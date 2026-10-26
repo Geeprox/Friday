@@ -1,0 +1,175 @@
+{
+  "$defs": {
+    "RelativeCalibration": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "reference": {
+          "title": "Reference",
+          "type": "string"
+        },
+        "source_profile": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Source Profile",
+          "type": "string"
+        },
+        "reference_profile": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Reference Profile",
+          "type": "string"
+        },
+        "context": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Context",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        },
+        "bias": {
+          "title": "Bias",
+          "type": "number"
+        },
+        "residual_bound": {
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Residual Bound",
+          "type": "number"
+        },
+        "reference_minimum": {
+          "title": "Reference Minimum",
+          "type": "number"
+        },
+        "reference_maximum": {
+          "title": "Reference Maximum",
+          "type": "number"
+        },
+        "sample_count": {
+          "maximum": 256,
+          "minimum": 8,
+          "title": "Sample Count",
+          "type": "integer"
+        },
+        "valid_until": {
+          "format": "date-time",
+          "title": "Valid Until",
+          "type": "string"
+        },
+        "relative_only": {
+          "default": true,
+          "title": "Relative Only",
+          "type": "boolean"
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "reference",
+        "source_profile",
+        "reference_profile",
+        "context",
+        "version",
+        "bias",
+        "residual_bound",
+        "reference_minimum",
+        "reference_maximum",
+        "sample_count",
+        "valid_until",
+        "simulated"
+      ],
+      "title": "RelativeCalibration",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "candidate_id": {
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "fingerprint": {
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "realm": {
+      "title": "Realm",
+      "type": "string"
+    },
+    "revision": {
+      "title": "Revision",
+      "type": "string"
+    },
+    "group_entity": {
+      "title": "Group Entity",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "calibration": {
+      "$ref": "#/$defs/RelativeCalibration"
+    },
+    "installed": {
+      "const": false,
+      "default": false,
+      "title": "Installed",
+      "type": "boolean"
+    },
+    "sample_history_persisted": {
+      "const": false,
+      "default": false,
+      "title": "Sample History Persisted",
+      "type": "boolean"
+    },
+    "evidence_refs": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 32,
+      "title": "Evidence Refs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "fingerprint",
+    "realm",
+    "revision",
+    "group_entity",
+    "created_at",
+    "expires_at",
+    "calibration",
+    "evidence_refs"
+  ],
+  "title": "CalibrationPreview",
+  "type": "object"
+}

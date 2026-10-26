@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "GroupMember": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_key": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Source Key",
+          "type": "string"
+        },
+        "binding_fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Binding Fingerprint",
+          "type": "string"
+        },
+        "identity_fingerprint": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identity Fingerprint"
+        }
+      },
+      "required": [
+        "source_key",
+        "binding_fingerprint"
+      ],
+      "title": "GroupMember",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "realm": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Realm",
+      "type": "string"
+    },
+    "expected_revision": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Expected Revision",
+      "type": "string"
+    },
+    "name": {
+      "maxLength": 96,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "primary_key": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Primary Key",
+      "type": "string"
+    },
+    "members": {
+      "items": {
+        "$ref": "#/$defs/GroupMember"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Members",
+      "type": "array"
+    }
+  },
+  "required": [
+    "realm",
+    "expected_revision",
+    "name",
+    "primary_key",
+    "members"
+  ],
+  "title": "EditMeasurementGroup",
+  "type": "object"
+}

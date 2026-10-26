@@ -1,0 +1,108 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "rule_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "revision": {
+      "title": "Revision",
+      "type": "integer"
+    },
+    "fingerprint": {
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "supported",
+        "unsupported",
+        "requires_core"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "backend": {
+      "enum": [
+        "simulator",
+        "home_core",
+        "ha",
+        "mijia_geek"
+      ],
+      "title": "Backend",
+      "type": "string"
+    },
+    "reasons": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Reasons",
+      "type": "array"
+    },
+    "core_independent": {
+      "default": false,
+      "title": "Core Independent",
+      "type": "boolean"
+    },
+    "wan_independent": {
+      "default": false,
+      "title": "Wan Independent",
+      "type": "boolean"
+    },
+    "bindings": {
+      "additionalProperties": {
+        "items": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "title": "Bindings",
+      "type": "object"
+    },
+    "instructions": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Instructions",
+      "type": "array"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "compiler_version": {
+      "const": "restricted-v1",
+      "default": "restricted-v1",
+      "title": "Compiler Version",
+      "type": "string"
+    },
+    "native_artifact": {
+      "default": null,
+      "title": "Native Artifact",
+      "type": "null"
+    }
+  },
+  "required": [
+    "rule_id",
+    "revision",
+    "fingerprint",
+    "status",
+    "backend",
+    "reasons",
+    "simulated"
+  ],
+  "title": "RuleCompilation",
+  "type": "object"
+}

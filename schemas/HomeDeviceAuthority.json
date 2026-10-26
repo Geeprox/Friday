@@ -1,0 +1,101 @@
+{
+  "additionalProperties": false,
+  "description": "Private operator grant. Runtime peers do not inherit Console device authority.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "enabled": {
+      "default": false,
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "authority_ref": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Authority Ref",
+      "type": "string"
+    },
+    "ha_url": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Ha Url",
+      "type": "string"
+    },
+    "ha_instance": {
+      "maxLength": 96,
+      "minLength": 1,
+      "title": "Ha Instance",
+      "type": "string"
+    },
+    "scope": {
+      "const": "all_registered_devices",
+      "title": "Scope",
+      "type": "string"
+    },
+    "operations": {
+      "items": {
+        "enum": [
+          "light.set",
+          "switch.set",
+          "fan.set",
+          "fan.percentage",
+          "climate.mode",
+          "climate.temperature",
+          "cover.position",
+          "cover.state",
+          "lock.set",
+          "number.value",
+          "select.option"
+        ],
+        "type": "string"
+      },
+      "maxItems": 11,
+      "minItems": 1,
+      "title": "Operations",
+      "type": "array"
+    },
+    "external_entity_ids": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 256,
+          "minItems": 1,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "External Entity Ids"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Expires At"
+    }
+  },
+  "required": [
+    "authority_ref",
+    "ha_url",
+    "ha_instance",
+    "scope",
+    "operations",
+    "expires_at"
+  ],
+  "title": "HomeDeviceAuthority",
+  "type": "object"
+}

@@ -1,0 +1,82 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "grant_id": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Grant Id",
+      "type": "string"
+    },
+    "subject_ref": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Subject Ref",
+      "type": "string"
+    },
+    "source_ref": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Source Ref",
+      "type": "string"
+    },
+    "config_generation": {
+      "minimum": 0,
+      "title": "Config Generation",
+      "type": "integer"
+    },
+    "connection_epoch": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Connection Epoch",
+      "type": "string"
+    },
+    "directory_refs": {
+      "items": {
+        "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Directory Refs",
+      "type": "array"
+    },
+    "approved_at": {
+      "format": "date-time",
+      "title": "Approved At",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "max_observed_entries": {
+      "default": 256,
+      "maximum": 1024,
+      "minimum": 1,
+      "title": "Max Observed Entries",
+      "type": "integer"
+    },
+    "max_read_bytes": {
+      "default": 8388608,
+      "maximum": 67108864,
+      "minimum": 0,
+      "title": "Max Read Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "grant_id",
+    "subject_ref",
+    "source_ref",
+    "config_generation",
+    "connection_epoch",
+    "directory_refs",
+    "approved_at",
+    "expires_at"
+  ],
+  "title": "StewardAgentReadScope",
+  "type": "object"
+}

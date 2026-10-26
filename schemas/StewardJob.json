@@ -1,0 +1,191 @@
+{
+  "$defs": {
+    "FamilyMediaOriginalRef": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "object_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Object Ref",
+          "type": "string"
+        },
+        "config_generation": {
+          "minimum": 0,
+          "title": "Config Generation",
+          "type": "integer"
+        },
+        "connection_epoch": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Connection Epoch",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "revision_basis": {
+          "const": "metadata",
+          "default": "metadata",
+          "title": "Revision Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_ref",
+        "object_ref",
+        "config_generation",
+        "connection_epoch",
+        "revision"
+      ],
+      "title": "FamilyMediaOriginalRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "job_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "item_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Item Id",
+      "type": "string"
+    },
+    "content_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Content Id",
+      "type": "string"
+    },
+    "source_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Source Fingerprint",
+      "type": "string"
+    },
+    "original_ref": {
+      "$ref": "#/$defs/FamilyMediaOriginalRef"
+    },
+    "provider": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Provider",
+      "type": "string"
+    },
+    "provider_version": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Provider Version",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "disabled",
+        "queued",
+        "running",
+        "paused",
+        "done",
+        "needs_ocr",
+        "failed",
+        "stale",
+        "offline"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "cursor": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cursor"
+    },
+    "completed_units": {
+      "default": 0,
+      "maximum": 256,
+      "minimum": 0,
+      "title": "Completed Units",
+      "type": "integer"
+    },
+    "completed_pages": {
+      "default": 0,
+      "maximum": 256,
+      "minimum": 0,
+      "title": "Completed Pages",
+      "type": "integer"
+    },
+    "source_pages": {
+      "anyOf": [
+        {
+          "maximum": 256,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Pages"
+    },
+    "charged_source_bytes": {
+      "default": 0,
+      "maximum": 67108864,
+      "minimum": 0,
+      "title": "Charged Source Bytes",
+      "type": "integer"
+    },
+    "attempts": {
+      "default": 0,
+      "maximum": 64,
+      "minimum": 0,
+      "title": "Attempts",
+      "type": "integer"
+    },
+    "reason": {
+      "default": "",
+      "maxLength": 120,
+      "title": "Reason",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "job_id",
+    "item_id",
+    "content_id",
+    "source_fingerprint",
+    "original_ref",
+    "provider",
+    "provider_version",
+    "status",
+    "updated_at"
+  ],
+  "title": "StewardJob",
+  "type": "object"
+}

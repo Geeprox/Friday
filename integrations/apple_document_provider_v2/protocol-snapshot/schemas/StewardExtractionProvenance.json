@@ -1,0 +1,77 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "engine": {
+      "enum": [
+        "pdfkit",
+        "vision",
+        "synthetic_fixture"
+      ],
+      "title": "Engine",
+      "type": "string"
+    },
+    "engine_version": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Engine Version",
+      "type": "string"
+    },
+    "execution": {
+      "enum": [
+        "native",
+        "fixture"
+      ],
+      "title": "Execution",
+      "type": "string"
+    },
+    "method": {
+      "enum": [
+        "embedded_text",
+        "ocr"
+      ],
+      "title": "Method",
+      "type": "string"
+    },
+    "language_hints": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 8,
+      "title": "Language Hints",
+      "type": "array"
+    },
+    "raster_content_id": {
+      "anyOf": [
+        {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Raster Content Id"
+    },
+    "coordinate_origin": {
+      "const": "top_left",
+      "default": "top_left",
+      "title": "Coordinate Origin",
+      "type": "string"
+    }
+  },
+  "required": [
+    "engine",
+    "engine_version",
+    "execution",
+    "method"
+  ],
+  "title": "StewardExtractionProvenance",
+  "type": "object"
+}

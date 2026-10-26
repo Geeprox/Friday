@@ -1,0 +1,14 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "seconds": {
+      "default": 6.0,
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Seconds",
+      "type": "number"
+    }
+  },
+  "title": "MediaProbeRequest",
+  "type": "object"
+}

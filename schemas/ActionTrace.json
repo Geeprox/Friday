@@ -1,0 +1,273 @@
+{
+  "$defs": {
+    "ActionRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        },
+        "capability": {
+          "const": "light.set",
+          "default": "light.set",
+          "title": "Capability",
+          "type": "string"
+        },
+        "desired": {
+          "additionalProperties": true,
+          "title": "Desired",
+          "type": "object"
+        },
+        "actor": {
+          "default": "console",
+          "enum": [
+            "console",
+            "cli",
+            "test"
+          ],
+          "title": "Actor",
+          "type": "string"
+        },
+        "origin": {
+          "const": "dry-run",
+          "default": "dry-run",
+          "title": "Origin",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "expected_version": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Expected Version",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Idempotency Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "desired",
+        "expires_at",
+        "expected_version"
+      ],
+      "title": "ActionRequest",
+      "type": "object"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "state-snapshot",
+            "state-transition",
+            "source-report",
+            "quality-change",
+            "action-result",
+            "observation-gap"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "source_seq": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Seq"
+        },
+        "correlation_id": {
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "wall_time": {
+          "format": "date-time",
+          "title": "Wall Time",
+          "type": "string"
+        },
+        "received_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Received At"
+        },
+        "time_basis": {
+          "default": "unknown",
+          "enum": [
+            "upstream_event",
+            "local_event",
+            "unknown"
+          ],
+          "title": "Time Basis",
+          "type": "string"
+        },
+        "monotonic_time": {
+          "title": "Monotonic Time",
+          "type": "number"
+        },
+        "boot_id": {
+          "title": "Boot Id",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        },
+        "sensitivity": {
+          "default": "household",
+          "enum": [
+            "public",
+            "household",
+            "sensitive"
+          ],
+          "title": "Sensitivity",
+          "type": "string"
+        },
+        "simulated": {
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "kind",
+        "correlation_id",
+        "wall_time",
+        "monotonic_time",
+        "boot_id",
+        "payload"
+      ],
+      "title": "Event",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "action_id": {
+      "title": "Action Id",
+      "type": "string"
+    },
+    "correlation_id": {
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "request": {
+      "$ref": "#/$defs/ActionRequest"
+    },
+    "status": {
+      "enum": [
+        "planned",
+        "rejected",
+        "expired"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "code": {
+      "title": "Code",
+      "type": "string"
+    },
+    "route": {
+      "const": "dry-run",
+      "default": "dry-run",
+      "title": "Route",
+      "type": "string"
+    },
+    "reasons": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Reasons",
+      "type": "array"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/Event"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "real_write_attempted": {
+      "const": false,
+      "default": false,
+      "title": "Real Write Attempted",
+      "type": "boolean"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "action_id",
+    "correlation_id",
+    "request",
+    "status",
+    "code",
+    "reasons",
+    "simulated"
+  ],
+  "title": "ActionTrace",
+  "type": "object"
+}

@@ -1,0 +1,41 @@
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+.env
+friday.local.json
+friday.home.json
+data/
+*.log
+models.local.json
+node_modules
+dist/
+native/**/.build/
+
+# Project-local offline inputs, build/test output and bounded migration evidence.
+/.artifacts/
+# Ignore legacy in-project build/audit output as well.
+native/**/build/
+
+# Household data, credentials, reports and deployment state are never source.
+.env.*
+!.env.example
+*.local.json
+*.ses
+*.sqlite*
+*.db
+*.pem
+*.key
+*.p12
+*.mobileprovision
+*.log
+/.private/
+/evidence/
+**/evidence/
+/docs/evidence/
+/docs/context/
+native/**/Resources/product-inputs.local.json
+# Native integration compiler output.
+integrations/**/.build/

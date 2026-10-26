@@ -1,0 +1,56 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "cursor": {
+      "anyOf": [
+        {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cursor"
+    },
+    "limit": {
+      "default": 50,
+      "maximum": 100,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "query": {
+      "default": "",
+      "maxLength": 120,
+      "title": "Query",
+      "type": "string"
+    },
+    "search_mode": {
+      "default": "catalog_page",
+      "enum": [
+        "catalog_page",
+        "indexed_cache"
+      ],
+      "title": "Search Mode",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_context"
+  ],
+  "title": "StewardPageRequest",
+  "type": "object"
+}

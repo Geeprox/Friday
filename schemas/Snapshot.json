@@ -1,0 +1,1122 @@
+{
+  "$defs": {
+    "Binding": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "external_id": {
+          "title": "External Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "external_id"
+      ],
+      "title": "Binding",
+      "type": "object"
+    },
+    "CanonicalState": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "value": {
+          "default": null,
+          "title": "Value"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "quality": {
+          "enum": [
+            "healthy",
+            "suspect",
+            "stale",
+            "faulty",
+            "unknown"
+          ],
+          "title": "Quality",
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        },
+        "selected_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selected Source"
+        },
+        "excluded_sources": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Excluded Sources",
+          "type": "object"
+        },
+        "as_of": {
+          "format": "date-time",
+          "title": "As Of",
+          "type": "string"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valid Until"
+        },
+        "resolver_version": {
+          "default": "conservative-v1",
+          "title": "Resolver Version",
+          "type": "string"
+        },
+        "calibration_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calibration Version"
+        },
+        "inferred": {
+          "default": false,
+          "title": "Inferred",
+          "type": "boolean"
+        },
+        "value_interval": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value Interval"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "simulated": {
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "quality",
+        "reasons",
+        "as_of"
+      ],
+      "title": "CanonicalState",
+      "type": "object"
+    },
+    "Capability": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "access": {
+          "enum": [
+            "read",
+            "write",
+            "event"
+          ],
+          "title": "Access",
+          "type": "string"
+        },
+        "support": {
+          "default": "unknown",
+          "enum": [
+            "supported",
+            "unsupported",
+            "unknown"
+          ],
+          "title": "Support",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum"
+        },
+        "minimum_verified": {
+          "default": false,
+          "title": "Minimum Verified",
+          "type": "boolean"
+        },
+        "atomic_power_brightness": {
+          "default": false,
+          "title": "Atomic Power Brightness",
+          "type": "boolean"
+        },
+        "no_bright_flash_verified": {
+          "default": false,
+          "title": "No Bright Flash Verified",
+          "type": "boolean"
+        },
+        "verification": {
+          "default": "unknown",
+          "enum": [
+            "unknown",
+            "simulated",
+            "protocol",
+            "hardware"
+          ],
+          "title": "Verification",
+          "type": "string"
+        },
+        "wan_dependency": {
+          "default": "unknown",
+          "enum": [
+            "yes",
+            "no",
+            "unknown"
+          ],
+          "title": "Wan Dependency",
+          "type": "string"
+        },
+        "choices": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 128,
+          "title": "Choices",
+          "type": "array"
+        },
+        "step": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Step"
+        }
+      },
+      "required": [
+        "name",
+        "access"
+      ],
+      "title": "Capability",
+      "type": "object"
+    },
+    "Entity": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "room": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Room"
+        },
+        "physical_source_id": {
+          "title": "Physical Source Id",
+          "type": "string"
+        },
+        "bindings": {
+          "items": {
+            "$ref": "#/$defs/Binding"
+          },
+          "title": "Bindings",
+          "type": "array"
+        },
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "simulated": {
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        },
+        "state_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Version"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "physical_source_id"
+      ],
+      "title": "Entity",
+      "type": "object"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "state-snapshot",
+            "state-transition",
+            "source-report",
+            "quality-change",
+            "action-result",
+            "observation-gap"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "source_seq": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Seq"
+        },
+        "correlation_id": {
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "wall_time": {
+          "format": "date-time",
+          "title": "Wall Time",
+          "type": "string"
+        },
+        "received_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Received At"
+        },
+        "time_basis": {
+          "default": "unknown",
+          "enum": [
+            "upstream_event",
+            "local_event",
+            "unknown"
+          ],
+          "title": "Time Basis",
+          "type": "string"
+        },
+        "monotonic_time": {
+          "title": "Monotonic Time",
+          "type": "number"
+        },
+        "boot_id": {
+          "title": "Boot Id",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        },
+        "sensitivity": {
+          "default": "household",
+          "enum": [
+            "public",
+            "household",
+            "sensitive"
+          ],
+          "title": "Sensitivity",
+          "type": "string"
+        },
+        "simulated": {
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "kind",
+        "correlation_id",
+        "wall_time",
+        "monotonic_time",
+        "boot_id",
+        "payload"
+      ],
+      "title": "Event",
+      "type": "object"
+    },
+    "ExternalRuleRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "raw": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Raw"
+        },
+        "fingerprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Fingerprint"
+        },
+        "normalization": {
+          "default": "opaque",
+          "enum": [
+            "exact",
+            "partial",
+            "opaque"
+          ],
+          "title": "Normalization",
+          "type": "string"
+        },
+        "readable": {
+          "default": false,
+          "title": "Readable",
+          "type": "boolean"
+        },
+        "writable": {
+          "default": false,
+          "title": "Writable",
+          "type": "boolean"
+        },
+        "coverage_note": {
+          "title": "Coverage Note",
+          "type": "string"
+        },
+        "simulated": {
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "raw",
+        "fingerprint",
+        "coverage_note"
+      ],
+      "title": "ExternalRuleRecord",
+      "type": "object"
+    },
+    "Observation": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "capability": {
+          "title": "Capability",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "physical_source_id": {
+          "title": "Physical Source Id",
+          "type": "string"
+        },
+        "ingest_source": {
+          "title": "Ingest Source",
+          "type": "string"
+        },
+        "measured_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Measured At"
+        },
+        "source_reported_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Reported At"
+        },
+        "integration_written_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Integration Written At"
+        },
+        "received_at": {
+          "format": "date-time",
+          "title": "Received At",
+          "type": "string"
+        },
+        "freshness_basis": {
+          "default": "unknown",
+          "enum": [
+            "device_sample",
+            "upstream_report",
+            "cache_write",
+            "unknown"
+          ],
+          "title": "Freshness Basis",
+          "type": "string"
+        },
+        "cached": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached"
+        },
+        "device_sequence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device Sequence"
+        },
+        "clock_uncertainty_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clock Uncertainty Seconds"
+        },
+        "semantics": {
+          "default": "periodic_sample",
+          "enum": [
+            "periodic_sample",
+            "change_triggered",
+            "latched_state",
+            "derived"
+          ],
+          "title": "Semantics",
+          "type": "string"
+        },
+        "transport_health": {
+          "default": "unknown",
+          "enum": [
+            "online",
+            "offline",
+            "unknown"
+          ],
+          "title": "Transport Health",
+          "type": "string"
+        },
+        "simulated": {
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "entity_id",
+        "capability",
+        "value",
+        "physical_source_id",
+        "ingest_source",
+        "received_at"
+      ],
+      "title": "Observation",
+      "type": "object"
+    },
+    "PhysicalDevice": {
+      "additionalProperties": false,
+      "description": "Product projection; grouping functions does not merge measurement evidence.",
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "room": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Room"
+        },
+        "function_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Function Ids",
+          "type": "array"
+        },
+        "bindings": {
+          "items": {
+            "$ref": "#/$defs/Binding"
+          },
+          "title": "Bindings",
+          "type": "array"
+        },
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "identity_basis": {
+          "enum": [
+            "xiaomi_identifier",
+            "ha_device_registry",
+            "simulated"
+          ],
+          "title": "Identity Basis",
+          "type": "string"
+        },
+        "category": {
+          "default": "device",
+          "enum": [
+            "device",
+            "service"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "simulated": {
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "function_ids",
+        "identity_basis"
+      ],
+      "title": "PhysicalDevice",
+      "type": "object"
+    },
+    "SourceQualityEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "physical_source_id": {
+          "title": "Physical Source Id",
+          "type": "string"
+        },
+        "entity_id": {
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "quality": {
+          "enum": [
+            "healthy",
+            "suspect",
+            "stale",
+            "faulty",
+            "unknown"
+          ],
+          "title": "Quality",
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        },
+        "profile_version": {
+          "title": "Profile Version",
+          "type": "string"
+        },
+        "profile_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile Fingerprint"
+        },
+        "location": {
+          "title": "Location",
+          "type": "string"
+        },
+        "placement": {
+          "title": "Placement",
+          "type": "string"
+        },
+        "installation_height_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Installation Height M"
+        },
+        "reporting": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reporting"
+        },
+        "ttl_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ttl Seconds"
+        },
+        "context": {
+          "title": "Context",
+          "type": "string"
+        },
+        "distinct_sample_count": {
+          "title": "Distinct Sample Count",
+          "type": "integer"
+        },
+        "recovery_samples": {
+          "title": "Recovery Samples",
+          "type": "integer"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "physical_source_id",
+        "entity_id",
+        "quality",
+        "reasons",
+        "profile_version",
+        "location",
+        "placement",
+        "context",
+        "distinct_sample_count",
+        "recovery_samples",
+        "simulated"
+      ],
+      "title": "SourceQualityEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "mode": {
+      "enum": [
+        "simulator",
+        "ha-read-only"
+      ],
+      "title": "Mode",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "entities": {
+      "items": {
+        "$ref": "#/$defs/Entity"
+      },
+      "title": "Entities",
+      "type": "array"
+    },
+    "observations": {
+      "items": {
+        "$ref": "#/$defs/Observation"
+      },
+      "title": "Observations",
+      "type": "array"
+    },
+    "states": {
+      "items": {
+        "$ref": "#/$defs/CanonicalState"
+      },
+      "title": "States",
+      "type": "array"
+    },
+    "rules": {
+      "items": {
+        "$ref": "#/$defs/ExternalRuleRecord"
+      },
+      "title": "Rules",
+      "type": "array"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/Event"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "limitations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    },
+    "devices": {
+      "items": {
+        "$ref": "#/$defs/PhysicalDevice"
+      },
+      "title": "Devices",
+      "type": "array"
+    },
+    "action_targets": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Action Targets",
+      "type": "array"
+    },
+    "derived_entities": {
+      "items": {
+        "$ref": "#/$defs/Entity"
+      },
+      "maxItems": 32,
+      "title": "Derived Entities",
+      "type": "array"
+    },
+    "quality_sources": {
+      "items": {
+        "$ref": "#/$defs/SourceQualityEvidence"
+      },
+      "maxItems": 64,
+      "title": "Quality Sources",
+      "type": "array"
+    },
+    "simulator_scenario": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Simulator Scenario"
+    }
+  },
+  "required": [
+    "mode",
+    "version",
+    "generated_at",
+    "entities",
+    "observations",
+    "states",
+    "rules",
+    "events",
+    "limitations"
+  ],
+  "title": "Snapshot",
+  "type": "object"
+}

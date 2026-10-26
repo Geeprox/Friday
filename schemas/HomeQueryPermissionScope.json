@@ -1,0 +1,79 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "subject": {
+      "maxLength": 256,
+      "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+      "title": "Subject",
+      "type": "string"
+    },
+    "boundary": {
+      "enum": [
+        "loopback_console",
+        "registered_peer",
+        "unverified"
+      ],
+      "title": "Boundary",
+      "type": "string"
+    },
+    "revision": {
+      "maxLength": 256,
+      "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+      "title": "Revision",
+      "type": "string"
+    },
+    "requested_rooms": {
+      "items": {
+        "maxLength": 256,
+        "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+        "type": "string"
+      },
+      "maxItems": 8,
+      "title": "Requested Rooms",
+      "type": "array"
+    },
+    "requested_entities": {
+      "items": {
+        "maxLength": 256,
+        "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+        "type": "string"
+      },
+      "maxItems": 16,
+      "title": "Requested Entities",
+      "type": "array"
+    },
+    "requested_source": {
+      "default": "home",
+      "enum": [
+        "home",
+        "family_media"
+      ],
+      "title": "Requested Source",
+      "type": "string"
+    },
+    "requested_source_ref": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Requested Source Ref"
+    }
+  },
+  "required": [
+    "subject",
+    "boundary",
+    "revision",
+    "requested_rooms",
+    "requested_entities"
+  ],
+  "title": "HomeQueryPermissionScope",
+  "type": "object"
+}

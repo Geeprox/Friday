@@ -1,0 +1,135 @@
+{
+  "$defs": {
+    "StewardDestinationInventory": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "root_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Root Ref",
+          "type": "string"
+        },
+        "namespace_revision": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Namespace Revision",
+          "type": "string"
+        },
+        "checked_at": {
+          "format": "date-time",
+          "title": "Checked At",
+          "type": "string"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 512,
+          "title": "Paths",
+          "type": "array"
+        },
+        "basis": {
+          "enum": [
+            "synthetic_fixture",
+            "operator_preview"
+          ],
+          "title": "Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "root_ref",
+        "namespace_revision",
+        "checked_at",
+        "complete",
+        "basis"
+      ],
+      "title": "StewardDestinationInventory",
+      "type": "object"
+    },
+    "StewardRelocationSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "item_id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "expected_content_id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Expected Content Id",
+          "type": "string"
+        },
+        "destination": {
+          "title": "Destination",
+          "type": "string"
+        },
+        "operation": {
+          "default": "rename_and_move",
+          "enum": [
+            "rename",
+            "move",
+            "rename_and_move",
+            "restructure"
+          ],
+          "title": "Operation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "expected_content_id",
+        "destination"
+      ],
+      "title": "StewardRelocationSelection",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "selections": {
+      "items": {
+        "$ref": "#/$defs/StewardRelocationSelection"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Selections",
+      "type": "array"
+    },
+    "inventory": {
+      "$ref": "#/$defs/StewardDestinationInventory"
+    }
+  },
+  "required": [
+    "expected_context",
+    "selections",
+    "inventory"
+  ],
+  "title": "StewardPreviewRequest",
+  "type": "object"
+}

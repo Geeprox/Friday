@@ -1,0 +1,189 @@
+{
+  "$defs": {
+    "ArchiveTimeRange": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "start": {
+          "format": "date-time",
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "format": "date-time",
+          "title": "End",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "ArchiveTimeRange",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "plan_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "context_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Context Fingerprint",
+      "type": "string"
+    },
+    "media_ref": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Media Ref",
+      "type": "string"
+    },
+    "camera_id": {
+      "title": "Camera Id",
+      "type": "string"
+    },
+    "time_range": {
+      "$ref": "#/$defs/ArchiveTimeRange"
+    },
+    "source_time_range": {
+      "$ref": "#/$defs/ArchiveTimeRange"
+    },
+    "stream_url": {
+      "pattern": "^/api/archive/media/[a-f0-9]{64}$",
+      "title": "Stream Url",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "start_offset_seconds": {
+      "minimum": 0,
+      "title": "Start Offset Seconds",
+      "type": "number"
+    },
+    "end_offset_seconds": {
+      "exclusiveMinimum": 0,
+      "title": "End Offset Seconds",
+      "type": "number"
+    },
+    "previous_keyframe_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Previous Keyframe Seconds"
+    },
+    "indexed_keyframes_seconds": {
+      "items": {
+        "type": "number"
+      },
+      "maxItems": 64,
+      "title": "Indexed Keyframes Seconds",
+      "type": "array"
+    },
+    "duration_seconds": {
+      "exclusiveMinimum": 0,
+      "maximum": 86400,
+      "title": "Duration Seconds",
+      "type": "number"
+    },
+    "audio_track": {
+      "title": "Audio Track",
+      "type": "boolean"
+    },
+    "codecs": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 4,
+      "title": "Codecs",
+      "type": "array"
+    },
+    "clock_uncertainty_seconds": {
+      "maximum": 60,
+      "minimum": 0,
+      "title": "Clock Uncertainty Seconds",
+      "type": "number"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "range_budget_bytes": {
+      "const": 8388608,
+      "default": 8388608,
+      "title": "Range Budget Bytes",
+      "type": "integer"
+    },
+    "session_budget_bytes": {
+      "const": 67108864,
+      "default": 67108864,
+      "title": "Session Budget Bytes",
+      "type": "integer"
+    },
+    "decoder_verified_by_server": {
+      "const": false,
+      "default": false,
+      "title": "Decoder Verified By Server",
+      "type": "boolean"
+    },
+    "hardware_clock_verified": {
+      "const": false,
+      "default": false,
+      "title": "Hardware Clock Verified",
+      "type": "boolean"
+    },
+    "media_copied": {
+      "const": false,
+      "default": false,
+      "title": "Media Copied",
+      "type": "boolean"
+    },
+    "causal_relation": {
+      "const": "unknown",
+      "default": "unknown",
+      "title": "Causal Relation",
+      "type": "string"
+    }
+  },
+  "required": [
+    "plan_id",
+    "context_fingerprint",
+    "media_ref",
+    "camera_id",
+    "time_range",
+    "source_time_range",
+    "stream_url",
+    "expires_at",
+    "start_offset_seconds",
+    "end_offset_seconds",
+    "duration_seconds",
+    "audio_track",
+    "codecs",
+    "clock_uncertainty_seconds",
+    "simulated"
+  ],
+  "title": "ArchivePlaybackPlan",
+  "type": "object"
+}

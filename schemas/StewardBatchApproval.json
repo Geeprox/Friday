@@ -1,0 +1,65 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "plan_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "expected_plan_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Plan Fingerprint",
+      "type": "string"
+    },
+    "expected_inventory_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Inventory Fingerprint",
+      "type": "string"
+    },
+    "selected_entry_ids": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Selected Entry Ids",
+      "type": "array"
+    },
+    "decision": {
+      "enum": [
+        "approve_preview",
+        "reject"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "scope": {
+      "const": "preview_only",
+      "default": "preview_only",
+      "title": "Scope",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_context",
+    "plan_id",
+    "expected_plan_fingerprint",
+    "expected_inventory_fingerprint",
+    "selected_entry_ids",
+    "decision"
+  ],
+  "title": "StewardBatchApproval",
+  "type": "object"
+}

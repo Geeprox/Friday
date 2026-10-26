@@ -1,0 +1,290 @@
+{
+  "$defs": {
+    "FamilyMediaOriginalRef": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "object_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Object Ref",
+          "type": "string"
+        },
+        "config_generation": {
+          "minimum": 0,
+          "title": "Config Generation",
+          "type": "integer"
+        },
+        "connection_epoch": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Connection Epoch",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "revision_basis": {
+          "const": "metadata",
+          "default": "metadata",
+          "title": "Revision Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_ref",
+        "object_ref",
+        "config_generation",
+        "connection_epoch",
+        "revision"
+      ],
+      "title": "FamilyMediaOriginalRef",
+      "type": "object"
+    },
+    "HomeQueryFamilyMediaOriginal": {
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "media_kind": {
+          "enum": [
+            "image",
+            "video"
+          ],
+          "title": "Media Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "ready",
+            "pending",
+            "missing",
+            "stale",
+            "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "last_seen_at": {
+          "format": "date-time",
+          "title": "Last Seen At",
+          "type": "string"
+        },
+        "original_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FamilyMediaOriginalRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "item_id",
+        "media_kind",
+        "status",
+        "last_seen_at",
+        "original_ref"
+      ],
+      "title": "HomeQueryFamilyMediaOriginal",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "family_media_evidence",
+      "title": "Kind",
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "asset_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Asset Id",
+      "type": "string"
+    },
+    "original_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Original Hash",
+      "type": "string"
+    },
+    "source_ref": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Source Ref",
+      "type": "string"
+    },
+    "context_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Context Fingerprint",
+      "type": "string"
+    },
+    "config_generation": {
+      "minimum": 0,
+      "title": "Config Generation",
+      "type": "integer"
+    },
+    "connection_epoch": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Connection Epoch"
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "pending",
+        "missing",
+        "stale",
+        "unavailable"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "original_count": {
+      "maximum": 20000,
+      "minimum": 1,
+      "title": "Original Count",
+      "type": "integer"
+    },
+    "ready_original_count": {
+      "maximum": 20000,
+      "minimum": 0,
+      "title": "Ready Original Count",
+      "type": "integer"
+    },
+    "other_original_count": {
+      "maximum": 20000,
+      "minimum": 0,
+      "title": "Other Original Count",
+      "type": "integer"
+    },
+    "original_count_basis": {
+      "const": "observed_source_bindings_including_historical_epochs",
+      "title": "Original Count Basis",
+      "type": "string"
+    },
+    "originals": {
+      "items": {
+        "$ref": "#/$defs/HomeQueryFamilyMediaOriginal"
+      },
+      "maxItems": 8,
+      "title": "Originals",
+      "type": "array"
+    },
+    "originals_truncated": {
+      "title": "Originals Truncated",
+      "type": "boolean"
+    },
+    "query_observed_at": {
+      "format": "date-time",
+      "title": "Query Observed At",
+      "type": "string"
+    },
+    "captured_at": {
+      "default": null,
+      "title": "Captured At",
+      "type": "null"
+    },
+    "hardware_sample_time": {
+      "default": null,
+      "title": "Hardware Sample Time",
+      "type": "null"
+    },
+    "physical_copy_count": {
+      "default": null,
+      "title": "Physical Copy Count",
+      "type": "null"
+    },
+    "causal_relation": {
+      "const": "unknown",
+      "default": "unknown",
+      "title": "Causal Relation",
+      "type": "string"
+    },
+    "confidence": {
+      "default": null,
+      "title": "Confidence",
+      "type": "null"
+    },
+    "hash_basis": {
+      "const": "full_stream_sha256",
+      "default": "full_stream_sha256",
+      "title": "Hash Basis",
+      "type": "string"
+    },
+    "source_revision_basis": {
+      "const": "metadata",
+      "default": "metadata",
+      "title": "Source Revision Basis",
+      "type": "string"
+    },
+    "immutable_source_verified": {
+      "const": false,
+      "default": false,
+      "title": "Immutable Source Verified",
+      "type": "boolean"
+    },
+    "playback_verified": {
+      "const": false,
+      "default": false,
+      "title": "Playback Verified",
+      "type": "boolean"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "kind",
+    "id",
+    "asset_id",
+    "original_hash",
+    "source_ref",
+    "context_fingerprint",
+    "config_generation",
+    "connection_epoch",
+    "status",
+    "original_count",
+    "ready_original_count",
+    "other_original_count",
+    "original_count_basis",
+    "originals",
+    "originals_truncated",
+    "query_observed_at",
+    "simulated"
+  ],
+  "title": "HomeQueryFamilyMediaEvidence",
+  "type": "object"
+}

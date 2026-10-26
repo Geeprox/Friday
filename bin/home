@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+if [ -x .venv/bin/python ]; then
+  exec .venv/bin/python -m homeplane.cli "$@"
+fi
+export UV_CACHE_DIR="$PWD/.artifacts/uv-cache"
+exec uv run --locked --no-dev python -m homeplane.cli "$@"

@@ -1,0 +1,4 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+ <item><shape><solid android:color="#F2F3EF"/><size android:width="320dp" android:height="180dp"/></shape></item>
+ <item android:width="84dp" android:height="84dp" android:gravity="center"><bitmap android:src="@drawable/friday_icon" android:gravity="fill"/></item>
+</layer-list>

@@ -1,0 +1,16 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "expected_generation": {
+      "minimum": 0,
+      "title": "Expected Generation",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "expected_generation"
+  ],
+  "title": "NASConnectionCommand",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

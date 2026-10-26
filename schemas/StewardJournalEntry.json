@@ -1,0 +1,241 @@
+{
+  "$defs": {
+    "FamilyMediaOriginalRef": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "object_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Object Ref",
+          "type": "string"
+        },
+        "config_generation": {
+          "minimum": 0,
+          "title": "Config Generation",
+          "type": "integer"
+        },
+        "connection_epoch": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Connection Epoch",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "revision_basis": {
+          "const": "metadata",
+          "default": "metadata",
+          "title": "Revision Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_ref",
+        "object_ref",
+        "config_generation",
+        "connection_epoch",
+        "revision"
+      ],
+      "title": "FamilyMediaOriginalRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "journal_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Journal Id",
+      "type": "string"
+    },
+    "plan_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "entry_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Entry Id",
+      "type": "string"
+    },
+    "content_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Content Id",
+      "type": "string"
+    },
+    "before": {
+      "$ref": "#/$defs/FamilyMediaOriginalRef"
+    },
+    "before_root_ref": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Before Root Ref",
+      "type": "string"
+    },
+    "before_relative_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Before Relative Path"
+    },
+    "target_root_ref": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Target Root Ref",
+      "type": "string"
+    },
+    "destination": {
+      "title": "Destination",
+      "type": "string"
+    },
+    "source_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Source Fingerprint",
+      "type": "string"
+    },
+    "inventory_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Inventory Fingerprint",
+      "type": "string"
+    },
+    "policy_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Policy Fingerprint",
+      "type": "string"
+    },
+    "policy_rule_ids": {
+      "items": {
+        "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+        "type": "string"
+      },
+      "title": "Policy Rule Ids",
+      "type": "array"
+    },
+    "operation": {
+      "enum": [
+        "rename",
+        "move",
+        "rename_and_move",
+        "restructure"
+      ],
+      "title": "Operation",
+      "type": "string"
+    },
+    "phase": {
+      "enum": [
+        "planned",
+        "preview_approved",
+        "rejected",
+        "preflight",
+        "applied",
+        "rollback",
+        "conflict"
+      ],
+      "title": "Phase",
+      "type": "string"
+    },
+    "recorded_at": {
+      "format": "date-time",
+      "title": "Recorded At",
+      "type": "string"
+    },
+    "after_object_ref": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "After Object Ref"
+    },
+    "after_revision": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "After Revision"
+    },
+    "verified_after_hash": {
+      "anyOf": [
+        {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Verified After Hash"
+    },
+    "inverse_operation": {
+      "const": "relocate_no_overwrite",
+      "default": "relocate_no_overwrite",
+      "title": "Inverse Operation",
+      "type": "string"
+    },
+    "execution_grant_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution Grant Id"
+    }
+  },
+  "required": [
+    "journal_id",
+    "plan_id",
+    "entry_id",
+    "content_id",
+    "before",
+    "before_root_ref",
+    "target_root_ref",
+    "destination",
+    "source_fingerprint",
+    "inventory_fingerprint",
+    "policy_fingerprint",
+    "policy_rule_ids",
+    "operation",
+    "phase",
+    "recorded_at"
+  ],
+  "title": "StewardJournalEntry",
+  "type": "object"
+}

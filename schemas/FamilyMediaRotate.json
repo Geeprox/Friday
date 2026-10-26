@@ -1,0 +1,32 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "operation": {
+      "const": "rotate",
+      "default": "rotate",
+      "title": "Operation",
+      "type": "string"
+    },
+    "degrees_clockwise": {
+      "enum": [
+        0,
+        90,
+        180,
+        270
+      ],
+      "title": "Degrees Clockwise",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "degrees_clockwise"
+  ],
+  "title": "FamilyMediaRotate",
+  "type": "object"
+}

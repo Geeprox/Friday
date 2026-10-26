@@ -1,0 +1,137 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "folder_ref": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Folder Ref",
+      "type": "string"
+    },
+    "camera_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Camera Id"
+    },
+    "name": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "room": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Room"
+    },
+    "timezone": {
+      "default": "Asia/Shanghai",
+      "maxLength": 64,
+      "title": "Timezone",
+      "type": "string"
+    },
+    "timing_reviewed": {
+      "default": false,
+      "title": "Timing Reviewed",
+      "type": "boolean"
+    },
+    "clock_offset_seconds": {
+      "anyOf": [
+        {
+          "maximum": 86400,
+          "minimum": -86400,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Clock Offset Seconds"
+    },
+    "clock_uncertainty_seconds": {
+      "anyOf": [
+        {
+          "maximum": 60,
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Clock Uncertainty Seconds"
+    },
+    "completion_convention": {
+      "default": "unreviewed",
+      "enum": [
+        "unreviewed",
+        "closed_files_operator_reviewed"
+      ],
+      "title": "Completion Convention",
+      "type": "string"
+    },
+    "arrival_delay_seconds": {
+      "anyOf": [
+        {
+          "maximum": 86400,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Arrival Delay Seconds"
+    },
+    "source_retention_days": {
+      "anyOf": [
+        {
+          "maximum": 3650,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Retention Days"
+    }
+  },
+  "required": [
+    "expected_context",
+    "folder_ref",
+    "name"
+  ],
+  "title": "ArchiveCameraEdit",
+  "type": "object"
+}

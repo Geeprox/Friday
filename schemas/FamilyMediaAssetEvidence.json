@@ -1,0 +1,320 @@
+{
+  "$defs": {
+    "FamilyMediaItem": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "item_id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "asset_id": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Asset Id"
+        },
+        "media_kind": {
+          "enum": [
+            "image",
+            "video",
+            "audio",
+            "other"
+          ],
+          "title": "Media Kind",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "ready",
+            "pending",
+            "missing",
+            "stale",
+            "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "original_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Original Hash"
+        },
+        "previous_original_hashes": {
+          "items": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Previous Original Hashes",
+          "type": "array"
+        },
+        "hash_basis": {
+          "enum": [
+            "full_stream_sha256",
+            "not_verified"
+          ],
+          "title": "Hash Basis",
+          "type": "string"
+        },
+        "hash_progress_bytes": {
+          "minimum": 0,
+          "title": "Hash Progress Bytes",
+          "type": "integer"
+        },
+        "completion_evidence": {
+          "enum": [
+            "source_closed",
+            "operator_reviewed_stable_metadata",
+            "unreviewed"
+          ],
+          "title": "Completion Evidence",
+          "type": "string"
+        },
+        "last_seen_at": {
+          "format": "date-time",
+          "title": "Last Seen At",
+          "type": "string"
+        },
+        "captured_at": {
+          "const": null,
+          "default": null,
+          "title": "Captured At",
+          "type": "null"
+        },
+        "original_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FamilyMediaOriginalRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_revision_basis": {
+          "const": "metadata",
+          "default": "metadata",
+          "title": "Source Revision Basis",
+          "type": "string"
+        },
+        "immutable_source_verified": {
+          "const": false,
+          "default": false,
+          "title": "Immutable Source Verified",
+          "type": "boolean"
+        },
+        "playback_verified": {
+          "const": false,
+          "default": false,
+          "title": "Playback Verified",
+          "type": "boolean"
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        },
+        "media_copied": {
+          "const": false,
+          "default": false,
+          "title": "Media Copied",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "item_id",
+        "media_kind",
+        "size_bytes",
+        "status",
+        "reason",
+        "hash_basis",
+        "hash_progress_bytes",
+        "completion_evidence",
+        "last_seen_at",
+        "simulated"
+      ],
+      "title": "FamilyMediaItem",
+      "type": "object"
+    },
+    "FamilyMediaOriginalRef": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "object_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Object Ref",
+          "type": "string"
+        },
+        "config_generation": {
+          "minimum": 0,
+          "title": "Config Generation",
+          "type": "integer"
+        },
+        "connection_epoch": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Connection Epoch",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "revision_basis": {
+          "const": "metadata",
+          "default": "metadata",
+          "title": "Revision Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_ref",
+        "object_ref",
+        "config_generation",
+        "connection_epoch",
+        "revision"
+      ],
+      "title": "FamilyMediaOriginalRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "context_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Context Fingerprint",
+      "type": "string"
+    },
+    "asset_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Asset Id",
+      "type": "string"
+    },
+    "original_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Original Hash",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "pending",
+        "missing",
+        "stale",
+        "unavailable"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "originals": {
+      "items": {
+        "$ref": "#/$defs/FamilyMediaItem"
+      },
+      "maxItems": 128,
+      "title": "Originals",
+      "type": "array"
+    },
+    "original_count": {
+      "minimum": 1,
+      "title": "Original Count",
+      "type": "integer"
+    },
+    "ready_original_count": {
+      "minimum": 0,
+      "title": "Ready Original Count",
+      "type": "integer"
+    },
+    "other_original_count": {
+      "minimum": 0,
+      "title": "Other Original Count",
+      "type": "integer"
+    },
+    "partial": {
+      "title": "Partial",
+      "type": "boolean"
+    },
+    "dedup_basis": {
+      "const": "full_stream_sha256",
+      "default": "full_stream_sha256",
+      "title": "Dedup Basis",
+      "type": "string"
+    },
+    "near_duplicate_inference": {
+      "const": false,
+      "default": false,
+      "title": "Near Duplicate Inference",
+      "type": "boolean"
+    },
+    "causal_relation": {
+      "const": "unknown",
+      "default": "unknown",
+      "title": "Causal Relation",
+      "type": "string"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "context_fingerprint",
+    "asset_id",
+    "original_hash",
+    "status",
+    "originals",
+    "original_count",
+    "ready_original_count",
+    "other_original_count",
+    "partial",
+    "simulated"
+  ],
+  "title": "FamilyMediaAssetEvidence",
+  "type": "object"
+}

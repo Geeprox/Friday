@@ -1,0 +1,130 @@
+{
+  "$defs": {
+    "StewardBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_bytes": {
+          "default": 1048576,
+          "maximum": 8388608,
+          "minimum": 1,
+          "title": "Source Bytes",
+          "type": "integer"
+        },
+        "units": {
+          "default": 8,
+          "maximum": 8,
+          "minimum": 1,
+          "title": "Units",
+          "type": "integer"
+        },
+        "seconds": {
+          "default": 5,
+          "exclusiveMinimum": 0,
+          "maximum": 5,
+          "title": "Seconds",
+          "type": "number"
+        },
+        "text_chars": {
+          "default": 32000,
+          "maximum": 32000,
+          "minimum": 1,
+          "title": "Text Chars",
+          "type": "integer"
+        }
+      },
+      "title": "StewardBudget",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "settings_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Settings Id",
+      "type": "string"
+    },
+    "source_ref": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Source Ref",
+      "type": "string"
+    },
+    "config_generation": {
+      "minimum": 0,
+      "title": "Config Generation",
+      "type": "integer"
+    },
+    "connection_epoch": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Connection Epoch",
+      "type": "string"
+    },
+    "directory_ref": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Directory Ref"
+    },
+    "watched": {
+      "default": false,
+      "title": "Watched",
+      "type": "boolean"
+    },
+    "extraction_mode": {
+      "default": "metadata_only",
+      "enum": [
+        "metadata_only",
+        "pdf_text_first"
+      ],
+      "title": "Extraction Mode",
+      "type": "string"
+    },
+    "budget": {
+      "$ref": "#/$defs/StewardBudget"
+    },
+    "policy_rule_id": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Policy Rule Id",
+      "type": "string"
+    },
+    "revision": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Revision",
+      "type": "integer"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "settings_id",
+    "source_ref",
+    "config_generation",
+    "connection_epoch",
+    "directory_ref",
+    "policy_rule_id",
+    "updated_at"
+  ],
+  "title": "StewardDirectorySettings",
+  "type": "object"
+}

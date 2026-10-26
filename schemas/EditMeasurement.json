@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "ProfileFields": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "placement": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Placement",
+          "type": "string"
+        },
+        "installation_height_m": {
+          "anyOf": [
+            {
+              "maximum": 10,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Installation Height M"
+        },
+        "reporting": {
+          "enum": [
+            "periodic_sample",
+            "change_triggered",
+            "latched_state",
+            "derived"
+          ],
+          "title": "Reporting",
+          "type": "string"
+        },
+        "expected_context": {
+          "enum": [
+            "ambient",
+            "cooling",
+            "heating",
+            "fan-only",
+            "unknown"
+          ],
+          "title": "Expected Context",
+          "type": "string"
+        },
+        "ttl_seconds": {
+          "default": 300,
+          "maximum": 3600,
+          "minimum": 1,
+          "title": "Ttl Seconds",
+          "type": "integer"
+        },
+        "representativeness": {
+          "default": "unreviewed",
+          "enum": [
+            "unreviewed",
+            "room_reference",
+            "contextual_air"
+          ],
+          "title": "Representativeness",
+          "type": "string"
+        }
+      },
+      "required": [
+        "placement",
+        "reporting",
+        "expected_context"
+      ],
+      "title": "ProfileFields",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "realm": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Realm",
+      "type": "string"
+    },
+    "expected_revision": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Expected Revision",
+      "type": "string"
+    },
+    "source_key": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Source Key",
+      "type": "string"
+    },
+    "binding_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Binding Fingerprint",
+      "type": "string"
+    },
+    "fields": {
+      "$ref": "#/$defs/ProfileFields"
+    }
+  },
+  "required": [
+    "realm",
+    "expected_revision",
+    "source_key",
+    "binding_fingerprint",
+    "fields"
+  ],
+  "title": "EditMeasurement",
+  "type": "object"
+}

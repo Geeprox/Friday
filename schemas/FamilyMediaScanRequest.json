@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "directory_ref": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Directory Ref"
+    },
+    "limit": {
+      "default": 128,
+      "maximum": 128,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+    },
+    "byte_budget": {
+      "default": 4194304,
+      "maximum": 8388608,
+      "minimum": 0,
+      "title": "Byte Budget",
+      "type": "integer"
+    },
+    "restart_scan": {
+      "default": false,
+      "title": "Restart Scan",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "expected_context"
+  ],
+  "title": "FamilyMediaScanRequest",
+  "type": "object"
+}

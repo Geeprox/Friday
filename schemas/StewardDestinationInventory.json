@@ -1,0 +1,55 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "root_ref": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Root Ref",
+      "type": "string"
+    },
+    "namespace_revision": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Namespace Revision",
+      "type": "string"
+    },
+    "checked_at": {
+      "format": "date-time",
+      "title": "Checked At",
+      "type": "string"
+    },
+    "complete": {
+      "title": "Complete",
+      "type": "boolean"
+    },
+    "paths": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 512,
+      "title": "Paths",
+      "type": "array"
+    },
+    "basis": {
+      "enum": [
+        "synthetic_fixture",
+        "operator_preview"
+      ],
+      "title": "Basis",
+      "type": "string"
+    }
+  },
+  "required": [
+    "root_ref",
+    "namespace_revision",
+    "checked_at",
+    "complete",
+    "basis"
+  ],
+  "title": "StewardDestinationInventory",
+  "type": "object"
+}

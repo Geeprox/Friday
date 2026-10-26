@@ -1,0 +1,403 @@
+{
+  "$defs": {
+    "FamilyMediaOriginalRef": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "object_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Object Ref",
+          "type": "string"
+        },
+        "config_generation": {
+          "minimum": 0,
+          "title": "Config Generation",
+          "type": "integer"
+        },
+        "connection_epoch": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Connection Epoch",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "revision_basis": {
+          "const": "metadata",
+          "default": "metadata",
+          "title": "Revision Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_ref",
+        "object_ref",
+        "config_generation",
+        "connection_epoch",
+        "revision"
+      ],
+      "title": "FamilyMediaOriginalRef",
+      "type": "object"
+    },
+    "StewardExtractionProvenance": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "engine": {
+          "enum": [
+            "pdfkit",
+            "vision",
+            "synthetic_fixture"
+          ],
+          "title": "Engine",
+          "type": "string"
+        },
+        "engine_version": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Engine Version",
+          "type": "string"
+        },
+        "execution": {
+          "enum": [
+            "native",
+            "fixture"
+          ],
+          "title": "Execution",
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "embedded_text",
+            "ocr"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "language_hints": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Language Hints",
+          "type": "array"
+        },
+        "raster_content_id": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raster Content Id"
+        },
+        "coordinate_origin": {
+          "const": "top_left",
+          "default": "top_left",
+          "title": "Coordinate Origin",
+          "type": "string"
+        }
+      },
+      "required": [
+        "engine",
+        "engine_version",
+        "execution",
+        "method"
+      ],
+      "title": "StewardExtractionProvenance",
+      "type": "object"
+    },
+    "StewardExtractionQuality": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "assessment": {
+          "default": "unassessed",
+          "enum": [
+            "unassessed",
+            "review_required"
+          ],
+          "title": "Assessment",
+          "type": "string"
+        },
+        "character_count": {
+          "maximum": 4000,
+          "minimum": 0,
+          "title": "Character Count",
+          "type": "integer"
+        },
+        "ocr_min_confidence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ocr Min Confidence"
+        }
+      },
+      "required": [
+        "character_count"
+      ],
+      "title": "StewardExtractionQuality",
+      "type": "object"
+    },
+    "StewardSourceAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "content_id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Content Id",
+          "type": "string"
+        },
+        "original_ref": {
+          "$ref": "#/$defs/FamilyMediaOriginalRef"
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "page",
+            "image_region",
+            "video_time",
+            "audio_time"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "page": {
+          "anyOf": [
+            {
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page"
+        },
+        "start_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ms"
+        },
+        "end_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ms"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Region"
+        }
+      },
+      "required": [
+        "content_id",
+        "original_ref",
+        "kind"
+      ],
+      "title": "StewardSourceAnchor",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "v1 embedded receipts remain valid. v2 expresses genuine OCR/hold/failure evidence.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "outcome_version": {
+      "default": 1,
+      "enum": [
+        1,
+        2
+      ],
+      "title": "Outcome Version",
+      "type": "integer"
+    },
+    "anchor": {
+      "$ref": "#/$defs/StewardSourceAnchor"
+    },
+    "status": {
+      "enum": [
+        "text",
+        "needs_ocr",
+        "empty",
+        "failed",
+        "held"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "provider": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Provider",
+      "type": "string"
+    },
+    "provider_version": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Provider Version",
+      "type": "string"
+    },
+    "unit_id": {
+      "anyOf": [
+        {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unit Id"
+    },
+    "reason": {
+      "enum": [
+        "embedded_text",
+        "no_embedded_text",
+        "ocr_text",
+        "ocr_no_text",
+        "provider_failure",
+        "provider_hold"
+      ],
+      "title": "Reason",
+      "type": "string"
+    },
+    "provenance": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StewardExtractionProvenance"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "quality": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StewardExtractionQuality"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "failure_code": {
+      "anyOf": [
+        {
+          "enum": [
+            "locked",
+            "restricted",
+            "malformed",
+            "missing",
+            "limit",
+            "unsupported",
+            "cancelled",
+            "provider_failed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Code"
+    }
+  },
+  "required": [
+    "anchor",
+    "status",
+    "provider",
+    "provider_version",
+    "reason"
+  ],
+  "title": "StewardPageOutcome",
+  "type": "object"
+}

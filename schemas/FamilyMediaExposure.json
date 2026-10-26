@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "operation": {
+      "const": "exposure",
+      "default": "exposure",
+      "title": "Operation",
+      "type": "string"
+    },
+    "stops": {
+      "maximum": 2,
+      "minimum": -2,
+      "title": "Stops",
+      "type": "number"
+    }
+  },
+  "required": [
+    "stops"
+  ],
+  "title": "FamilyMediaExposure",
+  "type": "object"
+}

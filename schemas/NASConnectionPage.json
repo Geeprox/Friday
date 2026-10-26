@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "NASConnectionEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "object_ref": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Object Ref",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "file",
+            "directory"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "modified_ns": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modified Ns"
+        },
+        "media_kind": {
+          "default": "other",
+          "enum": [
+            "image",
+            "video",
+            "audio",
+            "other"
+          ],
+          "title": "Media Kind",
+          "type": "string"
+        },
+        "closed": {
+          "default": null,
+          "title": "Closed",
+          "type": "null"
+        },
+        "revision_basis": {
+          "const": "metadata",
+          "default": "metadata",
+          "title": "Revision Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "object_ref",
+        "kind",
+        "revision",
+        "size"
+      ],
+      "title": "NASConnectionEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_ref": {
+      "title": "Source Ref",
+      "type": "string"
+    },
+    "config_generation": {
+      "minimum": 1,
+      "title": "Config Generation",
+      "type": "integer"
+    },
+    "connection_epoch": {
+      "title": "Connection Epoch",
+      "type": "string"
+    },
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/NASConnectionEntry"
+      },
+      "maxItems": 128,
+      "title": "Entries",
+      "type": "array"
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Cursor"
+    },
+    "enumeration_complete": {
+      "default": false,
+      "title": "Enumeration Complete",
+      "type": "boolean"
+    },
+    "completed_scan_token": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed Scan Token"
+    },
+    "snapshot_consistent": {
+      "const": false,
+      "default": false,
+      "title": "Snapshot Consistent",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "source_ref",
+    "config_generation",
+    "connection_epoch",
+    "entries"
+  ],
+  "title": "NASConnectionPage",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

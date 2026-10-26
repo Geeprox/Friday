@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "review_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Review Id",
+      "type": "string"
+    },
+    "approval_digest": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Approval Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "review_id",
+    "approval_digest"
+  ],
+  "title": "RuleAnalysisApproval",
+  "type": "object"
+}

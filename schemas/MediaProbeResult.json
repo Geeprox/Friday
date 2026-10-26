@@ -1,0 +1,479 @@
+{
+  "$defs": {
+    "MediaStreamResult": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "not_requested",
+          "enum": [
+            "not_requested",
+            "decoded",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "codec": {
+          "anyOf": [
+            {
+              "enum": [
+                "h264",
+                "opus",
+                "g711a",
+                "g711u"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Codec"
+        },
+        "packets": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Packets",
+          "type": "integer"
+        },
+        "encoded_bytes": {
+          "default": 0,
+          "maximum": 12582912,
+          "minimum": 0,
+          "title": "Encoded Bytes",
+          "type": "integer"
+        },
+        "decoded_frames": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Decoded Frames",
+          "type": "integer"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "maximum": 4096,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width"
+        },
+        "height": {
+          "anyOf": [
+            {
+              "maximum": 4096,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Height"
+        },
+        "sample_rate": {
+          "anyOf": [
+            {
+              "maximum": 48000,
+              "minimum": 8000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Decoded source rate before mono16k resampling; null if the SDK hides it",
+          "title": "Sample Rate"
+        },
+        "channels": {
+          "anyOf": [
+            {
+              "maximum": 2,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Decoded source channels before resampling; null if unavailable",
+          "title": "Channels"
+        },
+        "pcm_format": {
+          "anyOf": [
+            {
+              "const": "mono_s16_16000",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pcm Format"
+        },
+        "pcm_16k_samples": {
+          "default": 0,
+          "maximum": 320000,
+          "minimum": 0,
+          "title": "Pcm 16K Samples",
+          "type": "integer"
+        },
+        "first_decode_ms": {
+          "anyOf": [
+            {
+              "maximum": 20000,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "First Decode Ms"
+        },
+        "last_decode_ms": {
+          "anyOf": [
+            {
+              "maximum": 20000,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Decode Ms"
+        },
+        "video_timestamps_seen": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Video Timestamps Seen",
+          "type": "integer"
+        },
+        "video_clock_discontinuities": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Video Clock Discontinuities",
+          "type": "integer"
+        },
+        "source_timestamps_seen": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Source Timestamps Seen",
+          "type": "integer"
+        },
+        "source_clock_discontinuities": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Source Clock Discontinuities",
+          "type": "integer"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "enum": [
+                "service_login_required",
+                "account_login_required",
+                "service_unavailable",
+                "protocol_error",
+                "unsupported_codec",
+                "codec_changed",
+                "missing_init",
+                "malformed_packet",
+                "decode_failed",
+                "stream_closed",
+                "stream_error",
+                "no_decoded_frames",
+                "input_budget",
+                "worker_unavailable",
+                "worker_failed",
+                "worker_timeout",
+                "worker_memory_limit",
+                "sdk_not_qualified",
+                "account_token_expired",
+                "camera_not_found",
+                "camera_offline",
+                "camera_pin_required",
+                "service_conflict",
+                "stream_idle"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure"
+        }
+      },
+      "title": "MediaStreamResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "status": {
+      "default": "not_requested",
+      "enum": [
+        "not_requested",
+        "not_configured",
+        "running",
+        "decoded_sync_unknown",
+        "failed",
+        "stopped",
+        "discarded_configuration_changed",
+        "expired"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "probe_id": {
+      "anyOf": [
+        {
+          "maxLength": 36,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Probe Id"
+    },
+    "checked_at": {
+      "anyOf": [
+        {
+          "maxLength": 40,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Checked At"
+    },
+    "valid_until": {
+      "anyOf": [
+        {
+          "maxLength": 40,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Valid Until"
+    },
+    "simulated": {
+      "default": false,
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "provider": {
+      "default": "miloco_service",
+      "enum": [
+        "miloco_service",
+        "miot_sdk"
+      ],
+      "title": "Provider",
+      "type": "string"
+    },
+    "video": {
+      "$ref": "#/$defs/MediaStreamResult"
+    },
+    "audio": {
+      "$ref": "#/$defs/MediaStreamResult"
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "enum": [
+            "service_login_required",
+            "account_login_required",
+            "service_unavailable",
+            "protocol_error",
+            "unsupported_codec",
+            "codec_changed",
+            "missing_init",
+            "malformed_packet",
+            "decode_failed",
+            "stream_closed",
+            "stream_error",
+            "no_decoded_frames",
+            "input_budget",
+            "worker_unavailable",
+            "worker_failed",
+            "worker_timeout",
+            "worker_memory_limit",
+            "sdk_not_qualified",
+            "account_token_expired",
+            "camera_not_found",
+            "camera_offline",
+            "camera_pin_required",
+            "service_conflict",
+            "stream_idle"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure"
+    },
+    "failure_phase": {
+      "anyOf": [
+        {
+          "enum": [
+            "sdk_preflight",
+            "login",
+            "inventory",
+            "connect",
+            "sampling",
+            "cleanup",
+            "worker"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Phase"
+    },
+    "native_start_status": {
+      "default": "unobserved",
+      "enum": [
+        "unobserved",
+        "pending",
+        "succeeded",
+        "failed"
+      ],
+      "title": "Native Start Status",
+      "type": "string"
+    },
+    "native_start_error_code": {
+      "anyOf": [
+        {
+          "maximum": 2147483647,
+          "minimum": -2147483648,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Opaque miot_camera_start return value; no vendor meaning is inferred",
+      "title": "Native Start Error Code"
+    },
+    "source_av_alignment": {
+      "const": "unavailable",
+      "default": "unavailable",
+      "title": "Source Av Alignment",
+      "type": "string"
+    },
+    "alignment_error_bound_ms": {
+      "default": null,
+      "title": "Alignment Error Bound Ms",
+      "type": "null"
+    },
+    "alignment_reason": {
+      "default": "audio_source_timestamp_absent_video_clock_domain_unverified",
+      "enum": [
+        "audio_source_timestamp_absent_video_clock_domain_unverified",
+        "sdk_source_timestamps_clock_domain_unverified"
+      ],
+      "title": "Alignment Reason",
+      "type": "string"
+    },
+    "reception_overlap_ms": {
+      "anyOf": [
+        {
+          "maximum": 20000,
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reception Overlap Ms"
+    },
+    "reception_clock": {
+      "const": "worker_monotonic_not_capture_time",
+      "default": "worker_monotonic_not_capture_time",
+      "title": "Reception Clock",
+      "type": "string"
+    },
+    "worker_peak_rss_bytes": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Worker Peak Rss Bytes"
+    },
+    "media_persisted": {
+      "const": false,
+      "default": false,
+      "title": "Media Persisted",
+      "type": "boolean"
+    },
+    "model_invoked": {
+      "const": false,
+      "default": false,
+      "title": "Model Invoked",
+      "type": "boolean"
+    },
+    "device_write": {
+      "const": false,
+      "default": false,
+      "title": "Device Write",
+      "type": "boolean"
+    },
+    "nas_recording_impact": {
+      "const": "not_independently_verified",
+      "default": "not_independently_verified",
+      "title": "Nas Recording Impact",
+      "type": "string"
+    }
+  },
+  "title": "MediaProbeResult",
+  "type": "object"
+}

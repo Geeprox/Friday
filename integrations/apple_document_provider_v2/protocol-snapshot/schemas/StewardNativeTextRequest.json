@@ -1,0 +1,82 @@
+{
+  "additionalProperties": false,
+  "description": "Native wire v2. A request processes one page/image, not max_pages pages.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "request_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Request Version",
+      "type": "integer"
+    },
+    "document_base64": {
+      "maxLength": 11184812,
+      "title": "Document Base64",
+      "type": "string"
+    },
+    "page": {
+      "maximum": 256,
+      "minimum": 1,
+      "title": "Page",
+      "type": "integer"
+    },
+    "max_chars": {
+      "maximum": 4000,
+      "minimum": 1,
+      "title": "Max Chars",
+      "type": "integer"
+    },
+    "mode": {
+      "default": "pdf_text",
+      "enum": [
+        "pdf_text",
+        "pdf_auto",
+        "image_ocr"
+      ],
+      "title": "Mode",
+      "type": "string"
+    },
+    "max_pages": {
+      "default": 256,
+      "maximum": 256,
+      "minimum": 1,
+      "title": "Max Pages",
+      "type": "integer"
+    },
+    "languages": {
+      "items": {
+        "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+        "type": "string"
+      },
+      "maxItems": 8,
+      "title": "Languages",
+      "type": "array"
+    },
+    "max_pixels": {
+      "default": 4000000,
+      "maximum": 4000000,
+      "minimum": 1,
+      "title": "Max Pixels",
+      "type": "integer"
+    },
+    "seconds": {
+      "default": 5,
+      "exclusiveMinimum": 0,
+      "maximum": 5,
+      "title": "Seconds",
+      "type": "number"
+    }
+  },
+  "required": [
+    "document_base64",
+    "page",
+    "max_chars"
+  ],
+  "title": "StewardNativeTextRequest",
+  "type": "object"
+}

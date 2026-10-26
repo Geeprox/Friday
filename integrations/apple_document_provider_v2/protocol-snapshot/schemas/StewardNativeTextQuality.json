@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "embedded_chars": {
+      "default": 0,
+      "maximum": 1000000,
+      "minimum": 0,
+      "title": "Embedded Chars",
+      "type": "integer"
+    },
+    "meaningful_chars": {
+      "default": 0,
+      "maximum": 4000,
+      "minimum": 0,
+      "title": "Meaningful Chars",
+      "type": "integer"
+    },
+    "flags": {
+      "items": {
+        "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+        "type": "string"
+      },
+      "maxItems": 8,
+      "title": "Flags",
+      "type": "array"
+    },
+    "ocr_min_confidence": {
+      "anyOf": [
+        {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ocr Min Confidence"
+    }
+  },
+  "title": "StewardNativeTextQuality",
+  "type": "object"
+}

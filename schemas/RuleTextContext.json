@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "fingerprint": {
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "available": {
+      "title": "Available",
+      "type": "boolean"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "supported_operation": {
+      "default": "remove_one_enabled_light_or_climate_action",
+      "title": "Supported Operation",
+      "type": "string"
+    },
+    "planner": {
+      "default": "deterministic_baseline",
+      "title": "Planner",
+      "type": "string"
+    },
+    "model_inference_attempted": {
+      "default": false,
+      "title": "Model Inference Attempted",
+      "type": "boolean"
+    },
+    "coverage": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Coverage",
+      "type": "array"
+    }
+  },
+  "required": [
+    "fingerprint",
+    "available",
+    "simulated",
+    "coverage"
+  ],
+  "title": "RuleTextContext",
+  "type": "object"
+}

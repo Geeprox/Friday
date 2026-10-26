@@ -1,0 +1,201 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "event",
+      "title": "Kind",
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "source": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Source",
+      "type": "string"
+    },
+    "event_kind": {
+      "enum": [
+        "state-snapshot",
+        "state-transition",
+        "source-report",
+        "quality-change",
+        "action-result",
+        "observation-gap"
+      ],
+      "title": "Event Kind",
+      "type": "string"
+    },
+    "entity_refs": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        "type": "string"
+      },
+      "maxItems": 256,
+      "title": "Entity Refs",
+      "type": "array"
+    },
+    "event_time": {
+      "format": "date-time",
+      "title": "Event Time",
+      "type": "string"
+    },
+    "source_reported_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source Reported At"
+    },
+    "event_time_basis": {
+      "enum": [
+        "upstream_event",
+        "local_event",
+        "unknown"
+      ],
+      "title": "Event Time Basis",
+      "type": "string"
+    },
+    "observed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Observed At"
+    },
+    "query_observed_at": {
+      "format": "date-time",
+      "title": "Query Observed At",
+      "type": "string"
+    },
+    "hardware_sample_time": {
+      "title": "Hardware Sample Time",
+      "type": "null"
+    },
+    "causation_ref": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Causation Ref"
+    },
+    "causation_status": {
+      "enum": [
+        "recorded_by_source_not_independently_verified",
+        "unknown"
+      ],
+      "title": "Causation Status",
+      "type": "string"
+    },
+    "correlation_ref": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Correlation Ref"
+    },
+    "summary": {
+      "maxProperties": 6,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9_.:-]*$": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "maximum": 1000000000000.0,
+              "minimum": -1000000000000.0,
+              "type": "integer"
+            },
+            {
+              "maximum": 1000000000000.0,
+              "minimum": -1000000000000.0,
+              "type": "number"
+            },
+            {
+              "maxLength": 256,
+              "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "propertyNames": {
+        "enum": [
+          "from",
+          "to",
+          "quality",
+          "status",
+          "code",
+          "reason"
+        ]
+      },
+      "title": "Summary",
+      "type": "object"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "confidence": {
+      "title": "Confidence",
+      "type": "null"
+    }
+  },
+  "required": [
+    "kind",
+    "id",
+    "source",
+    "event_kind",
+    "entity_refs",
+    "event_time",
+    "source_reported_at",
+    "event_time_basis",
+    "observed_at",
+    "query_observed_at",
+    "hardware_sample_time",
+    "causation_ref",
+    "causation_status",
+    "correlation_ref",
+    "summary",
+    "simulated",
+    "confidence"
+  ],
+  "title": "HomeQueryEvent",
+  "type": "object"
+}

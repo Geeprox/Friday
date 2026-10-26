@@ -1,0 +1,15 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "redacted": {
+      "const": true,
+      "title": "Redacted",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "redacted"
+  ],
+  "title": "DiagnosticsExportRequest",
+  "type": "object"
+}

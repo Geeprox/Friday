@@ -1,0 +1,71 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "rule_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "matched",
+        "not_triggered",
+        "suppressed",
+        "unsupported"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "reasons": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Reasons",
+      "type": "array"
+    },
+    "commands": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Commands",
+      "type": "array"
+    },
+    "simulated": {
+      "default": true,
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "real_write_attempted": {
+      "const": false,
+      "default": false,
+      "title": "Real Write Attempted",
+      "type": "boolean"
+    },
+    "physically_confirmed": {
+      "const": false,
+      "default": false,
+      "title": "Physically Confirmed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "rule_id",
+    "event_id",
+    "outcome",
+    "reasons"
+  ],
+  "title": "RuleEvaluation",
+  "type": "object"
+}

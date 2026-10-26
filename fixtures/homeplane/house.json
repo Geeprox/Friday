@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "simulated": true,
+  "description": "Synthetic HA/Geek-style envelopes; not captured vendor protocol and not hardware compatibility evidence.",
+  "entities": [
+    {
+      "id": "light.hall",
+      "name": "Hall light",
+      "kind": "device",
+      "room": "hall",
+      "physical_source_id": "sim:hall-bulb",
+      "simulated": true,
+      "bindings": [
+        {
+          "source": "ha:sim",
+          "external_id": "light.hall"
+        },
+        {
+          "source": "geek:sim",
+          "external_id": "sim-device-1"
+        }
+      ],
+      "capabilities": [
+        {
+          "name": "light.set",
+          "access": "write",
+          "support": "supported",
+          "minimum": 2,
+          "maximum": 254,
+          "minimum_verified": true,
+          "atomic_power_brightness": true,
+          "no_bright_flash_verified": true,
+          "verification": "simulated",
+          "wan_dependency": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "sensor.living.temperature",
+      "name": "Living thermometer",
+      "kind": "sensor",
+      "room": "living-room",
+      "physical_source_id": "sim:thermometer",
+      "simulated": true,
+      "bindings": [
+        {
+          "source": "ha:sim",
+          "external_id": "sensor.living_temperature"
+        },
+        {
+          "source": "geek:sim",
+          "external_id": "sim-device-2"
+        }
+      ],
+      "capabilities": [
+        {
+          "name": "temperature",
+          "access": "read",
+          "support": "supported",
+          "unit": "°C",
+          "verification": "simulated"
+        }
+      ]
+    },
+    {
+      "id": "climate.living",
+      "name": "Living air conditioner",
+      "kind": "device",
+      "room": "living-room",
+      "physical_source_id": "sim:ac",
+      "simulated": true,
+      "bindings": [
+        {
+          "source": "ha:sim",
+          "external_id": "climate.living"
+        }
+      ],
+      "capabilities": [
+        {
+          "name": "temperature",
+          "access": "read",
+          "support": "supported",
+          "unit": "°C",
+          "verification": "simulated"
+        },
+        {
+          "name": "climate.set",
+          "access": "write",
+          "support": "supported",
+          "verification": "simulated",
+          "wan_dependency": "unknown"
+        }
+      ]
+    },
+    {
+      "id": "binary_sensor.door",
+      "name": "Front door",
+      "kind": "sensor",
+      "room": "hall",
+      "physical_source_id": "sim:door",
+      "simulated": true,
+      "bindings": [
+        {
+          "source": "ha:sim",
+          "external_id": "binary_sensor.door"
+        }
+      ],
+      "capabilities": [
+        {
+          "name": "contact",
+          "access": "read",
+          "support": "supported",
+          "verification": "simulated"
+        },
+        {
+          "name": "contact.transition",
+          "access": "event",
+          "support": "supported",
+          "verification": "simulated",
+          "wan_dependency": "unknown"
+        }
+      ]
+    }
+  ],
+  "external_graph_raw": "{\"simulated\":true,\"id\":\"arrival\",\"nodes\":[{\"type\":\"vendor_unknown_v3\",\"opaqueField\":{\"keep\":true}}],\"edges\":[]}",
+  "arrival_rule": {
+    "simulated": true,
+    "id": "arrival",
+    "revision": 1,
+    "trigger": "arrival-transition",
+    "actions": [
+      {
+        "target": "light.hall",
+        "capability": "light.set",
+        "desired": {
+          "power": "on"
+        }
+      },
+      {
+        "target": "climate.living",
+        "capability": "climate.set",
+        "desired": {
+          "power": "on"
+        }
+      }
+    ]
+  }
+}

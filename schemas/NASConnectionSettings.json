@@ -1,0 +1,320 @@
+{
+  "$defs": {
+    "NASConnectionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_ref": {
+          "pattern": "^[A-Za-z0-9_-]{1,96}$",
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "transport": {
+          "enum": [
+            "smb",
+            "sftp"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "host": {
+          "maxLength": 253,
+          "minLength": 1,
+          "title": "Host",
+          "type": "string"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port"
+        },
+        "share": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Share"
+        },
+        "root": {
+          "default": "",
+          "maxLength": 1024,
+          "title": "Root",
+          "type": "string"
+        },
+        "credential_ref": {
+          "pattern": "^[A-Za-z0-9_-]{1,128}$",
+          "title": "Credential Ref",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "require_encryption": {
+          "default": true,
+          "title": "Require Encryption",
+          "type": "boolean"
+        },
+        "host_key_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^SHA256:[A-Za-z0-9+/]{43}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host Key Sha256"
+        },
+        "sftp_root_confined": {
+          "default": false,
+          "title": "Sftp Root Confined",
+          "type": "boolean"
+        },
+        "connect_timeout_seconds": {
+          "default": 8,
+          "maximum": 30,
+          "minimum": 0.05,
+          "title": "Connect Timeout Seconds",
+          "type": "number"
+        },
+        "operation_timeout_seconds": {
+          "default": 5,
+          "maximum": 30,
+          "minimum": 0.05,
+          "title": "Operation Timeout Seconds",
+          "type": "number"
+        },
+        "health_interval_seconds": {
+          "default": 30,
+          "maximum": 300,
+          "minimum": 0.05,
+          "title": "Health Interval Seconds",
+          "type": "number"
+        },
+        "backoff_initial_seconds": {
+          "default": 1,
+          "maximum": 60,
+          "minimum": 0.05,
+          "title": "Backoff Initial Seconds",
+          "type": "number"
+        },
+        "backoff_max_seconds": {
+          "default": 60,
+          "maximum": 300,
+          "minimum": 0.05,
+          "title": "Backoff Max Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "source_ref",
+        "transport",
+        "host",
+        "credential_ref"
+      ],
+      "title": "NASConnectionConfig",
+      "type": "object"
+    },
+    "NASConnectionStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Ref"
+        },
+        "config_generation": {
+          "minimum": 0,
+          "title": "Config Generation",
+          "type": "integer"
+        },
+        "connection_epoch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Connection Epoch"
+        },
+        "configured": {
+          "default": false,
+          "title": "Configured",
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "not_configured",
+            "disabled",
+            "connecting",
+            "online",
+            "backoff",
+            "paused",
+            "stopped"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "reachable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reachable"
+        },
+        "authenticated": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Authenticated"
+        },
+        "readable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Readable"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure"
+        },
+        "retry_in_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retry In Seconds"
+        },
+        "checked_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checked At"
+        }
+      },
+      "required": [
+        "config_generation",
+        "state"
+      ],
+      "title": "NASConnectionStatus",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Owner-local saved config and cached status; never resolves a credential.",
+  "properties": {
+    "config": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NASConnectionConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "$ref": "#/$defs/NASConnectionStatus"
+    },
+    "credential_reference_saved": {
+      "title": "Credential Reference Saved",
+      "type": "boolean"
+    },
+    "credential_availability": {
+      "const": "not_checked",
+      "default": "not_checked",
+      "title": "Credential Availability",
+      "type": "string"
+    }
+  },
+  "required": [
+    "config",
+    "status",
+    "credential_reference_saved"
+  ],
+  "title": "NASConnectionSettings",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

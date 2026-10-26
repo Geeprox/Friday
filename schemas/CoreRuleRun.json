@@ -1,0 +1,101 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "record_id": {
+      "title": "Record Id",
+      "type": "string"
+    },
+    "rule_id": {
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "fingerprint": {
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    },
+    "boot_id": {
+      "title": "Boot Id",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "running",
+        "waiting",
+        "completed",
+        "cancelled",
+        "suppressed",
+        "unknown_outcome"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "code": {
+      "title": "Code",
+      "type": "string"
+    },
+    "effects": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "maxItems": 16,
+      "title": "Effects",
+      "type": "array"
+    },
+    "simulated": {
+      "const": false,
+      "default": false,
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "real_write_attempted": {
+      "default": false,
+      "title": "Real Write Attempted",
+      "type": "boolean"
+    },
+    "physically_confirmed": {
+      "const": false,
+      "default": false,
+      "title": "Physically Confirmed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "record_id",
+    "rule_id",
+    "fingerprint",
+    "event_id",
+    "boot_id",
+    "created_at",
+    "expires_at",
+    "status",
+    "code"
+  ],
+  "title": "CoreRuleRun",
+  "type": "object"
+}

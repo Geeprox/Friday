@@ -1,0 +1,80 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "state": {
+      "default": "disabled",
+      "enum": [
+        "disabled",
+        "unavailable",
+        "running",
+        "ready",
+        "unknown",
+        "ambiguous",
+        "matched",
+        "expired"
+      ],
+      "title": "State",
+      "type": "string"
+    },
+    "reason": {
+      "default": "default_off",
+      "enum": [
+        "default_off",
+        "owner_admission_unavailable",
+        "owner_binding_mismatch",
+        "running",
+        "provider_unavailable",
+        "quality_unqualified",
+        "invalid_video",
+        "invalid_audio",
+        "audio_window_overflow",
+        "short_audio",
+        "no_input",
+        "expired",
+        "stopped",
+        "configuration_changed",
+        "stale_generation",
+        "model_mismatch",
+        "simulation_mismatch",
+        "policy_unqualified",
+        "candidate_unqualified",
+        "below_threshold",
+        "ambiguous",
+        "similarity_evidence_only",
+        "embedding_only",
+        "native_failed",
+        "worker_timeout",
+        "worker_memory_limit",
+        "worker_failed",
+        "native_cleanup_uncertain"
+      ],
+      "title": "Reason",
+      "type": "string"
+    },
+    "simulated": {
+      "default": false,
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "security_authentication": {
+      "const": false,
+      "default": false,
+      "title": "Security Authentication",
+      "type": "boolean"
+    },
+    "action_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Action Authorized",
+      "type": "boolean"
+    },
+    "av_association": {
+      "const": "unavailable",
+      "default": "unavailable",
+      "title": "Av Association",
+      "type": "string"
+    }
+  },
+  "title": "RecognitionStatus",
+  "type": "object"
+}

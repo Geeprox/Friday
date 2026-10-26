@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "asset_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Asset Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_context",
+    "asset_id"
+  ],
+  "title": "FamilyMediaAssetRequest",
+  "type": "object"
+}

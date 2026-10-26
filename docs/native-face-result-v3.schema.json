@@ -1,0 +1,611 @@
+{
+  "$defs": {
+    "FaceFrameMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "frame_sequence": {
+          "maximum": 127,
+          "minimum": 0,
+          "title": "Frame Sequence",
+          "type": "integer"
+        },
+        "frame_ref": {
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+          "title": "Frame Ref",
+          "type": "string"
+        },
+        "width": {
+          "maximum": 1280,
+          "minimum": 1,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "maximum": 720,
+          "minimum": 1,
+          "title": "Height",
+          "type": "integer"
+        },
+        "timing": {
+          "$ref": "#/$defs/ReceivedFrameTiming"
+        },
+        "slots": {
+          "items": {
+            "$ref": "#/$defs/FaceSlotMetadata"
+          },
+          "maxItems": 8,
+          "title": "Slots",
+          "type": "array"
+        }
+      },
+      "required": [
+        "frame_sequence",
+        "frame_ref",
+        "width",
+        "height",
+        "timing",
+        "slots"
+      ],
+      "title": "FaceFrameMetadata",
+      "type": "object"
+    },
+    "FaceFrameProvenance": {
+      "additionalProperties": false,
+      "description": "V3 evidence types do not relabel native metadata as a v2 fixture.",
+      "properties": {
+        "provider": {
+          "const": "opencv_yunet_sface",
+          "default": "opencv_yunet_sface",
+          "title": "Provider",
+          "type": "string"
+        },
+        "detector_model_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Detector Model Sha256",
+          "type": "string"
+        },
+        "embedding_model_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Embedding Model Sha256"
+        },
+        "evidence": {
+          "enum": [
+            "native_unverified",
+            "native_verified",
+            "synthetic_contract_fixture"
+          ],
+          "title": "Evidence",
+          "type": "string"
+        },
+        "artifact_evidence": {
+          "enum": [
+            "configured_only",
+            "verified_local_artifacts",
+            "synthetic_contract_fixture"
+          ],
+          "title": "Artifact Evidence",
+          "type": "string"
+        },
+        "runtime_version": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Version"
+        }
+      },
+      "required": [
+        "detector_model_sha256",
+        "evidence",
+        "artifact_evidence"
+      ],
+      "title": "FaceFrameProvenance",
+      "type": "object"
+    },
+    "FaceSlotMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "observation_id": {
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+          "title": "Observation Id",
+          "type": "string"
+        },
+        "face_slot": {
+          "maximum": 7,
+          "minimum": 0,
+          "title": "Face Slot",
+          "type": "integer"
+        },
+        "box": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Box",
+          "type": "array"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "quality": {
+          "$ref": "#/$defs/FaceSlotQuality"
+        },
+        "embedding_state": {
+          "enum": [
+            "produced",
+            "unavailable",
+            "quality_unqualified",
+            "budget_exhausted",
+            "duplicate",
+            "frame_mismatch",
+            "model_mismatch",
+            "simulation_mismatch",
+            "provider_unavailable"
+          ],
+          "title": "Embedding State",
+          "type": "string"
+        },
+        "track_id": {
+          "default": null,
+          "title": "Track Id",
+          "type": "null"
+        },
+        "tracking": {
+          "const": "unavailable",
+          "default": "unavailable",
+          "title": "Tracking",
+          "type": "string"
+        },
+        "identity_claim": {
+          "const": "none",
+          "default": "none",
+          "title": "Identity Claim",
+          "type": "string"
+        },
+        "person_association": {
+          "const": "unavailable",
+          "default": "unavailable",
+          "title": "Person Association",
+          "type": "string"
+        }
+      },
+      "required": [
+        "observation_id",
+        "face_slot",
+        "box",
+        "confidence",
+        "quality",
+        "embedding_state"
+      ],
+      "title": "FaceSlotMetadata",
+      "type": "object"
+    },
+    "FaceSlotQuality": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "default": "unavailable",
+          "enum": [
+            "unavailable",
+            "native_measured",
+            "synthetic_contract_fixture"
+          ],
+          "title": "Evidence",
+          "type": "string"
+        },
+        "evidence_reference": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Reference"
+        },
+        "qualified": {
+          "default": false,
+          "title": "Qualified",
+          "type": "boolean"
+        },
+        "pose_ok": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pose Ok"
+        },
+        "sharpness_ok": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sharpness Ok"
+        },
+        "occlusion_ok": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Occlusion Ok"
+        }
+      },
+      "title": "FaceSlotQuality",
+      "type": "object"
+    },
+    "ReceivedFrameTiming": {
+      "additionalProperties": false,
+      "properties": {
+        "received_monotonic": {
+          "minimum": 0,
+          "title": "Received Monotonic",
+          "type": "number"
+        },
+        "received_at": {
+          "const": "decoded_callback_entry",
+          "default": "decoded_callback_entry",
+          "title": "Received At",
+          "type": "string"
+        },
+        "received_clock_domain": {
+          "const": "worker_monotonic",
+          "default": "worker_monotonic",
+          "title": "Received Clock Domain",
+          "type": "string"
+        },
+        "observation_monotonic": {
+          "minimum": 0,
+          "title": "Observation Monotonic",
+          "type": "number"
+        },
+        "source_timestamp": {
+          "anyOf": [
+            {
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Timestamp"
+        },
+        "source_clock_domain": {
+          "const": "unverified",
+          "default": "unverified",
+          "title": "Source Clock Domain",
+          "type": "string"
+        },
+        "source_discontinuity": {
+          "default": false,
+          "title": "Source Discontinuity",
+          "type": "boolean"
+        },
+        "capture_monotonic": {
+          "default": null,
+          "title": "Capture Monotonic",
+          "type": "null"
+        },
+        "capture_clock_id": {
+          "default": null,
+          "title": "Capture Clock Id",
+          "type": "null"
+        },
+        "capture_evidence": {
+          "const": "unavailable",
+          "default": "unavailable",
+          "title": "Capture Evidence",
+          "type": "string"
+        },
+        "av_sync": {
+          "const": "unavailable",
+          "default": "unavailable",
+          "title": "Av Sync",
+          "type": "string"
+        }
+      },
+      "required": [
+        "received_monotonic",
+        "observation_monotonic"
+      ],
+      "title": "ReceivedFrameTiming",
+      "type": "object"
+    },
+    "RecognitionSession": {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "recognition",
+          "default": "recognition",
+          "title": "Operation",
+          "type": "string"
+        },
+        "session_id": {
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "generation": {
+          "minimum": 1,
+          "title": "Generation",
+          "type": "integer"
+        },
+        "owner_operation": {
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "title": "Owner Operation",
+          "type": "string"
+        },
+        "camera_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f]+$",
+          "title": "Camera Id",
+          "type": "string"
+        },
+        "channel": {
+          "const": 0,
+          "default": 0,
+          "title": "Channel",
+          "type": "integer"
+        },
+        "modality": {
+          "enum": [
+            "face",
+            "speaker"
+          ],
+          "title": "Modality",
+          "type": "string"
+        },
+        "deadline_monotonic": {
+          "exclusiveMinimum": 0,
+          "title": "Deadline Monotonic",
+          "type": "number"
+        },
+        "seconds": {
+          "default": 2.0,
+          "maximum": 8,
+          "minimum": 2,
+          "title": "Seconds",
+          "type": "number"
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "generation",
+        "owner_operation",
+        "camera_id",
+        "modality",
+        "deadline_monotonic",
+        "simulated"
+      ],
+      "title": "RecognitionSession",
+      "type": "object"
+    },
+    "RecognitionStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "default": "disabled",
+          "enum": [
+            "disabled",
+            "unavailable",
+            "running",
+            "ready",
+            "unknown",
+            "ambiguous",
+            "matched",
+            "expired"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "reason": {
+          "default": "default_off",
+          "enum": [
+            "default_off",
+            "owner_admission_unavailable",
+            "owner_binding_mismatch",
+            "running",
+            "provider_unavailable",
+            "quality_unqualified",
+            "invalid_video",
+            "invalid_audio",
+            "audio_window_overflow",
+            "short_audio",
+            "no_input",
+            "expired",
+            "stopped",
+            "configuration_changed",
+            "stale_generation",
+            "model_mismatch",
+            "simulation_mismatch",
+            "policy_unqualified",
+            "candidate_unqualified",
+            "below_threshold",
+            "ambiguous",
+            "similarity_evidence_only",
+            "embedding_only",
+            "native_failed",
+            "worker_timeout",
+            "worker_memory_limit",
+            "worker_failed",
+            "native_cleanup_uncertain"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "simulated": {
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        },
+        "security_authentication": {
+          "const": false,
+          "default": false,
+          "title": "Security Authentication",
+          "type": "boolean"
+        },
+        "action_authorized": {
+          "const": false,
+          "default": false,
+          "title": "Action Authorized",
+          "type": "boolean"
+        },
+        "av_association": {
+          "const": "unavailable",
+          "default": "unavailable",
+          "title": "Av Association",
+          "type": "string"
+        }
+      },
+      "title": "RecognitionStatus",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Same private worker channel, new explicit version; no vectors/People grant.",
+  "properties": {
+    "schema_version": {
+      "const": 3,
+      "default": 3,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "message_kind": {
+      "const": "face_frame_metadata",
+      "default": "face_frame_metadata",
+      "title": "Message Kind",
+      "type": "string"
+    },
+    "session": {
+      "$ref": "#/$defs/RecognitionSession"
+    },
+    "status": {
+      "$ref": "#/$defs/RecognitionStatus"
+    },
+    "provenance": {
+      "$ref": "#/$defs/FaceFrameProvenance"
+    },
+    "admission_kind": {
+      "default": "unavailable",
+      "enum": [
+        "unavailable",
+        "synthetic_contract_fixture",
+        "native_source_metadata"
+      ],
+      "title": "Admission Kind",
+      "type": "string"
+    },
+    "window_started_monotonic": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Window Started Monotonic"
+    },
+    "frame": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FaceFrameMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "production_admission": {
+      "const": "unavailable",
+      "default": "unavailable",
+      "title": "Production Admission",
+      "type": "string"
+    },
+    "media_persisted": {
+      "const": false,
+      "default": false,
+      "title": "Media Persisted",
+      "type": "boolean"
+    },
+    "embeddings_exported": {
+      "const": false,
+      "default": false,
+      "title": "Embeddings Exported",
+      "type": "boolean"
+    },
+    "face_to_voice": {
+      "const": "unavailable",
+      "default": "unavailable",
+      "title": "Face To Voice",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "status",
+    "provenance"
+  ],
+  "title": "NativeFaceResult",
+  "type": "object"
+}

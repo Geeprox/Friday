@@ -1,0 +1,242 @@
+{
+  "$defs": {
+    "FamilyMediaOriginalRef": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "object_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Object Ref",
+          "type": "string"
+        },
+        "config_generation": {
+          "minimum": 0,
+          "title": "Config Generation",
+          "type": "integer"
+        },
+        "connection_epoch": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Connection Epoch",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "revision_basis": {
+          "const": "metadata",
+          "default": "metadata",
+          "title": "Revision Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_ref",
+        "object_ref",
+        "config_generation",
+        "connection_epoch",
+        "revision"
+      ],
+      "title": "FamilyMediaOriginalRef",
+      "type": "object"
+    },
+    "StewardPlanEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "entry_id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Entry Id",
+          "type": "string"
+        },
+        "item_id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "content_id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Content Id",
+          "type": "string"
+        },
+        "source_fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Source Fingerprint",
+          "type": "string"
+        },
+        "original_ref": {
+          "$ref": "#/$defs/FamilyMediaOriginalRef"
+        },
+        "before_relative_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Relative Path"
+        },
+        "destination": {
+          "title": "Destination",
+          "type": "string"
+        },
+        "operation": {
+          "enum": [
+            "rename",
+            "move",
+            "rename_and_move",
+            "restructure"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "policy_fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Policy Fingerprint",
+          "type": "string"
+        },
+        "policy_rule_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+            "type": "string"
+          },
+          "title": "Policy Rule Ids",
+          "type": "array"
+        },
+        "policy_label": {
+          "title": "Policy Label",
+          "type": "string"
+        },
+        "blockers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Blockers",
+          "type": "array"
+        }
+      },
+      "required": [
+        "entry_id",
+        "item_id",
+        "content_id",
+        "source_fingerprint",
+        "original_ref",
+        "destination",
+        "operation",
+        "policy_fingerprint",
+        "policy_rule_ids",
+        "policy_label",
+        "blockers"
+      ],
+      "title": "StewardPlanEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "plan_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "plan_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Plan Fingerprint",
+      "type": "string"
+    },
+    "context_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Context Fingerprint",
+      "type": "string"
+    },
+    "inventory_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Inventory Fingerprint",
+      "type": "string"
+    },
+    "target_root_ref": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Target Root Ref",
+      "type": "string"
+    },
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/StewardPlanEntry"
+      },
+      "title": "Entries",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "awaiting_review",
+        "blocked",
+        "reviewed_preview",
+        "rejected"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Counts",
+      "type": "object"
+    },
+    "execution_enabled": {
+      "const": false,
+      "default": false,
+      "title": "Execution Enabled",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "plan_id",
+    "plan_fingerprint",
+    "context_fingerprint",
+    "inventory_fingerprint",
+    "target_root_ref",
+    "entries",
+    "created_at",
+    "expires_at",
+    "status",
+    "counts"
+  ],
+  "title": "StewardRelocationPlan",
+  "type": "object"
+}

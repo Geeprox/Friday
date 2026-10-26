@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "assessment": {
+      "default": "unassessed",
+      "enum": [
+        "unassessed",
+        "review_required"
+      ],
+      "title": "Assessment",
+      "type": "string"
+    },
+    "character_count": {
+      "maximum": 4000,
+      "minimum": 0,
+      "title": "Character Count",
+      "type": "integer"
+    },
+    "ocr_min_confidence": {
+      "anyOf": [
+        {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ocr Min Confidence"
+    }
+  },
+  "required": [
+    "character_count"
+  ],
+  "title": "StewardExtractionQuality",
+  "type": "object"
+}

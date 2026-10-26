@@ -1,0 +1,93 @@
+{
+  "additionalProperties": false,
+  "description": "One genuine embedded-text result from a qualified native bridge, or a fixture receipt.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "page": {
+      "maximum": 256,
+      "minimum": 1,
+      "title": "Page",
+      "type": "integer"
+    },
+    "page_count": {
+      "anyOf": [
+        {
+          "maximum": 100000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Page Count"
+    },
+    "status": {
+      "enum": [
+        "text",
+        "needs_ocr",
+        "locked",
+        "restricted",
+        "malformed",
+        "missing",
+        "limit",
+        "unsupported"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "text": {
+      "default": "",
+      "maxLength": 4000,
+      "title": "Text",
+      "type": "string"
+    },
+    "engine": {
+      "enum": [
+        "pdfkit",
+        "vision",
+        "synthetic_fixture"
+      ],
+      "title": "Engine",
+      "type": "string"
+    },
+    "engine_version": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Engine Version",
+      "type": "string"
+    },
+    "execution": {
+      "enum": [
+        "native",
+        "fixture"
+      ],
+      "title": "Execution",
+      "type": "string"
+    },
+    "text_kind": {
+      "default": "embedded",
+      "enum": [
+        "embedded",
+        "ocr"
+      ],
+      "title": "Text Kind",
+      "type": "string"
+    }
+  },
+  "required": [
+    "page",
+    "status",
+    "engine",
+    "engine_version",
+    "execution"
+  ],
+  "title": "StewardPDFPageReceipt",
+  "type": "object"
+}

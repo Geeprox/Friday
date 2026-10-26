@@ -1,0 +1,50 @@
+name: Source and privacy checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.10.0'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - run: uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connection
+      - run: npm --prefix workers/geek ci --ignore-scripts
+      - run: uv run --no-sync python -m pytest -q --basetemp=/tmp/friday-tests
+      - run: node --test tests/audio.test.mjs
+      - run: node --test workers/geek/crypto.test.mjs
+      - run: uv run --no-sync python native/FridayDesktop/tests/check_build_entry.py
+      - run: npm --prefix workers/geek audit --omit=dev
+      - run: uv export --locked --all-extras --all-groups --no-hashes --output-file /tmp/friday-dependencies.txt
+      - run: uvx --from pip-audit==2.10.1 pip-audit --vulnerability-service osv --no-deps --disable-pip -r /tmp/friday-dependencies.txt
+      - run: uv run --no-sync ruff check --select E9,F63,F7,F82 homeplane friday scripts tests native/FridayDesktop/backend native/FridayDesktop/script
+      - run: python3 scripts/audit_publication.py
+      - run: python3 scripts/setup-dependencies.py plan
+      - if: runner.os == 'macOS'
+        run: uv run --no-sync python native/FridayDesktop/script/build_desktop.py --build-only
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - name: Install verified Gitleaks
+        run: |
+          curl --fail --location --output /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          curl --fail --location --output /tmp/gitleaks-checksums.txt https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_checksums.txt
+          expected=$(awk '$2 == "gitleaks_8.30.1_linux_x64.tar.gz" {print $1}' /tmp/gitleaks-checksums.txt)
+          test -n "$expected"
+          echo "$expected  /tmp/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+      - run: /tmp/gitleaks git --redact --no-banner --log-opts='--all'

@@ -1,0 +1,425 @@
+{
+  "$defs": {
+    "HomeQuerySourceTime": {
+      "additionalProperties": false,
+      "properties": {
+        "physical_source_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Physical Source Id",
+          "type": "string"
+        },
+        "ingest_source": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Ingest Source",
+          "type": "string"
+        },
+        "measured_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Measured At"
+        },
+        "source_reported_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Reported At"
+        },
+        "integration_written_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Integration Written At"
+        },
+        "received_at": {
+          "format": "date-time",
+          "title": "Received At",
+          "type": "string"
+        },
+        "freshness_basis": {
+          "enum": [
+            "device_sample",
+            "upstream_report",
+            "cache_write",
+            "unknown"
+          ],
+          "title": "Freshness Basis",
+          "type": "string"
+        },
+        "cached": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cached"
+        },
+        "clock_uncertainty_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clock Uncertainty Seconds"
+        }
+      },
+      "required": [
+        "physical_source_id",
+        "ingest_source",
+        "measured_at",
+        "source_reported_at",
+        "integration_written_at",
+        "received_at",
+        "freshness_basis",
+        "cached"
+      ],
+      "title": "HomeQuerySourceTime",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "state",
+      "title": "Kind",
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "entity_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Entity Id",
+      "type": "string"
+    },
+    "device_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Device Id"
+    },
+    "device_name": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Device Name"
+    },
+    "name": {
+      "maxLength": 256,
+      "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "room": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Room"
+    },
+    "capability": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Capability",
+      "type": "string"
+    },
+    "value": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "maximum": 1000000000000.0,
+          "minimum": -1000000000000.0,
+          "type": "integer"
+        },
+        {
+          "maximum": 1000000000000.0,
+          "minimum": -1000000000000.0,
+          "type": "number"
+        },
+        {
+          "maxLength": 256,
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Value"
+    },
+    "unit": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Unit"
+    },
+    "quality": {
+      "enum": [
+        "healthy",
+        "suspect",
+        "stale",
+        "faulty",
+        "unknown"
+      ],
+      "title": "Quality",
+      "type": "string"
+    },
+    "freshness": {
+      "enum": [
+        "canonical_valid",
+        "expired",
+        "unknown"
+      ],
+      "title": "Freshness",
+      "type": "string"
+    },
+    "reasons": {
+      "items": {
+        "maxLength": 256,
+        "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+        "type": "string"
+      },
+      "maxItems": 17,
+      "title": "Reasons",
+      "type": "array"
+    },
+    "selected_source": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Selected Source"
+    },
+    "excluded_sources": {
+      "maxProperties": 8,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9_.:-]*$": {
+          "maxLength": 256,
+          "pattern": "^[^\\x00-\\x1f\\x7f]*$",
+          "type": "string"
+        }
+      },
+      "propertyNames": {
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "title": "Excluded Sources",
+      "type": "object"
+    },
+    "as_of": {
+      "format": "date-time",
+      "title": "As Of",
+      "type": "string"
+    },
+    "valid_until": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Valid Until"
+    },
+    "as_of_basis": {
+      "const": "canonical_resolution_not_hardware_sample",
+      "title": "As Of Basis",
+      "type": "string"
+    },
+    "value_interval": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Value Interval"
+    },
+    "diagnostic_interval": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Diagnostic Interval"
+    },
+    "calibration_version": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Calibration Version"
+    },
+    "resolver_version": {
+      "maxLength": 128,
+      "title": "Resolver Version",
+      "type": "string"
+    },
+    "inferred": {
+      "title": "Inferred",
+      "type": "boolean"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "confidence": {
+      "title": "Confidence",
+      "type": "null"
+    },
+    "evidence_refs": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        "type": "string"
+      },
+      "maxItems": 32,
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "source_times": {
+      "items": {
+        "$ref": "#/$defs/HomeQuerySourceTime"
+      },
+      "maxItems": 8,
+      "title": "Source Times",
+      "type": "array"
+    }
+  },
+  "required": [
+    "kind",
+    "id",
+    "entity_id",
+    "device_id",
+    "device_name",
+    "name",
+    "room",
+    "capability",
+    "value",
+    "unit",
+    "quality",
+    "freshness",
+    "reasons",
+    "selected_source",
+    "excluded_sources",
+    "as_of",
+    "valid_until",
+    "as_of_basis",
+    "value_interval",
+    "diagnostic_interval",
+    "calibration_version",
+    "resolver_version",
+    "inferred",
+    "simulated",
+    "confidence",
+    "evidence_refs",
+    "source_times"
+  ],
+  "title": "HomeQueryState",
+  "type": "object"
+}

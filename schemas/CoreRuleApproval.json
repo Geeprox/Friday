@@ -1,0 +1,28 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "approval_digest": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Approval Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "plan_id",
+    "approval_digest"
+  ],
+  "title": "CoreRuleApproval",
+  "type": "object"
+}

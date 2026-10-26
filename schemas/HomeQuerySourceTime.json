@@ -1,0 +1,106 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "physical_source_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Physical Source Id",
+      "type": "string"
+    },
+    "ingest_source": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Ingest Source",
+      "type": "string"
+    },
+    "measured_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Measured At"
+    },
+    "source_reported_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Source Reported At"
+    },
+    "integration_written_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Integration Written At"
+    },
+    "received_at": {
+      "format": "date-time",
+      "title": "Received At",
+      "type": "string"
+    },
+    "freshness_basis": {
+      "enum": [
+        "device_sample",
+        "upstream_report",
+        "cache_write",
+        "unknown"
+      ],
+      "title": "Freshness Basis",
+      "type": "string"
+    },
+    "cached": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Cached"
+    },
+    "clock_uncertainty_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Clock Uncertainty Seconds"
+    }
+  },
+  "required": [
+    "physical_source_id",
+    "ingest_source",
+    "measured_at",
+    "source_reported_at",
+    "integration_written_at",
+    "received_at",
+    "freshness_basis",
+    "cached"
+  ],
+  "title": "HomeQuerySourceTime",
+  "type": "object"
+}

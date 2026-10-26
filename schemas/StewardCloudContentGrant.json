@@ -1,0 +1,101 @@
+{
+  "additionalProperties": false,
+  "description": "Separate future content permission. Directory policies never grant cloud access.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "grant_id": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Grant Id",
+      "type": "string"
+    },
+    "provider": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Provider",
+      "type": "string"
+    },
+    "model": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Model",
+      "type": "string"
+    },
+    "selected_content_ids": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Selected Content Ids",
+      "type": "array"
+    },
+    "selected_unit_ids": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "maxItems": 256,
+      "title": "Selected Unit Ids",
+      "type": "array"
+    },
+    "max_upload_bytes": {
+      "maximum": 8388608,
+      "minimum": 1,
+      "title": "Max Upload Bytes",
+      "type": "integer"
+    },
+    "max_tokens": {
+      "maximum": 32000,
+      "minimum": 1,
+      "title": "Max Tokens",
+      "type": "integer"
+    },
+    "max_cost_minor_units": {
+      "minimum": 1,
+      "title": "Max Cost Minor Units",
+      "type": "integer"
+    },
+    "currency": {
+      "enum": [
+        "CNY",
+        "USD"
+      ],
+      "title": "Currency",
+      "type": "string"
+    },
+    "approved_at": {
+      "format": "date-time",
+      "title": "Approved At",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "automatic_expansion_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Automatic Expansion Allowed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "grant_id",
+    "provider",
+    "model",
+    "selected_content_ids",
+    "max_upload_bytes",
+    "max_tokens",
+    "max_cost_minor_units",
+    "currency",
+    "approved_at",
+    "expires_at"
+  ],
+  "title": "StewardCloudContentGrant",
+  "type": "object"
+}

@@ -1,0 +1,69 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "target": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Target",
+      "type": "string"
+    },
+    "capability": {
+      "const": "light.set",
+      "default": "light.set",
+      "title": "Capability",
+      "type": "string"
+    },
+    "desired": {
+      "additionalProperties": true,
+      "title": "Desired",
+      "type": "object"
+    },
+    "actor": {
+      "default": "console",
+      "enum": [
+        "console",
+        "cli",
+        "test"
+      ],
+      "title": "Actor",
+      "type": "string"
+    },
+    "origin": {
+      "const": "dry-run",
+      "default": "dry-run",
+      "title": "Origin",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "expected_version": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Expected Version",
+      "type": "string"
+    },
+    "idempotency_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Idempotency Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "target",
+    "desired",
+    "expires_at",
+    "expected_version"
+  ],
+  "title": "ActionRequest",
+  "type": "object"
+}

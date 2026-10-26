@@ -1,0 +1,503 @@
+/**
+ * Core - Gateway 客户端
+ * 封装 ECJPAKE + AES-GCM + WebSocket 通信
+ */
+
+import WebSocket from 'ws';
+import crypto from 'crypto';
+import {deflateRawSync, inflateRawSync} from 'zlib';
+import elliptic from 'elliptic';
+import BN from 'bn.js';
+
+const EC = new elliptic.ec('secp256k1');
+const EC_N: BN = EC.n!;
+
+const DATA_TYPE = {
+    PROTOCOL_LIST: 1,
+    SELECTED_PROTOCOL: 2,
+    SESSION_KEY_EXCHANGE: 3,
+    ERROR: 4,
+    DATA: 5,
+    SERVER_PUB_KEY: 16,
+    ECJPAKE_ROUND_ONE: 32,
+    ECJPAKE_ROUND_TWO: 33,
+} as const;
+
+class AESGCMCipher {
+    private key: Buffer;
+    private nonce: Buffer;
+    private encryptCounter: number = 1;
+    private decryptCounter: number = 0;
+
+    constructor(key: Buffer, nonce: Buffer) {
+        if (key.length !== 16) throw new Error('key must be 16 bytes');
+        if (nonce.length !== 8) throw new Error('nonce must be 8 bytes');
+        this.key = key;
+        this.nonce = nonce;
+    }
+
+    private makeIV(counter: number): Buffer {
+        const iv = Buffer.alloc(12);
+        this.nonce.copy(iv, 0);
+        iv.writeUInt32LE(counter, 8);
+        return iv;
+    }
+
+    encrypt(data: Buffer): Buffer {
+        const counter = this.encryptCounter++;
+        const iv = this.makeIV(counter);
+        const cipher = crypto.createCipheriv('aes-128-gcm', this.key, iv);
+        const encrypted = Buffer.concat([cipher.update(data), cipher.final()]);
+        const tag = cipher.getAuthTag();
+
+        const result = Buffer.alloc(4 + encrypted.length + tag.length);
+        result.writeUInt32LE(counter, 0);
+        encrypted.copy(result, 4);
+        tag.copy(result, 4 + encrypted.length);
+        return result;
+    }
+
+    decrypt(data: Buffer): Buffer {
+        if (data.length < 20) throw new Error('Data too short');
+        const counter = data.readUInt32LE(0);
+        if (counter <= this.decryptCounter) throw new Error('Replay attack');
+        this.decryptCounter = counter;
+
+        const ciphertext = data.slice(4, data.length - 16);
+        const tag = data.slice(data.length - 16);
+        const iv = this.makeIV(counter);
+
+        const decipher = crypto.createDecipheriv('aes-128-gcm', this.key, iv);
+        decipher.setAuthTag(tag);
+        return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    }
+}
+
+function compress(data: Buffer): Buffer {
+    const compressed = deflateRawSync(data);
+    const result = Buffer.alloc(4 + compressed.length);
+    result.writeUInt32LE(data.length, 0);
+    compressed.copy(result, 4);
+    return result;
+}
+
+function decompress(data: Buffer): Buffer {
+    if (data.length < 4) throw new Error('Data too short');
+    return inflateRawSync(data.slice(4));
+}
+
+class ECJPAKE {
+    private role: string;
+    private peerRole: string;
+    private secretBytes: Buffer;
+    private x1: BN | null = null;
+    private x2: BN | null = null;
+    private g_x1: unknown = null;
+    private g_x2: unknown = null;
+    private g_x3: unknown = null;
+    private g_x4: unknown = null;
+    private roundOneSent = false;
+    private roundOneReceived = false;
+    private roundTwoSent = false;
+    private roundTwoReceived = false;
+
+    constructor(secret: string, role: string = 'client') {
+        this.role = role;
+        this.peerRole = role === 'client' ? 'server' : 'client';
+        this.secretBytes = Buffer.from(secret, 'utf8');
+    }
+
+    private encodePoint(point: unknown): Buffer {
+        const result = Buffer.alloc(66);
+        result[0] = 65;
+        result[1] = 4;
+        const p = point as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>;
+        Buffer.from(p.getX().toArray('be', 32)).copy(result, 2);
+        Buffer.from(p.getY().toArray('be', 32)).copy(result, 34);
+        return result;
+    }
+
+    private encodePointForHash(point: unknown): Buffer {
+        const result = Buffer.alloc(69);
+        result.writeUInt32BE(65, 0);
+        result[4] = 4;
+        const p = point as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>;
+        Buffer.from(p.getX().toArray('be', 32)).copy(result, 5);
+        Buffer.from(p.getY().toArray('be', 32)).copy(result, 37);
+        return result;
+    }
+
+    private decodePoint(data: Buffer): unknown {
+        if (data[0] !== 65 || data[1] !== 4) throw new Error('Invalid point format');
+        return EC.keyFromPublic({
+            x: data.slice(2, 34).toString('hex'),
+            y: data.slice(34, 66).toString('hex')
+        }).getPublic();
+    }
+
+    private zkpHash(g: unknown, v: unknown, publicPoint: unknown, name: string): BN {
+        const nameBytes = Buffer.from(name, 'utf8');
+        const data = Buffer.concat([
+            this.encodePointForHash(g),
+            this.encodePointForHash(v),
+            this.encodePointForHash(publicPoint),
+            Buffer.alloc(4),
+            nameBytes
+        ]);
+        data.writeUInt32BE(nameBytes.length, 207);
+        return new BN(crypto.createHash('sha256').update(data).digest()).umod(EC_N);
+    }
+
+    private generateZKP(g: unknown, publicPoint: unknown, privateKey: BN, name: string) {
+        let k = new BN(crypto.randomBytes(32)).umod(EC_N);
+        if (k.isZero()) k.iaddn(1);
+        const v = (g as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>).mul(k);
+        const challenge = this.zkpHash(g, v, publicPoint, name);
+        const r = k.sub(challenge.mul(privateKey)).umod(EC_N);
+        return {v, r};
+    }
+
+    private verifyZKP(g: unknown, publicPoint: unknown, v: unknown, r: BN, name: string): boolean {
+        const challenge = this.zkpHash(g, v, publicPoint, name);
+        const p = publicPoint as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>;
+        const gk = g as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>;
+        return p.mul(challenge).add(gk.mul(r)).eq(v as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>);
+    }
+
+    private encodeZKP(v: unknown, r: BN): Buffer {
+        const result = Buffer.alloc(99);
+        this.encodePoint(v).copy(result, 0);
+        result[66] = 32;
+        Buffer.from(r.toArray('be', 32)).copy(result, 67);
+        return result;
+    }
+
+    private decodeZKP(data: Buffer) {
+        return {
+            v: this.decodePoint(data.slice(0, 66)),
+            r: new BN(data.slice(67, 99))
+        };
+    }
+
+    writeRoundOne(): Buffer {
+        if (this.roundOneSent) throw new Error('Round one already sent');
+        this.roundOneSent = true;
+
+        const g = EC.g;
+        this.x1 = new BN(crypto.randomBytes(32)).umod(EC_N);
+        this.x2 = new BN(crypto.randomBytes(32)).umod(EC_N);
+        this.g_x1 = g.mul(this.x1);
+        this.g_x2 = g.mul(this.x2);
+
+        const zkp1 = this.generateZKP(g, this.g_x1, this.x1, this.role);
+        const zkp2 = this.generateZKP(g, this.g_x2, this.x2, this.role);
+
+        const result = Buffer.alloc(330);
+        this.encodePoint(this.g_x1).copy(result, 0);
+        this.encodeZKP(zkp1.v, zkp1.r).copy(result, 66);
+        this.encodePoint(this.g_x2).copy(result, 165);
+        this.encodeZKP(zkp2.v, zkp2.r).copy(result, 231);
+        return result;
+    }
+
+    readRoundOne(data: Buffer): void {
+        if (this.roundOneReceived) throw new Error('Round one already received');
+        this.roundOneReceived = true;
+
+        const g = EC.g;
+        this.g_x3 = this.decodePoint(data.slice(0, 66));
+        const zkp1 = this.decodeZKP(data.slice(66, 165));
+        this.g_x4 = this.decodePoint(data.slice(165, 231));
+        const zkp2 = this.decodeZKP(data.slice(231, 330));
+
+        if (!this.verifyZKP(g, this.g_x3, zkp1.v, zkp1.r, this.peerRole))
+            throw new Error('ZKP verification failed for g_x3');
+        if (!this.verifyZKP(g, this.g_x4, zkp2.v, zkp2.r, this.peerRole))
+            throw new Error('ZKP verification failed for g_x4');
+    }
+
+    writeRoundTwo(): Buffer {
+        if (this.roundTwoSent) throw new Error('Round two already sent');
+        if (!this.roundOneSent || !this.roundOneReceived) throw new Error('Round one not completed');
+        this.roundTwoSent = true;
+
+        const g_xa = (this.g_x1 as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>).add(this.g_x3 as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>).add(this.g_x4 as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>);
+        const random = new BN(crypto.randomBytes(16));
+        const y = random.mul(EC_N).add(new BN(this.secretBytes));
+        const x2_s = this.x2!.mul(y).umod(EC_N);
+        const g_s = g_xa.mul(x2_s);
+
+        const zkp = this.generateZKP(g_xa, g_s, x2_s, this.role);
+
+        const result = Buffer.alloc(165);
+        this.encodePoint(g_s).copy(result, 0);
+        this.encodeZKP(zkp.v, zkp.r).copy(result, 66);
+        return result;
+    }
+
+    readRoundTwo(data: Buffer): Buffer {
+        if (this.roundTwoReceived) throw new Error('Round two already received');
+        if (!this.roundOneSent || !this.roundOneReceived) throw new Error('Round one not completed');
+        this.roundTwoReceived = true;
+
+        const offset = this.role === 'client' ? 3 : 0;
+
+        const g_xb = (this.g_x1 as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>).add(this.g_x2 as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>).add(this.g_x3 as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>);
+        const g_s_peer = this.decodePoint(data.slice(offset, offset + 66));
+        const zkp = this.decodeZKP(data.slice(offset + 66, offset + 165));
+
+        if (!this.verifyZKP(g_xb, g_s_peer, zkp.v, zkp.r, this.peerRole))
+            throw new Error('ZKP verification failed for round two');
+
+        const random = new BN(crypto.randomBytes(16));
+        const y = random.mul(EC_N).add(new BN(this.secretBytes));
+        const m = this.x2!.mul(y).umod(EC_N);
+        const v = (g_s_peer as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>).add((this.g_x4 as ReturnType<ReturnType<typeof EC.keyFromPublic>['getPublic']>).mul(m).neg()).mul(this.x2!);
+
+        return crypto.createHash('sha256').update(Buffer.from(v.getX().toArray('be', 32))).digest();
+    }
+}
+
+export class GatewayClient {
+    private ws: WebSocket | null = null;
+    private sessionIdCounter = 0;
+    private pendingRequests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+    private handshakeFrames: Buffer[] = [];
+    private handshakeError: Error | null = null;
+    private handshakeWaiters: Array<{ resolve: (data: Buffer) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }> = [];
+    private cipherOut: AESGCMCipher | null = null;
+    private cipherIn: AESGCMCipher | null = null;
+    private secureEstablished = false;
+    private connected = false;
+
+    private static parseUrl(url: string): string {
+        const match = url.match(/^(https?):\/\/([^/:]+)(?::(\d+))?((?:\/.*)?)/);
+        if (!match) throw new Error('Invalid URL');
+        const [, protocol, host, port, path] = match;
+        const wsProtocol = protocol === 'https' ? 'wss' : 'ws';
+        const wsPort = port || (protocol === 'https' ? '443' : '80');
+        const wsPath = (path || '').replace(/\/$/, '');
+        return `${wsProtocol}://${host}:${wsPort}${wsPath}/centrallinkws/`;
+    }
+
+    async connect(gatewayUrl: string): Promise<void> {
+        const url = GatewayClient.parseUrl(gatewayUrl);
+        await this.close();
+        this.handshakeFrames = [];
+        this.handshakeError = null;
+
+        return new Promise((resolve, reject) => {
+            const ws = new WebSocket(url);
+            this.ws = ws;
+            const fail = (error: Error) => {
+                if (this.ws !== ws) return;
+                this.connected = false;
+                this.secureEstablished = false;
+                this.handshakeError = error;
+                this.handshakeFrames = [];
+                for (const waiter of this.handshakeWaiters.splice(0)) {
+                    clearTimeout(waiter.timer);
+                    waiter.reject(error);
+                }
+                reject(error);
+            };
+            // Listen before sending anything: authentication frames may arrive back-to-back.
+            ws.on('message', (data: Buffer) => {
+                if (this.ws !== ws || this.secureEstablished || this.handshakeError) return;
+                const waiter = this.handshakeWaiters.shift();
+                if (waiter) {
+                    clearTimeout(waiter.timer);
+                    waiter.resolve(data);
+                } else {
+                    this.handshakeFrames.push(data);
+                }
+            });
+            ws.on('close', (code) => fail(new Error(`Gateway connection closed (${code})`)));
+            ws.on('error', fail);
+
+            ws.on('open', () => {
+                if (this.ws !== ws || this.handshakeError) return;
+                const protocols = ['passcode'];
+                const data = Buffer.from(JSON.stringify(protocols), 'utf8');
+                const message = Buffer.alloc(1 + data.length);
+                message[0] = DATA_TYPE.PROTOCOL_LIST;
+                data.copy(message, 1);
+                ws.send(message);
+                this.connected = true;
+                resolve();
+            });
+        });
+    }
+
+    private recv(timeout = 10000): Promise<Buffer> {
+        if (this.handshakeError) return Promise.reject(this.handshakeError);
+        const queued = this.handshakeFrames.shift();
+        if (queued) return Promise.resolve(queued);
+        return new Promise((resolve, reject) => {
+            const waiter = {
+                resolve,
+                reject,
+                timer: setTimeout(() => {
+                    this.handshakeWaiters = this.handshakeWaiters.filter((item) => item !== waiter);
+                    reject(new Error('Gateway authentication timed out'));
+                }, timeout),
+            };
+            this.handshakeWaiters.push(waiter);
+        });
+    }
+
+    async authenticate(passcode: string): Promise<void> {
+        const jpake = new ECJPAKE(passcode, 'client');
+
+        let response = await this.recv();
+        if (response[0] !== DATA_TYPE.SELECTED_PROTOCOL) {
+            throw new Error('Protocol selection failed');
+        }
+
+        const roundOne = jpake.writeRoundOne();
+        await this.ws!.send(Buffer.concat([Buffer.from([DATA_TYPE.ECJPAKE_ROUND_ONE]), roundOne]));
+
+        response = await this.recv();
+        if (response[0] !== DATA_TYPE.ECJPAKE_ROUND_ONE) {
+            throw new Error(`Unexpected response type: ${response[0]}`);
+        }
+        jpake.readRoundOne(response.slice(1));
+
+        const roundTwo = jpake.writeRoundTwo();
+        await this.ws!.send(Buffer.concat([Buffer.from([DATA_TYPE.ECJPAKE_ROUND_TWO]), roundTwo]));
+
+        response = await this.recv();
+        if (response[0] !== DATA_TYPE.ECJPAKE_ROUND_TWO) {
+            throw new Error(`Unexpected response type: ${response[0]}`);
+        }
+        const serverRoundTwo = response.slice(1);
+
+        const sharedKey = jpake.readRoundTwo(serverRoundTwo);
+
+        const sharedCipher = new AESGCMCipher(sharedKey.slice(0, 16), sharedKey.slice(16, 24));
+        const myKeyNonce = crypto.randomBytes(24);
+
+        try {
+            response = await this.recv(3000);
+            if (response[0] === DATA_TYPE.SESSION_KEY_EXCHANGE) {
+                const serverKeyNonce = sharedCipher.decrypt(response.slice(1));
+                const encrypted = sharedCipher.encrypt(myKeyNonce);
+                await this.ws!.send(Buffer.concat([Buffer.from([DATA_TYPE.SESSION_KEY_EXCHANGE]), encrypted]));
+                this.cipherOut = new AESGCMCipher(myKeyNonce.slice(0, 16), myKeyNonce.slice(16, 24));
+                this.cipherIn = new AESGCMCipher(serverKeyNonce.slice(0, 16), serverKeyNonce.slice(16, 24));
+                this.secureEstablished = true;
+            }
+        } catch (error) {
+            if (this.handshakeError) throw error;
+            const encrypted = sharedCipher.encrypt(myKeyNonce);
+            await this.ws!.send(Buffer.concat([Buffer.from([DATA_TYPE.SESSION_KEY_EXCHANGE]), encrypted]));
+            response = await this.recv();
+            if (response[0] === DATA_TYPE.SESSION_KEY_EXCHANGE) {
+                const serverKeyNonce = sharedCipher.decrypt(response.slice(1));
+                this.cipherOut = new AESGCMCipher(myKeyNonce.slice(0, 16), myKeyNonce.slice(16, 24));
+                this.cipherIn = new AESGCMCipher(serverKeyNonce.slice(0, 16), serverKeyNonce.slice(16, 24));
+                this.secureEstablished = true;
+            }
+        }
+
+        if (!this.secureEstablished) {
+            throw new Error('Session key exchange failed');
+        }
+
+        this.startReceiveLoop();
+    }
+
+    private startReceiveLoop(): void {
+        if (!this.ws) return;
+        const ws = this.ws;
+        ws.on('message', (data: Buffer) => {
+            if (this.ws === ws) this.handleMessage(data);
+        });
+    }
+
+    private handleMessage(data: Buffer): void {
+        if (!data || data.length === 0) return;
+        if (data[0] !== DATA_TYPE.DATA || !this.secureEstablished) return;
+
+        try {
+            const decrypted = this.cipherIn!.decrypt(data.slice(1));
+            const decompressed = decompress(decrypted);
+            const response = JSON.parse(decompressed.toString('utf8'));
+
+            if ('id' in response) {
+                const future = this.pendingRequests.get(response.id);
+                if (future) {
+                    this.pendingRequests.delete(response.id);
+                    if ('result' in response) {
+                        future.resolve(response.result);
+                    } else if ('error' in response) {
+                        future.reject(new Error(response.error?.message || 'Unknown error'));
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[!] Error handling message:', e);
+        }
+    }
+
+    async callApi<T = unknown>(method: string, params: Record<string, unknown> = {}, timeout: number = 5000): Promise<T> {
+        if (!this.secureEstablished) {
+            throw new Error('Secure Session not established');
+        }
+
+        const requestId = this.sessionIdCounter++;
+        const request = {
+            jsonrpc: '2.0',
+            id: requestId,
+            method: `/api/${method}`,
+            params
+        };
+
+        return new Promise<T>((resolve, reject) => {
+            this.pendingRequests.set(requestId, {
+                resolve: resolve as (value: unknown) => void,
+                reject
+            });
+
+            const jsonData = Buffer.from(JSON.stringify(request), 'utf8');
+            const compressed = compress(jsonData);
+            const encrypted = this.cipherOut!.encrypt(compressed);
+            const message = Buffer.alloc(1 + encrypted.length);
+            message[0] = DATA_TYPE.DATA;
+            encrypted.copy(message, 1);
+            this.ws!.send(message);
+
+            setTimeout(() => {
+                if (this.pendingRequests.has(requestId)) {
+                    this.pendingRequests.delete(requestId);
+                    reject(new Error(`API call timeout: ${method}`));
+                }
+            }, timeout);
+        });
+    }
+
+    async getDeviceList(): Promise<unknown> {
+        return this.callApi('getDevList', {}, 10000);
+    }
+
+    async close(): Promise<void> {
+        this.connected = false;
+        this.secureEstablished = false;
+        this.cipherIn = null;
+        this.cipherOut = null;
+        this.handshakeFrames = [];
+        this.handshakeError = new Error('Gateway connection closed');
+        for (const waiter of this.handshakeWaiters.splice(0)) {
+            clearTimeout(waiter.timer);
+            waiter.reject(this.handshakeError);
+        }
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
+    }
+
+    isConnected(): boolean {
+        return this.connected && this.secureEstablished;
+    }
+}

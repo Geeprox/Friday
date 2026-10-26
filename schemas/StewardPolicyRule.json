@@ -1,0 +1,123 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "rule_id": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "source_ref": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Source Ref",
+      "type": "string"
+    },
+    "config_generation": {
+      "minimum": 0,
+      "title": "Config Generation",
+      "type": "integer"
+    },
+    "connection_epoch": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Connection Epoch",
+      "type": "string"
+    },
+    "directory_ref": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Directory Ref"
+    },
+    "item_id": {
+      "anyOf": [
+        {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Item Id"
+    },
+    "label": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Label",
+      "type": "string"
+    },
+    "status": {
+      "default": "proposed",
+      "enum": [
+        "proposed",
+        "user_pinned"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "origin": {
+      "default": "unknown",
+      "enum": [
+        "unknown",
+        "camera_phone",
+        "downloaded",
+        "old_photos",
+        "sensitive",
+        "bundle"
+      ],
+      "title": "Origin",
+      "type": "string"
+    },
+    "rename_preview": {
+      "default": false,
+      "title": "Rename Preview",
+      "type": "boolean"
+    },
+    "move_preview": {
+      "default": false,
+      "title": "Move Preview",
+      "type": "boolean"
+    },
+    "structure_preview": {
+      "default": false,
+      "title": "Structure Preview",
+      "type": "boolean"
+    },
+    "dedup_review": {
+      "default": false,
+      "title": "Dedup Review",
+      "type": "boolean"
+    },
+    "unit": {
+      "default": "file",
+      "enum": [
+        "file",
+        "dependent_bundle"
+      ],
+      "title": "Unit",
+      "type": "string"
+    }
+  },
+  "required": [
+    "rule_id",
+    "source_ref",
+    "config_generation",
+    "connection_epoch",
+    "label"
+  ],
+  "title": "StewardPolicyRule",
+  "type": "object"
+}

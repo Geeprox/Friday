@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Friday · Home control</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<header><a class="brand" href="/">friday<span>／</span></a><span class="descriptor">HOME INTELLIGENCE</span><span id="mode" class="tag">加载中</span><a class="export" href="/api/diagnostics">导出诊断 ↗</a></header>
+<main>
+  <section class="workspace">
+    <section id="connections" class="connections" hidden>
+      <div class="section-head compact"><div><p class="eyebrow">CONNECTED HOME</p><h2>让家，听懂你的意思。</h2></div><span id="systemState" class="status">连接检查中</span></div>
+      <div class="connection-grid"><div><span class="connection-label">01 · 设备</span><strong id="haState">Home Assistant</strong><button id="connectHA">连接我的家 ↗</button><button id="syncHA" hidden>同步设备</button></div><div><span class="connection-label">02 · 感知</span><strong id="perceptionState">本地视觉与语音</strong><a href="http://127.0.0.1:1810" target="_blank" rel="noreferrer" class="text-link">配置 Miloco 摄像头 ↗</a></div><div><span class="connection-label">03 · 推理</span><strong id="plannerState">Codex App-Server</strong><span class="connection-note">复杂指令 · 按设备能力执行</span></div></div>
+    </section>
+    <div class="section-head"><div><p class="eyebrow">01 / CAMERA</p><h1>现场控制</h1><p class="sub" id="room">客厅 · 摄像头控制</p></div><span class="status" id="status">已暂停</span></div>
+    <div class="viewport" id="viewport">
+      <canvas id="scene" width="960" height="540" aria-label="摄像头画面及设备绑定区域"></canvas>
+      <video id="video" autoplay muted playsinline hidden></video>
+      <div class="view-top"><span id="sourceLabel">模拟房间 · 非实时画面</span><span id="clock">--:--:--</span></div>
+      <div id="anchors"></div><div id="selection" hidden></div>
+      <div class="view-bottom"><span id="captureState">摄像头未启用</span><span class="meter"><i id="level"></i></span></div>
+    </div>
+    <div class="controls"><div class="source-field"><label for="source">输入来源</label><select id="source"><option value="demo">模拟场景</option><option value="server">米家摄像头 · 后台持续监听</option><option value="miloco">米家摄像头 · Miloco</option><option value="browser">本机摄像头 + 麦克风</option></select></div><button id="listen" class="primary">开始体验 <span>→</span></button></div>
+    <div class="interaction"><div class="section-head compact"><p class="eyebrow">02 / INTERACTION</p><label class="wake"><input type="checkbox" id="wake"> 仅在说出 Friday 时响应</label></div><p class="instruction" id="instruction">看向摄像头说出完整指令，或指向已绑定的设备。</p><div class="examples" id="examples"><button data-scenario="named"><span>01</span>“打开客厅灯”<small>明确名称</small></button><button data-scenario="point"><span>02</span>☞ “把这个打开”<small>指向落地灯</small></button><button data-scenario="dim"><span>03</span>“这个暗一点”<small>15 秒连续对话</small></button></div><div class="test-row" id="testrow"><span>误触测试</span><button data-scenario="tv">电视说“开灯”</button><button data-scenario="ambiguous">目标不明确</button><button data-scenario="friday">呼叫 Friday</button></div><form id="commandForm" class="command-form" hidden><label for="commandText">或直接输入完整指令</label><div><input id="commandText" placeholder="把客厅灯调到 30%，其余房间保持原样" maxlength="2000" autocomplete="off" required><button id="sendCommand" type="submit">执行 →</button></div></form><div id="planReview" class="plan-review" hidden></div><p id="feedback" role="status" aria-live="polite">模拟模式不会操作家里的真实设备。</p></div>
+  </section>
+  <aside>
+    <section id="wholeHome" class="whole-home" hidden><div class="section-head compact"><div><p class="eyebrow">WHOLE HOME</p><h2>全屋设备</h2></div><span id="homeCount" class="status">—</span></div><input id="deviceFilter" placeholder="搜索房间或设备" aria-label="搜索房间或设备"><div id="homeDevices"><p class="empty">连接 Home Assistant 后自动发现。</p></div></section>
+    <section class="devices"><div class="section-head compact"><div><p class="eyebrow">03 / DEVICE REGISTRY</p><h2>画面里的设备</h2></div><span id="deviceCount">0</span></div><p class="hint">暂停后，选择设备，在画面上拖动框选对应的灯。</p><div id="devices"></div><button id="cancelBind" hidden>取消框选</button></section>
+    <section class="trace"><div class="section-head compact"><div><p class="eyebrow">04 / ACTIVITY</p><h2>执行记录</h2></div><span class="tiny-dot"></span></div><div id="events"><p class="empty">还没有指令。<br>开始体验后，执行过程会出现在这里。</p></div></section>
+    <footer><strong>Your home, understood.</strong><p>音视频在本机内存中处理。使用 Codex 时，复杂指令文本及必要设备状态会发送给 Codex。诊断不保存语音内容或画面。</p><p id="boundary">DEMO · 无真实设备连接</p></footer>
+  </aside>
+</main>
+<script type="module" src="/static/app.js"></script>
+</body></html>

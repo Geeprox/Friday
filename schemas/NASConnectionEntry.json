@@ -1,0 +1,71 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "object_ref": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Object Ref",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "file",
+        "directory"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "revision": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Revision",
+      "type": "string"
+    },
+    "size": {
+      "minimum": 0,
+      "title": "Size",
+      "type": "integer"
+    },
+    "modified_ns": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Modified Ns"
+    },
+    "media_kind": {
+      "default": "other",
+      "enum": [
+        "image",
+        "video",
+        "audio",
+        "other"
+      ],
+      "title": "Media Kind",
+      "type": "string"
+    },
+    "closed": {
+      "default": null,
+      "title": "Closed",
+      "type": "null"
+    },
+    "revision_basis": {
+      "const": "metadata",
+      "default": "metadata",
+      "title": "Revision Basis",
+      "type": "string"
+    }
+  },
+  "required": [
+    "object_ref",
+    "kind",
+    "revision",
+    "size"
+  ],
+  "title": "NASConnectionEntry",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "approved_library_file_id": "original-project-artwork",
+  "approved_file_id": "project-artwork",
+  "approved_version": 0,
+  "source_sha256": "ec8cd9ad525bfe9910589e8ebe55909160540aff09643bebd49d22cdeb8ce3f6",
+  "original_size": [
+    1669,
+    942
+  ],
+  "extraction": {
+    "source_roi": [
+      800,
+      90,
+      1510,
+      770
+    ],
+    "roi_cutout_bbox": [
+      34,
+      26,
+      673,
+      655
+    ],
+    "source_cutout_bbox": [
+      834,
+      116,
+      1473,
+      745
+    ],
+    "cutout_size": [
+      639,
+      629
+    ],
+    "square_size": 639,
+    "square_offset": [
+      0,
+      5
+    ],
+    "core_threshold": 110,
+    "edge_band_pixels": 1,
+    "opaque_core_RGB_changed": 0,
+    "resampling": "Lanczos; uniform aspect ratio retained"
+  },
+  "edge_method": "Only the one-pixel matte boundary uses original neighboring rim RGB with estimated alpha; opaque interior RGB is copied exactly.",
+  "no_generated_artwork_or_design_changes": true,
+  "ICNS_small_slots": "Correct premultiplied ARGB ic04/ic05; original alpha and opaque RGB exact, 8bit quantization validated by black/white composites; all original PNGs unchanged",
+  "outputs": {
+    "Friday-cutout.png": {
+      "sha256": "1de9669a3190ef241c052aaddcdd245c1b41513ad2c6bfc67af59571c2637bc4"
+    },
+    "Friday.iconset/icon_16x16.png": {
+      "sha256": "8ad8c89bda47825c01fbd180a3b3c93c3811266ee1bc4c5a505d2d60be7af180"
+    },
+    "Friday.iconset/icon_16x16@2x.png": {
+      "sha256": "264cf4280e35032804ea24648608b96ef943635cace4f4d79af64079dbd725fd"
+    },
+    "Friday.iconset/icon_32x32.png": {
+      "sha256": "264cf4280e35032804ea24648608b96ef943635cace4f4d79af64079dbd725fd"
+    },
+    "Friday.iconset/icon_32x32@2x.png": {
+      "sha256": "46f4dbaad1b04a630c6ed139b288b7e68ac910cf741f6b3f65d35b7b718c8cf8"
+    },
+    "Friday.iconset/icon_128x128.png": {
+      "sha256": "9745e426a3f5503678ea67d992aa1a057c5e037702cbe451b1fc154c25023e6c"
+    },
+    "Friday.iconset/icon_128x128@2x.png": {
+      "sha256": "dd41309b0da876ec63fb9636981e5d825e425a4103022a15e4c26ba88c4a1c9c"
+    },
+    "Friday.iconset/icon_256x256.png": {
+      "sha256": "dd41309b0da876ec63fb9636981e5d825e425a4103022a15e4c26ba88c4a1c9c"
+    },
+    "Friday.iconset/icon_256x256@2x.png": {
+      "sha256": "b454fb1c9b22dec53697d919c68999d7bf9abe68b2462f5d7cc2d75282bfca68"
+    },
+    "Friday.iconset/icon_512x512.png": {
+      "sha256": "b454fb1c9b22dec53697d919c68999d7bf9abe68b2462f5d7cc2d75282bfca68"
+    },
+    "Friday.iconset/icon_512x512@2x.png": {
+      "sha256": "8419a9d63c622f26286f669f414c46141fcb93b03872e005d38eb2ded5330c9c"
+    },
+    "Friday.icns": {
+      "sha256": "6a08c4fffa651a717a90e7d253c75577ab1b52d27cbf6aa5629854741fdc0bd1"
+    }
+  }
+}

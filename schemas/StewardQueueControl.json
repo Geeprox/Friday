@@ -1,0 +1,49 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "job_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "expected_revision": {
+      "minimum": 0,
+      "title": "Expected Revision",
+      "type": "integer"
+    },
+    "expected_settings_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Settings Fingerprint",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "pause",
+        "cancel",
+        "resume_preview"
+      ],
+      "title": "Decision",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_context",
+    "job_id",
+    "expected_revision",
+    "expected_settings_fingerprint",
+    "decision"
+  ],
+  "title": "StewardQueueControl",
+  "type": "object"
+}

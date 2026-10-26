@@ -1,0 +1,161 @@
+{
+  "$defs": {
+    "NASConnectionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_ref": {
+          "pattern": "^[A-Za-z0-9_-]{1,96}$",
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "transport": {
+          "enum": [
+            "smb",
+            "sftp"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "host": {
+          "maxLength": 253,
+          "minLength": 1,
+          "title": "Host",
+          "type": "string"
+        },
+        "port": {
+          "anyOf": [
+            {
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port"
+        },
+        "share": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Share"
+        },
+        "root": {
+          "default": "",
+          "maxLength": 1024,
+          "title": "Root",
+          "type": "string"
+        },
+        "credential_ref": {
+          "pattern": "^[A-Za-z0-9_-]{1,128}$",
+          "title": "Credential Ref",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "require_encryption": {
+          "default": true,
+          "title": "Require Encryption",
+          "type": "boolean"
+        },
+        "host_key_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^SHA256:[A-Za-z0-9+/]{43}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host Key Sha256"
+        },
+        "sftp_root_confined": {
+          "default": false,
+          "title": "Sftp Root Confined",
+          "type": "boolean"
+        },
+        "connect_timeout_seconds": {
+          "default": 8,
+          "maximum": 30,
+          "minimum": 0.05,
+          "title": "Connect Timeout Seconds",
+          "type": "number"
+        },
+        "operation_timeout_seconds": {
+          "default": 5,
+          "maximum": 30,
+          "minimum": 0.05,
+          "title": "Operation Timeout Seconds",
+          "type": "number"
+        },
+        "health_interval_seconds": {
+          "default": 30,
+          "maximum": 300,
+          "minimum": 0.05,
+          "title": "Health Interval Seconds",
+          "type": "number"
+        },
+        "backoff_initial_seconds": {
+          "default": 1,
+          "maximum": 60,
+          "minimum": 0.05,
+          "title": "Backoff Initial Seconds",
+          "type": "number"
+        },
+        "backoff_max_seconds": {
+          "default": 60,
+          "maximum": 300,
+          "minimum": 0.05,
+          "title": "Backoff Max Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "source_ref",
+        "transport",
+        "host",
+        "credential_ref"
+      ],
+      "title": "NASConnectionConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "expected_generation": {
+      "minimum": 0,
+      "title": "Expected Generation",
+      "type": "integer"
+    },
+    "config": {
+      "$ref": "#/$defs/NASConnectionConfig"
+    }
+  },
+  "required": [
+    "expected_generation",
+    "config"
+  ],
+  "title": "NASConnectionEdit",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

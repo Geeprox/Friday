@@ -1,0 +1,654 @@
+{
+  "$defs": {
+    "BackgroundAttempt": {
+      "additionalProperties": false,
+      "description": "Last preparation result, distinct from the current owner's state.",
+      "properties": {
+        "checked_at": {
+          "maxLength": 40,
+          "title": "Checked At",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "connected",
+            "failed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "failure_phase": {
+          "anyOf": [
+            {
+              "enum": [
+                "local_setup",
+                "websocket_connect",
+                "authenticate",
+                "inventory"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure Phase"
+        },
+        "failure_code": {
+          "anyOf": [
+            {
+              "enum": [
+                "connection_refused",
+                "network_unreachable",
+                "gateway_closed_connection",
+                "connection_timeout",
+                "websocket_upgrade_rejected",
+                "authentication_timeout",
+                "protocol_selection_failed",
+                "authentication_handshake_failed",
+                "gateway_error_frame",
+                "unexpected_handshake_frame",
+                "readonly_request_timeout",
+                "session_not_connected",
+                "check_failed"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure Code"
+        },
+        "network_errno": {
+          "anyOf": [
+            {
+              "enum": [
+                "ECONNREFUSED",
+                "ETIMEDOUT",
+                "EHOSTUNREACH",
+                "ENETUNREACH",
+                "EPERM",
+                "EACCES"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Network Errno"
+        }
+      },
+      "required": [
+        "checked_at",
+        "outcome"
+      ],
+      "title": "BackgroundAttempt",
+      "type": "object"
+    },
+    "Changes": {
+      "additionalProperties": false,
+      "properties": {
+        "added": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Added",
+          "type": "integer"
+        },
+        "removed": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Removed",
+          "type": "integer"
+        },
+        "modified": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Modified",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "added",
+        "removed",
+        "modified"
+      ],
+      "title": "Changes",
+      "type": "object"
+    },
+    "GeekGraph": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "source_enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Enabled"
+        },
+        "normalization": {
+          "const": "opaque",
+          "default": "opaque",
+          "title": "Normalization",
+          "type": "string"
+        },
+        "readable": {
+          "const": true,
+          "default": true,
+          "title": "Readable",
+          "type": "boolean"
+        },
+        "writable": {
+          "const": false,
+          "default": false,
+          "title": "Writable",
+          "type": "boolean"
+        },
+        "fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "raw_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Raw Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "fingerprint",
+        "raw_sha256"
+      ],
+      "title": "GeekGraph",
+      "type": "object"
+    },
+    "GeekSessionView": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "status",
+          "default": "status",
+          "title": "Kind",
+          "type": "string"
+        },
+        "provider": {
+          "const": "oh-my-sage-readonly",
+          "default": "oh-my-sage-readonly",
+          "title": "Provider",
+          "type": "string"
+        },
+        "revision": {
+          "const": "4fe2c03ce16c365838b58f70e955e987d1a23531",
+          "default": "4fe2c03ce16c365838b58f70e955e987d1a23531",
+          "title": "Revision",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "stopped",
+            "starting",
+            "online",
+            "reconnecting",
+            "blocked",
+            "stale",
+            "worker_stopped",
+            "worker_fault",
+            "worker_unavailable",
+            "pairing_required",
+            "unsupported_gateway_address",
+            "background_unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "simulated": {
+          "const": false,
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        },
+        "writes_attempted": {
+          "const": false,
+          "default": false,
+          "title": "Writes Attempted",
+          "type": "boolean"
+        },
+        "graph_semantics": {
+          "const": "opaque",
+          "default": "opaque",
+          "title": "Graph Semantics",
+          "type": "string"
+        },
+        "checked_at": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checked At"
+        },
+        "reconnects": {
+          "default": 0,
+          "maximum": 2147483647,
+          "minimum": 0,
+          "title": "Reconnects",
+          "type": "integer"
+        },
+        "device_count": {
+          "anyOf": [
+            {
+              "maximum": 4096,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device Count"
+        },
+        "graph_count": {
+          "anyOf": [
+            {
+              "maximum": 64,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Graph Count"
+        },
+        "scope_count": {
+          "anyOf": [
+            {
+              "maximum": 32,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope Count"
+        },
+        "fingerprint": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fingerprint"
+        },
+        "changes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Changes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "gap": {
+          "default": false,
+          "title": "Gap",
+          "type": "boolean"
+        },
+        "session_seconds": {
+          "anyOf": [
+            {
+              "maximum": 2147483647,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Seconds"
+        },
+        "failure_phase": {
+          "anyOf": [
+            {
+              "enum": [
+                "local_setup",
+                "websocket_connect",
+                "authenticate",
+                "inventory"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure Phase"
+        },
+        "failure_code": {
+          "anyOf": [
+            {
+              "enum": [
+                "connection_refused",
+                "network_unreachable",
+                "gateway_closed_connection",
+                "connection_timeout",
+                "websocket_upgrade_rejected",
+                "authentication_timeout",
+                "protocol_selection_failed",
+                "authentication_handshake_failed",
+                "gateway_error_frame",
+                "unexpected_handshake_frame",
+                "readonly_request_timeout",
+                "session_not_connected",
+                "check_failed"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure Code"
+        },
+        "network_errno": {
+          "anyOf": [
+            {
+              "enum": [
+                "ECONNREFUSED",
+                "ETIMEDOUT",
+                "EHOSTUNREACH",
+                "ENETUNREACH",
+                "EPERM",
+                "EACCES"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Network Errno"
+        },
+        "last_change": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LastChange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "session_live": {
+          "title": "Session Live",
+          "type": "boolean"
+        },
+        "credential_available": {
+          "title": "Credential Available",
+          "type": "boolean"
+        },
+        "inventory_stale": {
+          "title": "Inventory Stale",
+          "type": "boolean"
+        },
+        "poll_seconds": {
+          "const": 60,
+          "default": 60,
+          "title": "Poll Seconds",
+          "type": "integer"
+        },
+        "session_resume": {
+          "const": "saved_pin_reauthentication",
+          "default": "saved_pin_reauthentication",
+          "title": "Session Resume",
+          "type": "string"
+        },
+        "permanent_login_verified": {
+          "const": false,
+          "default": false,
+          "title": "Permanent Login Verified",
+          "type": "boolean"
+        },
+        "raw_graphs_public": {
+          "const": false,
+          "default": false,
+          "title": "Raw Graphs Public",
+          "type": "boolean"
+        },
+        "retention_days": {
+          "const": 7,
+          "default": 7,
+          "title": "Retention Days",
+          "type": "integer"
+        },
+        "coverage": {
+          "const": "geek_visible_only",
+          "default": "geek_visible_only",
+          "title": "Coverage",
+          "type": "string"
+        },
+        "external_rules_intercepted": {
+          "const": false,
+          "default": false,
+          "title": "External Rules Intercepted",
+          "type": "boolean"
+        },
+        "connection_host": {
+          "default": "console_child",
+          "enum": [
+            "console_child",
+            "background_service"
+          ],
+          "title": "Connection Host",
+          "type": "string"
+        },
+        "background_service_live": {
+          "default": false,
+          "title": "Background Service Live",
+          "type": "boolean"
+        },
+        "keep_connected": {
+          "default": false,
+          "title": "Keep Connected",
+          "type": "boolean"
+        },
+        "background_last_attempt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BackgroundAttempt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "status",
+        "session_live",
+        "credential_available",
+        "inventory_stale"
+      ],
+      "title": "GeekSessionView",
+      "type": "object"
+    },
+    "LastChange": {
+      "additionalProperties": false,
+      "properties": {
+        "added": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Added",
+          "type": "integer"
+        },
+        "removed": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Removed",
+          "type": "integer"
+        },
+        "modified": {
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Modified",
+          "type": "integer"
+        },
+        "checked_at": {
+          "maxLength": 40,
+          "title": "Checked At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "added",
+        "removed",
+        "modified",
+        "checked_at"
+      ],
+      "title": "LastChange",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "session": {
+      "$ref": "#/$defs/GeekSessionView"
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "unavailable",
+        "stale",
+        "integrity_failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "observed_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Observed At"
+    },
+    "fingerprint": {
+      "anyOf": [
+        {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fingerprint"
+    },
+    "graphs": {
+      "items": {
+        "$ref": "#/$defs/GeekGraph"
+      },
+      "maxItems": 64,
+      "title": "Graphs",
+      "type": "array"
+    },
+    "coverage": {
+      "const": "geek_visible_only",
+      "default": "geek_visible_only",
+      "title": "Coverage",
+      "type": "string"
+    },
+    "simulated": {
+      "const": false,
+      "default": false,
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "raw_graphs_public": {
+      "const": false,
+      "default": false,
+      "title": "Raw Graphs Public",
+      "type": "boolean"
+    },
+    "external_rules_intercepted": {
+      "const": false,
+      "default": false,
+      "title": "External Rules Intercepted",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "session",
+    "status"
+  ],
+  "title": "GeekInventoryView",
+  "type": "object"
+}

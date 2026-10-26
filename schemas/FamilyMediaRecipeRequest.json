@@ -1,0 +1,218 @@
+{
+  "$defs": {
+    "FamilyMediaCrop": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "operation": {
+          "const": "crop",
+          "default": "crop",
+          "title": "Operation",
+          "type": "string"
+        },
+        "x": {
+          "exclusiveMaximum": 1,
+          "minimum": 0,
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "exclusiveMaximum": 1,
+          "minimum": 0,
+          "title": "Y",
+          "type": "number"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Width",
+          "type": "number"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Height",
+          "type": "number"
+        },
+        "coordinate_basis": {
+          "const": "original_normalized_after_exif_orientation",
+          "default": "original_normalized_after_exif_orientation",
+          "title": "Coordinate Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "title": "FamilyMediaCrop",
+      "type": "object"
+    },
+    "FamilyMediaExposure": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "operation": {
+          "const": "exposure",
+          "default": "exposure",
+          "title": "Operation",
+          "type": "string"
+        },
+        "stops": {
+          "maximum": 2,
+          "minimum": -2,
+          "title": "Stops",
+          "type": "number"
+        }
+      },
+      "required": [
+        "stops"
+      ],
+      "title": "FamilyMediaExposure",
+      "type": "object"
+    },
+    "FamilyMediaOrganize": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "operation": {
+          "const": "organize",
+          "default": "organize",
+          "title": "Operation",
+          "type": "string"
+        },
+        "album": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Album",
+          "type": "string"
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Labels",
+          "type": "array"
+        }
+      },
+      "required": [
+        "album"
+      ],
+      "title": "FamilyMediaOrganize",
+      "type": "object"
+    },
+    "FamilyMediaRotate": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "operation": {
+          "const": "rotate",
+          "default": "rotate",
+          "title": "Operation",
+          "type": "string"
+        },
+        "degrees_clockwise": {
+          "enum": [
+            0,
+            90,
+            180,
+            270
+          ],
+          "title": "Degrees Clockwise",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "degrees_clockwise"
+      ],
+      "title": "FamilyMediaRotate",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "item_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Item Id",
+      "type": "string"
+    },
+    "expected_original_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Original Hash",
+      "type": "string"
+    },
+    "operations": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "crop": "#/$defs/FamilyMediaCrop",
+            "exposure": "#/$defs/FamilyMediaExposure",
+            "organize": "#/$defs/FamilyMediaOrganize",
+            "rotate": "#/$defs/FamilyMediaRotate"
+          },
+          "propertyName": "operation"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/FamilyMediaOrganize"
+          },
+          {
+            "$ref": "#/$defs/FamilyMediaCrop"
+          },
+          {
+            "$ref": "#/$defs/FamilyMediaRotate"
+          },
+          {
+            "$ref": "#/$defs/FamilyMediaExposure"
+          }
+        ]
+      },
+      "maxItems": 16,
+      "minItems": 1,
+      "title": "Operations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "expected_context",
+    "item_id",
+    "expected_original_hash",
+    "operations"
+  ],
+  "title": "FamilyMediaRecipeRequest",
+  "type": "object"
+}

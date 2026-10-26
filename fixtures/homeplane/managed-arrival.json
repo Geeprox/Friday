@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "managed.sim.arrival",
+  "revision": 1,
+  "intent": "示例进门联动：玄关灯和空调；不推断人员身份",
+  "ownership": "managed",
+  "trigger": {"type":"state_transition","entity":"binary_sensor.door","capability":"contact","from_value":"closed","to_value":"open"},
+  "conditions": [],
+  "on_unknown": "suppress_and_record",
+  "actions": [
+    {"type":"light.set","id":"hall-light-on","target":"light.hall","power":"on"},
+    {"type":"climate.set","id":"air-conditioner-on","target":"climate.living","power":"on"}
+  ],
+  "execution": {"preferred_backend":"simulator","replay_policy":"never_actuate","max_event_age_ms":3000},
+  "safety": {"policy_ref":"policy.managed-lighting.v1","respect_sleep":true,"respect_manual_override":true},
+  "simulated": true
+}

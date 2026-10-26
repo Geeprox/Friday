@@ -1,0 +1,209 @@
+{
+  "$defs": {
+    "RuleAnalysisContext": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "fingerprint": {
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        },
+        "backend": {
+          "enum": [
+            "simulator",
+            "home_core",
+            "unavailable"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "execution_policy_configured": {
+          "title": "Execution Policy Configured",
+          "type": "boolean"
+        },
+        "analysis_enabled": {
+          "default": false,
+          "title": "Analysis Enabled",
+          "type": "boolean"
+        },
+        "tool": {
+          "const": "friday.rule-removal.plan.v1",
+          "default": "friday.rule-removal.plan.v1",
+          "title": "Tool",
+          "type": "string"
+        },
+        "model": {
+          "const": "gpt-6.1-sol",
+          "default": "gpt-6.1-sol",
+          "title": "Model",
+          "type": "string"
+        },
+        "model_inference_attempted": {
+          "const": false,
+          "default": false,
+          "title": "Model Inference Attempted",
+          "type": "boolean"
+        },
+        "external_rules_intercepted": {
+          "const": false,
+          "default": false,
+          "title": "External Rules Intercepted",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "available",
+        "simulated",
+        "backend",
+        "execution_policy_configured"
+      ],
+      "title": "RuleAnalysisContext",
+      "type": "object"
+    },
+    "RuleTextChoice": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "record_id": {
+          "title": "Record Id",
+          "type": "string"
+        },
+        "action_id": {
+          "title": "Action Id",
+          "type": "string"
+        },
+        "expected_fingerprint": {
+          "title": "Expected Fingerprint",
+          "type": "string"
+        },
+        "rule_label": {
+          "title": "Rule Label",
+          "type": "string"
+        },
+        "action_label": {
+          "title": "Action Label",
+          "type": "string"
+        },
+        "retained_actions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Retained Actions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "record_id",
+        "action_id",
+        "expected_fingerprint",
+        "rule_label",
+        "action_label",
+        "retained_actions"
+      ],
+      "title": "RuleTextChoice",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "boot_id": {
+      "title": "Boot Id",
+      "type": "string"
+    },
+    "context": {
+      "$ref": "#/$defs/RuleAnalysisContext"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "approval_digest": {
+      "title": "Approval Digest",
+      "type": "string"
+    },
+    "request": {
+      "additionalProperties": true,
+      "title": "Request",
+      "type": "object"
+    },
+    "choices": {
+      "items": {
+        "$ref": "#/$defs/RuleTextChoice"
+      },
+      "maxItems": 16,
+      "title": "Choices",
+      "type": "array"
+    },
+    "model": {
+      "const": "gpt-6.1-sol",
+      "default": "gpt-6.1-sol",
+      "title": "Model",
+      "type": "string"
+    },
+    "provider": {
+      "const": "codex_app_server",
+      "default": "codex_app_server",
+      "title": "Provider",
+      "type": "string"
+    },
+    "model_inference_attempted": {
+      "const": false,
+      "default": false,
+      "title": "Model Inference Attempted",
+      "type": "boolean"
+    },
+    "real_write_attempted": {
+      "const": false,
+      "default": false,
+      "title": "Real Write Attempted",
+      "type": "boolean"
+    },
+    "data_destination": {
+      "const": "existing_codex_account_via_arl",
+      "default": "existing_codex_account_via_arl",
+      "title": "Data Destination",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "boot_id",
+    "context",
+    "expires_at",
+    "approval_digest",
+    "request",
+    "choices"
+  ],
+  "title": "RuleAnalysisReview",
+  "type": "object"
+}

@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "realm": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Realm",
+      "type": "string"
+    },
+    "expected_revision": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Expected Revision",
+      "type": "string"
+    },
+    "source_key": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Source Key",
+      "type": "string"
+    },
+    "binding_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Binding Fingerprint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "realm",
+    "expected_revision",
+    "source_key",
+    "binding_fingerprint"
+  ],
+  "title": "MeasurementChange",
+  "type": "object"
+}

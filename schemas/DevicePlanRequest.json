@@ -1,0 +1,76 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "target": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Target",
+      "type": "string"
+    },
+    "operation": {
+      "enum": [
+        "light.set",
+        "switch.set",
+        "fan.set",
+        "fan.percentage",
+        "climate.mode",
+        "climate.temperature",
+        "cover.position",
+        "cover.state",
+        "lock.set",
+        "number.value",
+        "select.option"
+      ],
+      "title": "Operation",
+      "type": "string"
+    },
+    "desired": {
+      "additionalProperties": true,
+      "title": "Desired",
+      "type": "object"
+    },
+    "actor": {
+      "default": "console",
+      "enum": [
+        "console",
+        "cli",
+        "test"
+      ],
+      "title": "Actor",
+      "type": "string"
+    },
+    "expected_state_version": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Expected State Version",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "idempotency_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Idempotency Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "target",
+    "operation",
+    "desired",
+    "expected_state_version",
+    "expires_at",
+    "idempotency_key"
+  ],
+  "title": "DevicePlanRequest",
+  "type": "object"
+}

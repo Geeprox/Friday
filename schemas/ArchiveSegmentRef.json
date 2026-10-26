@@ -1,0 +1,192 @@
+{
+  "$defs": {
+    "ArchiveTimeRange": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "start": {
+          "format": "date-time",
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "format": "date-time",
+          "title": "End",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "ArchiveTimeRange",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "media_ref": {
+      "title": "Media Ref",
+      "type": "string"
+    },
+    "camera_id": {
+      "title": "Camera Id",
+      "type": "string"
+    },
+    "time_range": {
+      "$ref": "#/$defs/ArchiveTimeRange"
+    },
+    "status": {
+      "enum": [
+        "ready",
+        "pending",
+        "missing",
+        "expired",
+        "unavailable"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "reason": {
+      "title": "Reason",
+      "type": "string"
+    },
+    "file_signature": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "File Signature"
+    },
+    "size_bytes": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Size Bytes"
+    },
+    "audio_track": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Audio Track"
+    },
+    "codecs": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 4,
+      "title": "Codecs",
+      "type": "array"
+    },
+    "media_time_bases": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 4,
+      "title": "Media Time Bases",
+      "type": "array"
+    },
+    "clock_offset_seconds": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Clock Offset Seconds"
+    },
+    "clock_uncertainty_seconds": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Clock Uncertainty Seconds"
+    },
+    "time_basis": {
+      "enum": [
+        "simulated",
+        "operator_reviewed_filename"
+      ],
+      "title": "Time Basis",
+      "type": "string"
+    },
+    "completion_basis": {
+      "enum": [
+        "simulated",
+        "operator_reviewed_convention",
+        "unverified"
+      ],
+      "title": "Completion Basis",
+      "type": "string"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "playable_verified": {
+      "const": false,
+      "default": false,
+      "title": "Playable Verified",
+      "type": "boolean"
+    },
+    "hardware_clock_verified": {
+      "const": false,
+      "default": false,
+      "title": "Hardware Clock Verified",
+      "type": "boolean"
+    },
+    "seek_error_seconds": {
+      "default": null,
+      "title": "Seek Error Seconds",
+      "type": "null"
+    }
+  },
+  "required": [
+    "media_ref",
+    "camera_id",
+    "time_range",
+    "status",
+    "reason",
+    "time_basis",
+    "completion_basis",
+    "simulated"
+  ],
+  "title": "ArchiveSegmentRef",
+  "type": "object"
+}

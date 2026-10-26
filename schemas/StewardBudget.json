@@ -1,0 +1,41 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_bytes": {
+      "default": 1048576,
+      "maximum": 8388608,
+      "minimum": 1,
+      "title": "Source Bytes",
+      "type": "integer"
+    },
+    "units": {
+      "default": 8,
+      "maximum": 8,
+      "minimum": 1,
+      "title": "Units",
+      "type": "integer"
+    },
+    "seconds": {
+      "default": 5,
+      "exclusiveMinimum": 0,
+      "maximum": 5,
+      "title": "Seconds",
+      "type": "number"
+    },
+    "text_chars": {
+      "default": 32000,
+      "maximum": 32000,
+      "minimum": 1,
+      "title": "Text Chars",
+      "type": "integer"
+    }
+  },
+  "title": "StewardBudget",
+  "type": "object"
+}

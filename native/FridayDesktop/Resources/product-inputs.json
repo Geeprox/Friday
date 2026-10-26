@@ -1,0 +1,10 @@
+{
+  "schema": 2,
+  "version": "0.6.0",
+  "build": "1",
+  "bundle_identifier": "com.friday.home.desktop",
+  "artifact_root": ".artifacts",
+  "signing_identity": "-",
+  "install_or_launch": false,
+  "packaging": "local-development-runtime"
+}

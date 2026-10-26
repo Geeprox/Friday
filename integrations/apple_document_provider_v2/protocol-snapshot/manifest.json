@@ -1,0 +1,47 @@
+{
+  "source_root": "/path/to/private-work/2026-10-02/task-12/Friday-file-steward",
+  "swift_predecessor_present": false,
+  "source_repository_written": false,
+  "files": [
+    {
+      "path": "docs/FRIDAY-APPLE-EXTRACTOR-HANDOFF.md",
+      "sha256": "9f12fe7e1a8b9e4442b662f0a01b4516d24fb17de32a1f7e6521a6816a7f3dd6"
+    },
+    {
+      "path": "homeplane/file_steward/contracts.py",
+      "sha256": "7384688b0fbdd2d63552299310dead820fa373cc64a3a35a6f1fe1e21f3145a3"
+    },
+    {
+      "path": "homeplane/file_steward/providers.py",
+      "sha256": "747542690495272ecc4d72d4b6ff34a91bf526303e33b36443b64eae5d06bf61"
+    },
+    {
+      "path": "homeplane/file_steward/pdf_text.py",
+      "sha256": "42d29a782314519915611777515ceb78b446318a98b2310d35f61a0a2f110a44"
+    },
+    {
+      "path": "schemas/StewardNativeTextRequest.json",
+      "sha256": "e46b7022c0e75f844a3f8d0114efcd26cac40f4de450d1ff3ea2e894d2dfea2d"
+    },
+    {
+      "path": "schemas/StewardNativeTextQuality.json",
+      "sha256": "e31a1b0af13867908c7da28b6e875dcec86d74058b80c1ec751082196b60600b"
+    },
+    {
+      "path": "schemas/StewardNativeTextReceipt.json",
+      "sha256": "d45de2630f6f9e0ac1787fd72b11d61b330fe6034e6374ebe0b5cc4b2d8a351c"
+    },
+    {
+      "path": "schemas/StewardPageOutcome.json",
+      "sha256": "0b964f23ddafb23476d4696f5d755df0f233a23e2c2b8dfc4e2e478a8fc33937"
+    },
+    {
+      "path": "schemas/StewardExtractionQuality.json",
+      "sha256": "69b89438180def77ba9604b8d368d75d9f9bf84a3389d5e8fa9548bc8582b9e6"
+    },
+    {
+      "path": "schemas/StewardExtractionProvenance.json",
+      "sha256": "fbb8bc35cea82e7872c3d1814c5d235afb9245a2ce39eef751ffe68059221257"
+    }
+  ]
+}

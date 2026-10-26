@@ -1,0 +1,122 @@
+{
+  "additionalProperties": false,
+  "description": "Future qualification contract only; no route accepts this and execute always refuses.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "grant_id": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Grant Id",
+      "type": "string"
+    },
+    "reviewed_by": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Reviewed By",
+      "type": "string"
+    },
+    "plan_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "plan_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Plan Fingerprint",
+      "type": "string"
+    },
+    "inventory_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Inventory Fingerprint",
+      "type": "string"
+    },
+    "policy_fingerprints": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Policy Fingerprints",
+      "type": "array"
+    },
+    "selected_entry_ids": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Selected Entry Ids",
+      "type": "array"
+    },
+    "source_grant_id": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Source Grant Id",
+      "type": "string"
+    },
+    "target_grant_id": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Target Grant Id",
+      "type": "string"
+    },
+    "approved_at": {
+      "format": "date-time",
+      "title": "Approved At",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "operation": {
+      "const": "relocate_no_overwrite",
+      "default": "relocate_no_overwrite",
+      "title": "Operation",
+      "type": "string"
+    },
+    "full_hash_recheck_required": {
+      "const": true,
+      "default": true,
+      "title": "Full Hash Recheck Required",
+      "type": "boolean"
+    },
+    "rollback_journal_required": {
+      "const": true,
+      "default": true,
+      "title": "Rollback Journal Required",
+      "type": "boolean"
+    },
+    "overwrite_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Overwrite Allowed",
+      "type": "boolean"
+    },
+    "delete_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Delete Allowed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "grant_id",
+    "reviewed_by",
+    "plan_id",
+    "plan_fingerprint",
+    "inventory_fingerprint",
+    "policy_fingerprints",
+    "selected_entry_ids",
+    "source_grant_id",
+    "target_grant_id",
+    "approved_at",
+    "expires_at"
+  ],
+  "title": "StewardExecutionBatchGrant",
+  "type": "object"
+}

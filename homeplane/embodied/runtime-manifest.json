@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "miloco": "2026.10.16",
+  "miloco_miot": "2026.10.16",
+  "vision": "Apple Vision/macOS",
+  "tracking": "ByteTrack/trackers 2.6.1",
+  "asr": "SenseVoice int8/sherpa-onnx 2.0.0",
+  "vad": "Silero ONNX",
+  "command_gate": "Laya MLX 0.5.0 via shared ARL laya-v1",
+  "codex_sdk": "ARL 0.1.1/friday-embodied kernel registered peer",
+  "native_sha256": {
+    "bin/camera-sockets.dylib": "a5770e90ed223532bc58324ec9fd784ddb5f8c810e1952519df4bdb4f4cc50c7",
+    "bin/friday-vision": "0c0b7fe643f852143344e9acd97faf2a7d49ab3c49e6541284497845d330d3e6"
+  },
+  "model_sha256": {
+    "silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+    "yolov8n.onnx": "65158dad735be799c2466fa15e260c09558080bd530b42a8d0c3d1b419afd8b5",
+    "sensevoice-int8/model.int8.onnx": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+    "decision/model.safetensors": "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
+    "whisper-large-v3-turbo-4bit/model.safetensors": "e2d6146b49644c13ed7467060d3c43c402bbdfca1f01f1c21f6fbeda23b6567e",
+    "whisper-large-v3-turbo-4bit/weights.safetensors": "e2d6146b49644c13ed7467060d3c43c402bbdfca1f01f1c21f6fbeda23b6567e"
+  }
+}

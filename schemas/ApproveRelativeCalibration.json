@@ -1,0 +1,47 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "realm": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Realm",
+      "type": "string"
+    },
+    "expected_revision": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Expected Revision",
+      "type": "string"
+    },
+    "candidate_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "reviewed_relative_only": {
+      "const": true,
+      "title": "Reviewed Relative Only",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "realm",
+    "expected_revision",
+    "candidate_id",
+    "fingerprint",
+    "reviewed_relative_only"
+  ],
+  "title": "ApproveRelativeCalibration",
+  "type": "object"
+}

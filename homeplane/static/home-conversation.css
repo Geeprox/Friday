@@ -1,0 +1,87 @@
+/* Owned Ask addition: local assets, quiet light surfaces, current domain truth. */
+#home-conversation-slot.surface,
+#home-conversation-slot + .surface {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 20px 16px 24px;
+}
+#home-conversation-slot + .surface { border-top: 1px solid var(--line, #e6e6e9); }
+#home-conversation-slot + .surface > p { margin: 10px 0 16px; }
+#home-conversation-slot + .surface .settings-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; margin: 18px 0; }
+#home-conversation-slot + .surface .settings-form label { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+#home-conversation-slot + .surface .settings-form select { max-width: 100%; background: transparent; }
+.hc-root {
+  --hc-ink: var(--ink, #252527);
+  --hc-muted: var(--muted, #626267);
+  --hc-line: var(--line, #e6e6e9);
+  color: var(--hc-ink);
+  max-width: 1000px;
+  min-width: 0;
+  margin: 0 0 28px;
+  padding: 22px 0 24px;
+  border-bottom: 1px solid var(--hc-line);
+  font: inherit;
+}
+.hc-root h2 { margin: 0; font-size: 21px; font-weight: 610; letter-spacing: -.4px; }
+.hc-root h3 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+.hc-root p { margin: 8px 0; overflow-wrap: anywhere; }
+.hc-status { color: var(--hc-muted); font-size: 12px; min-height: 20px; display: flex; flex-wrap: wrap; gap: 8px; }
+.hc-status strong { color: var(--hc-ink); font-weight: 600; }
+.hc-history { margin: 20px 0; }
+.hc-history > summary { padding: 10px 0; font-size: 13px; cursor: pointer; min-height: 44px; box-sizing: border-box; }
+.hc-log { padding: 0; margin: 0; list-style: none; max-height: 540px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-padding-block: 12px; }
+.hc-turn { padding: 20px 12px 24px; border-top: 1px solid var(--hc-line); }
+.hc-user { max-width: 740px; margin: 0 0 14px; font-size: 14px; font-weight: 600; white-space: pre-wrap; }
+.hc-answer { padding-top: 0; min-width: 0; }
+.hc-caption { max-width: 790px; font-size: 14px; line-height: 1.75; white-space: pre-wrap; scroll-margin-block-start: 12px; }
+.hc-meta { color: var(--hc-muted); font-size: 12px; line-height: 1.65; }
+.hc-plan, .hc-evidence { margin: 18px 0 12px; padding: 15px 0 0; border-top: 1px solid var(--hc-line); }
+.hc-diff { list-style: none; padding: 0; margin: 10px 0 14px; }
+.hc-diff li { padding: 8px 12px; margin: 5px 0; border-left: 2px solid #aeb9b1; font-size: 13px; background: #f5f7f5; overflow-wrap: anywhere; }
+.hc-diff .hc-remove { border-color: #bb8c79; background: #faf4f1; }
+.hc-controls, .hc-choices { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin: 12px 0; }
+.hc-root button { font: inherit; font-size: 13px; line-height: 1.4; min-height: 44px; min-width: 44px; padding: 9px 16px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
+.hc-root button:disabled { cursor: default; opacity: .5; }
+.hc-root .hc-secondary { background: transparent; border: 1px solid var(--hc-line); color: var(--hc-ink); box-shadow: none; }
+.hc-root .hc-secondary:hover:not(:disabled) { background: #f0f0f2; border-color: #d2d2d7; }
+.hc-choices { align-items: stretch; }
+.hc-choices button { text-align: left; background: transparent; border: 1px solid var(--hc-line); flex: 0 1 auto; }
+.hc-choices button:hover:not(:disabled) { background: #f4f5f4; }
+.hc-details { margin: 12px 0; }
+.hc-details summary { min-height: 44px; box-sizing: border-box; padding: 11px 0; color: var(--hc-muted); cursor: pointer; font-size: 12px; }
+.hc-details p { font-size: 12px; line-height: 1.7; }
+.hc-details pre { font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; background: transparent; color: var(--hc-ink); border: 1px solid var(--hc-line); border-radius: 10px; padding: 14px; }
+.hc-return { display: none; }
+.hc-return[hidden] { display: none; }
+.hc-composer { border-top: 1px solid var(--hc-line); padding-top: 18px; }
+.hc-composer label { display: block; margin-bottom: 8px; font-size: 13px; }
+.hc-composer textarea { box-sizing: border-box; display: block; width: 100%; resize: vertical; min-height: 90px; max-height: 280px; border: 1px solid var(--hc-line); border-radius: 12px; padding: 13px 15px; background: transparent; color: var(--hc-ink); font: inherit; font-size: 14px; line-height: 1.65; }
+.hc-root :focus-visible { outline: 2px solid var(--accent, #536d5c); outline-offset: 3px; }
+.hc-reference { padding: 10px 0; border-bottom: 1px solid var(--hc-line); }
+.hc-root video { width: 100%; max-height: 360px; display: block; background: #1c1c1e; border-radius: 10px; margin: 14px 0; }
+.hc-mode { font-size: 14px; font-weight: 550; }
+@media (max-width: 520px) {
+  #home-conversation-slot.surface, #home-conversation-slot + .surface { padding: 16px 12px 20px; }
+  #home-conversation-slot + .surface .settings-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #home-conversation-slot + .surface .settings-form select { width: 100%; }
+  #home-conversation-slot + .surface .settings-form > button { grid-column: 1 / -1; justify-self: start; }
+  .hc-root { padding-top: 12px; margin-bottom: 22px; }
+  .hc-log { max-height: none; overflow: visible; overscroll-behavior: auto; scrollbar-gutter: auto; padding-bottom: var(--hc-composer-height, 0px); }
+  .hc-composer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  .hc-root[data-hc-sticky="true"] .hc-composer { position: sticky; bottom: 0; z-index: 2; background: var(--bg, #f6f6f5); }
+  .hc-root .hc-return { display: inline-flex; position: fixed; right: 16px; bottom: max(12px, env(safe-area-inset-bottom)); z-index: 3; background: var(--bg, #f6f6f5); }
+  .hc-return[hidden] { display: none; }
+  .hc-controls { gap: 8px; }
+  .hc-choices { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .hc-choices button { width: 100%; }
+  .hc-composer textarea { padding: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hc-root *, .hc-root *::before, .hc-root *::after { transition: none !important; scroll-behavior: auto !important; }
+}
+@media (prefers-contrast: more) {
+  .hc-root { --hc-muted: #46464b; --hc-line: #aaaab0; }
+  .hc-diff .hc-remove { border-color: #895242; }
+}

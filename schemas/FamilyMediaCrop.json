@@ -1,0 +1,55 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "operation": {
+      "const": "crop",
+      "default": "crop",
+      "title": "Operation",
+      "type": "string"
+    },
+    "x": {
+      "exclusiveMaximum": 1,
+      "minimum": 0,
+      "title": "X",
+      "type": "number"
+    },
+    "y": {
+      "exclusiveMaximum": 1,
+      "minimum": 0,
+      "title": "Y",
+      "type": "number"
+    },
+    "width": {
+      "exclusiveMinimum": 0,
+      "maximum": 1,
+      "title": "Width",
+      "type": "number"
+    },
+    "height": {
+      "exclusiveMinimum": 0,
+      "maximum": 1,
+      "title": "Height",
+      "type": "number"
+    },
+    "coordinate_basis": {
+      "const": "original_normalized_after_exif_orientation",
+      "default": "original_normalized_after_exif_orientation",
+      "title": "Coordinate Basis",
+      "type": "string"
+    }
+  },
+  "required": [
+    "x",
+    "y",
+    "width",
+    "height"
+  ],
+  "title": "FamilyMediaCrop",
+  "type": "object"
+}

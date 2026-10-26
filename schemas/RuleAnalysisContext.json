@@ -1,0 +1,74 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "fingerprint": {
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "available": {
+      "title": "Available",
+      "type": "boolean"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "backend": {
+      "enum": [
+        "simulator",
+        "home_core",
+        "unavailable"
+      ],
+      "title": "Backend",
+      "type": "string"
+    },
+    "execution_policy_configured": {
+      "title": "Execution Policy Configured",
+      "type": "boolean"
+    },
+    "analysis_enabled": {
+      "default": false,
+      "title": "Analysis Enabled",
+      "type": "boolean"
+    },
+    "tool": {
+      "const": "friday.rule-removal.plan.v1",
+      "default": "friday.rule-removal.plan.v1",
+      "title": "Tool",
+      "type": "string"
+    },
+    "model": {
+      "const": "gpt-6.1-sol",
+      "default": "gpt-6.1-sol",
+      "title": "Model",
+      "type": "string"
+    },
+    "model_inference_attempted": {
+      "const": false,
+      "default": false,
+      "title": "Model Inference Attempted",
+      "type": "boolean"
+    },
+    "external_rules_intercepted": {
+      "const": false,
+      "default": false,
+      "title": "External Rules Intercepted",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "fingerprint",
+    "available",
+    "simulated",
+    "backend",
+    "execution_policy_configured"
+  ],
+  "title": "RuleAnalysisContext",
+  "type": "object"
+}

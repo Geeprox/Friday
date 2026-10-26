@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "ArchiveTimeRange": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "start": {
+          "format": "date-time",
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "format": "date-time",
+          "title": "End",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "ArchiveTimeRange",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "camera_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Camera Id",
+      "type": "string"
+    },
+    "time_range": {
+      "$ref": "#/$defs/ArchiveTimeRange"
+    }
+  },
+  "required": [
+    "expected_context",
+    "camera_id",
+    "time_range"
+  ],
+  "title": "ArchiveResolveRequest",
+  "type": "object"
+}

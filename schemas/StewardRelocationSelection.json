@@ -1,0 +1,43 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "item_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Item Id",
+      "type": "string"
+    },
+    "expected_content_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Content Id",
+      "type": "string"
+    },
+    "destination": {
+      "title": "Destination",
+      "type": "string"
+    },
+    "operation": {
+      "default": "rename_and_move",
+      "enum": [
+        "rename",
+        "move",
+        "rename_and_move",
+        "restructure"
+      ],
+      "title": "Operation",
+      "type": "string"
+    }
+  },
+  "required": [
+    "item_id",
+    "expected_content_id",
+    "destination"
+  ],
+  "title": "StewardRelocationSelection",
+  "type": "object"
+}

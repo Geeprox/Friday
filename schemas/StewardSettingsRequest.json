@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "sample_item_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Sample Item Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_context",
+    "sample_item_id"
+  ],
+  "title": "StewardSettingsRequest",
+  "type": "object"
+}

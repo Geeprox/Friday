@@ -1,0 +1,9 @@
+.speech-output-settings{margin:24px 0;padding:26px 28px;border-radius:22px;background:#fff;border:1px solid rgba(29,35,31,.06)}
+.speech-output-heading{display:flex;align-items:center;justify-content:space-between;gap:24px}
+.speech-output-heading h2{font-size:20px;margin:0 0 8px}.speech-output-heading p{margin:0;line-height:1.6}
+.speech-output-settings select,.speech-output-settings input{min-height:42px;border:1px solid #dedfdd;border-radius:11px;padding:9px 12px;background:#fafbf9;color:inherit;font:inherit}
+.speech-output-settings select{min-width:180px}.speech-output-status{min-height:22px;margin:20px 0 14px;color:#505951}
+.speech-output-actions{display:flex;flex-wrap:wrap;gap:10px}.speech-output-settings button{min-height:40px;padding:9px 16px;border:1px solid #dedfdd;border-radius:11px;background:#f8f9f7;color:inherit;font:inherit;cursor:pointer}
+.speech-output-settings button:disabled{opacity:.45;cursor:default}.speech-output-settings button:focus-visible,.speech-output-settings select:focus-visible,.speech-output-settings input:focus-visible{outline:2px solid #627c6a;outline-offset:3px}
+.speech-output-devices{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}.speech-output-device{font-weight:600}.speech-output-address{margin-top:20px;padding-top:18px;border-top:1px solid #eeefec}.speech-output-address summary{cursor:pointer;font-size:14px;color:#687269}.speech-output-address form{display:flex;gap:10px;margin-top:15px}.speech-output-address input{flex:1;min-width:0}.speech-output-address .caption{margin-bottom:0}
+@media(max-width:700px){.speech-output-heading{align-items:stretch;flex-direction:column;gap:16px}.speech-output-settings{padding:22px 20px}.speech-output-actions button{flex:1}}

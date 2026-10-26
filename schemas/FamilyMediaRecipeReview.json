@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "recipe_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Recipe Id",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "reviewed",
+        "rejected"
+      ],
+      "title": "Decision",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_context",
+    "recipe_id",
+    "decision"
+  ],
+  "title": "FamilyMediaRecipeReview",
+  "type": "object"
+}

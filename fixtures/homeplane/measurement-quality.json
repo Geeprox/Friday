@@ -1,0 +1,516 @@
+{
+  "schema_version": 1,
+  "simulated": true,
+  "description": "Synthetic warm history anchored to scenario selection; values/calibration are authored fixtures, never household observations.",
+  "profiles": [
+    {
+      "source": "sim:thermometer",
+      "entity": "sensor.living.temperature",
+      "location": "living-room",
+      "placement": "occupied_zone",
+      "installation_height_m": 1.2,
+      "reporting": "periodic_sample",
+      "context": "ambient",
+      "version": "SIMULATED-room-v1",
+      "simulated": true
+    },
+    {
+      "source": "sim:ac",
+      "entity": "climate.living",
+      "location": "living-room",
+      "placement": "return_air",
+      "installation_height_m": 2.2,
+      "reporting": "periodic_sample",
+      "context": "fan-only",
+      "version": "SIMULATED-ac-v1",
+      "simulated": true
+    }
+  ],
+  "group": {
+    "entity": "room.living",
+    "name": "客厅室温",
+    "location": "living-room",
+    "primary": "sim:thermometer",
+    "sources": [
+      "sim:thermometer",
+      "sim:ac"
+    ]
+  },
+  "relative_calibration": {
+    "template": {
+      "source": "sim:ac",
+      "reference": "sim:thermometer",
+      "source_profile": "eb4be44057560ec35899129d6987c5551620c0f054dd75e64389c2fd64f0fd51",
+      "reference_profile": "1460d1733cc94e62b9bdaab9aac97419c52abdd2ce35078ee0d089fb722888d8",
+      "context": "fan-only",
+      "version": "SIMULATED-relative-v1",
+      "bias": 2,
+      "residual_bound": 0.2,
+      "reference_minimum": 20,
+      "reference_maximum": 30,
+      "sample_count": 12,
+      "simulated": true
+    },
+    "valid_for_seconds": 86400
+  },
+  "scenarios": {
+    "baseline": {
+      "calibrated": false,
+      "frames": [
+        {
+          "offset_seconds": -90,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -60,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5
+        }
+      ]
+    },
+    "stale-temperature": {
+      "calibrated": false,
+      "frames": [
+        {
+          "offset_seconds": -90,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -60,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5,
+          "room_age_seconds": 28800,
+          "room_cached": true
+        }
+      ]
+    },
+    "all-sources-bad": {
+      "calibrated": false,
+      "frames": [
+        {
+          "offset_seconds": -90,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -60,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5,
+          "room_age_seconds": 28800,
+          "ac_age_seconds": 28800,
+          "room_cached": true,
+          "ac_cached": true
+        }
+      ]
+    },
+    "calibrated-fallback": {
+      "calibrated": true,
+      "frames": [
+        {
+          "offset_seconds": -90,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -60,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5,
+          "room_age_seconds": 28800,
+          "room_cached": true
+        }
+      ]
+    },
+    "battery-stale": {
+      "calibrated": false,
+      "frames": [
+        {
+          "offset_seconds": -90,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -60,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5,
+          "battery": 12,
+          "battery_age_seconds": 15552000
+        }
+      ]
+    },
+    "wrong-ac-mode": {
+      "calibrated": true,
+      "frames": [
+        {
+          "offset_seconds": -90,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -60,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5,
+          "room_cached": true,
+          "ac_context": "cooling"
+        }
+      ]
+    },
+    "calibration-expired": {
+      "calibrated": true,
+      "frames": [
+        {
+          "offset_seconds": -90,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -60,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5,
+          "room_cached": true
+        }
+      ]
+    },
+    "transport-gap": {
+      "calibrated": false,
+      "frames": [
+        {
+          "offset_seconds": -90,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -60,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5,
+          "room_transport": "offline",
+          "ac_transport": "offline"
+        }
+      ]
+    },
+    "watch-window": {
+      "calibrated": false,
+      "frames": [
+        {
+          "offset_seconds": -2,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -1,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5
+        }
+      ]
+    },
+    "recovered": {
+      "calibrated": false,
+      "frames": [
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 26.5,
+          "room_cached": true
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5
+        }
+      ]
+    },
+    "cache-recovery": {
+      "calibrated": false,
+      "frames": [
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 26.5,
+          "room_cached": true
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5,
+          "room_cached": true
+        }
+      ]
+    },
+    "frozen-temperature": {
+      "calibrated": true,
+      "frames": [
+        {
+          "offset_seconds": -120,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -90,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -60,
+          "room": 24.5,
+          "ac": 29
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.5,
+          "ac": 29.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 30
+        }
+      ]
+    },
+    "peer-disagreement": {
+      "calibrated": true,
+      "frames": [
+        {
+          "offset_seconds": -90,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -60,
+          "room": 24.4,
+          "ac": 29
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.7,
+          "ac": 30
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 31
+        }
+      ]
+    },
+    "recovery-hold": {
+      "calibrated": true,
+      "frames": [
+        {
+          "offset_seconds": -100,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -85,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -70,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -40,
+          "room": 24.5,
+          "ac": 26.5,
+          "room_transport": "offline"
+        },
+        {
+          "offset_seconds": -35,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -20,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": -5,
+          "room": 24.5,
+          "ac": 26.5
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5
+        }
+      ]
+    },
+    "calibration-training": {
+      "calibrated": false,
+      "frames": [
+        {
+          "offset_seconds": -150,
+          "room": 23.0,
+          "ac": 25.0
+        },
+        {
+          "offset_seconds": -140,
+          "room": 23.1,
+          "ac": 25.1
+        },
+        {
+          "offset_seconds": -130,
+          "room": 23.2,
+          "ac": 25.2
+        },
+        {
+          "offset_seconds": -120,
+          "room": 23.3,
+          "ac": 25.3
+        },
+        {
+          "offset_seconds": -110,
+          "room": 23.4,
+          "ac": 25.4
+        },
+        {
+          "offset_seconds": -100,
+          "room": 23.5,
+          "ac": 25.5
+        },
+        {
+          "offset_seconds": -90,
+          "room": 23.6,
+          "ac": 25.6
+        },
+        {
+          "offset_seconds": -80,
+          "room": 23.7,
+          "ac": 25.7
+        },
+        {
+          "offset_seconds": -70,
+          "room": 23.8,
+          "ac": 25.8
+        },
+        {
+          "offset_seconds": -60,
+          "room": 23.9,
+          "ac": 25.9
+        },
+        {
+          "offset_seconds": -50,
+          "room": 24.0,
+          "ac": 26.0
+        },
+        {
+          "offset_seconds": -40,
+          "room": 24.1,
+          "ac": 26.1
+        },
+        {
+          "offset_seconds": -30,
+          "room": 24.2,
+          "ac": 26.2
+        },
+        {
+          "offset_seconds": -20,
+          "room": 24.3,
+          "ac": 26.3
+        },
+        {
+          "offset_seconds": -10,
+          "room": 24.4,
+          "ac": 26.4
+        },
+        {
+          "offset_seconds": 0,
+          "room": 24.5,
+          "ac": 26.5
+        }
+      ]
+    }
+  },
+  "reference_roles": {
+    "sim:thermometer": "room_reference",
+    "sim:ac": "contextual_air"
+  }
+}

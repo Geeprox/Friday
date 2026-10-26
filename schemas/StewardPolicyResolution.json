@@ -1,0 +1,77 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Fingerprint",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "file_exception",
+        "directory_policy",
+        "default_preserve",
+        "policy_conflict"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "matched_rule_ids": {
+      "items": {
+        "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+        "type": "string"
+      },
+      "title": "Matched Rule Ids",
+      "type": "array"
+    },
+    "label": {
+      "title": "Label",
+      "type": "string"
+    },
+    "rename_preview": {
+      "default": false,
+      "title": "Rename Preview",
+      "type": "boolean"
+    },
+    "move_preview": {
+      "default": false,
+      "title": "Move Preview",
+      "type": "boolean"
+    },
+    "structure_preview": {
+      "default": false,
+      "title": "Structure Preview",
+      "type": "boolean"
+    },
+    "dedup_review": {
+      "default": false,
+      "title": "Dedup Review",
+      "type": "boolean"
+    },
+    "bundle_review_required": {
+      "default": false,
+      "title": "Bundle Review Required",
+      "type": "boolean"
+    },
+    "automatic_cloud_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Automatic Cloud Allowed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "fingerprint",
+    "source",
+    "matched_rule_ids",
+    "label"
+  ],
+  "title": "StewardPolicyResolution",
+  "type": "object"
+}

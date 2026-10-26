@@ -1,0 +1,97 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "plan_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "context_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Context Fingerprint",
+      "type": "string"
+    },
+    "item_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Item Id",
+      "type": "string"
+    },
+    "original_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Original Hash",
+      "type": "string"
+    },
+    "media_kind": {
+      "enum": [
+        "image",
+        "video",
+        "audio",
+        "other"
+      ],
+      "title": "Media Kind",
+      "type": "string"
+    },
+    "size_bytes": {
+      "exclusiveMinimum": 0,
+      "title": "Size Bytes",
+      "type": "integer"
+    },
+    "stream_url": {
+      "pattern": "^/api/family-media/originals/[a-f0-9]{64}$",
+      "title": "Stream Url",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "range_budget_bytes": {
+      "const": 1048576,
+      "default": 1048576,
+      "title": "Range Budget Bytes",
+      "type": "integer"
+    },
+    "session_budget_bytes": {
+      "const": 67108864,
+      "default": 67108864,
+      "title": "Session Budget Bytes",
+      "type": "integer"
+    },
+    "playback_verified": {
+      "const": false,
+      "default": false,
+      "title": "Playback Verified",
+      "type": "boolean"
+    },
+    "media_copied": {
+      "const": false,
+      "default": false,
+      "title": "Media Copied",
+      "type": "boolean"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "plan_id",
+    "context_fingerprint",
+    "item_id",
+    "original_hash",
+    "media_kind",
+    "size_bytes",
+    "stream_url",
+    "expires_at",
+    "simulated"
+  ],
+  "title": "FamilyMediaOriginalPlan",
+  "type": "object"
+}

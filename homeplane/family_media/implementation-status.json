@@ -1,0 +1,30 @@
+{
+  "feature": "F2 family photo/video incremental catalog and review-only recipes",
+  "code_present": true,
+  "synthetic_tests_passed": 74,
+  "focused_tests_passed": 93,
+  "actual_F1_manager_fake_transport_integration_passed": true,
+  "real_protocol_verified": false,
+  "real_hardware_verified": false,
+  "real_nas_media_accessed": false,
+  "original_mutated": false,
+  "second_full_media_copy": false,
+  "main_api_console_settings_store_cli_camera_files_modified": false,
+  "local_model_work": "canceled_not_resumed",
+  "blocked_security_review": "not_retried",
+  "constraints": [
+    "metadata-only source revisions do not prove immutable bytes",
+    "unfinished in-memory SHA256 jobs restart at byte zero after process restart",
+    "directory EOF token is not absence/closure/atomic-snapshot evidence",
+    "recipes are reviewed local metadata only, with no rendered derivative or automatic deletion",
+    "actual source configuration, exact read scope and completion review remain pending",
+    "photo preview, codec/EXIF/capture-time qualification and protected consumer wiring remain pending"
+  ],
+  "evidence_refs": [
+    "evidence/pytest.txt",
+    "evidence/f1-f2-integration.json",
+    "evidence/source-integrity.json"
+  ],
+  "evidence_ref_base": "f2-family-media-delivery.zip (bundle-relative paths)",
+  "next_blocker": "Integration owner must wire shared F1 reader/local SQLite/router/query/Console and obtain exact authorized real-data window."
+}

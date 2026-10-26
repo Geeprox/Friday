@@ -1,0 +1,272 @@
+{
+  "$defs": {
+    "FamilyMediaCheckpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "binding_fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Binding Fingerprint",
+          "type": "string"
+        },
+        "directory_ref": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Directory Ref"
+        },
+        "scan_id": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Scan Id",
+          "type": "string"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Cursor"
+        },
+        "entries_seen": {
+          "minimum": 0,
+          "title": "Entries Seen",
+          "type": "integer"
+        },
+        "enumeration_complete": {
+          "title": "Enumeration Complete",
+          "type": "boolean"
+        },
+        "completed_scan_token": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed Scan Token"
+        },
+        "snapshot_consistent": {
+          "const": false,
+          "default": false,
+          "title": "Snapshot Consistent",
+          "type": "boolean"
+        },
+        "checked_at": {
+          "format": "date-time",
+          "title": "Checked At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "binding_fingerprint",
+        "scan_id",
+        "entries_seen",
+        "enumeration_complete",
+        "checked_at"
+      ],
+      "title": "FamilyMediaCheckpoint",
+      "type": "object"
+    },
+    "FamilyMediaContext": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "source_ref": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Ref"
+        },
+        "config_generation": {
+          "minimum": 0,
+          "title": "Config Generation",
+          "type": "integer"
+        },
+        "connection_epoch": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Connection Epoch"
+        },
+        "source_online": {
+          "title": "Source Online",
+          "type": "boolean"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure"
+        },
+        "completion_convention": {
+          "enum": [
+            "unreviewed",
+            "closed_files_operator_reviewed"
+          ],
+          "title": "Completion Convention",
+          "type": "string"
+        },
+        "checkpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FamilyMediaCheckpoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        },
+        "read_only_originals": {
+          "const": true,
+          "default": true,
+          "title": "Read Only Originals",
+          "type": "boolean"
+        },
+        "media_copied": {
+          "const": false,
+          "default": false,
+          "title": "Media Copied",
+          "type": "boolean"
+        },
+        "device_write_attempted": {
+          "const": false,
+          "default": false,
+          "title": "Device Write Attempted",
+          "type": "boolean"
+        },
+        "model_inference_attempted": {
+          "const": false,
+          "default": false,
+          "title": "Model Inference Attempted",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "source_ref",
+        "config_generation",
+        "connection_epoch",
+        "source_online",
+        "completion_convention",
+        "simulated"
+      ],
+      "title": "FamilyMediaContext",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "context": {
+      "$ref": "#/$defs/FamilyMediaContext"
+    },
+    "files_observed": {
+      "maximum": 128,
+      "minimum": 0,
+      "title": "Files Observed",
+      "type": "integer"
+    },
+    "bytes_read": {
+      "maximum": 8388608,
+      "minimum": 0,
+      "title": "Bytes Read",
+      "type": "integer"
+    },
+    "bytes_requested": {
+      "maximum": 8388608,
+      "minimum": 0,
+      "title": "Bytes Requested",
+      "type": "integer"
+    },
+    "hashes_completed": {
+      "maximum": 4,
+      "minimum": 0,
+      "title": "Hashes Completed",
+      "type": "integer"
+    },
+    "checkpoint": {
+      "$ref": "#/$defs/FamilyMediaCheckpoint"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    },
+    "media_copied": {
+      "const": false,
+      "default": false,
+      "title": "Media Copied",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "context",
+    "files_observed",
+    "bytes_read",
+    "bytes_requested",
+    "hashes_completed",
+    "checkpoint",
+    "simulated"
+  ],
+  "title": "FamilyMediaScanResult",
+  "type": "object"
+}

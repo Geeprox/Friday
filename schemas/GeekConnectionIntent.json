@@ -1,0 +1,117 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "keep_connected": {
+      "default": false,
+      "title": "Keep Connected",
+      "type": "boolean"
+    },
+    "url": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Url"
+    },
+    "credential_stamp": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Credential Stamp"
+    },
+    "authentication_blocked": {
+      "default": false,
+      "title": "Authentication Blocked",
+      "type": "boolean"
+    },
+    "automatic_retry_blocked": {
+      "default": false,
+      "title": "Automatic Retry Blocked",
+      "type": "boolean"
+    },
+    "failure_status": {
+      "anyOf": [
+        {
+          "enum": [
+            "blocked",
+            "worker_stopped",
+            "worker_fault",
+            "worker_unavailable"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Status"
+    },
+    "failure_phase": {
+      "anyOf": [
+        {
+          "enum": [
+            "local_setup",
+            "websocket_connect",
+            "authenticate",
+            "inventory"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Phase"
+    },
+    "failure_code": {
+      "anyOf": [
+        {
+          "enum": [
+            "connection_refused",
+            "network_unreachable",
+            "gateway_closed_connection",
+            "connection_timeout",
+            "websocket_upgrade_rejected",
+            "authentication_timeout",
+            "protocol_selection_failed",
+            "authentication_handshake_failed",
+            "gateway_error_frame",
+            "unexpected_handshake_frame",
+            "readonly_request_timeout",
+            "session_not_connected",
+            "check_failed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Code"
+    }
+  },
+  "title": "ConnectionIntent",
+  "type": "object"
+}

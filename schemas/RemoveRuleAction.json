@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "record_id": {
+      "maxLength": 192,
+      "minLength": 1,
+      "title": "Record Id",
+      "type": "string"
+    },
+    "action_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Action Id",
+      "type": "string"
+    },
+    "expected_fingerprint": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Fingerprint",
+      "type": "string"
+    },
+    "idempotency_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Idempotency Key",
+      "type": "string"
+    }
+  },
+  "required": [
+    "record_id",
+    "action_id",
+    "expected_fingerprint",
+    "idempotency_key"
+  ],
+  "title": "RemoveRuleAction",
+  "type": "object"
+}

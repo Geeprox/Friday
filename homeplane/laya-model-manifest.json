@@ -1,0 +1,25 @@
+{
+  "repository": "convaiinnovations/laya-multilingual",
+  "revision": "e4e9ddf21a7b1903b7acffd8814ad4307bf63a67",
+  "runtime": "laya-mlx==0.2.0",
+  "files": {
+    ".cache/huggingface/.gitignore": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+    ".cache/huggingface/CACHEDIR.TAG": "f6572428f6d5e1575e73a1502895a8731f10757dfbb634909c6e154b849af91d",
+    ".cache/huggingface/download/encoder/config.json.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ".cache/huggingface/download/encoder/config.json.metadata": "be2322a1973a75f6a51fad6707c5fe510c7047f5fad65b5ae2e85bf8be6c97ea",
+    ".cache/huggingface/download/model.safetensors.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ".cache/huggingface/download/model.safetensors.metadata": "a79b52e363c4d354d56ceff2925ae4dd5e1993a5e5bd6ea948cdcd7bdc131d2d",
+    ".cache/huggingface/download/rl_agent_config.json.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ".cache/huggingface/download/rl_agent_config.json.metadata": "9c400342497cd7275e0f1e45bd3bf57759dba460e112536df7f1b7e662f5ca0d",
+    ".cache/huggingface/download/tokenizer/tokenizer.json.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ".cache/huggingface/download/tokenizer/tokenizer.json.metadata": "9c2f5edb1687aa131ab8ea8c2b66f120e348a23643ba3be15e4952394abc3666",
+    ".cache/huggingface/download/tokenizer/tokenizer_config.json.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ".cache/huggingface/download/tokenizer/tokenizer_config.json.metadata": "fb3227803be100d7010100d73bee0bebad1fa1d849126ac5793bc381fceee371",
+    ".cache/huggingface/trees/e4e9ddf21a7b1903b7acffd8814ad4307bf63a67.json": "92b5f06ea51ecd5dac0bb897959def91ce7ed6a265e466a09324f9b418be7d23",
+    "encoder/config.json": "83f6916d13ef0f556ac461f28308dc2bffa7ebeadee8ec9e2db5812020ea5bb4",
+    "model.safetensors": "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
+    "rl_agent_config.json": "25061739243b617ad88d1219ba6f8a9c86c5881ca28df024fa2d9b3b2fcc30c6",
+    "tokenizer/tokenizer.json": "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f",
+    "tokenizer/tokenizer_config.json": "424b69444bf7b5809dc2cd2e36d0bd71b8055124dd24274d6db3c655d38205e7"
+  }
+}

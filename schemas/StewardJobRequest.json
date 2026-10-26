@@ -1,0 +1,38 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "item_ids": {
+      "items": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Item Ids",
+      "type": "array"
+    },
+    "provider": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Provider",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_context",
+    "item_ids",
+    "provider"
+  ],
+  "title": "StewardJobRequest",
+  "type": "object"
+}

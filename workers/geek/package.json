@@ -1,0 +1,8 @@
+{
+  "name": "homeplane-geek-readonly-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=24.5.0"},
+  "dependencies": {"ws": "8.22.0", "@noble/curves": "2.4.0", "bn.js": "5.2.3"}
+}

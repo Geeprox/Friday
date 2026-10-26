@@ -1,0 +1,18 @@
+{
+  "mode": "demo",
+  "wake_mode": "optional",
+  "backend": "miloco",
+  "camera_id": "living-room",
+  "room": "客厅",
+  "camera_did": null,
+  "miloco_url": "http://127.0.0.1:1810",
+  "asr_backend": "http",
+  "asr_url": "http://127.0.0.1:8080/v1",
+  "asr_model": "whisper-1",
+  "vlm_url": "http://127.0.0.1:1234/v1",
+  "vlm_model": "local-vlm",
+  "devices": [
+    {"id": "floor-lamp", "name": "落地灯", "room": "客厅", "aliases": ["沙发灯", "客厅落地灯"], "anchors": [{"camera_id": "living-room", "box": [0.72, 0.19, 0.87, 0.83], "description": "沙发右侧落地灯"}]},
+    {"id": "ceiling-light", "name": "吸顶灯", "room": "客厅", "aliases": ["主灯", "客厅灯"], "anchors": [{"camera_id": "living-room", "box": [0.38, 0.06, 0.60, 0.18], "description": "天花板中央吸顶灯"}]}
+  ]
+}

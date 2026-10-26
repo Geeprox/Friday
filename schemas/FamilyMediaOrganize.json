@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "operation": {
+      "const": "organize",
+      "default": "organize",
+      "title": "Operation",
+      "type": "string"
+    },
+    "album": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Album",
+      "type": "string"
+    },
+    "labels": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 16,
+      "title": "Labels",
+      "type": "array"
+    }
+  },
+  "required": [
+    "album"
+  ],
+  "title": "FamilyMediaOrganize",
+  "type": "object"
+}

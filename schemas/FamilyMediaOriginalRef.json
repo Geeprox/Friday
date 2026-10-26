@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_ref": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Source Ref",
+      "type": "string"
+    },
+    "object_ref": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Object Ref",
+      "type": "string"
+    },
+    "config_generation": {
+      "minimum": 0,
+      "title": "Config Generation",
+      "type": "integer"
+    },
+    "connection_epoch": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Connection Epoch",
+      "type": "string"
+    },
+    "revision": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+      "title": "Revision",
+      "type": "string"
+    },
+    "revision_basis": {
+      "const": "metadata",
+      "default": "metadata",
+      "title": "Revision Basis",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_ref",
+    "object_ref",
+    "config_generation",
+    "connection_epoch",
+    "revision"
+  ],
+  "title": "FamilyMediaOriginalRef",
+  "type": "object"
+}

@@ -1,0 +1,83 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "redacted": {
+      "const": true,
+      "default": true,
+      "title": "Redacted",
+      "type": "boolean"
+    },
+    "sensitivity": {
+      "const": "operational_metadata_redacted",
+      "default": "operational_metadata_redacted",
+      "title": "Sensitivity",
+      "type": "string"
+    },
+    "server_retention_seconds": {
+      "const": 0,
+      "default": 0,
+      "title": "Server Retention Seconds",
+      "type": "integer"
+    },
+    "downloaded_file_retention": {
+      "const": "user_managed",
+      "default": "user_managed",
+      "title": "Downloaded File Retention",
+      "type": "string"
+    },
+    "max_bytes": {
+      "const": 65536,
+      "default": 65536,
+      "title": "Max Bytes",
+      "type": "integer"
+    },
+    "collection_timeout_seconds": {
+      "const": 2,
+      "default": 2,
+      "title": "Collection Timeout Seconds",
+      "type": "integer"
+    },
+    "journal_row_limit_per_table": {
+      "const": 1000,
+      "default": 1000,
+      "title": "Journal Row Limit Per Table",
+      "type": "integer"
+    },
+    "collection_basis": {
+      "const": "cached_local_state_no_upstream_refresh",
+      "default": "cached_local_state_no_upstream_refresh",
+      "title": "Collection Basis",
+      "type": "string"
+    },
+    "excluded": {
+      "default": [
+        "credentials",
+        "addresses_and_paths",
+        "device_room_member_names_and_ids",
+        "raw_logs_and_exceptions",
+        "graphs_rules_prompts_and_transcripts",
+        "audio_video_images_and_biometric_templates",
+        "database_and_settings_files"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Excluded",
+      "type": "array"
+    },
+    "automatic_upload": {
+      "const": false,
+      "default": false,
+      "title": "Automatic Upload",
+      "type": "boolean"
+    }
+  },
+  "title": "DiagnosticsPolicy",
+  "type": "object"
+}

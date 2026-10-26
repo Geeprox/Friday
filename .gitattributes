@@ -1,0 +1,10 @@
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.png binary
+*.icns binary
+*.mp4 binary
+# Keep upstream formatting unchanged.
+homeplane/static/vendor/** -whitespace

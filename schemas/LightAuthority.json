@@ -1,0 +1,74 @@
+{
+  "additionalProperties": false,
+  "description": "Local operator policy; no HTTP endpoint accepts arbitrary service authority.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "enabled": {
+      "default": false,
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "authority_ref": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Authority Ref",
+      "type": "string"
+    },
+    "ha_url": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Ha Url",
+      "type": "string"
+    },
+    "ha_instance": {
+      "maxLength": 96,
+      "minLength": 1,
+      "title": "Ha Instance",
+      "type": "string"
+    },
+    "target": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Target",
+      "type": "string"
+    },
+    "external_entity_id": {
+      "maxLength": 256,
+      "pattern": "^light\\.[a-z0-9_]+$",
+      "title": "External Entity Id",
+      "type": "string"
+    },
+    "registry_device_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Registry Device Id",
+      "type": "string"
+    },
+    "allow_brightness": {
+      "default": false,
+      "title": "Allow Brightness",
+      "type": "boolean"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "authority_ref",
+    "ha_url",
+    "ha_instance",
+    "target",
+    "external_entity_id",
+    "registry_device_id",
+    "expires_at"
+  ],
+  "title": "LightAuthority",
+  "type": "object"
+}

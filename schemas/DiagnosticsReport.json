@@ -1,0 +1,571 @@
+{
+  "$defs": {
+    "DiagnosticsPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "redacted": {
+          "const": true,
+          "default": true,
+          "title": "Redacted",
+          "type": "boolean"
+        },
+        "sensitivity": {
+          "const": "operational_metadata_redacted",
+          "default": "operational_metadata_redacted",
+          "title": "Sensitivity",
+          "type": "string"
+        },
+        "server_retention_seconds": {
+          "const": 0,
+          "default": 0,
+          "title": "Server Retention Seconds",
+          "type": "integer"
+        },
+        "downloaded_file_retention": {
+          "const": "user_managed",
+          "default": "user_managed",
+          "title": "Downloaded File Retention",
+          "type": "string"
+        },
+        "max_bytes": {
+          "const": 65536,
+          "default": 65536,
+          "title": "Max Bytes",
+          "type": "integer"
+        },
+        "collection_timeout_seconds": {
+          "const": 2,
+          "default": 2,
+          "title": "Collection Timeout Seconds",
+          "type": "integer"
+        },
+        "journal_row_limit_per_table": {
+          "const": 1000,
+          "default": 1000,
+          "title": "Journal Row Limit Per Table",
+          "type": "integer"
+        },
+        "collection_basis": {
+          "const": "cached_local_state_no_upstream_refresh",
+          "default": "cached_local_state_no_upstream_refresh",
+          "title": "Collection Basis",
+          "type": "string"
+        },
+        "excluded": {
+          "default": [
+            "credentials",
+            "addresses_and_paths",
+            "device_room_member_names_and_ids",
+            "raw_logs_and_exceptions",
+            "graphs_rules_prompts_and_transcripts",
+            "audio_video_images_and_biometric_templates",
+            "database_and_settings_files"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Excluded",
+          "type": "array"
+        },
+        "automatic_upload": {
+          "const": false,
+          "default": false,
+          "title": "Automatic Upload",
+          "type": "boolean"
+        }
+      },
+      "title": "DiagnosticsPolicy",
+      "type": "object"
+    },
+    "GeekConnectionSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "unknown",
+          "enum": [
+            "stopped",
+            "starting",
+            "online",
+            "reconnecting",
+            "blocked",
+            "stale",
+            "worker_stopped",
+            "worker_fault",
+            "worker_unavailable",
+            "pairing_required",
+            "unsupported_gateway_address",
+            "background_unavailable",
+            "unknown"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "connection_host": {
+          "default": "unknown",
+          "enum": [
+            "console_child",
+            "background_service",
+            "unknown"
+          ],
+          "title": "Connection Host",
+          "type": "string"
+        },
+        "session_live": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Live"
+        },
+        "inventory_stale": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inventory Stale"
+        },
+        "background_service_live": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Background Service Live"
+        },
+        "keep_connected": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Keep Connected"
+        },
+        "failure_phase": {
+          "anyOf": [
+            {
+              "enum": [
+                "local_setup",
+                "websocket_connect",
+                "authenticate",
+                "inventory"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure Phase"
+        },
+        "failure_code": {
+          "anyOf": [
+            {
+              "enum": [
+                "connection_refused",
+                "network_unreachable",
+                "gateway_closed_connection",
+                "connection_timeout",
+                "websocket_upgrade_rejected",
+                "authentication_timeout",
+                "protocol_selection_failed",
+                "authentication_handshake_failed",
+                "gateway_error_frame",
+                "unexpected_handshake_frame",
+                "readonly_request_timeout",
+                "session_not_connected",
+                "check_failed"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure Code"
+        },
+        "network_errno": {
+          "anyOf": [
+            {
+              "enum": [
+                "ECONNREFUSED",
+                "ETIMEDOUT",
+                "EHOSTUNREACH",
+                "ENETUNREACH",
+                "EPERM",
+                "EACCES"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Network Errno"
+        },
+        "permanent_login_verified": {
+          "const": false,
+          "default": false,
+          "title": "Permanent Login Verified",
+          "type": "boolean"
+        }
+      },
+      "title": "GeekConnectionSummary",
+      "type": "object"
+    },
+    "HAConnectionSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "transport": {
+          "default": "unavailable",
+          "enum": [
+            "online",
+            "offline",
+            "unknown",
+            "unavailable"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "pattern": "^\\d{1,4}\\.\\d{1,4}(?:\\.\\d{1,4})?(?:(?:a|b|rc)\\d{1,4})?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "continuous_subscription": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Continuous Subscription"
+        },
+        "observation_gap": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observation Gap"
+        },
+        "journal_available": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Journal Available"
+        }
+      },
+      "title": "HAConnectionSummary",
+      "type": "object"
+    },
+    "JournalSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "available",
+            "missing",
+            "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "sampled_rows": {
+          "additionalProperties": {
+            "maximum": 1000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "propertyNames": {
+            "enum": [
+              "traces",
+              "events",
+              "light_actions"
+            ]
+          },
+          "title": "Sampled Rows",
+          "type": "object"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        },
+        "sampled_action_stages": {
+          "additionalProperties": {
+            "maximum": 1000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "propertyNames": {
+            "enum": [
+              "planned",
+              "authorized",
+              "sent",
+              "accepted",
+              "reported_match",
+              "physically_confirmed",
+              "failed",
+              "expired",
+              "unknown_outcome",
+              "rejected",
+              "unknown"
+            ]
+          },
+          "title": "Sampled Action Stages",
+          "type": "object"
+        }
+      },
+      "required": [
+        "status",
+        "sampled_rows"
+      ],
+      "title": "JournalSummary",
+      "type": "object"
+    },
+    "QualityCounts": {
+      "additionalProperties": false,
+      "properties": {
+        "healthy": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Healthy",
+          "type": "integer"
+        },
+        "suspect": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Suspect",
+          "type": "integer"
+        },
+        "stale": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Stale",
+          "type": "integer"
+        },
+        "faulty": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Faulty",
+          "type": "integer"
+        },
+        "unknown": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Unknown",
+          "type": "integer"
+        }
+      },
+      "title": "QualityCounts",
+      "type": "object"
+    },
+    "SnapshotSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "simulator",
+            "ha-read-only",
+            "unavailable"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "simulated": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Simulated"
+        },
+        "cached_snapshot_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Snapshot At"
+        },
+        "snapshot_available": {
+          "default": false,
+          "title": "Snapshot Available",
+          "type": "boolean"
+        },
+        "sampled_entities": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Sampled Entities",
+          "type": "integer"
+        },
+        "sampled_devices": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Sampled Devices",
+          "type": "integer"
+        },
+        "sampled_states": {
+          "default": 0,
+          "maximum": 4096,
+          "minimum": 0,
+          "title": "Sampled States",
+          "type": "integer"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        },
+        "quality": {
+          "$ref": "#/$defs/QualityCounts"
+        }
+      },
+      "required": [
+        "mode",
+        "simulated"
+      ],
+      "title": "SnapshotSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "policy": {
+      "$ref": "#/$defs/DiagnosticsPolicy"
+    },
+    "versions": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "propertyNames": {
+        "enum": [
+          "python",
+          "macos",
+          "fastapi",
+          "pydantic",
+          "httpx",
+          "websockets"
+        ]
+      },
+      "title": "Versions",
+      "type": "object"
+    },
+    "source": {
+      "$ref": "#/$defs/SnapshotSummary"
+    },
+    "ha": {
+      "$ref": "#/$defs/HAConnectionSummary"
+    },
+    "geek": {
+      "$ref": "#/$defs/GeekConnectionSummary"
+    },
+    "journal": {
+      "$ref": "#/$defs/JournalSummary"
+    },
+    "hardware_offline_qualification": {
+      "const": "not_established_by_diagnostics",
+      "default": "not_established_by_diagnostics",
+      "title": "Hardware Offline Qualification",
+      "type": "string"
+    },
+    "real_writes_attempted": {
+      "const": false,
+      "default": false,
+      "title": "Real Writes Attempted",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "generated_at",
+    "versions",
+    "source",
+    "ha",
+    "geek",
+    "journal"
+  ],
+  "title": "DiagnosticsReport",
+  "type": "object"
+}

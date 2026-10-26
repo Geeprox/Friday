@@ -1,0 +1,1679 @@
+{
+  "$defs": {
+    "CancelInstruction": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "cancel_pending",
+          "default": "cancel_pending",
+          "title": "Type",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "scope": {
+          "const": "same_rule",
+          "default": "same_rule",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "CancelInstruction",
+      "type": "object"
+    },
+    "ClimateInstruction": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "climate.set",
+          "default": "climate.set",
+          "title": "Type",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "target": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        },
+        "power": {
+          "enum": [
+            "on",
+            "off"
+          ],
+          "title": "Power",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "power"
+      ],
+      "title": "ClimateInstruction",
+      "type": "object"
+    },
+    "CoreRulePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "boot_id": {
+          "title": "Boot Id",
+          "type": "string"
+        },
+        "context_fingerprint": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Fingerprint"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "old": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreRuleRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "new": {
+          "$ref": "#/$defs/CoreRuleRecord"
+        },
+        "compilation": {
+          "$ref": "#/$defs/RuleCompilation"
+        },
+        "approval_digest": {
+          "title": "Approval Digest",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "validated",
+            "awaiting_approval",
+            "verified",
+            "rolled_back",
+            "failed",
+            "expired"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "trial": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuleEvaluation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "real_write_attempted": {
+          "const": false,
+          "default": false,
+          "title": "Real Write Attempted",
+          "type": "boolean"
+        },
+        "physically_confirmed": {
+          "const": false,
+          "default": false,
+          "title": "Physically Confirmed",
+          "type": "boolean"
+        },
+        "simulated": {
+          "const": false,
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "boot_id",
+        "created_at",
+        "expires_at",
+        "old",
+        "new",
+        "compilation",
+        "approval_digest",
+        "status",
+        "code"
+      ],
+      "title": "CoreRulePlan",
+      "type": "object"
+    },
+    "CoreRuleRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "rule": {
+          "$ref": "#/$defs/RuleIR"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "source_scope": {
+          "title": "Source Scope",
+          "type": "string"
+        },
+        "authority_revision": {
+          "title": "Authority Revision",
+          "type": "string"
+        },
+        "fingerprint": {
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "source": {
+          "const": "project:home_core",
+          "default": "project:home_core",
+          "title": "Source",
+          "type": "string"
+        },
+        "simulated": {
+          "const": false,
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "rule",
+        "enabled",
+        "source_scope",
+        "authority_revision",
+        "fingerprint"
+      ],
+      "title": "CoreRuleRecord",
+      "type": "object"
+    },
+    "DecisionCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "decision",
+          "default": "decision",
+          "title": "Type",
+          "type": "string"
+        },
+        "provider": {
+          "enum": [
+            "laya_mlx",
+            "jev",
+            "openai_decisions"
+          ],
+          "title": "Provider",
+          "type": "string"
+        },
+        "task": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Task",
+          "type": "string"
+        },
+        "equals": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Equals",
+          "type": "string"
+        },
+        "require_valid_lease": {
+          "const": true,
+          "default": true,
+          "title": "Require Valid Lease",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "provider",
+        "task",
+        "equals"
+      ],
+      "title": "DecisionCondition",
+      "type": "object"
+    },
+    "DelayInstruction": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "delay",
+          "default": "delay",
+          "title": "Type",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "milliseconds": {
+          "maximum": 30000,
+          "minimum": 1,
+          "title": "Milliseconds",
+          "type": "integer"
+        },
+        "cancel_on_new_event": {
+          "const": true,
+          "default": true,
+          "title": "Cancel On New Event",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "milliseconds"
+      ],
+      "title": "DelayInstruction",
+      "type": "object"
+    },
+    "DeviceInstruction": {
+      "additionalProperties": false,
+      "description": "Absolute shared operation; no raw HA services or implicit climate mode.",
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "device.set",
+          "default": "device.set",
+          "title": "Type",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "target": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        },
+        "operation": {
+          "enum": [
+            "light.set",
+            "switch.set",
+            "fan.set",
+            "fan.percentage",
+            "climate.mode",
+            "climate.temperature",
+            "cover.position",
+            "cover.state",
+            "lock.set",
+            "number.value",
+            "select.option"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "desired": {
+          "additionalProperties": true,
+          "title": "Desired",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "operation",
+        "desired"
+      ],
+      "title": "DeviceInstruction",
+      "type": "object"
+    },
+    "EventTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "event",
+          "default": "event",
+          "title": "Type",
+          "type": "string"
+        },
+        "entity": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Entity",
+          "type": "string"
+        },
+        "capability": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Capability",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "entity",
+        "capability",
+        "value"
+      ],
+      "title": "EventTrigger",
+      "type": "object"
+    },
+    "FeedbackInstruction": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "feedback.speak",
+          "default": "feedback.speak",
+          "title": "Type",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "endpoint": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "route": {
+          "enum": [
+            "local_tts",
+            "cloud_tts"
+          ],
+          "title": "Route",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "endpoint",
+        "route",
+        "text"
+      ],
+      "title": "FeedbackInstruction",
+      "type": "object"
+    },
+    "LightInstruction": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "light.set",
+          "default": "light.set",
+          "title": "Type",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "target": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        },
+        "power": {
+          "enum": [
+            "on",
+            "off"
+          ],
+          "title": "Power",
+          "type": "string"
+        },
+        "brightness": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "const": "minimum_verified",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Brightness"
+        },
+        "require_no_bright_flash": {
+          "default": false,
+          "title": "Require No Bright Flash",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "power"
+      ],
+      "title": "LightInstruction",
+      "type": "object"
+    },
+    "ManagedRuleRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "rule": {
+          "$ref": "#/$defs/RuleIR"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "fingerprint": {
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "source": {
+          "const": "project:simulator",
+          "default": "project:simulator",
+          "title": "Source",
+          "type": "string"
+        },
+        "simulated": {
+          "const": true,
+          "default": true,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "rule",
+        "enabled",
+        "fingerprint"
+      ],
+      "title": "ManagedRuleRecord",
+      "type": "object"
+    },
+    "ModeCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "mode",
+          "default": "mode",
+          "title": "Type",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "home.sleep",
+            "home.manual",
+            "home.present"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "equals": {
+          "title": "Equals",
+          "type": "boolean"
+        },
+        "require_valid_lease": {
+          "const": true,
+          "default": true,
+          "title": "Require Valid Lease",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mode",
+        "equals"
+      ],
+      "title": "ModeCondition",
+      "type": "object"
+    },
+    "NumericCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "numeric",
+          "default": "numeric",
+          "title": "Type",
+          "type": "string"
+        },
+        "entity": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Entity",
+          "type": "string"
+        },
+        "capability": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Capability",
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            "lt",
+            "le",
+            "gt",
+            "ge",
+            "eq"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Value"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "maxLength": 24,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "entity",
+        "capability",
+        "operator",
+        "value"
+      ],
+      "title": "NumericCondition",
+      "type": "object"
+    },
+    "RuleAnalysisContext": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "fingerprint": {
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        },
+        "backend": {
+          "enum": [
+            "simulator",
+            "home_core",
+            "unavailable"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "execution_policy_configured": {
+          "title": "Execution Policy Configured",
+          "type": "boolean"
+        },
+        "analysis_enabled": {
+          "default": false,
+          "title": "Analysis Enabled",
+          "type": "boolean"
+        },
+        "tool": {
+          "const": "friday.rule-removal.plan.v1",
+          "default": "friday.rule-removal.plan.v1",
+          "title": "Tool",
+          "type": "string"
+        },
+        "model": {
+          "const": "gpt-6.1-sol",
+          "default": "gpt-6.1-sol",
+          "title": "Model",
+          "type": "string"
+        },
+        "model_inference_attempted": {
+          "const": false,
+          "default": false,
+          "title": "Model Inference Attempted",
+          "type": "boolean"
+        },
+        "external_rules_intercepted": {
+          "const": false,
+          "default": false,
+          "title": "External Rules Intercepted",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "available",
+        "simulated",
+        "backend",
+        "execution_policy_configured"
+      ],
+      "title": "RuleAnalysisContext",
+      "type": "object"
+    },
+    "RuleCompilation": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "rule_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "integer"
+        },
+        "fingerprint": {
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "supported",
+            "unsupported",
+            "requires_core"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "backend": {
+          "enum": [
+            "simulator",
+            "home_core",
+            "ha",
+            "mijia_geek"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        },
+        "core_independent": {
+          "default": false,
+          "title": "Core Independent",
+          "type": "boolean"
+        },
+        "wan_independent": {
+          "default": false,
+          "title": "Wan Independent",
+          "type": "boolean"
+        },
+        "bindings": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Bindings",
+          "type": "object"
+        },
+        "instructions": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Instructions",
+          "type": "array"
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        },
+        "compiler_version": {
+          "const": "restricted-v1",
+          "default": "restricted-v1",
+          "title": "Compiler Version",
+          "type": "string"
+        },
+        "native_artifact": {
+          "default": null,
+          "title": "Native Artifact",
+          "type": "null"
+        }
+      },
+      "required": [
+        "rule_id",
+        "revision",
+        "fingerprint",
+        "status",
+        "backend",
+        "reasons",
+        "simulated"
+      ],
+      "title": "RuleCompilation",
+      "type": "object"
+    },
+    "RuleDeployment": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "request_digest": {
+          "title": "Request Digest",
+          "type": "string"
+        },
+        "boot_id": {
+          "title": "Boot Id",
+          "type": "string"
+        },
+        "source_version": {
+          "title": "Source Version",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "old": {
+          "$ref": "#/$defs/ManagedRuleRecord"
+        },
+        "new_id": {
+          "title": "New Id",
+          "type": "string"
+        },
+        "new_rule": {
+          "$ref": "#/$defs/RuleIR"
+        },
+        "compilation": {
+          "$ref": "#/$defs/RuleCompilation"
+        },
+        "approval_digest": {
+          "title": "Approval Digest",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "validated",
+            "awaiting_approval",
+            "staging",
+            "staged_disabled",
+            "pausing_old",
+            "old_paused",
+            "activating",
+            "activated",
+            "verified",
+            "needs_reconcile",
+            "rolling_back",
+            "rolled_back",
+            "failed",
+            "expired"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "history": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "History",
+          "type": "array"
+        },
+        "simulation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuleEvaluation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reconciled": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reconciled"
+        },
+        "real_write_attempted": {
+          "const": false,
+          "default": false,
+          "title": "Real Write Attempted",
+          "type": "boolean"
+        },
+        "physically_confirmed": {
+          "const": false,
+          "default": false,
+          "title": "Physically Confirmed",
+          "type": "boolean"
+        },
+        "simulated": {
+          "const": true,
+          "default": true,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "key",
+        "request_digest",
+        "boot_id",
+        "source_version",
+        "created_at",
+        "expires_at",
+        "old",
+        "new_id",
+        "new_rule",
+        "compilation",
+        "approval_digest",
+        "status",
+        "code"
+      ],
+      "title": "RuleDeployment",
+      "type": "object"
+    },
+    "RuleEvaluation": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "rule_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "matched",
+            "not_triggered",
+            "suppressed",
+            "unsupported"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        },
+        "commands": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Commands",
+          "type": "array"
+        },
+        "simulated": {
+          "default": true,
+          "title": "Simulated",
+          "type": "boolean"
+        },
+        "real_write_attempted": {
+          "const": false,
+          "default": false,
+          "title": "Real Write Attempted",
+          "type": "boolean"
+        },
+        "physically_confirmed": {
+          "const": false,
+          "default": false,
+          "title": "Physically Confirmed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rule_id",
+        "event_id",
+        "outcome",
+        "reasons"
+      ],
+      "title": "RuleEvaluation",
+      "type": "object"
+    },
+    "RuleExecution": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "preferred_backend": {
+          "default": "simulator",
+          "enum": [
+            "simulator",
+            "home_core",
+            "ha",
+            "mijia_geek"
+          ],
+          "title": "Preferred Backend",
+          "type": "string"
+        },
+        "require_wan_independent": {
+          "default": false,
+          "title": "Require Wan Independent",
+          "type": "boolean"
+        },
+        "require_core_independent": {
+          "default": false,
+          "title": "Require Core Independent",
+          "type": "boolean"
+        },
+        "replay_policy": {
+          "const": "never_actuate",
+          "default": "never_actuate",
+          "title": "Replay Policy",
+          "type": "string"
+        },
+        "max_event_age_ms": {
+          "default": 3000,
+          "maximum": 30000,
+          "minimum": 1,
+          "title": "Max Event Age Ms",
+          "type": "integer"
+        }
+      },
+      "title": "RuleExecution",
+      "type": "object"
+    },
+    "RuleIR": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "intent": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Intent",
+          "type": "string"
+        },
+        "ownership": {
+          "const": "managed",
+          "default": "managed",
+          "title": "Ownership",
+          "type": "string"
+        },
+        "trigger": {
+          "discriminator": {
+            "mapping": {
+              "event": "#/$defs/EventTrigger",
+              "state_transition": "#/$defs/TransitionTrigger"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TransitionTrigger"
+            },
+            {
+              "$ref": "#/$defs/EventTrigger"
+            }
+          ],
+          "title": "Trigger"
+        },
+        "conditions": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "decision": "#/$defs/DecisionCondition",
+                "mode": "#/$defs/ModeCondition",
+                "numeric": "#/$defs/NumericCondition",
+                "time_window": "#/$defs/TimeCondition"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumericCondition"
+              },
+              {
+                "$ref": "#/$defs/ModeCondition"
+              },
+              {
+                "$ref": "#/$defs/TimeCondition"
+              },
+              {
+                "$ref": "#/$defs/DecisionCondition"
+              }
+            ]
+          },
+          "maxItems": 8,
+          "title": "Conditions",
+          "type": "array"
+        },
+        "on_unknown": {
+          "const": "suppress_and_record",
+          "default": "suppress_and_record",
+          "title": "On Unknown",
+          "type": "string"
+        },
+        "actions": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "cancel_pending": "#/$defs/CancelInstruction",
+                "climate.set": "#/$defs/ClimateInstruction",
+                "delay": "#/$defs/DelayInstruction",
+                "device.set": "#/$defs/DeviceInstruction",
+                "feedback.speak": "#/$defs/FeedbackInstruction",
+                "light.set": "#/$defs/LightInstruction"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LightInstruction"
+              },
+              {
+                "$ref": "#/$defs/ClimateInstruction"
+              },
+              {
+                "$ref": "#/$defs/DeviceInstruction"
+              },
+              {
+                "$ref": "#/$defs/DelayInstruction"
+              },
+              {
+                "$ref": "#/$defs/CancelInstruction"
+              },
+              {
+                "$ref": "#/$defs/FeedbackInstruction"
+              }
+            ]
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Actions",
+          "type": "array"
+        },
+        "execution": {
+          "$ref": "#/$defs/RuleExecution"
+        },
+        "safety": {
+          "$ref": "#/$defs/RuleSafety"
+        },
+        "simulated": {
+          "default": false,
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "intent",
+        "trigger",
+        "actions"
+      ],
+      "title": "RuleIR",
+      "type": "object"
+    },
+    "RuleSafety": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "policy_ref": {
+          "default": "policy.managed-lighting.v1",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Policy Ref",
+          "type": "string"
+        },
+        "prohibited_targets": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Prohibited Targets",
+          "type": "array"
+        },
+        "respect_sleep": {
+          "const": true,
+          "default": true,
+          "title": "Respect Sleep",
+          "type": "boolean"
+        },
+        "respect_manual_override": {
+          "const": true,
+          "default": true,
+          "title": "Respect Manual Override",
+          "type": "boolean"
+        },
+        "allow_during_sleep": {
+          "default": false,
+          "title": "Allow During Sleep",
+          "type": "boolean"
+        }
+      },
+      "title": "RuleSafety",
+      "type": "object"
+    },
+    "RuleTextChoice": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "record_id": {
+          "title": "Record Id",
+          "type": "string"
+        },
+        "action_id": {
+          "title": "Action Id",
+          "type": "string"
+        },
+        "expected_fingerprint": {
+          "title": "Expected Fingerprint",
+          "type": "string"
+        },
+        "rule_label": {
+          "title": "Rule Label",
+          "type": "string"
+        },
+        "action_label": {
+          "title": "Action Label",
+          "type": "string"
+        },
+        "retained_actions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Retained Actions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "record_id",
+        "action_id",
+        "expected_fingerprint",
+        "rule_label",
+        "action_label",
+        "retained_actions"
+      ],
+      "title": "RuleTextChoice",
+      "type": "object"
+    },
+    "TimeCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "time_window",
+          "default": "time_window",
+          "title": "Type",
+          "type": "string"
+        },
+        "start": {
+          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+          "title": "Start",
+          "type": "string"
+        },
+        "end": {
+          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+          "title": "End",
+          "type": "string"
+        },
+        "timezone": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "timezone"
+      ],
+      "title": "TimeCondition",
+      "type": "object"
+    },
+    "TransitionTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "state_transition",
+          "default": "state_transition",
+          "title": "Type",
+          "type": "string"
+        },
+        "entity": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Entity",
+          "type": "string"
+        },
+        "capability": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Capability",
+          "type": "string"
+        },
+        "from_value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "From Value"
+        },
+        "to_value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "To Value"
+        }
+      },
+      "required": [
+        "entity",
+        "capability",
+        "from_value",
+        "to_value"
+      ],
+      "title": "TransitionTrigger",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "review_id": {
+      "title": "Review Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "planned",
+        "clarification",
+        "unsupported",
+        "rejected",
+        "expired",
+        "needs_review",
+        "in_progress"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "code": {
+      "title": "Code",
+      "type": "string"
+    },
+    "context": {
+      "$ref": "#/$defs/RuleAnalysisContext"
+    },
+    "planner": {
+      "const": "arl_reviewed_removal_v1",
+      "default": "arl_reviewed_removal_v1",
+      "title": "Planner",
+      "type": "string"
+    },
+    "planner_call_attempted": {
+      "default": false,
+      "title": "Planner Call Attempted",
+      "type": "boolean"
+    },
+    "model_inference_attempted": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": false,
+      "title": "Model Inference Attempted"
+    },
+    "model_receipt": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Receipt"
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "maxLength": 300,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Summary"
+    },
+    "baseline_comparison": {
+      "default": "not_applicable",
+      "enum": [
+        "not_applicable",
+        "matched",
+        "disagreed",
+        "ambiguous"
+      ],
+      "title": "Baseline Comparison",
+      "type": "string"
+    },
+    "choices": {
+      "items": {
+        "$ref": "#/$defs/RuleTextChoice"
+      },
+      "maxItems": 16,
+      "title": "Choices",
+      "type": "array"
+    },
+    "plan": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RuleDeployment"
+        },
+        {
+          "$ref": "#/$defs/CoreRulePlan"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Plan"
+    },
+    "real_write_attempted": {
+      "const": false,
+      "default": false,
+      "title": "Real Write Attempted",
+      "type": "boolean"
+    },
+    "physically_confirmed": {
+      "const": false,
+      "default": false,
+      "title": "Physically Confirmed",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "review_id",
+    "status",
+    "code",
+    "context"
+  ],
+  "title": "RuleAnalysisResult",
+  "type": "object"
+}

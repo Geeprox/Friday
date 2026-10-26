@@ -1,0 +1,175 @@
+{
+  "$defs": {
+    "FaceFrameProvenance": {
+      "additionalProperties": false,
+      "description": "V3 evidence types do not relabel native metadata as a v2 fixture.",
+      "properties": {
+        "provider": {
+          "const": "opencv_yunet_sface",
+          "default": "opencv_yunet_sface",
+          "title": "Provider",
+          "type": "string"
+        },
+        "detector_model_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Detector Model Sha256",
+          "type": "string"
+        },
+        "embedding_model_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Embedding Model Sha256"
+        },
+        "evidence": {
+          "enum": [
+            "native_unverified",
+            "native_verified",
+            "synthetic_contract_fixture"
+          ],
+          "title": "Evidence",
+          "type": "string"
+        },
+        "artifact_evidence": {
+          "enum": [
+            "configured_only",
+            "verified_local_artifacts",
+            "synthetic_contract_fixture"
+          ],
+          "title": "Artifact Evidence",
+          "type": "string"
+        },
+        "runtime_version": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Runtime Version"
+        }
+      },
+      "required": [
+        "detector_model_sha256",
+        "evidence",
+        "artifact_evidence"
+      ],
+      "title": "FaceFrameProvenance",
+      "type": "object"
+    },
+    "RecognitionSession": {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "recognition",
+          "default": "recognition",
+          "title": "Operation",
+          "type": "string"
+        },
+        "session_id": {
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "generation": {
+          "minimum": 1,
+          "title": "Generation",
+          "type": "integer"
+        },
+        "owner_operation": {
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "title": "Owner Operation",
+          "type": "string"
+        },
+        "camera_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f]+$",
+          "title": "Camera Id",
+          "type": "string"
+        },
+        "channel": {
+          "const": 0,
+          "default": 0,
+          "title": "Channel",
+          "type": "integer"
+        },
+        "modality": {
+          "enum": [
+            "face",
+            "speaker"
+          ],
+          "title": "Modality",
+          "type": "string"
+        },
+        "deadline_monotonic": {
+          "exclusiveMinimum": 0,
+          "title": "Deadline Monotonic",
+          "type": "number"
+        },
+        "seconds": {
+          "default": 2.0,
+          "maximum": 8,
+          "minimum": 2,
+          "title": "Seconds",
+          "type": "number"
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "generation",
+        "owner_operation",
+        "camera_id",
+        "modality",
+        "deadline_monotonic",
+        "simulated"
+      ],
+      "title": "RecognitionSession",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Versioned request metadata cannot manufacture a provider or admission.",
+  "properties": {
+    "schema_version": {
+      "const": 3,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "message_kind": {
+      "const": "face_frame_request",
+      "default": "face_frame_request",
+      "title": "Message Kind",
+      "type": "string"
+    },
+    "session": {
+      "$ref": "#/$defs/RecognitionSession"
+    },
+    "provenance": {
+      "$ref": "#/$defs/FaceFrameProvenance"
+    }
+  },
+  "required": [
+    "schema_version",
+    "session",
+    "provenance"
+  ],
+  "title": "NativeFaceRequest",
+  "type": "object"
+}
