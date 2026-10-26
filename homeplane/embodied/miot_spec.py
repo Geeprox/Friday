@@ -12,12 +12,27 @@ def properties(spec):
     if not isinstance(spec, dict) or not isinstance(spec.get('services', []), list):
         raise ValueError('miot_spec_invalid')
     result = {}
+    service_ids = set()
     for service in spec.get('services', []):
         if not isinstance(service, dict) or not isinstance(service.get('properties', []), list):
             raise ValueError('miot_spec_invalid')
+        siid = service.get('iid')
+        if type(siid) is not int or not 1 <= siid <= 65535 or siid in service_ids:
+            raise ValueError('miot_spec_invalid')
+        service_ids.add(siid)
+        property_ids = set()
         for prop in service.get('properties', []):
             if not isinstance(prop, dict) or not isinstance(prop.get('type', ''), str):
                 raise ValueError('miot_spec_invalid')
+            piid, access = prop.get('iid'), prop.get('access')
+            if (
+                type(piid) is not int or not 1 <= piid <= 65535 or piid in property_ids
+                or type(access) is not list or any(
+                    type(item) is not str or item not in {'read', 'write', 'notify'} for item in access
+                ) or len(access) != len(set(access))
+            ):
+                raise ValueError('miot_spec_invalid')
+            property_ids.add(piid)
             urn = prop.get('type', '').split(':')
             if len(urn) < 4 or urn[2] != 'property':
                 continue
@@ -31,7 +46,10 @@ def properties(spec):
 
 def property_ref(props, name, access):
     prop = props.get(name)
-    if (not prop or access not in prop.get('access', [])
+    rights = prop.get('access') if isinstance(prop, dict) else None
+    if (not prop or type(rights) is not list
+            or any(type(item) is not str or item not in {'read', 'write', 'notify'} for item in rights)
+            or len(rights) != len(set(rights)) or access not in rights
             or any(type(prop.get(k)) is not int or not 1 <= prop[k] <= 65535 for k in ('siid', 'piid'))):
         raise ValueError('miot_capability_unavailable')
     return prop['siid'], prop['piid']
@@ -78,13 +96,40 @@ def optional_cover():
         return None
 
 
+_CAMERA_CAPABILITIES = {
+    'cruise': ('cruise', 'cruise-switch'),
+    'human_tracking': ('camera-control', 'human-tracking'),
+    'pet_tracking': ('ai-detection', 'pet-tracking'),
+    'human_close_up': ('ai-detection', 'human-close-up'),
+    'camera_power': ('camera-control', 'on'),
+    'presets': ('camera-fav-area', 'fav-area'),
+    'active_preset': ('camera-fav-area', 'active-fav-area'),
+}
+
+
+def camera_property(camera, capability, access):
+    service_name, property_name = _CAMERA_CAPABILITIES[capability]
+    spec = camera.get('spec', {})
+    if not isinstance(spec, dict) or not isinstance(spec.get('services', []), list):
+        raise ValueError('miot_spec_invalid')
+    properties(spec)  # Validate all IIDs and permissions before selecting a service.
+    # The same property name (for example "on") may occur in several services.
+    # Require the semantic service as well as the property; never guess an IID.
+    services = []
+    for service in spec.get('services', []):
+        if not isinstance(service, dict) or not isinstance(service.get('type', ''), str):
+            raise ValueError('miot_spec_invalid')
+        urn = service.get('type', '').split(':')
+        if len(urn) >= 4 and urn[2] == 'service' and urn[3] == service_name:
+            services.append(service)
+    if len(services) != 1:
+        raise ValueError('miot_capability_unavailable')
+    return property_ref(properties({'services': services}), property_name, access)
+
+
 def camera_properties(camera):
-    props = properties(camera.get('spec', {}))
-    aliases = {'cruise': 'cruise', 'human_tracking': 'human-tracking',
-               'pet_tracking': 'pet-tracking', 'human_close_up': 'human-close-up',
-               'camera_power': 'on', 'presets': 'preset-list', 'active_preset': 'preset-id'}
-    reads = {key: property_ref(props, name, 'read') for key, name in aliases.items()}
-    for key, name in aliases.items():
+    reads = {key: camera_property(camera, key, 'read') for key in _CAMERA_CAPABILITIES}
+    for key in _CAMERA_CAPABILITIES:
         if key != 'presets':
-            property_ref(props, name, 'write')
+            camera_property(camera, key, 'write')
     return reads

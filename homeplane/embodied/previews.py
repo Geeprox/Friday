@@ -15,9 +15,9 @@ from homeplane.runtime_log import RuntimeLog
 
 async def camera_is_open(selected, *, client_factory=None, parameter_factory=None):
     """Read privacy state without changing it; failed reads remain unavailable."""
-    from .miot_spec import properties, property_ref
+    from .miot_spec import camera_property
 
-    siid, piid = property_ref(properties(selected.get('spec', {})), 'on', 'read')
+    siid, piid = camera_property(selected, 'camera_power', 'read')
     if client_factory is None:
         from miot.cloud import MIoTHttpClient
         client_factory = MIoTHttpClient

@@ -25,7 +25,8 @@ async def test_privacy_readback_never_turns_transport_failure_into_closed(tmp_pa
     monkeypatch.setattr(paths, 'PRIVATE', tmp_path)
     client = SimpleNamespace(get_props_async=AsyncMock(return_value=reply), deinit_async=AsyncMock())
     selected = {'device': {'did': 'SYNTHETIC'}, 'spec': {'services': [
-        {'iid': 7, 'properties': [{'iid': 9, 'type': 'urn:miot-spec-v2:property:on:00000006', 'access': ['read']}]}]}}
+        {'iid': 7, 'type': 'urn:miot-spec-v2:service:camera-control:00007803',
+         'properties': [{'iid': 9, 'type': 'urn:miot-spec-v2:property:on:00000006', 'access': ['read']}]}]}}
     async def read():
         return await previews.camera_is_open(selected, client_factory=lambda **_: client,
                                              parameter_factory=SimpleNamespace)

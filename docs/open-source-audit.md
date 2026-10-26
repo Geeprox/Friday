@@ -11,7 +11,7 @@ commit. Historical private branches, tags, backups, household exports, runtime
 state, screenshots and field reports are excluded. The original repository and
 local recovery bundles remain private; their histories are not public inputs.
 
-The frozen publication contains 1,404 reviewed files, including source, tests, deployment scripts, workflow files,
+The frozen publication contains 1,405 reviewed files, including source, tests, deployment scripts, workflow files,
 documentation, dependency locks and included assets. The only video fixture is a
 hash-pinned generated color-bar sample. App icons and third-party artwork/license
 notices were retained. No model weights or restricted native SDKs are distributed.
