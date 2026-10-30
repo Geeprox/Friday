@@ -21,6 +21,14 @@ jobs:
           node-version: '24'
       - run: uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connection --extra privacy-playback
       - run: npm --prefix workers/geek ci --ignore-scripts
+      - name: Install media tools on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+      - name: Install media tools on macOS
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
       - run: uv run --no-sync python -m pytest -q --basetemp=/tmp/friday-tests
       - run: node --test tests/audio.test.mjs
       - run: node --test workers/geek/crypto.test.mjs

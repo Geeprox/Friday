@@ -16,6 +16,10 @@
 
 首次安装播放依赖：
 
+先通过系统包管理器安装 FFmpeg（包含 `ffprobe`）：macOS 使用 `brew install ffmpeg`，
+Debian/Ubuntu 使用 `sudo apt-get install ffmpeg`。Friday 只查找已安装且权限安全的工具，
+不会自动下载或执行第三方安装脚本。基础家庭连接不依赖这些媒体工具。
+
 ```sh
 uv sync --locked --extra privacy-playback
 python3 scripts/archive_privacy.py status

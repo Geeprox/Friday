@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from homeplane.api import create_app
 from homeplane.archive_contracts import ArchiveResolveRequest
+from homeplane.media_tools import ffprobe_executable
 
 
 def protected_api_plan(tmp_path):
@@ -34,6 +35,7 @@ def protected_api_plan(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node unavailable for DOM contract")
+@pytest.mark.skipif(ffprobe_executable() is None, reason="Installed ffprobe required for the protected API plan")
 def test_player_mute_seek_receipt_preservation_stop_and_late_source_guards(tmp_path):
     actual_plan, actual_lookup = protected_api_plan(tmp_path.resolve())
     script = r"""

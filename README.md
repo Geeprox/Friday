@@ -69,6 +69,10 @@ python3 scripts/audit_publication.py
 
 Node.js 24.5+ 用于 JS 测试及可选米家极客版 worker。首次使用 worker：`npm --prefix workers/geek ci --ignore-scripts`。Miloco 原生 SDK、ARL 私有候选包与真实硬件测试需要额外本机输入，缺失时会明确跳过对应外部集成测试。默认开发测试不需要家庭凭据。
 
+完整媒体回归还需安装 FFmpeg（包含 `ffprobe`）：macOS 使用 `brew install ffmpeg`，
+Debian/Ubuntu 使用 `sudo apt-get install ffmpeg`。CI 会安装它们并执行真实合成媒体检查；
+本机缺少工具时，相应集成测试明确跳过。
+
 macOS 桌面源码位于 `native/FridayDesktop/`，用 SwiftPM 构建；[桌面构建说明](docs/FRIDAY-DESKTOP-BUILD.md) 说明本机运行环境与签名边界。基础 Web Console 支持 macOS/Linux，无需桌面打包。
 
 代码采用 [MIT](LICENSE)。外部服务、SDK 与模型保持各自许可，见 [第三方声明](THIRD_PARTY_NOTICES.md)。Miloco、HA、ARL 和模型权重不随 Friday 分发。
