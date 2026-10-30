@@ -204,7 +204,10 @@ async def test_api_reading_is_silent_no_evidence_injection_and_test_is_explicit(
         report = (await client.get("/api/embodied/safety")).json()
         assert report["policy"]["enabled"] is False
         assert report["worker"]["status"] == "not_running"
-        assert all(c["status"] == "unavailable" for c in report["capabilities"][1:])
+        assert all(c["status"] == "unavailable" for c in report["capabilities"]
+                   if c["id"] in {"crying", "infant_face_covered", "rough_handling"})
+        assert report["visual_review"]["enabled"] is False
+        assert runtime.visual.engine.process is None
         speaker.assert_not_awaited()
         assert (await client.post("/api/embodied/safety/events", json={"kind": "fall"})).status_code == 405
         assert (

@@ -8,6 +8,7 @@ from uuid import uuid4
 from .contracts import Entity, Event, ExternalRuleRecord, Observation, Snapshot
 from .quality import resolve
 from .simulated_measurements import SimulatedMeasurements
+from .event_provenance import entity_source_context
 
 FIXTURE = Path(__file__).resolve().parent.parent / "fixtures/homeplane/house.json"
 SCENARIOS = {"calibration-training", "baseline", "stale-temperature", "all-sources-bad", "recovered", "transport-gap",
@@ -22,6 +23,9 @@ class Simulator:
         self.fixture = json.loads(fixture.read_text())
         if self.fixture.get("simulated") is not True:
             raise ValueError("simulator_requires_explicit_simulated_fixture")
+        self.source_fixture_identity = hashlib.sha256(json.dumps(
+            self.fixture, ensure_ascii=True, sort_keys=True, separators=(',', ':')
+        ).encode('utf8')).hexdigest()
         self.entities = [Entity.model_validate(e) for e in self.fixture["entities"]]
         if not all(e.simulated for e in self.entities):
             raise ValueError("simulator_entities_must_be_simulated")
@@ -103,7 +107,10 @@ class Simulator:
             for state in canonical:
                 signature = (state.quality, state.selected_source, state.value_interval, tuple(state.reasons))
                 if self.last_quality.get(state.id) != signature:
+                    sources = [entity for entity in self.measurements.entities if state.id == entity.id
+                               or any(state.id == entity.id + ':' + capability.name for capability in entity.capabilities)]
                     self.events.append(Event(source="simulator-quality", kind="quality-change", correlation_id=str(uuid4()),
+                        source_context=entity_source_context(self, sources[0]) if len(sources) == 1 else None,
                         wall_time=now, monotonic_time=self.monotonic(), boot_id=self.boot_id, simulated=True,
                         payload={"entity_id": state.id, "quality": state.quality, "selected_source": state.selected_source,
                                  "reasons": state.reasons, "scenario": self.scenario,
@@ -143,6 +150,7 @@ class Simulator:
         self.managed_values[(entity.id,"contact")] = value
         self.version += 1
         event = Event(source="simulator:explicit-contact",kind="state-transition",correlation_id=str(uuid4()),
+            source_context=entity_source_context(self, entity),
             wall_time=self.now(),monotonic_time=self.monotonic(),boot_id=self.boot_id,simulated=True,
             payload={"entity_id":entity.id,"capability":"contact","from":old,"to":value,"trigger_eligible":True})
         self.events.append(event)

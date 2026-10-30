@@ -10,7 +10,11 @@ Web 控制面与合成示例，不下载模型、Miloco SDK 或家庭数据。
 
 ## 2. Home Assistant
 
-优先复用已有 HA。通过 Console 设置中的发现与 OAuth 登录连接；多实例时选择目标。
+优先复用已有 HA。首次启动桌面版会直接打开“连接你的家”；Web 示例首页和“连接”页
+也显示同一清单。点击“查找并连接”：只有一个实例且只有一个地址时会进入它的登录页；
+多个实例或地址需要选择。没有发现结果时可直接填写完整地址，不必编辑配置文件。
+完成 Home Assistant 官方登录后，点击“连接并读取设备”。地址、授权、实际家庭读取
+分别显示完成状态；服务离线时保留已有授权，可重试或更改地址。
 纯 CLI 的只读接入可在本机设置 `HOME_HA_URL`、`HOME_HA_INSTANCE`、`HOME_HA_TOKEN`，
 然后执行 `./bin/home --mode ha-read-only serve`。不要把真实 token 写入命令示例或聊天。
 
@@ -45,6 +49,11 @@ python3 scripts/setup-dependencies.py ha-up
 Friday 基础运行不依赖 Miloco。摄像头能力需要账号、设备支持、SDK/媒体协议以及
 独立安装的上游服务；不是安装 Friday 后自动开启摄像头。
 
+“连接”页的“摄像头与互动”单独标为可选，不阻止家庭设备连接。安装与授权入口直接
+可见。已有旧版兼容服务的用户可在“设置摄像头连接 → 已有兼容的 Miloco 服务？”中
+填写地址并检查服务与米家绑定；这项检查不取流或开启识别。当前 Miloco 插件按下方
+官方平台指南安装，不能把旧版 HTTP 服务配置当作当前插件已经接入的证明。
+
 ```sh
 python3 scripts/setup-dependencies.py miloco-source
 ```
@@ -78,8 +87,23 @@ ARL 不属于基础依赖，缺少可信身份/任务契约时模型功能明确
 模型或获取授权。`python3 scripts/embodied/runtime.py --check` 列出缺失输入，
 `--build-native` 编译当前主机的 Vision worker 与摄像头 socket helper，不安装或启动它们。
 
+可选的 [本机画面复核](local-video-review.md) 使用独立、按需加载的 MLX 子进程。
+默认关闭，不随基础部署下载模型或开启监测。
+
 ## 5. 验收顺序
 
 依次记录：基础服务健康 → HA 登录 → 当前注册表读取 → 自己的户型导入 →
 单设备动作预览/授权 → 实际用户确认 → 可选摄像头/音频/模型。发现、注册、HTTP200、
 ACK、playing 或帧数都不能证明物理效果、音画同步或识别准确率。
+
+## 6. 设备控制权限
+
+HA 登录与读取成功不会自动授予 Friday 设备写入权限。首次连接可以先查看状态；
+控制范围由本机操作员单独设置，不能通过登录回调或发现结果扩大权限。
+
+本机操作员应根据当前 HA 注册表与设备能力，审阅 `HomeDeviceAuthority`
+（`homeplane/action_contracts.py`）的目标实例、操作范围、可选实体限制与有效期，
+再将授权保存在忽略的私有目录。Web 服务使用其配置目录下的 `action-authority.json`；
+桌面版使用其私有 embodied 目录下的 `private/action-authority.json`，配置后重新连接。
+不要复制其他家庭的实例或实体标识。授权文件不是 HA 令牌，不需要在聊天或公开仓库中提交。
+已授权的控制可以在“连接 → 高级连接设置 → 家庭数据”中暂停或恢复；暂停不会撤回已发送的指令。

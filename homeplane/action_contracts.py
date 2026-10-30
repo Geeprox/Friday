@@ -37,12 +37,26 @@ DeviceOperation = Literal[
     "fan.set",
     "fan.percentage",
     "climate.mode",
+    "climate.power",
     "climate.temperature",
+    "climate.fan_mode",
+    "light.color_temperature",
     "cover.position",
+    "cover.tilt",
     "cover.state",
     "lock.set",
     "number.value",
     "select.option",
+    "media_player.power",
+    "media_player.volume",
+    "media_player.mute",
+    "media_player.playback",
+    "humidifier.power",
+    "humidifier.humidity",
+    "humidifier.mode",
+    "water_heater.power",
+    "water_heater.mode",
+
 ]
 
 
@@ -67,12 +81,22 @@ class DevicePlanRequest(Contract):
             "fan.set": "power",
             "fan.percentage": "percentage",
             "climate.mode": "hvac_mode",
+            "climate.power": "power",
             "climate.temperature": "temperature",
+            "climate.fan_mode": "fan_mode",
+            "light.color_temperature": "color_temp_kelvin",
             "cover.position": "position",
+            "cover.tilt": "tilt_position",
             "cover.state": "state",
             "lock.set": "lock",
             "number.value": "value",
             "select.option": "option",
+            "media_player.power": "power",
+            "media_player.volume": "volume_level",
+            "media_player.mute": "is_volume_muted",
+            "media_player.playback": "state",
+            "humidifier.power":"power", "humidifier.humidity":"humidity", "humidifier.mode":"mode",
+            "water_heater.power":"power", "water_heater.mode":"operation_mode",
         }[self.operation]
         if set(self.desired) != {key}:
             raise ValueError("unsupported_parameters")
@@ -84,15 +108,22 @@ class DevicePlanRequest(Contract):
             and value not in ("locked", "unlocked")
         ):
             raise ValueError("absolute_state_required")
-        if key in {"percentage", "position"} and (type(value) is not int or not 0 <= value <= 100):
+        if key in {"percentage", "position", "tilt_position", "humidity"} and (type(value) is not int or not 0 <= value <= 100):
             raise ValueError("invalid_percentage")
         if key in {"temperature", "value"} and (type(value) not in (int, float) or not math.isfinite(value)):
             raise ValueError("finite_numeric_parameter_required")
-        if key in {"hvac_mode", "option"} and (
+        if key in {"hvac_mode", "option", "fan_mode", "mode", "operation_mode"} and (
             not isinstance(value, str) or not 1 <= len(value) <= 128 or any(ord(c) < 32 for c in value)
         ):
             raise ValueError("invalid_choice")
-        if key == "state" and value not in ("open", "closed"):
+        if key == 'color_temp_kelvin' and (type(value) is not int or not 1000<=value<=40000):
+            raise ValueError('invalid_color_temperature')
+        if key == 'volume_level' and (type(value) not in (int,float) or not math.isfinite(value) or not 0<=value<=1):
+            raise ValueError('invalid_volume')
+        if key == 'is_volume_muted' and type(value) is not bool:
+            raise ValueError('absolute_mute_required')
+        states=('playing','paused') if self.operation=='media_player.playback' else ('open','closed','stopped')
+        if key == "state" and value not in states:
             raise ValueError("absolute_state_required")
         return self
 
@@ -105,7 +136,7 @@ class HomeDeviceAuthority(Contract):
     ha_url: str = Field(min_length=1, max_length=512)
     ha_instance: str = Field(min_length=1, max_length=96)
     scope: Literal["all_registered_devices"]
-    operations: list[DeviceOperation] = Field(min_length=1, max_length=11)
+    operations: list[DeviceOperation] = Field(min_length=1, max_length=24)
     external_entity_ids: list[str] | None = Field(default=None, min_length=1, max_length=256)
     expires_at: AwareDatetime | None
 
@@ -121,7 +152,7 @@ class HomeDeviceAuthority(Contract):
     def bounded_entity_scope(cls, value):
         import re
         if value is not None and (len(value) != len(set(value)) or any(
-                not re.fullmatch(r'(?:light|switch|climate|cover|fan|lock|number|select)\.[a-z0-9_]{1,220}', item)
+                not re.fullmatch(r'(?:light|switch|climate|cover|fan|lock|number|select|media_player|humidifier|water_heater)\.[a-z0-9_]{1,220}', item)
                 for item in value)):
             raise ValueError('invalid_entity_scope')
         return value

@@ -99,8 +99,18 @@ def main():
     (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
     native_inputs = {str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in NATIVE.rglob('*.swift') if not any(x in p.parts for x in ('build', '.build', 'tests'))}
+    build_inputs = {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in (NATIVE/'backend/desktop_backend.py', NATIVE/'Resources/product-inputs.json',
+                                 NATIVE/'Resources/com.friday.household.service.plist',
+                                 NATIVE/'Resources/AppIcon/Friday.icns', Path(__file__),
+                                 NATIVE/'script/install_desktop.py')}
+    packaged_inputs = {str(path.relative_to(contents)): hashlib.sha256(path.read_bytes()).hexdigest()
+                       for path in (backend/'desktop_backend.py', launcher, contents/'Info.plist',
+                                    agents/'com.friday.household.service.plist', resources/'Friday.icns')}
     (resources / 'FRIDAY-SOURCE-INTEGRATION.json').write_text(json.dumps(
-        {'schema': 2, 'records': records, 'native_inputs': native_inputs}, indent=2))
+        {'schema': 3, 'records': records, 'native_inputs': native_inputs,
+         'build_inputs': build_inputs, 'packaged_inputs': packaged_inputs,
+         'runtime_python': str(args.python.absolute())}, indent=2))
     subprocess.run(['codesign', '--force', '--deep', '--sign', args.signing_identity, str(destination)], check=True)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(destination)], check=True)
     print(json.dumps({**plan, 'built': True, 'source_files': len(records), 'signature_verified': True,

@@ -39,7 +39,7 @@ export function mountRecognitionDebug(root,{go}={}){
   if(disposed||refreshing)return;refreshing=true;
   try{
    const report=await read('/api/embodied/status');if(disposed)return;
-   const names={live:'识别运行',stale:'画面延迟',shutter_closed:'镜头遮蔽',connecting:'正在连接',stopped:'服务暂停',not_configured:'尚未配置',unavailable:'正在重连'};
+   const names={live:'识别运行',stale:'画面延迟',shutter_closed:'米家镜头已关闭',restore_pending:'原有巡航与跟踪设置正在恢复',paused:'摄像头感知已暂停',connecting:'正在连接',stopped:'服务暂停',not_configured:'尚未配置',unavailable:'正在重连'};
    state.textContent=names[report.state]||'等待画面';
    const value=televisionState(report.tv_viewer);tv.textContent='电视 · '+value;
    tv.title=value==='未连接'?'在客厅电视打开 Friday 后检查连接':'仅表示电视端最近上报的状态';

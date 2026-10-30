@@ -19,7 +19,8 @@ const fs=require('node:fs');
  assert.equal(m.directPower(lamp).id,'c_2');assert.equal(m.directPower(lock),null);
  assert.equal(m.directPower({...lamp,controls:[...lamp.controls,...lamp.controls]}),null);
  const quick=m.roomQuickControls([supply,offlineLamp,lamp,lock],'客厅');
- assert.equal(quick.length,1);assert.equal(quick[0].control,'c_2');assert.equal(quick[0].available,true);
+ assert.equal(quick.length,2);assert.equal(quick[0].control,'c_2');assert.equal(quick[0].available,true);
+ assert.equal(quick[1].device,'lock');assert.equal(quick[1].control,undefined);
  const bounds=m.arrangeRoomControls(Array.from({length:6},(_,i)=>({anchorX:300+(i%3)*40,anchorY:170+Math.floor(i/3)*40,w:145,h:70})),775,340);
  for(const p of bounds){assert.ok(p.x>=p.w/2+12&&p.x<=775-p.w/2-12);assert.ok(p.y>=p.h/2+54&&p.y<=340-p.h/2-36);}
  for(let i=0;i<bounds.length;i++)for(let j=i+1;j<bounds.length;j++)assert.ok(Math.abs(bounds[i].x-bounds[j].x)>144||Math.abs(bounds[i].y-bounds[j].y)>69,'room controls overlap');

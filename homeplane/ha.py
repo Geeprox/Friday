@@ -24,6 +24,7 @@ from .contracts import (
 )
 from .devices import project_ha
 from .quality import resolve
+from .event_provenance import entity_source_context
 
 from .runtime_log import observe
 
@@ -182,7 +183,10 @@ class HAReadOnlyAdapter:
                 self._areas = {r["area_id"]: r for r in results[2]}
 
     def _event(self, kind, payload, now, *, source_seq=None, received_at=None):
+        entities = [entity for entity in self._last.entities if entity.id == payload.get('entity_id')] if self._last else []
+        source_context = entity_source_context(self, entities[0]) if len(entities) == 1 else None
         event = Event(source="ha", kind=kind, correlation_id=str(uuid4()), wall_time=now,
+                      source_context=source_context,
                       monotonic_time=time.monotonic(), boot_id=self._boot, payload=payload, source_seq=source_seq,
                       received_at=received_at or datetime.now(timezone.utc),
                       time_basis="upstream_event" if payload.get("upstream_event") == "state_changed" else "local_event")
@@ -341,6 +345,8 @@ class HAReadOnlyAdapter:
     def _project(self, rows, now, limits, *, emit_snapshot, snapshot_origin=None):
         self._light_attributes = {r["entity_id"]: r.get("attributes", {}) for r in rows if r["entity_id"].startswith("light.")}
         self._control_attributes = {r["entity_id"]:r.get("attributes", {}) for r in rows}
+        from .switch_channels import project as switch_modes
+        self._switch_channels=switch_modes(self._registry,rows)
         entities, observations, states = [], [], []
         for row in rows:
             external = row["entity_id"]
@@ -360,7 +366,8 @@ class HAReadOnlyAdapter:
             # Only qualified live on/off event edges; a cached read is not a trigger.
             if (stable and self._stream and self._stream.ready and not self._stream.gap
                     and domain in {"binary_sensor", "light", "switch", "fan"}
-                    and row.get("state") in {"on", "off"}):
+                    and row.get("state") in {"on", "off"}
+                    and not self._switch_channels.get(external,{}).get("role") in {"wireless","unknown"}):
                 caps.append(Capability(name=capability + ".transition", access="event", support="supported"))
             if domain == "light":
                 caps.append(Capability(name="light.set", access="write", support="unsupported"))
@@ -368,7 +375,7 @@ class HAReadOnlyAdapter:
                                    room=self._areas.get(area, {}).get("name") or area, physical_source_id=physical,
                                    bindings=bindings, capabilities=caps,
                                    state_version=hashlib.sha256(json.dumps([external, stable, registry.get("device_id"),
-                                               row.get("state"), attrs], sort_keys=True).encode()).hexdigest()))
+                                               row.get("state"), attrs, self._switch_channels.get(external)], sort_keys=True).encode()).hexdigest()))
             written = _date(row.get("last_reported") or row.get("last_updated"))
             value = row.get("state")
             unavailable = value in ("unknown", "unavailable", None)
@@ -396,7 +403,7 @@ class HAReadOnlyAdapter:
             # A recent, available on/off read is a reported latch, not a new
             # hardware sample or physical confirmation. Temperature remains unknown.
             if (domain in {"light", "switch", "fan"} and value in {"on", "off"}
-                    or domain in {"climate", "cover", "lock", "number", "select"} and not unavailable):
+                    or domain in {"climate", "cover", "lock", "number", "select", "media_player", "humidifier", "water_heater"} and not unavailable):
                 states[-1] = resolve(observations[-1], now, ttl_seconds=30)
         evidence = {"rows": sorted(rows, key=lambda r: r["entity_id"]), "registry": self._registry,
                     "devices": self._devices, "areas": self._areas, "registry_ok": self._registry_ok,

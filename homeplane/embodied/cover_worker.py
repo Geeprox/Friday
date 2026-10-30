@@ -10,6 +10,9 @@ from .paths import PRIVATE
 
 async def run():
     request=json.loads(sys.stdin.read(2048));action=request['action']
+    from .miot_spec import cover_binding,cover_revision
+    binding=cover_binding();revision=cover_revision(binding)
+    if action!='read' and request.get('expected_revision')!=revision:raise ValueError('cover_binding_changed')
     from .smart_home import Curtain
     curtain=Curtain()
     if action=='read':
@@ -18,7 +21,9 @@ async def run():
         finally:await curtain.close()
     from homeplane.action_contracts import HomeDeviceAuthority
     authority=HomeDeviceAuthority.model_validate_json((PRIVATE/'action-authority.json').read_bytes())
-    if not authority.enabled or authority.expires_at is not None and authority.expires_at<=datetime.now(UTC):raise ValueError('unauthorized')
+    if (not authority.enabled or authority.external_entity_ids is not None
+            or authority.expires_at is not None and authority.expires_at<=datetime.now(UTC)
+            or ('cover.position' if action.startswith('position:') else 'cover.state') not in authority.operations):raise ValueError('unauthorized')
     event=request['event_id']
     if not isinstance(event,str)or not 1<=len(event)<=160:raise ValueError('invalid_event')
     if action not in {'open','close','stop'}and not (action.startswith('position:')and action[9:].isdigit()and 0<=int(action[9:])<=100):raise ValueError('unsupported_action')
@@ -26,7 +31,7 @@ async def run():
     try:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         path=PRIVATE/'cover-ledger.json';entries=json.loads(path.read_text())if path.exists()else{}
-        key=hashlib.sha256(event.encode()).hexdigest()
+        key=hashlib.sha256((revision+':'+event).encode()).hexdigest()
         if key in entries:
             if entries[key].get('requested_action',action)!=action:return {'status':'rejected','acknowledged':False,'reached_target':False}
             return entries[key]

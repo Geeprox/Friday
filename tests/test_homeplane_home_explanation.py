@@ -1,17 +1,22 @@
-"""Original domain consumers over synthetic local records; no live media/IO.
+"""Original domain consumers over synthetic local records; no household/device IO.
 
-The synthetic reader guard verifies composition only. It is not the F5 media
-route and cannot qualify household NAS, decoded original video or audibility.
+The synthetic reader guard verifies composition only. Playback cases use the
+repository's generated video through the real protected-preview producer. This
+does not qualify household NAS, scene detector accuracy or audibility.
 """
 import asyncio
+import shutil
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from homeplane.archive_index import ArchiveIndex
 from homeplane.archive_playback import ArchivePlayer
+from homeplane.archive_contracts import ArchivePlaybackRequest, ArchiveResolution, ArchiveTimeRange
+from homeplane.archive_worker import run as archive_worker_run
 from homeplane.contracts import Event
 from homeplane.core import HomeCore
 from homeplane.home_explanation import HomeExplanation
@@ -58,6 +63,47 @@ class SyntheticReaderGuard:
         except Exception:
             self.revoke(plan_id, context)
             raise
+
+
+class PreparedPreviewFixture:
+    """Stage genuine protected leases before testing short-lived consumers.
+
+    Generation is real, but delivery is a separate deterministic test phase.
+    Every delivery must match the exact request and the producer's live lease.
+    """
+    def __init__(self, rig):
+        self.rig, self.raw_prepare, self.pending = rig, rig.player.prepare, []
+
+    async def produce(self, request):
+        return await self.raw_prepare(request)
+
+    async def stage(self, answer, reference=None):
+        resolution = ArchiveResolution.model_validate(answer.domain["archive"])
+        segment = next(item for item in resolution.segments
+                       if item.status == "ready" and (reference is None or item.media_ref == reference))
+        request = ArchivePlaybackRequest(
+            expected_context=resolution.context_fingerprint, camera_id=resolution.camera_id,
+            media_ref=segment.media_ref, time_range=ArchiveTimeRange(
+                start=max(resolution.time_range.start, segment.time_range.start),
+                end=min(resolution.time_range.end, segment.time_range.end)))
+        plan = await self.produce(request)
+        lease = self.rig.player.leases[plan.plan_id]
+        assert lease.plan is plan and self.rig.player.protected_preview(plan.plan_id)
+        preview = Path(lease.binding["root"], lease.binding["path"])
+        original = Path(lease.binding["source_root"], lease.binding["source_path"])
+        assert preview.is_file() and preview != original
+        assert lease.binding["signature"] != lease.binding["source_signature"]
+        self.pending.append((request, plan, lease))
+        return plan
+
+    async def prepare(self, request):
+        assert self.pending, "stage a real protected lease before the consumer phase"
+        expected, plan, lease = self.pending.pop(0)
+        assert request == expected
+        assert self.rig.player.leases.get(plan.plan_id) is lease
+        assert self.rig.player.protected_preview(plan.plan_id)
+        self.rig.player.valid(lease)
+        return plan
 
 
 @pytest.fixture
@@ -139,6 +185,25 @@ async def rig(tmp_path):
     await index.close()
     query.close()
     store.close()
+
+
+@pytest.fixture
+async def protected_playback(rig):
+    """Use actual synthetic media and protection, never invented privacy flags."""
+    if shutil.which("ffprobe") is None:
+        pytest.skip("Installed ffprobe required for generated protected playback")
+    pytest.importorskip("av")
+    pytest.importorskip("cv2")
+
+    async def actual_probe(root, operation, payload):
+        assert operation == "playback-info"
+        rig.runner_calls.append(operation)
+        return await asyncio.to_thread(archive_worker_run, root, operation, payload)
+
+    rig.index.runner = actual_probe
+    rig.previews = PreparedPreviewFixture(rig)
+    rig.player.prepare = rig.previews.prepare
+    return rig
 
 
 def turn(rig, *, session="A", serial="1", **kwargs):
@@ -343,7 +408,8 @@ async def test_default_reader_guard_holds_explicit_click_without_player_prepare(
 
 
 @pytest.mark.asyncio
-async def test_explicit_click_uses_original_player_clipped_window_and_cancel_revoke(rig):
+async def test_explicit_click_uses_original_player_clipped_window_and_cancel_revoke(protected_playback):
+    rig = protected_playback
     event(rig)
     rig.live.metadata = rig.live.content = True
     guard = SyntheticReaderGuard(rig)
@@ -356,10 +422,16 @@ async def test_explicit_click_uses_original_player_clipped_window_and_cancel_rev
     forged = await rig.service.prepare_playback(turn(rig, serial="2", kind="playback", evidence_ref="a" * 64,
                                                     expected_context=answer.context_token), context)
     assert forged.code == "archive_reference_unavailable" and not rig.runner_calls
+    await rig.previews.stage(answer, ref)
     playback = await rig.service.prepare_playback(turn(rig, serial="3", kind="playback", evidence_ref=ref,
                                                        expected_context=answer.context_token), context)
     plan = playback.domain["playback"]
     assert plan == rig.player.leases[plan["plan_id"]].plan.model_dump(mode="json")
+    assert plan["privacy_protected"] and plan["privacy_preview_generated"]
+    assert plan["privacy_mode"] == "local_full_frame_mosaic"
+    binding = rig.player.leases[plan["plan_id"]].binding
+    assert Path(binding["root"], binding["path"]).is_file()
+    assert (binding["root"], binding["path"]) != (binding["source_root"], binding["source_path"])
     assert plan["stream_url"] == "/api/archive/media/" + plan["plan_id"]
     assert plan["start_offset_seconds"] == 5 and plan["end_offset_seconds"] == 55
     assert plan["simulated"] and not plan["decoder_verified_by_server"] and not plan["hardware_clock_verified"]
@@ -369,7 +441,8 @@ async def test_explicit_click_uses_original_player_clipped_window_and_cancel_rev
 
 
 @pytest.mark.asyncio
-async def test_content_expiration_and_late_revocation_revoke_original_lease(rig, monkeypatch):
+async def test_content_expiration_and_late_revocation_revoke_original_lease(protected_playback, monkeypatch):
+    rig = protected_playback
     event(rig)
     rig.live.metadata = rig.live.content = True
     guard = SyntheticReaderGuard(rig)
@@ -377,12 +450,14 @@ async def test_content_expiration_and_late_revocation_revoke_original_lease(rig,
     context = rig.context()
     answer = await rig.service.answer(question(rig), context)
     ref = answer.domain["archive"]["segments"][0]["media_ref"]
+    await rig.previews.stage(answer, ref)
     prepared = await rig.service.prepare_playback(turn(rig, serial="2", kind="playback", evidence_ref=ref,
                                                        expected_context=answer.context_token), context)
     rig.clock.advance(6)
     with pytest.raises(ValueError):
         guard.check(prepared.domain["playback"]["plan_id"])
     assert not rig.player.leases
+    await rig.previews.stage(answer, ref)
     prepare = rig.player.prepare
 
     async def revoke_after_original(request):
@@ -394,6 +469,26 @@ async def test_content_expiration_and_late_revocation_revoke_original_lease(rig,
     result = await rig.service.prepare_playback(turn(rig, serial="3", kind="playback", evidence_ref=ref,
                                                     expected_context=answer.context_token), context)
     assert result.domain is None and not rig.player.leases and not guard.bindings
+
+    # Keep a real producer timeout/cleanup check separate from the cached
+    # consumer stages above. The three-second production budget is unchanged.
+    rig.live.content = True
+    children = []
+    launch = rig.player.privacy.launcher
+
+    async def slow_launch(*args, **kwargs):
+        await asyncio.sleep(3.1)
+        child = await launch(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(rig.player.privacy, "launcher", slow_launch)
+    monkeypatch.setattr(rig.player, "prepare", rig.previews.raw_prepare)
+    timed_out = await rig.service.prepare_playback(turn(rig, serial="4", kind="playback", evidence_ref=ref,
+                                                       expected_context=answer.context_token), context)
+    assert timed_out.domain is None and timed_out.code == "archive_playback_unavailable"
+    assert children and all(child.returncode is not None for child in children)
+    assert not rig.player.leases and not rig.player.privacy.files and not guard.bindings
 
 
 @pytest.mark.asyncio
@@ -461,13 +556,15 @@ async def test_stale_question_token_cannot_prepare_same_segment_in_a_new_window(
 
 
 @pytest.mark.asyncio
-async def test_scope_loss_at_entry_revokes_an_already_prepared_original_lease(rig):
+async def test_scope_loss_at_entry_revokes_an_already_prepared_original_lease(protected_playback):
+    rig = protected_playback
     rig.live.metadata = rig.live.content = True
     guard = SyntheticReaderGuard(rig)
     rig.service.archive = replace(rig.ports, reader_guard=guard)
     context = rig.context()
     answer = await rig.service.answer(question(rig), context)
     ref = answer.domain["archive"]["segments"][0]["media_ref"]
+    await rig.previews.stage(answer, ref)
     result = await rig.service.prepare_playback(turn(rig, serial="2", kind="playback", evidence_ref=ref,
                                                     expected_context=answer.context_token), context)
     assert result.domain["playback"] and rig.player.leases
@@ -516,13 +613,15 @@ async def test_original_archive_await_keeps_home_only_for_metadata_failure(rig, 
 
 
 @pytest.mark.asyncio
-async def test_cancel_waits_for_a_late_original_player_plan_and_revokes_it(rig, monkeypatch):
+async def test_cancel_waits_for_a_late_original_player_plan_and_revokes_it(protected_playback, monkeypatch):
+    rig = protected_playback
     rig.live.metadata = rig.live.content = True
     guard = SyntheticReaderGuard(rig)
     rig.service.archive = replace(rig.ports, reader_guard=guard)
     context = rig.context()
     answer = await rig.service.answer(question(rig), context)
     ref = answer.domain["archive"]["segments"][0]["media_ref"]
+    staged = await rig.previews.stage(answer, ref)
     entered = asyncio.Event()
     prepare = rig.player.prepare
 
@@ -537,12 +636,13 @@ async def test_cancel_waits_for_a_late_original_player_plan_and_revokes_it(rig, 
     monkeypatch.setattr(rig.player, "prepare", late)
     task = asyncio.create_task(rig.service.prepare_playback(turn(rig, serial="2", kind="playback",
                                 evidence_ref=ref, expected_context=answer.context_token), context))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), timeout=5)
     assert rig.player.leases
     cancelled = await rig.service.cancel(turn(rig, serial="stop", kind="cancel"), context)
     result = await task
     assert cancelled.phase == result.phase == "cancelled"
     assert result.domain is None and not rig.player.leases and not guard.bindings
+    assert staged.plan_id not in rig.player.leases
 
 
 @pytest.mark.asyncio
@@ -579,7 +679,8 @@ async def test_public_selected_device_cannot_silently_override_a_different_named
 
 
 @pytest.mark.asyncio
-async def test_actual_f2_shaped_same_operation_time_camera_and_original_prepare(rig):
+async def test_actual_f2_shaped_same_operation_time_camera_and_original_prepare(protected_playback):
+    rig = protected_playback
     event(rig, cause="SIMULATED-parent")
     rig.live.metadata = rig.live.content = True
     rig.live.mapping = False
@@ -594,6 +695,7 @@ async def test_actual_f2_shaped_same_operation_time_camera_and_original_prepare(
     selected = await rig.service.answer(turn(rig, serial="3", operation_id=first.operation_id,
                                             expected_context=timed.context_token, camera_id=choice["id"]), context)
     ref = selected.domain["archive"]["segments"][0]["media_ref"]
+    await rig.previews.stage(selected, ref)
     clicked = await rig.service.prepare_playback(turn(rig, serial="4", kind="playback",
         operation_id=first.operation_id, expected_context=selected.context_token, evidence_ref=ref), context)
     assert first.phase == "clarify" and timed.domain["query"] == rig.returned[1]
@@ -605,7 +707,8 @@ async def test_actual_f2_shaped_same_operation_time_camera_and_original_prepare(
 
 
 @pytest.mark.asyncio
-async def test_new_question_and_stale_old_cancel_preserve_new_operation_and_fixed_session_ttl(rig):
+async def test_new_question_and_stale_old_cancel_preserve_new_operation_and_fixed_session_ttl(protected_playback, monkeypatch):
+    rig = protected_playback
     event(rig)
     rig.live.metadata = rig.live.content = True
     guard = SyntheticReaderGuard(rig)
@@ -617,9 +720,13 @@ async def test_new_question_and_stale_old_cancel_preserve_new_operation_and_fixe
     new = await rig.service.answer(question(rig, serial="2"), rig.context())
     assert new.phase == "result" and new.expires_at == old.expires_at
     ref = new.domain["archive"]["segments"][0]["media_ref"]
+    await rig.previews.stage(new, ref)
     prepared = await rig.service.prepare_playback(turn(rig, serial="3", kind="playback",
         operation_id=new.operation_id, expected_context=new.context_token, evidence_ref=ref), rig.context())
+    assert prepared.domain is not None, prepared.model_dump_json()
     plan_id = prepared.domain["playback"]["plan_id"]
+    assert guard.bindings[plan_id][2] == rig.clock.mono + 5
+    assert prepared.expires_at == rig.clock.wall + timedelta(seconds=5)
     late = await rig.service.cancel(turn(rig, serial="late-old", kind="cancel", operation_id=old.operation_id), context)
     assert late.phase == "cancelled" and plan_id in rig.player.leases and plan_id in guard.bindings
     resurrected = await rig.service.answer(question(rig, serial="4", operation_id=old.operation_id), context)
@@ -641,13 +748,17 @@ async def test_same_operation_requires_current_token_and_cannot_borrow_another_o
 
 
 @pytest.mark.asyncio
-async def test_late_retired_original_player_plan_cleans_only_its_old_operation(rig, monkeypatch):
+async def test_late_retired_original_player_plan_cleans_only_its_old_operation(protected_playback, monkeypatch):
+    rig = protected_playback
     rig.live.metadata = rig.live.content = True
     guard = SyntheticReaderGuard(rig)
     rig.service.archive = replace(rig.ports, reader_guard=guard)
     context = rig.context()
     old = await rig.service.answer(question(rig), context)
     old_ref = old.domain["archive"]["segments"][0]["media_ref"]
+    old_ready = await rig.previews.stage(old, old_ref)
+    new_ready = await rig.previews.stage(old, old_ref)
+    assert old_ready.plan_id != new_ready.plan_id
     entered, release = asyncio.Event(), asyncio.Event()
     original = rig.player.prepare
     old_plans = []
@@ -665,22 +776,25 @@ async def test_late_retired_original_player_plan_cleans_only_its_old_operation(r
     monkeypatch.setattr(rig.player, "prepare", delayed)
     old_task = asyncio.create_task(rig.service.prepare_playback(turn(rig, serial="2", kind="playback",
         operation_id=old.operation_id, expected_context=old.context_token, evidence_ref=old_ref), context))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), timeout=5)
     newer = await rig.service.answer(question(rig, serial="3"), context)
     monkeypatch.setattr(rig.player, "prepare", original)
     new_ref = newer.domain["archive"]["segments"][0]["media_ref"]
     new_plan = await rig.service.prepare_playback(turn(rig, serial="4", kind="playback",
         operation_id=newer.operation_id, expected_context=newer.context_token, evidence_ref=new_ref), context)
     new_id = new_plan.domain["playback"]["plan_id"]
+    assert new_id == new_ready.plan_id
     release.set()
     late = await old_task
     assert late.phase == "cancelled" and late.domain is None
     assert all(plan_id not in rig.player.leases for plan_id in old_plans)
+    assert old_ready.plan_id not in rig.player.leases
     assert new_id in rig.player.leases and new_id in guard.bindings and not rig.service.retired
 
 
 @pytest.mark.asyncio
-async def test_close_waits_for_retired_plan_after_current_session_is_pruned(rig, monkeypatch):
+async def test_close_waits_for_retired_plan_after_current_session_is_pruned(protected_playback, monkeypatch):
+    rig = protected_playback
     event(rig)
     rig.live.metadata = rig.live.content = True
     guard = SyntheticReaderGuard(rig)
@@ -688,6 +802,7 @@ async def test_close_waits_for_retired_plan_after_current_session_is_pruned(rig,
     context = rig.context()
     old = await rig.service.answer(question(rig), context)
     old_ref = old.domain["archive"]["segments"][0]["media_ref"]
+    await rig.previews.stage(old, old_ref)
     original = rig.player.prepare
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -706,7 +821,7 @@ async def test_close_waits_for_retired_plan_after_current_session_is_pruned(rig,
         operation_id=old.operation_id, expected_context=old.context_token, evidence_ref=old_ref), context))
     close_task = None
     try:
-        await asyncio.wait_for(entered.wait(), timeout=2)
+        await asyncio.wait_for(entered.wait(), timeout=5)
         newer = await rig.service.answer(question(rig, serial="3"), context)
         assert newer.phase == "result" and newer.operation_id != old.operation_id
         rig.clock.advance(61)

@@ -41,7 +41,8 @@ class Curtain:
         self.get_parameter, self.set_parameter = MIoTGetPropertyParam, MIoTSetPropertyParam
         self.state.update(name=binding['name'], model=binding.get('model'))
         self.did = str(binding["did"])
-        token = json.loads((PRIVATE / "miot-session.json").read_text())["access_token"]
+        from .miot_session import MiSession
+        token = (await MiSession(PRIVATE).current())["access_token"]
         self.api = MIoTHttpClient(cloud_server=binding.get('region', 'cn'), access_token=token)
         await self.read()
 
@@ -104,7 +105,7 @@ class Curtain:
             target = int(action[9:]) if action.startswith("position:") else 100 if action == "open" else 0 if action=="close" else before
             if self.state["fault"] != 0:
                 raise RuntimeError("curtain_fault")
-            if action!="stop" and abs(before - target) <= 2 and self.state["target"] == target:
+            if self.binding.get("feedback_quality")!="unreliable" and action!="stop" and abs(before - target) <= 2 and self.state["target"] == target:
                 receipt.update(status="already_at_target", reached_target=True)
                 self.state["status"] = "ready"
                 return receipt
@@ -121,6 +122,10 @@ class Curtain:
                 raise RuntimeError("curtain_command_rejected")
             receipt["acknowledged"] = True
             receipt["status"] = "accepted"
+            if self.binding.get("feedback_quality")=="unreliable":
+                receipt.update(status="angle_unconfirmed",feedback_quality="unreliable",reached_target=False)
+                self.state["status"]="unconfirmed"
+                return receipt
             self.last_write = time.monotonic()
             self.state["status"] = "moving"
             if self.monitor:

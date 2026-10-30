@@ -60,7 +60,6 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
     draftText: initialDraft, recovery, recoveryButtons: [], sessionDeadline: null,
   };
   const root = element('section', null, {class: 'hc-root', 'aria-label': '家庭对话'});
-  const heading = element('h2', '对话');
   const status = element('p', '', {class: 'hc-status', role: 'status', 'aria-live': 'polite'});
   function showStatus(name, description) {
     status.replaceChildren(element('strong', name, {'data-hc': 'state'}), element('span', description, {'data-hc': 'state-description'}));
@@ -98,7 +97,7 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
     input.focus({preventScroll: true});
     form.scrollIntoView?.({block: 'end', inline: 'nearest', behavior: 'auto'});
   }, {class: 'hc-return hc-secondary', 'data-hc': 'return-input', 'aria-controls': inputId, hidden: ''});
-  root.append(heading, status, history, form, returnToInput);
+  root.append(status, history, form, returnToInput);
   container.append(root); // preserve the existing structured Ask query and other content
 
   function viewportBounds() {
@@ -490,6 +489,7 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
       log.append(item);
       record.article = article;
     }
+    history.hidden = !state.records.length;
     retention.textContent = state.trimmed ? `仅显示最近 ${state.records.length} 轮对话` : '本次最多保留 16 轮对话';
     if (!transportReady()) {
       const states = {connecting: ['开始中', '原文保留，可继续编辑'], expired: ['已过期', '旧预览失效，原文仍保留'], unknown: ['待确认', '会话未确认，原文仍保留']};
@@ -497,7 +497,7 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
     } else if (state.pending) showStatus('处理中', '正在处理，可停止本次请求');
     else if (state.recovery === 'editing') showStatus('继续编辑', '核对原记录后再发送');
     else if (state.active?.record.error) showStatus('待核对', '请求结果尚未确认');
-    else showStatus('对话', '按当前范围读取');
+    else showStatus('可以开始了', '问问家里的状态，或告诉 Friday 你想做什么。');
     submit.disabled = !transportReady() || !!state.pending;
     fresh.disabled = !transportReady();
     stop.disabled = !transportReady() || !state.active;

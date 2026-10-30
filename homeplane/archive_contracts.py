@@ -130,6 +130,14 @@ class ArchivePlaybackPlan(Contract):
     audio_track: bool
     codecs: list[str] = Field(max_length=4)
     clock_uncertainty_seconds: float = Field(ge=0, le=60)
+    privacy_protected: Literal[True]
+    privacy_mode: Literal["local_person_mosaic", "local_full_frame_mosaic"]
+    privacy_preview_generated: Literal[True] = True
+    privacy_degraded_reason: Literal[
+        "none", "detector_unconfigured", "detector_unavailable", "analysis_uncertain"
+    ]
+    original_modified: Literal[False] = False
+    original_copied: Literal[False] = False
     simulated: bool
     range_budget_bytes: Literal[8388608] = 8388608
     session_budget_bytes: Literal[67108864] = 67108864

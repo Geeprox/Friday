@@ -20,15 +20,28 @@ from tests.test_homeplane_ha import Socket
 
 CASES = [
     ("light.set", {"power": "on", "brightness": 8}, "light", "turn_on"),
+    ("humidifier.power",{"power":"on"},"humidifier","turn_on"),
+    ("humidifier.humidity",{"humidity":55},"humidifier","set_humidity"),
+    ("humidifier.mode",{"mode":"quiet"},"humidifier","set_mode"),
+    ("water_heater.power",{"power":"on"},"water_heater","turn_on"),
+    ("water_heater.mode",{"operation_mode":"low"},"water_heater","set_operation_mode"),
     ("switch.set", {"power": "on"}, "switch", "turn_on"),
     ("fan.set", {"power": "off"}, "fan", "turn_off"),
     ("fan.percentage", {"percentage": 50}, "fan", "set_percentage"),
+    ("climate.power", {"power": "on"}, "climate", "turn_on"),
+    ("cover.tilt", {"tilt_position": 65}, "cover", "set_cover_tilt_position"),
     ("climate.mode", {"hvac_mode": "cool"}, "climate", "set_hvac_mode"),
     ("climate.temperature", {"temperature": 24.5}, "climate", "set_temperature"),
     ("cover.position", {"position": 20}, "cover", "set_cover_position"),
     ("lock.set", {"lock": "locked"}, "lock", "lock"),
     ("number.value", {"value": 3}, "number", "set_value"),
     ("select.option", {"option": "low"}, "select", "select_option"),
+    ('climate.fan_mode',{'fan_mode':'low'},'climate','set_fan_mode'),
+    ('light.color_temperature',{'color_temp_kelvin':3500},'light','turn_on'),
+    ('media_player.power',{'power':'on'},'media_player','turn_on'),
+    ('media_player.volume',{'volume_level':.4},'media_player','volume_set'),
+    ('media_player.mute',{'is_volume_muted':True},'media_player','volume_mute'),
+    ('media_player.playback',{'state':'playing'},'media_player','media_play'),
 ]
 
 
@@ -61,25 +74,32 @@ class Registry(Socket):
 
 def rig(tmp_path):
     attributes = {
-        "light": {"brightness": 100, "supported_color_modes": ["brightness"]},
+        "humidifier":{"supported_features":1,"available_modes":["auto","quiet"],"mode":"auto","min_humidity":30,"max_humidity":70,"humidity":60,"current_humidity":65},
+        "water_heater":{"supported_features":10,"operation_list":["low","high","off"],"operation_mode":"off","current_temperature":35},
+        "light": {"brightness": 100, "supported_color_modes": ["brightness",'color_temp'],
+                  'min_color_temp_kelvin':2000,'max_color_temp_kelvin':6500,'color_temp_kelvin':3000},
         "switch": {},
         "fan": {"supported_features": 1, "percentage": 25, "percentage_step": 25},
         "climate": {
-            "supported_features": 1,
+            "supported_features": 393,
+            'fan_modes':['auto','low','high'],'fan_mode':'auto',
             "hvac_modes": ["off", "cool", "heat"],
             "min_temp": 16,
             "max_temp": 30,
             "target_temp_step": 0.5,
             "temperature": 23,
         },
-        "cover": {"supported_features": 4, "current_position": 0},
+        "cover": {"supported_features": 132, "current_position": 0, "current_tilt_position": 20},
         "lock": {},
         "number": {"min": 0, "max": 10, "step": 1},
         "select": {"options": ["low", "high"]},
         "camera": {},
         "sensor": {"device_class": "temperature", "unit_of_measurement": "°C"},
+        'media_player':{'supported_features':16781,'volume_level':.2,'is_volume_muted':False},
     }
     initial = {
+        "humidifier":"off",
+        "water_heater":"off",
         "light": "off",
         "switch": "off",
         "fan": "on",
@@ -90,6 +110,7 @@ def rig(tmp_path):
         "select": "high",
         "camera": "idle",
         "sensor": "24",
+        'media_player':'paused',
     }
     rows = [
         {
@@ -106,7 +127,11 @@ def rig(tmp_path):
         domains[d][s] = {}
     for d in ("light", "switch", "fan"):
         domains[d].update({"turn_on": {}, "turn_off": {}})
+    domains['climate']['turn_off']={}
+    domains['humidifier']['turn_off']={}
+    domains['water_heater']['turn_off']={}
     domains["lock"]["unlock"] = {}
+    domains['media_player'].update({'turn_off':{},'media_pause':{}})
 
     def handle(request):
         if request.url.path == "/api/states":
@@ -126,16 +151,18 @@ def rig(tmp_path):
             row = next(r for r in rows if r["entity_id"] == body["entity_id"])
             if not fault["mismatch"]:
                 if external in {"turn_on", "turn_off"}:
-                    row["state"] = "on" if external == "turn_on" else "off"
+                    row["state"] = ("cool" if row["entity_id"].startswith("climate.") else "on") if external == "turn_on" else "off"
                 for k, v in body.items():
                     if k == "entity_id":
                         continue
                     if k in {"hvac_mode", "option", "value"}:
                         row["state"] = str(v)
                     else:
-                        row["attributes"]["current_position" if k == "position" else k] = v
+                        row["attributes"][{"position":"current_position","tilt_position":"current_tilt_position"}.get(k,k)] = v
                 if external in {"lock", "unlock"}:
                     row["state"] = "locked" if external == "lock" else "unlocked"
+                if external in {'media_play','media_pause'}:
+                    row['state']='playing' if external=='media_play' else 'paused'
             return httpx.Response(200, json=[{"entity_id": "unrelated_changed_state"}])
         return httpx.Response(200, json=next(r for r in rows if r["entity_id"] == external))
 
@@ -187,7 +214,7 @@ async def test_all_registered_operations_plan_once_send_exact_target_and_report(
     core, rows, calls, *_ = rig(tmp_path)
     try:
         snap = await core.snapshot()
-        assert len(snap.action_targets) == 8 and not calls  # Camera and sampled sensor excluded.
+        assert len(snap.action_targets) == 11 and not calls  # Camera and sampled sensor excluded.
         trace = await plan(core, operation, desired)
         assert trace.status == "planned" and not calls and not trace.real_write_attempted
         before = json.loads(json.dumps(rows))
@@ -333,3 +360,16 @@ async def test_resume_only_restores_current_private_grant_and_never_revives_old_
         assert (await plan(core, "switch.set", {"power": "on"})).status == "planned" and not calls
     finally:
         await close(core)
+
+
+@pytest.mark.asyncio
+async def test_tilt_and_climate_power_require_device_feature_and_live_service(tmp_path):
+    core,rows,calls,*_=rig(tmp_path)
+    try:
+        await core.snapshot()
+        for kind,operation,desired,feature in [('cover','cover.tilt',{'tilt_position':50},4),('climate','climate.power',{'power':'on'},9)]:
+            row=next(r for r in rows if r['entity_id']==kind+'.simulated')
+            row['attributes']['supported_features']=feature
+            assert (await plan(core,operation,desired)).status=='rejected'
+        assert not calls
+    finally:await close(core)

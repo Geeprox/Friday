@@ -61,3 +61,51 @@ to publish, validate every optional platform, or replace physical user acceptanc
 
 See [deployment](deployment.md), [privacy](privacy.md), [layout import](layout.md)
 and [desktop build](FRIDAY-DESKTOP-BUILD.md) for installation and evidence limits.
+
+
+## Source update · 2026-10-30
+
+This update retains the existing reviewed public history and adds a source-only
+commit from an independently audited export. Private integration commits and
+development branches are not pushed. No app binaries, model weights, household
+receipts, camera frames, face portraits, device exports or credentials accompany
+the source update.
+
+The public inventory contains 1,480 files. It includes generic room/device
+controls, switch-mode admission, explicit camera power and authorization recovery,
+automation management, read-only protected recording previews, and reversible
+anonymous face-candidate grouping. Optional local visual review remains isolated
+and is not an accuracy or physical-acceptance claim.
+
+First-time connection now exposes HA discovery, address selection, OAuth login,
+explicit household reading, and optional camera setup directly in the interface.
+Saved login, active service access, camera closure and control authority are
+separate states; merely opening setup starts no discovery, stream, model or action.
+
+Verification of this update:
+
+- The locked publication regression reports 2,374 passed and 68 skipped. Seven
+  Node audio/cryptographic tests pass;
+  optional external-runtime checks are explicitly skipped when unavailable.
+- Ruff fatal-error checks, whitespace checks and the native build-entry guards
+  pass. The corresponding macOS source was Release-built and signature-verified.
+- Publication checks include a maintainer-private list of actual household
+  identifiers. The working publication and a fresh Git archive have no findings.
+- Gitleaks scans both the file export and all reachable public commit history,
+  including the new update. It reports no secrets. No new blanket allowlist was
+  added. The default scanner's digest exceptions remain narrow.
+- The official OSV batch API reports no known vulnerabilities for all 119
+  PyPI package/version pairs in the lockfile at review. The Node production
+  dependency audit also reports zero known vulnerabilities. This is a dated
+  advisory check, not a guarantee against undiscovered issues.
+- Public branches, tags, releases and issue/PR metadata were checked separately;
+  no household artifacts are included in this publication.
+
+Selective privacy models are operator-supplied and are not redistributed. The
+NudeNet package-metadata/wheel-license discrepancy is disclosed in the third-party
+notice and privacy-playback guide. Unconfigured playback uses full-frame
+protection; optional detection does not guarantee that every private scene is
+identified. NAS original media remains read-only.
+
+Real camera/microphone use, spoken-command accuracy, device physical effects and
+actual household installation coordinates remain separate acceptance gates.

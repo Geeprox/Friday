@@ -11,6 +11,7 @@ import functools
 import json
 import math
 import os
+import re
 import sqlite3
 import stat
 import sys
@@ -27,10 +28,11 @@ sys.path[:0] = [str(PRODUCT / 'vendor'), str(PRODUCT / 'app')]
 USER_SUPPORT = Path.home() / 'Library/Application Support'
 BASE = Path(os.environ.get('FRIDAY_HOME', USER_SUPPORT / 'Friday')).expanduser().absolute()
 os.environ.setdefault('FRIDAY_EMBODIED_DATA', str(BASE / 'data/embodied'))
+os.environ['FRIDAY_EMBODIED_DATA'] = str(Path(os.environ['FRIDAY_EMBODIED_DATA']).expanduser().resolve())
 
 import httpx
 from fastapi import FastAPI, Request
-from starlette.responses import JSONResponse, HTMLResponse
+from starlette.responses import JSONResponse, HTMLResponse, FileResponse, RedirectResponse
 from homeplane.arl import ARLRuntime
 from homeplane.ha import HAReadOnlyAdapter
 from homeplane.settings import SettingsConfig, SettingsService
@@ -50,15 +52,19 @@ READ_ONLY_PREPARATION_PATHS = frozenset({
     '/api/rules/text/plan', '/api/rules/plans/simulate',
     '/api/rules/analysis/reviews', '/api/rules/analysis/cancel',
     '/api/archive/playback/cancel',
+    '/api/archive/resolve', '/api/archive/playback',
+    '/api/home/evidence/query', '/api/home/evidence/detail',
+    '/api/home/recordings/stop',
     '/api/files/query', '/api/files/settings/query',
     '/api/diagnostics/export',
 })
 # RuleIR permits 12 KiB; retain a bounded envelope for this existing preview.
 READ_ONLY_REQUEST_BYTES = {'/api/rules/core/plans': 16384}
 PEOPLE_WRITE_PATHS = frozenset('/api/people/' + name for name in (
-    'name', 'merge', 'split', 'correct', 'undo', 'voice-review', 'live/register', 'live/forget', 'live/name-candidate'))
+    'name', 'merge', 'split', 'correct', 'undo', 'voice-review', 'live/register', 'live/forget', 'live/name-candidate',
+    'live/candidate-group','live/candidate-group/undo'))
 HELD_GET_PATHS = frozenset({'/api/settings/ha/discover', '/api/settings/miloco/models'})
-HELD_GET_PREFIXES = ('/api/archive/media/', '/api/family-media/originals/')
+HELD_GET_PREFIXES = ('/api/archive/media/', '/api/home/recordings/media/', '/api/family-media/originals/')
 
 
 CONNECTION_PHASES = frozenset({'configuration', 'saved_login', 'home_read', 'workspace', 'startup'})
@@ -221,7 +227,12 @@ async def real_adapter(renewal=None):
         if device_control and request.method=='POST':
             permitted={'/api/services/light/turn_on','/api/services/light/turn_off','/api/services/switch/turn_on','/api/services/switch/turn_off','/api/services/cover/set_cover_position','/api/services/cover/open_cover','/api/services/cover/close_cover','/api/services/climate/set_hvac_mode','/api/services/climate/set_temperature',
                        '/api/services/fan/turn_on','/api/services/fan/turn_off','/api/services/fan/set_percentage',
-                       '/api/services/lock/lock','/api/services/lock/unlock','/api/services/number/set_value','/api/services/select/select_option'}
+                       '/api/services/lock/lock','/api/services/lock/unlock','/api/services/number/set_value','/api/services/select/select_option',
+                       '/api/services/climate/set_fan_mode','/api/services/climate/turn_on','/api/services/climate/turn_off',
+                       '/api/services/cover/stop_cover','/api/services/cover/set_cover_tilt_position',
+                       '/api/services/media_player/turn_on','/api/services/media_player/turn_off',
+                       '/api/services/media_player/volume_set','/api/services/media_player/volume_mute',
+                       '/api/services/media_player/media_play','/api/services/media_player/media_pause'}
             if request.url.path in permitted and str(request.url).startswith(settings.ha_url.rstrip('/')+'/api/services/') and len(request.content)<=4096:
                 payload=json.loads(request.content)
                 if isinstance(payload,dict) and isinstance(payload.get('entity_id'),str):return
@@ -361,6 +372,23 @@ def local_people_catalog():
         raise
 
 
+def arl_connection_state(report):
+    """Current health only; cached readiness cannot qualify a current connection."""
+    freshness = report.get('metadata_freshness', 'unknown')
+    if report.get('metadata_refresh_pending') is True:
+        return 'refreshing'
+    if freshness == 'last_known':
+        return 'stale'
+    if freshness not in {'current', 'unavailable'}:
+        return 'unknown'
+    status = report.get('status')
+    if status == 'ready' and report.get('ready') is True and freshness == 'current':
+        return 'connected'
+    return {'disconnected': 'disconnected', 'not_running': 'not_running',
+            'sdk_missing': 'sdk_missing', 'user_disabled': 'disabled',
+            'unsafe_home': 'unsafe_configuration', 'starting': 'starting'}.get(status, 'unknown')
+
+
 async def arl_status(runtime=None):
     runtime = runtime or arl_runtime()
     report = await runtime.status(start=False, timeout=3)
@@ -369,7 +397,10 @@ async def arl_status(runtime=None):
             'metadataFreshness': report.get('metadata_freshness', 'unknown'),
             'refreshPending': report.get('metadata_refresh_pending') is True,
             'refreshCode': report.get('metadata_refresh_code', 'none'),
-            'refreshSource': report.get('metadata_refresh_source', 'sdk')}
+            'refreshSource': report.get('metadata_refresh_source', 'sdk'),
+            'connectionState': arl_connection_state(report),
+            'taskReadiness': 'unverified', 'identityVerified': False,
+            'modelCapabilityVerified': False}
 
 
 class DesktopService:
@@ -427,13 +458,77 @@ class DesktopService:
         self.metadata.add_api_route('/desktop/connect', self.connect, methods=['POST'])
         self.metadata.add_api_route('/desktop/disconnect', self.disconnect, methods=['POST'])
         self.metadata.add_api_route('/desktop/authorization', self.authorization_page, methods=['GET'])
+        self.metadata.add_api_route('/desktop/setup', self.setup_page, methods=['GET'])
+        self.metadata.add_api_route('/desktop/setup/assets/{name}', self.setup_asset, methods=['GET'])
+        self.metadata.add_api_route('/api/settings/setup', self.setup_status, methods=['GET'])
+        self.metadata.add_api_route('/api/settings/setup', self.setup_save, methods=['POST'])
+        self.metadata.add_api_route('/api/settings/ha/discover', self.setup_discover, methods=['GET'])
+        self.metadata.add_api_route('/api/settings/camera/probe', self.setup_camera_probe, methods=['POST'])
+        from homeplane.discovery import HADiscovery
+        self.setup_discovery = HADiscovery()
         self.metadata.add_api_route('/api/diagnostics/runtime', self.runtime_diagnostics, methods=['GET'])
         from homeplane import ha_setup
         ha_setup.CREDENTIAL_PATH = NEW_CREDENTIAL
         self.metadata.add_api_route('/api/settings/ha/status', self.authorization_status, methods=['GET'])
         ha_setup.install_oauth(self.metadata, CONFIG)
-        self.authorization_paths = {'/api/settings/ha/connect', '/api/settings/ha/status', ha_setup.CALLBACK}
+        self.authorization_paths = {'/api/settings/ha/connect', '/api/settings/ha/status',
+                                    '/api/settings/setup', '/api/settings/ha/discover',
+                                    '/api/settings/camera/probe', ha_setup.CALLBACK}
         self.runtime_log.record('service.construct', 'result')
+
+    async def setup_page(self):
+        from homeplane import onboarding
+        return FileResponse(Path(onboarding.__file__).with_name('static') / 'connection-setup.html',
+                            headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
+
+    async def setup_asset(self, name: str):
+        if name not in {'style.css', 'interface.css', 'connection-setup.css', 'connection-setup.js', 'connection-setup-page.js'}:
+            return JSONResponse({'code': 'not_found'}, status_code=404)
+        from homeplane import onboarding
+        return FileResponse(Path(onboarding.__file__).with_name('static') / name, headers={'Cache-Control': 'no-store'})
+
+    def setup_settings(self):
+        return SettingsService(CONFIG, token_path=BASE / 'data/miloco/config.json')
+
+    async def setup_status(self):
+        from homeplane.onboarding import setup_report
+        settings = self.setup_settings()
+        health = {'transport': 'offline'}
+        camera = False
+        if self.inner:
+            health = self.inner.state.home_experience.connection_health()
+            if getattr(self.inner.state.core.adapter, 'url', None) != (settings.config.ha_url or '').rstrip('/'):
+                health = {'transport': 'configuration_changed'}
+            camera = self.inner.state.embodied.configured()
+        return JSONResponse(setup_report(settings, health, camera_configured=camera, desktop=True,
+                            control_enabled=bool(self.inner and self.inner.state.core.actions.policy_report()['enabled'])),
+                            headers={'Cache-Control': 'no-store'})
+
+    async def setup_save(self, request: Request):
+        from homeplane.onboarding import SetupConfiguration
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 2048:
+                return JSONResponse({'code': 'request_budget_exceeded'}, status_code=413)
+        try:
+            command = SetupConfiguration.model_validate_json(body)
+            patch = command.model_dump(exclude_unset=True)
+            self.setup_settings().update(patch)
+            camera_patch = {key: value for key, value in patch.items() if key.startswith('camera_')}
+            if camera_patch:
+                SettingsService(STATE / 'settings.json').update(camera_patch)
+                if self.inner:
+                    self.inner.state.settings.update(camera_patch)
+        except (ValueError, OSError):
+            return JSONResponse({'code': 'setup_configuration_invalid'}, status_code=400)
+        return await self.setup_status()
+
+    async def setup_discover(self):
+        return await self.setup_discovery.discover()
+
+    async def setup_camera_probe(self):
+        return await self.setup_settings().probe_camera()
 
     async def capabilities(self):
         # Public SDK discovery is availability metadata, never account/app
@@ -605,7 +700,9 @@ class DesktopService:
             return JSONResponse({'code': 'connection_in_progress'}, status_code=409)
         async with self.gate:
             if self.inner is not None:
-                if self.connection_failure() is None:
+                selected_url = (self.setup_settings().config.ha_url or '').rstrip('/')
+                current_url = getattr(self.adapter, 'url', None)
+                if self.connection_failure() is None and current_url == selected_url:
                     return await self.status()
                 # Only the explicit connect request replaces an unhealthy owner.
                 # A passive status read never closes or reconnects it.
@@ -799,7 +896,9 @@ class DesktopService:
 
         The original domain keeps source, permission, revision and ownership
         checks. The ordinary preview routes grant no execution, inference or
-        media preparation. A trusted policy can separately forward the typed
+        original-media access. Explicit playback creates only a protected preview;
+        the media guard below requires a completed, currently owned preview lease.
+        A trusted policy can separately forward the typed
         analysis approval reference; the domain owns its exact review checks.
         """
         if self.inner is None:
@@ -820,10 +919,19 @@ class DesktopService:
             '/api/rules/analysis/reviews': api.RuleAnalysisRequest,
             '/api/rules/analysis/cancel': api.RuleAnalysisApproval,
             '/api/archive/playback/cancel': api.ArchivePlaybackCancel,
+            '/api/archive/resolve': api.ArchiveResolveRequest,
+            '/api/archive/playback': api.ArchivePlaybackRequest,
             '/api/files/query': StewardPageRequest,
             '/api/files/settings/query': StewardSettingsRequest,
             '/api/diagnostics/export': api.DiagnosticsExportRequest,
         }
+        if scope['path'] in {'/api/home/evidence/query', '/api/home/evidence/detail'}:
+            from homeplane.event_evidence import EvidenceDetail, EvidenceQuery
+            schemas.update({'/api/home/evidence/query': EvidenceQuery,
+                            '/api/home/evidence/detail': EvidenceDetail})
+        if scope['path'] == '/api/home/recordings/stop':
+            from homeplane.home_experience import RecordingStopRequest
+            schemas['/api/home/recordings/stop'] = RecordingStopRequest
         if reviewed_analysis:
             # Only a complete trusted policy opens this typed approval-ref route.
             # The original domain checks the immutable review/digest/deadline.
@@ -862,6 +970,23 @@ class DesktopService:
             return await receive()
         await self.inner(scope, replay, send)
 
+    def protected_preview_media(self, path, headers):
+        """Grant no original access: only exact, same-origin owned preview leases."""
+        if self.inner is None or not (
+                headers.get(b'origin') == ORIGIN.encode()
+                or headers.get(b'sec-fetch-site') == b'same-origin'):
+            return False
+        archive = re.fullmatch(r'/api/archive/media/([a-f0-9]{64})', path)
+        recording = re.fullmatch(r'/api/home/recordings/media/([a-f0-9]{48})', path)
+        try:
+            if archive:
+                return self.inner.state.archive_player.protected_preview(archive[1]) is True
+            if recording:
+                return self.inner.state.home_experience.recordings.protected_preview(recording[1]) is True
+        except (AttributeError, OSError, ValueError, TypeError):
+            pass
+        return False
+
     @asgi_observed
     async def __call__(self, scope, receive, send):
         if scope['type'] == 'lifespan':
@@ -893,6 +1018,9 @@ class DesktopService:
             if headers.get(b'host') != b'127.0.0.1:8740' or origin not in {None, ORIGIN.encode()}:
                 await JSONResponse({'code': 'invalid_local_origin'}, status_code=403)(scope, receive, send)
                 return
+            if path == '/' and self.inner is None:
+                await RedirectResponse('/desktop/setup' + ('?ha=failed' if b'ha=failed' in scope.get('query_string', b'') else ''))(scope, receive, send)
+                return
             if path.startswith('/desktop/') or path in self.authorization_paths or path == '/api/diagnostics/runtime':
                 if scope['method'] != 'GET' and origin != ORIGIN.encode():
                     await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
@@ -901,6 +1029,8 @@ class DesktopService:
                 return
             if scope['method']=='POST' and self.inner is not None and (
                 path.startswith('/api/embodied/') or path in PEOPLE_WRITE_PATHS
+                or path.startswith('/api/home/automations/records/') and self.inner.state.core.actions.policy_report().get('enabled')
+                or path=='/api/home/storage/prepare'
                 or path in {'/api/rules/core/plans/apply','/api/rules/core/plans/rollback','/api/rules/core/runtime/mode'} and self.inner.state.core.actions.policy_report().get('enabled')
                 or path in {'/api/home/layout/preview','/api/home/layout/import','/api/home/layout/device-position','/api/home/layout/restore'}
                 or path in {'/api/home/control','/api/home/preferences','/api/home/recordings/play','/api/home/interactions','/api/home/presentation','/api/home/automations/catalog'}
@@ -944,7 +1074,7 @@ class DesktopService:
             if scope['method'] not in {'GET', 'HEAD'}:
                 await JSONResponse({'code': 'desktop_read_only', 'device_writes': 'disabled'}, status_code=409)(scope, receive, send)
                 return
-            if path in HELD_GET_PATHS or path.startswith(HELD_GET_PREFIXES):
+            if (path in HELD_GET_PATHS or path.startswith(HELD_GET_PREFIXES)) and not self.protected_preview_media(path, headers):
                 await JSONResponse({'code': 'desktop_read_only', 'device_writes': 'disabled'}, status_code=409)(scope, receive, send)
                 return
         if self.inner is not None:

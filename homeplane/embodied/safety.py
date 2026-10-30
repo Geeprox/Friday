@@ -23,6 +23,7 @@ class SafetyPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool = False
     announce: bool = False
+    visual_review: bool = False
     revision: int = Field(default=0, ge=0)
 
 
@@ -46,6 +47,10 @@ CAPABILITIES = [
         name="疑似粗暴照护或击打",
         status="unavailable",
         basis="需要照护人与婴儿的交互时序证据；骨骼不能判断力度或意图",
+    ),
+    dict(
+        id="visual_review", name="本机画面复核", status="experimental",
+        basis="有限时间窗口识别可见变化；两段一致后留作人工复核，不自动播报",
     ),
 ]
 
@@ -358,7 +363,7 @@ class FallDetector:
 
 
 class SafetyRuntime:
-    def __init__(self, store, *, labels=lambda: {}, speaker=None):
+    def __init__(self, store, *, labels=lambda: {}, speaker=None, visual_engine=None):
         self.store, self.labels, self.speaker = store, labels, speaker
         self.detector = FallDetector()
         self.frames = {}
@@ -366,9 +371,39 @@ class SafetyRuntime:
         self.tasks = set()
         self.last_seen = {}
         self.policy_revision = None
+        self.policy_task = None
+        self.policy_lock = asyncio.Lock()
         self.error = None
+        from .temporal_review import TemporalReviewer
+        self.visual = TemporalReviewer(policy=store.policy, deliver=self._visual_event, engine=visual_engine)
+
+    async def sync_policy(self):
+        async with self.policy_lock:
+            policy = self.store.policy()
+            if self.policy_revision == policy.revision:return
+            self.policy_revision = policy.revision
+            self.detector.cameras.clear()
+            self.frames.clear()
+            self.post_frames.clear()
+            self.last_seen.clear()
+            await self.visual.invalidate()
+
+    async def start(self, *, interval=.5):
+        if self.policy_task is not None:return
+        async def sync_safely():
+            try:await self.sync_policy()
+            except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+                self.error = 'safety_storage_unavailable'
+                await self.visual.invalidate()
+        await sync_safely()
+        async def watch():
+            while True:
+                await sync_safely()
+                await asyncio.sleep(interval)
+        self.policy_task = asyncio.create_task(watch(), name='friday-safety-policy')
 
     def clear(self, camera):
+        self.visual.clear(camera)
         self.detector.clear(camera)
         self.frames.pop(camera, None)
         self.post_frames.pop(camera, None)
@@ -386,19 +421,18 @@ class SafetyRuntime:
             self.error = "safety_storage_unavailable"
 
     async def _observe(self, camera, session, people, now, captured, *, stable, jpeg, aspect):
+        await self.sync_policy()
         policy = self.store.policy()
-        if self.policy_revision != policy.revision:
-            self.detector.cameras.clear()
-            self.frames.clear()
-            self.post_frames.clear()
-            self.last_seen.clear()
-            self.policy_revision = policy.revision
         if not policy.enabled or not stable or not 0 <= time.monotonic() - captured <= 1.5:
             self.clear(camera)
             return
         if camera in self.frames and self.frames[camera]["session"] != session:
             self.clear(camera)
         self.last_seen[camera] = time.monotonic()
+        if policy.visual_review:
+            self.visual.offer(camera, session, policy.revision, captured, jpeg, stable=stable)
+        else:
+            self.visual.clear(camera)
         ring = self.frames.setdefault(camera, dict(session=session, items=deque(maxlen=16)))
         stamp = time.time() - (time.monotonic() - captured)
         if (
@@ -425,6 +459,25 @@ class SafetyRuntime:
             self.post_frames.setdefault(camera, []).append(dict(id=saved["id"], until=captured + 3))
             if policy.announce:
                 self.schedule(saved, revision=policy.revision)
+
+    def _visual_event(self, camera, session, frames, result, captured_at):
+        messages = {
+            "possible_fall": "画面中疑似出现跌落动作，请查看关键帧。",
+            "face_obscured": "画面中疑似出现面部遮挡，请查看关键帧。",
+            "rapid_movement": "画面中疑似出现快速移动或搬动，请查看关键帧。",
+        }
+        # Model text remains private evidence. It cannot supply identity or speech.
+        self.store.create(
+            dict(
+                kind="visual_review", visual_kind=result.event, severity="review",
+                status="pending_review", simulated=False, camera=camera, session=session,
+                track=None, person_id=None, person_name=None,
+                message=messages[result.event], observation=result.observation,
+                captured_at=captured_at, basis="two_disjoint_local_windows",
+                detector="qwen3.5-2b-window/1",
+            ),
+            [(captured_at - (frames[-1][0] - stamp), jpeg) for stamp, jpeg in frames],
+        )
 
     def schedule(self, event, revision=None):
         # Bound pending output independently of the perception frame rate.
@@ -506,9 +559,15 @@ class SafetyRuntime:
             ],
             pending_announcements=len(self.tasks),
             error=self.error,
+            visual_review=self.visual.status(),
         )
 
     async def close(self):
+        if self.policy_task is not None:
+            self.policy_task.cancel()
+            await asyncio.gather(self.policy_task, return_exceptions=True)
+            self.policy_task = None
+        await self.visual.close()
         for task in list(self.tasks):
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)

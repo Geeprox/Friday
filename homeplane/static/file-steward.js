@@ -244,7 +244,7 @@ export function mountFiles(root, {state = {tab:'Files', query:'', selected:new S
     };
     root.replaceChildren();
     const toolbar = node('div',null,{class:'files-toolbar'}), tabs = node('nav',null,{'aria-label':'文件页面'});
-    for (const [key, label] of [['Files','全部文件'],['Inbox','收件箱'],['Search','搜索'],['Review','审核']])
+    for (const [key, label] of [['Files','已索引资料'],['Inbox','待提取'],['Search','搜索内容'],['Review','整理建议']])
       tabs.append(focusTarget(action(label,() => {
         const previous=mode(), wasReview=state.tab === 'Review';state.tab=key;
         if (key === 'Review') {cancelRead();busy=false;render();}
@@ -255,6 +255,12 @@ export function mountFiles(root, {state = {tab:'Files', query:'', selected:new S
     if (['authentication_required','connection_required'].includes(context?.session?.reason) && onOpenConnections)
       toolbar.append(action('核对连接',onOpenConnections));
     root.append(toolbar);
+    if(context&&!context.catalog.source_online&&!rows.length&&state.tab!=='Search'){
+      root.append(append(node('section',null,{class:'files-source-empty'}),node('h2','资料来源尚未就绪'),
+        node('p','这里用于搜索 NAS 中已经建立索引的资料，并核对整理建议。当前未读取到资料来源，不能据此判断文件数量。'),
+        action('重试读取',()=>refresh()),onOpenConnections?action('设置资料来源',onOpenConnections):node('p','请先配置资料来源。')));
+      restore();return;
+    }
     if (readOnly) root.append(node('p','目前只读，提取和整理尚未启用。当前只读；提取、整理和目录设置修改待启用。',{class:'files-state'}));
     if (error) root.append(append(node('div',null,{class:'files-error'}),node('p',error,{role:'status'}),action('重试',() => refresh(),{disabled:busy ? '' : undefined})));
     if (context?.catalog.simulated) root.append(node('p','示例文件',{class:'files-eyebrow'}));

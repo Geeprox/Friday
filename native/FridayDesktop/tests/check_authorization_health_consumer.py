@@ -36,7 +36,8 @@ class AuthorizationConsumerChecks(fixture.LocalConsumerChecks):
         description = page.text.split('<p>',1)[1].split('</p>',1)[0]
         self.assertIn('Home Assistant 拒绝了现有授权',description)
         self.assertIn('尚不能断定 token 过期',description)
-        self.assertIn('设备控制、音频、相机、真实 NAS 接入和模型调用继续关闭',page.text)
+        self.assertIn('摄像头、语音和家居控制按本机配置与当前授权启用',page.text)
+        self.assertIn('其余设备写入仍关闭',page.text)
 
     async def test_production_asgi_serves_changed_resource_bytes_without_effects(self):
         await self.connect()

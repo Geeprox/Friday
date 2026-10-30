@@ -16,7 +16,9 @@ from homeplane.embodied.previews import PreviewPool
 @pytest.mark.asyncio
 async def test_secondary_manual_request_reuses_owned_camera_route():
     request=AsyncMock(return_value={'native_code':0})
-    service=SimpleNamespace(selected='cam_1111111111',process=SimpleNamespace(returncode=None),
+    async def camera_control(camera_id, *, direction=None, mode=None):
+        return await request('/api/previews/'+camera_id+'/control',{'direction':direction} if direction else {'mode':mode})
+    service=SimpleNamespace(camera_control=camera_control,selected='cam_1111111111',process=SimpleNamespace(returncode=None),
         cameras=lambda:[{'id':'cam_1111111111'},{'id':'cam_2222222222'}],request=request)
     app=FastAPI();app.include_router(create_router(service,SimpleNamespace(),asyncio.Lock()))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
@@ -49,7 +51,7 @@ def test_closed_primary_view_is_not_overwritten_by_last_frames_age(tmp_path):
     state={'status':'shutter_closed','received_at':time.time()-100,'processed_frames':2,
            'camera_control':{'view_usable':True,'target_locked':True}}
     context=dict(state=state,games=SimpleNamespace(public={}),recorder=SimpleNamespace(public=lambda:{}),
-        home=SimpleNamespace(public=lambda:{}),fleet=SimpleNamespace(public=lambda _:{}),time=time,
+        home=SimpleNamespace(public=lambda:{}),secondary_homes={},fleet=SimpleNamespace(public=lambda _:{}),time=time,
         PRIVATE=tmp_path,last_frame=1,SELECTED={'id':'main'},configuration=lambda:{'cameras':[{'id':'main'}]})
     exec(compile(ast.Module(body=[function],type_ignores=[]),'<actual view>','exec'),context)
     result=context['view']()

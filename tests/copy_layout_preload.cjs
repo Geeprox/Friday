@@ -15,6 +15,7 @@ function prepare(context) {
     context.queueMicrotask = queueMicrotask;
     original(fs.readFileSync(path.join(__dirname, '../homeplane/static/copy-layout.js'), 'utf8'), context);
   }
+  document.addEventListener ??= (type,listener) => {document.events ??= {};document.events[type]=listener;};
   if (context.FridayCopyLayout) {
     Object.assign(context, {copyName: context.FridayCopyLayout.name, withCopy: context.FridayCopyLayout.withCopy,
                            copyLayout: context.FridayCopyLayout});

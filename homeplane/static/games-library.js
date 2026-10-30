@@ -1,6 +1,6 @@
 const h=(tag,text,cls)=>{const n=document.createElement(tag);if(text)n.textContent=text;if(cls)n.className=cls;return n;};
 async function api(path,body){const r=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok)throw Error('unavailable');return r.json();}
-const states={not_configured:'识别服务待配置',stopped:'准备开始',live:'识别中',connecting:'正在连接镜头',unavailable:'镜头正在重连'};
+const states={not_configured:'识别服务待配置',stopped:'准备开始',restore_pending:'原有巡航与跟踪设置正在恢复',paused:'摄像头感知已暂停，可在摄像头页恢复',shutter_closed:'米家镜头已关闭，请在米家开启后使用',live:'识别中',connecting:'正在连接镜头',unavailable:'镜头正在重连'};
 export function mountGames(root,{go}={}){
  let disposed=false,selection=null,report=null,cameras=[],busy=false,chosenCamera=null,stageApp=null,ui={};
  const wrap=h('section',null,'games-library'),list=h('nav',null,'games-list'),detail=h('section',null,'game-detail');list.setAttribute('aria-label','游戏与互动');wrap.append(list,detail);root.append(wrap);
@@ -22,7 +22,7 @@ export function mountGames(root,{go}={}){
   detail.append(h('p','电视进入 Friday 后会同步当前游戏。切换游戏不会打断电视正在播放的其他内容。','muted'));
   ui={camera,status,tv,start,resume,stop,stage};update();
  }
- function update(){if(!ui.status||!report)return;const service=report.service;ui.status.textContent=states[service.state]||'等待连接';ui.start.disabled=busy||!service.configured;ui.resume.disabled=busy||!service.owned;ui.stop.disabled=busy||!service.owned;ui.camera.disabled=true;
+ function update(){if(!ui.status||!report)return;const service=report.service;ui.status.textContent=states[service.state]||'等待连接';ui.start.disabled=busy||!service.configured||service.capture_enabled===false;ui.resume.disabled=busy||!service.owned;ui.stop.disabled=busy||!service.owned;ui.camera.disabled=true;
   const tv=service.tv_viewer,fresh=tv&&Date.now()/1000-tv.reported_at<12;ui.tv.textContent=fresh?'电视已连接 · 正在同步画面':'电视待连接 · 可在电视打开 Friday';
   if(stageApp&&!service.owned){ui.stage.replaceChildren(h('p','游戏已停止，可以重新开始。','game-stage-empty'));stageApp=null;}
  }

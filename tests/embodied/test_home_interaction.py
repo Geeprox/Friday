@@ -1,6 +1,7 @@
 import copy, unittest, asyncio
 from unittest.mock import AsyncMock, patch
 import numpy as np
+import pytest
 from types import SimpleNamespace
 from homeplane.embodied.smart_home import WindowGesture, Attention, Curtain, CURTAIN_DID
 from homeplane.embodied.intent import address, parse_plan, utterance_focus
@@ -238,3 +239,11 @@ class DeviceTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+@pytest.mark.asyncio
+async def test_unreliable_angle_feedback_never_suppresses_command_or_claims_target():
+    c=DeviceTests().curtain();c.api.pos=100;c.binding['feedback_quality']='unreliable'
+    result=await c.act('open','explicit-angle-command')
+    assert c.api.writes and result['acknowledged']
+    assert not result['reached_target'] and result['status']=='angle_unconfirmed'
+    assert c.monitor is None

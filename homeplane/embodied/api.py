@@ -20,10 +20,35 @@ class Start(BaseModel):
     app: str | None = Field(default=None, max_length=32)
 
 
+class MiHomeConnection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str = Field(pattern="^(status|begin|finish)$")
+    return_url: str | None = Field(default=None,max_length=4096)
+
+
 class CameraControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
     direction: str | None = Field(default=None,pattern="^(left|right|up|down)$")
     mode: str | None = Field(default=None,pattern="^(hold|auto|survey)$")
+
+
+class CameraPower(BaseModel):
+    model_config=ConfigDict(extra='forbid',strict=True)
+    enabled:bool
+    revision:str=Field(pattern=r'^[a-f0-9]{64}$')
+    event_id:str=Field(pattern=r'^[A-Za-z0-9_-]{1,128}$')
+
+
+class StopPreview(BaseModel):
+    model_config=ConfigDict(extra='forbid',strict=True)
+    token:str|None=Field(default=None,pattern=r'^[a-f0-9]{32}$')
+
+
+class SceneRun(BaseModel):
+    model_config=ConfigDict(extra='forbid',strict=True)
+    scene:str=Field(pattern=r'^[a-f0-9]{64}$')
+    revision:str=Field(pattern=r'^[a-f0-9]{64}$')
+    event_id:str=Field(pattern=r'^[A-Za-z0-9_-]{1,128}$')
 
 
 class Quiet(BaseModel):
@@ -72,6 +97,16 @@ def create_router(service, core, lock, infrastructure=None):
     async def games():
         return dict(apps=catalog(), recognition=RECOGNIZERS, service=await service.status())
 
+    @router.get('/api/embodied/scenes')
+    async def scenes():
+        try:return await service.scenes()
+        except (ValueError,OSError,TimeoutError):raise HTTPException(409,detail='mijia_scenes_unavailable')from None
+
+    @router.post('/api/embodied/scenes/run')
+    async def run_scene(request:SceneRun):
+        try:return await service.scenes(scene=request.scene,revision=request.revision,event_id=request.event_id)
+        except (ValueError,OSError,TimeoutError):raise HTTPException(409,detail='mijia_scene_not_confirmed')from None
+
     @router.get("/api/embodied/status")
     async def status():
         return await service.status()
@@ -82,17 +117,39 @@ def create_router(service, core, lock, infrastructure=None):
 
     @router.post("/api/embodied/cameras/{camera_id}/control")
     async def camera_control(camera_id: str, request: CameraControl):
-        if camera_id not in {c['id'] for c in service.cameras()} or not service.process or service.process.returncode is not None:
+        if camera_id not in {c['id'] for c in service.cameras()}:
             raise HTTPException(409,detail="camera_not_running")
         if bool(request.direction)==bool(request.mode):raise HTTPException(422)
         try:
-            return await service.request(f'/api/previews/{camera_id}/control',
-                dict(direction=request.direction)if request.direction else dict(mode=request.mode))
+            return await service.camera_control(camera_id,direction=request.direction,mode=request.mode)
         except (ValueError,OSError):raise HTTPException(409,detail="camera_control_unavailable")from None
+
+    @router.get('/api/embodied/connection')
+    async def mijia_connection_status():
+        return await service.connection()
+
+    @router.post('/api/embodied/connection')
+    async def mijia_connection(request:MiHomeConnection):
+        return await service.connection(request.action,request.return_url)
 
     @router.get("/api/embodied/cameras")
     async def cameras():
         return dict(cameras=service.cameras())
+
+    @router.get('/api/embodied/cameras/{camera_id}/power')
+    async def camera_power_status(camera_id:str):
+        try:return await service.camera_power(camera_id)
+        except (ValueError,OSError,TimeoutError):raise HTTPException(409,detail='camera_power_unavailable')from None
+
+    @router.post('/api/embodied/cameras/{camera_id}/power')
+    async def camera_power(camera_id:str,request:CameraPower):
+        try:return await service.camera_power(camera_id,enabled=request.enabled,revision=request.revision,event_id=request.event_id)
+        except (ValueError,OSError,TimeoutError):raise HTTPException(409,detail='camera_power_unavailable')from None
+
+    @router.post('/api/embodied/cameras/{camera_id}/preview/stop')
+    async def stop_preview(camera_id:str,request:StopPreview):
+        try:return await service.stop_preview(camera_id,request.token)
+        except (ValueError,OSError):raise HTTPException(409,detail='camera_preview_unavailable')from None
 
     @router.get("/api/embodied/devices")
     async def inventory():
@@ -109,11 +166,17 @@ def create_router(service, core, lock, infrastructure=None):
 
     @router.post("/api/embodied/cameras/{camera_id}/preview")
     async def start_preview(camera_id: str):
-        return await service.preview(camera_id, start=True)
+        try:
+            return await service.preview(camera_id, start=True,explicit=True)
+        except ValueError:
+            raise HTTPException(409, detail="camera_preview_unavailable") from None
 
     @router.get("/api/embodied/cameras/{camera_id}/preview")
     async def preview_status(camera_id: str):
-        return await service.preview(camera_id)
+        try:
+            return await service.preview(camera_id)
+        except ValueError:
+            raise HTTPException(409, detail="camera_preview_unavailable") from None
 
     @router.get("/api/embodied/cameras/{camera_id}/frame")
     async def preview_frame(camera_id: str):

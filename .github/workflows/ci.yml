@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
-      - run: uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connection
+      - run: uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connection --extra privacy-playback
       - run: npm --prefix workers/geek ci --ignore-scripts
       - run: uv run --no-sync python -m pytest -q --basetemp=/tmp/friday-tests
       - run: node --test tests/audio.test.mjs

@@ -630,7 +630,9 @@ sys.stdout.write(result.model_dump_json())
 @pytest.mark.asyncio
 async def test_real_child_pending_native_call_uses_uncertain_exit_and_parent_reaps(tmp_path):
     context, _ = owner(tmp_path)
-    context = replace(context, session=context.session.model_copy(update={'deadline_monotonic': time.monotonic()+1.5}))
+    # Include cold NumPy/module startup in a fresh interpreter before the
+    # synthetic native call begins; keep the child and parent deadlines finite.
+    context = replace(context, session=context.session.model_copy(update={'deadline_monotonic': time.monotonic()+3.5}))
     project = Path(__file__).parents[1]
     owned_root = tmp_path/'SIMULATED-owned-native-hang'
     owned_root.mkdir()
@@ -680,7 +682,7 @@ real_exit(79)
         return process
     probe = RecognitionProbe(settings(tmp_path), launcher=spawn, rss_reader=zero_rss)
     await probe.start_owner(context)
-    await asyncio.wait_for(probe.task, 7)
+    await asyncio.wait_for(probe.task, 9)
     # Test-only exit code 77 confirms the existing os._exit branch saw a live
     # native future and retained SDK owner; no destructor/finalizer was run.
     assert processes[0].returncode == 77 and probe.process is None

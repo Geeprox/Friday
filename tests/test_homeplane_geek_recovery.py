@@ -144,7 +144,8 @@ async def test_stop_cancels_pending_recovery_and_disk_failure_is_visible(tmp_pat
 async def test_readonly_diagnostics_ipc_and_old_status_client_compatibility(monkeypatch):
     from homeplane.geek_background import GeekBackground
     repo = ROOT
-    with tempfile.TemporaryDirectory(prefix="gk-", dir=repo / ".artifacts") as name:
+    # AF_UNIX paths must also fit when the checkout is a deep frozen export.
+    with tempfile.TemporaryDirectory(prefix="gk-", dir=Path(tempfile.gettempdir()).resolve()) as name:
         daemon, processes, now = make(Path(name))
         from homeplane.geek_background_contracts import BackgroundInstallation
         module.atomic_private(Path(name) / "geek-background-installed.json", BackgroundInstallation(use_for_connections=True).model_dump_json())

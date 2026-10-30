@@ -98,6 +98,9 @@ class IdentityStore:
             self.db.execute('CREATE TABLE IF NOT EXISTS face_candidates '
                 '(id TEXT PRIMARY KEY, model TEXT NOT NULL, vectors TEXT NOT NULL, jpeg BLOB NOT NULL, '
                 'first REAL NOT NULL, seen REAL NOT NULL, observations INTEGER NOT NULL, quality REAL NOT NULL)')
+            self.db.execute('CREATE TABLE IF NOT EXISTS face_candidate_links (candidate TEXT PRIMARY KEY, leader TEXT NOT NULL)')
+            self.db.execute('CREATE TABLE IF NOT EXISTS face_candidate_separate (left_id TEXT NOT NULL, right_id TEXT NOT NULL, PRIMARY KEY(left_id,right_id))')
+            self.db.execute('CREATE TABLE IF NOT EXISTS face_candidate_undo (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL)')
             self.db.execute('DELETE FROM face_candidates WHERE seen<?',(self.clock()-30*86400,))
         self._candidate_pruned_at=self.clock()
 
@@ -216,6 +219,48 @@ class IdentityStore:
             row=self.db.execute('SELECT jpeg FROM face_candidates WHERE id=? AND seen>=?',(candidate,self.clock()-30*86400)).fetchone()
             return bytes(row[0]) if row else None
 
+    def candidate_groups(self):
+        from .candidate_groups import groups
+        visible=self.candidates()
+        with self.lock:
+            vectors=dict(self.db.execute('SELECT id,vectors FROM face_candidates WHERE model=?',(SFACE_SHA256,)))
+            links={}
+            for candidate,leader in self.db.execute('SELECT candidate,leader FROM face_candidate_links'):
+                links.setdefault(leader,[]).append(candidate)
+            separate=list(self.db.execute('SELECT left_id,right_id FROM face_candidate_separate'))
+            return groups([dict(row,vectors=json.loads(vectors[row['id']])) for row in visible if row['id'] in vectors],
+                          joined=links.values(),separate=separate)
+
+    def edit_candidate_group(self,members,*,separate=False):
+        if len(set(members))!=len(members) or not 2<=len(members)<=8:
+            raise ValueError('identity_candidate_unavailable')
+        with self.lock,self.db:
+            visible={row['id'] for row in self.candidates()}
+            if not set(members)<=visible:raise ValueError('identity_candidate_unavailable')
+            before=dict(links=list(self.db.execute('SELECT candidate,leader FROM face_candidate_links')),
+                        separate=list(self.db.execute('SELECT left_id,right_id FROM face_candidate_separate')))
+            self.db.execute('INSERT OR REPLACE INTO face_candidate_undo VALUES (1,?)',(json.dumps(before),))
+            for member in members:self.db.execute('DELETE FROM face_candidate_links WHERE candidate=?',(member,))
+            for left in members:
+                for right in members:
+                    if left>=right:continue
+                    self.db.execute('DELETE FROM face_candidate_separate WHERE left_id=? AND right_id=?',(left,right))
+                    if separate:self.db.execute('INSERT INTO face_candidate_separate VALUES (?,?)',(left,right))
+            if not separate:
+                self.db.executemany('INSERT OR REPLACE INTO face_candidate_links VALUES (?,?)',[(member,min(members)) for member in members])
+
+    def undo_candidate_group(self):
+        with self.lock,self.db:
+            row=self.db.execute('SELECT body FROM face_candidate_undo WHERE id=1').fetchone()
+            if not row:raise ValueError('identity_candidate_undo_unavailable')
+            before=json.loads(row[0]);self.db.execute('DELETE FROM face_candidate_links');self.db.execute('DELETE FROM face_candidate_separate')
+            self.db.executemany('INSERT INTO face_candidate_links VALUES (?,?)',before['links'])
+            self.db.executemany('INSERT INTO face_candidate_separate VALUES (?,?)',before['separate'])
+            self.db.execute('DELETE FROM face_candidate_undo')
+
+    def group_undo_available(self):
+        with self.lock:return bool(self.db.execute('SELECT 1 FROM face_candidate_undo').fetchone())
+
     def promote_candidate(self,candidate,person):
         with self.lock:
             row=self.db.execute('SELECT model,vectors,jpeg FROM face_candidates WHERE id=? AND seen>=?',
@@ -226,34 +271,46 @@ class IdentityStore:
             with self.db:self.db.execute('DELETE FROM face_candidates WHERE id=?',(candidate,))
 
     @observe('people.enroll')
-    def name_candidate(self,catalog,candidate,name,revision,person=None):
+    def name_candidate(self,catalog,candidate,name,revision,person=None,*,members=None,group_revision=None):
         """One SQLite transaction covers naming, face persistence and promotion."""
         with catalog._lock,self.lock:
+            members=[candidate] if members is None else members
+            if not 1<=len(members)<=8 or len(set(members))!=len(members) or candidate not in members:
+                raise ValueError('identity_candidate_unavailable')
+            if len(members)>1:
+                group=next((g for g in self.candidate_groups() if g['id']==candidate),None)
+                if not group or group['members']!=members or group['group_revision']!=group_revision:
+                    raise ValueError('identity_candidate_unavailable')
             connection=catalog.connection
             connection.execute('ATTACH DATABASE ? AS live_identity',(str(self.path),))
             try:
                 def persist(pid,transaction):
-                    row=transaction.execute('SELECT model,vectors,jpeg FROM live_identity.face_candidates '
-                        'WHERE id=? AND seen>=? AND observations>=3 AND seen-first>=.8',
-                        (candidate,self.clock()-30*86400)).fetchone()
-                    if not row or row[0]!=SFACE_SHA256:raise ValueError('identity_candidate_unavailable')
-                    embeddings=[Embedding('face',SFACE_SHA256,tuple(v),False) for v in json.loads(row[1])]
+                    rows=[];embeddings=[]
+                    for member in members:
+                        row=transaction.execute('SELECT model,vectors,jpeg,quality FROM live_identity.face_candidates '
+                            'WHERE id=? AND seen>=? AND observations>=3 AND seen-first>=.8',
+                            (member,self.clock()-30*86400)).fetchone()
+                        if not row or row[0]!=SFACE_SHA256:raise ValueError('identity_candidate_unavailable')
+                        values=json.loads(row[1])
+                        if len(values)<3 or any(similarity(a,b)<THRESHOLD for a in values for b in values):
+                            raise ValueError('identity_samples_inconsistent')
+                        embeddings.extend(Embedding('face',SFACE_SHA256,tuple(v),False) for v in values[-3:]);rows.append(row)
                     # Remove inside this transaction so the portrait budget does
                     # not count the same face twice. A failed enrollment rolls back.
-                    transaction.execute('DELETE FROM live_identity.face_candidates WHERE id=?',(candidate,))
-                    self.enroll(pid,embeddings,portrait=bytes(row[2]),_transaction=transaction)
+                    transaction.executemany('DELETE FROM live_identity.face_candidates WHERE id=?',[(member,) for member in members])
+                    self.enroll(pid,embeddings,portrait=bytes(max(rows,key=lambda row:row[3])[2]),_transaction=transaction,_confirmed_group=len(members)>1)
                     transaction.execute('INSERT OR REPLACE INTO live_identity.identity_labels VALUES (?,?)',(pid,name.strip()))
                 return catalog.register_profile(name,revision,person,_before_commit=persist)
             finally:
                 connection.execute('DETACH DATABASE live_identity')
 
-    def enroll(self, person, embeddings, *, portrait=None, _transaction=None):
-        if not REF.fullmatch(person) or not 3 <= len(embeddings) <= 5:
+    def enroll(self, person, embeddings, *, portrait=None, _transaction=None,_confirmed_group=False):
+        if not REF.fullmatch(person) or not 3 <= len(embeddings) <= (24 if _confirmed_group else 5):
             raise ValueError("identity_samples_required")
         if any(not isinstance(e, Embedding) or e.modality != "face" or e.simulated
                or e.model_sha256 != SFACE_SHA256 for e in embeddings):
             raise ValueError("identity_model_mismatch")
-        if any(similarity(a.values, b.values) < THRESHOLD for a in embeddings for b in embeddings):
+        if not _confirmed_group and any(similarity(a.values, b.values) < THRESHOLD for a in embeddings for b in embeddings):
             raise ValueError("identity_samples_inconsistent")
         if portrait is not None and (type(portrait) is not bytes or not 4<=len(portrait)<=262144
                 or not portrait.startswith(b'\xff\xd8') or not portrait.endswith(b'\xff\xd9')):
@@ -267,11 +324,11 @@ class IdentityStore:
                 if previous[0] != SFACE_SHA256:
                     raise ValueError("identity_model_mismatch")
                 old = json.loads(previous[1])
-                if any(max(similarity(value, target) for target in old) < THRESHOLD for value in values):
+                if not _confirmed_group and any(max(similarity(value, target) for target in old) < THRESHOLD for value in values):
                     raise ValueError("identity_samples_inconsistent")
                 # Adding a view in another room preserves two earlier views;
                 # it must not silently replace the only evidence from that room.
-                values = values[-3:] + old[-2:]
+                values = values+old[-6:] if _confirmed_group else values[-3:]+old[-2:]
             if db.execute(f"SELECT count(*) FROM {prefix}face_templates").fetchone()[0] >= 128:
                 if not db.execute(f"SELECT 1 FROM {prefix}face_templates WHERE person=?", (person,)).fetchone():
                     raise ValueError("identity_capacity")

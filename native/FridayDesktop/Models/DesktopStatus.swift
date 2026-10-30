@@ -7,29 +7,68 @@ struct ARLStatus: Decodable {
     var inferenceAttempted: Bool
     var metadataFreshness: String? = nil
     var refreshPending: Bool? = nil
+    var connectionState: String? = nil
+    var taskReadiness: String? = nil
+    var identityVerified: Bool? = nil
+    var modelCapabilityVerified: Bool? = nil
+
+    // The legacy ready field represents health metadata, never task permission.
+    var connectionPhase: String {
+        if refreshPending == true { return "refreshing" }
+        if metadataFreshness == "last_known" { return "stale" }
+        guard metadataFreshness == "current" || metadataFreshness == "unavailable" else { return "unknown" }
+        if status == "ready" && ready && metadataFreshness == "current" { return "connected" }
+        switch status {
+        case "disconnected": return "disconnected"
+        case "not_running": return "not_running"
+        case "sdk_missing": return "sdk_missing"
+        case "user_disabled": return "disabled"
+        case "unsafe_home": return "unsafe_configuration"
+        case "starting": return "starting"
+        default: return "unknown"
+        }
+    }
 
     var connectionDetail: String {
-        if refreshPending == true && metadataFreshness == "unknown" {
-            return "ARL 连接状态正在检查，尚无最近确认记录。"
+        if connectionPhase == "stale" {
+            if status == "ready" && ready { return "ARL 上次健康通信正常；当前连接待核对，身份与模型能力尚未验证。" }
+            if status == "disconnected" { return "ARL 上次连接检查失败；当前连接待核对。" }
+            return "ARL 仅有上次检查记录；当前连接待核对。"
         }
-        if ready {
-            return refreshPending == true
-                ? "ARL 上次健康通信正常；正在刷新，身份与模型能力尚未验证。"
-                : "ARL 健康通信正常；身份与模型能力尚未验证。"
+        if connectionPhase == "refreshing" {
+            if metadataFreshness != "last_known" {
+                return "ARL 连接状态正在检查，尚无最近确认记录。"
+            }
+            if status == "ready" && ready {
+                return "ARL 上次健康通信正常；正在刷新，身份与模型能力尚未验证。"
+            }
+            if status == "disconnected" { return "ARL 上次连接检查失败；正在刷新。" }
+            return "ARL 正在刷新，保留上次检查结果；当前连接状态待确认。"
         }
-        if refreshPending == true && metadataFreshness == "last_known" {
-            return status == "disconnected"
-                ? "ARL 上次连接检查失败；正在刷新。"
-                : "ARL 正在刷新，保留上次检查结果；当前连接状态待确认。"
-        }
-        switch status {
+        switch connectionPhase {
+        case "connected": return "ARL 健康通信正常；身份与模型能力尚未验证。"
         case "disconnected": return "ARL 连接检查失败，健康通信暂不可用。"
         case "not_running": return "ARL 尚未运行。"
         case "sdk_missing": return "本机尚未安装 ARL SDK。"
-        case "user_disabled": return "ARL 已停用。"
-        case "unsafe_home": return "ARL 本机配置未通过安全检查。"
+        case "disabled": return "ARL 已停用。"
+        case "unsafe_configuration": return "ARL 本机配置未通过安全检查。"
         case "starting": return "ARL 正在启动，连接就绪状态待确认。"
         default: return "ARL 连接状态尚未确认。"
+        }
+    }
+
+    var connectionRecovery: String {
+        switch connectionPhase {
+        case "connected": return "在本次任务预览中核对模型能力与授权。"
+        case "disconnected": return "检查本机 ARL 服务后重新读取。"
+        case "not_running": return "在本机启动已配置的 ARL 后重新读取。"
+        case "sdk_missing": return "按部署指南安装 ARL SDK 后重新读取。"
+        case "disabled": return "需要使用时，在 ARL 本机设置中启用后重新读取。"
+        case "unsafe_configuration": return "在本机检查 ARL 配置与文件权限后重新读取。"
+        case "starting": return "等待启动完成后重新读取。"
+        case "refreshing": return "等待本次检查完成后重新读取。"
+        case "stale": return "重新读取连接状态；历史记录不能确认当前连接。"
+        default: return "重新读取连接状态；若仍不可读，在 Mac 版检查 ARL 服务。"
         }
     }
 }

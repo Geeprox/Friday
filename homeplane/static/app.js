@@ -78,6 +78,7 @@ let inspectingStateId = null;
 let archiveSession=0,archiveVersion=0,archiveContext=null,archiveResult=null;
 const archiveDraft={camera:'',start:'',end:''};
 let archivePlayerView=null,archivePlayerVersion=0;
+let archivePrepareController=null,archiveExpiryTimer=null,archiveContextTimer=null;
 let archiveSetupSession=0,archiveSetupVersion=0,archiveSetupRefresh=null;
 const archiveSetupDraft={camera:'',folder:'',name:'',room:'',timezone:'Asia/Shanghai',offset:'',uncertainty:'',arrival:'',retention:'',timing:false,completion:false};
 let selectedRoom = '*', selectedEntityId = null, deviceQuery = '', deviceLimit = 24, activityLimit = 30;
@@ -85,14 +86,14 @@ const pages = ['Home','Devices','Cameras','Safety','Interaction','Automations','
 const pageInfo = {
   Cameras:['摄像头','实时查看家中画面与录像。','video'],
   Safety:['智能预警','查看疑似异常，提醒家人及时照看。','eye'],
-  Interaction:['互动控制','用动作、手势与注视控制你的家。','eye'],
+  Interaction:['互动控制','设置手势控制，查看最近的响应。','eye'],
   Games:['游戏库','选择游戏，与家人一起动起来。','player-play'],
-  Files:['文件','找到内容，核对原件与整理建议。','folder'],
-  People:['人物','核对摄像头中的人物，为身份观察登记名字。','eye'],
-  Home:['我的家','家的状态，随手掌握。','home'], Devices:['设备','按房间找到需要的设备。','devices'],
+  Files:['家庭资料（预览）','搜索已索引的 NAS 资料，查看整理建议。','folder'],
+  People:['人物','为熟悉的家人登记名字，核对识别结果。','eye'],
+  Home:['我的家','在房间里查看状态，控制家中设备。','home'], Devices:['设备','按房间找到需要的设备。','devices'],
   Automations:['自动化','查看家里的日常安排。','clock'], Activity:['回看','发生了什么，记录在这里。','player-play'],
   Settings:['连接','管理家庭服务与账号。','settings'], System:['系统状态','连接、存储与智能服务。','chart-bar'],
-  Developer:['调试工具','状态与来源记录。','code'], 'Ask Home':['对话','问家庭状态，查看已有记录','cpu']
+  Developer:['调试工具','状态与来源记录。','code'], 'Ask Home':['文字指令调试','用于检查文字理解与家庭记录','cpu']
 };
 async function api(path, options = {}) {
   if (options.method && options.method !== 'GET' && /^\/api\/(?:settings|source|archive\/(?:cameras|simulator)|simulator\/scenario)/.test(path)) clearHomeConversation();
@@ -100,12 +101,12 @@ async function api(path, options = {}) {
   if (!response.ok) throw new Error(`请求失败（${response.status}），请重试。`);
   return response.json();
 }
-function go(name) { if(page!==name){archiveVersion++;archiveSetupVersion++;stopArchivePlayer();} page = name; lastTrace = null; history.replaceState(null,'','#' + name.toLowerCase().replace(' ','-')); render(); if (page === 'Settings') void refreshHaStatus(); }
+function go(name) { const changed=page!==name;if(changed){archiveVersion++;archiveSetupVersion++;stopArchivePlayer();} page = name; lastTrace = null; history.replaceState(null,'','#' + name.toLowerCase().replace(' ','-')); render(); if(changed){const heading=$('page-title');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});globalThis.scrollTo?.({top:0,left:0,behavior:'instant'});} if (page === 'Settings') void refreshHaStatus(); }
 function button(text, action, attrs = {}) { const b = el('button',text,{type:'button',...attrs}); b.addEventListener('click',action); return b; }
 function navigation() {
   const nav = $('navigation'); nav.replaceChildren();
   const utility = $('utility-navigation'); if (utility) utility.replaceChildren();
-  for (const name of ['Home','Devices','Cameras','Safety','Interaction','Automations','Activity','Games',...(peopleAvailable ? ['People'] : []),...(filesAvailable ? ['Files'] : []),'Ask Home','Settings',...($('developer-mode').checked ? ['System','Developer'] : [])]) {
+  for (const name of ['Home','Devices','Cameras','Safety','Interaction','Automations','Activity','Games',...(peopleAvailable ? ['People'] : []),'Settings',...($('developer-mode').checked ? ['System','Developer'] : [])]) {
     const [label,,mark] = pageInfo[name];
     const b = add(button(null,() => go(name), {'data-page':name,'aria-label':label,...(page === name ? {'aria-current':'page'} : {})}),icon(mark),el('span',label));
     (['Ask Home','Settings','System','Developer'].includes(name) && utility ? utility : nav).append(b);
@@ -130,6 +131,11 @@ function expireHomeQueryStates() {
   }
   return changed;
 }
+document.addEventListener('Friday.homeStatus',event=>{
+ const status=event.detail;if(!status||!status.generated_at||!Number.isFinite(Date.parse(status.generated_at)))return;
+ $('mode').textContent=status.simulated?'示例家庭':status.connected?(status.control_count?'家庭已连接':'家庭已连接 · 只读'):'连接中断';
+ $('snapshot-time').textContent='更新于'+shortTime(status.generated_at);
+});
 function renderSourceStatus() {
   $('mode').textContent = !snapshot ? '未连接' : !connected ? '连接中断' : snapshot.mode === 'simulator' ? '示例家庭' : snapshot.action_targets?.length ? '家庭已连接' : '家庭已连接 · 只读';
   $('snapshot-time').textContent = snapshot ? '更新于' + shortTime(snapshot.generated_at) : '';
@@ -260,6 +266,7 @@ function render() {
   if(page!=='Activity'&&archivePlayerView)stopArchivePlayer();
   expireSnapshotStates(); navigation();
   $('page-title').textContent = page === 'Home' ? '我的家' : pageInfo[page][0];
+  document.title = 'Friday · ' + $('page-title').textContent;
   copyLayout.decorate($('page-title'),page === 'Home' ? '我的家' : pageInfo[page][0]);
   if ($('page-subtitle')) $('page-subtitle').textContent = pageInfo[page][1];
   $('content').setAttribute('aria-label',pageInfo[page][0]);
@@ -306,9 +313,9 @@ function render() {
     });
     return;
   }
-  if(document.body.dataset.consoleSurface!=='legacy'&&['Home','Devices','Cameras','Interaction','Activity','Automations','Settings'].includes(page)&&snapshot){
+  if(document.body.dataset.consoleSurface!=='legacy'&&['Home','Devices','Cameras','Interaction','Activity','Automations','Settings'].includes(page)&&(snapshot||page==='Settings')){
     experiencePage=page;
-    import('/static/home-experience.js').then(({mountExperience})=>{if(experienceCurrent!==experienceVersion||experiencePage!==page)return;experienceView=mountExperience(content,{page,go,snapshot,legacyConnections:renderSettings,legacyRules:renderCoreRules});}).catch(()=>{
+    import('/static/home-experience.js').then(({mountExperience})=>{if(experienceCurrent!==experienceVersion||experiencePage!==page)return;experienceView=mountExperience(content,{page,go,snapshot,legacyConnections:(slot,target)=>{if(target)selectedConnection=target;renderSettings(slot);},legacyRules:renderCoreRules,openEvidenceRecording:openEventRecording});}).catch(()=>{
       if(experienceCurrent!==experienceVersion||experiencePage!==page)return;
       experiencePage=null;
       // A missing optional view must not remove the basic Console's controls.
@@ -691,39 +698,82 @@ function renderActivity(content) {
   const block = el('section',null,{class:'surface',id:'activity-events'});renderEventList(block,activityLimit);if (lastTrace) renderTrace(block,lastTrace);content.append(block);
   renderArchiveLookup(content);
 }
-const archiveLabels={ready:copyName('Friday-1200'),pending:'等待落盘或完成核对',missing:'该区间没有已知片段',expired:'索引中的原片已不存在',unavailable:'暂不能定位原片'};
+const archiveLabels={ready:'可准备隐私预览',pending:'等待落盘或完成核对',missing:'该区间没有已知片段',expired:'索引中的原片已不存在',unavailable:'暂不能定位原片'};
 const archiveReasons={archive_camera_mapping_required:'请先对应NAS录像目录与摄像头',archive_recording_clock_unreviewed:'需要核对摄像头录像时钟。',archive_file_still_changing:'文件仍在变化，暂不能用于区间引用。',archive_completion_unreviewed:'录像写入完成的规则尚未核对。',archive_media_time_or_container_unvalidated:'媒体格式或时长与文件名区间尚未匹配。',archive_index_coverage_incomplete:'目录记录不完整，请刷新并检查对应关系。当前索引只覆盖部分目录或文件名；请刷新索引并检查映射。',archive_coverage_or_clock_boundary_uncertain:'片段之间存在空缺或时钟边界不确定。',archive_overlapping_segments_ambiguous:'该区间存在重叠片段，需要核对来源。',archive_within_declared_arrival_delay:'仍在你设置的归档等待时间内。',archive_source_segment_expired:'已知原片已从可读目录中消失。'};
 function localArchiveDate(value){const d=new Date(value);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,23);}
 function showArchiveResolution(output,report){
-  output.replaceChildren();add(output,badge(report.simulated?'simulated · 示例归档':'NAS · 原录像只读引用'),el('h3',archiveLabels[report.status]??'需要核对'),el('p',archiveReasons[report.reason]??(report.status==='ready'?(report.simulated?'示例时间区间已覆盖，未读取真实原片。':'文件时间已核对，播放及跳转误差未确认。本次查询的文件和时间区间已核对；播放器与跳转误差尚未验证。'):'请核对归档来源和当前索引。')));
+  output.replaceChildren();add(output,badge(report.simulated?'simulated · 合成录像引用':'NAS · 录像只读引用'),el('h3',archiveLabels[report.status]??'需要核对'),el('p',archiveReasons[report.reason]??(report.status==='ready'?(report.simulated?'已定位合成录像片段，未读取真实原片。':'录像引用和时间已核对；播放前会在本机生成保护预览。'):'请核对归档来源和当前索引。')));
   for(const segment of report.segments??[]){
     const row=el('article',null,{class:'automation-row'});add(row,el('p',`${time(segment.time_range.start)} — ${time(segment.time_range.end)}`),badge(archiveLabels[segment.status]??'需要核对'),el('p',`时钟误差 ${segment.clock_uncertainty_seconds===null?'未知':'±'+segment.clock_uncertainty_seconds+' 秒'} · ${segment.audio_track===true?'含音轨':segment.audio_track===false?'未发现音轨':'音轨未确认'}`,{class:'meta'}),detail('片段依据',segment));output.append(row);
     if(segment.status==='ready')row.append(button('打开片段',()=>openArchivePlayer(output,report,segment),{class:'secondary','data-archive-playback-ref':segment.media_ref}));
   }
   if(report.gaps?.length)output.append(detail('尚未覆盖的区间',report.gaps));
-  output.append(el('p','录像邻近事件，未确认触发原因。录像时间接近事件，不代表已确认触发原因。播放默认静音；真实摄像头时钟与跳转精度需单独核验。',{class:'meta'}));
+  output.append(el('p','附近录像只作画面参考，不能证明触发原因。保护预览默认静音。',{class:'meta'}));
   if(archivePlayerView&&archivePlayerView.plan.context_fingerprint===report.context_fingerprint)output.append(archivePlayerView.root);
 }
 function cancelArchivePlayback(plan){if(/^[a-f0-9]{64}$/.test(plan?.plan_id??''))void api('/api/archive/playback/cancel',{method:'POST',body:JSON.stringify({plan_id:plan.plan_id})}).catch(()=>{});}
 function stopArchivePlayer(message=''){
+  archivePrepareController?.abort();archivePrepareController=null;
+  if(archiveExpiryTimer!==null&&typeof clearTimeout==='function')clearTimeout(archiveExpiryTimer);archiveExpiryTimer=null;
+  if(archiveContextTimer!==null&&typeof clearInterval==='function')clearInterval(archiveContextTimer);archiveContextTimer=null;
   archivePlayerVersion++;const view=archivePlayerView;archivePlayerView=null;if(!view)return;
   view.video.pause?.();view.video.removeAttribute?.('src');view.video.load?.();view.video.setAttribute('hidden','');cancelArchivePlayback(view.plan);
   if(message)settingsMessage(view.status,message,true);
+}
+async function openEventRecording(output,details){
+  stopArchivePlayer();const version=++archiveVersion;output.replaceChildren();
+  if(!details)return;
+  const request=details.request;
+  const allowed=['schema_version','camera_id','expected_context','time_range'];
+  if(!request||Object.keys(request).some(key=>!allowed.includes(key))
+    ||(request.schema_version!==undefined&&request.schema_version!==1)
+    ||!/^[a-f0-9]{64}$/.test(request.expected_context??'')||typeof request.camera_id!=='string'
+    ||!request.time_range||Object.keys(request.time_range).some(key=>!['schema_version','start','end'].includes(key))
+    ||(request.time_range.schema_version!==undefined&&request.time_range.schema_version!==1)
+    ||!Number.isFinite(Date.parse(request.time_range.start))||!Number.isFinite(Date.parse(request.time_range.end))){
+    output.append(el('p','这条录像引用暂不可核对，请刷新事件后重试。',{role:'status'}));return;
+  }
+  output.append(el('p','正在定位事件附近的录像…',{role:'status','aria-live':'polite'}));
+  output.scrollIntoView?.({block:'nearest'});
+  try{
+    const report=await api('/api/archive/resolve',{method:'POST',body:JSON.stringify(request)}),context=await api('/api/archive/context');
+    if(version!==archiveVersion||page!=='Activity'||!output.isConnected)return;
+    if(report.context_fingerprint!==request.expected_context||context.fingerprint!==report.context_fingerprint||context.simulated!==report.simulated)throw Error('source_changed');
+    showArchiveResolution(output,report);
+    output.scrollIntoView?.({block:'nearest'});
+    const ready=(report.segments??[]).filter(segment=>segment.status==='ready');
+    if(ready.length===1)await openArchivePlayer(output,report,ready[0]);
+  }catch(_){if(version===archiveVersion&&page==='Activity'&&output.isConnected)output.replaceChildren(el('p','事件录像暂不可定位，请核对 NAS 连接、时间和摄像头对应关系后重试。',{role:'status'}));}
 }
 async function openArchivePlayer(output,report,segment){
   stopArchivePlayer();const version=++archivePlayerVersion,queryVersion=archiveVersion;
   const start=Math.max(Date.parse(report.time_range.start),Date.parse(segment.time_range.start)+(segment.clock_uncertainty_seconds??0)*1000),end=Math.min(Date.parse(report.time_range.end),Date.parse(segment.time_range.end)-(segment.clock_uncertainty_seconds??0)*1000);
   if(!(end>start))return;
   const status=el('div','正在生成隐私预览…',{role:'status','aria-live':'polite'});output.append(status);
+  if(typeof AbortController==='function')archivePrepareController=new AbortController();
+  const signal=archivePrepareController?.signal;
+  status.append(button('取消',()=>{stopArchivePlayer();status.textContent='已取消准备。';},{class:'secondary'}));
+  let preparedPlan=null,adopted=false;
   try{
-    const plan=await api('/api/archive/playback',{method:'POST',body:JSON.stringify({expected_context:report.context_fingerprint,camera_id:report.camera_id,media_ref:segment.media_ref,time_range:{start:new Date(start).toISOString(),end:new Date(end).toISOString()}})}),fresh=await api('/api/archive/context');
+    preparedPlan=await api('/api/archive/playback',{method:'POST',signal,body:JSON.stringify({expected_context:report.context_fingerprint,camera_id:report.camera_id,media_ref:segment.media_ref,time_range:{start:new Date(start).toISOString(),end:new Date(end).toISOString()}})});
+    const plan=preparedPlan;
+    if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!=='Activity')return;
+    const fresh=await api('/api/archive/context',{signal});
     if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!=='Activity'||fresh.fingerprint!==plan.context_fingerprint||fresh.simulated!==plan.simulated){cancelArchivePlayback(plan);return;}
-    if(plan.privacy_protected!==true){cancelArchivePlayback(plan);status.textContent='隐私预览未就绪';return;}
+    if(plan.privacy_protected!==true||plan.privacy_preview_generated!==true||plan.original_modified!==false||!['local_person_mosaic','local_full_frame_mosaic'].includes(plan.privacy_mode)){cancelArchivePlayback(plan);status.textContent='隐私预览未就绪';return;}
     if(!/^\/api\/archive\/media\/[a-f0-9]{64}$/.test(plan.stream_url)||!Number.isFinite(plan.start_offset_seconds)||!Number.isFinite(plan.end_offset_seconds)||plan.end_offset_seconds<=plan.start_offset_seconds){cancelArchivePlayback(plan);throw Error('unqualified media');}
     const root=el('section',null,{class:'archive-player',id:'archive-player'}),video=el('video',null,{controls:'',playsinline:'',preload:'metadata','aria-label':plan.simulated?'simulated 测试录像':copyName('Friday-1228')}),receipt=el('p','等待媒体定位…',{id:'archive-seek-evidence',class:'meta'});
     video.muted=true;
     const view={root,video,plan,status:receipt};archivePlayerView=view;
     const active=()=>archivePlayerView===view&&page==='Activity'&&version===archivePlayerVersion;
+    const expires=Date.parse(plan.expires_at)-Date.now();
+    if(!Number.isFinite(expires)||expires<=0||expires>301000){stopArchivePlayer('预览已过期，请重新选择。');return;}
+    if(typeof setTimeout==='function')archiveExpiryTimer=setTimeout(()=>{if(active())stopArchivePlayer('预览已过期，请重新选择。');},expires);
+    archiveContextTimer=setInterval(async()=>{
+      if(!active())return;
+      try{const context=await api('/api/archive/context');if(active()&&(context.fingerprint!==plan.context_fingerprint||context.simulated!==plan.simulated))stopArchivePlayer('录像来源已变化，请重新选择。');}
+      catch(_){if(active())stopArchivePlayer('录像来源暂不可核对，请重新选择。');}
+    },15000);
     const stateEvidence=()=>{
       for(const [key,value] of [['position',video.currentTime],['duration',video.duration],['width',video.videoWidth],['height',video.videoHeight],['ready-state',video.readyState]])if(Number.isFinite(value))video.setAttribute('data-'+key,value);
       if(typeof video.paused==='boolean')video.setAttribute('data-paused',video.paused);
@@ -766,9 +816,11 @@ async function openArchivePlayer(output,report,segment){
     video.addEventListener('timeupdate',()=>{if(active()&&video.currentTime>=plan.end_offset_seconds){ended=true;video.pause();video.currentTime=Math.max(plan.start_offset_seconds,plan.end_offset_seconds-.001);receipt.append(el('span',' · 所选区间结束'));}});
     video.addEventListener('play',()=>{if(!active())return;if(Date.parse(plan.expires_at)<=Date.now()){stopArchivePlayer('播放资格已过期，请重新查询。');return;}if(ended){ended=false;video.currentTime=plan.start_offset_seconds;}});
     video.addEventListener('error',failed);
-    add(root,badge(plan.simulated?'simulated · 生成的测试图案':copyName('Friday-1236')),el('h3','所选片段'),video,receipt,el('p',`结果尚未确认，请核对完整说明。前一个关键帧 ${plan.previous_keyframe_seconds===null?'未知':plan.previous_keyframe_seconds.toFixed(3)+' 秒'} · 播放资格至 ${time(plan.expires_at)} · 64 MiB 读取上限`,{class:'meta'}),button('停止回放',()=>stopArchivePlayer('已停止回放。'),{id:'archive-player-stop',class:'secondary'}));
-    const target=$('archive-result')??output;status.remove?.();target.append(root);video.setAttribute('src',plan.stream_url);
-  }catch(_){if(version===archivePlayerVersion&&page==='Activity')settingsMessage(status,'原片不能播，请查格式、连接与时钟。原片暂不能播放。请重新查询并检查格式、连接和时钟核对。',true);}
+    const protection=plan.privacy_mode==='local_full_frame_mosaic'?'整帧遮挡保护':'人物遮挡保护';
+    add(root,badge(plan.simulated?'simulated · 合成录像隐私预览':'本机隐私预览'),el('h3','所选片段'),video,receipt,el('p',`${protection} · 默认静音 · 播放资格至 ${time(plan.expires_at)} · 64 MiB 读取上限`,{class:'meta'}),button('停止回放',()=>stopArchivePlayer('已停止回放。'),{id:'archive-player-stop',class:'secondary'}));
+    status.remove?.();output.append(root);video.setAttribute('src',plan.stream_url);adopted=true;root.scrollIntoView?.({block:'nearest'});
+  }catch(_){if(version===archivePlayerVersion&&page==='Activity')settingsMessage(status,'保护预览暂不能播放，请重新选择片段并检查本机播放依赖、连接和时钟。',true);}
+  finally{if(preparedPlan&&!adopted)cancelArchivePlayback(preparedPlan);if(version===archivePlayerVersion)archivePrepareController=null;}
 }
 function renderArchiveLookup(content){
   const session=++archiveSession,block=el('section',null,{class:'surface archive-lookup',id:'archive-lookup'});
@@ -1893,6 +1945,7 @@ function renderArchiveSettings(section) {
       for(const [key,source] of Object.entries(keys))fields[key].value=profile[source]??'';
       timing.checked=profile.timing_reviewed===true;completion.checked=profile.completion_convention==='closed_files_operator_reviewed';
       folder.value=context.folders.some(item=>item.folder_ref===profile.folder_ref)?profile.folder_ref:'';
+      if(profile.room_binding_current===false)settingsMessage(output,'请核对摄像头对应的当前家庭房间，再确认保存。完成前不会把这里的录像连到家庭事件。');
     }else{
       for(const [key,field] of Object.entries(fields))field.value=key==='timezone'?'Asia/Shanghai':'';
       timing.checked=false;completion.checked=false;folder.value='';
@@ -1903,7 +1956,7 @@ function renderArchiveSettings(section) {
   for(const field of [...Object.values(fields),timing,completion])field.addEventListener('input',remember);
   function showContext(){
     listing.replaceChildren();camera.replaceChildren(el('option','新增相机',{value:''}));folder.replaceChildren(el('option','选择已读取目录',{value:''}));
-    for(const item of context.cameras??[])camera.append(el('option',item.name+(item.source_binding_current===false?' · 需重新对应目录':''),{value:item.id}));
+    for(const item of context.cameras??[])camera.append(el('option',item.name+(item.source_binding_current===false?' · 需重新对应目录':item.room_binding_current===false?' · 需核对家庭房间':''),{value:item.id}));
     for(const item of context.folders??[]){folder.append(el('option',item.label,{value:item.folder_ref}));listing.append(el('p',withCopy(item.label+' · '+(item.scan_complete?copyName('Friday-1843'):'部分索引'),item.scan_complete?copyName('Friday-1843'):null),{class:'meta'}),detail('文件示例',item.sample_filenames));}
     camera.value=context.cameras.some(item=>item.id===archiveSetupDraft.camera)?archiveSetupDraft.camera:'';
     folder.value=context.folders.some(item=>item.folder_ref===archiveSetupDraft.folder)?archiveSetupDraft.folder:'';
@@ -2190,12 +2243,14 @@ function renderSettings(content) {
   const arlHome = settingsField(arl.form, copyName('Friday-1957'), 'settings-arl-home', config.arl_home, {maxlength:90}, '留空使用共享 ARL 默认目录');
   settingsSave(arl, 'settings-arl', () => ({arl_home: settingValue(arlHome)}));
   let arlConsumerSequence = 0;
-  const showArl = report => {
+  const showArl = async report => {
     const consumerSequence = ++arlConsumerSequence;
-    const statuses = {ready:'ARL 已连接',starting:copyName('Friday-1960'),not_running:'ARL 尚未运行',sdk_missing:'需要安装ARL连接组件',disconnected:'共享服务未连接',user_disabled:'ARL 已由用户停用',unsafe_home:copyName('Friday-1965'),deadline_exceeded:'连接超时，可稍后重试',app_identity_unverified:'共享服务尚未信任此客户端',sdk_roundtrip_pass:'共享连接往返检查通过',runtime_busy:'共享服务检查进行中',runtime_launch_environment_not_isolated:'请由共享 ARL 启动器启动服务，再连接'};
-    const refreshNotice = arlRefreshNotice(report);
-    settingsMessage(arl.output, report.metadata_refresh_pending && report.metadata_freshness !== 'last_known' ? refreshNotice : statuses[report.status] ?? '共享服务暂时不可用');
-    if (refreshNotice && report.metadata_freshness === 'last_known') arl.output.append(el('p',refreshNotice,{class:'meta'}));
+    let presentation;
+    try{const {arlRuntimePresentation}=await import('/static/arl-status.js');presentation=arlRuntimePresentation(report);}
+    catch(_){presentation={description:'ARL 连接状态尚未确认；身份与模型能力尚未验证。',recovery:'请重新读取连接状态。'};}
+    if(!arl.output.isConnected||consumerSequence!==arlConsumerSequence||page!=='Settings')return;
+    settingsMessage(arl.output,presentation.description);
+    arl.output.append(el('p',presentation.recovery,{class:'meta'}));
     if (report.runtime_version) arl.output.append(el('p', 'ARL ' + report.runtime_version, {class:'meta'}));
     for (const provider of (report.providers ?? []).filter(provider => provider.name === 'codex_app_server')) {
       const state = {ready:'已发现',disabled:'尚未启用',unavailable:'不可用',not_ready:'尚未就绪'}[provider.availability] ?? '待检查';
@@ -2209,7 +2264,7 @@ function renderSettings(content) {
   };
   const checkArl = async path => {
     if (arlHome.value.trim() !== (settingsData.config.arl_home ?? '')) { settingsMessage(arl.output,'请先保存后台服务目录。',true); return; }
-    showArl(await api(path,{method:'POST',body:'{}'}));
+    await showArl(await api(path,{method:'POST',body:'{}'}));
   };
   settingsButton(arl, '连接服务', 'settings-arl-connect', () => checkArl('/api/settings/arl/connect'));
   settingsButton(arl, copyName('Friday-1980'), 'settings-arl-probe', () => checkArl('/api/settings/arl/probe'));
@@ -2467,7 +2522,7 @@ function renderAsk(content) {
   if(!rooms.length)return empty(content,'还没有可查询的房间','在设备来源中补全房间映射后再查询。','查看设备',()=>go('Devices'));
   if(!rooms.includes(homeQueryDraft.room))homeQueryDraft.room=rooms.includes(selectedRoom) ? selectedRoom : rooms[0];
   const block=el('section',null,{class:'surface'});
-  add(block,el('h2','查看依据'),el('p','请核对资料范围与当前状态。指定房间查看常用状态、设备和近期记录，也可在上方发起本机文字对话。',{class:'muted'}));
+  add(block,el('h2','查看依据'),el('p','选择房间，查看设备状态和最近的记录。',{class:'muted'}));
   const form=el('form',null,{class:'settings-form',id:'home-query-form'});
   const room=el('select',null,{id:'home-query-room'}),kind=el('select',null,{id:'home-query-kind'});
   for(const value of rooms)room.append(el('option',roomName(value),{value}));room.value=homeQueryDraft.room;
@@ -2499,7 +2554,7 @@ function renderAsk(content) {
   };
   form.addEventListener('submit',event=>{event.preventDefault();return read(false);});
   if(homeQueryResult){renderHomeQueryResult(output,homeQueryResult);if(homeQueryResult.next_cursor)more.removeAttribute('hidden');}
-  add(block,form,el('p','只读依据，不操作、不调模型或上传。只读取证据，不发设备动作、不调用模型、不上传音视频。',{class:'meta'}),output,more);content.append(block);
+  add(block,form,el('p','这里仅查询家庭记录，不会操作设备。',{class:'meta'}),output,more);content.append(block);
 }
 async function refresh() {
   if(experienceView)return experienceView.refresh();
@@ -2526,7 +2581,7 @@ async function refreshPassive() {
 }
 $('brand-home')?.addEventListener('click',event => {event.preventDefault();go('Home');});
 $('refresh').addEventListener('click',refresh);
-$('developer-mode').addEventListener('change',()=>{if(page==='Developer'&&!$('developer-mode').checked)page='Home';render();});
+$('developer-mode').addEventListener('change',()=>{if(page==='Developer'&&!$('developer-mode').checked)page='Home';navigation();render();});
 const initial=pages.find(name=>name.toLowerCase().replace(' ','-')===location.hash.slice(1)); if(initial)page=initial;
 render(); refresh();
 // OAuth return and browser restoration must refresh authorization independently of HA polling.

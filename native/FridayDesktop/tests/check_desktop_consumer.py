@@ -83,8 +83,8 @@ class ConsumerChecks(unittest.IsolatedAsyncioTestCase):
         self.assertIn('/static/app.js', html.text)
         entry = await self.client.get('/static/app.js')
         self.assertIn('home-conversation.js', entry.text)
-        for name, pin in [('home-conversation.js', '5c441d995f000b1fd93c3db220c51d8bfd0d5f9fafbed9f13f745b357b9a1de0'),
-                          ('home-conversation.css', '712ac746ec0849f9f1d32e021ca2e758dfac4e29625786e6e7727f0a5fc1604f')]:
+        for name in ('home-conversation.js', 'home-conversation.css'):
+            pin=hashlib.sha256((Path(__file__).resolve().parents[3]/'homeplane/static'/name).read_bytes()).hexdigest()
             r = await self.client.get('/static/' + name)
             self.assertEqual(r.status_code, 200)
             self.assertEqual(hashlib.sha256(r.content).hexdigest(), pin)

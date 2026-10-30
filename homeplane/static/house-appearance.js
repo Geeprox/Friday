@@ -17,16 +17,16 @@ export function roomQuickControls(devices,room){
  const lamps=list.flatMap(d=>(d.controls||[]).filter(c=>c.presentation?.emits_light&&powerOperation(c)).map(c=>({device:d,control:c})))
   .sort((a,b)=>Number(b.control.available)-Number(a.control.available)||Number(b.control.presentation.lighting_role==='main')-Number(a.control.presentation.lighting_role==='main'));
  if(lamps[0])result.push({device:lamps[0].device.id,control:lamps[0].control.id,kind:'light',name:lamps[0].control.name,on:lamps[0].control.value==='on',available:lamps[0].control.available});
- for(const kind of ['cover','climate']){
-  const d=list.find(d=>d.kind===kind&&d.controls?.length);
-  if(d)result.push({device:d.id,kind,name:d.name,on:d.controls.some(c=>c.available&&!['off','closed','unavailable','unknown'].includes(c.value)),available:d.controls.some(c=>c.available)});
+ for(const kind of ['cover','climate','camera','lock']){
+  const d=list.find(d=>d.kind===kind);
+  if(d)result.push({device:d.id,kind,name:d.name,on:d.controls.some(c=>c.available&&!['off','closed','unavailable','unknown'].includes(c.value)),available:d.available!==false});
  }
  return result;
 }
 // Resolve projected room annotations without changing source coordinates.
-export function arrangeRoomControls(items,width,height){
+export function arrangeRoomControls(items,width,height,topInset=54){
  const rows=items.map(p=>({...p,x:p.anchorX,y:p.anchorY}));
- const clamp=p=>{p.x=Math.max(p.w/2+12,Math.min(width-p.w/2-12,p.x));p.y=Math.max(p.h/2+54,Math.min(height-p.h/2-36,p.y));};
+ const clamp=p=>{p.x=Math.max(p.w/2+12,Math.min(width-p.w/2-12,p.x));p.y=Math.max(p.h/2+topInset,Math.min(height-p.h/2-36,p.y));};
  for(let pass=0;pass<32;pass++){
   for(const p of rows){if(pass<20){p.x+=(p.anchorX-p.x)*.045;p.y+=(p.anchorY-p.y)*.045;}clamp(p);}
   for(let i=0;i<rows.length;i++)for(let j=i+1;j<rows.length;j++){
@@ -39,7 +39,7 @@ export function arrangeRoomControls(items,width,height){
   const packed=[];
   for(const p of rows){
    let best=null,score=Infinity;
-   for(let y=p.h/2+54;y<=height-p.h/2-36;y+=5)for(let x=p.w/2+12;x<=width-p.w/2-12;x+=5){
+   for(let y=p.h/2+topInset;y<=height-p.h/2-36;y+=5)for(let x=p.w/2+12;x<=width-p.w/2-12;x+=5){
     const candidate={...p,x,y};if(packed.some(q=>overlap(candidate,q)))continue;
     const cost=(x-p.anchorX)**2+(y-p.anchorY)**2;if(cost<score){best=candidate;score=cost;}
    }

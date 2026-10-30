@@ -25,7 +25,7 @@ export function mountPeople(root,{endpoint='/api/people',embedded=false,readOnly
   async function refresh(){
     busy=true;render();
     try{const response=await fetch(endpoint,{cache:'no-store'});if(!response.ok)throw new Error();page=await response.json();if(failed)notice='';failed=false;}
-    catch{notice='人物记录暂时无法读取。';failed=true;}finally{busy=false;render();}
+    catch{notice='人物记录暂时无法读取，请刷新重试。';failed=true;}finally{busy=false;render();}
   }
   async function edit(path,body,message){
     if(readOnly){notice='当前只读；人物核对修改与识别接入待启用。';render();return;}
@@ -51,7 +51,7 @@ export function mountPeople(root,{endpoint='/api/people',embedded=false,readOnly
     const undo=button('撤销修改',()=>edit('undo',{},'已撤销上一次修改。'));undo.disabled=busy||readOnly||!page?.undo_available;
     const reload=button('刷新',refresh);reload.disabled=busy;
     add(top,status,add(node('div',null,{class:'top-actions'}),undo,reload));
-    const heading=add(node('header',null,{class:'people-heading'}),add(node('div'),node('h1','人物'),node('p','核对摄像头中的人物，为身份观察登记名字。')),
+    const heading=add(node('header',null,{class:'people-heading'}),add(node('div'),node('h1','人物'),node('p','为熟悉的家人登记名字，核对识别结果。')),
       node('span',page?`${page.samples.filter(s=>s.active).length} ${sampleUnit()} · ${page.clusters.length} 组人物`:'',{class:'people-count'}));
     add(root,top,...(embedded?[]:[heading]),node('div',notice,{class:'people-notice'+(failed?' error':''),role:'status','aria-live':'polite'}));
     if(readOnly)root.append(node('p','当前只读；人物识别接入与核对修改待启用。',{class:'people-note'}));
@@ -79,7 +79,7 @@ export function mountPeople(root,{endpoint='/api/people',embedded=false,readOnly
     });
     if(!visible.length)list.append(node('p','这里还没有人物。',{class:'people-empty'}));
     add(layout,list,inspector(page.clusters.find(c=>c.cluster_id===selected)));root.append(layout);
-    root.append(node('p','图片为示意，姓名只用于身份核对记录。观察图为几何占位。登记名字只保存身份核对记录。',{class:'people-note'}));
+    root.append(node('p','样本图为示意；登记名字只用于身份核对记录。',{class:'people-note'}));
   }
   function inspector(cluster){
     const panel=node('section',null,{class:'people-inspector','aria-label':'人物详情'});
@@ -120,14 +120,16 @@ export function mountPeople(root,{endpoint='/api/people',embedded=false,readOnly
   }
   function mergeDialog(){
     if(readOnly)return;
+    const trigger=document.activeElement;
     const clusters=page.clusters.filter(c=>mergeSelection.has(c.cluster_id));
-    const dialog=node('dialog',null,{class:'people-dialog'}),personIds=[...new Set(clusters.map(c=>c.person_id).filter(Boolean))];
-    add(dialog,node('h2',`合并这 ${clusters.length} 组人物`),node('p',clusters.map(title).join('、')),node('p','样本合并到同一人，声音关联需重新核对'));
+    const dialog=node('dialog',null,{class:'people-dialog','aria-labelledby':'people-merge-title'}),personIds=[...new Set(clusters.map(c=>c.person_id).filter(Boolean))];
+    add(dialog,node('h2',`合并这 ${clusters.length} 组人物`,{id:'people-merge-title'}),node('p',clusters.map(title).join('、')),node('p','样本合并到同一人，声音关联需重新核对'));
     const select=node('select',null,{'aria-label':'保留人物'});
     if(personIds.length){dialog.append(node('label','保留姓名'));personIds.forEach(pid=>select.append(node('option',page.people.find(p=>p.person_id===pid)?.name||'未命名人物',{value:pid})));dialog.append(select);}
-    const cancel=button('取消',()=>{dialog.close();dialog.remove();});
-    const confirm=button('确认合并',()=>{dialog.close();dialog.remove();void edit('merge',{cluster_ids:clusters.map(c=>c.cluster_id),...(personIds.length?{target_person_id:select.value}:{})},'人物组已合并。');},{class:'primary'});
-    add(dialog,add(node('div',null,{class:'dialog-actions'}),cancel,confirm));dialog.addEventListener('cancel',()=>dialog.remove());root.append(dialog);dialog.showModal();
+    const dismiss=()=>{dialog.close();dialog.remove();trigger?.focus();};
+    const cancel=button('取消',dismiss);
+    const confirm=button('确认合并',()=>{dismiss();void edit('merge',{cluster_ids:clusters.map(c=>c.cluster_id),...(personIds.length?{target_person_id:select.value}:{})},'人物组已合并。');},{class:'primary'});
+    add(dialog,add(node('div',null,{class:'dialog-actions'}),cancel,confirm));dialog.addEventListener('cancel',event=>{event.preventDefault();dismiss();});root.append(dialog);dialog.showModal();
   }
   const ready=refresh();
   return {refresh,ready,destroy(){destroyed=true;liveView?.destroy();root.replaceChildren();root.classList.remove('people-root');}};

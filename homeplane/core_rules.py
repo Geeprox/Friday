@@ -424,10 +424,11 @@ class CoreRules:
                 allow_core=True,
                 preview=True,
             )
+            known_false=bool(result.reasons) and all(reason.startswith('condition_false:') or reason=='outside_time_window' for reason in result.reasons)
             return self._stage(
                 plan,
-                "awaiting_approval" if result.outcome == "matched" else "validated",
-                "assumed_awake_trial_no_device_write",
+                "awaiting_approval" if result.outcome == "matched" or result.outcome=='suppressed' and known_false else "validated",
+                "conditions_currently_false_no_device_write" if known_false else "assumed_awake_trial_no_device_write",
                 trial=result,
             )
 

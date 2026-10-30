@@ -27,10 +27,10 @@ async function main(){
   const rows=[{item:item('a'.repeat(64)),title:'DoneSentinel',extraction_status:'done',policy,references:[]},
     {item:item('b'.repeat(64)),title:'InboxPending',extraction_status:'disabled',policy,references:[]}];
   const calls=[];const first=setup(async url=>{calls.push(url);return {ok:true,json:async()=>url.endsWith('/context')?ctx:url.endsWith('/query')?{items:rows,next_cursor:null}:[]};});
-  await first.view.ready;assert(first.root.classList.contains('files-root'));assert(first.root.textContent.includes('全部文件'));
+  await first.view.ready;assert(first.root.classList.contains('files-root'));assert(first.root.textContent.includes('已索引资料'));
   assert.equal(calls.length,3);assert(calls.every(url=>!/(run|scan|upload|execute)/.test(url)));
   const walk=node=>[node,...node.children.flatMap(walk)];
-  walk(first.root).find(node=>node.tag==='button'&&node.textContent==='收件箱').events.click();
+  walk(first.root).find(node=>node.tag==='button'&&node.textContent==='待提取').events.click();
   assert(first.root.textContent.includes('InboxPending'));assert(!first.root.textContent.includes('DoneSentinel'));
   first.view.destroy();assert.equal(first.root.children.length,0);assert(!first.root.classList.contains('files-root'));
   let deliver;const late=setup(async()=>({ok:true,json:()=>new Promise(resolve=>{deliver=resolve;})}));

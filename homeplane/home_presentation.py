@@ -8,7 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from .embodied.paths import PRIVATE
 
 Fixture = Literal['main_light', 'pendant', 'led_strip', 'downlight', 'spotlight',
-                  'accent_light', 'ceiling_vent', 'wall_unit', 'power_supply', 'generic']
+                  'accent_light', 'ceiling_vent', 'wall_unit', 'power_supply',
+                  'curtain', 'camera', 'door_lock', 'sensor', 'speaker', 'switch_panel', 'generic']
 
 
 class Style(BaseModel):
@@ -66,6 +67,8 @@ def appearance(kind, name, profile: Profile, identities=()):
     override = next((profile.overrides[i].fixture for i in identities if i in profile.overrides), None)
     if override:
         fixture = override
+    elif kind == 'climate' and any(label in name for label in ('水暖毯','浴霸')):
+        fixture = 'generic'
     elif kind == 'climate':
         fixture = profile.climate_style if profile.climate_style != 'auto' else 'generic'
     elif kind == 'light':
@@ -73,6 +76,9 @@ def appearance(kind, name, profile: Profile, identities=()):
                    else 'downlight' if '筒灯' in name else 'spotlight' if '射灯' in name
                    else 'pendant' if '吊灯' in name else 'accent_light' if any(x in name for x in ('台灯', '壁灯', '氛围'))
                    else 'main_light')
+    elif kind in {'cover', 'camera', 'lock', 'sensor', 'binary_sensor', 'media_player', 'switch', 'trigger'}:
+        fixture = {'cover':'curtain','camera':'camera','lock':'door_lock','sensor':'sensor',
+                   'binary_sensor':'sensor','media_player':'speaker','switch':'switch_panel','trigger':'switch_panel'}[kind]
     else:
         fixture = 'generic'
     role = {'main_light': 'main', 'pendant': 'main', 'led_strip': 'strip',
@@ -82,7 +88,9 @@ def appearance(kind, name, profile: Profile, identities=()):
                 label={'ceiling_vent': '中央空调 · 吊顶出风口', 'wall_unit': '壁挂空调',
                        'power_supply': '照明供电', 'led_strip': '灯带', 'downlight': '筒灯',
                        'spotlight': '射灯', 'main_light': '主灯', 'pendant': '吊灯',
-                       'accent_light': '氛围灯'}.get(fixture, '设备'))
+                       'accent_light': '氛围灯', 'curtain':'窗帘', 'camera':'摄像头',
+                       'door_lock':'门锁','sensor':'传感器','speaker':'影音设备',
+                       'switch_panel':'开关面板'}.get(fixture, '设备'))
 
 
 def project(device: dict, profile: Profile) -> dict:
@@ -92,7 +100,8 @@ def project(device: dict, profile: Profile) -> dict:
     for control in device['controls']:
         controls.append(dict(control, presentation=appearance(control['kind'], control['name'], profile,
                                                                [control['id'], *identities])))
-    if not any(i in profile.overrides for i in identities):
+    if device.get('triggers'):visual=appearance('switch',device['name'],profile,identities)
+    if not device.get('triggers') and not any(i in profile.overrides for i in identities):
         if len(controls) == 1:
             visual = controls[0]['presentation']
         elif len(controls) > 1:

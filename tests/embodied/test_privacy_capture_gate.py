@@ -21,7 +21,8 @@ from homeplane.embodied.camera_wall import CameraWall
     ([], None),
 ])
 async def test_privacy_readback_never_turns_transport_failure_into_closed(tmp_path, monkeypatch, reply, expected):
-    (tmp_path/'miot-session.json').write_text(json.dumps({'access_token':'SYNTHETIC'}))
+    (tmp_path/'miot-session.json').write_text(json.dumps({'access_token':'SYNTHETIC','expires_ts':time.time()+3600}))
+    (tmp_path/'miot-session.json').chmod(0o600)
     monkeypatch.setattr(paths, 'PRIVATE', tmp_path)
     client = SimpleNamespace(get_props_async=AsyncMock(return_value=reply), deinit_async=AsyncMock())
     selected = {'device': {'did': 'SYNTHETIC'}, 'spec': {'services': [
@@ -39,8 +40,9 @@ async def test_privacy_readback_never_turns_transport_failure_into_closed(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_closed_secondary_does_not_start_models_or_capture(monkeypatch):
-    monkeypatch.delenv('FRIDAY_CAMERA_OPEN', raising=False)
+@pytest.mark.parametrize('legacy_open',['0','1'])
+async def test_closed_secondary_does_not_start_models_or_capture(monkeypatch,legacy_open):
+    monkeypatch.setenv('FRIDAY_CAMERA_OPEN',legacy_open)
     monkeypatch.setattr(previews, 'camera_is_open', AsyncMock(return_value=False))
     spawn = AsyncMock(side_effect=AssertionError('closed camera must not spawn'))
     monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
@@ -52,8 +54,9 @@ async def test_closed_secondary_does_not_start_models_or_capture(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_closed_primary_uses_real_source_function_without_capture(monkeypatch):
-    monkeypatch.delenv('FRIDAY_CAMERA_OPEN', raising=False)
+@pytest.mark.parametrize('legacy_open',['0','1'])
+async def test_closed_primary_uses_real_source_function_without_capture(monkeypatch,legacy_open):
+    monkeypatch.setenv('FRIDAY_CAMERA_OPEN',legacy_open)
     # Importing the worker starts its private identity store; compile its actual
     # production function instead so this test has no private data side effects.
     source = Path('homeplane/embodied/worker.py').read_text()

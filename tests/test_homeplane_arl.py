@@ -251,8 +251,10 @@ async def test_legacy_wrappers_reuse_arl_and_never_spawn_or_shortcut():
 
     class Runtime:
         calls = []
+        error = None
         async def complete(self, *args, **kwargs):
             self.calls.append((args, kwargs))
+            if self.error:raise ARLError(self.error)
             return {"simulated": False, "decision": {"label": "simple", "confidence": .99}}
     runtime = Runtime()
     result = await ARLRouteDecision(Settings(), runtime).classify("simulated")
@@ -260,9 +262,11 @@ async def test_legacy_wrappers_reuse_arl_and_never_spawn_or_shortcut():
     runtime.calls.clear()
     with pytest.raises(ARLError, match="explicit_model_required"):
         await ARLPlanner(Settings(), runtime).plan({}, {})
+    assert not runtime.calls
+    runtime.error = 'invalid_arguments'
     with pytest.raises(ARLError, match="arl_planner_context_contract_insufficient"):
         await ARLPlanner(Settings(codex_model="simulated-version"), runtime).plan({}, {})
-    assert not runtime.calls
+    assert len(runtime.calls) == 1 and runtime.calls[0][0][0] == 'codex_app_server'
 
 
 @pytest.mark.asyncio

@@ -54,18 +54,24 @@ async def test_overview_reports_latched_values_and_normalized_rooms(tmp_path):
     finally:core.actions.close();await core.adapter.close();core.store.close()
 
 @pytest.mark.asyncio
-async def test_original_recording_range_revision_and_symlink_fence(tmp_path):
+async def test_invalid_recording_cannot_be_published_as_protected_preview(tmp_path):
     root=tmp_path/'nas';folder=root/'XiaomiCamera_00_123456ABCDEF';folder.mkdir(parents=True)
     original=folder/'00_20260101000000_20260101001000.mp4';original.write_bytes(b'original-synthetic-video')
     outside=tmp_path/'outside.mp4';outside.write_bytes(b'secret-not-a-recording')
     (folder/'00_20260101001000_20260101002000.mp4').symlink_to(outside)
     report=listing(str(root));assert len(report['files'])==1
-    archive=SimpleNamespace(_root=AsyncMock(return_value=str(root)))
-    owner=Recordings(archive);owner.files['a'*32]={**report['files'][0],'root':str(root)}
-    plan=await owner.prepare('a'*32);token=plan['url'].rsplit('/',1)[1]
-    chunks,headers,status=owner.media(token,'bytes=2-6');assert b''.join(chunks)==b'igina';assert status==206
-    original.write_bytes(b'changed')
-    with pytest.raises(ValueError,match='source_changed'):owner.media(token,'bytes=0-1')
+    archive=SimpleNamespace(_root=AsyncMock(return_value=str(root)),
+        context=lambda:{'fingerprint':'a'*64},_check=lambda context:None,
+        runner=AsyncMock(return_value={'status':'unavailable'}))
+    owner=Recordings(archive,directory=tmp_path/'private-previews')
+    owner.files['a'*32]={**report['files'][0],'root':str(root),'context':'a'*64}
+    try:
+        with pytest.raises(ValueError,match='source_changed'):
+            await owner.prepare('a'*32)
+        assert not owner.leases and not owner.privacy.files
+        assert original.read_bytes()==b'original-synthetic-video'
+    finally:
+        await owner.close()
 
 
 def test_binding_scope_rejects_unknown_targets_and_requires_point_calibration(tmp_path,monkeypatch):
@@ -97,6 +103,28 @@ def test_product_selects_physical_channels_instead_of_configuration_switches():
     assert household_function(lamp,{},[lamp])
     assert household_function(e('switch','客厅面板  电视背景墙射灯开关 开关'),{'kind':'light'},[])
     assert household_function(e('switch','厨房开关  开关 开关'),{},[])
+    indicator=e('light','总控开关  指示灯')
+    assert household_function(e('switch','总控开关  开关 开关'),{},[indicator])
+    assert household_function(e('switch','智能面板  主灯 开关'),{},[])
+
+
+@pytest.mark.asyncio
+async def test_unavailable_devices_and_door_state_are_not_filtered_out(tmp_path):
+    core,rows,*_=rig(tmp_path)
+    settings=SimpleNamespace(path=tmp_path/'settings.json')
+    owner=HomeExperience(core,settings,Embodied(),None,Runtime())
+    sensor=next(r for r in rows if r['entity_id'].startswith('sensor.'))
+    sensor['state']='unavailable'
+    try:
+        result=await owner.overview()
+        d=next(d for d in result['devices'] if d['kind']=='sensor')
+        assert d['available'] is False and d['readings'][0]['available'] is False
+        sensor['state']='已上锁'
+        sensor['attributes']={'friendly_name':'SIMULATED 门锁  门 门状态'}
+        result=await owner.overview()
+        assert any(r['value']=='已上锁' for d in result['devices'] for r in d['readings'])
+    finally:
+        core.actions.close();await core.adapter.close();core.store.close()
 
 
 def test_nas_worker_imports_from_owned_source_outside_repository(tmp_path):
@@ -142,5 +170,29 @@ def test_presentation_separates_power_supply_from_emitting_light_and_panel_circu
     d={'id':'panel','name':'多路面板','kind':'light','controls':[
        {'id':'strip','name':'一路','kind':'light'},{'id':'down','name':'筒灯','kind':'light'}]}
     projected=p.project(d,profile)
-    assert projected['presentation']['fixture']=='generic'
+    assert projected['presentation']['fixture']=='switch_panel'
     assert [c['presentation']['lighting_role']for c in projected['controls']]==['strip','downlight']
+
+
+@pytest.mark.asyncio
+async def test_synced_selected_cover_keeps_one_card_and_unreliable_slat_semantics(tmp_path, monkeypatch):
+    from homeplane.contracts import Binding as SourceBinding
+    import homeplane.embodied.miot_spec as spec
+    core,*_=rig(tmp_path)
+    try:
+        snapshot=await core.snapshot()
+        device=next(d for d in snapshot.devices if any(e.id in d.function_ids and e.kind=='cover' for e in snapshot.entities))
+        device.bindings.append(SourceBinding(source='xiaomi-identity',external_id='cn_123456'))
+        core.snapshot=AsyncMock(return_value=snapshot)
+        cover=dict(did='123456',name='SIMULATED slats',room='SIMULATED room',feedback_quality='unreliable',position_semantics='slat_angle')
+        monkeypatch.setattr(spec,'optional_cover',lambda:cover)
+        monkeypatch.setattr(spec,'cover_revision',lambda value:'a'*64)
+        embodied=SimpleNamespace(configured=lambda:True,cameras=lambda:[],miot_cover=AsyncMock(return_value={'fault':0,'status':'ready','position':99}))
+        result=await HomeExperience(core,SimpleNamespace(path=tmp_path/'settings.json'),embodied,None,Runtime()).overview()
+        assert not any(d['id']==device.id for d in result['devices'])
+        selected=next(d for d in result['devices'] if d['id']=='friday:configured-cover')
+        assert selected['controls'][0]['attributes']['current_position'] is None
+        assert selected['controls'][0]['attributes']['position_semantics']=='slat_angle'
+        assert selected['controls'][0]['value']=='unconfirmed'
+    finally:
+        core.actions.close();await core.adapter.close();core.store.close()

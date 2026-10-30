@@ -142,6 +142,9 @@ class SourceQualityEvidence(Contract):
 class Event(Contract):
     event_id: str = Field(default_factory=lambda: str(uuid4()))
     source: str
+    # Durable source compatibility evidence, never authentication or action authority.
+    # Old journal entries remain explicitly unqualified when this field is absent.
+    source_context: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     kind: Literal["state-snapshot", "state-transition", "source-report", "quality-change", "action-result", "observation-gap"]
     source_seq: str | None = None
     correlation_id: str

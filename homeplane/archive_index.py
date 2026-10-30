@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from .archive_contracts import ArchiveResolution, ArchiveSegmentRef, ArchiveTimeRange
 from .settings import resolve_smb_path, run_bounded
 from .worker_runtime import module_command
+from .media_tools import ffprobe_executable
 
 
 def fingerprint(value):
@@ -71,8 +72,11 @@ def interval_gaps(request, segments):
 
 
 class ArchiveIndex:
-    def __init__(self, store, settings, simulated, *, runner=None, clock=None):
+    def __init__(self, store, settings, simulated, *, runner=None, clock=None, room_context=None):
         self.store, self.settings, self.simulated = store, settings, simulated
+        if room_context is not None and not callable(room_context):
+            raise ValueError("archive_room_context_unavailable")
+        self.room_context = room_context
         self.runner, self.clock = runner or self._worker, clock or (lambda: datetime.now(UTC))
         self.boot_id, self.revision = str(uuid4()), 0
         self.lock, self.closed = asyncio.Lock(), False
@@ -111,24 +115,42 @@ class ArchiveIndex:
         ]
 
     def all_profiles(self):
-        return [
-            {"id": row[0], "source_binding_current": row[1] == self.source(), **json.loads(row[2])}
-            for row in self.store.connection.execute(
-                "SELECT id,source,body FROM archive_profiles ORDER BY id"
-            )
-        ]
+        source, result = self.source(), []
+        for identifier, bound_source, raw in self.store.connection.execute(
+                "SELECT id,source,body FROM archive_profiles ORDER BY id"):
+            value = json.loads(raw)
+            stored = value.get("room_source_context")
+            current = self._room_context(value.get("room"))
+            result.append({**value, "id": identifier, "source_binding_current": bound_source == source,
+                           "room_binding_current": isinstance(stored, str)
+                           and re.fullmatch(r"[a-f0-9]{64}", stored) is not None
+                           and current is not None and stored == current})
+        return result
+
+    def _room_context(self, room):
+        if self.room_context is None or not isinstance(room, str) or not room:
+            return None
+        try:
+            value = self.room_context(room)
+            return value if isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value) else None
+        except Exception:
+            # Metadata failure never promotes an old mapping or exposes its source.
+            return None
 
     def context(self):
         profiles = self.all_profiles()
         simulated = bool(self.simulated())
-        value = fingerprint([self.boot_id, self.source(), self.revision, profiles, self.closed])
+        simulated_room = self._room_context("living-room") if simulated else None
+        value = fingerprint([self.boot_id, self.source(), self.revision, profiles, self.closed, simulated_room])
         if simulated:
             cameras = [
                 {
                     "id": "simulated:archive:living",
                     "name": "示例客厅摄像头",
-                    "room": "示例客厅",
+                    "room": "living-room",
                     "simulated": True,
+                    "source_binding_current": True,
+                    "room_binding_current": simulated_room is not None,
                     "example_ranges": {
                         "ready": self._sim_range(-120, 0).model_dump(mode="json"),
                         "pending": self._sim_range(0, 60).model_dump(mode="json"),
@@ -137,7 +159,7 @@ class ArchiveIndex:
                 }
             ]
         else:
-            cameras = [{k: v for k, v in p.items() if k != "relative_directory"} for p in self.all_profiles()]
+            cameras = [{k: v for k, v in p.items() if k != "relative_directory"} for p in profiles]
         fresh = bool(
             self.last_scan
             and self.last_scan["source"] == self.source()
@@ -311,6 +333,7 @@ class ArchiveIndex:
         value = edit.model_dump(exclude={"expected_context", "camera_id"})
         value.update(
             relative_directory=match["folder"],
+            room_source_context=self._room_context(edit.room),
             mapping_evidence="operator_declared_not_hardware_verified",
             simulated=False,
         )
@@ -368,7 +391,7 @@ class ArchiveIndex:
             report = await self.runner(
                 root,
                 "inspect",
-                {"paths": [i[0]["relative_path"] for i in selected], "ffprobe": shutil.which("ffprobe")},
+                {"paths": [i[0]["relative_path"] for i in selected], "ffprobe": ffprobe_executable()},
             )
             self._check(request.expected_context)
             if report.get("status") != "readable":
@@ -553,7 +576,7 @@ class ArchiveIndex:
             info = await self.runner(
                 root,
                 "playback-info",
-                {"path": relative, "ffprobe": shutil.which("ffprobe"), "offset_seconds": start},
+                {"path": relative, "ffprobe": ffprobe_executable(), "offset_seconds": start},
             )
             self._check(request.expected_context)
             if (

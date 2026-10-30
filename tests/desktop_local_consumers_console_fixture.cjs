@@ -19,9 +19,14 @@ const find=(root,label)=>walk(root).find(n=>n.tag==='button'&&n.textContent===la
 function setup(file, mount, fetch, options={}) {
   const root=new Element('section'), document={activeElement:null,createElement:tag=>{const element=new Element(tag);element.ownerDocument=document;return element;}};
   const copyDOM=require('./copy_layout_dom.cjs').install(Element,document,root);
-  const context=vm.createContext({...copyDOM,document,fetch,AbortController,DOMException,Set,Map,console,scrollY:0,scrollTo:({top})=>{context.scrollY=top;}});
-  const source=fs.readFileSync(path.join(process.argv[2],file),'utf8').replace(/^import '[^']*copy-layout.js';\n/m,'').replace(`export function ${mount}`,`function ${mount}`);
+  const localFetch=async(url,request)=>url==='/api/people/live'?{ok:true,json:async()=>({profiles:[],observations:[],cameras:[],recognition:{state:'stopped'}})}:fetch(url,request);
+  const context=vm.createContext({...copyDOM,document,fetch:localFetch,AbortController,DOMException,Set,Map,console,setInterval:()=>0,clearInterval(){},scrollY:0,scrollTo:({top})=>{context.scrollY=top;}});
+  const source=fs.readFileSync(path.join(process.argv[2],file),'utf8').replace(/^import '[^']*copy-layout.js';\n/m,'').replace(/^import \{mountLivePeople\} from '\.\/live.js';\n/m,'').replace(`export function ${mount}`,`function ${mount}`);
   vm.runInContext(fs.readFileSync(path.join(process.argv[2],'homeplane/static/copy-layout.js'),'utf8'),context);
+  if(file==='homeplane/people/static/people.js') {
+    const live=fs.readFileSync(path.join(process.argv[2],'homeplane/people/static/live.js'),'utf8').replace('export function mountLivePeople','function mountLivePeople');
+    vm.runInContext('{'+live+';globalThis.mountLivePeople=mountLivePeople;}',context);
+  }
   vm.runInContext(source,context);context.root=root;context.options=options;
   return {root,view:vm.runInContext(`${mount}(root,options)`,context)};
 }
@@ -30,10 +35,11 @@ async function main(){
   const peopleCalls=[], empty={revision:0,people:[],clusters:[],samples:[],voice_links:[],last_run:null,undo_available:true};
   const people=setup(peopleFile,'mountPeople',async(url,request)=>{peopleCalls.push({url,request});return {ok:true,json:async()=>empty};},{readOnly:true});
   await people.view.ready;
-  assert(people.root.textContent.includes('人物目录 · 识别未启用'));
+  assert(people.root.textContent.includes('人物目录'));
+  assert(people.root.textContent.includes('人物识别接入与核对修改待启用'));
   assert(!people.root.textContent.includes('合成样本'));
   assert(find(people.root,'撤销修改').disabled);
-  assert(find(people.root,'合并人物').disabled);
+  assert(!find(people.root,'合并人物')); // Empty catalog exposes no merge action.
   await find(people.root,'撤销修改').events.click(); // Direct dispatch also fails closed.
   assert(peopleCalls.every(c=>!c.request?.method));
   people.view.destroy();assert.equal(people.root.children.length,0);
@@ -45,7 +51,7 @@ async function main(){
   await metadata.view.ready;
   assert(metadata.root.textContent.includes('人物元数据只读'));
   assert(metadata.root.textContent.includes('几何占位'));
-  assert(!walk(metadata.root).some(n=>n.tag==='form'));
+  assert(walk(metadata.root).filter(n=>n.tag==='form').every(n=>n.hidden));
   assert(walk(metadata.root).filter(n=>n.attrs.type==='checkbox').every(n=>n.disabled));
   const excluded=walk(metadata.root).find(n=>n.tag==='button'&&n.textContent.startsWith('已排除'));
   excluded.events.click();assert(find(metadata.root,'恢复样本').disabled);
@@ -59,7 +65,7 @@ async function main(){
   for (const flags of [{simulated:true},{last_run:{backend:'scikit-learn',simulated:true}},{samples:page.samples.map(sample=>({...sample,simulated:true}))}]) {
     const simulated=setup(peopleFile,'mountPeople',async()=>({ok:true,json:async()=>({...page,...flags})}),{readOnly:true});
     await simulated.view.ready;
-    assert(simulated.root.textContent.includes('合成样本 · 识别未启用'));
+    assert(simulated.root.textContent.includes('合成观察目录'));
     assert(simulated.root.textContent.includes('1 个合成样本'));
     assert(!simulated.root.textContent.includes('摄像头观察'));
     simulated.view.destroy();
@@ -69,7 +75,7 @@ async function main(){
   await recovery.view.ready;assert(recovery.root.textContent.includes('人物记录暂时无法读取'));
   failedRead=false;await recovery.view.refresh();
   assert(!recovery.root.textContent.includes('人物记录暂时无法读取'));
-  assert(recovery.root.textContent.includes('人物目录 · 识别未启用'));
+  assert(recovery.root.textContent.includes('人物目录'));
   recovery.view.destroy();
 
   const context={catalog:{fingerprint:'c'.repeat(64),source_online:false,simulated:false},session:{reason:'connection_required',label:'需连接 NAS'}};

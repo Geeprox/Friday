@@ -18,14 +18,28 @@ OPERATIONS = (
     "fan.set",
     "fan.percentage",
     "climate.mode",
+    "climate.power",
     "climate.temperature",
+    "climate.fan_mode",
+    "light.color_temperature",
     "cover.position",
+    "cover.tilt",
     "cover.state",
     "lock.set",
     "number.value",
     "select.option",
+    "media_player.power",
+    "media_player.volume",
+    "media_player.mute",
+    "media_player.playback",
+    "humidifier.power",
+    "humidifier.humidity",
+    "humidifier.mode",
+    "water_heater.power",
+    "water_heater.mode",
+
 )
-BINDING = re.compile(r"^(light|switch|fan|climate|cover|lock|number|select)\.[a-z0-9_]+$")
+BINDING = re.compile(r"^(light|switch|fan|climate|cover|lock|number|select|media_player|humidifier|water_heater)\.[a-z0-9_]+$")
 
 
 def finite(value):
@@ -59,6 +73,8 @@ def admitted_capabilities(adapter, entity, authority):
         return []
     external, _ = bound
     domain = entity.kind
+    if domain=='switch' and getattr(adapter,'_switch_channels',{}).get(external,{}).get('role') in {'wireless','unknown'}:
+        return []
     known = services(adapter, domain)
     attrs = adapter._control_attributes.get(external, {})
     feature = attrs.get("supported_features", 0)
@@ -81,6 +97,10 @@ def admitted_capabilities(adapter, entity, authority):
             ):
                 fields = {"unit": "ha_brightness", "minimum": 1, "maximum": 255, "step": 1}
         add(domain + ".set", **fields)
+        if domain=='light' and 'color_temp' in attrs.get('supported_color_modes',[]):
+            low,high=attrs.get('min_color_temp_kelvin'),attrs.get('max_color_temp_kelvin')
+            if finite(low) and finite(high) and 1000<=low<high<=40000:
+                add('light.color_temperature',minimum=low,maximum=high,step=1,unit='K')
     if domain == "fan" and "set_percentage" in known and feature & 1:
         step = attrs.get("percentage_step")
         add(
@@ -91,6 +111,8 @@ def admitted_capabilities(adapter, entity, authority):
             step=step if finite(step) and step > 0 else None,
         )
     if domain == "climate":
+        if {"turn_on", "turn_off"} <= known and feature & 384 == 384:
+            add("climate.power", choices=["on", "off"])
         modes = attrs.get("hvac_modes", [])
         if (
             "set_hvac_mode" in known
@@ -114,10 +136,29 @@ def admitted_capabilities(adapter, entity, authority):
                 step=step if finite(step) and step > 0 else None,
                 unit=unit if isinstance(unit, str) and len(unit) <= 16 else None,
             )
+        modes=attrs.get('fan_modes')
+        if ('set_fan_mode' in known and feature&8 and isinstance(modes,list)
+                and 0<len(modes)<=32 and all(isinstance(m,str) and 1<=len(m)<=128
+                    and not any(ord(c)<32 for c in m) for m in modes)):
+            add('climate.fan_mode',choices=list(dict.fromkeys(modes)))
+    if domain in {"humidifier", "water_heater"}:
+        if {"turn_on", "turn_off"} <= known and (domain == "humidifier" or feature & 8):
+            add(domain + ".power", choices=["on", "off"])
+        if domain == "humidifier":
+            low, high = attrs.get("min_humidity"), attrs.get("max_humidity")
+            step = attrs.get("target_humidity_step")
+            if "set_humidity" in known and finite(low) and finite(high) and 0 <= low < high <= 100:
+                add("humidifier.humidity",minimum=low,maximum=high,step=step if finite(step) and step > 0 else 1,unit="%")
+        mode_key, service, flag = ("available_modes", "set_mode", 1) if domain == "humidifier" else ("operation_list", "set_operation_mode", 2)
+        modes = attrs.get(mode_key)
+        if service in known and feature & flag and isinstance(modes,list) and 0<len(modes)<=32 and all(isinstance(m,str) and 1<=len(m)<=128 and not any(ord(c)<32 for c in m) for m in modes):
+            add(domain + ".mode",choices=list(dict.fromkeys(modes)))
+    if domain == "cover" and "set_cover_tilt_position" in known and feature & 128:
+        add("cover.tilt", unit="%", minimum=0, maximum=100, step=1)
     if domain == "cover" and "set_cover_position" in known and feature & 4:
         add("cover.position", unit="%", minimum=0, maximum=100, step=1)
     if domain == "cover" and {"open_cover", "close_cover"} <= known and feature & 3 == 3:
-        add("cover.state", choices=["open", "closed"])
+        add("cover.state", choices=["open", "closed"]+(['stopped'] if 'stop_cover' in known and feature&8 else []))
     if domain == "lock" and {"lock", "unlock"} <= known:
         add("lock.set", choices=["locked", "unlocked"])
     if domain == "number" and "set_value" in known:
@@ -141,6 +182,15 @@ def admitted_capabilities(adapter, entity, authority):
             )
         ):
             add("select.option", choices=list(dict.fromkeys(options)))
+    if domain=='media_player':
+        if {'turn_on','turn_off'}<=known and feature&384==384:
+            add('media_player.power',choices=['on','off'])
+        if 'volume_set' in known and feature&4:
+            add('media_player.volume',minimum=0,maximum=1,step=.01)
+        if 'volume_mute' in known and feature&8:
+            add('media_player.mute')
+        if {'media_play','media_pause'}<=known and feature&16385==16385:
+            add('media_player.playback',choices=['playing','paused'])
     return caps
 
 
@@ -155,14 +205,27 @@ def command(operation, desired):
     if operation == "lock.set":
         return "lock", "lock" if desired["lock"] == "locked" else "unlock", {}
     if operation == "cover.state":
-        return "cover", "open_cover" if desired["state"] == "open" else "close_cover", {}
+        return "cover", {'open':'open_cover','closed':'close_cover','stopped':'stop_cover'}[desired['state']], {}
+    if operation in {'media_player.power', 'climate.power', 'humidifier.power', 'water_heater.power'}:
+        return operation.split('.')[0],'turn_on' if desired['power']=='on' else 'turn_off',{}
+    if operation=='media_player.playback':
+        return 'media_player','media_play' if desired['state']=='playing' else 'media_pause',{}
+    if operation=='light.color_temperature':
+        return 'light','turn_on',{'color_temp_kelvin':desired['color_temp_kelvin']}
     domain, service, key = {
         "fan.percentage": ("fan", "set_percentage", "percentage"),
+        "humidifier.humidity":("humidifier","set_humidity","humidity"),
+        "humidifier.mode":("humidifier","set_mode","mode"),
+        "water_heater.mode":("water_heater","set_operation_mode","operation_mode"),
         "climate.mode": ("climate", "set_hvac_mode", "hvac_mode"),
         "climate.temperature": ("climate", "set_temperature", "temperature"),
         "cover.position": ("cover", "set_cover_position", "position"),
+        "cover.tilt": ("cover", "set_cover_tilt_position", "tilt_position"),
         "number.value": ("number", "set_value", "value"),
         "select.option": ("select", "select_option", "option"),
+        "climate.fan_mode": ('climate','set_fan_mode','fan_mode'),
+        "media_player.volume": ('media_player','volume_set','volume_level'),
+        "media_player.mute": ('media_player','volume_mute','is_volume_muted'),
     }[operation]
     return domain, service, {key: desired[key]} if key else {}
 
@@ -178,16 +241,26 @@ def parameter_error(capability, operation, desired):
                 return "unsupported_parameters"
         return None
     key = {
+        "humidifier.power":"power", "humidifier.humidity":"humidity", "humidifier.mode":"mode",
+        "water_heater.power":"power", "water_heater.mode":"operation_mode",
         "switch.set": "power",
         "fan.set": "power",
         "fan.percentage": "percentage",
         "climate.mode": "hvac_mode",
+        "climate.power": "power",
         "climate.temperature": "temperature",
         "cover.position": "position",
+        "cover.tilt": "tilt_position",
         "cover.state": "state",
         "lock.set": "lock",
         "number.value": "value",
         "select.option": "option",
+        "climate.fan_mode": 'fan_mode',
+        "light.color_temperature": 'color_temp_kelvin',
+        "media_player.power": 'power',
+        "media_player.volume": 'volume_level',
+        "media_player.mute": 'is_volume_muted',
+        "media_player.playback": 'state',
     }[operation]
     value = desired[key]
     if capability.choices and value not in capability.choices:
@@ -251,12 +324,37 @@ class HADeviceWriter:
                 if brightness is not None and (type(brightness) is not int or not 0 <= brightness <= 255):
                     raise ValueError("invalid_readback")
                 reported["brightness"] = brightness
+        elif self.operation in {"humidifier.power", "water_heater.power"}:
+            modes=attrs.get("operation_list",[]) if self.operation=="water_heater.power" else []
+            reported={"power":"off" if value=="off" else "on" if value=="on" or value in modes else None}
+        elif self.operation == "humidifier.humidity":
+            reported={"humidity":attrs.get("humidity")}
+        elif self.operation == "humidifier.mode":
+            reported={"mode":attrs.get("mode")}
+        elif self.operation == "water_heater.mode":
+            reported={"operation_mode":attrs.get("operation_mode")}
         elif self.operation == "climate.mode":
             reported = {"hvac_mode": value}
         elif self.operation == "climate.temperature":
             reported = {"temperature": attrs.get("temperature")}
+        elif self.operation=='climate.fan_mode':
+            reported={'fan_mode':attrs.get('fan_mode')}
+        elif self.operation=='light.color_temperature':
+            reported={'color_temp_kelvin':attrs.get('color_temp_kelvin')}
+        elif self.operation=='climate.power':
+            reported={'power':'off' if value=='off' else 'on' if value in {'heat','cool','heat_cool','auto','dry','fan_only'} else None}
+        elif self.operation=='media_player.power':
+            reported={'power':'off' if value=='off' else 'on' if value in {'on','idle','playing','paused','buffering'} else None}
+        elif self.operation=='media_player.volume':
+            reported={'volume_level':attrs.get('volume_level')}
+        elif self.operation=='media_player.mute':
+            reported={'is_volume_muted':attrs.get('is_volume_muted')}
+        elif self.operation=='media_player.playback':
+            reported={'state':value}
         elif self.operation == "fan.percentage":
             reported = {"percentage": attrs.get("percentage")}
+        elif self.operation == "cover.tilt":
+            reported = {"tilt_position": attrs.get("current_tilt_position")}
         elif self.operation == "cover.position":
             reported = {"position": attrs.get("current_position")}
         elif self.operation == "cover.state":
@@ -274,7 +372,7 @@ class HADeviceWriter:
         else:
             reported = {"option": value}
         if any(
-            type(v) not in (int, float, str, type(None)) or isinstance(v, float) and not math.isfinite(v)
+            type(v) not in (int, float, str, type(None), bool) or isinstance(v, float) and not math.isfinite(v)
             for v in reported.values()
         ):
             raise ValueError("invalid_readback")
@@ -287,5 +385,7 @@ class HADeviceWriter:
 
 def reported_matches(desired, reported):
     return all(
-        reported.get(key) == value and type(reported.get(key)) is not bool for key, value in desired.items()
+        reported.get(key) == value and (type(reported.get(key)) is bool if type(value) is bool
+                                       else type(reported.get(key)) is not bool)
+        for key, value in desired.items()
     )

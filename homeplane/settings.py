@@ -331,6 +331,8 @@ class SettingsService:
                         else:
                             report["account_bound"] = bound
                             report["status"] = "bound_stream_unverified" if bound else "account_login_required"
+        except FileNotFoundError:
+            report['status'] = 'service_login_required'
         except (httpx.HTTPError, OSError, ValueError, TypeError, AttributeError):
             report["status"] = "service_unavailable"
         return self._record("camera", report, revision)

@@ -82,4 +82,4 @@ def test_demo_markup_and_static_module_use_text_nodes():
     source = client.get("/people-static/people.js").text
     assert "textContent" in source and "innerHTML" not in source
     assert "expected_revision" in source
-    assert "核对摄像头中的人物" in source
+    assert "核对识别结果" in source

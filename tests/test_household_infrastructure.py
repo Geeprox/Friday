@@ -75,14 +75,34 @@ async def test_unadmitted_or_corrupt_policy_never_starts_models(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_explicit_camera_open_intent_persists_without_a_viewer(tmp_path):
+async def test_legacy_auto_open_permission_cannot_reopen_manual_shutters(tmp_path):
     path=tmp_path/'intent.json';worker=service()
+    # Load the exact old on-disk shape, bypassing the current model validator.
+    path.write_text('{"enabled":true,"auto_open_cameras":true}')
     owner=HouseholdInfrastructure(worker,path,admitted=lambda:True)
-    await owner.configure(ServicePolicy(enabled=True,auto_open_cameras=True))
+    await owner.reconcile()
+    worker.ensure_background.assert_awaited_once_with(interaction=True,open_privacy=False)
+    worker.ensure_background.reset_mock()
+    await owner.configure(ServicePolicy(enabled=True).model_copy(update={'auto_open_cameras':True}))
     reopened=HouseholdInfrastructure(worker,path,admitted=lambda:True)
     await reopened.reconcile()
-    worker.ensure_background.assert_awaited_once_with(interaction=True,open_privacy=True)
+    worker.ensure_background.assert_awaited_once_with(interaction=True,open_privacy=False)
+    assert reopened.policy.auto_open_cameras is False
     assert reopened.report()['requires_open_window'] is False
+
+
+@pytest.mark.asyncio
+async def test_saved_pause_fences_direct_starts_even_if_cleanup_fails(tmp_path):
+    worker=service()
+    owner=HouseholdInfrastructure(worker,tmp_path/'intent.json',admitted=lambda:True)
+    assert worker.capture_enabled is False
+    await owner.configure(ServicePolicy(enabled=True))
+    assert worker.capture_enabled is True
+    worker.stop.side_effect=ValueError('cleanup_pending')
+    await owner.configure(ServicePolicy(revision=1,enabled=False))
+    assert worker.capture_enabled is False and owner.report()['failure']=='service_unavailable'
+    reopened=HouseholdInfrastructure(worker,owner.path,admitted=lambda:True)
+    assert not worker.capture_enabled and not reopened.policy.enabled
 
 
 @pytest.mark.asyncio

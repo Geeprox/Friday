@@ -7,6 +7,7 @@ import json
 import math
 import os
 import time
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from .paths import PRIVATE
 from .smart_home import WindowGesture
@@ -17,9 +18,9 @@ ACTIONS={'on','off','open','close','position:0','position:25','position:50','pos
 class Binding(BaseModel):
     model_config=ConfigDict(extra='forbid')
     id:str=Field(pattern=r'^[a-f0-9]{32}$')
-    # Only image-ray targets are camera scoped. Old body bindings containing a
-    # camera continue to work, now throughout the home, without duplicating them.
+    # Legacy body bindings remain home-wide unless a new scope is explicit.
     camera:str|None=Field(default=None,pattern=r'^cam_[a-f0-9]{10}$')
+    scope:Literal['home','camera']='home'
     gesture:str
     target:str=Field(min_length=1,max_length=256)
     action:str
@@ -46,10 +47,16 @@ def save(edit,targets,cameras):
     current=load()
     if edit.revision!=current.revision:raise ValueError('interaction_config_changed')
     seen=set()
+    previous={b.id:b for b in current.bindings}
     for b in edit.bindings:
+        old=previous.get(b.id)
+        if (b.id not in seen and not b.enabled and old is not None
+                and b.model_dump(exclude={'enabled'})==old.model_dump(exclude={'enabled'})):
+            seen.add(b.id);continue # Keep a disabled orphan available for repair.
         if b.id in seen or b.target not in targets or b.camera is not None and b.camera not in cameras or b.action not in ACTIONS:
             raise ValueError('invalid_interaction_binding')
         seen.add(b.id)
+        if b.scope=='camera' and b.camera not in cameras:raise ValueError('invalid_interaction_camera')
         if b.gesture=='hand.point':
             if b.camera not in cameras or b.anchor is None or any(not math.isfinite(v)or not 0<=v<=1 for v in b.anchor):
                 raise ValueError('pointing_calibration_required')
@@ -130,7 +137,7 @@ class InteractionEngine:
         self.observed=now
         person=next((p for p in people if p['id']==owner),None)
         if person is None:self.reset();return []
-        bindings=[b for b in self.config.bindings if b.enabled and (b.gesture!='hand.point' or b.camera==self.camera)]
+        bindings=[b for b in self.config.bindings if b.enabled and (b.gesture!='hand.point' and b.scope!='camera' or b.camera==self.camera)]
         labels={h.get('gesture')for h in hands if h.get('person_id')==owner}
         event=self.arms.update(person,now)
         gestures={'body.arms_'+event['action'] if event else ''}

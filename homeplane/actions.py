@@ -30,6 +30,7 @@ from .ha_control import (
 )
 
 from .runtime_log import observe
+from .event_provenance import entity_source_context
 
 AUTHORITY = TypeAdapter(LightAuthority | HomeDeviceAuthority)
 
@@ -275,6 +276,7 @@ class ActionController:
     def _stage(self, trace, status, code, *, reported=None):
         event = Event(
             source="action-gateway",
+            source_context=trace.events[0].source_context if trace.events else None,
             kind="action-result",
             correlation_id=trace.correlation_id,
             causation_id=trace.events[0].event_id if trace.events else None,
@@ -342,6 +344,7 @@ class ActionController:
                 trace.route = "ha-scoped-device"
             event = Event(
                 source="action-gateway",
+                source_context=entity_source_context(self.core.adapter, entity) if entity is not None else None,
                 kind="action-result",
                 correlation_id=trace.correlation_id,
                 causation_id=request.source_event_id if isinstance(request, CoreRuleEffect) else None,

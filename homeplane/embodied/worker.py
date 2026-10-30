@@ -51,7 +51,6 @@ ALLOWED_IPS = set(configuration()["viewer_hosts"])
 SELECTED = dict(camera())
 wall = CameraWall(configuration()['cameras'])
 primary_wall_epoch = 0
-if os.environ.get("FRIDAY_CAMERA_OPEN")=="1":SELECTED["takeover"]=True
 if os.environ.get("FRIDAY_BACKGROUND") == "1":
     SELECTED["takeover"] = True
 interaction_enabled = os.environ.get("FRIDAY_INTERACTION_ENABLED", "1") == "1"
@@ -227,6 +226,9 @@ async def motor_step(direction, observed=None):
         async with room_lock:
             if room:
                 room.expect_motion(time.monotonic(), 2)
+        if not await camera_is_open(SELECTED):
+            close_primary_view()
+            raise RuntimeError('privacy_shutter_closed')
         # The lock may have waited behind vision registration. Revalidate all
         # authority and freshness immediately before the irreversible send.
         if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
@@ -264,7 +266,7 @@ async def motor_step(direction, observed=None):
 async def camera_search():
     global camera_lease, camera_planner
     io = Transport()
-    lease = CameraLease(io, open_privacy=os.environ.get("FRIDAY_CAMERA_OPEN")=="1", restore_native=False)
+    lease = CameraLease(io, open_privacy=False, restore_native=True)
     camera_lease = lease
     try:
         await lease.acquire()
@@ -311,15 +313,19 @@ async def camera_search():
     finally:
         camera_planner = None
         try:
-            restored = await lease.release()
-            state["camera_control"] = {
-                "owner": "none",
-                "phase": "restored" if restored else "restore_pending",
-                "reason": "镜头已释放" if restored else "镜头待释放",
-            }
+            # No queued motor command may run after vendor tracking is restored.
+            try:
+                await reap(capture)
+            finally:
+                restored = await lease.release()
+                state["camera_control"] = {
+                    "owner": "none",
+                    "phase": "restored" if restored else "restore_pending",
+                    "reason": "镜头已释放" if restored else "镜头待释放",
+                }
         finally:
-            await io.close()
-            camera_lease = None
+            try:await io.close()
+            finally:camera_lease = None
 
 
 def rate(times):
@@ -338,6 +344,7 @@ def view():
     result["game"] = games.public
     result["recording"] = recorder.public()
     result["home"] = home.public()
+    result["voice_sessions"] = [dict(camera=cid,**{key:service.public().get(key) for key in ("enabled","voice","reason","last_transcript","last_event")}) for cid,service in [(SELECTED["id"],home),*secondary_homes.items()]]
     result['interactions'] = fleet.public(time.monotonic())
     result['voice_input'] = not (PRIVATE/'voice-input-paused').exists()
     result["frame_age_ms"] = (
@@ -366,11 +373,13 @@ def authorized(client, key):
 
 async def reap(process):
     if process and process.returncode is None:
-        process.terminate()
+        try:process.terminate()
+        except ProcessLookupError:pass
         try:
             await asyncio.wait_for(process.wait(), 3)
         except asyncio.TimeoutError:
-            process.kill()
+            try:process.kill()
+            except ProcessLookupError:pass
             await process.wait()
 
 
@@ -403,7 +412,7 @@ async def run_source(my_generation):
     camera_task = None
     stage = "source_start"
     try:
-        if os.environ.get('FRIDAY_CAMERA_OPEN') != '1' and not await camera_is_open(SELECTED):
+        if not await camera_is_open(SELECTED):
             state.update(status='shutter_closed', reason='privacy_shutter_closed')
             await notify()
             return
@@ -852,6 +861,7 @@ async def stop():
 
 @asynccontextmanager
 async def lifespan(app):
+    await safety.start()
     if os.environ.get("FRIDAY_START_IDLE") != "1":
         await start()
     else:
@@ -870,6 +880,12 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 @app.get('/api/safety/status')
 async def safety_status():
     return safety.status()
+
+
+@app.post('/api/safety/policy')
+async def safety_policy_changed():
+    await safety.sync_policy()
+    return {'revision': safety.policy_revision}
 
 
 def identity_authorized(request):
@@ -1476,6 +1492,8 @@ async def websocket(ws: WebSocket):
 
 
 async def serve():
+    from homeplane.embodied.camera_guardian import check_guardian, watch_owner
+    check_guardian()
     server = uvicorn.Server(
         uvicorn.Config(
             app,
@@ -1487,14 +1505,9 @@ async def serve():
             timeout_graceful_shutdown=2,
         )
     )
-    parent = os.getppid()
+    parent = int(os.environ['FRIDAY_SERVICE_OWNER_PID'])
 
-    async def owner_watch():
-        while os.getppid() == parent:
-            await asyncio.sleep(1)
-        server.should_exit = True
-
-    watch = asyncio.create_task(owner_watch())
+    watch = asyncio.create_task(watch_owner(parent, lambda: setattr(server, 'should_exit', True)))
     try:
         await server.serve()
     finally:
@@ -1503,4 +1516,6 @@ async def serve():
 
 
 if __name__ == "__main__":
+    from homeplane.embodied.camera_guardian import exit_with_owner
+    exit_with_owner(int(os.environ.get('FRIDAY_SERVICE_OWNER_PID', '0')))
     asyncio.run(serve())

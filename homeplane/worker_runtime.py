@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def module_command(module: str, *arguments: str) -> list[str]:
-    if module not in {'homeplane.settings', 'homeplane.recordings', 'homeplane.archive_worker'}:
+    if module not in {'homeplane.settings', 'homeplane.recordings', 'homeplane.archive_worker','homeplane.storage_preparation'}:
         raise ValueError('unsupported_owned_worker')
     source = Path(__file__).resolve().parent.parent
     paths = [str(source)]

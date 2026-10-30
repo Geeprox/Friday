@@ -375,7 +375,7 @@ function descendants(node) { return [node,...node.children.flatMap(descendants)]
  navigate('Home'); navigate('Devices');
  assert.match(content.textContent,/连接恢复后可预览调整/);
  assert(!descendants(content).some(n=>n.attrs.id==='action-form'));
- navigate('Ask Home'); assert.match(content.textContent,/指定房间查看常用状态/);
+ navigate('Ask Home'); assert.match(content.textContent,/选择房间，查看设备状态/);
  const actionBeforeQuery=request;disconnected=false;
  await elements.get('home-query-form').handlers.submit({preventDefault(){}});
  assert.equal(homeQueries,1);assert.equal(request,actionBeforeQuery,'read query cannot issue an action');
@@ -414,6 +414,10 @@ for(const id of ['navigation','developer-mode','mode','snapshot-time','page-titl
 const fixture={mode:'simulator',version:'fixture-v1',generated_at:new Date().toISOString(),entities:[],states:[],events:[],rules:[],observations:[],limitations:[]};
 const config={ha_url:'http://ha.local:8123',ha_instance:'Home',nas_url:'smb://nas.local/archive',nas_path:null,camera_service_url:'http://127.0.0.1:8001',camera_id_configured:true,camera_id_masked:'••••1234',geek_url:'http://gateway.local'};
 const calls=[]; let snapshotUnavailable=true, redirect=null, credentialFailure=false, ageTick=null, haAuthorized=false;
+let arlConnectReport={status:'ready',ready:true,runtime_version:'0.1.0',metadata_freshness:'current',metadata_refresh_pending:false,
+ metadata_refresh_code:'none',metadata_refresh_source:'sdk',metadata_access:'settings_public_read_only',identity:'not_verified_by_friday',
+ identity_verifier_configured:true,local_inference_enabled:true,inference_attempted:false,action_authority:false,
+ providers:[{name:'codex_app_server',availability:'disabled'}]};
 let geekSession={status:'stopped',session_live:false,inventory_stale:true},geekStatusDeferred=false,releaseGeekStatus=null;
 const modelReport={status:'ready',catalog:[{preset:'mimo-flash',label:'SIMULATED MiMo',input_cny_per_million:1,output_cny_per_million:2,saved:false,key_configured:false,active:false,media_fit:'native_miloco_adapter'}]};
 const measurementReport={realm:'a'.repeat(64),revision:'SIMULATED-r1',simulated:true,omitted_count:0,sources:[{
@@ -450,9 +454,9 @@ const fetch=async(path,options={})=>{
  else if(path==='/api/settings/geek/connect') {geekSession={status:'online',session_live:true,inventory_stale:false,graph_count:4,last_change:{added:0,removed:0,modified:1},passcode:'must-not-be-rendered'};result=geekSession;}
  else if(path==='/api/settings/geek/disconnect') {geekSession={status:'stopped',session_live:false,inventory_stale:true};result=geekSession;}
  else if(path==='/api/settings/geek/session') {result=geekSession;if(geekStatusDeferred)await new Promise(resolve=>{releaseGeekStatus=resolve;});}
- else if(path==='/api/settings/arl/status') result={status:'not_running',ready:false};
- else if(path==='/api/settings/arl/connect') result={status:'ready',ready:true,runtime_version:'0.1.0',providers:[{name:'codex_app_server',availability:'disabled'}]};
- else if(path==='/api/settings/arl/probe') result={status:'sdk_roundtrip_pass',inference_attempted:false,device_write_attempted:false};
+ else if(path==='/api/settings/arl/status') result={status:'not_running',ready:false,metadata_freshness:'unavailable',metadata_refresh_pending:false,metadata_refresh_code:'not_running',metadata_refresh_source:'local_configuration',identity:'not_verified_by_friday',inference_attempted:false};
+ else if(path==='/api/settings/arl/connect') result=arlConnectReport;
+ else if(path==='/api/settings/arl/probe') result={status:'sdk_roundtrip_pass',job_id:'SYNTHETIC-ping',inference_attempted:false,device_write_attempted:false,hardware_verified:false};
  else if(path==='/api/settings/measurements') result=measurementReport;
  else if(path==='/api/settings/measurements/group') {
   const data=JSON.parse(options.body);assert.equal(data.expected_revision,measurementReport.revision);assert.equal(data.members.length,2);assert(!('samples' in data));
@@ -482,7 +486,17 @@ const fetch=async(path,options={})=>{
  return {ok:true,json:async()=>result};
 };
 const context=vm.createContext({document:{getElementById:id=>elements.get(id),createElement:tag=>new Element(tag)},fetch,location:{hash:'#settings',assign:value=>redirect=value},history:{replaceState(){}},crypto:{randomUUID:()=> 'uuid'},URL,Date,JSON,console,setInterval:fn=>{ageTick=fn;},addEventListener:(name,fn)=>{lifecycle[name]=fn;}});
-vm.runInContext(fs.readFileSync('homeplane/static/app.js','utf8'),context);
+let arlModulePromise=null,arlModuleLoads=0;
+async function importSettingsModule(specifier){
+ assert.equal(specifier,'/static/arl-status.js','Only the actual ARL presentation dependency is needed by this Settings fixture');
+ if(!arlModulePromise)arlModulePromise=(async()=>{
+  arlModuleLoads++;
+  const module=new vm.SourceTextModule(fs.readFileSync('homeplane/static/arl-status.js','utf8'),{context,identifier:'friday-fixture:/static/arl-status.js'});
+  await module.link(()=>{throw Error('Unexpected nested ARL presentation import');});await module.evaluate();return module;
+ })();
+ return arlModulePromise;
+}
+vm.runInContext(fs.readFileSync('homeplane/static/app.js','utf8'),context,{importModuleDynamically:importSettingsModule});
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 const get=id=>{assert(elements.has(id),'Missing '+id);return elements.get(id);};
 const submit=id=>get(id).handlers.submit({preventDefault(){}});
@@ -596,9 +610,18 @@ function descendants(node) { return [node,...node.children.flatMap(descendants)]
  for(const endpoint of ['/api/settings','/api/settings/ha/connect','/api/settings/ha/status','/api/settings/ha/activate','/api/settings/source/simulator','/api/settings/nas/probe','/api/settings/camera/probe','/api/settings/geek/credential','/api/settings/geek/session']) assert(calls.some(c=>c.path===endpoint),'Missing API '+endpoint);
  assert.match(get('settings-arl-result').textContent,/ARL 尚未运行/);
  assert(!calls.some(c=>c.path==='/api/settings/arl/connect'),'opening Settings never starts shared runtime');
- await click('settings-arl-connect'); assert.match(get('settings-arl-result').textContent,/ARL 已连接/);
+ await click('settings-arl-connect'); assert.match(get('settings-arl-result').textContent,/ARL 健康通信正常/);
+ assert.match(get('settings-arl-result').textContent,/身份与模型能力尚未验证/);
+ assert(!get('settings-arl-result').textContent.includes('智能服务已就绪'));
  assert.match(get('settings-arl-result').textContent,/codex_app_server · 尚未启用/);
- await click('settings-arl-probe'); assert.match(get('settings-arl-result').textContent,/共享连接往返检查通过/);
+ arlConnectReport={...arlConnectReport,metadata_freshness:'last_known',metadata_refresh_pending:false};
+ await click('settings-arl-connect'); assert.match(get('settings-arl-result').textContent,/上次健康通信正常；当前连接待核对/);
+ assert(!get('settings-arl-result').textContent.includes('正在刷新'));
+ arlConnectReport={...arlConnectReport,metadata_refresh_pending:true};
+ await click('settings-arl-connect'); assert.match(get('settings-arl-result').textContent,/上次健康通信正常；正在刷新/);
+ await click('settings-arl-probe'); assert.match(get('settings-arl-result').textContent,/ARL 连接状态尚未确认/);
+ assert(!get('settings-arl-result').textContent.includes('健康通信正常'),'A single ping result does not qualify current runtime metadata or a model task');
+ assert.equal(arlModuleLoads,1,'The real exported presentation module is evaluated and reused');
  assert(!calls.some(c=>c.path.includes('model.complete')),'SDK check never runs a model');
  vm.runInContext("selectedConnection='settings-measurements';render()",context);await settle();await settle();
  const modelDraft=get('settings-model-key');modelDraft.value='SIMULATED-unsent-model-draft';
@@ -626,10 +649,10 @@ function descendants(node) { return [node,...node.children.flatMap(descendants)]
  assert.equal(calibrationApprovals,1);assert.match(get('settings-measurement-group-status').textContent,/相对校准已安装/);
  assert.equal(get('settings-model-key'),modelDraft);assert.equal(modelDraft.value,'SIMULATED-unsent-model-draft');
  assert(!calls.some(c=>c.path.startsWith('/api/actions/execute')));
- console.log('PASS: Settings recovery, flat configuration patches, OAuth, mount, private credentials and explicit ARL discovery/probe');
+ console.log('PASS: Settings recovery, flat configuration patches, OAuth, mount, private credentials and actual ARL health presentation module');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 """
-    result = subprocess.run(["node", "-e", script], cwd=root, text=True, capture_output=True)
+    result = subprocess.run(["node", "--experimental-vm-modules", "-e", script], cwd=root, text=True, capture_output=True)
     assert result.returncode == 0, result.stdout + result.stderr
 
 

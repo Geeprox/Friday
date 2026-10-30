@@ -80,10 +80,11 @@ async def main():
         raise ValueError("quality_not_allowed")
     selected = registered_camera(request.get("camera"))
     device = selected["device"]
-    login = json.loads((PRIVATE / "miot-session.json").read_text())
+    from .miot_session import MiSession
+    login = await MiSession(PRIVATE).current()
     info = MIoTCameraInfo(**device, channel_count=1, camera_status=MIoTCameraStatus.DISCONNECTED)
     owner = ObservedCamera(cloud_server="cn", access_token=login["access_token"])
-    parent_pid = os.getppid()
+    parent_pid = int(os.environ['FRIDAY_CAPTURE_OWNER_PID'])
     started = time.monotonic()
     last = 0.0
     attention_until = 0.0
@@ -239,6 +240,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    from homeplane.embodied.camera_guardian import exit_with_owner
+    exit_with_owner(int(os.environ.get('FRIDAY_CAPTURE_OWNER_PID', '0')))
     try:
         asyncio.run(main())
     except BaseException as error:

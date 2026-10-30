@@ -35,6 +35,7 @@ class LeaseTests(unittest.IsolatedAsyncioTestCase):
         self.lease = CameraLease(self.io, self.path)
 
     async def asyncTearDown(self):
+        self.lease.unclaim()
         self.temp.cleanup()
 
     async def test_takeover_and_restore_exact_flags(self):
@@ -93,7 +94,7 @@ class PreviewRestoreTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp:
             camera = FakeCamera()
             camera.values["camera_power"] = False
-            lease = CameraLease(camera, Path(temp) / "lease.json")
+            lease = CameraLease(camera, Path(temp) / "lease.json", open_privacy=True)
             await lease.acquire()
             self.assertTrue(camera.values["camera_power"])
             await lease.release()
@@ -108,6 +109,34 @@ class PreviewRestoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await lease.release())
             self.assertFalse(camera.values["camera_power"])
             self.assertTrue(lease.snapshot["manual_preview_close_preserved"])
+
+    async def test_recovery_does_not_undo_a_newer_explicit_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            camera=FakeCamera();camera.values['camera_power']=False
+            lease=CameraLease(camera,Path(temp)/'lease.json',open_privacy=True)
+            await lease.acquire()
+            (Path(temp)/'power-intent.json').write_text(json.dumps(dict(enabled=True,at=lease.snapshot['acquired_at']+1)))
+            self.assertTrue(await lease.release())
+            self.assertTrue(camera.values['camera_power'])
+            self.assertNotIn(('camera_power',False),camera.writes)
+
+    async def test_default_lease_never_opens_closed_or_unknown_camera(self):
+        for power in (False, None):
+            with tempfile.TemporaryDirectory() as temp:
+                camera = FakeCamera()
+                camera.values['camera_power'] = power
+                lease = CameraLease(camera, Path(temp) / 'lease.json')
+                with self.assertRaisesRegex(RuntimeError, 'privacy_shutter_closed'):
+                    await lease.acquire()
+                self.assertEqual(camera.writes, [])
+
+    async def test_release_never_reasserts_power_on_after_readback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            camera = FakeCamera()
+            lease = CameraLease(camera, Path(temp) / 'lease.json')
+            await lease.acquire()
+            self.assertTrue(await lease.release())
+            self.assertNotIn(('camera_power', True), camera.writes)
 
 
 class PlannerTests(unittest.TestCase):

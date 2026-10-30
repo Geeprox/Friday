@@ -1,0 +1,14 @@
+.protected-recordings{display:grid;gap:32px;min-width:0}
+.protected-recordings .evidence-playback:empty{display:none}
+.protected-recordings .evidence-playback,.protected-recordings .recording-section{min-width:0}
+.protected-recordings .recording-section>h2{margin-top:0;margin-bottom:18px}
+.protected-recordings .evidence-playback .archive-player{margin-top:20px}
+.protected-recordings video{display:block;width:100%;max-height:440px;object-fit:contain;background:#161d18}
+.protected-recordings .recording-toolbar{flex-wrap:wrap}
+.protected-recordings .recording-player{min-width:0}
+.protected-recordings .recording-player>p{overflow-wrap:anywhere}
+@media(max-width:800px){.protected-recordings .recording-layout{grid-template-columns:minmax(0,1fr)}.protected-recordings .recording-list{max-height:240px;overflow:auto}.protected-recordings video{max-height:55vh}}
+
+.protected-recordings .recording-timeline{display:flex;align-items:center;gap:12px;margin:14px 0;min-width:0}
+.protected-recordings .recording-timeline input{min-width:0;flex:1;width:100%}
+.protected-recordings .recording-clock{font-variant-numeric:tabular-nums;white-space:nowrap;font-size:13px}

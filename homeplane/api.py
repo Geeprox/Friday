@@ -252,8 +252,10 @@ def create_app(
         authorizer=arl_planning_authorizer,
         planning_executor=arl_planning_executor,
     )
+    from .event_provenance import registered_room_context
     archive = ArchiveIndex(
-        store, settings, lambda: isinstance(core.adapter, Simulator), runner=archive_runner
+        store, settings, lambda: isinstance(core.adapter, Simulator), runner=archive_runner,
+        room_context=lambda room:registered_room_context(core.adapter,room),
     )
     archive_player = ArchivePlayer(archive)
     home_flow = HomeFlow(core, settings, rules, rule_text, queries, archive, archive_player,
@@ -354,6 +356,9 @@ def create_app(
     home_product_router=home_experience_router(core, lock, settings, embodied, archive, core_rule_runtime)
     app.include_router(home_product_router)
     app.state.home_experience=home_product_router.home_owner
+    from .event_evidence import create_router as event_evidence_router
+    app.include_router(event_evidence_router(core, lock, queries, archive,
+        core_rules=core_rules, context_revision=lambda: settings.revision))
     from .automation_catalog import create_router as automation_catalog_router
     app.include_router(automation_catalog_router(settings.path.with_name('automation-catalog.json'), core_rules, lambda: geek_session.inventory()))
     app.state.core = core
@@ -966,8 +971,12 @@ def create_app(
     class ArchiveSimulation(ArchiveContextRequest):
         scenario: str = Field(pattern=r"^(late-arrives|offline|reset)$")
 
-    async def archive_call(operation):
+    async def archive_call(operation, *, viewer=None):
         try:
+            if viewer is not None:
+                from .preview_request import prepare_for_viewer
+                return await prepare_for_viewer(viewer, operation,
+                    discard=lambda plan:archive_player.revoke(plan.plan_id))
             async with asyncio.timeout(8):
                 return await operation()
         except ValueError as exc:
@@ -1007,8 +1016,8 @@ def create_app(
         return await archive_call(lambda: archive.resolve(request))
 
     @app.post("/api/archive/playback", response_model=ArchivePlaybackPlan)
-    async def archive_playback(request: ArchivePlaybackRequest):
-        return await archive_call(lambda: archive_player.prepare(request))
+    async def archive_playback(request: ArchivePlaybackRequest, http_request: Request):
+        return await archive_call(lambda: archive_player.prepare(request), viewer=http_request)
 
     @app.post("/api/archive/playback/cancel")
     async def archive_playback_cancel(request: ArchivePlaybackCancel):
@@ -1043,11 +1052,12 @@ def create_app(
         except (TimeoutError, OSError, TypeError, KeyError, sqlite3.Error):
             return JSONResponse({"code": "archive_media_unavailable"}, status_code=503)
         headers = {
+            "Cache-Control": "no-store",
             "Content-Length": str(reader.length),
             "Accept-Ranges": "bytes",
             "Cross-Origin-Resource-Policy": "same-origin",
             "Referrer-Policy": "no-referrer",
-            "Content-Disposition": 'inline; filename="archive.mp4"',
+            "Content-Disposition": 'inline; filename="protected-preview.mp4"',
         }
         if reader.partial:
             headers["Content-Range"] = (
@@ -1077,6 +1087,26 @@ def create_app(
     @app.get("/api/settings/ha/discover")
     async def ha_discover():
         return await discovery.discover()
+
+    @app.get('/api/settings/setup')
+    async def connection_setup_status():
+        from .onboarding import setup_report
+        health = app.state.home_experience.connection_health()
+        if not health.get('simulated') and getattr(core.adapter, 'url', None) != (settings.config.ha_url or '').rstrip('/'):
+            health = {'transport': 'configuration_changed'}
+        return setup_report(settings, health,
+                            camera_configured=embodied.configured(),
+                            control_enabled=core.actions.policy_report()['enabled'])
+
+    from .onboarding import SetupConfiguration
+
+    @app.post('/api/settings/setup')
+    async def connection_setup_save(command: SetupConfiguration):
+        try:
+            settings.update(command.model_dump(exclude_unset=True))
+        except (ValueError, OSError):
+            return JSONResponse({'code': 'setup_configuration_invalid'}, status_code=400)
+        return await connection_setup_status()
 
     @app.get("/api/settings/miloco/models")
     async def miloco_models_status():

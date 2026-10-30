@@ -166,7 +166,13 @@ class LocalConsumerChecks(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.client.post(path, json={}, headers={"Origin": "https://invalid.example"})).status_code, 403)
             self.assertEqual((await self.client.post(path, content=b"x" * 8193)).status_code, 413)
             self.assertEqual((await self.client.post(path, json={})).status_code, 422)
-        for path in ("/api/people/name", "/api/people/undo", "/api/files/settings/preview",
+        # Owner-local People edits retain their original typed domain gate;
+        # read-only household transport does not grant device/file effects.
+        for path in ('/api/people/name', '/api/people/undo'):
+            self.assertEqual((await self.client.post(path,json={},headers={'Origin':'https://invalid.example'})).status_code,403)
+            response=await self.client.post(path,json={})
+            self.assertEqual(response.status_code,422,(path,response.text))
+        for path in ("/api/files/settings/preview",
                      "/api/files/query/extra", "/api/files/jobs/preview", "/api/files/queue/review",
                      "/api/files/relocations/review", "/api/files/reconcile",
                      "/api/settings/nas/connection", "/api/actions/execute",

@@ -203,12 +203,15 @@ def test_native_plan_ranges_expiry_revocation_context_and_no_effects(tmp_path):
         request = await actual_request(archive)
         plan = await player.prepare(request)
         assert plan.simulated and plan.start_offset_seconds == 30 and plan.end_offset_seconds == 40
-        assert plan.previous_keyframe_seconds == 30 and 30 in plan.indexed_keyframes_seconds
+        assert plan.previous_keyframe_seconds is not None and 0 <= 30 - plan.previous_keyframe_seconds <= 1.1
+        assert plan.privacy_protected and plan.privacy_preview_generated and not plan.original_modified
         assert plan.codecs == ["h264"] and not plan.audio_track and not plan.decoder_verified_by_server
         assert "root" not in plan.model_dump() and "path" not in plan.model_dump() and not plan.media_copied
         original = FIXTURE.read_bytes()
         reader = await player.read(plan.plan_id, "bytes=8-31")
-        assert b"".join([chunk async for chunk in reader.chunks()]) == original[8:32]
+        protected = (Path(player.leases[plan.plan_id].binding["root"]) / player.leases[plan.plan_id].binding["path"]).read_bytes()
+        assert b"".join([chunk async for chunk in reader.chunks()]) == protected[8:32]
+        assert protected != original
         assert not player.readers
         lease = player.leases[plan.plan_id]
         lease.remaining = 1
@@ -306,8 +309,11 @@ def test_api_media_origin_range_metadata_and_cancellation(tmp_path):
             == 403
         )
         response = client.get(url, headers={"Sec-Fetch-Site": "same-origin", "Range": "bytes=8-31"})
-        assert response.status_code == 206 and response.content == FIXTURE.read_bytes()[8:32]
-        assert response.headers["content-range"] == f"bytes 8-31/{FIXTURE.stat().st_size}"
+        lease = app.state.archive_player.leases[plan["plan_id"]]
+        protected = (Path(lease.binding["root"]) / lease.binding["path"]).read_bytes()
+        assert plan["privacy_protected"] and protected != FIXTURE.read_bytes()
+        assert response.status_code == 206 and response.content == protected[8:32]
+        assert response.headers["content-range"] == f"bytes 8-31/{len(protected)}"
         assert (
             response.headers["cross-origin-resource-policy"] == "same-origin"
             and response.headers["cache-control"] == "no-store"

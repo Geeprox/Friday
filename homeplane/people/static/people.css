@@ -1,11 +1,11 @@
 /* People owns only its root and standalone demo surface. */
-.people-root, .people-demo{color-scheme:light;--people-bg:#f6f6f5;--people-ink:#1d1d1f;--people-muted:#77787a;--people-line:#e5e5e7;--people-accent:#303033;--people-soft:#edeeec}
+.people-root, .people-demo{color-scheme:light;--people-bg:#f6f6f5;--people-ink:#1d1d1f;--people-muted:#596356;--people-line:#e5e5e7;--people-accent:#303033;--people-soft:#edeeec}
 :where(.people-root,.people-demo), :where(.people-root,.people-demo) *{box-sizing:border-box}
 .people-demo{margin:0;background:var(--people-bg);font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;color:var(--people-ink)}
 :where(.people-root,.people-demo) button, :where(.people-root,.people-demo) input, :where(.people-root,.people-demo) select{font:inherit;color:inherit}
 :where(.people-root,.people-demo) button{cursor:pointer}
 :where(.people-root,.people-demo) button:disabled{opacity:.4;cursor:default}
-:where(.people-root,.people-demo) button:focus-visible, :where(.people-root,.people-demo) input:focus-visible, :where(.people-root,.people-demo) select:focus-visible, :where(.people-root,.people-demo) a:focus-visible{outline:3px solid #818d8270;outline-offset:3px}
+:where(.people-root,.people-demo) button:focus-visible, :where(.people-root,.people-demo) input:focus-visible, :where(.people-root,.people-demo) select:focus-visible, :where(.people-root,.people-demo) a:focus-visible{outline:2px solid #365a43;outline-offset:3px}
 :where(.people-root,.people-demo) button, :where(.people-root,.people-demo) input, :where(.people-root,.people-demo) select{min-height:42px;border:1px solid var(--people-line);border-radius:10px;background:white;padding:9px 14px}
 :where(.people-root,.people-demo) button:hover:not(:disabled){background:#f1f1ef}
 :where(.people-root,.people-demo) button.primary{background:var(--people-accent);color:white;border-color:var(--people-accent)}
@@ -159,3 +159,25 @@ to{opacity:1;transform:translateY(0)}}
 .people-root .live-portrait{width:88px;height:104px;object-fit:contain;border-radius:12px;background:#f1f1ec;flex:none}.people-root .live-profile-row>div{flex:1}
 
 .people-root .live-candidates{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:16px;margin:20px 0}.people-root .live-candidate{padding:16px;border:1px solid #e8e8e1;border-radius:16px;background:#fafaf6;display:grid;gap:10px}.people-root .live-candidate-portrait{width:100%;height:156px;object-fit:contain;border-radius:12px}.people-root .live-candidate input{min-width:0}
+
+/* Shared legibility without leaking People styles into the Console shell. */
+:where(.people-root,.people-demo) :is(.count,.live-caption,.nav-entry,.people-note,.quiet-status,.sample-selection,.dependency-note,.voice-detail){color:var(--people-muted);font-size:.8125rem;line-height:1.55}
+:where(.people-root,.people-demo) :is(input:not([type=checkbox]),select){border-color:#7e8878}
+:where(.people-root,.people-demo) input[type=checkbox]{width:24px;height:24px;min-height:24px}
+:where(.people-root,.people-demo) .group-row{grid-template-columns:24px minmax(0,1fr)}
+:where(.people-root,.people-demo) .people-toolbar{flex-wrap:wrap;gap:12px;padding-bottom:12px}
+:where(.people-root,.people-demo) .filters{flex-wrap:wrap;gap:16px}
+:where(.people-root,.people-demo) .filters button{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:.8125rem}
+:where(.people-root,.people-demo) .filters .count{font-size:.75rem;color:var(--people-muted);font-variant-numeric:tabular-nums}
+:where(.people-root,.people-demo) .people-inspector{min-width:0;overscroll-behavior:contain}
+:where(.people-root,.people-demo) :is(.group-name,.inspector-subtitle,.people-note){overflow-wrap:anywhere}
+:where(.people-root,.people-demo) .sample-count{font-variant-numeric:tabular-nums}
+@media(max-width:760px){:where(.people-root,.people-demo) input:not([type=checkbox]),:where(.people-root,.people-demo) select{font-size:1rem}
+:where(.people-root,.people-demo) .people-top{flex-wrap:wrap;gap:12px}
+:where(.people-root,.people-demo) .quiet-status{font-size:.75rem}
+:where(.people-root,.people-demo) .top-actions button{font-size:.75rem;min-height:36px}
+:where(.people-root,.people-demo) .contact-sheet{grid-template-columns:repeat(auto-fit,minmax(75px,1fr))}}
+@media(hover:none){:where(.people-root,.people-demo) .sample-tile:hover .sample-art,:where(.people-root,.people-demo) .sample-tile:hover .sample-art:before{transform:none}}
+@media(forced-colors:active){:where(.people-root,.people-demo) :focus-visible{outline-color:Highlight}}
+
+.people-root .live-caption,.people-demo .live-caption{color:var(--people-muted);font-size:.8125rem;line-height:1.55}

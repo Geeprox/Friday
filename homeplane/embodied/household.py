@@ -126,7 +126,12 @@ class DeviceCommands:
         except (OSError, ValueError):
             aliases = {}
         result = []
+        from .miot_spec import optional_cover
+        cover = optional_cover() if self.service and self.service.configured() else None
+        selected_functions={fid for d in snapshot.devices if cover and any(b.source=='xiaomi-identity' and b.external_id=='cn_'+str(cover['did']) for b in d.bindings) for fid in d.function_ids}
         for entity in snapshot.entities:
+            if entity.id in selected_functions:
+                continue
             external = next((b.external_id for b in entity.bindings if b.source == "ha"), "")
             alias = aliases.get(external)
             if entity.kind not in {"light", "cover", "climate", "fan", "switch"} and not alias:
@@ -154,13 +159,12 @@ class DeviceCommands:
                     current=next((o.value for o in snapshot.observations if o.entity_id == entity.id), None),
                 )
             )
-        from .miot_spec import optional_cover
-        cover = optional_cover() if self.service and self.service.configured() else None
         if cover:
             authority, _ = self.core.actions.authority()
             bound = bool(
                 authority
                 and self.core.actions.policy_report().get("enabled")
+                and authority.external_entity_ids is None
                 and authority.ha_url.rstrip("/") == getattr(self.core.adapter, "url", None)
                 and authority.ha_instance == getattr(self.core.adapter, "instance_id", None)
             )
@@ -173,6 +177,7 @@ class DeviceCommands:
                     source_kind="miot",
                     controllable=bound,
                     capabilities=["cover.open", "cover.close", "cover.position", "cover.stop"],
+                    binding_revision=__import__("homeplane.embodied.miot_spec",fromlist=["cover_revision"]).cover_revision(cover),
                 )
             )
         for item in result:
@@ -195,6 +200,7 @@ class DeviceCommands:
                     raise ValueError("invalid_percentage")
                 return "light.set", {"power": "on", "brightness": max(1, round(percent * 255 / 100))}
         if kind == "cover":
+            if action=="stop" and "cover.stop" in item.get("capabilities",[]):return "cover.state", {"state":"stopped"}
             if action in {"on", "off", "open", "close"}:
                 if 'cover.state' in item.get('capabilities', []):
                     return 'cover.state', {'state': 'open' if action in {'on','open'} else 'closed'}
@@ -202,6 +208,8 @@ class DeviceCommands:
             if action.startswith("position:"):
                 return "cover.position", {"position": int(action.split(":")[1])}
         if kind == "climate":
+            if action in {"on","open","off","close"} and "climate.power" in item.get("capabilities",[]):
+                return "climate.power", {"power":"on" if action in {"on","open"} else "off"}
             if action in {"off", "close"}:
                 return "climate.mode", {"hvac_mode": "off"}
             if action in {"on", "open"}:
@@ -255,7 +263,7 @@ class DeviceCommands:
                                          write_attempted=False, acknowledged=False))
                     continue
                 if item.get("source_kind") == "miot":
-                    if action not in {"on", "off", "open", "close"} and not (action.startswith("position:") and action[9:].isdigit() and 0<=int(action[9:])<=100):
+                    if action not in {"on", "off", "open", "close", "stop"} and not (action.startswith("position:") and action[9:].isdigit() and 0<=int(action[9:])<=100):
                         outcomes.append(
                             dict(
                                 target=item["id"],
@@ -266,7 +274,7 @@ class DeviceCommands:
                         )
                         continue
                     result = await self.service.miot_cover(
-                        "open" if action in {"on", "open"} else "close" if action in {"off", "close"} else action, event_id
+                        "open" if action in {"on", "open"} else "close" if action in {"off", "close"} else action, event_id, expected_revision=item.get("binding_revision")
                     )
                     outcomes.append(
                         dict(
@@ -355,8 +363,8 @@ def supported_actions(item):
         return ['on','off'] if caps & {'light.set','switch.set','fan.set'} else []
     if kind == 'cover':
         actions = ['open','close'] if caps & {'cover.state','cover.position','cover.open'} else []
-        return actions + (['position:'+str(p) for p in (0,25,50,75,100)] if 'cover.position' in caps else [])
+        return actions + (['stop'] if 'cover.stop' in caps else []) + (['position:'+str(p) for p in (0,25,50,75,100)] if 'cover.position' in caps else [])
     if kind == 'climate' and 'climate.mode' in caps:
         choices = item.get('capability_specs', {}).get('climate.mode', {}).get('choices', [])
-        return ['off' if c == 'off' else 'mode:'+c for c in choices]
+        return (['on','off'] if 'climate.power' in caps else []) + ['off' if c == 'off' else 'mode:'+c for c in choices if c!='off' or 'climate.power' not in caps]
     return []

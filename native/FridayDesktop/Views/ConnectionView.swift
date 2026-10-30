@@ -17,18 +17,21 @@ struct ConnectionView: View {
         network.check(host: host, port: report.networkPort) { Task { await service.connectHome(ifCurrent: context) } }
     }
     var body: some View {
+        GeometryReader { geometry in
+        ScrollView {
         VStack(spacing: 18) {
             Image(systemName: needsAuthorization ? "key.fill" : service.status?.failure == nil ? "house" : "exclamationmark.triangle")
                 .font(.system(size: 36))
                 .foregroundStyle(service.status?.failure == nil ? Color.secondary : Color.orange)
                 .accessibilityHidden(true)
             Text(presentation.title).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
+                .accessibilityAddTraits(.isHeader)
             if let description = presentation.titleDetail {
                 Text(description).font(.caption).foregroundStyle(.secondary)
             }
             Text(presentation.detail).foregroundStyle(.primary).multilineTextAlignment(.center).frame(maxWidth: 560)
             if needsAuthorization {
-                Text("请核对权限与本次操作范围。请在 Home Assistant 中重新登录并确认授权，返回 Friday 后会重新读取家庭状态。")
+                Text("在 Home Assistant 中重新登录并确认授权，返回 Friday 后重新读取家庭状态。")
                     .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 520)
             }
             if let report = service.status {
@@ -37,7 +40,7 @@ struct ConnectionView: View {
                         .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
                         .disabled(!service.statusReadAvailable || !report.configurationAvailable || service.connecting)
                     if service.awaitingAuthorization {
-                        Text("请核对权限与本次操作范围。授权页面已打开。请在浏览器中完成登录和授权。")
+                        Text("授权页面已打开，在浏览器中完成登录后返回这里。")
                             .foregroundStyle(.secondary).multilineTextAlignment(.center)
                         Button("检查授权") { connect(report) }
                             .disabled(!service.statusReadAvailable || service.connecting || network.checking)
@@ -47,17 +50,21 @@ struct ConnectionView: View {
                     Button("登录网关") { service.openHomeAuthorization() }
                         .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
                         .disabled(!service.statusReadAvailable || service.connecting)
-                    Text("在Home Assistant中登录").font(.caption).foregroundStyle(.secondary)
+                    Text("在 Home Assistant 中登录").font(.caption).foregroundStyle(.secondary)
                 } else {
                     Button(network.checking ? "等待网络权限…" : service.status?.failure == nil ? "连接家庭" : "重新读取") {
                         connect(report)
                     }.buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
                         .disabled(!service.statusReadAvailable || !report.configurationAvailable || !report.credentialAvailable || service.connecting || network.checking)
                 }
+            } else {
+                Button("重新读取") { Task { await service.refresh() } }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    .keyboardShortcut(.defaultAction)
             }
             if service.connecting { ProgressView("正在读取家庭状态…") }
             if let message = network.message { Text(message).foregroundStyle(.secondary).frame(maxWidth: 560) }
-            Text("连接恢复前，家庭状态与对话不可用。恢复连接前，家庭状态与对话暂不可用。")
+            Text("连接恢复后，即可查看家庭状态和控制设备。")
                 .font(.callout).foregroundStyle(.secondary)
             if service.status?.failure != nil {
                 Button("查看记录") { service.openLogs() }
@@ -66,12 +73,15 @@ struct ConnectionView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if let report = service.status {
                         Text(report.configurationAvailable ? "已有家庭配置" : "尚未配置家庭网关")
-                        Text(report.credentialAvailable ? "本机有授权记录，不代表当前授权有效。本机有授权记录；记录存在不代表授权当前有效。" : "本机尚无可用授权记录。")
+                        Text(report.credentialAvailable ? "本机有授权记录，当前有效性以重新读取的结果为准。" : "本机尚无可用授权记录。")
                         Text(report.arl.connectionDetail)
+                        Text(report.arl.connectionRecovery)
                     }
-                    Text("设备相机音频NAS读取模型调用均未启用。设备执行、摄像头、音频、NAS 内容读取与模型调用未启用。")
+                    Text("此页仅管理连接，不会开启摄像头、音频或设备控制。")
                 }.font(.callout).foregroundStyle(.secondary).padding(.top, 8)
             }.frame(maxWidth: 560)
-        }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.padding(32).frame(maxWidth: .infinity, minHeight: geometry.size.height)
+        }
+        }
     }
 }

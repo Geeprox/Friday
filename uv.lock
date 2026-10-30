@@ -982,6 +982,14 @@ airplay = [
 camera-media = [
     { name = "av" },
 ]
+ktv = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pypng" },
+    { name = "qrcode" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
 local-asr = [
     { name = "mlx-whisper", marker = "sys_platform == 'darwin'" },
 ]
@@ -994,6 +1002,16 @@ local-runtime = [
 nas-connection = [
     { name = "paramiko" },
     { name = "smbprotocol" },
+]
+privacy-model = [
+    { name = "onnxruntime" },
+    { name = "pillow" },
+]
+privacy-playback = [
+    { name = "av" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "opencv-python" },
 ]
 vision = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -1026,19 +1044,28 @@ dev = [
 requires-dist = [
     { name = "av", marker = "extra == 'camera-media'", specifier = "==18.1.0" },
     { name = "av", marker = "extra == 'local-runtime'", specifier = "==18.1.0" },
+    { name = "av", marker = "extra == 'privacy-playback'", specifier = "==18.1.0" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "laya-mlx", marker = "sys_platform == 'darwin' and extra == 'local-runtime'", specifier = "==0.5.0" },
     { name = "mlx-vlm", marker = "sys_platform == 'darwin' and extra == 'local-runtime'", specifier = "==0.7.3" },
     { name = "mlx-whisper", marker = "sys_platform == 'darwin' and extra == 'local-asr'", specifier = "==0.4.3" },
     { name = "mlx-whisper", marker = "sys_platform == 'darwin' and extra == 'local-runtime'", specifier = "==0.4.3" },
+    { name = "numpy", marker = "extra == 'ktv'", specifier = ">=2.3,<3" },
+    { name = "numpy", marker = "extra == 'privacy-playback'", specifier = ">=2.3,<3" },
     { name = "numpy", marker = "extra == 'vision'", specifier = ">=2.3,<3" },
+    { name = "onnxruntime", marker = "extra == 'privacy-model'", specifier = "==1.30.0" },
     { name = "onnxruntime", marker = "extra == 'vision'", specifier = "==1.30.0" },
+    { name = "opencv-python", marker = "extra == 'privacy-playback'", specifier = ">=4.11,<6" },
     { name = "opencv-python", marker = "extra == 'vision'", specifier = ">=4.11,<6" },
     { name = "paramiko", marker = "extra == 'nas-connection'", specifier = "==5.1.0" },
+    { name = "pillow", marker = "extra == 'privacy-model'", specifier = ">=11,<14" },
     { name = "pyatv", marker = "extra == 'airplay'", specifier = "==0.18.0" },
     { name = "pydantic", specifier = ">=2.13,<3" },
+    { name = "pypng", marker = "extra == 'ktv'", specifier = "==0.20220715.0" },
     { name = "python-multipart", specifier = ">=0.0.20,<1" },
+    { name = "qrcode", marker = "extra == 'ktv'", specifier = "==8.2" },
+    { name = "scipy", marker = "extra == 'ktv'", specifier = ">=1.16,<2" },
     { name = "scipy", marker = "extra == 'vision'", specifier = ">=1.16,<2" },
     { name = "sherpa-onnx", marker = "extra == 'vision'", specifier = "==2.0.0" },
     { name = "smbprotocol", marker = "extra == 'nas-connection'", specifier = "==1.15.0" },
@@ -1048,7 +1075,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=15,<16" },
     { name = "zeroconf", specifier = ">=0.147,<1" },
 ]
-provides-extras = ["airplay", "nas-connection", "camera-media", "local-asr", "local-runtime", "vision"]
+provides-extras = ["ktv", "airplay", "nas-connection", "camera-media", "privacy-playback", "privacy-model", "local-asr", "local-runtime", "vision"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2635,6 +2662,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pypng"
+version = "0.20220715.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/93/cd/112f092ec27cca83e0516de0a3368dbd9128c187fb6b52aaaa7cde39c96d/pypng-0.20220715.0.tar.gz", hash = "sha256:739c433ba96f078315de54c0db975aee537cbc3e1d0ae4ed9aab0ca1e427e2c1", size = 128992, upload-time = "2022-07-15T14:11:05.301Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/b9/3766cc361d93edb2ce81e2e1f87dd98f314d7d513877a342d31b30741680/pypng-0.20220715.0-py3-none-any.whl", hash = "sha256:4a43e969b8f5aaafb2a415536c1a8ec7e341cd6a3f957fd5b5f32a4cfeed902c", size = 58057, upload-time = "2022-07-15T14:11:03.713Z" },
+]
+
+[[package]]
 name = "pyspnego"
 version = "0.12.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2751,6 +2787,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/da/92/1446574745d74df0c92e6aa4a7b0b3130706a4142b2d1a5869f2eaa423c6/pyyaml-6.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65", size = 829923, upload-time = "2025-09-25T21:32:54.537Z" },
     { url = "https://files.pythonhosted.org/packages/f0/7a/1c7270340330e575b92f397352af856a8c06f230aa3e76f86b39d01b416a/pyyaml-6.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9", size = 174062, upload-time = "2025-09-25T21:32:55.767Z" },
     { url = "https://files.pythonhosted.org/packages/f1/12/de94a39c2ef588c7e6455cfbe7343d3b2dc9d6b6b2f40c4c6565744c873d/pyyaml-6.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b", size = 149341, upload-time = "2025-09-25T21:32:56.828Z" },
+]
+
+[[package]]
+name = "qrcode"
+version = "8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8f/b2/7fc2931bfae0af02d5f53b174e9cf701adbb35f39d69c2af63d4a39f81a9/qrcode-8.2.tar.gz", hash = "sha256:35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c", size = 43317, upload-time = "2025-05-01T15:44:24.726Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/b8/d2d6d731733f51684bbf76bf34dab3b70a9148e8f2cef2bb544fccec681a/qrcode-8.2-py3-none-any.whl", hash = "sha256:16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f", size = 45986, upload-time = "2025-05-01T15:44:22.781Z" },
 ]
 
 [[package]]

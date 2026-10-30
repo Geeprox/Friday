@@ -1,5 +1,6 @@
 """Console safety controls; public clients cannot inject recognition evidence."""
 
+import asyncio
 from typing import Literal
 
 from fastapi import HTTPException, Response
@@ -35,14 +36,20 @@ def install(router, service):
             max_events=store.MAX_EVENTS,
             max_evidence_bytes=store.MAX_BYTES,
             evidence_kind="private_keyframes",
+            visual_review=worker.get("visual_review") or runtime.visual.status(),
         )
 
     @router.post("/api/embodied/safety/policy")
     async def configure(policy: SafetyPolicy):
         try:
-            return store.configure(policy)
+            saved = store.configure(policy)
         except ValueError:
             raise HTTPException(409, detail="safety_policy_changed") from None
+        await runtime.sync_policy()
+        if service.process and service.process.returncode is None:
+            try:await asyncio.wait_for(service.request('/api/safety/policy', {}), 2)
+            except Exception:pass  # Worker revision watcher independently observes the durable save.
+        return saved
 
     @router.get("/api/embodied/safety/events")
     async def events():

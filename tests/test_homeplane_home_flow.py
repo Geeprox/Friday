@@ -435,7 +435,7 @@ async def test_reviewed_widget_consumes_actual_application_http_flow(tmp_path):
             assert len(approved) == 1 and domain(approved[0][1])["status"] == "verified"
             assert manager.get(approved[0][0]["plan_id"]).status == "rolled_back"
             assert all(report["output_audibility"] == "unavailable" for _, report in reports)
-            evidence = Path(__file__).parents[2] / "evidence" / "actual-http-widget.json"
+            evidence = tmp_path / "evidence" / "actual-http-widget.json"
             evidence.parent.mkdir(exist_ok=True)
             evidence.write_text(json.dumps({"qualification":"local Simulator; HTTP+DOM, no browser/device qualification",
                 "checked":result["checked"], "html_writes":0,

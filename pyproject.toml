@@ -15,9 +15,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ktv = ["qrcode==8.2", "pypng==0.20220715.0", "numpy>=2.3,<3", "scipy>=1.16,<2"]
 airplay = ["pyatv==0.18.0"]
 nas-connection = ["smbprotocol==1.15.0", "paramiko==5.1.0"]
 camera-media = ["av==18.1.0"]
+privacy-playback = ["av==18.1.0", "numpy>=2.3,<3", "opencv-python>=4.11,<6"]
+privacy-model = ["onnxruntime==1.30.0", "pillow>=11,<14"]
 local-asr = ["mlx-whisper==0.4.3; sys_platform == 'darwin'"]
 local-runtime = ["av==18.1.0", "laya-mlx==0.5.0; sys_platform == 'darwin'", "mlx-vlm==0.7.3; sys_platform == 'darwin'", "mlx-whisper==0.4.3; sys_platform == 'darwin'"]
 vision = ["numpy>=2.3,<3", "scipy>=1.16,<2", "opencv-python>=4.11,<6", "supervision==0.31.1", "trackers==2.6.1", "onnxruntime==1.30.0", "sherpa-onnx==2.0.0"]

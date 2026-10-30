@@ -20,6 +20,7 @@ def capture_environment():
     import re
 
     environment = dict(os.environ)
+    environment['FRIDAY_CAPTURE_OWNER_PID'] = str(os.getpid())
     interface = configuration().get("camera_interface")
     if interface:
         if not re.fullmatch(r"en[0-9]{1,2}", interface) or not SOCKETS.is_file():

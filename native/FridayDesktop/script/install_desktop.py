@@ -20,6 +20,9 @@ if target.exists():
     # Never replace a currently running App or its service.
     if subprocess.run(['pgrep', '-x', 'Friday'], capture_output=True).returncode != 1:
         parser.error('stop the existing Friday App and household service first')
+    # The service execs Python, so its native executable name is insufficient.
+    if subprocess.run(['launchctl', 'list', 'com.friday.household.service'], capture_output=True).returncode == 0:
+        parser.error('unregister the identified Friday household service before replacing the App')
     args.backup.parent.mkdir(parents=True, exist_ok=True)
     os.rename(target, args.backup)
 try:

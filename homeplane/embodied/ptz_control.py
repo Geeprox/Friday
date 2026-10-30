@@ -6,10 +6,14 @@ official MiOT HTTP API; an acknowledgement is never proof of physical movement.
 
 import asyncio
 import base64
+import fcntl
 import json
 import logging
 import math
 import os
+import secrets
+import stat
+import tempfile
 import time
 
 from homeplane.embodied.paths import PRIVATE, camera, camera_storage
@@ -19,14 +23,34 @@ logging.getLogger("miot").setLevel(logging.CRITICAL)
 
 
 def atomic(path, data):
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-    temp.chmod(0o600)
-    temp.replace(path)
+    fd, name = tempfile.mkstemp(prefix='.ptz-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:os.fsync(directory)
+        finally:os.close(directory)
+    finally:
+        if os.path.exists(name):os.unlink(name)
+
+
+def read_lease(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd) as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+            raise ValueError('invalid_camera_lease')
+        value = json.load(stream)
+    if not isinstance(value, dict):raise ValueError('invalid_camera_lease')
+    return value
 
 
 def alive(pid):
     try:
+        if isinstance(pid, bool) or int(pid) <= 0:return False
         os.kill(int(pid), 0)
         return True
     except (ProcessLookupError, ValueError, TypeError):
@@ -71,7 +95,8 @@ class Transport:
         if name not in FLAGS and name not in ("active_preset", "camera_power"):
             raise ValueError("property_not_allowed")
         s, p = self.refs[name]
-        result = await self.api.set_prop_async(MIoTSetPropertyParam(did=self.did, siid=s, piid=p, value=value))
+        result = await asyncio.wait_for(self.api.set_prop_async(
+            MIoTSetPropertyParam(did=self.did, siid=s, piid=p, value=value)), 12)
         if result.get("code") != 0:
             raise RuntimeError("camera_write_code_" + str(result.get("code")))
         return {"code": 0, "property": name, "value": value}
@@ -81,16 +106,38 @@ class Transport:
 
 
 class CameraLease:
-    def __init__(self, transport, path=None, initial_baseline=None, *, open_privacy=True, restore_native=True):
+    def __init__(self, transport, path=None, initial_baseline=None, *, open_privacy=False, restore_native=True):
         self.io = transport
         self.open_privacy = open_privacy
-        self.restore_native = restore_native
+        # Retain the old argument for callers, but leases always restore their
+        # original flags. Permanent vendor-tracking suppression is unsupported.
+        self.restore_native = True
         self.path = path if path is not None else camera_storage() / 'ptz-lease.json'
         self.initial_baseline = initial_baseline
         self.snapshot = None
         self.presets = []
         self.active = None
         self.events = []
+        self.lock_fd = None
+
+    def claim(self):
+        if self.lock_fd is not None:return
+        fd = os.open(self.path.with_suffix('.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):raise ValueError('invalid_camera_lock')
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            raise RuntimeError('camera_owned_by_live_process') from None
+        except BaseException:
+            os.close(fd)
+            raise
+        self.lock_fd = fd
+
+    def unclaim(self):
+        if self.lock_fd is not None:
+            os.close(self.lock_fd)
+            self.lock_fd = None
 
     def event(self, kind, **fields):
         self.events.append(dict(at=time.time(), event=kind, **fields))
@@ -110,32 +157,45 @@ class CameraLease:
             await asyncio.sleep(0.4)
 
     async def acquire(self):
+        self.claim()
+        try:
+            await self._acquire()
+        except BaseException:
+            self.unclaim()
+            raise
+
+    async def _acquire(self):
         if self.path.exists():
-            prior = json.loads(self.path.read_text())
+            prior = read_lease(self.path)
             if prior.get("status") != "restored":
-                if alive(prior.get("pid")) and prior.get("pid") != os.getpid():
+                # Version 2 uses the OS lock, which survives PID reuse safely.
+                if prior.get('version', 1) < 2 and alive(prior.get("pid")) and prior.get("pid") != os.getpid():
                     raise RuntimeError("camera_owned_by_live_process")
                 self.snapshot = prior
                 self.events = prior.get("events", [])
-                if not await self.release():
+                if not await self._restore():
                     raise RuntimeError("previous_restore_pending")
         before = await self.io.read()
-        if not self.open_privacy and before.get('camera_power') is False:
+        if not self.open_privacy and before.get('camera_power') is not True:
             raise RuntimeError('privacy_shutter_closed')
         original = {k: before[k] for k in FLAGS}
+        if any(type(value) is not bool for value in original.values()):
+            raise RuntimeError('incomplete_camera_readback')
         if "camera_power" in before:
             original["camera_power"] = before["camera_power"]
         if self.initial_baseline and not self.path.exists():
             original.update(self.initial_baseline)
         self.snapshot = {
-            "version": 1,
+            "version": 2,
+            "lease_id": secrets.token_hex(16),
+            "owner_token": os.environ.get('FRIDAY_CAMERA_OWNER'),
             "pid": os.getpid(),
             "status": "acquiring",
             "acquired_at": time.time(),
             "before": original,
             "observed_before": {k: before[k] for k in FLAGS},
             "return_preset": before["active_preset"],
-            "restore_native": self.restore_native,
+            "restore_native": True,
         }
         self.events = []
         atomic(self.path, self.snapshot)
@@ -162,10 +222,14 @@ class CameraLease:
             self.snapshot["status"] = "owned"
             self.event("acquired", disabled=list(FLAGS))
         except BaseException:
-            await self.release()
+            await self._restore()
             raise
 
     async def move(self, preset):
+        if self.lock_fd is None or not self.snapshot or self.snapshot.get('status') != 'owned':
+            raise RuntimeError('camera_not_owned')
+        if (await self.io.read()).get('camera_power') is not True:
+            raise RuntimeError('privacy_shutter_closed')
         # Existing favourite IDs only. Never modify the household's preset definitions.
         if preset not in {p["idx"] for p in self.presets}:
             raise ValueError("unknown_preset")
@@ -177,37 +241,74 @@ class CameraLease:
         self.event("preset_acknowledged", preset=preset, latency_ms=round((time.monotonic() - began) * 1000))
 
     async def release(self):
+        try:
+            if self.snapshot and self.snapshot.get('status') != 'restored':
+                self.claim()
+                current = read_lease(self.path)
+                if current.get('lease_id') != self.snapshot.get('lease_id'):
+                    raise RuntimeError('stale_camera_lease')
+                return await self._restore()
+            return True
+        finally:
+            self.unclaim()
+
+    async def _restore(self):
         if not self.snapshot or self.snapshot.get("status") == "restored":
             return True
+        # Old in-progress leases also restore the original flags, even if an old
+        # worker saved restore_native=False. Never replace the baseline on retry.
+        before = self.snapshot.get('before', {})
+        if any(type(before.get(name)) is not bool for name in FLAGS):
+            raise ValueError('invalid_camera_lease')
+        self.snapshot['restore_native'] = True
         self.snapshot["status"] = "restoring"
         atomic(self.path, self.snapshot)
         errors = []
+        returned_preset = False
+        try:
+            current = await self.io.read()
+        except Exception:
+            self.snapshot.update(status='restore_pending', restore_errors=['camera_readback_unavailable'])
+            self.event('restore', ok=False)
+            return False
         # Stop automatic movement before returning the view; restore native patrol last.
         try:
-            await self.io.write("cruise", False)
-            await self.io.write("human_tracking", False)
-            await self.io.write("pet_tracking", False)
-            current = await self.io.read()
-            if current.get("camera_power") is not False:
+            if current.get("camera_power") is True:
+                await self.io.write("cruise", False)
+                await self.io.write("human_tracking", False)
+                await self.io.write("pet_tracking", False)
+                current = await self.io.read()
+            if current.get("camera_power") is True:
                 await self.io.write("active_preset", self.snapshot["return_preset"])
+                returned_preset = True
         except Exception as e:
             errors.append(type(e).__name__)
         for name in ("human_close_up", "pet_tracking", "human_tracking", "cruise"):
             try:
-                await self.io.write(name, self.snapshot["before"][name] if self.snapshot.get("restore_native",True) else False)
+                await self.io.write(name, before[name])
             except Exception as e:
                 errors.append(name + ":" + type(e).__name__)
-        expected = dict(self.snapshot["before"])
-        if not self.snapshot.get("restore_native",True):
-            expected.update({name:False for name in FLAGS})
-        if "camera_power" in expected:
+        expected = {name: before[name] for name in FLAGS}
+        if returned_preset:expected['active_preset'] = self.snapshot['return_preset']
+        if 'camera_power' in before:
             try:
                 current = await self.io.read()
-                if current.get("camera_power") is False and expected["camera_power"] is True:
-                    expected["camera_power"] = False
+                if current.get("camera_power") is False and before['camera_power'] is True:
                     self.snapshot["manual_preview_close_preserved"] = True
-                else:
-                    await self.io.write("camera_power", expected["camera_power"])
+                # Only undo a temporary explicit opening. Never restore power-on
+                # or require it in readback after a newer manual close.
+                elif before['camera_power'] is False:
+                    intent_path=self.path.parent/'power-intent.json'
+                    intent=read_lease(intent_path) if intent_path.exists() else {}
+                    if (intent.get('enabled') is True and type(intent.get('at')) in (int,float)
+                            and intent['at']>self.snapshot.get('acquired_at',0)):
+                        self.snapshot['newer_explicit_open_preserved']=True
+                        expected.pop('camera_power',None)
+                        preserve_open=True
+                    else:preserve_open=False
+                    if not preserve_open:
+                        await self.io.write("camera_power", False)
+                        expected['camera_power'] = False
             except Exception as e:
                 errors.append("camera_power:" + type(e).__name__)
         try:
@@ -391,24 +492,31 @@ class LocalFollower:
         self.edge_since = None
 
 
-async def restore_only():
-    LEASE = camera_storage() / 'ptz-lease.json'
-    if not LEASE.exists():
-        return
-    data = json.loads(LEASE.read_text())
-    if data.get("status") == "restored":
-        return
-    if alive(data.get("pid")):
-        raise RuntimeError("camera_owner_still_running")
-    io = Transport()
-    lease = CameraLease(io)
-    lease.snapshot = data
-    lease.events = data.get("events", [])
+async def restore_camera(camera_id=None, *, path=None, owner_token=None, transport_factory=Transport):
+    path = path if path is not None else camera_storage(camera_id) / 'ptz-lease.json'
+    if not path.exists():return True
+    lease = CameraLease(None, path)
+    lease.claim()
+    io = None
     try:
-        ok = await lease.release()
-        print(json.dumps({"camera_settings_restored": ok}))
+        data = read_lease(path)
+        if data.get('status') == 'restored' or owner_token is not None and data.get('owner_token') != owner_token:
+            return True
+        if data.get('version', 1) < 2 and alive(data.get('pid')):
+            raise RuntimeError('camera_owner_still_running')
+        io = transport_factory(camera_id)
+        lease.io, lease.snapshot, lease.events = io, data, data.get('events', [])
+        return await lease._restore()
     finally:
-        await io.close()
+        try:
+            if io is not None:await asyncio.wait_for(io.close(), 5)
+        finally:lease.unclaim()
+
+
+async def restore_only():
+    ok = await restore_camera()
+    print(json.dumps({'camera_settings_restored': ok}))
+    if not ok:raise SystemExit(1)
 
 
 if __name__ == "__main__":

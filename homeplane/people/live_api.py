@@ -32,6 +32,14 @@ class NameCandidate(BaseModel):
     candidate: str = Field(pattern=r'^candidate_[a-f0-9]{24}$')
     name: str = Field(min_length=1,max_length=40)
     person_id: str | None = Field(default=None,pattern=r'^person_[a-f0-9]{24}$')
+    members: list[str] | None = Field(default=None,min_length=1,max_length=8)
+    group_revision: str | None = Field(default=None,pattern=r'^[a-f0-9]{64}$')
+
+
+class CandidateGroup(BaseModel):
+    model_config = ConfigDict(extra='forbid',strict=True)
+    members:list[str]=Field(min_length=2,max_length=8)
+    separate:bool=False
 
 
 def create_router(catalog, service):
@@ -48,6 +56,8 @@ def create_router(catalog, service):
             profiles, presence = db.registered(), db.presence()
             portraits={p for p in profiles if db.portrait(p) is not None}
             candidates=db.candidates()
+            candidate_groups=db.candidate_groups()
+            group_undo=db.group_undo_available()
         finally:
             db.close()
         page = catalog.page()
@@ -66,7 +76,7 @@ def create_router(catalog, service):
                     enrolled=p.person_id in profiles, updated=profiles.get(p.person_id),
                     portrait=p.person_id in portraits)
                     for p in page.people if p.name and not p.merged_into],
-                    observations=presence, candidates=candidates, cameras=service.cameras(), policy=POLICY,
+                    observations=presence, candidates=candidates,candidate_groups=candidate_groups,group_undo_available=group_undo,cameras=service.cameras(), policy=POLICY,
                     experimental=True, security_authentication=False, action_authorized=False)
 
     @router.get('/{person_id}/portrait')
@@ -93,12 +103,35 @@ def create_router(catalog, service):
         async with gate:
             db=store()
             try:
-                db.name_candidate(catalog,request.candidate,request.name,request.expected_revision,request.person_id)
+                db.name_candidate(catalog,request.candidate,request.name,request.expected_revision,request.person_id,
+                                  members=request.members,group_revision=request.group_revision)
                 return JSONResponse(metadata(),headers={'Cache-Control':'no-store'})
             except PeopleError as error:
                 raise HTTPException(409,detail={'code':error.code}) from None
             except (ValueError,sqlite3.Error):
                 raise HTTPException(409,detail={'code':'identity_candidate_unavailable'}) from None
+            finally:db.close()
+
+    @router.post('/candidate-group')
+    async def candidate_group(request:CandidateGroup):
+        async with gate:
+            db=store()
+            try:
+                db.edit_candidate_group(request.members,separate=request.separate)
+                return JSONResponse(metadata(),headers={'Cache-Control':'no-store'})
+            except (ValueError,sqlite3.Error):
+                raise HTTPException(409,detail={'code':'identity_candidate_unavailable'}) from None
+            finally:db.close()
+
+    @router.post('/candidate-group/undo')
+    async def candidate_group_undo():
+        async with gate:
+            db=store()
+            try:
+                db.undo_candidate_group()
+                return JSONResponse(metadata(),headers={'Cache-Control':'no-store'})
+            except (ValueError,sqlite3.Error):
+                raise HTTPException(409,detail={'code':'identity_candidate_undo_unavailable'}) from None
             finally:db.close()
 
     @router.get("")

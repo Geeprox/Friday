@@ -94,14 +94,14 @@ def test_wake_focus_and_empty_view_patrol_do_not_guess_between_people():
 
 
 @pytest.mark.asyncio
-async def test_background_does_not_open_privacy_and_keeps_vendor_tracking_disabled(tmp_path):
+async def test_background_preserves_privacy_and_restores_vendor_tracking(tmp_path):
     values=dict(camera_power=False,cruise=True,human_tracking=True,pet_tracking=True,
                 human_close_up=False,active_preset=1,presets=[])
     writes=[]
     async def read():return dict(values)
     async def write(name,value):writes.append((name,value));values[name]=value
     io=SimpleNamespace(read=read,write=write)
-    lease=CameraLease(io,tmp_path/'lease.json',open_privacy=False,restore_native=False)
+    lease=CameraLease(io,tmp_path/'lease.json',open_privacy=False,restore_native=True)
     with pytest.raises(RuntimeError,match='privacy_shutter_closed'):await lease.acquire()
     assert not writes and not lease.path.exists()
     values['camera_power']=True
@@ -110,7 +110,8 @@ async def test_background_does_not_open_privacy_and_keeps_vendor_tracking_disabl
     values['camera_power']=False
     writes.clear()
     assert await lease.release()
-    assert all(values[k] is False for k in FLAGS)
+    assert values['cruise'] and values['human_tracking'] and values['pet_tracking']
+    assert values['human_close_up'] is False
     assert not any(k=='active_preset' or (k=='camera_power' and v) for k,v in writes)
 
 

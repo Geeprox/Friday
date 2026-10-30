@@ -78,13 +78,15 @@ def cover_binding(config=None):
     commands = {}
     for item in props['motor-control'].get('value-list', []):
         name = str(item.get('description', '')).lower()
-        action = {'open': 'open', 'up': 'open', 'close': 'close', 'down': 'close', 'stop': 'stop'}.get(name)
+        action = {'open': 'open', 'up': 'open', 'close': 'close', 'down': 'close', 'stop': 'stop', 'pause':'stop'}.get(name)
         if action and type(item.get('value')) is int:
             if action in commands:
                 raise ValueError('cover_motor_values_ambiguous')
             commands[action] = item['value']
     if set(commands) != {'open', 'close', 'stop'}:
         raise ValueError('cover_motor_values_unavailable')
+    if binding.get('position_semantics','travel') not in {'travel','slat_angle'} or binding.get('feedback_quality','reported') not in {'reported','unreliable'}:
+        raise ValueError('cover_semantics_invalid')
     return {**binding, 'refs': refs, 'commands': commands,
             'name': str(binding.get('name') or '窗帘')[:128], 'room': str(binding.get('room') or '')[:80]}
 
@@ -133,3 +135,8 @@ def camera_properties(camera):
         if key != 'presets':
             camera_property(camera, key, 'write')
     return reads
+
+
+def cover_revision(binding):
+    import hashlib,json
+    return hashlib.sha256(json.dumps({key:binding.get(key) for key in ('did','region','spec','refs','commands','position_semantics','feedback_quality')},sort_keys=True).encode()).hexdigest()

@@ -249,7 +249,8 @@ class HomeFlow:
         if not scope.all_home and room not in scope.rooms:
             return ()
         result = tuple(c['id'] for c in self.archive.context()['cameras']
-                       if c.get('room') == room and c.get('source_binding_current') is not False)
+                       if c.get('room') == room and c.get('source_binding_current') is True
+                       and c.get('room_binding_current') is True)
         context.check()
         return result
 
@@ -258,7 +259,8 @@ class HomeFlow:
         current = self.archive.context()
         camera = next((c for c in current['cameras'] if c['id'] == request.camera_id), None)
         context.check()
-        return bool(camera and camera.get('source_binding_current') is not False
+        return bool(camera and camera.get('source_binding_current') is True
+                    and camera.get('room_binding_current') is True
                     and request.expected_context == current['fingerprint']
                     and (scope.all_home or camera.get('room') in scope.rooms))
 

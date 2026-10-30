@@ -11,14 +11,33 @@ struct ARLStatusConsumerProbe {
         return try JSONDecoder().decode(ARLStatus.self, from: data)
     }
     static func main() throws {
+        if CommandLine.arguments.contains("--project") {
+            let values = try JSONDecoder().decode([ARLStatus].self, from: FileHandle.standardInput.readDataToEndOfFile())
+            let output = values.map { ["state": $0.connectionPhase, "description": $0.connectionDetail, "recovery": $0.connectionRecovery] }
+            FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]))
+            return
+        }
         let base: [String: Any] = ["status": "ready", "sdkVersion": "synthetic", "ready": true, "inferenceAttempted": false]
         let legacy = try decode(base)
         expect(legacy.metadataFreshness == nil && legacy.refreshPending == nil, "Legacy public metadata still decodes")
-        expect(legacy.connectionDetail == "ARL 健康通信正常；身份与模型能力尚未验证。", "Ready metadata does not qualify models")
+        expect(legacy.connectionPhase == "unknown", "Legacy ready has no current freshness evidence")
+        expect(legacy.connectionDetail == "ARL 连接状态尚未确认。", "Legacy readiness cannot qualify a current connection")
+        var fresh = base
+        fresh["metadataFreshness"] = "current"; fresh["refreshPending"] = false
+        fresh["connectionState"] = "connected"; fresh["taskReadiness"] = "unverified"
+        fresh["identityVerified"] = false; fresh["modelCapabilityVerified"] = false
+        let current = try decode(fresh)
+        expect(current.connectionPhase == "connected", "Fresh health qualifies connection only")
+        expect(current.connectionDetail == "ARL 健康通信正常；身份与模型能力尚未验证。", "Current health does not qualify a model task")
+        expect(current.identityVerified == false && current.modelCapabilityVerified == false, "Backend task verification remains explicit")
         var warm = base
         warm["metadataFreshness"] = "last_known"; warm["refreshPending"] = true
         let cachedReady = try decode(warm)
         expect(cachedReady.connectionDetail.contains("上次健康通信正常"), "Refresh retains previous successful connection")
+        expect(cachedReady.connectionPhase == "refreshing", "Cached readiness is not a current connected state")
+        warm["refreshPending"] = false
+        let stale = try decode(warm)
+        expect(stale.connectionPhase == "stale" && !stale.connectionDetail.contains("正在"), "Historical metadata without a pending check cannot claim refreshing")
         var cold = base
         cold["ready"] = false; cold["status"] = "runtime_busy"
         cold["metadataFreshness"] = "unknown"; cold["refreshPending"] = true
@@ -40,6 +59,12 @@ struct ARLStatusConsumerProbe {
         starting["ready"] = false; starting["status"] = "starting"; starting["metadataFreshness"] = "current"
         let startingState = try decode(starting)
         expect(startingState.connectionDetail.contains("正在启动"), "Starting is not a failed connection")
-        print("ARLStatusConsumerProbe: 8 finite synthetic presentation cases passed")
+        var conflict = fresh
+        conflict["status"] = "user_disabled"
+        let disabled = try decode(conflict)
+        expect(disabled.connectionPhase == "disabled" && disabled.connectionDetail.contains("已停用"), "Disabled status dominates contradictory ready")
+        conflict["status"] = "ready"; conflict["metadataFreshness"] = "unknown"
+        expect(try decode(conflict).connectionPhase == "unknown", "Unknown freshness cannot reuse ready")
+        print("ARLStatusConsumerProbe: 12 finite synthetic presentation cases passed")
     }
 }

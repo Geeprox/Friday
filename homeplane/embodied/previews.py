@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import json
-import os
 import secrets
 import time
 
@@ -25,7 +24,8 @@ async def camera_is_open(selected, *, client_factory=None, parameter_factory=Non
         from miot.types import MIoTGetPropertyParam
         parameter_factory = MIoTGetPropertyParam
     from .paths import PRIVATE
-    login = json.loads((PRIVATE / "miot-session.json").read_text())
+    from .miot_session import MiSession
+    login = await MiSession(PRIVATE).current()
     api = client_factory(cloud_server=selected.get('region', 'cn'), access_token=login["access_token"])
     try:
         rows = await asyncio.wait_for(api.get_props_async(
@@ -38,7 +38,7 @@ async def camera_is_open(selected, *, client_factory=None, parameter_factory=Non
 
 
 class PreviewPool:
-    def __init__(self, identity_store=None, continuous=False, *, recognize=False, on_observation=None, on_audio=None, on_clear=None, focus=None, occupied_elsewhere=None, wall=None):
+    def __init__(self, identity_store=None, continuous=False, *, recognize=False, control_camera=False, on_observation=None, on_audio=None, on_clear=None, focus=None, occupied_elsewhere=None, wall=None):
         self.wall = wall
         self.sessions = {}
         self.focus = focus or (lambda camera: None)
@@ -48,6 +48,7 @@ class PreviewPool:
         self.identity_store = identity_store
         self.continuous = continuous
         self.recognize = recognize
+        self.control_camera=control_camera
         self.on_observation, self.on_audio, self.on_clear = on_observation, on_audio, on_clear
 
     async def start(self, camera_id):
@@ -95,6 +96,7 @@ class PreviewPool:
             timing=item.get('timing',{}),dropped_frames=item.get('dropped_frames',0),
             capture=item.get('capture',{}),
             camera_control=control,
+            manual_control=bool(item.get('control')),
         )
 
     def frame(self, camera_id):
@@ -142,22 +144,22 @@ class PreviewPool:
         motion_task = None
         waiters = {}
         item["privacy_closed"] = False
-        item.update(mode='auto', control_epoch=0, control=None, manual_tasks=set())
+        item.update(mode='auto' if self.recognize else 'hold', control_epoch=0, control=None, manual_tasks=set())
         latest = None
         stage='initializing'
         wall_epoch = self.wall.begin(selected['id']) if self.wall else None
         try:
             stage='shutter_readback'
             is_open = await camera_is_open(selected)
-            if not is_open and os.environ.get('FRIDAY_CAMERA_OPEN') != '1':
+            if not is_open:
                 item['state'] = 'shutter_closed'
                 return
-            if self.recognize:
+            if self.recognize or (self.control_camera and selected.get('takeover') is True):
                 stage='camera_lease'
                 from .ptz_control import CameraLease, Transport
                 io = Transport(selected['id'])
                 lease = CameraLease(io, camera_storage(selected['id'])/'ptz-lease.json',
-                    open_privacy=os.environ.get('FRIDAY_CAMERA_OPEN')=='1', restore_native=False)
+                    open_privacy=False, restore_native=True)
                 await lease.acquire()
                 item['shutter_changed'] = lease.snapshot['before'].get('camera_power') is False
                 if item['shutter_changed']:
@@ -250,7 +252,7 @@ class PreviewPool:
                     waiters[request_id] = future
                     self.runtime_log.record('embodied.command','start',correlation=correlation)
                     try:
-                        recognizer.mark_motion(time.monotonic())
+                        if recognizer is not None:recognizer.mark_motion(time.monotonic())
                         if self.on_clear:self.on_clear(selected['id'])
                         process.stdin.write((json.dumps(dict(action='motor_step',direction=direction,
                             request_id=request_id))+'\n').encode())
@@ -301,12 +303,16 @@ class PreviewPool:
                         except (RuntimeError, OSError, TimeoutError):
                             if item['privacy_closed']:return
                     await asyncio.sleep(.3)
-            if lease is not None:motion_task=asyncio.create_task(direct())
+            if lease is not None and self.recognize:motion_task=asyncio.create_task(direct())
+            checked_power=0.
             while self.continuous or time.monotonic() < item["expires"]:
                 if item['privacy_closed']:break
                 if motion_task and motion_task.done():
                     await motion_task
                 packet = await asyncio.wait_for(queue.get(), 75 if not item["frames"] else 40)
+                if time.monotonic()-checked_power>=5:
+                    checked_power=time.monotonic()
+                    if not await camera_is_open(selected):privacy_closed()
                 if item['privacy_closed']:break
                 if packet.get("type") == "frame":
                     if recognizer is not None:
@@ -346,37 +352,51 @@ class PreviewPool:
         except Exception as error:
             item.update(state='unavailable',error_class=type(error).__name__,error_stage=stage)
         finally:
-            if self.wall:self.wall.clear(selected['id'], wall_epoch)
-            item['control'] = None
-            item['control_epoch'] += 1
-            for task in item['manual_tasks']:task.cancel()
-            await asyncio.gather(*item['manual_tasks'],return_exceptions=True)
-            if self.on_clear:self.on_clear(selected['id'])
-            if motion_task:
-                motion_task.cancel()
-                await asyncio.gather(motion_task,return_exceptions=True)
-            if receiver:
-                receiver.cancel()
-                await asyncio.gather(receiver, return_exceptions=True)
-            if recognizer is not None:
-                await recognizer.close()
-                item['recognizer'] = None
-            if pipeline is not None:
-                pipeline.close()
-            item["frame"] = None
-            if process and process.returncode is None:
-                process.terminate()
+            try:
                 try:
-                    await asyncio.wait_for(process.wait(), 5)
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.wait()
-            if lease is not None:
-                item['restored'] = await lease.release()
-                item['camera_control'] = dict(owner='none',phase='restored' if item['restored'] else 'restore_pending',
-                    reason='镜头已释放' if item['restored'] else '镜头待释放',view_usable=False,target_locked=False)
-            if io is not None:
-                await io.close()
+                    if self.wall:self.wall.clear(selected['id'], wall_epoch)
+                    item['control'] = None
+                    item['control_epoch'] += 1
+                    for task in item['manual_tasks']:task.cancel()
+                    await asyncio.gather(*item['manual_tasks'],return_exceptions=True)
+                    if self.on_clear:self.on_clear(selected['id'])
+                    if motion_task:
+                        motion_task.cancel()
+                        await asyncio.gather(motion_task,return_exceptions=True)
+                    if receiver:
+                        receiver.cancel()
+                        await asyncio.gather(receiver, return_exceptions=True)
+                    if recognizer is not None:
+                        await recognizer.close()
+                        item['recognizer'] = None
+                    if pipeline is not None:
+                        pipeline.close()
+                    item["frame"] = None
+                finally:
+                    if process and process.returncode is None:
+
+                        try:process.terminate()
+                        except ProcessLookupError:pass
+                        try:
+                            await asyncio.wait_for(process.wait(), 5)
+                        except asyncio.TimeoutError:
+                            try:process.kill()
+                            except ProcessLookupError:pass
+                            await process.wait()
+            finally:
+                try:
+                    if lease is not None:
+                        item['restored'] = await lease.release()
+                        item['camera_control'] = dict(owner='none',phase='restored' if item['restored'] else 'restore_pending',
+                            reason='镜头已释放' if item['restored'] else '镜头待释放',view_usable=False,target_locked=False)
+                finally:
+                    if io is not None:
+                        await io.close()
+
+    async def stop(self,camera_id):
+        item=self.sessions.pop(camera_id,None)
+        if item:
+            item['task'].cancel();await asyncio.gather(item['task'],return_exceptions=True)
 
     async def close(self):
         tasks = [s["task"] for s in self.sessions.values()]

@@ -23,6 +23,11 @@ struct ConsoleView: NSViewRepresentable {
         var windows: [NSWindow] = []
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if let url = navigationAction.request.url, let scheme = url.scheme, ["https", "http"].contains(scheme),
+               !(url.host == "127.0.0.1" && url.port == 8860) {
+                NSWorkspace.shared.open(url)
+                return nil
+            }
             guard windows.count < 2, let url = navigationAction.request.url, url.scheme == "http",
                   url.host == "127.0.0.1", url.port == 8860,
                   ["/", "/games"].contains(url.path) else { return nil }

@@ -14,6 +14,15 @@ software, model weights, generated upstream protocol schemas or vendor SDKs.
   independently installed MIT-licensed noble-curves and bn.js.
 - Python/Node dependencies are independently installed from `uv.lock` and
   `workers/geek/package-lock.json`; licenses remain with their respective authors.
+- Protected playback uses separately installed PyAV/FFmpeg, NumPy and OpenCV.
+  Their licenses and any codec-specific terms remain with the installed
+  distributions; source publication does not bundle those libraries or codecs.
+- Optional selective privacy detection can use an operator-provided NudeNet
+  3.4.2 model and a pinned Tiny YOLOv3 model. NudeNet's package metadata says MIT
+  while its wheel includes AGPL-3.0 license text. No weights or third-party
+  detector implementation are redistributed here. Operators must review the
+  actual model assets and terms before explicitly configuring them; a hash is
+  not a license grant.
 - Home Assistant, Xiaomi Home, Miloco and ARL are external applications. Review
   their upstream licenses and account terms before installing. Friday does not
   vendor their implementations, account material or restricted native libraries.

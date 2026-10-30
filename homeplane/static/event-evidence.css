@@ -1,0 +1,23 @@
+.event-evidence{margin-block:0 32px;border-bottom:1px solid var(--line,#ddd);padding-bottom:24px}
+.evidence-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.evidence-heading h2{margin-bottom:4px}.evidence-heading p{margin-top:0}
+.evidence-filters{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-block:16px}
+.evidence-filters label{display:grid;gap:6px;min-width:0;font-size:13px}
+.evidence-filters select,.evidence-filters input{width:100%;min-height:42px;box-sizing:border-box}
+.evidence-layout{display:grid;grid-template-columns:minmax(220px,.85fr) minmax(0,1.4fr);gap:24px}
+.evidence-list{max-height:580px;overflow:auto;align-self:start}
+.evidence-event{display:grid;grid-template-columns:1fr;gap:5px;width:100%;text-align:left;padding:14px 12px;border:0;border-bottom:1px solid var(--line,#ddd);border-radius:0;background:transparent;color:inherit;white-space:normal;overflow-wrap:anywhere}
+.evidence-event time{font-size:12px;color:var(--muted,#61655f)}
+.evidence-event[aria-pressed=true]{background:var(--soft,#eef2ed);box-shadow:inset 3px 0 #426a52}
+.evidence-event:focus-visible{outline:2px solid #426a52;outline-offset:-2px}
+.evidence-detail{min-width:0;overflow-wrap:anywhere}.evidence-detail h3{margin-top:0}
+.evidence-detail h4{margin-top:24px;margin-bottom:8px}.evidence-detail p{line-height:1.6}
+.evidence-facts{display:grid;grid-template-columns:auto 1fr;gap:8px 16px;font-size:13px}
+.evidence-facts dt{color:var(--muted,#61655f)}.evidence-facts dd{margin:0}
+.evidence-rule{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-block:10px}
+.evidence-rule span{font-size:13px;color:var(--muted,#61655f)}
+.evidence-change{font-size:18px}.evidence-status[data-error=true]{color:#8a352c}
+.evidence-coverage{margin-block:12px 18px;padding:10px 12px;background:var(--soft,#eef2ed);font-size:13px}
+.evidence-simulation{font-size:13px;color:#685326;background:#f6f0df;padding:8px 12px}
+@media(max-width:760px){.evidence-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.evidence-layout{grid-template-columns:1fr}.evidence-list{max-height:340px}.evidence-heading{align-items:flex-start}}
+@media(max-width:400px){.evidence-filters{grid-template-columns:1fr}}

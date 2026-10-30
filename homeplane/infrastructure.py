@@ -1,7 +1,7 @@
 """Persistent household intent and supervision, independent of any UI consumer.
 
 No import or GET opens a camera. The owning application's lifespan explicitly
-    starts this coordinator on a configured real household. Camera opening is saved intent.
+starts this coordinator on a configured real household. Mi Home owns shutter intent.
 """
 
 import asyncio
@@ -12,7 +12,7 @@ import time
 import httpx
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .runtime_log import observe
 
@@ -24,6 +24,13 @@ class ServicePolicy(BaseModel):
     recognition: bool = True
     interaction: bool = True
     auto_open_cameras: bool = False
+
+    @field_validator("auto_open_cameras")
+    @classmethod
+    def preserve_manual_shutters(cls, value):
+        # Accept old saved policies without retaining permission to reopen a
+        # camera after a newer manual close or Mi Home scene.
+        return False
 
 
 class HouseholdInfrastructure:
@@ -47,6 +54,8 @@ class HouseholdInfrastructure:
         self.closed = False
         self.retry_at = 0
         self.failures = 0
+        self.service.capture_enabled = self.policy.enabled and self.policy.recognition
+        self.service.recovery_enabled = bool(self.admitted())
 
     async def start(self):
         if self.task is None and not self.closed:
@@ -78,7 +87,7 @@ class HouseholdInfrastructure:
             if self.prepare is not None:
                 await self.prepare()
             await self.service.ensure_background(interaction=self.policy.interaction,
-                open_privacy=self.policy.auto_open_cameras)
+                open_privacy=False)
             if self.people is not None:
                 await self.service.sync_people(self.people.page().people)
             self.failure, self.failures, self.retry_at = None, 0, 0
@@ -86,6 +95,7 @@ class HouseholdInfrastructure:
     @observe("infrastructure.configure")
     async def configure(self, requested):
         async with self.lock:
+            requested = ServicePolicy.model_validate(requested.model_dump())
             if requested.revision != self.policy.revision:
                 raise ValueError("source_conflict")
             updated = requested.model_copy(update={"revision": requested.revision + 1})
@@ -102,9 +112,13 @@ class HouseholdInfrastructure:
                 if os.path.exists(name):
                     os.unlink(name)
             self.policy = updated
+            # Fence direct game/preview starts before waiting for worker cleanup.
+            self.service.capture_enabled = updated.enabled and updated.recognition
             self.failure, self.retry_at = None, 0
             try:
                 if not updated.enabled or not updated.recognition:
+                    preview=getattr(self.service,'manual_previews',None)
+                    if preview is not None:await preview.close()
                     await self.service.stop()
                 else:
                     await self.service.set_interaction(updated.interaction)

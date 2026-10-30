@@ -9,7 +9,7 @@ from homeplane.embodied.household import DeviceCommands
 async def test_gesture_expiring_behind_another_command_never_reaches_miot():
     lock=asyncio.Lock();service=SimpleNamespace(miot_cover=AsyncMock(return_value=dict(acknowledged=True,reached_target=False)))
     commands=DeviceCommands(None,lock,service)
-    commands.inventory=AsyncMock(return_value=[dict(id='curtain',kind='cover',source_kind='miot',controllable=True,capabilities=['cover.position'])])
+    commands.inventory=AsyncMock(return_value=[dict(id='curtain',kind='cover',source_kind='miot',controllable=True,capabilities=['cover.position'],binding_revision='synthetic-binding')])
     admitted=[True]
     await lock.acquire()
     task=asyncio.create_task(commands.command(None,'open','synthetic-gesture',target='curtain',dispatch_guard=lambda:admitted[0]))
@@ -21,7 +21,7 @@ async def test_gesture_expiring_behind_another_command_never_reaches_miot():
     # Manual UI commands are independent of a camera event's short validity.
     manual=await commands.command(None,'open','synthetic-manual',target='curtain')
     assert manual['acknowledged']
-    service.miot_cover.assert_awaited_once_with('open','synthetic-manual')
+    service.miot_cover.assert_awaited_once_with('open','synthetic-manual',expected_revision='synthetic-binding')
 
 @pytest.mark.asyncio
 async def test_actual_ha_send_boundary_rechecks_event_after_plan(tmp_path):
