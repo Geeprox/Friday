@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 
 from .intent import address
@@ -250,7 +251,11 @@ class DeviceCommands:
             ]
             return dict(status="preview", write_attempted=False, targets=parameters)
         outcomes = []
-        async with self.lock:
+        # A single HA gesture is already serialized at ActionController's send
+        # boundary. Do not hold the voice/MIoT group lock during its readback.
+        ha_gesture = (dispatch_guard is not None and target is not None
+                      and len(targets) == 1 and targets[0].get('source_kind') != 'miot')
+        async with nullcontext() if ha_gesture else self.lock:
             for item in targets:
                 if dispatch_guard is not None and dispatch_guard() is not True:
                     outcomes.append(dict(target=item['id'],status='rejected',code='stale_interaction',
@@ -317,13 +322,12 @@ class DeviceCommands:
                         idempotency_key=key,
                     )
                     trace = await self.core.actions.plan(request)
-                    if trace.status == "planned":
-                        try:
-                            trace = await self.core.actions.execute(trace.action_id, dispatch_guard=dispatch_guard)
-                        except ValueError:
-                            outcomes.append(dict(target=item['id'],status='rejected',code='stale_interaction',
-                                                 write_attempted=False,acknowledged=False))
-                            continue
+                try:
+                    trace = await self.core.actions.execute(trace.action_id, dispatch_guard=dispatch_guard)
+                except ValueError:
+                    outcomes.append(dict(target=item['id'],status='rejected',code='stale_interaction',
+                                         write_attempted=False,acknowledged=False))
+                    continue
                 outcomes.append(
                     dict(
                         target=item["id"],

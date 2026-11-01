@@ -13,6 +13,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 import httpx
 from pydantic import TypeAdapter
@@ -42,6 +43,7 @@ class ActionController:
         self.boot_id = str(uuid4())
         self._deadlines = {}
         self._lock = asyncio.Lock()
+        self._execution_locks = WeakValueDictionary()
         self.authority_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if any(p.is_symlink() for p in self.authority_path.parents):
             raise ValueError("authority_symlink_rejected")
@@ -368,6 +370,13 @@ class ActionController:
 
     @observe('action.approve', upstream='ha', key='action_id')
     async def execute(self, action_id, *, managed_guard=None, dispatch_guard=None):
+        # Duplicate callers wait for the same action's final readback, without
+        # holding the dispatch lock needed by a different, fresh gesture.
+        execution_lock = self._execution_locks.setdefault(action_id, asyncio.Lock())
+        async with execution_lock:
+            return await self._execute(action_id, managed_guard=managed_guard, dispatch_guard=dispatch_guard)
+
+    async def _execute(self, action_id, *, managed_guard=None, dispatch_guard=None):
         async with self._lock:
             trace = self.core.store.light_action(action_id)
             if trace is None:
@@ -420,19 +429,29 @@ class ActionController:
                         trace, "failed" if outcome == "rejected_by_ha" else "unknown_outcome", outcome
                     )
                 trace = self._stage(trace, "accepted", "ha_service_accepted")
-                reported = await self._settle(writer, trace.request.desired)
-                matches = reported_matches(trace.request.desired, reported)
-                return self._stage(
-                    trace,
-                    "reported_match" if matches else "unknown_outcome",
-                    "ha_reported_match" if matches else "reported_state_mismatch",
-                    reported=reported,
-                )
             except asyncio.CancelledError:
                 self._stage(trace, "unknown_outcome", "request_cancelled_after_send")
                 raise
             except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                 return self._stage(trace, "unknown_outcome", "readback_or_transport_unavailable")
+
+        # A slow device's read-only settling must not make the next gesture
+        # expire in the send queue. Claims, authority, freshness and network
+        # sends remain serialized above; readback never retries a send.
+        try:
+            reported = await self._settle(writer, trace.request.desired)
+            matches = reported_matches(trace.request.desired, reported)
+            return self._stage(
+                trace,
+                "reported_match" if matches else "unknown_outcome",
+                "ha_reported_match" if matches else "reported_state_mismatch",
+                reported=reported,
+            )
+        except asyncio.CancelledError:
+            self._stage(trace, "unknown_outcome", "request_cancelled_after_send")
+            raise
+        except (httpx.HTTPError, ValueError, TimeoutError, OSError):
+            return self._stage(trace, "unknown_outcome", "readback_or_transport_unavailable")
 
     async def _settle(self, writer, desired):
         """Wait for asynchronous HA reports, with one send and a bounded read budget.
