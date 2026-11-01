@@ -1,4 +1,4 @@
-"""A fresh worker event can expire while waiting for the shared actuator owner."""
+"""检查手势排队时效，以及慢设备回读与后续发送之间的隔离。"""
 import asyncio
 import json
 from types import SimpleNamespace
@@ -19,7 +19,7 @@ async def test_gesture_expiring_behind_another_command_never_reaches_miot():
     result=await task
     assert result['outcomes'][0]['code']=='stale_interaction' and not result['write_attempted'] and not result['acknowledged']
     service.miot_cover.assert_not_called()
-    # Manual UI commands are independent of a camera event's short validity.
+    # 手动界面命令不受摄像头事件短有效期的约束。
     manual=await commands.command(None,'open','synthetic-manual',target='curtain')
     assert manual['acknowledged']
     service.miot_cover.assert_awaited_once_with('open','synthetic-manual',expected_revision='synthetic-binding')
@@ -40,7 +40,7 @@ async def test_actual_ha_send_boundary_rechecks_event_after_plan(tmp_path):
 
 @pytest.mark.asyncio
 async def test_fresh_ha_gesture_dispatches_while_previous_readback_is_pending(tmp_path, monkeypatch):
-    """Waiting for a curtain to settle must not consume the next gesture's TTL."""
+    """等待窗帘到位不能耗尽下一次手势的有效期。"""
     from tests.test_homeplane_device_controls import rig
     from tests.test_homeplane_actions import close
 
@@ -130,7 +130,7 @@ async def test_ha_send_still_serializes_and_rejects_gesture_expiring_during_tran
     from tests.test_homeplane_actions import close
 
     core, _, calls, fault, *_ = rig(tmp_path)
-    fault['mismatch'] = True  # No state delta: exercise the final freshness guard.
+    fault['mismatch'] = True  # 保持状态不变，单独检验发送前的最终时效检查。
     monkeypatch.setattr(core.actions, '_settle', AsyncMock(return_value={'position': 0}))
     commands = DeviceCommands(core, asyncio.Lock())
     sending, release, checked = asyncio.Event(), asyncio.Event(), asyncio.Event()

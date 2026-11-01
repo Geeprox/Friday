@@ -370,8 +370,7 @@ class ActionController:
 
     @observe('action.approve', upstream='ha', key='action_id')
     async def execute(self, action_id, *, managed_guard=None, dispatch_guard=None):
-        # Duplicate callers wait for the same action's final readback, without
-        # holding the dispatch lock needed by a different, fresh gesture.
+        # 同一动作的重复调用等待各自的最终回读，不占用新手势需要的发送锁。
         execution_lock = self._execution_locks.setdefault(action_id, asyncio.Lock())
         async with execution_lock:
             return await self._execute(action_id, managed_guard=managed_guard, dispatch_guard=dispatch_guard)
@@ -389,9 +388,8 @@ class ActionController:
                 return self._stage(trace, "expired", "restart_requires_new_plan")
             if time.monotonic() >= self._deadlines[action_id]:
                 return self._stage(trace, "expired", "expired_request")
-            # A healthy event stream can outlive its HTTP access token. Refresh
-            # the existing grant BEFORE the final policy/gesture/deadline gate,
-            # never retry a device POST after an uncertain outcome.
+            # HA 事件流正常不代表 HTTP 访问凭据仍有效。先刷新现有授权，
+            # 再做最终权限、手势和有效期检查；结果未知时不重试设备写请求。
             if isinstance(self.core.adapter, HAReadOnlyAdapter):
                 try:
                     async with asyncio.timeout(max(0, self._deadlines[action_id]-time.monotonic())):
@@ -413,9 +411,8 @@ class ActionController:
                 return self._stage(trace, "expired" if code == "expired_request" else "rejected", code)
             if dispatch_guard is not None and dispatch_guard() is not True:
                 raise ValueError("dispatch_guard_rejected")
-            # Commit the send claim before touching the network. DB/CAS failure
-            # prevents the write
-            # Another Core cannot claim this plan twice.
+            # 访问网络前先持久化发送占用记录，写库或状态比较失败则不发送。
+            # 其他 Core 也不能重复领取同一计划。
             trace = self._stage(trace, "sent", "send_claim_recorded")
             try:
                 entity = next(e for e in snapshot.entities if e.id == trace.request.target)
@@ -435,9 +432,8 @@ class ActionController:
             except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                 return self._stage(trace, "unknown_outcome", "readback_or_transport_unavailable")
 
-        # A slow device's read-only settling must not make the next gesture
-        # expire in the send queue. Claims, authority, freshness and network
-        # sends remain serialized above; readback never retries a send.
+        # 慢设备的只读到位检查不应占住发送队列，让下一次手势在等待时过期。
+        # 上方仍按顺序校验发送占用、权限和时效，再发送请求；回读不会重发。
         try:
             reported = await self._settle(writer, trace.request.desired)
             matches = reported_matches(trace.request.desired, reported)
@@ -454,10 +450,10 @@ class ActionController:
             return self._stage(trace, "unknown_outcome", "readback_or_transport_unavailable")
 
     async def _settle(self, writer, desired):
-        """Wait for asynchronous HA reports, with one send and a bounded read budget.
+        """在有界时间内等待 HA 异步回报，设备请求只发送一次。
 
-        Retry delays never apply to sends. A failed/ambiguous send goes directly
-        to unknown_outcome and cannot enter this path.
+        延迟重试仅用于读取；发送失败或结果不明时直接标记 unknown_outcome，
+        不进入此流程，也不重发设备请求。
         """
         reported = None
         for delay in (0, .25, .5, 1, 2):

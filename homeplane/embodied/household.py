@@ -251,8 +251,8 @@ class DeviceCommands:
             ]
             return dict(status="preview", write_attempted=False, targets=parameters)
         outcomes = []
-        # A single HA gesture is already serialized at ActionController's send
-        # boundary. Do not hold the voice/MIoT group lock during its readback.
+        # 单目标 HA 手势已在 ActionController 发送边界按顺序执行，
+        # 等待状态回读时不再占用语音与 MIoT 共用的命令锁。
         ha_gesture = (dispatch_guard is not None and target is not None
                       and len(targets) == 1 and targets[0].get('source_kind') != 'miot')
         async with nullcontext() if ha_gesture else self.lock:
