@@ -251,10 +251,11 @@ class DeviceCommands:
             ]
             return dict(status="preview", write_attempted=False, targets=parameters)
         outcomes = []
-        # 单目标 HA 手势已在 ActionController 发送边界按顺序执行，
-        # 等待状态回读时不再占用语音与 MIoT 共用的命令锁。
+        # 来源明确的单目标 HA 手势已在 ActionController 发送边界按顺序执行，
+        # 等待回读时不再占用共用命令锁；缺少来源的请求仍保留原排队检查。
         ha_gesture = (dispatch_guard is not None and target is not None
-                      and len(targets) == 1 and targets[0].get('source_kind') != 'miot')
+                      and target.startswith('ha:') and len(targets) == 1
+                      and targets[0].get('source_kind') in {'light', 'switch', 'fan', 'climate', 'cover'})
         async with nullcontext() if ha_gesture else self.lock:
             for item in targets:
                 if dispatch_guard is not None and dispatch_guard() is not True:

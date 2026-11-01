@@ -39,6 +39,39 @@ async def test_actual_ha_send_boundary_rechecks_event_after_plan(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('target,source_kind', [
+    ('ha:SIMULATED:lamp', None),
+    ('ha:SIMULATED:lamp', 'unknown'),
+    ('SIMULATED-legacy-lamp', 'light'),
+])
+async def test_unconfirmed_ha_source_keeps_shared_queue_freshness_check(target, source_kind):
+    """缺少 HA 来源证据时不进入快速通道，排队过期后不能进入计划阶段。"""
+    lock = asyncio.Lock()
+    core = SimpleNamespace(snapshot=AsyncMock(), actions=SimpleNamespace(plan=AsyncMock()))
+    commands = DeviceCommands(core, lock)
+    commands.inventory = AsyncMock(return_value=[dict(
+        id=target, kind='light', source_kind=source_kind,
+        controllable=True, capabilities=['light.set'])])
+    fresh = [True]
+    await lock.acquire()
+    task = asyncio.create_task(commands.command(
+        None, 'on', 'SIMULATED-unknown-source', target=target, dispatch_guard=lambda: fresh[0]))
+    try:
+        await asyncio.sleep(0)
+        assert not task.done()
+        fresh[0] = False
+        lock.release()
+        result = await task
+        assert result['outcomes'][0]['code'] == 'stale_interaction'
+        assert not result['write_attempted']
+        core.actions.plan.assert_not_called()
+    finally:
+        if lock.locked():
+            lock.release()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_fresh_ha_gesture_dispatches_while_previous_readback_is_pending(tmp_path, monkeypatch):
     """等待窗帘到位不能耗尽下一次手势的有效期。"""
     from tests.test_homeplane_device_controls import rig
