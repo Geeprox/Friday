@@ -33,12 +33,43 @@ python3 scripts/setup-dependencies.py ha-up
 或应用商店。官方安装要求 Docker Engine；macOS 应使用 Linux VM/独立 HA 主机，
 不要把 Docker Desktop 的网页可访问误认为组播/蓝牙完整兼容。
 
-`xiaomi-home` 从固定上游版本复制集成到新建的私有配置目录；已有集成不覆盖。若 HA
+`xiaomi-home` 安装 Xiaomi Home v0.5.0，校验官方提交
+`75b3acb6325a3a8d295688b13904737d6738a6a5`，使用独立版本缓存；已有集成不覆盖。若 HA
 已经运行，重新启动 HA，在 设置 → 设备与服务 → 添加集成 → Xiaomi Home 完成官方
 登录，选择你的区域、家庭和设备。账号选择和设备授权只能在上游页面完成。
 
 停止新建的实例：`python3 scripts/setup-dependencies.py ha-down`。保留持久卷；不删除
-用户数据。更新之前自行备份，并显式修改版本后复核。
+用户数据。日常启动不会自动更新依赖。
+
+### 已有 Xiaomi Home 的离线升级
+
+v0.4.3 的云设备刷新在网络异常后可能不再重试。官方 [#1555](https://github.com/XiaoMi/ha_xiaomi_home/pull/1555)
+在 v0.4.6 加入异常后的重试；本脚本固定的 [v0.5.0](https://github.com/XiaoMi/ha_xiaomi_home/releases/tag/v0.5.0)
+包含该修复。不要把网络恢复或 HA 网页可打开当作设备状态已恢复。
+
+先暂停互动，在 HA 仍运行时记录当前实例的精确容器标识，并准备来源：
+
+```sh
+python3 scripts/setup-dependencies.py xiaomi-home-source
+```
+
+正常停止 Friday 与同一台 HA，备份该 HA 完整 `/config`（包括 `.storage`）和 Friday
+私有配置。确认容器已停止，再执行下面的升级命令；将示例变量设为已核对的容器标识：
+
+```sh
+python3 scripts/setup-dependencies.py xiaomi-home-upgrade --ha-container "$friday_ha_container"
+```
+
+Linux 的 Docker 需要 sudo 时，先 `sudo -v`，再追加 `--docker-sudo`。
+非默认源码或 Docker 路径可用 `--project`、`--directory`、`--docker-executable`。
+升级只适用于私有部署目录下的本地 bind mount；其他 HA 安装方式按原维护入口处理。
+脚本会核对容器已停且 `/config` 指向当前目录，完整暂存新集成，并将旧组件保留在
+`data/deployment/integration-backups/`。替换文件失败时恢复原组件；启动后的版本迁移
+若需回滚，应在再次停机后恢复完整 HA 备份，不能仅换回 Python 文件。
+
+重新启动 HA 与 Friday 后，核对集成版本和加载状态、原实体标识、规则、控制范围、
+绑定设备正常且未过期的状态、摄像头及原暂停设置。通过后才恢复互动并由使用者验证
+实物动作。依赖安装、服务启动、设备状态和物理效果分别记录。
 
 依据：[HA Linux 安装](https://www.home-assistant.io/installation/linux/)、
 [HA Container 维护](https://www.home-assistant.io/common-tasks/container/)、
