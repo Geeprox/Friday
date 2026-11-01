@@ -78,11 +78,23 @@ class InteractionFleet:
             if len(matches) == 1:
                 item['owner'] = owner = matches[0]['id']
                 item['suppress_ok'] = True
+        candidates = {h.get('person_id') for h in hands if h.get('gesture') == 'ok'} & ids.keys()
+        if owner is not None:
+            # A sole-body selection must not lock out someone entering later.
+            # Only one continuously observed OK can explicitly take over; the
+            # selecting OK is consumed until release, just like initial binding.
+            candidate = next(iter(candidates)) if len(candidates) == 1 and owner not in candidates else None
+            if candidate is None:
+                item['candidate'] = None
+            elif candidate != item['candidate']:
+                item.update(candidate=candidate, since=now)
+            elif now-item['since'] >= .7:
+                item.update(owner=candidate, suppress_ok=True, candidate=None)
+                owner = candidate
         if owner is None:
             # A sole continuously visible body needs no hidden activation
             # gesture or enrolled face. Multiple people still need one explicit
             # OK candidate; never select by camera order or equal track IDs.
-            candidates = {h.get('person_id') for h in hands if h.get('gesture') == 'ok'} & ids.keys()
             if len(people) == 1:
                 candidate = people[0]['id']
             else:

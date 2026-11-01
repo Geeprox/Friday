@@ -52,6 +52,49 @@ def test_binding_ok_is_consumed_and_a_held_gesture_needs_release(configured):
     update(fleet,CAMERAS[0],20.4,'ok')
     assert len(update(fleet,CAMERAS[0],21.2,'ok'))==1
 
+
+@pytest.mark.parametrize('camera', CAMERAS)
+def test_unique_ok_can_take_over_existing_operator_without_dispatching_selection(configured, camera):
+    fleet = InteractionFleet(); bind(fleet, camera)
+    crowd = people(track=7) + people(track=8)
+    for at in [11.3, 11.7, 12.1]:
+        assert not fleet.update(camera, 'session', crowd, hand('ok', 8), {'status': 'locked'}, True, at)
+        if at < 12.1:
+            assert fleet.cameras[camera]['owner'] == 7
+    assert fleet.cameras[camera]['owner'] == 8
+    # Selection is not a configured OK action, even if the new owner keeps holding it.
+    assert not fleet.update(camera, 'session', crowd, hand('ok', 8), {'status': 'locked'}, True, 12.9)
+    for at in [13., 13.3]:
+        assert not fleet.update(camera, 'session', crowd, [], {'status': 'locked'}, True, at)
+    assert not fleet.update(camera, 'session', crowd, hand('ok', 8), {'status': 'locked'}, True, 13.4)
+    result = fleet.update(camera, 'session', crowd, hand('ok', 8), {'status': 'locked'}, True, 14.2)
+    assert len(result) == 1 and result[0]['track'] == 8 and result[0]['action'] == 'off'
+
+
+@pytest.mark.parametrize('interruption', ['released', 'ambiguous', 'foreign_track'])
+def test_interrupted_or_ambiguous_ok_cannot_finish_operator_takeover(configured, interruption):
+    fleet = InteractionFleet(); bind(fleet, CAMERAS[0])
+    crowd = people(track=7) + people(track=8) + people(track=9)
+    assert fleet.operator(CAMERAS[0], 'session', crowd, hand('ok', 8), 11.3) == 7
+    hands = {'released': [], 'ambiguous': hand('ok', 8) + hand('ok', 9),
+             'foreign_track': hand('ok', 99)}[interruption]
+    assert fleet.operator(CAMERAS[0], 'session', crowd, hands, 11.8) == 7
+    assert fleet.operator(CAMERAS[0], 'session', crowd, hand('ok', 8), 12.2) == 7
+    assert fleet.operator(CAMERAS[0], 'session', crowd, hand('ok', 8), 13.) == 8
+
+
+def test_takeover_fences_previous_operator_events_and_keeps_other_camera_owner(configured):
+    fleet = InteractionFleet(); bind(fleet, CAMERAS[0]); bind(fleet, CAMERAS[1])
+    update(fleet, CAMERAS[0], 11.3, 'open_palm')
+    event = update(fleet, CAMERAS[0], 12.05, 'open_palm')[0]
+    assert fleet.current(event, 12.1)
+    crowd = people(track=7) + people(track=8)
+    for at in [12.1, 12.5, 12.85]:
+        assert not fleet.update(CAMERAS[0], 'session', crowd, hand('ok', 8), {'status': 'locked'}, True, at)
+    assert fleet.cameras[CAMERAS[0]]['owner'] == 8
+    assert not fleet.current(event, 12.9)
+    assert fleet.cameras[CAMERAS[1]]['owner'] == 7
+
 def test_enrolled_operator_continues_and_overlapping_views_execute_once(configured):
     fleet=InteractionFleet();bind(fleet,CAMERAS[0],'member')
     update(fleet,CAMERAS[0],11.3,'open_palm','member')
