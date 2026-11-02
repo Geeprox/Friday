@@ -1,56 +1,37 @@
-# Working on Friday
+# Friday 开发与维护
 
-Read README.md, docs/deployment.md and docs/privacy.md before setup. Keep secrets,
-household exports and generated reports under ignored data/ or .artifacts/.
-Never request passwords, tokens, pairing codes or family exports in chat/commits.
+开始安装或部署前，阅读 [README.md](README.md)、[部署说明](docs/deployment.md)和[隐私说明](docs/privacy.md)。下文保留本仓库的部署、设备发现与发布要求；通用的中文提交、文档同步和授权约定由元仓库统一维护，生成在本文件末尾。
 
-## Deployment workflow
+凭据、家庭导出与生成报告保存在被 Git 忽略的 `data/` 或 `.artifacts/` 中。不要在聊天或提交中索取、粘贴密码、Token、配对码或家庭导出文件。
 
-1. Run `python3 scripts/setup-dependencies.py plan`. Inspect OS, Python, uv, Docker,
-   Node and already configured services. Reuse an existing HA instance.
-2. Run `scripts/install-home.sh` and verify `bin/home doctor` and a Simulator
-   snapshot. Simulator is the default and must remain visibly simulated.
-3. For new HA, prepare with setup-dependencies.py. Container deployment requires
-   Linux Docker Engine; macOS uses a Linux VM/remote HA. Configure timezone locally.
-4. Install the pinned Xiaomi Home integration; complete account login in HA UI.
-   Miloco is optional: download its pinned source with the helper, inspect official
-   install instructions and use a supported agent platform. Do not invent a Codex
-   or Docker installer for the current Miloco plugin architecture.
-5. Discover rooms/entities/devices through HA registries. MIoT property IDs come
-   from imported specs. Never identify a target by an author's model, IP, name or
-   coordinates. Unknown/ambiguous capabilities must fail closed.
-6. Import the user's Mi Home layout with the import script. Preview first; retain
-   stable IDs, holes, missing positions and source coordinate basis. Never ship
-   a captured home map, texture, compass direction or default household geometry.
-7. Report each gate separately: dependency installed, service started, login,
-   readback, requested control and physical user confirmation. Do not infer success
-   from HTTP 200, ACKs, playing, decoded frame counts or synthetic tests.
+## 部署与设备接入
 
-## Development
+1. 先运行 `python3 scripts/setup-dependencies.py plan`，检查操作系统、Python、uv、Docker、Node.js 和已有服务，优先复用现有 Home Assistant（HA）实例。
+2. 运行 `scripts/install-home.sh`，验证 `bin/home doctor` 和模拟器快照。默认使用模拟器，界面与输出必须保留清晰的模拟标记。
+3. 新建 HA 时使用依赖准备脚本。容器部署需要 Linux Docker Engine；macOS 使用 Linux 虚拟机或远程 HA。时区在本机私有配置中设置。
+4. 安装固定版本的 Xiaomi Home 集成，在 HA 页面完成账号登录。Miloco 为可选依赖：使用辅助脚本取得固定版本源码，核对官方安装说明并使用受支持的智能体平台；不要为当前 Miloco 插件架构虚构 Codex 或 Docker 安装器。
+5. 通过 HA 注册表发现房间、实体和设备，MIoT 属性标识来自导入的规格。不要依据作者的设备型号、IP、名称或坐标匹配目标；能力未知或目标有歧义时，拒绝执行相应操作。
+6. 使用导入脚本处理用户自己的米家户型，先预览，再保留稳定标识、孔洞、缺失位置和源坐标基准。公开内容不得包含抓取的家庭户型、纹理、罗盘方向或默认家庭几何数据。
+7. 分别报告依赖安装、服务启动、账号登录、状态读回、所请求的控制和用户实物确认。HTTP 200、ACK、播放状态、解码帧数或合成测试结果均不能替代实物确认。
 
-Do not start cameras, microphones, models, audio, television or device actions as
-part of ordinary tests. Optional hardware work needs scope from the user. Do not
-expand a setup request into cloud inference or recurring device automation.
+## 本仓库验证与发布
 
-Use isolated, temporary paths for tests. Test receipts belong under .artifacts/.
-Run the locked test environment and publication scanner before a release. Scan a
-fresh exported clone as well as the source worktree. A clean current tree does
-not sanitize old commits/branches/releases: keep private history private and
-publish only reviewed clean history. Never push `--mirror` or `--all` to public.
+普通测试使用隔离的临时目录，证据保存在 `.artifacts/`。不要为常规验证创建新的真实家庭会话，或启动真实摄像头、麦克风、模型、音频、电视与设备动作；硬件验证必须在用户授权范围内。安装请求不自动扩展为云推理或周期性设备自动化。
 
-## 公共开发约定与文档协作
+按 [README.md](README.md) 和[开发说明](docs/development.md)使用锁定依赖的开发环境运行验证，并执行 `python3 scripts/check_dev_policy.py check`。发布前完成上述验证并运行公开内容扫描器，分别检查源码工作区和新导出的源码副本。
 
-本仓库保留以上部署、隐私、授权和发布约束，同时接入[公共开发规范](https://github.com/lijunfeng722/project-index/blob/main/docs/development.md)。核心约定由元仓库生成到本文件，专用约束在此维护。
+当前工作区没有敏感内容，不代表旧提交、分支和发布记录已经安全。私有历史继续保留在私有环境，只推送经过审阅的公开历史；禁止向公共远端推送 `--mirror` 或 `--all`。
 
-开发时运行 `python3 scripts/check_dev_policy.py check`，再按实际改动选择 README.md 和 docs/development.md 中的验证入口。用户可见变化同步独立用户手册；安装器变化同步下载副本与校验清单；跨仓库部署入口变化同步元仓库。普通内部重构说明无用户文档影响即可。
+用户文档、技术说明、截图和顶级索引的同步范围遵循下方公共约定；依赖安装器变化还需同步独立用户手册中的下载副本与校验清单。
 
 <!-- friday-dev-policy:start -->
 ## Friday 公共开发约定
 
-规范版本：2026-11-02.1
+规范版本：2026-11-02.2
 
 - 新增人工提交使用中文说明目的，推荐“功能：……”“修复：……”“文档：……”。保留英文技术名称；不为格式要求重写上游或已有历史。
 - 新增、修改的解释性注释和文档字符串使用中文。保留工具指令、协议字段、标准术语、第三方原文及用于反例的测试数据；不要求批量翻译旧注释。
+- 协作规范正文统一使用中文；合并历史规则时整合同义要求，保留原有约束及必要的命令、文件名和技术术语。
 - 用户可见的新特性或使用方式变化，同步用户手册的步骤、限制与相关 FAQ；界面变化时更新对应产品截图。内部重构可说明无用户文档影响及理由。
 - 架构、接口、数据流或部署方式变化，同步对应技术说明和必要的 Mermaid 图；涉及仓库职责、依赖和维护入口时同步顶级索引。
 - 按变更选择相关验证，记录实际结果与未验证范围。代码提交、服务就绪、设备回报与使用者实物确认分别报告；普通测试使用隔离、合成输入。

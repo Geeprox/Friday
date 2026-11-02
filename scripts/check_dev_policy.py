@@ -20,7 +20,7 @@ SNAPSHOT = ".github/friday-dev-policy.json"
 CHECKER = "scripts/check_dev_policy.py"
 TEMPLATE = ".github/pull_request_template.md"
 WORKFLOW = ".github/workflows/development-policy.yml"
-SKILL_REFERENCE = ".agents/skills/friday-development/references/development.md"
+SKILL_REFERENCE = "skills/friday-development/references/development.md"
 SIGNATURES = {
     CHECKER: "# Friday 开发约定检查；源文件由 project-index 维护。",
     TEMPLATE: "<!-- Friday 开发约定模板；源文件由 project-index 维护。 -->",
@@ -120,7 +120,7 @@ def expected_files(source, target):
     role = target_identity(target, managed)
     agents_path = target / "AGENTS.md"
     no_symlinks(target, "AGENTS.md")
-    current = agents_path.read_text(encoding="utf-8") if agents_path.exists() else "# Agent 工作说明\n"
+    current = agents_path.read_text(encoding="utf-8") if agents_path.exists() else "# 开发协作说明\n"
     block = START + "\n" + rules + "\n" + END
     if START in current or END in current:
         before, _, after = section(current, START, END)
@@ -199,7 +199,7 @@ def check_repo(root):
         reference = root / SKILL_REFERENCE
         if not reference.is_file() or reference.read_text(encoding="utf-8") != REFERENCE_HEADER + text:
             errors.append("skill_reference_not_synced")
-        skill = root / ".agents/skills/friday-development/SKILL.md"
+        skill = root / "skills/friday-development/SKILL.md"
         if not skill.is_file() or not re.search(r"^name: friday-development$", skill.read_text(), re.M):
             errors.append("skill_manifest_invalid")
     return {"policy_version": policy.get("version"), "repository": policy["repository"], "errors": errors}

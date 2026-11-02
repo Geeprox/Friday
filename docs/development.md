@@ -1,21 +1,26 @@
-# Development
+# 开发与验证
 
-Read AGENTS.md. Use locked dependencies and synthetic fixtures. Do not create a
-new household session or run models/hardware for ordinary test verification.
+先阅读 [AGENTS.md](../AGENTS.md)，核对当前任务的实现、验证与授权范围。公共约定在[元仓库开发规范](https://github.com/lijunfeng722/project-index/blob/main/docs/development.md)统一维护，本仓库保留部署、隐私、设备发现与公开历史要求。
 
-Runtime events use fixed, bounded codes and do not log secrets, raw transcripts,
-media, names or exception bodies. Put generated receipts under .artifacts/.
-Privacy tests must verify actual data boundaries, not only UI wording.
+## 开发环境
 
-The regression environment is Python 3.12 (including AST contract pins). Create it
-with `uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connection`.
-Install the optional Geek worker test dependencies with
-`npm --prefix workers/geek ci --ignore-scripts` before the complete suite.
-The basic Console installation still supports Python 3.11+.
+使用锁定依赖和合成测试数据。回归环境使用 Python 3.12，包括固定的抽象语法树（AST）契约检查。创建环境：
 
-## 中文约定与跨仓库交付
+```sh
+uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connection
+```
 
-公共约定在[元仓库开发规范](https://github.com/lijunfeng722/project-index/blob/main/docs/development.md)统一维护，本仓库的 AGENTS.md 包含核心副本。运行 `python3 scripts/check_dev_policy.py check` 检查当前约定；有明确任务基线时用 `--base` 核对新提交，保留旧历史和上游信息。
+完整测试套件运行前，使用 `npm --prefix workers/geek ci --ignore-scripts` 安装可选 Geek 工作进程的测试依赖；完整回归的依赖参数以 [CI 工作流](../.github/workflows/ci.yml)为准。基础控制台安装仍支持 Python 3.11 及以上版本。
+
+## 验证与隐私
+
+常规测试不创建真实家庭会话，也不运行真实模型或硬件。使用隔离临时目录，生成证据放在 `.artifacts/`，公开前分别检查源码工作区和独立导出的源码副本。
+
+运行事件使用固定、有界的事件码，不记录凭据、原始转写、媒体、原始名称或异常正文。隐私测试应验证实际数据边界，不能只检查界面提示文字。
+
+## 跨仓库交付
+
+新增人工提交、解释性注释和协作规范正文使用中文，保留必要的文件名、命令与技术术语。运行 `python3 scripts/check_dev_policy.py check` 检查当前约定；有明确任务基线时用 `--base` 核对新提交，保留旧历史和上游信息。
 
 新增用户可见能力或操作变化时同步用户手册的步骤、限制和 FAQ；架构、接口、授权或部署变化时更新对应技术说明和必要 Mermaid 图。涉及依赖安装器时同步用户手册的下载副本与 SHA256 清单，涉及跨仓库维护入口时更新元仓库。纯内部变更说明无用户文档影响及理由。
 
