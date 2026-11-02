@@ -1,0 +1,22 @@
+# Friday 开发约定工作流；源文件由 project-index 维护。
+name: 开发约定检查
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  conventions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - name: 检查规则与本次变更信息
+        run: python3 scripts/check_dev_policy.py check --event-file "$GITHUB_EVENT_PATH"
+      - name: 验证公共规则工具与索引
+        run: |
+          if [ -f scripts/test_dev_policy.py ]; then python3 scripts/test_dev_policy.py; fi
+          if [ -f scripts/check_index.py ]; then python3 scripts/check_index.py; fi
