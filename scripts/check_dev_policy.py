@@ -245,9 +245,9 @@ def documentation_errors(body, bot=False):
         return ["pr_documentation_impact_missing"]
     errors = []
     for label, code in [("用户文档", "user"), ("技术文档", "technical"), ("顶级索引", "index")]:
-        # 只允许横向空白，避免空依据跨行吞入下一项内容后被误判为已填写。
-        values = re.findall(r"^[ \t]*[-*]?[ \t]*" + label + r"[：:][ \t]*(.*?)[ \t]*$", body, re.M)
-        reasons = re.findall(r"^[ \t]*[-*]?[ \t]*" + label + r"依据[：:][ \t]*(.*?)[ \t]*$", body, re.M)
+        # 只允许横向空白和 CRLF 行尾，避免空依据跨行吞入下一项内容后被误判为已填写。
+        values = re.findall(r"^[ \t]*[-*]?[ \t]*" + label + r"[：:][ \t]*(.*?)[ \t]*\r?$", body, re.M)
+        reasons = re.findall(r"^[ \t]*[-*]?[ \t]*" + label + r"依据[：:][ \t]*(.*?)[ \t]*\r?$", body, re.M)
         if len(values) != 1 or values[0] not in {"已更新", "无影响", "不适用"}:
             errors.append("pr_docs_impact_required:" + code)
             continue
