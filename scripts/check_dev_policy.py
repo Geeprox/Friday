@@ -217,6 +217,10 @@ def commit_language_errors(root, base, head="HEAD"):
         shas = git(root, "rev-list", "--first-parent", revision).splitlines()
     else:
         shas = [tip]
+    return commit_language_errors_for_shas(root, shas)
+
+
+def commit_language_errors_for_shas(root, shas):
     errors = []
     checked = exempt = 0
     for sha in shas:
@@ -255,6 +259,29 @@ def documentation_errors(body, bot=False):
     return errors
 
 
+def push_event_commit_language_errors(root, event, after):
+    commits = event.get("commits")
+    if not isinstance(commits, list) or not commits or len(commits) >= 2048:
+        raise PolicyError("event_commit_scope_invalid")
+    commit_shas = [commit.get("id") for commit in commits if isinstance(commit, dict)]
+    if (len(commit_shas) != len(commits)
+            or any(not isinstance(sha, str) or not SHA.fullmatch(sha) for sha in commit_shas)
+            or len(set(commit_shas)) != len(commit_shas)):
+        raise PolicyError("event_commit_scope_invalid")
+    shas = set(commit_shas)
+    if after not in shas:
+        raise PolicyError("event_commit_scope_invalid")
+    history = git(root, "rev-list", "--first-parent", "--max-count=" + str(len(shas) + 1), after).splitlines()
+    pushed = []
+    for sha in history:
+        if sha not in shas:
+            break
+        pushed.append(sha)
+    if not pushed:
+        raise PolicyError("event_commit_scope_invalid")
+    return commit_language_errors_for_shas(root, pushed)
+
+
 def event_checks(root, event):
     errors = []
     result = {"errors": errors}
@@ -284,6 +311,11 @@ def event_checks(root, event):
             before = None
         if before == after:
             before = None
+    else:
+        try:
+            git(root, "cat-file", "-e", before + "^{commit}")
+        except PolicyError:
+            return push_event_commit_language_errors(root, event, after)
     return commit_language_errors(root, before, after)
 
 
