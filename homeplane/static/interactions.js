@@ -13,6 +13,31 @@ export function mountInteractions(root,{data,go,toast}){
  const select=(items,label)=>{const n=h('select',null,{'aria-label':label});for(const[value,text]of items)n.append(h('option',text,{value}));return n;};
  const field=(label,input)=>add(h('label',null,{class:'product-field'}),h('span',label),input);
  const targetById=id=>targets.find(t=>t.id===id),valid=b=>{const t=targetById(b.target);return t&&(t.actions||[]).includes(b.action);};
+ let historyElement=null,historyKey='';
+ function renderHistory(){
+  const history=slot.querySelector?.('[data-interaction-history]');if(!history)return;
+  const events=report.interactions?.events||[],key=JSON.stringify([events,targets,gestures]);
+  if(history===historyElement&&key===historyKey)return;
+  historyElement=history;historyKey=key;history.replaceChildren();
+  if(!events.length){history.append(h('p','做出已设置的手势后，可以在这里查看设备是否响应。',{class:'caption'}));return;}
+  const timestamp=value=>typeof value==='number'&&Number.isFinite(value)&&value>0?value:0;
+  const table=h('table',null,{class:'interaction-history-table'}),head=h('tr'),body=h('tbody');
+  table.append(h('caption','最近 5 次手势响应，按触发时间从新到旧排列；时间为当前浏览器本地时间。'));
+  for(const label of ['触发时间','触发动作','对应规则','响应结果'])head.append(h('th',label,{scope:'col'}));
+  table.append(add(h('thead'),head),body);
+  const recent=[...events].sort((a,b)=>(timestamp(b.triggered_at)||timestamp(b.at))-(timestamp(a.triggered_at)||timestamp(a.at))).slice(0,5);
+  for(const e of recent){
+   const target=targetById(e.target),camera=cameras.find(c=>c.id===e.camera),gesture=e.gesture==='hand.point'?'指向设备并比 OK':gestures[e.gesture]||'未记录手势';
+   const row=h('tr'),when=h('td'),date=new Date(timestamp(e.triggered_at)*1000);
+   if(timestamp(e.triggered_at)&&Number.isFinite(date.getTime()))when.append(h('time',date.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}),{datetime:date.toISOString()}));
+   else when.append(h('span','未记录'));
+   const trigger=add(h('td'),h('span',gesture),h('small',camera?.room||'原镜头不可用'));
+   const scope=e.scope==='home'&&e.gesture!=='hand.point'?'全屋':e.scope==='camera'||e.gesture==='hand.point'?camera?.room||'原镜头不可用':'范围未记录';
+   const rule=add(h('td'),h('span',`${e.binding?gesture+' → ':''}${target?.name||'原设备不可用'} · ${actionName(e.action)}`),h('small',e.binding?[...new Set([scope,target?.room].filter(Boolean))].join(' · '):'未记录规则'));
+   row.append(when,trigger,rule,h('td',e.reached_target?'状态已更新':e.acknowledged?'指令已发送':'操作未完成'));body.append(row);
+  }
+  history.append(add(h('div',null,{class:'interaction-history-scroll',role:'region','aria-label':'最近的手势响应表格',tabindex:'0'}),table));
+ }
  function retain(){try{sessionStorage.setItem('Friday.interactionDraft',JSON.stringify(draft));}catch(_){}}
  function openCamera(id){retain();try{sessionStorage.setItem('Friday.cameraFocus',id);}catch(_){}go('Cameras');}
  function stopPreview(){const token=previewToken,id=previewCamera;previewToken=null;previewCamera=null;previewLive=false;if(token)void api(`/api/embodied/cameras/${id}/preview/stop`,{token}).catch(()=>{});}
@@ -29,7 +54,7 @@ export function mountInteractions(root,{data,go,toast}){
   const toggle=slot.querySelector?.('[data-interaction-toggle]');if(toggle){toggle.textContent=mode==='voice'?(policy?.enabled&&policy?.recognition&&policy?.interaction&&report.voice_input?'暂停语音输入':'开启语音控制'):policy?.enabled&&policy?.recognition&&policy?.interaction?'暂停手势控制':'启用手势控制';toggle.disabled=busy;}
   const status=slot.querySelector?.('[data-camera-status]');if(status&&!status.contains?.(document.activeElement)){status.replaceChildren();for(const c of cameras){const s=report.camera_sessions?.find(s=>s.camera===c.id);status.append(add(h('div',null,{class:'interaction-camera'}),h('strong',c.room),h('span',states[s?.state]||'未开启'),btn('查看镜头',()=>openCamera(c.id))));}}
   const voiceState=slot.querySelector?.('[data-voice-state]');if(voiceState){const voice=report.voice_sessions?.find(v=>v.camera===voiceCamera)||(report.camera===voiceCamera?report.home:null);voiceState.replaceChildren();if(voice?.last_transcript){voiceState.append(h('p','听到：'+voice.last_transcript),h('p',voice.reason||'正在处理这条指令…'));}else voiceState.append(h('p',report.voice_input?'说出指令后，这里会显示听到的内容和设备的响应。':'语音输入已暂停，开启后再对着镜头说话。',{class:'caption'}));}
-  const history=slot.querySelector?.('[data-interaction-history]');if(history){history.replaceChildren();const events=report.interactions?.events||[];for(const e of events.slice(-5).reverse()){const target=targetById(e.target),camera=cameras.find(c=>c.id===e.camera);history.append(h('p',`${camera?.room||'家中'} · ${target?.name||'设备'} · ${actionName(e.action)} · ${e.reached_target?'状态已更新':e.acknowledged?'指令已发送':'操作未完成'}`));}if(!events.length)history.append(h('p','做出已设置的手势后，可以在这里查看设备是否响应。',{class:'caption'}));}
+  renderHistory();
  }
  async function refresh(){try{const[next,infra]=await Promise.all([api('/api/embodied/status'),api('/api/embodied/infrastructure')]);if(alive){report=next;policy=infra.policy;readiness();if(image?.isConnected&&previewCamera)void pollImage();}}catch(_){const line=slot.querySelector?.('[data-interaction-readiness]');if(line)line.replaceChildren(h('p','状态暂时无法读取，请刷新后重试。'),btn('重试',()=>refresh()));}}
  async function pollImage(){if(!image?.isConnected||!previewCamera)return;try{const result=await api(`/api/embodied/cameras/${previewCamera}/preview`);if(result.state==='live'){image.src=`/api/embodied/cameras/${previewCamera}/frame?t=${Date.now()}`;}else previewLive=false;}catch(_){previewLive=false;}}

@@ -96,6 +96,7 @@ async def test_secondary_gesture_dispatch_does_not_require_primary_camera_armed(
         wall=CameraWall([dict(id='secondary',name='Synthetic',room='Synthetic')]),
         fleet=SimpleNamespace(current=lambda *_:True,receipts=[]))
     exec(compile(ast.Module(body=[node],type_ignores=[]),'<production dispatch>','exec'),scope)
-    event=dict(camera='secondary',action='on',event_id='synthetic',target='lamp',binding='a'*32,revision=1,observed_mono=time.monotonic())
+    event=dict(camera='secondary',action='on',event_id='synthetic',target='lamp',binding='a'*32,revision=1,
+        gesture='hand.open_palm',scope='home',triggered_at=time.time(),observed_mono=time.monotonic())
     await scope['dispatch_interactions']([event]);await asyncio.gather(*tasks)
     command.assert_awaited_once()

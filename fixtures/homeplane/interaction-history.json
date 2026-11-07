@@ -1,0 +1,24 @@
+{
+  "devices": [
+    {"id": "cam_1111111111", "kind": "camera", "name": "示例镜头", "room": "示例客厅"}
+  ],
+  "targets": [
+    {"id": "simulated-curtain", "kind": "cover", "room": "示例客厅", "name": "示例窗帘", "controllable": true, "actions": ["open", "close"]},
+    {"id": "simulated-lamp", "kind": "light", "room": "示例客厅", "name": "示例主灯", "controllable": true, "actions": ["on", "off"]}
+  ],
+  "gestures": {"body.arms_open": "双臂打开", "body.arms_close": "双臂合上", "hand.open_palm": "张开手掌", "hand.ok": "OK"},
+  "config": {
+    "revision": 3,
+    "enabled": true,
+    "bindings": [
+      {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "gesture": "body.arms_open", "scope": "home", "camera": null, "target": "simulated-curtain", "action": "open", "enabled": true},
+      {"id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "gesture": "body.arms_close", "scope": "home", "camera": null, "target": "simulated-curtain", "action": "close", "enabled": true},
+      {"id": "cccccccccccccccccccccccccccccccc", "gesture": "hand.open_palm", "scope": "camera", "camera": "cam_1111111111", "target": "simulated-lamp", "action": "on", "enabled": true}
+    ]
+  },
+  "events": [
+    {"camera": "cam_1111111111", "target": "simulated-curtain", "action": "open", "binding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "revision": 3, "gesture": "body.arms_open", "scope": "home", "triggered_at": 1794024000, "at": 1794024035, "acknowledged": true, "reached_target": true},
+    {"camera": "cam_1111111111", "target": "simulated-curtain", "action": "close", "binding": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "revision": 3, "gesture": "body.arms_close", "scope": "home", "triggered_at": 1794024010, "at": 1794024012, "acknowledged": true, "reached_target": false},
+    {"camera": "cam_1111111111", "target": "simulated-lamp", "action": "on", "binding": "cccccccccccccccccccccccccccccccc", "revision": 3, "gesture": "hand.open_palm", "scope": "camera", "triggered_at": 1794024020, "at": 1794024021, "acknowledged": false, "reached_target": false}
+  ]
+}
