@@ -217,6 +217,10 @@ def commit_language_errors(root, base, head="HEAD"):
         shas = git(root, "rev-list", "--first-parent", revision).splitlines()
     else:
         shas = [tip]
+    return commit_language_errors_for_shas(root, shas)
+
+
+def commit_language_errors_for_shas(root, shas):
     errors = []
     checked = exempt = 0
     for sha in shas:
@@ -241,9 +245,9 @@ def documentation_errors(body, bot=False):
         return ["pr_documentation_impact_missing"]
     errors = []
     for label, code in [("用户文档", "user"), ("技术文档", "technical"), ("顶级索引", "index")]:
-        # 只允许横向空白，避免空依据跨行吞入下一项内容后被误判为已填写。
-        values = re.findall(r"^[ \t]*[-*]?[ \t]*" + label + r"[：:][ \t]*(.*?)[ \t]*$", body, re.M)
-        reasons = re.findall(r"^[ \t]*[-*]?[ \t]*" + label + r"依据[：:][ \t]*(.*?)[ \t]*$", body, re.M)
+        # 只允许横向空白和 CRLF 行尾，避免空依据跨行吞入下一项内容后被误判为已填写。
+        values = re.findall(r"^[ \t]*[-*]?[ \t]*" + label + r"[：:][ \t]*(.*?)[ \t]*\r?$", body, re.M)
+        reasons = re.findall(r"^[ \t]*[-*]?[ \t]*" + label + r"依据[：:][ \t]*(.*?)[ \t]*\r?$", body, re.M)
         if len(values) != 1 or values[0] not in {"已更新", "无影响", "不适用"}:
             errors.append("pr_docs_impact_required:" + code)
             continue
@@ -253,6 +257,29 @@ def documentation_errors(body, bot=False):
         elif values[0] == "已更新" and not re.search(r"https?://\S+|[^\s`]+\.(?:md|rst|png|jpg|jpeg|svg)|#[0-9]+", reason):
             errors.append("pr_docs_reference_required:" + code)
     return errors
+
+
+def push_event_commit_language_errors(root, event, after):
+    commits = event.get("commits")
+    if not isinstance(commits, list) or not commits or len(commits) >= 2048:
+        raise PolicyError("event_commit_scope_invalid")
+    commit_shas = [commit.get("id") for commit in commits if isinstance(commit, dict)]
+    if (len(commit_shas) != len(commits)
+            or any(not isinstance(sha, str) or not SHA.fullmatch(sha) for sha in commit_shas)
+            or len(set(commit_shas)) != len(commit_shas)):
+        raise PolicyError("event_commit_scope_invalid")
+    shas = set(commit_shas)
+    if after not in shas:
+        raise PolicyError("event_commit_scope_invalid")
+    history = git(root, "rev-list", "--first-parent", "--max-count=" + str(len(shas) + 1), after).splitlines()
+    pushed = []
+    for sha in history:
+        if sha not in shas:
+            break
+        pushed.append(sha)
+    if not pushed:
+        raise PolicyError("event_commit_scope_invalid")
+    return commit_language_errors_for_shas(root, pushed)
 
 
 def event_checks(root, event):
@@ -284,6 +311,11 @@ def event_checks(root, event):
             before = None
         if before == after:
             before = None
+    else:
+        try:
+            git(root, "cat-file", "-e", before + "^{commit}")
+        except PolicyError:
+            return push_event_commit_language_errors(root, event, after)
     return commit_language_errors(root, before, after)
 
 
