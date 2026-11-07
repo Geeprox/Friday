@@ -191,5 +191,7 @@ class InteractionEngine:
         events=[]
         for b in result:
             self.sequence+=1
-            events.append(dict(revision=self.config.revision,binding=b.id,camera=self.camera,session=self.session,track=owner,target=b.target,action=b.action,event_id=f'interaction:{self.session}:{owner}:{self.sequence}',observed_mono=now))
+            events.append(dict(revision=self.config.revision,binding=b.id,gesture=b.gesture,scope=b.scope,
+                triggered_at=time.time(),camera=self.camera,session=self.session,track=owner,target=b.target,
+                action=b.action,event_id=f'interaction:{self.session}:{owner}:{self.sequence}',observed_mono=now))
         return events
