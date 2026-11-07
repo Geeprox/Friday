@@ -18,8 +18,9 @@ export function mountInteractions(root,{data,go,toast}){
   const history=slot.querySelector?.('[data-interaction-history]');if(!history)return;
   const events=report.interactions?.events||[],key=JSON.stringify([events,targets,gestures]);
   if(history===historyElement&&key===historyKey)return;
-  historyElement=history;historyKey=key;history.replaceChildren();
-  if(!events.length){history.append(h('p','做出已设置的手势后，可以在这里查看设备是否响应。',{class:'caption'}));return;}
+  historyElement=history;historyKey=key;
+  const scroll=history.querySelector?.('[data-interaction-scroll]');
+  if(!events.length){(scroll||history).replaceChildren(h('p','做出已设置的手势后，可以在这里查看设备是否响应。',{class:'caption'}));return;}
   const timestamp=value=>typeof value==='number'&&Number.isFinite(value)&&value>0?value:0;
   const table=h('table',null,{class:'interaction-history-table'}),head=h('tr'),body=h('tbody');
   table.append(h('caption','最近 5 次手势响应，按触发时间从新到旧排列；时间为当前浏览器本地时间。'));
@@ -36,7 +37,8 @@ export function mountInteractions(root,{data,go,toast}){
    const rule=add(h('td'),h('span',`${e.binding?gesture+' → ':''}${target?.name||'原设备不可用'} · ${actionName(e.action)}`),h('small',e.binding?[...new Set([scope,target?.room].filter(Boolean))].join(' · '):'未记录规则'));
    row.append(when,trigger,rule,h('td',e.reached_target?'状态已更新':e.acknowledged?'指令已发送':'操作未完成'));body.append(row);
   }
-  history.append(add(h('div',null,{class:'interaction-history-scroll',role:'region','aria-label':'最近的手势响应表格',tabindex:'0'}),table));
+  if(scroll){const left=scroll.scrollLeft;scroll.replaceChildren(table);scroll.scrollLeft=left;}
+  else history.replaceChildren(add(h('div',null,{class:'interaction-history-scroll','data-interaction-scroll':'',role:'region','aria-label':'最近的手势响应表格',tabindex:'0'}),table));
  }
  function retain(){try{sessionStorage.setItem('Friday.interactionDraft',JSON.stringify(draft));}catch(_){}}
  function openCamera(id){retain();try{sessionStorage.setItem('Friday.cameraFocus',id);}catch(_){}go('Cameras');}

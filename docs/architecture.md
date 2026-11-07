@@ -35,6 +35,9 @@ ARL provides the model-runtime boundary and is not a prerequisite for simulation
 每条记录保存命令返回时的回报快照，不随后续设备状态持续更新；设备回报与现场实物
 确认继续分别处理。
 
+轮询只更新既有滚动容器内的内容；新回执到达时保留容器焦点和横向位置，记录清空时
+也保留已有容器以显示空状态。没有数据变化时不重绘。
+
 页面回归使用 `fixtures/homeplane/interaction-history.json` 的固定合成事件。复现截图时，
 在仓库根目录运行 `python3 -m http.server 18742 --bind 127.0.0.1`，访问
 `http://127.0.0.1:18742/fixtures/homeplane/interaction-history.html`。该示例直接加载产品的

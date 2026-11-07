@@ -1,7 +1,8 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const fixture=JSON.parse(fs.readFileSync('fixtures/homeplane/interaction-history.json','utf8'));
+let focused=null;
 class Element{
- constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.value='';this.ownText='';}
+ constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.value='';this.ownText='';this.scrollLeft=0;}
  set textContent(value){this.ownText=value;this.children=[];}
  get textContent(){return this.ownText+this.children.map(n=>n.textContent).join('');}
  setAttribute(k,v){this.attrs[k]=String(v);if(k==='value')this.value=String(v);}
@@ -9,6 +10,7 @@ class Element{
  replaceChildren(...nodes){this.ownText='';this.children=[];this.append(...nodes);}
  querySelector(selector){const match=selector.match(/^\[([^\]]+)\]$/);return all(this).find(n=>match?Object.hasOwn(n.attrs,match[1]):n.tagName===selector)||null;}
  get isConnected(){return true;}
+ focus(){focused=this;}
  remove(){}
 }
 const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate);
@@ -26,7 +28,7 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
   };
   assert.ok(Object.hasOwn(routes,path),path);return {ok:true,json:async()=>routes[path]};
  };
- const context=vm.createContext({document:{createElement:tag=>new Element(tag)},fetch,Date,
+ const context=vm.createContext({document:{createElement:tag=>new Element(tag),get activeElement(){return all(root).includes(focused)?focused:null;}},fetch,Date,
   sessionStorage:{getItem:()=>null,setItem(){}},setInterval:fn=>{poll=fn;return 1;},clearInterval(){},
   root,options:{data:{devices:fixture.devices},go(){},toast(){}}});
  vm.runInContext(fs.readFileSync('homeplane/static/interactions.js','utf8').replace('export function mountInteractions','function mountInteractions'),context);
@@ -42,11 +44,25 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
  assert.equal(rows()[2].children[3].textContent,'状态已更新');
  assert.equal(rows()[2].children[0].children[0].attrs.datetime,new Date(events[0].triggered_at*1000).toISOString());
  assert.equal(rows()[0].children[3].textContent,'操作未完成');
- const unchanged=table();poll();await settle();assert.equal(table(),unchanged,'无变化的轮询保留表格与键盘焦点');
  const scroll=all(history()).find(n=>n.attrs.role==='region');assert.equal(scroll.attrs.tabindex,'0');
+ scroll.focus();scroll.scrollLeft=130;
+ const assertScroll=(position=130)=>{
+  assert.ok(all(history()).find(n=>n.attrs.role==='region')===scroll,'新回执必须保留滚动容器');
+  assert.ok(context.document.activeElement===scroll,'更新后键盘焦点应留在滚动容器');
+  assert.equal(scroll.scrollLeft,position,'更新后保留横向滚动位置');
+ };
+ const unchanged=table();poll();await settle();assert.equal(table(),unchanged,'无变化的轮询保留表格');assertScroll();
+ events=[...fixture.events,{...fixture.events[2],triggered_at:fixture.events[2].triggered_at+1,acknowledged:true}];poll();await settle();
+ assert.equal(rows().length,4);assert.equal(rows()[0].children[3].textContent,'指令已发送');assertScroll();
+ events=[];poll();await settle();
+ assert.equal(table(),undefined);assert.match(history().textContent,/做出已设置的手势/);
+ assert.ok(all(history()).find(n=>n.attrs.role==='region')===scroll,'清空记录时保留已聚焦的滚动容器');
+ assert.ok(context.document.activeElement===scroll,'空状态不应移除当前键盘焦点');
+ scroll.scrollLeft=0;
  // 配置编辑或删除后仍使用事件记录的手势、动作与范围。
  fixture.config.bindings[2].gesture='hand.ok';fixture.config.bindings[2].action='off';fixture.config.bindings=[];
  events=[{...fixture.events[2],reached_target:true},...fixture.events.slice(0,2)];poll();await settle();
+ assertScroll(0);
  assert.match(rows()[0].children[2].textContent,/张开手掌 → 示例主灯 · 开启/);
  assert.match(rows()[0].children[2].textContent,/示例客厅/);
  events=Array.from({length:8},(_,i)=>({...fixture.events[0],triggered_at:1794024000+i})).reverse();poll();await settle();
