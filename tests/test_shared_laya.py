@@ -82,13 +82,12 @@ def test_client_rejects_invalid_answers(choice):
 
 
 def test_no_unverified_rpc(tmp_path, monkeypatch):
-    # macOS Unix sockets require a short path; model/log fixtures stay in the
-    # isolated cache. Constructing this runtime never starts a host or model.
+    # 两个平台均使用独占短 socket 目录；模型/日志夹具留在隔离缓存，构造过程不启动宿主或模型。
     from types import SimpleNamespace
     # The optional host SDK's travel catalogue is unrelated to this admission
     # unit. Keep the actual runtime/policies without requiring its host assets.
     monkeypatch.setattr('arl.service.TravelAdapter', lambda: SimpleNamespace(tools=lambda: []))
-    with tempfile.TemporaryDirectory(prefix='friday-arl-', dir='/private/tmp') as directory:
+    with tempfile.TemporaryDirectory(prefix='friday-arl-', dir='/tmp') as directory:
         engine = LayaEngine(tmp_path, {}, factory=Agent)
         runtime = SharedRuntime(Path(directory), engine, {"friday": {"executable": "/unknown", "sha256": "x"}})
         request = {"protocol":"arl/1", "app":"friday", "method":"laya.predict.v1", "params":params()}
