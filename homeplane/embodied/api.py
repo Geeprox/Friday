@@ -36,35 +36,10 @@ class MiHomeConnection(BaseModel):
     return_url: str | None = Field(default=None,max_length=4096)
 
 
-class MiHomeConnection(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    action: str = Field(pattern="^(status|begin|finish)$")
-    return_url: str | None = Field(default=None,max_length=4096)
-
-
 class CameraControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
     direction: str | None = Field(default=None,pattern="^(left|right|up|down)$")
     mode: str | None = Field(default=None,pattern="^(hold|auto|pets|survey)$")
-
-
-class CameraPower(BaseModel):
-    model_config=ConfigDict(extra='forbid',strict=True)
-    enabled:bool
-    revision:str=Field(pattern=r'^[a-f0-9]{64}$')
-    event_id:str=Field(pattern=r'^[A-Za-z0-9_-]{1,128}$')
-
-
-class StopPreview(BaseModel):
-    model_config=ConfigDict(extra='forbid',strict=True)
-    token:str|None=Field(default=None,pattern=r'^[a-f0-9]{32}$')
-
-
-class SceneRun(BaseModel):
-    model_config=ConfigDict(extra='forbid',strict=True)
-    scene:str=Field(pattern=r'^[a-f0-9]{64}$')
-    revision:str=Field(pattern=r'^[a-f0-9]{64}$')
-    event_id:str=Field(pattern=r'^[A-Za-z0-9_-]{1,128}$')
 
 
 class CameraPower(BaseModel):
@@ -190,16 +165,6 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     @router.get("/api/games")
     async def games():
         return dict(apps=catalog(), recognition=RECOGNIZERS, difficulties=difficulty_options(), service=await service.status())
-
-    @router.get('/api/embodied/scenes')
-    async def scenes():
-        try:return await service.scenes()
-        except (ValueError,OSError,TimeoutError):raise HTTPException(409,detail='mijia_scenes_unavailable')from None
-
-    @router.post('/api/embodied/scenes/run')
-    async def run_scene(request:SceneRun):
-        try:return await service.scenes(scene=request.scene,revision=request.revision,event_id=request.event_id)
-        except (ValueError,OSError,TimeoutError):raise HTTPException(409,detail='mijia_scene_not_confirmed')from None
 
     @router.get('/api/embodied/scenes')
     async def scenes():

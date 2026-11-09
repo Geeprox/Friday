@@ -38,3 +38,34 @@ async def test_changed_or_unknown_scene_cannot_run_and_timeout_is_not_replayed(t
     result=await owner.run(scene['id'],scene['revision'],'uncertain');assert result['status']=='unknown_outcome'
     assert await owner.run(scene['id'],scene['revision'],'uncertain')==result
     assert len(api.runs)==1
+
+
+@pytest.mark.asyncio
+async def test_console_scene_schema_and_validated_request_share_one_dispatch(tmp_path):
+    import asyncio
+    import warnings
+
+    import httpx
+    from fastapi import FastAPI
+
+    from homeplane.embodied.api import create_router
+
+    api=API();owner=SceneCommands(api,{'home':object()},tmp_path,region='synthetic')
+    async def scenes(**request):
+        return await owner.run(request['scene'],request['revision'],request['event_id']) if request else await owner.listing()
+    app=FastAPI();app.include_router(create_router(SimpleNamespace(scenes=scenes),SimpleNamespace(),asyncio.Lock()))
+    with warnings.catch_warnings():
+        warnings.filterwarnings('error',message='Duplicate Operation ID')
+        schema=app.openapi()
+    assert schema['paths']['/api/embodied/scenes'].keys()=={'get'}
+    assert schema['paths']['/api/embodied/scenes/run'].keys()=={'post'}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        listing=(await client.get('/api/embodied/scenes')).json()
+        scene=listing['scenes'][0]
+        request=dict(scene=scene['id'],revision=scene['revision'],event_id='synthetic-click')
+        assert (await client.post('/api/embodied/scenes/run',json={**request,'unreviewed':True})).status_code==422
+        assert not api.runs
+        first=await client.post('/api/embodied/scenes/run',json=request)
+        assert first.status_code==200 and first.json()['physically_confirmed'] is False
+        assert (await client.post('/api/embodied/scenes/run',json=request)).json()==first.json()
+        assert api.runs==['stable-id']

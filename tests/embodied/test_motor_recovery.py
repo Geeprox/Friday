@@ -83,7 +83,9 @@ def test_decision_is_rechecked_without_charging_another_survey_step(change):
     if change == 'invalid': current = view(1.2, tracking=False)
     if change == 'session': current = view(1.2, session='replacement')
     if change == 'game': current['game'] = dict(status='playing')
-    if change == 'focus': kwargs['focus'] = dict(track=2, at=1.2)
+    if change == 'focus':
+        current['people'].append(dict(id=2, box=dict(x=.2, y=.1, w=.12, h=.7), identity={}))
+        kwargs['focus'] = dict(track=2, at=1.2, session_id=current['session_id'])
     if change == 'hold': director.apply_mode('hold', 2)
     assert not director.decision_current(current, 1.2, 'right', **kwargs)
     if change != 'hold': assert director.survey_attempts == 1
