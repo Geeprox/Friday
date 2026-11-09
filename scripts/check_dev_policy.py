@@ -272,14 +272,26 @@ def push_event_commit_language_errors(root, event, after):
     shas = set(commit_shas)
     if after not in shas:
         raise PolicyError("event_commit_scope_invalid")
-    history = git(root, "rev-list", "--first-parent", "--max-count=" + str(len(shas) + 1), after).splitlines()
-    pushed = []
-    for sha in history:
-        if sha not in shas:
-            break
-        pushed.append(sha)
-    if not pushed:
+    try:
+        history = git(root, "rev-list", "--parents", after).splitlines()
+    except PolicyError as error:
+        if error.args == ("git_reference_or_query_unavailable",):
+            raise PolicyError("event_commit_scope_invalid") from None
+        raise
+    # 祖先图只校验提交类型与可达性；语言检查仍限于事件内的第一父链。
+    parents = {row[0]: row[1:] for row in (line.split() for line in history)}
+    if not shas.issubset(parents):
         raise PolicyError("event_commit_scope_invalid")
+    pushed = []
+    sha, gap = after, False
+    while sha in parents:
+        if sha in shas:
+            if gap:
+                raise PolicyError("event_commit_scope_invalid")
+            pushed.append(sha)
+        else:
+            gap = True
+        sha = parents[sha][0] if parents[sha] else None
     return commit_language_errors_for_shas(root, pushed)
 
 
