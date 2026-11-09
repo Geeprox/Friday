@@ -721,6 +721,7 @@ class FamilyMediaCatalog:
         status, context = await self._check(request.expected_context)
         row = self._load(request.item_id)
         item = self._item(row, status)
+        stored_state = (row["status"], row["reason"])
         # Stale but same-binding items can be revalidated by explicit stat;
         # unknown object refs on a new connection require re-listing first.
         can_check = status.online and row["binding"] == digest(status.binding)
@@ -765,10 +766,9 @@ class FamilyMediaCatalog:
                 self.hash_jobs.pop(row["item_id"], None)
             with self.connection:
                 self._save(row)
-                # A successful recheck of a ready original must not revoke other
-                # active plans or its own recipe preview. Actual state changes do.
-                refreshed = self._item(row, status)
-                if (refreshed.status, refreshed.reason) != (item.status, item.reason):
+                # 时间造成的暂时过期不等于原件改变；成功核对同一元数据时
+                # 保留正在编辑的方案与读取租约，实际状态变化仍更新修订。
+                if (row["status"], row["reason"]) != stored_state:
                     self._bump()
             context = self._context(status)
             item = self._item(row, status)

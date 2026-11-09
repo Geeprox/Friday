@@ -383,3 +383,26 @@ async def test_idle_result_is_released_on_timer_without_another_request(photos, 
     await asyncio.wait_for(expired.wait(), 3)
     assert lease.payload is None and not photos.service.jobs and not photos.service.active
     assert lease.state.status == "expired"
+
+
+@pytest.mark.asyncio
+async def test_unchanged_original_recheck_after_a_minute_preserves_edit_and_download(photos):
+    request = await rendered(photos)
+    job = await finished(photos, await photos.service.start(request, kind="render"))
+    before, payload = await photos.service.content(job.job_id)
+    photos.clock[0] += timedelta(seconds=61)
+    after, returned = await photos.service.content(job.job_id)
+    assert after == before and returned == payload
+    assert (await photos.catalog.context()).fingerprint == request.expected_context
+    assert hashlib.sha256(returned).hexdigest() == job.output.result.output_sha256
+
+
+@pytest.mark.asyncio
+async def test_changed_original_after_a_minute_still_invalidates_edit_and_download(photos):
+    request = await rendered(photos)
+    job = await finished(photos, await photos.service.start(request, kind="render"))
+    photos.clock[0] += timedelta(seconds=61)
+    photos.reader.objects["SIMULATED-photo"]["entry"]["revision"] = "SIMULATED-replaced-r2"
+    with pytest.raises(FamilyMediaError, match="photo_original_changed_or_not_ready"):
+        await photos.service.content(job.job_id)
+    assert (await photos.catalog.context()).fingerprint != request.expected_context

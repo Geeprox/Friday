@@ -296,7 +296,7 @@ class NASConnectionManager:
             raise NASConnectionError("nas_budget_exceeded")
         self._objects[key] = (path, data["kind"])
         suffix = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-        media = ("image" if suffix in {"jpg", "jpeg", "png", "heic", "webp", "gif"} else
+        media = ("image" if suffix in {"jpg", "jpeg", "png", "heic", "heif", "avif", "tif", "tiff", "webp", "gif"} else
                  "video" if suffix in {"mp4", "mov", "mkv", "ts", "m4v"} else
                  "audio" if suffix in {"mp3", "wav", "opus", "m4a", "flac"} else "other")
         return NASConnectionEntry(object_ref=key, kind=data["kind"], revision=data["revision"],
