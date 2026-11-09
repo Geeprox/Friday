@@ -393,18 +393,40 @@ async def test_failed_final_readback_does_not_fabricate_a_missing_or_successful_
 
 
 @pytest.mark.asyncio
-async def test_real_sqlite_writer_wait_does_not_age_out_a_qualified_incident(monitor):
+async def test_real_sqlite_writer_wait_does_not_age_out_a_qualified_incident(monitor, monkeypatch):
     await before_fall(monitor)
     qualified_at = 1800000000+monitor.clock[0]
+    busy = threading.Event()
+    create = monitor.store.create
+
+    def observe_busy(*args, **kwargs):
+        try:
+            return create(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            if 'locked' in str(exc).lower() or 'busy' in str(exc).lower():
+                busy.set()
+            raise
+
+    monkeypatch.setattr(monitor.store, 'create', observe_busy)
     blocker = sqlite3.connect(monitor.store.path)
     blocker.execute('BEGIN IMMEDIATE')
     try:
         await frame(monitor)
+
+        async def until_retry_pending():
+            while not (busy.is_set() and any(job.failed for job in monitor.runtime.recording.jobs.values())):
+                await asyncio.sleep(.05)
+                monitor.clock[0] += .05
+                await frame(monitor)
+                await frame(monitor, camera='secondary', down=False)
+
+        # 等真实 SQLite 竞争进入原记录器的重试状态，不以调度耗时推测它已发生。
+        await asyncio.wait_for(until_retry_pending(), 10)
         for _ in range(16):
-            await asyncio.sleep(.15)
             monitor.clock[0] += .25
             await frame(monitor)
             await frame(monitor, camera='secondary', down=False)
+            await asyncio.sleep(0)
         blocker.commit()
         await asyncio.wait_for(monitor.runtime.drain(), 2)
         events = monitor.store.events()

@@ -342,13 +342,16 @@ async def test_actual_primary_frame_continues_game_and_home_input_while_safety_s
     monkeypatch.setattr(safety, 'time', SimpleNamespace(monotonic=lambda: 10, time=lambda: 1000))
     runtime = synthetic_runtime(tmp_path)
     await runtime.sync_policy()
-    entered, release = threading.Event(), threading.Event()
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     create = runtime.store.create
 
     def held(*args, **kwargs):
         entered.set()
-        release.wait(1)
-        return create(*args, **kwargs)
+        try:
+            assert release.wait(5), '合成写入闸门未在测试结束前释放'
+            return create(*args, **kwargs)
+        finally:
+            finished.set()
 
     monkeypatch.setattr(runtime.store, 'create', held)
     scope, published = primary_frame_scope(tmp_path)
@@ -356,9 +359,10 @@ async def test_actual_primary_frame_continues_game_and_home_input_while_safety_s
     try:
         assert runtime.offer('held', 'session', [dict(trigger=True)], 10, 10, stable=True, source_context='a' * 64)
         assert await asyncio.to_thread(entered.wait, 1)
-        started = time.perf_counter()
-        await frame_continuation(scope)()
-        assert time.perf_counter() - started < .15
+        # 原帧处理必须在持久化闸门仍关闭时完成；墙钟只作死锁上限。
+        async with asyncio.timeout(2):
+            await frame_continuation(scope)()
+        assert not release.is_set() and not finished.is_set()
         assert published == ['live'] and scope['state']['status'] == 'live'
         scope['practice'].observe.assert_called_once()
         scope['home'].observe.assert_awaited_once()
