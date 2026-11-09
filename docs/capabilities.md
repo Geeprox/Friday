@@ -3,6 +3,7 @@
 | Area | Available code path | Additional acceptance required |
 | --- | --- | --- |
 | Simulator | Synthetic snapshots, device previews and reviewed sample rules | Does not control hardware |
+| 首页运行状态 | 首次创建首页即读取现有服务、资源和待处理事项；返回前台或手动刷新立即更新，后台暂停定时读取。过期读数撤下，退出页面取消未完成请求 | 原组件的合成状态旅程已验证；当前原生画面与真实家庭服务仍分别验收。只读状态不启动摄像头、语音、模型或设备 |
 | Home Assistant | Registry discovery, OAuth, readback and scoped device operations | Your instance, permissions and physical effects |
 | Mi Home layout | BakeData/floormap validation, preview, revisioned import, 3D rendering | Your export, accessible files and device positions |
 | Cameras | Optional Miloco media/SDK adapters, worker lifetime, bounded frame pipelines | Supported SDK/platform/device and actual video/audio |

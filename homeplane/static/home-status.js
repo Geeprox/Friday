@@ -59,7 +59,7 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
  const attention=h('section',null,{class:'home-attention','aria-label':'需要关注'}),count=h('span','',{class:'attention-count'}),items=h('div',null,{class:'home-attention-items'});
  attention.append(add(h('div',null,{class:'home-aside-heading'}),h('h2','需要关注'),count),items);
  root.append(section,attention);
- function draw(report){
+ function draw(report,pending=false){
   const summary=homeServiceSummary({...report,simulated});status.textContent=summary.label;status.dataset.state=summary.state;
   list.replaceChildren();for(const row of summary.rows)list.append(add(h('div',null,{'data-state':row.state}),h('dt',row.label),h('dd',row.text)));
   const sample=report?.resources,age=sample?Date.now()-Date.parse(sample.sampled_at):NaN;
@@ -74,15 +74,15 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
   if(Number.isFinite(report?.worker?.latency_ms))resources.append(h('p','画面处理 '+Math.round(report.worker.latency_ms)+' ms',{class:'runtime-latency'}));
   if(report?.worker?.latency_ms>1000)resources.append(h('p','画面处理较慢',{class:'runtime-performance-note'}));
   const notices=homeAttention(report?currentDevices:[],report?.events?.events||[],report?.rules?.runs||[],report?.worker?.owned?report.worker.safety_recording:null,report?.proposals?.proposals||[],report?.rules?.task_attention);count.textContent=notices.length?String(notices.length):'';items.replaceChildren();
-  if(!report)items.append(h('p','正在更新待处理事项…',{class:'home-attention-empty'}));
+  if(!report)items.append(h('p',pending?'正在更新待处理事项…':'提醒暂未更新',{class:'home-attention-empty'}));
   else if(!notices.length)items.append(add(h('div',null,{class:'home-attention-empty'}),icon('check'),h('p',report.events?'暂无需要你处理的事项':'事件记录暂未更新')));
   for(const item of notices){
    const row=button(null,()=>{if(item.proposalRef){try{sessionStorage.setItem('Friday.taskReview',item.proposalRef);}catch{}go('Ask Home');}else if(item.device)onDevice(item.device);else if(item.eventId)go(item.page,{eventId:item.eventId});else if(item.attentionId)go(item.page,{attentionId:item.attentionId});else go(item.page);},{class:'home-attention-item','data-priority':item.priority});row.append(icon(item.priority===0?'alert-circle':item.device?'devices':'clock'),add(h('span'),h('strong',item.title),h('small',item.detail)),icon('chevron-right'));items.append(row);
   }
   if(notices.length>1){const expanded=attention.dataset.expanded==='true',more=button(expanded?'收起提醒':'展开 '+notices.length+' 项提醒',()=>{const expanded=attention.dataset.expanded!=='true';attention.dataset.expanded=String(expanded);more.textContent=expanded?'收起提醒':'展开 '+notices.length+' 项提醒';more.setAttribute('aria-expanded',String(expanded));},{class:'home-attention-expand text-button'+(notices.length>4?' has-overflow':''),'aria-expanded':String(expanded)});items.append(more);}
  }
- async function refresh(){
-  if(!alive||busy||document.hidden)return;busy=true;controller=new AbortController();
+ async function refresh(force=false){
+  if(!alive||busy||(!force&&document.hidden))return;busy=true;controller=new AbortController();
   const timeout=setTimeout(()=>controller?.abort(),7000);
   try{
    const paths={worker:'/api/embodied/status',infrastructure:'/api/embodied/infrastructure',rules:'/api/rules/core/runtime',arl:'/api/settings/arl/status',resources:'/api/home/resources',events:'/api/embodied/safety/events',proposals:'/api/home-flow/task-proposals'};
@@ -91,6 +91,8 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
    clearTimeout(expiry);expiry=setTimeout(()=>{if(alive)draw(null);},16000);
   }finally{clearTimeout(timeout);busy=false;}
  }
- draw(null);void refresh();timer=setInterval(()=>void refresh(),10000);
- return{refresh,update(next){currentDevices=next;},dispose(){alive=false;controller?.abort();clearInterval(timer);clearTimeout(expiry);section.remove();attention.remove();}};
+ const visibility=()=>{if(!document.hidden)void refresh();};
+ document.addEventListener('visibilitychange',visibility);
+ draw(null,true);void refresh(true);timer=setInterval(()=>void refresh(),10000);
+ return{refresh:()=>refresh(true),update(next){currentDevices=next;},dispose(){alive=false;controller?.abort();document.removeEventListener('visibilitychange',visibility);clearInterval(timer);clearTimeout(expiry);section.remove();attention.remove();}};
 }

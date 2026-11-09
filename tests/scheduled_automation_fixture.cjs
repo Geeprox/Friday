@@ -45,7 +45,9 @@ function fixture({zone='America/New_York',existing=true,rule={},capabilities=nul
   if(path.startsWith('/api/home/automations/records/attention/')&&path.endsWith('/acknowledge'))return acknowledge?acknowledge(path,request):{status:'acknowledged',id:path.split('/').at(-2),device_actions:false};
   throw Error('Unreviewed synthetic API path '+path);
  };
- const context=vm.createContext({document:{body,createElement:t=>new Element(t),get activeElement(){return focused;}},
+ const documentEvents=new EventTarget();
+ const context=vm.createContext({document:{body,createElement:t=>new Element(t),get activeElement(){return focused;},
+  addEventListener:documentEvents.addEventListener.bind(documentEvents),removeEventListener:documentEvents.removeEventListener.bind(documentEvents),dispatchEvent:documentEvents.dispatchEvent.bind(documentEvents)},
   Intl,Date,JSON,structuredClone,crypto:{randomUUID:()=> 'SYNTHETIC-uuid-'+(++sequence)},
   mountAutomationCatalog(){},mountAutomationMode(root,options){const sink=options.onStatus;statusSink=sink;if(modeReport)sink?.(modeReport);return{dispose(){if(statusSink===sink)statusSink=null;}};}});
  const source=fs.readFileSync('homeplane/static/automations.js','utf8').replace(/^import .*;$/gm,'').replace(/export /g,'');

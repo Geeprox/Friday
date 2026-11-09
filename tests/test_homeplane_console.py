@@ -17,7 +17,7 @@ import pytest
     [
         ["--test", "tests/home_experience_lifecycle.test.cjs", "tests/camera_follow_view.test.cjs"],
         ["tests/spatial_controls_fixture.cjs"],
-        ["--test", "tests/home_status.test.mjs"],
+        ["--test", "tests/home_status.test.mjs", "tests/home_status_lifecycle.test.cjs"],
         ["tests/safety_console_fixture.cjs"],
         ["--test", "tests/safety_flow.test.cjs"],
         ["--test", "tests/calibration_editor.test.cjs"],

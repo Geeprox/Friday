@@ -65,7 +65,10 @@ class Element {
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
 }
-globalThis.document = {createElement: tag => new Element(tag), activeElement: null};
+const documentEvents = new EventTarget();
+globalThis.document = {createElement: tag => new Element(tag), activeElement: null,
+  addEventListener: documentEvents.addEventListener.bind(documentEvents),
+  removeEventListener: documentEvents.removeEventListener.bind(documentEvents)};
 document.body = new Element('body');
 const {default:copyDOM} = await import('file://' + process.argv[2].replace(/homeplane\/static\/home-conversation.js$/, 'tests/copy_layout_dom.cjs'));
 const copyInterfaces=copyDOM.install(Element,document,document.body);

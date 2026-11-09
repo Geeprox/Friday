@@ -35,7 +35,9 @@ function fixture(initial=[event('b'),event('a')]){
   else data={};
   const snapshot=structuredClone(data);return{ok:true,json:async()=>snapshot};
  };
- const document={body:root,head,hidden:false,createElement:tag=>new Element(tag),getElementById:id=>all(head).find(n=>n.attrs.id===id),get activeElement(){return focused;}};
+ const documentEvents=new EventTarget();
+ const document={body:root,head,hidden:false,createElement:tag=>new Element(tag),getElementById:id=>all(head).find(n=>n.attrs.id===id),get activeElement(){return focused;},
+  addEventListener:documentEvents.addEventListener.bind(documentEvents),removeEventListener:documentEvents.removeEventListener.bind(documentEvents)};
  const context=vm.createContext({document,fetch,Date,JSON,console,AbortController,Blob,URL,
   setInterval(fn){tick=fn;return 1;},clearInterval(){},setTimeout(){return 1;},clearTimeout(){}});
  const labels=fs.readFileSync('homeplane/static/safety-event-labels.js','utf8').replace(/export /g,'');
