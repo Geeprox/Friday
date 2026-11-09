@@ -33,7 +33,8 @@ git_reference_or_query_unavailable shared_rules_markers_invalid run_sync_from_fr
 target_must_be_repository_root target_repository_not_managed generated_path_is_symlink
 existing_file_is_not_managed existing_snapshot_is_not_managed policy_schema_invalid
 shared_rules_digest_invalid commit_head_invalid commit_base_invalid event_commit_scope_invalid
-event_default_branch_invalid new_branch_baseline_unavailable""".split())
+event_default_branch_invalid event_commit_scope_unavailable
+new_branch_baseline_unavailable""".split())
 
 
 class PolicyError(ValueError):
@@ -297,25 +298,32 @@ def event_checks(root, event):
     before, after = event.get("before"), event["after"]
     if not isinstance(before, str) or not SHA.fullmatch(before) or not isinstance(after, str) or not SHA.fullmatch(after):
         raise PolicyError("event_commit_scope_invalid")
-    if set(before) == {"0"}:
-        # 新分支不回扫已有历史；优先取默认分支的共同祖先，首次导入只检查当前提交。
+    def default_branch_baseline():
         branch = event.get("repository", {}).get("default_branch", "")
         if not isinstance(branch, str) or not re.fullmatch(r"[A-Za-z0-9_./-]+", branch) or branch.startswith("-"):
             raise PolicyError("event_default_branch_invalid")
         ref = "refs/remotes/origin/" + branch
         try:
-            before = git(root, "merge-base", after, ref)
+            baseline = git(root, "merge-base", after, ref)
         except PolicyError:
             if event.get("ref") != "refs/heads/" + branch:
                 raise PolicyError("new_branch_baseline_unavailable") from None
-            before = None
-        if before == after:
-            before = None
+            return None
+        return None if baseline == after else baseline
+
+    if set(before) == {"0"}:
+        # 新分支不回扫已有历史；优先取默认分支的共同祖先，首次导入只检查当前提交。
+        before = default_branch_baseline()
     else:
         try:
-            git(root, "cat-file", "-e", before + "^{commit}")
+            git(root, "rev-parse", "--verify", "--end-of-options", before + "^{commit}")
         except PolicyError:
-            return push_event_commit_language_errors(root, event, after)
+            # 已提供的事件清单必须完整校验，不能用基线回退绕过无效清单。
+            if "commits" in event:
+                return push_event_commit_language_errors(root, event, after)
+            before = default_branch_baseline()
+            if before is None:
+                raise PolicyError("event_commit_scope_unavailable") from None
     return commit_language_errors(root, before, after)
 
 
