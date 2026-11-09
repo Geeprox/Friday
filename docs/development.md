@@ -17,6 +17,17 @@ uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connectio
 按[桌面构建说明](FRIDAY-DESKTOP-BUILD.md)显式准备固定公开 SDK 后，可在新测试进程中
 使用 `PYTHONPATH=<该输入目录>` 和 `FRIDAY_TEST_ARL_SDK_INPUT=<该输入目录>` 运行客户端
 及消费者回归。SDK 只参与合成协议与回执验证；CI 也使用同一固定清单，不要求开发者私有目录。
+常规 Python 导入也必须设置 `PYTHONDONTWRITEBYTECODE=1`，避免在固定输入中生成
+`__pycache__`；额外文件仍会使来源核验和清理拒绝，不能用忽略缓存的方式放宽清单。
+
+CI 通过 `scripts/run_ci_regression.py` 为每个回归进程创建独占的 `/tmp/fci-*`，同时将它设为
+`TMPDIR`，并把 pytest `--basetemp` 放在其 `p/` 子目录。这样 SQLite 仍遵守原本的
+本机临时位置校验，Unix socket 也保留短路径余量；回归期间持有锁，结束后核对来源、
+Git、类型和打开句柄再回收，保留外部小型 JSON 回执。引用不明时保留现场并使 job 失败。
+默认 cacheprovider 保持启用，`cache_dir` 显式设为同一独占根的 `pytest-cache/` 并随之回收。
+`RUNNER_TEMP` 只保留 SDK 输入和准备回执，不直接用作 pytest 数据库目录。
+本机开发仍遵守项目缓存命名空间；设置 `TMPDIR` 时须指向本任务已创建的隔离目录，
+需要短 socket 的测试才使用有来源记录、可回收的 `/tmp` 例外。
 
 `tests/test_arl_priority_consumer.py` 覆盖真实公开 SDK 的 v2 协商、首次优先级提交、回执、
 上下文撤销、取消与不重放。完整宿主的身份生产器、资源租约及代次替换由原有四个集成用例

@@ -3,6 +3,8 @@
 import hashlib
 import importlib.util
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -97,3 +99,42 @@ def test_open_input_is_preserved_until_handle_closes(tmp_path, fetch):
         with pytest.raises(ValueError, match="sdk_cleanup_input_in_use"):
             prepare.clean(output)
     assert prepare.clean(output)["cleaned"]
+
+
+@pytest.mark.parametrize("disable_bytecode", [False, True])
+def test_regular_python_import_requires_immutable_input_environment(tmp_path, fetch, disable_bytecode):
+    """用常规导入复现 CI 缓存污染；不构造客户端、宿主或模型。"""
+    output = tmp_path / "sdk"
+    prepare.prepare(output, fetch=fetch)
+    environment = dict(os.environ, PYTHONPATH=str(output))
+    environment.pop("PYTHONDONTWRITEBYTECODE", None)
+    environment.pop("PYTHONPYCACHEPREFIX", None)
+    if disable_bytecode:
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    code = """import sys
+def boundary(event, args):
+    if event.startswith(('socket.', 'subprocess.', 'os.system')) or (event == 'ctypes.dlopen' and args[0] is not None):
+        raise AssertionError('SDK import attempted external activity')
+sys.addaudithook(boundary)
+import arl.client
+assert arl.client.__file__ == sys.argv[1]
+"""
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", code, str(output / "arl/client.py")],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    caches = list(output.rglob("__pycache__"))
+    if disable_bytecode:
+        assert not caches and prepare.verify(output)["files"] == 52
+        assert prepare.clean(output)["cleaned"]
+    else:
+        assert caches
+        with pytest.raises(ValueError, match="sdk_inventory_mismatch"):
+            prepare.verify(output)
+        with pytest.raises(ValueError, match="sdk_inventory_mismatch"):
+            prepare.clean(output)
+        assert output.exists()
