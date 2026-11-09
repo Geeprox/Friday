@@ -14,6 +14,13 @@ software, model weights, generated upstream protocol schemas or vendor SDKs.
   independently installed MIT-licensed noble-curves and bn.js.
 - Python/Node dependencies are independently installed from `uv.lock` and
   `workers/geek/package-lock.json`; licenses remain with their respective authors.
+- 照片处理使用独立安装的 Pillow 13.0.0 和 pillow-heif 1.8.1，不将解码器二进制复制进
+  Friday 源码或桌面包。Pillow 使用 MIT-CMU；pillow-heif 源码使用 BSD-3-Clause，
+  其官方二进制 wheel 因包含原生库而整体采用 GPLv2，不能将 wheel 误标为 BSD。
+  wheel 自带的 `LICENSES_bundled.txt` 保留 libheif 1.23.6（LGPLv3）、
+  libde265 1.1.3（LGPLv3）、x265 4.3（GPLv2）及各自固定来源。
+  包及完整声明见 [Pillow](https://github.com/python-pillow/Pillow) 和
+  [pillow-heif 1.8.1](https://pypi.org/project/pillow-heif/1.8.1/)；本项目不改写这些许可。
 - The optional local KTV source adapter installs MIT-licensed
   `@neteasecloudmusicapienhanced/api` 4.41.1 and its dependencies from
   `integrations/ktv_source/package-lock.json`. Their notices remain in the
