@@ -307,7 +307,8 @@ def test_events_wake_on_real_control_change_and_keep_state_confirmation_separate
         store.coordinator.events(room, cursor, 6)
 
 
-def test_http_credential_scopes_direct_ownership_qr_and_protocol_routes(store):
+@pytest.mark.parametrize("stale_nas_health", [False, True])
+def test_http_credential_scopes_direct_ownership_qr_and_protocol_routes(store, stale_nas_health):
     server = Server(("127.0.0.1", 0), make_handler(store, AGENT, ASSETS))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -328,8 +329,14 @@ def test_http_credential_scopes_direct_ownership_qr_and_protocol_routes(store):
             assert client.post("/agent/rooms/" + party["room_id"] + "/playback", headers=agent, json={}).status_code == 409
             assert client.post("/agent/rooms/" + party["room_id"] + "/close", headers=agent, json={}).status_code == 409
             assert client.post("/agent/worker", headers=agent, json=registration()).status_code == 200
+            if stale_nas_health:
+                store.coordinator.health_at = time.monotonic() - 16
+                stale = client.get("/v1/status", headers=tv).json()["readiness"]
+                assert not stale["gates"]["nas_data"] and not stale["gates"]["nas_media"]
+            # 此协议夹具关闭后台刷新；在要求完整就绪前采集真实的新文件/数据库证据。
+            store.coordinator.refresh_health()
             response = client.post("/v1/tv/readiness", headers=tv, json={"instance": instance, "protocol": 1, "playback": True, "audio": True, "media": True})
-            assert response.status_code == 200 and response.json()["ready"]
+            assert response.status_code == 200 and response.json()["ready"], response.json()
             assert client.get("/agent/tasks", headers=agent).json()["rooms"][0]["direct"] is True
             assert client.post("/agent/manifests", headers=agent, content='{"x":NaN}').status_code == 400
             assert client.post("/v1/party/close", headers=tv, json={"room_id": party["room_id"]}).json()["closed"] is True
