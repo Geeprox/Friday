@@ -18,7 +18,7 @@ from api_privacy_guard import privacy_fingerprint
 from test_homeplane_recognition_consumer import launch, owner, settings, zero_rss
 
 from homeplane.api import create_app
-from homeplane.media_probe import RecognitionProbe
+from homeplane.media_probe import RecognitionProbe, stop_process
 from homeplane.people.catalog import PeopleCatalog, PeopleError
 from homeplane.people.contracts import Correct, Name, Split
 from homeplane.people_feature_bridge import SyntheticPeopleBatchOwner, qualify_people_catalog
@@ -421,6 +421,9 @@ with tempfile.TemporaryDirectory(prefix='SIMULATED-feature-pipeline-') as direct
 worker.publish_worker_result(result,os.dup(sys.stdout.fileno()))
 '''
     if hang:
+        # 仅供合成夹具在父进程开始原有时限前确认冷导入结束，不改变生产 IPC。
+        code = code.replace('request=RecognitionSession.model_validate_json',
+            "sys.stdout.write('SIMULATED-READY\\n');sys.stdout.flush()\nrequest=RecognitionSession.model_validate_json")
         code = code.replace('from test_people_feature_integration import configure,catalog', '''from test_people_feature_integration import configure,catalog,FixturePartition
 import threading
 release=threading.Event()
@@ -521,24 +524,30 @@ async def test_real_child_stop_or_settings_edit_revokes_and_reaps_without_catalo
     assert processes[0].returncode is not None and probe.process is None
 
 
+@pytest.mark.parametrize('startup_delay', [0, 3])
 @pytest.mark.asyncio
-async def test_real_child_clustering_hang_uses_v2_uncertain_exit_and_reap(tmp_path):
+async def test_real_child_clustering_hang_uses_v2_uncertain_exit_and_reap(tmp_path, startup_delay):
     people = catalog()
     context, _ = configure(tmp_path, people)
-    context = replace(context, session=context.session.model_copy(update={'deadline_monotonic':time.monotonic()+2.5}))
-    context = replace(context, _people_owner=SyntheticPeopleBatchOwner.from_catalog(people, context.session,
-        context.provenance, context.policy, _synthetic_consent=True, _cluster_factory=FixturePartition))
     root = tmp_path/'SIMULATED-hung-cluster'
     root.mkdir()
-    script = 'OWNED_ROOT=' + repr(str(root)) + '\n' + batch_child(hang=True)
-    processes = []
-    async def spawn():
-        process = await launch(script)
-        processes.append(process)
-        return process
-    probe = RecognitionProbe(settings(tmp_path), launcher=spawn, rss_reader=zero_rss, people_catalog=people)
-    await probe.start_owner(context)
-    await asyncio.wait_for(probe.task, 7)
-    assert processes[0].returncode == 77 and probe.process is None
-    assert probe.report.reason == 'worker_timeout' and people.page().revision == 0
-    assert probe.feature_message is None
+    script = ('import time;time.sleep(' + repr(startup_delay) + ')\nOWNED_ROOT=' + repr(str(root))
+        + '\n' + batch_child(hang=True))
+    process = await launch(script)
+    try:
+        # 冷导入慢于 2.5 秒时仍应验证聚类挂起；保留原有运行/回收预算和真实 worker。
+        assert await asyncio.wait_for(process.stdout.readline(), 10) == b'SIMULATED-READY\n'
+        context = replace(context, session=context.session.model_copy(update={'deadline_monotonic':time.monotonic()+2.5}))
+        context = replace(context, _people_owner=SyntheticPeopleBatchOwner.from_catalog(people, context.session,
+            context.provenance, context.policy, _synthetic_consent=True, _cluster_factory=FixturePartition))
+        async def spawn():
+            return process
+        probe = RecognitionProbe(settings(tmp_path), launcher=spawn, rss_reader=zero_rss, people_catalog=people)
+        assert (await probe.start_owner(context)).state == 'running'
+        await asyncio.wait_for(probe.task, 7)
+        assert process.returncode == 77 and probe.process is None
+        assert probe.report.reason == 'worker_timeout' and people.page().revision == 0
+        assert probe.feature_message is None
+    finally:
+        await stop_process(process)
+        people.connection.close()

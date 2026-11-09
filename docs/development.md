@@ -7,10 +7,13 @@
 使用锁定依赖和合成测试数据。回归环境使用 Python 3.12，包括固定的抽象语法树（AST）契约检查。创建环境：
 
 ```sh
-uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connection
+uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connection --extra privacy-playback --extra ktv
 ```
 
 完整测试套件运行前，使用 `npm --prefix workers/geek ci --ignore-scripts` 安装可选 Geek 工作进程的测试依赖；完整回归的依赖参数以 [CI 工作流](../.github/workflows/ci.yml)为准。基础控制台安装仍支持 Python 3.11 及以上版本。
+
+完整回归包含 KTV 的真实 PNG 二维码生成，因此须选择已锁定的 `ktv` extra；
+`qrcode` 本身不包含 `PyPNGImage` 所需的 PyPNG。无需为运行测试启动 KTV、登录、扬声器或电视。
 
 ## ARL 客户端与完整宿主测试
 
@@ -49,6 +52,9 @@ Git、类型和打开句柄再回收，保留外部小型 JSON 回执。引用�
 首页状态的生命周期回归覆盖后台创建、首次读取、过期、返回前台、手动刷新及退出取消；后台定时轮询仍暂停。此修复恢复既有首页的状态显示，不新增用户操作步骤；当前渲染证据与真实家庭验收分别记录。
 
 常规测试不创建真实家庭会话，也不运行真实模型或硬件。使用隔离临时目录，生成证据放在 `.artifacts/`，公开前分别检查源码工作区和独立导出的源码副本。
+
+聚类挂起回归先等待合成子进程完成冷导入，再交给原有识别进程管理器运行；包含超过工作预算的
+启动延迟样例，避免导入时间耗尽预算而误测其他分支。工作时限、停止与回收预算及未确认退出断言保持不变。
 
 运行事件使用固定、有界的事件码，不记录凭据、原始转写、媒体、原始名称或异常正文。隐私测试应验证实际数据边界，不能只检查界面提示文字。
 
