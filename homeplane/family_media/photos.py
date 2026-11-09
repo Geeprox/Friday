@@ -78,7 +78,7 @@ class FamilyPhotos:
 
     async def _check_item(self, request, original_hash, original_ref=None):
         self._available()
-        result = await self.catalog.resolve(FamilyMediaResolveRequest(
+        result = await self.catalog.resolve_photo(FamilyMediaResolveRequest(
             expected_context=request.expected_context, item_id=request.item_id,
         ))
         item = result.item

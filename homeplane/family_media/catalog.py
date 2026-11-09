@@ -717,7 +717,21 @@ class FamilyMediaCatalog:
         async with self.lock:
             return await self._resolve(request)
 
-    async def _resolve(self, request):
+    async def resolve_photo(self, request):
+        return await self._tracked(self._resolve_photo_guarded, request)
+
+
+    async def _resolve_photo_guarded(self, request):
+        if self.lock.locked():
+            raise FamilyMediaError("family_media_busy")
+        async with self.lock:
+            await self._check(request.expected_context, online=True)
+            if self._load(request.item_id)["media_kind"] != "image":
+                raise FamilyMediaError("photo_image_required")
+            return await self._resolve(request, preserve_image_lease=True)
+
+
+    async def _resolve(self, request, *, preserve_image_lease=False):
         status, context = await self._check(request.expected_context)
         row = self._load(request.item_id)
         item = self._item(row, status)
@@ -766,9 +780,13 @@ class FamilyMediaCatalog:
                 self.hash_jobs.pop(row["item_id"], None)
             with self.connection:
                 self._save(row)
-                # 时间造成的暂时过期不等于原件改变；成功核对同一元数据时
-                # 保留正在编辑的方案与读取租约，实际状态变化仍更新修订。
-                if (row["status"], row["reason"]) != stored_state:
+                refreshed = self._item(row, status)
+                # 图片编辑只保留同一已就绪原件的租约；其他读取者沿用
+                # 原有的过期后新上下文，不能借照片接口刷新文字读取授权。
+                retain = (preserve_image_lease and stored_state == (row["status"], row["reason"])
+                          and row["status"] == "ready" and row["media_kind"] == "image")
+                actual_change = (row["status"], row["reason"]) != stored_state
+                if actual_change or not retain and (refreshed.status, refreshed.reason) != (item.status, item.reason):
                     self._bump()
             context = self._context(status)
             item = self._item(row, status)

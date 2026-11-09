@@ -406,3 +406,26 @@ async def test_changed_original_after_a_minute_still_invalidates_edit_and_downlo
     with pytest.raises(FamilyMediaError, match="photo_original_changed_or_not_ready"):
         await photos.service.content(job.job_id)
     assert (await photos.catalog.context()).fingerprint != request.expected_context
+
+
+@pytest.mark.asyncio
+async def test_photo_refresh_cannot_renew_a_text_readers_expired_context(photos):
+    from homeplane.family_media.contracts import FamilyMediaQuery, FamilyMediaResolveRequest
+    photos.catalog.indexed_kinds = frozenset({"image","other"})
+    photos.reader.put("SIMULATED-text",b"SIMULATED text",kind="other")
+    for _ in range(2):
+        await photos.catalog.scan(FamilyMediaScanRequest(expected_context=(await photos.catalog.context()).fingerprint))
+        photos.clock[0] += timedelta(seconds=3)
+    items=(await photos.catalog.list_items(FamilyMediaQuery(expected_context=(await photos.catalog.context()).fingerprint))).items
+    text=next(item for item in items if item.media_kind=="other")
+    context=(await photos.catalog.context()).fingerprint
+    photos.clock[0] += timedelta(seconds=61)
+    before=list(photos.reader.calls)
+    request=FamilyMediaResolveRequest(expected_context=context,item_id=text.item_id)
+    with pytest.raises(FamilyMediaError,match="photo_image_required"):
+        await photos.catalog.resolve_photo(request)
+    assert photos.reader.calls==before
+    assert (await photos.catalog.context()).fingerprint==context
+    refreshed=await photos.catalog.resolve(request)
+    assert refreshed.item.status=="ready" and refreshed.context_fingerprint!=context
+
