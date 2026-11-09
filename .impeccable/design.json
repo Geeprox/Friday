@@ -1,0 +1,569 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-09T16:56:24.340833+00:00",
+  "title": "Design System: Friday",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "石墨操作色",
+        "tonalRamp": [
+          "oklch(15% 0.00332 268.43)",
+          "oklch(26% 0.00575 268.43)",
+          "oklch(37% 0.00819 268.43)",
+          "oklch(48% 0.00885 268.43)",
+          "oklch(60% 0.00885 268.43)",
+          "oklch(72% 0.00826 268.43)",
+          "oklch(84% 0.00472 268.43)",
+          "oklch(95% 0.00147 268.43)"
+        ]
+      },
+      "accent-hover": {
+        "role": "primary",
+        "displayName": "深石墨悬停色",
+        "tonalRamp": [
+          "oklch(15% 0.00293 264.44)",
+          "oklch(26% 0.00508 264.44)",
+          "oklch(37% 0.00724 264.44)",
+          "oklch(48% 0.00782 264.44)",
+          "oklch(60% 0.00782 264.44)",
+          "oklch(72% 0.00730 264.44)",
+          "oklch(84% 0.00417 264.44)",
+          "oklch(95% 0.00130 264.44)"
+        ]
+      },
+      "accent-soft": {
+        "role": "primary",
+        "displayName": "浅石墨底",
+        "tonalRamp": [
+          "oklch(15% 0.00151 106.48)",
+          "oklch(26% 0.00261 106.48)",
+          "oklch(37% 0.00372 106.48)",
+          "oklch(48% 0.00402 106.48)",
+          "oklch(60% 0.00402 106.48)",
+          "oklch(72% 0.00375 106.48)",
+          "oklch(84% 0.00214 106.48)",
+          "oklch(95% 0.00067 106.48)"
+        ]
+      },
+      "bg": {
+        "role": "neutral",
+        "displayName": "中性纸面",
+        "tonalRamp": [
+          "oklch(15% 0.00099 106.45)",
+          "oklch(26% 0.00172 106.45)",
+          "oklch(37% 0.00245 106.45)",
+          "oklch(48% 0.00265 106.45)",
+          "oklch(60% 0.00265 106.45)",
+          "oklch(72% 0.00247 106.45)",
+          "oklch(84% 0.00141 106.45)",
+          "oklch(95% 0.00044 106.45)"
+        ]
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "侧栏灰",
+        "tonalRamp": [
+          "oklch(15% 0.00150 106.48)",
+          "oklch(26% 0.00260 106.48)",
+          "oklch(37% 0.00371 106.48)",
+          "oklch(48% 0.00401 106.48)",
+          "oklch(60% 0.00401 106.48)",
+          "oklch(72% 0.00374 106.48)",
+          "oklch(84% 0.00214 106.48)",
+          "oklch(95% 0.00067 106.48)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "白色内容面",
+        "tonalRamp": [
+          "oklch(15% 0.00000 0.00)",
+          "oklch(26% 0.00000 0.00)",
+          "oklch(37% 0.00000 0.00)",
+          "oklch(48% 0.00000 0.00)",
+          "oklch(60% 0.00000 0.00)",
+          "oklch(72% 0.00000 0.00)",
+          "oklch(84% 0.00000 0.00)",
+          "oklch(95% 0.00000 0.00)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "正文石墨",
+        "tonalRamp": [
+          "oklch(15% 0.00147 264.50)",
+          "oklch(26% 0.00254 264.50)",
+          "oklch(37% 0.00362 264.50)",
+          "oklch(48% 0.00391 264.50)",
+          "oklch(60% 0.00391 264.50)",
+          "oklch(72% 0.00365 264.50)",
+          "oklch(84% 0.00209 264.50)",
+          "oklch(95% 0.00065 264.50)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "次级灰",
+        "tonalRamp": [
+          "oklch(15% 0.00242 274.87)",
+          "oklch(26% 0.00419 274.87)",
+          "oklch(37% 0.00596 274.87)",
+          "oklch(48% 0.00644 274.87)",
+          "oklch(60% 0.00644 274.87)",
+          "oklch(72% 0.00601 274.87)",
+          "oklch(84% 0.00344 274.87)",
+          "oklch(95% 0.00107 274.87)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "细分隔灰",
+        "tonalRamp": [
+          "oklch(15% 0.00152 106.48)",
+          "oklch(26% 0.00263 106.48)",
+          "oklch(37% 0.00374 106.48)",
+          "oklch(48% 0.00404 106.48)",
+          "oklch(60% 0.00404 106.48)",
+          "oklch(72% 0.00377 106.48)",
+          "oklch(84% 0.00216 106.48)",
+          "oklch(95% 0.00067 106.48)"
+        ]
+      },
+      "warn": {
+        "role": "secondary",
+        "displayName": "关注褐金",
+        "tonalRamp": [
+          "oklch(15% 0.03703 73.00)",
+          "oklch(26% 0.06419 73.00)",
+          "oklch(37% 0.09135 73.00)",
+          "oklch(48% 0.09875 73.00)",
+          "oklch(60% 0.09875 73.00)",
+          "oklch(72% 0.09217 73.00)",
+          "oklch(84% 0.05267 73.00)",
+          "oklch(95% 0.01646 73.00)"
+        ]
+      },
+      "warn-bg": {
+        "role": "secondary",
+        "displayName": "关注浅底",
+        "tonalRamp": [
+          "oklch(15% 0.01260 86.31)",
+          "oklch(26% 0.02183 86.31)",
+          "oklch(37% 0.03107 86.31)",
+          "oklch(48% 0.03359 86.31)",
+          "oklch(60% 0.03359 86.31)",
+          "oklch(72% 0.03135 86.31)",
+          "oklch(84% 0.01791 86.31)",
+          "oklch(95% 0.00560 86.31)"
+        ]
+      },
+      "bad": {
+        "role": "secondary",
+        "displayName": "失败红",
+        "tonalRamp": [
+          "oklch(15% 0.05464 17.73)",
+          "oklch(26% 0.09471 17.73)",
+          "oklch(37% 0.13478 17.73)",
+          "oklch(48% 0.14571 17.73)",
+          "oklch(60% 0.14571 17.73)",
+          "oklch(72% 0.13599 17.73)",
+          "oklch(84% 0.07771 17.73)",
+          "oklch(95% 0.02428 17.73)"
+        ]
+      },
+      "bad-bg": {
+        "role": "secondary",
+        "displayName": "失败浅底",
+        "tonalRamp": [
+          "oklch(15% 0.00610 12.78)",
+          "oklch(26% 0.01057 12.78)",
+          "oklch(37% 0.01505 12.78)",
+          "oklch(48% 0.01627 12.78)",
+          "oklch(60% 0.01627 12.78)",
+          "oklch(72% 0.01518 12.78)",
+          "oklch(84% 0.00868 12.78)",
+          "oklch(95% 0.00271 12.78)"
+        ]
+      },
+      "good": {
+        "role": "secondary",
+        "displayName": "正常绿",
+        "tonalRamp": [
+          "oklch(15% 0.03085 163.82)",
+          "oklch(26% 0.05346 163.82)",
+          "oklch(37% 0.07608 163.82)",
+          "oklch(48% 0.08225 163.82)",
+          "oklch(60% 0.08225 163.82)",
+          "oklch(72% 0.07677 163.82)",
+          "oklch(84% 0.04387 163.82)",
+          "oklch(95% 0.01371 163.82)"
+        ]
+      },
+      "good-bg": {
+        "role": "secondary",
+        "displayName": "正常浅底",
+        "tonalRamp": [
+          "oklch(15% 0.00588 160.62)",
+          "oklch(26% 0.01020 160.62)",
+          "oklch(37% 0.01452 160.62)",
+          "oklch(48% 0.01569 160.62)",
+          "oklch(60% 0.01569 160.62)",
+          "oklch(72% 0.01465 160.62)",
+          "oklch(84% 0.00837 160.62)",
+          "oklch(95% 0.00262 160.62)"
+        ]
+      },
+      "focus": {
+        "role": "primary",
+        "displayName": "焦点石墨",
+        "tonalRamp": [
+          "oklch(15% 0.00332 268.43)",
+          "oklch(26% 0.00575 268.43)",
+          "oklch(37% 0.00819 268.43)",
+          "oklch(48% 0.00885 268.43)",
+          "oklch(60% 0.00885 268.43)",
+          "oklch(72% 0.00826 268.43)",
+          "oklch(84% 0.00472 268.43)",
+          "oklch(95% 0.00147 268.43)"
+        ]
+      },
+      "game-ink": {
+        "role": "neutral",
+        "displayName": "游戏石墨",
+        "tonalRamp": [
+          "oklch(15% 0.00145 264.51)",
+          "oklch(26% 0.00251 264.51)",
+          "oklch(37% 0.00357 264.51)",
+          "oklch(48% 0.00386 264.51)",
+          "oklch(60% 0.00386 264.51)",
+          "oklch(72% 0.00360 264.51)",
+          "oklch(84% 0.00206 264.51)",
+          "oklch(95% 0.00064 264.51)"
+        ]
+      },
+      "game-muted": {
+        "role": "neutral",
+        "displayName": "游戏次级灰",
+        "tonalRamp": [
+          "oklch(15% 0.00407 113.37)",
+          "oklch(26% 0.00705 113.37)",
+          "oklch(37% 0.01003 113.37)",
+          "oklch(48% 0.01085 113.37)",
+          "oklch(60% 0.01085 113.37)",
+          "oklch(72% 0.01012 113.37)",
+          "oklch(84% 0.00578 113.37)",
+          "oklch(95% 0.00181 113.37)"
+        ]
+      },
+      "game-paper": {
+        "role": "neutral",
+        "displayName": "游戏纸面",
+        "tonalRamp": [
+          "oklch(15% 0.00251 97.35)",
+          "oklch(26% 0.00436 97.35)",
+          "oklch(37% 0.00620 97.35)",
+          "oklch(48% 0.00670 97.35)",
+          "oklch(60% 0.00670 97.35)",
+          "oklch(72% 0.00626 97.35)",
+          "oklch(84% 0.00357 97.35)",
+          "oklch(95% 0.00112 97.35)"
+        ]
+      },
+      "game-line": {
+        "role": "neutral",
+        "displayName": "游戏分隔灰",
+        "tonalRamp": [
+          "oklch(15% 0.00406 106.62)",
+          "oklch(26% 0.00704 106.62)",
+          "oklch(37% 0.01001 106.62)",
+          "oklch(48% 0.01083 106.62)",
+          "oklch(60% 0.01083 106.62)",
+          "oklch(72% 0.01011 106.62)",
+          "oklch(84% 0.00577 106.62)",
+          "oklch(95% 0.00180 106.62)"
+        ]
+      },
+      "game-control": {
+        "role": "neutral",
+        "displayName": "游戏控件面",
+        "tonalRamp": [
+          "oklch(15% 0.00198 106.50)",
+          "oklch(26% 0.00343 106.50)",
+          "oklch(37% 0.00488 106.50)",
+          "oklch(48% 0.00527 106.50)",
+          "oklch(60% 0.00527 106.50)",
+          "oklch(72% 0.00492 106.50)",
+          "oklch(84% 0.00281 106.50)",
+          "oklch(95% 0.00088 106.50)"
+        ]
+      },
+      "game-control-hover": {
+        "role": "neutral",
+        "displayName": "游戏控件悬停面",
+        "tonalRamp": [
+          "oklch(15% 0.00348 106.58)",
+          "oklch(26% 0.00604 106.58)",
+          "oklch(37% 0.00860 106.58)",
+          "oklch(48% 0.00929 106.58)",
+          "oklch(60% 0.00929 106.58)",
+          "oklch(72% 0.00867 106.58)",
+          "oklch(84% 0.00496 106.58)",
+          "oklch(95% 0.00155 106.58)"
+        ]
+      },
+      "game-hud": {
+        "role": "neutral",
+        "displayName": "HUD 纸面",
+        "tonalRamp": [
+          "oklch(15% 0.00348 99.98 / 0.9373)",
+          "oklch(26% 0.00604 99.98 / 0.9373)",
+          "oklch(37% 0.00859 99.98 / 0.9373)",
+          "oklch(48% 0.00929 99.98 / 0.9373)",
+          "oklch(60% 0.00929 99.98 / 0.9373)",
+          "oklch(72% 0.00867 99.98 / 0.9373)",
+          "oklch(84% 0.00496 99.98 / 0.9373)",
+          "oklch(95% 0.00155 99.98 / 0.9373)"
+        ]
+      },
+      "game-hud-line": {
+        "role": "neutral",
+        "displayName": "HUD 描边",
+        "tonalRamp": [
+          "oklch(15% 0.00455 101.50)",
+          "oklch(26% 0.00789 101.50)",
+          "oklch(37% 0.01123 101.50)",
+          "oklch(48% 0.01214 101.50)",
+          "oklch(60% 0.01214 101.50)",
+          "oklch(72% 0.01133 101.50)",
+          "oklch(84% 0.00647 101.50)",
+          "oklch(95% 0.00202 101.50)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "页面标题",
+        "purpose": "Web Console 的页面标题；窄屏沿用当前缩小值。"
+      },
+      "title": {
+        "displayName": "分组标题",
+        "purpose": "日常工作区的标题层次。"
+      },
+      "body": {
+        "displayName": "正文",
+        "purpose": "Web Console 默认正文。"
+      },
+      "control": {
+        "displayName": "操作文字",
+        "purpose": "日常工作区按钮与字段；手机字段沿用当前覆盖值。"
+      },
+      "caption": {
+        "displayName": "辅助状态",
+        "purpose": "状态摘要、测量与次级说明。"
+      },
+      "game-mission": {
+        "displayName": "游戏任务",
+        "purpose": "独立舞台桌面任务；嵌入与窄屏保留实际局部适配。"
+      },
+      "game-instruction": {
+        "displayName": "游戏指令",
+        "purpose": "独立舞台的动作说明。"
+      },
+      "game-progress": {
+        "displayName": "保持与次数",
+        "purpose": "实底 HTML 进度，不随虚拟画布缩小。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "shadow-panel",
+        "value": "0 12px 40px #292a2c1c",
+        "purpose": "当前对话框面板的局部阴影。"
+      },
+      {
+        "name": "toast",
+        "value": "0 8px 28px #292a2c26",
+        "purpose": "当前浮动结果提示的局部投影，不用于日常信息行。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-transition",
+        "value": "160ms ease-out",
+        "purpose": "日常按钮的背景、描边与文字颜色过渡。"
+      },
+      {
+        "name": "cover-hover",
+        "value": "220ms cubic-bezier(.16,1,.3,1)",
+        "purpose": "商店既有封面悬停缩放；减少动态效果时取消。"
+      },
+      {
+        "name": "practice-confirm",
+        "value": "260ms cubic-bezier(.16,1,.3,1)",
+        "purpose": "既有练习成功图形确认；减少动态效果时取消。"
+      },
+      {
+        "name": "quest-chapter-dissolve",
+        "value": "360ms",
+        "purpose": "现有山径章节画面过渡上限，跟随原页面时钟与暂停规则。"
+      },
+      {
+        "name": "quest-earned-settlement",
+        "value": "380ms",
+        "purpose": "现有已获得道具的落定时长；不把时间流逝当作得分。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "operate-wide",
+        "value": "1200px"
+      },
+      {
+        "name": "operate-stacked",
+        "value": "960px"
+      },
+      {
+        "name": "operate-compact",
+        "value": "760px"
+      },
+      {
+        "name": "library-stacked",
+        "value": "800px"
+      },
+      {
+        "name": "library-four-columns",
+        "value": "1550px"
+      },
+      {
+        "name": "stage-narrow-portrait",
+        "value": "360px"
+      },
+      {
+        "name": "stage-short-landscape-height",
+        "value": "600px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "日常主要按钮",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "日常工作区的主要动作；字样取自现有保存操作。",
+      "html": "<button type=\"button\" class=\"ds-button-primary\">保存</button>",
+      "css": ".ds-button-primary{font-family:-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;font-size:.875rem;line-height:1.55;font-weight:400;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:9px 13px;border:1px solid var(--line,#dededb);border-radius:8px;cursor:pointer;transition:background-color 160ms ease-out,border-color 160ms ease-out,color 160ms ease-out;background:var(--accent,#424449);border-color:var(--accent,#424449);color:var(--surface,#ffffff);}.ds-button-primary:hover:not(:disabled){background:var(--accent-hover,#292b2f);}.ds-button-primary:focus-visible{outline:2px solid var(--focus,#424449);outline-offset:3px;}.ds-button-primary:disabled{opacity:.5;cursor:not-allowed;}@media(prefers-reduced-motion:reduce){.ds-button-primary{transition:none;}}@media(forced-colors:active){.ds-button-primary:focus-visible{outline-color:Highlight;}}"
+    },
+    {
+      "name": "日常次要按钮",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "与对象就近的次要动作；保留纸白、细边与真实状态反馈。",
+      "html": "<button type=\"button\" class=\"ds-button-secondary\">查看设备</button>",
+      "css": ".ds-button-secondary{font-family:-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;font-size:.875rem;line-height:1.55;font-weight:400;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:9px 13px;border:1px solid var(--line,#dededb);border-radius:8px;cursor:pointer;transition:background-color 160ms ease-out,border-color 160ms ease-out,color 160ms ease-out;background:var(--surface,#ffffff);color:var(--ink,#292a2c);}.ds-button-secondary:active:not(:disabled){background:#dededb;}.ds-button-secondary:hover:not(:disabled){background:var(--accent-soft,#e6e6e3);border-color:#b6b7b3;}.ds-button-secondary:focus-visible{outline:2px solid var(--focus,#424449);outline-offset:3px;}.ds-button-secondary:disabled{opacity:.5;cursor:not-allowed;}@media(prefers-reduced-motion:reduce){.ds-button-secondary{transition:none;}}@media(forced-colors:active){.ds-button-secondary:focus-visible{outline-color:Highlight;}}"
+    },
+    {
+      "name": "日常文字按钮",
+      "kind": "button",
+      "refersTo": "button-text",
+      "description": "减少表面强调的局部操作，沿用当前文字按钮的悬停和焦点。",
+      "html": "<button type=\"button\" class=\"ds-button-text\">查看详情</button>",
+      "css": ".ds-button-text{font-family:-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;font-size:.875rem;line-height:1.55;font-weight:400;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:9px 13px;border:1px solid var(--line,#dededb);border-radius:8px;cursor:pointer;transition:background-color 160ms ease-out,border-color 160ms ease-out,color 160ms ease-out;background:var(--surface,#ffffff);color:var(--ink,#292a2c);padding-inline:6px;background:transparent;border-color:transparent;color:var(--accent,#424449);}.ds-button-text:active:not(:disabled){background:#dededb;}.ds-button-text:hover:not(:disabled){background:var(--accent-soft,#e6e6e3);border-color:#b6b7b3;}.ds-button-text:focus-visible{outline:2px solid var(--focus,#424449);outline-offset:3px;}.ds-button-text:disabled{opacity:.5;cursor:not-allowed;}@media(prefers-reduced-motion:reduce){.ds-button-text{transition:none;}}@media(forced-colors:active){.ds-button-text:focus-visible{outline-color:Highlight;}}"
+    },
+    {
+      "name": "设备搜索",
+      "kind": "input",
+      "refersTo": "field-search",
+      "description": "设备行列表头部的搜索字段；手机字号沿用现有一 rem 覆盖。",
+      "html": "<input class=\"ds-search\" type=\"search\" aria-label=\"搜索设备\" placeholder=\"查找设备\">",
+      "css": ".ds-search{font-family:-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;font-size:.875rem;line-height:1.55;color:var(--ink,#292a2c);background:var(--surface,#ffffff);border:1px solid #b8bab4;border-radius:8px;padding:8px 12px;min-height:40px;width:220px;max-inline-size:100%;caret-color:var(--accent,#424449);}.ds-search::placeholder{color:var(--muted,#606165);opacity:1;}.ds-search:focus-visible{outline:2px solid var(--focus,#424449);outline-offset:3px;}@media(max-width:760px){.ds-search{font-size:1rem;width:100%;}}@media(forced-colors:active){.ds-search:focus-visible{outline-color:Highlight;}}"
+    },
+    {
+      "name": "带文字的主导航",
+      "kind": "nav",
+      "refersTo": "navigation-item",
+      "description": "桌面侧栏条目的节选；当前目的地有白色底与较深文字，图标直接来自仓库 SVG。",
+      "html": "<nav class=\"ds-navigation\" aria-label=\"主导航\"><button type=\"button\" aria-current=\"page\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" > <path stroke=\"none\" d=\"M0 0h24v24H0z\" fill=\"none\"/> <path d=\"M5 12l-2 0l9 -9l9 9l-2 0\" /> <path d=\"M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-7\" /> <path d=\"M9 21v-6a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v6\" /> </svg><span>我的家</span></button><button type=\"button\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" > <path stroke=\"none\" d=\"M0 0h24v24H0z\" fill=\"none\"/> <path d=\"M13 9a1 1 0 0 1 1 -1h6a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1h-6a1 1 0 0 1 -1 -1v-10z\" /> <path d=\"M18 8v-3a1 1 0 0 0 -1 -1h-13a1 1 0 0 0 -1 1v12a1 1 0 0 0 1 1h9\" /> <path d=\"M16 9h2\" /> </svg><span>设备</span></button></nav>",
+      "css": ".ds-navigation{display:flex;flex-direction:column;gap:5px;background:var(--sidebar,#e9e9e6);}.ds-navigation button{font-family:-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;font-size:.875rem;line-height:1.55;font-weight:400;display:flex;align-items:center;justify-content:flex-start;gap:12px;width:100%;min-height:44px;padding:11px 14px;text-align:start;color:#5d5f63;background:transparent;border:0;border-radius:8px;cursor:pointer;transition:background-color 160ms ease-out,border-color 160ms ease-out,color 160ms ease-out;}.ds-navigation svg{flex:none;width:19px;height:19px;}.ds-navigation button:hover{color:var(--accent,#424449);background:#dfdfdc;}.ds-navigation button[aria-current=page]{color:var(--accent,#424449);background:var(--surface,#ffffff);font-weight:600;}.ds-navigation button:focus-visible{outline:2px solid var(--focus,#424449);outline-offset:3px;}@media(prefers-reduced-motion:reduce){.ds-navigation button{transition:none;}}@media(forced-colors:active){.ds-navigation button:focus-visible{outline-color:Highlight;}.ds-navigation button[aria-current=page]{outline:1px solid Highlight;outline-offset:-1px;}}"
+    },
+    {
+      "name": "正常状态标签",
+      "kind": "chip",
+      "refersTo": "status-good",
+      "description": "健康状态标签的静态样例；示例不连接家庭数据。",
+      "html": "<span class=\"ds-status-good\">已连接</span>",
+      "css": ".ds-status-good{font-family:-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;display:inline-flex;align-items:center;gap:7px;width:fit-content;min-height:26px;padding:3px 9px;border-radius:6px;background:var(--good-bg,#e9f5ee);color:var(--good,#23684d);font-size:.75rem;line-height:1.55;font-weight:550;}"
+    },
+    {
+      "name": "设备详情面",
+      "kind": "card",
+      "refersTo": "inspector",
+      "description": "白色详情容器的静态结构样例；不增加卡片投影。",
+      "html": "<aside class=\"ds-inspector\" aria-label=\"设备详情\"><h2>设备</h2></aside>",
+      "css": ".ds-inspector{font-family:-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;padding:22px;background:var(--surface,#ffffff);color:var(--ink,#292a2c);border:0;border-radius:12px;}.ds-inspector h2{font-size:1.25rem;font-weight:600;line-height:1.45;letter-spacing:-.015em;margin:0 0 4px;overflow-wrap:anywhere;}"
+    },
+    {
+      "name": "设备分组行",
+      "kind": "custom",
+      "refersTo": "device-row",
+      "description": "名称、状态与就近详情入口的静态结构；动态数据由原组件提供。",
+      "html": "<article class=\"ds-device-row\"><button class=\"ds-device-open\" type=\"button\" aria-label=\"查看设备\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" > <path stroke=\"none\" d=\"M0 0h24v24H0z\" fill=\"none\"/> <path d=\"M13 9a1 1 0 0 1 1 -1h6a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1h-6a1 1 0 0 1 -1 -1v-10z\" /> <path d=\"M18 8v-3a1 1 0 0 0 -1 -1h-13a1 1 0 0 0 -1 1v12a1 1 0 0 0 1 1h9\" /> <path d=\"M16 9h2\" /> </svg><span class=\"ds-device-copy\"><strong>设备</strong><span>正在读取家庭状态…</span></span></button></article>",
+      "css": ".ds-device-row{font-family:-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;display:flex;flex-direction:row;align-items:center;gap:18px;min-height:98px;padding:10px 12px;border:0;border-block-end:1px solid var(--line,#dededb);border-radius:0;background:transparent;color:var(--ink,#292a2c);}.ds-device-row:hover{background:#f0f0ec;}.ds-device-open{font:inherit;display:flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:14px;padding:12px 0;min-height:64px;min-width:0;flex:1;width:auto;text-align:start;border:0;border-radius:6px;background:transparent;color:inherit;cursor:pointer;}.ds-device-open svg{flex:0 0 30px;width:30px;height:30px;color:#797d75;}.ds-device-copy{display:grid;gap:5px;min-width:0;}.ds-device-copy strong{font-size:.875rem;font-weight:550;line-height:1.45;overflow-wrap:anywhere;}.ds-device-copy>span{font-size:.8125rem;line-height:1.55;color:var(--muted,#606165);}.ds-device-open:focus-visible{outline:2px solid var(--focus,#424449);outline-offset:-4px;}@media(max-width:760px){.ds-device-row{flex-wrap:wrap;gap:0 14px;padding:10px 0;}.ds-device-open{min-width:130px;}}@media(forced-colors:active){.ds-device-open:focus-visible{outline-color:Highlight;}}"
+    },
+    {
+      "name": "游戏主要按钮",
+      "kind": "button",
+      "refersTo": "game-button-primary",
+      "description": "独立舞台的原有深色按钮；局部保留 games.css 的基础上下文，避免与 Console 的同名变量混用。",
+      "html": "<button type=\"button\" class=\"ds-game-primary\">开始本局</button>",
+      "css": ".ds-game-primary{--ink:#2d2e30;font-family:-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;font-size:13px;font-weight:550;min-height:42px;padding:10px 15px;border:1px solid var(--ink);border-radius:10px;background:var(--ink);color:white;cursor:pointer;}.ds-game-primary:hover{background:var(--ink);}.ds-game-primary:focus-visible{outline:2px solid var(--ink);outline-offset:4px;}.ds-game-primary:disabled{opacity:.45;cursor:default;}@media(max-width:760px){.ds-game-primary{min-height:44px;padding:10px 13px;}}@media(forced-colors:active){.ds-game-primary:focus-visible{outline-color:Highlight;}}"
+    },
+    {
+      "name": "游戏保持与次数反馈",
+      "kind": "custom",
+      "refersTo": "game-live-progress",
+      "description": "原有 HTML 实底反馈的静态样例；局部变量取自独立舞台，数字不代表真实识别。",
+      "html": "<p class=\"ds-game-progress\">已完成 0 / 3 次</p>",
+      "css": ".ds-game-progress{--ink:#2d2e30;--paper:#f7f6f1;font-family:-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;display:block;width:fit-content;font-size:15px;line-height:1.4;font-weight:650;font-variant-numeric:tabular-nums;color:var(--ink);background:var(--paper);padding:4px 7px;border-radius:6px;margin:8px 0 0;}@media(orientation:landscape) and (max-height:600px){.ds-game-progress{font-size:12px;line-height:1.3;padding:2px 4px;margin-top:5px;}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "纸张与哑光石墨",
+    "overview": "Friday 沿用现有 Icon 的折纸、典雅深灰与哑光金属质感。日常 Operate 界面以中性纸面承接内容，以石墨文字、细分隔线和熟悉的系统控件组织操作。密度服务于读状态和采取下一步动作；原因、原始异常与诊断保留在按需展开的区域，日常页面保持简洁。\n\nGames 是同一身份中的 Experience：已有纸艺、黏土插画构成封面与游戏世界，操作层继续使用克制的纸面和深色控件。插画承担场景、材质与角色表达，状态文字和生命周期操作保持清楚；既有游戏美术不扩展为日常操作页的装饰主题。macOS 外壳保留原生标题栏、系统文字角色、进度和授权控件。",
+    "keyCharacteristics": [
+      "原 Friday Icon 与现有插画、Godot 手势源各自保留其身份和来源。",
+      "中性纸面与石墨构成日常工作区，语义颜色只标识实际状态。",
+      "操作靠近其对象，行、分隔线和按需详情承担组织结构。",
+      "游戏世界领先，任务、实底反馈和稳定操作区支持观看与游玩。"
+    ],
+    "rules": [
+      {
+        "name": "The 语义着色 Rule",
+        "body": "色彩跟随实际状态，并保留文字说明；未知结果不借正常色或成功词句显得已经完成。",
+        "section": "colors"
+      },
+      {
+        "name": "The 实际字号 Rule",
+        "body": "必要指令、保持时间和次数由响应式 HTML 承载；不随（1600px）虚拟游戏画布等比例缩小。",
+        "section": "typography"
+      },
+      {
+        "name": "The 平面工作区 Rule",
+        "body": "先用分组、纸面与细线建立层次；不把浮层投影、局部透明处理或游戏插画扩展为所有页面的装饰结构。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** 沿用原 Friday Icon、已确认的纸张与哑光石墨身份，以及有来源的现有游戏美术。",
+      "**Do** 把文字状态、相关动作和结果放在同一阅读区域，详细原因按需展开。",
+      "**Do** 在手机直接呈现互动控制和家庭游戏，并保留游戏反馈与操作的相邻关系和稳定锚点。",
+      "**Do** 保留清楚的焦点、减少动态效果分支、合成来源标记和真实能力边界。"
+    ],
+    "donts": [
+      "**Don't** 以任意品牌换色、装饰玻璃、重复卡片或全页说明文案替代已确认的操作结构。",
+      "**Don't** 用颜色、微小模型或随画布缩小的文字独自传达必要状态和游戏进度。",
+      "**Don't** 将旧样式中的眉题、字符图标或局部遗留透明处理推广为新的全局规则。",
+      "**Don't** 将原六项视觉修复的 ship、组件样例或合成截图当成整产品、现装 App、识别准确性或真实设备验收。"
+    ]
+  }
+}
