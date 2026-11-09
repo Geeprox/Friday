@@ -6,7 +6,11 @@
 ```sh
 ./scripts/install-home.sh
 native/FridayDesktop/script/build_and_run.sh --plan
-native/FridayDesktop/script/build_and_run.sh --build-only --arl-sdk-input /absolute/path/to/reviewed-arl-sdk
+# 先显式取得公开固定输入；输出放入本项目独占的可清理构建区。
+python3 scripts/prepare_arl_sdk.py --output /absolute/cache/path/friday-arl-sdk
+native/FridayDesktop/script/build_and_run.sh --build-only --arl-sdk-input /absolute/cache/path/friday-arl-sdk
+# 完成封包与验证后核对来源及清单，再清理本轮输入。
+python3 scripts/prepare_arl_sdk.py --output /absolute/cache/path/friday-arl-sdk --clean
 ```
 
 默认产物：`.artifacts/desktop-public/Friday.app`。默认 ad-hoc 签名；可通过
@@ -22,6 +26,28 @@ SwiftPM、中间文件和模块缓存使用
 其清单摘要必须与 `homeplane/arl_sdk_requirements.json` 中的固定值一致；构建不下载 SDK，
 也不覆盖所选 Python 环境。缺文件、摘要变化、额外文件或符号链接会在编译前拒绝。
 冻结 SDK 随 App 放入 `product/vendor`，逐文件摘要纳入来源绑定。
+
+公开锁清单位于 `native/FridayDesktop/Resources/ARL-SDK-MANIFEST.json`，其原始字节摘要与
+唯一消费契约一致。准备器只从该固定公开提交下载所列源码、LICENSE、NOTICE 和项目元数据，
+逐文件验证大小、SHA-256 与 Git blob；不执行 SDK、不克隆私有仓库、不安装依赖，也不更新
+已有 Python 环境。已有输入必须完整匹配才复用，未知文件、目录、符号链接或改动均拒绝。
+源下载失败会清理本轮仍匹配清单的部分输入；未知并发写入保留供人工核对。
+
+CI 在独占的 `RUNNER_TEMP` 路径显式准备输入，供公开 SDK 回归和 macOS 封包使用，最后
+调用 `--clean`。清理只接受准备器自身的来源回执及空闲锁，保留有结束状态的小型回执。
+清理还需现有 Git 与 `lsof` 核对跟踪和打开句柄；工具缺失、输入被跟踪或正在使用时拒绝
+删除。macOS 通常已有这些工具，Linux CI 显式安装 `lsof`。
+这条链不改变冻结 SDK 或接口要求；只比较版本字符串不能代替来源和摘要验证。
+
+```mermaid
+flowchart LR
+  A[公开固定提交与锁清单] --> B[显式准备及逐文件摘要校验]
+  B --> C[公开 SDK 消费者合成回归]
+  B --> D[强制 arl-sdk-input 封包]
+  D --> E[独立导入门禁与签名]
+  C --> F[核对所有权后清理输入]
+  E --> F
+```
 
 签名前分别在所选 Python 的新进程中检查后端源码导入及 ARL SDK 兼容性。
 后者只调用 `homeplane.arl_application.sdk_compatibility()` 这一兼容入口；检查过程

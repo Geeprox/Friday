@@ -12,6 +12,27 @@ uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connectio
 
 完整测试套件运行前，使用 `npm --prefix workers/geek ci --ignore-scripts` 安装可选 Geek 工作进程的测试依赖；完整回归的依赖参数以 [CI 工作流](../.github/workflows/ci.yml)为准。基础控制台安装仍支持 Python 3.11 及以上版本。
 
+## ARL 客户端与完整宿主测试
+
+按[桌面构建说明](FRIDAY-DESKTOP-BUILD.md)显式准备固定公开 SDK 后，可在新测试进程中
+使用 `PYTHONPATH=<该输入目录>` 和 `FRIDAY_TEST_ARL_SDK_INPUT=<该输入目录>` 运行客户端
+及消费者回归。SDK 只参与合成协议与回执验证；CI 也使用同一固定清单，不要求开发者私有目录。
+
+`tests/test_arl_priority_consumer.py` 覆盖真实公开 SDK 的 v2 协商、首次优先级提交、回执、
+上下文撤销、取消与不重放。完整宿主的身份生产器、资源租约及代次替换由原有四个集成用例
+单独覆盖；它们需要显式的 `FRIDAY_TEST_ARL_PRIORITY_HOST_SOURCE`，不能把公开客户端
+缺少 `friday_profile` 或 `priority_host` 当作应扩充冻结 SDK 的理由。
+
+完整宿主集成须在全新进程中把所选、已审阅的完整 SDK 根目录置于 `PYTHONPATH`，然后
+设置上述变量运行 `tests/test_homeplane_arl_planning_priority.py`。未提供时明确跳过该
+宿主范围；显式输入缺接口或与已导入 SDK 不同则失败，禁止替换已导入命名空间。
+原生 sealed actor 用例也要求该明确来源及其候选；源 seal、身份和授权断言继续保留。
+普通 CI 不提供私有宿主组合，不能将其跳过写成宿主或真实模型验收。
+
+默认 API 测试分别注入无外部传输的会话或调用方持有的运行时，仍检查创建/启动/关闭
+次数及 API、HA 订阅原有行为。线程异常视为错误，不吞掉 socket 越界尝试来消除警告。
+这些是开发与验证入口变化，无终端用户功能、使用步骤或产品截图变化。
+
 ## 验证与隐私
 
 常规测试不创建真实家庭会话，也不运行真实模型或硬件。使用隔离临时目录，生成证据放在 `.artifacts/`，公开前分别检查源码工作区和独立导出的源码副本。

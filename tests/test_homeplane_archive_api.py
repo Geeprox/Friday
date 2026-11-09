@@ -68,10 +68,14 @@ def test_simulator_api_origin_limits_and_no_effects(tmp_path):
 
 
 def test_unconfigured_and_real_namespace_cannot_simulate(tmp_path):
+    from tests.arl_fixtures import isolated_runtime
+
+    runtime, counts = isolated_runtime(tmp_path / 'synthetic-arl')
     app = create_app(
         SimulatedReadonlyNamespace(),
         db_path=tmp_path / "SIMULATED.sqlite",
         settings_path=tmp_path / "settings.json",
+        arl_runtime=runtime,
     )
     with TestClient(app, base_url=ORIGIN) as client:
         context = client.get("/api/archive/context").json()
@@ -85,6 +89,8 @@ def test_unconfigured_and_real_namespace_cannot_simulate(tmp_path):
             "/api/archive/simulator", json={**body, "scenario": "late-arrives"}, headers=HEADERS
         )
         assert response.status_code == 409
+    assert counts == dict(created=0, started=0, closed=0)
+    asyncio.run(runtime.close())
 
 
 def test_local_index_failure_has_bounded_error_and_does_not_block_devices(tmp_path, monkeypatch):
