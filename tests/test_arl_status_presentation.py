@@ -65,7 +65,7 @@ class MetadataPeer:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('kind,expected', [
-    ('fresh', 'connected'), ('pending', 'refreshing'), ('stale', 'stale'), ('missing', 'unknown'),
+    ('fresh', 'handshake_required'), ('pending', 'refreshing'), ('stale', 'stale'), ('missing', 'unknown'),
 ])
 async def test_runtime_snake_case_uses_the_same_backend_health_projection(backend, tmp_path, kind, expected):
     peer = MetadataPeer()
@@ -109,10 +109,11 @@ async def test_actual_runtime_health_does_not_qualify_identity_or_model_task(bac
     runtime = ARLRuntime(lambda: tmp_path.resolve(), settings_client_factory=lambda _: peer)
     report = await backend.arl_status(runtime)
     presentation = web_projection(report)
-    assert report['connectionState'] == presentation['state'] == 'connected'
-    assert presentation['connected'] is True
-    assert presentation['label'] == '通信正常'
-    assert '身份与模型能力尚未验证' in presentation['description']
+    assert report['connectionState'] == presentation['state'] == 'handshake_required'
+    assert presentation['connected'] is False and presentation['runtimeConnected'] is True
+    assert presentation['applicationRegistered'] is False
+    assert presentation['label'] == '尚未注册'
+    assert '尚未完成应用握手' in presentation['description']
     for value in (report, presentation):
         assert value['taskReadiness'] == 'unverified'
         assert value['identityVerified'] is False
@@ -120,6 +121,31 @@ async def test_actual_runtime_health_does_not_qualify_identity_or_model_task(bac
     assert report['inferenceAttempted'] is False
     assert peer.calls == ['overview']
     assert 'synthetic-provider' not in json.dumps(report)
+
+
+@pytest.mark.asyncio
+async def test_only_confirmed_application_session_qualifies_registered_presentation(backend, tmp_path):
+    from types import SimpleNamespace
+    class Session:
+        def __init__(self, home):
+            self.client = SimpleNamespace(home=home)
+            self.connected, self.error, self.accepted = False, None, []
+        def start(self):
+            self.connected = True
+            self.accepted = ['codex.text.plan.v1']
+        def close(self): self.connected = False
+    peer = MetadataPeer()
+    runtime = ARLRuntime(lambda:tmp_path.resolve(), application_factory=Session, settings_client_factory=lambda _:peer)
+    await runtime.start_application()
+    try:
+        desktop = await backend.arl_status(runtime)
+        view = web_projection(desktop)
+        assert view['state'] == desktop['connectionState'] == 'connected'
+        assert view['applicationRegistered'] and view['runtimeConnected'] and view['modelServiceAccepted']
+        assert view['label'] == '已注册' and not view['modelCapabilityVerified']
+        assert peer.calls == ['overview']
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

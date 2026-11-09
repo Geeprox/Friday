@@ -14,8 +14,8 @@ PREFIX = r"(?:(?:请你|请|麻烦你|麻烦|能不能|可以|你帮我|帮我|�
 SUFFIX = r"(?:(?:一下|吧|谢谢)\s*)*"
 
 
-def household_plan(text, attending=False):
-    a = address(text, attending)
+def household_plan(text, attending=False, *, wake_word='Friday'):
+    a = address(text, attending, wake_word=wake_word)
     if not a["admitted"]:
         return None
     body = a["body"].strip().rstrip("。.!！").strip()

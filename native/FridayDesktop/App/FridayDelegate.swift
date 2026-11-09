@@ -6,6 +6,11 @@ import Foundation
 final class FridayDelegate: NSObject, NSApplicationDelegate {
     private var lock: Int32 = -1
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if FridayVisualPreview.active {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
         try? FileManager.default.createDirectory(at: FridayPaths.base, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
         lock = Darwin.open(FridayPaths.base.appendingPathComponent("native-app.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
@@ -23,14 +28,15 @@ final class FridayDelegate: NSObject, NSApplicationDelegate {
             if CommandLine.arguments.contains("--self-check") { await self.selfCheck() }
         }
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { FridayVisualPreview.active }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if !hasVisibleWindows { NSApp.windows.first?.makeKeyAndOrderFront(nil) }
         NSApp.activate(ignoringOtherApps: true)
         return true
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        ServiceManager.shared.stopForApplicationQuit() ? .terminateNow : .terminateCancel
+        if FridayVisualPreview.active { return .terminateNow }
+        return ServiceManager.shared.stopForApplicationQuit() ? .terminateNow : .terminateCancel
     }
     func applicationWillTerminate(_ notification: Notification) {
         if lock >= 0 { Darwin.close(lock) }

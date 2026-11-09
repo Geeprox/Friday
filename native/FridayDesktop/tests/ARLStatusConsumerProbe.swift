@@ -26,9 +26,12 @@ struct ARLStatusConsumerProbe {
         fresh["metadataFreshness"] = "current"; fresh["refreshPending"] = false
         fresh["connectionState"] = "connected"; fresh["taskReadiness"] = "unverified"
         fresh["identityVerified"] = false; fresh["modelCapabilityVerified"] = false
+        let healthOnly = try decode(fresh)
+        expect(healthOnly.connectionPhase == "handshake_required", "Health and supplied connectionState cannot fake application registration")
+        fresh["applicationSession"] = ["appID": "com.friday.home.desktop", "connected": true, "state": "connected", "modelServiceAccepted": true]
         let current = try decode(fresh)
         expect(current.connectionPhase == "connected", "Fresh health qualifies connection only")
-        expect(current.connectionDetail == "ARL 健康通信正常；身份与模型能力尚未验证。", "Current health does not qualify a model task")
+        expect(current.connectionDetail == "Friday 已完成 ARL 应用握手；模型能力尚未实测，家庭操作权限单独校验。", "Application handshake does not qualify a model task")
         expect(current.identityVerified == false && current.modelCapabilityVerified == false, "Backend task verification remains explicit")
         var warm = base
         warm["metadataFreshness"] = "last_known"; warm["refreshPending"] = true

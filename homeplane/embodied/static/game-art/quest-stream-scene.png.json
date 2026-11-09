@@ -1,0 +1,12 @@
+{
+  "asset": "quest-stream-scene.png",
+  "origin": "Built-in image_gen; original generated sibling game artwork",
+  "prompt": "Use case: stylized-concept / environment variant edit.\nAsset type: full-bleed 16:9 environment background plate for the STREAM CHAPTER of Friday's existing original family motion adventure. This is production game art, no interface. Edit the supplied existing summer garden plate into a new imaginary creek-side chapter, preserving its exact tactile paper-and-clay material language, soft upper-left daylight, mild downward fixed camera, horizon height and broad empty center. Create a separate sibling asset; the supplied original is not to be overwritten.\nChange the landscape: layered cool green woodland and pale smooth river stones at the far margins, a clear turquoise shallow stream winding horizontally through the far middle distance, a small low wooden footbridge entirely in the distant upper third, softly layered green hills behind it. In the LOWER 60 percent keep a broad continuous flat dry warm sand-and-clay clearing, evenly lit and mostly empty for separate gameplay objects and a central full-body tutorial figure. The stream must stay in the background, never appear under the player's central position. Maintain a clear, comfortable, stationary perspective and recognizable real material detail.\nMatch the source: dimensional handcrafted paper foliage with paper fibers, rounded matte clay forms, soft contact shadows, refined organic shapes, restrained pine/teal foliage and warm cream light. No new visual identity, no flat vector/geometric placeholder scenery, no camera tilt or dramatic lens. Original imaginary park only; no real household or location.\nConstraints: no people, animals, text, logo, watermark, UI, border, equipment or central obstacle. No rectangular inset or vignette; all edges full bleed. Render landscape 16:9 with adequate crisp detail for a 1600x900 game canvas.",
+  "sha256": "8b8acf2a4abcf31746d6615f296773e65f43b970a0a8afad41a5b38d3d43a9ae",
+  "created_at": "2026-11-08T12:01:52.575410+00:00",
+  "input_asset": "summer-scene.png",
+  "input_sha256": "37b327817aa118f18ab82064f9d4fb3ec53853261880a07d5ae4dfb9f240bafb",
+  "generated_file": "exec-7971c020-d945-45e5-9daf-0d08660ec8f5.png",
+  "pixel_edits": "None; provider PNG copied byte-for-byte. Renderer uses measured source rectangles for sprites.",
+  "input_media": "Only existing original synthetic Friday game artwork. No household media or identifiable person."
+}

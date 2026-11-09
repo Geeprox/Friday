@@ -47,6 +47,8 @@ async def lifespan(app):
         )
         app.state.controller = Controller(s, adapter, app.state.journal, allow_simulated_admission=s.mode == 'demo')
         app.state.arl = runtime_for(s)
+        if s.mode == 'live':
+            await app.state.arl.start_application()
         app.state.perception = Perception(s, runtime=app.state.arl)
         app.state.inference_lock = asyncio.Lock()
         app.state.credentials = Credentials(s, client)
@@ -81,6 +83,7 @@ async def lifespan(app):
         await asyncio.gather(sync_task, return_exceptions=True)
         app.state.controller.stop()
         await app.state.capture.stop()
+        await app.state.arl.close()
         app.state.journal.close()
 
 

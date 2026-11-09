@@ -1,0 +1,26 @@
+{
+  "purpose": "Two additional game and rehearsal cycles using retained original Desk Break MIT clips and MakeHuman CC0 clothed rig",
+  "source_provenance": "provenance.json",
+  "renderer_and_model_unchanged": true,
+  "new_raster_assets": false,
+  "mappings": {
+    "exercise.reach_up": {
+      "clip": "overhead-reach",
+      "neutral_source_time": 0.9,
+      "left_target_source_time": 0,
+      "right_target_source_time": 1.8,
+      "process": "neutral to left reach,hold,neutral,to right reach,hold,neutral;source-bone interpolation",
+      "static_fallback_alias": "body.left_hand_up",
+      "recognition": "standing calibrated legs,one wrist overhead with visible elbow,opposite wrist lowered;alternate complete lift-and-return cycles"
+    },
+    "exercise.arm_open": {
+      "clip": "open-close-swings",
+      "closed_source_time": 0.6,
+      "open_target_source_time": 1.2333333492,
+      "process": "chest closed to bilateral horizontal open,hold,return to chest",
+      "static_fallback_alias": "body.arms_open",
+      "recognition": "standing calibrated legs,both wrists in chest/shoulder band;closed-to-open-to-closed cycle"
+    }
+  },
+  "acceptance": "Source and synthetic geometry only;real people,camera-view variation and recognition accuracy remain unverified"
+}

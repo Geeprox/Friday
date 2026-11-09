@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import httpx
 import pytest
-from homeplane.home_experience import HomeExperience,create_router,room_name
+from homeplane.home_experience import HomeExperience,Preferences,create_router,room_name
 from homeplane.recordings import Recordings,listing
 from homeplane.embodied.interaction import Configuration,Binding,InteractionEngine,save
 from fastapi import FastAPI
@@ -20,7 +20,26 @@ class Runtime:
     mode_deadline=0
     async def set_mode(self,*a):return {}
     async def set_execution(self,*a,**kw):return {}
+    async def hold_for_manual(self,*a,**kw):return {}
     def status(self):return {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('enabled',[False,True])
+async def test_preference_write_failure_never_resumes_execution(tmp_path,monkeypatch,enabled):
+    calls=[]
+    async def execution(value):calls.append(value)
+    runtime=SimpleNamespace(set_execution=execution)
+    owner=HomeExperience(None,SimpleNamespace(path=tmp_path/'settings.json'),None,None,runtime)
+    original=owner.save
+    def save(edit,*,commit=True):
+        if commit:raise OSError('SIMULATED disk write failure')
+        return original(edit,commit=False)
+    monkeypatch.setattr(owner,'save',save)
+    with pytest.raises(OSError,match='SIMULATED'):
+        await owner.update_preferences(Preferences(expected_revision=0,automatic_running=enabled))
+    assert calls==([] if enabled else [False])
+    assert owner.preferences['revision']==0 and not owner.path.exists()
 
 @pytest.mark.asyncio
 async def test_product_controls_execute_once_without_second_approval(tmp_path):

@@ -1,0 +1,4 @@
+FRIDAY_STRICT_CACHE_1 {
+    global: friday_strict_cache_start; friday_strict_cache_stop;
+    local: *;
+};

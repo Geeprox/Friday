@@ -23,6 +23,7 @@ from homeplane.rule_contracts import RuleIR
 from homeplane.rule_deployment import RuleManager
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_device_controls import CASES, rig
+from tests.test_household_timezone_wiring import OfflineARL
 
 
 async def fixture(tmp_path):
@@ -170,6 +171,57 @@ async def test_protection_and_recovery_never_replay_old_event(tmp_path, mode):
     await runtime.ingest(core.adapter, event(core))
     assert len(calls) == 1
     await cleanup(core, owner, runtime)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['awake', 'sleep', 'manual', 'unknown'])
+@pytest.mark.parametrize('enabled', [True, False])
+async def test_manual_takeover_preserves_mode_and_automatic_intent(tmp_path, mode, enabled):
+    core, _, _, _, _, _, owner, _, runtime = await fixture(tmp_path)
+    try:
+        await runtime.set_mode(mode)
+        await runtime.set_execution(enabled)
+        original, deadline = runtime.modes, runtime.mode_deadline
+        await runtime.hold_for_manual()
+        assert runtime.modes is original and runtime.mode_deadline == deadline
+        assert runtime.execution_enabled is enabled
+        assert runtime.status()['manual_hold_active'] is True
+        runtime.manual_until = 0  # Expire the synthetic hold; do not wait or renew its mode.
+        state = runtime.status()
+        assert state['mode_window_current'] is (mode != 'unknown')
+        assert state['execution_state'] == ('paused' if not enabled else
+            {'awake':'starting', 'sleep':'sleeping', 'manual':'manual', 'unknown':'awaiting_mode'}[mode])
+    finally:
+        await cleanup(core, owner, runtime)
+
+
+@pytest.mark.asyncio
+async def test_manual_takeover_drops_pending_effects_and_accepts_only_new_ingress_after_hold(tmp_path):
+    core, _, calls, _, _, _, owner, manager, runtime = await fixture(tmp_path)
+    try:
+        target = next(e.id for e in (await core.snapshot()).entities if e.kind == 'light')
+        actions = [{'type':'delay', 'id':'pause', 'milliseconds':50},
+                   {'type':'device.set', 'id':'light', 'target':target,
+                    'operation':'light.set', 'desired':{'power':'on'}}]
+        await enable(manager, await proposal(core, manager, actions=actions))
+        await runtime.set_mode('awake')
+        original = runtime.modes
+        incoming = event(core)
+        await runtime.ingest(core.adapter, incoming)
+        assert runtime.pending and not calls
+        await runtime.hold_for_manual()
+        assert not runtime.pending and not runtime.queue and runtime.modes is original
+        runtime.manual_until = 0
+        await runtime.ingest(core.adapter, incoming)
+        await runtime.tick()
+        assert calls == []
+        await runtime.ingest(core.adapter, event(core))
+        assert runtime.pending
+        await asyncio.sleep(.06)
+        await runtime.tick()
+        assert len(calls) == 1
+    finally:
+        await cleanup(core, owner, runtime)
 
 
 @pytest.mark.asyncio
@@ -435,6 +487,8 @@ async def test_http_review_lifecycle_never_accepts_internal_actor_or_raw_ingress
         db_path=tmp_path / "SIMULATED-api.sqlite",
         settings_path=tmp_path / "SIMULATED-settings.json",
         authority_path=path,
+        arl_runtime=OfflineARL(),
+        background_enabled=False,
     )
     with TestClient(app, base_url="http://127.0.0.1:8740") as client:
         origin = {"Origin": "http://127.0.0.1:8740"}
@@ -496,7 +550,10 @@ async def test_http_review_lifecycle_never_accepts_internal_actor_or_raw_ingress
             "/api/actions/execute", json={"plan_id": manual["action_id"]}, headers=origin
         ).json()
         assert executed["status"] == "reported_match" and len(calls) == 1
-        assert client.get("/api/rules/core/runtime").json()["modes"] == {}
+        after_manual = client.get('/api/rules/core/runtime').json()
+        assert after_manual['manual_hold_active'] is True
+        assert after_manual['mode_window_current'] is True
+        assert not any(m['value'] for m in after_manual['modes'].values())
         assert (
             client.post(
                 "/api/rules/core/plans/rollback", json={"plan_id": plan["id"]}, headers=origin

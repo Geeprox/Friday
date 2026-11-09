@@ -60,6 +60,12 @@ READ_ONLY_PREPARATION_PATHS = frozenset({
 })
 # RuleIR permits 12 KiB; retain a bounded envelope for this existing preview.
 READ_ONLY_REQUEST_BYTES = {'/api/rules/core/plans': 16384}
+KTV_OWNER_WRITE_PATHS = frozenset('/api/games/ktv/' + operation for operation in (
+    'manage/preview', 'manage/delete', 'manage/policy', 'scheduler',
+    'source/login', 'source/poll', 'source/settings',
+    *('manage/room/' + operation for operation in (
+        'theme', 'controls', 'command', 'order', 'queue-remove', 'songs', 'retry', 'preferences')),
+))
 PEOPLE_WRITE_PATHS = frozenset('/api/people/' + name for name in (
     'name', 'merge', 'split', 'correct', 'undo', 'voice-review', 'live/register', 'live/forget', 'live/name-candidate',
     'live/candidate-group','live/candidate-group/undo'))
@@ -305,7 +311,8 @@ def arl_runtime():
         location = config().arl_home
     except (OSError, ValueError, KeyError, TypeError):
         location = None
-    return ARLRuntime(lambda: Path(location) if location else USER_SUPPORT / 'ARL')
+    return ARLRuntime(lambda: Path(location) if location else USER_SUPPORT / 'ARL',
+                      state_directory=lambda: STATE)
 
 
 def prepare_private_workspace():
@@ -383,7 +390,12 @@ def arl_connection_state(report):
         return 'unknown'
     status = report.get('status')
     if status == 'ready' and report.get('ready') is True and freshness == 'current':
-        return 'connected'
+        application = report.get('application') or {}
+        if application.get('connected') is True and application.get('state') == 'connected':
+            return 'connected'
+        if application.get('state') == 'upgrade_required':
+            return 'upgrade_required'
+        return 'registering' if application.get('state') == 'registering' else 'handshake_required'
     return {'disconnected': 'disconnected', 'not_running': 'not_running',
             'sdk_missing': 'sdk_missing', 'user_disabled': 'disabled',
             'unsafe_home': 'unsafe_configuration', 'starting': 'starting'}.get(status, 'unknown')
@@ -392,6 +404,7 @@ def arl_connection_state(report):
 async def arl_status(runtime=None):
     runtime = runtime or arl_runtime()
     report = await runtime.status(start=False, timeout=3)
+    application = report.get('application') or {}
     return {'status': report['status'], 'sdkVersion': report.get('sdk_version'),
             'ready': report.get('ready') is True, 'inferenceAttempted': False,
             'metadataFreshness': report.get('metadata_freshness', 'unknown'),
@@ -399,6 +412,12 @@ async def arl_status(runtime=None):
             'refreshCode': report.get('metadata_refresh_code', 'none'),
             'refreshSource': report.get('metadata_refresh_source', 'sdk'),
             'connectionState': arl_connection_state(report),
+            'applicationSession': {
+                'appID': application.get('app_id'), 'connected': application.get('connected') is True,
+                'state': application.get('state', 'not_started'), 'error': application.get('error'),
+                'modelServiceAccepted': application.get('model_service_accepted') is True,
+                'identityBasis': application.get('identity_basis'),
+            },
             'taskReadiness': 'unverified', 'identityVerified': False,
             'modelCapabilityVerified': False}
 
@@ -993,6 +1012,8 @@ class DesktopService:
             while True:
                 event = await receive()
                 if event['type'] == 'lifespan.startup':
+                    if callable(getattr(self.arl_runtime, 'start_application', None)):
+                        await self.arl_runtime.start_application()
                     self.arl = await arl_status(self.arl_runtime)
                     self.arl_task = asyncio.create_task(self.refresh_arl())
                     if self.persistent:
@@ -1009,6 +1030,8 @@ class DesktopService:
                         except asyncio.CancelledError:
                             pass
                     await self.close()
+                    if callable(getattr(self.arl_runtime, 'close', None)):
+                        await self.arl_runtime.close()
                     await send({'type': 'lifespan.shutdown.complete'})
                     return
         path = scope.get('path', '')
@@ -1026,6 +1049,17 @@ class DesktopService:
                     await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
                     return
                 await self.metadata(scope, receive, send)
+                return
+            if scope['method'] == 'POST' and path in KTV_OWNER_WRITE_PATHS:
+                if origin != ORIGIN.encode():
+                    await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
+                    return
+                if self.inner is None:
+                    await JSONResponse({'code': 'home_not_connected'}, status_code=503)(scope, receive, send)
+                    return
+                # The fixed owner adapter still enforces loopback, Host and the
+                # inner app's genuine read-only mode; this is no general proxy.
+                await self.inner(scope, receive, send)
                 return
             if scope['method']=='POST' and self.inner is not None and (
                 path.startswith('/api/embodied/') or path in PEOPLE_WRITE_PATHS

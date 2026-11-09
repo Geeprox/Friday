@@ -1,0 +1,106 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const {makeClient,game,packet}=require('./game_stage_harness.cjs');
+const vm=require('node:vm');
+const {part}=require('./game_stage_harness.cjs');
+
+test('a rejected mode selection preserves the current game and selected tab',async()=>{
+ const h=makeClient({fetch:async()=>({ok:false})}),old=h.c.meta.game;
+ await h.c.chooseMode('ski');assert.equal(h.c.selected,'quest');assert.equal(h.c.meta.game,old);
+ assert.equal(h.node('gameNotice').textContent,'暂时无法切换游戏，请重试。');
+});
+
+test('a late stop reply cannot overwrite a newer round already received from the stream',async()=>{
+ let finish;const h=makeClient({fetch:()=>new Promise(r=>finish=r)}),c=h.c;
+ const pending=c.stopGame(),newer=game({mode:'ski',selected_mode:'ski',round_id:3,control_revision:3});
+ c.meta={game:newer};c.selected='ski';finish({ok:true,json:async()=>game({mode:'off',round_id:2,control_revision:2})});
+ await pending;assert.equal(c.meta.game,newer);assert.equal(c.selected,'ski');
+});
+
+test('confirmed selection consumes the bound response; double clicks make one request',async()=>{
+ let finish;const requests=[],h=makeClient({fetch:(p,o)=>{requests.push(JSON.parse(o.body));return new Promise(r=>finish=r);}});
+ const pending=h.c.chooseMode('ski');await h.c.startGame();assert.equal(requests.length,1);assert.equal(h.c.selected,'quest');
+ assert.deepEqual(requests[0],{action:'select',mode:'ski',expected_context:'a'.repeat(32),expected_revision:1});
+ finish({ok:true,json:async()=>game({mode:'off',selected_mode:'ski',round_id:2,control_revision:2})});
+ await pending;assert.equal(h.c.selected,'ski');assert.equal(h.c.commandPending,null);assert.equal(h.node('start').disabled,false);
+});
+test('same-revision live score is newer than the HTTP transition snapshot',async()=>{
+ let finish;const h=makeClient({fetch:()=>new Promise(r=>finish=r)}),pending=h.c.startGame();
+ const live=game({round_id:2,control_revision:2,elapsed:2.3});h.c.meta={game:live};
+ finish({ok:true,json:async()=>game({round_id:2,control_revision:2,status:'waiting',elapsed:0})});
+ await pending;assert.equal(h.c.meta.game,live);
+});
+test('conflict and disconnected controls never retry or change the round',async()=>{
+ let requests=0;const h=makeClient({fetch:async()=>{requests++;return {ok:false,status:409};}}),old=h.c.meta.game;
+ await h.c.stopGame();assert.equal(requests,1);assert.equal(h.c.meta.game,old);
+ h.c.streamOpen=false;await h.c.startGame();assert.equal(requests,1);assert.equal(h.c.meta.game,old);
+});
+test('request timeout releases busy controls without claiming the command succeeded',async()=>{
+ const h=makeClient({fetch:(_,o)=>new Promise((_,reject)=>o.signal.addEventListener('abort',()=>reject(Error('timeout'))))}),old=h.c.meta.game;
+ const pending=h.c.startGame();h.fire(5000);await pending;
+ assert.equal(h.c.commandPending,null);assert.equal(h.c.meta.game,old);assert.equal(h.node('gameNotice').textContent,'暂时无法开始本局，请重试。');
+});
+test('a pause reply must confirm the requested pause state',async()=>{
+ const h=makeClient({fetch:async()=>({ok:true,json:async()=>game({control_revision:2,manually_paused:false})})}),old=h.c.meta.game;
+ await h.c.pauseGame();assert.equal(h.c.meta.game,old);assert.equal(h.node('gameNotice').textContent,'暂时无法暂停或继续，请重试。');
+});
+test('new connection needs its own fresh packet and ignores retired socket messages',()=>{
+ const h=makeClient(),c=h.c;c.connect();const first=h.sockets[0];first.onopen();
+ assert.equal(c.gameViewCurrent(),false);first.onmessage({data:packet(game())});assert.equal(c.gameViewCurrent(),true);
+ c.reconnectGame();const next=h.sockets[1];next.onopen();assert.equal(c.gameViewCurrent(),false);
+ const before=c.meta;first.onmessage({data:packet(game({control_revision:999}))});assert.equal(c.meta,before);
+ next.onmessage({data:packet(game({control_context:'b'.repeat(32)}))});assert.equal(c.gameViewCurrent(),true);
+});
+test('a lower revision frame cannot rewind score or refresh the current input age',()=>{
+ const h=makeClient(),c=h.c;c.connect();const ws=h.sockets[0];ws.onopen();ws.onmessage({data:packet(game({control_revision:3,elapsed:9}))});
+ const live=c.meta.game;h.setNow(1000);ws.onmessage({data:packet(game({control_revision:2,elapsed:0}))});
+ assert.equal(c.meta.game,live);assert.equal(c.received,0);h.setNow(1600);assert.equal(c.gameViewCurrent(),false);
+ assert.equal(c.presentedGame().status,'paused');assert.equal(c.presentedGame().elapsed,9);
+});
+for(const data of [new ArrayBuffer(2),new ArrayBuffer(8),packet({...game(),control_revision:true})]){
+ test('malformed binary metadata retires its connection without a control request',()=>{
+  const h=makeClient(),c=h.c;c.connect();const ws=h.sockets[0];ws.onopen();ws.onmessage({data});
+  assert.equal(ws.closed,true);assert.equal(c.gameViewCurrent(),false);assert.equal(h.timers.size,1);
+ });
+}
+test('late image callbacks cannot release or replace a newer decode',()=>{
+ const h=makeClient(),c=h.c;c.connect();let ws=h.sockets[0];ws.onopen();ws.onmessage({data:packet(game(),1)});h.readers[0].onload();
+ c.reconnectGame();ws=h.sockets[1];ws.onopen();ws.onmessage({data:packet(game({control_context:'b'.repeat(32)}),1)});h.readers[1].onload();
+ h.images[0].onload();assert.equal(c.decoding,true);assert.equal(c.debugFrame,null);
+ h.images[1].onload();assert.equal(c.decoding,false);assert.equal(c.debugFrame,h.images[1]);
+});
+test('socket error creates one reconnect and closing the view retires every callback',()=>{
+ const h=makeClient(),c=h.c;c.connect();const ws=h.sockets[0];ws.onopen();ws.onerror();ws.onclose();
+ assert.equal(h.timers.size,1);c.closeGameView();assert.equal(h.timers.size,0);assert.equal(c.stageClosed,true);
+ const count=h.sockets.length;c.connect();assert.equal(h.sockets.length,count);
+});
+
+test('source recovery disables only continue until real readiness arrives',()=>{
+ const h=makeClient(),c=h.c;
+ c.document.querySelectorAll=()=>[h.node('mode'),h.node('pauseToggle'),h.node('stopToggle')];
+ c.meta.game=game({manually_paused:true,status:'paused',source_recovery:{required:true,ready:false}});
+ c.syncGameControls();assert.equal(h.node('pauseToggle').disabled,true);
+ assert.equal(h.node('stopToggle').disabled,false);assert.equal(h.node('mode').disabled,false);
+ c.meta.game.source_recovery.ready=true;c.syncGameControls();assert.equal(h.node('pauseToggle').disabled,false);
+ h.setNow(1600);c.syncGameControls();assert.equal(h.node('pauseToggle').disabled,true);
+});
+test('resume readiness rejection offers a useful action without replaying the command',async()=>{
+ let requests=0;const h=makeClient({fetch:async()=>{requests++;return {ok:false,status:409,json:async()=>({detail:'game_input_not_ready'})};}});
+ const old=h.c.meta.game;await h.c.pauseGame();assert.equal(requests,1);assert.equal(h.c.meta.game,old);
+ assert.equal(h.node('gameNotice').textContent,'请先回到镜头前站定，再继续。');
+});
+test('a late conflict detail cannot report an old recovery failure in a new connection',async()=>{
+ let finish,entered;const reading=new Promise(r=>entered=r);
+ const h=makeClient({fetch:async()=>({ok:false,status:409,json:()=>{entered();return new Promise(r=>finish=r);}})});
+ const work=h.c.pauseGame();await reading;h.c.streamGeneration++;finish({detail:'game_input_not_ready'});
+ await work;assert.equal(h.node('gameNotice').textContent,'');
+});
+test('recovery guidance distinguishes camera loss, player confirmation and a deliberate countdown',()=>{
+ const h=makeClient(),c=h.c;vm.runInContext(part('function gamePhaseMessage(', '\nconst artRoot'),c);
+ c.selected='tennis';c.meta.status='unavailable';let g=game({manually_paused:true,source_recovery:{required:true,phase:'camera'}});
+ assert.match(c.gamePhaseMessage(g),/进度已保留/);
+ c.meta.status='live';g.source_recovery.phase='players';assert.match(c.gamePhaseMessage(g),/两位玩家/);
+ g.source_recovery.ready=true;assert.match(c.gamePhaseMessage(g),/继续本局/);
+ g=game({status:'calibrating',resume_seconds:3});assert.equal(c.gamePhaseMessage(g),'准备继续本局');
+ g.manually_paused=true;assert.match(c.gamePhaseMessage(g),/休息/);
+});

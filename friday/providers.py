@@ -37,19 +37,20 @@ class ARLPlanner:
         self.settings, self.runtime = settings, runtime or runtime_for(settings)
 
     async def plan(self, context, schema):
-        model = self.settings.codex_model if self.settings.arl_planner_provider == "codex_app_server" else self.settings.planner_model
-        if not model:
-            raise ARLError("explicit_model_required")
+        request_id = context.get('model_request_id')
+        if not isinstance(request_id, str):
+            raise ARLError('model_request_id_required')
+        if not self.settings.arl_model_tasks_enabled:
+            raise ARLError('application_model_opt_in_required')
         prompt = PLANNER_INSTRUCTIONS + "\nSchema: " + json.dumps(schema, allow_nan=False) + "\nContext: " + json.dumps(context, ensure_ascii=False, allow_nan=False)
         # Keep the complete payload. The existing SDK validates the deployed
         # argument/provider budgets and encodes the final RPC envelope (including
         # JSON escaping and scheduling); this consumer must not guess or truncate.
         try:
-            result = await self.runtime.complete(self.settings.arl_planner_provider, model, prompt,
-                deadline=model_deadline(min(30, self.settings.model_timeout_seconds)),
-                task_kind="household.response", requested_class="interactive")
+            result = await self.runtime.complete_scenario('home_planning', prompt, request_id=request_id,
+                deadline=model_deadline(min(30, self.settings.model_timeout_seconds)))
         except ARLError as error:
-            if error.code in {"invalid_arguments", "model_budget_exceeded", "invalid_frame"}:
+            if error.code in {"invalid_arguments", "model_budget_exceeded", "invalid_frame", "application_request_invalid"}:
                 raise ARLError("arl_planner_context_contract_insufficient") from None
             raise
         if result.get("simulated"):

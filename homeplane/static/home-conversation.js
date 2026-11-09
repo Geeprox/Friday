@@ -28,7 +28,7 @@ function domainOf(response) {
 
 function planOf(response) {
   const domain = domainOf(response);
-  return domain?.plan ?? (domain?.old?.rule && domain?.new_rule ? domain : null);
+  return domain?.plan ?? (domain?.old?.rule && (domain?.new_rule || domain?.new?.rule) ? domain : null);
 }
 
 function validResponse(response) {
@@ -51,25 +51,29 @@ function validResponse(response) {
   try { return bytes(JSON.stringify(response)) <= MAX_RESPONSE_BYTES; } catch { return false; }
 }
 
-export function mount(container, {sourceToken, client, initialDraft = '', recovery = null} = {}) {
+export function mount(container, {sourceToken, client, initialDraft = '', recovery = null, initialProposalRef = null} = {}) {
   if (!container?.append) throw new TypeError('home_conversation_container_required');
   if (typeof initialDraft !== 'string' || initialDraft.length > 1024 || bytes(initialDraft) > 4096) throw new TypeError('invalid_local_draft');
   const state = {
     sourceToken, client, sessionId: null, generation: 0, sequence: 0, disposed: false,
     records: [], active: null, pending: null, trimmed: 0, clocks: [],
     draftText: initialDraft, recovery, recoveryButtons: [], sessionDeadline: null,
+    taskProposals: [], taskRead: null, taskReadAt: 0, taskReadFailed: false,
+    taskMutation: null,
+    proposalFocus: typeof initialProposalRef === 'string' && /^[a-f0-9]{64}$/.test(initialProposalRef) ? initialProposalRef : null,
   };
   const root = element('section', null, {class: 'hc-root', 'aria-label': '家庭对话'});
   const status = element('p', '', {class: 'hc-status', role: 'status', 'aria-live': 'polite'});
+  const taskInbox = element('section', null, {class: 'hc-task-inbox', 'aria-label': '待确认的语音任务', hidden: ''});
+  let taskInboxFingerprint = '';
   function showStatus(name, description) {
     status.replaceChildren(element('strong', name, {'data-hc': 'state'}), element('span', description, {'data-hc': 'state-description'}));
   }
-  const history = element('details', null, {class: 'hc-history'});
-  history.open = true;
-  const summary = element('summary', '本次对话');
+  const history = element('section', null, {class: 'hc-history', 'aria-label': '本次对话'});
+  const summary = element('h2', '本次对话', {class: 'hc-history-title'});
   const log = element('ol', null, {class: 'hc-log', role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions'});
   const retention = element('p', '本次来源最多保留 16 轮对话。', {class: 'hc-meta'});
-  history.append(summary, log, retention);
+  history.append(summary, log);
   const form = element('form', null, {class: 'hc-composer'});
   const inputId = uid('hc-input');
   const label = element('label', '输入文字', {for: inputId});
@@ -88,7 +92,7 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
   const stop = button('停止请求', () => void stopCurrent(), {'data-hc': 'stop', class: 'hc-secondary'});
   controls.append(submit, fresh, stop);
   const help = element('details', null, {class: 'hc-details'});
-  help.append(element('summary', '详情'), element('p', '批准只作用于当前预览。Esc 停止，⌘ / Ctrl + Enter 发送。原文只在当前窗口保留。', {class: 'hc-meta'}));
+  help.append(element('summary', '详情'), element('p', '批准只作用于当前预览。Esc 停止，⌘ / Ctrl + Enter 发送。', {class: 'hc-meta'}), retention);
   form.append(label, input, controls, help);
   const narrowViewport = globalThis.matchMedia?.('(max-width: 520px)');
   const visualViewport = globalThis.visualViewport;
@@ -97,7 +101,7 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
     input.focus({preventScroll: true});
     form.scrollIntoView?.({block: 'end', inline: 'nearest', behavior: 'auto'});
   }, {class: 'hc-return hc-secondary', 'data-hc': 'return-input', 'aria-controls': inputId, hidden: ''});
-  root.append(status, history, form, returnToInput);
+  root.append(status, taskInbox, history, form, returnToInput);
   container.append(root); // preserve the existing structured Ask query and other content
 
   function viewportBounds() {
@@ -120,8 +124,11 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
   function updateComposerLayout() {
     if (state.disposed) return;
     const box = form.getBoundingClientRect?.(), view = viewportBounds();
+    const reply=state.active?.record.response;
+    const reviewing=reply?.phase==='preview' || reply?.choices?.length || planOf(reply) || domainOf(reply)?.home_question === true
+      || ['approve','rollback','reconcile'].includes(state.active?.request.kind);
     // Leave at least half the viewport for reading; low-height/zoomed views use document flow.
-    const sticky = !!(narrowViewport?.matches && box?.height > 0 &&
+    const sticky = !!(!reviewing && narrowViewport?.matches && box?.height > 0 &&
       Number.isFinite(view.height) && box.height + 48 <= view.height / 2 &&
       (visualViewport?.scale ?? 1) === 1);
     const keepFocusedInput = root.getAttribute('data-hc-sticky') === 'true' && !sticky && document.activeElement === input;
@@ -135,7 +142,6 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
     if (!current(record)) return;
     const caption = record.article?.querySelector('.hc-caption');
     if (!caption) return;
-    history.open = true;
     if (narrowViewport?.matches) {
       caption.scrollIntoView?.({block: 'start', inline: 'nearest', behavior: 'auto'});
     } else if (pending) log.scrollTop = log.scrollHeight;
@@ -204,6 +210,12 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
     state.records = [];
     state.trimmed = 0;
     state.recovery = recovery;
+    state.taskRead?.controller.abort();
+    state.taskMutation?.controller.abort();
+    state.taskProposals = [];
+    state.taskReadAt = 0;
+    state.taskReadFailed = false;
+    drawTaskInbox();
     input.value = state.draftText;
   }
 
@@ -251,25 +263,44 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
   function addPlan(article, record, response) {
     const plan = planOf(response);
     if (!plan) return;
-    const block = element('section', null, {class: 'hc-plan', 'aria-label': '规则差异'});
-    block.append(element('h3', response.phase === 'cancelled' ? copyName('Friday-2293') : '本次差异'));
-    const surviving = new Set((plan.new_rule?.actions ?? []).map(action => action.id));
-    const choice = domainOf(response)?.choices?.find(item => item.record_id === plan.old?.id && item.expected_fingerprint === plan.old?.fingerprint);
+    const taskReview = domainOf(response)?.task_review;
+    const block = element('section', null, {class: 'hc-plan', 'aria-label': taskReview ? '后台任务' : '规则差异'});
+    const restored = plan.status === 'rolled_back';
+    block.append(element('h3', taskReview
+      ? restored ? '后台任务已停用' : plan.status === 'verified' ? '后台任务已启用' : response.phase === 'cancelled' ? '任务未启用' : '确认后台任务'
+      : response.phase === 'cancelled' ? copyName('Friday-2293') : restored ? '已恢复原设置' : plan.status === 'verified' ? '已应用的调整' : '本次差异'));
+    const newRule = plan.new_rule ?? plan.new?.rule;
+    const surviving = new Set((newRule?.actions ?? []).map(action => action.id));
+    const candidates = domainOf(response)?.choices ?? state.records.flatMap(other =>
+      other.request.operation_id === record.request.operation_id && planOf(other.response)?.id === plan.id
+        ? domainOf(other.response)?.choices ?? [] : []);
+    const choice = candidates.find(item => item.record_id === plan.old?.id && item.expected_fingerprint === plan.old?.fingerprint);
+    const retainedNames = new Map((plan.old?.rule?.actions ?? []).filter(action => surviving.has(action.id))
+      .map((action, index) => [action.id, choice?.retained_actions?.[index]]));
     const diff = element('ul', null, {class: 'hc-diff'});
+    if (taskReview) {
+      block.append(element('p', taskReview.title), element('p', taskReview.trigger_kind === 'schedule' ? taskReview.when : `当 ${taskReview.when}`));
+      for (const condition of (taskReview.conditions ?? []).slice(0, 8)) block.append(element('p', `条件 · ${condition}`, {class: 'hc-meta'}));
+      for (const [index, step] of (taskReview.steps ?? []).slice(0, 16).entries()) {
+        diff.append(element('li', `${index + 1} · ${step}`, {class: 'hc-retain'}));
+      }
+    }
     for (const action of plan.old?.rule?.actions ?? []) {
       const retained = surviving.has(action.id);
-      const name = !retained && choice ? choice.action_label : `${action.target ?? action.endpoint ?? action.id} · ${action.type}`;
-      diff.append(element('li', `${retained ? '保留' : '移除'} · ${name}`, {class: retained ? 'hc-retain' : 'hc-remove'}));
+      const fallback = {delay:'等待', 'light.set':'灯光控制', 'climate.set':'空调控制','device.set':'设备操作','feedback.speak':'语音提醒'}[action.type] ?? '自动化动作';
+      const name = (!retained && choice ? choice.action_label : retainedNames.get(action.id)) || fallback;
+      diff.append(element('li', `${restored ? '恢复' : retained ? '保留' : '移除'} · ${name}`, {class: restored || retained ? 'hc-retain' : 'hc-remove'}));
     }
     const preserved = element('details', null, {class: 'hc-details'});
     preserved.append(element('summary', copyName('Friday-2296')));
     for (const [key, label] of [['trigger', '触发'], ['conditions', '条件'], ['execution', '执行'], ['safety', '安全']]) {
-      const before = JSON.stringify(plan.old?.rule?.[key]), after = JSON.stringify(plan.new_rule?.[key]);
+      const before = JSON.stringify(plan.old?.rule?.[key]), after = JSON.stringify(newRule?.[key]);
       preserved.append(element('p', `${label} · ${before === after ? '保留' : '变化'} · ${after}`, {class: 'hc-meta'}));
     }
-    block.append(diff, preserved);
+    block.append(diff);
+    if (!taskReview) block.append(preserved);
     if (response.phase === 'preview' && response.plan_id && response.approval_digest) {
-      const action = button(copyName('Friday-2302'), () => void follow(record, 'approve', {
+      const action = button(taskReview ? '启用任务' : copyName('Friday-2302'), () => void follow(record, 'approve', {
         plan_id: response.plan_id, approval_digest: response.approval_digest,
       }), {'data-hc': 'approve', class: 'primary'});
       action.disabled = !current(record) || !!state.pending;
@@ -288,8 +319,8 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
     if (['needs_reconcile', 'verified'].includes(plan.status) && response.plan_id && current(record)) {
       const row = element('div', null, {class: 'hc-controls'});
       if (plan.status === 'needs_reconcile') row.append(button(copyName('Friday-2306'), () => void follow(record, 'reconcile', {plan_id: response.plan_id}), {'data-hc': 'reconcile'}));
-      row.append(button('恢复配置', () => void follow(record, 'rollback', {plan_id: response.plan_id}), {'data-hc': 'rollback'}));
-      block.append(row, element('p', '配置回滚不撤销过去的物理动作。', {class: 'hc-meta'}));
+      row.append(button(taskReview ? '停用任务' : '恢复配置', () => void follow(record, 'rollback', {plan_id: response.plan_id}), {'data-hc': 'rollback'}));
+      block.append(row);
     }
     article.append(block);
   }
@@ -363,6 +394,62 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
     }
   }
 
+  function addHomeReadings(article, record, response) {
+    const domain = domainOf(response), query = domain?.query;
+    if (domain?.home_question !== true || !query || !['state', 'devices'].includes(query.kind) ||
+        !Array.isArray(query.items)) return;
+    const readings = element('dl', null, {class: 'hc-readings', 'aria-label': query.kind === 'state' ? '设备读数' : '设备列表'});
+    const labels = {temperature: '温度', humidity: '湿度', power: '开关', brightness: '亮度',
+      battery: '电量', battery_level: '电量', co2: '二氧化碳', pm25: 'PM2.5', pm2_5: 'PM2.5',
+      illuminance: '照度', position: '开合位置', target_temperature: '设定温度'};
+    const values = new Map([['on', '已开'], ['off', '已关'], ['open', '已打开'], ['closed', '已关闭']]);
+    for (const item of query.items.slice(0, 50)) {
+      const row = element('div', null, {class: 'hc-reading'});
+      const title = element('dt', item.device_name || item.name || '设备');
+      const description = [item.room, query.kind === 'state' ? Object.hasOwn(labels, item.capability) ? labels[item.capability] : '状态' : null].filter(Boolean).join(' · ');
+      if (description) title.append(element('span', description, {class: 'hc-reading-label'}));
+      const value = element('dd', '', {class: 'hc-reading-value'});
+      row.append(title, value);
+      if (query.kind === 'state') {
+        let previous;
+        const update = () => {
+          const until = Date.parse(item.valid_until);
+          const fresh = item.quality === 'healthy' && item.freshness === 'canonical_valid'
+            && item.value !== null && Number.isFinite(until) && until > Date.now();
+          const text = fresh ? (values.get(item.value)
+            ?? (typeof item.value === 'boolean' ? item.value ? '是' : '否' : String(item.value))) : '暂不可用';
+          const status = fresh ? item.unit || '' : item.quality === 'stale' || Number.isFinite(until) && until <= Date.now()
+            ? '读数已过期' : item.quality === 'suspect' ? '读数待确认' : '尚无有效读数';
+          const key = JSON.stringify([fresh, text, status]);
+          if (key === previous) return;
+          previous = key;
+          row.setAttribute('data-reading-state', fresh ? 'current' : 'unavailable');
+          value.replaceChildren(element('span', text), element('span', status, {class: 'hc-reading-unit'}));
+        };
+        state.clocks.push(update);
+        update();
+      } else {
+        value.className = 'hc-reading-category';
+        value.textContent = ({lighting: '照明', climate: '空调', sensor: '传感器', switch: '开关',
+          cover: '窗帘', fan: '风扇'}[item.category] || '设备');
+      }
+      readings.append(row);
+    }
+    if (readings.children.length) article.append(readings);
+    const original = record.questionText;
+    if (original && opaque(domain.refresh_ref)) {
+      const refresh = button('重新查询', () => {
+        if (!current(record) || state.pending || !transportReady()) return;
+        state.records = state.records.filter(item => item.request.operation_id !== record.request.operation_id);
+        void send({session_id: state.sessionId, turn_id: uid('turn'), operation_id: record.request.operation_id,
+          idempotency_key: uid('key'), kind: 'turn', lane: 'query', candidate_id:domain.refresh_ref,
+          expected_context:response.context_token}, original, false, null, original);
+      }, {'data-hc': 'refresh-readings', class: 'hc-secondary'});
+      refresh.disabled = !current(record) || !!state.pending || !transportReady();
+      article.append(refresh);
+    }
+  }
+
   function addActionTrace(article, record, response) {
     const trace = domainOf(response);
     if (!trace?.action_id || !trace.request || !trace.route) return;
@@ -398,14 +485,15 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
       const mode = element('p', '', {class: 'hc-mode', 'data-hc': 'mode'});
       const effective = domain.effective;
       state.clocks.push(() => {
+        const label = {sleep:'休息',manual:'手动接管',awake:'日常',unknown:'状态待确认'}[effective.mode]??'状态待确认';
+        if(effective.status==='active'&&effective.persistent===true){mode.textContent=label+' · 保持到你更改';return;}
         const until = Date.parse(effective.valid_until);
         const remaining = Math.max(0, Math.min(Number(effective.remaining_seconds) || 0, Math.ceil((until - Date.now()) / 1000)));
-        const label = {sleep: '显式睡眠', manual: '手动', awake: '清醒', unknown: '模式未知'}[effective.mode] ?? effective.mode;
-        const statusLabel = {expired: '已过期', unavailable: '未接入', unknown: '状态未知'}[effective.status] ?? effective.status;
-        mode.textContent = effective.status === 'active' && Number.isFinite(remaining) && remaining > 0 ? `当前状态、剩余时间与处理服务。${label} · 剩余 ${remaining} 秒 · ${effective.backend}` :
-          `当前模式需核对，请查看完整说明。${label ?? '模式未知'} · ${effective.status === 'active' ? '展示窗口已过期或时间未知' : statusLabel} · 剩余 0 秒 · ${effective.backend}`;
+        const statusLabel = {expired: '已过期', unavailable: '暂不可用', unknown: '待确认'}[effective.status] ?? '待确认';
+        mode.textContent = effective.status === 'active' && Number.isFinite(remaining) && remaining > 0 ? `${label} · 剩余 ${remaining} 秒` :
+          `家庭状态${effective.status==='active'?'待重新确认':statusLabel}`;
       });
-      article.append(mode, element('p', '适用范围以执行服务和有效时间为准。覆盖范围以原 runtime 和有效窗口为准。', {class: 'hc-meta'}));
+      article.append(mode);
     }
     if (response.domain?.output) {
       const output = response.domain.output;
@@ -426,9 +514,96 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
     }
   }
 
+  async function refreshTaskProposals() {
+    if (state.disposed || state.taskRead || state.taskMutation || !transportReady() || typeof state.client?.taskProposals !== 'function') return;
+    const read = {controller: new AbortController(), generation: state.generation, session: state.sessionId};
+    state.taskRead = read;
+    state.taskReadAt = Date.now();
+    const timeout = setTimeout(() => read.controller.abort(), 5000);
+    try {
+      const report = await state.client.taskProposals({signal: read.controller.signal});
+      if (state.disposed || read.controller.signal.aborted || read.generation !== state.generation || read.session !== state.sessionId) return;
+      const proposals = report?.proposals;
+      if (!Array.isArray(proposals) || proposals.length > 8 || new Set(proposals.map(p => p.id)).size !== proposals.length || !proposals.every(p =>
+        typeof p.id === 'string' && /^[a-f0-9]{64}$/.test(p.id) && typeof p.text === 'string' && p.text.length <= 1024 && bytes(p.text) <= 4096 &&
+        typeof p.task_review?.title === 'string' && p.task_review.title.length <= 128 && Number.isFinite(Date.parse(p.expires_at)))) throw Error('task_proposals_unavailable');
+      state.taskProposals = proposals.filter(p => Date.parse(p.expires_at) > Date.now());
+      state.taskReadFailed = false;
+      drawTaskInbox();
+      const focused = state.taskProposals.find(p => p.id === state.proposalFocus);
+      if (focused && !state.pending) { state.proposalFocus = null; void reviewTask(focused); }
+    } catch (_) {
+      if (!state.disposed && read.generation === state.generation && read.session === state.sessionId) {
+        state.taskReadFailed = true;
+        drawTaskInbox();
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (state.taskRead === read) state.taskRead = null;
+      if (!state.disposed && state.taskReadAt === 0 && transportReady()) void refreshTaskProposals();
+    }
+  }
+
+  function drawTaskInbox() {
+    const proposals = state.taskProposals.filter(p => Date.parse(p.expires_at) > Date.now());
+    const fingerprint = JSON.stringify([proposals, !!state.pending, !!state.taskMutation, transportReady(), state.taskReadFailed]);
+    if (fingerprint === taskInboxFingerprint) return;
+    taskInboxFingerprint = fingerprint;
+    const focused = taskInbox.contains?.(document.activeElement);
+    taskInbox.replaceChildren();
+    taskInbox.hidden = !proposals.length;
+    if (!proposals.length) { if (focused) input.focus(); return; }
+    taskInbox.append(element('h2', '待确认的语音任务'));
+    if (state.taskReadFailed) taskInbox.append(element('p', '任务列表暂未更新，请重新读取后核对。', {class: 'hc-meta', role: 'status'}),
+      button('重新读取任务', () => void refreshTaskProposals(), {'data-hc': 'refresh-tasks'}));
+    for (const proposal of proposals) {
+      const row = element('div', null, {class: 'hc-task-proposal'});
+      row.append(element('div'), element('div', null, {class: 'hc-controls'}));
+      row.children[0].append(element('h3', proposal.task_review.title), element('p', proposal.text, {class: 'hc-meta'}));
+      const review = button('核对任务', () => void reviewTask(proposal), {'data-hc': 'review-task', class: 'primary'});
+      const discard = button('忽略', async () => {
+        const mutation = {controller: new AbortController(), generation: state.generation, session: state.sessionId};
+        state.taskMutation = mutation;
+        state.taskRead?.controller.abort();
+        drawTaskInbox();
+        const timeout = setTimeout(() => mutation.controller.abort(), 5000);
+        try {
+          await state.client.discardTaskProposal(proposal.id, {signal: mutation.controller.signal});
+          if (!state.disposed && mutation.generation === state.generation && mutation.session === state.sessionId)
+            state.taskProposals = state.taskProposals.filter(p => p.id !== proposal.id);
+        } catch (_) {
+          if (!state.disposed && mutation.generation === state.generation && mutation.session === state.sessionId) state.taskReadFailed = true;
+        } finally {
+          clearTimeout(timeout);
+          if (state.taskMutation === mutation) state.taskMutation = null;
+          if (!state.disposed && mutation.generation === state.generation && mutation.session === state.sessionId) {
+            state.taskReadAt = 0;
+            drawTaskInbox();
+            void refreshTaskProposals();
+          }
+        }
+      }, {'data-hc': 'discard-task', class: 'hc-secondary'});
+      review.disabled = !!state.pending || !!state.taskMutation || !transportReady() || state.taskReadFailed;
+      discard.disabled = !!state.pending || !!state.taskMutation || typeof state.client?.discardTaskProposal !== 'function';
+      row.children[1].append(review, discard);
+      taskInbox.append(row);
+    }
+    if (focused) taskInbox.querySelector('button')?.focus();
+  }
+
+  function reviewTask(proposal) {
+    if (expireSession() || state.pending || state.taskMutation || !transportReady() || state.taskReadFailed || Date.parse(proposal.expires_at) <= Date.now()) return;
+    abandon();
+    state.taskProposals = state.taskProposals.filter(p => p.id !== proposal.id);
+    return send({session_id: state.sessionId, turn_id: uid('turn'), operation_id: uid('operation'), idempotency_key: uid('key'),
+      kind: 'turn', lane: 'tasks', proposal_ref: proposal.id}, '语音任务 · ' + proposal.text, false, proposal.text, proposal.text);
+  }
+
   function tick() {
     if (expireSession()) { render(); return; }
     for (const updateClock of state.clocks) updateClock();
+    drawTaskInbox();
+    if (document.hidden !== true && Date.now() - state.taskReadAt > 5000) void refreshTaskProposals();
   }
 
   function render() {
@@ -444,7 +619,10 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
       const article = element('article', null, {class: 'hc-answer', tabindex: '-1'});
       if (record.response) {
         const response = record.response;
-        article.append(element('p', response.caption, {class: 'hc-caption'}));
+        const caption = element('p', response.caption, {class: 'hc-caption'});
+        if (domainOf(response)?.home_question === true && domainOf(response)?.query?.simulated === true)
+          caption.append(element('span', '示例数据', {class: 'hc-reading-simulated'}));
+        article.append(caption);
         if (response.choices?.length) {
           const choices = element('div', null, {class: 'hc-choices', 'aria-label': '澄清选择'});
           for (const choice of response.choices) {
@@ -456,16 +634,18 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
         }
         addPlan(article, record, response);
         addActionTrace(article, record, response);
+        addHomeReadings(article, record, response);
         addEvidence(article, record, response);
         addModeAndOutput(article, response);
-        if (response.limitations?.length) {
+        if (response.limitations?.length && domainOf(response)?.home_question !== true) {
           const coverage = element('details', null, {class: 'hc-details'});
           coverage.append(element('summary', '来源范围'));
           for (const line of response.limitations) coverage.append(element('p', line));
           article.append(coverage);
         }
         const details = element('details', null, {class: 'hc-details'});
-        details.append(element('summary', response.phase === 'cancelled' ? copyName('Friday-2344') : copyName('Friday-2345')));
+        details.append(element('summary', domainOf(response)?.home_question === true ? '查询详情' : response.phase === 'cancelled' ? copyName('Friday-2344') : copyName('Friday-2345')));
+        if (domainOf(response)?.home_question === true) for (const line of response.limitations ?? []) details.append(element('p', line));
         details.append(element('p', qualifier(response), {class: 'hc-meta'}));
         addTechnicalRecord(details, response);
         details.append(element('pre', JSON.stringify(response.domain, null, 2)));
@@ -498,18 +678,21 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
     else if (state.recovery === 'editing') showStatus('继续编辑', '核对原记录后再发送');
     else if (state.active?.record.error) showStatus('待核对', '请求结果尚未确认');
     else showStatus('可以开始了', '问问家里的状态，或告诉 Friday 你想做什么。');
+    status.hidden = !!(!state.pending && !state.recovery && state.active?.record.response && transportReady());
     submit.disabled = !transportReady() || !!state.pending;
     fresh.disabled = !transportReady();
+    fresh.hidden = !state.records.length;
     stop.disabled = !transportReady() || !state.active;
+    stop.hidden = !state.active || !state.pending && domainOf(state.active?.record.response)?.home_question === true;
     tick();
     updateComposerLayout();
   }
 
-  async function send(request, text, useCancel = false, editableText = null) {
+  async function send(request, text, useCancel = false, editableText = null, questionText = null) {
     if (!transportReady() || state.disposed) return;
     const generation = state.generation, token = state.sourceToken, sequence = ++state.sequence;
     const controller = new AbortController();
-    const record = {request, text, response: null, error: null, editableText};
+    const record = {request, text, response: null, error: null, editableText, questionText:request.text || questionText};
     remember(record);
     state.active = {request, record};
     state.pending = {request, controller};
@@ -546,7 +729,7 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
       ...(response.context_token ? {expected_context: response.context_token} : {}), ...fields,
     };
     const label = {approve: copyName('Friday-2351'), reconcile: copyName('Friday-2306'), rollback: '恢复配置', playback: '查看原片'}[kind] ?? '选择候选';
-    return send(request, label);
+    return send(request, label, false, null, record.questionText);
   }
 
   async function stopCurrent() {
@@ -619,12 +802,15 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
         if (response.caption) status.textContent = response.caption;
       }
       render();
+      void refreshTaskProposals();
     },
     dispose() {
       if (state.disposed) return;
       abandon();
       ++state.generation;
       state.disposed = true;
+      state.taskRead?.controller.abort();
+      state.taskMutation?.controller.abort();
       clearInterval(timer);
       composerObserver?.disconnect();
       globalThis.removeEventListener?.('resize', updateComposerLayout);

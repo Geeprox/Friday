@@ -1,5 +1,7 @@
 """Local relative floor projection and conservative 2D seat pointing. No identity inference."""
 
+import copy
+import json
 import math
 
 import cv2
@@ -7,34 +9,66 @@ import numpy as np
 
 from homeplane.embodied.gestures import GestureStabilizer, classify_hand
 from homeplane.embodied.pose_rules import iou
+from homeplane.embodied.calibration_store import CalibrationStore
 
 DEFAULT = {
-    "mode": "approximate",
+    "mode": "unconfigured",
     "metric": False,
     "dynamic_seats": True,
-    "camera": {"map": [0.18, 0.96], "mount": "电视墙右上角吊顶（面向电视）"},
-    "anchors": [
-        {"name": "前侧地面", "image": [0.40, 0.98], "map": [0.08, 0.94]},
-        {"name": "沙发左侧地面", "image": [0.53, 0.65], "map": [0.12, 0.54]},
-        {"name": "餐桌左侧地面", "image": [0.665, 0.515], "map": [0.31, 0.24]},
-        {"name": "餐桌右侧地面", "image": [0.96, 0.505], "map": [0.92, 0.24]},
-    ],
-    "seats": [
-        {"id": 1, "image": [0.70, 0.36], "map": [0.40, 0.18]},
-        {"id": 2, "image": [0.78, 0.36], "map": [0.60, 0.18]},
-        {"id": 3, "image": [0.86, 0.40], "map": [0.78, 0.28]},
-        {"id": 4, "image": [0.82, 0.49], "map": [0.60, 0.43]},
-        {"id": 5, "image": [0.73, 0.49], "map": [0.40, 0.43]},
-        {"id": 6, "image": [0.65, 0.41], "map": [0.25, 0.28]},
-    ],
-    "furniture": [
-        {"name": "餐桌", "rect": [0.35, 0.23, 0.30, 0.14]},
-        {"name": "沙发", "rect": [0.30, 0.55, 0.46, 0.14]},
-        {"name": "电视", "rect": [0.30, 0.92, 0.45, 0.025]},
-    ],
-    "outline": [[0.05, 0.04], [0.95, 0.04], [0.95, 0.97], [0.05, 0.97]],
-    "note": "按米家户型粗标 · 相对坐标 · 座位待校准",
+    "camera": None,
+    "anchors": [],
+    "seats": [],
+    "furniture": [],
+    "outline": [],
+    "note": "尚未标定空间",
 }
+
+
+def calibration_draft(config):
+    """Editing handles on a unit canvas, never an observed household layout."""
+    draft = copy.deepcopy(config)
+    if not draft.get("anchors"):
+        draft["anchors"] = [
+            dict(name=f"A{i + 1}", image=list(p), map=list(p))
+            for i, p in enumerate(((0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)))
+        ]
+    if not draft.get("seats"):
+        draft["seats"] = [
+            dict(id=i + 1, image=[x, 0.5], map=[x, 0.5]) for i, x in enumerate((0.25, 0.75))
+        ]
+    return draft
+
+
+def load_room(folder, picture, *, factory=None):
+    """Load existing calibration offloop; an ordinary frame never saves one."""
+    config_path, reference_path = folder / "room-calibration.json", folder / "room-reference.jpg"
+    make = factory or Room
+
+    def read(path, budget):
+        with path.open("rb") as stream:
+            data = stream.read(budget + 1)
+        if len(data) > budget:
+            raise ValueError("calibration_size_invalid")
+        return data
+
+    try:
+        try:
+            config, reference, _ = CalibrationStore(folder).read()
+        except FileNotFoundError:
+            pass
+        else:
+            return make(config, reference)
+        config = json.loads(read(config_path, 64 * 1024)) if config_path.exists() else copy.deepcopy(DEFAULT)
+        reference = read(reference_path, 2_000_000) if reference_path.exists() else picture
+        if not reference_path.exists():
+            config = dict(config, mode="unconfigured")
+        return make(config, reference)
+    except (OSError, ValueError, TypeError, KeyError, RecursionError, cv2.error):
+        # Calibration is optional. Preserve its files, and keep the actual body
+        # and gesture path available on an unprojected, current reference.
+        room = make(copy.deepcopy(DEFAULT), picture)
+        room.calibration_error = "calibration_unavailable"
+        return room
 
 
 def project(matrix, p):
@@ -49,7 +83,7 @@ def validate(config):
         raise ValueError("invalid_config")
     anchors = config.get("anchors", [])
     seats = config.get("seats", [])
-    if not 4 <= len(anchors) <= 12 or not 2 <= len(seats) <= 12:
+    if not 4 <= len(anchors) <= 12 or not (0 if config.get("dynamic_seats", True) else 2) <= len(seats) <= 12:
         raise ValueError("invalid_count")
     for obj in anchors + seats:
         for key in ("image", "map"):
@@ -57,7 +91,7 @@ def validate(config):
             if (
                 not isinstance(p, list)
                 or len(p) != 2
-                or any(not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in p)
+                or any(type(v) not in (int, float) or not 0 <= v <= 1 or not math.isfinite(v) for v in p)
             ):
                 raise ValueError("invalid_point")
     if sorted(s.get("id") for s in seats) != list(range(1, len(seats) + 1)):
@@ -78,8 +112,17 @@ def validate(config):
 
 class Room:
     def __init__(self, config, reference):
-        self.config = config
-        self.floor = validate(config)
+        if not isinstance(config, dict):
+            raise ValueError("invalid_config")
+        self.calibration_candidate = dict(copy.deepcopy(DEFAULT), **copy.deepcopy(config))
+        self.config = copy.deepcopy(self.calibration_candidate)
+        # Older automatic "approximate" files carry no manual calibration
+        # evidence. Preserve them for the editor, but do not publish their map.
+        calibrated = (config.get("mode") == "relative_calibrated"
+                      or config.get("mode") == "approximate" and config.get("calibration_source") == "manual")
+        self.floor = validate(config) if calibrated and config.get("mode") != "unconfigured" else None
+        if self.floor is None:
+            self.config.update(copy.deepcopy(DEFAULT))
         self.reference = reference
         self.orb = cv2.ORB_create(nfeatures=1000, fastThreshold=12)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
@@ -151,7 +194,7 @@ class Room:
                 self.pending[p["id"]] = old
                 if now - old["since"] < 0.45 or old["count"] < 3 or self.next_seat > 12:
                     continue
-                existing = {"id": self.next_seat, "map": [-1, -1], "reference": None}
+                existing = {"id": self.next_seat, "map": None, "reference": None}
                 self.players[self.next_seat] = existing
                 self.next_seat += 1
             existing.update(track=p["id"], last=now, active=True, current_image=image)
@@ -176,7 +219,10 @@ class Room:
                     if inverse is not None and s.get("reference") is not None
                     else None
                 )
-            result.append({k: v for k, v in s.items() if k not in ("reference", "track", "last")})
+            result.append(dict(
+                ((k, v) for k, v in s.items() if k not in ("reference", "track", "last")),
+                track=s["track"] if s["active"] else None,
+            ))
         return result
 
     def features(self, picture, people):
@@ -308,6 +354,7 @@ class Room:
         if moving:
             objects = []
         inverse = np.linalg.inv(self.registration) if self.registration is not None else None
+        ground = self.floor @ self.registration if self.floor is not None and self.registration is not None else None
         ratio = width / max(1, height)
         observed = []
         for o in sorted(objects or [], key=lambda o: o["confidence"], reverse=True):
@@ -322,13 +369,13 @@ class Room:
                 continue
             b = o["box"]
             left = (
-                project(self.floor @ self.registration, [b["x"], b["y"] + b["h"]])
-                if self.registration is not None
+                project(ground, [b["x"], b["y"] + b["h"]])
+                if ground is not None
                 else None
             )
             right = (
-                project(self.floor @ self.registration, [b["x"] + b["w"], b["y"] + b["h"]])
-                if self.registration is not None
+                project(ground, [b["x"] + b["w"], b["y"] + b["h"]])
+                if ground is not None
                 else None
             )
             o["ground_edge"] = (
@@ -374,11 +421,11 @@ class Room:
             if len(motion_feet) == 2 and self.registration is not None:
                 center = [sum(p[k] for p in motion_feet) / 2 for k in ("x", "y")]
                 reference = project(self.registration, center)
-                ground = project(self.floor @ self.registration, center)
-                if reference and ground and all(-2 <= v <= 3 for v in ground):
+                floor_point = project(ground, center) if ground is not None else None
+                if reference and all(-2 <= v <= 3 for v in reference):
                     person["motion_anchor"] = {
                         "reference": reference,
-                        "floor": ground,
+                        "floor": floor_point,
                         "method": "two_visible_ankles",
                     }
             hips = [j[n] for n in ("leftHip", "rightHip") if n in j and j[n].get("confidence", 0) >= 0.4]
@@ -386,9 +433,9 @@ class Room:
                 person["motion_torso"] = project(
                     self.registration, [sum(q[k] for q in hips) / 2 for k in ("x", "y")]
                 )
-            if floor_feet and self.registration is not None:
+            if floor_feet and ground is not None:
                 foot = max(floor_feet, key=lambda p: p["y"])
-                p = project(self.floor @ self.registration, [foot["x"], foot["y"]])
+                p = project(ground, [foot["x"], foot["y"]])
                 if p and -0.05 <= p[0] <= 1.05 and -0.05 <= p[1] <= 1.05:
                     person["position"] = {
                         "x": p[0],
@@ -432,7 +479,10 @@ class Room:
                 seats = []
                 for s in self.players.values():
                     if now - s["last"] < 60:
-                        seats.append(dict(s, active=False, located=False, current_image=None))
+                        seats.append(dict(
+                            ((k, v) for k, v in s.items() if k not in ("reference", "track", "last")),
+                            active=False, located=False, current_image=None, track=None,
+                        ))
             else:
                 seats = self.player_seats(people, inverse, now)
         pointing = []
@@ -540,6 +590,7 @@ class Room:
         self.holds = {k: v for k, v in self.holds.items() if k in seen and now - v["last"] <= 0.3}
         return {
             "mode": self.config["mode"],
+            "position_status": self.config["mode"] if self.floor is not None else "unconfigured",
             "metric": False,
             "note": self.config["note"],
             "registration": self.reg_info,

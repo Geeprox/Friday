@@ -98,12 +98,14 @@ class ReadScope:
 
     loopback_console is the existing local Console boundary, not OS app identity.
     An ARL host must supply registered_peer plus an actual approved scoped grant.
+    qualified_ambient is the app-owned admitted worker read port; it cannot read
+    history or family media and does not inherit the Console identity.
     """
 
     subject: str
     revision: str
     expires_at: datetime
-    boundary: Literal["loopback_console", "registered_peer", "unverified"] = "unverified"
+    boundary: Literal["loopback_console", "registered_peer", "qualified_ambient", "unverified"] = "unverified"
     rooms: frozenset[str] = frozenset()
     entities: frozenset[str] = frozenset()
     all_home: bool = False
@@ -113,7 +115,7 @@ class ReadScope:
 
     def __post_init__(self):
         if (
-            self.boundary not in {"loopback_console", "registered_peer", "unverified"}
+            self.boundary not in {"loopback_console", "registered_peer", "qualified_ambient", "unverified"}
             or any(type(value) is not bool for value in (self.all_home, self.history, self.permitted))
             or type(self.subject) is not str or not 0 < len(self.subject) <= 64
             or type(self.revision) is not str or not 0 < len(self.revision) <= 128
@@ -130,6 +132,9 @@ class ReadScope:
                    for c in text)
         ):
             raise ValueError("invalid_read_scope")
+        if self.boundary == 'qualified_ambient' and (
+                self.subject != 'embodied_voice' or self.history or self.family_media_sources):
+            raise ValueError('invalid_ambient_read_scope')
 
 
 class QueryItem(BaseModel):
@@ -230,7 +235,7 @@ class HomeQueryEvent(QueryItem):
 
 class HomeQueryPermissionScope(QueryItem):
     subject: Label
-    boundary: Literal["loopback_console", "registered_peer", "unverified"]
+    boundary: Literal["loopback_console", "registered_peer", "qualified_ambient", "unverified"]
     revision: Label
     requested_rooms: list[Label] = Field(max_length=8)
     requested_entities: list[Label] = Field(max_length=16)

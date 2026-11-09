@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from homeplane.api import create_app
+from tests.test_household_timezone_wiring import OfflineARL
 
 PHRASE = "以后我回家不要自动开空调"
 sequence = itertools.count()
@@ -22,7 +23,8 @@ async def application(tmp_path, *, timezone="Asia/Shanghai", adapter=None, autho
     root = tmp_path.resolve()
     app = create_app(adapter=adapter, authority_path=authority_path,
                      db_path=root / "traces.sqlite", settings_path=root / "settings.json",
-                     flow_household_timezone=timezone)
+                     flow_household_timezone=timezone, arl_runtime=OfflineARL(),
+                     background_enabled=False)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                     base_url="http://testserver",
@@ -227,7 +229,7 @@ async def test_control_uses_original_action_controller_without_fabricated_simula
 
 
 @pytest.mark.asyncio
-async def test_actual_app_original_mock_action_preview_live_approval_is_held(tmp_path):
+async def test_actual_app_original_mock_action_approval_and_fresh_brightness_readback(tmp_path):
     from test_homeplane_actions import rig
 
     # All authority and transport data are the existing synthetic fixture in
@@ -245,14 +247,71 @@ async def test_actual_app_original_mock_action_preview_live_approval_is_held(tmp
         trace = domain(preview)
         assert trace == app.state.core.store.light_action(preview["plan_id"]).model_dump(mode="json")
         assert trace["status"] == "planned" and trace["real_write_attempted"] is False
-        held = await turn(client, request(ready["session_id"], operation="control:1", kind="approve",
+        done = await turn(client, request(ready["session_id"], operation="control:1", kind="approve",
             expected_context=preview["context_token"], plan_id=preview["plan_id"],
             approval_digest=preview["approval_digest"]))
-        assert held["code"] == "flow_live_write_held" and held["phase"] == "unavailable"
-        assert not posts
+        assert done['phase'] == 'result', done
+        assert domain(done)['status'] == 'reported_match' and len(posts) == 1
         saved = app.state.core.store.light_action(preview["plan_id"])
-        assert saved.status == "planned" and saved.real_write_attempted is False
+        assert saved.status == 'reported_match' and saved.real_write_attempted is True
         assert saved.physically_confirmed is False
+        assert app.state.core_rule_runtime.status()['manual_hold_active'] is True
+        row['attributes']['brightness'] = 80
+        follow = await turn(client, request(ready['session_id'], operation='control:2',
+                                           lane='control', text='亮一点'))
+        assert follow['phase'] == 'preview', follow
+        assert domain(follow)['request']['desired']['brightness'] == 131
+        assert len(posts) == 1
+        done = await turn(client, request(ready['session_id'], operation='control:2', kind='approve',
+            expected_context=follow['context_token'], plan_id=follow['plan_id'],
+            approval_digest=follow['approval_digest']))
+        assert domain(done)['status'] == 'reported_match' and len(posts) == 2
+        assert row['attributes']['brightness'] == 131
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault_kind,expected', [('timeout','unknown_outcome'), ('deny','failed')])
+async def test_live_control_adapter_failure_never_retries_or_reports_physical_success(tmp_path, fault_kind, expected):
+    from test_homeplane_actions import rig
+    core, row, _, posts, fault, path, _ = rig(tmp_path.resolve())
+    row['attributes']['friendly_name'] = '客厅灯'
+    adapter = core.adapter
+    core.actions.close()
+    core.store.close()
+    async with application(tmp_path, adapter=adapter, authority_path=path) as (_, client):
+        session = (await bootstrap(client))['session_id']
+        preview = await turn(client, request(session, operation='control:failure', lane='control', text='打开客厅灯'))
+        assert preview['phase'] == 'preview'
+        fault['send'] = fault_kind
+        done = await turn(client, request(session, operation='control:failure', kind='approve',
+            expected_context=preview['context_token'], plan_id=preview['plan_id'],
+            approval_digest=preview['approval_digest']))
+        assert domain(done)['status'] == expected and len(posts) == 1
+        assert domain(done)['physically_confirmed'] is False
+        repeated = await turn(client, request(session, operation='control:failure', kind='approve',
+            expected_context=done['context_token'], plan_id=preview['plan_id'],
+            approval_digest=preview['approval_digest']))
+        assert domain(repeated)['status'] == expected and len(posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_control_authority_revocation_after_preview_never_dispatches(tmp_path):
+    from test_homeplane_actions import rig
+    core, row, _, posts, _, path, _ = rig(tmp_path.resolve())
+    row['attributes']['friendly_name'] = '客厅灯'
+    adapter = core.adapter
+    core.actions.close()
+    core.store.close()
+    async with application(tmp_path, adapter=adapter, authority_path=path) as (app, client):
+        session = (await bootstrap(client))['session_id']
+        preview = await turn(client, request(session, operation='control:revoke', lane='control', text='打开客厅灯'))
+        assert preview['phase'] == 'preview'
+        app.state.core.actions.pause()
+        denied = await turn(client, request(session, operation='control:revoke', kind='approve',
+            expected_context=preview['context_token'], plan_id=preview['plan_id'],
+            approval_digest=preview['approval_digest']))
+        assert denied['phase'] != 'result' and posts == []
+        assert app.state.core.store.light_action(preview['plan_id']).real_write_attempted is False
 
 
 @pytest.mark.asyncio

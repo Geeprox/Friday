@@ -72,4 +72,7 @@ def install(router):
     async def test():
         if configuration().get('speech_output') != 'homepod':
             raise HTTPException(409, detail='homepod_not_selected')
-        return await airplay.play(None, '我是 Friday，这是 HomePod 的语音播报测试。')
+        if (PRIVATE / 'voice-paused').exists():
+            return dict(status='paused')
+        from .speech import Speaker
+        return await Speaker().say('我是 Friday，这是 HomePod 的语音播报测试。')

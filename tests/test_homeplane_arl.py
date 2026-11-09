@@ -90,8 +90,20 @@ class SDK:
 
 @pytest.fixture
 def setup(tmp_path):
+    from types import SimpleNamespace
+    class Session:
+        def __init__(self, home):
+            self.client = SimpleNamespace(home=home, app_session='synthetic-session',
+                ping_app_session=lambda:dict(connected=self.connected, session_id='synthetic-session'))
+            self.connected, self.error, self.accepted = False, None, []
+        def start(self):
+            self.connected = True
+            self.accepted = ['codex.text.plan.v1']
+        def close(self):
+            self.connected = False
     sdk = SDK()
-    runtime = ARLRuntime(lambda: tmp_path, client_factory=sdk.factory, settings_client_factory=sdk.settings_factory)
+    runtime = ARLRuntime(lambda: tmp_path, client_factory=sdk.factory, settings_client_factory=sdk.settings_factory,
+                         application_factory=Session)
     return runtime, sdk
 
 
@@ -112,7 +124,7 @@ async def test_passive_status_and_explicit_bootstrap(setup):
 
 
 @pytest.mark.asyncio
-async def test_explicit_bootstrap_only_when_public_socket_is_absent(setup):
+async def test_explicit_connection_does_not_bootstrap_a_separate_runtime(setup):
     runtime, sdk = setup
     original = sdk.rpc
     def rpc(method, params=None):
@@ -124,9 +136,10 @@ async def test_explicit_bootstrap_only_when_public_socket_is_absent(setup):
     assert (await runtime.status())["status"] == "disconnected"
     assert not any(m == "connect" for m, _ in sdk.calls)
     sdk.calls.clear()
-    assert (await runtime.status(start=True))["ready"]
-    assert [m for m, _ in sdk.calls] == ["overview", "connect", "overview"]
-    assert sdk.factory_calls[-1][1] is True
+    report = await runtime.status(start=True)
+    assert report['status'] == 'disconnected' and not report['ready']
+    assert [m for m, _ in sdk.calls] == ["overview"]
+    assert all(start is False for _, start in sdk.factory_calls)
 
 
 @pytest.mark.asyncio
@@ -256,17 +269,21 @@ async def test_legacy_wrappers_reuse_arl_and_never_spawn_or_shortcut():
             self.calls.append((args, kwargs))
             if self.error:raise ARLError(self.error)
             return {"simulated": False, "decision": {"label": "simple", "confidence": .99}}
+        async def complete_scenario(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            if self.error: raise ARLError(self.error)
+            return {'simulated':False,'text':'{}'}
     runtime = Runtime()
     result = await ARLRouteDecision(Settings(), runtime).classify("simulated")
     assert result["confidence"] == 0 and result["shadow"] and runtime.calls[0][0][0] == "laya_mlx"
     runtime.calls.clear()
-    with pytest.raises(ARLError, match="explicit_model_required"):
+    with pytest.raises(ARLError, match="model_request_id_required"):
         await ARLPlanner(Settings(), runtime).plan({}, {})
     assert not runtime.calls
     runtime.error = 'invalid_arguments'
     with pytest.raises(ARLError, match="arl_planner_context_contract_insufficient"):
-        await ARLPlanner(Settings(codex_model="simulated-version"), runtime).plan({}, {})
-    assert len(runtime.calls) == 1 and runtime.calls[0][0][0] == 'codex_app_server'
+        await ARLPlanner(Settings(arl_model_tasks_enabled=True, codex_model="simulated-version"), runtime).plan({'model_request_id':'synthetic-request'}, {})
+    assert len(runtime.calls) == 1 and runtime.calls[0][0][0] == 'home_planning'
 
 
 @pytest.mark.asyncio
@@ -294,7 +311,7 @@ async def test_media_never_bypasses_missing_arl_capabilities():
 
 def test_sdk_bootstrap_never_inherits_known_household_or_development_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME_HA_TOKEN", "SIMULATED-private-never-forward")
-    with pytest.raises(ARLError, match="runtime_launch_environment_not_isolated"):
+    with pytest.raises(ARLError, match="runtime_managed_by_arl"):
         sdk_client(tmp_path, start=True)
 
 

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from .temporal_model import MlxWindowProcess, VisualResult, model_readiness
+from .temporal_model import MlxWindowProcess, VisualResult, VisualSourceChanged, model_readiness
 
 
 @dataclass
@@ -19,6 +20,7 @@ class WindowState:
     seen: float = 0
     submitted: float = -math.inf
     candidate: tuple | None = None
+    followup: bool = False
     recorded: dict = field(default_factory=dict)
 
 
@@ -28,8 +30,10 @@ class TemporalReviewer:
         self.engine = engine or MlxWindowProcess()
         self.clock, self.wall = clock, wall
         self.windows = {}
+        self.served = {}
         self.task = None
         self.active_camera = None
+        self.phase = None
         self.last_camera = None
         self.cleanup_task = None
         self.error = None
@@ -71,7 +75,9 @@ class TemporalReviewer:
             if len(self.windows) >= 8:
                 self.skipped += 1
                 return
-            state = self.windows[camera] = WindowState(session, revision)
+            # View changes retire every pixel/candidate, but must not erase
+            # scheduling debt and repeatedly put this camera before its peers.
+            state = self.windows[camera] = WindowState(session, revision, submitted=self.served.get(camera, -math.inf))
         state.seen = captured
         if not state.frames or captured - state.frames[-1][0] >= 1:
             state.frames.append((captured, jpeg))
@@ -88,17 +94,60 @@ class TemporalReviewer:
             for index, (cid, other) in enumerate(self.windows.items())
             if len(other.frames) == 4 and 0 <= now - other.seen <= 1.5 and now - other.submitted >= 6
         ]
-        if eligible and min(eligible)[2] != camera:
+        # One timely confirmation prevents a slower shared model from
+        # expiring every camera's candidate before its second ordinary turn.
+        # It cannot chain more follow-ups ahead of the other eligible feeds.
+        priority = [item for item in eligible if self._followup_ready(self.windows[item[2]])]
+        if eligible and min(priority or eligible)[2] != camera:
             return
+        followup = self._followup_ready(state)
+        state.followup = False
         state.submitted = now
+        if camera not in self.served and len(self.served) >= 8:
+            inactive = [cid for cid in self.served if cid not in self.windows]
+            if inactive:
+                self.served.pop(min(inactive, key=self.served.get))
+        self.served[camera] = now
         self.last_submit = now
         self.active_camera = camera
-        self.task = asyncio.create_task(self._review(camera, state, tuple(state.frames)))
+        self.task = asyncio.create_task(self._review(camera, state, tuple(state.frames), allow_followup=not followup))
         self.task.add_done_callback(self._finished)
+
+    def _corroboration_limit(self):
+        return max(18, min(60, len(self.windows)*6+12))
+
+    def _followup_ready(self, state):
+        previous = state.candidate
+        return bool(state.followup and previous and state.frames
+                    and state.frames[0][0] > previous[1]
+                    and 0 < state.frames[-1][0]-previous[1] <= self._corroboration_limit())
+
+    def stability_pending(self, camera, session, revision):
+        """Current analysis/corroboration benefits from the existing stable view.
+
+        This is a read-only scheduling hint, never a motor grant or an event.
+        The camera owner applies its own finite hold/cooldown and intent checks.
+        """
+        state = self.windows.get(camera)
+        if (state is None or state.session != session or state.revision != revision
+                or len(state.frames) != 4
+                or not self._current(camera, state, tuple(state.frames))):
+            return False
+        active = (self.active_camera == camera and self.task is not None
+                  and not self.task.done() and not self.task.cancelling())
+        if state.candidate is None:
+            return active
+        event, captured, _ = state.candidate
+        now = self.clock()
+        if (not 0 <= now - captured <= self._corroboration_limit() + 12
+                or now - state.recorded.get(event, -math.inf) < 60):
+            return False
+        return bool(state.followup or active)
 
     def _finished(self, task):
         if self.task is task:
             self.task = self.active_camera = None
+            self.phase = None
 
     def _current(self, camera, state, frames):
         policy = self.policy()
@@ -112,11 +161,33 @@ class TemporalReviewer:
             and 0 <= self.clock() - frames[-1][0] <= 12
         )
 
-    async def _review(self, camera, state, frames):
+    async def _review(self, camera, state, frames, *, allow_followup=True):
         try:
             if not self._current(camera, state, frames):
                 return
-            result = await self.engine.analyze(frames)
+            selected = False
+            def current_window():
+                nonlocal frames, selected
+                latest = tuple(state.frames)
+                if selected or len(latest) != 4 or not self._current(camera, state, latest):
+                    raise VisualSourceChanged('visual_source_changed')
+                frames = latest
+                selected = True
+                # Reserve cadence at image submission, after any startup or
+                # host-budget wait, rather than at the earlier queue admission.
+                submitted = self.clock()
+                state.submitted = self.last_submit = submitted
+                self.served[camera] = submitted
+                self.phase = 'reviewing'
+                return frames
+            latest = getattr(self.engine, 'analyze_latest', None)
+            if callable(latest):
+                self.phase = 'preparing'
+                result = await latest(current_window)
+                if not selected:
+                    raise ValueError('visual_window_not_submitted')
+            else:
+                result = await self.engine.analyze(current_window())
             self.last_camera = camera
             result = VisualResult.model_validate(result) if not isinstance(result, VisualResult) else result
             if not self._current(camera, state, frames):
@@ -129,26 +200,33 @@ class TemporalReviewer:
                 return
             previous = state.candidate
             state.candidate = (result.event, frames[-1][0], frames)
+            if self.clock() - state.recorded.get(result.event, -math.inf) < 60:
+                return
             # Two disjoint windows of the same kind; a repeated snapshot is not corroboration.
             if (
                 not previous
                 or previous[0] != result.event
                 or frames[0][0] <= previous[1]
-                or frames[-1][0] - previous[1] > max(18, min(60, len(self.windows) * 6 + 12))
+                or frames[-1][0] - previous[1] > self._corroboration_limit()
             ):
+                state.followup = allow_followup
                 return
-            if self.clock() - state.recorded.get(result.event, -math.inf) < 60:
-                return
-            self.deliver(
+            delivered = self.deliver(
                 camera,
                 state.session,
                 previous[2] + frames,
                 result,
                 self.wall() - (self.clock() - frames[-1][0]),
             )
+            if inspect.isawaitable(delivered):
+                delivered = await delivered
+            if delivered is False:
+                return
             state.recorded[result.event] = self.clock()
         except asyncio.CancelledError:
             raise
+        except VisualSourceChanged:
+            return
         except Exception as error:
             state.candidate = None
             self.failures = min(3, self.failures + 1)
@@ -179,7 +257,7 @@ class TemporalReviewer:
         return dict(
             **ready,
             enabled=bool(policy.enabled and policy.visual_review),
-            state="reviewing" if self.task else "deferred" if self.error else "idle",
+            state=(self.phase or "preparing") if self.task else "deferred" if self.error else "idle",
             completed_windows=self.completed,
             skipped_windows=self.skipped,
             error=self.error,
@@ -190,6 +268,7 @@ class TemporalReviewer:
 
     async def invalidate(self):
         self.windows.clear()
+        self.served.clear()
         if self.task:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)

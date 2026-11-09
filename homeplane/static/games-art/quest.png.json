@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "asset": "quest",
+  "game_name": "动作闯关",
+  "kind": "original_illustrative_game_cover",
+  "use_case": "stylized-concept",
+  "generator": "OpenAI built-in image_gen",
+  "generated_on": "2026-11-03",
+  "source_generated_image": "exec-1787a158-0ac3-4392-bed0-d18ddd601793.png",
+  "transparent_background": false,
+  "prompt": "Use case: stylized-concept\nAsset type: original wide landscape game-store cover illustration, 16:9, full bleed, opaque, no UI.\nPrimary request: a welcoming mountain-trail adventure illustration for a simple motion-controlled family game where body poses help the player advance along a trail.\nScene: a gently winding ochre hiking path stepping across a miniature alpine hillside, small rounded rocks and low meadow plants, layered teal hills and pale blue distant mountains. A few simple stone stepping points hint at gradual progress, with an open destination ridge in the distance. No fantasy architecture or invented power-ups.\nSubject: exactly one friendly stylized adult adventurer wearing a muted coral jacket, graphite trousers and a small simple teal daypack. The figure stands steadily on the path with both arms raised outward in a broad overhead Y pose, a clear readable body gesture rather than an athletic jump or climbing stunt.\nStyle/medium: sophisticated handmade 3D paper-and-clay illustration, crisply layered cut-paper shapes, softly rounded low-poly forms, matte materials, delicate visible paper fibers only at close range. A polished consumer game illustration with restrained art direction, not a screenshot.\nComposition/framing: wide cinematic landscape; elevated three-quarter view; the figure prominent just right of center and the trail curves from the foreground through the middle distance. Readable layered silhouettes, essential action inside the central 75 percent, enough landscape to feel inviting and explorable. Artwork fills the rectangular frame with no card border.\nLighting/mood: warm clear morning light, soft broad contact shadows, fresh calm optimism and gentle forward momentum.\nColor palette: muted golden ochre, paper cream, deep pine teal, sage, powder blue and a coral clothing accent.\nConstraints: only one player; no text, letters, numbers, logos, watermarks, scores, badges, health metrics, magical effects, treasure, controllers, cameras, screens, interface, split panels or surrounding mockup.",
+  "provenance": "Original generated illustration. No household data, photographs or game screenshots were used.",
+  "presentation": "Illustrative cover art; not a screenshot, performance claim, or representation of final game visual fidelity.",
+  "approval_status": "needs_parent_review",
+  "width": 1672,
+  "height": 941,
+  "prompt_embedded": true
+}

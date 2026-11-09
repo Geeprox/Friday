@@ -12,10 +12,11 @@ dependencies = [
     "websockets>=15,<16",
     "zeroconf>=0.147,<1",
     "pydantic>=2.13,<3",
+    "qrcode==8.2",
 ]
 
 [project.optional-dependencies]
-ktv = ["qrcode==8.2", "pypng==0.20220715.0", "numpy>=2.3,<3", "scipy>=1.16,<2"]
+ktv = ["pypng==0.20220715.0", "numpy>=2.3,<3", "scipy>=1.16,<2"]
 airplay = ["pyatv==0.18.0"]
 nas-connection = ["smbprotocol==1.15.0", "paramiko==5.1.0"]
 camera-media = ["av==18.1.0"]

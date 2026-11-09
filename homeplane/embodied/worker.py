@@ -36,13 +36,22 @@ from homeplane.embodied.paths import (
 from homeplane.embodied.plugins import configure
 from homeplane.embodied.previews import PreviewPool, camera_is_open
 from homeplane.embodied.ptz_control import CameraLease, LocalFollower, SearchPlanner, Transport
-from homeplane.embodied.room_engine import DEFAULT, Room, project, validate
-from homeplane.embodied.scene_detector import SceneDetector
-from homeplane.embodied.camera_director import CameraDirector, visible_scene
+from homeplane.embodied.room_session import RoomSession, close_rooms
+from homeplane.embodied.room_protocol import unavailable_layout
+from homeplane.embodied.scene_process import SceneProcess
+from homeplane.embodied.calibration_save import CalibrationSaver
+from homeplane.embodied.calibration_frames import CalibrationFrames
+from homeplane.embodied.static_page import static_asset, static_page
+from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_intent import CameraIntentStore
 from homeplane.embodied.frame_sampling import offer_frame
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
-from homeplane.people.live import FaceIdentityPipeline, IdentityStore, analyze
+from homeplane.embodied.pet_tracks import PetTracks
+from homeplane.embodied.camera_audio import AudioIngress, deliver_audio
+from homeplane.embodied.vision_pipe import request_vision
+from homeplane.people.live import IdentityStore, analyze, close_identity
+from homeplane.people.identity_session import IdentitySession
 
 os.umask(0o077)
 KEY_PATH = PRIVATE / "viewer-key"
@@ -51,10 +60,12 @@ ALLOWED_IPS = set(configuration()["viewer_hosts"])
 SELECTED = dict(camera())
 wall = CameraWall(configuration()['cameras'])
 primary_wall_epoch = 0
+primary_retired_scope = None
 if os.environ.get("FRIDAY_BACKGROUND") == "1":
     SELECTED["takeover"] = True
 interaction_enabled = os.environ.get("FRIDAY_INTERACTION_ENABLED", "1") == "1"
 CAMERA_STORAGE = camera_storage()
+camera_intents = CameraIntentStore(CAMERA_STORAGE, SELECTED)
 SESSION = secrets.token_hex(12)
 state = {
     "status": "stopped",
@@ -75,6 +86,7 @@ capture = None
 vision = None
 generation = 0
 tracks = Tracks()
+pet_tracks = PetTracks()
 latest = None
 last_frame = 0
 last_jpeg = b""
@@ -82,8 +94,7 @@ last_preview = b""
 last_preview_at = 0.0
 changed = asyncio.Condition()
 room = None
-calibration_path = CAMERA_STORAGE / "room-calibration.json"
-reference_path = CAMERA_STORAGE / "room-reference.jpg"
+calibration_frames = CalibrationFrames()
 processed_times = collections.deque(maxlen=120)
 captured_times = collections.deque(maxlen=120)
 room_lock = asyncio.Lock()
@@ -92,24 +103,47 @@ camera_planner = None
 motor_waiters = {}
 motor_sequence = 0
 motion_generation = 0
-games = MotionGames()
+motor_last_sent = -100.0
+games = MotionGames(require_presentation=True)
 recorder = PageRecording(DATA / "recordings")
 record_lock = asyncio.Lock()
 home = HomeService(SELECTED['id'])
 from homeplane.embodied.interaction import InteractionEngine
 from homeplane.embodied.interaction_fleet import InteractionFleet
+from homeplane.embodied.practice import RecognitionPractice
+practice = RecognitionPractice()
 interaction = InteractionEngine(SELECTED["id"], SESSION)
 fleet = InteractionFleet()
 secondary_homes = {}
 identity_store = IdentityStore(PRIVATE / "identities.sqlite")
 from homeplane.embodied.safety import SafetyRuntime, SafetyStore
 safety = SafetyRuntime(SafetyStore(PRIVATE / "safety.sqlite"), labels=identity_store.labels)
-identities = FaceIdentityPipeline(identity_store, SELECTED["id"], SESSION, MODELS)
+identities = IdentitySession(identity_store, SELECTED["id"], SESSION, MODELS)
+
+
+def interaction_source_current(event):
+    if event['camera'] == SELECTED['id']:
+        return (state.get('status') in {'connecting', 'live'}
+                and event['session'] == identities.session)
+    item = previews.sessions.get(event['camera'], {})
+    recognizer = item.get('recognizer')
+    return bool(recognizer and recognizer.session == event['session']
+                and previews.source_current(event['camera'], item.get('process')))
+
+
 async def dispatch_interactions(events):
     for event in events:
-        async def dispatch(e=event):
+        game_window = event.get('_game_window')
+        if event['camera'] == SELECTED['id'] and game_window is None:
+            game_window = (games.control_context, games.control_revision)
+        async def dispatch(e=event, expected_game=game_window):
+            if e['camera'] == SELECTED['id'] and (
+                    games.mode not in {'off', 'home'}
+                    or expected_game != (games.control_context, games.control_revision)):
+                return
             service = home if e['camera'] == SELECTED['id'] else secondary_homes.get(e['camera'])
-            if not (interaction_enabled and service and service.armed and fleet.current(e,time.monotonic())):return
+            if not (interaction_enabled and service and service.armed and interaction_source_current(e)
+                    and fleet.current(e,time.monotonic())) or practice.suppresses(e['camera']):return
             from homeplane.embodied.bridge import command
             receipt = await command(None,e['action'],e['event_id'],target=e['target'],camera_id=e['camera'],
                 gesture={k:e[k] for k in ('binding','revision','observed_mono')})
@@ -128,34 +162,133 @@ def clear_camera(camera_id):
     service=home if camera_id==SELECTED['id'] else secondary_homes.get(camera_id)
     if service:
         service.selected=False;service.epoch+=1;service.vad=[];service.pending_audio=None
+        service.armed=False;service.audio_allowed=False;service.speaking=False;service.last_audio=None
+        service.camera_session=None;service.camera_focus=None
+
+
+def calibration_source():
+    return dict(worker=SESSION, generation=generation, motion_generation=motion_generation)
+
+
+def invalidate_calibration():
+    global room, motion_generation
+    # A committed or uncertain commit must reload the complete durable pair.
+    # Do not wait on the old Room's native job/lock before retiring its input.
+    motion_generation += 1
+    calibration_frames.clear()
+    if room is not None:
+        room.retire()
+    room = None
+    tracks.invalidate()
+    pet_tracks.clear()
+    identities.discard()
+    clear_camera(SELECTED['id'])
+    wall.clear_observation(SELECTED['id'])
+    if camera_planner:
+        camera_planner.views.clear()
+    games.suspend_source()
+    state.update(room=None, people=[], hands=[], animals=[], animals_current=False,
+                 tracking_current=False, scene={'objects': []})
+
+
+calibration_saver = CalibrationSaver(CAMERA_STORAGE, invalidate_calibration)
+
+
+def secondary_frame_current(observation, process):
+    captured = observation.get('captured_mono')
+    return (previews.source_current(observation['camera'], process)
+            and type(captured) in (int, float) and 0 <= time.monotonic()-captured <= 1.5)
 
 
 def close_primary_view():
     global motion_generation
     motion_generation += 1
-    state.update(status='shutter_closed',reason='privacy_shutter_closed',people=[],hands=[],frame=None)
+    calibration_frames.clear()
+    state.update(status='shutter_closed',reason='privacy_shutter_closed',people=[],hands=[],frame=None,
+                 animals=[],animals_current=False,scene={'objects': []})
+    pet_tracks.clear()
     wall.clear(SELECTED['id'], primary_wall_epoch)
     clear_camera(SELECTED['id'])
     identities.discard()
+    games.suspend_source()
+
+
+async def primary_capture_closed(my_generation, wall_epoch, reason, error_class=None, *, stage='capture'):
+    """Retire this source before waking its consumer or waiting for recovery."""
+    global motion_generation, latest, last_frame, last_jpeg, last_preview, last_preview_at
+    global primary_retired_scope
+    if (my_generation != generation or wall_epoch != primary_wall_epoch
+            or primary_retired_scope == (my_generation, wall_epoch)):
+        return
+    primary_retired_scope = (my_generation, wall_epoch)
+    calibration_frames.clear()
+    games.suspend_source()
+    motion_generation += 1
+    latest, last_frame, last_jpeg, last_preview, last_preview_at = None, 0, b'', b'', 0.0
+    state.update(frame=None, people=[], hands=[], animals=[], animals_current=False, room=None,
+                 scene={'objects': []})
+    if state.get('status') != 'shutter_closed':
+        state.update(status='unavailable', reason=reason, error_class=error_class, error_stage=stage)
+    home.armed = False
+    pet_tracks.clear()
+    wall.clear(SELECTED['id'], wall_epoch)
+    clear_camera(SELECTED['id'])
+    identities.discard()
+    for future in tuple(motor_waiters.values()):
+        if not future.done():
+            future.set_exception(RuntimeError(reason))
+            # The dispatch coroutine may still be waiting for a room/privacy
+            # lock and exit without awaiting this future. Awaiters still raise.
+            future.exception()
+    await notify()
+
+
+def primary_frame_current(my_generation, frame_generation, received_at):
+    return (my_generation == generation and frame_generation == motion_generation
+            and state.get('status') in {'connecting', 'live'}
+            and type(received_at) in (int, float) and 0 <= time.time()-received_at <= 1.5)
+
+
+def scene_frame_current(my_generation, wall_epoch, item, frame_generation, current_item, *, warming=False):
+    return (isinstance(item, dict) and isinstance(current_item, dict)
+            and item.get('type') == current_item.get('type') == 'frame'
+            and wall_epoch == primary_wall_epoch
+            and primary_frame_current(my_generation, frame_generation,
+                                      current_item.get('received_at') if warming else item.get('received_at'))
+            and (warming or 0 <= time.time() - item['received_at'] <= 1.2)
+            and item.get('_motion_generation') == frame_generation
+            and current_item.get('_motion_generation') == frame_generation
+            and isinstance(item.get('capture_session'), str)
+            and item['capture_session'] == current_item.get('capture_session')
+            and isinstance(item.get('camera_source_context'), str)
+            and item['camera_source_context'] == current_item.get('camera_source_context'))
 
 
 async def secondary_observation(observation, process):
     camera_id=observation['camera']
-    await safety.observe(camera_id, observation['session'], observation['people'], observation['now'],
+    if not secondary_frame_current(observation, process):return
+    practice.observe(camera_id, observation['session'], observation['people'], observation['hands'],
+        observation['registration'], observation['now'], observation['captured_mono'])
+    safety.offer(camera_id, observation['session'], observation['people'], observation['now'],
         observation['captured_mono'], stable=observation.get('scene_visible', False)
             and observation['registration'].get('status') == 'locked',
-        jpeg=observation.get('safety_jpeg', b''), aspect=observation.get('aspect', 16 / 9))
+        jpeg=observation.get('safety_jpeg', b''), aspect=observation.get('aspect', 16 / 9),
+        source_context=observation.get('camera_source_context'),
+        source_name=observation.get('camera_source_name'))
+    if not secondary_frame_current(observation, process):return
     wall.observe(camera_id,observation['session'],observation['people'],
         time.time()-(time.monotonic()-observation['captured_mono']),
         hands=observation['hands'],
         moving=observation['registration'].get('status') in {'moving','settling','lost','stale'})
     active=interaction_enabled
     events=fleet.update(camera_id,observation['session'],observation['people'],observation['hands'],
-        observation['registration'],active,observation['now'])
+        observation['registration'],active,observation['now'],captured_mono=observation['captured_mono'])
     await dispatch_interactions(events)
+    if not secondary_frame_current(observation, process):return
     if camera_id not in secondary_homes:secondary_homes[camera_id]=HomeService(camera_id,voice_provider=home)
     service=secondary_homes[camera_id]
     if active and not service.enabled:await service.enable()
+    if not secondary_frame_current(observation, process):return
     service.armed=active
     item=fleet.cameras.get(camera_id,{})
     now = time.monotonic()
@@ -165,18 +298,21 @@ async def secondary_observation(observation, process):
         enabled=active and service.armed and 0 <= now-observation['now'] <= 1.5
             and not (PRIVATE/'voice-input-paused').exists())
     await service.observe(observation['people'],observation['faces'],observation['registration'],
-        observation['now'],process,active,item.get('owner'),gestures_enabled=False)
+        observation['now'],process,active,item.get('owner'),gestures_enabled=False,
+        sound_review=safety.sound_requested(camera_id),session_id=observation['session'])
 
 
 async def secondary_audio(camera_id, packet):
+    safety.observe_audio(camera_id, packet)
     service=secondary_homes.get(camera_id)
     if service:
         service.audio_allowed = service.audio_allowed and fleet.voice_current(camera_id, time.monotonic())
-        await service.audio(packet)
+        await deliver_audio(service, packet)
 
 
 previews = PreviewPool(identity_store=identity_store, continuous=True, recognize=True, wall=wall,
     on_observation=secondary_observation,on_audio=secondary_audio,on_clear=clear_camera,
+    review_pending=safety.review_pending,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
     occupied_elsewhere=lambda cid: (cid!=SELECTED['id'] and bool(view().get('people')))
         or any(other!=cid and previews.status(other)['state']=='live' and item.get('people',0)
@@ -186,8 +322,8 @@ bindings = ActionBindings(registry)
 configure(registry, bindings, games, home)
 
 
-async def motor_step(direction, observed=None):
-    global motor_sequence, motion_generation
+async def motor_step(direction, observed=None, expected_intent=None, decision_current=None):
+    global motor_sequence, motion_generation, motor_last_sent
     if direction not in ("left", "right", "up", "down"):
         raise ValueError("invalid_motor_direction")
     if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
@@ -200,51 +336,68 @@ async def motor_step(direction, observed=None):
     ):
         raise RuntimeError("camera_not_owned")
     owned_capture, owned_lease = capture, camera_lease
-    if not await camera_is_open(SELECTED):
-        close_primary_view()
-        raise RuntimeError('privacy_shutter_closed')
-    if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
-    if observed is not None and not 0 <= time.monotonic()-observed <= 1.5:
-        raise RuntimeError('stale_input')
-    if observed is not None and camera_planner and camera_planner.mode == 'hold':
-        raise RuntimeError('stale_input')
+    owned_motion_generation = motion_generation
+    owned_planner = camera_planner
+    # Reserve before the first await. A second request must be recomputed after
+    # the first completes; queuing it would retain an obsolete visual decision.
+    if motor_waiters:
+        raise RuntimeError('motor_busy')
     motor_sequence += 1
     request_id = motor_sequence
     future = asyncio.get_running_loop().create_future()
     motor_waiters[request_id] = future
-    motion_generation += 1
-    identities.discard()
-    fleet.clear(SELECTED['id'])
-    home.selected = False
-    home.epoch += 1
-    home.vad = []
-    home.pending_audio = None
     correlation = secrets.token_hex(16)
     began = time.monotonic()
+    expires = min(began+1.5, observed+1.5) if observed is not None else began+1.5
+    sent = False
     home.runtime_log.record('embodied.command','start',correlation=correlation)
     try:
-        async with room_lock:
-            if room:
-                room.expect_motion(time.monotonic(), 2)
         if not await camera_is_open(SELECTED):
             close_primary_view()
             raise RuntimeError('privacy_shutter_closed')
-        # The lock may have waited behind vision registration. Revalidate all
-        # authority and freshness immediately before the irreversible send.
-        if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
-        if (capture is not owned_capture or camera_lease is not owned_lease
-                or not camera_lease.snapshot or camera_lease.snapshot.get('status')!='owned'):
-            raise RuntimeError('camera_not_owned')
-        if observed is not None and (not 0 <= time.monotonic()-observed <= 1.5
-                or camera_planner and camera_planner.mode=='hold'):
-            raise RuntimeError('stale_input')
-        capture.stdin.write(
-            (
-                json.dumps({"action": "motor_step", "direction": direction, "request_id": request_id}) + "\n"
-            ).encode()
-        )
+        async with room_lock:
+            if not await camera_is_open(SELECTED):
+                close_primary_view()
+                raise RuntimeError('privacy_shutter_closed')
+            # Registration and privacy reads may have waited. No await separates
+            # the final authority/observation check from reserving and writing.
+            if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
+            if (capture is not owned_capture or camera_lease is not owned_lease
+                    or not camera_lease.snapshot or camera_lease.snapshot.get('status')!='owned'):
+                raise RuntimeError('camera_not_owned')
+            if motion_generation != owned_motion_generation:
+                raise RuntimeError('capture_source_changed')
+            if expected_intent is not None and (camera_planner is not owned_planner
+                    or not camera_planner or camera_planner.intent_revision != expected_intent):
+                raise RuntimeError('camera_intent_changed')
+            now = time.monotonic()
+            if observed is not None and (not 0 <= now-observed <= 1.5
+                    or camera_planner and camera_planner.mode=='hold'
+                    or state.get('status')!='live' or state.get('tracking_current') is not True
+                    or not 0 <= now-last_frame <= 1.5 or last_frame <= motor_last_sent
+                    or decision_current is not None and not decision_current()):
+                raise RuntimeError('stale_input')
+            if now >= expires:
+                raise RuntimeError('motor_request_expired')
+            motion_generation += 1
+            calibration_frames.clear()
+            motor_last_sent = now
+            state['scene'] = {'objects': []}
+            identities.discard()
+            fleet.clear(SELECTED['id'])
+            home.selected = False
+            home.epoch += 1
+            home.vad = []
+            home.pending_audio = None
+            if room:
+                room.expect_motion(now, 2)
+            capture.stdin.write((json.dumps(dict(action='motor_step', direction=direction,
+                request_id=request_id, expires_mono=expires))+'\n').encode())
+            sent = True
         await capture.stdin.drain()
         result = await asyncio.wait_for(future, 3)
+        if result.get('error_code') == 'motor_request_expired':
+            raise RuntimeError('motor_request_expired')
         if result.get("error_class") or result.get("native_code") != 0:
             raise RuntimeError("local_motor_rejected")
         state["local_motor"] = dict(result, at=time.time())
@@ -253,7 +406,8 @@ async def motor_step(direction, observed=None):
         return result
     except asyncio.CancelledError:
         home.runtime_log.record('embodied.command','result',correlation=correlation,
-            result='cancelled',code='control_cancelled_after_send',elapsed_ms=round((time.monotonic()-began)*1000))
+            result='cancelled',code='control_cancelled_after_send' if sent else 'control_cancelled_before_dispatch',
+            elapsed_ms=round((time.monotonic()-began)*1000))
         raise
     except Exception:
         home.runtime_log.record('embodied.command','result',correlation=correlation,
@@ -261,6 +415,7 @@ async def motor_step(direction, observed=None):
         raise
     finally:
         motor_waiters.pop(request_id, None)
+        if not future.done():future.cancel()
 
 
 async def camera_search():
@@ -271,6 +426,9 @@ async def camera_search():
     try:
         await lease.acquire()
         planner = SearchPlanner(lease.presets, time.monotonic(), lease.active)
+        intent = camera_intents.load()
+        planner.mode, planner.intent_revision = intent.mode, intent.revision
+        planner.intent_status = intent.status
         if os.environ.get("FRIDAY_CAMERA_HOLD")=="1":planner.mode="hold"
         camera_planner = planner
         director = CameraDirector()
@@ -283,23 +441,34 @@ async def camera_search():
                     close_primary_view()
                     return
             now = time.monotonic()
-            sample = dict(state, _local_received=last_frame)
+            sample = dict(state, _local_received=last_frame, game=games.public)
             elsewhere = any(item.get('people',0) and previews.status(cid)['state']=='live'
                             for cid,item in previews.sessions.items())
+            director.apply_mode(planner.mode, planner.intent_revision)
             direction = director.choose(sample, now, focus=getattr(home,'camera_focus',None),
-                                        occupied_elsewhere=elsewhere) if planner.mode!='hold' else None
+                                        occupied_elsewhere=elsewhere,
+                                        review_pending=safety.review_pending(SELECTED['id'], sample.get('session_id'))) if planner.mode!='hold' else None
             if planner.mode == 'hold':director.hold()
             state['camera_control'] = dict(planner.public(lease.presets), **director.public())
             if direction is not None:
                 try:
-                    await motor_step(direction, sample['_local_received'])
+                    def decision_current():
+                        current = dict(state, _local_received=last_frame, game=games.public)
+                        occupied = any(item.get('people',0) and previews.status(cid)['state']=='live'
+                                       for cid,item in previews.sessions.items())
+                        return director.decision_current(current, time.monotonic(), direction,
+                            focus=getattr(home,'camera_focus',None), occupied_elsewhere=occupied,
+                            review_pending=safety.review_pending(SELECTED['id'], current.get('session_id')))
+                    await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
+                                     decision_current=decision_current)
                     director.sent(time.monotonic())
                     lease.event('local_follow_impulse', direction=direction)
-                except RuntimeError as error:
+                except (RuntimeError, OSError, TimeoutError) as error:
                     # Capture connection is not ready during startup; retry only
                     # after a new fresh observation, with no queued motor commands.
-                    state['camera_control']['phase'] = 'motor_unavailable'
-                    if str(error) != 'stale_input':director.failed(time.monotonic())
+                    if str(error) not in {'stale_input', 'camera_intent_changed', 'motor_busy', 'motor_request_expired', 'capture_source_changed'}:
+                        state['camera_control']['phase'] = 'motor_unavailable'
+                        director.failed(time.monotonic())
             await asyncio.sleep(.3)
     except asyncio.CancelledError:
         raise
@@ -341,12 +510,21 @@ async def notify():
 
 def view():
     result = dict(state)
-    result["game"] = games.public
+    result["game"] = games.viewer_state()
     result["recording"] = recorder.public()
+    result['safety_recording'] = safety.recording_status()
     result["home"] = home.public()
-    result["voice_sessions"] = [dict(camera=cid,**{key:service.public().get(key) for key in ("enabled","voice","reason","last_transcript","last_event")}) for cid,service in [(SELECTED["id"],home),*secondary_homes.items()]]
+    result["voice_sessions"] = [dict(camera=cid,**{key:service.public().get(key) for key in ("enabled","voice","reason","last_transcript","last_event","voice_command","audio_input","audio_analysis")}) for cid,service in [(SELECTED["id"],home),*secondary_homes.items()]]
     result['interactions'] = fleet.public(time.monotonic())
     result['voice_input'] = not (PRIVATE/'voice-input-paused').exists()
+    if camera_planner and result.get('camera_control'):
+        control = result['camera_control']
+        if control.get('intent_revision') != camera_planner.intent_revision:
+            held = camera_planner.mode == 'hold'
+            result['camera_control'] = dict(control,mode=camera_planner.mode,
+                intent_revision=camera_planner.intent_revision,
+                phase='held' if held else 'waiting_video',
+                reason='停留当前视角' if held else '等待画面',view_usable=False,target_locked=False)
     result["frame_age_ms"] = (
         round((time.time() - state.get("received_at", time.time())) * 1000) if last_frame else None
     )
@@ -358,10 +536,22 @@ def view():
             people=[],
             hands=[],
             room=None,
-            game=dict(games.public, status="paused", reason="实时画面已过期", players=[]),
+            game=dict(result['game'], status="paused", reason="实时画面已过期", players=[]),
         )
     if result['status'] != 'live' and result.get('camera_control'):
         result['camera_control'] = dict(result['camera_control'], view_usable=False, target_locked=False)
+    if result['status'] != 'live':
+        result['game'] = dict(result['game'], players=[])
+        if result['game'].get('mode') != 'off' and result['game'].get('status') != 'complete':
+            result['game'].update(status='paused', reason='实时画面已过期')
+        if result['game']['source_recovery']['required']:
+            result['game']['source_recovery'] = dict(result['game']['source_recovery'],ready=False,phase='camera')
+    pet_current = (result['status'] == 'live' and camera_planner and camera_planner.mode == 'pets'
+                   and result.get('animals_intent') == camera_planner.intent_revision
+                   and result.get('animals_current') is True)
+    if not pet_current:
+        result.update(animals=[],animals_current=False)
+        if result.get('pet_tracking'):result['pet_tracking'] = dict(result['pet_tracking'],current=False)
     result['camera_sessions'] = [dict(camera=SELECTED['id'],state=result['status'],recognition='running' if result['status']=='live' else 'waiting',frames=state['processed_frames']),
         *[previews.status(c['id']) for c in configuration()['cameras'] if c['id']!=SELECTED['id']]]
     return result
@@ -384,12 +574,17 @@ async def reap(process):
 
 
 async def run_source(my_generation):
-    global capture, vision, latest, last_frame, tracks, last_jpeg, room, primary_wall_epoch
+    global capture, vision, latest, last_frame, tracks, pet_tracks, last_jpeg, room, primary_wall_epoch
+    global last_preview, last_preview_at
     primary_wall_epoch = wall.begin(SELECTED['id'])
     wall_epoch = primary_wall_epoch
     identities.session = f"{SESSION}_{my_generation}_{secrets.token_hex(3)}"
     state["session_id"] = identities.session
-    games.reset("off")
+    games.begin_source()
+    source_scope = object()
+    room_ok = False
+    if room is not None:room.retire()
+    room = None
     home.armed = False
     home.selected = False
     home.epoch += 1
@@ -398,6 +593,7 @@ async def run_source(my_generation):
     fleet.clear(SELECTED['id'])
     home.gesture.reset()
     tracks = Tracks()
+    pet_tracks = PetTracks()
     processed_times.clear()
     captured_times.clear()
     state.update(
@@ -406,6 +602,7 @@ async def run_source(my_generation):
         frame=None,
         people=[],
         hands=[],
+        animals=[],animals_current=False,animals_intent=None,pet_tracking=pet_tracks.public(),
         room=None,
         game={"mode": games.mode, "status": "paused", "reason": "实时画面已过期", "players": []},
     )
@@ -436,6 +633,8 @@ async def run_source(my_generation):
             await notify()
             return
         stage = 'source_start'
+        capture_session = secrets.token_hex(16)
+        audio_ingress = AudioIngress(SELECTED, capture_session)
         capture = await asyncio.create_subprocess_exec(
             str(PYTHON),
             "-B",
@@ -458,7 +657,7 @@ async def run_source(my_generation):
             (
                 json.dumps(
                     {"source": "miloco", "camera": SELECTED["id"], "motor": bool(camera_task),
-                     "audio": True, "identity": False}
+                     "audio": True, "identity": False, "capture_session": capture_session}
                 )
                 + "\n"
             ).encode()
@@ -471,54 +670,104 @@ async def run_source(my_generation):
 
         async def observe_scene():
             nonlocal scene_data
-            detector = await asyncio.to_thread(SceneDetector, MODELS / "yolov8n.onnx")
+            detector = SceneProcess(MODELS / "yolov8n.onnx")
             processed_at = None
-            while my_generation == generation:
-                item = latest_item
-                if (item and item.get("type") == "frame" and item['received_at'] != processed_at
-                        and 0 <= time.time()-item['received_at'] <= 1.2):
-                    processed_at = item['received_at']
-                    result = await asyncio.to_thread(detector.detect, base64.b64decode(item["jpeg"]))
-                    result["observed_at"] = item["received_at"]
-                    scene_data = result
-                await asyncio.sleep(0.7)
+            try:
+                while my_generation == generation:
+                    item = latest_item
+                    frame_generation = item.get('_motion_generation') if isinstance(item, dict) else None
+                    current = lambda i=item, m=frame_generation: scene_frame_current(
+                        my_generation, wall_epoch, i, m, latest_item)
+                    key = ((item['received_at'], item['capture_session'],
+                            item['camera_source_context'], frame_generation) if current() else None)
+                    if key is not None and key != processed_at:
+                        processed_at = key
+                        try:
+                            result = await detector.analyze(base64.b64decode(item['jpeg'], validate=True),
+                                context=dict(generation=my_generation, wall_epoch=wall_epoch,
+                                    motion_generation=frame_generation, capture_session=item['capture_session'],
+                                    camera_source_context=item['camera_source_context']), current=current,
+                                active=lambda i=item, m=frame_generation: scene_frame_current(
+                                    my_generation, wall_epoch, i, m, latest_item, warming=True))
+                        except Exception:
+                            result = None
+                        if result is not None and current():
+                            source = {k: item[k] for k in ('type', 'received_at', '_motion_generation',
+                                                          'capture_session', 'camera_source_context')}
+                            scene_data = dict(result, observed_at=item['received_at'], _source=source)
+                    if not scene_frame_current(my_generation, wall_epoch, scene_data.get('_source'),
+                                               frame_generation, latest_item):
+                        scene_data = {'objects': [], 'observed_at': 0}
+                    if my_generation == generation:
+                        state['scene_service'] = detector.status()
+                    await asyncio.sleep(0.7)
+            finally:
+                scene_data = {'objects': [], 'observed_at': 0}
+                await detector.close()
+                if my_generation == generation:
+                    state['scene_service'] = detector.status()
 
         last_video_lease=0.0
         async def receive():
             nonlocal latest_item,last_video_lease
-            while raw := await capture.stdout.readline():
-                item = json.loads(raw)
-                if item.get("type") == "diagnostic":
-                    state["capture_diagnostic"] = dict(
-                        stage=item.get("stage"),
-                        at=time.time(),
-                        categories=item.get("categories"),
-                        codes=item.get("codes"),
-                    )
-                    state.setdefault("capture_stages", []).append(state["capture_diagnostic"])
-                    state["capture_stages"] = state["capture_stages"][-30:]
-                    continue
-                if item.get("type") == "audio":
-                    home.audio_allowed = home.audio_allowed and fleet.voice_current(SELECTED["id"], time.monotonic())
-                    await home.audio(item)
-                    continue
-                if item.get("type") == "motor_result":
-                    future = motor_waiters.get(item.get("request_id"))
-                    if future and not future.done():
-                        future.set_result(item)
-                    continue
-                if item.get('type')=='video':
-                    if state.get('status')!='shutter_closed':wall.offer(SELECTED['id'],wall_epoch,item)
-                    continue
-                latest_item = item
-                if item.get("type") == "frame":
-                    if time.monotonic()-last_video_lease>.7:
-                        last_video_lease=time.monotonic()
-                        capture.stdin.write((json.dumps(dict(action='video_window',enabled=wall.video[SELECTED['id']].subscribers>0))+'\n').encode())
-                    captured_times.append(time.monotonic())
-                    if state.get('status') != 'shutter_closed':wall.offer(SELECTED['id'], wall_epoch, item)
-                offer_frame(queue, item)
-            offer_frame(queue, {"type": "error", "reason": "source_closed"})
+            reason, error_class = None, None
+            try:
+                while raw := await capture.stdout.readline():
+                    if my_generation != generation:return
+                    item = json.loads(raw)
+                    if not isinstance(item, dict):
+                        raise ValueError('invalid_capture_packet')
+                    if item.get("type") == "diagnostic":
+                        state["capture_diagnostic"] = dict(
+                            stage=item.get("stage"),
+                            at=time.time(),
+                            categories=item.get("categories"),
+                            codes=item.get("codes"),
+                        )
+                        state.setdefault("capture_stages", []).append(state["capture_diagnostic"])
+                        state["capture_stages"] = state["capture_stages"][-30:]
+                        continue
+                    if item.get("type") == "audio":
+                        home.audio_allowed = home.audio_allowed and fleet.voice_current(SELECTED["id"], time.monotonic())
+                        admission = (audio_ingress.reject('camera_paused') if state.get('status') == 'shutter_closed'
+                            else audio_ingress.accept(item,wall=time.time(),mono=time.monotonic()))
+                        safety.observe_audio(SELECTED['id'], admission)
+                        await deliver_audio(home,admission)
+                        continue
+                    if item.get("type") == "motor_result":
+                        future = motor_waiters.get(item.get("request_id"))
+                        if future and not future.done():
+                            future.set_result(item)
+                        continue
+                    if item.get('type')=='video':
+                        if state.get('status')!='shutter_closed':wall.offer(SELECTED['id'],wall_epoch,item)
+                        continue
+                    if item.get("type") == "frame":
+                        # Bind queued pixels to the motion epoch at receipt, before any await.
+                        item['_motion_generation'] = motion_generation
+                    latest_item = item
+                    if item.get("type") == "frame":
+                        audio_ingress.observe_frame(item,wall=time.time(),mono=time.monotonic())
+                        if time.monotonic()-last_video_lease>.7:
+                            last_video_lease=time.monotonic()
+                            capture.stdin.write((json.dumps(dict(action='video_window',enabled=wall.video[SELECTED['id']].subscribers>0))+'\n').encode())
+                        captured_times.append(time.monotonic())
+                        if state.get('status') != 'shutter_closed':wall.offer(SELECTED['id'], wall_epoch, item)
+                    offer_frame(queue, item)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                reason, error_class = 'capture_stream_unavailable', type(error).__name__
+            else:
+                reason = 'source_closed'
+            finally:
+                if reason is not None and my_generation == generation:
+                    latest_item = None
+                    try:
+                        await primary_capture_closed(my_generation, wall_epoch, reason, error_class)
+                    finally:
+                        if my_generation == generation and wall_epoch == primary_wall_epoch:
+                            offer_frame(queue, dict(type='error', reason=reason, error_class=error_class))
 
         receiver = asyncio.create_task(receive())
         scene_task = asyncio.create_task(observe_scene())
@@ -530,6 +779,7 @@ async def run_source(my_generation):
                 stage = "waiting_frame"
                 item = await asyncio.wait_for(queue.get(), 85)
                 if item["type"] != "frame":
+                    if state['status'] == 'shutter_closed':return
                     state.update(
                         status="unavailable",
                         reason=item.get("reason", "source_unavailable"),
@@ -555,13 +805,16 @@ async def run_source(my_generation):
                     home.epoch += 1
                     identities.discard()
                     continue
-                frame_motion_generation = motion_generation
+                frame_motion_generation = item.get('_motion_generation', motion_generation)
+                if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
+                    continue
                 phase_at = time.monotonic()
                 timings = dict(queue_age_ms=round((time.time()-item['received_at'])*1000,1))
                 # Pixel data remains exclusively in local process pipes and memory.
-                current_scene = (
-                    scene_data if time.time() - scene_data["observed_at"] < 1.2 else {"objects": []}
-                )
+                frame_scene = scene_data
+                current_scene = ({k: frame_scene[k] for k in ('objects', 'scene_ms', 'observed_at')}
+                    if scene_frame_current(my_generation, wall_epoch, frame_scene.get('_source'),
+                                           frame_motion_generation, item) else {'objects': []})
                 if room is not None and room.reg_info.get("status") in ("moving", "settling"):
                     current_scene = {"objects": []}
                 rois = [
@@ -569,31 +822,23 @@ async def run_source(my_generation):
                     for o in current_scene["objects"]
                     if o["class"] == "person" and o["confidence"] >= 0.5
                 ]
-                vision.stdin.write(
-                    (
-                        json.dumps(
-                            {
-                                "jpeg": item["jpeg"],
-                                "face_jpeg": item.get("face_jpeg"),
-                                "person_rois": rois,
-                                "hand_interval_ms": 140 if games.mode not in ("off", "home") else 80,
-                                "attention_enabled": True,
-                            }
-                        )
-                        + "\n"
-                    ).encode()
-                )
-                await vision.stdin.drain()
+                pet_owner = camera_planner
+                pet_revision = pet_owner.intent_revision if pet_owner and pet_owner.mode == 'pets' else None
                 stage = "vision_request"
-                detection = json.loads(await asyncio.wait_for(vision.stdout.readline(), 12))
+                detection = await request_vision(vision, {
+                    "jpeg": item["jpeg"],
+                    "face_jpeg": item.get("face_jpeg"),
+                    "person_rois": rois,
+                    "hand_interval_ms": 140 if games.mode not in ("off", "home") else 80,
+                    "attention_enabled": True,
+                    "animals_enabled": pet_revision is not None,
+                })
                 timings['vision_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 phase_at = time.monotonic()
-                if detection.get("error"):
-                    raise RuntimeError("vision_request_failed")
                 if my_generation != generation:
                     break
                 if state.get('status') == 'shutter_closed':return
-                if frame_motion_generation != motion_generation or not 0 <= time.time()-item['received_at'] <= 1.5:
+                if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
                     state['pipeline_timing'] = dict(timings, dropped_stage='after_vision')
                     safety.clear(SELECTED['id'])
                     fleet.clear(SELECTED['id']);home.selected=False;home.epoch+=1;identities.discard()
@@ -601,72 +846,66 @@ async def run_source(my_generation):
                 now = time.monotonic()
                 picture = base64.b64decode(item["jpeg"])
                 if room is None:
-                    config = (
-                        json.loads(calibration_path.read_text())
-                        if calibration_path.exists()
-                        else copy.deepcopy(DEFAULT)
-                    )
-                    if SELECTED["id"] != configuration()["default_camera"] and not calibration_path.exists():
-                        config.update(
-                            mode="unconfigured",
-                            furniture=[],
-                            seats=copy.deepcopy(DEFAULT["seats"]),
-                            note="该镜头尚未标定；点位不可用",
-                        )
-                    reference = reference_path.read_bytes() if reference_path.exists() else picture
-                    room = Room(config, reference)
-                    if not reference_path.exists():
-                        reference_path.write_bytes(picture)
-                        calibration_path.write_text(json.dumps(config, ensure_ascii=False, indent=2))
+                    room = RoomSession(CAMERA_STORAGE, scope=source_scope)
                 hands = detection.get("hands", [])
                 async with room_lock:
-                    await asyncio.to_thread(
-                        room.register, picture, [{"box": b} for b in detection.get("boxes", [])], now
-                    )
-                    people = tracks.update(detection, now, transform=room.registration,
-                        camera_moving=now < room.command_until or room.reg_info.get('status') in {'moving','settling'})
-                    layout = await asyncio.to_thread(
-                        room.update,
-                        picture,
-                        people,
-                        hands,
-                        now,
-                        item["width"],
-                        item["height"],
-                        current_scene["objects"],
-                        True,
-                    )
-                if room.config.get("mode") == "unconfigured":
-                    layout.update(
-                        seats=[],
-                        pointing=[],
-                        furniture=[],
-                        observed_furniture=[],
-                        position_status="unconfigured",
-                    )
-                    for p in people:
-                        p["position"] = None
+                    frame_room = room
+                    frame_current = lambda: primary_frame_current(my_generation, frame_motion_generation, item['received_at'])
+                    if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
+                        continue
+                    masks = [{"box": b} for b in detection.get("boxes", [])]
+                    masks.extend({'box': row['box']} for row in PetTracks.read_rows(detection) or [])
+                    registered = await frame_room.register(picture, masks, now, current=frame_current,
+                        active=lambda: scene_frame_current(my_generation, wall_epoch, item,
+                            frame_motion_generation, latest_item, warming=True))
+                    if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
+                        continue
+                    people = tracks.update(detection, now, transform=frame_room.registration,
+                        camera_moving=not registered or now < frame_room.command_until or frame_room.reg_info.get('status') in {'moving','settling'})
+                    pet_active = (pet_revision is not None and camera_planner is pet_owner
+                        and pet_owner.mode == 'pets' and pet_owner.intent_revision == pet_revision)
+                    animals = pet_tracks.update(detection, now, intent=pet_revision if pet_active else None,
+                        transform=frame_room.registration,
+                        camera_moving=not registered or now < frame_room.command_until or frame_room.reg_info.get('status') in {'moving','settling'})
+                    if not scene_frame_current(my_generation, wall_epoch, frame_scene.get('_source'),
+                                               frame_motion_generation, item):
+                        current_scene = {'objects': []}
+                    layout = (await frame_room.update(picture, people, hands, now, item['width'], item['height'],
+                        current_scene['objects'], current=frame_current)) if registered else None
+                    if layout is None:
+                        if room_ok:games.suspend_source()
+                        room_ok=False
+                        tracks.invalidate();pet_tracks.clear();identities.discard()
+                        people,hands,animals=[],[],[]
+                        layout=unavailable_layout()
+                    elif not room_ok:
+                        games.begin_source()
+                        room_ok=True
+                    state['room_service']=frame_room.status()
+                if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
+                    if my_generation != generation:return
+                    state['pipeline_timing'] = dict(timings, dropped_stage='after_layout')
+                    continue
                 if layout["registration"]["status"] in ("moving", "settling"):
                     for p in people:
                         p["motion"] = "camera_moving"
-                global last_preview, last_preview_at
-                if item.get("preview"):
-                    last_preview = base64.b64decode(item["preview"])
-                    last_preview_at = item["preview_at"]
+                    pet_tracks.clear()
+                    animals = []
                 timings['layout_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 phase_at = time.monotonic()
                 identity_rows = await analyze(
                     identities, base64.b64decode(item.get("face_jpeg") or item["jpeg"]), people,
-                    detection.get("faces", []), moving=now < room.command_until or layout["registration"]["status"] in ("moving", "settling"),
+                    detection.get("faces", []), moving=now < frame_room.command_until or layout["registration"]["status"] in ("moving", "settling"),
                     sample=bool(item.get('face_jpeg')) or max(item.get('native_size') or [0])<=1920,
                     captured_at=time.monotonic()-(time.time()-item['received_at']))
                 timings['identity_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 phase_at = time.monotonic()
-                scene_visible = await asyncio.to_thread(visible_scene, picture)
+                scene_visible = frame_room.scene_visible
                 timings['visibility_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 state['pipeline_timing'] = dict(timings)
                 if state.get('status')=='shutter_closed':return
-                if frame_motion_generation != motion_generation or not 0 <= time.time() - item['received_at'] <= 1.5:
+                if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
+                    if my_generation != generation:return
                     state['pipeline_timing']['dropped_stage'] = 'after_identity'
                     safety.clear(SELECTED['id'])
                     fleet.clear(SELECTED['id'])
@@ -678,15 +917,29 @@ async def run_source(my_generation):
                 for person in people:
                     person["identity"] = by_track.get(str(person["id"]), dict(state="unknown", person_id=None))
                 state["identity"] = dict(reason=identities.reason, tracks=identity_rows)
-                await safety.observe(SELECTED['id'], identities.session, people, now,
+                safety.offer(SELECTED['id'], identities.session, people, now,
                     time.monotonic() - (time.time() - item['received_at']),
                     stable=scene_visible and layout['registration'].get('status') == 'locked'
-                        and now >= room.command_until,
-                    jpeg=picture, aspect=item['width'] / max(1, item['height']))
+                        and now >= frame_room.command_until,
+                    jpeg=picture, aspect=item['width'] / max(1, item['height']),
+                    source_context=item.get('camera_source_context'), source_name=item.get('camera_source_name'))
+                if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
+                    if my_generation != generation:return
+                    state['pipeline_timing'] = dict(timings, dropped_stage='after_safety')
+                    continue
                 wall.observe(SELECTED['id'],identities.session,people,item['received_at'],
                     hands=hands,
                     moving=layout['registration'].get('status') in {'moving','settling','lost','stale'})
-                game = games.update(people, layout["registration"], now, hands)
+                if practice.suppresses(SELECTED['id']):
+                    # Practising OK must neither join nor start a game. Keep its
+                    # latch closed until the person releases after the lesson.
+                    games.gesture_latched = True
+                    games.gesture_last = now
+                    games.gesture_release = None
+                    game = games.public
+                else:
+                    game = games.update(people, layout["registration"], now, hands,
+                                        captured_at=time.monotonic()-(time.time()-item['received_at']))
                 extension_events = registry.observe(
                     camera=SELECTED["id"], session=identities.session, people=people, hands=hands, game=game, now=now
                 )
@@ -698,9 +951,10 @@ async def run_source(my_generation):
                             session=identities.session,
                             bound_track=games.preferred_track,
                             now=now,
-                            current=lambda e=event, g=my_generation: (
-                                generation == g
+                            current=lambda e=event, g=my_generation, m=frame_motion_generation, at=item['received_at']: (
+                                primary_frame_current(g, m, at)
                                 and interaction_enabled
+                                and not practice.suppresses(SELECTED['id'])
                                 and games.preferred_track == e.track
                                 and 0 <= time.monotonic() - e.observed_mono <= 1.5
                             ),
@@ -713,10 +967,21 @@ async def run_source(my_generation):
                 elif not interaction_enabled:
                     home.armed = False
                 if state.get('status')=='shutter_closed':return
+                if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
+                    if my_generation != generation:return
+                    state['pipeline_timing'] = dict(timings, dropped_stage='after_enable')
+                    continue
                 last_selection = games.selected_mode
+                game_window = (games.control_context, games.control_revision)
                 gesture_active = interaction_enabled and games.mode in {'off', 'home'}
+                practice.observe(SELECTED['id'], identities.session, people, hands,
+                    layout['registration'], now, now-(time.time()-item['received_at']))
                 interaction_events=fleet.update(SELECTED['id'],identities.session,people,hands,
-                    layout['registration'],gesture_active,now)
+                    layout['registration'],gesture_active,now,game_window=game_window,
+                    game_active=games.mode not in {'off','home'},
+                    captured_mono=time.monotonic()-(time.time()-item['received_at']))
+                for event in interaction_events:
+                    event['_game_window'] = game_window
                 voice_now = time.monotonic()
                 home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,home.attention.candidate() is not None,
                     people=len(people), session=identities.session,
@@ -732,16 +997,38 @@ async def run_source(my_generation):
                     interaction_enabled and home.armed,
                     fleet.cameras.get(SELECTED['id'], {}).get('owner'),
                     gestures_enabled=False,
+                    sound_review=safety.sound_requested(SELECTED['id']),
+                    session_id=identities.session,
                 )
                 if state.get('status')=='shutter_closed':return
+                if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
+                    if my_generation != generation:return
+                    state['pipeline_timing'] = dict(timings, dropped_stage='after_home')
+                    continue
                 await dispatch_interactions(interaction_events)
+                if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
+                    if my_generation != generation:return
+                    state['pipeline_timing'] = dict(timings, dropped_stage='after_dispatch')
+                    continue
                 timings['interaction_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 state['pipeline_timing'] = dict(timings)
                 processed_times.append(time.monotonic())
+                if item.get("preview"):
+                    last_preview = base64.b64decode(item["preview"])
+                    last_preview_at = item["preview_at"]
                 last_jpeg = picture
                 last_frame = time.monotonic()-(time.time()-item['received_at'])
+                if not scene_frame_current(my_generation, wall_epoch, frame_scene.get('_source'),
+                                           frame_motion_generation, item):
+                    current_scene = {'objects': []}
+                calibration_frames.publish(frame_room.draft, picture,
+                    dict(width=item['width'],height=item['height'],room=layout,people=[],hands=[],status='live'),
+                    calibration_source(),item['received_at'])
                 state.update(
                     status="live",
+                    tracking_current=tracks.input_valid,
+                    animals=animals,animals_current=pet_tracks.current,
+                    animals_intent=pet_revision if pet_active else None,pet_tracking=pet_tracks.public(),
                     scene_visible=scene_visible,
                     reason=None,
                     frame=item["jpeg"],
@@ -759,6 +1046,7 @@ async def run_source(my_generation):
                     inference_ms=round(detection.get("inference_ms", 0), 1),
                     body_ms=round(detection.get("body_ms", 0), 1),
                     hand_ms=round(detection.get("hand_ms", 0), 1),
+                    animal_ms=round(detection.get("animal_ms", 0), 1),
                     capture_fps=rate(captured_times),
                     processed_fps=rate(processed_times),
                     capture_encode_ms=item.get("capture_encode_ms"),
@@ -780,28 +1068,29 @@ async def run_source(my_generation):
         raise
     except Exception as error:
         if my_generation == generation:
-            state.update(
-                status="unavailable",
-                reason="source_or_detector_unavailable",
-                error_class=type(error).__name__,
-                error_stage=stage,
-                frame=None,
-                people=[],
-                hands=[],
-                room=None,
-                game={"mode": games.mode, "status": "paused", "reason": "实时画面已过期", "players": []},
-            )
-            await notify()
+            await primary_capture_closed(my_generation, wall_epoch, 'source_or_detector_unavailable',
+                                         type(error).__name__, stage=stage)
     finally:
-        wall.clear(SELECTED['id'], wall_epoch)
-        safety.clear(SELECTED['id'])
-        identities.close()
-        if camera_task:
-            camera_task.cancel()
-            await asyncio.gather(camera_task, return_exceptions=True)
-        await reap(capture)
-        await reap(vision)
-        capture = vision = None
+        try:
+            await primary_capture_closed(my_generation, wall_epoch, 'source_closed')
+        finally:
+            wall.clear(SELECTED['id'], wall_epoch)
+            safety.clear(SELECTED['id'])
+            try:
+                state['identity_cleanup_pending'] = await close_identity(identities) is False
+            finally:
+                try:
+                    try:
+                        await close_rooms(source_scope)
+                    finally:
+                        if camera_task:
+                            camera_task.cancel()
+                            await asyncio.gather(camera_task, return_exceptions=True)
+                finally:
+                    try:await reap(capture)
+                    finally:
+                        try:await reap(vision)
+                        finally:capture = vision = None
 
 
 async def supervised_source(my_generation):
@@ -867,7 +1156,10 @@ async def lifespan(app):
     else:
         state["camera_control"] = {"owner": "none", "phase": "idle", "reason": "识别尚未启动"}
     yield
-    await stop()
+    try:
+        await calibration_saver.close()
+    finally:
+        await stop()
     await previews.close()
     await home.close()
     await safety.close()
@@ -986,11 +1278,13 @@ async def interaction_policy(request: Request):
     return dict(enabled=interaction_enabled)
 
 
-@app.get("/assets/{name}")
-async def asset(name: str):
-    if name not in {"index.js", "index.css", "games.js", "games.css"}:
+@app.get("/assets/{name:path}")
+async def asset(name: str, request: Request):
+    from .game_assets import game_asset_path
+    path = game_asset_path(name)
+    if path is None:
         raise HTTPException(404)
-    return FileResponse(HERE / "static" / name)
+    return static_asset(path,request.headers)
 
 
 @app.get("/audio/{token}")
@@ -1058,6 +1352,7 @@ async def voice_control(request: Request):
     else:
         marker.unlink(missing_ok=True)
     if is_input:
+        if paused:await safety.sound.invalidate()
         armed=home.armed
         for service in [*secondary_homes.values(),home]:await service.close()
         if armed:await home.enable()
@@ -1078,11 +1373,14 @@ async def preview_status(camera_id: str, request: Request):
     if request.client.host not in {"127.0.0.1", "::1"}:
         raise HTTPException(403)
     if camera_id == SELECTED["id"]:
+        report = view()
         return {
-            "state": view()["status"],
+            "state": report["status"],
             "camera": camera_id,
             "frames": state["processed_frames"],
             "primary": True,
+            "camera_control": report.get('camera_control'),
+            "pet_tracking": report.get('pet_tracking'),
         }
     return previews.status(camera_id)
 
@@ -1099,6 +1397,35 @@ async def preview_frame(camera_id: str, request: Request):
     if not frame:
         raise HTTPException(409, detail="camera_frame_unavailable")
     return Response(frame, media_type="image/jpeg")
+
+
+@app.post('/api/practice/start')
+async def practice_start(request: Request):
+    data = await request.json()
+    if games.mode not in {'off', 'home'}:
+        return dict(phase='blocked', reason='game_active')
+    if not any(s['state'] == 'live' for s in view()['camera_sessions']):
+        return dict(phase='blocked', reason='camera_not_ready')
+    try:
+        return practice.begin(data.get('gesture'), [c['id'] for c in configuration()['cameras']])
+    except ValueError:
+        raise HTTPException(409, detail='practice_not_ready') from None
+
+
+@app.post('/api/practice/status')
+async def practice_status(request: Request):
+    data = await request.json()
+    if not isinstance(data.get('token'), str):
+        raise HTTPException(422)
+    return practice.status(data['token'])
+
+
+@app.post('/api/practice/stop')
+async def practice_stop(request: Request):
+    data = await request.json()
+    if not isinstance(data.get('token'), str):
+        raise HTTPException(422)
+    return practice.stop(data['token'])
 
 
 @app.get('/api/wall')
@@ -1150,13 +1477,16 @@ async def camera_wall_still(camera_id: str):
 async def preview_control(camera_id: str, request: Request):
     if request.client.host not in {'127.0.0.1','::1'}:
         raise HTTPException(403)
+    origin = request.headers.get('origin')
+    if origin and origin != 'http://' + request.headers.get('host', ''):
+        raise HTTPException(403)
     data = await request.json()
+    if not isinstance(data, dict):raise HTTPException(400)
     direction, mode = data.get('direction'), data.get('mode')
     if bool(direction)==bool(mode):raise HTTPException(400)
     if camera_id == SELECTED['id']:
         if direction:
             if not camera_planner:raise HTTPException(409, detail='camera_not_owned')
-            camera_planner.mode = 'hold'
             return await manual_motor(request)
         return await camera_control(request)
     try:
@@ -1168,12 +1498,23 @@ async def preview_control(camera_id: str, request: Request):
 
 @app.get("/")
 async def index():
-    return HTMLResponse((HERE / "static/index.html").read_text())
+    return HTMLResponse(static_page(HERE / 'static/index.html'),headers={'Cache-Control':'no-cache'})
 
 
 @app.get("/games")
 async def game_page():
-    return HTMLResponse((HERE / "static/games.html").read_text())
+    return HTMLResponse(static_page(HERE / 'static/games.html'),headers={'Cache-Control':'no-cache'})
+
+
+@app.post('/api/game/presentation')
+async def game_presentation(request: Request):
+    origin = request.headers.get('origin')
+    if origin and origin != 'http://' + request.headers.get('host', ''):
+        raise HTTPException(403)
+    try:
+        return games.observe_presentation(await request.json())
+    except (TypeError, ValueError):
+        raise HTTPException(409, detail='game_view_changed') from None
 
 
 @app.post("/api/game")
@@ -1182,17 +1523,38 @@ async def game_control(request: Request):
     if origin and origin != "http://" + request.headers.get("host", ""):
         raise HTTPException(403)
     data = await request.json()
+    if not isinstance(data, dict):
+        raise HTTPException(400, detail='invalid_game_request')
+    action = data.get('action')
+    if action is not None and (not isinstance(action, str) or action not in {'select','start','pause','resume'}):
+        raise HTTPException(400, detail='invalid_game_action')
+    if set(data)-{'mode','action','difficulty','expected_context','expected_revision'}:
+        raise HTTPException(400, detail='invalid_game_request')
+    if 'difficulty' in data and (type(data['difficulty']) is not str
+            or action not in {'select','start'} or data.get('mode') not in {'quest','ski','tennis','hiit'}):
+        raise HTTPException(400, detail='invalid_game_difficulty')
+    if not games.control_current(data.get('expected_context'),data.get('expected_revision')):
+        raise HTTPException(409, detail='game_state_changed')
+    if practice.active() and action != 'pause' and data.get("mode", "quest") not in {"off", "home"}:
+        raise HTTPException(409, detail="practice_active")
     try:
-        if data.get("action") == "select":
-            games.select(data.get("mode", "quest"))
+        if action in {'pause', 'resume'}:
+            if data.get('mode') != games.mode:
+                raise ValueError('game_changed')
+            games.set_paused(action == 'pause')
+        elif action == "select":
+            games.select(data.get("mode", "quest"), **({'difficulty':data['difficulty']} if 'difficulty' in data else {}))
         else:
-            games.reset(data.get("mode", "off"))
+            games.require_game_view(data.get('mode', 'off'))
+            games.reset(data.get("mode", "off"), **({'difficulty':data['difficulty']} if 'difficulty' in data else {}))
         if data.get("action") == "start" and games.mode != "off":
             await start()
-        if games.selected_mode == "home" and data.get("mode") != "off":
+        if action not in {'pause','resume'} and games.selected_mode == "home" and data.get("mode") != "off":
             await home.enable()
             await start()
-    except ValueError:
+    except ValueError as error:
+        if str(error) in {'game_input_not_ready','game_presentation_not_ready'}:
+            raise HTTPException(409, detail=str(error))
         raise HTTPException(400)
     return games.public
 
@@ -1316,54 +1678,43 @@ async def live(request: Request):
 
 @app.get("/api/calibration")
 async def calibration():
-    async with room_lock:
-        if room is None:
-            return DEFAULT
-        config = copy.deepcopy(room.config)
-        if room.registration is not None:
-            import numpy as np
-
-            inverse = np.linalg.inv(room.registration)
-            for item in config["anchors"] + config["seats"]:
-                point = project(inverse, item["image"])
-                if point:
-                    item["image"] = point
-        return config
+    if state.get('status')!='live':raise HTTPException(409,detail='等待画面稳定后再校准')
+    try:return calibration_frames.open(calibration_source())
+    except ValueError:raise HTTPException(409,detail='等待画面稳定后再校准')from None
 
 
 @app.post("/api/calibration")
 async def save_calibration(request: Request):
-    global room
     if request.client.host not in {"127.0.0.1", "::1"}:
         raise HTTPException(403)
     origin = request.headers.get("origin")
     if origin and origin != "http://" + request.headers.get("host", ""):
         raise HTTPException(403)
-    if int(request.headers.get("content-length", "0")) > 3_000_000:
-        raise HTTPException(413)
-    data = await request.json()
     try:
-        config = data["config"]
-        validate(config)
+        if int(request.headers.get('content-length', '0')) > 3_000_000:
+            raise HTTPException(413)
+        body = bytearray()
+        async for part in request.stream():
+            if len(body) + len(part) > 3_000_000:
+                raise HTTPException(413)
+            body.extend(part)
+        data = json.loads(body)
+        config = dict(data['config'])
+        source = config.pop('_source', None)
         reference = base64.b64decode(data["reference_jpeg"], validate=True)
-        if len(reference) > 2_000_000:
-            raise ValueError("reference_too_large")
-        manual = config.get("mode") == "relative_calibrated"
-        config.update(
-            mode="relative_calibrated" if manual else "approximate",
-            metric=False,
-            note="相对坐标 · 手动标定 · 无米制尺寸" if manual else "按米家户型粗标 · 相对坐标 · 座位待校准",
-        )
-        replacement = Room(config, reference)
+        reference = calibration_frames.resolve(source,reference,calibration_source())
+        result = await calibration_saver.save(config, reference, current=lambda: (
+            calibration_frames.valid(source,calibration_source()) and state.get('status') == 'live'))
+    except HTTPException:
+        raise
     except Exception as error:
-        raise HTTPException(400, detail=str(error)[:80])
-    calibration_path.write_text(json.dumps(config, ensure_ascii=False, indent=2))
-    reference_path.write_bytes(reference)
-    async with room_lock:
-        room = replacement
-    if camera_planner:
-        camera_planner.views.clear()
-    return {"saved": True, "metric": False}
+        reason = str(error)
+        code, message = (409, '画面已更新，请重新校准') if reason == 'calibration_source_changed' else (
+            (409, '正在保存，请稍候') if reason == 'calibration_busy' else (
+            (503, '暂时无法保存，请稍后重试') if reason == 'calibration_unavailable' else
+            (400, '请检查标记位置和参考画面')))
+        raise HTTPException(code, detail=message) from None
+    return result
 
 
 @app.post("/api/viewer")
@@ -1398,17 +1749,35 @@ async def camera_control(request: Request):
     if origin and origin != "http://" + request.headers.get("host", ""):
         raise HTTPException(403)
     data = await request.json()
+    if not isinstance(data, dict):raise HTTPException(400)
     mode = data.get("mode")
-    if mode not in ("auto", "hold", "survey"):
+    if mode not in ("auto", "pets", "hold", "survey"):
         raise HTTPException(400)
     if not camera_planner:
         raise HTTPException(409, detail="camera_not_owned")
-    camera_planner.mode = mode
+    try:
+        set_primary_camera_mode(mode)
+    except (OSError, ValueError, RuntimeError):
+        raise HTTPException(409, detail='camera_control_unavailable') from None
     if mode == "survey":
         camera_planner.visited.clear()
         camera_planner.last_person = time.monotonic() - 8
         camera_planner.last_move = time.monotonic() - 12
     return {"mode": mode}
+
+
+def set_primary_camera_mode(mode):
+    if mode not in ('auto', 'pets', 'hold', 'survey'):
+        raise ValueError('invalid_camera_mode')
+    if not camera_planner:
+        raise RuntimeError('camera_not_owned')
+    camera_planner.mode = 'hold'
+    camera_planner.intent_revision = secrets.token_hex(16)
+    camera_planner.intent_status = 'unavailable'
+    intent = camera_intents.save(mode)
+    camera_planner.mode = intent.mode
+    camera_planner.intent_revision = intent.revision
+    camera_planner.intent_status = intent.status
 
 
 @app.post("/api/motor")
@@ -1419,11 +1788,14 @@ async def manual_motor(request: Request):
     if origin and origin != "http://" + request.headers.get("host", ""):
         raise HTTPException(403)
     data = await request.json()
+    if not isinstance(data, dict) or data.get('direction') not in ('left', 'right', 'up', 'down'):
+        raise HTTPException(400)
     try:
+        set_primary_camera_mode('hold')
         return await motor_step(data.get("direction"))
     except ValueError:
         raise HTTPException(400)
-    except RuntimeError:
+    except (OSError, RuntimeError):
         raise HTTPException(409, detail="motor_not_ready")
 
 
@@ -1438,10 +1810,7 @@ async def control(action: str, request: Request):
         await stop()
     elif action == "seats_reset":
         if room:
-            room.players.clear()
-            room.pending.clear()
-            room.next_seat = 1
-            room.holds.clear()
+            room.reset_seats()
     else:
         raise HTTPException(404)
     return {"status": view()["status"]}

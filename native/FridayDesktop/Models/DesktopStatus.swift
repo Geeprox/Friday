@@ -1,5 +1,14 @@
 import Foundation
 
+struct ARLApplicationStatus: Decodable {
+    var appID: String?
+    var connected: Bool
+    var state: String
+    var error: String?
+    var modelServiceAccepted: Bool
+    var identityBasis: String?
+}
+
 struct ARLStatus: Decodable {
     var status: String
     var sdkVersion: String?
@@ -11,13 +20,18 @@ struct ARLStatus: Decodable {
     var taskReadiness: String? = nil
     var identityVerified: Bool? = nil
     var modelCapabilityVerified: Bool? = nil
+    var applicationSession: ARLApplicationStatus? = nil
 
     // The legacy ready field represents health metadata, never task permission.
     var connectionPhase: String {
         if refreshPending == true { return "refreshing" }
         if metadataFreshness == "last_known" { return "stale" }
         guard metadataFreshness == "current" || metadataFreshness == "unavailable" else { return "unknown" }
-        if status == "ready" && ready && metadataFreshness == "current" { return "connected" }
+        if status == "ready" && ready && metadataFreshness == "current" {
+            if applicationSession?.connected == true && applicationSession?.state == "connected" { return "connected" }
+            if applicationSession?.state == "upgrade_required" { return "upgrade_required" }
+            return applicationSession?.state == "registering" ? "registering" : "handshake_required"
+        }
         switch status {
         case "disconnected": return "disconnected"
         case "not_running": return "not_running"
@@ -46,7 +60,10 @@ struct ARLStatus: Decodable {
             return "ARL 正在刷新，保留上次检查结果；当前连接状态待确认。"
         }
         switch connectionPhase {
-        case "connected": return "ARL 健康通信正常；身份与模型能力尚未验证。"
+        case "connected": return "Friday 已完成 ARL 应用握手；模型能力尚未实测，家庭操作权限单独校验。"
+        case "upgrade_required": return "ARL 健康通信正常；当前 SDK 或服务尚不支持应用握手。"
+        case "registering": return "ARL 健康通信正常；Friday 正在注册应用会话。"
+        case "handshake_required": return "ARL 健康通信正常；Friday 尚未完成应用握手。"
         case "disconnected": return "ARL 连接检查失败，健康通信暂不可用。"
         case "not_running": return "ARL 尚未运行。"
         case "sdk_missing": return "本机尚未安装 ARL SDK。"
@@ -60,6 +77,9 @@ struct ARLStatus: Decodable {
     var connectionRecovery: String {
         switch connectionPhase {
         case "connected": return "在本次任务预览中核对模型能力与授权。"
+        case "upgrade_required": return "更新 ARL 和配套 SDK 后，Friday 会重新握手。"
+        case "registering": return "等待注册确认；若 ARL 重启，会自动重新握手。"
+        case "handshake_required": return "启动 Friday 的家庭服务，完成应用注册后再提交模型任务。"
         case "disconnected": return "检查本机 ARL 服务后重新读取。"
         case "not_running": return "在本机启动已配置的 ARL 后重新读取。"
         case "sdk_missing": return "按部署指南安装 ARL SDK 后重新读取。"
@@ -147,15 +167,15 @@ struct HomeConnectionPresentation {
         if unknown { return "当前连接状态暂不可读取，历史家庭状态不能证明当前连接。" }
         if needsAuthorization {
             let code = status?.failureEvidence?.httpReads.first(where: { [401, 403].contains($0.status) })?.status
-            return code.map { "请核对权限与本次操作范围。Home Assistant 拒绝了现有授权（HTTP \($0)）。" }
-                ?? "请核对权限与本次操作范围。当前家庭授权暂不可用。请重新登录并确认授权。"
+            return code.map { "Home Assistant 拒绝了现有授权（HTTP \($0)）。" }
+                ?? "家庭授权暂不可用，请重新登录并确认授权。"
         }
         switch failure {
-        case "ha_unreachable": return "请核对权限与本次操作范围。网关当前无法访问。请检查网关是否在线，以及 Friday 的本地网络权限。"
+        case "ha_unreachable": return "请检查 Home Assistant 是否在线，以及 Friday 的本地网络权限。"
         case "ha_read_timeout": return "网关没有及时响应。请稍后重新读取。"
         case "subscription_disconnected": return "家庭状态更新出现缺口，历史读数不能代表当前状态。请重新读取；设备操作仍未启用。"
         case nil: return "读取你已配置的家庭网关，查看家庭状态。"
-        default: return "请核对连接状态与使用范围。当前连接未通过检查。请重新读取；如果仍失败，可查看本机运行记录。"
+        default: return "连接检查未通过。请重新读取，或查看本机运行记录。"
         }
     }
 }

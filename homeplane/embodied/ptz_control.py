@@ -60,33 +60,54 @@ def alive(pid):
 
 
 class Transport:
-    def __init__(self, camera_id=None):
-        from miot.cloud import MIoTHttpClient
+    def __init__(self, camera_id=None, *, session=None, http_factory=None):
         from .miot_spec import camera_properties
 
         selected = camera(camera_id)
         self.refs = camera_properties(selected)
         self.did = selected["device"]["did"]
-        login = json.loads((PRIVATE / "miot-session.json").read_text())
-        self.api = MIoTHttpClient(cloud_server=selected.get('region', 'cn'), access_token=login["access_token"])
+        self.region = selected.get('region', 'cn')
+        if session is None:
+            from .miot_session import MiSession
+            session = MiSession(PRIVATE)
+        self.session = session
+        self.http_factory = http_factory or session.http
+        self.api, self._token, self._closed = None, None, False
+        self._io_lock = asyncio.Lock()
+
+    async def _current_api(self):
+        if self._closed:
+            raise RuntimeError("camera_transport_closed")
+        # Reuse the existing saved grant/renewal owner. A new transport does not
+        # log in, open a camera, widen its scope, or replay an earlier write.
+        saved = await self.session.current()
+        token = saved.get("access_token")
+        if not token or saved.get("cloud_server", self.region) != self.region:
+            raise RuntimeError("camera_authorization_changed")
+        if self.api is None or self._token != token:
+            if self.api is not None:
+                await self.api.deinit_async()
+                self.api, self._token = None, None
+            self.api = self.http_factory(cloud_server=self.region, access_token=token)
+            self._token = token
+        return self.api
 
     async def read(self):
         from miot.types import MIoTGetPropertyParam
 
-        result = await asyncio.wait_for(
-            self.api.get_props_async(
+        async with self._io_lock, asyncio.timeout(18):
+            api = await self._current_api()
+            result = await api.get_props_async(
                 [MIoTGetPropertyParam(did=self.did, siid=s, piid=p) for s, p in self.refs.values()]
-            ),
-            18,
-        )
-        values = {
-            name: r.get("value")
-            for r in result
-            for name, (s, p) in self.refs.items()
-            if (s, p) == (r["siid"], r["piid"]) and r.get("code") == 0
-        }
-        if any(name not in values for name in self.refs):
-            raise RuntimeError("incomplete_camera_readback")
+            )
+        values = {}
+        for name, (siid, piid) in self.refs.items():
+            rows = [r for r in result if isinstance(r, dict)
+                    and str(r.get("did")) == str(self.did)
+                    and (r.get("siid"), r.get("piid")) == (siid, piid)]
+            if len(rows) != 1 or rows[0].get("code") != 0:
+                raise RuntimeError("incomplete_camera_readback")
+            values[name] = rows[0].get("value")
         return values
 
     async def write(self, name, value):
@@ -95,14 +116,20 @@ class Transport:
         if name not in FLAGS and name not in ("active_preset", "camera_power"):
             raise ValueError("property_not_allowed")
         s, p = self.refs[name]
-        result = await asyncio.wait_for(self.api.set_prop_async(
-            MIoTSetPropertyParam(did=self.did, siid=s, piid=p, value=value)), 12)
+        async with self._io_lock, asyncio.timeout(12):
+            api = await self._current_api()
+            result = await api.set_prop_async(
+                MIoTSetPropertyParam(did=self.did, siid=s, piid=p, value=value))
         if result.get("code") != 0:
             raise RuntimeError("camera_write_code_" + str(result.get("code")))
         return {"code": 0, "property": name, "value": value}
 
     async def close(self):
-        await self.api.deinit_async()
+        async with self._io_lock:
+            self._closed = True
+            if self.api is not None:
+                await self.api.deinit_async()
+                self.api, self._token = None, None
 
 
 class CameraLease:
@@ -335,6 +362,8 @@ class SearchPlanner:
         self.last_person = now
         self.person_since = None
         self.mode = "auto"
+        self.intent_revision = 0
+        self.intent_status = 'default'
         self.phase = "observing"
         self.reason = "启动观察"
         self.visited = set()
@@ -427,6 +456,7 @@ class SearchPlanner:
         return {
             "owner": "friday",
             "mode": self.mode,
+            "intent_status": self.intent_status,
             "phase": self.phase,
             "reason": self.reason,
             "preset": self.current,

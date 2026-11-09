@@ -1,0 +1,125 @@
+{
+  "status": "Candidate requiring parent visual acceptance",
+  "sources": [
+    {
+      "garment": "T-shirt",
+      "author": "Elvaerwyn; source header Makehuman edited by Elvaerwyn",
+      "license": "CC0-1.0",
+      "mesh_vertices": 1095,
+      "mesh_triangles": 2068,
+      "boundary_edges": 126,
+      "author_hidden_body_vertices": 892,
+      "max_mapped_vs_obj_difference_m": 0.10101691077078195,
+      "bounds_m": [
+        [
+          -0.27332642674446106,
+          0.27332642674446106
+        ],
+        [
+          0.9482861161231995,
+          1.4637789726257324
+        ],
+        [
+          -0.09869567304849625,
+          0.17481835186481476
+        ]
+      ],
+      "source_headers": [
+        "# Exported from MakeClothes (TM)",
+        "# author Makehuman edited by Elvaerwyn",
+        "# license CC0",
+        "# homepage http://www.makehuman.org/"
+      ]
+    },
+    {
+      "garment": "Loose long trousers",
+      "author": "MargaretToigo; source header MRT",
+      "license": "CC0-1.0",
+      "mesh_vertices": 1372,
+      "mesh_triangles": 2674,
+      "boundary_edges": 77,
+      "author_hidden_body_vertices": 0,
+      "max_mapped_vs_obj_difference_m": 0.12268543524740085,
+      "bounds_m": [
+        [
+          -0.27508148550987244,
+          0.27508145570755005
+        ],
+        [
+          0.07591278105974197,
+          1.0601112842559814
+        ],
+        [
+          -0.13295723497867584,
+          0.16124868392944336
+        ]
+      ],
+      "source_headers": [
+        "# Exported from MakeClothes (TM)",
+        "# author MRT",
+        "# license CC0",
+        "# homepage http://www.makehuman.org/"
+      ]
+    },
+    {
+      "garment": "Lace-up sneakers",
+      "author": "MakeHuman system; Data Collection AB, Joel Palmius, Jonas Hauquier",
+      "license": "CC0-1.0",
+      "mesh_vertices": 1594,
+      "mesh_triangles": 3064,
+      "boundary_edges": 120,
+      "author_hidden_body_vertices": 3206,
+      "max_mapped_vs_obj_difference_m": 0.04484120899602065,
+      "bounds_m": [
+        [
+          -0.30358996987342834,
+          0.30358996987342834
+        ],
+        [
+          -0.0184735506772995,
+          0.2396673709154129
+        ],
+        [
+          -0.059181343764066696,
+          0.21222183108329773
+        ]
+      ],
+      "source_headers": [
+        "# This is a clothes file for MakeHuman",
+        "#",
+        "# This asset was explicitly released as CC0 in september 2020. The license",
+        "# text for CC0 can be found in the root of this repository.",
+        "#",
+        "# The copyright holders at the point of the release to CC0 were:",
+        "#",
+        "# Copyright (C) 2020 Data Collection AB, https://www.datacollection.se",
+        "# Copyright (C) 2020 Joel Palmius",
+        "# Copyright (C) 2020 Jonas Hauquier",
+        "#",
+        "# The primary legal contact for MakeHuman is Data Collection AB.",
+        "#",
+        "# For more information, see homepage at http://www.makehumancommunity.org"
+      ]
+    }
+  ],
+  "original_binary_prefix_retained_bytes": 1452868,
+  "original_animation_json_unchanged": true,
+  "clips": [
+    "t-raise",
+    "upward-salute-gentle",
+    "sit-back-squat",
+    "high-knee-march",
+    "open-close-swings",
+    "overhead-reach",
+    "hands-on-hips-side-bend",
+    "side-step-arm-swing",
+    "step-jack",
+    "side-step-taps",
+    "friday-ski-alternate-v1",
+    "friday-tennis-forehand-v1",
+    "friday-side-lunge-v1"
+  ],
+  "hidden_body_triangles": 9623,
+  "remaining_body_triangles": 17964,
+  "model_sha256": "98ad4bc78c767bd447fe3ddf71821d1d5d0dab6a3e789f0c1953e5fbafdefb40"
+}

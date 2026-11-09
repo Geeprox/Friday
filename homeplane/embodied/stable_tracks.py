@@ -9,6 +9,48 @@ from trackers import ByteTrackTracker
 from homeplane.embodied.pose_rules import classify
 
 IDENTITY = np.eye(3)
+TRACK_GAP_SECONDS = 3.0
+POSE_GAP_SECONDS = .75
+
+
+def valid_point(point):
+    return (isinstance(point,dict) and all(type(point.get(k)) in (int,float)
+            and math.isfinite(point[k]) and 0 <= point[k] <= 1 for k in ('x','y','confidence'))
+            and point['confidence'] >= .4)
+
+
+def valid_box(box):
+    return (isinstance(box,dict) and all(type(box.get(k)) in (int,float)
+            and math.isfinite(box[k]) for k in ('x','y','w','h','confidence'))
+            and .4 <= box['confidence'] <= 1 and box['x'] >= 0 and box['y'] >= 0
+            and box['w'] > 0 and box['h'] > 0 and box['x']+box['w'] <= 1.000001
+            and box['y']+box['h'] <= 1.000001)
+
+
+def assign_poses(detection, boxes):
+    """Only a supported pose whose root belongs to one box may supply actions.
+
+    More joints do not resolve two overlapping people. Multiple qualifying
+    poses in one box also stay ambiguous; no detector-order choice is made.
+    """
+    assignments = {i:[] for i in range(len(boxes))}
+    ambiguous = set()
+    for pose in detection.get('poses',[])[:10]:
+        raw = pose.get('joints',{}) if isinstance(pose,dict) else {}
+        if not isinstance(raw,dict):
+            continue
+        joints = {name:p for name,p in raw.items() if valid_point(p)}
+        root = joints.get('root') or joints.get('neck')
+        if root is None or len(joints)<6:
+            continue
+        candidates = [i for i,b in enumerate(boxes)
+            if b['x']-.05 <= root['x'] <= b['x']+b['w']+.05
+            and b['y']-.05 <= root['y'] <= b['y']+b['h']+.05]
+        if len(candidates)==1:
+            assignments[candidates[0]].append(joints)
+        else:
+            ambiguous.update(candidates)
+    return {i:values[0] for i,values in assignments.items() if len(values)==1 and i not in ambiguous}
 
 
 def warp_box(box, transform):
@@ -31,11 +73,14 @@ class StableTracks:
         self.tracker = self._new_tracker()
         self.items = {}
         self.last_update = None
+        self.input_valid = False
 
     @staticmethod
     def _new_tracker():
         return ByteTrackTracker(
-            lost_track_buffer=600,
+            # The installed tracker converts this budget at30Hz to3 elapsed
+            # seconds when timestamp is supplied. Short occlusion still survives.
+            lost_track_buffer=90,
             frame_rate=20.0,
             track_activation_threshold=0.65,
             high_conf_det_threshold=0.5,
@@ -43,30 +88,61 @@ class StableTracks:
             minimum_iou_threshold=0.08,
         )
 
+    def invalidate(self):
+        self._space = None
+        self.items.clear()
+        self.last_update = None
+        self.input_valid = False
+
     def update(self, detection, now, transform=IDENTITY, *, camera_moving=False):
+        self.input_valid = False
+        if (not isinstance(detection,dict) or not isinstance(detection.get('boxes',[]),list)
+                or not isinstance(detection.get('poses',[]),list)):
+            self.invalidate()
+            return []
+        if type(now) not in (int,float) or not math.isfinite(now) or now < 0:
+            self.invalidate()
+            return []
+        if self.last_update is not None:
+            if now <= self.last_update:
+                if now < self.last_update:
+                    self.invalidate()
+                return []  # Replayed time is not another pose observation.
+            if now-self.last_update > TRACK_GAP_SECONDS:
+                self.invalidate()
         if camera_moving:
-            self._space = None
+            self.invalidate()
+            self.last_update = now
             return []
         # Face/body continuity does not require a calibrated floor map. Moving
         # the camera or changing coordinate space always creates new track IDs.
         space = 'image' if transform is None else 'background_reference'
+        if transform is None:
+            transform = IDENTITY
+        try:
+            transform = np.asarray(transform,dtype=float)
+            if transform.shape != (3,3) or not np.isfinite(transform).all() or np.linalg.matrix_rank(transform)<3:
+                raise ValueError('registration_invalid')
+        except (ValueError,TypeError,np.linalg.LinAlgError):
+            self.invalidate()
+            return []
+        boxes = []
+        xy = []
+        for box in detection.get("boxes", [])[:10]:
+            if not valid_box(box):
+                self.invalidate()
+                return []
+            world = warp_box(box, transform)
+            if world is None:
+                self.invalidate()
+                return []
+            boxes.append(box)
+            xy.append(world)
         if space != self._space:
             self.tracker = self._new_tracker()
             self.items.clear()
             self._epoch += 1
             self._space = space
-        if transform is None:
-            transform = IDENTITY
-        transform = np.asarray(transform)
-        boxes = []
-        xy = []
-        for box in detection.get("boxes", [])[:10]:
-            if box.get("confidence", 0) < 0.4:
-                continue
-            world = warp_box(box, transform)
-            if world is not None:
-                boxes.append(box)
-                xy.append(world)
         ds = sv.Detections(
             xyxy=np.array(xy, dtype=np.float32).reshape(-1, 4),
             confidence=np.array([b["confidence"] for b in boxes], dtype=np.float32),
@@ -74,31 +150,18 @@ class StableTracks:
             data={"source_index": np.arange(len(boxes))},
         )
         tracked = self.tracker.update(ds, timestamp=now)
+        poses = assign_poses(detection,boxes)
         people = []
-        used = set()
         for n, track_id in enumerate(tracked.tracker_id if tracked.tracker_id is not None else []):
             if int(track_id) < 0:
                 continue
             track_id = int(track_id) + 1 + self._epoch * 1000000
             index = int(tracked.data["source_index"][n])
             box = boxes[index]
-            joints = {}
-            candidates = []
-            for i, pose in enumerate(detection.get("poses", [])):
-                if i in used:
-                    continue
-                j = pose.get("joints", {})
-                c = j.get("root") or j.get("neck")
-                if (
-                    c
-                    and box["x"] - 0.05 <= c["x"] <= box["x"] + box["w"] + 0.05
-                    and box["y"] - 0.05 <= c["y"] <= box["y"] + box["h"] + 0.05
-                ):
-                    candidates.append((len(j), i, j))
-            if candidates:
-                _, i, joints = max(candidates, key=lambda x: x[0])
-                used.add(i)
+            joints = poses.get(index,{})
             prev = self.items.get(track_id)
+            if prev and now-prev['last'] > POSE_GAP_SECONDS:
+                prev = None
             labels = classify(joints)
             streak = prev["streak"] + 1 if prev and prev["candidate"] == tuple(labels) else 1
             b = xy[index]
@@ -132,6 +195,7 @@ class StableTracks:
                     "tracking": {"backend": "ByteTrack", "space": space, "session_id": True},
                 }
             )
-        self.items = {k: v for k, v in self.items.items() if now - v["last"] < 30}
+        self.items = {k: v for k, v in self.items.items() if now - v["last"] <= TRACK_GAP_SECONDS}
         self.last_update = now
+        self.input_valid = True
         return people

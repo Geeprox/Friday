@@ -2,6 +2,9 @@
 
 import json
 import re
+import unicodedata
+
+from .voice_preferences import wake_word as checked_wake_word
 
 LAYA_QUESTIONS = {
     "command": {
@@ -16,10 +19,17 @@ LAYA_QUESTIONS = {
 }
 
 
-def address(text, attending=False):
+def wake_pattern(wake_word='Friday'):
+    name=checked_wake_word(wake_word)
+    boundary=r'(?![A-Za-z0-9_])' if name[-1].isascii() and name[-1].isalnum() else ''
+    return r'^\s*(?:hey[，,\s]*)?'+re.escape(name)+boundary+r'[，,：:\s。.!！]*'
+
+
+def address(text, attending=False, *, wake_word='Friday'):
     if not isinstance(text, str) or not 1 <= len(text) <= 1000:
         return {"admitted": False, "reason": "invalid_text"}
-    match = re.match(r"^\s*(?:hey[，,\s]*)?friday(?![A-Za-z0-9_])[，,：:\s。.!！]*", text, re.I)
+    text=unicodedata.normalize('NFKC',text)
+    match = re.match(wake_pattern(wake_word), text, re.I)
     body = text[match.end() :].strip() if match else text.strip()
     if not match and not attending:
         return {"admitted": False, "reason": "need_wake_word_without_attention"}
@@ -34,13 +44,16 @@ def address(text, attending=False):
     }
 
 
-def transcript_quality(text, quality=None):
+def transcript_quality(text, quality=None, *, wake_word='Friday'):
     if not isinstance(text, str) or not text.strip():
         return False, "no_speech"
-    if re.search(r"[\u3040-\u30ff]", text):
+    normalized=unicodedata.normalize('NFKC',text)
+    cue=re.match(wake_pattern(wake_word),normalized,re.I)
+    body=normalized[cue.end():] if cue else normalized
+    if re.search(r"[\u3040-\u30ff]", body):
         return False, "unsupported_script"
-    wake_only = bool(re.fullmatch(r"\s*(?:hey[，,\s]*)?friday[，,：:\s。.!！]*", text, re.I))
-    if not wake_only and not re.search(r"[\u3400-\u9fff]", text):
+    wake_only = bool(cue and not body.strip())
+    if not wake_only and not re.search(r"[\u3400-\u9fff]", body):
         return False, "no_chinese_task"
     quality = quality or {}
     if quality.get("speech_event") and "Speech" not in quality["speech_event"]:

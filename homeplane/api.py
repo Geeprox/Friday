@@ -153,7 +153,12 @@ def create_app(
     runtime_log=None,
     embodied_service=None,
     background_enabled=False,
+    console_port=8740,
 ):
+    if type(console_port) is not int or not 1 <= console_port <= 65535:
+        raise ValueError('invalid_console_port')
+    console_origin = 'http://127.0.0.1' + (f':{console_port}' if console_port != 80 else '')
+    localhost_authority = 'localhost' + (f':{console_port}' if console_port != 80 else '')
     adapter = adapter or Simulator()
     store = TraceStore(Path(db_path or "data/homeplane/traces.sqlite"))
     core = HomeCore(adapter, store)
@@ -211,10 +216,15 @@ def create_app(
     rule_runtime = RuleRuntime(rules)
     core_rules = CoreRules(core, rules)
     core_rule_runtime = CoreRuleRuntime(core_rules)
+    from .household_mode import HouseholdMode
+    household_mode = HouseholdMode(core,core_rule_runtime)
     family_media = FamilyMediaCatalog(store.connection, nas or UnavailableNASReader(nas_status),
                                      simulated=family_media_simulated,
                                      indexed_kinds=family_media_indexed_kinds)
-    file_steward = FileSteward(store.connection, family_media, session_status=nas_status) if file_steward_enabled else None
+    file_steward = FileSteward(
+        store.connection, family_media, session_status=nas_status,
+        local_text_enabled=not console_read_only,
+    ) if file_steward_enabled else None
     queries = HomeQueries(core, family_media=family_media)
     if query_adoption_config is not None and not isinstance(query_adoption_config, HomeQueryAdoptionConfig):
         raise ValueError("invalid_query_adoption_config")
@@ -242,7 +252,8 @@ def create_app(
 
     discovery = HADiscovery()
     runtime = arl_runtime or ARLRuntime(
-        lambda: Path(settings.config.arl_home) if settings.config.arl_home else DEFAULT_HOME
+        lambda: Path(settings.config.arl_home) if settings.config.arl_home else DEFAULT_HOME,
+        state_directory=lambda: settings.path.parent,
     )
     rule_text = RuleTextChanges(rules, runtime)
     rule_analysis = ARLRuleChanges(
@@ -253,14 +264,17 @@ def create_app(
         planning_executor=arl_planning_executor,
     )
     from .event_provenance import registered_room_context
+    from .embodied.camera_provenance import configured_camera_sources
     archive = ArchiveIndex(
         store, settings, lambda: isinstance(core.adapter, Simulator), runner=archive_runner,
         room_context=lambda room:registered_room_context(core.adapter,room),
+        capture_cameras=configured_camera_sources,
     )
     archive_player = ArchivePlayer(archive)
     home_flow = HomeFlow(core, settings, rules, rule_text, queries, archive, archive_player,
                          rule_runtime, core_rule_runtime, nas_status=nas_status,
-                         household_timezone=flow_household_timezone)
+                         household_timezone=flow_household_timezone,household_mode=household_mode,
+                         question_runtime=runtime)
     geek.prune()
     from .embodied.service import EmbodiedService
     from .embodied.api import create_router as embodied_router
@@ -292,6 +306,8 @@ def create_app(
         from .ha import HAReadOnlyAdapter
 
         try:
+            if arl_runtime is None and not isinstance(core.adapter, Simulator):
+                await runtime.start_application()
             if nas is not None:
                 try:
                     await nas.start()
@@ -309,6 +325,7 @@ def create_app(
         finally:
             await infrastructure.close()
             await app.state.home_experience.close()
+            await app.state.werewolf.close()
             await embodied.close()
             await home_flow.close()
             if query_adoption:
@@ -332,6 +349,8 @@ def create_app(
             core.measurements.enrollment.close()
             await rule_runtime.close()
             await core_rule_runtime.close()
+            if arl_runtime is None:
+                await runtime.close()
             await core.adapter.close()
             core.actions.close()
             rules.close()
@@ -351,9 +370,18 @@ def create_app(
             return await infrastructure.configure(request)
         except ValueError:
             raise HTTPException(409, detail="source_conflict") from None
-    app.include_router(embodied_router(embodied, core, lock, infrastructure))
+    app.include_router(embodied_router(embodied, core, lock, infrastructure, arl_runtime=runtime, archive=archive,
+                                     home_flow=home_flow))
+    from .werewolf_api import create_router as werewolf_router
+    party_router = werewolf_router(core, lock, embodied, settings.path.parent)
+    app.include_router(party_router)
+    app.state.werewolf = party_router.game_owner
+    from .ktv_game_api import create_router as ktv_game_router
+    app.include_router(ktv_game_router(read_only=console_read_only))
     from .home_experience import create_router as home_experience_router
-    home_product_router=home_experience_router(core, lock, settings, embodied, archive, core_rule_runtime)
+    home_product_router=home_experience_router(core, lock, settings, embodied, archive, core_rule_runtime,
+                                               file_source_status=nas_status,household_mode=household_mode)
+    home_flow.pause_automatic=home_product_router.home_owner.pause_automatic
     app.include_router(home_product_router)
     app.state.home_experience=home_product_router.home_owner
     from .event_evidence import create_router as event_evidence_router
@@ -394,21 +422,28 @@ def create_app(
         app.include_router(file_steward_router(file_steward))
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
+    from .host_resources import HostResources
+    host_resources = HostResources()
+
+    @app.get('/api/home/resources')
+    async def home_resources():
+        return await asyncio.to_thread(host_resources.sample)
+
     @app.get('/api/diagnostics/runtime')
     async def runtime_diagnostics():
         return runtime_log.export()
 
     @app.middleware("http")
     async def local_boundary(request: Request, call_next):
-        # OAuth cookies and client_id use a single fixed loopback origin. Canonicalize
+        # OAuth cookies and client_id use the declared loopback origin. Canonicalize
         # the UI alias before login instead of letting localhost start a broken flow.
         if (
             request.method == "GET"
             and request.url.path == "/"
-            and request.headers.get("host") == "localhost:8740"
+            and request.headers.get("host") == localhost_authority
         ):
             return RedirectResponse(
-                "http://127.0.0.1:8740/",
+                console_origin + '/',
                 status_code=303,
                 headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
             )
@@ -696,7 +731,19 @@ def create_app(
 
     @app.get("/api/rules/core/context")
     async def core_rule_context():
-        return core_rules.context()
+        from zoneinfo import ZoneInfo
+        adapter, before = core.adapter, core_rules.context()
+        timezone = flow_household_timezone
+        if timezone is None and callable(provider := getattr(adapter, 'household_timezone', None)):
+            try:
+                candidate = await asyncio.wait_for(provider(), 2)
+                if isinstance(candidate, str) and 1 <= len(candidate) <= 64:
+                    ZoneInfo(candidate)
+                    timezone = candidate
+            except (OSError, ValueError, TypeError, TimeoutError, KeyError):
+                pass
+        current = core_rules.context()
+        return dict(current, household_timezone=timezone if adapter is core.adapter and current == before else None)
 
     @app.get("/api/rules/core/records")
     async def core_rule_records():
@@ -713,7 +760,7 @@ def create_app(
 
     @app.post("/api/rules/core/runtime/mode")
     async def core_mode(request: CoreMode):
-        return await core_rule_runtime.set_mode(request.mode, request.ttl_seconds)
+        return await household_mode.select(request.mode,ttl_seconds=request.ttl_seconds)
 
     @app.get("/api/rules/core/runs/{run_id}", response_model=CoreRuleRun)
     async def core_rule_run(run_id: str):
@@ -890,13 +937,14 @@ def create_app(
 
     @app.post("/api/settings/arl/connect")
     async def arl_connect():
-        # Upstream SDK discovers an existing shared instance or boots one without inference.
+        # Register against the existing shared host; never launch another ARL.
         return await runtime.status(start=True, timeout=10)
 
     @app.post("/api/settings/arl/probe")
     async def arl_probe():
         try:
-            return await runtime.smoke()
+            probe = getattr(runtime, 'application_smoke', None) or runtime.smoke
+            return await probe()
         except ARLError as exc:
             return {"status": exc.code, "inference_attempted": False, "device_write_attempted": False}
 
@@ -912,7 +960,7 @@ def create_app(
 
     @app.post("/api/actions/execute", response_model=LightExecutionTrace)
     async def action_execute(request: ExecutePlan):
-        await core_rule_runtime.invalidate("explicit_console_action_takes_over")
+        await core_rule_runtime.hold_for_manual()
         async with lock:
             return await core.actions.execute(request.plan_id)
 
@@ -1152,6 +1200,21 @@ def create_app(
     async def nas_probe():
         return await settings.probe_nas()
 
+    class NASCredentialInput(BaseModel):
+        model_config = ConfigDict(extra='forbid')
+        expected_generation: int = Field(ge=1,strict=True)
+        username: SecretStr = Field(min_length=1,max_length=256)
+        password: SecretStr = Field(min_length=1,max_length=8192)
+
+    @app.post('/api/settings/nas/credential')
+    async def nas_credential(value: NASCredentialInput):
+        try:
+            return settings.save_nas_credential(value.username.get_secret_value(),
+                                               value.password.get_secret_value(),
+                                               expected_generation=value.expected_generation)
+        except (ValueError,OSError,NASConnectionError):
+            raise HTTPException(409,detail='nas_login_not_saved') from None
+
     @app.get("/api/settings/nas/connection", response_model=NASConnectionStatus)
     async def nas_connection_status():
         return nas_status()
@@ -1326,6 +1389,8 @@ def create_app(
             await old.close()
         except Exception:
             pass
+        if arl_runtime is None:
+            await runtime.start_application()
         return core.actions.decorate(initial)
 
     @app.post("/api/source/simulator", response_model=Snapshot)
@@ -1340,7 +1405,7 @@ def create_app(
             await old.close()
             return await core.snapshot()
 
-    install_oauth(app, settings.path, transport=oauth_transport)
+    install_oauth(app, settings.path, base_url=console_origin, transport=oauth_transport)
 
     @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
     @app.api_route("/index.html", methods=["GET", "HEAD"], include_in_schema=False)

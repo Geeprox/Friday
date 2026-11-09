@@ -75,4 +75,6 @@ Debian/Ubuntu 使用 `sudo apt-get install ffmpeg`。CI 会安装它们并执行
 
 macOS 桌面源码位于 `native/FridayDesktop/`，用 SwiftPM 构建；[桌面构建说明](docs/FRIDAY-DESKTOP-BUILD.md) 说明本机运行环境与签名边界。基础 Web Console 支持 macOS/Linux，无需桌面打包。
 
-代码采用 [MIT](LICENSE)。外部服务、SDK 与模型保持各自许可，见 [第三方声明](THIRD_PARTY_NOTICES.md)。Miloco、HA、ARL 和模型权重不随 Friday 分发。
+独立的 [LG TV 菜单栏工具](native/LGTVMenu/README.md) 支持对自己配对的 webOS 电视发送关机请求，并在 Mac 睡眠后唤醒时发送局域网唤醒包。需要电视支持并开启网络开机；此工具不启动 Friday 家庭服务。
+
+代码采用 [MIT](LICENSE)。外部服务、SDK 与模型保持各自许可，见 [第三方声明](THIRD_PARTY_NOTICES.md)。Miloco、HA、ARL 应用和模型权重不随 Friday 分发。桌面候选可附带经来源与摘要校验的 MIT ARL Python SDK；它只提供客户端与共享契约，不包含 ARL 宿主、模型或账户材料。

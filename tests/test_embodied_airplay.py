@@ -45,7 +45,7 @@ def receiver(tmp_path,monkeypatch):
     scan=AsyncMock(return_value=[config]);connect=AsyncMock(return_value=device)
     monkeypatch.setattr(pyatv,'scan',scan);monkeypatch.setattr(pyatv,'connect',connect)
     audio=tmp_path/'reply.wav'
-    async def synthesize(text,*,file_format):
+    async def synthesize(text,*,file_format,guard=None):
         assert file_format=='wav';audio.write_bytes(b'RIFF-SYNTHETIC-WAVE');return audio,'synthetic'
     synth=AsyncMock(side_effect=synthesize);monkeypatch.setattr(synthesis,'synthesize',synth)
     return SimpleNamespace(config=config,service=service,device=device,scan=scan,connect=connect,

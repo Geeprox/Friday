@@ -1,0 +1,42 @@
+{
+  "type": "native-rendered-3d-clothed-instructional-target",
+  "business_key": "exercise.squat",
+  "file": "targets/exercise-squat.png",
+  "key": "squat",
+  "phase": 0.57,
+  "yaw": 20,
+  "outlineWidth": 0.01,
+  "whiteBackground": false,
+  "pixels": [
+    480,
+    540
+  ],
+  "clip": "sit-back-squat",
+  "motion_origin": "Desk Break original MIT clip, retargeted",
+  "motion_license": "MIT / Shlomy Reshef",
+  "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+  "png_sha256": "93218eb8655d34675f42e502e1ff49a8d676659dbe3e14c05d9762f875fa6e94",
+  "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+  "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+  "static_target_not_animation": true,
+  "bytes": 10767,
+  "origin_embedded": true,
+  "transparentBackground": true,
+  "materials": {
+    "shirt": "#e6e7e2",
+    "trousers": "#c9ccc5",
+    "sneakers": "#ffffff",
+    "exposedBody": "#ffffff"
+  },
+  "origin": "Rendered transparent clothed teaching target, exercise.squat. Real official MakeHuman CC0 T-shirt by Elvaerwyn, loose wool trousers by MargaretToigo and system shoes02 sneakers. Material adaptation only: T-shirt #e6e7e2, trousers #c9ccc5, shoes/head/exposed arms white. Existing continuous body,15-bone skeleton and all13 clips unchanged. Motion sit-back-squat: Desk Break original MIT clip, retargeted; MIT / Shlomy Reshef. Reproducible final model SHA256 cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90; renderer SHA256 a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce; phase .57 or declared sourceTime, yaw20, outline .010. Browser render input SHA256 19d64be9ee97d203f2ad4ec443512190e93bfe08e37f81c9c37265887a17e2db; final model differs only in non-geometry outline metadata hint .007->.010 ignored by renderer. No camera/inference/device/recognition result. Official sources: https://static.makehumancommunity.org/assets/assetpacks/index.html . Exact source/license evidence retained adjacent.",
+  "render_input_model_sha256": "19d64be9ee97d203f2ad4ec443512190e93bfe08e37f81c9c37265887a17e2db",
+  "render_input_equivalence": "Final model differs only in the non-geometry outline hint; primitive attributes/materials/binary and adapter input behavior are identical.",
+  "notices": [
+    "../CLOTHING-LICENSES.md",
+    "../MAKEHUMAN-LICENSE.ASSETS.md",
+    "../DESK-BREAK-LICENSE-MIT.txt",
+    "../FRIDAY-LICENSE-MIT.txt",
+    "../THREE-LICENSE-MIT.txt"
+  ],
+  "impeccable_origin_embedded": true
+}

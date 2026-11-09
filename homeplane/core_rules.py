@@ -30,6 +30,7 @@ from .rule_contracts import (
     RuleEvaluation,
     RuleIR,
     RuleTrial,
+    CLOCK_TRIGGERS,
 )
 
 
@@ -118,6 +119,7 @@ class CoreRules:
         self.boot_id, self.lock = str(uuid4()), asyncio.Lock()
         self.deadlines = {}
         self.generation = 0
+        self.on_change = None
         with self.store.connection:
             self.store.connection.execute(
                 "CREATE TABLE IF NOT EXISTS core_owned_rules (id TEXT PRIMARY KEY, body TEXT)"
@@ -127,6 +129,11 @@ class CoreRules:
             )
         if self.owner.owned:
             self.prune()
+
+    def changed(self):
+        self.generation += 1
+        if self.on_change is not None:
+            self.on_change()
 
     def prune(self):
         """Expire diagnostic drafts; retained rule versions and rollback receipts are configuration."""
@@ -197,7 +204,7 @@ class CoreRules:
     def scope(self, rule, snapshot):
         a = self.core.adapter
         ids = (
-            {rule.trigger.entity}
+            (set() if isinstance(rule.trigger, CLOCK_TRIGGERS) else {rule.trigger.entity})
             | {c.entity for c in rule.conditions if isinstance(c, NumericCondition)}
             | {x.target for x in rule.actions if hasattr(x, "target")}
         )
@@ -238,6 +245,8 @@ class CoreRules:
         rules = [r.rule for r in self.records() if r.enabled and (old is None or r.id != old.id)] + [rule]
         edges = {}
         for item in rules:
+            if isinstance(item.trigger, CLOCK_TRIGGERS):
+                continue
             edges.setdefault(item.trigger.entity, set()).update(
                 a.target for a in item.actions if hasattr(a, "target")
             )
@@ -299,6 +308,8 @@ class CoreRules:
             if request.expected_context != self.context()["fingerprint"]:
                 raise ValueError("source_conflict")
             now = datetime.now(UTC)
+            from .rule_schedule import require_future_once
+            require_future_once(request.rule.trigger, now)
             ttl = (request.expires_at - now).total_seconds()
             if not 0 < ttl <= 60:
                 raise ValueError("expired_or_unsupported_ttl")
@@ -366,11 +377,14 @@ class CoreRules:
 
     async def _check(self, plan):
         self._live(plan)
+        from .rule_schedule import require_future_once
+        require_future_once(plan.new.rule.trigger, datetime.now(UTC))
         if plan.context_fingerprint != self.context()["fingerprint"]:
             raise ValueError("source_conflict")
         adapter = self.core.adapter
         snapshot = await self.core.snapshot()
         self._live(plan)
+        require_future_once(plan.new.rule.trigger, datetime.now(UTC))
         _, revision = self.core.actions.authority()
         if (
             adapter is not self.core.adapter
@@ -397,10 +411,17 @@ class CoreRules:
             snapshot = await self._check(plan)
             now = datetime.now(UTC)
             trigger = plan.new.rule.trigger
-            payload = {"entity_id": trigger.entity, "capability": trigger.capability}
+            if isinstance(trigger, CLOCK_TRIGGERS):
+                from .rule_schedule import clock_payload, next_occurrence
+                occurrence = next_occurrence(trigger, now)
+                if occurrence is None:
+                    raise ValueError('schedule_time_unavailable')
+                payload = clock_payload(trigger, occurrence)
+            else:
+                payload = {"entity_id": trigger.entity, "capability": trigger.capability}
             if trigger.type == "state_transition":
                 payload.update({"from": trigger.from_value, "to": trigger.to_value})
-            else:
+            elif trigger.type == 'event':
                 payload["value"] = trigger.value
             event = Event(
                 source="SIMULATED-core-rule-trial",
@@ -432,7 +453,7 @@ class CoreRules:
                 trial=result,
             )
 
-    async def apply(self, request):
+    async def apply(self, request, *, commit_guard=None):
         async with self.lock:
             plan = self.plan_get(request.plan_id)
             if plan.status != "awaiting_approval":
@@ -440,6 +461,8 @@ class CoreRules:
             if request.approval_digest != plan.approval_digest:
                 raise ValueError("approval_conflict")
             await self._check(plan)
+            if commit_guard is not None and commit_guard() is not True:
+                raise ValueError('core_rule_commit_cancelled')
             if self.store.connection.execute("SELECT count(*) FROM core_owned_rules").fetchone()[0] >= 64:
                 raise ValueError("core_rule_capacity")
             enabled = core_record(
@@ -466,10 +489,10 @@ class CoreRules:
                     }
                 )
                 self._save_plan(plan)
-            self.generation += 1
+            self.changed()
             return plan
 
-    async def rollback(self, identifier):
+    async def rollback(self, identifier, *, commit_guard=None):
         async with self.lock:
             if not self.owner.owned:
                 raise ValueError("core_rule_owner_unavailable")
@@ -485,6 +508,8 @@ class CoreRules:
                 )
                 if old != expected:
                     raise ValueError("source_edited_no_automatic_overwrite")
+            if commit_guard is not None and commit_guard() is not True:
+                raise ValueError('core_rule_commit_cancelled')
             with self.store.connection:
                 disabled = core_record(
                     plan.new.id, plan.new.rule, False, plan.new.source_scope, plan.new.authority_revision
@@ -504,7 +529,7 @@ class CoreRules:
                     }
                 )
                 self._save_plan(plan)
-            self.generation += 1
+            self.changed()
             return plan
 
     def listing(self):
@@ -533,8 +558,11 @@ class CoreRuleRuntime:
         self.mode_generation = -1
         self.execution_enabled = True
         self.manual_until = 0.0
+        self.mode_source_guard = None
+        self.on_manual_hold = None
         self.worker = None
         self.wake = asyncio.Event()
+        manager.on_change = self.wake.set
         self.closed = False
         self.failure = None
         self.seen_ingress = 0
@@ -543,6 +571,10 @@ class CoreRuleRuntime:
             self.store.connection.execute(
                 "CREATE TABLE IF NOT EXISTS core_rule_runs (id TEXT PRIMARY KEY, event_id TEXT, rule_id TEXT, created TEXT, body TEXT, UNIQUE(event_id,rule_id))"
             )
+        from .core_schedule import CoreSchedule
+        self.clock = CoreSchedule(self)
+        from .automation_attention import AutomationAttention
+        self.attention = AutomationAttention(self)
         if manager.owner.owned:
             for row in self.store.connection.execute("SELECT body FROM core_rule_runs").fetchall():
                 run = CoreRuleRun.model_validate_json(row[0])
@@ -571,6 +603,7 @@ class CoreRuleRuntime:
                 run = CoreRuleRun.model_validate_json(body)
                 if run.created_at < cutoff and run.status not in {"running", "waiting"}:
                     self.store.connection.execute("DELETE FROM core_rule_runs WHERE id=?", (identifier,))
+            self.attention.prune()
         self.last_prune = time.monotonic()
 
     def start(self):
@@ -592,7 +625,8 @@ class CoreRuleRuntime:
             if (
                 event.kind == "state-transition"
                 and event.payload.get("trigger_eligible") is True
-                and any(r.rule.trigger.entity == event.payload.get("entity_id") for r in records)
+                and any(not isinstance(r.rule.trigger, CLOCK_TRIGGERS)
+                        and r.rule.trigger.entity == event.payload.get("entity_id") for r in records)
             ):
                 if len(self.queue) >= 32:
                     self._fail("live_event_queue_overflow")
@@ -629,6 +663,7 @@ class CoreRuleRuntime:
                 )
                 if result.rowcount != 1:
                     return False
+                self.attention.remember(run)
             else:
                 self.store.connection.execute(
                     "UPDATE core_rule_runs SET body=? WHERE id=?", (run.model_dump_json(), run.id)
@@ -690,6 +725,23 @@ class CoreRuleRuntime:
         self.wake.set()
         return self.status()
 
+    async def hold_for_manual(self, seconds=60):
+        """Cancel pending automation without changing user intent or mode leases.
+
+        Only fresh ingress after the hold may act; queued work is never replayed.
+        A manual control must not wake a sleeping home or resume paused tasks.
+        """
+        if type(seconds) is not int or not 1 <= seconds <= 300:
+            raise ValueError('invalid_mode_window')
+        async with self.manager.lock:
+            self.manual_until = max(self.manual_until, time.monotonic() + seconds)
+            if self.on_manual_hold is not None:self.on_manual_hold(seconds)
+            self.queue.clear()
+            for key in list(self.pending):
+                self._cancel(key, 'explicit_console_action_takes_over')
+        self.wake.set()
+        return self.status()
+
     async def renew_awake(self, expected_modes):
         """A maintenance waiter cannot overwrite a newer sleep/unknown decision."""
         async with self.manager.lock:
@@ -704,6 +756,26 @@ class CoreRuleRuntime:
             self.manager._allowed()
             self.mode_deadline = time.monotonic() + 1800
             self.modes = {key: lease.model_copy(update={'valid_until': now + timedelta(seconds=1800)})
+                          for key, lease in self.modes.items()}
+
+    async def renew_intent(self, expected_modes, ttl, guard):
+        """Renew the same explicit household choice without cancelling pending work."""
+        if type(ttl) is not int or not 1 <= ttl <= 60:
+            raise ValueError('invalid_mode_window')
+        async with self.manager.lock:
+            now = datetime.now(UTC)
+            if (self.closed or self.failure or self.modes is not expected_modes
+                    or self.mode_generation != self.manager.generation
+                    or time.monotonic() >= self.mode_deadline
+                    or set(self.modes) != {'home.sleep', 'home.manual'}
+                    or any(not lease.issued_at <= now < lease.valid_until for lease in self.modes.values())
+                    or self.modes['home.sleep'].value and self.modes['home.manual'].value):
+                return
+            self.manager._allowed()
+            if guard() is not True:
+                return
+            self.mode_deadline = time.monotonic()+ttl
+            self.modes = {key: lease.model_copy(update={'valid_until': now+timedelta(seconds=ttl)})
                           for key, lease in self.modes.items()}
 
     async def set_mode(self, mode, ttl=60):
@@ -748,21 +820,40 @@ class CoreRuleRuntime:
         return CoreRuleRun.model_validate_json(row[0])
 
     def status(self):
+        available = self.manager.available() and not self.closed and not self.failure
+        mono, now = time.monotonic(), datetime.now(UTC)
+        worker_running = bool(self.worker and not self.worker.done())
+        mode_current = (self.mode_generation == self.manager.generation
+                        and mono < self.mode_deadline
+                        and set(self.modes) == {'home.sleep', 'home.manual'}
+                        and all(m.issued_at <= now < m.valid_until for m in self.modes.values()))
+        execution_state = ('unavailable' if not available else
+                           'paused' if not self.execution_enabled else
+                           'manual' if mono < self.manual_until else
+                           'awaiting_mode' if not mode_current else
+                           'manual' if self.modes['home.manual'].value else
+                           'sleeping' if self.modes['home.sleep'].value else
+                           'starting' if not worker_running else 'ready')
+        clock = self.clock.status()
         return {
-            "available": self.manager.available() and not self.closed and not self.failure,
+            "available": available,
             "simulated": False,
             "backend": "home_core",
             "core_independent": False,
             "wan_independent": "unverified",
             "modes": {k: v.model_dump(mode="json") for k, v in self.modes.items()},
             "mode_revision_valid": self.mode_generation == self.manager.generation,
+            "mode_window_current": mode_current,
+            "execution_state": execution_state,
             "automatic_enabled": self.execution_enabled,
             "manual_hold_active": time.monotonic() < self.manual_until,
             "pending_count": len(self.pending),
             "queued_count": len(self.queue),
-            "worker_running": bool(self.worker and not self.worker.done()),
+            "worker_running": worker_running,
             "worker_failure": self.failure,
             "seen_live_ingress_count": self.seen_ingress,
+            "clock": clock,
+            "task_attention": self.attention.status(clock),
             "runs": [
                 json.loads(r[0])
                 for r in self.store.connection.execute(
@@ -788,10 +879,14 @@ class CoreRuleRuntime:
             return "source_or_runtime_unavailable"
         if not self._current_connection(item["adapter"], item["event"]):
             return "old_connection_event_no_replay"
+        if isinstance(record.rule.trigger, CLOCK_TRIGGERS) and not self.clock.current(item):
+            return 'unregistered_clock_occurrence'
         if mono >= item["deadline"] or now < run.created_at or now >= run.expires_at:
             return "expired_event_no_replay"
         if not self.execution_enabled or mono < self.manual_until:
             return "guard_unknown_or_protected"
+        if self.mode_source_guard is not None and self.mode_source_guard() is not True:
+            return 'household_mode_source_unavailable'
         if self.mode_generation != self.manager.generation:
             return "rule_change_requires_fresh_mode_window"
         if mono >= self.mode_deadline or any(
@@ -845,7 +940,8 @@ class CoreRuleRuntime:
             if adapter is not self.core.adapter:
                 return {"accepted": False, "code": "source_changed"}
             for record in self.manager.records():
-                if not record.enabled or event.payload.get("entity_id") != record.rule.trigger.entity:
+                if (not record.enabled or isinstance(record.rule.trigger, CLOCK_TRIGGERS)
+                        or event.payload.get("entity_id") != record.rule.trigger.entity):
                     continue
                 if self.store.connection.execute(
                     "SELECT 1 FROM core_rule_runs WHERE event_id=? AND rule_id=?",
@@ -900,6 +996,7 @@ class CoreRuleRuntime:
         return {"accepted": True, "simulated": False}
 
     async def tick(self):
+        await self.clock.poll()
         async with self.manager.lock:
             for key, item in list(self.pending.items()):
                 if code := self._guard(item):
@@ -1054,7 +1151,7 @@ class CoreRuleRuntime:
                 self._fail("core_worker_failed")
                 return
             try:
-                await asyncio.wait_for(self.wake.wait(), timeout=0.1 if self.pending else 30)
+                await asyncio.wait_for(self.wake.wait(), timeout=0.1 if self.pending else self.clock.wait_seconds())
             except TimeoutError:
                 pass
             finally:

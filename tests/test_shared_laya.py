@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -79,13 +81,20 @@ def test_client_rejects_invalid_answers(choice):
         SharedLaya(client=Client()).predict("x", Q)
 
 
-def test_no_unverified_rpc(tmp_path):
-    engine = LayaEngine(tmp_path, {}, factory=Agent)
-    runtime = SharedRuntime(tmp_path, engine, {"friday": {"executable": "/unknown", "sha256": "x"}})
-    request = {"protocol":"arl/1", "app":"friday", "method":"laya.predict.v1", "params":params()}
-    with pytest.raises(Fault, match="app_identity_unverified"):
-        runtime.dispatch(request)
-    assert runtime.execute_jobs is False and runtime.policies["friday"].max_calls == 0
+def test_no_unverified_rpc(tmp_path, monkeypatch):
+    # macOS Unix sockets require a short path; model/log fixtures stay in the
+    # isolated cache. Constructing this runtime never starts a host or model.
+    from types import SimpleNamespace
+    # The optional host SDK's travel catalogue is unrelated to this admission
+    # unit. Keep the actual runtime/policies without requiring its host assets.
+    monkeypatch.setattr('arl.service.TravelAdapter', lambda: SimpleNamespace(tools=lambda: []))
+    with tempfile.TemporaryDirectory(prefix='friday-arl-', dir='/private/tmp') as directory:
+        engine = LayaEngine(tmp_path, {}, factory=Agent)
+        runtime = SharedRuntime(Path(directory), engine, {"friday": {"executable": "/unknown", "sha256": "x"}})
+        request = {"protocol":"arl/1", "app":"friday", "method":"laya.predict.v1", "params":params()}
+        with pytest.raises(Fault, match="app_identity_unverified"):
+            runtime.dispatch(request)
+        assert runtime.execute_jobs is False and runtime.policies["friday"].max_calls == 0
 
 
 @pytest.mark.parametrize("state,questions", [("x"*8001,Q),("x",{}),("x",{"x":{"type":"code"}})])

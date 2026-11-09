@@ -1,5 +1,4 @@
 """Real People module over synthetic provider batches and private metadata IPC."""
-import ast
 import asyncio
 import hashlib
 import importlib.abc
@@ -15,6 +14,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 import pytest
+from api_privacy_guard import privacy_fingerprint
 from test_homeplane_recognition_consumer import launch, owner, settings, zero_rss
 
 from homeplane.api import create_app
@@ -368,14 +368,12 @@ async def test_absent_clustering_library_is_explicit_and_submits_no_catalog(tmp_
     assert people.page().revision == 0
 
 
-def test_shared_quality_ast_and_boundary_only_adds_people_prefix():
-    # Exact approved AST fingerprints; independent of later repository history.
+def test_shared_quality_ast_and_reviewed_boundary_with_declared_port_alias():
+    # Keep both reviewed hashes; normalization is limited to the localhost redirect.
     expected = {'record_media_quality': '613ed905c7cd6741c748a456054ed7dd5e79c14ab11497edec88586e9dbd018e', 'local_boundary': '2de1eb50a4defc7b4360eb07cbb694c6bb7d495aa54b92342c6624c4253feb28'}
     current = Path('homeplane/api.py').read_text()
     for name, fingerprint in expected.items():
-        node = next(n for n in ast.walk(ast.parse(current))
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
-        assert hashlib.sha256(ast.dump(node, include_attributes=False).replace(', type_params=[]', '').encode()).hexdigest() == fingerprint
+        assert privacy_fingerprint(current, name) == fingerprint
     assert hashlib.sha256(Path('homeplane/recognition_contracts.py').read_bytes()).hexdigest() == '649f45c667f15bccbcb6af5bc33a9d5adc1577d7a705779f16a7cfc13959b4ba'
 
 

@@ -38,6 +38,13 @@ class CameraWall:
             self.observations.pop(camera,None)
             self.toasts.pop(camera,None);self.gestures.pop(camera,None)
 
+    def clear_observation(self, camera):
+        """Retire overlays/labels while keeping the live transport epoch."""
+        self.observations.pop(camera, None)
+        self.toasts.pop(camera, None)
+        self.gestures.pop(camera, None)
+        self.labels[camera] = {}
+
     def offer(self, camera, epoch, packet):
         if self.epochs[camera] != epoch:return
         if packet.get('type')=='video':
@@ -73,10 +80,11 @@ class CameraWall:
         if moving or not 0 <= self.clock()-at <= 1.5:
             self.observations.pop(camera,None);self.gestures.pop(camera,None);self.toasts.pop(camera,None);return
         from .interaction import body_gestures,GESTURES
+        from .gestures import BINDABLE_HAND_LABELS
         recognized=set()
         for p in people:
             recognized.update(body_gestures(p))
-        recognized.update('hand.'+h['gesture'] for h in hands if h.get('gesture') in {'ok','yeah','open_palm'})
+        recognized.update('hand.'+h['gesture'] for h in hands if h.get('gesture') in BINDABLE_HAND_LABELS)
         added=recognized-self.gestures.get(camera,set())
         self.gestures[camera]=recognized
         if added:self.notice(camera,'已识别 · '+ '、'.join(GESTURES[g] for g in sorted(added) if g in GESTURES))

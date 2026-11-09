@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
@@ -108,9 +109,11 @@ class PresentationEdit(BaseModel):
 
 
 class HomeExperience:
-    def __init__(self, core, settings, embodied, archive, runtime):
+    def __init__(self, core, settings, embodied, archive, runtime, *, household_mode=None):
         self.core, self.settings, self.embodied = core, settings, embodied
         self.runtime=runtime
+        self.household_mode=household_mode
+        self.preference_lock=asyncio.Lock()
         self.task=None
         self.closed=False
         self.path = settings.path.with_name('home-experience.json')
@@ -130,6 +133,7 @@ class HomeExperience:
 
     async def start(self):
         await self.runtime.set_execution(bool(self.preferences.get("automatic_running")))
+        if self.household_mode is not None:await self.household_mode.maintain()
         if self.task is None:self.task=asyncio.create_task(self._maintain())
 
     async def close(self):
@@ -141,6 +145,9 @@ class HomeExperience:
         await self.recordings.close()
 
     async def _maintain_once(self):
+        if self.household_mode is not None:
+            await self.household_mode.maintain()
+            return
         import time
         remaining = self.runtime.mode_deadline - time.monotonic()
         modes = self.runtime.modes
@@ -156,7 +163,9 @@ class HomeExperience:
     async def _maintain(self):
         while not self.closed:
             try:await self._maintain_once()
-            except (ValueError,OSError):pass
+            except (ValueError,OSError,sqlite3.Error):
+                if self.household_mode is not None:
+                    await self.runtime.invalidate('household_mode_unavailable')
             await asyncio.sleep(15)
 
     def save(self, edit, *, commit=True):
@@ -190,6 +199,24 @@ class HomeExperience:
         os.replace(temp, self.path)
         self.preferences = updated
         return self.preferences
+
+    async def update_preferences(self, edit, *, guard=lambda: True):
+        async with self.preference_lock:
+            if guard() is not True:raise ValueError('preferences_changed')
+            self.save(edit,commit=False)
+            # Stop first; resume only after the explicit choice is durable.
+            if edit.automatic_running is False:
+                await self.runtime.set_execution(False)
+            if guard() is not True:raise ValueError('preferences_changed')
+            saved=self.save(edit)
+            if edit.automatic_running is True:
+                await self.runtime.set_execution(True)
+            return saved
+
+    async def pause_automatic(self, *, guard=lambda: True):
+        await self.update_preferences(Preferences(expected_revision=self.preferences['revision'],automatic_running=False),guard=guard)
+        return {'status':'paused','simulated':False,'governed_only':True,
+                'external_rules_intercepted':False,'real_write_attempted':False}
 
     async def overview(self):
         snapshot = await self.core.snapshot()
@@ -322,9 +349,9 @@ class HomeExperience:
                     control_count=len(authorized))
 
 
-def create_router(core, lock, settings, embodied, archive, runtime):
+def create_router(core, lock, settings, embodied, archive, runtime, *, file_source_status=None, household_mode=None):
     router=APIRouter(prefix='/api/home')
-    owner=HomeExperience(core,settings,embodied,archive,runtime)
+    owner=HomeExperience(core,settings,embodied,archive,runtime,household_mode=household_mode)
     router.home_owner=owner
     from .automation_actions import create_router as automation_actions_router
     if getattr(runtime,'manager',None) is not None:
@@ -420,17 +447,13 @@ def create_router(core, lock, settings, embodied, archive, runtime):
     @router.post('/preferences')
     async def preferences(edit:Preferences):
         try:
-            owner.save(edit,commit=False)
-            if edit.automatic_running is not None:
-                await runtime.set_execution(edit.automatic_running)
-            return owner.save(edit)
+            return await owner.update_preferences(edit)
         except ValueError as exc:
             raise HTTPException(409,detail=str(exc)) from None
 
     @router.post('/control')
     async def control(request:Control):
-        if owner.preferences.get('automatic_running'):
-            await runtime.set_execution(True, manual_seconds=60)
+        await runtime.hold_for_manual()
         if request.target=='friday:configured-cover':
             from .embodied.miot_spec import optional_cover,cover_revision
             cover=optional_cover()
@@ -469,11 +492,28 @@ def create_router(core, lock, settings, embodied, archive, runtime):
             nas.update(connected=report.get('readable')is True,status=report.get('status'))
         except (ValueError,OSError,TimeoutError):
             pass
-        return dict(home=owner.connection_health(),cameras=dict(configured=embodied.configured(),count=len(embodied.cameras())),nas=nas)
+        direct=file_source_status() if file_source_status is not None else None
+        return dict(home=owner.connection_health(),cameras=dict(configured=embodied.configured(),count=len(embodied.cameras())),
+                    nas=nas,file_source=direct.model_dump(mode='json') if hasattr(direct,'model_dump') else direct)
 
     @router.get('/automatic-status')
     async def automatic_status():
-        return dict(enabled=owner.preferences.get('automatic_running',False),runtime=runtime.status())
+        return dict(revision=owner.preferences['revision'],
+                    enabled=owner.preferences.get('automatic_running',False),runtime=runtime.status(),
+                    mode_source=household_mode.status() if household_mode is not None else None)
+
+    class HouseholdModeEdit(BaseModel):
+        model_config=ConfigDict(extra='forbid',strict=True)
+        mode: str = Field(pattern='^(awake|sleep|manual|unknown)$')
+        expected_context: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+    @router.post('/mode')
+    async def mode(edit:HouseholdModeEdit):
+        if household_mode is None:raise HTTPException(409,detail='household_mode_unavailable')
+        try:
+            return await household_mode.select(edit.mode,expected_context=edit.expected_context)
+        except (ValueError,OSError,sqlite3.Error):
+            raise HTTPException(409,detail='household_mode_unavailable') from None
 
     @router.get('/recordings')
     async def recordings(folder:str|None=None,date:str|None=None):

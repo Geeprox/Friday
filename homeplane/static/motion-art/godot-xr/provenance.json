@@ -1,0 +1,338 @@
+{
+  "created_at": "2026-11-03T18:24:29.484758+00:00",
+  "repository": {
+    "repository": "GodotVR/godot-xr-tools",
+    "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+    "commit_url": "https://github.com/GodotVR/godot-xr-tools/commit/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+    "hands_tree_sha": "62ac3692eb1acee7cf0123e022fcedebba043020",
+    "hands_tree_matches_pinned_commit": true,
+    "downloaded_blob_hashes_verified": true
+  },
+  "hand_license": "CC0 1.0, DigitalN8m4r3 / Miodrag Sejic, 2022-11-07",
+  "hand_license_source": "https://github.com/GodotVR/godot-xr-tools/blob/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/License.md",
+  "code_license": "Godot XR Tools MIT; existing Three.js r180 MIT; included notices",
+  "original_source_files": [
+    {
+      "file": "source-hand-r.blend",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/blend/hand_r.blend",
+      "source_path": "addons/godot-xr-tools/hands/blend/hand_r.blend",
+      "git_blob_sha1": "ef496551d95391b9124ddf300af589f90d12f2f7",
+      "expected_blob_sha1": "ef496551d95391b9124ddf300af589f90d12f2f7",
+      "sha256": "fff4c4349215d8d04dc32a3e6d21b8ce5f6040e17ade5db68d9089323ec75291",
+      "bytes": 2314340,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/blend/hand_r.blend"
+    },
+    {
+      "file": "Hand_low_R.gltf",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/model/Hand_low_R.gltf",
+      "source_path": "addons/godot-xr-tools/hands/model/Hand_low_R.gltf",
+      "git_blob_sha1": "383b28bd0a4330625a7d75f69bc78611879c3083",
+      "expected_blob_sha1": "383b28bd0a4330625a7d75f69bc78611879c3083",
+      "sha256": "19cbbf3c2fd3b8f0a1319056854975b99cdb6dfe3caa9b09018bb865a3964de1",
+      "bytes": 70346,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/model/Hand_low_R.gltf"
+    },
+    {
+      "file": "Hand-License-CC0.md",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/License.md",
+      "source_path": "addons/godot-xr-tools/hands/License.md",
+      "git_blob_sha1": "baa7dabd7c3bf93d065e9aa03b05ed3653342b34",
+      "expected_blob_sha1": "baa7dabd7c3bf93d065e9aa03b05ed3653342b34",
+      "sha256": "cbe5dc22b073664e9f4412904c40de66dbc6742c9e7b8c2a8b82ecde54034c10",
+      "bytes": 7275,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/License.md"
+    },
+    {
+      "file": "Hand-About.md",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/About.md",
+      "source_path": "addons/godot-xr-tools/hands/About.md",
+      "git_blob_sha1": "91fe6a5d284323fb3648a985eb405471da65a861",
+      "expected_blob_sha1": "91fe6a5d284323fb3648a985eb405471da65a861",
+      "sha256": "a717c25af68eac672710a41c9b1981aac2ddbfd1fd858b5579fa3a922e968e84",
+      "bytes": 824,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/About.md"
+    },
+    {
+      "file": "Code-License-MIT.txt",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/LICENSE",
+      "source_path": "LICENSE",
+      "git_blob_sha1": "f8f1c828e1f378fa279cb2d739d704114045a501",
+      "expected_blob_sha1": null,
+      "sha256": "3c7b052e959551657929dc088dc7930cfffdabbe1ce327879c875aa3c1f38b7c",
+      "bytes": 1092,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/LICENSE"
+    },
+    {
+      "file": "OK.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/animations/right/OK.res",
+      "source_path": "addons/godot-xr-tools/hands/animations/right/OK.res",
+      "git_blob_sha1": "0c34865d7f6e965a1a97d7f369dc59a6f6aa57a5",
+      "expected_blob_sha1": "0c34865d7f6e965a1a97d7f369dc59a6f6aa57a5",
+      "sha256": "696d4736223bf96fd3d9ac8ff7d20ce97dabf1e833ea97ee9e301a2e8382067e",
+      "bytes": 6010,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/OK.res"
+    },
+    {
+      "file": "Peace.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/animations/right/Peace.res",
+      "source_path": "addons/godot-xr-tools/hands/animations/right/Peace.res",
+      "git_blob_sha1": "706c3650b81f0a0d8d2f00f8c33e1f202153fc5e",
+      "expected_blob_sha1": "706c3650b81f0a0d8d2f00f8c33e1f202153fc5e",
+      "sha256": "a206810250d647db987efaa5e72cd125c3f07bb30c270cc457636a8b6720e497",
+      "bytes": 6016,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Peace.res"
+    },
+    {
+      "file": "Sign_Point.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/animations/right/Sign_Point.res",
+      "source_path": "addons/godot-xr-tools/hands/animations/right/Sign_Point.res",
+      "git_blob_sha1": "8f64870315da7a117e6dc0bafca8ad4dcf70dc19",
+      "expected_blob_sha1": "8f64870315da7a117e6dc0bafca8ad4dcf70dc19",
+      "sha256": "3a0f7b40668f872adf6efdfa8cbbb90b451df4be0f8a25330b688b830011dc03",
+      "bytes": 6026,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Sign_Point.res"
+    },
+    {
+      "file": "Straight.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/animations/right/Straight.res",
+      "source_path": "addons/godot-xr-tools/hands/animations/right/Straight.res",
+      "git_blob_sha1": "cd658eccc2744944aef263c2295d5b581a284ab8",
+      "expected_blob_sha1": "cd658eccc2744944aef263c2295d5b581a284ab8",
+      "sha256": "70ff93c9545412c7edadd3d4c8046bb8b737e5953599a47ff8e90eba1323ade6",
+      "bytes": 6022,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Straight.res"
+    },
+    {
+      "file": "Default_pose.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/animations/right/Default%20pose.res",
+      "source_path": "addons/godot-xr-tools/hands/animations/right/Default pose.res",
+      "git_blob_sha1": "04330644a24674394aca53eb473a62c5ac809212",
+      "expected_blob_sha1": "04330644a24674394aca53eb473a62c5ac809212",
+      "sha256": "7bc2e8d32eb5def5b0cdf08fdae54c29266213833719d8276de4699c5d27a4ac",
+      "bytes": 6030,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Default%20pose.res"
+    },
+    {
+      "file": "hand_r.gltf",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/model/hand_r.gltf",
+      "git_blob_sha1": "4b98f9f98cd48d75f5df59817d0f29ccc2a9afcb",
+      "sha256": "eb8d9765dcb7dcb67928f90e5fbad6ae1f7705043ab900dbe4a43b68a2721d37",
+      "bytes": 167759,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/model/hand_r.gltf"
+    },
+    {
+      "file": "Sign_1.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/animations/right/Sign%201.res",
+      "git_blob_sha1": "b5f12afe95b1f25caa7b7f4cbe848a6681eabe0f",
+      "sha256": "ea21d1bbaa3540d2529defe85c060656c91702815c1c2477385a7a9d2f721bd6",
+      "bytes": 6018,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Sign%201.res"
+    },
+    {
+      "file": "Sign_5.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/master/addons/godot-xr-tools/hands/animations/right/Sign%205.res",
+      "git_blob_sha1": "69f68f45b610470ee44603496518d7cc9566e9de",
+      "sha256": "b1777fbcd43d144bf34219f7772d1f884c9bd785a06bf47a621e7e600e509fd6",
+      "bytes": 6018,
+      "downloaded_unchanged": true,
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Sign%205.res"
+    },
+    {
+      "file": "Grip.res",
+      "source_path": "addons/godot-xr-tools/hands/animations/right/Grip.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Grip.res",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Grip.res",
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "git_blob_sha1": "601dcf75953fd02a829e94cbd3b0b8461a35fede",
+      "sha256": "f32e8d70d384732e8f5281b1eb4819e4ae5f1cd59228ec1f9d2587e1b6282966",
+      "bytes": 6014,
+      "downloaded_unchanged": true
+    },
+    {
+      "file": "Horns.res",
+      "source_path": "addons/godot-xr-tools/hands/animations/right/Horns.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Horns.res",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Horns.res",
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "git_blob_sha1": "dc96a648ba85c1640e03d153e7097f021b8b8f7b",
+      "sha256": "2a9147c220c60b9c57c6dfc53d838985561f2405ef30dee951907c4275dc4b5c",
+      "bytes": 6016,
+      "downloaded_unchanged": true
+    },
+    {
+      "file": "Metal.res",
+      "source_path": "addons/godot-xr-tools/hands/animations/right/Metal.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Metal.res",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Metal.res",
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "git_blob_sha1": "9586df280258fddb8d7eb4388eb93cfe134b2356",
+      "sha256": "11e8a3114507e920744bd07d3e40012be7bac72b7a59df8d4505f91b2d9b4cfd",
+      "bytes": 6016,
+      "downloaded_unchanged": true
+    },
+    {
+      "file": "Surfer.res",
+      "source_path": "addons/godot-xr-tools/hands/animations/right/Surfer.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Surfer.res",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Surfer.res",
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "git_blob_sha1": "01cfa17a1222e95fdcfa7432469251a50e147381",
+      "sha256": "84cafd6a3c4361bb0bbb392d872fd49d0430d4b3cf4a16dcb0a40fbe54e10298",
+      "bytes": 6018,
+      "downloaded_unchanged": true
+    },
+    {
+      "file": "Thumb.res",
+      "source_path": "addons/godot-xr-tools/hands/animations/right/Thumb.res",
+      "source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Thumb.res",
+      "pinned_source_url": "https://raw.githubusercontent.com/GodotVR/godot-xr-tools/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/animations/right/Thumb.res",
+      "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+      "git_blob_sha1": "f82ac7fdc1999efc2b7ff47e3351b090bcf53a9a",
+      "sha256": "4ab107773d29033d5278363d3a17fab074cf3255edd74912ac2d59beef7a0458",
+      "bytes": 6016,
+      "downloaded_unchanged": true
+    }
+  ],
+  "geometry_derivation": [
+    "Original CC0 source-hand-r.blend mesh_Hand_R, 1528 base vertices",
+    "One Catmull-Clark subdivision via existing Blender 4.5.12 LTS, 6126 mesh vertices / 6598 exported vertices including splits",
+    "Original armature and bone names retained; no hand silhouette or pose endpoint authored",
+    "glTF exporter selects and normalizes highest 4 joint weights; all exported floats checked finite"
+  ],
+  "pose_derivation": "Original 19 rotation tracks per endpoint decoded losslessly from RSRC resource data. Values match original resources; transition/hold/reset timing is the audit adapter, not an original recorded animation clip.",
+  "original_pose_source_format_reference": "https://github.com/godotengine/godot/blob/4.0/core/io/resource_format_binary.cpp",
+  "variants": {
+    "hand.ok": {
+      "source_pose": "OK",
+      "roll_degrees": 0,
+      "status": "user-approved baseline"
+    },
+    "hand.yeah": {
+      "source_pose": "Peace",
+      "roll_degrees": 0,
+      "status": "user-approved baseline"
+    },
+    "hand.point": {
+      "source_pose": "Sign_1",
+      "roll_degrees": 0,
+      "status": "user-approved baseline; exact official pose_point_right choice"
+    },
+    "hand.open_palm": {
+      "source_pose": "Sign_5",
+      "start_pose": "Default_pose",
+      "roll_degrees": 0,
+      "status": "user-approved baseline"
+    },
+    "hand.fist": {
+      "source_pose": "Grip",
+      "roll_degrees": 0,
+      "status": "original source endpoint"
+    },
+    "hand.thumb_up": {
+      "source_pose": "Thumb",
+      "roll_degrees": -90,
+      "status": "original thumb endpoint; whole-hand display orientation adjusted"
+    },
+    "hand.thumb_down": {
+      "source_pose": "Thumb",
+      "roll_degrees": 90,
+      "status": "explicit derivative: same Thumb endpoint with whole-hand display rotation 180 degrees from thumb_up; NOT an independent official pose"
+    },
+    "hand.shaka": {
+      "source_pose": "Surfer",
+      "roll_degrees": 0,
+      "status": "original source endpoint: thumb and little finger extended"
+    },
+    "hand.horns": {
+      "source_pose": "Horns",
+      "roll_degrees": 0,
+      "status": "original source endpoint: index/little extended, thumb folded"
+    },
+    "source.Metal": {
+      "source_pose": "Metal",
+      "roll_degrees": 0,
+      "status": "original alternate rock endpoint with thumb extended"
+    }
+  },
+  "rendering": "Orthographic yaw 35 degrees, white MeshBasicMaterial, dark-grey backface normal-extrusion outline. No lighting/textures/perspective. One injected shared Three renderer/context; no RAF inside module.",
+  "timing": {
+    "start_hold": [
+      0,
+      0.12
+    ],
+    "form": [
+      0.12,
+      0.42
+    ],
+    "target_hold": [
+      0.42,
+      0.72
+    ],
+    "reset": [
+      0.72,
+      0.96
+    ],
+    "reset_hold": [
+      0.96,
+      1
+    ]
+  },
+  "performance_observation": {
+    "date": "2026-11-04",
+    "surface": "Four simultaneous hands in local Chrome preview, 1.5 device-pixel ratio",
+    "cpu_submission_mean_ms": 2.25,
+    "cpu_submission_p95_ms": 10.0,
+    "observed_draw_rate_per_s": 21.4,
+    "configured_animation_draw_cap_per_s": 24,
+    "includes_gpu_completion": false,
+    "limitation": "Short warm local observation including evidence capture, not a formal sustained GPU or production benchmark. Paused/hidden preview stops its shared clock."
+  },
+  "evidence": {
+    "contact_sheet": "../evidence/contact-sheet.png",
+    "rows": [
+      "OK",
+      "Peace",
+      "Sign_1",
+      "Sign_5"
+    ],
+    "phase_columns": [
+      0,
+      0.28,
+      0.57,
+      0.86
+    ],
+    "last_column": "reset in progress, not final reset endpoint",
+    "phase_files": [
+      "../evidence/phase-000.png",
+      "../evidence/phase-280.png",
+      "../evidence/phase-570.png",
+      "../evidence/phase-860.png"
+    ]
+  },
+  "animated_raster_exports": "Not produced yet; source package is ready. Transparent PNG phase evidence exists. Optional WebP/APNG can be exported from the same source rig later without new hand drawing."
+}

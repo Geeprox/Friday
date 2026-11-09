@@ -9,6 +9,30 @@ enum HouseholdService {
     static var agent: SMAppService { .agent(plistName: label + ".plist") }
 
     static func runIfRequested() {
+        if CommandLine.arguments.contains("--service-unregister") {
+            // Explicit deployment operation; never registers or starts a service.
+            let previousPID = pid()
+            var failureCode: Int?
+            do { try agent.unregister() }
+            catch {
+                if agent.status != .notRegistered || pid() != nil {
+                    failureCode = (error as NSError).code
+                }
+            }
+            let deadline = ProcessInfo.processInfo.systemUptime + 120
+            while failureCode == nil && ProcessInfo.processInfo.systemUptime < deadline {
+                if pid() == nil && !(previousPID.map(processExists) ?? false) { break }
+                usleep(100_000)
+            }
+            let stopped = failureCode == nil && agent.status == .notRegistered
+                && pid() == nil && !(previousPID.map(processExists) ?? false)
+            let value: [String: Any] = ["stopped": stopped, "registration": agent.status.rawValue,
+                                       "previous_pid": previousPID as Any? ?? NSNull(),
+                                       "error_code": failureCode as Any? ?? NSNull()]
+            if let data = try? JSONSerialization.data(withJSONObject: value),
+               let text = String(data: data, encoding: .utf8) { print(text) }
+            exit(stopped ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--service-status") {
             let value: [String: Any] = ["registration": agent.status.rawValue, "pid": pid() as Any? ?? NSNull()]
             if let data = try? JSONSerialization.data(withJSONObject: value), let text = String(data: data, encoding: .utf8) { print(text) }

@@ -15,7 +15,7 @@ from pydantic import AwareDatetime, Field
 
 from .contracts import Contract, Event
 from .rule_compiler import evaluate_rule
-from .rule_contracts import CancelInstruction, DelayInstruction, ModeLease, RuleTrial
+from .rule_contracts import CancelInstruction, DelayInstruction, ModeLease, RuleTrial, CLOCK_TRIGGERS
 from .simulator import Simulator
 
 
@@ -269,7 +269,7 @@ class RuleRuntime:
             admitted = 0
             for current in self.manager.backend.records():
                 rule = current.rule
-                if not current.enabled or not rule.simulated:
+                if not current.enabled or not rule.simulated or isinstance(rule.trigger, CLOCK_TRIGGERS):
                     continue
                 p = event.payload
                 if (p.get("entity_id"), p.get("capability")) != (

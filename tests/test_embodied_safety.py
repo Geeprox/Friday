@@ -151,7 +151,8 @@ async def test_runtime_persists_before_named_speech_and_keeps_evidence_local(tmp
     monkeypatch.setattr("homeplane.embodied.safety.time.monotonic", lambda: clock[0])
     monkeypatch.setattr("homeplane.embodied.safety.time.time", lambda: 1800000000 + clock[0])
 
-    async def say(text):
+    async def say(text, *, current, revalidate):
+        assert current() is True and await revalidate() is True
         assert store.events()[0]["person_name"] == "Example Person"
         assert store.events()[0]["frames"]
         assert text == "检测到 Example Person 疑似跌倒，请立即查看。"
@@ -165,6 +166,7 @@ async def test_runtime_persists_before_named_speech_and_keeps_evidence_local(tmp
             state="matched", person_id="synthetic-person", observed_monotonic=now, face_observed_monotonic=now
         )
         await runtime.observe("a", "s", [person(i >= 7, identity)], now, now, stable=True, jpeg=b"local-jpeg")
+    await runtime.drain()
     await asyncio.gather(*runtime.tasks)
     event = store.events()[0]
     assert event["announcement"] == dict(status="accepted", physical_audio_confirmed=False)
@@ -188,6 +190,7 @@ async def test_revocation_and_quiet_are_recorded_without_fabricating_physical_su
     assert store.events()[0]["announcement"]["status"] == "cancelled"
     await runtime.announce(event)
     assert store.events()[0]["announcement"] == dict(status="paused", physical_audio_confirmed=False)
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -238,6 +241,7 @@ async def test_disabled_monitor_has_no_image_buffer_and_revocation_clears_post_c
     for i in range(17):
         clock[0] = now = 100 + i * 0.25
         await runtime.observe("a", "s", [person(i >= 7)], now, now, stable=True, jpeg=b"private")
+    await runtime.drain()
     assert runtime.post_frames["a"] and store.events()
     count = len(store.events()[0]["frames"])
     store.configure(policy.model_copy(update={"enabled": False}))
@@ -245,6 +249,7 @@ async def test_disabled_monitor_has_no_image_buffer_and_revocation_clears_post_c
     await runtime.observe("a", "s", [person(True)], clock[0], clock[0], stable=True, jpeg=b"new-private")
     assert not runtime.frames and not runtime.post_frames
     assert len(store.events()[0]["frames"]) == count
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -258,6 +263,7 @@ async def test_storage_failure_does_not_crash_camera_observer(tmp_path, monkeypa
     monkeypatch.setattr(store, "policy", failed)
     await runtime.observe("a", "s", [person()], 100, 100, stable=True)
     assert runtime.status()["error"] == "safety_storage_unavailable"
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -277,6 +283,7 @@ async def test_two_process_output_lease_and_false_alarm_cancel(tmp_path):
     await runtime.announce(event)
     assert store.event(event["id"])["announcement"]["status"] == "cancelled"
     speaker.say.assert_not_awaited()
+    await runtime.close()
 
 
 @pytest.mark.parametrize("target", ["joint", "box"])

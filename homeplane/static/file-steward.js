@@ -36,7 +36,16 @@ export function mountFiles(root, {state = {tab:'Files', query:'', selected:new S
       throw new Error('当前只读，内容提取与整理尚未启用。当前只读；提取与整理修改待启用。');
     const response = await fetch(endpoint + path, {signal, headers:{'Content-Type':'application/json'},
       ...(body ? {method:'POST', body:JSON.stringify(body)} : {})});
-    if (!response.ok) throw new Error(response.status === 409 ? '记录已变化，请刷新后核对。' : '暂时无法读取，请重试。');
+    if (!response.ok) {
+      let failure = null;
+      try {failure = await response.json();} catch (_) {}
+      const code = failure?.detail?.code;
+      const messages = {steward_text_format_unsupported:'这份文件不是可读取的 UTF-8 文本。',
+        steward_text_source_limit:'文件超过本次可读取大小。',steward_text_output_limit:'文字超出本次提取限额。',
+        steward_text_empty:'文件中没有可提取的文字。',content_grant_required:'本次读取已结束，请重新选择文件。',
+        steward_settings_changed:'设置已变化，请刷新后重试。',steward_queue_busy:'另一份资料正在提取，请稍后重试。'};
+      throw new Error(messages[code] || (response.status === 409 ? '记录已变化，请刷新后核对。' : '暂时无法读取，请重试。'));
+    }
     const result = await response.json();
     if (destroyed) throw new DOMException('View closed','AbortError');
     return result;
@@ -168,6 +177,18 @@ export function mountFiles(root, {state = {tab:'Files', query:'', selected:new S
     container.append(referenceList);
     container.append(action('目录设置',() => openSettings(row),{disabled:busy ? '' : undefined}));
     if (readOnly) {container.append(node('p','当前只读，原件不改不移，提取未启用。当前只读；原件不改名、不移动，提取待启用。',{class:'files-state'}));return;}
+    const directText = ['ready','stale'].includes(item.status) && item.original_hash &&
+      item.media_kind === 'other' && context.content_extraction_enabled;
+    if (directText) {
+      container.append(action(item.status === 'stale' ? '核对并提取文字' : '提取文字',() => perform(async () => {
+        const selected = await api('/content/text/prepare',{expected_context:context.catalog.fingerprint,
+          item_id:item.item_id,expected_content_id:item.original_hash});
+        if (selected.item_id !== item.item_id || selected.expected_content_id !== item.original_hash)
+          throw new Error('文件已变化，请刷新后重新选择。');
+        await api('/content/text',selected);
+        await refresh();
+      }),{disabled:busy ? '' : undefined}),node('p','本机读取 UTF-8 文本，单份不超过 128 KB。',{class:'files-state'}));
+    }
     const jobIds=new Set((row.jobs || []).map(job => job.job_id));
     for (const entry of context.queue || []) if (jobIds.has(entry.job_id)) {
       const names={held:'提取待启用',waiting:'待提取',claimed:'提取中',paused:'计划已暂停',done:'已完成',needs_ocr:'部分页面待识字',cancelled:'计划已取消',failed:'提取待核对',offline:'来源离线',stale:'核对来源'};
@@ -185,7 +206,7 @@ export function mountFiles(root, {state = {tab:'Files', query:'', selected:new S
       if (!['done','needs_ocr','cancelled'].includes(entry.status))
         container.append(action('取消计划',() => control('cancel'),{disabled:busy ? '' : undefined}));
     }
-    if (item.status === 'ready') container.append(action('规划提取',() => perform(async () => {
+    if (item.status === 'ready' && !directText) container.append(action('规划提取',() => perform(async () => {
       const provider = item.media_kind === 'image' ? 'ocr' : ['audio','video'].includes(item.media_kind) ? 'asr_keyframes' : 'docling';
       await api('/jobs/preview',{expected_context:context.catalog.fingerprint,item_ids:[item.item_id],provider});
       await refresh();

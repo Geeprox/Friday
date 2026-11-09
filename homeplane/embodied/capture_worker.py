@@ -1,7 +1,6 @@
 """Bounded living-room video capture through the official local Miloco SDK."""
 
 import asyncio
-import base64
 import collections
 import json
 import logging
@@ -16,9 +15,11 @@ import miot.camera as camera_sdk
 from miot.camera import MIoTCamera
 from miot.types import MIoTCameraInfo, MIoTCameraStatus
 
-from homeplane.embodied.local_motor import LocalMotor
+from homeplane.embodied.local_motor import LocalMotor, check_motor_deadline
 from homeplane.embodied.frame_sampling import LatestFrameEncoder
 from homeplane.embodied.capture_decoder import install_decoder
+from homeplane.embodied.camera_provenance import bind_capture_packet
+from homeplane.embodied.camera_audio import PCMFramer
 from homeplane.embodied.paths import PRIVATE
 from homeplane.embodied.paths import camera as registered_camera
 
@@ -75,6 +76,9 @@ async def main():
     request = json.loads(await reader.readline())
     if request.get("source") != "miloco":
         raise ValueError("source_not_allowed")
+    capture_session = request.get('capture_session', os.urandom(16).hex())
+    if not isinstance(capture_session, str) or not re.fullmatch(r'[a-f0-9]{32}', capture_session):
+        raise ValueError('invalid_capture_session')
     quality = int(os.environ.get("FRIDAY_CAMERA_QUALITY", "3"))
     if quality not in (2, 3):
         raise ValueError("quality_not_allowed")
@@ -90,7 +94,7 @@ async def main():
     attention_until = 0.0
     audio_until = 0.0
     video_until = 0.0
-    audio_pending = bytearray()
+    audio_framer = PCMFramer(selected, capture_session)
     audio_observed = False
     raw_times = collections.deque(maxlen=80)
     decode_times = collections.deque(maxlen=80)
@@ -111,11 +115,12 @@ async def main():
     cv2.setNumThreads(1)
 
     def encoded(packet):
+        packet['capture_session'] = capture_session
         packet.update(raw_fps=rate(raw_times), decoded_fps=rate(decode_times))
         decoders = getattr(owner_camera[0], '_decoders', []) if owner_camera else []
         if decoders and hasattr(decoders[0], 'friday_status'):
             packet.update(decoders[0].friday_status())
-        emit(packet)
+        emit(bind_capture_packet(packet, selected))
 
     sampler = LatestFrameEncoder(encoded, quality=quality,
         face_enabled=lambda: time.monotonic()<attention_until or request.get('identity') is True)
@@ -137,20 +142,12 @@ async def main():
             emit({"type": "diagnostic", "stage": "first_decoded_audio"})
             audio_observed = True
         if channel != 0 or time.monotonic() > audio_until:
-            audio_pending.clear()
+            audio_framer.reset()
             return
-        audio_pending.extend(pcm.astype("<i2", copy=False).tobytes())
-        while len(audio_pending) >= 6400:
-            chunk = bytes(audio_pending[:6400])
-            del audio_pending[:6400]
-            emit(
-                {
-                    "type": "audio",
-                    "pcm": base64.b64encode(chunk).decode(),
-                    "sample_rate": 16000,
-                    "received_at": recv_unix_ms / 1000,
-                }
-            )
+        for packet in audio_framer.push(pcm.astype('<i2', copy=False).tobytes(),
+                received=recv_unix_ms/1000, decoded=decoded_unix_ms/1000,
+                wall=time.time(), mono=time.monotonic()):
+            emit(packet)
 
     owner_camera = []
     try:
@@ -196,13 +193,15 @@ async def main():
                         audio_until = time.monotonic() + 1.3 if command.get("enabled") is True else 0.0
                         attention_until = time.monotonic() + 1.3 if command.get("attention") is True else 0.0
                         if not command.get("enabled"):
-                            audio_pending.clear()
+                            audio_framer.reset()
                         continue
                     if command.get("action") != "motor_step":
                         continue
                     if request.get("motor") is not True:
                         raise ValueError("motor_not_owned")
-                    result = await asyncio.to_thread(motor.step, command.get("direction"))
+                    check_motor_deadline(command.get('expires_mono'))
+                    result = await asyncio.to_thread(motor.step, command.get("direction"),
+                                                     expires_mono=command['expires_mono'])
                     emit(dict(result, type="motor_result", request_id=command.get("request_id")))
                 except Exception as e:
                     emit(
@@ -210,6 +209,7 @@ async def main():
                             "type": "motor_result",
                             "request_id": command.get("request_id") if isinstance(command, dict) else None,
                             "error_class": type(e).__name__,
+                            "error_code": 'motor_request_expired' if str(e)=='motor_request_expired' else 'local_motor_rejected',
                         }
                     )
 

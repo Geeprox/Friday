@@ -68,6 +68,10 @@ try:
             elif op=='open_games':
                 intent={'action':'android.intent.action.MAIN','category':'android.intent.category.LAUNCHER','component':{'pkg':'local.tv.camera','cls':'local.tv.camera.MainActivity'}}
                 s.send('263>>1>>'+json.dumps(intent,separators=(',',':')));time.sleep(.7);screenshot()
+            elif op=='open_ktv':
+                intent={'action':'android.intent.action.MAIN','category':'android.intent.category.LAUNCHER',
+                        'component':{'pkg':'local.friday.ktv','cls':'local.friday.ktv.MainActivity'}}
+                s.send('263>>1>>'+json.dumps(intent,separators=(',',':')));time.sleep(.7);screenshot()
             elif op=='open_settings':
                 open_settings()
                 screenshot()

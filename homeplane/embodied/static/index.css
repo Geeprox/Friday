@@ -19,3 +19,30 @@ header{flex-wrap:wrap;gap:12px}
 @media(forced-colors:active){:focus-visible{outline-color:Highlight}}
 
 select,input:not([type=checkbox]){min-height:40px}
+
+/* Calibration has its own workspace; both references precede the shared form. */
+.calibrating main{grid-template-columns:minmax(0,1.5fr) minmax(240px,1fr);grid-template-areas:"stage title" "stage map" "editor editor";gap:12px 28px;align-items:start}
+.calibrating main>section{grid-area:stage}
+.calibrating aside{display:contents}
+.calibrating .maptitle{grid-area:title;margin:0}
+.calibrating #map{grid-area:map;width:auto;height:min(400px,42vh);max-width:100%;justify-self:center}
+.calibrating .below,.calibrating aside>.toolbar,.calibrating aside>.note{display:none}
+.calibrating footer{display:none}
+.calibrating #editor{grid-area:editor;gap:14px;margin-top:8px;padding-top:20px;font-size:14px;line-height:1.5}
+.editor-heading h2{font-size:18px;line-height:1.4;margin:0;font-weight:600}
+.editor-heading p{font-size:14px;margin:5px 0 0}
+.editor-options{display:flex;gap:12px 28px;flex-wrap:wrap;align-items:center}
+.editor-options label{display:flex;gap:8px;align-items:center;margin:0}
+.editor-options select{min-width:160px}
+.editor-options input[type=checkbox]{width:18px;height:18px;margin:0}
+.calibrating .coordinate-fields{grid-template-columns:repeat(2,minmax(0,1fr));margin:0}
+.calibrating .coordinate-fields label{margin:4px 12px 0 0}
+.calibrating .coordinate-fields input{min-height:44px;width:6rem}
+.editor-guide{margin:0;font-size:14px}
+.calibrating .editor .toolbar button,.calibrating .editor select{min-height:44px}
+button:disabled{cursor:default;opacity:.6}
+@media(max-width:950px){.calibrating main{grid-template-columns:minmax(0,1fr);grid-template-areas:"stage" "title" "map" "editor";gap:16px}.calibrating #map{height:280px}}
+@media(max-width:36rem){.calibrating #map{height:220px}.calibrating .coordinate-fields{grid-template-columns:minmax(0,1fr)}.editor-options{gap:14px}.editor-options label{min-height:44px}.editor-heading h2{font-size:18px}.calibrating #editor{padding-top:20px;gap:16px}.editor .toolbar button{flex:1}}
+
+#editopenerror{margin-block:12px;font-size:14px;line-height:1.6;overflow-wrap:anywhere}
+#editopenerror:empty{display:none}

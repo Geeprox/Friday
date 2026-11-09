@@ -83,6 +83,30 @@ async function main(){
   assert(settingBody.watched&&settingBody.rule.rename_preview&&!settingBody.rule.move_preview&&!settingBody.rule.structure_preview&&!settingBody.rule.dedup_review);
   assert.equal(settingBody.expected_fingerprint,'c'.repeat(64));
   assert(!Object.keys(settingBody).some(k=>/password|credential|host|transport/.test(k)));configured.view.destroy();
+  const contentCalls=[];let extracted=false,formatFailure=false;
+  const contentRow={...rows[1],references:[],jobs:[]};
+  const local=setup(async(url,request)=>{
+    contentCalls.push({url,body:request?.body?JSON.parse(request.body):null});
+    if(url.endsWith('/content/text/prepare'))return {ok:true,json:async()=>({expected_context:ctx.catalog.fingerprint,
+      item_id:contentRow.item.item_id,expected_content_id:contentRow.item.original_hash,expected_settings_fingerprint:settingView.fingerprint})};
+    if(url.endsWith('/content/text')){
+      if(formatFailure)return {ok:false,status:409,json:async()=>({detail:{code:'steward_text_format_unsupported'}})};
+      extracted=true;contentRow.extraction_status='done';contentRow.references=[{anchor:{kind:'file',content_id:contentRow.item.original_hash},provider:'local_utf8_text',title:'合成文字',text:'<script>provider text stays inert</script>'}];
+      return {ok:true,json:async()=>({status:'done'})};
+    }
+    return {ok:true,json:async()=>url.endsWith('/context')?{...ctx,content_extraction_enabled:true}:url.endsWith('/query')?{items:[contentRow],next_cursor:null}:[]};
+  });
+  await local.view.ready;
+  assert(!contentCalls.some(call=>call.url.endsWith('/content/text')),'Browsing must not read content');
+  await walk(local.root).find(n=>n.tag==='button'&&n.textContent==='提取文字').events.click();
+  assert(extracted&&local.root.textContent.includes('<script>provider text stays inert</script>'));
+  const selection=contentCalls.find(call=>call.url.endsWith('/content/text')).body;
+  assert.equal(selection.item_id,contentRow.item.item_id);assert.equal(selection.expected_content_id,contentRow.item.original_hash);
+  assert.equal(selection.expected_context,ctx.catalog.fingerprint);assert.equal(selection.expected_settings_fingerprint,settingView.fingerprint);
+  formatFailure=true;await walk(local.root).find(n=>n.tag==='button'&&n.textContent==='提取文字').events.click();
+  assert(local.root.textContent.includes('这份文件不是可读取的 UTF-8 文本。'));
+  contentRow.item.status='stale';await local.view.refresh();
+  assert(walk(local.root).some(n=>n.tag==='button'&&n.textContent==='核对并提取文字'));local.view.destroy();
   console.log(JSON.stringify({local_metadata_only:true,late_response_discarded:true,view_marker_removed:true,provider_html_execution:false,focus_and_selection_retained:true,auth_status_and_retry:true,exact_batch_rejection:true}));
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

@@ -2,7 +2,7 @@
 Requires existing Pillow 12.3.0 and macOS iconutil. Does not build/install an App.
 """
 from pathlib import Path
-import hashlib,json,subprocess,struct
+import base64,hashlib,json,subprocess,struct,sys
 from PIL import Image,ImageDraw,ImageFilter
 from statistics import median
 
@@ -55,12 +55,19 @@ def main():
   if tag==b'ic04':payload=argb_payload(iconset/'icon_16x16.png')
   elif tag==b'ic05':payload=argb_payload(iconset/'icon_32x32.png')
   chunks.append((tag,payload))
+ # ARL's bounded icon profile reads the original 64 px artwork as icp6.
+ # Add that representation without replacing any of iconutil's original slots.
+ if not any(tag==b'icp6' for tag,_ in chunks):
+  sys.path.insert(0,str(REPO))
+  from homeplane.arl_icon import application_icon
+  icon=application_icon(icns)
+  chunks.append((b'icp6',base64.b64decode(icon['png_base64'],validate=True)))
  if has_toc:
   toc=b''.join(tag+struct.pack('>I',len(payload)+8) for tag,payload in chunks);chunks.insert(0,(b'TOC ',toc))
  body=b''.join(tag+struct.pack('>I',len(payload)+8)+payload for tag,payload in chunks)
  icns.write_bytes(b'icns'+struct.pack('>I',len(body)+8)+body)
  outputs=['Friday-cutout.png',*[f'Friday.iconset/{name}' for name,_ in SLOTS],'Friday.icns']
- manifest={'schema':1,'approved_library_file_id':'original-project-artwork','approved_file_id':'project-artwork','approved_version':0,'source_sha256':SOURCE_SHA,'original_size':[1669,942],'extraction':meta,'edge_method':'Only the one-pixel matte boundary uses original neighboring rim RGB with estimated alpha; opaque interior RGB is copied exactly.','no_generated_artwork_or_design_changes':True,'ICNS_small_slots':'Correct premultiplied ARGB ic04/ic05; original alpha and opaque RGB exact, 8bit quantization validated by black/white composites; all original PNGs unchanged','outputs':{p:{'sha256':sha(ASSETS/p)} for p in outputs}}
+ manifest={'schema':1,'approved_library_file_id':'original-project-artwork','approved_file_id':'project-artwork','approved_version':0,'source_sha256':SOURCE_SHA,'original_size':[1669,942],'extraction':meta,'edge_method':'Only the one-pixel matte boundary uses original neighboring rim RGB with estimated alpha; opaque interior RGB is copied exactly.','no_generated_artwork_or_design_changes':True,'ICNS_small_slots':'Correct premultiplied ARGB ic04/ic05; original alpha and opaque RGB exact, 8bit quantization validated by black/white composites; all original PNGs unchanged','ARL_icon_profile':'icp6 duplicates the original ic12 64px PNG pixels; ancillary PNG metadata removed; original slots retained','outputs':{p:{'sha256':sha(ASSETS/p)} for p in outputs}}
  (ASSETS/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
  print(json.dumps({'source_sha256':SOURCE_SHA,'cutout':meta['source_cutout_bbox'],'iconset_sizes':[size for _,size in SLOTS],'icns_sha256':sha(ASSETS/'Friday.icns')}))
 if __name__=='__main__':main()

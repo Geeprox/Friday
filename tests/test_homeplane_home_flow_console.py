@@ -17,7 +17,7 @@ input.on('line',line=>{const value=JSON.parse(line), accept=pending.get(value.br
 async function api(path,options={}) {
   const bridge_id=++serial;
   const promise=new Promise(resolve=>pending.set(bridge_id,resolve));
-  emit({type:'request',bridge_id,path,body:options.body?JSON.parse(options.body):null});
+  emit({type:'request',bridge_id,path,method:options.method||'GET',body:options.body?JSON.parse(options.body):null});
   const result=await promise;
   seen.push({path,code:result.code});
   if(path.endsWith('/bootstrap')&&holdBootstrap)
@@ -32,6 +32,7 @@ const app=fs.readFileSync(process.argv[3],'utf8');
 const functions=app.slice(app.indexOf('function retainHomeConversationDraft()'),app.indexOf('\nfunction render()'))
   .replace("import('/static/home-conversation.js')",'Promise.resolve(HomeConversationModule)');
 const scope=new Function('api','el','button','note','HomeConversationModule',`
+  ${app.match(/^const add = .+;$/m)[0]}
   let homeConversationView=null,homeConversationSlot=null,homeConversationSession=null,
       homeConversationVersion=0,homeConversationBoot=null,homeConversationCheck=null,homeConversationDraft='',page='Ask Home';
   ${functions}
@@ -72,7 +73,7 @@ async def test_console_mount_real_http_context_and_late_bootstrap_cleanup(tmp_pa
         process = await asyncio.create_subprocess_exec(NODE, str(script),
             str(static / "home-conversation.js"), str(static / "app.js"),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            env={"PATH":"/opt/homebrew/bin:/usr/bin:/bin", "TMPDIR":"/tmp"})
+            env={"PATH":"/opt/homebrew/bin:/usr/bin:/bin", "TMPDIR":str(tmp_path.resolve())})
         result, requests = None, []
         try:
             async with asyncio.timeout(15):
@@ -83,7 +84,8 @@ async def test_console_mount_real_http_context_and_late_bootstrap_cleanup(tmp_pa
                     if message["type"] == "done":
                         result = message
                         break
-                    response = await client.post(message["path"], json=message["body"])
+                    response = await client.request(message['method'],message["path"],
+                        **({'json':message['body']} if message['body'] is not None else {}))
                     assert response.status_code == 200, response.text
                     requests.append(message["path"])
                     process.stdin.write((json.dumps({"bridge_id":message["bridge_id"],

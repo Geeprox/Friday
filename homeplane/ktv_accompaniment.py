@@ -3,6 +3,7 @@
 The public report is a private local handoff to the listening UI. Operational
 logs use Friday's bounded journal and contain no source/output paths or titles.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -29,24 +30,47 @@ PACKAGE_VERSION = "0.1.20"
 MODEL = "mel-roformer-zfturbo-vocals-v1-mlx"
 MODEL_REVISION = "01bef2daebedf39937f552d6da68340fc979c9a0"
 PINNED_MODEL_ASSETS = {
-    "config.json": {"bytes": 1016,
-                    "sha256": "d110ed4713b403d27e2ae6c7796b1a864576232de4a2070e9762108ca197caa6"},
-    "model.safetensors": {"bytes": 67402202,
-                          "sha256": "ef4aa052845a868cfaff93611477bd8f54d8081bc32f2742a9b3c738f0821191"},
+    "config.json": {
+        "bytes": 1016,
+        "sha256": "d110ed4713b403d27e2ae6c7796b1a864576232de4a2070e9762108ca197caa6",
+    },
+    "model.safetensors": {
+        "bytes": 67402202,
+        "sha256": "ef4aa052845a868cfaff93611477bd8f54d8081bc32f2742a9b3c738f0821191",
+    },
 }
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024
 MAX_DURATION_SECONDS = 1800
 SCHEMA = 1
-CODES = frozenset({
-    "none", "preparing", "cache_hit", "invalid_request", "output_outside_workspace",
-    "unsafe_output", "source_unavailable", "source_too_large", "source_changed",
-    "source_audio_unreadable", "source_duration_exceeded", "runtime_unavailable",
-    "runtime_version_mismatch", "worker_failed", "model_or_separation_failed",
-    "model_unavailable", "model_identity_mismatch", "runtime_gpu_unavailable",
-    "output_unqualified", "preparation_timeout", "preparation_cancelled", "cache_busy",
-    "logging_unavailable", "internal_error",
-})
+CODES = frozenset(
+    {
+        "none",
+        "preparing",
+        "cache_hit",
+        "invalid_request",
+        "output_outside_workspace",
+        "unsafe_output",
+        "source_unavailable",
+        "source_too_large",
+        "source_changed",
+        "source_audio_unreadable",
+        "source_duration_exceeded",
+        "runtime_unavailable",
+        "runtime_version_mismatch",
+        "worker_failed",
+        "model_or_separation_failed",
+        "model_unavailable",
+        "model_identity_mismatch",
+        "runtime_gpu_unavailable",
+        "output_unqualified",
+        "preparation_timeout",
+        "preparation_cancelled",
+        "cache_busy",
+        "logging_unavailable",
+        "internal_error",
+    }
+)
 
 
 class PreparationError(ValueError):
@@ -94,12 +118,24 @@ def write_report(path: Path, value: dict) -> None:
 
 
 def _base(status: str, code: str, *, simulated: bool) -> dict:
-    return {"schema_version": SCHEMA, "status": status, "code": code,
-            "instrumental_path": None, "vocals_path": None, "source_sha256": None,
-            "model": MODEL, "model_revision": MODEL_REVISION, "model_verified": False,
-            "runtime_package": PACKAGE, "runtime_version": PACKAGE_VERSION,
-            "simulated": simulated, "evidence_basis": "synthetic_input" if simulated else "selected_local_file",
-            "processing_location": "local", "audio_uploaded": False, "microphone_captured": False}
+    return {
+        "schema_version": SCHEMA,
+        "status": status,
+        "code": code,
+        "instrumental_path": None,
+        "vocals_path": None,
+        "source_sha256": None,
+        "model": MODEL,
+        "model_revision": MODEL_REVISION,
+        "model_verified": False,
+        "runtime_package": PACKAGE,
+        "runtime_version": PACKAGE_VERSION,
+        "simulated": simulated,
+        "evidence_basis": "synthetic_input" if simulated else "selected_local_file",
+        "processing_location": "local",
+        "audio_uploaded": False,
+        "microphone_captured": False,
+    }
 
 
 def _stage_source(source: Path, job: Path, cancel: threading.Event) -> tuple[Path, str, tuple]:
@@ -128,8 +164,10 @@ def _stage_source(source: Path, job: Path, cancel: threading.Event) -> tuple[Pat
             writer.write(chunk)
             digest.update(chunk)
         after = os.fstat(reader.fileno())
+
     def signature(value):
         return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
     if signature(before) != signature(after) or total != before.st_size:
         raise PreparationError("source_changed")
     os.chmod(staged, 0o400)
@@ -157,16 +195,30 @@ def _terminate(process: subprocess.Popen) -> None:
 
 
 def _run_worker(request: Path, runtime: Path, cancel: threading.Event, timeout: float) -> None:
-    environment = {key: value for key, value in os.environ.items()
-                   if key in {"PATH", "HOME", "LANG", "LC_ALL", "SYSTEMROOT"}}
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key in {"PATH", "HOME", "LANG", "LC_ALL", "SYSTEMROOT"}
+    }
     temporary = request.parent / "tmp"
     temporary.mkdir(mode=0o700)
-    environment.update({"TMPDIR": str(temporary), "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
-                        "HF_HOME": str(request.parent.parent.parent / "hf-cache"),
-                        "XDG_CACHE_HOME": str(temporary / "cache"), "PYTHONUNBUFFERED": "1"})
-    process = subprocess.Popen([str(runtime), str(ROOT / "scripts/ktv_prepare.py"),
-                                "--worker-request", str(request)], cwd=ROOT, env=environment,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    environment.update(
+        {
+            "TMPDIR": str(temporary),
+            "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+            "HF_HOME": str(request.parent.parent.parent / "hf-cache"),
+            "XDG_CACHE_HOME": str(temporary / "cache"),
+            "PYTHONUNBUFFERED": "1",
+        }
+    )
+    process = subprocess.Popen(
+        [str(runtime), str(ROOT / "scripts/ktv_prepare.py"), "--worker-request", str(request)],
+        cwd=ROOT,
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
     deadline = time.monotonic() + timeout
     try:
         while process.poll() is None:
@@ -221,27 +273,44 @@ def _cached(cache: Path, key: str, source_hash: str, model_dir: Path, simulated:
         manifest = json.loads(manifest_path.read_text())
         model_binding = _model_files(model_dir)
         stored_binding = manifest.get("model_files", {})
-        if (manifest.get("source_sha256") != source_hash or manifest.get("model") != MODEL
-                or manifest.get("runtime_version") != PACKAGE_VERSION
-                or manifest.get("simulated") is not simulated or not isinstance(stored_binding, dict)
-                or any(stored_binding.get(name) != digest for name, digest in model_binding.items())):
+        if (
+            manifest.get("source_sha256") != source_hash
+            or manifest.get("model") != MODEL
+            or manifest.get("runtime_version") != PACKAGE_VERSION
+            or manifest.get("simulated") is not simulated
+            or not isinstance(stored_binding, dict)
+            or any(stored_binding.get(name) != digest for name, digest in model_binding.items())
+        ):
             return None
         for stem in ("instrumental", "vocals"):
             item = manifest["artifacts"][stem]
             if _artifact(entry / item["filename"], entry) != item:
                 return None
         result = _base("ready", "cache_hit", simulated=simulated)
-        return {**result, "source_sha256": source_hash, "cache_key": key,
-                "model_verified": True,
-                "instrumental_path": str(entry / manifest["artifacts"]["instrumental"]["filename"]),
-                "vocals_path": str(entry / manifest["artifacts"]["vocals"]["filename"]),
-                "manifest_path": str(manifest_path), "cache_hit": True}
+        return {
+            **result,
+            "source_sha256": source_hash,
+            "cache_key": key,
+            "model_verified": True,
+            "instrumental_path": str(entry / manifest["artifacts"]["instrumental"]["filename"]),
+            "vocals_path": str(entry / manifest["artifacts"]["vocals"]["filename"]),
+            "manifest_path": str(manifest_path),
+            "cache_hit": True,
+        }
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
 
-def prepare(source: Path, cache_dir: Path, report_path: Path, *, runtime: Path = RUNTIME,
-            timeout: float = 1800, cancel: threading.Event | None = None, simulated: bool = False) -> dict:
+def prepare(
+    source: Path,
+    cache_dir: Path,
+    report_path: Path,
+    *,
+    runtime: Path = RUNTIME,
+    timeout: float = 1800,
+    cancel: threading.Event | None = None,
+    simulated: bool = False,
+) -> dict:
     """Prepare one selected file. SIGTERM/SIGINT callers set cancel; no inference on import."""
     cancel = cancel if cancel is not None else threading.Event()
     result = _base("unavailable", "internal_error", simulated=simulated)
@@ -249,6 +318,7 @@ def prepare(source: Path, cache_dir: Path, report_path: Path, *, runtime: Path =
     journal = None
     job = None
     lock = None
+    song_lock = None
     try:
         if type(timeout) not in {int, float} or not math.isfinite(timeout) or not 0 < timeout <= 3600:
             raise PreparationError("invalid_request")
@@ -262,7 +332,7 @@ def prepare(source: Path, cache_dir: Path, report_path: Path, *, runtime: Path =
         lock_path = cache / "prepare.lock"
         lock = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise PreparationError("cache_busy") from error
         jobs = _private_directory(cache / "jobs")
@@ -274,6 +344,19 @@ def prepare(source: Path, cache_dir: Path, report_path: Path, *, runtime: Path =
         # turn into a fresh inference while still claiming the fixed revision.
         model_binding = _model_files(model_dir)
         key = hashlib.sha256((source_hash + MODEL + PACKAGE_VERSION + str(simulated)).encode()).hexdigest()
+        locks = _private_directory(cache / "locks")
+        song_lock = os.open(locks / (key + ".lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        wait_deadline = time.monotonic() + timeout
+        while True:
+            if cancel.is_set():
+                raise PreparationError("preparation_cancelled")
+            try:
+                fcntl.flock(song_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= wait_deadline:
+                    raise PreparationError("preparation_timeout")
+                cancel.wait(0.1)
         hit = _cached(cache, key, source_hash, model_dir, simulated)
         if hit is not None:
             result = hit
@@ -301,14 +384,24 @@ def prepare(source: Path, cache_dir: Path, report_path: Path, *, runtime: Path =
             for item in artifacts.values():
                 (job / item["filename"]).rename(entry / item["filename"])
                 os.chmod(entry / item["filename"], 0o600)
-            manifest = {**_base("ready", "none", simulated=simulated), "source_sha256": source_hash,
-                        "cache_key": key, "artifacts": artifacts, "model_files": model_binding,
-                        "model_verified": True,
-                        "duration_seconds": outcome["duration_seconds"], "sample_rate_hz": outcome["sample_rate_hz"]}
+            manifest = {
+                **_base("ready", "none", simulated=simulated),
+                "source_sha256": source_hash,
+                "cache_key": key,
+                "artifacts": artifacts,
+                "model_files": model_binding,
+                "model_verified": True,
+                "duration_seconds": outcome["duration_seconds"],
+                "sample_rate_hz": outcome["sample_rate_hz"],
+            }
             write_report(entry / "manifest.json", manifest)
-            result = {**manifest, "instrumental_path": str(entry / artifacts["instrumental"]["filename"]),
-                      "vocals_path": str(entry / artifacts["vocals"]["filename"]),
-                      "manifest_path": str(entry / "manifest.json"), "cache_hit": False}
+            result = {
+                **manifest,
+                "instrumental_path": str(entry / artifacts["instrumental"]["filename"]),
+                "vocals_path": str(entry / artifacts["vocals"]["filename"]),
+                "manifest_path": str(entry / "manifest.json"),
+                "cache_hit": False,
+            }
         if cancel.is_set():
             raise PreparationError("preparation_cancelled")
         current = source.stat()
@@ -316,10 +409,14 @@ def prepare(source: Path, cache_dir: Path, report_path: Path, *, runtime: Path =
         if now != signature or _hash(source) != source_hash:
             raise PreparationError("source_changed")
     except PreparationError as error:
-        result.update(status="unavailable", code=error.args[0] if error.args[0] in CODES else "internal_error")
+        result.update(
+            status="unavailable", code=error.args[0] if error.args[0] in CODES else "internal_error"
+        )
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         result.update(status="unavailable", code="internal_error")
     finally:
+        if song_lock is not None:
+            os.close(song_lock)
         if lock is not None:
             os.close(lock)
         if job is not None:
@@ -329,12 +426,26 @@ def prepare(source: Path, cache_dir: Path, report_path: Path, *, runtime: Path =
         result.update(instrumental_path=None, vocals_path=None, model_verified=False)
     if journal is not None:
         code = result["code"]
-        journal.record("service.stop", "result", correlation=correlation,
-                       result="ok" if result["status"] == "ready" else "cancelled" if code == "preparation_cancelled"
-                       else "timeout" if code == "preparation_timeout" else "unavailable",
-                       code="none" if result["status"] == "ready" else "flow_cancelled" if code == "preparation_cancelled"
-                       else "deadline_exceeded" if code == "preparation_timeout" else "internal_error",
-                       elapsed_ms=result["elapsed_seconds"] * 1000)
+        journal.record(
+            "service.stop",
+            "result",
+            correlation=correlation,
+            result="ok"
+            if result["status"] == "ready"
+            else "cancelled"
+            if code == "preparation_cancelled"
+            else "timeout"
+            if code == "preparation_timeout"
+            else "unavailable",
+            code="none"
+            if result["status"] == "ready"
+            else "flow_cancelled"
+            if code == "preparation_cancelled"
+            else "deadline_exceeded"
+            if code == "preparation_timeout"
+            else "internal_error",
+            elapsed_ms=result["elapsed_seconds"] * 1000,
+        )
         result["logging_available"] = journal.disk_available is True
     else:
         result["logging_available"] = False
@@ -403,13 +514,18 @@ def worker(request_path: Path) -> int:
         output_rates = []
         for filename in stems.values():
             stem_info = info(str(output / filename))
-            if abs(float(stem_info.duration) - duration) > .25 or not 1 <= stem_info.channels <= 2:
+            if abs(float(stem_info.duration) - duration) > 0.25 or not 1 <= stem_info.channels <= 2:
                 raise PreparationError("output_unqualified")
             output_rates.append(int(stem_info.sample_rate))
         if output_rates[0] != output_rates[1]:
             raise PreparationError("output_unqualified")
-        outcome = {"code": "none", **stems, "duration_seconds": duration,
-                   "source_sample_rate_hz": rate, "sample_rate_hz": output_rates[0]}
+        outcome = {
+            "code": "none",
+            **stems,
+            "duration_seconds": duration,
+            "source_sample_rate_hz": rate,
+            "sample_rate_hz": output_rates[0],
+        }
     except PreparationError as error:
         outcome = {"code": error.args[0] if error.args[0] in CODES else "model_or_separation_failed"}
     except Exception:

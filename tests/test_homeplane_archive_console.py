@@ -69,16 +69,22 @@ const submit=()=>nodes.get('archive-lookup-form').handlers.submit({preventDefaul
  const leaving=submit();await settle();vm.runInContext("go('Home');go('Activity')",env);await settle();pending();await leaving;
  assert(!nodes.get('archive-result').textContent.includes('原片引用可定位'),'leaving and returning does not revive late answer');
  late=false;resultSourceChange=true;await submit();assert.match(nodes.get('archive-result').textContent,/归档来源或映射已变化/);
- context={...context,fingerprint:'c'.repeat(64),simulated:false,cameras:[]};
+ context={...context,fingerprint:'c'.repeat(64),simulated:false,cameras:[],capture_cameras:[{id:'cam_1111111111',name:'SYNTHETIC monitoring camera'}]};
  vm.runInContext("selectedConnection='settings-nas';go('Settings')",env);await settle();
  assert(!posts.some(([p])=>p==='/api/archive/scan'),'settings does not scan automatically');
  assert.equal(nodes.get('settings-archive-timing').checked,false);assert.equal(nodes.get('settings-archive-completion').checked,false);
  await nodes.get('settings-archive-scan').handlers.click();await settle();
  change('settings-archive-folder','e'.repeat(64));change('settings-archive-name','SIMULATED camera');
+ change('settings-archive-capture','cam_1111111111');
  await nodes.get('settings-archive-form').handlers.submit({preventDefault(){}});await settle();
  const body=posts.at(-1)[1];assert.equal(body.timing_reviewed,false);assert.equal(body.clock_offset_seconds,null);assert.equal(body.clock_uncertainty_seconds,null);
  assert.equal(body.completion_convention,'unreviewed');assert.equal(body.camera_id,null);assert(!('path' in body));
+ assert.equal(body.capture_camera_id,'cam_1111111111','recording mapping uses the explicitly selected registered camera');
  assert.match(nodes.get('settings-archive-status').textContent,/对应关系已保存/);
+ nodes.delete('settings-nas-kind');nodes.delete('settings-nas-path');nodes.delete('settings-nas-url');
+ const count=posts.length;
+ await nodes.get('settings-archive-form').handlers.submit({preventDefault(){}});await settle();
+ assert.equal(posts.length,count+1,'standalone mapping uses the already saved archive source without requiring a NAS editor');
  assert(posts.every(([p])=>p.startsWith('/api/archive/')),'no device, model, mount or external write');
 })().catch(error=>{console.error(error);process.exitCode=1;});
 """

@@ -1,6 +1,7 @@
 """Local PCM -> Whisper -> addressing + Laya; complex tasks use ARL Codex.
 
-Input/output are bounded private pipes. No audio/transcript files or model downloads.
+Friday writes no audio/transcript files or downloads. Explicit model text/results
+use ARL's shared durable queue and its retention policy.
 """
 
 import base64
@@ -25,6 +26,7 @@ from homeplane.embodied.intent import (
 )
 from homeplane.embodied.local_asr import LocalASR
 from homeplane.embodied.local_intent import household_plan
+from homeplane.embodied.voice_preferences import read_preferences
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
@@ -64,6 +66,9 @@ def main():
             request = json.loads(line)
             began = time.monotonic()
             op = request.get("op")
+            policy=read_preferences()
+            if request.get('voice_revision',policy.revision)!=policy.revision:
+                raise ValueError('voice_preferences_changed')
             if op == "transcribe":
                 pcm = base64.b64decode(request["pcm"], validate=True)
                 if not 6400 <= len(pcm) <= 256000:
@@ -72,16 +77,16 @@ def main():
                 samples, rms, gain = normalize_audio(samples)
                 with contextlib.redirect_stdout(sys.stderr):
                     text, quality = asr.transcribe(samples)
-                valid, quality_reason = transcript_quality(text, quality)
+                valid, quality_reason = transcript_quality(text, quality, wake_word=policy.wake_word)
                 route = (
-                    address(text, request.get("attending") is True)
+                    address(text, request.get("attending") is True, wake_word=policy.wake_word)
                     if valid
                     else {"admitted": False, "reason": quality_reason}
                 )
                 semantic = None
                 if route["admitted"]:
-                    if household_plan(text, request.get("attending") is True) or basic_command(
-                        text, request.get("attending") is True
+                    if household_plan(text, request.get("attending") is True, wake_word=policy.wake_word) or basic_command(
+                        text, request.get("attending") is True, wake_word=policy.wake_word
                     ):
                         semantic = {
                             "choice": "指令或任务请求",
@@ -103,6 +108,7 @@ def main():
                         "address": route,
                         "laya": semantic,
                         "asr_quality": dict(quality, filter=quality_reason),
+                        "voice_revision":policy.revision,
                         "signal": {"input_rms": round(rms, 4), "gain": round(gain, 2)},
                         "latency_ms": round((time.monotonic() - began) * 1000, 1),
                     }
@@ -112,24 +118,8 @@ def main():
                 if not isinstance(text, str) or not 1 <= len(text) <= 1000:
                     raise ValueError("invalid_task")
                 if intent_runtime is None:
-                    import asyncio
-
-                    from homeplane.arl import ARLRuntime
-
-                    status = asyncio.run(ARLRuntime().status(timeout=4))
-                    provider = next(
-                        (
-                            p
-                            for p in status.get("providers", [])
-                            if p["name"] == "codex_app_server" and p["availability"] == "ready"
-                        ),
-                        None,
-                    )
-                    if provider is None:
-                        raise RuntimeError("arl_codex_not_ready")
                     from homeplane.embodied.arl_intent import IntentRuntime
-
-                    intent_runtime = IntentRuntime(provider["models"][0])
+                    intent_runtime = IntentRuntime()
                 prompt = (
                     PLAN_INSTRUCTIONS
                     + "\n输入数据："
@@ -142,7 +132,7 @@ def main():
                         ensure_ascii=False,
                     )
                 )
-                result = intent_runtime.complete(prompt)
+                result = intent_runtime.complete(prompt, request_id=request.get('request_id'),voice_revision=policy.revision)
                 if result.get("simulated") is not False:
                     raise RuntimeError("non_live_provider")
                 plan = parse_plan(str(result.get("text", "")))

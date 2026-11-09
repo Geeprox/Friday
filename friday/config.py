@@ -62,6 +62,7 @@ class Settings(BaseModel):
     decision_model: str = "convaiinnovations/laya-multilingual"
     planner_provider: Literal["arl", "openai", "codex"] = "arl"  # Old values accepted for config migration only.
     arl_home: str | None = None
+    arl_model_tasks_enabled: bool = False
     arl_planner_provider: Literal["codex_app_server", "ollama"] = "codex_app_server"
     codex_model: str | None = None
     planner_url: str = "http://127.0.0.1:8811/v1"

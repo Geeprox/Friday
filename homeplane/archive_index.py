@@ -72,11 +72,15 @@ def interval_gaps(request, segments):
 
 
 class ArchiveIndex:
-    def __init__(self, store, settings, simulated, *, runner=None, clock=None, room_context=None):
+    def __init__(self, store, settings, simulated, *, runner=None, clock=None, room_context=None,
+                 capture_cameras=None):
         self.store, self.settings, self.simulated = store, settings, simulated
         if room_context is not None and not callable(room_context):
             raise ValueError("archive_room_context_unavailable")
         self.room_context = room_context
+        if capture_cameras is not None and not callable(capture_cameras):
+            raise ValueError('archive_capture_context_unavailable')
+        self.capture_cameras = capture_cameras
         self.runner, self.clock = runner or self._worker, clock or (lambda: datetime.now(UTC))
         self.boot_id, self.revision = str(uuid4()), 0
         self.lock, self.closed = asyncio.Lock(), False
@@ -114,18 +118,45 @@ class ArchiveIndex:
             )
         ]
 
-    def all_profiles(self):
+    def all_profiles(self, *, captures=None):
         source, result = self.source(), []
+        captures = {row['id']: row['source_context'] for row in (
+            self.capture_registry() if captures is None else captures)}
         for identifier, bound_source, raw in self.store.connection.execute(
                 "SELECT id,source,body FROM archive_profiles ORDER BY id"):
             value = json.loads(raw)
             stored = value.get("room_source_context")
             current = self._room_context(value.get("room"))
+            capture_id = value.get('capture_camera_id')
+            capture = captures.get(capture_id) if isinstance(capture_id, str) else None
             result.append({**value, "id": identifier, "source_binding_current": bound_source == source,
+                           "capture_binding_current": isinstance(value.get('capture_source_context'), str)
+                           and value.get('capture_source_context') == capture,
                            "room_binding_current": isinstance(stored, str)
                            and re.fullmatch(r"[a-f0-9]{64}", stored) is not None
                            and current is not None and stored == current})
         return result
+
+    def capture_registry(self):
+        if self.capture_cameras is None or self.simulated():
+            return []
+        try:
+            rows = self.capture_cameras()
+            if not isinstance(rows, list) or len(rows) > 8:
+                return []
+            result = []
+            for row in rows:
+                if (not isinstance(row, dict) or not isinstance(row.get('id'), str)
+                        or not re.fullmatch(r'cam_[a-f0-9]{10}', row['id'])
+                        or not isinstance(row.get('source_context'), str)
+                        or not re.fullmatch(r'[a-f0-9]{64}', row['source_context'])
+                        or not isinstance(row.get('name'), str) or not 1 <= len(row['name']) <= 80
+                        or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in row['name'])):
+                    return []
+                result.append({key: row[key] for key in ('id', 'name', 'source_context')})
+            return result if len({row['id'] for row in result}) == len(result) else []
+        except Exception:
+            return []
 
     def _room_context(self, room):
         if self.room_context is None or not isinstance(room, str) or not room:
@@ -138,10 +169,11 @@ class ArchiveIndex:
             return None
 
     def context(self):
-        profiles = self.all_profiles()
+        captures = self.capture_registry()
+        profiles = self.all_profiles(captures=captures)
         simulated = bool(self.simulated())
         simulated_room = self._room_context("living-room") if simulated else None
-        value = fingerprint([self.boot_id, self.source(), self.revision, profiles, self.closed, simulated_room])
+        value = fingerprint([self.boot_id, self.source(), self.revision, profiles, self.closed, simulated_room, captures])
         if simulated:
             cameras = [
                 {
@@ -172,6 +204,7 @@ class ArchiveIndex:
             "source": "simulator" if simulated else "nas",
             "configured": simulated or bool(self.settings.config.nas_url or self.settings.config.nas_path),
             "cameras": cameras,
+            "capture_cameras": [{key: row[key] for key in ('id', 'name')} for row in captures] if not simulated else [],
             "folders": self.folders if fresh else [],
             "scan": {k: v for k, v in self.last_scan.items() if k != "source"} if fresh else None,
             "read_only": True,
@@ -331,8 +364,12 @@ class ArchiveIndex:
             raise ValueError("archive_camera_capacity")
         identifier = old["id"] if old else "archive-camera:" + str(uuid4())
         value = edit.model_dump(exclude={"expected_context", "camera_id"})
+        captures = {row['id']: row['source_context'] for row in self.capture_registry()}
+        if edit.capture_camera_id is not None and edit.capture_camera_id not in captures:
+            raise ValueError('archive_capture_camera_unavailable')
         value.update(
             relative_directory=match["folder"],
+            capture_source_context=captures.get(edit.capture_camera_id),
             room_source_context=self._room_context(edit.room),
             mapping_evidence="operator_declared_not_hardware_verified",
             simulated=False,

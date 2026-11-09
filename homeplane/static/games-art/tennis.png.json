@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "asset": "tennis",
+  "game_name": "双人网球",
+  "kind": "original_illustrative_game_cover",
+  "use_case": "stylized-concept",
+  "generator": "OpenAI built-in image_gen",
+  "generated_on": "2026-11-03",
+  "source_generated_image": "exec-b6ddf2d8-ec72-4fac-ac19-3526020802a0.png",
+  "transparent_background": false,
+  "prompt": "Use case: stylized-concept\nAsset type: original wide landscape game-store cover illustration, 16:9, full bleed, opaque, no UI.\nPrimary request: a lively two-player tennis rally in an elegant miniature outdoor court, for a simple motion-controlled family game based on hitting and returning the ball.\nScene: one terracotta tennis court with crisp simple cream court lines and a low taut net; restrained cut-paper shrubs and tall slender trees beyond the court, pale blue sky. No stadium or crowd.\nSubjects: exactly two friendly stylized adult players, one near the foreground in deep teal sportswear returning a ball, the other across the net in a muted coral shirt ready to respond. Each holds one simple tennis racket. One small yellow-green ball hangs between them. Their silhouettes and intent are instantly readable.\nStyle/medium: sophisticated handmade 3D paper-and-clay illustration, crisply layered cut-paper shapes, softly rounded low-poly forms, matte materials, delicate visible paper fibers only at close range. A polished consumer game illustration with restrained art direction, not a screenshot.\nComposition/framing: wide cinematic landscape; slightly elevated three-quarter camera, court runs diagonally through the scene; foreground player large enough for a readable arm swing, second player fully visible beyond the net. Keep essential action inside the central 75 percent. Balanced diagonal energy with clear open space above the court. Artwork fills the rectangular frame with no card border.\nLighting/mood: soft warm afternoon daylight, broad gentle contact shadows, welcoming and playfully competitive.\nColor palette: warm terracotta, paper cream, deep pine teal, muted coral, powder blue, tiny tennis-ball yellow accent.\nConstraints: exactly two players, no text, letters, numbers, logos, watermarks, scores, badges, health metrics, controllers, cameras, screens, interface, split panels or surrounding mockup.",
+  "provenance": "Original generated illustration. No household data, photographs or game screenshots were used.",
+  "presentation": "Illustrative cover art; not a screenshot, performance claim, or representation of final game visual fidelity.",
+  "approval_status": "needs_parent_review",
+  "width": 1672,
+  "height": 941,
+  "prompt_embedded": true
+}

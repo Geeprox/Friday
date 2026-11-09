@@ -11,6 +11,22 @@ export function powerOperation(control){
 export function directPower(device){
  return device?.controls?.length===1&&powerOperation(device.controls[0])?device.controls[0]:null;
 }
+export function roomDeviceSummary(devices,room){
+ const counts={total:0,on:0,off:0,idle:0,unavailable:0,unknown:0};
+ const active=new Set(['on','open','opening','closing','cool','heat','heat_cool','dry','fan_only','playing','buffering','cleaning']);
+ const inactive=new Set(['off','closed']);
+ for(const device of devices.filter(d=>d.room===room)){
+  counts.total++;const controls=device.controls||[];
+  if(device.available===false||controls.length&&controls.every(c=>c.available===false)){counts.unavailable++;continue;}
+  const values=controls.filter(c=>c.available!==false).map(c=>c.value);
+  if(values.some(v=>active.has(v)))counts.on++;
+  else if(values.length&&values.every(v=>inactive.has(v)))counts.off++;
+  else if(values.length&&values.every(v=>['idle','docked'].includes(v)))counts.idle++;
+  else if(controls.length&&(!values.length||values.some(v=>v==null||['unknown','unavailable'].includes(v))))counts.unknown++;
+ }
+ const parts=[[counts.on,'运行'],[counts.off,'关闭'],[counts.idle,'待机'],[counts.unavailable,'离线'],[counts.unknown,'待更新']].filter(([n])=>n).map(([n,label])=>n+' '+label);
+ return{...counts,text:parts.join(' · ')||counts.total+' 个设备',label:counts.total+' 个设备'+(parts.length?'，'+parts.join('，'):'')};
+}
 // Room anchors are grouped controls, not invented fixture coordinates.
 export function roomQuickControls(devices,room){
  const list=devices.filter(d=>d.room===room),result=[];

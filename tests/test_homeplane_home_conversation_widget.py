@@ -280,13 +280,16 @@ try {
   assert.equal(click.plan_id, config.action.plan_id); assert.equal(click.approval_digest, config.action.approval_digest);
   assert.equal(click.expected_context, config.action.context_token);
   await show(config.mode);
-  assert(root.textContent.includes('当前模式需核对，请查看完整说明'));
-  assert(root.textContent.includes('适用范围以执行服务和有效时间为准'));
+  assert(root.querySelector('[data-hc="mode"]').textContent === '家庭状态已过期');
   assert(!root.textContent.includes('删除范围'));
   assert(root.textContent.includes('配置、调用与可听见状态分别显示'));
-  assert(root.textContent.includes('已过期') && root.textContent.includes('剩余 0 秒'));
   assert(root.textContent.includes('可听见 unverified') && root.textContent.includes('模拟 true'));
   assert(root.querySelector('pre').textContent.includes('"value": true'), 'raw expired original lease is retained');
+  await show(config.persistent_mode);
+  assert.equal(root.querySelector('[data-hc="mode"]').textContent, '休息 · 保持到你更改');
+  assert(!root.querySelector('[data-hc="mode"]').textContent.includes('过期'), 'null expiry means persistent user intent');
+  await show(config.unknown_mode);
+  assert.equal(root.querySelector('[data-hc="mode"]').textContent, '家庭状态待确认');
   await show(config.held_archive);
   assert.equal(root.querySelector('video'), null, 'missing content guard never loads an unqualified route');
   assert(root.textContent.includes('scoped_action_trace_unavailable'));
@@ -331,6 +334,12 @@ async def test_projection_only_expiry_independent_qualifiers_and_original_field_
         "output": {"status": "completed", "code": "projection_exit0", "endpoint_id": "SIMULATED-output", "configured": True,
                    "attempted": True, "completed": True, "simulated": True, "audibility": "unverified", "cleanup": "complete", "playback_window": None},
     }})
+    persistent_mode = mode.model_copy(deep=True)
+    persistent_mode.domain['report']['effective'].update(
+        mode='sleep', status='active', persistent=True, remaining_seconds=None, valid_until=None, backend='home_core')
+    unknown_mode = mode.model_copy(deep=True)
+    unknown_mode.domain['report']['effective'].update(
+        mode='unknown', status='unknown', persistent=False, remaining_seconds=None, valid_until=None, backend='home_core')
     held_archive = bootstrap.model_copy(update={"phase": "unavailable", "code": "archive_content_reader_guard_unavailable", "domain": {
         "query": None, "explanation": {"level": "history_gap", "statements": [], "complete_household_history": False},
         "archive": None, "archive_status": {"status": "held", "reason": "archive_content_reader_guard_unavailable", "choices": []},
@@ -346,6 +355,7 @@ async def test_projection_only_expiry_independent_qualifiers_and_original_field_
     foreign.domain["playback"]["stream_url"] = "https://SIMULATED.invalid/media"
     config = {key: value.model_dump(mode="json") for key, value in {
         "bootstrap": bootstrap, "expired_rule": expired, "action": action, "mode": mode,
+        "persistent_mode": persistent_mode, "unknown_mode": unknown_mode,
         "held_archive": held_archive, "playback": playback, "foreign_route": foreign,
     }.items()}
     config["invalid_qualifier"] = {**config["action"], "nas_lease": "SIMULATED-client-invented-grant"}

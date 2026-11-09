@@ -1,0 +1,144 @@
+"""Distance-driven skiing must stay fair across observed frame cadences."""
+
+import pytest
+
+from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.ski_route import SKI_COURSES, SKI_GATES, SKI_ROUTE
+
+
+def run_ski(cadence, *, duration=None, lateral=0, difficulty='standard'):
+    game = MotionGames()
+    game.reset("ski", difficulty=difficulty)
+    elapsed = 0.0
+    for i in range(20000):
+        dt = cadence[i % len(cadence)]
+        if duration is not None:
+            dt = min(dt, duration - elapsed)
+        position = lateral(game) if callable(lateral) else lateral
+        game.ski({"arm_effort": 1, "lateral": position}, dt, elapsed + dt)
+        elapsed += dt
+        if game.complete or duration is not None and elapsed >= duration - 1e-9:
+            return game
+    raise AssertionError("ski route never finished")
+
+
+@pytest.mark.parametrize('difficulty', ['easy', 'standard', 'challenge'])
+def test_distance_for_constant_input_is_independent_of_frame_cadence(difficulty):
+    reference = run_ski((0.02,), duration=4, difficulty=difficulty)
+    for cadence in [(0.05,), (0.1,), (0.017, 0.08, 0.033, 0.12)]:
+        other = run_ski(cadence, duration=4, difficulty=difficulty)
+        assert other.distance == pytest.approx(reference.distance, abs=1e-8)
+        assert other.speed == pytest.approx(reference.speed, abs=1e-8)
+
+
+def test_every_complete_run_encounters_the_same_obstacles():
+    counts = []
+    for cadence in [(0.02,), (0.05,), (0.1,), (0.017, 0.08, 0.033, 0.12)]:
+        game = run_ski(cadence, lateral=1)
+        counts.append(game.passed + game.collisions)
+    assert len(set(counts)) == 1, counts
+
+
+def test_route_contains_real_crossing_targets_and_edge_camping_cannot_earn_three_stars():
+    game = run_ski((0.05,), lateral=1)
+    public = game.publish([], "complete", "")['ski']
+    assert public.get("gate_count", 0) >= 12
+    assert public['gates_passed'] == 0
+    assert public['gates_missed'] == public['gate_count']
+    assert public['stars'] < 3
+
+
+def next_gate_center(game):
+    gate = game.ski_public([], 'playing')['guide']['next_gate']
+    return gate['x'] if gate else 0
+
+
+def test_all_three_courses_have_authored_increasing_crossing_challenges():
+    assert len(SKI_GATES) == 18
+    assert len({f.id for f in SKI_ROUTE}) == len(SKI_ROUTE)
+    assert list(SKI_ROUTE) == sorted(SKI_ROUTE, key=lambda f: (f.at, f.id))
+    assert [sum(g.course == i for g in SKI_GATES) for i in range(3)] == [6, 6, 6]
+    assert all(0 < f.at < 180 and abs(f.x) <= 1 for f in SKI_ROUTE)
+    assert SKI_COURSES[0]['gate_width'] > SKI_COURSES[1]['gate_width'] > SKI_COURSES[2]['gate_width']
+    assert max(abs(b.x-a.x) for a, b in zip(SKI_GATES[:6], SKI_GATES[1:6])) < max(
+        abs(b.x-a.x) for a, b in zip(SKI_GATES[12:], SKI_GATES[13:]))
+
+
+@pytest.mark.parametrize('difficulty', ['easy', 'standard', 'challenge'])
+def test_steering_through_published_targets_has_a_clear_corridor_and_stable_reward(difficulty):
+    results = []
+    for cadence in [(0.02,), (0.1,), (0.017, 0.08, 0.033, 0.12)]:
+        game = run_ski(cadence, lateral=next_gate_center, difficulty=difficulty)
+        state = game.publish([], 'complete', '')['ski']
+        assert state['gates_passed'] == 18
+        assert state['gates_missed'] == state['collisions'] == 0
+        assert state['best_combo'] == 18
+        assert state['stars'] == 3
+        assert len(game.ski_results) == len(SKI_ROUTE)
+        results.append((state['points'], state['passed'], state['best_combo']))
+    assert len(set(results)) == 1
+
+
+@pytest.mark.parametrize('offset,passed', [(0, True), (.48, True), (-.48, True), (.481, False), (-.481, False)])
+def test_a_gate_is_scored_once_at_its_actual_crossing(offset, passed):
+    game = MotionGames()
+    game.reset('ski')
+    game.distance, game.speed = 7.99, 2.4
+    game.ski({'arm_effort': 1, 'lateral': offset}, .05, 1)
+    assert game.gates_passed == int(passed)
+    assert game.gates_missed == int(not passed)
+    assert game.ski_event_sequence == 1
+    assert game.ski_event['kind'] == ('gate' if passed else 'miss')
+    for _ in range(10):
+        game.ski({'arm_effort': 0, 'lateral': offset}, .02, 1)
+    assert game.ski_event_sequence == 1
+
+
+def test_collision_slowdown_applies_at_the_crossing_not_the_end_of_a_frame():
+    tree = next(f for f in SKI_ROUTE if f.kind == 'tree')
+    results = []
+    for cadence in [(0.08,), (0.02,) * 4]:
+        game = MotionGames()
+        game.reset('ski')
+        game.distance, game.speed = tree.at - .01, 2.4
+        for dt in cadence:
+            game.ski({'arm_effort': 1, 'lateral': tree.x}, dt, 1)
+        assert game.collisions == 1
+        assert game.ski_event_sequence == 1
+        results.append((game.distance, game.speed))
+    assert results[0] == pytest.approx(results[1], abs=1e-8)
+
+
+def test_course_boundary_remainder_uses_the_next_courses_speed():
+    results = []
+    for cadence in [(0.1,), (0.02,) * 5]:
+        game = MotionGames()
+        game.reset('ski')
+        game.distance, game.speed = 59.99, 2.4
+        for dt in cadence:
+            game.ski({'arm_effort': 1, 'lateral': 0}, dt, 1)
+        assert game.ski_course()[0] == 1
+        results.append((game.distance, game.speed))
+    assert results[0] == pytest.approx(results[1], abs=1e-8)
+
+
+def test_visible_gates_and_trees_share_one_world_plane_and_pause_preserves_earned_work():
+    game = run_ski((.05,), duration=12, lateral=next_gate_center)
+    before = game.publish([{'lateral': 0}], 'playing', '')['ski']
+    assert before['gates'] and before['obstacles']
+    for item in [*before['gates'], *before['obstacles']]:
+        feature = next(f for f in SKI_ROUTE if f.id == item['id'])
+        assert item['z'] == pytest.approx((feature.at-game.distance) * 3)
+    paused = game.set_paused(True)['ski']
+    assert not paused['guide']['active']
+    for key in ['points', 'gates_passed', 'gates_missed', 'best_combo', 'combo', 'gates', 'obstacles']:
+        assert paused[key] == before[key]
+    game.begin_source()
+    recovery = game.publish([], 'paused', '')['ski']
+    assert recovery['gates_passed'] == before['gates_passed']
+    assert recovery['points'] == before['points']
+    game.reset('ski')
+    replay = game.publish([], 'waiting', '')['ski']
+    assert replay['points'] == replay['gates_passed'] == replay['gates_missed'] == replay['best_combo'] == 0
+    assert replay['event'] is replay['stars'] is None
+    assert not game.ski_results

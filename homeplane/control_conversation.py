@@ -196,6 +196,27 @@ class ControlConversation:
         if operation.task and not operation.task.done():
             operation.task.cancel()
 
+    def retire_completed(self, operation_id, context):
+        """Retire a settled command while retaining its short-lived target focus.
+
+        Cancellation still revokes pending/unknown work. A completed operation
+        is removed so a late cancel or expiry cannot clear a newer command's
+        reused focus slot.
+        """
+        context.check()
+        scope = context.read_scope()
+        key = (context.session_id, operation_id)
+        operation = self._operations.get(key)
+        if (operation is None or operation.context_key != context.focus_key
+                or operation.scope_key != self._scope_key(scope)
+                or not operation.approved or operation.cancelled
+                or operation.task is not None
+                or operation.trace is None or operation.trace.status != 'reported_match'):
+            return False
+        operation.cancelled = True
+        self._operations.pop(key)
+        return True
+
     def invalidate(self, session_id=None):
         """Owner calls synchronously on stop/source/identity/map/authority changes."""
         for key, op in list(self._operations.items()):

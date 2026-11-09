@@ -379,6 +379,8 @@ class RuleManager:
             snapshot = await self.core.snapshot()
             now = datetime.now(UTC)
             trigger = deployment.new_rule.trigger
+            if trigger.type in {'schedule', 'once'}:
+                raise ValueError('schedule_requires_home_core')
             payload = {"entity_id": trigger.entity, "capability": trigger.capability}
             if trigger.type == "state_transition":
                 payload.update({"from": trigger.from_value, "to": trigger.to_value})

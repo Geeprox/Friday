@@ -1,9 +1,11 @@
 """Offline policy tests; do not claim physical movement or speaker identity."""
 import asyncio
+import ast
 import base64
 import json
 import time
 from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import cv2
@@ -83,7 +85,7 @@ def test_wake_focus_and_empty_view_patrol_do_not_guess_between_people():
     d=CameraDirector();clear(d)
     people=[person(1,.1),person(2,.75)]
     assert d.choose(sample(1,people=people),1) is None
-    assert d.choose(sample(2,people=people),2,focus=dict(track=2,at=2))=='right'
+    assert d.choose(sample(2,people=people),2,focus=dict(track=2,at=2,session_id='first'))=='right'
     d.sent(2)
     assert d.choose(sample(20),20,occupied_elsewhere=True) is None
     assert d.choose(sample(21),21)=='right'
@@ -91,6 +93,57 @@ def test_wake_focus_and_empty_view_patrol_do_not_guess_between_people():
     assert d.choose(sample(25),25) is None
     assert d.choose(sample(35,visible=False),35) is None
     assert d.phase=='view_obscured'
+
+
+def test_game_keeps_visible_players_in_a_stable_control_frame():
+    d=CameraDirector();clear(d)
+    one=person(1,.75)
+    playing=sample(1,people=[one]);playing['game']={'status':'playing'}
+    assert d.choose(playing,1) is None
+    assert d.target is None and d.phase=='game_held'
+    group=sample(2,people=[person(1,.08),person(2,.72)]);group['game']={'status':'calibrating'}
+    assert d.choose(group,2) is None
+    edge=sample(3,people=[person(1,.9)]);edge['game']={'status':'playing'}
+    assert d.choose(edge,3) is None  # The game owns its frame even when a player is clipped.
+    assert d.phase=='game_held'
+
+
+def test_requested_survey_is_finite_and_repeated_intent_does_not_restart_it():
+    d=CameraDirector();d.apply_mode('survey',7)
+    attempts=[]
+    for at in range(300):
+        if direction:=d.choose(sample(at),at):
+            attempts.append(direction);d.sent(at)
+    assert len(attempts)==12 and d.phase=='survey_finished'
+    assert d.public()['physical_motion_verified'] is False
+    d.apply_mode('survey',7)
+    assert d.choose(sample(301),301) is None
+    d.apply_mode('survey',8)
+    assert d.choose(sample(302),302) is None
+    assert d.choose(sample(303),303) in {'left','right'}
+    assert d.survey_attempts==1
+    d.apply_mode('hold',9)
+    assert d.choose(sample(320,visible=False),320) is None
+    assert d.phase=='held'
+
+
+def test_survey_charges_unknown_dispatch_outcomes_before_any_retry():
+    d=CameraDirector();d.apply_mode('survey',1)
+    # Each new frame is a new decision; no acknowledgement is manufactured.
+    choices=[d.choose(sample(at),at) for at in range(200)]
+    assert sum(value is not None for value in choices)==12
+    assert d.survey_attempts==12 and d.phase=='survey_finished'
+
+
+def test_primary_controller_receives_the_actual_game_state():
+    source=ast.parse(Path('homeplane/embodied/worker.py').read_text())
+    search=next(n for n in source.body if isinstance(n,ast.AsyncFunctionDef)and n.name=='camera_search')
+    assignment=next(n for n in ast.walk(search) if isinstance(n,ast.Assign)
+                    and any(isinstance(t,ast.Name)and t.id=='sample' for t in n.targets))
+    current={'mode':'tennis','status':'playing'}
+    scope={'state':{'status':'live'},'last_frame':20,'games':SimpleNamespace(public=current)}
+    exec(compile(ast.Module(body=[assignment],type_ignores=[]),'<actual camera input>','exec'),scope)
+    assert scope['sample']['game'] is current
 
 
 @pytest.mark.asyncio
@@ -124,8 +177,9 @@ def test_bare_wake_word_retains_quality_gate_without_becoming_device_command():
 
 @pytest.mark.asyncio
 async def test_bare_wake_focus_requires_current_video_and_unique_visible_target():
-    h=HomeService();h.selected=h.armed=True;h.visible_tracks={8}
-    h.request=AsyncMock(return_value=dict(address=address('Friday')))
+    h=HomeService(voice_preferences=lambda:SimpleNamespace(wake_word='Friday',revision=0))
+    h.selected=h.armed=True;h.visible_tracks={8};h.camera_session='first'
+    h.request=AsyncMock(return_value=dict(text='Friday',voice_revision=0,address=address('Friday')))
     h.last_video=time.monotonic()
     await h.transcribe(b'',None,time.monotonic(),epoch=h.epoch)
     assert h.camera_focus['track']==8

@@ -1,0 +1,232 @@
+{
+  "count": 9,
+  "source": "Exact currently adopted Godot runtime files, unchanged",
+  "targets": {
+    "hand.ok": {
+      "file": "hand-ok.png",
+      "png_sha256": "b7e7822447c8fe2c20dbbdbb04aedd6e8b307a1387f22e97a28cea6678bc025a",
+      "bytes": 17255,
+      "pixels": [
+        432,
+        480
+      ],
+      "phase": 0.57,
+      "source_pose": "OK",
+      "source_endpoint_sha256": "1a8d03073c18eb604171e2ca602a245229ddb2086e2ef6521308f107445d71fa",
+      "roll_degrees": 0,
+      "transparent_background_preserved": true,
+      "render_defaults_unchanged": {
+        "outlineWidth": 0.0016,
+        "yaw": 35,
+        "side": 1
+      },
+      "model_sha256": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+      "poses_json_sha256": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+      "adapter_sha256": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf",
+      "static_target_not_animation": true,
+      "license": "CC0 source hand mesh and original pose endpoint; rendering adapter/Godot code/Three MIT notices retained",
+      "origin_embedded": true
+    },
+    "hand.yeah": {
+      "file": "hand-yeah.png",
+      "png_sha256": "79b00385633b8901f9d8e430b657fab8117a88514c655d7e27bc744e615752ff",
+      "bytes": 13912,
+      "pixels": [
+        432,
+        480
+      ],
+      "phase": 0.57,
+      "source_pose": "Peace",
+      "source_endpoint_sha256": "e81264cf035fe5f470436cecf3e1efca7aaa186f45e70f5b68602466bad7b152",
+      "roll_degrees": 0,
+      "transparent_background_preserved": true,
+      "render_defaults_unchanged": {
+        "outlineWidth": 0.0016,
+        "yaw": 35,
+        "side": 1
+      },
+      "model_sha256": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+      "poses_json_sha256": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+      "adapter_sha256": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf",
+      "static_target_not_animation": true,
+      "license": "CC0 source hand mesh and original pose endpoint; rendering adapter/Godot code/Three MIT notices retained",
+      "origin_embedded": true
+    },
+    "hand.open_palm": {
+      "file": "hand-open_palm.png",
+      "png_sha256": "ca2b7fd740f6b6880b7938b528636dba42f101eeb447f0a1f3789b42c077672f",
+      "bytes": 17131,
+      "pixels": [
+        432,
+        480
+      ],
+      "phase": 0.57,
+      "source_pose": "Sign_5",
+      "source_endpoint_sha256": "fa522144b8255f8c858e4927a4c5fe299177d638a6291a57ac31a099cbb9bb95",
+      "roll_degrees": 0,
+      "transparent_background_preserved": true,
+      "render_defaults_unchanged": {
+        "outlineWidth": 0.0016,
+        "yaw": 35,
+        "side": 1
+      },
+      "model_sha256": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+      "poses_json_sha256": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+      "adapter_sha256": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf",
+      "static_target_not_animation": true,
+      "license": "CC0 source hand mesh and original pose endpoint; rendering adapter/Godot code/Three MIT notices retained",
+      "origin_embedded": true
+    },
+    "hand.point": {
+      "file": "hand-point.png",
+      "png_sha256": "0496407d52e47dc6b9b430f88224a79b4ea693a9d51a26223ca402894fdcbe32",
+      "bytes": 12849,
+      "pixels": [
+        432,
+        480
+      ],
+      "phase": 0.57,
+      "source_pose": "Sign_1",
+      "source_endpoint_sha256": "97c7049a7a26c73ba4009c4ad992ffd1c61b2fb380a5b9ffcaaa22e3b5079052",
+      "roll_degrees": 0,
+      "transparent_background_preserved": true,
+      "render_defaults_unchanged": {
+        "outlineWidth": 0.0016,
+        "yaw": 35,
+        "side": 1
+      },
+      "model_sha256": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+      "poses_json_sha256": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+      "adapter_sha256": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf",
+      "static_target_not_animation": true,
+      "license": "CC0 source hand mesh and original pose endpoint; rendering adapter/Godot code/Three MIT notices retained",
+      "origin_embedded": true
+    },
+    "hand.fist": {
+      "file": "hand-fist.png",
+      "png_sha256": "c2a89536f5fe3f73bc2d8ce4aeafdb53813f757b8e59a3117a8d3f84d3b09d78",
+      "bytes": 11929,
+      "pixels": [
+        432,
+        480
+      ],
+      "phase": 0.57,
+      "source_pose": "Grip",
+      "source_endpoint_sha256": "55b4556089b093c01958ef6e8005dafecf2819b42f2c9cc7a50c34170112e5d1",
+      "roll_degrees": 0,
+      "transparent_background_preserved": true,
+      "render_defaults_unchanged": {
+        "outlineWidth": 0.0016,
+        "yaw": 35,
+        "side": 1
+      },
+      "model_sha256": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+      "poses_json_sha256": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+      "adapter_sha256": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf",
+      "static_target_not_animation": true,
+      "license": "CC0 source hand mesh and original pose endpoint; rendering adapter/Godot code/Three MIT notices retained",
+      "origin_embedded": true
+    },
+    "hand.thumb_up": {
+      "file": "hand-thumb_up.png",
+      "png_sha256": "d09b29a0967b2590669e80779888bf03211078551136b583746aed9af030a124",
+      "bytes": 12897,
+      "pixels": [
+        432,
+        480
+      ],
+      "phase": 0.57,
+      "source_pose": "Thumb",
+      "source_endpoint_sha256": "95f9a60b00d0841e26df0991c6241696ffc9d31e5062fd0b56fb2dd1ff3ead11",
+      "roll_degrees": -90,
+      "transparent_background_preserved": true,
+      "render_defaults_unchanged": {
+        "outlineWidth": 0.0016,
+        "yaw": 35,
+        "side": 1
+      },
+      "model_sha256": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+      "poses_json_sha256": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+      "adapter_sha256": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf",
+      "static_target_not_animation": true,
+      "license": "CC0 source hand mesh and original pose endpoint; rendering adapter/Godot code/Three MIT notices retained",
+      "origin_embedded": true
+    },
+    "hand.thumb_down": {
+      "file": "hand-thumb_down.png",
+      "png_sha256": "9b2466c6c247f7c7b1a424fb2093759ce0f8e25dfbd66114ba1403a1b090e77e",
+      "bytes": 12877,
+      "pixels": [
+        432,
+        480
+      ],
+      "phase": 0.57,
+      "source_pose": "Thumb",
+      "source_endpoint_sha256": "95f9a60b00d0841e26df0991c6241696ffc9d31e5062fd0b56fb2dd1ff3ead11",
+      "roll_degrees": 90,
+      "transparent_background_preserved": true,
+      "render_defaults_unchanged": {
+        "outlineWidth": 0.0016,
+        "yaw": 35,
+        "side": 1
+      },
+      "model_sha256": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+      "poses_json_sha256": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+      "adapter_sha256": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf",
+      "static_target_not_animation": true,
+      "license": "CC0 source hand mesh and original pose endpoint; rendering adapter/Godot code/Three MIT notices retained",
+      "derivation": "Same official Thumb endpoint as thumb_up, with approved runtime roll+90 instead of-90; not an independent official pose",
+      "origin_embedded": true
+    },
+    "hand.shaka": {
+      "file": "hand-shaka.png",
+      "png_sha256": "f66f36b0ddb4029f334c143135c404753e8e6625ca826330e283308955790549",
+      "bytes": 14466,
+      "pixels": [
+        432,
+        480
+      ],
+      "phase": 0.57,
+      "source_pose": "Surfer",
+      "source_endpoint_sha256": "76cc171927516863931cacfe5ea1b389c673c76ce24ca345de759b19bb6d9e66",
+      "roll_degrees": 0,
+      "transparent_background_preserved": true,
+      "render_defaults_unchanged": {
+        "outlineWidth": 0.0016,
+        "yaw": 35,
+        "side": 1
+      },
+      "model_sha256": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+      "poses_json_sha256": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+      "adapter_sha256": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf",
+      "static_target_not_animation": true,
+      "license": "CC0 source hand mesh and original pose endpoint; rendering adapter/Godot code/Three MIT notices retained",
+      "origin_embedded": true
+    },
+    "hand.horns": {
+      "file": "hand-horns.png",
+      "png_sha256": "a11384062bdb82eab230547e8e512630aacf906aa1abbc11e62691e7164c4736",
+      "bytes": 13910,
+      "pixels": [
+        432,
+        480
+      ],
+      "phase": 0.57,
+      "source_pose": "Horns",
+      "source_endpoint_sha256": "6715163dec51951475eaee0ef4a128ac190dfa2dada2c7635229092adb4521f0",
+      "roll_degrees": 0,
+      "transparent_background_preserved": true,
+      "render_defaults_unchanged": {
+        "outlineWidth": 0.0016,
+        "yaw": 35,
+        "side": 1
+      },
+      "model_sha256": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+      "poses_json_sha256": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+      "adapter_sha256": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf",
+      "static_target_not_animation": true,
+      "license": "CC0 source hand mesh and original pose endpoint; rendering adapter/Godot code/Three MIT notices retained",
+      "origin_embedded": true
+    }
+  }
+}

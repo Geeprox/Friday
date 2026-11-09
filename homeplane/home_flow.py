@@ -2,7 +2,8 @@
 
 Only transient fences live here. Domain records, grants, scheduling and effects
 remain owned by ActionController, RuleManager, HomeQueries and ArchivePlayer.
-The shipped ingress is local text; live writes, ambient input and audio stay held.
+The shipped ingress is local text. Device approvals and Friday-owned rule edits
+use their original guarded owners; ambient input and unqualified audio stay held.
 """
 from __future__ import annotations
 
@@ -15,13 +16,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import Field
 
 from .contracts import Contract
 from .control_conversation import ControlConversation
 from .feedback_contracts import VerifiedFeedback
 from .home_explanation import HomeExplanation
+from .home_questions import HomeQuestions, is_home_question
 from .home_flow_contracts import (
     MAX_ACTIVE_OPERATIONS,
     MAX_HISTORY_BYTES,
@@ -47,6 +49,7 @@ from .rule_conversation import RuleConversation
 from .rule_text import parse_removal
 from .simulator import Simulator
 from .sleep_status import LONG_TEXT, MODE_TEXT, PAUSE_TEXT, SleepStatus
+from .task_composition import CoreTaskText, TaskConversation, is_task_request
 
 from .runtime_log import observe
 
@@ -79,6 +82,8 @@ class Session:
     history_bytes: int = 0
     active: str | None = None
     operations: dict = field(default_factory=dict)
+    household_timezone: str | None = None
+    sending: bool = False
 
 
 class FlowSessionRequest(Contract):
@@ -88,32 +93,43 @@ class FlowSessionRequest(Contract):
 class HomeFlow:
     def __init__(self, core, settings, rules, rule_text, queries, archive, player,
                  rule_runtime, core_rule_runtime, *, nas_status, household_timezone=None,
-                 monotonic=time.monotonic, wall_now=None):
+                 monotonic=time.monotonic, wall_now=None, household_mode=None, question_runtime=None):
         if household_timezone is not None:
             ZoneInfo(household_timezone)
         self.core, self.settings = core, settings
         self.rule_runtime, self.core_rule_runtime = rule_runtime, core_rule_runtime
         self.archive, self.player, self.nas_status = archive, player, nas_status
+        self.household_mode, self.pause_automatic = household_mode, None
         self.timezone, self.monotonic = household_timezone, monotonic
         self.wall_now = wall_now or (lambda: datetime.now(UTC))
         self.sessions, self.tasks, self.bootstrap_tasks = {}, set(), set()
         self.generation, self.closed = 0, False
+        self.voice_tasks = None
         self.control = ControlConversation(ActionPorts(
             core.actions, self._snapshot, read_trace=self._read_trace,
+            read_current=self._read_current,
             guarded_execute=bind_guarded_action_executor(core.actions),
         ))
         self.rules = RuleConversation(RulePorts(rule_text, rules))
+        from .rule_text import RuleTextChanges
+        core_rules=core_rule_runtime.manager
+        self.live_rules=RuleConversation(RulePorts(RuleTextChanges(core_rules,core_rule_runtime),core_rules))
+        self.task_plans = TaskConversation(RulePorts(CoreTaskText(self.live_rules.ports.text, question_runtime), core_rules))
         # This metadata capability comes from the same original local Console
         # boundary and explicit original camera profiles. Content remains held.
         self.why = HomeExplanation(QueryPorts(queries), ArchivePorts(
             archive, player, verify_metadata=self._archive_metadata,
             cameras_for_room=self._cameras_for_room,
         ))
+        self.questions = HomeQuestions(QueryPorts(queries), self._snapshot, question_runtime)
         self.mode = SleepStatus(ModePorts(
             backend='simulator', permitted=self._mode_permitted,
             set_mode=self._set_mode, status=self._mode_status,
             pause_and_invalidate=self._pause, fixed_ttl_seconds=30,
         ))
+        self.live_mode = SleepStatus(ModePorts(backend='home_core',durable_intent=True,
+            permitted=self._live_mode_permitted,set_mode=self._set_live_mode,
+            status=self._live_mode_status,pause_and_invalidate=self._pause_live))
         self.feedback = ResponseRouter()  # No installed or qualified room output.
 
     def _binding(self):
@@ -148,7 +164,7 @@ class HomeFlow:
             check_current=lambda _context: self._current(session),
             cancelled=lambda: session.invalidated,
             current_scope=lambda: session.scope if self._current(session) else None,
-            household_timezone=self.timezone, monotonic=self.monotonic, wall_now=self.wall_now,
+            household_timezone=session.household_timezone, monotonic=self.monotonic, wall_now=self.wall_now,
         )
 
     @staticmethod
@@ -178,6 +194,19 @@ class HomeFlow:
             snapshot = await task
         except asyncio.CancelledError as exc:
             raise FlowAbort('flow_cancelled') from exc
+        household_timezone = self.timezone
+        if household_timezone is None:
+            provider = getattr(self.core.adapter, 'household_timezone', None)
+            if callable(provider):
+                try:
+                    candidate = await asyncio.wait_for(provider(), timeout=2)
+                    if isinstance(candidate, str):
+                        ZoneInfo(candidate)
+                        household_timezone = candidate
+                except (OSError, ValueError, TypeError, TimeoutError, KeyError):
+                    # Missing metadata leaves relative time unresolved; never
+                    # silently reinterpret a household date in the host zone.
+                    pass
         if self.closed or binding != self._binding():
             raise FlowAbort('flow_context_changed')
         identifier = 'console:' + secrets.token_hex(24)
@@ -188,7 +217,7 @@ class HomeFlow:
             all_home=True, history=True, permitted=True, expires_at=expires,
             rooms=frozenset(sorted({entity.room for entity in snapshot.entities if entity.room})[:64]),
             entities=frozenset(sorted({entity.id for entity in snapshot.entities})[:256]),
-        ), mono + SESSION_TTL_SECONDS, expires)
+        ), mono + SESSION_TTL_SECONDS, expires, household_timezone=household_timezone)
         self.sessions[identifier] = session
         return FlowResponse(session_id=identifier, turn_id='bootstrap', operation_id='bootstrap',
                             input_kind='console_text', phase='result', code='flow_ready',
@@ -203,8 +232,12 @@ class HomeFlow:
             session.invalidated = True
             self.control.invalidate(key)
             self.rules.invalidate(key)
+            self.live_rules.invalidate(key)
+            self.task_plans.invalidate(key)
             self.why.invalidate(key)
+            self.questions.invalidate(key)
             self.mode.invalidate(key)
+            self.live_mode.invalidate(key)
             self.feedback.invalidate(key)
             for operation in session.operations.values():
                 operation.cancelled = True
@@ -244,6 +277,32 @@ class HomeFlow:
         context.read_scope()
         return trace if entity and (scope.all_home or entity.id in scope.entities or entity.room in scope.rooms) else None
 
+    async def _read_current(self, target, expected_state_version, context):
+        from .ha import HAReadOnlyAdapter
+        from .ha_control import HADeviceWriter
+
+        def allowed(entity):
+            scope = context.read_scope()
+            return bool(entity and entity.kind == 'light'
+                        and entity.state_version == expected_state_version
+                        and (scope.all_home or target in scope.entities or entity.room in scope.rooms))
+
+        if not isinstance(self.core.adapter, HAReadOnlyAdapter):
+            raise ValueError('brightness_state_unavailable')
+        snapshot = await self._snapshot(context)
+        entity = next((e for e in snapshot.entities if e.id == target), None)
+        if not allowed(entity):
+            raise FlowAbort('flow_context_changed')
+        binding = self.core.actions.binding_fingerprint(entity)
+        reported = await HADeviceWriter(self.core.adapter, entity, 'light.set').readback()
+        later = await self._snapshot(context)
+        current = next((e for e in later.entities if e.id == target), None)
+        if not allowed(current) or self.core.actions.binding_fingerprint(current) != binding:
+            raise FlowAbort('flow_context_changed')
+        return dict(reported=reported, received_at=reported['received_at'],
+                    expected_state_version=expected_state_version,
+                    target_binding_fingerprint=binding, physically_confirmed=False)
+
     def _cameras_for_room(self, context, room):
         scope = context.read_scope()
         if not scope.all_home and room not in scope.rooms:
@@ -267,6 +326,35 @@ class HomeFlow:
     def _mode_permitted(self, context, operation):
         scope = context.read_scope()
         return scope.boundary == 'loopback_console' and scope.all_home and isinstance(self.core.adapter, Simulator)
+
+    def _live_mode_permitted(self, context, operation):
+        from .ha import HAReadOnlyAdapter
+        scope=context.read_scope()
+        return bool(scope.boundary=='loopback_console' and scope.subject=='console' and scope.all_home
+                    and isinstance(self.core.adapter,HAReadOnlyAdapter) and self.household_mode is not None
+                    and (self.pause_automatic is not None if operation=='pause' else self.household_mode.binding() is not None))
+
+    def _live_mode_status(self, context):
+        context.check()
+        return self.household_mode.runtime_status()
+
+    async def _set_live_mode(self, mode, *, ttl_seconds, context):
+        def current():
+            context.check()
+            return self._live_mode_permitted(context,'mode')
+        if not current():raise FlowAbort('mode_permission_required')
+        result=await self.household_mode.select(mode,ttl_seconds=ttl_seconds,guard=current)
+        context.check()
+        return result
+
+    async def _pause_live(self, context):
+        def current():
+            context.check()
+            return self._live_mode_permitted(context,'pause')
+        if not current():raise FlowAbort('mode_permission_required')
+        result=await self.pause_automatic(guard=current)
+        context.check()
+        return result
 
     def _mode_status(self, context):
         context.check()
@@ -297,6 +385,10 @@ class HomeFlow:
         text = request.text.strip().rstrip('。！？!?')
         if text in MODE_TEXT or text in PAUSE_TEXT or text in LONG_TEXT:
             return 'mode'
+        if is_task_request(text):
+            return 'tasks'
+        if is_home_question(text):
+            return 'query'
         if '为什么' in text or '为何' in text:
             return 'why'
         if parse_removal(text) is not None:
@@ -320,6 +412,8 @@ class HomeFlow:
         if operation is None:
             return self._reply(request, 'flow_operation_unavailable', 'cancelled')
         operation.cancelled = True
+        if operation.lane == 'query':
+            self.questions.invalidate_operation(session.id, operation_id)
         if operation.cancel_task is None:
             # Exactly one captured cleanup owns the lane call. Repeating F1's
             # invalidation could revoke a new operation's reused focus slot.
@@ -339,9 +433,14 @@ class HomeFlow:
                     if operation.lane == 'control':
                         return await self.control.cancel(captured, context)
                     if operation.lane == 'rules':
-                        return await self.rules.cancel(captured, context)
+                        handler=self.rules if isinstance(self.core.adapter,Simulator) else self.live_rules
+                        return await handler.cancel(captured, context)
+                    if operation.lane == 'tasks':
+                        return await self.task_plans.cancel(captured, context)
                     if operation.lane == 'why':
                         return await self.why.cancel(captured, context)
+                    if operation.lane == 'query':
+                        return await self.questions.cancel(captured, context)
                     return self._reply(request, 'flow_cancelled', 'cancelled',
                                        '本次请求已停止；原模式租约与已发送动作保留。')
                 except (FlowAbort, asyncio.CancelledError):
@@ -381,6 +480,17 @@ class HomeFlow:
         session = self.sessions.get(request.session_id)
         if session is None or not self._current(session):
             return self._reply(request, 'flow_session_unavailable')
+        # A model-backed read releases the global application lock. Keep one
+        # admitted turn per session, without queueing or delaying cancellation.
+        if session.sending:
+            return self._reply(request, 'flow_operation_in_progress')
+        session.sending = True
+        try:
+            return await self._send(request, session)
+        finally:
+            session.sending = False
+
+    async def _send(self, request, session):
         operation = None
         try:
             context = self._context(session)
@@ -394,7 +504,13 @@ class HomeFlow:
                 if sum(op.task is not None and not op.task.done() for op in session.operations.values()) >= MAX_ACTIVE_OPERATIONS:
                     raise FlowAbort('flow_operation_budget')
                 if session.active:
-                    await self._cancel_operation(session, session.active, request)
+                    previous = session.operations[session.active]
+                    if (previous.lane == 'control' and previous.report
+                            and previous.report.phase == 'result'
+                            and self.control.retire_completed(session.active, context)):
+                        previous.cancelled = True
+                    else:
+                        await self._cancel_operation(session, session.active, request)
                     context.check()
                 operation = Operation(self._lane(request))
                 session.operations[request.operation_id] = operation
@@ -415,22 +531,29 @@ class HomeFlow:
                 if operation.cancelled:
                     raise FlowAbort('flow_cancelled')
                 if (not isinstance(self.core.adapter, Simulator)
-                        and request.kind in {'approve','rollback'}):
+                        and request.kind in {'approve','rollback'}
+                        and operation.lane not in {'control','rules','tasks'}):
                     return self._reply(request, 'flow_live_write_held', 'unavailable')
                 if operation.lane == 'control':
                     if request.kind in {'approve','reconcile'}:
                         if request.kind == 'approve':
-                            await self.core_rule_runtime.invalidate('explicit_console_action_takes_over')
+                            await self.core_rule_runtime.hold_for_manual()
                             context.check()
                         return await self.control.approve(bound, context)
                     return await self.control.plan(bound, context)
                 if operation.lane == 'rules':
-                    return await (self.rules.approve(bound, context) if request.kind == 'approve'
-                                  else self.rules.turn(bound, context))
+                    handler=self.rules if isinstance(self.core.adapter,Simulator) else self.live_rules
+                    return await (handler.approve(bound, context) if request.kind == 'approve'
+                                  else handler.turn(bound, context))
+                if operation.lane == 'tasks':
+                    return await self.task_plans.turn(bound, context)
                 if operation.lane == 'why':
                     return await (self.why.prepare_playback(bound, context) if request.kind == 'playback'
                                   else self.why.answer(bound, context))
-                return await self.mode.change(bound, context)
+                if operation.lane == 'query':
+                    return await self.questions.answer(bound, context)
+                handler=self.mode if isinstance(self.core.adapter,Simulator) else self.live_mode
+                return await handler.change(bound, context)
             task = asyncio.create_task(dispatch(), name='console-home-flow')
             operation.task = task
             self.tasks.add(task)
@@ -468,11 +591,17 @@ class HomeFlow:
     async def close(self):
         self.closed = True
         self.invalidate()
+        if self.voice_tasks is not None:
+            await self.voice_tasks.close()
         # Each handler waits its own current and retired work before shared close.
         await self.control.close()
         await self.rules.close()
+        await self.live_rules.close()
+        await self.task_plans.close()
         await self.why.close()
+        await self.questions.close()
         await self.mode.close()
+        await self.live_mode.close()
         await self.feedback.close()
         if self.tasks:
             await asyncio.gather(*tuple(self.tasks), return_exceptions=True)
@@ -493,7 +622,13 @@ def create_router(flow, lock):
                                     caption='本机会话暂不可用，请稍后重新开始。')
 
     @router.post('/turn', response_model=FlowResponse)
-    async def turn(body: FlowRequest):
+    async def turn(body: FlowRequest, incoming: Request):
+        session = flow.sessions.get(body.session_id)
+        operation = session.operations.get(body.operation_id) if session else None
+        lane = operation.lane if operation else flow._lane(body)
+        if lane in {'query', 'tasks'}:
+            from .preview_request import prepare_for_viewer
+            return await prepare_for_viewer(incoming, lambda: flow.send(body), timeout=48)
         async with lock:
             return await flow.send(body)
 

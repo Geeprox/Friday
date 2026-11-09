@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from homeplane.embodied.ptz_control import CameraLease, SearchPlanner, FLAGS
+from homeplane.embodied.camera_intent import CameraIntent, CameraIntentStore
 
 
 def functions(names,scope):
@@ -35,10 +36,39 @@ async def test_exited_capture_race_cannot_skip_native_restore_or_retain_lock(tmp
     scope=dict(asyncio=asyncio,time=time,os=os,Transport=lambda:io,CameraLease=lambda *_,**__:lease,
                SearchPlanner=SearchPlanner,CameraDirector=lambda:None,camera_is_open=AsyncMock(return_value=False),
                SELECTED={'id':'synthetic'},close_primary_view=lambda:None,capture=capture,state={},
+               camera_intents=SimpleNamespace(load=lambda:CameraIntent('auto','initial','default')),
                camera_lease=None,camera_planner=None)
     functions({'camera_search','reap'},scope)
     await scope['camera_search']()
     assert values==original and lease.lock_fd is None
+    assert json.loads(lease.path.read_text())['status']=='restored'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('requested,restored', [('hold','hold'),('auto','auto'),('survey','hold')])
+async def test_primary_search_recreation_loads_intent_and_still_restores_vendor(tmp_path, monkeypatch, requested, restored):
+    monkeypatch.delenv('FRIDAY_CAMERA_HOLD', raising=False)
+    selected={'id':'cam_1111111111','device':{'did':'synthetic-main'}}
+    intents=CameraIntentStore(tmp_path/'camera',selected)
+    saved=intents.save(requested)
+    values=dict(camera_power=True,cruise=True,human_tracking=True,pet_tracking=True,
+                human_close_up=False,active_preset=1,presets=[])
+    before=dict(values)
+    async def write(name,value):values[name]=value
+    io=SimpleNamespace(read=AsyncMock(side_effect=lambda:dict(values)),write=write,close=AsyncMock())
+    lease=CameraLease(io,tmp_path/'lease.json')
+    planners=[]
+    def make_planner(*args):
+        planner=SearchPlanner(*args);planners.append(planner);return planner
+    scope=dict(asyncio=asyncio,time=time,os=os,Transport=lambda:io,CameraLease=lambda *_,**__:lease,
+               SearchPlanner=make_planner,CameraDirector=lambda:None,camera_is_open=AsyncMock(return_value=False),
+               SELECTED=selected,close_primary_view=lambda:None,capture=None,state={},
+               camera_intents=intents,camera_lease=None,camera_planner=None)
+    functions({'camera_search','reap'},scope)
+    await scope['camera_search']()
+    assert len(planners)==1 and planners[0].mode==restored
+    assert planners[0].intent_revision==saved.revision and planners[0].intent_status=='saved'
+    assert values==before and lease.lock_fd is None
     assert json.loads(lease.path.read_text())['status']=='restored'
 
 

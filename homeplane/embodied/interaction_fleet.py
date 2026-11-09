@@ -35,7 +35,9 @@ class InteractionFleet:
         if not old or old['session'] != session:
             if self.voice_camera == camera:
                 self.voice_camera = self.voice_session = None
-            self.cameras[camera] = dict(session=session, engine=InteractionEngine(camera, session),
+            engine=InteractionEngine(camera,session)
+            if old and old['engine'].rearm:engine.require_release(not_before=old['engine'].release_not_before)
+            self.cameras[camera] = dict(session=session, engine=engine,game_window=old.get('game_window')if old else None,
                                         owner=None, candidate=None, since=0, suppress_ok=False,
                                         seen=-100., people=0, gestures={}, state='connecting')
         return self.cameras[camera]
@@ -113,21 +115,27 @@ class InteractionFleet:
                 item['suppress_ok'] = False
         return owner
 
-    def update(self, camera, session, people, hands, registration, active, now):
+    def update(self, camera, session, people, hands, registration, active, now, *, game_window=None, game_active=False,captured_mono=None):
         stationary = registration.get('status') not in {'moving', 'settling', 'lost', 'stale'}
+        item=self.session(camera,session)
+        if game_window is not None:
+            if item.get('game_window') is not None and item['game_window']!=game_window:
+                item['engine'].require_release(not_before=now)
+            item['game_window']=game_window
         if not active:
-            item = self.session(camera, session)
             # A game may consume this camera's gestures while its microphone
             # remains a household consumer. Actual source loss uses clear().
             self.clear(camera, voice=False)
-            item.update(seen=now, people=len(people))
+            item['engine'].require_release('game_active'if game_active else 'input_paused',not_before=now)
+            item.update(seen=now, people=len(people),state='game'if game_active else 'paused')
             return []
         owner = self.operator(camera, session, people, hands, now, stationary=stationary)
         item = self.cameras[camera]
         person = next((p for p in people if p['id'] == owner), None)
         actor = ('person', self.identity(person)) if person and self.identity(person) else ('track', camera, session, owner)
         visible = body_gestures(person) if person else set()
-        visible.update('hand.'+h['gesture'] for h in hands if h.get('person_id') == owner and h.get('gesture') in {'ok','yeah','open_palm'})
+        from .gestures import BINDABLE_HAND_LABELS
+        visible.update('hand.'+h['gesture'] for h in hands if h.get('person_id') == owner and h.get('gesture') in BINDABLE_HAND_LABELS)
         item['gestures'] = {actor:visible} if person else {}
         # Only release a shared latch when every fresh view of the person has
         # released. A missing or stale view cannot keep a latch forever.
@@ -136,7 +144,7 @@ class InteractionFleet:
             if not any(now-c['seen'] < 1.5 and gesture in c['gestures'].get(who, set()) for c in self.cameras.values()):
                 self.latched.discard(key)
         admitted_hands = [h for h in hands if not (item['suppress_ok'] and h.get('gesture') == 'ok')]
-        events = item['engine'].update(people, admitted_hands, owner, registration, active, now)
+        events = item['engine'].update(people, admitted_hands, owner, registration, active, now,observed_hands=hands,observed_mono=captured_mono)
         result = []
         bindings = {b.id:b for b in item['engine'].config.bindings}
         self.recent = {k:t for k,t in self.recent.items() if now-t < 10}
@@ -163,6 +171,8 @@ class InteractionFleet:
             return False
         item = self.cameras.get(event['camera'])
         return bool(item and item['session'] == event['session'] and item['owner'] == event['track']
+                    and not(item['engine'].rearm and (item['engine'].rearm_owner is None
+                            or event['binding']in item['engine'].game_releases))
                     and item['state'] == 'ready' and 0 <= now-event['observed_mono'] <= 1.5
                     and now-item['seen'] <= 1.5)
 
