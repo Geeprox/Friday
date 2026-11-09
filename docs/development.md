@@ -1,6 +1,6 @@
 # 开发与验证
 
-先阅读 [AGENTS.md](../AGENTS.md)，核对当前任务的实现、验证与授权范围。公共约定在[元仓库开发规范](https://github.com/lijunfeng722/project-index/blob/main/docs/development.md)统一维护，本仓库保留部署、隐私、设备发现与公开历史要求。
+先阅读 [AGENTS.md](../AGENTS.md)，核对当前任务的实现、验证与授权范围。公共约定在[元仓库开发规范](https://github.com/lijunfeng722/friday-project-index/blob/main/docs/development.md)统一维护，本仓库保留部署、隐私、设备发现与公开历史要求。
 
 ## 开发环境
 

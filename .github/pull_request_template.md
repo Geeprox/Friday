@@ -1,4 +1,4 @@
-<!-- Friday 开发约定模板；源文件由 project-index 维护。 -->
+<!-- Friday 开发约定模板；源文件由 friday-project-index 维护。 -->
 
 ## 变更与验证
 

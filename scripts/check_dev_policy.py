@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Friday 开发约定检查；源文件由 project-index 维护。
+# Friday 开发约定检查；源文件由 friday-project-index 维护。
 """离线检查开发约定，显式同步受维护仓库，不操作服务或设备。"""
 
 import argparse
@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = "https://github.com/lijunfeng722/project-index"
+SOURCE = "https://github.com/lijunfeng722/friday-project-index"
 CORE_START = "<!-- friday-policy-core:start -->"
 CORE_END = "<!-- friday-policy-core:end -->"
 START = "<!-- friday-dev-policy:start -->"
@@ -22,14 +22,14 @@ TEMPLATE = ".github/pull_request_template.md"
 WORKFLOW = ".github/workflows/development-policy.yml"
 SKILL_REFERENCE = "skills/friday-development/references/development.md"
 SIGNATURES = {
-    CHECKER: "# Friday 开发约定检查；源文件由 project-index 维护。",
-    TEMPLATE: "<!-- Friday 开发约定模板；源文件由 project-index 维护。 -->",
-    WORKFLOW: "# Friday 开发约定工作流；源文件由 project-index 维护。",
+    CHECKER: "# Friday 开发约定检查；源文件由 friday-project-index 维护。",
+    TEMPLATE: "<!-- Friday 开发约定模板；源文件由 friday-project-index 维护。 -->",
+    WORKFLOW: "# Friday 开发约定工作流；源文件由 friday-project-index 维护。",
 }
-REFERENCE_HEADER = "<!-- 生成副本：在 project-index/docs/development.md 修改，再运行规则同步。 -->\n\n"
+REFERENCE_HEADER = "<!-- 生成副本：在 friday-project-index/docs/development.md 修改，再运行规则同步。 -->\n\n"
 SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 PUBLIC_ERRORS = frozenset("""invalid_policy_or_event_json git_query_unavailable
-git_reference_or_query_unavailable shared_rules_markers_invalid run_sync_from_project_index
+git_reference_or_query_unavailable shared_rules_markers_invalid run_sync_from_friday_project_index
 target_must_be_repository_root target_repository_not_managed generated_path_is_symlink
 existing_file_is_not_managed existing_snapshot_is_not_managed policy_schema_invalid
 shared_rules_digest_invalid commit_head_invalid commit_base_invalid event_commit_scope_invalid
@@ -75,17 +75,17 @@ def section(text, start, end):
 
 def canonical(root):
     if not (root / "repos.json").is_file():
-        raise PolicyError("run_sync_from_project_index")
+        raise PolicyError("run_sync_from_friday_project_index")
     try:
         text = (root / "docs/development.md").read_text(encoding="utf-8")
         _, rules, _ = section(text, CORE_START, CORE_END)
         version = re.search(r"^规范版本：([0-9.\-]+)$", rules, re.M).group(1)
         rows = read_json(root / "repos.json")["repositories"]
         urls = {r["id"]: r["url"].rstrip("/") for r in rows}
-        managed = {"project-index": SOURCE, "friday": urls["friday"], "user-guide": urls["user-guide"]}
+        managed = {"friday-project-index": SOURCE, "friday": urls["friday"], "user-guide": urls["user-guide"]}
         assets = {p: (root / p).read_bytes() for p in SIGNATURES}
     except (OSError, KeyError, TypeError, AttributeError):
-        raise PolicyError("run_sync_from_project_index") from None
+        raise PolicyError("run_sync_from_friday_project_index") from None
     return text, rules, version, managed, assets
 
 
@@ -133,7 +133,7 @@ def expected_files(source, target):
               "assets_sha256": {p: digest(value) for p, value in assets.items()}}
     files = {**assets, "AGENTS.md": agents.encode(),
              SNAPSHOT: (json.dumps(policy, ensure_ascii=False, indent=2) + "\n").encode()}
-    if role == "project-index":
+    if role == "friday-project-index":
         files[SKILL_REFERENCE] = (REFERENCE_HEADER + text).encode()
     # 覆盖前先检查所有目的文件，避免发现同名用户文件时已经写入一半。
     for name in files:
@@ -177,7 +177,7 @@ def check_repo(root):
     policy = read_json(root / SNAPSHOT)
     errors = []
     if (policy.get("schema_version") != 1 or policy.get("source_repository") != SOURCE
-            or policy.get("repository") not in {"project-index", "friday", "user-guide"}):
+            or policy.get("repository") not in {"friday-project-index", "friday", "user-guide"}):
         raise PolicyError("policy_schema_invalid")
     rules = policy.get("shared_rules")
     if not isinstance(rules, str) or digest(rules.encode()) != policy.get("shared_rules_sha256"):
@@ -192,7 +192,7 @@ def check_repo(root):
         path = root / name
         if not path.is_file() or digest(path.read_bytes()) != hashes.get(name):
             errors.append("managed_asset_drift:" + name)
-    if policy["repository"] == "project-index":
+    if policy["repository"] == "friday-project-index":
         text, source_rules, version, _, _ = canonical(root)
         if version != policy.get("version") or source_rules != rules:
             errors.append("canonical_rules_not_synced")
