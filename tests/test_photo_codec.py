@@ -202,3 +202,19 @@ async def test_worker_rejects_changed_input_and_cleans_process():
         assert runner.process is None and runner.active is None
     finally:
         await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_product_default_launcher_reads_the_locked_installed_codec_without_test_injection():
+    if os.environ.get("FRIDAY_TEST_PHOTO_CODEC_ROOT"):
+        pytest.skip("本机保留现有运行环境；固定编解码器安装由全新 CI 环境验证")
+    payload = image_bytes(colors())
+    runner = PhotoRunner()
+    try:
+        result, encoded = await runner.render(payload, request(payload))
+        assert result.output_sha256 == hashlib.sha256(encoded).hexdigest()
+        with Image.open(io.BytesIO(encoded)) as decoded:
+            assert decoded.tobytes() == colors().tobytes()
+        assert runner.active is None and runner.process is None
+    finally:
+        await runner.close()

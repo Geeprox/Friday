@@ -1,0 +1,39 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "item_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Item Id",
+      "type": "string"
+    },
+    "request_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "expected_original_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Original Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "expected_context",
+    "item_id",
+    "request_id",
+    "expected_original_hash"
+  ],
+  "title": "FamilyMediaPhotoOpen",
+  "type": "object"
+}

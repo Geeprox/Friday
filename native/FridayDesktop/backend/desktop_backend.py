@@ -56,6 +56,8 @@ READ_ONLY_PREPARATION_PATHS = frozenset({
     '/api/home/evidence/query', '/api/home/evidence/detail',
     '/api/home/recordings/stop',
     '/api/files/query', '/api/files/settings/query',
+    '/api/family-media/photos/open', '/api/family-media/photos/render',
+    '/api/family-media/recipes/preview', '/api/family-media/recipes/review',
     '/api/diagnostics/export',
 })
 # RuleIR permits 12 KiB; retain a bounded envelope for this existing preview.
@@ -70,7 +72,8 @@ PEOPLE_WRITE_PATHS = frozenset('/api/people/' + name for name in (
     'name', 'merge', 'split', 'correct', 'undo', 'voice-review', 'live/register', 'live/forget', 'live/name-candidate',
     'live/candidate-group','live/candidate-group/undo'))
 HELD_GET_PATHS = frozenset({'/api/settings/ha/discover', '/api/settings/miloco/models'})
-HELD_GET_PREFIXES = ('/api/archive/media/', '/api/home/recordings/media/', '/api/family-media/originals/')
+HELD_GET_PREFIXES = ('/api/archive/media/', '/api/home/recordings/media/', '/api/family-media/originals/',
+                     '/api/family-media/photos/content/')
 
 
 CONNECTION_PHASES = frozenset({'configuration', 'saved_login', 'home_read', 'workspace', 'startup'})
@@ -927,6 +930,8 @@ class DesktopService:
         from homeplane import api
         from homeplane.file_steward.contracts import StewardPageRequest
         from homeplane.file_steward.settings_contracts import StewardSettingsRequest
+        from homeplane.family_media.photo_requests import FamilyMediaPhotoOpen, FamilyMediaPhotoRender
+        from homeplane.family_media.contracts import FamilyMediaRecipeRequest, FamilyMediaRecipeReview
         schemas = {
             '/api/query': api.HomeQuery,
             '/api/actions/plan': api.LightPlanRequest | api.DevicePlanRequest,
@@ -942,6 +947,10 @@ class DesktopService:
             '/api/archive/playback': api.ArchivePlaybackRequest,
             '/api/files/query': StewardPageRequest,
             '/api/files/settings/query': StewardSettingsRequest,
+            '/api/family-media/photos/open': FamilyMediaPhotoOpen,
+            '/api/family-media/photos/render': FamilyMediaPhotoRender,
+            '/api/family-media/recipes/preview': FamilyMediaRecipeRequest,
+            '/api/family-media/recipes/review': FamilyMediaRecipeReview,
             '/api/diagnostics/export': api.DiagnosticsExportRequest,
         }
         if scope['path'] in {'/api/home/evidence/query', '/api/home/evidence/detail'}:
@@ -997,11 +1006,14 @@ class DesktopService:
             return False
         archive = re.fullmatch(r'/api/archive/media/([a-f0-9]{64})', path)
         recording = re.fullmatch(r'/api/home/recordings/media/([a-f0-9]{48})', path)
+        photo = re.fullmatch(r'/api/family-media/photos/content/([a-f0-9]{64})', path)
         try:
             if archive:
                 return self.inner.state.archive_player.protected_preview(archive[1]) is True
             if recording:
                 return self.inner.state.home_experience.recordings.protected_preview(recording[1]) is True
+            if photo:
+                return self.inner.state.family_media.photos.owns_result(photo[1]) is True
         except (AttributeError, OSError, ValueError, TypeError):
             pass
         return False
@@ -1038,6 +1050,11 @@ class DesktopService:
         if scope['type'] == 'http':
             headers = dict(scope.get('headers', []))
             origin = headers.get(b'origin')
+            photo_path = (path.startswith('/api/family-media/photos/')
+                          or path in {'/api/family-media/recipes/preview', '/api/family-media/recipes/review'})
+            if photo_path and (scope.get('client') or ('',))[0] not in {'127.0.0.1', '::1'}:
+                await JSONResponse({'code': 'invalid_local_client'}, status_code=403)(scope, receive, send)
+                return
             if headers.get(b'host') != b'127.0.0.1:8740' or origin not in {None, ORIGIN.encode()}:
                 await JSONResponse({'code': 'invalid_local_origin'}, status_code=403)(scope, receive, send)
                 return
@@ -1104,6 +1121,16 @@ class DesktopService:
                     await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
                     return
                 await self.read_only_preparation(scope, receive, send)
+                return
+            if scope['method'] == 'DELETE' and re.fullmatch(r'/api/family-media/photos/jobs/[a-f0-9]{64}', path):
+                if origin != ORIGIN.encode():
+                    await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
+                    return
+                if self.inner is None:
+                    await JSONResponse({'code': 'home_not_connected'}, status_code=503)(scope, receive, send)
+                    return
+                # 仅撤销本机照片任务；不开放 NAS 写入或原件删除。
+                await self.inner(scope, receive, send)
                 return
             if scope['method'] not in {'GET', 'HEAD'}:
                 await JSONResponse({'code': 'desktop_read_only', 'device_writes': 'disabled'}, status_code=409)(scope, receive, send)

@@ -106,6 +106,7 @@ class FamilyMediaCatalog:
         self.hash_jobs, self.cursors, self.leases = {}, {}, {}
         self.active_readers = 0
         self.tasks = set()
+        self.photos = None
         with connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS family_media_meta (key TEXT PRIMARY KEY, body TEXT NOT NULL)"
@@ -948,6 +949,8 @@ class FamilyMediaCatalog:
     async def close(self):
         # The injected manager's connection belongs to F1, not to this consumer.
         self.closed = True
+        if self.photos is not None:
+            await self.photos.close()
         self.hash_jobs.clear()
         self.cursors.clear()
         self.leases.clear()
