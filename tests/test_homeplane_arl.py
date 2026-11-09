@@ -199,23 +199,62 @@ async def test_no_paid_inference_or_resubmit_after_lost_receipt(setup):
 @pytest.mark.asyncio
 async def test_deadline_and_cancellation_cancel_late_receipt_without_backlog(setup):
     runtime, sdk = setup
-    sdk.delay = .12
-    with pytest.raises(ARLError, match="deadline_exceeded"):
-        await runtime.run_job("runtime.ping", {}, deadline=time.monotonic()+.03)
-    with pytest.raises(ARLError, match="runtime_busy"):
-        await runtime.smoke()
-    await asyncio.sleep(.14)
-    assert any(method == "cancel" for method, _ in sdk.calls)
-    assert not runtime._busy.locked()
-    sdk.calls.clear()
-    sdk.start.clear()
-    task = asyncio.create_task(runtime.smoke())
-    await asyncio.to_thread(sdk.start.wait, 1)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    await asyncio.sleep(.14)
-    assert any(method == "cancel" for method, _ in sdk.calls) and not runtime._busy.locked()
+    original_rpc = sdk.rpc
+    loop = asyncio.get_running_loop()
+    for reason in ("deadline", "cancellation"):
+        sdk.calls.clear()
+        submitted, cancelled = asyncio.Event(), asyncio.Event()
+        release_receipt, release_cancel = threading.Event(), threading.Event()
+
+        def rpc(method, params=None):
+            result = original_rpc(method, params)
+            if method == "submit":
+                # 真实提交已产生回执，但运行时尚未收到；不靠线程池等待者的调度速度。
+                loop.call_soon_threadsafe(submitted.set)
+                assert release_receipt.wait(5), "合成提交回执未释放"
+            elif method == "cancel":
+                loop.call_soon_threadsafe(cancelled.set)
+                assert release_cancel.wait(5), "合成取消调用未释放"
+            return result
+
+        sdk.rpc = rpc
+        operation = (runtime.run_job("runtime.ping", {}, deadline=time.monotonic()+.5)
+                     if reason == "deadline" else runtime.smoke())
+        task = asyncio.create_task(operation)
+        try:
+            await asyncio.wait_for(submitted.wait(), 2)
+            if reason == "deadline":
+                with pytest.raises(ARLError, match="deadline_exceeded"):
+                    await task
+            else:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            assert runtime._busy.locked()
+            with pytest.raises(ARLError, match="runtime_busy"):
+                await runtime.smoke()
+            assert sum(method == "submit" for method, _ in sdk.calls) == 1
+            release_receipt.set()
+            await asyncio.wait_for(cancelled.wait(), 2)
+            # 取消调用尚未返回时也不能放开单工作线程或积压下一次提交。
+            assert runtime._busy.locked()
+            with pytest.raises(ARLError, match="runtime_busy"):
+                await runtime.smoke()
+            assert sum(method == "submit" for method, _ in sdk.calls) == 1
+        finally:
+            release_receipt.set()
+            release_cancel.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            # 在真实工作线程释放锁之后检查结果；超时只作为失败上界。
+            acquired = await asyncio.to_thread(runtime._busy.acquire, timeout=2)
+            if acquired:
+                runtime._busy.release()
+            sdk.rpc = original_rpc
+            assert acquired, "原工作线程未结束"
+        assert sum(method == "cancel" for method, _ in sdk.calls) == 1
+        assert not runtime._busy.locked()
 
 
 @pytest.mark.asyncio
