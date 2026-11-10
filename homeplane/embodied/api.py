@@ -6,7 +6,7 @@ import time
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from homeplane.runtime_log import observe
 
@@ -74,11 +74,26 @@ class VoiceInput(BaseModel):
 class PracticeStart(BaseModel):
     model_config = ConfigDict(extra='forbid')
     gesture: str = Field(min_length=1, max_length=40)
+    request_id: str | None = Field(default=None,pattern=r'^[a-f0-9]{64}$')
+    issued_at_ms: int | None = Field(default=None,ge=0,strict=True)
+
+    @model_validator(mode='after')
+    def paired_request(self):
+        if (self.request_id is None) != (self.issued_at_ms is None):
+            raise ValueError('practice_request_pair_required')
+        return self
 
 
 class PracticeToken(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    token: str = Field(pattern=r'^[a-f0-9]{32}$')
+    token: str | None = Field(default=None,pattern=r'^[a-f0-9]{32}$')
+    request_id: str | None = Field(default=None,pattern=r'^[a-f0-9]{64}$')
+
+    @model_validator(mode='after')
+    def current_request(self):
+        if self.token is None and self.request_id is None:
+            raise ValueError('practice_request_required')
+        return self
 
 
 class GestureContext(BaseModel):
@@ -183,21 +198,24 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     @router.post('/api/embodied/practice/start')
     async def practice_start(request: PracticeStart):
         try:
-            return await service.practice('start', request.model_dump())
-        except (ValueError, OSError):
-            raise HTTPException(409, detail='practice_not_ready') from None
+            return await service.practice('start', request.model_dump(exclude_none=True))
+        except (ValueError, OSError) as error:
+            code = str(error)
+            raise HTTPException(409, detail=code if code in {
+                'practice_already_active', 'practice_recognition_not_running',
+            } else 'practice_not_ready') from None
 
     @router.post('/api/embodied/practice/status')
     async def practice_status(request: PracticeToken):
         try:
-            return await service.practice('status', request.model_dump())
+            return await service.practice('status', request.model_dump(exclude_none=True))
         except (ValueError, OSError):
             raise HTTPException(409, detail='practice_unavailable') from None
 
     @router.post('/api/embodied/practice/stop')
     async def practice_stop(request: PracticeToken):
         try:
-            return await service.practice('stop', request.model_dump())
+            return await service.practice('stop', request.model_dump(exclude_none=True))
         except (ValueError, OSError):
             raise HTTPException(409, detail='practice_unavailable') from None
 

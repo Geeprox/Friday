@@ -1399,14 +1399,26 @@ async def preview_frame(camera_id: str, request: Request):
     return Response(frame, media_type="image/jpeg")
 
 
+@app.get('/api/practice/capabilities')
+async def practice_capabilities():
+    return practice.capabilities()
+
+
 @app.post('/api/practice/start')
 async def practice_start(request: Request):
     data = await request.json()
+    context = {}
+    if data.get('request_id') is not None:
+        try:context = practice.request_context(data['request_id'],data.get('expected_scope'))
+        except ValueError:raise HTTPException(409,detail='practice_source_changed') from None
     if games.mode not in {'off', 'home'}:
-        return dict(phase='blocked', reason='game_active')
+        return dict(phase='blocked', reason='game_active',**context)
     if not any(s['state'] == 'live' for s in view()['camera_sessions']):
-        return dict(phase='blocked', reason='camera_not_ready')
+        return dict(phase='blocked', reason='camera_not_ready',**context)
     try:
+        if context:
+            return practice.begin_request(data.get('gesture'),[c['id'] for c in configuration()['cameras']],
+                data['request_id'],data.get('expected_scope'),data.get('not_after'),data.get('lease_deadline'))
         return practice.begin(data.get('gesture'), [c['id'] for c in configuration()['cameras']])
     except ValueError:
         raise HTTPException(409, detail='practice_not_ready') from None
@@ -1415,6 +1427,9 @@ async def practice_start(request: Request):
 @app.post('/api/practice/status')
 async def practice_status(request: Request):
     data = await request.json()
+    if data.get('request_id') is not None:
+        try:return practice.status_request(data['request_id'],data.get('expected_scope'))
+        except ValueError:raise HTTPException(409,detail='practice_source_changed') from None
     if not isinstance(data.get('token'), str):
         raise HTTPException(422)
     return practice.status(data['token'])
@@ -1423,6 +1438,9 @@ async def practice_status(request: Request):
 @app.post('/api/practice/stop')
 async def practice_stop(request: Request):
     data = await request.json()
+    if data.get('request_id') is not None:
+        try:return practice.stop_request(data['request_id'],data.get('expected_scope'))
+        except ValueError:raise HTTPException(409,detail='practice_source_changed') from None
     if not isinstance(data.get('token'), str):
         raise HTTPException(422)
     return practice.stop(data['token'])

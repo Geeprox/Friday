@@ -2,6 +2,9 @@
 
 import secrets
 import time
+import math
+
+from .practice_requests import valid_id
 
 from .interaction import GESTURES, body_gestures
 from .smart_home import WindowGesture
@@ -21,6 +24,61 @@ class RecognitionPractice:
         self.clock = clock
         self.lease = None
         self.observers = {}
+        self.scope = secrets.token_hex(16)
+        self.requests = {}
+
+    def capabilities(self):
+        return dict(scoped_requests=1, scope=self.scope)
+
+    def request_context(self, request_id, expected_scope):
+        if not valid_id(request_id) or not isinstance(expected_scope,str) or not secrets.compare_digest(expected_scope,self.scope):
+            raise ValueError('practice_source_changed')
+        return dict(request_id=request_id, scope=self.scope)
+
+    def _requests(self, request_id):
+        now = self.clock()
+        self.requests = {key:value for key,value in self.requests.items() if value['expires'] > now}
+        if request_id not in self.requests and len(self.requests) >= 128:
+            raise ValueError('practice_request_capacity')
+        return self.requests.get(request_id)
+
+    def begin_request(self, gesture, cameras, request_id, expected_scope, not_after, lease_deadline):
+        context = self.request_context(request_id,expected_scope)
+        now = self.clock()
+        if (type(not_after) not in {int,float} or type(lease_deadline) not in {int,float}
+                or not math.isfinite(not_after) or not math.isfinite(lease_deadline)
+                or not now < not_after <= now+10 or not now < lease_deadline <= now+90):
+            raise ValueError('practice_request_expired')
+        record = self._requests(request_id)
+        signature = (gesture,tuple(sorted(set(cameras))))
+        if record is not None:
+            if record['signature'] not in {None,signature}:
+                raise ValueError('practice_request_conflict')
+            return self.status_request(request_id,expected_scope)
+        self.requests[request_id] = dict(signature=signature,expires=now+120)
+        try:
+            result = self.begin(gesture,cameras)
+        except ValueError:
+            return dict(phase='blocked',reason='practice_active',**context)
+        self.lease.update(request_id=request_id,deadline=lease_deadline)
+        return self.status(result['token']) | context
+
+    def status_request(self,request_id,expected_scope):
+        context = self.request_context(request_id,expected_scope)
+        lease = self.active()
+        if lease is not None and lease.get('request_id') == request_id:
+            return self.status(lease['token']) | context
+        return dict(phase='ended',remaining=0,progress=0.0,**context)
+
+    def stop_request(self,request_id,expected_scope):
+        context = self.request_context(request_id,expected_scope)
+        record = self._requests(request_id)
+        if record is None:
+            self.requests[request_id] = dict(signature=None,expires=self.clock()+120)
+        lease = self.active()
+        if lease is not None and lease.get('request_id') == request_id:
+            self.stop(lease['token'])
+        return dict(phase='ended',remaining=0,progress=0.0,**context)
 
     def active(self):
         if self.lease and self.clock() >= self.lease['deadline']:

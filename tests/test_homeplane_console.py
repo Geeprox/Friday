@@ -21,6 +21,7 @@ import pytest
         ["tests/safety_console_fixture.cjs"],
         ["--test", "tests/safety_flow.test.cjs"],
         ["--test", "tests/calibration_editor.test.cjs"],
+        ["--test", "tests/recognition_practice_lifecycle.test.cjs"],
         ["--test", "tests/werewolf_host_state.test.cjs", "tests/werewolf_host_effects.test.cjs",
          "tests/werewolf_session.test.cjs", "tests/werewolf_script.test.cjs"],
     ],
