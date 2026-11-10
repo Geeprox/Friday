@@ -110,6 +110,41 @@ def test_settings_are_same_origin_masked_and_do_not_make_billable_requests(tmp_p
         assert not calls
 
 
+def test_voice_socket_is_loopback_same_origin_and_missing_key_does_not_start_capture(tmp_path):
+    from starlette.websockets import WebSocketDisconnect
+
+    owner = runtime(tmp_path / "ai", lambda request: pytest.fail("不应发起云端调用"))
+    owner.settings.key_resolver = lambda: None
+    owner.settings.update({"cloud_voice": True})
+    app = create_app(
+        db_path=tmp_path / "trace.sqlite",
+        settings_path=tmp_path / "settings.json",
+        arl_runtime=OfflineARL(),
+        intelligence_runtime=owner,
+    )
+    endpoint = "ws://127.0.0.1:8740/api/settings/intelligence/voice"
+    with TestClient(app, base_url="http://127.0.0.1:8740", client=("127.0.0.1", 47000)) as client:
+        policy = client.get("/").headers["content-security-policy"]
+        assert policy.count("connect-src") == 1 and "connect-src 'self' ws://127.0.0.1:8740" in policy
+        with pytest.raises(WebSocketDisconnect) as failure:
+            with client.websocket_connect(endpoint, headers={"origin": "https://untrusted.invalid"}):
+                pytest.fail("跨来源连接不应被接受")
+        assert failure.value.code == 1008
+        with client.websocket_connect(endpoint, headers={"origin": "http://127.0.0.1:8740"}) as socket:
+            assert socket.receive_json() == {"event": "unavailable", "code": "api_key_missing"}
+        assert owner.status()["usage"]["used"]["requests"] == 0
+    app = create_app(
+        db_path=tmp_path / "trace-remote.sqlite",
+        settings_path=tmp_path / "settings.json",
+        arl_runtime=OfflineARL(),
+        intelligence_runtime=owner,
+    )
+    with TestClient(app, base_url="http://127.0.0.1:8740", client=("192.168.40.20", 47000)) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(endpoint, headers={"origin": "http://127.0.0.1:8740"}):
+                pytest.fail("非本机客户端不应被接受")
+
+
 async def test_background_is_nonblocking_deduplicated_reusable_and_uses_only_song_metadata(tmp_path):
     began, release = asyncio.Event(), asyncio.Event()
     calls = []

@@ -279,7 +279,10 @@ async def test_formal_fast_engine_abstains_without_inventing_task_api(setup):
     assert not any(m == "submit" for m, _ in sdk.calls)
     assert (await engine.decide(DecisionRequest("intent", {}, time.monotonic()-1))).unknown_reason == "expired"
     assert (await engine.decide(DecisionRequest("intent", {"text": "中"*500}, time.monotonic()+1))).unknown_reason == "context_overflow"
-    assert all(p["runtime"] == "arl" for p in registry_descriptors())
+    providers = registry_descriptors()
+    assert {p["provider_id"] for p in providers if p["runtime"] == "arl"} == {"laya_mlx", "jev", "codex_app_server"}
+    assert next(p for p in providers if p["runtime"] == "openai")["availability"] == "requires_configuration"
+    assert all(not p["action_authority"] for p in providers)
 
 
 def test_settings_sdk_roundtrip_never_writes_devices_and_requires_origin(setup, tmp_path):

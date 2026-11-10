@@ -497,10 +497,19 @@ def create_app(
             frame_source=f"http://127.0.0.1:{int(embodied_configuration()['viewer_port'])}"
         except (OSError,ValueError,KeyError):pass
         response.headers["Content-Security-Policy"] = (
-            f"default-src 'self'; connect-src 'self' ws://127.0.0.1:{console_port}; script-src 'self'; style-src 'self'; object-src 'none'; frame-ancestors 'none'; frame-src "+frame_source
+            "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; frame-ancestors 'none'; frame-src "+frame_source
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.middleware("http")
+    async def intelligence_connections(request, call_next):
+        """仅为主动语音添加当前 Console 的固定本机连接来源。"""
+        response = await call_next(request)
+        policy = response.headers.get("Content-Security-Policy")
+        if policy:
+            response.headers["Content-Security-Policy"] = policy + f"; connect-src 'self' ws://127.0.0.1:{console_port}"
         return response
 
     @app.exception_handler(RequestValidationError)
