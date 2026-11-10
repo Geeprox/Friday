@@ -39,6 +39,8 @@ class EmbodiedService:
         self.recovery_enabled = False
         self.practice_deadline = 0.0
         self.practice_token = None
+        from .practice_requests import PracticeRequests
+        self._practice_requests = PracticeRequests(self)
         from .manual_preview import ManualPreview
         self.manual_previews=ManualPreview()
 
@@ -71,6 +73,8 @@ class EmbodiedService:
             await self.request("/api/interaction", {"enabled": enabled})
 
     async def practice(self, operation, payload):
+        if payload.get('request_id') is not None:
+            return await self._practice_requests.call(operation,payload)
         # A lesson never starts perception, opens a shutter or changes its owner.
         if not self.process or self.process.returncode is not None:
             raise ValueError('practice_recognition_not_running')
@@ -402,9 +406,11 @@ class EmbodiedService:
             return await self._stop()
 
     async def _stop(self):
+        await self._practice_requests.retire()
         # Constructing/closing a Simulator or an unadmitted service never sends
         # device commands. Real household admission also permits orphan recovery.
         if self.process is None and not self.recovery_enabled:
+            self._practice_requests.worker_stopped()
             return dict(status='stopped', restored=True)
         self._game_lifecycle = secrets.token_hex(16)
         worker_pid = self.process.pid if self.process is not None else None
@@ -426,6 +432,7 @@ class EmbodiedService:
             except asyncio.TimeoutError:pass  # Durable retry survives Console exit.
             self.guardian = None
         self.process = None
+        self._practice_requests.worker_stopped()
         return dict(status="stopped", restored=True)
 
     async def _recover_pending(self, worker_pid=None):
