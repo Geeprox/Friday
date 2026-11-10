@@ -1,16 +1,16 @@
 /* Local safety review. Untrusted names and observations are always text nodes. */
 import {soundReviewNames as soundNames,isSafetyOutputTest as isOutputTest,safetyEventTitle as eventTitle} from './safety-event-labels.js';
 export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiveSettings=()=>go('Settings'),initialEventId=null,onEventSelected=()=>{}}={}){
- const base='/api/embodied/safety';let alive=true,report=null,busy=false,version=0,lastEvents='',selected=null,selectionVersion=0,timer,events=[],historyLoaded=false;
+ const base='/api/embodied/safety';let alive=true,report=null,busy=false,version=0,lastEvents='',selected=null,selectionVersion=0,timer,events=[],historyLoaded=false,retrying=false,retryController=null,retryTimer=null;
  const validEventId=id=>typeof id==='string'&&/^[a-f0-9]{32}$/.test(id)?id:null;let requested=validEventId(initialEventId);
  const eventTime=event=>Number.isFinite(event.captured_at)?event.captured_at:event.at;
  const el=(tag,text,attrs={})=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;for(const[k,v]of Object.entries(attrs))n.setAttribute(k,v);return n;};
  const add=(n,...children)=>{n.append(...children);return n;};
  const button=(text,run)=>{const n=el('button',text,{type:'button'});n.onclick=run;return n;};
- const api=async(path,body)=>{const r=await fetch(base+path,{headers:{'Content-Type':'application/json'},...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)})});if(!r.ok)throw Error('unavailable');return r.json();};
+ const api=async(path,body,options={})=>{const r=await fetch(base+path,{headers:{'Content-Type':'application/json'},...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)}),...options});if(!r.ok)throw Error('unavailable');return r.json();};
  const root=el('div',null,{class:'safety-page','data-detail-open':'false'});container.append(root);
  if(!document.getElementById('safety-style'))document.head.append(el('link',null,{id:'safety-style',rel:'stylesheet',href:'/static/safety.css'}));
- const status=el('p','正在读取监测状态…',{role:'status','aria-live':'polite'}),enable=button('开启监测',()=>change('enabled')),announce=button('开启语音提醒',()=>change('announce'));
+ const status=el('p','正在读取监测状态…',{role:'status','aria-live':'polite',tabindex:'-1'}),enable=button('开启监测',()=>change('enabled')),announce=button('开启语音提醒',()=>change('announce'));
  const test=button('试听跌倒提醒',async()=>{if(busy)return;busy=true;test.disabled=true;status.textContent='正在发送测试提醒…';try{await api('/test',{});await refresh();}catch{status.textContent='试听未发送，请检查播报音箱连接。';}finally{busy=false;test.disabled=false;}});
  const intro=add(el('section',null,{class:'safety-intro'}),el('h2','家中提醒'),el('p','发现疑似跌倒时记录事件，按需通过选定音箱提醒家人。'),status,
    add(el('div',null,{class:'safety-actions'}),enable,announce,test,button('选择播报音箱',()=>go('Settings'))),
@@ -27,13 +27,23 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  const detailBody=el('div'),recordings=el('div',null,{class:'safety-recording','aria-label':'事件附近录像'}),back=button('全部提醒',backToList);back.className='safety-back';detail.append(back,detailBody,recordings);detail.hidden=true;
  const stopRecording=()=>{try{const pending=onOpenRecording(recordings,null);pending?.catch?.(()=>{});}catch{recordings.replaceChildren();}};
  const limits=add(el('details',null,{class:'safety-limits'}),el('summary','监测范围与限制'),capabilities);
- const historyView=el('div',null,{class:'safety-history'}),settings=add(el('details',null,{class:'safety-settings'}),el('summary','监测设置'),intro,visual,sound,limits);historyView.append(add(el('div',null,{class:'safety-list-panel'}),add(el('div',null,{class:'safety-actions'}),el('h2','近期提醒'),button('刷新记录',()=>refresh())),list),detail);root.append(status,historyView,settings);
+ const historyView=el('div',null,{class:'safety-history'}),settings=add(el('details',null,{class:'safety-settings'}),el('summary','监测设置'),intro,visual,sound,limits);historyView.append(add(el('div',null,{class:'safety-list-panel'}),add(el('div',null,{class:'safety-actions'}),el('h2','近期提醒'),button('刷新记录',()=>refresh())),list),detail);
+ const reconnect=button('重试连接',()=>retryConnection()),cameraCheck=button('查看摄像头',()=>go('Cameras')),recoveryActions=add(el('div',null,{class:'safety-actions',role:'group','aria-label':'监测连接恢复'}),reconnect,cameraCheck);recoveryActions.hidden=true;root.append(status,recoveryActions,historyView,settings);
  const reviewNames={unreviewed:'待查看',acknowledged:'已查看',false_alarm:'已标记误报'};
  const eventRows=new Map();
  const audioNames={not_requested:'未请求播报',requesting:'正在发送播报',accepted:'音箱已接受，实际声音待确认',unconfirmed:'播报结果待确认',paused:'安静模式，未播报',busy:'音箱忙，未播报',unavailable:'播报不可用',cancelled:'已取消播报',interrupted:'播报已中断'};
- function availability(){enable.disabled=announce.disabled=busy;visualToggle.disabled=busy||(!report?.policy?.visual_review&&(!report?.policy?.enabled||!report?.visual_review?.available));soundToggle.disabled=busy||(!report?.policy?.sound_review&&(!report?.policy?.enabled||!report?.sound_review?.available));}
+ function availability(){enable.disabled=announce.disabled=busy;visualToggle.disabled=busy||(!report?.policy?.visual_review&&(!report?.policy?.enabled||!report?.visual_review?.available));soundToggle.disabled=busy||(!report?.policy?.sound_review&&(!report?.policy?.enabled||!report?.sound_review?.available));reconnect.disabled=busy||retrying||!report?.supervision?.recovery?.can_retry;}
+ async function retryConnection(){
+  const revision=report?.supervision?.policy?.revision;
+  if(!alive||busy||retrying||!report?.supervision?.recovery?.can_retry||!Number.isInteger(revision))return;
+  const focused=recoveryActions.contains(document.activeElement);retrying=true;availability();recoveryActions.setAttribute('aria-busy','true');status.textContent='正在重试连接…';if(focused)status.focus({preventScroll:true});
+  const controller=typeof AbortController==='function'?new AbortController():null,timeout=controller?setTimeout(()=>controller.abort(),5000):null;retryController=controller;retryTimer=timeout;
+  try{await api('/retry',{expected_revision:revision},controller?{signal:controller.signal}:{});if(alive)await refresh();}
+  catch{if(alive){status.textContent='暂未确认连接结果，正在读取状态…';await refresh();}}
+  finally{clearTimeout(timeout);retryTimer=null;retryController=null;retrying=false;if(alive){recoveryActions.setAttribute('aria-busy','false');availability();}}
+ }
  async function change(key){if(busy||!report)return;busy=true;availability();try{await api('/policy',{...report.policy,[key]:!report.policy[key]});await refresh();}catch{if(alive)status.textContent='设置未保存，请刷新后重试。';}finally{busy=false;if(alive)availability();}}
- async function refresh(){const epoch=++version;try{const [next,history]=await Promise.all([api(''),api('/events')]);if(!alive||epoch!==version)return;report=next;
+ async function refresh(){if(!alive)return;const epoch=++version;try{const [next,history]=await Promise.all([api(''),api('/events')]);if(!alive||epoch!==version)return;report=next;
    enable.textContent=next.policy.enabled?'暂停监测':'开启监测';enable.setAttribute('role','switch');enable.setAttribute('aria-checked',String(next.policy.enabled));
    announce.textContent=next.policy.announce?'关闭语音提醒':'开启语音提醒';announce.setAttribute('role','switch');announce.setAttribute('aria-checked',String(next.policy.announce));
    const model=next.visual_review||{};visualToggle.setAttribute('aria-checked',String(Boolean(next.policy.visual_review)));visualToggle.disabled=busy||(!next.policy.visual_review&&(!next.policy.enabled||!model.available));
@@ -45,7 +55,11 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    const count=next.worker.cameras?.filter(c=>c.fresh).length||0;
    const recording=next.worker.recording;
    const recordingFailure=recording?.dropped>0?'有提醒未能保存，请检查本机存储。':recording?.unconfirmed>0?'有提醒的保存结果尚未确认，请查看记录并检查本机存储。':recording?.partial>0?'有提醒的画面未完整保存，可查看已保存的记录。':'提醒记录暂不可用，请检查本机存储。';
-   status.textContent=recording?.state==='recovering'?'提醒正在保存，稍后自动重试。':recording?.state==='saving'?'提醒正在保存。':next.worker.error||recording?.state==='unavailable'?recordingFailure:!next.policy.enabled?'监测已暂停':count?`${count} 台摄像头正在监测 · ${next.policy.announce?'单设备语音提醒':'只记录事件'}`:'监测已开启，等待清晰、稳定的摄像头画面';
+   const supervision=next.supervision,recovery=supervision?.recovery,paused=!next.policy.enabled||Boolean(supervision?.policy&&(!supervision.policy.enabled||!supervision.policy.recognition));
+   const disconnected=['not_running','unavailable'].includes(next.worker.status),recovering=recovery?.automatic&&(recovery.in_progress||supervision.failure==='service_unavailable');
+   const recoveryFocused=recoveryActions.contains(document.activeElement);recoveryActions.hidden=paused||!disconnected;reconnect.hidden=!recovery?.automatic||supervision?.failure!=='service_unavailable';availability();
+   const message=next.worker.error||recording?.state==='unavailable'?recordingFailure:paused?'监测已暂停':disconnected?(recovering?'正在恢复监测，稍后自动重试。':next.worker.status==='not_running'?'监测尚未运行':'暂时无法读取监测状态'):next.worker.status!=='running'?'监测状态尚未更新':recording?.state==='recovering'?'提醒正在保存，稍后自动重试。':recording?.state==='saving'?'提醒正在保存。':count?`${count} 台摄像头正在监测 · ${next.policy.announce?'单设备语音提醒':'只记录事件'}`:'监测已开启，等待清晰、稳定的摄像头画面';if(status.textContent!==message)status.textContent=message;
+   if(recoveryFocused&&(recoveryActions.hidden||document.activeElement===reconnect&&reconnect.disabled))status.focus({preventScroll:true});
    capabilities.replaceChildren(el('h2','监测场景'));
    const descriptions={crying:'目前无法根据声音判断持续哭闹。',rough_handling:'目前无法可靠判断照护动作的力度或意图。'};
    for(const c of next.capabilities)capabilities.append(add(el('article'),el('strong',c.name),el('span',c.id==='visual_review'&&!model.available?'需要设置':c.id==='sound_review'&&!soundModel.available?'尚未提供':c.status==='experimental'?'试用功能':'尚未提供',{class:'caption'}),el('p',descriptions[c.id]||c.basis,{class:'caption'})));
@@ -91,5 +105,5 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
   }catch{if(alive&&selected===event.id&&token===selectionVersion)recordings.replaceChildren(el('p','录像暂不可读取，请刷新记录后重试。',{role:'status'}));}
  }
  void refresh();timer=setInterval(()=>{if(!busy)void refresh();},5000);
- return{selectEvent,dispose(){alive=false;version++;selectionVersion++;clearInterval(timer);stopRecording();root.remove();}};
+ return{selectEvent,dispose(){alive=false;version++;selectionVersion++;clearInterval(timer);clearTimeout(retryTimer);retryController?.abort();stopRecording();root.remove();}};
 }

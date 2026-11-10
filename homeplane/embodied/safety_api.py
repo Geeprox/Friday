@@ -5,7 +5,7 @@ import sqlite3
 from typing import Literal
 
 from fastapi import HTTPException, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .paths import PRIVATE
 from .safety import CAPABILITIES, SafetyPolicy, SafetyRuntime, SafetyStore
@@ -17,7 +17,12 @@ class Review(BaseModel):
     review: Literal["acknowledged", "false_alarm", "unreviewed"]
 
 
-def install(router, service, *, archive=None):
+class Retry(BaseModel):
+    model_config = ConfigDict(extra='forbid',strict=True)
+    expected_revision: int = Field(ge=0)
+
+
+def install(router, service, *, archive=None, infrastructure=None):
     store = SafetyStore(PRIVATE / "safety.sqlite")
     runtime = SafetyRuntime(store)
     from .safety_archive import SafetyArchive
@@ -44,6 +49,7 @@ def install(router, service, *, archive=None):
         return dict(
             policy=runtime.policy_cache,
             worker=worker,
+            supervision=infrastructure.report() if infrastructure is not None else None,
             capabilities=CAPABILITIES,
             output_scope="selected_device",
             retention_days=30,
@@ -53,6 +59,17 @@ def install(router, service, *, archive=None):
             visual_review=worker.get("visual_review") or runtime.visual.status(),
             sound_review=worker.get('sound_review') or runtime.sound.status(),
         )
+
+    @router.post('/api/embodied/safety/retry')
+    async def retry(request: Retry):
+        if infrastructure is None:
+            raise HTTPException(409,detail='recovery_not_available')
+        try:
+            return await infrastructure.retry(expected_revision=request.expected_revision)
+        except ValueError as error:
+            raise HTTPException(409,detail='source_conflict' if str(error)=='source_conflict' else 'recovery_not_available') from None
+        except TimeoutError:
+            raise HTTPException(503,detail='recovery_busy') from None
 
     @router.post("/api/embodied/safety/policy")
     async def configure(policy: SafetyPolicy):

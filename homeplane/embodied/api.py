@@ -134,7 +134,7 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     from .audio_output import install as install_speech_output
     install_speech_output(router)
     from .safety_api import install as install_safety
-    service.safety_output = install_safety(router, service, archive=archive)
+    service.safety_output = install_safety(router, service, archive=archive,infrastructure=infrastructure)
     devices = DeviceCommands(core, lock, service)
     if home_flow is not None:
         from .voice_questions import install as install_voice_questions

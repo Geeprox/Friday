@@ -4,7 +4,7 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
 const event=(id,kind='sound_review',review='unreviewed')=>({id:id.repeat(32),kind,sound_kind:id==='a'?'crying':'glass_break',at:1800000000,
  simulated:false,camera:'cam_1111111111',camera_name:'合成客厅',message:'合成事件 '+id,review,announcement:{status:'not_requested'},frames:[]});
 function fixture(initial=[event('b'),event('a')]){
- let focused,events=structuredClone(initial),tick,heldRecording,recording=null;
+ let focused,events=structuredClone(initial),tick,heldRecording,recording=null,workerStatus='running',supervision=null,holdRetry=false,heldRetry;
  class Element{
   constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.dataset={};this.disabled=false;this.hidden=false;this._text='';}
   set textContent(value){this._text=String(value);this.children=[];}
@@ -28,9 +28,10 @@ function fixture(initial=[event('b'),event('a')]){
  const fetch=async(path,options={})=>{
   const body=options.body&&JSON.parse(options.body);calls.push({path,body});let data;
   if(path.endsWith('/recordings'))return new Promise(resolve=>heldRecording=data=>resolve({ok:true,json:async()=>data}));
+  if(path.endsWith('/retry')){if(holdRetry)return new Promise(resolve=>heldRetry=()=>resolve({ok:true,json:async()=>supervision}));return{ok:true,json:async()=>supervision};}
   if(path.endsWith('/review')){const id=path.split('/').at(-2),current=events.find(e=>e.id===id);current.review=body.review;data=current;}
   else if(path.endsWith('/events'))data={events};
-  else if(path==='/api/embodied/safety')data={policy,worker:{cameras:[],recording},visual_review:{available:false},sound_review:{available:false},capabilities:[]};
+  else if(path==='/api/embodied/safety')data={policy,worker:{status:workerStatus,cameras:[],recording},supervision,visual_review:{available:false},sound_review:{available:false},capabilities:[]};
   else if(path==='/api/embodied/status')data={configured:true,owned:true,state:'live',safety_recording:recording};
   else data={};
   const snapshot=structuredClone(data);return{ok:true,json:async()=>snapshot};
@@ -50,6 +51,7 @@ function fixture(initial=[event('b'),event('a')]){
   home(devices=[]){return context.mountHomeStatus(root,{api,go,devices});},
   tick:async()=>{tick();await settle();},resolveRecording:data=>heldRecording(data),
   recording(value){recording=value;},
+  monitoring(state,owner){workerStatus=state;supervision=owner;},holdRetry(){holdRetry=true;},resolveRetry(){heldRetry();},
  };
 }
 
@@ -116,6 +118,36 @@ test('review timestamps follow the captured evidence time and retain legacy reco
   const expected=new Date((captured??row.at)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'});
   assert.ok(f.by('p','合成客厅 · '+expected));assert.ok(f.rows()[0].textContent.includes(expected));view.dispose();
  }
+});
+
+test('an unreachable worker uses the actual owner recovery state and one explicit retry',async()=>{
+ const f=fixture([]),supervision={policy:{revision:7,enabled:true,recognition:true},failure:'service_unavailable',recovery:{automatic:true,in_progress:false,can_retry:true,retry_after_seconds:30}};
+ f.monitoring('unavailable',supervision);const view=f.mount();await settle();
+ assert(f.root.textContent.includes('正在恢复监测'));assert(!f.root.textContent.includes('监测已开启，等待清晰'));
+ assert.equal(f.calls.some(c=>c.body),false);f.holdRetry();const retry=f.by('button','重试连接');assert(retry);
+ retry.focus();const pending=retry.onclick();await settle();assert.equal(retry.disabled,true);assert.equal(f.focused.attrs.role,'status');await retry.onclick();
+ assert.deepEqual(f.calls.filter(c=>c.path.endsWith('/retry')).map(c=>c.body),[{expected_revision:7}]);
+ supervision.recovery.can_retry=false;f.resolveRetry();await pending;assert(!f.root.textContent.includes('监测正常'));
+ f.monitoring('running',null);await f.tick();assert(f.root.textContent.includes('等待清晰'));assert.equal(retry.hidden,true);view.dispose();
+});
+
+test('a missing worker without an automatic owner cannot masquerade as waiting for a camera',async()=>{
+ for(const state of ['unavailable','not_running']){
+  const f=fixture([]);f.monitoring(state,null);const view=f.mount();await settle();
+  assert(!f.root.textContent.includes('监测已开启，等待清晰'));assert(f.by('button','查看摄像头'));assert.equal(f.calls.some(c=>c.body),false);view.dispose();
+ }
+});
+
+test('a saved global pause cannot expose a reconnect action or claim monitoring is active',async()=>{
+ const f=fixture([]);f.monitoring('not_running',{policy:{revision:9,enabled:false,recognition:false},state:'paused',recovery:{automatic:false,can_retry:false}});
+ const view=f.mount();await settle();assert(f.root.textContent.includes('监测已暂停'));
+ const retry=f.by('button','重试连接');assert(!retry||retry.hidden);assert.equal(f.calls.some(c=>c.body),false);view.dispose();
+});
+
+test('leaving during explicit recovery ignores its late acknowledgement and does not refresh the retired page',async()=>{
+ const f=fixture([]);f.monitoring('unavailable',{policy:{revision:2,enabled:true,recognition:true},failure:'service_unavailable',recovery:{automatic:true,can_retry:true}});
+ const view=f.mount();await settle();f.holdRetry();const pending=f.by('button','重试连接').onclick();await settle();
+ view.dispose();const count=f.calls.length;f.resolveRetry();await pending;assert.equal(f.calls.length,count);assert.equal(f.root.children.length,0);
 });
 
 function navigationFixture(){

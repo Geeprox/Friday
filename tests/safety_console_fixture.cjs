@@ -28,7 +28,7 @@ class Element{
  };
  const document={head,createElement:t=>new Element(t),getElementById:id=>all(head).find(n=>n.attrs.id===id),get activeElement(){return focusedElement;}};
  const safetyOptions={onOpenRecording:(output,item)=>{output.replaceChildren();if(item){opened.push(item);output.append(new Element('video'));}},onArchiveSettings:()=>setups++};
- const context=vm.createContext({document,fetch,Date,JSON,console,root,safetyOptions,setInterval:f=>(interval=f,1),clearInterval(){},setTimeout(){},Blob,URL});
+ const context=vm.createContext({document,fetch,Date,JSON,console,root,safetyOptions,setInterval:f=>(interval=f,1),clearInterval(){},setTimeout(){},clearTimeout(){},Blob,URL});
  const labelsSource=fs.readFileSync('homeplane/static/safety-event-labels.js','utf8').replace(/export /g,'');
  const labels=vm.runInContext('(function(){'+labelsSource+';return {soundReviewNames,isSafetyOutputTest,safetyEventTitle};})()',context);
  Object.assign(context,{soundNames:labels.soundReviewNames,isOutputTest:labels.isSafetyOutputTest,eventTitle:labels.safetyEventTitle});
