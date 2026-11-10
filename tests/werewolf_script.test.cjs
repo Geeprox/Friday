@@ -3,7 +3,7 @@ const {execFileSync}=require('node:child_process');
 const host=fs.readFileSync('homeplane/static/werewolf-host.js','utf8');
 const display=fs.readFileSync('homeplane/static/werewolf-party.js','utf8');
 const extract=(source,start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
-const packets=JSON.parse(execFileSync('.venv/bin/python',['-B','-c',`
+const packets=JSON.parse(execFileSync(process.env.FRIDAY_TEST_PYTHON||'.venv/bin/python',['-B','-c',`
 import json
 from tests.test_werewolf import game,until,act,role
 g,_=game();until(g,'vote')
