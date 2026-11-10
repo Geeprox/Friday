@@ -12,7 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from .paths import PRIVATE
 from .smart_home import WindowGesture
 
-GESTURES={'body.arms_open':'双臂打开','body.arms_close':'双臂合上','body.hands_up':'双手举高','body.left_hand_up':'举起左手','body.right_hand_up':'举起右手','body.squat':'下蹲','body.lean_left':'身体向左倾','body.lean_right':'身体向右倾','hand.open_palm':'张开手掌','hand.yeah':'比出 Yeah','hand.ok':'OK'}
+from .gestures import BINDABLE_HAND_LABELS
+
+GESTURES={'body.arms_open':'双臂打开','body.arms_close':'双臂合上','body.hands_up':'双手举高','body.left_hand_up':'举起左手','body.right_hand_up':'举起右手','body.squat':'下蹲','body.lean_left':'身体向左倾','body.lean_right':'身体向右倾','hand.open_palm':'张开手掌','hand.yeah':'剪刀手','hand.ok':'OK','hand.fist':'握拳','hand.thumb_up':'点赞','hand.thumb_down':'拇指向下','hand.shaka':'电话手势','hand.horns':'摇滚手势'}
 ACTIONS={'on','off','open','close','position:0','position:25','position:50','position:75','position:100','mode:cool','mode:heat','mode:off','mode:auto','mode:heat_cool','mode:dry','mode:fan_only'}
 
 class Binding(BaseModel):
@@ -109,19 +111,78 @@ def body_gestures(person):
     return result
 
 
+def release_observed(gesture, person, hands, arm_pose):
+    """Positive counter-evidence; an absent/occluded pose is not a release."""
+    joints = person.get('joints', {})
+    def known(names):
+        return all((p := joints.get(name)) and p.get('confidence', 0) >= .5
+                   and all(type(p.get(axis)) in (int, float) and math.isfinite(p[axis])
+                           and 0 <= p[axis] <= 1 for axis in ('x', 'y')) for name in names)
+    base = ['leftShoulder', 'rightShoulder', 'leftHip', 'rightHip']
+    if not known(base):
+        return False
+    ls, rs, lh, rh = [joints[name] for name in base]
+    torso = (lh['y'] + rh['y'] - ls['y'] - rs['y']) / 2
+    if torso < .04 or abs(ls['x'] - rs['x']) < .025:
+        return False
+    if gesture in {'body.lean_left', 'body.lean_right'}:
+        return abs((ls['x'] + rs['x'] - lh['x'] - rh['x']) / 2 / torso) < .2
+    if gesture == 'body.squat':
+        from .pose_rules import angle
+        legs = [[side + part for part in ('Hip', 'Knee', 'Ankle')] for side in ('left', 'right')]
+        return all(known(leg) and (value := angle(*(joints[name] for name in leg))) is not None
+                   and value > 150 for leg in legs)
+    if not known(['leftWrist', 'rightWrist']):
+        return False
+    if gesture in {'body.arms_open', 'body.arms_close'}:
+        return arm_pose == 'transition'
+    if gesture.startswith('hand.'):
+        label = 'pointing' if gesture == 'hand.point' else gesture.removeprefix('hand.')
+        if any(hand.get('person_id') == person['id'] and hand.get('gesture') == label for hand in hands):
+            return False
+    # Clear wrists below the shoulders qualify a relaxed upper body. Missing
+    # hand landmarks alone cannot qualify it, and a still-visible hand label
+    # above was deliberately kept latched.
+    return (joints['leftWrist']['y'] > ls['y'] + torso * .7
+            and joints['rightWrist']['y'] > rs['y'] + torso * .7)
+
+
 class InteractionEngine:
     def __init__(self,camera,session):
         self.camera,self.session=camera,session
         self.arms=WindowGesture();self.config=Configuration(revision=0)
         self.loaded=-100.;self.owner=None;self.holds={};self.last={};self.pending=None;self.sequence=0
         self.latched=set();self.released={};self.observed=None
+        self.rearm=False;self.rearm_owner=None;self.rearm_revision=None;self.game_releases=set()
+        self.release_not_before=-math.inf
         self.public={'enabled':False,'selection':None,'reason':'not_enabled'}
 
     def reset(self):
         self.arms.reset();self.holds.clear();self.pending=None;self.owner=None
         self.latched.clear();self.released.clear();self.observed=None
+        if self.rearm:
+            self.rearm_owner=None;self.rearm_revision=None;self.game_releases.clear()
 
-    def update(self,people,hands,owner,registration,active,now):
+    def require_release(self, reason='release_required', *, not_before=None):
+        self.reset()
+        self.rearm=True;self.rearm_owner=None;self.rearm_revision=None;self.game_releases.clear()
+        if not_before is not None:self.release_not_before=max(self.release_not_before,not_before)
+        self.public={'enabled':False,'selection':None,'reason':reason,'release_required':True}
+
+    def _release_binding(self, binding, person, hands, now, observed):
+        key=('game',person['id'],binding.id)
+        if (type(observed)not in(int,float)or not math.isfinite(observed)
+                or not self.release_not_before<=observed<=now or now-observed>1.5
+                or not release_observed(binding.gesture, person, hands, self.arms.public.get('pose'))):
+            self.released.pop(key,None)
+            return
+        self.released.setdefault(key,observed)
+        if observed-self.released[key] >= .25:
+            self.game_releases.discard(binding.id)
+            self.latched.discard((person['id'],binding.id))
+            self.holds.pop((person['id'],binding.id),None)
+
+    def update(self,people,hands,owner,registration,active,now,*,observed_hands=None,observed_mono=None):
         if now-self.loaded>1:
             try:
                 next_config=load()
@@ -130,7 +191,7 @@ class InteractionEngine:
             except (OSError,ValueError):self.config=Configuration(revision=0)
             self.loaded=now
         if not self.config.enabled or not active or registration.get('status') in {'moving','settling','lost','stale'} or owner is None:
-            self.reset();self.public={'enabled':False,'selection':None,'reason':'bind_operator'if active else 'not_enabled'};return []
+            self.reset();self.public={'enabled':False,'selection':None,'reason':'bind_operator'if active else 'not_enabled',**({'release_required':True}if self.rearm else {})};return []
         if owner!=self.owner:self.reset();self.owner=owner
         if self.observed is not None and now-self.observed>1:
             self.reset();self.owner=owner
@@ -138,10 +199,17 @@ class InteractionEngine:
         person=next((p for p in people if p['id']==owner),None)
         if person is None:self.reset();return []
         bindings=[b for b in self.config.bindings if b.enabled and (b.gesture!='hand.point' and b.scope!='camera' or b.camera==self.camera)]
+        if self.rearm and (self.rearm_owner!=owner or self.rearm_revision!=self.config.revision):
+            self.rearm_owner=owner;self.rearm_revision=self.config.revision
+            self.game_releases={b.id for b in bindings}
+            self.latched.update((owner,b.id)for b in bindings if b.gesture!='hand.point')
+            self.pending=None
         labels={h.get('gesture')for h in hands if h.get('person_id')==owner}
+        release_hands=hands if observed_hands is None else observed_hands
+        release_stamp=now if observed_mono is None else observed_mono
         event=self.arms.update(person,now)
         gestures={'body.arms_'+event['action'] if event else ''}
-        gestures.update('hand.'+x for x in labels if x in {'ok','yeah','open_palm'})
+        gestures.update('hand.'+x for x in labels if x in BINDABLE_HAND_LABELS)
         gestures.update(body_gestures(person))
         result=[]
         pointing_ready=registration.get('status')=='locked' and not registration.get('compensated',False)
@@ -149,6 +217,9 @@ class InteractionEngine:
         for b in bindings:
             if b.gesture=='hand.point':continue
             key=(owner,b.id)
+            if b.id in self.game_releases:
+                self._release_binding(b,person,release_hands,now,release_stamp)
+                continue
             if b.gesture not in gestures:
                 self.holds.pop(key,None)
                 self.released.setdefault(key,now)
@@ -160,12 +231,15 @@ class InteractionEngine:
             if key not in self.latched and (moving_arms or now-self.holds[key]>=.7) and now-self.last.get(key,-100)>3:
                 self.last[key]=now;self.latched.add(key);result.append(b)
         candidates=[]
+        for b in bindings:
+            if b.gesture=='hand.point' and b.id in self.game_releases:
+                self._release_binding(b,person,release_hands,now,release_stamp)
         for hand in hands:
             if not pointing_ready or hand.get('person_id')!=owner or hand.get('gesture')!='pointing' or not hand.get('ray'):continue
             ray=hand['ray'];ox,oy=ray['origin'];dx,dy=ray['direction'];norm=math.hypot(dx,dy)
             if norm<.001:continue
             for b in bindings:
-                if b.gesture!='hand.point':continue
+                if b.gesture!='hand.point' or b.id in self.game_releases:continue
                 tx,ty=b.anchor[0]-ox,b.anchor[1]-oy;dist=math.hypot(tx,ty)
                 if dist<.045 or tx*dx+ty*dy<=0:continue
                 angle=abs(tx*dy-ty*dx)/norm/dist
@@ -187,7 +261,8 @@ class InteractionEngine:
             b=self.pending[0];key=('point',owner,b.id)
             if now-self.last.get(key,-100)>3:self.last[key]=now;result.append(b)
             self.pending=None
-        self.public={'enabled':True,'selection':self.pending[0].target if self.pending else None,'reason':'confirm_ok'if self.pending else 'ready'}
+        self.rearm=bool(self.game_releases)
+        self.public={'enabled':True,'selection':self.pending[0].target if self.pending else None,'reason':'confirm_ok'if self.pending else 'release_required'if self.rearm and len(self.game_releases)==len(bindings) else 'ready',**({'release_required':True,'blocked_gestures':sorted({b.gesture for b in bindings if b.id in self.game_releases}),'ready_bindings':len(bindings)-len(self.game_releases)}if self.rearm else {})}
         events=[]
         for b in result:
             self.sequence+=1

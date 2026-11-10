@@ -19,12 +19,18 @@ OBJECT = r"[\u3400-\u9fffA-Za-z0-9]{1,32}?"
 VERB = r"打开|拉开|开启|推开|关闭|关上|合上|拉上|关掉|开|关"
 
 
-def basic_command(text, attending=False):
-    admission = address(text, attending)
+def basic_command(text, attending=False, *, wake_word='Friday'):
+    admission = address(text, attending, wake_word=wake_word)
     if not admission["admitted"]:
         return None
     body = admission["body"].strip().rstrip("。.!！").replace(" ", "")
     if not body or len(body) > 80:
+        return None
+    # These clauses belong to the full intent path. The free-form device label
+    # must not swallow a second action, condition, schedule or question.
+    if (re.search(r'然后|接着|并且|同时|如果|一旦|等到|直到|明天|后天|今晚|定时|分钟|小时|以后|之前|之后|或者|还是|再(?:开|关|把|将|调|设)',body)
+            or re.search(r'(?:吗|么|怎么样|是否|有没有)[?？]?$',body)
+            or re.search(r'(?:灯|窗帘|空调).*(?:和|与|及|还有).*(?:灯|窗帘|空调)',body)):
         return None
     if re.fullmatch(
         PREFIX + r"(?:先|暂时)?(?:别|不要|不用|不必)(?:帮我)?(?:" + VERB + r")" + OBJECT + SUFFIX, body

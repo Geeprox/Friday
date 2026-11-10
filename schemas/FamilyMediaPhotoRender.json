@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "request_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "expected_context": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Expected Context",
+      "type": "string"
+    },
+    "recipe_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Recipe Id",
+      "type": "string"
+    },
+    "purpose": {
+      "enum": [
+        "preview",
+        "export"
+      ],
+      "title": "Purpose",
+      "type": "string"
+    },
+    "output_format": {
+      "default": "JPEG",
+      "enum": [
+        "JPEG",
+        "PNG"
+      ],
+      "title": "Output Format",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "expected_context",
+    "recipe_id",
+    "purpose"
+  ],
+  "title": "FamilyMediaPhotoRender",
+  "type": "object"
+}

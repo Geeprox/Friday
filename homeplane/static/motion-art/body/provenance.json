@@ -1,0 +1,225 @@
+{
+  "status": "Integrated; parent reviewed actual cards, practice and game stage at desktop/phone, independent review and user acceptance pending; physical recognition untested",
+  "created_at": "2026-11-04T17:14:41.361841+00:00",
+  "replacement_for": "Source-bound real outfit materials and19 transparent fallbacks only; no production edits by producer",
+  "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+  "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+  "base": {
+    "model_sha256": "4b7f192011f43a21c833a5e00822d077bfaf56685b08da0060d57b3d32599969",
+    "geometry_nodes_skin_and_original_seven_clips_unchanged": false,
+    "unchanged_binary_prefix_bytes": 1452868,
+    "source_mesh": "https://github.com/makehumancommunity/makehuman/blob/1f508f6083b2f823dab15de924b3bde72e08d77c/makehuman/data/3dobjs/base.obj",
+    "source_rig": "https://github.com/makehumancommunity/makehuman/blob/1f508f6083b2f823dab15de924b3bde72e08d77c/makehuman/data/rigs/default.mhskel",
+    "weights": "https://github.com/makehumancommunity/makehuman/blob/1f508f6083b2f823dab15de924b3bde72e08d77c/makehuman/data/rigs/default_weights.mhw",
+    "license": "CC0 1.0",
+    "neutral_face": "Retained same original-derived neutral envelope and outline mask",
+    "clothed_candidate_detail": "Source base POSITION/NORMAL/weights, rig hierarchy, all13 animations and complete1,452,868-byte original binary prefix unchanged. Base-face rendering mask changed; source garments appended."
+  },
+  "original_motion": {
+    "repository": "https://github.com/shlomorsh/desk-break",
+    "commit": "8d475aa476b2c0e9ec6d09d8558faf17161e19ef",
+    "clip_file": "library/exercises.glb",
+    "sha256": "e9e69eded7a865f576512d0ad401a4136649a25205a78b2c45946fee6587afb0",
+    "license": "MIT / Shlomy Reshef",
+    "new_selected": [
+      "side-step-arm-swing",
+      "step-jack",
+      "side-step-taps"
+    ],
+    "existing_seven_retained": true
+  },
+  "authored_motion": {
+    "copyright": "2026 Friday contributors",
+    "license": "MIT",
+    "files": [
+      "authored-poses.json",
+      "build-coverage.py"
+    ],
+    "clips": [
+      "friday-ski-alternate-v1",
+      "friday-tennis-forehand-v1",
+      "friday-side-lunge-v1"
+    ],
+    "upstream_motion_claim": false,
+    "reference": "Original t-raise neutral used only as the starting alignment; target waypoints, foot anchors, two-bone IK, swing path and timing are authored here",
+    "joint_process": "Explicit waist/torso/wrist/foot waypoints, anatomical bone lengths, fixed planted ankle anchors and two-bone IK; 30Hz baked quaternions and translations, original geometry and scale retained",
+    "no_equipment_required": "In-place simulated ski poling and forehand arm motion, without physical poles or racket"
+  },
+  "library_gap_audit": {
+    "fixed_library_clips": 435,
+    "skier-swing": "Actual original key definition has both arms in sync overhead ->back; rejected as alternating ski poling",
+    "tennis": "No exact tennis/forehand/racket clip found in this fixed library; authored candidate clearly identified",
+    "side_lunge": "No exact dynamic side-lunge clip found; original inner-thigh-stretch never relabeled; authored step/active-knee/long-leg/return candidate supplied",
+    "jack": "Actual no-jump step-jack used as allowed by current instruction; not called jumping animation"
+  },
+  "render": {
+    "outlineWidth": 0.01,
+    "default_yaw": 20,
+    "view_checks": "20 default plus0 front/65 side audit only",
+    "source_left_right_semantics_unchanged": true,
+    "one_renderer_no_raf": true,
+    "static_target_count": 19,
+    "target_pixels": [
+      480,
+      540
+    ],
+    "background": "Per-item true transparency; default opaque white",
+    "materials": {
+      "shirt": "#e6e7e2",
+      "trousers": "#c9ccc5",
+      "sneakers": "#ffffff",
+      "exposedBody": "#ffffff"
+    }
+  },
+  "notice_files": [
+    "MAKEHUMAN-LICENSE.ASSETS.md",
+    "DESK-BREAK-LICENSE-MIT.txt",
+    "FRIDAY-LICENSE-MIT.txt",
+    "THREE-LICENSE-MIT.txt",
+    "CLOTHING-LICENSES.md"
+  ],
+  "local_original_inputs_retained": [
+    ".artifacts/design-20261103/body-source-review/continuous-candidate",
+    ".artifacts/design-20261103/body-source-review/upstream-makehuman",
+    ".artifacts/design-20261103/body-source-review/upstream-desk-break",
+    ".artifacts/design-20261103/body-source-review/upstream-garments"
+  ],
+  "garments": {
+    "fetched_at": "2026-11-04T16:12:34.136249+00:00",
+    "publisher": "MakeHuman Community official static asset packs",
+    "license": "CC0-1.0",
+    "verification": "Official per-asset pack table agrees with actual selected OBJ / MHCLO / MHW header; no conflicting source header",
+    "garments": [
+      {
+        "name": "elvs_crude_t-shirt_male",
+        "author": "Elvaerwyn; header Makehuman edited by Elvaerwyn",
+        "page": "https://static.makehumancommunity.org/assets/assetpacks/shirts01.html",
+        "files": "shirts01/"
+      },
+      {
+        "name": "toigo_wool_pants",
+        "author": "MargaretToigo; header MRT",
+        "page": "https://static.makehumancommunity.org/assets/assetpacks/pants01.html",
+        "files": "pants01/"
+      },
+      {
+        "name": "shoes02",
+        "author": "MakeHuman system; Data Collection AB, Joel Palmius, Jonas Hauquier",
+        "page": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+        "files": "system-shoes/",
+        "selection": "Official system shoes02 are low lace-up sneakers; not the different Shoes01 community pack"
+      }
+    ],
+    "selected_files": [
+      {
+        "file": "shirts01/crude_male_shirt.mhmat",
+        "bytes": 794,
+        "sha256": "4e456f7b85ff3023b2ec3b4ed58b0ccceac621f3a02f4887d04eaa2a781b229a"
+      },
+      {
+        "file": "shirts01/crude_male_shirt.obj",
+        "bytes": 80940,
+        "sha256": "3389b981a826396213cce2e69f40b3d9eca6cdfadcfcbee2774acb1dfb322fa7"
+      },
+      {
+        "file": "shirts01/elvs_crude_t-shirt_male.mhclo",
+        "bytes": 75660,
+        "sha256": "64dd3e6e2fbba39cc792854e0ae3e2c4829a37fa4e4b690f463c2956476294da"
+      },
+      {
+        "file": "shirts01/elvs_crude_t-shirt_male.thumb",
+        "bytes": 32748,
+        "sha256": "0507fb8a0c2aea8e5e3ce861334780a94eafe15550478df2df6d557fe494d692"
+      },
+      {
+        "file": "pants01/pants_wool.mhmat",
+        "bytes": 473,
+        "sha256": "fedf31e98ea92b57c8f45e10ec167d420f5eb11b9410feb075c321c3798fdb53"
+      },
+      {
+        "file": "pants01/pants_wool.obj",
+        "bytes": 108902,
+        "sha256": "e02cd1e417ca3365e4dafc033f415c5186739df535d98810075cface0ce59c96"
+      },
+      {
+        "file": "pants01/toigo_wool_pants.mhclo",
+        "bytes": 93219,
+        "sha256": "ac1a57a817976d80ece8a88698873d54de7f252d01ba3dca5e361693621fcf22"
+      },
+      {
+        "file": "pants01/toigo_wool_pants.thumb",
+        "bytes": 36834,
+        "sha256": "23dfe8875ee2fbdaef1e705871d2054868198fc415188ec177bebf96a09b944c"
+      },
+      {
+        "file": "system-shoes/shoes02.mhclo",
+        "bytes": 110217,
+        "sha256": "0d447fd6b7415d6b2603e91697336ee51ac2f00ef85878d6667e9acfb45a20fe"
+      },
+      {
+        "file": "system-shoes/shoes02.mhmat",
+        "bytes": 1184,
+        "sha256": "7f2cb19506784fbe22ba3f766f94bb13d1eee1712dd29ed10b926c5905bab924"
+      },
+      {
+        "file": "system-shoes/shoes02.mhw",
+        "bytes": 309023,
+        "sha256": "dba34894b93f102ea64d7ad21968894a9788c7a0770c066584a66a536a3e92b6"
+      },
+      {
+        "file": "system-shoes/shoes02.obj",
+        "bytes": 125457,
+        "sha256": "5726aabac42ff489998d0a769545dea013961bbb71b9c6024d75170181a98818"
+      },
+      {
+        "file": "system-shoes/shoes02.thumb",
+        "bytes": 43978,
+        "sha256": "0e41c095f5ff5a13c0d2b12a6c96d65d907137e1ae3fb120ff14300fc818015d"
+      }
+    ],
+    "pack_digests": [
+      "shirts01-pack-digest.json",
+      "pants01-pack-digest.json",
+      "system-shoes-pack-digest.json"
+    ],
+    "retention": "Protected source inputs and exact license evidence for adopted/review candidate. Original ZIPs are temporary and removed after extraction verification."
+  },
+  "garment_fitting": {
+    "method": "Official MHCLO surface barycentric mappings and offsets. Shirt/trouser weights mapped from existing15-bone base; sneakers use official garment MHW weights with identical anatomical bone aggregation.",
+    "topology": "Three actual official OBJ garment topologies retained. Thin2.5mm strokes derived from exact source boundary edges.",
+    "body_visibility": "Official garment deletion masks plus covered torso/waist-down base-face filtering. Exposed head/neck/arms/hands retained.",
+    "nude_body_recoloring": false,
+    "garment_audit_file": "garment-audit.json"
+  },
+  "validation": ".artifacts/design-20261103/body-source-review/clothed-material-candidate/validation.json",
+  "proof": {
+    "native_dimensions_comparison": ".artifacts/design-20261103/body-source-review/clothed-material-candidate/evidence/dimensions-compare.png",
+    "comparison_sizes": [
+      [
+        245,
+        216
+      ],
+      [
+        167,
+        190
+      ]
+    ],
+    "compared_outlines": [
+      0.007,
+      0.01
+    ],
+    "selected_outline": 0.01,
+    "targets": "targets.json",
+    "validation": ".artifacts/design-20261103/body-source-review/clothed-material-candidate/validation.json",
+    "alpha": ".artifacts/design-20261103/body-source-review/clothed-material-candidate/alpha-audit.json",
+    "unchanged_motion_proof": ".artifacts/design-20261103/body-source-review/clothed-candidate/evidence/animation-audit.json; prior motion pixels use older material, timing/geometry proof remains applicable"
+  },
+  "material_adaptation": {
+    "source_candidate": ".artifacts/design-20261103/body-source-review/clothed-candidate",
+    "changes": "Real T-shirt fill #ffffff -> #e6e7e2; real trousers #f5f5f3 -> #c9ccc5; sneakers and exposed body remain white. Default outline .007 -> .010 after native-size comparison.",
+    "source_audit": ".artifacts/design-20261103/body-source-review/clothed-material-candidate/material-audit.json",
+    "no_mesh_rig_motion_hand_changes": true,
+    "render_input_model_sha256": "19d64be9ee97d203f2ad4ec443512190e93bfe08e37f81c9c37265887a17e2db",
+    "final_model_inert_hint_update": "Only final non-geometry outline hint differs from browser render input; render-affecting fields are identical."
+  }
+}

@@ -25,7 +25,8 @@ def producer(tmp_path,monkeypatch):
                 p=Path(command[-1]);p.write_bytes(p.read_bytes()[:-100])
         else:
             Path(command[-1]).write_bytes(b'SYNTHETIC encoded M4A')
-        process=SimpleNamespace(returncode=0,wait=AsyncMock(return_value=0),kill=Mock())
+        process=SimpleNamespace(returncode=0,wait=AsyncMock(return_value=0),kill=Mock(),terminate=Mock(),
+            stdout=SimpleNamespace(read=AsyncMock(return_value=b'')),stdin=SimpleNamespace(close=Mock()))
         state.processes.append(process)
         return process
     monkeypatch.setattr(asyncio,'create_subprocess_exec',spawn)

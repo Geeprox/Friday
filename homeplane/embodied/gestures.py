@@ -3,6 +3,11 @@
 import math
 
 
+BINDABLE_HAND_LABELS = frozenset({
+    "ok", "yeah", "open_palm", "fist", "thumb_up", "thumb_down", "shaka", "horns",
+})
+
+
 def classify_hand(joints, ratio=16 / 9):
     def q(name):
         p = joints.get(name)
@@ -32,6 +37,41 @@ def classify_hand(joints, ratio=16 / 9):
         folded[name] = dist(wrist, c) < dist(wrist, b) * 1.16
     thumb = q("thumbTip")
     tip = q("indexTip")
+    # Additional common poses require all four fingers and the thumb joints.
+    # Occluded/folded fingers are not interchangeable: missing landmarks must
+    # never become a fist, a thumb signal or a device-control gesture.
+    thumb_base, thumb_mp, thumb_ip = q("thumbCMC"), q("thumbMP"), q("thumbIP")
+    required = ["wrist", "thumbCMC", "thumbMP", "thumbIP", "thumbTip"] + [
+        n + part for n in ("index", "middle", "ring", "little") for part in ("MCP", "PIP", "Tip")]
+    clear = all((p := joints.get(n)) and p.get("confidence", 0) >= .55
+                and all(type(p.get(axis)) in (int, float) and math.isfinite(p[axis]) and 0 <= p[axis] <= 1
+                        for axis in ("x", "y")) for n in required)
+    all_fingers = clear and len(extended) == 4 and len(folded) == 4
+    curled = {n: folded.get(n, False) and not extended.get(n, False)
+              for n in ("index", "middle", "ring", "little")}
+    thumb_straight = False
+    thumb_closed = False
+    if thumb and thumb_base and thumb_mp and thumb_ip and index:
+        def bend(a, b, c):
+            u = ((a["x"] - b["x"]) * ratio, a["y"] - b["y"])
+            v = ((c["x"] - b["x"]) * ratio, c["y"] - b["y"])
+            length = math.hypot(*u) * math.hypot(*v)
+            return math.degrees(math.acos(max(-1, min(1, (u[0] * v[0] + u[1] * v[1]) / length)))) if length > 1e-8 else 0
+        thumb_straight = (bend(thumb_mp, thumb_ip, thumb) > 150
+                          and dist(thumb_base, thumb) > dist(thumb_base, thumb_mp) * 1.7
+                          and dist(thumb, index) > palm * .60)
+        thumb_closed = not thumb_straight and dist(thumb, index) < palm * .85
+    if all_fingers and all(curled.values()) and thumb:
+        if thumb_straight:
+            dx, dy = (thumb["x"] - thumb_base["x"]) * ratio, thumb["y"] - thumb_base["y"]
+            if abs(dy) > palm * .6 and abs(dy) > abs(dx) * 1.4:
+                return "thumb_up" if dy < 0 else "thumb_down"
+        elif thumb_closed:
+            return "fist"
+    if all_fingers and all(curled[n] for n in ("index", "middle", "ring")) and extended["little"] and thumb_straight:
+        return "shaka"
+    if all_fingers and extended["index"] and extended["little"] and curled["middle"] and curled["ring"] and thumb_closed:
+        return "horns"
     if (
         thumb
         and tip
@@ -39,11 +79,11 @@ def classify_hand(joints, ratio=16 / 9):
         and sum(extended.get(n, False) for n in ("middle", "ring", "little")) >= 2
     ):
         return "ok"
-    if extended.get("index") and extended.get("middle") and any(folded.get(n) for n in ("ring", "little")):
+    if extended.get("index") and extended.get("middle") and all(folded.get(n) for n in ("ring", "little")):
         return "yeah"
     if (
         extended.get("index")
-        and any(folded.get(n) for n in ("middle", "ring", "little"))
+        and all(folded.get(n) for n in ("middle", "ring", "little"))
         and not extended.get("middle", False)
     ):
         return "pointing"

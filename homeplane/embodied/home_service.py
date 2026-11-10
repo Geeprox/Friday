@@ -5,43 +5,58 @@ import base64
 import hashlib
 import json
 import time
+from datetime import UTC, datetime
 
 import numpy as np
 
 from homeplane.embodied import bridge
 from homeplane.embodied.household import basic_command
-from homeplane.embodied.intent import parse_plan, utterance_focus
+from homeplane.embodied.intent import address, parse_plan, utterance_focus
 from homeplane.embodied.local_intent import household_plan
 from homeplane.embodied.paths import DATA, PRIVATE, PYTHON
 from homeplane.embodied.smart_home import Attention, Curtain, WindowGesture
 from homeplane.embodied.speech import Speaker
 from homeplane.embodied.voice_activity import VoiceActivity
+from homeplane.embodied.voice_preferences import read_preferences
+from homeplane.embodied.voice_process import VoiceProcess
 from homeplane.runtime_log import RuntimeLog, observe
+from homeplane.home_questions import is_home_question
+from homeplane.task_composition import is_task_request
 
 VOICE_PYTHON = str(PYTHON)
 VOICE_PAUSED = PRIVATE / "voice-paused"
 VOICE_INPUT_PAUSED = PRIVATE / 'voice-input-paused'
 
 
+def voice_command_outcome(receipt):
+    """Readback and acknowledgement are different evidence; neither proves physical action."""
+    if receipt.get("status") in {"reported_match", "already_at_target", "observed_at_target"} and receipt.get("reached_target") is True:
+        return "readback"
+    if receipt.get("status") == "partial":
+        return "partial"
+    if receipt.get("status") == "unknown_outcome":
+        return "unknown_outcome"
+    if receipt.get("acknowledged") is True:
+        return "accepted"
+    return "failed"
+
+
 class HomeService:
-    def __init__(self, camera_id=None, voice_provider=None):
+    def __init__(self, camera_id=None, voice_provider=None, *, voice_preferences=None):
         self.camera_id = camera_id
         self.voice_provider = voice_provider
+        self.voice_preferences=voice_preferences or read_preferences
         self.audio_allowed = True
         self.runtime_log = RuntimeLog(DATA / "logs")
         self.enabled = False
         self.armed = False
-        self.retry_voice_at = 0
         self.curtain = Curtain()
         self.gesture = WindowGesture()
         self.attention = Attention()
-        self.worker = None
-        self.reader = None
+        self.voice_process = None if voice_provider else VoiceProcess(
+            (VOICE_PYTHON, '-B', '-m', 'homeplane.embodied.voice_worker'))
         self.poller = None
         self.jobs = set()
-        self.futures = {}
-        self.lock = asyncio.Lock()
-        self.sequence = 0
         self.selected = False
         self.owner = None
         self.voice_owner = None
@@ -53,9 +68,12 @@ class HomeService:
         self.voiced_duration = 0.0
         self.noise = 0.004
         self.last_audio = None
+        self.audio_input_at = None
+        self.audio_retry_at = 0.0
         self.voice_busy = False
         self.last_video = -100.0
         self.camera_focus = None
+        self.camera_session = None
         self.visible_tracks = set()
         self.activity = None  # Optional model loads only after admitted live audio.
         self.speaker = Speaker()
@@ -72,6 +90,7 @@ class HomeService:
             "last_event": None,
             "last_transcript": None,
             "last_result": None,
+            "voice_command": None,
             "laya": "command_gate_with_local_or_codex_intent",
             "arl_scope": "codex_plan_local_allowlisted_actuator",
             "audio_persisted": False,
@@ -79,8 +98,16 @@ class HomeService:
         }
 
     def public(self):
+        self.refresh_voice()
+        audio_input = self.state.get('audio_input')
+        if audio_input:
+            age = time.monotonic()-self.audio_input_at if self.audio_input_at is not None else None
+            audio_input = dict(audio_input,age_ms=round(age*1000) if age is not None and age >= 0 else None)
+            if audio_input.get('status') == 'ready' and (age is None or not 0 <= age <= 1.5):
+                audio_input.update(status='waiting',reason='input_stale')
         return {
             **self.state,
+            'audio_input': audio_input,
             "enabled": self.enabled and self.armed,
             "owner_track": self.owner,
             "curtain": dict(self.curtain.state),
@@ -90,46 +117,52 @@ class HomeService:
             "diagnostics": self.runtime_log.export(),
         }
 
+    def voice_status(self):
+        if not self.enabled:
+            return 'stopped' if self.state['voice'] == 'stopped' else 'not_started'
+        if VOICE_INPUT_PAUSED.exists() and self.enabled:
+            return 'paused'
+        owner = self.voice_provider or self
+        phase = owner.voice_process.status
+        return 'transcribing' if self.voice_busy and phase in {'ready', 'transcribing'} else phase
+
+    def ensure_voice(self):
+        # The shared ASR owner is independent of its primary camera's admission.
+        # A live secondary can recover ASR without arming an inactive primary.
+        owner = self.voice_provider or self
+        if VOICE_INPUT_PAUSED.exists():
+            owner.voice_process.stop()
+        else:
+            owner.voice_process.ensure_started()
+
+    def refresh_voice(self):
+        phase = self.voice_status()
+        previous = self.state['voice']
+        if phase != previous:
+            reason = {'ready': '等待语音指令', 'loading_local_models': '本地语音模型启动中',
+                      'unavailable': '语音暂不可用', 'paused': '语音指令已暂停，手势控制仍可用'}
+            self.state.update(voice=phase)
+            if phase in reason and (phase != 'ready' or previous in {
+                    'not_started', 'stopped', 'paused', 'loading_local_models', 'unavailable'}):
+                self.state['reason'] = reason[phase]
+        owner = self.voice_provider or self
+        self.state.update(asr_model=owner.voice_process.metadata.get('asr_model'),
+                          intelligence=owner.voice_process.metadata.get('intelligence'))
+
     async def enable(self):
         self.armed = True
+        if not self.enabled and self.voice_provider is None:
+            self.poller = asyncio.create_task(self.poll_curtain())
+        self.enabled = True
+        self.state['enabled'] = True
+        self.ensure_voice()
         # Muting Friday's replies must not silently turn off gaze/voice input.
         if VOICE_INPUT_PAUSED.exists():
-            if not self.enabled:
-                self.enabled = True
-                self.poller = asyncio.create_task(self.poll_curtain())
-            self.state.update(
-                enabled=True, voice="paused", reason="语音指令已暂停，手势控制仍可用"
-            )
+            self.reset_audio()
+            self.pending_audio = None
+            self.refresh_voice()
             return
-        if self.enabled:
-            if self.voice_provider is not None or self.worker and self.worker.returncode is None:
-                return
-            if time.monotonic() < self.retry_voice_at:
-                return
-            self.retry_voice_at = time.monotonic() + 30
-            if self.reader:
-                await asyncio.gather(self.reader, return_exceptions=True)
-            if self.poller:
-                self.poller.cancel()
-                await asyncio.gather(self.poller, return_exceptions=True)
-        self.enabled = True
-        if self.voice_provider is not None:
-            await self.voice_provider.enable()
-            self.state.update(enabled=True, voice=self.voice_provider.state['voice'])
-            return
-        self.state.update(enabled=True, voice="loading_local_models", reason="本地语音模型启动中")
-        self.poller = asyncio.create_task(self.poll_curtain())
-        self.worker = await asyncio.create_subprocess_exec(
-            VOICE_PYTHON,
-            "-B",
-            "-m",
-            "homeplane.embodied.voice_worker",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            limit=100000,
-        )
-        self.reader = asyncio.create_task(self.read_worker())
+        self.refresh_voice()
 
     async def poll_curtain(self):
         try:
@@ -143,43 +176,10 @@ class HomeService:
         except Exception as e:
             self.curtain.state.update(status="unavailable", error_class=type(e).__name__)
 
-    async def read_worker(self):
-        try:
-            while line := await self.worker.stdout.readline():
-                item = json.loads(line)
-                if item.get("type") == "ready":
-                    self.state.update(
-                        asr_model=item.get("asr"),
-                        intelligence=item.get("intelligence"),
-                        voice="ready",
-                        reason="看向镜头直接说指令；未注视时先说 Friday",
-                    )
-                    continue
-                future = self.futures.get(item.get("id"))
-                if future and not future.done():
-                    future.set_result(item)
-        finally:
-            self.state["voice"] = "unavailable"
-            for future in self.futures.values():
-                if not future.done():
-                    future.set_exception(RuntimeError("voice_worker_closed"))
-
     async def request(self, op, **kwargs):
         if self.voice_provider is not None:
             return await self.voice_provider.request(op, **kwargs)
-        async with self.lock:
-            if not self.worker or self.worker.returncode is not None or not self.worker.stdin:
-                raise RuntimeError("voice_not_ready")
-            self.sequence += 1
-            seq = self.sequence
-            future = asyncio.get_running_loop().create_future()
-            self.futures[seq] = future
-            try:
-                self.worker.stdin.write((json.dumps(dict(kwargs, op=op, id=seq)) + "\n").encode())
-                await self.worker.stdin.drain()
-                return await asyncio.wait_for(future, 60)
-            finally:
-                self.futures.pop(seq, None)
+        return await self.voice_process.request(op, **kwargs)
 
     def spawn(self, coro):
         t = asyncio.create_task(coro)
@@ -194,24 +194,26 @@ class HomeService:
         return receipt
 
     async def observe(
-        self, people, faces, registration, now, capture, selected, preferred=None, gestures_enabled=False
+        self, people, faces, registration, now, capture, selected, preferred=None, gestures_enabled=False,
+        sound_review=False, session_id=None,
     ):
-        selected = bool(selected and self.enabled and self.armed)
-        if selected != self.selected:
+        session = session_id if type(session_id) is str and 0 < len(session_id) <= 128 else None
+        selected = bool(selected and self.enabled and self.armed and session is not None)
+        if selected != self.selected or session != self.camera_session:
             self.epoch += 1
-            self.vad = []
-            self.speaking = False
-            self.duration = 0.0
-            self.voiced_duration = 0.0
+            self.reset_audio()
             self.pending_audio = None
+            self.camera_focus = None
+        self.camera_session = session
         self.selected = selected
-        if self.voice_provider is not None and self.state['voice'] != 'transcribing':
-            self.state['voice'] = self.voice_provider.state['voice']
+        if selected:
+            self.ensure_voice()
+        self.refresh_voice()
         self.last_video = now
         good = registration.get("status") not in {"moving", "settling", "lost", "stale"}
         self.attention.update(people if good else [], faces if good else [], now)
         ids = {p["id"] for p in people}
-        self.visible_tracks = ids
+        self.visible_tracks = ids if good else set()
         owner = preferred if preferred in ids else self.attention.candidate() if preferred is None else None
         if owner is None and preferred is None and len(people) == 1:
             owner = people[0]["id"]
@@ -228,8 +230,9 @@ class HomeService:
             # Keep the wake-word path available even with no qualified face. Audio is
             # bounded in RAM and only forwarded while this mode is selected.
             gate = bool(
-                selected and self.audio_allowed and not VOICE_INPUT_PAUSED.exists()
-                and self.state["voice"] in ("ready", "transcribing") and now > self.reply_until
+                not VOICE_INPUT_PAUSED.exists() and (sound_review is True or
+                selected and self.audio_allowed and self.voice_status() in ("ready", "transcribing")
+                and now > self.reply_until)
             )
             capture.stdin.write(
                 (
@@ -240,32 +243,59 @@ class HomeService:
             )
             await capture.stdin.drain()
 
+    def reset_audio(self):
+        """Discard a partial segment; completed admitted requests have their own lease."""
+        self.vad = []
+        self.speaking = False
+        self.silence = self.duration = self.voiced_duration = 0.0
+        self.utterance_owner = None
+        self.utterance_attention = []
+        self.state['voice_activity'] = False
+        try:
+            getattr(self.activity, 'reset', lambda: None)()
+        except Exception:
+            self.activity = None
+            self.audio_retry_at = time.monotonic()+5
+            self.state['audio_analysis'] = dict(status='unavailable',code='local_audio_model_unavailable')
+
     async def audio(self, item):
         now = time.monotonic()
         if self.last_audio is not None and now - self.last_audio > 0.6:
-            getattr(self.activity, "reset", lambda: None)()
+            self.reset_audio()
         self.last_audio = now
         self.state["audio_packets"] = self.state.get("audio_packets", 0) + 1
         if (
             not self.selected or not self.audio_allowed or VOICE_INPUT_PAUSED.exists()
-            or self.state["voice"] not in ("ready", "transcribing")
+            or self.voice_status() not in ("ready", "transcribing")
             or now < self.reply_until
             or now - self.last_video > 1.5
         ):
-            self.vad = []
-            self.speaking = False
-            self.duration = 0.0
-            self.voiced_duration = 0.0
-            getattr(self.activity, "reset", lambda: None)()
+            self.reset_audio()
             return
         raw = base64.b64decode(item["pcm"])
         samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
         duration = len(samples) / 16000.0
         rms = float(np.sqrt(np.mean(samples * samples))) if len(samples) else 0.0
         self.state["audio_rms"] = round(rms, 4)
-        if self.activity is None:
-            self.activity = VoiceActivity()
-        speech, ratio, rms = self.activity.measure(raw)
+        if now < self.audio_retry_at:
+            self.state['audio_analysis'] = dict(status='unavailable',code='local_audio_model_unavailable',
+                                              retry_ms=round((self.audio_retry_at-now)*1000))
+            return
+        try:
+            if self.activity is None:
+                self.activity = VoiceActivity()
+            speech, ratio, rms = self.activity.measure(raw)
+        except Exception:
+            # Optional audio inference must not terminate the camera receiver,
+            # which also carries video and motor acknowledgements. No raw model
+            # error, PCM or transcript is added to status/diagnostic output.
+            self.activity = None
+            self.reset_audio()
+            self.audio_retry_at = now+5
+            self.state['audio_analysis'] = dict(status='unavailable',code='local_audio_model_unavailable',retry_ms=5000)
+            return
+        self.audio_retry_at = 0.0
+        self.state['audio_analysis'] = dict(status='ready',retry_ms=0)
         probability = getattr(self.activity, "probability", 0)
         self.state["speech_ratio"] = round(ratio, 2)
         self.state["speech_probability"] = round(probability, 3)
@@ -320,14 +350,88 @@ class HomeService:
             and time.monotonic() - self.last_video < 1.5
         )
 
+    def _voice_guard(self, text, captured, epoch, attending, policy, owner=None, *, cue_only=False):
+        # Wake and gaze are alternative cues. Both still require the original
+        # input source, policy and camera generation to remain current.
+        addressed = address(text, attending, wake_word=policy.wake_word)
+        explicit_wake = addressed.get('wake_word') is True
+        admitted = addressed.get('admitted') is True
+
+        def current():
+            # Microphone arbitration gates new samples, not a completed
+            # utterance's own lease while another camera collects audio.
+            return bool(
+                self.voice_preferences() == policy
+                and self.current(captured, epoch)
+                and not VOICE_INPUT_PAUSED.exists()
+                and (explicit_wake if cue_only else admitted and (
+                    explicit_wake or attending and owner is not None and owner in self.attention.latest))
+            )
+
+        return current
+
+    def _wake_focus(self, text, captured, epoch, policy):
+        if (self.camera_session is None
+                or not self._voice_guard(text, captured, epoch, False, policy, cue_only=True)()):
+            return
+        # This is a framing cue from one visible body, not speaker identity.
+        visible = self.visible_tracks
+        target = next(iter(visible)) if len(visible) == 1 else None
+        self.camera_focus = (dict(track=target, at=time.monotonic(), session_id=self.camera_session)
+                             if target is not None else None)
+
+    async def answer_question(self, text, event, captured, epoch, attending, policy, command, *, owner=None):
+        current = self._voice_guard(text, captured, epoch, attending, policy, owner)
+        if not current():
+            command.update(state='expired',updated_at=time.time())
+            self.state['reason']='这次提问已过期，请重新说一次'
+            return
+        answer = await bridge.question(text,camera_id=self.camera_id,
+            request_id=hashlib.sha256(f'voice-query:{self.camera_id}:{event}:{epoch}:{captured}'.encode()).hexdigest(),
+            captured_mono=captured,voice_revision=policy.revision,attending=attending)
+        if not current() or answer.valid_until <= datetime.now(UTC):
+            command.update(state='expired',updated_at=time.time())
+            self.state['reason']='这次提问已过期，请重新说一次'
+            return
+        report = answer.report
+        result = report.domain.get('query') if report.domain else None
+        completed = report.phase == 'result' and result and result.get('status') != 'refused'
+        command.update(route='query',state='answered' if completed else 'clarify',reply=answer.reply,
+            receipt={'status':report.code,'read_only':True,'device_authority':False},updated_at=time.time())
+        self.state.update(last_result=answer.model_dump(mode='json'),last_route='query',reason=answer.reply)
+        self.reply_until=time.monotonic()+min(30,max(3.5,len(answer.reply)/4.5+1.5))
+        await self.speaker.say(answer.reply, current=lambda: current() and answer.valid_until > datetime.now(UTC))
+
+    async def prepare_task(self,text,event,captured,epoch,attending,policy,command,owner=None):
+        current = self._voice_guard(text, captured, epoch, attending, policy, owner)
+        if not current():
+            command.update(state='expired',updated_at=time.time())
+            return
+        answer=await bridge.task(text,camera_id=self.camera_id,
+            request_id=hashlib.sha256(f'voice-task:{self.camera_id}:{event}:{epoch}:{captured}'.encode()).hexdigest(),
+            captured_mono=captured,voice_revision=policy.revision,attending=attending)
+        if not current() or answer.valid_until<=datetime.now(UTC):
+            if answer.proposal_ref:await bridge.discard_task(answer.proposal_ref)
+            command.update(state='expired',updated_at=time.time())
+            return
+        command.update(route='task',state='awaiting_confirmation' if answer.status=='pending_confirmation' else 'clarify',
+            reply=answer.reply,receipt={'status':answer.status,'configured':False,'device_authority':False},updated_at=time.time())
+        self.state.update(last_result=answer.model_dump(mode='json'),last_route='task',reason=answer.reply)
+        await self.speaker.say(answer.reply,current=lambda:current() and answer.valid_until>datetime.now(UTC))
+
     async def transcribe(self, pcm, owner, captured, attending=False, epoch=None):
         epoch = self.epoch if epoch is None else epoch
         began = time.monotonic()
         result_kind, result_code = "ok", "none"
+        command = None
         self.runtime_log.record("embodied.voice", "start")
         try:
             self.state["voice"] = "transcribing"
-            result = await self.request("transcribe", pcm=base64.b64encode(pcm).decode(), attending=attending)
+            policy=self.voice_preferences()
+            result = await self.request("transcribe", pcm=base64.b64encode(pcm).decode(), attending=attending,voice_revision=policy.revision)
+            if result.get('voice_revision',0)!=policy.revision or self.voice_preferences()!=policy:
+                self.state['reason']='唤醒词已更新，请重新说一次'
+                return
             self.state["asr_ms"] = result.get("latency_ms")
             self.state["laya_result"] = result.get("laya")
             self.state["asr_quality"] = result.get("asr_quality")
@@ -346,25 +450,45 @@ class HomeService:
             if not self.current(captured, epoch) or time.monotonic() - captured > 10:
                 self.state["reason"] = "指令已过期或操作者变化"
                 return
-            if route.get('wake_word'):
-                visible = getattr(self,'visible_tracks',set())
-                # Visual attention is not speaker localization. With this
-                # microphone, only a unique visible person is a framing cue.
-                target = next(iter(visible)) if len(visible)==1 else None
-                self.camera_focus = dict(track=target,at=time.monotonic()) if target is not None else None
             if not route.get("admitted"):
+                if (route.get('reason') == 'waiting_instruction'
+                        and address(result.get('text'), False, wake_word=policy.wake_word).get('reason')
+                        == 'waiting_instruction'):
+                    self._wake_focus(result['text'], captured, epoch, policy)
                 self.state["reason"] = (
-                    "未确认注视，请先说 Friday"
+                    f"未确认注视，请先说 {policy.wake_word}"
                     if route.get("reason") == "need_wake_word_without_attention"
                     else "请继续说出指令"
                 )
                 return
             if result.get("text"):
                 self.state["last_transcript"] = result["text"]
+            event = "voice:" + hashlib.sha256(pcm).hexdigest()[:24]
+            command = {
+                "id": event,
+                "text": result["text"],
+                "state": "processing",
+                "started_at": time.time(),
+                "updated_at": time.time(),
+            }
+            self.state["voice_command"] = command
+            current = self._voice_guard(result['text'], captured, epoch, attending, policy, owner)
+            if not current():
+                command.update(state="expired", updated_at=time.time())
+                self.state["reason"] = "指令已过期或操作者变化"
+                return
+            self._wake_focus(result['text'], captured, epoch, policy)
             decision_started = time.monotonic()
             laya = result.get("laya") or {}
-            fast = household_plan(result["text"], attending)
-            general = basic_command(result["text"], attending)
+            body = address(result['text'],attending,wake_word=policy.wake_word).get('body','')
+            if is_task_request(body):
+                await self.prepare_task(result['text'],event,captured,epoch,attending,policy,command,owner=owner)
+                return
+            if is_home_question(body):
+                await self.answer_question(result['text'],event,captured,epoch,attending,policy,command,owner=owner)
+                return
+            fast = household_plan(result["text"], attending,wake_word=policy.wake_word)
+            general = basic_command(result["text"], attending,wake_word=policy.wake_word)
             if not fast and general:
                 fast = {
                     "is_command": True,
@@ -373,7 +497,6 @@ class HomeService:
                     "action": general.get("action"),
                     "reply": general.get("reply", "正在处理家居指令。"),
                 }
-            event = "voice:" + hashlib.sha256(pcm).hexdigest()[:24]
             if fast:
                 task = {
                     "type": "task_result",
@@ -386,15 +509,15 @@ class HomeService:
                     "latency_ms": round((time.monotonic() - decision_started) * 1000, 2),
                 }
             else:
-                if laya.get("status") == "unavailable":
-                    self.state["reason"] = "理解服务暂不可用，请稍后重试"
-                    return
                 if laya.get("choice") == "闲聊或转述" and laya.get("confidence", 0) >= 0.75:
+                    command.update(state="ignored", updated_at=time.time())
                     self.state["reason"] = "闲聊，未触发任务"
                     return
                 self.state["reason"] = "ARL Codex 正在理解指令"
                 task = await self.request(
-                    "delegate", text=result["text"], context=dict(route, person_id=owner), laya=laya
+                    "delegate", text=result["text"], context=dict(route, person_id=owner), laya=laya,
+                    request_id=hashlib.sha256(f'voice-intent:{self.camera_id}:{event}:{epoch}:{captured}'.encode()).hexdigest(),
+                    voice_revision=policy.revision,
                 )
                 self.state["codex_runtime"] = task.get("runtime")
                 if task.get("type") != "task_result" or task.get("simulated") is not False:
@@ -414,9 +537,8 @@ class HomeService:
                     "reply": "我没有听清要控制哪个设备，请再说一下。",
                 }
                 task = dict(task, plan=plan, text=plan["reply"])
-            if not self.current(captured, epoch) or (
-                attending and (owner is None or owner not in self.attention.latest)
-            ):
+            if not current():
+                command.update(state="expired", updated_at=time.time())
                 self.state["reason"] = "任务返回时交互已结束，未执行"
                 return
             task["returned_at"] = time.time()
@@ -424,6 +546,7 @@ class HomeService:
             self.state["last_route"] = plan["route"]
             self.state["intent_provider"] = task.get("provider")
             self.state["intent_ms"] = task.get("latency_ms")
+            command.update(route=plan["route"], state="executing", updated_at=time.time())
             if plan["route"] == "curtain":
                 self.state["reason"] = "正在控制窗帘"
                 receipt = await self.command(
@@ -450,6 +573,18 @@ class HomeService:
                 )
             else:
                 self.state["reason"] = plan["reply"]
+            if plan["route"] in {"curtain", "home"}:
+                command.update(
+                    state=voice_command_outcome(receipt),
+                    receipt={key: receipt.get(key) for key in ("status", "acknowledged", "reached_target")},
+                    updated_at=time.time(),
+                )
+            else:
+                command.update(
+                    state="clarify" if plan["route"] == "clarify" else "ignored",
+                    reply=plan["reply"],
+                    updated_at=time.time(),
+                )
             if plan["is_command"] or plan["route"] == "clarify":
                 spoken = (
                     (self.state["reason"] if plan["route"] == "home" else plan["reply"])
@@ -463,11 +598,15 @@ class HomeService:
                     else "窗帘暂时没有响应。"
                 )
                 self.reply_until = time.monotonic() + min(30, max(3.5, len(spoken) / 4.5 + 1.5))
-                await self.speaker.say(spoken)
+                await self.speaker.say(spoken, current=current)
         except asyncio.CancelledError:
+            if command and command["state"] in {"processing", "executing"}:
+                command.update(state="unknown_outcome", updated_at=time.time())
             result_kind, result_code = "cancelled", "cancelled"
             raise
         except Exception as e:
+            if command and command["state"] in {"processing", "executing"}:
+                command.update(state="unknown_outcome" if command["state"] == "executing" else "failed", updated_at=time.time())
             result_kind, result_code = "unavailable", "runtime_error"
             self.state.update(reason="语音处理暂不可用", error_class=type(e).__name__)
         finally:
@@ -479,8 +618,7 @@ class HomeService:
                 elapsed_ms=(time.monotonic() - began) * 1000,
             )
             self.voice_busy = False
-            self.state["voice"] = (self.voice_provider.state['voice'] if self.voice_provider else
-                                   "ready" if self.worker and self.worker.returncode is None else "unavailable")
+            self.refresh_voice()
             pending = self.pending_audio
             self.pending_audio = None
             if (
@@ -495,17 +633,19 @@ class HomeService:
 
     async def close(self):
         self.selected = False
-        tasks = [t for t in [self.poller, self.reader, *self.jobs] if t]
+        self.enabled = self.armed = False
+        self.epoch += 1
+        self.camera_session = None
+        self.camera_focus = None
+        self.pending_audio = None
+        if self.voice_process:
+            self.voice_process.stop()
+        tasks = [t for t in [self.poller, *self.jobs] if t]
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        if self.worker and self.worker.returncode is None:
-            self.worker.terminate()
-            try:
-                await asyncio.wait_for(self.worker.wait(), 3)
-            except asyncio.TimeoutError:
-                self.worker.kill()
-                await self.worker.wait()
+        if self.voice_process:
+            await self.voice_process.close()
         await self.curtain.close()
         self.enabled = False
         self.armed = False

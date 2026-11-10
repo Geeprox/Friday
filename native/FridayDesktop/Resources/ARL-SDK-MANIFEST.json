@@ -1,0 +1,375 @@
+{
+  "absent_optional_modules": [
+    "arl.private_compat"
+  ],
+  "contract": "friday.arl.sdk-import.v1",
+  "dependencies": [],
+  "files": {
+    "LICENSE": {
+      "git_blob_sha1": "a3c2c9b76a7ce18d5ea75969e9fd15e36354ee1b",
+      "sha256": "96e3cd51c55b19811c4ed860abdaf344d910fd359e271631a5552d89eb9d3675",
+      "size": 1073,
+      "source_path": "LICENSE"
+    },
+    "NOTICE": {
+      "git_blob_sha1": "9209f88f53d581e884d0534c7551a90436ab353f",
+      "sha256": "06c3040fcea3ae35228cd5506fa7efd35ac133a5981d8e6ef3e9227de25700c8",
+      "size": 692,
+      "source_path": "NOTICE"
+    },
+    "arl/__init__.py": {
+      "git_blob_sha1": "64640362c6020a36f0a41bb331e953770eeb84b5",
+      "sha256": "1ca7fa8cd52854ea11bec9d0f807ce19ca966e362a3333bf861f3e4f664b9a6e",
+      "size": 111,
+      "source_path": "arl/__init__.py"
+    },
+    "arl/app_connections.py": {
+      "git_blob_sha1": "c33847cc1c6f9a13c9e264e68535cd0048c1170f",
+      "sha256": "9d9014cf330b1664f2a87208e37380d2eb13a1e8178ee9e21d8b09fdb590f480",
+      "size": 5494,
+      "source_path": "arl/app_connections.py"
+    },
+    "arl/application_models.py": {
+      "git_blob_sha1": "27733a5864089b6fd772cc3a4f131d5e890127d5",
+      "sha256": "47cf07a82bc7f4258dd58d99e9dfbb08cd65c9ed44ba3b79fe1dd4c3a0e933e8",
+      "size": 21188,
+      "source_path": "arl/application_models.py"
+    },
+    "arl/application_platform.py": {
+      "git_blob_sha1": "a8a31e67daab9c00e31304a6f8157584a5bede1c",
+      "sha256": "7d422dd4506d3fe93b7e99c5900704869a5d50f1d0e1e26916a2caebd47ce291",
+      "size": 14322,
+      "source_path": "arl/application_platform.py"
+    },
+    "arl/application_session.py": {
+      "git_blob_sha1": "53dad88ff51851ff7a1b18e2ae0e5d2471c57f30",
+      "sha256": "98cdfb2654f0bdf32088e557e60d31b6791f1164533db4112795ee54baf5746c",
+      "size": 3759,
+      "source_path": "arl/application_session.py"
+    },
+    "arl/calendar_write.py": {
+      "git_blob_sha1": "f3b8be787098cfd59909a5d0190af4eff963bcb1",
+      "sha256": "3c3b0d2eab2f25c6acfbe95efb3c09192179d38166fdb088e47fbbf8065fd047",
+      "size": 5381,
+      "source_path": "arl/calendar_write.py"
+    },
+    "arl/capabilities.py": {
+      "git_blob_sha1": "d6921d30d6b8e73a94e24626c5958b7b533ade02",
+      "sha256": "476e6276017c8a88f89024f2ea996f3945b72d2a660388d48e9a93f9272c4d5b",
+      "size": 2917,
+      "source_path": "arl/capabilities.py"
+    },
+    "arl/client.py": {
+      "git_blob_sha1": "3e9319417584cdb9f5af1d20d80f642eae8ba78e",
+      "sha256": "8152d825daeacc5d1b08619d9e9aaecab1f86e9ee34ff67dd8844626301254e3",
+      "size": 9745,
+      "source_path": "arl/client.py"
+    },
+    "arl/codex_context.py": {
+      "git_blob_sha1": "470e1eed30c72a5ce3b78bb4c24d8b924e00a012",
+      "sha256": "9f90238302809066553c160b5f5c51de554e2cb9f229229507eb3847e2bc9cc5",
+      "size": 2941,
+      "source_path": "arl/codex_context.py"
+    },
+    "arl/codex_contract.py": {
+      "git_blob_sha1": "0b1c8066e643517afb7fa4744394e92f86f1a472",
+      "sha256": "19ca594307eb88000927d03f71af7d8ddcd10dc193a3852cb4d72d184b49a510",
+      "size": 14805,
+      "source_path": "arl/codex_contract.py"
+    },
+    "arl/codex_diagnostics.py": {
+      "git_blob_sha1": "a63d4e385bfe5ffda1be1d0e0b8e5e5a142f3967",
+      "sha256": "3e081f277390786e4cf7ba8d3a68dc5627720fc2314fb7d362b55cc4d6ec9e64",
+      "size": 1621,
+      "source_path": "arl/codex_diagnostics.py"
+    },
+    "arl/codex_execution_contract.py": {
+      "git_blob_sha1": "506d51e1770ba7cbc817bc0fd91b2f4f1118cc0f",
+      "sha256": "812f19158d909cbfb8b7b0c8e5671b24f652202eb01451bc3dbfcef64feaa2a8",
+      "size": 5911,
+      "source_path": "arl/codex_execution_contract.py"
+    },
+    "arl/codex_execution_options.py": {
+      "git_blob_sha1": "6a470b0a039e08582df9ded0659a77725d5f040d",
+      "sha256": "bc3746ed54cb92d535e185b6fb83832e585fe31e17906ca99e990a8d9e360b93",
+      "size": 3292,
+      "source_path": "arl/codex_execution_options.py"
+    },
+    "arl/codex_packages.py": {
+      "git_blob_sha1": "40a14de6a40275df27790439822860620199c575",
+      "sha256": "2bf9828758de80c1ff92a67e5000f175c23def378279e64a4c87404defe6a8d8",
+      "size": 4941,
+      "source_path": "arl/codex_packages.py"
+    },
+    "arl/codex_research.py": {
+      "git_blob_sha1": "40d1d718545274e1e4c236bbe420f676986771cf",
+      "sha256": "eed80a351a39fe91996710029bf35e349dade58a1905277463063750a88c8232",
+      "size": 20119,
+      "source_path": "arl/codex_research.py"
+    },
+    "arl/codex_server.py": {
+      "git_blob_sha1": "605db71418571e0301b05099bed54b3c9e31c427",
+      "sha256": "1006497f95865df4015a922c2bde5fa4ff9584bcb0eb4b54e8d5b8442eb1672a",
+      "size": 46072,
+      "source_path": "arl/codex_server.py"
+    },
+    "arl/codex_sourced_contract.py": {
+      "git_blob_sha1": "a80b835c2439ea0e3aac530e5f337c7ed24ca73f",
+      "sha256": "ed10f2eb34180130b84862dd3b3c0d01c999b6548672c002fc2a16318f03e547",
+      "size": 27900,
+      "source_path": "arl/codex_sourced_contract.py"
+    },
+    "arl/codex_sourced_research.py": {
+      "git_blob_sha1": "639a04e956af65dc8707fd05b048b2f483990e4c",
+      "sha256": "b8fddd665738afa580375c6e92c4b97827a9e3eb6c95cc37074cb4852d91e022",
+      "size": 5367,
+      "source_path": "arl/codex_sourced_research.py"
+    },
+    "arl/contracts.py": {
+      "git_blob_sha1": "d5e2e77edf1e9b0bfcdff125dee8dfb6dd6126b0",
+      "sha256": "f9fbf4e8d207de22b930c484eb24133a9c6cf2ff5964176a2eaaa4886c365ed3",
+      "size": 4835,
+      "source_path": "arl/contracts.py"
+    },
+    "arl/control.py": {
+      "git_blob_sha1": "86b7acd3ca42a6e64396a515f8b19439c8498901",
+      "sha256": "7b5140984cd04dbd95b6c8eaa8395fe422f7c4546147a25d621f4e0d9f20c82b",
+      "size": 18332,
+      "source_path": "arl/control.py"
+    },
+    "arl/diagnostics.py": {
+      "git_blob_sha1": "30aeba71632ad0a10afe9566fa310cdb9892855e",
+      "sha256": "d0862cef569473237a6f3028c54c8a733d50c885c077b74a4d2c81a87a3c8bc8",
+      "size": 10703,
+      "source_path": "arl/diagnostics.py"
+    },
+    "arl/extension_contracts.py": {
+      "git_blob_sha1": "05cef027c3df6b2594f86e5a7bdb1832ae743b63",
+      "sha256": "6b0a8c08037f30015822ade974b9b35d1d2831ce75eae799898a8f7aff7f8dc5",
+      "size": 1756,
+      "source_path": "arl/extension_contracts.py"
+    },
+    "arl/friday_planning.py": {
+      "git_blob_sha1": "dfa5f8e3d479315ad4adcb1fc657cc2a7119d510",
+      "sha256": "2e3d3cf5f446fd315311d59705a10a7ca175c150cd18a200adf790937e51e0be",
+      "size": 7860,
+      "source_path": "arl/friday_planning.py"
+    },
+    "arl/friday_planning_client.py": {
+      "git_blob_sha1": "a6c533537db8e886811472cbab5dcdc2276b888f",
+      "sha256": "cc10b2787e5d35cdec36d3cf856aa24303452f6c53d1863992e61f8f42d770a2",
+      "size": 6676,
+      "source_path": "arl/friday_planning_client.py"
+    },
+    "arl/identity.py": {
+      "git_blob_sha1": "8b5ddd3d5e556fc272e3d18b89f8ea48c5f0b11b",
+      "sha256": "349b70afa8fe0842157435c1e934060dd1baeb986471c4c065496d4b53476fb2",
+      "size": 7356,
+      "source_path": "arl/identity.py"
+    },
+    "arl/lifecycle.py": {
+      "git_blob_sha1": "1f5b42c3d89d84f8ad5bc6a19819053a75d55b69",
+      "sha256": "fe607ae65773e8d9c7be3373fc45d77bb74dee55109b08ceacffe22394e25d49",
+      "size": 2037,
+      "source_path": "arl/lifecycle.py"
+    },
+    "arl/messages_receive.py": {
+      "git_blob_sha1": "68bdda36225128ecfb46bdbfee6ccae36bd2ae25",
+      "sha256": "338bb12a9fe881ae25fc182cc7126a1bb818fa033d1e86ce17180451c5dd7a43",
+      "size": 14946,
+      "source_path": "arl/messages_receive.py"
+    },
+    "arl/metrics.py": {
+      "git_blob_sha1": "00c578a1c3038bf2793d09ca2db45caddc097e5d",
+      "sha256": "6db017b0b9a6986339a3a8c18796ce4186116dd48be988c95d77c437f4f1cab2",
+      "size": 9110,
+      "source_path": "arl/metrics.py"
+    },
+    "arl/modules.py": {
+      "git_blob_sha1": "6e1951b421e3b7f622fee1b4f4e171b749562b19",
+      "sha256": "13eee0d5eddc29ce439c2e5e8a6456c2aa92ed81d83c8c4eeb81a2cae788cfb3",
+      "size": 3833,
+      "source_path": "arl/modules.py"
+    },
+    "arl/netease_music.py": {
+      "git_blob_sha1": "745707d0b78344e16e9a5b8761ad7792c0b47317",
+      "sha256": "e43f7c51594ccdc526d04e09a83b4f1e5b8a896cfe076e900f678e784838686f",
+      "size": 14897,
+      "source_path": "arl/netease_music.py"
+    },
+    "arl/overview.py": {
+      "git_blob_sha1": "e617583ee909b656bfa55778427a5e05fe6e2403",
+      "sha256": "b15570c58573c2167fe4280bf7efc942c836304937d4c256afbeb0b190173ac4",
+      "size": 3363,
+      "source_path": "arl/overview.py"
+    },
+    "arl/priority.py": {
+      "git_blob_sha1": "086821422d8c15d3dc0cbf93a4f2ae72fb0d42de",
+      "sha256": "3a7f511992c6e01ce4f2f29fa52d84c1a0175628697e7ed214653ae06da501be",
+      "size": 35630,
+      "source_path": "arl/priority.py"
+    },
+    "arl/providers.py": {
+      "git_blob_sha1": "ba98435f3fb86c79fa32426ac513cdc99ef46214",
+      "sha256": "2e368413c8a3023f1e1c9afd3285182c0dfc6f629da516bd0bdeafb00ae24aa3",
+      "size": 6857,
+      "source_path": "arl/providers.py"
+    },
+    "arl/research.py": {
+      "git_blob_sha1": "21e24cb87c0cb9733c35c8f2db482bf2c2b71934",
+      "sha256": "35f0b92b37eb0c081e1ae45c5dad6ebb093bc9afeaf24b98c1d355878ff8f01c",
+      "size": 32365,
+      "source_path": "arl/research.py"
+    },
+    "arl/runtime_description.py": {
+      "git_blob_sha1": "bacf62cc505e199a5766e3cf13a1ee1ed884e3d8",
+      "sha256": "1d55032fa44c4aac44a9b954671e96d51090537052f5f1622b6a63d7496cda41",
+      "size": 2314,
+      "source_path": "arl/runtime_description.py"
+    },
+    "arl/scheduling.py": {
+      "git_blob_sha1": "1c34b6de79cd550000ef269ca3bd9ec13a3e2ee3",
+      "sha256": "6a773792913efb5941a86f9f90d00cbcf04db15f2ead76a9ab30c8966b0f84f4",
+      "size": 2121,
+      "source_path": "arl/scheduling.py"
+    },
+    "arl/service.py": {
+      "git_blob_sha1": "e5f36d25f1f1baa57ed1637d8f052b6e8f402ca3",
+      "sha256": "4749b9344de8e59b2ba88c20692573fdce8042b7f9104d7cb4f0d52fa3068bef",
+      "size": 40859,
+      "source_path": "arl/service.py"
+    },
+    "arl/service_deployment/__init__.py": {
+      "git_blob_sha1": "5d68b649c18370525f3ae3287af9e5bbea7c62f8",
+      "sha256": "150552732e5fd60302c275287a582ec07574409d3cd4e0b616e6897e9ada49d6",
+      "size": 689,
+      "source_path": "arl/service_deployment/__init__.py"
+    },
+    "arl/service_deployment/models.py": {
+      "git_blob_sha1": "c6a459a1debf437d9be65b31619c2420451aae1a",
+      "sha256": "931a4836e805b938a1eb0be90bf173c14d65b95533ba2dbba28de967808c8907",
+      "size": 7073,
+      "source_path": "arl/service_deployment/models.py"
+    },
+    "arl/service_deployment/planning.py": {
+      "git_blob_sha1": "4b1779045997197cbb1680e92a9ed0c0edc03907",
+      "sha256": "ba025839c7da14c0bdb1c19cd8ed4a1b46922ec152d53a80ef4c9809788ecdae",
+      "size": 10241,
+      "source_path": "arl/service_deployment/planning.py"
+    },
+    "arl/service_deployment/portal.py": {
+      "git_blob_sha1": "379c412d98284ea9bccc9ef8449e13173b7d4e18",
+      "sha256": "323996ffff9d566ad5aed7459f93736091530675a04c8f7af401f23555c95956",
+      "size": 11127,
+      "source_path": "arl/service_deployment/portal.py"
+    },
+    "arl/service_deployment/readiness.py": {
+      "git_blob_sha1": "2b8d7aa17178e6a0a767cf2c69fe39b0856038d1",
+      "sha256": "33966849eca7e3e72792345134a90c5905119cfc05fc10b131e49b838ed2c048",
+      "size": 10311,
+      "source_path": "arl/service_deployment/readiness.py"
+    },
+    "arl/service_deployment/validation.py": {
+      "git_blob_sha1": "6848634f32ffc2a3af2221844cb4c48b9e51de00",
+      "sha256": "a7599216162d2523b84a1b87be2792cc6125961c5281bf6c3066774829a33279",
+      "size": 17335,
+      "source_path": "arl/service_deployment/validation.py"
+    },
+    "arl/storage.py": {
+      "git_blob_sha1": "72adaa06e16dcc399059742907d797a48c0dc56c",
+      "sha256": "de4717491df6a83cda7810c0a7fcb1221e2cb2cb880760eaafede84c562712d5",
+      "size": 25158,
+      "source_path": "arl/storage.py"
+    },
+    "arl/supervisor.py": {
+      "git_blob_sha1": "6bd484de2248d34d10273e0d0b554620186a10c6",
+      "sha256": "d48e021cae8c1b4c148d260fa9c51f09b00705a57eb1f1ade41072a90f251e8d",
+      "size": 15429,
+      "source_path": "arl/supervisor.py"
+    },
+    "arl/travel.py": {
+      "git_blob_sha1": "150f5b5d8d83448bf298311ecf0116f3e2fd095e",
+      "sha256": "37b11e709ef68af952f672490697707206b40b9db1e2b205cf2b78e6d87b0df8",
+      "size": 1316,
+      "source_path": "arl/travel.py"
+    },
+    "arl/wake.py": {
+      "git_blob_sha1": "fc38ba89ebc90c15ac2947a1887caa198bb05129",
+      "sha256": "bc1d9e59ab9f1d06ac2824a483be27ae80aee7d34d0d00e68cedb763ec55c62b",
+      "size": 1129,
+      "source_path": "arl/wake.py"
+    },
+    "arl/wire.py": {
+      "git_blob_sha1": "b3085b79fea8d1feb91c1712458e5367bb8c49b4",
+      "sha256": "2d626bf34cb41231e266567ca313a06a0a35e89ac2f7987c24545eeb52aa6ae1",
+      "size": 597,
+      "source_path": "arl/wire.py"
+    },
+    "pyproject.toml": {
+      "git_blob_sha1": "ac4c1c1ec5a4608d0ee04f8ffac73d3ec9a907f2",
+      "sha256": "98f7fbce0ac335f595d56589fc00e45bdf4adcc1acc5cff23a17fc2675cc9ad6",
+      "size": 328,
+      "source_path": "pyproject.toml"
+    }
+  },
+  "license": "MIT",
+  "modules": {
+    "arl": "arl/__init__.py",
+    "arl.app_connections": "arl/app_connections.py",
+    "arl.application_models": "arl/application_models.py",
+    "arl.application_platform": "arl/application_platform.py",
+    "arl.application_session": "arl/application_session.py",
+    "arl.calendar_write": "arl/calendar_write.py",
+    "arl.capabilities": "arl/capabilities.py",
+    "arl.client": "arl/client.py",
+    "arl.codex_context": "arl/codex_context.py",
+    "arl.codex_contract": "arl/codex_contract.py",
+    "arl.codex_diagnostics": "arl/codex_diagnostics.py",
+    "arl.codex_execution_contract": "arl/codex_execution_contract.py",
+    "arl.codex_execution_options": "arl/codex_execution_options.py",
+    "arl.codex_packages": "arl/codex_packages.py",
+    "arl.codex_research": "arl/codex_research.py",
+    "arl.codex_server": "arl/codex_server.py",
+    "arl.codex_sourced_contract": "arl/codex_sourced_contract.py",
+    "arl.codex_sourced_research": "arl/codex_sourced_research.py",
+    "arl.contracts": "arl/contracts.py",
+    "arl.control": "arl/control.py",
+    "arl.diagnostics": "arl/diagnostics.py",
+    "arl.extension_contracts": "arl/extension_contracts.py",
+    "arl.friday_planning": "arl/friday_planning.py",
+    "arl.friday_planning_client": "arl/friday_planning_client.py",
+    "arl.identity": "arl/identity.py",
+    "arl.lifecycle": "arl/lifecycle.py",
+    "arl.messages_receive": "arl/messages_receive.py",
+    "arl.metrics": "arl/metrics.py",
+    "arl.modules": "arl/modules.py",
+    "arl.netease_music": "arl/netease_music.py",
+    "arl.overview": "arl/overview.py",
+    "arl.priority": "arl/priority.py",
+    "arl.providers": "arl/providers.py",
+    "arl.research": "arl/research.py",
+    "arl.runtime_description": "arl/runtime_description.py",
+    "arl.scheduling": "arl/scheduling.py",
+    "arl.service": "arl/service.py",
+    "arl.service_deployment": "arl/service_deployment/__init__.py",
+    "arl.service_deployment.models": "arl/service_deployment/models.py",
+    "arl.service_deployment.planning": "arl/service_deployment/planning.py",
+    "arl.service_deployment.portal": "arl/service_deployment/portal.py",
+    "arl.service_deployment.readiness": "arl/service_deployment/readiness.py",
+    "arl.service_deployment.validation": "arl/service_deployment/validation.py",
+    "arl.storage": "arl/storage.py",
+    "arl.supervisor": "arl/supervisor.py",
+    "arl.travel": "arl/travel.py",
+    "arl.wake": "arl/wake.py",
+    "arl.wire": "arl/wire.py"
+  },
+  "protocol": "arl/1",
+  "schema_version": 1,
+  "sdk_version": "0.1.2",
+  "source": {
+    "commit": "a48e8bfd15b9ff7716a6a52a3ef9fcdbe915a585",
+    "commit_signed": false,
+    "repository": "https://github.com/Geeprox/ARL",
+    "tree": "33f2c7d556dcacc050f0a3edaacf4a248c27de8f"
+  }
+}

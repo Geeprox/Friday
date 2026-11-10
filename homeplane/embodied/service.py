@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import secrets
@@ -16,12 +17,14 @@ import httpx
 from homeplane.runtime_log import observe
 
 from .catalog import get_app
+from .game_difficulty import game_difficulty
 from .paths import DATA, PRIVATE, PROJECT, PYTHON, VISION, camera, configuration
 
 
 class EmbodiedService:
     def __init__(self):
         self.process = None
+        self._game_lifecycle = secrets.token_hex(16)
         self.lock = asyncio.Lock()
         self.selected = None
         self.open_privacy = False
@@ -34,6 +37,8 @@ class EmbodiedService:
         self.guardian = None
         self.recovery_pending = False
         self.recovery_enabled = False
+        self.practice_deadline = 0.0
+        self.practice_token = None
         from .manual_preview import ManualPreview
         self.manual_previews=ManualPreview()
 
@@ -65,6 +70,28 @@ class EmbodiedService:
         if self.process and self.process.returncode is None:
             await self.request("/api/interaction", {"enabled": enabled})
 
+    async def practice(self, operation, payload):
+        # A lesson never starts perception, opens a shutter or changes its owner.
+        if not self.process or self.process.returncode is not None:
+            raise ValueError('practice_recognition_not_running')
+        if operation == 'start':
+            if time.monotonic() < self.practice_deadline:
+                raise ValueError('practice_already_active')
+            self.practice_deadline = time.monotonic() + 90
+        try:
+            result = await self.request('/api/practice/' + operation, payload)
+        except (httpx.HTTPError, OSError, ValueError):
+            # Keep a failed/uncertain start fenced for the bounded lease duration.
+            raise ValueError('practice_unavailable') from None
+        if operation == 'start':
+            self.practice_token = result.get('token')
+            if not self.practice_token:
+                self.practice_deadline = 0.0
+        elif payload.get('token') == self.practice_token and result.get('phase') == 'ended':
+            self.practice_deadline = 0.0
+            self.practice_token = None
+        return result
+
     async def sync_people(self, people):
         # Names stay in PeopleCatalog; workers only need canonical stable IDs.
         from homeplane.people.live import IdentityStore
@@ -95,10 +122,85 @@ class EmbodiedService:
             timeout=timeout,
         )
         if response.status_code >= 400:
+            if path == '/api/game' and response.status_code == 409:
+                try:
+                    if response.json().get('detail') == 'game_state_changed':
+                        raise ValueError('game_state_changed')
+                except (json.JSONDecodeError, AttributeError):
+                    pass
             raise ValueError("embodied_operation_unavailable")
         return response.json()
 
+    def _game_source(self):
+        return (self._game_lifecycle, id(self.process),
+                getattr(self.process, 'returncode', None), self.selected,
+                self.capture_enabled, self.closed, self.recovery_pending)
+
+    async def party_frame(self):
+        """Read an already running source, with no preview lease or capture start."""
+        source = self._game_source()
+        if (self.closed or not self.capture_enabled or self.recovery_pending
+                or self.process is None or self.process.returncode is not None or not self.selected):
+            raise ValueError('camera_view_unavailable')
+        async with self.client.stream('GET', self._url('/api/frame'), timeout=1) as response:
+            response.raise_for_status()
+            data = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(data) + len(chunk) > 3_000_000:
+                    raise ValueError('camera_view_unavailable')
+                data.extend(chunk)
+        report = json.loads(data)
+        if (source != self._game_source() or not isinstance(report, dict)
+                or report.get('camera_id') != self.selected):
+            raise ValueError('camera_view_unavailable')
+        return report
+
+    def _game_intent(self, game=None):
+        """A state precondition, never authority to open a camera or control HA."""
+        if self.closed or not self.capture_enabled or self.recovery_pending:
+            return None
+        scope = None
+        if self.process is not None and self.process.returncode is None:
+            if not isinstance(game, dict):
+                return None
+            context, revision = game.get('control_context'), game.get('control_revision')
+            if (type(context) is not str or len(context) != 32
+                    or any(c not in '0123456789abcdef' for c in context)
+                    or type(revision) is not int or revision < 0
+                    or type(game.get('round_id')) is not int or game['round_id'] < 1
+                    or type(game.get('mode')) is not str
+                    or game['mode'] not in {'off', 'quest', 'ski', 'tennis', 'hiit', 'home'}
+                    or type(game.get('selected_mode')) is not str
+                    or game['selected_mode'] not in {'quest', 'ski', 'tennis', 'hiit', 'home'}):
+                return None
+            scope = (context, revision)
+        return hashlib.sha256(json.dumps((self._game_source(), scope)).encode()).hexdigest()
+
+    async def _check_game_intent(self, expected):
+        if (type(expected) is not str or len(expected) != 64
+                or any(c not in '0123456789abcdef' for c in expected)):
+            raise ValueError('game_state_changed')
+        snapshot = await self.status()
+        current = snapshot.get('game_intent')
+        if not current or not secrets.compare_digest(expected, current):
+            raise ValueError('game_state_changed')
+        return snapshot
+
+    async def _send_game_command(self, data, game):
+        # Carry the checked observation to the worker's final synchronous check.
+        # A second read here would silently retarget a retired user's intent.
+        return await self.request('/api/game', dict(data,
+            expected_context=game['control_context'], expected_revision=game['control_revision']))
+
+    async def game_command(self, data, *, expected_intent):
+        async with self.lock:
+            snapshot = await self._check_game_intent(expected_intent)
+            if not snapshot.get('owned') or not isinstance(snapshot.get('game'), dict):
+                raise ValueError('game_state_changed')
+            return await self._send_game_command(data, snapshot['game'])
+
     async def status(self):
+        source = self._game_source()
         base = dict(
             configured=self.configured(),
             state="not_configured",
@@ -109,6 +211,7 @@ class EmbodiedService:
             interaction_enabled=self.interaction_enabled,
             capture_enabled=self.capture_enabled,
             recovery_pending=self.recovery_pending,
+            game_intent=None,
         )
         if not base["configured"]:
             return base
@@ -120,6 +223,8 @@ class EmbodiedService:
             base.update(owned=True, state="connecting")
             try:
                 value = await self.request("/api/status")
+                if not isinstance(value, dict):
+                    raise ValueError('game_state_unavailable')
                 base.update(
                     state=value["status"],
                     reason=value.get("reason"),
@@ -128,9 +233,12 @@ class EmbodiedService:
                     camera=value.get("camera_id"),
                     fps=value.get("processed_fps"),
                     latency_ms=value.get("pipeline_ms"),
+                    scene_service=value.get('scene_service'),
+                    room_service=value.get('room_service'),
                     people=len(value.get("people", [])),
                     game=value.get("game"),
                     recording=value.get("recording"),
+                    safety_recording=value.get('safety_recording'),
                     camera_control=value.get("camera_control"),
                     home=value.get("home"),
                     interactions=value.get('interactions'),
@@ -141,6 +249,12 @@ class EmbodiedService:
                 )
             except (httpx.HTTPError, OSError, ValueError, KeyError):
                 base["state"] = "unavailable"
+        if source != self._game_source():
+            base.pop('game', None)
+            base.pop('safety_recording', None)
+            base.update(state='unavailable', owned=False, capture_enabled=self.capture_enabled)
+        elif base['state'] != 'unavailable':
+            base['game_intent'] = self._game_intent(base.get('game'))
         return base
 
     def cameras(self):
@@ -160,14 +274,27 @@ class EmbodiedService:
         ]
 
     @observe("embodied.start")
-    async def start(self, camera_id=None, app_id=None, *, open_privacy=False):
+    async def start(self, camera_id=None, app_id=None, *, open_privacy=False, expected_intent=None, difficulty=None):
         async with self.lock:
+            if difficulty is not None:
+                game_difficulty(difficulty)
+                if not app_id or get_app(app_id).mode not in {'quest','ski','tennis','hiit'}:
+                    raise ValueError('invalid_game_difficulty')
+            if app_id and app_id != 'home' and time.monotonic() < self.practice_deadline:
+                raise ValueError('practice_active')
             if not self.capture_enabled:
                 raise ValueError("camera_capture_paused")
             if open_privacy:
                 raise ValueError("camera_open_in_mijia_required")
+            if app_id and get_app(app_id).kind == 'party':
+                raise ValueError('party_host_required')
             if self.closed or not self.configured():
                 raise ValueError("embodied_not_configured")
+            app = get_app(app_id) if app_id else None
+            snapshot = None
+            if expected_intent is not None or app and app.mode:
+                snapshot = await self._check_game_intent(expected_intent)
+            original_process = self.process
             self.recovery_enabled = True
             # Viewer selection never replaces the household camera owner. Games
             # use its primary feed; other views subscribe to their existing feed.
@@ -213,14 +340,33 @@ class EmbodiedService:
                         await self._stop()
                         raise ValueError("embodied_worker_failed")
                     await asyncio.sleep(0.1)
-            if app_id:
-                app = get_app(app_id)
-                if app.mode:
-                    await self.request("/api/game", {"action": "select", "mode": app.mode})
+            if app and app.mode:
+                if self.process is not original_process:
+                    # A newly spawned idle worker has exactly its constructor
+                    # reset. A bookmarked viewer may already have claimed it;
+                    # do not select over that newer activity.
+                    initial = await self.request('/api/status')
+                    game = initial.get('game', {})
+                    if (not self._game_intent(game) or game.get('control_revision') != 1
+                            or game.get('round_id') != 1 or game.get('mode') != 'off'
+                            or game.get('selected_mode') != 'quest'
+                            or game.get('game_input_enabled') is not False):
+                        raise ValueError('game_state_changed')
+                else:
+                    game = snapshot['game']
+                command = {"action": "select", "mode": app.mode}
+                if difficulty is not None:
+                    command['difficulty'] = difficulty
+                selected_game = await self._send_game_command(command, game)
+                if difficulty is not None and (not isinstance(selected_game, dict) or selected_game.get('difficulty') != difficulty):
+                    raise ValueError('game_state_changed')
+            if not self.capture_enabled:
+                raise ValueError('camera_capture_paused')
             await self.request("/api/start", {})
             return await self.status()
 
     async def _spawn_guarded_worker(self, environment):
+        self._game_lifecycle = secrets.token_hex(16)
         owner = secrets.token_hex(16)
         read_fd, write_fd = os.pipe()
         guardian = None
@@ -260,6 +406,7 @@ class EmbodiedService:
         # device commands. Real household admission also permits orphan recovery.
         if self.process is None and not self.recovery_enabled:
             return dict(status='stopped', restored=True)
+        self._game_lifecycle = secrets.token_hex(16)
         worker_pid = self.process.pid if self.process is not None else None
         if self.process is not None and self.process.returncode is None:
             try:
@@ -375,7 +522,7 @@ class EmbodiedService:
     async def camera_control(self,camera_id,*,direction=None,mode=None):
         camera(camera_id)
         if self.manual_previews.has(camera_id):
-            if mode=='auto' or mode=='survey':raise ValueError('recognition_required')
+            if mode in {'auto','pets','survey'}:raise ValueError('recognition_required')
             return await self.manual_previews.command('control',camera_id,direction=direction,mode=mode)
         if not self.capture_enabled or not self.process or self.process.returncode is not None:
             raise ValueError('camera_not_running')
@@ -460,7 +607,8 @@ class EmbodiedService:
     async def miot_cover(self, action, event_id, expected_revision=None):
         # Curtain control does not require camera capture or recognition.
         import time
-        from .miot_spec import optional_cover,cover_revision
+
+        from .miot_spec import cover_revision, optional_cover
         binding=optional_cover()
         if binding is None:raise ValueError('cover_unavailable')
         revision=cover_revision(binding)
@@ -483,6 +631,8 @@ class EmbodiedService:
 
     def viewer(self, app_id, *, tv=False):
         app = get_app(app_id)
+        if app.kind == 'party':
+            raise ValueError('party_host_required')
         config = configuration()
         host = config["viewer_host"] if tv else "127.0.0.1"
         path = "/games" if app.mode else "/"
@@ -490,12 +640,21 @@ class EmbodiedService:
             dict(k=(PRIVATE / "viewer-key").read_text().strip(), **({} if tv else {'embed':'1'}))
         )
 
+    def recognition_viewer(self):
+        config = configuration()
+        return f"http://127.0.0.1:{int(config['viewer_port'])}/?" + urlencode(
+            dict(k=(PRIVATE / 'viewer-key').read_text().strip(), embed='1', debug='1'))
+
     async def close(self):
         self.closed = True
         try:
-            await self.manual_previews.close()
-            if getattr(self, 'safety_output', None) is not None:
-                await self.safety_output.close()
-            await self.stop()
+            try:
+                await self.manual_previews.close()
+            finally:
+                try:
+                    if getattr(self, 'safety_output', None) is not None:
+                        await self.safety_output.close()
+                finally:
+                    await self.stop()
         finally:
             await self.client.aclose()

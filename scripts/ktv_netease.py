@@ -13,17 +13,17 @@ import subprocess
 
 BUNDLE_ID = "com.netease.163music"
 OPEN = "/usr/bin/open"
-ACTIONS = frozenset({"pause", "resume", "play"})
+ACTIONS = frozenset({"pause", "resume", "play", "download"})
 SONG_ID = re.compile(r"[1-9][0-9]{0,18}\Z", re.ASCII)
 
 
 def message(action: str, song_id: str | None = None) -> dict[str, str]:
     if not isinstance(action, str) or action not in ACTIONS:
         raise ValueError("unsupported_command")
-    if action == "play":
+    if action in {"play", "download"}:
         if not isinstance(song_id, str) or not SONG_ID.fullmatch(song_id) or int(song_id) > 2**63 - 1:
             raise ValueError("numeric_song_id_required")
-        return {"cmd": "play", "type": "song", "id": song_id}
+        return {"cmd": action, "type": "song", "id": song_id}
     if song_id is not None:
         raise ValueError("song_id_not_allowed")
     return {"cmd": action}
@@ -79,7 +79,7 @@ def control(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=sorted(ACTIONS))
-    parser.add_argument("--song-id", help="Positive numeric NetEase song ID, required for play")
+    parser.add_argument("--song-id", help="Positive numeric NetEase song ID, required for play/download")
     parser.add_argument("--title", help="Optional local display title; excluded from execution results and URI")
     parser.add_argument("--execute", action="store_true", help="Explicitly send the command to the installed client")
     args = parser.parse_args(argv)

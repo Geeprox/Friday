@@ -6,6 +6,7 @@ from homeplane.embodied.room_engine import Room, DEFAULT, validate
 class GeometryTests(unittest.TestCase):
     def fixture(self):
         c = copy.deepcopy(DEFAULT)
+        c["mode"] = "relative_calibrated"
         c["dynamic_seats"] = False
         c["anchors"] = [
             {"image": p, "map": p} for p in [[0.05, 0.05], [0.95, 0.05], [0.95, 0.95], [0.05, 0.95]]
@@ -41,6 +42,11 @@ class GeometryTests(unittest.TestCase):
                 "littleMCP": q(0.18, 0.52),
                 "middlePIP": q(0.22, 0.52),
                 "middleTip": q(0.21, 0.51),
+                "ringMCP": q(0.19, 0.54),
+                "ringPIP": q(0.22, 0.54),
+                "ringTip": q(0.20, 0.52),
+                "littlePIP": q(0.21, 0.54),
+                "littleTip": q(0.20, 0.52),
             },
         }
         return r, p, h

@@ -2,12 +2,13 @@
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from homeplane.embodied import temporal_model as model
-from homeplane.embodied.safety import SafetyRuntime, SafetyStore
+from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
 from homeplane.embodied.temporal_model import GIB, HostBudget, MlxWindowProcess, VisualResult
 from homeplane.embodied.temporal_review import TemporalReviewer
 
@@ -77,7 +78,9 @@ async def test_two_disjoint_windows_persist_both_evidence_sequences_and_deduplic
 async def test_busy_drops_backlog_and_next_request_contains_latest_frames():
     engine = Engine(block=True)
     r, clock, _, events = rig(engine)
-    await feed(r, clock, 0, 10, settle=False)
+    await feed(r, clock, 0, 4, settle=False)
+    await asyncio.sleep(0)
+    await feed(r, clock, 4, 10, settle=False)
     await asyncio.sleep(0)
     assert len(engine.calls) == 1 and r.skipped > 0
     engine.ready.set()
@@ -140,20 +143,24 @@ async def test_policy_watcher_revokes_inference_without_more_frames_or_status_re
     runtime=SafetyRuntime(store,visual_engine=engine)
     await runtime.start(interval=.01)
     engine.closed=False
-    clock=Clock();runtime.visual.clock=clock
+    clock=Clock()
+    runtime.visual.clock=clock
     try:
         await feed(runtime.visual,clock,0,4,settle=False)
         for _ in range(100):
-            if engine.calls:break
+            if engine.calls:
+                break
             await asyncio.sleep(.001)
         assert engine.calls and runtime.visual.task is not None
         store.configure(policy.model_copy(update=change))
         for _ in range(100):
-            if engine.closed and not runtime.visual.windows and runtime.visual.task is None:break
+            if engine.closed and not runtime.visual.windows and runtime.visual.task is None:
+                break
             await asyncio.sleep(.005)
         assert engine.closed and not runtime.visual.windows and runtime.visual.task is None
         assert not store.events()
-    finally:await runtime.close()
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -167,7 +174,8 @@ async def test_unreadable_optional_safety_policy_does_not_abort_perception_start
         await asyncio.sleep(.02)
         assert runtime.policy_task is not None and not runtime.policy_task.done()
         assert runtime.error=='safety_storage_unavailable' and not runtime.visual.windows
-    finally:await runtime.close()
+    finally:
+        await runtime.close()
 
 
 def test_model_pin_is_checked_without_loading_or_downloading(tmp_path, monkeypatch):
@@ -197,14 +205,19 @@ def test_mac_budget_reserves_headroom_and_defers_unknown_or_busy_host():
     assert HostBudget(16 * GIB, 50, 20, 10).reason() == "cpu_busy"
 
 
-def test_model_text_cannot_supply_identity_severity_or_actions(tmp_path):
+@pytest.mark.asyncio
+async def test_model_text_cannot_supply_identity_severity_or_actions(tmp_path):
     with pytest.raises(ValueError):
         VisualResult(event="face_obscured", observation="sample", action="broadcast")
-    runtime = SafetyRuntime(SafetyStore(tmp_path / "safety.sqlite"))
-    runtime._visual_event(
+    store = SafetyStore(tmp_path / "safety.sqlite")
+    store.configure(SafetyPolicy(enabled=True, visual_review=True))
+    runtime = SafetyRuntime(store)
+    now = time.monotonic()
+    await runtime.observe('camera', 'session', [], now, now, stable=True, jpeg=b'jpeg')
+    await runtime._visual_event(
         "camera",
         "session",
-        [(1.0, b"jpeg"), (2.0, b"jpeg")],
+        [(now - 1, b"jpeg"), (now, b"jpeg")],
         VisualResult(event="face_obscured", observation="模型观察待复核"),
         1800000000,
     )
@@ -212,12 +225,14 @@ def test_model_text_cannot_supply_identity_severity_or_actions(tmp_path):
     assert event["kind"] == "visual_review" and event["severity"] == "review"
     assert event["person_id"] is None and event["announcement"]["status"] == "not_requested"
     assert len(event["frames"]) == 2 and not runtime.tasks
+    await runtime.close()
 
 
 class FakeProcess:
     def __init__(self):
         self.returncode = None
         self.stdin = self.stdout = self
+        self.reads = 0
 
     def write(self, data):
         self.request = data
@@ -226,7 +241,16 @@ class FakeProcess:
         pass
 
     async def readline(self):
+        self.reads += 1
+        if self.reads == 1:
+            return b'{"version":1,"ready":true}\n'
         return b'{"version":1,"result":{"event":"none","observation":"unchanged"},"peak_mlx_bytes":123}\n'
+
+    async def read(self, limit):
+        return b""
+
+    def close(self):
+        pass
 
     def terminate(self):
         self.returncode = 0
@@ -288,6 +312,8 @@ async def test_cancelled_request_and_memory_pressure_release_the_child(tmp_path,
 
     class Blocked(FakeProcess):
         async def readline(self):
+            if self.reads == 0:
+                return await super().readline()
             read.set()
             await asyncio.Event().wait()
 

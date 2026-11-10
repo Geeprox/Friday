@@ -15,7 +15,8 @@ from typing import Literal
 from pydantic import AwareDatetime, Field, model_validator
 
 from .contracts import Contract
-from .rule_compiler import digest
+from .core_rules import CoreRulePlan, CoreRuleProposal, CoreRules
+from .rule_compiler import digest, remove_instruction
 from .rule_contracts import TransitionTrigger
 from .rule_deployment import RemoveRuleAction, RuleDeployment
 from .simulator import Simulator
@@ -65,7 +66,7 @@ class RuleTextResult(Contract):
     code: str
     context: RuleTextContext
     choices: list[RuleTextChoice] = Field(default_factory=list, max_length=16)
-    plan: RuleDeployment | None = None
+    plan: RuleDeployment | CoreRulePlan | None = None
     planner: str = "deterministic_baseline"
     model_inference_attempted: Literal[False] = False
     real_write_attempted: Literal[False] = False
@@ -92,6 +93,13 @@ class RuleTextChanges:
             )
 
     def context(self):
+        if isinstance(self.manager, CoreRules):
+            source = self.manager.context()
+            return RuleTextContext(
+                fingerprint=digest(['home_core_text/1',source['fingerprint']]),
+                available=source['available'],simulated=False,
+                coverage=['仅修改 Friday 中已保存的自动化。','其他平台中的规则保持原样。'],
+            )
         adapter = self.manager.core.adapter
         available = self.manager.owned and isinstance(adapter, Simulator)
         records = self.manager.backend.records() if available else []
@@ -115,6 +123,26 @@ class RuleTextChanges:
                 "Native HA/Geek rule deployment and ARL Codex structured planning remain unsupported.",
             ],
         )
+
+    def _records(self):
+        return self.manager.records() if isinstance(self.manager,CoreRules) else self.manager.backend.records()
+
+    async def _remove(self, chosen, request, deadline):
+        if not isinstance(self.manager,CoreRules):
+            return await self.manager.plan_remove(RemoveRuleAction(
+                record_id=chosen.record_id,action_id=chosen.action_id,
+                expected_fingerprint=chosen.expected_fingerprint,idempotency_key='text-'+digest(request)),
+                deadline=deadline)
+        if time.monotonic() >= deadline or self.context().fingerprint != request.expected_context:
+            raise ValueError('source_conflict')
+        old = self.manager.read(chosen.record_id)
+        if old is None or old.fingerprint != chosen.expected_fingerprint:
+            raise ValueError('source_conflict')
+        rule = remove_instruction(old.rule,chosen.action_id,digest(old.rule))
+        return await self.manager.plan(CoreRuleProposal(rule=rule,
+            expected_context=self.manager.context()['fingerprint'],
+            record_id=old.id,expected_fingerprint=old.fingerprint,
+            expires_at=request.expires_at,idempotency_key='text-'+digest(request)))
 
     def _result(self, context, status, code, **extra):
         return RuleTextResult(context=context, status=status, code=code, **extra)
@@ -177,12 +205,15 @@ class RuleTextChanges:
                     names.get(getattr(action, "target", None), ""),
                     names.get(getattr(action, "target", None), ""),
                 )
-                return ("打开 " if getattr(action, "power", None) == "on" else "保留 ") + (
+                parameters=getattr(action,'desired',{})
+                turns_on=(getattr(action,'power',None)=='on' or parameters.get('power')=='on'
+                          or getattr(action,'operation',None)=='climate.mode' and parameters.get('hvac_mode') not in {None,'off'})
+                return ("打开 " if turns_on else "保留 ") + (
                     name or action.type
                 )
 
             choices = []
-            for record in self.manager.backend.records():
+            for record in self._records():
                 if not record.enabled:
                     continue
                 trigger = record.rule.trigger
@@ -195,7 +226,12 @@ class RuleTextChanges:
                     continue
                 for action in record.rule.actions:
                     kind = "climate.set" if intent["target"] == "空调" else "light.set"
-                    if action.type != kind or getattr(action, "power", None) != "on":
+                    generic = action.type == 'device.set' and (
+                        kind == 'light.set' and action.operation == 'light.set' and action.desired.get('power') == 'on'
+                        or kind == 'climate.set' and (
+                            action.operation == 'climate.mode' and action.desired.get('hvac_mode') not in {None,'off'}
+                            or action.operation == 'climate.power' and action.desired.get('power') == 'on'))
+                    if not generic and (action.type != kind or getattr(action, "power", None) != "on"):
                         continue
                     if intent["target"] not in {"空调", "灯"} and intent["target"] not in label(action):
                         continue
@@ -230,15 +266,7 @@ class RuleTextChanges:
             else:
                 chosen = choices[0]
                 try:
-                    plan = await self.manager.plan_remove(
-                        RemoveRuleAction(
-                            record_id=chosen.record_id,
-                            action_id=chosen.action_id,
-                            expected_fingerprint=chosen.expected_fingerprint,
-                            idempotency_key="text-" + digest(request),
-                        ),
-                        deadline=deadline,
-                    )
+                    plan = await self._remove(chosen,request,deadline)
                 except ValueError as exc:
                     code = (
                         str(exc)

@@ -217,6 +217,8 @@ async def test_production_nas_positive_connect_then_read_timeout_or_cancel(tmp_p
 
 @pytest.mark.asyncio
 async def test_production_desktop_diagnostics_before_connection_and_failure_lifecycle(tmp_path, monkeypatch):
+    from tests.arl_fixtures import isolated_runtime
+
     root = tmp_path.resolve()
     journal = RuntimeLog(root / 'logs')
     for name in ('BASE','STATE'):
@@ -224,7 +226,8 @@ async def test_production_desktop_diagnostics_before_connection_and_failure_life
     for name in ('CONFIG','CREDENTIAL','NEW_CREDENTIAL'):
         monkeypatch.setattr(backend, name, root / (name + '.absent'))
     monkeypatch.setattr(backend, 'connection_configuration', lambda: {'configured':False})
-    monkeypatch.setattr(backend, 'arl_runtime', lambda: ARLRuntime(lambda: root / 'missing-runtime'))
+    runtime, session_counts = isolated_runtime(root / 'missing-runtime')
+    monkeypatch.setattr(backend, 'arl_runtime', lambda: runtime)
     async def failed_adapter(_renewal):
         raise backend.RealHomeFailure('ha_authorization_rejected', [{'private':'PRIVATE-GRANT PRIVATE-URL'}])
     monkeypatch.setattr(backend, 'real_adapter', failed_adapter)
@@ -251,6 +254,7 @@ async def test_production_desktop_diagnostics_before_connection_and_failure_life
                for r in journal.rows if 'http_status' in r)
     assert {'service.start','service.stop'} <= {r['stage'] for r in journal.rows}
     assert service.arl_task.done()
+    assert session_counts == dict(created=1, started=1, closed=1)
     check_private(journal)
 
 

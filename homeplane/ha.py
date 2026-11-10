@@ -95,6 +95,20 @@ class HAReadOnlyAdapter:
     async def discover(self):
         return {"status": "unsupported", "method": "mdns", "reason": "Explicit URL required"}
 
+    async def household_timezone(self):
+        """Read the configured home's timezone, never the Console machine's zone."""
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            await self._refresh_auth()
+            config = await self._get('/api/config')
+            value = config.get('time_zone') if isinstance(config, dict) else None
+            if not isinstance(value, str) or not 1 <= len(value) <= 96:
+                return None
+            ZoneInfo(value)
+            return value
+        except (httpx.HTTPError, OSError, ValueError, TypeError, ZoneInfoNotFoundError):
+            return None
+
     @observe('ha.subscribe', upstream='ha')
     async def subscribe(self, *, event_sink=None, timeout=15):
         from .ha_stream import HAStream

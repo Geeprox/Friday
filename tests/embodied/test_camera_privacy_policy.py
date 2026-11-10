@@ -54,6 +54,21 @@ async def test_explicit_start_cannot_create_persistent_shutter_open_permission()
 
 
 @pytest.mark.asyncio
+async def test_party_game_never_uses_perception_start_as_lobby(monkeypatch):
+    owner = module.EmbodiedService()
+    forbidden = AsyncMock(side_effect=AssertionError('party lobby must not start cameras'))
+    monkeypatch.setattr(module.asyncio, 'create_subprocess_exec', forbidden)
+    monkeypatch.setattr(module, 'camera', lambda *_: (_ for _ in ()).throw(AssertionError('no camera lookup')))
+    try:
+        with pytest.raises(ValueError, match='party_host_required'):
+            await owner.start(app_id='werewolf')
+        assert owner.process is None
+        forbidden.assert_not_awaited()
+    finally:
+        await owner.client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_recovery_replaces_preexisting_auto_open_worker_before_restarting():
     owner=module.EmbodiedService()
     owner.process=SimpleNamespace(returncode=None)

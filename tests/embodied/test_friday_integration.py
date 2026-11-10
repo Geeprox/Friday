@@ -106,15 +106,16 @@ async def test_console_catalog_without_optional_sdk_and_same_origin_lifecycle(tm
             ).status_code == 403
             assert (
                 await client.post(
-                    "/api/embodied/start", json=dict(app="ski"), headers={"Origin": "http://testserver"}
+                    "/api/embodied/start", json=dict(app="ski",expected_intent='a'*64), headers={"Origin": "http://testserver"}
                 )
             ).status_code == 200
 
 
-def test_catalog_does_not_claim_full_werewolf_rules():
+def test_catalog_werewolf_uses_independent_private_party_host():
     item = next(i for i in catalog() if i["id"] == "werewolf")
-    assert item["kind"] == "seating"
-    assert item["status"] == "prototype"
+    assert item["kind"] == "party"
+    assert item["players"] == (6, 12)
+    assert item["mode"] is None
 
 
 def test_bystander_cannot_switch_or_steal_bound_player_and_owner_survives_yeah():

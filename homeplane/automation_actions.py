@@ -26,6 +26,13 @@ class RunRecord(BaseModel):
     event_id:str=Field(pattern=r'^[A-Za-z0-9_-]{1,128}$')
 
 
+class AttentionAcknowledgement(BaseModel):
+    model_config=ConfigDict(extra='forbid',strict=True)
+    record_id:str=Field(min_length=1,max_length=128)
+    expected_fingerprint:str=Field(pattern=r'^[a-f0-9]{64}$')
+    run_id:str|None=Field(default=None,min_length=1,max_length=128)
+
+
 class AutomationActions:
     def __init__(self,manager,runtime,core_lock):
         self.manager,self.runtime,self.core,self.core_lock=manager,runtime,manager.core,core_lock
@@ -48,19 +55,24 @@ class AutomationActions:
         return snapshot
 
     async def set_enabled(self,identifier,request):
-        self.record(identifier,request)
+        initial=self.record(identifier,request)
+        if request.enabled:
+            from .rule_schedule import require_future_once
+            require_future_once(initial.rule.trigger,datetime.now(UTC))
         await self.runtime.invalidate('configuration_change_requires_new_window')
         async with self.manager.lock:
             record=self.record(identifier,request)
             if request.enabled:
                 await self.qualify(record);self.record(identifier,request)
+                from .rule_schedule import require_future_once
+                require_future_once(record.rule.trigger, datetime.now(UTC))
                 if any(r.enabled and r.id!=record.id and r.rule.id==record.rule.id for r in self.manager.records()):
                     raise ValueError('newer_rule_version_active')
                 self.manager._acyclic(record.rule,record)
             updated=core_record(record.id,record.rule,request.enabled,record.source_scope,record.authority_revision)
             with self.core.store.connection:
                 self.core.store.connection.execute('UPDATE core_owned_rules SET body=? WHERE id=?',(updated.model_dump_json(),record.id))
-            self.manager.generation+=1
+            self.manager.changed()
             return updated
 
     @staticmethod
@@ -114,4 +126,11 @@ def create_router(manager,runtime,core_lock):
     async def run(identifier:str,request:RunRecord):
         try:return await owner.run(identifier,request)
         except ValueError as exc:raise HTTPException(409,detail=str(exc))from None
+    @router.post('/attention/{identifier}/acknowledge')
+    async def acknowledge(identifier:str,request:AttentionAcknowledgement):
+        if len(identifier)!=64 or any(c not in 'abcdef0123456789' for c in identifier):
+            raise HTTPException(422,detail='invalid_attention')
+        async with manager.lock:
+            try:return runtime.attention.acknowledge(identifier,request)
+            except ValueError as exc:raise HTTPException(409,detail=str(exc))from None
     return router

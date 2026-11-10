@@ -1,7 +1,9 @@
 """Console App library and narrow lifecycle/device bridge."""
 
 import secrets
+import time
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -9,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from homeplane.runtime_log import observe
 
 from .catalog import RECOGNIZERS, catalog, get_app
+from .game_difficulty import DifficultyId, difficulty_options
 from .household import DeviceCommands, basic_command
 from .paths import PRIVATE
 
@@ -18,6 +21,13 @@ class Start(BaseModel):
     model_config = ConfigDict(extra="forbid")
     camera: str | None = Field(default=None, pattern=r"^cam_[a-f0-9]{10}$")
     app: str | None = Field(default=None, max_length=32)
+    difficulty: DifficultyId | None = None
+    expected_intent: str = Field(pattern=r'^[a-f0-9]{64}$', strict=True)
+
+
+class GameControl(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    expected_intent: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
 class MiHomeConnection(BaseModel):
@@ -29,7 +39,7 @@ class MiHomeConnection(BaseModel):
 class CameraControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
     direction: str | None = Field(default=None,pattern="^(left|right|up|down)$")
-    mode: str | None = Field(default=None,pattern="^(hold|auto|survey)$")
+    mode: str | None = Field(default=None,pattern="^(hold|auto|pets|survey)$")
 
 
 class CameraPower(BaseModel):
@@ -61,6 +71,16 @@ class VoiceInput(BaseModel):
     enabled: bool
 
 
+class PracticeStart(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    gesture: str = Field(min_length=1, max_length=40)
+
+
+class PracticeToken(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    token: str = Field(pattern=r'^[a-f0-9]{32}$')
+
+
 class GestureContext(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
     binding: str = Field(pattern=r"^[a-f0-9]{32}$")
@@ -85,17 +105,66 @@ class Resume(BaseModel):
     expected_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
-def create_router(service, core, lock, infrastructure=None):
+class ModelIntent(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    request_id: str = Field(pattern=r'^[a-z0-9-]{1,128}$')
+    input: str = Field(min_length=1, max_length=12000)
+    voice_revision:int|None=Field(default=None,ge=0,strict=True)
+
+
+def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None, archive=None, home_flow=None):
     router = APIRouter()
+    from .voice_preferences import install as install_voice_preferences
+    voice_preferences=install_voice_preferences(router,private=PRIVATE)
     from .audio_output import install as install_speech_output
     install_speech_output(router)
     from .safety_api import install as install_safety
-    service.safety_output = install_safety(router, service)
+    service.safety_output = install_safety(router, service, archive=archive)
     devices = DeviceCommands(core, lock, service)
+    if home_flow is not None:
+        from .voice_questions import install as install_voice_questions
+        voice_source=install_voice_questions(router,service,home_flow,infrastructure,voice_preferences,PRIVATE)
+        from .voice_tasks import install as install_voice_tasks
+        install_voice_tasks(router,voice_source)
+
+    @router.post('/api/embodied/model')
+    async def model(request: ModelIntent, incoming: Request):
+        try:
+            expected = (PRIVATE / 'control-key').read_text().strip()
+        except OSError:
+            raise HTTPException(403) from None
+        supplied = incoming.headers.get('x-friday-worker', '')
+        if not 32 <= len(expected) <= 512 or not secrets.compare_digest(expected, supplied):
+            raise HTTPException(403)
+        if arl_runtime is None:
+            raise HTTPException(503, detail='application_model_unavailable')
+        try:voice_revision=voice_preferences.read().revision
+        except (ValueError,OSError):raise HTTPException(409,detail='voice_preferences_unavailable')from None
+        if request.voice_revision is not None and request.voice_revision!=voice_revision:
+            raise HTTPException(409,detail='voice_preferences_changed')
+        def current():
+            try:current_revision=voice_preferences.read().revision
+            except (ValueError,OSError):return False
+            return bool(current_revision==voice_revision and service.capture_enabled and not (PRIVATE / 'voice-input-paused').exists()
+                        and (infrastructure is None or infrastructure.policy.enabled
+                             and infrastructure.policy.recognition and infrastructure.policy.interaction))
+        if not current():
+            raise HTTPException(409, detail='model_input_paused')
+        from homeplane.arl import ARLError, model_task
+        from homeplane.preview_request import prepare_for_viewer
+        deadline = time.monotonic() + 30
+        try:
+            with model_task('household.voice.intent', 'interactive', deadline=deadline, current=current):
+                result=await prepare_for_viewer(incoming, lambda: arl_runtime.complete_scenario(
+                    'voice_intent', request.input, request_id=request.request_id, deadline=deadline), timeout=32)
+                if not current():raise HTTPException(409,detail='model_input_changed')
+                return result
+        except (ARLError, ValueError, TimeoutError):
+            raise HTTPException(503, detail='application_model_unavailable') from None
 
     @router.get("/api/games")
     async def games():
-        return dict(apps=catalog(), recognition=RECOGNIZERS, service=await service.status())
+        return dict(apps=catalog(), recognition=RECOGNIZERS, difficulties=difficulty_options(), service=await service.status())
 
     @router.get('/api/embodied/scenes')
     async def scenes():
@@ -110,6 +179,27 @@ def create_router(service, core, lock, infrastructure=None):
     @router.get("/api/embodied/status")
     async def status():
         return await service.status()
+
+    @router.post('/api/embodied/practice/start')
+    async def practice_start(request: PracticeStart):
+        try:
+            return await service.practice('start', request.model_dump())
+        except (ValueError, OSError):
+            raise HTTPException(409, detail='practice_not_ready') from None
+
+    @router.post('/api/embodied/practice/status')
+    async def practice_status(request: PracticeToken):
+        try:
+            return await service.practice('status', request.model_dump())
+        except (ValueError, OSError):
+            raise HTTPException(409, detail='practice_unavailable') from None
+
+    @router.post('/api/embodied/practice/stop')
+    async def practice_stop(request: PracticeToken):
+        try:
+            return await service.practice('stop', request.model_dump())
+        except (ValueError, OSError):
+            raise HTTPException(409, detail='practice_unavailable') from None
 
     @router.post('/api/embodied/voice-input')
     async def voice_input(request: VoiceInput):
@@ -188,11 +278,15 @@ def create_router(service, core, lock, infrastructure=None):
     @router.post("/api/embodied/start")
     async def start(request: Start):
         if request.app:
-            get_app(request.app)
+            if get_app(request.app).kind == 'party':
+                raise HTTPException(409, detail='party_host_required')
         try:
-            return await service.start(request.camera, request.app, open_privacy=request.open_privacy)
-        except (OSError, ValueError):
-            raise HTTPException(409, detail="embodied_start_unavailable") from None
+            return await service.start(request.camera, request.app, open_privacy=request.open_privacy,
+                                       expected_intent=request.expected_intent,
+                                       **({'difficulty':request.difficulty} if request.difficulty is not None else {}))
+        except (OSError, ValueError, httpx.HTTPError) as error:
+            detail = 'game_state_changed' if str(error) == 'game_state_changed' else 'embodied_start_unavailable'
+            raise HTTPException(409, detail=detail) from None
 
     @router.post("/api/embodied/stop")
     async def stop():
@@ -201,8 +295,12 @@ def create_router(service, core, lock, infrastructure=None):
         return await service.stop()
 
     @router.post("/api/embodied/game/stop")
-    async def stop_game():
-        return await service.request("/api/game", {"action": "select", "mode": "off"})
+    async def stop_game(request: GameControl):
+        try:
+            return await service.game_command({"mode": "off"}, expected_intent=request.expected_intent)
+        except (OSError, ValueError, httpx.HTTPError) as error:
+            detail = 'game_state_changed' if str(error) == 'game_state_changed' else 'game_stop_unavailable'
+            raise HTTPException(409, detail=detail) from None
 
     @router.post("/api/embodied/quiet")
     async def quiet(request: Quiet):
@@ -210,11 +308,18 @@ def create_router(service, core, lock, infrastructure=None):
 
     @router.get("/api/games/{app_id}/open")
     async def open_app(app_id: str):
-        get_app(app_id)
+        if get_app(app_id).kind == 'party':
+            raise HTTPException(409, detail='party_host_required')
         report = await service.status()
         if not report["owned"]:
             raise HTTPException(409, detail="embodied_not_running")
         return dict(url=service.viewer(app_id), tv_url=service.viewer(app_id, tv=True))
+
+    @router.get('/api/embodied/recognition/open')
+    async def open_recognition():
+        if not (await service.status()).get('owned'):
+            raise HTTPException(409, detail='embodied_not_running')
+        return dict(url=service.recognition_viewer())
 
     @router.post("/api/embodied/command")
     @observe("embodied.command")
@@ -239,6 +344,8 @@ def create_router(service, core, lock, infrastructure=None):
             if request.gesture is None:
                 return True
             import time
+            if time.monotonic() < getattr(service, 'practice_deadline', 0):
+                return False
             from .interaction import load
             try:
                 config = load()

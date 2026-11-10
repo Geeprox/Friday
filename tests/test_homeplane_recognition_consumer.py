@@ -1,5 +1,4 @@
 """Finite synthetic consumer/IPC tests. No SDK, weights or household media."""
-import ast
 import asyncio
 import hashlib
 import importlib.abc
@@ -16,6 +15,7 @@ from uuid import uuid4
 import httpx
 import numpy as np
 import pytest
+from api_privacy_guard import privacy_fingerprint
 from test_homeplane_native_media import SimulatedSDK, immediate
 from test_recognition_packet import GOOD_METADATA, FakeCV, FakeSherpa, metadata_bytes
 
@@ -497,13 +497,11 @@ async def test_stale_configuration_cannot_publish_real_child_result(tmp_path):
 
 
 def test_protected_quality_callback_and_api_boundary_ast_unchanged():
-    # Quality callback frozen; boundary adds only the approved strict-write People prefix.
+    # Original privacy fingerprints remain pinned; only the declared-port alias is normalized.
     expected = {'record_media_quality': '613ed905c7cd6741c748a456054ed7dd5e79c14ab11497edec88586e9dbd018e', 'local_boundary': '2de1eb50a4defc7b4360eb07cbb694c6bb7d495aa54b92342c6624c4253feb28'}
     current = (Path(__file__).parents[1]/'homeplane/api.py').read_text()
     for name, fingerprint in expected.items():
-        node = next(n for n in ast.walk(ast.parse(current))
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
-        assert hashlib.sha256(ast.dump(node, include_attributes=False).replace(', type_params=[]', '').encode()).hexdigest() == fingerprint
+        assert privacy_fingerprint(current, name) == fingerprint
 
 
 @pytest.mark.asyncio

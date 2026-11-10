@@ -8,6 +8,7 @@ This is an experimental internal ABI, never a generic command interface.
 import ctypes as c
 import hashlib
 import json
+import math
 import platform
 import time
 from pathlib import Path
@@ -15,6 +16,17 @@ from pathlib import Path
 SHA256 = "df4610cae665ec2f4dbc40f203d0a59d6161f18fbd551219bdf853ab101bf4f0"
 NEW = 0x1B10
 SEND = 0x6F570
+
+
+def check_motor_deadline(expires_mono):
+    """Parent and child share the host monotonic clock; no queued old impulses."""
+    if type(expires_mono) not in (int, float) or not math.isfinite(expires_mono):
+        raise ValueError('invalid_motor_deadline')
+    remaining = expires_mono-time.monotonic()
+    if remaining <= 0:
+        raise RuntimeError('motor_request_expired')
+    if remaining > 1.5:
+        raise ValueError('invalid_motor_deadline')
 
 
 class LocalMotor:
@@ -33,10 +45,11 @@ class LocalMotor:
         self.send = c.CFUNCTYPE(c.c_int, c.c_void_p, c.c_uint32, c.c_char_p, c.c_size_t)(self.base + SEND)
         self.last = -10.0
 
-    def step(self, direction):
+    def step(self, direction, *, expires_mono):
         operation = {"left": 1, "right": 2, "up": 3, "down": 4}.get(direction)
         if operation is None:
             raise ValueError("direction_not_allowed")
+        check_motor_deadline(expires_mono)
         now = time.monotonic()
         if now - self.last < 0.7:
             raise RuntimeError("motor_rate_limited")
@@ -47,7 +60,10 @@ class LocalMotor:
         if not session or c.c_uint32.from_address(session).value != 4:
             raise RuntimeError("motor_session_not_ready")
         payload = json.dumps({"operation": operation}, separators=(",", ":")).encode()
-        self.last = now
+        # A worker-pool wait or delayed SDK/session inspection may outlive the
+        # decision. Refuse it at the final native boundary as well.
+        check_motor_deadline(expires_mono)
+        self.last = time.monotonic()
         began = time.monotonic()
         code = self.send(session, 0x112, payload, len(payload))
         return {

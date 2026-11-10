@@ -1,4 +1,4 @@
-"""Opt-in to Friday's existing same-origin guards; no run/scan/upload/delete endpoint."""
+"""Existing same-origin guards; explicit selected text reads, no file writes or cloud uploads."""
 
 from fastapi import APIRouter, HTTPException
 from pydantic import Field
@@ -18,6 +18,7 @@ from .extraction_queue import StewardQueueControl
 from .policy import StewardPolicyEdit
 from .service import StewardError
 from .settings_contracts import StewardSettingsEdit, StewardSettingsRequest
+from .local_text import SelectedTextPreparation, SelectedTextRequest
 
 
 class CompareRequest(Contract):
@@ -69,6 +70,18 @@ def create_router(steward):
     @router.post("/jobs/preview")
     async def jobs(request: StewardJobRequest):
         return await call(steward.plan_jobs, request)
+
+    @router.post("/content/text")
+    async def extract_text(request: SelectedTextRequest):
+        if steward.local_extraction is None:
+            raise HTTPException(409, detail={"code": "steward_executor_disabled"})
+        return await call(steward.local_extraction.start, request)
+
+    @router.post("/content/text/prepare")
+    async def prepare_text(request: SelectedTextPreparation):
+        if steward.local_extraction is None:
+            raise HTTPException(409, detail={"code": "steward_executor_disabled"})
+        return await call(steward.local_extraction.prepare, request)
 
     @router.post("/suggest")
     async def suggest(request: StewardSuggestionRequest):

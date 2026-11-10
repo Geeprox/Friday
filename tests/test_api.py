@@ -46,6 +46,11 @@ def test_api_control_and_boundaries(tmp_path, monkeypatch):
 
 
 def test_live_disables_demo(tmp_path, monkeypatch):
+    import importlib
+    from tests.arl_fixtures import isolated_runtime
+
+    runtime, counts = isolated_runtime(tmp_path / 'synthetic-arl')
+    monkeypatch.setattr(importlib.import_module('friday.app'), 'runtime_for', lambda _settings: runtime)
     example = json.loads(Path("friday.example.json").read_text())
     example["mode"] = "live"
     monkeypatch.chdir(tmp_path)
@@ -53,3 +58,4 @@ def test_live_disables_demo(tmp_path, monkeypatch):
     with TestClient(app) as client:
         headers = {"X-Friday-Token": client.get("/api/status").json()["token"]}
         assert client.post("/api/demo", headers=headers, json={"scenario": "point"}).status_code == 403
+    assert counts == dict(created=1, started=1, closed=1)

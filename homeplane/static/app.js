@@ -73,6 +73,8 @@ const coreRuleDraft = {name:'',triggerDevice:'',trigger:'',edge:'off:on',device:
 const deviceOperationLabels = {'light.set':'开关亮度','switch.set':'电源','fan.set':'风扇电源','fan.percentage':'风速比例','climate.mode':'空调模式','climate.temperature':'目标温度','cover.position':copyName('Friday-1017'),'lock.set':'门锁状态','number.value':'设定值','select.option':'功能选项'};
 let selectedActionFunctionId = null;
 let selectedConnection = 'settings-ha';
+let requestArchiveSettings = false;
+let requestedSafetyEvent = null;
 let showAllStates = false;
 let inspectingStateId = null;
 let archiveSession=0,archiveVersion=0,archiveContext=null,archiveResult=null;
@@ -80,38 +82,61 @@ const archiveDraft={camera:'',start:'',end:''};
 let archivePlayerView=null,archivePlayerVersion=0;
 let archivePrepareController=null,archiveExpiryTimer=null,archiveContextTimer=null;
 let archiveSetupSession=0,archiveSetupVersion=0,archiveSetupRefresh=null;
-const archiveSetupDraft={camera:'',folder:'',name:'',room:'',timezone:'Asia/Shanghai',offset:'',uncertainty:'',arrival:'',retention:'',timing:false,completion:false};
+const archiveSetupDraft={camera:'',capture:'',folder:'',name:'',room:'',timezone:'Asia/Shanghai',offset:'',uncertainty:'',arrival:'',retention:'',timing:false,completion:false};
 let selectedRoom = '*', selectedEntityId = null, deviceQuery = '', deviceLimit = 24, activityLimit = 30;
 const pages = ['Home','Devices','Cameras','Safety','Interaction','Automations','Activity','Games',...(peopleAvailable ? ['People'] : []),...(filesAvailable ? ['Files'] : []),'System','Ask Home','Settings'];
 const pageInfo = {
   Cameras:['摄像头','实时查看家中画面与录像。','video'],
-  Safety:['智能预警','查看疑似异常，提醒家人及时照看。','eye'],
-  Interaction:['互动控制','设置手势控制，查看最近的响应。','eye'],
-  Games:['游戏库','选择游戏，与家人一起动起来。','player-play'],
+  Safety:['家中提醒','查看需要关注的事件。','eye'],
+  Interaction:['互动控制','语音、手势与动作。','hand'],
+  Games:['家庭游戏','选择游戏，与家人一起动起来。','gamepad'],
   Files:['家庭资料（预览）','搜索已索引的 NAS 资料，查看整理建议。','folder'],
   People:['人物','为熟悉的家人登记名字，核对识别结果。','eye'],
   Home:['我的家','在房间里查看状态，控制家中设备。','home'], Devices:['设备','按房间找到需要的设备。','devices'],
   Automations:['自动化','查看家里的日常安排。','clock'], Activity:['回看','发生了什么，记录在这里。','player-play'],
-  Settings:['连接','管理家庭服务与账号。','settings'], System:['系统状态','连接、存储与智能服务。','chart-bar'],
-  Developer:['调试工具','状态与来源记录。','code'], 'Ask Home':['文字指令调试','用于检查文字理解与家庭记录','cpu']
+  Settings:['设置','家庭连接、隐私与偏好。','settings'], System:['系统状态','连接、存储与智能服务。','chart-bar'],
+  Developer:['调试工具','状态与来源记录。','code'], 'Ask Home':['家庭对话','查询家中状态，或告诉 Friday 你想做什么。','home']
 };
 async function api(path, options = {}) {
   if (options.method && options.method !== 'GET' && /^\/api\/(?:settings|source|archive\/(?:cameras|simulator)|simulator\/scenario)/.test(path)) clearHomeConversation();
   const response = await fetch(path, {headers:{'Content-Type':'application/json'}, ...options});
-  if (!response.ok) throw new Error(`请求失败（${response.status}），请重试。`);
+  if (!response.ok) { const error = new Error(`请求失败（${response.status}），请重试。`);try { const body = await response.json();if(body?.detail === 'schedule_time_unavailable')error.code = 'schedule_time_unavailable'; } catch {}throw error; }
   return response.json();
 }
-function go(name) { const changed=page!==name;if(changed){archiveVersion++;archiveSetupVersion++;stopArchivePlayer();} page = name; lastTrace = null; history.replaceState(null,'','#' + name.toLowerCase().replace(' ','-')); render(); if(changed){const heading=$('page-title');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});globalThis.scrollTo?.({top:0,left:0,behavior:'instant'});} if (page === 'Settings') void refreshHaStatus(); }
+let requestedTaskAttention=null;
+function taskAttentionId(value){return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)?value:null;}
+function safetyEventId(value){return typeof value==='string'&&/^[a-f0-9]{32}$/.test(value)?value:null;}
+function pageLocation(){const [path,query='']=location.hash.slice(1).split('?'),name=pages.find(name=>name.toLowerCase().replace(' ','-')===path);return{name,eventId:name==='Safety'?safetyEventId(new URLSearchParams(query).get('event')):null,attentionId:name==='Automations'?taskAttentionId(new URLSearchParams(query).get('attention')):null};}
+function rememberSafetyEvent(id){if(page!=='Safety')return;requestedSafetyEvent=safetyEventId(id);history.replaceState(null,'','#safety'+(requestedSafetyEvent?'?event='+requestedSafetyEvent:''));}
+function go(name,{eventId=null,attentionId=null}={}) { const changed=page!==name;if(changed){archiveVersion++;archiveSetupVersion++;stopArchivePlayer();} page = name;requestedSafetyEvent=name==='Safety'?safetyEventId(eventId):null;requestedTaskAttention=name==='Automations'?taskAttentionId(attentionId):null;lastTrace = null; history.replaceState(null,'','#' + name.toLowerCase().replace(' ','-')+(requestedSafetyEvent?'?event='+requestedSafetyEvent:requestedTaskAttention?'?attention='+requestedTaskAttention:'')); render();if(page==='Safety'&&requestedSafetyEvent)experienceView?.selectEvent?.(requestedSafetyEvent);if(page==='Automations')experienceView?.selectTaskAttention?.(requestedTaskAttention); if(changed){const heading=$('page-title');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});globalThis.scrollTo?.({top:0,left:0,behavior:'instant'});} if (page === 'Settings') void refreshHaStatus(); }
 function button(text, action, attrs = {}) { const b = el('button',text,{type:'button',...attrs}); b.addEventListener('click',action); return b; }
 function navigation() {
-  const nav = $('navigation'); nav.replaceChildren();
+  const nav = $('navigation'), previousPage=nav.querySelector('[aria-current="page"]')?.getAttribute('data-page'), wasOpen=nav.querySelector('.navigation-secondary')?.open, wasCompact=nav.getAttribute('data-compact')==='true'; nav.replaceChildren();
   const utility = $('utility-navigation'); if (utility) utility.replaceChildren();
-  for (const name of ['Home','Devices','Cameras','Safety','Interaction','Automations','Activity','Games',...(peopleAvailable ? ['People'] : []),'Settings',...($('developer-mode').checked ? ['System','Developer'] : [])]) {
+  const compact=globalThis.matchMedia?.('(max-width:760px)').matches===true;
+  nav.setAttribute('data-compact',String(compact));
+  const secondaryNames=['Cameras','Automations','Activity','Safety','People','Files'];
+  const more=add(el('summary',null,{'aria-label':secondaryNames.includes(page)?'更多页面，当前：'+pageInfo[page][0]:'更多页面',...(secondaryNames.includes(page)?{'aria-current':'page','data-page':page}:{})}),icon('chevron-down'),el('span','更多'));
+  const secondary=add(el('details',null,{class:'navigation-secondary',...(!compact||wasCompact&&previousPage===page&&wasOpen?{open:''}:{})}),more);
+  const secondaryNav=el('div',null,{class:'navigation-secondary-items'});secondary.append(secondaryNav);
+  secondary.addEventListener('keydown',event=>{if(nav.getAttribute('data-compact')==='true'&&event.key==='Escape'){secondary.open=false;secondary.querySelector('summary')?.focus();}});
+  for (const name of ['Home','Devices','Cameras','Automations','Activity','Safety','Interaction','Games',...(peopleAvailable ? ['People'] : []),...(filesAvailable ? ['Files'] : []),'Settings',...($('developer-mode').checked ? ['System','Developer'] : [])]) {
     const [label,,mark] = pageInfo[name];
     const b = add(button(null,() => go(name), {'data-page':name,'aria-label':label,...(page === name ? {'aria-current':'page'} : {})}),icon(mark),el('span',label));
-    (['Ask Home','Settings','System','Developer'].includes(name) && utility ? utility : nav).append(b);
+    (secondaryNames.includes(name)?secondaryNav:['Ask Home','Settings','System','Developer'].includes(name)&&utility?utility:nav).append(b);
   }
+  nav.append(secondary);
 }
+function syncNavigationViewport({matches}) {
+  const nav=$('navigation'),secondary=nav?.querySelector('.navigation-secondary');
+  if(!secondary)return;
+  const focused=secondary.contains(document.activeElement);
+  nav.setAttribute('data-compact',String(matches));
+  secondary.open=!matches;
+  if(focused)(matches?secondary.querySelector('summary'):nav.querySelector('button[aria-current="page"]')||nav.querySelector('button'))?.focus({preventScroll:true});
+}
+const navigationViewport=globalThis.matchMedia?.('(max-width:760px)');
+navigationViewport?.addEventListener?.('change',syncNavigationViewport);
 function expireSnapshotStates() {
   if (!snapshot) return false;
   let changed = false;
@@ -133,11 +158,13 @@ function expireHomeQueryStates() {
 }
 document.addEventListener('Friday.homeStatus',event=>{
  const status=event.detail;if(!status||!status.generated_at||!Number.isFinite(Date.parse(status.generated_at)))return;
- $('mode').textContent=status.simulated?'示例家庭':status.connected?(status.control_count?'家庭已连接':'家庭已连接 · 只读'):'连接中断';
+ $('mode').textContent=status.simulated?'示例家庭 · simulated':status.connected?(status.control_count?'家庭已连接':'家庭已连接 · 只读'):'连接中断';
+ $('mode').setAttribute('data-state',status.simulated?'simulated':status.connected?'connected':'offline');
  $('snapshot-time').textContent='更新于'+shortTime(status.generated_at);
 });
 function renderSourceStatus() {
-  $('mode').textContent = !snapshot ? '未连接' : !connected ? '连接中断' : snapshot.mode === 'simulator' ? '示例家庭' : snapshot.action_targets?.length ? '家庭已连接' : '家庭已连接 · 只读';
+  $('mode').textContent = !snapshot ? '未连接' : !connected ? '连接中断' : snapshot.mode === 'simulator' ? '示例家庭 · simulated' : snapshot.action_targets?.length ? '家庭已连接' : '家庭已连接 · 只读';
+  $('mode').setAttribute('data-state',snapshot?.mode==='simulator'?'simulated':connected?'connected':'offline');
   $('snapshot-time').textContent = snapshot ? '更新于' + shortTime(snapshot.generated_at) : '';
   const source = $('settings-source-result');
   if (page === 'Settings' && source && source.getAttribute?.('aria-busy') !== 'true') settingsMessage(source,
@@ -217,6 +244,8 @@ function mountHomeConversation(content) {
   const client={
     send:(request,{signal}={})=>api('/api/home-flow/turn',{method:'POST',body:JSON.stringify(request),signal}),
     cancel:(request,{signal}={})=>api('/api/home-flow/cancel',{method:'POST',body:JSON.stringify(request),signal}),
+    taskProposals:({signal}={})=>api('/api/home-flow/task-proposals',{signal}),
+    discardTaskProposal:(ref,{signal}={})=>api('/api/home-flow/task-proposals/'+encodeURIComponent(ref)+'/discard',{method:'POST',body:'{}',signal}),
   };
   const begin=async()=>{
     const old=homeConversationSession;
@@ -232,7 +261,7 @@ function mountHomeConversation(content) {
     try {
       const {HomeConversation}=await import('/static/home-conversation.js');
       if(version!==homeConversationVersion||controller.signal.aborted||page!=='Ask Home'||slot!==homeConversationSlot||!slot.isConnected)return;
-      if(!homeConversationView)homeConversationView=HomeConversation.mount(slot,{sourceToken:null,client,initialDraft:homeConversationDraft,recovery:'connecting'});
+      if(!homeConversationView){let initialProposalRef=null;try{initialProposalRef=sessionStorage.getItem('Friday.taskReview');sessionStorage.removeItem('Friday.taskReview');}catch{}homeConversationView=HomeConversation.mount(slot,{sourceToken:null,client,initialDraft:homeConversationDraft,recovery:'connecting',initialProposalRef});}
       status.hidden=true;
       const response=await api('/api/home-flow/bootstrap',{method:'POST',signal:controller.signal});
       if(version!==homeConversationVersion || page!=='Ask Home' || slot!==homeConversationSlot || !slot.isConnected || controller.signal.aborted) {
@@ -253,8 +282,8 @@ function mountHomeConversation(content) {
       if(version===homeConversationVersion){homeConversationBoot=null;restart.disabled=false;}
     }
   };
-  const restart=button('重新开始',()=>void begin(),{'data-home-flow':'bootstrap'});
-  slot.append(status,restart);void begin();
+  const restart=button('新对话',()=>void begin(),{'data-home-flow':'bootstrap'});
+  slot.append(add(el('div',null,{class:'hc-session-controls'}),status,restart));void begin();
 }
 let gamesView = null, gamesViewVersion=0;
 function render() {
@@ -263,8 +292,9 @@ function render() {
   if(page==='Games'&&gamesView)return;
   gamesView?.dispose();gamesView=null;++gamesViewVersion;
   if(page!=='Ask Home'&&(homeConversationSlot||homeConversationBoot))clearHomeConversation();
-  if(page!=='Activity'&&archivePlayerView)stopArchivePlayer();
+  if(!['Activity','Safety'].includes(page)&&archivePlayerView)stopArchivePlayer();
   expireSnapshotStates(); navigation();
+  document.body.dataset.activePage = page;
   $('page-title').textContent = page === 'Home' ? '我的家' : pageInfo[page][0];
   document.title = 'Friday · ' + $('page-title').textContent;
   copyLayout.decorate($('page-title'),page === 'Home' ? '我的家' : pageInfo[page][0]);
@@ -289,7 +319,7 @@ function render() {
   renderSourceStatus();
   if(page==='Safety'){
     experiencePage=page;
-    import('/static/safety.js').then(({mountSafety})=>{if(experienceCurrent===experienceVersion&&experiencePage===page)experienceView=mountSafety(content,{go});}).catch(()=>{if(page==='Safety')content.append(note('预警页面暂不可用，请刷新。',true));});return;
+    import('/static/safety.js').then(({mountSafety})=>{if(experienceCurrent===experienceVersion&&experiencePage===page)experienceView=mountSafety(content,{go,initialEventId:requestedSafetyEvent,onEventSelected:rememberSafetyEvent,onOpenRecording:openEventRecording,onArchiveSettings:()=>{requestArchiveSettings=true;go('Settings');}});}).catch(()=>{if(page==='Safety')content.append(note('预警页面暂不可用，请刷新。',true));});return;
   }
   if(page==='Games'){
     const version=gamesViewVersion;
@@ -315,7 +345,8 @@ function render() {
   }
   if(document.body.dataset.consoleSurface!=='legacy'&&['Home','Devices','Cameras','Interaction','Activity','Automations','Settings'].includes(page)&&(snapshot||page==='Settings')){
     experiencePage=page;
-    import('/static/home-experience.js').then(({mountExperience})=>{if(experienceCurrent!==experienceVersion||experiencePage!==page)return;experienceView=mountExperience(content,{page,go,snapshot,legacyConnections:(slot,target)=>{if(target)selectedConnection=target;renderSettings(slot);},legacyRules:renderCoreRules,openEvidenceRecording:openEventRecording});}).catch(()=>{
+    content.append(el('p',page==='Settings'?'正在读取连接设置…':'正在读取家庭状态…',{class:'loading-state',role:'status'}));
+    import('/static/home-experience.js').then(({mountExperience})=>{if(experienceCurrent!==experienceVersion||experiencePage!==page)return;content.replaceChildren();experienceView=mountExperience(content,{page,go,snapshot,attentionId:requestedTaskAttention,developerMode:$('developer-mode').checked,setDeveloperMode:checked=>{$('developer-mode').checked=checked;navigation();},legacyConnections:(slot,target)=>{if(target)selectedConnection=target;renderSettings(slot);},archiveSettings:async slot=>{settingsData=await api('/api/settings');if(page==='Settings'&&slot.isConnected){slot.replaceChildren();renderArchiveSettings(slot);slot.querySelector('#settings-archive').open=true;}},requestArchiveSettings,onArchiveSettingsOpened:()=>{requestArchiveSettings=false;},legacyRules:renderCoreRules,openEvidenceRecording:openEventRecording});}).catch(()=>{
       if(experienceCurrent!==experienceVersion||experiencePage!==page)return;
       experiencePage=null;
       // A missing optional view must not remove the basic Console's controls.
@@ -721,8 +752,9 @@ function stopArchivePlayer(message=''){
   if(message)settingsMessage(view.status,message,true);
 }
 async function openEventRecording(output,details){
-  stopArchivePlayer();const version=++archiveVersion;output.replaceChildren();
+  stopArchivePlayer();const version=++archiveVersion,ownerPage=page;output.replaceChildren();
   if(!details)return;
+  if(!['Activity','Safety'].includes(ownerPage))return;
   const request=details.request;
   const allowed=['schema_version','camera_id','expected_context','time_range'];
   if(!request||Object.keys(request).some(key=>!allowed.includes(key))
@@ -734,19 +766,21 @@ async function openEventRecording(output,details){
     output.append(el('p','这条录像引用暂不可核对，请刷新事件后重试。',{role:'status'}));return;
   }
   output.append(el('p','正在定位事件附近的录像…',{role:'status','aria-live':'polite'}));
-  output.scrollIntoView?.({block:'nearest'});
+  if(ownerPage==='Activity')output.scrollIntoView?.({block:'nearest'});
   try{
     const report=await api('/api/archive/resolve',{method:'POST',body:JSON.stringify(request)}),context=await api('/api/archive/context');
-    if(version!==archiveVersion||page!=='Activity'||!output.isConnected)return;
+    if(version!==archiveVersion||page!==ownerPage||!output.isConnected)return;
     if(report.context_fingerprint!==request.expected_context||context.fingerprint!==report.context_fingerprint||context.simulated!==report.simulated)throw Error('source_changed');
+    const ready=(report.segments??[]).filter(segment=>segment.status==='ready');
+    if(ownerPage==='Safety'&&ready.length===1){output.replaceChildren();await openArchivePlayer(output,report,ready[0]);return;}
     showArchiveResolution(output,report);
     output.scrollIntoView?.({block:'nearest'});
-    const ready=(report.segments??[]).filter(segment=>segment.status==='ready');
     if(ready.length===1)await openArchivePlayer(output,report,ready[0]);
-  }catch(_){if(version===archiveVersion&&page==='Activity'&&output.isConnected)output.replaceChildren(el('p','事件录像暂不可定位，请核对 NAS 连接、时间和摄像头对应关系后重试。',{role:'status'}));}
+  }catch(_){if(version===archiveVersion&&page===ownerPage&&output.isConnected)output.replaceChildren(el('p','事件录像暂不可定位，请核对 NAS 连接、时间和摄像头对应关系后重试。',{role:'status'}));}
 }
 async function openArchivePlayer(output,report,segment){
-  stopArchivePlayer();const version=++archivePlayerVersion,queryVersion=archiveVersion;
+  stopArchivePlayer();const version=++archivePlayerVersion,queryVersion=archiveVersion,ownerPage=page;
+  if(!['Activity','Safety'].includes(ownerPage))return;
   const start=Math.max(Date.parse(report.time_range.start),Date.parse(segment.time_range.start)+(segment.clock_uncertainty_seconds??0)*1000),end=Math.min(Date.parse(report.time_range.end),Date.parse(segment.time_range.end)-(segment.clock_uncertainty_seconds??0)*1000);
   if(!(end>start))return;
   const status=el('div','正在生成隐私预览…',{role:'status','aria-live':'polite'});output.append(status);
@@ -757,15 +791,16 @@ async function openArchivePlayer(output,report,segment){
   try{
     preparedPlan=await api('/api/archive/playback',{method:'POST',signal,body:JSON.stringify({expected_context:report.context_fingerprint,camera_id:report.camera_id,media_ref:segment.media_ref,time_range:{start:new Date(start).toISOString(),end:new Date(end).toISOString()}})});
     const plan=preparedPlan;
-    if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!=='Activity')return;
+    if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!==ownerPage)return;
     const fresh=await api('/api/archive/context',{signal});
-    if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!=='Activity'||fresh.fingerprint!==plan.context_fingerprint||fresh.simulated!==plan.simulated){cancelArchivePlayback(plan);return;}
+    if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!==ownerPage||fresh.fingerprint!==plan.context_fingerprint||fresh.simulated!==plan.simulated){cancelArchivePlayback(plan);return;}
     if(plan.privacy_protected!==true||plan.privacy_preview_generated!==true||plan.original_modified!==false||!['local_person_mosaic','local_full_frame_mosaic'].includes(plan.privacy_mode)){cancelArchivePlayback(plan);status.textContent='隐私预览未就绪';return;}
     if(!/^\/api\/archive\/media\/[a-f0-9]{64}$/.test(plan.stream_url)||!Number.isFinite(plan.start_offset_seconds)||!Number.isFinite(plan.end_offset_seconds)||plan.end_offset_seconds<=plan.start_offset_seconds){cancelArchivePlayback(plan);throw Error('unqualified media');}
-    const root=el('section',null,{class:'archive-player',id:'archive-player'}),video=el('video',null,{controls:'',playsinline:'',preload:'metadata','aria-label':plan.simulated?'simulated 测试录像':copyName('Friday-1228')}),receipt=el('p','等待媒体定位…',{id:'archive-seek-evidence',class:'meta'});
+    const compact=ownerPage==='Safety';
+    const root=el('section',null,{class:compact?'archive-player safety-event-player':'archive-player',id:'archive-player'}),video=el('video',null,{controls:'',playsinline:'',preload:'metadata','aria-label':plan.simulated?'simulated 测试录像':copyName('Friday-1228')}),receipt=el('p','等待媒体定位…',{id:'archive-seek-evidence',class:'meta'});
     video.muted=true;
-    const view={root,video,plan,status:receipt};archivePlayerView=view;
-    const active=()=>archivePlayerView===view&&page==='Activity'&&version===archivePlayerVersion;
+    const view={root,video,plan,status:receipt,ownerPage};archivePlayerView=view;
+    const active=()=>archivePlayerView===view&&page===ownerPage&&version===archivePlayerVersion;
     const expires=Date.parse(plan.expires_at)-Date.now();
     if(!Number.isFinite(expires)||expires<=0||expires>301000){stopArchivePlayer('预览已过期，请重新选择。');return;}
     if(typeof setTimeout==='function')archiveExpiryTimer=setTimeout(()=>{if(active())stopArchivePlayer('预览已过期，请重新选择。');},expires);
@@ -817,9 +852,13 @@ async function openArchivePlayer(output,report,segment){
     video.addEventListener('play',()=>{if(!active())return;if(Date.parse(plan.expires_at)<=Date.now()){stopArchivePlayer('播放资格已过期，请重新查询。');return;}if(ended){ended=false;video.currentTime=plan.start_offset_seconds;}});
     video.addEventListener('error',failed);
     const protection=plan.privacy_mode==='local_full_frame_mosaic'?'整帧遮挡保护':'人物遮挡保护';
-    add(root,badge(plan.simulated?'simulated · 合成录像隐私预览':'本机隐私预览'),el('h3','所选片段'),video,receipt,el('p',`${protection} · 默认静音 · 播放资格至 ${time(plan.expires_at)} · 64 MiB 读取上限`,{class:'meta'}),button('停止回放',()=>stopArchivePlayer('已停止回放。'),{id:'archive-player-stop',class:'secondary'}));
+    const stop=button('停止回放',()=>stopArchivePlayer('已停止回放。'),{id:'archive-player-stop',class:'secondary'});
+    if(compact){
+      add(root,el('h3','附近录像'),video,el('p',`${plan.simulated?'simulated · 合成录像 · ':''}${protection} · 默认静音`,{class:'caption'}),stop,
+        add(el('details',null,{class:'safety-playback-info'}),el('summary','播放信息'),receipt,el('p',`${time(plan.time_range.start)} — ${time(plan.time_range.end)} · 有效期至 ${time(plan.expires_at)}`,{class:'meta'})));
+    }else add(root,badge(plan.simulated?'simulated · 合成录像隐私预览':'本机隐私预览'),el('h3','所选片段'),video,receipt,el('p',`${protection} · 默认静音 · 播放资格至 ${time(plan.expires_at)} · 64 MiB 读取上限`,{class:'meta'}),stop);
     status.remove?.();output.append(root);video.setAttribute('src',plan.stream_url);adopted=true;root.scrollIntoView?.({block:'nearest'});
-  }catch(_){if(version===archivePlayerVersion&&page==='Activity')settingsMessage(status,'保护预览暂不能播放，请重新选择片段并检查本机播放依赖、连接和时钟。',true);}
+  }catch(_){if(version===archivePlayerVersion&&page===ownerPage)settingsMessage(status,'保护预览暂不能播放，请重新选择片段并检查本机播放依赖、连接和时钟。',true);}
   finally{if(preparedPlan&&!adopted)cancelArchivePlayback(preparedPlan);if(version===archivePlayerVersion)archivePrepareController=null;}
 }
 function renderArchiveLookup(content){
@@ -1569,27 +1608,34 @@ function renderLocalReadSources(section) {
   void refresh();return refresh;
 }
 function renderNASConnection(section, onStatusChanged=()=>{}) {
+  const localCredentials=typeof settingsData!=='undefined'&&settingsData?.credentials?.nas==='local_endpoint_bound_private_store';
   const root=el('div',null,{id:'nas-direct-setup'}),form=el('form',null,{id:'nas-direct-form',class:'form-grid settings-form'});
   const result=el('div',null,{id:'nas-direct-result',class:'settings-result',role:'status','aria-live':'polite'});
   const message=el('p','正在读取已保存设置…',{id:'nas-direct-message',class:'muted',role:'status','aria-live':'polite'});
-  add(root,el('h3','连接设置'),el('p','保存会停用读取；再连接，无需挂载目录。先保存，再由你连接。保存会停用当前读取；不需要 Finder 或挂载目录。',{class:'muted'}),form);
+  add(root,el('h3','连接设置'),el('p','先保存连接设置，再登录并连接 NAS。',{class:'muted'}),form);
   const transport=el('select',null,{id:'nas-direct-transport'});
   add(transport,el('option',copyName('Friday-1640'),{value:'smb'}),el('option',copyName('Friday-1641'),{value:'sftp'}));
   form.append(add(el('label','连接方式',{for:'nas-direct-transport'}),transport));
-  const host=settingsField(form,'主机地址','nas-direct-host','',{required:true,maxlength:253,autocomplete:'off',placeholder:'nas.local'},'只填主机名或IP，不填完整连接地址。填写主机名或 IP，不填写 smb:// 或 sftp:// 地址。');
+  const host=settingsField(form,'主机地址','nas-direct-host','',{required:true,maxlength:253,autocomplete:'off',placeholder:'nas.local'},'填写主机名或 IP。');
   const port=settingsField(form,copyName('Friday-1645'),'nas-direct-port','',{type:'number',min:1,max:65535,step:1,placeholder:'445'},'留空使用所选方式的默认端口。');
   const credential=settingsField(form,'已保存的登录信息引用','nas-direct-credential','',{required:true,maxlength:128,autocomplete:'off',pattern:'[A-Za-z0-9_\\-]{1,128}',placeholder:'nas-family'},'这里只填登录引用，保存不等于验证。由原有本机登录信息服务保管账号与密码。这里只填引用；保存引用不代表已经认证。');
+  if(localCredentials)credential.parentElement.hidden=true;
   const smb=el('div',null,{class:'form-grid full',id:'nas-direct-smb'});
-  const share=settingsField(smb,'共享名称','nas-direct-share','',{required:true,maxlength:255,placeholder:'photos'},'填写NAS共享名称，不填完整地址。填写 NAS 上的共享名称，不填写完整地址。');
+  const share=settingsField(smb,'共享名称','nas-direct-share','',{required:true,maxlength:255,placeholder:'photos'},'填写 NAS 上的共享名称。');
   const folder=settingsField(smb,copyName('Friday-1651'),'nas-direct-folder','',{maxlength:1024,placeholder:'Family'},'填共享内目录如Family，留空从根读取');
-  smb.append(el('p','只读连接，默认要求SMB签名与加密。使用只读共享连接；默认要求 SMB 签名和加密。',{class:'full meta'}));form.append(smb);
+  smb.append(el('p','只读连接，默认启用 SMB 签名与加密。',{class:'full meta'}));form.append(smb);
   const sftp=el('div',null,{class:'form-grid full',id:'nas-direct-sftp',hidden:''});
-  const pin=settingsField(sftp,copyName('Friday-1654'),'nas-direct-host-key','',{maxlength:50,autocomplete:'off',placeholder:'SHA256:…'},'结果尚未确认，请核对完整说明。通过 NAS 管理界面或可信渠道独立核对 SHA-256 指纹；不能自动接受未知主机。');
-  settingsField(sftp,copyName('Friday-1656'),'nas-direct-sftp-root','/',{readonly:''},'只支持已被NAS限制目录的账号。此读取方式仅支持已由 NAS 限制在 / 的 SFTP 账号。');
+  const pin=settingsField(sftp,copyName('Friday-1654'),'nas-direct-host-key','',{maxlength:50,autocomplete:'off',placeholder:'SHA256:…'},'请从 NAS 管理界面核对主机指纹。');
+  settingsField(sftp,copyName('Friday-1656'),'nas-direct-sftp-root','/',{readonly:''},'使用已在 NAS 端限制目录的只读账号。');
   const confined=el('input',null,{type:'checkbox',id:'nas-direct-confined'});
-  sftp.append(add(el('label','确认此账号只能访问指定根目录。我已确认此账号被 NAS 限制在这个根目录，不能访问其他位置。',{for:'nas-direct-confined',class:'nas-root-review full'}),confined));
-  sftp.append(el('p','保存结果未确认，请先核对状态。Friday 不会修改 NAS 的账号或目录权限。未确认账号限制时不能保存 SFTP 连接。',{class:'full meta'}));form.append(sftp);
+  sftp.append(add(el('label','此账号只能访问指定目录。',{for:'nas-direct-confined',class:'nas-root-review full'}),confined));
+  sftp.append(el('p','请先在 NAS 中设置账号的目录权限。',{class:'full meta'}));form.append(sftp);
   const save=el('button',copyName('Friday-1660'),{type:'submit',id:'nas-direct-save',class:'primary'});form.append(save);
+  const login=el('form',null,{class:'form-grid settings-form',id:'nas-login-form'});login.hidden=!localCredentials;
+  login.append(el('h3','登录 NAS',{class:'full'}),el('p','登录信息仅保存在此 Mac，用于当前 NAS 与目录的只读连接。',{class:'full muted'}));
+  const loginName=settingsField(login,'用户名','nas-login-name','',{autocomplete:'username',required:true,maxlength:256});
+  const loginPassword=settingsField(login,'密码','nas-login-password','',{type:'password',autocomplete:'current-password',required:true,maxlength:8192});
+  const loginSave=el('button','保存登录信息',{type:'submit',class:'primary'});login.append(loginSave);root.append(login);
   const actions=el('div',null,{class:'settings-actions'});
   const connect=button('连接读取',()=>mutate('resume'),{id:'nas-direct-connect'});
   const disconnect=button(copyName('Friday-1662'),()=>mutate('disable'),{id:'nas-direct-disconnect',class:'secondary'});
@@ -1600,7 +1646,7 @@ function renderNASConnection(section, onStatusChanged=()=>{}) {
   const inputs=[transport,host,port,credential,share,folder,pin,confined];
   const fields=()=>({transport:transport.value,host:host.value,port:port.value,credential_ref:credential.value,share:share.value,root:folder.value,host_key_sha256:pin.value,sftp_root_confined:confined.checked});
   const fill=value=>{
-    transport.value=value.transport??'smb';host.value=value.host??'';port.value=String(value.port??'');credential.value=value.credential_ref??'';
+    transport.value=value.transport??'smb';host.value=value.host??'';port.value=String(value.port??'');credential.value=value.credential_ref??(localCredentials?'family-nas':'');
     share.value=value.share??'';folder.value=value.root==='/'&&value.transport==='sftp'?'':value.root??'';
     pin.value=value.host_key_sha256??'';confined.checked=value.sftp_root_confined===true;
   };
@@ -1612,6 +1658,8 @@ function renderNASConnection(section, onStatusChanged=()=>{}) {
   };
   const controls=()=>{
     const known=generation!==null&&verified&&!reading;
+    loginSave.disabled=busy||!known||dirty||!saved?.config||conflict;
+    loginName.disabled=loginPassword.disabled=busy;
     save.disabled=busy||!known||conflict||Boolean(uncertain);
     connect.disabled=busy||!known||dirty||conflict||Boolean(uncertain)||!saved?.config||(saved.status.enabled===true&&!['paused','backoff'].includes(saved.status.state));
     disconnect.disabled=busy||!known||Boolean(uncertain)||!saved?.config||saved.status.enabled!==true;
@@ -1619,7 +1667,7 @@ function renderNASConnection(section, onStatusChanged=()=>{}) {
     connect.textContent=['paused','backoff','stopped'].includes(saved?.status.state)?'重新连接':'连接读取';
     for(const input of inputs)input.disabled=busy;mode();root.setAttribute('aria-busy',String(busy||reading));
   };
-  const draft=()=>{if(busy)return;if(!nasConnectionDraft)nasConnectionDraftGeneration=generation;dirty=true;nasConnectionDraft=fields();message.textContent='先保存再连接，停止读取不使用未存草稿。有未保存修改。先保存，再连接；断开读取不使用这些草稿。';controls();};
+  const draft=()=>{if(busy)return;if(!nasConnectionDraft)nasConnectionDraftGeneration=generation;dirty=true;nasConnectionDraft=fields();message.textContent='有未保存修改，请先保存连接设置。';controls();};
   for(const input of inputs){input.addEventListener('input',draft);input.addEventListener('change',draft);}
   // NASConnectionConfig's closed fields/defaults; a fixture checks model drift.
   const configDefaults=Object.freeze({
@@ -1662,15 +1710,17 @@ function renderNASConnection(section, onStatusChanged=()=>{}) {
     const labels={not_configured:'尚未配置',disabled:'已保存 · 读取停用',connecting:'正在连接',online:'读取连接在线',backoff:'连接中断或检查过期',paused:'连接已暂停',stopped:'读取尚未连接'};
     const online=status.state==='online'&&status.reachable===true&&status.authenticated===true&&status.readable===true;
     result.append(badge(online?'读取连接在线':labels[status.state]??'待核对',online?'healthy':''));
-    result.append(el('p',saved.credential_reference_saved?'登录引用已保存，是否可用尚未检查':'尚未保存登录信息引用。'));
+    const detail=el('details',null,{class:'connection-state-details'});detail.append(el('summary','连接详情'));
+    detail.append(el('p',saved.credential_reference_saved?'登录引用已保存，是否可用尚未检查':'尚未保存登录信息引用。'));
     const fact=value=>value===true?'已确认':value===false?'未验证通过':'尚未确认';
-    result.append(el('p',`分别核对连接、登录与读取状态。主机可达：${fact(status.reachable)} · 认证：${fact(status.authenticated)} · 可读取：${fact(status.readable)}`));
-    if(status.checked_at)result.append(el('p','最近检查'+time(status.checked_at),{class:'meta'}));
+    detail.append(el('p',`主机可达：${fact(status.reachable)} · 认证：${fact(status.authenticated)} · 可读取：${fact(status.readable)}`));
+    if(status.checked_at)detail.append(el('p','最近检查'+time(status.checked_at),{class:'meta'}));
     if(status.state==='backoff')result.append(el('p',Number.isFinite(status.retry_in_seconds)?`请核对资料范围与当前状态。约 ${Math.ceil(status.retry_in_seconds)} 秒后自动重试。等待期间不要把旧资料视为当前可用。`:'连接检查过期，请刷新状态或重新连接。连接检查已过期，当前可读取状态未确认；可读取最新状态或重新连接。',{class:'muted'}));
     const reasons={nas_auth_failed:'请核对连接状态与使用范围。登录信息引用未就绪或认证未通过。请在原有登录信息服务中核对，再连接。',nas_access_denied:'读取未获授权，请NAS管理方核对目录。读取权限未通过；请由 NAS 管理方核对已授权目录。',nas_host_key_mismatch:'主机校验不符，读取暂停。主机指纹未匹配，读取已暂停。通过可信渠道核对后修改设置；不会自动接受新指纹。',nas_dependency_missing:'本机读取未就绪，请维护方配置后重试。本机读取组件尚未就绪，请由本机维护方完成配置后重试。',nas_invalid_request:'请核对本机设置，NAS连接尚未确认',nas_timeout:'本次连接或读取超时，结果尚未确认。',nas_transport_failed:'连接未完成，可核对主机地址后重试。'};
     if(reasons[status.failure])result.append(el('p',reasons[status.failure],{class:'muted'}));
-    if(saved.config?.transport==='smb'&&saved.config.require_encryption===false)result.append(el('p','请核对连接状态与使用范围。此已保存共享连接未要求加密；保存草稿会保留现有要求。',{class:'meta'}));
-    result.append(el('p','请核对连接状态与使用范围。连接状态不证明目录完整、原件上传完成或可以播放。这里只刷新本机状态，不扫描目录或读取原件。',{class:'meta'}));
+    if(saved.config?.transport==='smb'&&saved.config.require_encryption===false)detail.append(el('p','请核对连接状态与使用范围。此已保存共享连接未要求加密；保存草稿会保留现有要求。',{class:'meta'}));
+    detail.append(el('p','连接状态不证明目录完整、原件上传完成或可以播放。这里只刷新本机状态，不扫描目录或读取原件。',{class:'meta'}));
+    result.append(detail);
   };
   const notify=()=>{
     const key=JSON.stringify([saved?.status.config_generation,saved?.status.state,saved?.status.connection_epoch,saved?.status.failure]);
@@ -1686,7 +1736,7 @@ function renderNASConnection(section, onStatusChanged=()=>{}) {
       const view=await request('/api/settings/nas/connection/config');
       if(current!==sequence||!root.isConnected)return;
       if(!view.status||!Number.isInteger(view.status.config_generation)||view.status.config_generation<0||typeof view.credential_reference_saved!=='boolean'||view.credential_availability!=='not_checked'||Boolean(view.config)!==view.status.configured)throw Error('invalid_saved_state');
-      const previous=generation;let notice=dirty?'草稿保留。先保存修改，再连接。':'只读取本机设置，不检查登录或读取NAS。已读取本机保存设置；不会检查登录信息或读取 NAS。';
+      const previous=generation;let notice=dirty?'草稿保留。先保存修改，再连接。':'已载入本机连接设置。';
       if(uncertain){
         if(view.status.config_generation>uncertain.generation&&same(view.config,uncertain.config)){dirty=false;nasConnectionDraft=null;nasConnectionDraftGeneration=null;conflict=false;notice='已返回状态与上次请求一致的保存设置。';}
         else if(view.status.config_generation===uncertain.generation)notice='新版本还未确认，重试需防重复提交。尚未观察到上次请求的新版本。可显式重试；若请求已生效，版本检查会拒绝重复提交。';
@@ -1707,7 +1757,7 @@ function renderNASConnection(section, onStatusChanged=()=>{}) {
   };
   async function mutate(operation){
     if(busy||reading||generation===null||!verified||uncertain||(conflict&&operation!=='disable')||operation==='resume'&&(dirty||!saved?.config||(saved.status.enabled&&!['paused','backoff'].includes(saved.status.state)))||operation==='disable'&&(!saved?.config||!saved.status.enabled))return;
-    let config;try{config=operation==='save'?candidate():{...saved.config,enabled:operation==='resume'};}catch(_){message.textContent='请核对主机、登录引用与目录限制。请核对主机、登录信息引用，以及所选方式的共享或 SFTP 指纹与账号限制。';return;}
+    let config;try{config=operation==='save'?candidate():{...saved.config,enabled:operation==='resume'};}catch(_){message.textContent='请核对主机、共享目录与登录信息。';return;}
     const expected=generation;busy=true;++sequence;controls();message.textContent=operation==='save'?'正在保存设置，读取将保持停用…':operation==='resume'?'正在发起连接；保存引用不代表已经认证…':'正在断开并停用读取…';
     try{
       const status=await request(operation==='save'?'/api/settings/nas/connection':'/api/settings/nas/connection/'+operation,{method:operation==='save'?'PUT':'POST',body:JSON.stringify(operation==='save'?{expected_generation:expected,config}:{expected_generation:expected})});
@@ -1715,7 +1765,7 @@ function renderNASConnection(section, onStatusChanged=()=>{}) {
       if(!Number.isInteger(status.config_generation)||status.config_generation<=expected)throw Error('unconfirmed_response');
       saved={config,status,credential_reference_saved:true,credential_availability:'not_checked'};generation=status.config_generation;verified=true;
       if(operation==='save'){dirty=false;nasConnectionDraft=null;nasConnectionDraftGeneration=null;fill(config);}
-      message.textContent=operation==='save'?'设置已保存，读取停用；核对后再连接。设置已保存，读取停用。确认无误后点击连接读取。':operation==='resume'?'连接请求已保存，连接认证读取仍待确认':'读取已停用，旧目录与原件状态需重查。已断开并停用读取。旧的目录与原件状态需重新核对。';
+      message.textContent=operation==='save'?'设置已保存。登录后点击“连接读取”。':operation==='resume'?'正在连接 NAS…':'读取已停用，旧目录与原件状态需重查。已断开并停用读取。旧的目录与原件状态需重新核对。';
       show();notify();polls=0;
     }catch(error){
       if(!root.isConnected)return;
@@ -1725,6 +1775,17 @@ function renderNASConnection(section, onStatusChanged=()=>{}) {
     }finally{busy=false;if(root.isConnected){controls();poll();}}
   }
   form.addEventListener('submit',event=>{event.preventDefault();return mutate('save');});
+  login.addEventListener('submit',async event=>{
+    event.preventDefault();if(!localCredentials||loginSave.disabled)return;
+    busy=true;controls();message.textContent='正在保存登录信息…';
+    try{
+      const result=await request('/api/settings/nas/credential',{method:'POST',body:JSON.stringify({expected_generation:generation,username:loginName.value,password:loginPassword.value})});
+      if(!root.isConnected)return;
+      if(result.saved!==true||result.secret_values_returned!==false||result.connection_attempted!==false)throw Error();
+      loginName.value='';message.textContent='登录信息已保存。点击“连接读取”连接 NAS。';
+    }catch{if(root.isConnected)message.textContent='登录信息未保存，请重新读取连接设置后再试。';}
+    finally{loginPassword.value='';busy=false;if(root.isConnected)controls();}
+  });
   if(nasConnectionDraft)fill(nasConnectionDraft);mode();controls();
   nasConnectionRefresh=()=>load(false);void load(false);
 }
@@ -1893,24 +1954,27 @@ async function checkSettings(block, name, patch, show) {
 }
 function renderArchiveSettings(section) {
   const session=++archiveSetupSession,block=el('details',null,{class:'settings-credential',id:'settings-archive'});
-  add(block,el('summary','录像设置'),el('p','读取目录后对应摄像头，录像只读。读取目录后，把每个目录对应到摄像头。录像只读复用。',{class:'muted'}));section.append(block);
+  add(block,el('summary','录像设置'),el('p','对应录像目录与监测摄像头，方便从提醒回看片段。',{class:'muted'}));section.append(block);
   const output=el('div',null,{id:'settings-archive-status',role:'status','aria-live':'polite'}),listing=el('div'),controls=el('div',null,{class:'settings-actions'});
   const form=el('form',null,{id:'settings-archive-form',class:'form-grid settings-form'});
-  const camera=el('select',null,{id:'settings-archive-camera','aria-label':copyName('Friday-1244')}),folder=el('select',null,{id:'settings-archive-folder','aria-label':'录像目录'});
-  add(form,add(el('label','摄像头'),camera),add(el('label','录像目录'),folder));
+  const camera=el('select',null,{id:'settings-archive-camera','aria-label':'已保存的对应关系'}),folder=el('select',null,{id:'settings-archive-folder','aria-label':'录像目录'});
+  const capture=el('select',null,{id:'settings-archive-capture','aria-label':'监测摄像头'});
+  const cameraField=add(el('label','已保存的对应关系'),camera);
+  add(form,cameraField,add(el('label','录像目录'),folder),add(el('label','监测摄像头'),capture));
+  const extraFields=el('div',null,{class:'form-grid settings-form'}),extra=add(el('details',null,{class:'full'}),el('summary','更多录像选项'),extraFields);
   const fields={};
   for(const [key,label,attrs,help] of [
     ['name','名称',{maxlength:80},''],['room','房间',{maxlength:128},''],
-    ['timezone','录像时区',{maxlength:64},'如 Asia/Shanghai。'],
-    ['offset',copyName('Friday-1823'),{type:'number',step:'any',min:-86400,max:86400},'超前填正数，滞后填负数。'],
-    ['uncertainty',copyName('Friday-1825'),{type:'number',step:'any',min:0,max:60},'未测量时留空；不要把未知填成 0。'],
-    ['arrival','归档等待时间（秒）',{type:'number',min:0,max:86400},'由录像写入行为核对；未知可留空。'],
-    ['retention',copyName('Friday-1829'),{type:'number',min:1,max:3650},'仅记录 NAS 策略，不会删除原片。']
-  ])fields[key]=settingsField(form,label,'settings-archive-'+key,archiveSetupDraft[key],attrs,help);
+    ['timezone','录像时区',{maxlength:64},''],
+    ['offset','录像快慢（秒）',{type:'number',step:'any',min:-86400,max:86400},'比实际时间快填正数，慢填负数。'],
+    ['uncertainty','最大误差（秒）',{type:'number',step:'any',min:0,max:60},'未测量时留空。'],
+    ['arrival','录像保存等待时间（秒）',{type:'number',min:0,max:86400},'未知时留空。'],
+    ['retention','保留天数',{type:'number',min:1,max:3650},'按 NAS 的实际设置填写。']
+  ])fields[key]=settingsField(['room','arrival','retention'].includes(key)?extraFields:form,label,'settings-archive-'+key,archiveSetupDraft[key],attrs,help);
   const timing=el('input',null,{type:'checkbox',id:'settings-archive-timing'}),completion=el('input',null,{type:'checkbox',id:'settings-archive-completion'});
   timing.checked=archiveSetupDraft.timing;completion.checked=archiveSetupDraft.completion;
-  add(form,add(el('label','已核对文件名起止时间、时区和时钟误差',{class:'full archive-review'}),timing),add(el('label','仅将已完成保存的文件视为完整片段。已核对该目录仅以完成写入的文件表示闭合片段',{class:'full archive-review'}),completion));
-  const save=el('button',copyName('Friday-1833'),{type:'submit',id:'settings-archive-save',class:'primary'});save.disabled=true;form.append(save);
+  add(form,add(el('label','已核对录像时间与误差',{class:'full archive-review'}),timing),add(el('label','已核对目录只包含保存完整的片段',{class:'full archive-review'}),completion),extra);
+  const save=el('button','保存对应',{type:'submit',id:'settings-archive-save',class:'primary'});save.disabled=true;form.append(save);
   const scan=button('刷新目录',async()=>{
     if(!context||!current()||!savedNas())return;
     const version=++archiveSetupVersion,before=context;scan.disabled=true;save.disabled=true;settingsMessage(output,'正在读取目录索引…');
@@ -1922,11 +1986,12 @@ function renderArchiveSettings(section) {
     }catch(_){if(current()&&version===archiveSetupVersion)settingsMessage(output,'请核对连接状态与使用范围。索引未完成。检查目录连接；SMB 共享需先在 Finder 登录并挂载。',true);}
     finally{if(current()){scan.disabled=!context||context.simulated;save.disabled=!folder.value||!context||context.simulated;}}
   },{id:'settings-archive-scan',class:'secondary'});scan.disabled=true;controls.append(scan);
-  add(block,controls,output,listing,form,el('p','结果尚未确认，请核对完整说明。索引与诊断基本信息在本机保留 7 天，最多 1,000 条，按家庭敏感信息处理。原片仍由 NAS 保存。播放器与跳转误差尚未验证。',{class:'meta'}));
+  const directoryDetails=add(el('details',null,{class:'archive-directory-details'}),el('summary','目录与文件'),listing);
+  add(block,controls,output,directoryDetails,form);
   let context=null;
   const current=()=>session===archiveSetupSession&&page==='Settings'&&block.isConnected;
   const remember=()=>{
-    archiveSetupDraft.camera=camera.value;archiveSetupDraft.folder=folder.value;
+    archiveSetupDraft.camera=camera.value;archiveSetupDraft.folder=folder.value;archiveSetupDraft.capture=capture.value;
     for(const [key,field] of Object.entries(fields))archiveSetupDraft[key]=field.value;
     archiveSetupDraft.timing=timing.checked;archiveSetupDraft.completion=completion.checked;
     archiveSetupVersion++;save.disabled=!folder.value||!context||context.simulated;
@@ -1934,9 +1999,17 @@ function renderArchiveSettings(section) {
   const savedNas=()=>{
     const config=settingsData?.config,kind=$('settings-nas-kind');
     if(!config)return false;
+    if(!kind)return context?.configured===true&&!context.simulated;
     const patch=kind?.value==='path'?{nas_path:settingValue($('settings-nas-path')),nas_url:null}:{nas_path:null,nas_url:settingValue($('settings-nas-url'))};
     if(Object.entries(patch).every(([key,value])=>(config[key]??null)===value))return true;
     settingsMessage(output,'请先保存目录地址，再读取索引。',true);return false;
+  };
+  const chooseCapture=value=>{
+    const choices=context?.capture_cameras??[];
+    capture.replaceChildren(el('option','仅用于手动回看',{value:''}));
+    for(const item of choices)capture.append(el('option',item.name,{value:item.id}));
+    if(value&&!choices.some(item=>item.id===value))capture.append(el('option','原镜头需要重新对应',{value}));
+    capture.value=value||'';
   };
   const chooseCamera=()=>{
     const profile=context?.cameras?.find(item=>item.id===camera.value);
@@ -1945,25 +2018,30 @@ function renderArchiveSettings(section) {
       for(const [key,source] of Object.entries(keys))fields[key].value=profile[source]??'';
       timing.checked=profile.timing_reviewed===true;completion.checked=profile.completion_convention==='closed_files_operator_reviewed';
       folder.value=context.folders.some(item=>item.folder_ref===profile.folder_ref)?profile.folder_ref:'';
-      if(profile.room_binding_current===false)settingsMessage(output,'请核对摄像头对应的当前家庭房间，再确认保存。完成前不会把这里的录像连到家庭事件。');
+      chooseCapture(profile.capture_camera_id);
+      if(profile.capture_camera_id&&profile.capture_binding_current===false)settingsMessage(output,'镜头配置已变化，请重新对应后保存。');
+      else if(profile.room&&profile.room_binding_current===false)settingsMessage(output,'请核对摄像头对应的当前房间，再确认保存。');
     }else{
       for(const [key,field] of Object.entries(fields))field.value=key==='timezone'?'Asia/Shanghai':'';
       timing.checked=false;completion.checked=false;folder.value='';
+      chooseCapture('');
     }
     remember();
   };
-  camera.addEventListener('change',chooseCamera);folder.addEventListener('change',remember);
+  camera.addEventListener('change',chooseCamera);folder.addEventListener('change',remember);capture.addEventListener('change',()=>{if(!fields.name.value.trim())fields.name.value=context?.capture_cameras?.find(item=>item.id===capture.value)?.name||'';remember();});
   for(const field of [...Object.values(fields),timing,completion])field.addEventListener('input',remember);
   function showContext(){
-    listing.replaceChildren();camera.replaceChildren(el('option','新增相机',{value:''}));folder.replaceChildren(el('option','选择已读取目录',{value:''}));
-    for(const item of context.cameras??[])camera.append(el('option',item.name+(item.source_binding_current===false?' · 需重新对应目录':item.room_binding_current===false?' · 需核对家庭房间':''),{value:item.id}));
-    for(const item of context.folders??[]){folder.append(el('option',item.label,{value:item.folder_ref}));listing.append(el('p',withCopy(item.label+' · '+(item.scan_complete?copyName('Friday-1843'):'部分索引'),item.scan_complete?copyName('Friday-1843'):null),{class:'meta'}),detail('文件示例',item.sample_filenames));}
+    listing.replaceChildren();camera.replaceChildren(el('option','新增对应关系',{value:''}));folder.replaceChildren(el('option','选择录像目录',{value:''}));
+    cameraField.hidden=!context.cameras?.length;
+    for(const item of context.cameras??[])camera.append(el('option',item.name+(item.source_binding_current===false?' · 需重新对应目录':item.capture_camera_id&&item.capture_binding_current===false?' · 需重新对应镜头':item.room&&item.room_binding_current===false?' · 需核对房间':''),{value:item.id}));
+    for(const item of context.folders??[]){folder.append(el('option',item.label,{value:item.folder_ref}));listing.append(el('p',item.label+' · '+(item.scan_complete?'已读取':'部分已读取'),{class:'meta'}),detail('文件示例',item.sample_filenames));}
     camera.value=context.cameras.some(item=>item.id===archiveSetupDraft.camera)?archiveSetupDraft.camera:'';
     folder.value=context.folders.some(item=>item.folder_ref===archiveSetupDraft.folder)?archiveSetupDraft.folder:'';
+    chooseCapture(archiveSetupDraft.capture);
     form.hidden=context.simulated;scan.disabled=context.simulated;save.disabled=!folder.value||context.simulated;
-    if(context.simulated)settingsMessage(output,'仅供模拟，不能证明实际效果。simulated · 示例归档已对应摄像头，可到“回看”查找区间。');
-    else if(context.scan)settingsMessage(output,`本次已查文件数；目录选择限60秒。本次索引 ${context.scan.indexed_this_scan} 个文件；目录选择在 60 秒后需重新读取。`);
-    else settingsMessage(output,context.configured?'尚未读取索引。已保存的摄像头关系会保留。':'请先连接录像目录。');
+    if(context.simulated)settingsMessage(output,'simulated · 示例录像，可在“回看”中体验。');
+    else if(context.scan)settingsMessage(output,`已读取 ${context.folders?.length||0} 个目录，可选择对应的摄像头。`);
+    else settingsMessage(output,context.configured?'刷新目录后即可设置对应关系。':'请先连接录像目录。');
   }
   const refresh=async()=>{
     const version=++archiveSetupVersion;scan.disabled=true;save.disabled=true;
@@ -1976,12 +2054,12 @@ function renderArchiveSettings(section) {
     const version=++archiveSetupVersion,before=context;save.disabled=true;
     const numeric=key=>fields[key].value.trim()===''?null:Number(fields[key].value);
     try{
-      const body={expected_context:before.fingerprint,folder_ref:folder.value,camera_id:camera.value||null,name:fields.name.value.trim(),room:settingValue(fields.room),timezone:fields.timezone.value.trim(),timing_reviewed:timing.checked,clock_offset_seconds:numeric('offset'),clock_uncertainty_seconds:numeric('uncertainty'),completion_convention:completion.checked?'closed_files_operator_reviewed':'unreviewed',arrival_delay_seconds:numeric('arrival'),source_retention_days:numeric('retention')};
+      const body={expected_context:before.fingerprint,folder_ref:folder.value,camera_id:camera.value||null,capture_camera_id:capture.value||null,name:fields.name.value.trim(),room:settingValue(fields.room),timezone:fields.timezone.value.trim(),timing_reviewed:timing.checked,clock_offset_seconds:numeric('offset'),clock_uncertainty_seconds:numeric('uncertainty'),completion_convention:completion.checked?'closed_files_operator_reviewed':'unreviewed',arrival_delay_seconds:numeric('arrival'),source_retention_days:numeric('retention')};
       const received=await api('/api/archive/cameras',{method:'POST',body:JSON.stringify(body)}),fresh=await api('/api/archive/context');
       if(!current()||version!==archiveSetupVersion)return;
       if(received.fingerprint!==fresh.fingerprint||fresh.simulated){settingsMessage(output,'归档来源已变化，请重新读取。',true);return;}
       context=fresh;archiveSetupDraft.camera=fresh.cameras.find(item=>item.folder_ref===body.folder_ref)?.id??'';archiveResult=null;archiveVersion++;showContext();settingsMessage(output,'摄像头对应关系已保存。');
-    }catch(_){if(current()&&version===archiveSetupVersion)settingsMessage(output,'未保存，请刷新目录核对名称时区与误差。未保存。请重新读取目录，并核对名称、时区和时钟误差。',true);}
+    }catch(_){if(current()&&version===archiveSetupVersion)settingsMessage(output,'未能保存，请刷新目录并核对摄像头与时间设置。',true);}
     finally{if(current())save.disabled=!folder.value||!context||context.simulated;}
   });
 }
@@ -2105,7 +2183,7 @@ function renderSettings(content) {
   renderNASConnection(nas.section,()=>sourceReadStatus?.());
   sourceReadStatus=renderLocalReadSources(nas.section);
   const legacy=el('details',null,{class:'details',id:'nas-legacy-archive'});
-  legacy.append(el('summary','已有录像归档与旧版目录设置（可选）'),el('p','此为旧录像独立设置，直连无需挂载。这是现有录像归档的独立设置；上方直连流程不需要这些挂载设置。',{class:'muted'}),nas.form,nas.controls,nas.output);
+  legacy.append(el('summary','已有录像归档与旧版目录设置（可选）'),el('p','这些设置只用于已有录像的系统共享目录。',{class:'muted'}),nas.form,nas.controls,nas.output);
   nas.section.append(legacy);renderArchiveSettings(legacy);
 
   const camera = settingsSection(content, 'Miloco · 房间感知', '请核对连接状态与使用范围。复用米家账号或连接本地 Miloco 服务读取摄像头。', 'settings-camera');
@@ -2521,8 +2599,8 @@ function renderAsk(content) {
   const rooms=[...new Set([...snapshot.entities,...(snapshot.derived_entities ?? [])].map(entity=>entity.room).filter(Boolean))];
   if(!rooms.length)return empty(content,'还没有可查询的房间','在设备来源中补全房间映射后再查询。','查看设备',()=>go('Devices'));
   if(!rooms.includes(homeQueryDraft.room))homeQueryDraft.room=rooms.includes(selectedRoom) ? selectedRoom : rooms[0];
-  const block=el('section',null,{class:'surface'});
-  add(block,el('h2','查看依据'),el('p','选择房间，查看设备状态和最近的记录。',{class:'muted'}));
+  const block=el('details',null,{class:'surface hc-structured-query'});
+  add(block,el('summary','按条件查询'),el('p','选择房间和查询范围。',{class:'muted'}));
   const form=el('form',null,{class:'settings-form',id:'home-query-form'});
   const room=el('select',null,{id:'home-query-room'}),kind=el('select',null,{id:'home-query-kind'});
   for(const value of rooms)room.append(el('option',roomName(value),{value}));room.value=homeQueryDraft.room;
@@ -2554,7 +2632,7 @@ function renderAsk(content) {
   };
   form.addEventListener('submit',event=>{event.preventDefault();return read(false);});
   if(homeQueryResult){renderHomeQueryResult(output,homeQueryResult);if(homeQueryResult.next_cursor)more.removeAttribute('hidden');}
-  add(block,form,el('p','这里仅查询家庭记录，不会操作设备。',{class:'meta'}),output,more);content.append(block);
+  add(block,form,output,more);content.append(block);
 }
 async function refresh() {
   if(experienceView)return experienceView.refresh();
@@ -2582,7 +2660,8 @@ async function refreshPassive() {
 $('brand-home')?.addEventListener('click',event => {event.preventDefault();go('Home');});
 $('refresh').addEventListener('click',refresh);
 $('developer-mode').addEventListener('change',()=>{if(page==='Developer'&&!$('developer-mode').checked)page='Home';navigation();render();});
-const initial=pages.find(name=>name.toLowerCase().replace(' ','-')===location.hash.slice(1)); if(initial)page=initial;
+const initial=pageLocation();if(initial.name){page=initial.name;requestedSafetyEvent=initial.eventId;requestedTaskAttention=initial.attentionId;}
+globalThis.addEventListener?.('hashchange',()=>{const next=pageLocation();if(next.name&&(next.name!==page||next.eventId!==requestedSafetyEvent||next.attentionId!==requestedTaskAttention))go(next.name,{eventId:next.eventId,attentionId:next.attentionId});});
 render(); refresh();
 // OAuth return and browser restoration must refresh authorization independently of HA polling.
 globalThis.addEventListener?.('pageshow', () => { if (page === 'Settings') void refreshHaStatus(); });

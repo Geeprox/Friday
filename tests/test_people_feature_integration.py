@@ -1,5 +1,4 @@
 """Real People module over synthetic provider batches and private metadata IPC."""
-import ast
 import asyncio
 import hashlib
 import importlib.abc
@@ -15,10 +14,11 @@ from pathlib import Path
 import httpx
 import numpy as np
 import pytest
+from api_privacy_guard import privacy_fingerprint
 from test_homeplane_recognition_consumer import launch, owner, settings, zero_rss
 
 from homeplane.api import create_app
-from homeplane.media_probe import RecognitionProbe
+from homeplane.media_probe import RecognitionProbe, stop_process
 from homeplane.people.catalog import PeopleCatalog, PeopleError
 from homeplane.people.contracts import Correct, Name, Split
 from homeplane.people_feature_bridge import SyntheticPeopleBatchOwner, qualify_people_catalog
@@ -368,14 +368,12 @@ async def test_absent_clustering_library_is_explicit_and_submits_no_catalog(tmp_
     assert people.page().revision == 0
 
 
-def test_shared_quality_ast_and_boundary_only_adds_people_prefix():
-    # Exact approved AST fingerprints; independent of later repository history.
+def test_shared_quality_ast_and_reviewed_boundary_with_declared_port_alias():
+    # Keep both reviewed hashes; normalization is limited to the localhost redirect.
     expected = {'record_media_quality': '613ed905c7cd6741c748a456054ed7dd5e79c14ab11497edec88586e9dbd018e', 'local_boundary': '2de1eb50a4defc7b4360eb07cbb694c6bb7d495aa54b92342c6624c4253feb28'}
     current = Path('homeplane/api.py').read_text()
     for name, fingerprint in expected.items():
-        node = next(n for n in ast.walk(ast.parse(current))
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
-        assert hashlib.sha256(ast.dump(node, include_attributes=False).replace(', type_params=[]', '').encode()).hexdigest() == fingerprint
+        assert privacy_fingerprint(current, name) == fingerprint
     assert hashlib.sha256(Path('homeplane/recognition_contracts.py').read_bytes()).hexdigest() == '649f45c667f15bccbcb6af5bc33a9d5adc1577d7a705779f16a7cfc13959b4ba'
 
 
@@ -423,6 +421,9 @@ with tempfile.TemporaryDirectory(prefix='SIMULATED-feature-pipeline-') as direct
 worker.publish_worker_result(result,os.dup(sys.stdout.fileno()))
 '''
     if hang:
+        # 仅供合成夹具在父进程开始原有时限前确认冷导入结束，不改变生产 IPC。
+        code = code.replace('request=RecognitionSession.model_validate_json',
+            "sys.stdout.write('SIMULATED-READY\\n');sys.stdout.flush()\nrequest=RecognitionSession.model_validate_json")
         code = code.replace('from test_people_feature_integration import configure,catalog', '''from test_people_feature_integration import configure,catalog,FixturePartition
 import threading
 release=threading.Event()
@@ -523,24 +524,30 @@ async def test_real_child_stop_or_settings_edit_revokes_and_reaps_without_catalo
     assert processes[0].returncode is not None and probe.process is None
 
 
+@pytest.mark.parametrize('startup_delay', [0, 3])
 @pytest.mark.asyncio
-async def test_real_child_clustering_hang_uses_v2_uncertain_exit_and_reap(tmp_path):
+async def test_real_child_clustering_hang_uses_v2_uncertain_exit_and_reap(tmp_path, startup_delay):
     people = catalog()
     context, _ = configure(tmp_path, people)
-    context = replace(context, session=context.session.model_copy(update={'deadline_monotonic':time.monotonic()+2.5}))
-    context = replace(context, _people_owner=SyntheticPeopleBatchOwner.from_catalog(people, context.session,
-        context.provenance, context.policy, _synthetic_consent=True, _cluster_factory=FixturePartition))
     root = tmp_path/'SIMULATED-hung-cluster'
     root.mkdir()
-    script = 'OWNED_ROOT=' + repr(str(root)) + '\n' + batch_child(hang=True)
-    processes = []
-    async def spawn():
-        process = await launch(script)
-        processes.append(process)
-        return process
-    probe = RecognitionProbe(settings(tmp_path), launcher=spawn, rss_reader=zero_rss, people_catalog=people)
-    await probe.start_owner(context)
-    await asyncio.wait_for(probe.task, 7)
-    assert processes[0].returncode == 77 and probe.process is None
-    assert probe.report.reason == 'worker_timeout' and people.page().revision == 0
-    assert probe.feature_message is None
+    script = ('import time;time.sleep(' + repr(startup_delay) + ')\nOWNED_ROOT=' + repr(str(root))
+        + '\n' + batch_child(hang=True))
+    process = await launch(script)
+    try:
+        # 冷导入慢于 2.5 秒时仍应验证聚类挂起；保留原有运行/回收预算和真实 worker。
+        assert await asyncio.wait_for(process.stdout.readline(), 10) == b'SIMULATED-READY\n'
+        context = replace(context, session=context.session.model_copy(update={'deadline_monotonic':time.monotonic()+2.5}))
+        context = replace(context, _people_owner=SyntheticPeopleBatchOwner.from_catalog(people, context.session,
+            context.provenance, context.policy, _synthetic_consent=True, _cluster_factory=FixturePartition))
+        async def spawn():
+            return process
+        probe = RecognitionProbe(settings(tmp_path), launcher=spawn, rss_reader=zero_rss, people_catalog=people)
+        assert (await probe.start_owner(context)).state == 'running'
+        await asyncio.wait_for(probe.task, 7)
+        assert process.returncode == 77 and probe.process is None
+        assert probe.report.reason == 'worker_timeout' and people.page().revision == 0
+        assert probe.feature_message is None
+    finally:
+        await stop_process(process)
+        people.connection.close()

@@ -2,6 +2,7 @@
 import json
 import stat
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -17,6 +18,9 @@ ORIGIN = "http://127.0.0.1:8740"
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
+    # These source/transport tests must not register against a real ARL host when
+    # the simulated HA candidate is explicitly activated.
+    monkeypatch.setattr('homeplane.arl.ARLRuntime.start_application', AsyncMock(return_value=None))
     monkeypatch.setattr(ha_setup, "CREDENTIAL_PATH", tmp_path / "credentials/ha.json")
     service = SettingsService(tmp_path / "settings/settings.json", token_path=tmp_path / "camera.json")
     exchanges = []

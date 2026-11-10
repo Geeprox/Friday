@@ -1,8 +1,8 @@
 """Opt-in router: integration owner mounts it under existing Friday auth/origin guards.
 
 Creating the router has no source side effects. There is no hidden scheduler,
-credential endpoint or unreviewed filesystem mutation. Media bytes are served as
-octet-stream until a separate bounded format/decoder qualification exists.
+credential endpoint or unreviewed filesystem mutation. Originals retain their
+bounded octet-stream path; photo derivatives use a separately qualified decoder.
 """
 
 from fastapi import APIRouter, Header, HTTPException, Response
@@ -27,10 +27,14 @@ from .contracts import (
     FamilyMediaSourceReview,
 )
 from .reader import RANGE_BYTES
+from .photo_requests import FamilyMediaPhotoJob, FamilyMediaPhotoOpen, FamilyMediaPhotoRender
+from .photos import FamilyPhotos
 
 
 def create_router(catalog):
     router = APIRouter(prefix="/api/family-media", tags=["family-media"])
+    if catalog.photos is None:
+        catalog.photos = FamilyPhotos(catalog)
 
     async def call(method, *args):
         try:
@@ -104,5 +108,36 @@ def create_router(catalog):
     @router.post("/recipes/review", response_model=FamilyMediaRecipe)
     async def review(request: FamilyMediaRecipeReview):
         return await call(catalog.review_recipe, request)
+
+    @router.post("/photos/open", response_model=FamilyMediaPhotoJob, status_code=202)
+    async def photo_open(request: FamilyMediaPhotoOpen):
+        async def start():
+            return await catalog.photos.start(request, kind="open")
+        return await call(start)
+
+    @router.post("/photos/render", response_model=FamilyMediaPhotoJob, status_code=202)
+    async def photo_render(request: FamilyMediaPhotoRender):
+        async def start():
+            return await catalog.photos.start(request, kind="render")
+        return await call(start)
+
+    @router.get("/photos/jobs/{job_id}", response_model=FamilyMediaPhotoJob)
+    async def photo_job(job_id: str):
+        return await call(catalog.photos.status, job_id)
+
+    @router.delete("/photos/jobs/{job_id}", response_model=FamilyMediaPhotoJob)
+    async def photo_cancel(job_id: str):
+        return await call(catalog.photos.cancel, job_id)
+
+    @router.get("/photos/content/{job_id}")
+    async def photo_content(job_id: str):
+        output, payload = await call(catalog.photos.content, job_id)
+        extension = "jpg" if output.result.output_format == "JPEG" else "png"
+        disposition = "attachment" if output.purpose == "export" else "inline"
+        return Response(payload, media_type=output.result.content_type, headers={
+            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'{disposition}; filename="Friday-photo-{job_id[:8]}.{extension}"',
+            "X-Friday-Photo-SHA256": output.result.output_sha256,
+        })
 
     return router

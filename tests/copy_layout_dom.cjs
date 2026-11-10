@@ -31,7 +31,14 @@ function install(Element, document, root) {
     proto.replaceChildren=function(...children){for(const child of this.children){child.parentNode=null;child.parent=null;}replace.call(this,...children);for(const child of children)child.parentNode=this;changed(this);};
     proto.insertBefore=function(child,before){child.remove();const index=before?this.children.indexOf(before):-1;child.parentNode=this;child.parent=this;if(index<0)this.children.push(child);else this.children.splice(index,0,child);changed(this);return child;};
     proto.closest=function(selector){const tags=selector.split(',').map(t=>t.trim().toUpperCase());for(let n=this;n;n=n.parentElement)if(tags.includes(n.tagName))return n;return null;};
-    proto.querySelectorAll=function(selector){const nodes=walk(this),attr=selector.match(/^\[([^=\]]+)(?:="([^"]+)")?\]$/);return nodes.filter(n=>selector==='*'||(attr?(attr[2]===undefined?n.getAttribute(attr[1])!=null:n.getAttribute(attr[1])===attr[2]):selector.startsWith('.')?(n.getAttribute('class')??'').split(' ').includes(selector.slice(1)):n.tagName===selector.toUpperCase()));};
+    proto.querySelectorAll=function(selector){
+      const selectors=selector.split(',').map(s=>s.trim());
+      return walk(this).filter(n=>selectors.some(s=>{
+        const attr=s.match(/^\[([^=\]]+)(?:="([^"]+)")?\]$/);
+        return s==='*'||(attr?(attr[2]===undefined?n.getAttribute(attr[1])!=null:n.getAttribute(attr[1])===attr[2]):s.startsWith('.')?(n.getAttribute('class')??'').split(' ').includes(s.slice(1)):String(n.tagName).toUpperCase()===s.toUpperCase());
+      }));
+    };
+    proto.querySelector=function(selector){return this.querySelectorAll(selector)[0]??null;};
   }
   class MutationObserver {
     constructor(callback){this.callback=callback;}

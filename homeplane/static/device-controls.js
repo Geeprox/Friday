@@ -15,19 +15,19 @@ export function mainDeviceControls(d,{send,wake,readCamera,viewCamera,details,bu
  function button(label,key,run,{pressed,primary=false,icon}={}){
   const b=h('button',null,{type:'button',class:'device-command'+(primary?' primary-command':''),'data-control-key':key,'aria-label':d.name+' · '+label,title:label});
   if(pressed!==undefined)b.setAttribute('aria-pressed',String(pressed));
-  if(icon)b.append(h('span',icon,{class:'command-symbol','aria-hidden':'true'}));b.append(h('span',label,{class:icon?'visually-hidden':'command-text'}));b.disabled=busy;b.addEventListener('click',()=>run(b));return b;
+  if(icon){const symbol=h('span',null,{class:'command-symbol','aria-hidden':'true'});symbol.append(h('span',null,{class:'icon icon-'+icon}));b.append(symbol);}b.append(h('span',label,{class:icon?'visually-hidden':'command-text'}));b.disabled=busy;b.addEventListener('click',()=>run(b));return b;
  }
  function power(c,operation,on){
-  const action=on?'关闭':'开启',b=button(action,'power:'+c.id,b=>send(c,operation,{power:on?'off':'on'},b),{pressed:on,icon:'⏻'});
+  const action=on?'关闭':'开启',b=button(action,'power:'+c.id,b=>send(c,operation,{power:on?'off':'on'},b),{pressed:on,icon:'power'});
   b.classList.add('device-power-button');b.dataset.loadKind=c.kind;b.setAttribute('aria-label',d.name+(c.name!==d.name?' · '+c.name:'')+' · '+action);b.title=c.name+' · '+action;b.disabled||=c.available===false;return b;
  }
  function cover(c){
   const state=cap(c,'cover.state'),position=cap(c,'cover.position');if(!state&&!position)return;
   const angular=c.attributes?.position_semantics==='slat_angle',row=h('div',null,{class:'curtain-commands'});
-  for(const[value,label,icon]of [['open','打开','↔'],['stopped','停止','Ⅱ'],['closed','关闭','⇥⇤']]){
+  for(const[value,label,icon]of [['open','打开','arrows-horizontal'],['stopped','停止','player-pause'],['closed','关闭','arrows-in']]){
    if(value==='stopped'&&!state?.choices?.includes('stopped'))continue;
    const op=value==='stopped'||!position?'cover.state':'cover.position',desired=op==='cover.position'?{position:value==='open'?100:0}:{state:value};
-   const b=button(label,value+':'+c.id,b=>send(c,op,desired,b),{icon:angular?(value==='open'?'↺':value==='closed'?'↻':'Ⅱ'):icon});if(angular){b.title=value==='stopped'?'停止':'叶片调光至 '+(value==='open'?'100%':'0%');b.setAttribute('aria-label',d.name+' · '+b.title);}b.disabled||=c.available===false;row.append(b);
+   const b=button(label,value+':'+c.id,b=>send(c,op,desired,b),{icon:angular?(value==='open'?'rotate-counterclockwise':value==='closed'?'rotate-clockwise':'player-pause'):icon});if(angular){b.title=value==='stopped'?'停止':'叶片调光至 '+(value==='open'?'100%':'0%');b.setAttribute('aria-label',d.name+' · '+b.title);}b.disabled||=c.available===false;row.append(b);
   }root.append(row);
   if(angular&&position||cap(c,'cover.tilt')){
    const range=h('input',null,{type:'range',min:0,max:100,step:1,'aria-label':d.name+'叶片调光','data-control-key':'tilt:'+c.id}),value=angular?(c.attributes?.requested_position??(c.attributes?.feedback_quality==='unreliable'?null:c.attributes?.current_position)):c.attributes?.current_tilt_position;
@@ -40,19 +40,19 @@ export function mainDeviceControls(d,{send,wake,readCamera,viewCamera,details,bu
   const row=h('div',null,{class:'climate-power-row'}),modes=cap(c,'climate.mode')?.choices||[],on=c.value!=='off'&&modes.includes(c.value);
   if(cap(c,'climate.power'))row.append(power(c,'climate.power',on));
   else if(modes.includes('off')&&(on||modes.filter(x=>x!=='off').length===1)){
-   const b=button(on?'关闭':'开启','power:'+c.id,b=>send(c,'climate.mode',{hvac_mode:on?'off':modes.find(x=>x!=='off')},b),{pressed:on,icon:'⏻'});b.classList.add('device-power-button');b.disabled||=c.available===false;row.append(b);
+   const b=button(on?'关闭':'开启','power:'+c.id,b=>send(c,'climate.mode',{hvac_mode:on?'off':modes.find(x=>x!=='off')},b),{pressed:on,icon:'power'});b.classList.add('device-power-button');b.disabled||=c.available===false;row.append(b);
   }else if(modes.length)row.append(button('选择模式','mode:'+c.id,details));
   const target=c.attributes?.temperature,limit=cap(c,'climate.temperature');
   row.append(add(h('div',null,{class:'climate-setpoint'}),h('span','设定温度'),add(h('strong'),h('span',typeof target==='number'?String(target):'—'),h('small',limit?.unit||'°C'))));root.append(row);
-  if(limit){const steps=h('div',null,{class:'temperature-steps'});for(const[delta,label]of [[-1,'调低 1°'],[1,'调高 1°']]){const desired=temperatureStep(c,delta),b=button(label,'temperature:'+delta+':'+c.id,b=>send(c,'climate.temperature',{temperature:desired},b),{icon:delta<0?'−':'＋'});b.disabled||=c.available===false||desired===null;steps.append(b);}root.append(steps);}
+  if(limit){const steps=h('div',null,{class:'temperature-steps'});for(const[delta,label]of [[-1,'调低 1°'],[1,'调高 1°']]){const desired=temperatureStep(c,delta),b=button(label,'temperature:'+delta+':'+c.id,b=>send(c,'climate.temperature',{temperature:desired},b),{icon:delta<0?'minus':'plus'});b.disabled||=c.available===false||desired===null;steps.append(b);}root.append(steps);}
  }
  if(d.kind==='camera'){
-  const state=h('p','正在读取镜头状态…',{class:'card-camera-state',role:'status','aria-live':'polite'}),action=button('正在读取…','camera',()=>{},{icon:'⏻'});action.disabled=true;root.append(state,action);
-  const setAction=label=>{action.lastElementChild.textContent=label;action.setAttribute('aria-label',d.name+' · '+label);action.title=label;};
+  const state=h('p','正在读取镜头状态…',{class:'card-camera-state',role:'status','aria-live':'polite'}),action=button('正在读取…','camera',()=>{},{icon:'refresh'});action.classList.add('camera-view-action');action.lastElementChild.className='command-text';action.disabled=true;root.append(state,action);
+  const setAction=label=>{action.lastElementChild.textContent=label;action.setAttribute('aria-label',d.name+' · '+label);action.title=label;action.querySelector('.icon')?.setAttribute('class','icon icon-'+(label==='查看画面'?'video':label==='唤醒镜头'?'power':'refresh'));};
   const load=async()=>{try{const status=await readCamera(d.id);if(!root.isConnected)return;state.textContent=status.enabled?'镜头已打开':'镜头已遮蔽';setAction(status.enabled?'查看画面':'唤醒镜头');action.disabled=busy;action.onclick=async()=>{if(action.disabled)return;action.disabled=true;try{if(status.enabled)viewCamera(d);else{state.textContent='正在唤醒镜头…';const result=await wake(d.id);state.textContent=result.status==='reported_match'?'镜头已打开':'已发送，状态尚未确认，请刷新状态';if(result.status==='reported_match'){status.enabled=true;setAction('查看画面');}else{setAction('刷新状态');action.onclick=load;}}}catch(_){state.textContent='操作未完成，请刷新状态后重试';setAction('刷新状态');action.onclick=load;}finally{action.disabled=false;}};}catch(_){if(!root.isConnected)return;state.textContent='镜头状态暂不可用';setAction('重新读取镜头状态');action.disabled=false;action.onclick=load;}};
   queueMicrotask(load);return root;
  }
- for(const trigger of d.triggers||[]){root.append(add(h('div',null,{class:'wireless-key'}),h('span','◉',{class:'wireless-key-symbol','aria-hidden':'true'}),add(h('span'),h('strong',trigger.name),h('small',trigger.role==='unknown'?'按键模式待确认':'动作按键'))));}
+ for(const trigger of d.triggers||[]){root.append(add(h('div',null,{class:'wireless-key'}),add(h('span',null,{class:'wireless-key-symbol','aria-hidden':'true'}),h('span',null,{class:'icon icon-adjustments-horizontal'})),add(h('span'),h('strong',trigger.name),h('small',trigger.role==='unknown'?'按键模式待确认':'动作按键'))));}
  const controls=d.controls||[],primary=controls.find(c=>c.kind===d.kind)||controls[0];
  if(d.kind==='cover'&&primary)cover(primary);
  else if(d.kind==='climate'&&primary)climate(primary);
@@ -62,7 +62,7 @@ export function mainDeviceControls(d,{send,wake,readCamera,viewCamera,details,bu
   const measured=kind==='humidifier'?c.attributes?.current_humidity:c.attributes?.current_temperature;
   if(typeof measured==='number')root.append(h('p',(kind==='humidifier'?'当前湿度 ':'当前水温 ')+measured+(kind==='humidifier'?'%':'°C'),{class:'caption'}));
   const humidity=cap(c,'humidifier.humidity'),target=c.attributes?.humidity;
-  if(humidity){const row=h('div',null,{class:'temperature-steps'});for(const[delta,symbol]of [[-5,'−'],[5,'＋']]){const desired=target+delta,b=button(delta<0?'调低湿度':'调高湿度','humidity:'+delta+':'+c.id,b=>send(c,'humidifier.humidity',{humidity:desired},b),{icon:symbol});b.disabled||=c.available===false||typeof target!=='number'||desired<humidity.minimum||desired>humidity.maximum||Math.abs((desired-humidity.minimum)/(humidity.step||1)-Math.round((desired-humidity.minimum)/(humidity.step||1)))>1e-6;row.append(b);}root.append(h('p','设定湿度 '+(typeof target==='number'?target+'%':'—'),{class:'caption'}),row);}
+  if(humidity){const row=h('div',null,{class:'temperature-steps'});for(const[delta,symbol]of [[-5,'minus'],[5,'plus']]){const desired=target+delta,b=button(delta<0?'调低湿度':'调高湿度','humidity:'+delta+':'+c.id,b=>send(c,'humidifier.humidity',{humidity:desired},b),{icon:symbol});b.disabled||=c.available===false||typeof target!=='number'||desired<humidity.minimum||desired>humidity.maximum||Math.abs((desired-humidity.minimum)/(humidity.step||1)-Math.round((desired-humidity.minimum)/(humidity.step||1)))>1e-6;row.append(b);}root.append(h('p','设定湿度 '+(typeof target==='number'?target+'%':'—'),{class:'caption'}),row);}
   if(modeCap){const select=h('select',null,{'aria-label':d.name+' · 运行模式','data-control-key':'mode:'+c.id});for(const mode of modeCap.choices||[])select.append(h('option',mode==='off'?'关闭':mode,{value:mode}));select.value=c.attributes?.[kind==='humidifier'?'mode':'operation_mode']??c.value;select.disabled=busy||c.available===false;select.addEventListener('change',()=>send(c,kind+'.mode',{[kind==='humidifier'?'mode':'operation_mode']:select.value},select));root.append(select);}
  }
 

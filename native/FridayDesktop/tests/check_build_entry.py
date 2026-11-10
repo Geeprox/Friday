@@ -1,8 +1,8 @@
 """Pure packaging guards; no compiler, runtime, accounts or device access."""
 import importlib.util
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[3]
@@ -34,6 +34,18 @@ class BuildGuards(unittest.TestCase):
         self.assertIn('homeplane/api.py', records)
         self.assertIn('fixtures/homeplane/archive-simulated.mp4', records)
         self.assertFalse(any(name.startswith(('data/', '.artifacts/')) or 'node_modules' in name for name in records))
+
+    def test_cache_output_is_bound_to_the_real_project_namespace(self):
+        with tempfile.TemporaryDirectory(prefix='friday-build-', dir='/tmp') as value:
+            root = Path(value).resolve()
+            with patch.object(build, 'REPO', root/'source'), patch.object(Path, 'home', return_value=root/'user'):
+                allowed = build.project_cache_root()/'swift-macos/release/task/candidate/Friday.app'
+                self.assertEqual(build.output_path(allowed), allowed)
+                other = allowed.parents[4].parent/'Other-deadbeef0000/swift-macos/release/task/Friday.app'
+                with self.assertRaises(ValueError):
+                    build.output_path(other)
+                with self.assertRaises(ValueError):
+                    build.output_path(root/'user/Library/Caches/Friday.app')
 
 
 if __name__ == '__main__':

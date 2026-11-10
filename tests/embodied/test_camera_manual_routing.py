@@ -30,8 +30,13 @@ async def test_secondary_manual_request_reuses_owned_camera_route():
 
 
 @pytest.mark.asyncio
-async def test_manual_control_invalidates_pending_auto_decision_and_holds():
+async def test_manual_control_invalidates_pending_auto_decision_and_holds(tmp_path, monkeypatch):
+    from homeplane.embodied import previews
+    from homeplane.embodied.camera_intent import CameraIntentStore
+    selected={'id':'cam_2222222222','device':{'did':'synthetic-secondary'}}
+    monkeypatch.setattr(previews,'camera',lambda _:selected)
     pool=PreviewPool.__new__(PreviewPool)
+    pool.intent_factory=lambda _:CameraIntentStore(tmp_path/'camera',selected)
     send=AsyncMock(return_value={'native_code':0})
     entry={'control':send,'mode':'auto','control_epoch':4,'manual_tasks':set()}
     pool.sessions={'secondary':entry}
@@ -46,13 +51,16 @@ async def test_manual_control_invalidates_pending_auto_decision_and_holds():
 
 
 def test_closed_primary_view_is_not_overwritten_by_last_frames_age(tmp_path):
+    from homeplane.embodied.motion_games import MotionGames
     source=Path('homeplane/embodied/worker.py').read_text()
     function=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='view')
     state={'status':'shutter_closed','received_at':time.time()-100,'processed_frames':2,
            'camera_control':{'view_usable':True,'target_locked':True}}
-    context=dict(state=state,games=SimpleNamespace(public={}),recorder=SimpleNamespace(public=lambda:{}),
+    context=dict(state=state,games=MotionGames(),recorder=SimpleNamespace(public=lambda:{}),
+        safety=SimpleNamespace(recording_status=lambda:{'state':'off'}),
         home=SimpleNamespace(public=lambda:{}),secondary_homes={},fleet=SimpleNamespace(public=lambda _:{}),time=time,
-        PRIVATE=tmp_path,last_frame=1,SELECTED={'id':'main'},configuration=lambda:{'cameras':[{'id':'main'}]})
+        PRIVATE=tmp_path,last_frame=1,SELECTED={'id':'main'},camera_planner=None,
+        configuration=lambda:{'cameras':[{'id':'main'}]})
     exec(compile(ast.Module(body=[function],type_ignores=[]),'<actual view>','exec'),context)
     result=context['view']()
     assert result['status']=='shutter_closed' and result['camera_sessions'][0]['state']=='shutter_closed'

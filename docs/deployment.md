@@ -112,11 +112,19 @@ Friday 从当前 HA 注册表读取稳定 ID、区域、实体和服务能力，
 [房型导入](layout.md) 使用你自己的米家导出，默认不包含房型、方向或设备坐标。
 可选 ARL 只连接你自己的实例；`scripts/install-arl-sdk.sh /path/to/ARL` 安装本机 SDK。
 ARL 不属于基础依赖，缺少可信身份/任务契约时模型功能明确不可用，确定性控制可独立运行。
+桌面应用会向既有 ARL 注册名称、图标与场景，并维持会话；注册本身不运行模型。
+应用平台版本要求、场景套餐及界面连接字段见 [ARL 应用会话](arl-application.md)。
 
 摄像头、人物识别和动作实验主要面向 macOS，并需要独立的本地模型、原生构建和 SDK。
 `uv sync --locked --extra vision --extra camera-media` 只安装声明的软件依赖，不下载
 模型或获取授权。`python3 scripts/embodied/runtime.py --check` 列出缺失输入，
 `--build-native` 编译当前主机的 Vision worker 与摄像头 socket helper，不安装或启动它们。
+
+可选声音复核使用 macOS SoundAnalysis，不下载第三方声音模型。源码部署可通过
+`python3 scripts/embodied/runtime.py --build-sound` 显式编译到本机可选运行环境；编译
+不会开启摄像头、声音输入或运行分类器。随后在“家中提醒 → 监测设置”开启声音复核。
+首次处理已授权镜头的声音时，才核对系统分类器实际提供的类别。构建中间文件使用
+用户指定的 CodexBuilds.noindex 缓存；声音原始数据只在有界内存中处理。
 
 可选的 [本机画面复核](local-video-review.md) 使用独立、按需加载的 MLX 子进程。
 默认关闭，不随基础部署下载模型或开启监测。

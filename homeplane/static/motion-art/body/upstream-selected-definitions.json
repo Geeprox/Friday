@@ -1,0 +1,263 @@
+{
+  "repository": "https://github.com/shlomorsh/desk-break",
+  "commit": "8d475aa476b2c0e9ec6d09d8558faf17161e19ef",
+  "license": "MIT",
+  "definitions": {
+    "step-jack": {
+      "id": "step-jack",
+      "he": "\u05e6\u05e2\u05d3 \u05d4\u05e6\u05d9\u05d3\u05d4 \u05e2\u05dd \u05d9\u05d3\u05d9\u05d9\u05dd \u05dc\u05de\u05e2\u05dc\u05d4",
+      "en": "Step jack",
+      "amount": "20 \u05e4\u05e2\u05de\u05d9\u05dd",
+      "steps": [
+        "\u05db\u05de\u05d5 \u05e7\u05e4\u05d9\u05e6\u05ea \u05e4\u05d9\u05e1\u05d5\u05e7, \u05d0\u05d1\u05dc \u05d1\u05dc\u05d9 \u05dc\u05e7\u05e4\u05d5\u05e5.",
+        "\u05e6\u05e2\u05d3 \u05e8\u05d2\u05dc \u05d0\u05d7\u05ea \u05d4\u05e6\u05d9\u05d3\u05d4 \u05d5\u05d1\u05de\u05e7\u05d1\u05d9\u05dc \u05d9\u05d3\u05d9\u05d9\u05dd \u05dc\u05de\u05e2\u05dc\u05d4.",
+        "\u05d7\u05d5\u05d6\u05e8\u05d9\u05dd \u05dc\u05de\u05e8\u05db\u05d6 \u05d5\u05de\u05d7\u05dc\u05d9\u05e4\u05d9\u05dd \u05e6\u05d3."
+      ],
+      "amount_en": "20 reps",
+      "steps_en": [
+        "Like a jumping jack, but with no jumping.",
+        "Step one foot out to the side as you raise your arms.",
+        "Come back to the center and switch sides."
+      ],
+      "beat": 0.5,
+      "keys": [
+        {},
+        {
+          "legL": [
+            0,
+            0,
+            22
+          ],
+          "arm": [
+            0,
+            0,
+            150
+          ],
+          "elbow": [
+            -10,
+            0,
+            0
+          ]
+        },
+        {},
+        {
+          "legR": [
+            0,
+            0,
+            22
+          ],
+          "arm": [
+            0,
+            0,
+            150
+          ],
+          "elbow": [
+            -10,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    "side-step-arm-swing": {
+      "id": "side-step-arm-swing",
+      "he": "\u05e6\u05e2\u05d3 \u05dc\u05e6\u05d3 \u05e2\u05dd \u05e0\u05d3\u05e0\u05d5\u05d3 \u05d9\u05d3\u05d9\u05d9\u05dd",
+      "en": "Side step with arm swings",
+      "amount": "30 \u05e9\u05e0\u05d9\u05d5\u05ea",
+      "steps": [
+        "\u05e6\u05e2\u05d3 \u05d2\u05d3\u05d5\u05dc \u05d4\u05e6\u05d9\u05d3\u05d4, \u05d4\u05e8\u05d2\u05dc \u05d4\u05e9\u05e0\u05d9\u05d9\u05d4 \u05de\u05e6\u05d8\u05e8\u05e4\u05ea.",
+        "\u05d4\u05d9\u05d3\u05d9\u05d9\u05dd \u05e0\u05e4\u05ea\u05d7\u05d5\u05ea \u05dc\u05e6\u05d3\u05d3\u05d9\u05dd \u05d1\u05db\u05dc \u05e6\u05e2\u05d3.",
+        "\u05d7\u05d5\u05d6\u05e8\u05d9\u05dd \u05dc\u05e6\u05d3 \u05d4\u05e9\u05e0\u05d9 \u05d1\u05e7\u05e6\u05d1 \u05e7\u05d1\u05d5\u05e2."
+      ],
+      "amount_en": "30 seconds",
+      "steps_en": [
+        "Take a big step to the side and bring the other foot in.",
+        "Open your arms out to the sides with each step.",
+        "Go back the other way at a steady pace."
+      ],
+      "beat": 0.55,
+      "keys": [
+        {
+          "arm": [
+            -35,
+            0,
+            2
+          ],
+          "elbow": [
+            -40,
+            0,
+            0
+          ]
+        },
+        {
+          "legL": [
+            0,
+            0,
+            20
+          ],
+          "arm": [
+            0,
+            0,
+            90
+          ],
+          "pos": [
+            0.08,
+            0,
+            0
+          ]
+        },
+        {
+          "arm": [
+            -35,
+            0,
+            2
+          ],
+          "elbow": [
+            -40,
+            0,
+            0
+          ],
+          "pos": [
+            0.16,
+            0,
+            0
+          ]
+        },
+        {
+          "legR": [
+            0,
+            0,
+            20
+          ],
+          "arm": [
+            0,
+            0,
+            90
+          ],
+          "pos": [
+            0.08,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    "skier-swing": {
+      "id": "skier-swing",
+      "he": "\u05ea\u05e0\u05d5\u05e4\u05ea \u05d2\u05d5\u05dc\u05e9 \u05e1\u05e7\u05d9",
+      "en": "Skier arm swing",
+      "amount": "15 \u05e4\u05e2\u05de\u05d9\u05dd",
+      "steps": [
+        "\u05d9\u05d3\u05d9\u05d9\u05dd \u05dc\u05de\u05e2\u05dc\u05d4 \u05de\u05e2\u05dc \u05d4\u05e8\u05d0\u05e9.",
+        "\u05de\u05db\u05d5\u05e4\u05e4\u05d9\u05dd \u05d1\u05e8\u05db\u05d9\u05d9\u05dd \u05de\u05e2\u05d8, \u05d2\u05d5\u05e3 \u05e7\u05d3\u05d9\u05de\u05d4, \u05d9\u05d3\u05d9\u05d9\u05dd \u05de\u05ea\u05e0\u05d3\u05e0\u05d3\u05d5\u05ea \u05dc\u05d0\u05d7\u05d5\u05e8.",
+        "\u05e2\u05d5\u05dc\u05d9\u05dd \u05d7\u05d6\u05e8\u05d4 \u05d5\u05d9\u05d3\u05d9\u05d9\u05dd \u05d7\u05d5\u05d6\u05e8\u05d5\u05ea \u05dc\u05de\u05e2\u05dc\u05d4.",
+        "!\u05d2\u05d1 \u05d9\u05e9\u05e8. \u05d0\u05dd \u05d4\u05d2\u05d1 \u05e8\u05d2\u05d9\u05e9, \u05de\u05ea\u05db\u05d5\u05e4\u05e4\u05d9\u05dd \u05e4\u05d7\u05d5\u05ea."
+      ],
+      "amount_en": "15 reps",
+      "steps_en": [
+        "Raise your arms overhead.",
+        "Bend your knees a little, lean forward, and swing your arms back.",
+        "Come back up and bring your arms back overhead.",
+        "!Keep your back straight. If your back is sensitive, bend less."
+      ],
+      "beat": 0.7,
+      "keys": [
+        {
+          "arm": [
+            -165,
+            0,
+            12
+          ],
+          "elbow": [
+            -6,
+            0,
+            0
+          ],
+          "foot": [
+            20,
+            0,
+            0
+          ]
+        },
+        {
+          "spine": [
+            35,
+            0,
+            0
+          ],
+          "leg": [
+            -30,
+            0,
+            0
+          ],
+          "knee": [
+            40,
+            0,
+            0
+          ],
+          "arm": [
+            45,
+            0,
+            8
+          ],
+          "elbow": [
+            -6,
+            0,
+            0
+          ],
+          "pos": [
+            0,
+            0,
+            -0.08
+          ]
+        }
+      ]
+    },
+    "side-step-taps": {
+      "id": "side-step-taps",
+      "he": "\u05e6\u05e2\u05d3 \u05dc\u05e6\u05d3 \u05d5\u05d1\u05d7\u05d6\u05e8\u05d4",
+      "en": "Side step taps",
+      "amount": "10 \u05dc\u05db\u05dc \u05e6\u05d3",
+      "steps": [
+        "\u05e6\u05e2\u05d3 \u05e7\u05d8\u05df \u05dc\u05e6\u05d3, \u05e0\u05d5\u05d2\u05e2\u05d9\u05dd \u05d1\u05d1\u05d5\u05d4\u05df.",
+        "\u05d7\u05d5\u05d6\u05e8\u05d9\u05dd \u05dc\u05de\u05e8\u05db\u05d6 \u05d5\u05e2\u05d5\u05d1\u05e8\u05d9\u05dd \u05dc\u05e6\u05d3 \u05d4\u05e9\u05e0\u05d9.",
+        "\u05d4\u05d9\u05d3\u05d9\u05d9\u05dd \u05e0\u05e4\u05ea\u05d7\u05d5\u05ea \u05dc\u05e6\u05d3\u05d3\u05d9\u05dd \u05d1\u05db\u05dc \u05e6\u05e2\u05d3."
+      ],
+      "amount_en": "10 each side",
+      "steps_en": [
+        "Take a small step to the side and tap your toes.",
+        "Come back to center and repeat on the other side.",
+        "Open your arms out to the sides with each step."
+      ],
+      "beat": 0.6,
+      "keys": [
+        {
+          "legL": [
+            0,
+            0,
+            18
+          ],
+          "arm": [
+            0,
+            0,
+            50
+          ]
+        },
+        {},
+        {
+          "legR": [
+            0,
+            0,
+            18
+          ],
+          "arm": [
+            0,
+            0,
+            50
+          ]
+        },
+        {}
+      ]
+    }
+  }
+}

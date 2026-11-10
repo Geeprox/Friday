@@ -21,6 +21,7 @@ LIMITATIONS = [
 MODE_TEXT = {
     "我要睡觉": "sleep", "我要睡觉了": "sleep", "进入睡眠模式": "sleep",
     "进入手动模式": "manual", "切换手动模式": "manual",
+    "进入日常模式": "awake", "切换日常模式": "awake", "恢复日常状态": "awake",
 }
 PAUSE_TEXT = {"暂停自动操作", "暂停自动化", "暂停本系统自动操作"}
 LONG_TEXT = {"我要睡觉一整晚", "我要睡觉整晚", "保护一整晚", "我要睡觉到明天"}
@@ -46,7 +47,8 @@ class SleepStatus:
             return FlowResponse(
                 session_id=request.session_id, turn_id=request.turn_id, operation_id=request.operation_id,
                 phase=phase, code=code, input_kind=context.input_kind, caption=caption,
-                choices=choices or [], domain=domain, limitations=LIMITATIONS,
+            choices=choices or [], domain=domain,
+            limitations=['仅管理 Friday 中已启用的自动任务。'] if self.ports.durable_intent else LIMITATIONS,
                 context_token=context_token,
             )
         except ValidationError:
@@ -87,6 +89,30 @@ class SleepStatus:
         if raw.get("available") is not True:
             result["status"] = "unavailable"
             return result
+        if self.ports.durable_intent:
+            intent = raw.get('mode_intent', {})
+            try:
+                if intent.get('state') != 'current' or raw.get('mode_window_current') is not True:
+                    return result
+                leases = {key: ModeLease.model_validate(raw['modes'][key]) for key in ('home.sleep','home.manual')}
+                now = context.wall_now()
+                if any(not lease.issued_at <= now < lease.valid_until for lease in leases.values()):
+                    return result
+                sleep, manual = leases['home.sleep'].value, leases['home.manual'].value
+                if sleep and manual:
+                    return result
+                mode = 'sleep' if sleep else 'manual' if manual else 'awake'
+                if mode != intent.get('mode'):
+                    return result
+                persistent = intent.get('persistent') is True
+                until = None if persistent else datetime.fromisoformat(intent['expires_at'])
+                remaining = None if persistent else (until-now).total_seconds()
+                if not persistent and remaining <= 0:
+                    return result
+                return dict(result, mode=mode, status='active', persistent=persistent,
+                            remaining_seconds=remaining, valid_until=until.isoformat() if until else None)
+            except (ValueError, TypeError, KeyError):
+                return result
         if raw.get("mode_revision_valid") is False or not self._origin:
             return result
         origin_binding, original_modes, observed_deadline = self._origin
@@ -124,14 +150,19 @@ class SleepStatus:
 
     def _view(self, request, context, raw, pause=None, *, code="mode_status"):
         effective = self._effective(raw, context)
-        if effective["status"] == "active":
+        if self.ports.durable_intent and pause is not None:
+            caption = '自动任务已暂停。' if pause.get('status') == 'paused' else '暂停结果尚未确认，请检查自动运行状态。'
+        elif effective['status'] == 'active' and effective.get('persistent'):
+            label = {'sleep':'休息','manual':'手动接管','awake':'日常'}[effective['mode']]
+            caption = f'已设为{label}状态，将保持到你更改。'
+        elif effective["status"] == "active":
             label = {"sleep": "显式睡眠", "manual": "手动", "awake": "清醒"}[effective["mode"]]
             caption = f"{'模拟：' if raw.get('simulated') is True else ''}{label}窗口剩余 {math.ceil(effective['remaining_seconds'])} 秒；仅覆盖受治理范围。"
         elif effective["status"] == "expired":
             caption = "原模式窗口已过期；当前模式未知，剩余 0 秒。"
         else:
             caption = "当前模式未知或不可用；不会自动续期或把关灯推断成睡眠。"
-        if pause is not None:
+        if pause is not None and not self.ports.durable_intent:
             caption = ("原暂停回执已显示；受治理 pending 已进入原失效路径，外部规则不受拦截。 "
                        if pause.get("status") == "paused" else "原暂停结果未确认完成；不会宣称 pending 已取消。 ") + caption
         return self._response(request, context, "unavailable" if effective["status"] == "unavailable" else "result",
@@ -185,7 +216,7 @@ class SleepStatus:
                 self.ports.fixed_ttl_seconds is not None and request.ttl_seconds is not None
                 and request.ttl_seconds != self.ports.fixed_ttl_seconds
             ):
-                seconds = self.ports.fixed_ttl_seconds or 1800
+                seconds = None if self.ports.durable_intent else self.ports.fixed_ttl_seconds or 1800
                 self._window_choices = {k: v for k, v in self._window_choices.items() if v["deadline"] > context.monotonic()}
                 if len(self._window_choices) >= 32 and request.session_id not in self._window_choices:
                     raise FlowAbort("mode_choice_capacity")
@@ -197,8 +228,8 @@ class SleepStatus:
                     "token": token, "mode": selected_mode, "seconds": seconds, "text": request.text,
                 }
                 return self._response(request, context, "clarify", "mode_window_choice_required",
-                                      f"当前后端只支持有限窗口（最长 {seconds} 秒）；请明确选择，不承诺整夜保护。",
-                                      choices=[FlowChoice(id=choice_id, label=f"{'睡眠' if selected_mode == 'sleep' else '手动'}窗口 {seconds} 秒")],
+                                      '要进入休息状态并保持到你切回日常吗？' if self.ports.durable_intent else f"当前后端只支持有限窗口（最长 {seconds} 秒）；请明确选择，不承诺整夜保护。",
+                                      choices=[FlowChoice(id=choice_id, label='保持休息，直到切回日常' if self.ports.durable_intent else f"{'睡眠' if selected_mode == 'sleep' else '手动'}窗口 {seconds} 秒")],
                                       context_token=token)
             entry, duplicate = self._operations.begin(
                 (request.session_id, request.idempotency_key), context,

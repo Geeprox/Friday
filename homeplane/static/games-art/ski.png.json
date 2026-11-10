@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "asset": "ski",
+  "game_name": "林间滑雪",
+  "kind": "original_illustrative_game_cover",
+  "use_case": "stylized-concept",
+  "generator": "OpenAI built-in image_gen",
+  "generated_on": "2026-11-03",
+  "source_generated_image": "exec-6c8be202-2663-4227-a696-9868c011a833.png",
+  "transparent_background": false,
+  "prompt": "Use case: stylized-concept\nAsset type: original wide landscape game-store cover illustration, 16:9, full bleed, opaque, no UI.\nPrimary request: an elegant miniature winter-skiing diorama for a simple motion-controlled family game. One stylized adult skier moves forward by swinging their arms and gently steers between lateral obstacles.\nScene: a winding snow trail through a quiet miniature evergreen forest, with a few clearly readable snowbanks and rounded rocks beside the trail. The trail flows from the foreground toward a pale blue distant ridge.\nSubject: one small but expressive skier in an amber jacket, charcoal trousers, dark skis and simple gloves, captured mid arm-pump with balanced bent knees. Emphasize playful forward movement and a clear open path, not an extreme stunt.\nStyle/medium: sophisticated handmade 3D paper-and-clay illustration, crisply layered cut-paper shapes, softly rounded low-poly forms, matte materials, delicate visible paper fibers only at close range. A polished consumer game illustration with restrained art direction, not a screenshot.\nComposition/framing: wide cinematic landscape; three-quarter elevated camera; skier prominent just left of center; layered foreground branches create depth while all essential action remains inside the central 75 percent. Crisp silhouettes at thumbnail size. Artwork fills the rectangular frame with no card border.\nLighting/mood: soft winter daylight, warm side light, broad gentle contact shadows, inviting and quietly energetic.\nColor palette: icy powder blue and paper white snow, deep pine teal, warm amber accent, a little graphite.\nConstraints: only one player; no text, letters, numbers, labels, logos, watermarks, badges, scores, health metrics, controllers, camera, screen, interface, split panels or surrounding mockup.",
+  "provenance": "Original generated illustration. No household data, photographs or game screenshots were used.",
+  "presentation": "Illustrative cover art; not a screenshot, performance claim, or representation of final game visual fidelity.",
+  "approval_status": "needs_parent_review",
+  "width": 1672,
+  "height": 941,
+  "prompt_embedded": true
+}

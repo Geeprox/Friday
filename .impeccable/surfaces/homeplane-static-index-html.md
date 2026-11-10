@@ -1,0 +1,42 @@
+---
+version: 1
+slug: "homeplane-static-index-html"
+primary_target: "homeplane/static/index.html"
+related_targets: ["homeplane/static/interface.css","homeplane/static/home-experience.js","homeplane/static/home-status.js","homeplane/static/connection-setup.html","native/FridayDesktop/Views/ContentView.swift"]
+---
+
+# Friday household supervision
+
+Mode: Operate. Web Console and macOS shell. Confirmed product record: PRODUCT.md.
+
+## Direction contract
+
+THESIS: A background household steward made legible. Opening Friday answers three questions: how the home is, how Friday is running, and what needs the user's attention. Manual device operation is a supporting path, not the home page's purpose.
+
+OWN-WORLD: The approved Friday icon is the visual authority: charcoal matte metal with folded white paper. Neutral paper work areas, graphite controls, restrained semantic colour, a compact system-sans scale, real approved artwork. No arbitrary brand recolouring, decorative glass or repeated card dashboards.
+
+STORY: Read the 3D household state and operate in place; inspect quiet service/resource summaries; follow a specific attention item to its device, task or incident. Internal processes and raw errors stay inside disclosure controls. Existing jobs run autonomously; only decisions and failed recovery ask for intervention.
+
+FIRST VIEWPORT: A compact navigation rail, a 56px source toolbar and a 28px title. An imported 3D home takes the main work area; a narrower right column holds service states, measured CPU/memory/latency and prioritized attention rows. Without imported geometry, an honest import state occupies the space with a direct device-list escape. Devices use room navigation, grouped rows, immediate controls and an adjacent or inline detail pane. Mobile stacks the same work areas with labelled navigation. Safety opens on recent incidents; monitoring configuration is a disclosure.
+
+FORM: User-pinned approved Friday identity and user-confirmed background-steward architecture override the earlier rejected blue/card direction. seed:0bbe4960b462f190 remains the session reference, not aesthetic authority. Code-first application screen. The existing Friday icon is copied unchanged with origin metadata. Games is a consumer storefront with individually authored illustrative covers, browse/filter/detail/play flow, honest player counts and prototype labels. Interaction and Games are primary navigation destinations.
+
+SIGNATURE INTERACTION: A line-diagram motion library explains every supported hand and body input. A bounded teaching session progresses from waiting for a person, through recognition, to a single legible success and an opt-in local-device chime. Practice consumes already-running sources and suppresses gesture device dispatch until explicitly closed or expired. Nonessential diagram loops play only while visible and honour reduced motion. Voice shows all cameras, never a mandatory single room selector.
+
+APPROVED HAND REFERENCE (2026-11-04): User approved the Godot XR Tools CC0 hand preview in this chat. Keep its source mesh/poses, orthographic white fill and smooth charcoal outline, with actual open-palm → target → hold → reset. Replace the rejected authored hand drawing with this source. Explore practical official common poses and wire supported recognizers to bindings and isolated teaching. Asset license does not establish recognition accuracy.
+
+Werewolf phone join recovery: persist only the exact pending join intent in current-tab session storage before sending it. A lost response or reload resumes that room and seat with the same random recovery identifier; it does not reserve another seat. The brief recovery state uses the existing neutral join layout and two clear actions, “重试入座” and “更换房间”, with no modal or infrastructure copy. An explicit different invitation supersedes the pending intent. Acknowledgment must match the requested room and seat before storing the personal credential and clearing recovery state. Removed players and closed/replaced rooms remain revoked. Recovery neither exposes roles automatically nor provides public/name-based credential lookup. Actual phone rendering and LAN acceptance remain open.
+
+Werewolf camera alignment: keep the native seat fields inline. “显示画面” reads an already running source beside those fields and overlays the numbers from that same decoded image. This is an explicit local host view, never a capture-start command or a phone/TV feed. Image and choices retire together on expiry, hiding or leaving the lobby; delayed replies cannot revive a retired view. Keep the existing paper/graphite controls, accessible numbered alternative and source-bound binding/readback. No camera, identity or physical accuracy claim follows from synthetic rendering.
+
+Seat correction stays inside the same native chooser: show which seat owns an unavailable number, disable that choice, and offer “取消当前对应” only when that seat has a saved mapping. Releasing it keeps the player and ready state. Waiting for a fresh camera must read “等待画面恢复”; a current picture without the bound person may say “原位置暂不可见”, without declaring that the camera or person moved. Do not replace fields or repeatedly rewrite unchanged native options during picture refresh. A correction changes the existing room version and cannot be undone by an old clear request.
+
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+
+## Scope and evidence
+
+Synthetic preview only. No live camera/microphone/model/TV/device activation. Desired gaze/wake confidence semantics and configurable wake words are captured as product truth; correcting the full speech execution chain and a Rust migration are separate functional changes, not claimed by this UI refactor. Host resource sampling is passive and bounded, with null values when unavailable. Background service and safety/event summaries read existing owners and never start them. Do not present planned crying/rough-care detection as a functioning capability.
+
+Generated reports and screenshots remain under ignored .artifacts/design-20261103/. The synthetic preview's room geometry and devices never ship as defaults.
+
+Task attention: Home names the actual task and links an immutable notice to the automatic-task tab, where a quiet row shows the execution time and result. A missed or unavailable one-off task offers “重新安排”; an uncertain device outcome offers “查看设备”. “已了解” acknowledges only that notice and never retries execution. The existing polling owner updates keyed rows without replacing the focused control; removing a focused notice moves focus to the next notice or the workspace heading. A changed/handled URL stays understandable instead of opening an obsolete editor. Native controls, paper surfaces and dividers remain the visual structure. No new modal, automatic sound or extra polling owner. Current actual browser/native capture remains required; inert DOM evidence is insufficient for visual finish.

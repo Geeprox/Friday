@@ -16,6 +16,25 @@ def test_encoding_matches_recovered_client_parser_and_known_pause_uri():
     }
 
 
+def test_download_uri_only_selects_download_action_and_never_confirms_playback(monkeypatch):
+    run = Mock(return_value=subprocess.CompletedProcess([], 0))
+    monkeypatch.setattr(ktv_netease.subprocess, "run", run)
+    prepared = ktv_netease.control("download", "123456")
+    assert json.loads(base64.b64decode(prepared["uri"].removeprefix("orpheus://"))) == {
+        "cmd": "download", "type": "song", "id": "123456"
+    }
+    run.assert_not_called()
+    sent = ktv_netease.control("download", "123456", execute=True)
+    assert sent["status"] == "requested" and sent["playback_confirmed"] is False
+    run.assert_called_once()
+
+
+@pytest.mark.parametrize("song_id", [None, "0", "12;open x", "１２３"])
+def test_download_keeps_the_same_exact_numeric_identity_validation(song_id):
+    with pytest.raises(ValueError):
+        ktv_netease.build_uri("download", song_id)
+
+
 def test_default_cli_only_prepares_and_title_is_not_in_uri(monkeypatch, capsys):
     run = Mock(side_effect=AssertionError("default must not launch any app"))
     monkeypatch.setattr(ktv_netease.subprocess, "run", run)
@@ -28,7 +47,7 @@ def test_default_cli_only_prepares_and_title_is_not_in_uri(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("action,song_id", [
-    ("download", "123"), ("pause", "123"), ("play", None), ("play", "0"),
+    ("delete", "123"), ("pause", "123"), ("play", None), ("play", "0"),
     ("play", "12\n"), ("play", "123;touch x"), ("play", "１２３"),
     ("play", "9223372036854775808"), ("play", True),
 ])

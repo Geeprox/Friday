@@ -1,0 +1,29 @@
+{
+  "assets": [
+    {
+      "name": "applause",
+      "file": "native/KTVTV/android/assets/sfx/applause.wav",
+      "sha256": "e5c7b5f7285168da91fcfde8843e40b0ac0ceb296cb049c632040b16d106c414",
+      "bytes": 1046060,
+      "duration_ms": 5448,
+      "license": "CC0-1.0",
+      "source": "https://bigsoundbank.com/applause-1-s2363.html",
+      "author": "Dorian CLAIR",
+      "integrated_lufs": -8.33,
+      "true_peak_dbtp": -1.92
+    },
+    {
+      "name": "cheer",
+      "file": "native/KTVTV/android/assets/sfx/cheer.wav",
+      "sha256": "987f42917c5e37aa51248062bbd28f9d648306b2c890a20f2edbe2803fa37d8b",
+      "bytes": 948132,
+      "duration_ms": 4937,
+      "license": "CC0-1.0",
+      "source": "https://bigsoundbank.com/shouts-and-applauses-of-teens-2-s0237.html",
+      "author": "DenisChardonnet",
+      "integrated_lufs": -9.59,
+      "true_peak_dbtp": -1.91
+    }
+  ],
+  "conversion": "Existing reviewed CC0 clips boosted 6 dB with an oversampled peak limiter, measured about -8 to -10 LUFS and below -1 dBTP; 48 kHz stereo PCM16 with canonical 44-byte WAV header. No captured household audio."
+}

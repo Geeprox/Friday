@@ -1,0 +1,609 @@
+{
+  "naming": "Only business-key dots replaced by hyphens; existing underscores retained. Use this exact map rather than guessing.",
+  "count": 19,
+  "render": {
+    "pixels": [
+      480,
+      540
+    ],
+    "outlineWidth": 0.01,
+    "yaw": 20,
+    "background": "native transparent RGBA",
+    "neutral_face": true,
+    "clothing": "Same actual source T-shirt/trousers/sneakers; distinct light graphite material fills",
+    "materials": {
+      "shirt": "#e6e7e2",
+      "trousers": "#c9ccc5",
+      "sneakers": "#ffffff",
+      "exposedBody": "#ffffff"
+    }
+  },
+  "targets": {
+    "pose.horizontal": {
+      "file": "targets/pose-horizontal.png",
+      "key": "horizontal",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "t-raise",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "865ce752808625a1ccea952a2974b4761d9031364c0f358d3ceacfc7f364e45c",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 12170,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "pose.overhead": {
+      "file": "targets/pose-overhead.png",
+      "key": "overhead",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "upward-salute-gentle",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "4291e5ddf523e006c1572c0bef0b34600b881f87415f379ea8f51cecef089383",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 13586,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.hands_up": {
+      "file": "targets/body-hands_up.png",
+      "key": "overhead",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "upward-salute-gentle",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "c7cddf777d25585ac1dbcba8bffca3341b40c59fef0b3bdda5117ee5641494fa",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 13586,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.squat": {
+      "file": "targets/body-squat.png",
+      "key": "squat",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "sit-back-squat",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "55e317003e65d1c03ffae84313e201d7a1e520293a54a4e6a4c6502bd508d651",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 10759,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "exercise.squat": {
+      "file": "targets/exercise-squat.png",
+      "key": "squat",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "sit-back-squat",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "93218eb8655d34675f42e502e1ff49a8d676659dbe3e14c05d9762f875fa6e94",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 10767,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "exercise.high_knee": {
+      "file": "targets/exercise-high_knee.png",
+      "key": "high_knee",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "high-knee-march",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "e31b4e3cca42243f5732c13819909b0fd2bf8c218fe8dbf6fba460896a09785a",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 12420,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.arms_open": {
+      "file": "targets/body-arms_open.png",
+      "key": "open-close-swings",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "open-close-swings",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "3c27a8972de19194a31fe6d07890f59a37e07edb56f320f99e00bc311dd1849a",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "sourceTime": 1.2333333492279053,
+      "bytes": 12313,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.arms_close": {
+      "file": "targets/body-arms_close.png",
+      "key": "open-close-swings",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "open-close-swings",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "8aecef9c803483a84499f999f98a3cd36d3e9eb261559b7d6ef71099b56e5107",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "sourceTime": 0.6,
+      "bytes": 11452,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.left_hand_up": {
+      "file": "targets/body-left_hand_up.png",
+      "key": "overhead-reach",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "overhead-reach",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "fe8c238bdf593ce438a32347ef2da091f08600647e90495ded77f05f840a7366",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "sourceTime": 0,
+      "bytes": 12833,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.right_hand_up": {
+      "file": "targets/body-right_hand_up.png",
+      "key": "overhead-reach",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "overhead-reach",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "1d893f9e72b64a1e5ed0ab8ecc1b36eaeb1fa4c7b194700fca836a3493828075",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "sourceTime": 1.8,
+      "bytes": 13361,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.lean_left": {
+      "file": "targets/body-lean_left.png",
+      "key": "hands-on-hips-side-bend",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "hands-on-hips-side-bend",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "4899da4b968d1234c24f4b0492515597996d59f75d6272f27c7fbb8726097934",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "sourceTime": 1.1,
+      "bytes": 12898,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.lean_right": {
+      "file": "targets/body-lean_right.png",
+      "key": "hands-on-hips-side-bend",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "hands-on-hips-side-bend",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "391c7b12b5a9012fe583b8b004fdbc10f99756b3f782fd8330ca8ff6630c761d",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "sourceTime": 3.3,
+      "bytes": 12951,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.lateral": {
+      "file": "targets/body-lateral.png",
+      "key": "lateral_step",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "side-step-arm-swing",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "bd4223e80f5bab67b266f234318eb985533ee96273bc49b64f261fb43a528113",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 13009,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.arm_effort": {
+      "file": "targets/body-arm_effort.png",
+      "key": "ski_alternate",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "friday-ski-alternate-v1",
+      "motion_origin": "Friday authored joint animation candidate",
+      "motion_license": "MIT / Friday contributors",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "0c7e6d68c08d31e13826547f6ea839e443abdbe02c774cf8ad9e089b7b241f4a",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 12662,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "body.swing": {
+      "file": "targets/body-swing.png",
+      "key": "tennis_swing",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "friday-tennis-forehand-v1",
+      "motion_origin": "Friday authored joint animation candidate",
+      "motion_license": "MIT / Friday contributors",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "43ec0dc00d05867b0b1b1aa52f1623ea490d0d2061c51e63cb8f5339a12db238",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 13512,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "exercise.jack": {
+      "file": "targets/exercise-jack.png",
+      "key": "step_jack",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "step-jack",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "860c045ef0ef34bb8720b45e2d3733e8806d31362aeda370c46bdf4f5790c477",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 14193,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "exercise.side_lunge": {
+      "file": "targets/exercise-side_lunge.png",
+      "key": "side_lunge",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "friday-side-lunge-v1",
+      "motion_origin": "Friday authored joint animation candidate",
+      "motion_license": "MIT / Friday contributors",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "a77f853f9cc3d3212bb5ffff09c1f7d6fd9a9c2ae33ea78d22232c1ceef550a3",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 13631,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "exercise.side_step": {
+      "file": "targets/exercise-side_step.png",
+      "key": "side_step",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "side-step-taps",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "2505a47e2a477d3aae76a73063646d1205374fd8f4be6bb1d1d4de424ba759bb",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 13902,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    },
+    "exercise.side_bend": {
+      "file": "targets/exercise-side_bend.png",
+      "key": "side_bend",
+      "phase": 0.57,
+      "yaw": 20,
+      "outlineWidth": 0.01,
+      "whiteBackground": false,
+      "pixels": [
+        480,
+        540
+      ],
+      "clip": "hands-on-hips-side-bend",
+      "motion_origin": "Desk Break original MIT clip, retargeted",
+      "motion_license": "MIT / Shlomy Reshef",
+      "mesh_license": "MakeHuman base + three real official garments CC0 1.0",
+      "png_sha256": "afff12657b4e11f510a8037b645a3806f89ab31ef3f34c73d17f0b072b39e0ea",
+      "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+      "static_target_not_animation": true,
+      "bytes": 12957,
+      "origin_embedded": true,
+      "transparentBackground": true,
+      "materials": {
+        "shirt": "#e6e7e2",
+        "trousers": "#c9ccc5",
+        "sneakers": "#ffffff",
+        "exposedBody": "#ffffff"
+      },
+      "impeccable_origin_embedded": true
+    }
+  },
+  "standalone_game_viewer_allowlist": {
+    "assets/motion-pose-horizontal.png": "targets/pose-horizontal.png",
+    "assets/motion-pose-overhead.png": "targets/pose-overhead.png",
+    "assets/motion-exercise-squat.png": "targets/exercise-squat.png",
+    "assets/motion-exercise-jack.png": "targets/exercise-jack.png",
+    "assets/motion-exercise-high-knee.png": "targets/exercise-high_knee.png",
+    "assets/motion-exercise-side-lunge.png": "targets/exercise-side_lunge.png",
+    "assets/motion-exercise-side-step.png": "targets/exercise-side_step.png",
+    "assets/motion-exercise-side-bend.png": "targets/exercise-side_bend.png"
+  }
+}

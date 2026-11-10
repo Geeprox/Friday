@@ -1,0 +1,19 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="local.friday.ktv" android:versionCode="60" android:versionName="0.60">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="local.friday.ktv.audio.CONTROL" />
+    <queries><package android:name="local.friday.ktv.audio" /></queries>
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <application android:label="Friday KTV" android:icon="@mipmap/ic_friday_ktv" android:roundIcon="@mipmap/ic_friday_ktv" android:banner="@mipmap/banner_friday_ktv" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="false" android:usesCleartextTraffic="true">
+        <service android:name="local.friday.audio.WetService" android:process=":wet" android:exported="false" />
+        <activity android:name=".DirectMonitorActivity" android:exported="false" android:screenOrientation="landscape" />
+        <activity android:name=".ProductionAudioCheckActivity" android:exported="false" android:screenOrientation="landscape" />
+        <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="landscape">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /><category android:name="android.intent.category.LEANBACK_LAUNCHER" /></intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -35,6 +35,7 @@ class ArchiveCameraEdit(Contract):
     expected_context: str = Field(pattern=r"^[a-f0-9]{64}$")
     folder_ref: str = Field(pattern=r"^[a-f0-9]{64}$")
     camera_id: str | None = Field(default=None, min_length=1, max_length=128)
+    capture_camera_id: str | None = Field(default=None, pattern=r'^cam_[a-f0-9]{10}$')
     name: str = Field(min_length=1, max_length=80)
     room: str | None = Field(default=None, max_length=128)
     timezone: str = Field(default="Asia/Shanghai", max_length=64)

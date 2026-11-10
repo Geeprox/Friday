@@ -284,6 +284,8 @@ def test_native_sealed_actor_receipt_enters_existing_local_diff_without_effects(
     import threading
     from types import SimpleNamespace
 
+    from tests.arl_fixtures import require_priority_host_sdk
+    require_priority_host_sdk()
     arl = pytest.importorskip('arl', reason='Optional ARL typed planning SDK')
     from arl.client import Client
     from arl.contracts import Fault

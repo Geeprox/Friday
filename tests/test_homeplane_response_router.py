@@ -58,6 +58,21 @@ def router_for(ctx, output, *, quiet=False, minimum_priority=0):
 
 
 @pytest.mark.asyncio
+async def test_text_only_console_keeps_caption_without_unrequested_audio_warning():
+    ctx=context(room=None)
+    original=report(ctx)
+    router=ResponseRouter()
+    try:
+        result=await router.deliver(receipt(original,ctx),ctx)
+        assert result.caption==original.caption
+        assert result.domain['report']==original.domain
+        assert result.domain['output']['code']=='room_output_unavailable'
+        assert result.domain['output']['attempted'] is False
+        assert result.output_audibility=='unavailable'
+    finally:await router.close()
+
+
+@pytest.mark.asyncio
 async def test_no_endpoint_preserves_original_truth_and_public_json_cannot_supply_result():
     ctx = context()
     original = report(ctx)

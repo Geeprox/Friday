@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "asset": "ktv",
+  "game_name": "家庭 KTV",
+  "kind": "original_illustrative_game_cover",
+  "use_case": "stylized-concept",
+  "generator": "OpenAI built-in image_gen",
+  "generated_on": "2026-11-09",
+  "source_generated_image": "exec-bf404b8d-d850-4456-af35-860be7e69738.png",
+  "transparent_background": false,
+  "prompt": "Use case: stylized-concept\nAsset type: original wide landscape 16:9 game-library cover, full bleed, opaque, no interface.\nPrimary request: a warm, lively family karaoke evening at home, immediately readable at a small storefront-card size.\nInput images: Image 1 (tennis cover) and Image 2 (Werewolf cover) are STYLE REFERENCES ONLY, not edit targets. Make a new scene. Match their sculpted paper-and-clay people, layered cut-paper environments, matte fibrous materials, friendly faces, restrained detail and polished lighting. Preserve neither reference composition nor subject matter.\nScene and subjects: a comfortable contemporary living room, three friendly fully clothed family members. Two standing adults sing together, each holding one clearly recognizable handheld microphone; a seated younger family member claps along on a muted green sofa. A small TV off to one side shows only abstract music bars, no words. A simple lamp and one leafy plant complete the room. Hands, microphone grips and facial features must be anatomically coherent and clear.\nComposition: cinematic three-quarter view, waist-up to three-quarter figures large enough to read. Essential singing action stays inside the central 75 percent for responsive cropping. Distinct silhouettes and relaxed joyful movement. Environment fills the frame; no frame, inset, separate panels or mockup.\nLighting and materials: warm evening lamplight, broad soft contact shadows, softly rounded sculpted matte forms and fine paper fiber texture, matching the supplied cover family. Warm cream, muted terracotta, pine green and small amber accents; avoid neon club lighting.\nConstraints: no text, letters, lyrics, numbers, logos, brands, watermark, scores, badges, controllers, cameras or interface elements. Original illustrative cover art, not a product screenshot.",
+  "provenance": "Original generated illustration using two existing original covers only as style references. No household data, photographs or game screenshots were used.",
+  "presentation": "Illustrative library cover; not a screenshot or a claim about audio, device or game functionality.",
+  "style_reference_images": [
+    "homeplane/static/games-art/tennis.png",
+    "homeplane/static/games-art/werewolf.png"
+  ],
+  "approval_status": "Illustration inspected; shared finish review pending.",
+  "width": 1672,
+  "height": 941,
+  "bytes": 2629335,
+  "sha256": "11b30030c8ba0cce72f2561b23e7de98f6ae0bc38010fa557e2d7368b2c5e2a4",
+  "source_generated_sha256": "d3c1366b1199ec36ca2ad3a16faaea2ad554222dd88a7ddf1e74f76319531b00",
+  "prompt_embedded": true,
+  "validation": "All PNG CRCs valid. Only exact prompt metadata was added; original compressed pixel stream is byte-identical.",
+  "style_reference_sha256": {
+    "homeplane/static/games-art/tennis.png": "2ed81d8cb7d8077b0da4ad33a87b50e37107a16bd962b978ca7e68418c21cd7f",
+    "homeplane/static/games-art/werewolf.png": "65c686067b13e7ec6b8d9475c31da9ddeca5253cae95160a41404d49ae827c24"
+  }
+}

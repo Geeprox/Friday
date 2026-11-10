@@ -1,0 +1,106 @@
+{
+  "new_business_mappings": {
+    "body.lateral": {
+      "key": "lateral_step",
+      "target_phase": 0.57,
+      "hold_phase": [
+        0.43,
+        0.67
+      ],
+      "clip": "side-step-arm-swing",
+      "sequence": {
+        "target": 0.55
+      }
+    },
+    "body.arm_effort": {
+      "key": "ski_alternate",
+      "target_phase": 0.57,
+      "hold_phase": [
+        0.43,
+        0.67
+      ],
+      "clip": "friday-ski-alternate-v1",
+      "sequence": {
+        "target": 2.592
+      }
+    },
+    "body.swing": {
+      "key": "tennis_swing",
+      "target_phase": 0.57,
+      "hold_phase": [
+        0.43,
+        0.67
+      ],
+      "clip": "friday-tennis-forehand-v1",
+      "sequence": {
+        "target": 3.3
+      }
+    },
+    "exercise.jack": {
+      "key": "step_jack",
+      "target_phase": 0.57,
+      "hold_phase": [
+        0.43,
+        0.67
+      ],
+      "clip": "step-jack",
+      "sequence": {
+        "target": 0.5
+      }
+    },
+    "exercise.side_lunge": {
+      "key": "side_lunge",
+      "target_phase": 0.57,
+      "hold_phase": [
+        0.43,
+        0.67
+      ],
+      "clip": "friday-side-lunge-v1",
+      "sequence": {
+        "target": 3.3
+      }
+    },
+    "exercise.side_step": {
+      "key": "side_step",
+      "target_phase": 0.57,
+      "hold_phase": [
+        0.43,
+        0.67
+      ],
+      "clip": "side-step-taps",
+      "sequence": {
+        "target": 1.2,
+        "end": 1.8
+      }
+    },
+    "exercise.side_bend": {
+      "key": "side_bend",
+      "target_phase": 0.57,
+      "hold_phase": [
+        0.43,
+        0.67
+      ],
+      "clip": "hands-on-hips-side-bend",
+      "sequence": {
+        "target": 3.3
+      }
+    }
+  },
+  "existing_keys_and_sourceTime_mappings_unchanged": true,
+  "renderer_signature": "createBodyRenderer(THREE, canvas, model, opts) -> draw(items,{width,height,ratio}), setYaw(),dispose()",
+  "item_fields": [
+    "key",
+    "phase",
+    "rect",
+    "yaw?",
+    "mirror?",
+    "sourceTime?"
+  ],
+  "default_yaw": 20,
+  "default_outlineWidth": 0.022,
+  "mirror": "Existing whole-pose display mirror; no business left/right semantic change",
+  "source_side_step": "side-step-taps has an initial L tap; enter from neutral, play through R tap at1.2s, end at source neutral1.8s before return. Full original clip retained.",
+  "source_side_bend": "hands-on-hips-side-bend: neutral0 -> viewer-left1.1 ->neutral2.2 ->viewer-right3.3 hold ->source neutral4.433 ->entry neutral.",
+  "static_targets": "targets.json",
+  "app_files_modified": false
+}

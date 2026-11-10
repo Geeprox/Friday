@@ -1,0 +1,97 @@
+# Friday
+
+<!-- impeccable:product-schema 1 -->
+
+## Platform
+
+web
+
+Friday 的主界面由浏览器和 macOS WKWebView 共用。原生桌面外壳使用 SwiftUI，保留 macOS 的窗口、键盘与系统授权行为。
+
+## Users
+
+普通家庭成员。日常通过后台任务、自然语言与动作或手势使用 Friday，通常不打开控制界面。家庭维护者按需处理配置与连接。
+
+## Product Purpose
+
+Friday 的核心定位是常驻后台的智能管家，主动完成已配置的家庭任务，并在需要时请使用者介入。家庭状态展示、空间化查看与可靠的设备控制是基础；日常价值来自不必反复打开界面也能完成任务。
+
+## Positioning
+
+与米家的手动设备控制相比，Friday 预期提供主动巡视、复杂任务与问答、自然语言控制、动作或手势控制，以及任务运行与异常处理的整体监督。不能仅把设备开关换一个界面当作核心产品价值。
+
+## Operating Context
+
+Web 主界面和 macOS 桌面外壳共享主要流程。Friday 在后台持续运行；控制界面主要用于了解家中情况、检查管家运行状态、处理需要介入的事项，以及必要的手动操作与设置。默认合成示例必须明确标记；连接真实家庭需要使用者自己的服务、登录与授权。
+
+## First-screen Priorities
+
+1. 家庭智能设备状态，以现有 3D 模型视图为主要表达；基础控制必须可达，操作后正确回显设备上报状态。
+2. Friday 后台各智能服务的运行状态，包括 CPU、内存负载，以及性能压力引起的降级或高延迟。只展示真实可获得的测量，缺少时不能伪造正常状态。
+3. 近期需要关注或介入的事项，例如低电量、设备掉线、任务执行偏离预期，以及已获支持的家庭异常事件。日常页面呈现影响、当前处理进度与必要操作，详细原因和证据按需查看。
+
+## Voice Interaction
+
+日常以语音为主：使用者可以看着摄像头直接讲话。注视是降低误触发、提高置信度的输入之一，不是必要条件；可通过唤醒词提高置信度，默认 Friday，并允许使用者配置。
+
+简单设备控制优先由规则或本地小模型解析，路由至 HA 执行并核对状态；问题与复杂任务经 ARL 交由 Codex。不要让简单开关指令等待一次复杂 Agent 调用。
+
+## Autonomy and Intervention
+
+已配置的任务在后台自动执行，异常优先自行恢复。恢复失败、结果偏离预期或需要使用者作决定时才打扰。新建复杂任务用简洁计划确认执行范围。此项为本轮已确认的产品行为，具体执行仍受本机已配置权限约束。
+
+## Desired Experience
+
+简洁、直观、结果导向。内部复杂度由产品消化，不把过程、原始异常与实现逻辑直接抛给用户。避免满屏解释、反复声明、含义不清的按钮和重复确认。没有待处理事项时保持安静；需要人介入时说明发生了什么、影响什么、接下来做什么。
+
+## Capabilities and Constraints
+
+- 互动控制与家庭游戏是一级核心入口，不收进“更多功能”。互动默认全屋已接入且已开启的摄像头共同参与，不要求使用者先选择所在房间。镜头关闭状态仍受其隐私设置约束。
+- 家庭游戏以游戏商店方式浏览：真实游戏目录、各自封面、玩法与人数、动作教学、详情和明确的开始/结束流程。不编造评分、玩家数、价格或游戏成熟度。
+- 支持的手势与动作提供线条动画示意，以及独立的“试一试”教学。练习只确认识别，不控制家庭设备；成功时提供清楚的视觉和可选择的本机声音反馈。练习不自动开启镜头。
+- 保留现有房间、设备、自动化、提醒、互动、回看、人物、资料与游戏入口；连接、权限和诊断集中在设置中。
+- 数据与能力来自当前连接和注册表，不按名称、型号或位置猜测设备。
+- 示例环境保持清晰可见的 simulated 身份；空家庭不生成户型、方向、设备或状态。
+- 只读、离线、过期、未授权与未核实的操作结果必须如实呈现。HTTP、ACK 和上报状态不代表物理验收。
+- 视觉开发不启动摄像头、麦克风、模型、音频、电视或真实设备动作。
+- 私有数据和生成的验证材料只保存在忽略的 data/ 或 .artifacts/。
+
+## Brand Commitments
+
+名称 Friday，简洁、直接的中文。延续现有 Icon 的典雅深灰、纸张与哑光金属质感；这项约束由使用者明确提出，现有 Icon 资源位于 native/FridayDesktop/Resources/AppIcon/。重构必须改变 UI 风格、信息结构与操作动线，不能以更换配色代替设计。
+
+## Evidence on Hand
+
+README.md、docs/deployment.md、docs/privacy.md 与现有 Web / SwiftUI 实现。仓库已有合成 Simulator 和功能测试。不存在可供公开发布的真实家庭数据。
+
+## Product Principles
+
+- 后台管家是日常；手动控制与空间化状态是基础。
+- 控件名称清楚，状态、操作和结果能够区分。
+- 将必要权限、隐私与能力边界放在相应设置或启用动作中，日常使用不反复堆叠声明。
+- 提供一致的导航、键盘操作和窄屏体验。
+
+## Capability Evidence Boundary
+
+使用者希望关注跌倒、婴儿哭闹与异常照护行为等场景。这些是需求，不是已有检测能力的证明。界面必须依据当前实现与验证证据呈现；未支持或未验证的能力不得显示为正在可靠监测。
+
+## Open Decisions
+
+- Rust 替换 Python 执行器处于技术评估阶段；是否迁移以及具体范围尚未决定，不应据此自动启动全量重写。
+
+## Confirmed Scope
+
+2026-11-03：使用者确认按普通家庭成员日常使用重构，同时覆盖 Web 主界面与 macOS 桌面外壳，将连接、诊断与权限配置收进设置。
+
+2026-11-03 补充澄清：上述智能管家定位、首屏三项优先级、内部复杂度的呈现原则与既有品牌约束，均来自使用者本轮回答；取代先前以房间/设备浏览为主线的假设。
+
+语音与自主运行补充：使用者明确了注视/可配置唤醒词作为置信度输入、简单指令走规则/小模型→HA、复杂任务走 ARL→Codex，并确认上述自主运行与介入分界。
+
+2026-11-04 扩展目标：继续视觉重构，同时按当前源码核实链路审计并修复确定断点。ARL 握手/注册/心跳/场景接入由“梳理 Friday 功能链路断点”会话独占负责，本会话仅消费其真实状态投影。滑雪、网球与体感闯关需要继续完成面向家庭用户的美术、关卡、交互、游戏性与更多动作识别；商店封面本身不代表游戏开发完成。
+
+狼人杀按使用者确认的 6–12 人标准局开发：手机私下查看身份并提交夜间行动，电视只显示公共信息；Friday 按确定规则主持，摄像头用于座位追踪、举手与指认。增加可显式配置的场景灯光和播报，使用已授权设备与当前能力；游戏不自行扩大摄像头、音频或设备授权。座位指认是可行性原型，不能冒充完整狼人杀。真实外设验收单列。
+
+手势图示补充：使用者再次拒绝手绘轮廓，要求参考所提供的专业黑白手势轮廓，并优先检索开源动画。必须展示动作成形过程；轻微摆动、静态图切换或描边显现不能作为手势教学动画交付。
+# Confirmed hand teaching visual (2026-11-04)
+
+The user explicitly approved the Godot XR Tools CC0 rigged-hand preview: orthographic white hand with smooth charcoal contours, real source-bone open-palm → target → hold → reset. This is the visual reference replacing the rejected authored hand diagrams. Preserve this source and style. The user additionally asked to review the official common poses and support practical additional gestures in recognition, bindings and teaching; source poses alone do not prove recognition support. Prioritize clearly distinguishable inputs and provide the same bounded practice/feedback path.

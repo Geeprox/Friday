@@ -377,6 +377,7 @@ class Orchestrator:
                     ]
                     context = {
                         "request": text,
+                        "model_request_id": hashlib.sha256(str(event_id).encode()).hexdigest(),
                         "camera_room": self.settings.room,
                         "devices": catalog,
                         "pointing_target": pointed,

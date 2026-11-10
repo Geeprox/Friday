@@ -154,10 +154,14 @@ def install_oauth(app: FastAPI, config_path: str | Path, base_url="http://127.0.
     callback authorization remains bound to nonce + browser cookie here.
     """
     base = urlsplit(base_url)
-    if (base.scheme != "http" or base.hostname != "127.0.0.1" or base.port != 8740
+    port = base.port if base.port is not None else 80
+    if (base.scheme != "http" or base.hostname != "127.0.0.1" or not 1 <= port <= 65535
             or base.path not in {"", "/"} or base.query or base.fragment or base.username or base.password):
-        raise ValueError("fixed_primary_loopback_origin_required")
-    client_id = base_url.rstrip("/")
+        raise ValueError("configured_primary_loopback_origin_required")
+    # The application declares its bound port. Never derive a redirect/client
+    # identity from Host, Origin, forwarded headers or callback parameters.
+    client_id = "http://127.0.0.1" + (f":{port}" if port != 80 else "")
+    expected_host = client_id.removeprefix('http://')
     cookie_name = "home_ha_console_session"
     pending = {}
 
@@ -175,7 +179,7 @@ def install_oauth(app: FastAPI, config_path: str | Path, base_url="http://127.0.
             return None
 
     def valid_host(request):
-        return request.headers.get("host") == base.netloc
+        return request.headers.get("host") == expected_host
 
     def sealed(response):
         response.headers.update({"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})

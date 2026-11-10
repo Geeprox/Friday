@@ -9,7 +9,6 @@ import asyncio
 import copy
 import importlib.metadata
 import math
-import os
 import threading
 import time
 import uuid
@@ -79,19 +78,14 @@ def sdk_client(home: Path, start=False, *, app="friday"):
     # Import the installed upstream SDK, never vendor it or implement a parallel socket protocol.
     try:
         from arl import PROTOCOL
-        from arl.client import Client, RuntimeLauncher
+        from arl.client import Client
     except ImportError:
         raise ARLError("sdk_missing") from None
     if PROTOCOL != "arl/1":
         raise ARLError("unsupported_protocol")
-    # Current SDK launcher inherits its parent's environment. Refuse bootstrap when
-    # known home/development credentials would cross that boundary; reconnect remains
-    # allowed. Upstream owns any future sanitized-launch environment contract.
-    if start and any(value for name, value in os.environ.items()
-                     if name in {"HOME_HA_TOKEN", "OPENAI_API_KEY", "JEV_API_KEY"}
-                     or (name.startswith(("FRIDAY_", "MILOCO_")) and name.endswith(("TOKEN", "KEY", "PASSCODE")))):
-        raise ARLError("runtime_launch_environment_not_isolated")
-    return Client(home, app, launcher=RuntimeLauncher(home) if start else None)
+    if start:
+        raise ARLError("runtime_managed_by_arl")
+    return Client(home, app)
 
 
 def sdk_version():
@@ -163,7 +157,7 @@ def safe_code(exc):
 
 class ARLRuntime:
     def __init__(self, home: Callable[[], Path] | None = None, *, client_factory=sdk_client,
-                 settings_client_factory=sdk_settings_client):
+                 settings_client_factory=sdk_settings_client, state_directory=None, application_factory=None):
         self.home = home or (lambda: DEFAULT_HOME)
         self.client_factory = client_factory
         self.settings_client_factory = settings_client_factory
@@ -174,6 +168,39 @@ class ARLRuntime:
         self._status_cache = None
         self._status_cache_home = None
         self._status_generation = 0
+        from .arl_application import FridayApplication
+        options = {"session_factory": application_factory} if application_factory is not None else {}
+        self.application = FridayApplication(self.home, state_directory or (lambda: Path('data/homeplane')), **options)
+        self._application_closed = False
+        self._application_gate = asyncio.Lock()
+
+    async def start_application(self):
+        async with self._application_gate:
+            if self._application_closed:
+                return
+            previous = self.application
+            if previous.session is not None and Path(previous.session.client.home) != Path(self.home()):
+                from .arl_application import FridayApplication
+                await previous.close()
+                self.application = FridayApplication(self.home, previous.state_directory,
+                    session_factory=previous.factory, allow_simulated=previous.allow_simulated)
+            self.application.start()
+
+    async def close(self):
+        async with self._application_gate:
+            self._application_closed = True
+            await self.application.close()
+
+    async def complete_scenario(self, scenario_id, prompt, *, request_id, deadline):
+        await self.start_application()
+        intent = current_model_task()
+        return await self.application.complete(scenario_id, prompt, request_id=request_id,
+            deadline=min(deadline, intent.deadline) if intent else deadline,
+            current=intent.current if intent else None)
+
+    async def application_smoke(self):
+        await self.start_application()
+        return await self.application.ping()
 
 
     @observe('arl.worker', upstream='arl')
@@ -205,8 +232,14 @@ class ARLRuntime:
             stop.set()
             raise
 
-    @observe('arl.status', upstream='arl')
     async def status(self, *, start=False, timeout=3):
+        if start or self.application.started:
+            await self.start_application()
+        report = await self._health_status(timeout=timeout)
+        return {**report, 'application': self.application.status()}
+
+    @observe('arl.status', upstream='arl')
+    async def _health_status(self, *, timeout=3):
         home = self.home()
         if home != self._status_cache_home:
             self._status_cache_home = home
@@ -222,23 +255,13 @@ class ARLRuntime:
                 self._status_cache = copy.deepcopy(report)
             return report
 
-        if not start and not home.exists():
+        if not home.exists():
             return remembered({**base, "status": "not_running" if base["sdk_version"] else "sdk_missing",
                                "metadata_freshness": "unavailable", "metadata_refresh_pending": False,
                                "metadata_refresh_code": "not_running", "metadata_refresh_source": "local_configuration"})
         def probe(stop):
             client = self.settings_client_factory(home)
-            try:
-                report = client.rpc("overview")
-            except Exception as exc:
-                if not start or safe_code(exc) != "disconnected":
-                    raise
-                if stop.is_set() or home != self.home():
-                    raise ARLError("discarded_configuration_changed")
-                # Explicit bootstrap only when absent; an existing strict runtime's
-                # public connection must not require Friday's task registration.
-                self.client_factory(home, True).connect(timeout=timeout)
-                report = client.rpc("overview")
+            report = client.rpc("overview")
             if stop.is_set() or home != self.home():
                 raise ARLError("discarded_configuration_changed")
             return {**base, **project_overview(report)}

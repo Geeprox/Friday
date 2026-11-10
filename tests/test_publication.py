@@ -95,6 +95,24 @@ def test_publication_scanner_rejects_symlinks_and_unreviewed_media(tmp_path):
     assert {f['rule'] for f in audit.scan(tmp_path)['findings']} == {'symlink', 'private_file'}
 
 
+@pytest.mark.parametrize('actor', ['near', 'far'])
+def test_reviewed_tennis_art_still_requires_the_exact_path_and_bytes(tmp_path, actor):
+    audit = script('audit_publication.py')
+    relative = f'homeplane/embodied/static/game-art/tennis-{actor}-v1.png'
+    source = Path(__file__).parents[1] / relative
+    target = tmp_path / relative
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source.read_bytes())
+    assert audit.scan(tmp_path)['findings'] == []
+    target.write_bytes(source.read_bytes() + b'\x00SYNTHETIC-MUTATION')
+    assert audit.scan(tmp_path)['findings'] == [
+        {'path': relative, 'rule': 'synthetic_fixture_changed'}]
+    target.unlink()
+    target.with_name('unreviewed.png').write_bytes(source.read_bytes())
+    assert audit.scan(tmp_path)['findings'] == [
+        {'path': 'homeplane/embodied/static/game-art/unreviewed.png', 'rule': 'unreviewed_binary'}]
+
+
 def test_personal_paths_are_checked_but_api_home_routes_are_not(tmp_path):
     audit = script('audit_publication.py')
     # Construct the synthetic path so the scanner can also audit its own tests.
@@ -107,6 +125,7 @@ def test_personal_paths_are_checked_but_api_home_routes_are_not(tmp_path):
 def test_dependency_prepare_is_private_and_never_starts_services(tmp_path, monkeypatch):
     setup = script('setup-dependencies.py')
     monkeypatch.setattr(setup, 'ROOT', tmp_path)
+    monkeypatch.setattr(setup.Path, 'home', classmethod(lambda cls: tmp_path / 'test-user'))
     directory = tmp_path / 'data/deployment'
     assert setup.prepare(directory) == {'prepared': True, 'services_started': False}
     assert (directory / 'compose.yaml').stat().st_mode & 0o777 == 0o600

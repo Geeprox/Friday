@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .rule_contracts import (
@@ -17,6 +17,7 @@ from .rule_contracts import (
     NumericCondition,
     RuleCompilation,
     RuleEvaluation,
+    CLOCK_TRIGGERS,
     TimeCondition,
 )
 from .rules import minimum_light_action
@@ -69,12 +70,15 @@ def compile_rule(rule, snapshot):
         return cap
 
     # Event edges have an explicit registered capability; read support alone is not evidence.
-    trigger_cap = (
-        rule.trigger.capability
-        if isinstance(rule.trigger, EventTrigger)
-        else rule.trigger.capability + ".transition"
-    )
-    trigger = capability(rule.trigger.entity, trigger_cap, "event")
+    trigger = None
+    if isinstance(rule.trigger, CLOCK_TRIGGERS):
+        dependencies.append('core_wall_clock_schedule')
+        if rule.execution.preferred_backend != 'home_core':
+            errors.append('schedule_requires_home_core')
+    else:
+        trigger_cap = (rule.trigger.capability if isinstance(rule.trigger, EventTrigger)
+                       else rule.trigger.capability + '.transition')
+        trigger = capability(rule.trigger.entity, trigger_cap, 'event')
     wan_known = True
     for condition in rule.conditions:
         if isinstance(condition, NumericCondition):
@@ -159,7 +163,7 @@ def compile_rule(rule, snapshot):
             instructions.append(action.model_dump(mode="json"))
     if elapsed > 30000:
         errors.append("sequence_delay_budget_exceeded")
-    wan_known &= bool(trigger and trigger.wan_dependency == "no")
+    wan_known &= isinstance(rule.trigger, CLOCK_TRIGGERS) or bool(trigger and trigger.wan_dependency == "no")
     if rule.execution.require_wan_independent and not wan_known:
         errors.append("wan_independence_unproven")
     # Sleep/manual protections are enforced at our managed execution point, never external rules.
@@ -248,17 +252,22 @@ def evaluate_rule(rule, snapshot, trial, *, now, allow_core=False, preview=False
         or event.boot_id not in {e.boot_id for e in snapshot.events}
     ):
         return result("suppressed", ["expired_future_or_foreign_boot_event"])
-    expected_kind = "source-report" if isinstance(rule.trigger, EventTrigger) else "state-transition"
+    scheduled = isinstance(rule.trigger, CLOCK_TRIGGERS)
+    expected_kind = "source-report" if isinstance(rule.trigger, (EventTrigger, *CLOCK_TRIGGERS)) else "state-transition"
     if event.kind != expected_kind:
         return result("not_triggered", ["snapshot_and_data_edges_are_not_triggers"])
     p, t = event.payload, rule.trigger
-    if p.get("entity_id") != t.entity or p.get("capability") != t.capability:
+    if scheduled:
+        from .rule_schedule import clock_event_matches
+        if not clock_event_matches(t, event, preview=preview):
+            return result('not_triggered', ['different_schedule_occurrence'])
+    elif p.get("entity_id") != t.entity or p.get("capability") != t.capability:
         return result("not_triggered", ["different_trigger"])
     pairs = (
         [(p.get("value"), t.value)]
         if isinstance(t, EventTrigger)
         else [(p.get("from"), t.from_value), (p.get("to"), t.to_value)]
-    )
+    ) if not scheduled else []
     if any(type(actual) is not type(expected) or actual != expected for actual, expected in pairs):
         return result("not_triggered", ["different_transition_or_event_value"])
     reasons = []
@@ -300,7 +309,8 @@ def evaluate_rule(rule, snapshot, trial, *, now, allow_core=False, preview=False
                 elif value == "false":
                     reasons.append("condition_false:" + condition.entity)
         elif isinstance(condition, TimeCondition):
-            local = now.astimezone(ZoneInfo(condition.timezone)).strftime("%H:%M")
+            when = datetime.fromisoformat(p['scheduled_at']) if scheduled and preview else now
+            local = when.astimezone(ZoneInfo(condition.timezone)).strftime("%H:%M")
             start, end = condition.start, condition.end
             inside = start <= local < end if start < end else local >= start or local < end
             if not inside:

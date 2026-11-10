@@ -61,6 +61,10 @@ class HomeQueries:
             and scope.subject != "console"
         ):
             return "read_permission_required"
+        if scope.boundary == 'qualified_ambient' and (
+                scope.subject != 'embodied_voice' or request.source != 'home'
+                or request.kind not in {'state', 'devices'}):
+            return 'read_permission_required'
         if request.source == "family_media":
             return None if request.source_ref in scope.family_media_sources else "family_media_permission_required"
         if request.kind in {"history", "evidence"} and not scope.history:
@@ -84,8 +88,9 @@ class HomeQueries:
             "permitted": scope.permitted,
             "family_media_sources": sorted(scope.family_media_sources),
             # Console reconstructs its request-local 5s I/O scope on every POST;
-            # registered peers instead have an actual host-approved grant lease.
-            "expires_at": scope.expires_at.isoformat() if scope.boundary == "registered_peer" else None,
+            # Registered peers and admitted ambient reads retain their actual
+            # finite grant expiry in the projection fingerprint.
+            "expires_at": scope.expires_at.isoformat() if scope.boundary in {"registered_peer", "qualified_ambient"} else None,
         }
 
     def _response(self, request, scope, *, status="refused", code, items=None, page=None, cursor=None):
@@ -140,6 +145,17 @@ class HomeQueries:
         update its current_scope provider before calling this cache cleanup hook.
         """
         self.pages = {key: page for key, page in self.pages.items() if page["subject"] != subject}
+
+    def revoke_scope(self, scope):
+        """Drop only this request owner's projections; never widen its identity.
+
+        Independent Console conversations retain the original console subject
+        and use distinct private revisions. Stopping one must not remove a
+        still-current peer's cursor. Host-wide revoke(subject) remains intact.
+        """
+        grant = self._digest(self._scope(scope))
+        self.pages = {key: page for key, page in self.pages.items()
+                      if page["subject"] != scope.subject or page["grant"] != grant}
 
     def _source(self):
         adapter = self.core.adapter
@@ -228,7 +244,7 @@ class HomeQueries:
             return self._response(request, scope, code="query_closed")
         refused = self._permission(scope, request)
         if refused:
-            self.revoke(scope.subject)
+            self.revoke_scope(scope)
             return self._response(request, scope, code=refused)
         started, wall_started = self.monotonic(), self.now()
         if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
@@ -269,7 +285,7 @@ class HomeQueries:
             return self._response(request, scope, code="query_deadline_exceeded")
         except _ReadAbort as exc:
             # Drop this principal's projections after cancellation/revocation/fault.
-            self.revoke(scope.subject)
+            self.revoke_scope(scope)
             return self._response(request, scope, code=exc.code)
 
     async def _read(self, request, scope, grant, check):
@@ -365,7 +381,7 @@ class HomeQueries:
                 "request": fingerprint,
                 "grant": grant,
                 "subject": scope.subject,
-                "grant_expires": scope.expires_at if scope.boundary == "registered_peer" else None,
+                "grant_expires": scope.expires_at if scope.boundary in {"registered_peer", "qualified_ambient"} else None,
                 "source": source,
                 "created": self.now(),
                 "mono": self.monotonic(),

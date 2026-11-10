@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "contract": "friday.arl.sdk-import.v1",
+  "protocol": "arl/1",
+  "source_repository": "https://github.com/Geeprox/ARL",
+  "source_commit": "a48e8bfd15b9ff7716a6a52a3ef9fcdbe915a585",
+  "manifest_name": "ARL-SDK-MANIFEST.json",
+  "modules": {
+    "arl": {
+      "values": {
+        "PROTOCOL": "arl/1"
+      }
+    },
+    "arl.application_session": {
+      "callables": {
+        "ApplicationSession.__init__": [
+          "home",
+          "app_id",
+          "name",
+          "scenarios",
+          "icon_ref",
+          "version",
+          "icon",
+          "client_factory"
+        ],
+        "ApplicationSession.register": [],
+        "ApplicationSession.start": [],
+        "ApplicationSession.close": [],
+        "ApplicationSession.submit": [
+          "scenario_id",
+          "text",
+          "request_id"
+        ],
+        "ApplicationSession.get": [
+          "job_id"
+        ],
+        "ApplicationSession.cancel": [
+          "job_id"
+        ],
+        "ApplicationSession.wait": [
+          "job",
+          "timeout"
+        ]
+      }
+    },
+    "arl.client": {
+      "callables": {
+        "Client.__init__": [
+          "home",
+          "app",
+          "launcher",
+          "max_frame_bytes"
+        ],
+        "Client.describe_runtime": [],
+        "Client.open_app_session": [
+          "name",
+          "capabilities",
+          "icon_ref",
+          "version",
+          "scenarios"
+        ],
+        "Client.ping_app_session": [],
+        "Client.close_app_session": [],
+        "Client.rpc": [
+          "method",
+          "params"
+        ],
+        "Client.connect": [
+          "timeout"
+        ]
+      }
+    },
+    "arl.contracts": {
+      "classes": [
+        "Fault",
+        "AppPolicy"
+      ],
+      "callables": {
+        "encode": [
+          "data"
+        ],
+        "validate": [
+          "value",
+          "schema"
+        ]
+      }
+    },
+    "arl.priority": {
+      "callables": {
+        "validate_profile_v2": [],
+        "select_binding_v2": [],
+        "validate_acceptance": []
+      }
+    },
+    "arl.identity": {
+      "classes": [
+        "RegisteredPeerVerifier"
+      ]
+    },
+    "arl.friday_planning": {
+      "classes": [
+        "FridayRemovalPlanner"
+      ],
+      "callables": {
+        "checked_proposal": [],
+        "rendered": []
+      }
+    },
+    "arl.friday_planning_client": {
+      "classes": [
+        "ReviewedRemoval"
+      ],
+      "callables": {
+        "plan_removal": []
+      }
+    },
+    "arl.extension_contracts": {
+      "callables": {
+        "metadata_policies": []
+      }
+    },
+    "arl.service": {
+      "classes": [
+        "Runtime"
+      ]
+    }
+  },
+  "manifest_sha256": "4d319c4e87c87d44e932b05f091338a4836e12c44da54a0eddda79205998156a",
+  "absent_optional_modules": [
+    "arl.private_compat"
+  ]
+}

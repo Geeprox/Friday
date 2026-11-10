@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "asset": "hiit",
+  "game_name": "运动闯关",
+  "kind": "original_illustrative_game_cover",
+  "use_case": "stylized-concept",
+  "generator": "OpenAI built-in image_gen",
+  "generated_on": "2026-11-03",
+  "source_generated_image": "exec-54c07357-7269-4b1e-b082-2f5ce9c089c7.png",
+  "transparent_background": false,
+  "prompt": "Use case: stylized-concept\nAsset type: original wide landscape game-store cover illustration, 16:9, full bleed, opaque, no UI.\nPrimary request: an inviting bodyweight exercise-circuit illustration for a simple motion-controlled family game using squat, jumping jack, high knee and side lunge.\nScene: one continuous clean miniature exercise terrace on a warm paper-colored ground, low abstract sage landscaping and layered paper-blue sky. An uncluttered shared scene, no gym machines or equipment, no separate panels.\nSubjects: four friendly stylized adult exercise figures with the same character proportions as a handmade miniature adventure game. Read left to right as four clear frozen poses: a balanced squat with knees bent and arms forward; a jumping-jack open stance with legs apart and both arms raised; a standing high-knee pose with one knee lifted; a side lunge with one knee bent and the other leg extended. Each body has natural anatomy and a stable silhouette. Muted coral, deep teal, ochre and powder-blue simple sportswear make the poses distinct.\nStyle/medium: sophisticated handmade 3D paper-and-clay illustration, crisply layered cut-paper shapes, softly rounded low-poly forms, matte materials, delicate visible paper fibers only at close range. A polished consumer game illustration with restrained art direction, not a screenshot or medical form guide.\nComposition/framing: wide cinematic landscape; mild three-quarter perspective; figures fill the middle band, spaced with breathing room and no overlaps, all fully visible including hands and feet. A lightly curved shared ground gives a playful progression through the circuit. Essential poses inside the central 90 percent. Artwork fills the rectangular frame with no card border.\nLighting/mood: soft warm daylight, broad gentle contact shadows, energizing but calm and approachable.\nColor palette: paper cream, muted coral, deep pine teal, golden ochre, powder blue, sage, small graphite details.\nConstraints: exactly four exercise figures; no text, letters, numbers, logos, watermarks, scores, medals, badges, health or calorie metrics, coaching claims, dumbbells, mats, machines, controllers, cameras, screens, interface, split panels or surrounding mockup.",
+  "provenance": "Original generated illustration. No household data, photographs or game screenshots were used.",
+  "presentation": "Illustrative cover art; not a screenshot, performance claim, or representation of final game visual fidelity.",
+  "approval_status": "needs_parent_review",
+  "width": 1672,
+  "height": 941,
+  "prompt_embedded": true
+}

@@ -1,4 +1,4 @@
-"""Bounded Console conversation over the existing Simulator rule transaction.
+"""Bounded Console conversation over the original owned rule transactions.
 
 No rule writer, identity, model, persistent conversation or native adapter lives
 here. App owners must invalidate synchronously before changing a private binding.
@@ -25,6 +25,7 @@ from .home_flow_contracts import (
     TrustedFlowContext,
 )
 from .home_flow_ports import RulePorts
+from .core_rules import CoreRuleApproval, CoreRulePlan, CoreRules
 from .rule_compiler import digest
 from .rule_deployment import RuleApproval, RuleDeployment
 from .rule_text import RuleTextChoice, RuleTextRequest, RuleTextResult
@@ -38,12 +39,13 @@ class _Operation:
     context_token: str
     choices: dict[str, RuleTextChoice] = field(default_factory=dict)
     text_result: RuleTextResult | None = None
-    plan: RuleDeployment | None = None
+    plan: RuleDeployment | CoreRulePlan | None = None
     response: FlowResponse | None = None
     task: asyncio.Task | None = None
     live: bool = True
     consumed: bool = False
     reason: str = "flow_cancelled"
+    source_guard: Callable | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -59,6 +61,8 @@ class _Session:
 
 
 class RuleConversation:
+    lanes = {'auto', 'rules'}
+
     def __init__(self, ports: RulePorts | None, *, poll_seconds: float = 0.02):
         if ports is not None and ports.text.manager is not ports.manager:
             raise ValueError("rule_ports_instance_mismatch")
@@ -74,6 +78,38 @@ class RuleConversation:
     @property
     def pending_count(self):
         return sum(not task.done() for task in self._tasks)
+
+    def _get(self, identifier):
+        return self.ports.manager.plan_get(identifier) if isinstance(self.ports.manager,CoreRules) else self.ports.manager.get(identifier)
+
+    async def _trial(self, identifier):
+        return await (self.ports.manager.trial(identifier) if isinstance(self.ports.manager,CoreRules) else self.ports.manager.simulate(identifier))
+
+    async def _apply(self, plan, session, operation, context):
+        if isinstance(self.ports.manager,CoreRules):
+            def current():
+                self._live(session,operation,context)
+                return self.ports.text.context().fingerprint == operation.context_token
+            result = await self.ports.manager.apply(CoreRuleApproval(plan_id=plan.id,approval_digest=plan.approval_digest),commit_guard=current)
+            if result.status == 'verified':
+                # The accepted configuration now has its own lifecycle. Its
+                # source guard fenced the commit; it must not revoke the result
+                # merely because this commit changed the rule fingerprint.
+                operation.source_guard = None
+            return result
+        return await self.ports.manager.apply(RuleApproval(plan_id=plan.id,approval_digest=plan.approval_digest))
+
+    async def _inspect_domain(self, kind, identifier, session, context):
+        if isinstance(self.ports.manager,CoreRules):
+            def current():
+                self._check(context)
+                if not session.live or session.key != context.focus_key or context.monotonic() >= session.deadline:
+                    raise FlowAbort('flow_context_changed')
+                return True
+            current()
+            return await self.ports.manager.rollback(identifier,commit_guard=current) if kind=='rollback' else self._get(identifier)
+        call=self.ports.manager.reconcile if kind=='reconcile' else self.ports.manager.rollback
+        return await call(identifier)
 
     def invalidate(self, session_id: str) -> None:
         """Fence first, then cancel; F5 calls this before changing its binding."""
@@ -126,7 +162,7 @@ class RuleConversation:
         self._check(context)
         if request.session_id != context.session_id:
             raise FlowAbort("flow_session_mismatch")
-        if request.lane not in {"auto", "rules"}:
+        if request.lane not in self.lanes:
             raise FlowAbort("rule_lane_mismatch")
         session = self.sessions.get(request.session_id)
         if session is None:
@@ -174,6 +210,8 @@ class RuleConversation:
 
     def _live(self, session, operation, context):
         self._check(context)
+        if operation.source_guard is not None and operation.source_guard() is not True:
+            raise FlowAbort('task_proposal_expired')
         if session.key != context.focus_key or not session.live:
             raise FlowAbort("flow_context_changed")
         if not operation.live:
@@ -243,7 +281,7 @@ class RuleConversation:
 
     def _domain(self, operation):
         if operation.plan is not None:
-            plan = self.ports.manager.get(operation.plan.id)
+            plan = self._get(operation.plan.id)
             operation.plan = plan
             return plan.model_dump(mode="json")
         return None
@@ -270,6 +308,9 @@ class RuleConversation:
         }
         return self._response(request, context, phase, code, captions.get(code, "本次规则请求未获准，请重新选择或预览。"), operation=operation, domain=domain)
 
+    async def _text_plan(self, request, context, operation_guard, origin):
+        return await self.ports.text.plan(request)
+
     async def turn(self, request: FlowRequest, context: TrustedFlowContext) -> FlowResponse:
         if request.kind == "approve":
             return await self.approve(request, context)
@@ -294,7 +335,7 @@ class RuleConversation:
                 if not operation.consumed and self.ports.text.context().fingerprint != operation.context_token:
                     raise FlowAbort("rule_context_changed")
                 if operation.plan is not None:
-                    operation.plan = self.ports.manager.get(operation.plan.id)
+                    operation.plan = self._get(operation.plan.id)
                     self._cap_plan(operation, context)
                     self._live(session, operation, context)
                 return operation.response.model_copy(update={"turn_id": request.turn_id})
@@ -329,13 +370,14 @@ class RuleConversation:
                 **(dict(record_id=selected.record_id, action_id=selected.action_id,
                         expected_fingerprint=selected.expected_fingerprint) if selected else {}),
             )
-            result = await self._await(session, operation, context, lambda: self.ports.text.plan(text_request))
+            result = await self._await(session, operation, context, lambda: self._text_plan(
+                text_request, context, lambda: operation.live and session.live, request))
             operation.text_result = result
             if result.status == "clarification":
                 operation.choices = {"rule-choice:" + uuid4().hex: choice for choice in result.choices}
                 choices = [FlowChoice(id=identifier, label=(choice.rule_label + " · " + choice.action_label)[:256])
                            for identifier, choice in operation.choices.items()]
-                return self._response(request, context, "select", result.code, "选择要修改的规则和空调动作；其他动作将保留。",
+                return self._response(request, context, "select", result.code, "选择要调整的自动化和动作。",
                                       operation=operation, domain=result.model_dump(mode="json"), choices=choices)
             if result.plan is None:
                 return self._response(request, context, "unavailable" if result.status in {"unsupported", "expired"} else "refused",
@@ -343,14 +385,14 @@ class RuleConversation:
                                       operation=operation, domain=result.model_dump(mode="json"))
             operation.plan = result.plan
             self._cap_plan(operation, context)
-            trial = await self._await(session, operation, context, lambda: self.ports.manager.simulate(result.plan.id))
+            trial = await self._await(session, operation, context, lambda: self._trial(result.plan.id))
             operation.plan = trial
             self._cap_plan(operation, context)
             # Reuse the original result schema and the current original domain
             # plan projection. No status or truth field is rewritten.
             domain = result.model_copy(update={"plan": trial}).model_dump(mode="json")
             return self._response(request, context, "preview" if trial.status == "awaiting_approval" else "result",
-                                  trial.code, "请核对仅移除的动作、保留内容与覆盖范围，再批准这次变更。",
+                                  trial.code, "确认以下调整。" if trial.status=='awaiting_approval' else '这条自动化暂时无法应用，请调整设置。',
                                   operation=operation, domain=domain)
         except FlowAbort as exc:
             return self._failure(request, context, str(exc), operation)
@@ -384,15 +426,13 @@ class RuleConversation:
             self._live(session, operation, context)
             if request.expected_context != operation.context_token or self.ports.text.context().fingerprint != operation.context_token:
                 raise FlowAbort("rule_context_changed")
-            plan = self.ports.manager.get(operation.plan.id)
+            plan = self._get(operation.plan.id)
             if plan.boot_id != self.ports.manager.boot_id or plan.status != "awaiting_approval":
                 raise FlowAbort("rule_new_preview_required")
             self._cap_plan(operation, context)
             self._live(session, operation, context)
             operation.consumed = True  # even an interrupted apply is never replayed
-            result = await self._await(session, operation, context, lambda: self.ports.manager.apply(
-                RuleApproval(plan_id=plan.id, approval_digest=plan.approval_digest)
-            ))
+            result = await self._await(session, operation, context, lambda: self._apply(plan,session,operation,context))
             operation.plan = result
             return self._response(request, context, "result", result.code, self._result_caption(result),
                                   operation=operation, domain=result.model_dump(mode="json"))
@@ -403,6 +443,8 @@ class RuleConversation:
 
     @staticmethod
     def _result_caption(result):
+        if isinstance(result,CoreRulePlan):
+            return '自动化已更新。' if result.status=='verified' else '已恢复之前的自动化设置。' if result.status=='rolled_back' else '自动化尚未更新，请重新核对。'
         if result.status == "verified":
             return "自有模拟规则配置已读取验证。其他动作保留；没有真实 Graph 写入或物理动作确认。"
         if result.status == "rolled_back":
@@ -426,17 +468,16 @@ class RuleConversation:
             if operation.task is not None:
                 raise FlowAbort("rule_operation_busy")
             if request.kind == "status":
-                result = self.ports.manager.get(operation.plan.id)
+                result = self._get(operation.plan.id)
             else:
                 if not operation.consumed:
                     raise FlowAbort("rule_no_deployment_to_reconcile")
                 # A cancelled approval may reconcile/rollback only its original
                 # record. It cannot become an eligible apply operation again.
-                call = self.ports.manager.reconcile if request.kind == "reconcile" else self.ports.manager.rollback
                 self._check(context)
                 if sum(owner == context.session_id and not task.done() for task, owner in self._tasks.items()) >= MAX_ACTIVE_OPERATIONS:
                     raise FlowAbort("flow_operation_capacity")
-                task = asyncio.create_task(call(operation.plan.id))
+                task = asyncio.create_task(self._inspect_domain(request.kind,operation.plan.id,session,context))
                 operation.task = task
                 self._tasks[task] = context.session_id
                 task.add_done_callback(self._finished_task)

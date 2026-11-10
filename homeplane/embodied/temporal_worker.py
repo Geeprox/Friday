@@ -8,6 +8,7 @@ import io
 import json
 import os
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from .temporal_model import MEMORY_LIMIT, WEIGHT_SHA256, VisualResult, model_readiness
@@ -28,20 +29,25 @@ PROMPT = (
 
 
 def main(model):
+    from .camera_guardian import exit_with_owner
+
+    exit_with_owner(int(os.environ.get("FRIDAY_REVIEW_OWNER_PID", "0")))
     os.environ["HF_HUB_OFFLINE"] = os.environ["TRANSFORMERS_OFFLINE"] = "1"
     if not model_readiness(model)["available"]:
         raise ValueError("model_not_ready")
     with (model / "model.safetensors").open("rb") as stream:
         if hashlib.file_digest(stream, "sha256").hexdigest() != WEIGHT_SHA256:
             raise ValueError("model_pin_mismatch")
-    import mlx.core as mx
-    from mlx_vlm import generate, load
-    from mlx_vlm.generate.video import timestamped_frame_messages
-    from PIL import Image
+    with redirect_stdout(sys.stderr):
+        import mlx.core as mx
+        from mlx_vlm import generate, load
+        from mlx_vlm.generate.video import timestamped_frame_messages
+        from PIL import Image
 
-    mx.set_memory_limit(MEMORY_LIMIT)
-    mx.set_cache_limit(64 * 1024**2)
-    loaded, processor = load(str(model), trust_remote_code=False, local_files_only=True)
+        mx.set_memory_limit(MEMORY_LIMIT)
+        mx.set_cache_limit(64 * 1024**2)
+        loaded, processor = load(str(model), trust_remote_code=False, local_files_only=True)
+    print(json.dumps(dict(version=1, ready=True)), flush=True)
     for line in iter(lambda: sys.stdin.buffer.readline(3 * 1024**2 + 1), b""):
         if len(line) > 3 * 1024**2 or not line.endswith(b"\n"):
             raise ValueError("invalid_window")
@@ -68,8 +74,6 @@ def main(model):
             messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
         )
         # Library diagnostics must never enter the line-oriented output protocol.
-        from contextlib import redirect_stdout
-
         with redirect_stdout(sys.stderr):
             response = generate(
                 loaded,

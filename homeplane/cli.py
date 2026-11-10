@@ -69,6 +69,8 @@ def main():
     serve = sub.add_parser("serve")
     serve.add_argument("--port", type=int, default=8740)
     args = parser.parse_args()
+    if args.command == 'serve' and not 1 <= args.port <= 65535:
+        parser.error('--port must be between 1 and 65535')
     if args.command == "diagnostics":
         import httpx
 
@@ -119,7 +121,7 @@ def main():
         import uvicorn
 
         from .api import create_app
-        uvicorn.run(create_app(adapter), host="127.0.0.1", port=args.port, access_log=False, proxy_headers=False)
+        uvicorn.run(create_app(adapter, console_port=args.port), host="127.0.0.1", port=args.port, access_log=False, proxy_headers=False)
         return
     if args.command == "doctor":
         from .arl import DEFAULT_HOME, ARLRuntime

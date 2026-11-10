@@ -1,0 +1,28 @@
+{
+  "created_at": "2026-11-03T21:48:51.009637+00:00",
+  "type": "Static raster target fallbacks from approved hand source; no new hand shape or pose authoring",
+  "upstream_repository": "https://github.com/GodotVR/godot-xr-tools",
+  "commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+  "hands_tree_sha": "62ac3692eb1acee7cf0123e022fcedebba043020",
+  "hand_license": "CC0 1.0 / DigitalN8m4r3 (Miodrag Sejic),2022-11-07",
+  "license_url": "https://github.com/GodotVR/godot-xr-tools/blob/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands/License.md",
+  "existing_derivation": [
+    "Original CC0 source-hand-r.blend mesh_Hand_R, 1528 base vertices",
+    "One Catmull-Clark subdivision via existing Blender 4.5.12 LTS, 6126 mesh vertices / 6598 exported vertices including splits",
+    "Original armature and bone names retained; no hand silhouette or pose endpoint authored",
+    "glTF exporter selects and normalizes highest 4 joint weights; all exported floats checked finite"
+  ],
+  "pose_derivation": "Original 19 rotation tracks per endpoint decoded losslessly from RSRC resource data. Values match original resources; transition/hold/reset timing is the audit adapter, not an original recorded animation clip.",
+  "source_files": "input-manifest.json",
+  "original_inputs_protected": "../upstream-godot/",
+  "runtime_geometry_pose_adapter_unchanged": true,
+  "styles": "Exact current defaults .0016 outline,yaw35,side1,white fill / dark gray outline,transparent background. Pixel resolution2x216\u00d7240 CSS cell; aspect unchanged.",
+  "phase": 0.57,
+  "target_hold": [
+    0.42,
+    0.72
+  ],
+  "thumb_down_derivative": true,
+  "file_hashes": "targets.json",
+  "camera_audio_inference_device_calls": false
+}
