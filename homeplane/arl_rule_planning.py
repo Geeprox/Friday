@@ -141,10 +141,11 @@ def planning_sdk():
 
 
 class ARLRuleChanges:
-    def __init__(self, text, core_rules, runtime, *, authorizer=None, planning_executor=None):
+    def __init__(self, text, core_rules, runtime, *, authorizer=None, planning_executor=None, model_allowed=None):
         self.text, self.core_rules, self.runtime = text, core_rules, runtime
         self.store = text.manager.store
         self.authorizer = authorizer  # Internal composition only; no HTTP enablement.
+        self.model_allowed = model_allowed or (lambda: True)
         # A trusted host can supply its sealed-process executor. This is never a
         # caller-selected transport, public enablement or actuator permission.
         if planning_executor is not None and not callable(planning_executor):
@@ -391,7 +392,7 @@ class ARLRuleChanges:
 
     async def _watch(self, projection, fingerprint):
         while not self.closed:
-            if self.context().fingerprint != fingerprint or not self.context().available:
+            if self.context().fingerprint != fingerprint or not self.context().available or not self.model_allowed():
                 projection.invalidate()
                 return
             await asyncio.sleep(0.05)
@@ -447,6 +448,8 @@ class ARLRuleChanges:
         return matches or None
 
     async def analyze(self, approval):
+        if not self.model_allowed():
+            return self._result(approval.review_id, "rejected", "analysis_channel_unavailable")
         if self.lock.locked():
             return self._result(approval.review_id, "in_progress", "analysis_busy")
         async with self.lock:

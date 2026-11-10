@@ -408,14 +408,8 @@ class CoreTaskText:
                     max(0, deadline - time.monotonic()),
                 )
             self._check(request, context, operation_guard, draft_only=draft_only)
-            if (
-                not isinstance(result, dict)
-                or result.get("simulated") is not False
-                or result.get("native_acknowledgements_verified") is not True
-                or result.get("device_authority") is not False
-                or result.get("application_admission", {}).get("scenario_id") != "home_planning"
-                or result.get("application_admission", {}).get("package_id") != "high"
-            ):
+            from .intelligence.runtime import verified_planning_result
+            if not verified_planning_result(result, digest(["task", context.focus_key, request.idempotency_key, prompt])):
                 raise FlowAbort("task_model_unverified")
             output = result.get("text")
             if not isinstance(output, str) or len(output.encode()) > 8192:

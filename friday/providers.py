@@ -1,4 +1,4 @@
-"""Legacy application interfaces delegated exclusively to the shared ARL SDK."""
+"""旧版规划接口复用 ARL 或用户选择的 API，动作仍由本地控制器校验。"""
 import json
 import math
 from pathlib import Path
@@ -32,9 +32,30 @@ def runtime_for(settings):
     return ARLRuntime(lambda: Path(settings.arl_home) if settings.arl_home else DEFAULT_HOME)
 
 
+def intelligence_context(context):
+    """只保留规划所需目录和有限状态，不转发任意 HA 属性或内部扩展字段。"""
+    public = {key: context.get(key) for key in (
+        "request", "model_request_id", "camera_room", "pointing_target", "previous_target"
+    )}
+    public["devices"] = []
+    attributes = {
+        "brightness", "temperature", "current_temperature", "humidity", "current_humidity",
+        "fan_mode", "preset_mode", "percentage", "current_position", "volume_level",
+    }
+    for entity in context.get("devices", []):
+        item = {key: entity[key] for key in (
+            "id", "name", "room", "domain", "state", "category", "capabilities"
+        ) if key in entity}
+        item["attributes"] = {key: value for key, value in entity.get("attributes", {}).items()
+                              if key in attributes and type(value) in (str, int, float, bool)}
+        public["devices"].append(item)
+    return public
+
+
 class ARLPlanner:
-    def __init__(self, settings, runtime=None):
+    def __init__(self, settings, runtime=None, *, intelligence=None):
         self.settings, self.runtime = settings, runtime or runtime_for(settings)
+        self.intelligence = intelligence
 
     async def plan(self, context, schema):
         request_id = context.get('model_request_id')
@@ -42,12 +63,13 @@ class ARLPlanner:
             raise ARLError('model_request_id_required')
         if not self.settings.arl_model_tasks_enabled:
             raise ARLError('application_model_opt_in_required')
-        prompt = PLANNER_INSTRUCTIONS + "\nSchema: " + json.dumps(schema, allow_nan=False) + "\nContext: " + json.dumps(context, ensure_ascii=False, allow_nan=False)
+        exposed = intelligence_context(context) if self.intelligence is not None else context
+        prompt = PLANNER_INSTRUCTIONS + "\nSchema: " + json.dumps(schema, allow_nan=False) + "\nContext: " + json.dumps(exposed, ensure_ascii=False, allow_nan=False)
         # Keep the complete payload. The existing SDK validates the deployed
         # argument/provider budgets and encodes the final RPC envelope (including
         # JSON escaping and scheduling); this consumer must not guess or truncate.
         try:
-            result = await self.runtime.complete_scenario('home_planning', prompt, request_id=request_id,
+            result = await (self.intelligence or self.runtime).complete_scenario('home_planning', prompt, request_id=request_id,
                 deadline=model_deadline(min(30, self.settings.model_timeout_seconds)))
         except ARLError as error:
             if error.code in {"invalid_arguments", "model_budget_exceeded", "invalid_frame", "application_request_invalid"}:
@@ -61,10 +83,27 @@ class ARLPlanner:
 
 
 class ARLRouteDecision:
-    def __init__(self, settings, runtime=None):
+    def __init__(self, settings, runtime=None, *, intelligence=None):
         self.settings, self.runtime = settings, runtime or runtime_for(settings)
+        self.intelligence = intelligence
 
     async def classify(self, text):
+        if self.intelligence is not None:
+            from homeplane.decision import DecisionRequest
+            from homeplane.intelligence.decisions import OpenAIDecisionProvider
+            try:
+                config = self.intelligence.settings.read()
+                if config.provider == "local":
+                    return {"label": "complex", "confidence": 0, "shadow": True, "provider": "local"}
+                if config.provider in {"openai", "auto"}:
+                    result = await OpenAIDecisionProvider(self.intelligence).decide(
+                        DecisionRequest("intent", {"text": text}, model_deadline(3))
+                    )
+                    return {"label": "complex", "confidence": 0, "shadow": True,
+                            "provider": "openai_decisions" if result.metrics.get("runtime") == "openai" else "local", "decision": result.metrics,
+                            "fallback_reason": result.unknown_reason}
+            except (ValueError, OSError):
+                return {"label": "complex", "confidence": 0, "shadow": True, "provider": "local"}
         result = await self.runtime.complete("laya_mlx", self.settings.decision_model, text,
             deadline=model_deadline(min(20, self.settings.model_timeout_seconds)),
             task_kind="household.response", requested_class="interactive")

@@ -1,4 +1,4 @@
-"""Home task calibration gates; provider execution is exclusively delegated to ARL."""
+"""家庭判断的校准闸门；云端判断单独启用，不授予动作权限。"""
 from __future__ import annotations
 
 import math
@@ -9,13 +9,16 @@ from .decision import TASKS, CalibrationProfile, DecisionRequest, DecisionResult
 
 
 def registry_descriptors():
-    return [{"provider_id": name, "runtime": "arl", "availability": "contract_pending" if name == "laya_mlx" else "unavailable",
+    result = [{"provider_id": name, "runtime": "arl", "availability": "contract_pending" if name == "laya_mlx" else "unavailable",
              "reason": reason, "automatic_fallback": False, "action_authority": False}
             for name, reason in (
                 ("laya_mlx", "ARL currently exposes route classification, not calibrated home-task scores/token accounting"),
                 ("jev", "ARL provider currently disabled; no Friday direct cloud adapter"),
-                ("codex_app_server", "ARL provider currently disabled; no Friday app-server process"),
-                ("openai_decision_api", "No verified ARL capability or official public contract"))]
+                ("codex_app_server", "ARL provider currently disabled; no Friday app-server process"))]
+    result.append({'provider_id':'openai_decisions','runtime':'openai','availability':'requires_configuration',
+        'reason':'需要明确开启云端文字处理并配置每日预算；判断仍经过原有校准闸门。',
+        'automatic_fallback':False,'action_authority':False})
+    return result
 
 
 class ARLDecisionProvider:

@@ -12,7 +12,7 @@ public final class MediaCache {
   this.root=root;this.limit=limit;if(limit<=0||(!root.isDirectory()&&!root.mkdirs()))throw new IOException("cache_unavailable");
   for(File f:files())if(f.getName().endsWith(".part"))synchronized(activePartials){if(!activePartials.contains(f.getAbsolutePath()))f.delete();}
  }
- private File[] files(){File[] all=root.listFiles((dir,name)->name.matches("[a-f0-9]{64}(?:\\.(?:wav|mp4|part)|-[a-f0-9]{32}\\.part)"));return all==null?new File[0]:all;}
+ private File[] files(){File[] all=root.listFiles((dir,name)->name.matches("[a-f0-9]{64}(?:\\.(?:wav|mp4|png|part)|-[a-f0-9]{32}\\.part)"));return all==null?new File[0]:all;}
  public File beginPartial(String sha)throws IOException{
   if(!sha.matches("[a-f0-9]{64}"))throw new IOException("invalid_media");
   synchronized(activePartials){for(int attempt=0;attempt<3;attempt++){File file=new File(root,sha+"-"+UUID.randomUUID().toString().replace("-","")+".part");if(file.createNewFile()){activePartials.add(file.getAbsolutePath());return file;}}}

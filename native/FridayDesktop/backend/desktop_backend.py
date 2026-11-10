@@ -766,7 +766,9 @@ class DesktopService:
                 def closed_geek(*_args, **_kwargs):
                     raise RuntimeError('desktop_read_only')
                 people = local_people_catalog()
+                from homeplane.intelligence.settings import default_directory
                 inner = create_app(adapter, db_path=STATE / 'traces.sqlite', settings_service=local_settings,
+                                   intelligence_directory=default_directory(),
                                    authority_path=Path(os.environ['FRIDAY_EMBODIED_DATA'])/'private/action-authority.json' if controls else STATE/'no-device-authority.json', geek_launcher=closed_geek,
                                    geek_readonly_directory=Path(os.environ['FRIDAY_EMBODIED_DATA']).parent/'homeplane',
                                    arl_runtime=self.arl_runtime,
@@ -1066,6 +1068,15 @@ class DesktopService:
                     await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
                     return
                 await self.metadata(scope, receive, send)
+                return
+            if path.startswith('/api/settings/intelligence') and scope['method'] in {'PUT', 'POST', 'DELETE'}:
+                if (origin != ORIGIN.encode() or (scope.get('client') or ('',))[0] not in {'127.0.0.1', '::1'}):
+                    await JSONResponse({'code':'invalid_local_origin'},status_code=403)(scope,receive,send)
+                    return
+                if self.inner is None:
+                    await JSONResponse({'code':'home_not_connected'},status_code=503)(scope,receive,send)
+                    return
+                await self.inner(scope,receive,send)
                 return
             if scope['method'] == 'POST' and path in KTV_OWNER_WRITE_PATHS:
                 if origin != ORIGIN.encode():

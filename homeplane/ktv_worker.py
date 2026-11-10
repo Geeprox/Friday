@@ -164,6 +164,7 @@ class PreparationWorker(NasBridge):
         self.archive_pending = set(self.mapping.values())
         self.metadata_root = private_directory(Path(config_path).absolute().parent / "worker-publications")
         self.published_metadata = {}
+        self.backgrounds = None
         self.archive_checked, self.archive_offset = 0, 0
 
     def _metadata(self, audio_version):
@@ -343,6 +344,15 @@ class PreparationWorker(NasBridge):
                 if job["state"] != "ready":
                     continue
                 audio_version = manifest_version(job)
+                background = None
+                if self.backgrounds is not None:
+                    try:
+                        candidate = self.backgrounds.request_from_thread(job)
+                        if candidate.get('status') == 'ready':
+                            background = {k:candidate[k] for k in ('status','sha256','bytes')}
+                            background.update(encoding='png',url=f'/v1/jobs/{local}/media/background')
+                    except (ValueError,OSError,RuntimeError,TypeError,KeyError):
+                        pass
                 previous_metadata = self._metadata(audio_version)
                 guide = previous_metadata.get("guide")
                 if self.guide is not None and local in self.guide.protected:
@@ -360,7 +370,7 @@ class PreparationWorker(NasBridge):
                         value = {"status": "unavailable", "lines": []}
                     self.lyrics_cache[audio_version] = (value, time.monotonic())
                 lyrics_value = self.lyrics_cache[audio_version][0]
-                version = hashlib.sha256(json.dumps({"audio": audio_version, "job": job, "lyrics": lyrics_value, "guide": guide},
+                version = hashlib.sha256(json.dumps({"audio": audio_version, "job": job, "lyrics": lyrics_value, "guide": guide, "background":background},
                     sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
                 ack = self.manifest_acked.get(remote)
                 if ack and ack[0] == version and time.monotonic() - ack[1] < 240:
@@ -372,6 +382,8 @@ class PreparationWorker(NasBridge):
                 ticket, expires = self.tickets.issue(job)
                 published = copy.deepcopy(job)
                 published["id"] = remote
+                if background is not None:
+                    published['background'] = background
                 payload = {"id": remote, "instance": self.instance, "version": version,
                     "timeline": {"sample_rate": 48000, "frames": round(duration * 48000), "duration_ms": round(duration * 1000)},
                     "job": published, "lyrics": lyrics_value, "media_ticket": ticket, "media_expires": expires}
