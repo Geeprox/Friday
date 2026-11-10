@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeplane.embodied.party_camera import PartyCamera
 
 from tests.embodied.test_camera_audio import actual, CAMERA
 from homeplane.embodied.camera_wall import CameraWall
@@ -197,7 +198,7 @@ def test_live_status_view_cannot_publish_old_game_players_while_source_is_down(t
     game=MotionGames();game.reset('ski');game.publish([{'id':1}],'playing','')
     scope=dict(
         state=dict(status=source_status,processed_frames=5,people=[],hands=[],room=None),
-        games=game,
+        games=game,party_camera=PartyCamera(),
         home=home,recorder=SimpleNamespace(public=lambda:{}),secondary_homes={},
         safety=SimpleNamespace(recording_status=lambda:{'state':'off'}),
         fleet=SimpleNamespace(public=lambda _:{}),time=SimpleNamespace(monotonic=lambda:10,time=lambda:1000),
@@ -321,7 +322,7 @@ def primary_frame_scope(tmp_path, fault_stage=None):
         captured_times=deque(),processed_times=deque(),rate=lambda _:0,PRIVATE=tmp_path,
         interaction_enabled=True,room_lock=asyncio.Lock(),capture=object(),notify=notify,
         registry=SimpleNamespace(observe=Mock(return_value=[])),
-        practice=SimpleNamespace(suppresses=lambda _:False,observe=Mock()),games=MotionGames())
+        practice=SimpleNamespace(suppresses=lambda _:False,observe=Mock()),games=MotionGames(),party_camera=PartyCamera())
     scope['state']['processed_frames']=0
     scope['identities'].reason='ready';scope['identities'].session='synthetic-session'
     scope['games'].reset('ski')

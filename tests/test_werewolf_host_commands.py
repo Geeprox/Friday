@@ -170,7 +170,10 @@ async def test_camera_binding_is_game_scoped_and_deduplicated_after_acknowledgem
             room=dict(registration=dict(status="locked"), seats=[], pointing=[]),
             people=[dict(id=7, box=dict(x=.1, y=.1, w=.3, h=.8, confidence=.95), joints={})],
         )
-        service.embodied = SimpleNamespace(process=SimpleNamespace(returncode=None), request=AsyncMock(return_value=sample))
+        sample['party_camera']=dict(protocol=1,scope='a'*32,revision=0,active=False,frame_mono=0.)
+        async def hold(payload):
+            return dict(scope='a'*32,context=payload['context'],sequence=payload['sequence'],active=payload['action']=='renew')
+        service.embodied = SimpleNamespace(process=SimpleNamespace(returncode=None), request=AsyncMock(return_value=sample),party_camera=hold)
         service.camera_enabled = True
         body = dict(seat=1, camera=camera, session="SYNTHETIC-camera", track=7,
                     game_session=service.session, revision=service.game.revision, event_id="SYNTHETIC-binding-0001")

@@ -43,6 +43,7 @@ from homeplane.embodied.calibration_save import CalibrationSaver
 from homeplane.embodied.calibration_frames import CalibrationFrames
 from homeplane.embodied.static_page import static_asset, static_page
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.camera_intent import CameraIntentStore
 from homeplane.embodied.frame_sampling import offer_frame
 from homeplane.embodied.camera_wall import CameraWall
@@ -105,6 +106,7 @@ motor_sequence = 0
 motion_generation = 0
 motor_last_sent = -100.0
 games = MotionGames(require_presentation=True)
+party_camera = PartyCamera()
 recorder = PageRecording(DATA / "recordings")
 record_lock = asyncio.Lock()
 home = HomeService(SELECTED['id'])
@@ -136,11 +138,15 @@ async def dispatch_interactions(events):
         game_window = event.get('_game_window')
         if event['camera'] == SELECTED['id'] and game_window is None:
             game_window = (games.control_context, games.control_revision)
-        async def dispatch(e=event, expected_game=game_window):
+        party_window=event.get('_party_window',party_camera.window(time.monotonic())[:2])if event['camera']==SELECTED['id']else None
+        async def dispatch(e=event, expected_game=game_window, expected_party=party_window):
             if e['camera'] == SELECTED['id'] and (
                     games.mode not in {'off', 'home'}
                     or expected_game != (games.control_context, games.control_revision)):
                 return
+            if e['camera']==SELECTED['id']:
+                party=party_camera.window(time.monotonic())
+                if party[2]or party[:2]!=expected_party:return
             service = home if e['camera'] == SELECTED['id'] else secondary_homes.get(e['camera'])
             if not (interaction_enabled and service and service.armed and interaction_source_current(e)
                     and fleet.current(e,time.monotonic())) or practice.suppresses(e['camera']):return
@@ -441,7 +447,9 @@ async def camera_search():
                     close_primary_view()
                     return
             now = time.monotonic()
-            sample = dict(state, _local_received=last_frame, game=games.public)
+            sample = dict(state, _local_received=last_frame, game=games.public,
+                party_camera=party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
+                    frame_mono=last_frame,now=now))
             elsewhere = any(item.get('people',0) and previews.status(cid)['state']=='live'
                             for cid,item in previews.sessions.items())
             director.apply_mode(planner.mode, planner.intent_revision)
@@ -453,7 +461,9 @@ async def camera_search():
             if direction is not None:
                 try:
                     def decision_current():
-                        current = dict(state, _local_received=last_frame, game=games.public)
+                        current = dict(state, _local_received=last_frame, game=games.public,
+                            party_camera=party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
+                                frame_mono=last_frame,now=time.monotonic()))
                         occupied = any(item.get('people',0) and previews.status(cid)['state']=='live'
                                        for cid,item in previews.sessions.items())
                         return director.decision_current(current, time.monotonic(), direction,
@@ -510,6 +520,8 @@ async def notify():
 
 def view():
     result = dict(state)
+    result['party_camera'] = party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
+        frame_mono=last_frame,now=time.monotonic())
     result["game"] = games.viewer_state()
     result["recording"] = recorder.public()
     result['safety_recording'] = safety.recording_status()
@@ -973,15 +985,17 @@ async def run_source(my_generation):
                     continue
                 last_selection = games.selected_mode
                 game_window = (games.control_context, games.control_revision)
-                gesture_active = interaction_enabled and games.mode in {'off', 'home'}
+                party_window=party_camera.window(time.monotonic())
+                gesture_active = interaction_enabled and games.mode in {'off', 'home'}and not party_window[2]
                 practice.observe(SELECTED['id'], identities.session, people, hands,
                     layout['registration'], now, now-(time.time()-item['received_at']))
                 interaction_events=fleet.update(SELECTED['id'],identities.session,people,hands,
-                    layout['registration'],gesture_active,now,game_window=game_window,
-                    game_active=games.mode not in {'off','home'},
+                    layout['registration'],gesture_active,now,game_window=(game_window,party_window[:2]),
+                    game_active=games.mode not in {'off','home'}or party_window[2],
                     captured_mono=time.monotonic()-(time.time()-item['received_at']))
                 for event in interaction_events:
                     event['_game_window'] = game_window
+                    event['_party_window'] = party_window[:2]
                 voice_now = time.monotonic()
                 home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,home.attention.candidate() is not None,
                     people=len(people), session=identities.session,
@@ -1397,6 +1411,15 @@ async def preview_frame(camera_id: str, request: Request):
     if not frame:
         raise HTTPException(409, detail="camera_frame_unavailable")
     return Response(frame, media_type="image/jpeg")
+
+
+@app.post('/api/party-camera')
+async def party_camera_control(request: Request):
+    try:
+        return party_camera.command(await request.json(),dict(view(),_local_received=last_frame),
+            time.monotonic(),motor_busy=bool(motor_waiters),motor_last_sent=motor_last_sent)
+    except ValueError as error:
+        raise HTTPException(409,detail=str(error))from None
 
 
 @app.get('/api/practice/capabilities')

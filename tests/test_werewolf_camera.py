@@ -15,6 +15,7 @@ from tests.test_werewolf_service import NoNetwork, SilentLights
 
 def observation():
     return dict(status='live',scene_visible=True,tracking_current=True,frame_age_ms=20,
+        party_camera=dict(protocol=1,scope='a'*32,revision=0,active=False,frame_mono=0.),
         camera_id='cam_1234567890',session_id='SYNTHETIC',
         people=[dict(id=track,box=dict(x=.1+index*.45,y=.1,w=.3,h=.8,confidence=.95),
             joints=dict(nose=dict(x=.25+index*.45,y=.4,confidence=.95),
@@ -31,6 +32,9 @@ class Embodied:
 
     async def request(self,*args,**kwargs):
         return copy.deepcopy(self.report)
+
+    async def party_camera(self,payload):
+        return dict(context=payload['context'],scope='a'*32,sequence=payload['sequence'],active=payload['action']=='renew')
 
 
 @asynccontextmanager

@@ -82,7 +82,7 @@ async def test_phone_private_cards_public_tv_and_no_host_or_household_routes():
             assert (await client.get("/api/player", headers={"Authorization": "Bearer " + service.public_token})).status_code == 403
             assert (await client.get("/api/player?token=" + tokens[0])).status_code == 403
             assert (await client.get("/api/player", headers={"Authorization": "Bearer " + "a" * 64})).status_code == 403
-            for path in ("/api/games/werewolf/control", "/api/embodied/start", "/api/actions/execute"):
+            for path in ("/api/games/werewolf/control", "/api/embodied/start", "/api/actions/execute", "/api/party-camera"):
                 assert (await client.post(path, json={"action": "end"})).status_code == 404
             assert (await client.get("/api/public", headers={"Host": "evil.example"})).status_code == 403
             assert (await client.post("/api/ready", json={"ready": True}, headers={"Origin": "https://evil.example"})).status_code == 403
@@ -215,8 +215,11 @@ async def test_camera_hints_require_explicit_binding_and_cannot_cast_votes():
                           joints=dict(nose=dict(x=.3,y=.4,confidence=.9),leftWrist=dict(x=.2,y=.1,confidence=.9)))])
         async def request(self, *_args, **_kwargs):
             return self.report
+        async def party_camera(self,payload):
+            return dict(context=payload['context'],scope='a'*32,sequence=payload['sequence'],active=payload['action']=='renew')
     service = await owner()
     service.embodied = Embodied()
+    service.embodied.report['party_camera']=dict(protocol=1,scope='a'*32,revision=0,active=False,frame_mono=0.)
     service.camera_enabled = True
     try:
         await service.join(Join(code=service.join_code, seat=1, name="玩家"))

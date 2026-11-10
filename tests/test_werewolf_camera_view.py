@@ -47,7 +47,14 @@ async def host(directory, monkeypatch):
     async def transport(request):
         state.calls.append(request)
         assert request.url.host == '127.0.0.1' and request.url.port == 41973
-        assert request.url.params['k'] == 'SYNTHETIC-LOCAL-KEY' and request.method == 'GET'
+        assert request.url.params['k'] == 'SYNTHETIC-LOCAL-KEY'
+        if request.url.path=='/api/party-camera':
+            import json
+            payload=json.loads(request.content)
+            assert request.method=='POST'
+            return httpx.Response(200,json=dict(context=payload['context'],scope='a'*32,
+                sequence=payload['sequence'],active=payload['action']=='renew'))
+        assert request.method=='GET'
         if state.handler and request.url.path == '/api/frame':
             return await state.handler(request)
         return httpx.Response(200, json=state.report)
@@ -89,7 +96,7 @@ async def test_same_snapshot_numbers_reach_host_and_bind_through_original_source
                            people=[dict(track=p['id'], box={k: p['box'][k] for k in ('x', 'y', 'w', 'h')})
                                    for p in state.report['people']])
         assert 'NEVER-EXPOSE' not in response.text
-        assert [r.url.path for r in state.calls] == ['/api/frame']
+        assert [r.url.path for r in state.calls] == ['/api/frame','/api/party-camera']
         body = dict(seat=1, camera=data['camera'], session=data['session'], track=data['people'][0]['track'],
                     game_session=party.session, revision=party.game.revision, event_id='SYNTHETIC-picture-bind')
         bound = await client.post('/api/games/werewolf/camera-bind', json=body)

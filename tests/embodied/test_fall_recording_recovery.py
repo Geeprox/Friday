@@ -472,7 +472,8 @@ async def verify_public_recording_health(monitor, monkeypatch):
     from tests.embodied.test_camera_audio import actual
 
     camera = 'cam_1111111111'
-    scope = dict(state=dict(status='live', camera_id=camera, processed_frames=1),
+    from homeplane.embodied.party_camera import PartyCamera
+    scope = dict(state=dict(status='live', camera_id=camera, processed_frames=1),party_camera=PartyCamera(),
         games=MotionGames(clock=lambda: monitor.clock[0]),
         recorder=SimpleNamespace(public=lambda: {}), safety=monitor.runtime,
         home=SimpleNamespace(public=lambda: {}), secondary_homes={}, fleet=SimpleNamespace(public=lambda _: {}),

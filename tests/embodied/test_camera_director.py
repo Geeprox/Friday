@@ -141,7 +141,9 @@ def test_primary_controller_receives_the_actual_game_state():
     assignment=next(n for n in ast.walk(search) if isinstance(n,ast.Assign)
                     and any(isinstance(t,ast.Name)and t.id=='sample' for t in n.targets))
     current={'mode':'tennis','status':'playing'}
-    scope={'state':{'status':'live'},'last_frame':20,'games':SimpleNamespace(public=current)}
+    from homeplane.embodied.party_camera import PartyCamera
+    scope={'state':{'status':'live'},'last_frame':20,'games':SimpleNamespace(public=current),
+           'party_camera':PartyCamera(),'SELECTED':{'id':'cam_1111111111'},'now':20}
     exec(compile(ast.Module(body=[assignment],type_ignores=[]),'<actual camera input>','exec'),scope)
     assert scope['sample']['game'] is current
 

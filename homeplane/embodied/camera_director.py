@@ -78,6 +78,17 @@ class CameraDirector:
             return None
         return tuple(game.get(key) for key in ('control_context', 'control_revision', 'round_id'))
 
+    @classmethod
+    def _camera_window(cls,sample):
+        party=sample.get('party_camera')
+        return (cls._game_window(sample.get('game')),
+                (party.get('scope'),party.get('revision'))if isinstance(party,dict)else None)
+
+    @classmethod
+    def _game_holds(cls,sample):
+        party=sample.get('party_camera')
+        return cls._game_active(sample.get('game'))or isinstance(party,dict)and party.get('active')is True
+
     def apply_mode(self, mode, revision):
         """A survey is a finite command window, never a claim of full room coverage."""
         if mode not in {'auto', 'pets', 'hold', 'survey'}:
@@ -111,7 +122,7 @@ class CameraDirector:
         self.pending_direction = direction
         self.pending_decision = dict(direction=direction, phase=self.phase, intent=self.intent,
             session=sample.get('session_id'), stamp=sample['_local_received'],
-            target=self.target, identity=self.target_identity, game_window=self._game_window(sample.get('game')))
+            target=self.target, identity=self.target_identity, game_window=self._camera_window(sample))
         return direction
 
     @staticmethod
@@ -150,8 +161,8 @@ class CameraDirector:
         """Recheck the pending purpose without consuming evidence or survey budget."""
         pending = self.pending_decision
         if (not pending or direction != self.pending_direction or self.mode == 'hold'
-                or self._game_active(sample.get('game'))
-                or pending.get('game_window') != self._game_window(sample.get('game'))
+                or self._game_holds(sample)
+                or pending.get('game_window') != self._camera_window(sample)
                 or pending['intent'] != self.intent or not self._fresh(sample, now)
                 or sample.get('session_id') != pending['session']
                 or sample['_local_received'] < pending['stamp']
@@ -226,7 +237,7 @@ class CameraDirector:
         if self.mode == 'hold':
             self.phase = 'held'
             return None
-        if self._game_active(sample.get('game')):
+        if self._game_holds(sample):
             # Keep the selected camera stable for the whole admitted game,
             # including waiting, pause and results. Perception still consumes
             # frames; neither clipped players nor an obscured view may pan it.

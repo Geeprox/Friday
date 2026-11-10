@@ -56,7 +56,8 @@ def test_closed_primary_view_is_not_overwritten_by_last_frames_age(tmp_path):
     function=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='view')
     state={'status':'shutter_closed','received_at':time.time()-100,'processed_frames':2,
            'camera_control':{'view_usable':True,'target_locked':True}}
-    context=dict(state=state,games=MotionGames(),recorder=SimpleNamespace(public=lambda:{}),
+    from homeplane.embodied.party_camera import PartyCamera
+    context=dict(state=state,games=MotionGames(),party_camera=PartyCamera(),recorder=SimpleNamespace(public=lambda:{}),
         safety=SimpleNamespace(recording_status=lambda:{'state':'off'}),
         home=SimpleNamespace(public=lambda:{}),secondary_homes={},fleet=SimpleNamespace(public=lambda _:{}),time=time,
         PRIVATE=tmp_path,last_frame=1,SELECTED={'id':'main'},camera_planner=None,

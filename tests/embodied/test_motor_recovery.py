@@ -217,14 +217,19 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change',['target','review'])
+@pytest.mark.parametrize('change',[None,'target','review'])
 async def test_primary_search_original_guard_rechecks_the_current_target(change):
+    from homeplane.embodied.party_camera import PartyCamera
     scope, sent = primary_scope()
     at = scope['last_frame']
+    holder=PartyCamera();scope['party_camera']=holder
+    def current(stamp):
+        return dict(view(stamp),party_camera=holder.status(camera=scope['SELECTED']['id'],
+            session=view(stamp)['session_id'],frame_mono=stamp,now=stamp))
     director = CameraDirector()
-    director.choose(view(at-.1), at-.1)
-    assert director.choose(view(at), at) == 'right'
-    scope['state'].update(view(at))
+    director.choose(current(at-.1), at-.1)
+    assert director.choose(current(at), at) == 'right'
+    scope['state'].update(current(at))
     scope.update(director=director, direction='right', games=SimpleNamespace(public={}),
                  previews=SimpleNamespace(sessions={}),safety=SimpleNamespace(review_pending=lambda *_:False))
     extract('homeplane/embodied/worker.py', {'decision_current'}, scope)
@@ -232,12 +237,17 @@ async def test_primary_search_original_guard_rechecks_the_current_target(change)
         async def __aenter__(self):
             await asyncio.sleep(0)
             if change=='target':scope['state']['people'] = view(at, x=.05)['people']
-            else:scope['safety'].review_pending=lambda *_:True
+            elif change=='review':scope['safety'].review_pending=lambda *_:True
         async def __aexit__(self, *_): pass
     scope['room_lock'] = Wait()
-    with pytest.raises(RuntimeError, match='stale_input'):
-        await scope['motor_step']('right', at, expected_intent='original', decision_current=scope['decision_current'])
-    assert not sent and not scope['motor_waiters']
+    if change is None:
+        await scope['motor_step']('right',at,expected_intent='original',decision_current=scope['decision_current'])
+        assert len(sent)==1
+    else:
+        with pytest.raises(RuntimeError, match='stale_input'):
+            await scope['motor_step']('right', at, expected_intent='original', decision_current=scope['decision_current'])
+        assert not sent
+    assert not scope['motor_waiters']
 
 
 @pytest.mark.asyncio

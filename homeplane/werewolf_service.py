@@ -165,6 +165,8 @@ class WerewolfService:
         self.camera_process = None
         self.camera_until = None
         self.camera_view_busy = False
+        self.camera_sequence = 0
+        self.camera_hold = None
         self.last_effect_revision = None
 
     @staticmethod
@@ -364,6 +366,8 @@ class WerewolfService:
             self._remember_host(admission)
             result = self.host()
         self._schedule_effects()
+        if self.game is not None and self.game.phase=='finished':
+            await self._release_camera()
         return result
 
     def _schedule_effects(self):
@@ -404,8 +408,11 @@ class WerewolfService:
             else:
                 self.game.tick()
         self._schedule_effects()
-        if self.camera_enabled:
+        if self.camera_enabled and self.game is not None and self.game.phase!='finished':
             await self._camera()
+        else:
+            self._clear_camera()
+            await self._release_camera()
 
     async def _run(self):
         while self.game is not None:
@@ -421,6 +428,42 @@ class WerewolfService:
         self.camera_process = None
         self.camera_until = None
 
+    async def _hold_camera(self,report,game,session,process):
+        capability=report.get('party_camera')if isinstance(report,dict)else None
+        owner=self.embodied
+        if (not isinstance(capability,dict)or type(capability.get('protocol'))is not int or capability['protocol']!=1
+                or not isinstance(capability.get('scope'),str)
+                or not re.fullmatch(r'[a-f0-9]{32}',capability['scope'])
+                or type(capability.get('frame_mono'))not in{int,float}
+                or self.game is not game or self.session!=session or not self.camera_enabled
+                or game.phase=='finished'or getattr(owner,'process',None)is not process
+                or not callable(getattr(owner,'party_camera',None))):
+            return False
+        self.camera_sequence+=1
+        sequence=self.camera_sequence
+        # Record before sending: a lost acknowledgement still owes this room an end.
+        self.camera_hold=(owner,process,session,capability['scope'])
+        result=await owner.party_camera(dict(action='renew',context=session,
+            sequence=sequence,expected_scope=capability['scope'],not_after=self.clock()+1,
+            camera=report['camera_id'],session=report['session_id'],frame_mono=capability['frame_mono']))
+        return (isinstance(result,dict)and result.get('scope')==capability['scope']
+                and result.get('context')==session and type(result.get('sequence'))is int and result['sequence']==sequence
+                and result.get('active')is True)
+
+    async def _release_camera(self):
+        entry,self.camera_hold=self.camera_hold,None
+        if entry is None:return
+        owner,process,context,scope=entry
+        self.camera_sequence+=1
+        if getattr(owner,'process',None)is not process or process.returncode is not None:return
+        try:
+            async with asyncio.timeout(1):
+                await owner.party_camera(dict(action='end',context=context,
+                    sequence=self.camera_sequence,expected_scope=scope,not_after=self.clock()+1))
+        except(ValueError,OSError,TimeoutError,httpx.HTTPError):
+            # The worker's three-second lease bounds an unconfirmed release.
+            pass
+
     def _camera_current(self):
         process = getattr(self.embodied, 'process', None)
         return (self.camera_enabled and self.game is not None and self.session is not None
@@ -431,7 +474,7 @@ class WerewolfService:
         self.camera_generation += 1
         generation = self.camera_generation
         self._clear_camera()
-        if self.embodied is None or not self.game or not self.camera_enabled:
+        if self.embodied is None or not self.game or not self.camera_enabled or self.game.phase=='finished':
             return
         owner, game, session = self.embodied, self.game, self.session
         process = getattr(owner, "process", None)
@@ -449,6 +492,15 @@ class WerewolfService:
             return
         sample = camera_observation(report)
         if sample is None:
+            return
+        try:
+            async with asyncio.timeout(1):
+                held=await self._hold_camera(report,game,session,process)
+        except(ValueError,OSError,TimeoutError,httpx.HTTPError):
+            return
+        if (not held or generation!=self.camera_generation or self.game is not game or self.session!=session
+                or not self.camera_enabled or self.embodied is not owner
+                or getattr(owner,'process',None)is not process or process.returncode is not None):
             return
         now = self.clock()
         elapsed = now - began
@@ -481,6 +533,14 @@ class WerewolfService:
             sample = camera_picture(report)
             elapsed = self.clock() - began
             if sample is None or not 0 <= elapsed < 1:
+                return dict(available=False)
+            async with asyncio.timeout(1):
+                held=await self._hold_camera(report,game,session,process)
+            elapsed=self.clock()-began
+            if (not held or self.game is not game or self.session!=session or not self.camera_enabled
+                    or game.phase!='lobby'or self.embodied is not owner
+                    or getattr(owner,'process',None)is not process or process.returncode is not None
+                    or not 0<=elapsed<1):
                 return dict(available=False)
             remaining = 1 - sample.pop('age_ms') / 1000 - elapsed
             if remaining <= 0:
@@ -539,6 +599,7 @@ class WerewolfService:
             self._clear_camera()
             self.camera_enabled = False
             try:
+                await self._release_camera()
                 if self.pump:
                     self.pump.cancel()
                     await asyncio.gather(self.pump, return_exceptions=True)

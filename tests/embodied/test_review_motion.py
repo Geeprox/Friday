@@ -9,6 +9,7 @@ import pytest
 
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.party_camera import PartyCamera
 from tests.test_visual_followup import Home
 from tests.embodied.test_sound_review import settle
 
@@ -77,7 +78,7 @@ class Patrol:
             self.scope.update(Transport=lambda:SimpleNamespace(close=AsyncMock()), CameraLease=lambda *a,**k:lease,
                 SearchPlanner=lambda *a:planner, camera_intents=SimpleNamespace(load=lambda:SimpleNamespace(mode='auto',revision='intent',status='configured')),
                 os=SimpleNamespace(environ={}), SELECTED={'id':self.camera}, state=self.state,
-                games=MotionGames(), previews=SimpleNamespace(sessions={}), home=SimpleNamespace(camera_focus=None),
+                games=MotionGames(), party_camera=PartyCamera(),previews=SimpleNamespace(sessions={}), home=SimpleNamespace(camera_focus=None),
                 safety=self.home.runtime, motor_step=self.motor, camera_lease=None, camera_planner=None,
                 reap=AsyncMock(),capture=None)
             loop=source_function('homeplane/embodied/worker.py','camera_search',self.scope)

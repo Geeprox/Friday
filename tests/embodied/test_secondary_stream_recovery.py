@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeplane.embodied.party_camera import PartyCamera
 
 from homeplane.embodied import camera_recognition, previews, ptz_control
 from homeplane.embodied.camera_wall import CameraWall
@@ -348,7 +349,7 @@ async def test_queued_original_gesture_rechecks_source_even_if_clear_callback_fa
     jobs = []
     scope = dict(SELECTED={'id': primary}, identities=SimpleNamespace(session='original-session'),
         state={'status': 'live'}, previews=pool, interaction_enabled=True,
-        games=MotionGames(),
+        games=MotionGames(),party_camera=PartyCamera(),
         home=SimpleNamespace(spawn=jobs.append, armed=True),
         secondary_homes={CAMERA['id']: SimpleNamespace(armed=True)},
         fleet=SimpleNamespace(current=Mock(return_value=True), receipts=deque()),

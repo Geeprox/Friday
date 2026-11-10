@@ -140,6 +140,17 @@ class EmbodiedService:
                 getattr(self.process, 'returncode', None), self.selected,
                 self.capture_enabled, self.closed, self.recovery_pending)
 
+    async def party_camera(self,payload):
+        """Only an existing worker may hold its camera; never start capture here."""
+        source=self._game_source()
+        if (self.process is None or self.process.returncode is not None
+                or payload.get('action')!='end'and(self.closed or not self.capture_enabled
+                    or self.recovery_pending or payload.get('camera')!=self.selected)):
+            raise ValueError('party_camera_unavailable')
+        result=await self.request('/api/party-camera',payload,timeout=1)
+        if source!=self._game_source():raise ValueError('party_camera_source_changed')
+        return result
+
     async def party_frame(self):
         """Read an already running source, with no preview lease or capture start."""
         source = self._game_source()

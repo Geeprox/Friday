@@ -11,6 +11,7 @@ from homeplane.embodied.camera_audio import AudioIngress, PCMFramer
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.sound_review import SoundReviewer
 from tests.embodied.test_review_motion import source_function
 from tests.embodied.test_sound_followup import Home, SlowEngine
@@ -100,7 +101,7 @@ class SoundPatrol:
                 camera_intents=SimpleNamespace(load=lambda: SimpleNamespace(
                     mode="auto", revision="intent", status="configured")),
                 os=SimpleNamespace(environ={}), SELECTED={"id": CAMERA["id"]}, state=self.state,
-                games=MotionGames(), previews=SimpleNamespace(sessions={}),
+                games=MotionGames(), party_camera=PartyCamera(),previews=SimpleNamespace(sessions={}),
                 home=SimpleNamespace(camera_focus=None), safety=self.j.runtime,
                 motor_step=self.motor, camera_lease=None, camera_planner=None,
                 reap=AsyncMock(), capture=None)
