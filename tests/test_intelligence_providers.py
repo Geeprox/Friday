@@ -181,6 +181,42 @@ async def test_configuration_revocation_suppresses_late_api_result(tmp_path):
     assert owner.status()["usage"]["used"]["text_tokens"] == 30
 
 
+@pytest.mark.parametrize("capability", ["responses", "realtime"])
+async def test_revocation_while_waiting_for_budget_prevents_upstream_dispatch(tmp_path, capability):
+    calls = []
+    owner = runtime(tmp_path, lambda request: calls.append(request))
+    owner.settings.update({"cloud_voice": True, "allow_arl_fallback": True})
+    reserve = owner.ledger.reserve
+
+    def revoke(*args, **kwargs):
+        reserve(*args, **kwargs)
+        owner.settings.update({"provider": "local"})
+
+    owner.ledger.reserve = revoke
+    if capability == "responses":
+        with pytest.raises(ARLError, match="configuration_changed"):
+            await owner.complete_scenario(
+                "home_planning", "模拟问题", request_id="queued", deadline=time.monotonic() + 5
+            )
+    else:
+        from homeplane.intelligence.budget import EnhancementUnavailable
+        from homeplane.intelligence.voice import RealtimeVoice
+
+        def connector(*args, **kwargs):
+            pytest.fail("关闭后不应打开上游连接")
+
+        async def audio():
+            pytest.fail("关闭后不应读取音频")
+            yield b""
+
+        emit = AsyncMock()
+        with pytest.raises(EnhancementUnavailable, match="configuration_changed"):
+            await RealtimeVoice(owner, connector=connector).transcribe(audio(), emit)
+        emit.assert_not_called()
+    assert not calls and not owner.arl.complete_scenario.called
+    assert owner.status()["usage"]["used"]["text_tokens"] == 0
+
+
 async def test_api_timeout_keeps_time_for_arl_fallback_without_replaying_cloud(tmp_path):
     from types import SimpleNamespace
 

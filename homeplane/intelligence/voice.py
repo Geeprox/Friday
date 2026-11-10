@@ -33,6 +33,8 @@ class RealtimeVoice:
         total, text = 0, ""
         started = time.monotonic()
         try:
+            if not client.configuration_current(config, key):
+                raise EnhancementUnavailable("intelligence_configuration_changed")
             async with asyncio.timeout(MAX_SESSION_SECONDS):
                 async with self.connector(
                     "wss://api.openai.com/v1/realtime?model=" + config.realtime_model,

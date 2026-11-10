@@ -57,6 +57,9 @@ class OpenAIClient:
             self.ledger.reserve, identifier, capability, config, text_tokens=text_tokens, images=images
         )
         try:
+            if not self.configuration_current(config, key):
+                await asyncio.to_thread(self.ledger.settle, identifier, text_tokens=0)
+                raise EnhancementUnavailable("intelligence_configuration_changed")
             async with asyncio.timeout_at(deadline):
                 read_timeout = 115 if capability == "images" else 20
                 async with httpx.AsyncClient(
