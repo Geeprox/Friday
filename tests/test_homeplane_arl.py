@@ -89,7 +89,7 @@ class SDK:
 
 
 @pytest.fixture
-def setup(tmp_path):
+async def setup(tmp_path):
     from types import SimpleNamespace
     class Session:
         def __init__(self, home):
@@ -104,7 +104,10 @@ def setup(tmp_path):
     sdk = SDK()
     runtime = ARLRuntime(lambda: tmp_path, client_factory=sdk.factory, settings_client_factory=sdk.settings_factory,
                          application_factory=Session)
-    return runtime, sdk
+    try:
+        yield runtime, sdk
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -143,17 +146,18 @@ async def test_explicit_connection_does_not_bootstrap_a_separate_runtime(setup):
 
 
 @pytest.mark.asyncio
-async def test_missing_runtime_is_passive_and_private_errors_sanitized(tmp_path):
-    sdk = SDK()
-    runtime = ARLRuntime(lambda: tmp_path / "missing", client_factory=sdk.factory,
-                         settings_client_factory=sdk.settings_factory)
+async def test_missing_runtime_is_passive_and_private_errors_sanitized(tmp_path, setup):
+    runtime, sdk = setup
+    runtime.home = lambda: tmp_path / "missing"
     assert (await runtime.status())["ready"] is False
     assert not sdk.calls and not (tmp_path / "missing").exists()
+    assert runtime.application.session is None
     runtime.home = lambda: tmp_path
     sdk.error = "private token / text"
     assert (await runtime.status())["status"] == "runtime_error"
     sdk.error = "user_disabled"
     assert (await runtime.status(start=True))["status"] == "user_disabled"
+    assert runtime.application.session.client.home == tmp_path
 
 
 @pytest.mark.asyncio
