@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from homeplane.embodied.calibration_frames import CalibrationFrames
+from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.room_session import RoomSession
 
 
@@ -109,6 +110,44 @@ async def test_real_room_child_preserves_registration_draft_and_unconfigured_lay
     finally:
         assert await session.close()
     assert process.returncode is not None and not session.owner.slot
+
+
+@pytest.mark.asyncio
+async def test_real_room_child_confirms_patrol_with_two_fresh_translated_views(tmp_path, image):
+    session = RoomSession(tmp_path)
+    director = CameraDirector()
+    director.apply_mode("survey", "synthetic-intent")
+    now = time.monotonic()
+    pixels = cv2.imdecode(np.frombuffer(image, np.uint8), cv2.IMREAD_COLOR)
+    moved = cv2.warpAffine(pixels, np.float32([[1, 0, -32], [0, 1, 0]]), (640, 360))
+    new_view = cv2.imencode(".jpg", moved)[1].tobytes()
+
+    async def observe(at, picture):
+        assert await session.register(picture, [], now + at)
+        return director.choose(dict(status="live", session_id="synthetic-capture", people=[],
+            _local_received=now + at, scene_visible=session.scene_visible,
+            _patrol_view=session.patrol_view), now + at)
+
+    try:
+        assert await observe(0, image) is None
+        assert await observe(.5, image) is None
+        assert await observe(16, image) == "right"
+        before = session.patrol_view
+        session.expect_motion(now + 16.1, 2)
+        director.sent(now + 16.2)
+        assert session.patrol_view is None
+        assert await observe(16.5, new_view) is None and session.patrol_view is None
+        assert await observe(18.5, new_view) is None
+        assert session.patrol_view[0] == before[0]
+        assert session.patrol_view[1] != before[1]
+        assert director.survey_confirmed_moves == 0
+        assert await observe(19, new_view) is None
+        assert director.survey_confirmed_moves == 1 and director.position == (1, 0)
+        assert director.public()["physical_motion_verified"] is False
+        assert not list(tmp_path.iterdir())
+    finally:
+        assert await session.close()
+    assert session.patrol_view is None
 
 
 CHILD = r"""

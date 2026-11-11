@@ -18,9 +18,13 @@ from homeplane.embodied.home_service import HomeService
 from homeplane.embodied.ptz_control import CameraLease, FLAGS
 
 
-def sample(at, *, visible=True, people=(), session='first'):
+def patrol_view(at, *, x=0.0, y=0.0, basis='synthetic-room'):
+    return (basis, ((1, 0, x), (0, 1, y), (0, 0, 1)), at)
+
+
+def sample(at, *, visible=True, people=(), session='first', x=0.0):
     return dict(status='live', _local_received=at, scene_visible=visible,
-                people=list(people), session_id=session)
+                people=list(people), session_id=session, _patrol_view=patrol_view(at, x=x))
 
 
 def person(track=1, x=.75, identity=None, *, y=.2, h=.6):
@@ -258,8 +262,9 @@ def test_wake_focus_and_empty_view_patrol_do_not_guess_between_people():
     assert d.choose(sample(20),20,occupied_elsewhere=True) is None
     assert d.choose(sample(21),21)=='right'
     d.sent(21)
-    assert d.choose(sample(25),25) is None
-    assert d.choose(sample(35,visible=False),35) is None
+    assert d.choose(sample(24,x=.05),24) is None
+    assert d.choose(sample(25,x=.05),25) is None and d.scan_steps==1
+    assert d.choose(sample(35,visible=False,x=.05),35) is None
     assert d.phase=='view_obscured'
 
 
@@ -279,20 +284,122 @@ def test_game_keeps_visible_players_in_a_stable_control_frame():
 def test_requested_survey_is_finite_and_repeated_intent_does_not_restart_it():
     d=CameraDirector();d.apply_mode('survey',7)
     attempts=[]
+    x = 0.0
     for at in range(300):
-        if direction:=d.choose(sample(at),at):
+        if direction:=d.choose(sample(at,x=x),at):
             attempts.append(direction);d.sent(at)
+            x += .05 if direction == 'right' else -.05
     assert len(attempts)==12 and d.phase=='survey_finished'
+    assert d.public()['survey_confirmed_moves'] == 12
+    assert d.scan_direction == 'left'
     assert d.public()['physical_motion_verified'] is False
     d.apply_mode('survey',7)
-    assert d.choose(sample(301),301) is None
+    assert d.choose(sample(301,x=x),301) is None
     d.apply_mode('survey',8)
-    assert d.choose(sample(302),302) is None
-    assert d.choose(sample(303),303) in {'left','right'}
+    assert d.choose(sample(302,x=x),302) is None
+    assert d.choose(sample(303,x=x),303) in {'left','right'}
     assert d.survey_attempts==1
+    assert d.survey_confirmed_moves==0
     d.apply_mode('hold',9)
     assert d.choose(sample(320,visible=False),320) is None
     assert d.phase=='held'
+
+
+def test_patrol_motor_ack_does_not_count_an_unchanged_view():
+    director = CameraDirector()
+    director.apply_mode('survey', 1)
+    clear(director)
+    assert director.choose(sample(16), 16) == 'right'
+    director.sent(16.1)
+    for at in (18.3, 19.4, 20.5, 22):
+        assert director.choose(sample(at), at) is None
+    assert director.scan_steps == 0 and director.position == (0, 0)
+    assert director.public()['survey_attempts'] == 1
+    assert director.public()['survey_confirmed_moves'] == 0
+
+
+@pytest.mark.parametrize('change', ['repeated', 'cached_fit', 'opposite', 'vertical', 'new_basis', 'stale'])
+def test_unrelated_or_unstable_samples_do_not_confirm_patrol(change):
+    director = CameraDirector()
+    director.apply_mode('survey', 1)
+    clear(director)
+    assert director.choose(sample(16), 16) == 'right'
+    director.sent(16.1)
+    first = sample(18.4, x=.05)
+    assert director.choose(first, 18.4) is None
+    second, now = sample(19.1, x=.05), 19.1
+    if change == 'repeated':
+        second = first
+    elif change == 'cached_fit':
+        second['_patrol_view'] = patrol_view(18.6, x=.05)
+    elif change == 'opposite':
+        second['_patrol_view'] = patrol_view(now, x=-.05)
+    elif change == 'vertical':
+        second['_patrol_view'] = patrol_view(now, x=.05, y=.05)
+    elif change == 'new_basis':
+        second['_patrol_view'] = patrol_view(now, x=.05, basis='restarted')
+    elif change == 'stale':
+        now = 21
+    assert director.choose(second, now) is None
+    assert director.public()['patrol_view_state'] == 'checking'
+    assert director.choose(sample(25, x=.05), 25) is None
+    assert director.public()['patrol_view_state'] == 'unconfirmed'
+    assert director.survey_confirmed_moves == 0
+
+
+@pytest.mark.parametrize('change', ['camera_session', 'game_window', 'mode'])
+def test_patrol_confirmation_expires_with_its_original_scope(change):
+    director = CameraDirector()
+    director.apply_mode('survey', 1)
+    clear(director)
+    assert director.choose(sample(16), 16) == 'right'
+    director.sent(16.1)
+    assert director.choose(sample(18.4, x=.05), 18.4) is None
+    newer = sample(19, x=.05)
+    if change == 'camera_session':
+        newer['session_id'] = 'second'
+    elif change == 'game_window':
+        newer['game'] = dict(control_context='new-game', control_revision=2)
+    else:
+        director.apply_mode('hold', 2)
+    assert director.choose(newer, 19) is None
+    assert director.patrol_confirmation is None
+    assert director.survey_confirmed_moves == 0 and director.position == (0, 0)
+
+
+def test_patrol_does_not_keep_pulsing_when_acks_arrive_without_movement():
+    director = CameraDirector()
+    clear(director)
+    for attempt, at in enumerate((16, 29, 42), 1):
+        assert director.choose(sample(at), at) == 'right'
+        director.sent(at)
+        assert director.choose(sample(at+8), at+8) is None
+        assert director.failed_moves == attempt
+        assert director.choose(sample(at+10), at+10) is None
+        assert director.choose(sample(at+11), at+11) is None
+    assert director.choose(sample(109), 109) is None
+    assert director.phase == 'motor_unavailable'
+    assert director.choose(sample(110), 110) is None
+    assert director.choose(sample(111), 111) == 'right'
+    director.sent(111)
+    assert director.choose(sample(113.5, x=.05), 113.5) is None
+    assert director.choose(sample(114, x=.05), 114) is None
+    assert director.failed_moves == 0 and director.position == (1, 0)
+
+
+def test_unknown_dispatch_forgets_relative_angle_and_preserves_confirmed_count():
+    director = CameraDirector()
+    director.apply_mode('survey', 1)
+    clear(director)
+    assert director.choose(sample(16), 16) == 'right'
+    director.sent(16)
+    assert director.choose(sample(18.5, x=.05), 18.5) is None
+    assert director.choose(sample(19, x=.05), 19) is None
+    assert director.position == (1, 0)
+    assert director.choose(sample(28, x=.05), 28) == 'right'
+    director.failed(28.1)
+    assert director.position == (0, 0) and director.survey_confirmed_moves == 1
+    assert director.survey_attempts == 2 and director.public()['patrol_view_state'] == 'unconfirmed'
 
 
 def test_survey_charges_unknown_dispatch_outcomes_before_any_retry():

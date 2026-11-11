@@ -11,6 +11,7 @@ from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from tests.test_visual_followup import Home
+from tests.embodied.test_camera_director import patrol_view
 from tests.embodied.test_sound_review import settle
 
 
@@ -29,6 +30,7 @@ class Patrol:
         self.moves, self.phases = [], []
         self.exit_state = None
         self.moving_until = 0
+        self.view_offset = 0.
         self.session = 'SYNTHETIC-review-motion'
         self.state = {}
         self.director = CameraDirector()
@@ -51,7 +53,8 @@ class Patrol:
             stable=stable, jpeg=bytes([self.marker])+b'SYNTHETIC-FRAME',
             source_context=self.context, source_name='合成镜头')
         self.state.update(status='live', _local_received=home.clock, session_id=self.session,
-                          tracking_current=True, scene_visible=stable, people=[])
+                          tracking_current=True, scene_visible=stable, people=[],
+                          _patrol_view=patrol_view(home.clock, x=self.view_offset) if stable else None)
         self.scope['last_frame'] = home.clock
         self.phases.append((home.clock, (self.state if self.owner=='primary' else self.item).get('camera_control',{}).get('phase')))
         await settle()
@@ -61,6 +64,7 @@ class Patrol:
             raise RuntimeError('stale_input')
         self.moves.append((self.home.clock, direction))
         self.moving_until = self.home.clock + 1
+        self.view_offset += .05 if direction == 'right' else -.05
         self.home.runtime.clear(self.camera)
         if self.owner == 'secondary':
             self.director.sent(self.home.clock, direction)
@@ -110,6 +114,7 @@ async def test_a_positive_review_survives_the_original_automatic_patrol_loop(tmp
         assert all(e['kind']=='visual_review' and len(e['frames'])==8 for e in events)
         assert home.engine.maximum==1
         assert patrol.moves, 'completed or bounded review must not disable patrol permanently'
+        assert patrol.director.patrol_view_state == 'confirmed'
         assert any(phase=='review_held' for _,phase in patrol.phases)
         home.runtime.speaker.say.assert_not_awaited()
     finally:
@@ -204,6 +209,7 @@ def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
 async def patrol_fleet(home,steps=480):
     directors={camera:CameraDirector()for _,camera,_ in home.feeds}
     moving_until={camera:0 for _,camera,_ in home.feeds}
+    view_offset={camera:0. for camera in directors}
     for index in range(1,steps+1):
         home.clock=index*.5
         task=home.runtime.visual.task
@@ -216,11 +222,13 @@ async def patrol_fleet(home,steps=480):
                 stable=stable,jpeg=bytes([marker])+b'SYNTHETIC-FRAME',source_context=context)
             director=directors[camera];director.apply_mode('auto','SYNTHETIC')
             sample=dict(status='live',tracking_current=True,scene_visible=stable,people=[],
-                        session_id='SYNTHETIC-visual',_local_received=home.clock)
+                        session_id='SYNTHETIC-visual',_local_received=home.clock,
+                        _patrol_view=patrol_view(home.clock, x=view_offset[camera]) if stable else None)
             pending=home.runtime.review_pending(camera,'SYNTHETIC-visual')
             direction=director.choose(sample,home.clock,review_pending=pending)
             if direction and director.decision_current(sample,home.clock,direction,review_pending=pending):
                 home.runtime.clear(camera);moving_until[camera]=home.clock+1;director.sent(home.clock,direction)
+                view_offset[camera] += .05 if direction == 'right' else -.05
         await settle()
     return directors
 

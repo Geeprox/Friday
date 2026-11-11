@@ -26,9 +26,23 @@ def visible_scene(jpeg):
     return len(cells) >= 26
 
 
+def _view_shift(before, after):
+    """求新画面中心在原画面里的位移。配准参考必须来自同一个 Room 进程。"""
+    if before is None or after is None or before[0] != after[0]:
+        return None
+    try:
+        center = np.linalg.solve(before[1], np.asarray(after[1]) @ (.5, .5, 1))
+    except (TypeError, ValueError, np.linalg.LinAlgError):
+        return None
+    if center.shape != (3,) or not np.isfinite(center).all() or abs(center[2]) < 1e-6:
+        return None
+    return tuple(center[:2] / center[2] - .5)
+
+
 class CameraDirector:
     REVIEW_HOLD_SECONDS = 30
     REVIEW_INTERVAL_SECONDS = 60
+    PATROL_CONFIRM_SECONDS = 8
     TILT_DIRECTIONS = ('up', 'down')
 
     def __init__(self):
@@ -64,6 +78,9 @@ class CameraDirector:
         self.mode = 'auto'
         self.intent = None
         self.survey_attempts = 0
+        self.survey_confirmed_moves = 0
+        self.patrol_confirmation = None
+        self.patrol_view_state = 'idle'
         self.game_hold = False
         self.review_scope = None
         self.review_until = self.review_retry_at = -100.0
@@ -98,6 +115,7 @@ class CameraDirector:
             raise ValueError('invalid_camera_mode')
         intent = (mode, revision)
         if intent != self.intent:
+            self._discard_patrol()
             self.review_scope = None
             self.tilt_observation = None
             self.tilt_recovery = None
@@ -107,6 +125,7 @@ class CameraDirector:
                 self.target_session = None
                 self.last_focus = None
                 self.target_seen = -100.0
+                self.visible_samples = 0
                 if (self.mode == 'pets') != (mode == 'pets'):
                     self.last_person = None
                 self.pending_decision = None
@@ -114,6 +133,8 @@ class CameraDirector:
             self.intent = intent
             self.mode = mode
             self.survey_attempts = 0
+            self.survey_confirmed_moves = 0
+            self.patrol_view_state = 'idle'
             if mode == 'hold':
                 self.hold()
 
@@ -128,6 +149,8 @@ class CameraDirector:
         self.pending_decision = dict(direction=direction, phase=self.phase, intent=self.intent,
             session=sample.get('session_id'), stamp=sample['_local_received'],
             target=self.target, identity=self.target_identity, game_window=self._camera_window(sample))
+        if self.phase == 'patrolling':
+            self.pending_decision['view'] = sample['_patrol_view']
         return direction
 
     @staticmethod
@@ -199,7 +222,8 @@ class CameraDirector:
             return False
         people = self._subjects(sample)
         if pending['phase'] == 'patrolling':
-            return not people and not occupied_elsewhere
+            shift = _view_shift(pending['view'], sample.get('_patrol_view'))
+            return not people and not occupied_elsewhere and shift is not None and math.hypot(*shift) <= .012
         if pending['phase'] != 'following':
             return False
         focus = self._current_focus(sample, now, focus)
@@ -226,8 +250,10 @@ class CameraDirector:
 
     def hold(self):
         # Manual positioning changes the relative origin. Do not reuse old angles.
+        self._discard_patrol()
         self.position = (0,0)
         self.blocked_positions.clear()
+        self.scan_steps = 0
         self.pending_direction = None
         self.pending_decision = None
         self.tilt_observation = None
@@ -238,6 +264,68 @@ class CameraDirector:
         self.obscured_samples = 0
         self.phase = 'held'
         self.review_scope = None
+
+    def _discard_patrol(self, *, uncertain_dispatch=False):
+        if self.patrol_confirmation is None and not uncertain_dispatch:
+            return
+        self.patrol_confirmation = None
+        self.patrol_view_state = 'unconfirmed'
+        # 转过多少未知，相对角度及其遮挡记录已失去基准。
+        self.position = (0, 0)
+        self.scan_steps = 0
+        self.blocked_positions.clear()
+
+    def _confirm_patrol(self, sample, now):
+        pending = self.patrol_confirmation
+        if pending is None:
+            return False
+        session = sample.get('session_id')
+        if ((session is not None and session != pending['session'])
+                or self._camera_window(sample) != pending['game_window']):
+            self._discard_patrol()
+            return False
+        if now >= pending['deadline']:
+            # 退避从确认超时起算，画面稳定和巡视间隔仍从实际发出转向起算。
+            last_move = self.last_move
+            self.failed(now)
+            self.last_move = last_move
+            return True
+        self.phase = 'confirming_view'
+        if (session != pending['session'] or not self._fresh(sample, now)
+                or sample['_local_received'] <= pending['stamp']):
+            return True
+        stamp = sample['_local_received']
+        pending['stamp'] = stamp
+        if stamp < self.last_move + 2:
+            return True
+        view = sample.get('_patrol_view')
+        shift = _view_shift(pending['view'], view) if sample.get('scene_visible') is True else None
+        sign = 1 if pending['direction'] == 'right' else -1
+        if shift is None or sign * shift[0] < .025 or abs(shift[0]) < 1.5 * abs(shift[1]):
+            pending['previous'] = None
+            return True
+        previous = pending['previous']
+        if previous is not None:
+            previous_stamp, previous_view_at, previous_shift = previous
+            # 配准最多每 0.3 秒计算一次。两次采样必须跨过复用窗口。
+            if view[2] - previous_view_at < .35:
+                return True
+            if stamp - previous_stamp <= 3.5 and math.dist(shift, previous_shift) <= .025:
+                self.patrol_confirmation = None
+                self.patrol_view_state = 'confirmed'
+                self.failed_moves = 0
+                self.retry_at = 0.0
+                self.position = self._next_position(pending['direction'])
+                self.scan_steps += 1
+                if self.scan_steps >= 12:
+                    self.scan_direction = 'left' if self.scan_direction == 'right' else 'right'
+                    self.scan_steps = 0
+                if self.mode == 'survey':
+                    self.survey_confirmed_moves += 1
+                self.visible_samples = 1
+                return False
+        pending['previous'] = (stamp, view[2], shift)
+        return True
 
     def _review_holds(self, sample, now, pending, *, reserve=False):
         if (pending is not True or self.mode not in {'auto', 'survey'}
@@ -270,6 +358,7 @@ class CameraDirector:
             # including waiting, pause and results. Perception still consumes
             # frames; neither clipped players nor an obscured view may pan it.
             self.game_hold = True
+            self._discard_patrol()
             self.pending_direction = self.pending_decision = None
             self.tilt_observation = None
             self.tilt_recovery = None
@@ -291,6 +380,8 @@ class CameraDirector:
             self.visible_samples = self.obscured_samples = 0
             self.clear_since = self.obscured_since = None
             self.phase = 'checking_view'
+        if self._confirm_patrol(sample, now):
+            return None
         if self.mode == 'survey' and self.survey_attempts >= 12:
             self.phase = 'survey_finished'
             return None
@@ -436,6 +527,9 @@ class CameraDirector:
         if now-self.last_move < 12:
             self.phase = 'observing'
             return None
+        if not isinstance(session, str) or not session or sample.get('_patrol_view') is None:
+            self.phase = 'patrol_waiting_view'
+            return None
         self.phase = 'patrolling'
         if self._next_position(self.scan_direction) in self.blocked_positions:
             self.scan_direction='left' if self.scan_direction=='right' else 'right'
@@ -446,16 +540,26 @@ class CameraDirector:
 
     def sent(self, now, direction=None, *, automatic=True):
         self.last_move = now
-        self.failed_moves = 0
-        self.retry_at = 0.0
         direction=direction or self.pending_direction
+        pending = self.pending_decision
+        patrol = automatic and direction == self.pending_direction and pending and pending['phase'] == 'patrolling'
+        if patrol:
+            self.patrol_confirmation = dict(direction=direction, session=pending['session'],
+                game_window=pending['game_window'], view=pending['view'],
+                stamp=now, deadline=now + self.PATROL_CONFIRM_SECONDS, previous=None)
+            self.patrol_view_state = 'checking'
+        else:
+            self._discard_patrol()
+            self.failed_moves = 0
+            self.retry_at = 0.0
         self.tilt_recovery = None
         if (automatic and direction in self.TILT_DIRECTIONS and direction == self.pending_direction
                 and self.pending_decision and self.pending_decision['phase'] == 'following'):
             reverse = 'up' if direction == 'down' else 'down'
             self.tilt_recovery = (reverse, self.pending_decision['game_window'])
         if direction in {'up','down','left','right'}:
-            self.position=self._next_position(direction)
+            if not patrol:
+                self.position=self._next_position(direction)
             self.last_direction=direction
         self.pending_direction=None
         self.pending_decision=None
@@ -469,13 +573,10 @@ class CameraDirector:
         self.obscured_since=None
         if self.phase == 'uncovering':
             self.uncover_steps += 1
-        elif self.phase == 'patrolling':
-            self.scan_steps += 1
-            if self.scan_steps >= 12:
-                self.scan_direction = 'left' if self.scan_direction == 'right' else 'right'
-                self.scan_steps = 0
 
     def failed(self, now):
+        pending = self.pending_decision
+        self._discard_patrol(uncertain_dispatch=pending is not None and pending['phase'] == 'patrolling')
         self.last_move = now
         self.failed_moves += 1
         if self.failed_moves >= 3:
@@ -495,14 +596,17 @@ class CameraDirector:
                   'view_obscured':'视野受阻', 'motor_unavailable':'云台待恢复',
                   'following':'跟随人物', 'target_ambiguous':'等待确认目标',
                   'patrolling':'环视房间', 'observing':'静候互动', 'held':'停留当前视角',
+                  'confirming_view':'确认新视角', 'patrol_waiting_view':'等待清晰视角',
                   'survey_finished':'本轮巡视已结束', 'pet_unavailable':'宠物识别暂不可用',
                   'game_held':'游戏中，镜头保持稳定', 'review_held':'停留观察'}[self.phase]
         if self.phase == 'following' and self.mode == 'pets':reason = '跟随宠物'
         return dict(owner='friday', phase=self.phase, reason=reason, native_tracking=False,
                     intent_revision=self.intent[1] if self.intent else None,
                     native_patrol=False, view_usable=self.clear and self.phase in {
-                        'following','target_ambiguous','patrolling','observing','game_held','pet_unavailable','review_held'},
+                        'following','target_ambiguous','patrolling','observing','game_held','pet_unavailable',
+                        'review_held','patrol_waiting_view'},
                     uncover_steps=self.uncover_steps, recovery_steps=self.recovery_steps,
                     survey_attempts=self.survey_attempts, survey_command_limit=12,
+                    survey_confirmed_moves=self.survey_confirmed_moves, patrol_view_state=self.patrol_view_state,
                     avoided_angles=len(self.blocked_positions), target_locked=self.phase == 'following',
                     physical_motion_verified=False)

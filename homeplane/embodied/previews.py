@@ -154,6 +154,7 @@ class PreviewPool:
         item['mode'] = 'hold'
         item['mode_revision'] = secrets.token_hex(16)
         item['survey_attempts'] = 0
+        item['survey_confirmed_moves'] = 0
         try:
             intent = self.intent_factory(camera(camera_id)).save(mode or 'hold')
         except (OSError, ValueError, RuntimeError):
@@ -341,6 +342,7 @@ class PreviewPool:
             director = CameraDirector()
             director.apply_mode(item['mode'], item.get('mode_revision', 0))
             director.survey_attempts = item.get('survey_attempts', 0)
+            director.survey_confirmed_moves = item.get('survey_confirmed_moves', 0)
             motion_lock = asyncio.Lock()
             def privacy_closed():
                 item.update(state='shutter_closed',privacy_closed=True)
@@ -357,7 +359,8 @@ class PreviewPool:
                     animals_current=observation.get('animals_current',False) if observation else False,
                     animals_intent=observation.get('animals_intent') if observation else None,
                     people=observation['people'] if observation else [],
-                    scene_visible=observation.get('scene_visible',False) if observation else False)
+                    scene_visible=observation.get('scene_visible',False) if observation else False,
+                    _patrol_view=observation.get('_patrol_view') if observation else None)
             async def send_motion(direction, observed=None, expected_epoch=None):
                 if direction not in {'left','right','up','down'}:raise ValueError('invalid_motor_direction')
                 if item['privacy_closed']:raise RuntimeError('privacy_shutter_closed')
@@ -445,6 +448,7 @@ class PreviewPool:
                         occupied_elsewhere=self.occupied_elsewhere(selected['id']),
                         review_pending=self.review_pending(selected['id'], sample.get('session_id'))) if item['mode']!='hold' else None
                     item['survey_attempts'] = director.survey_attempts
+                    item['survey_confirmed_moves'] = director.survey_confirmed_moves
                     if item['mode']=='hold':director.hold()
                     item['camera_control'] = dict(director.public(),mode=item['mode'],
                                                  intent_status=item.get('intent_status', 'default'))

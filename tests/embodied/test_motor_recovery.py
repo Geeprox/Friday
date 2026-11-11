@@ -14,11 +14,12 @@ import pytest
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.local_motor import LocalMotor
 from homeplane.embodied.local_motor import check_motor_deadline
+from tests.embodied.test_camera_director import patrol_view
 
 
 def view(at, *, x=.78, visible=True, tracking=True, session='source', people=None):
     return dict(status='live', _local_received=at, session_id=session,
-                scene_visible=visible, tracking_current=tracking,
+                scene_visible=visible, tracking_current=tracking, _patrol_view=patrol_view(at),
                 people=people if people is not None else [dict(id=1,
                     box=dict(x=x, y=.1, w=.12, h=.7), identity={})])
 
@@ -100,8 +101,19 @@ def test_current_follow_and_empty_room_guards_accept_only_their_original_purpose
     director.choose(view(20, people=[]), 20)
     assert director.choose(view(20.2, people=[]), 20.2) == 'right'
     assert director.decision_current(view(20.3, people=[]), 20.3, 'right')
+    for anchor in (None, patrol_view(20.3, x=.04), patrol_view(20.3, basis='replacement')):
+        current = dict(view(20.3, people=[]), _patrol_view=anchor)
+        assert not director.decision_current(current, 20.3, 'right')
     assert not director.decision_current(view(20.3), 20.3, 'right')
     assert not director.decision_current(view(20.3, people=[]), 20.3, 'right', occupied_elsewhere=True)
+
+
+def test_auto_patrol_requires_a_live_reference_before_pulsing():
+    director = CameraDirector()
+    for at in (0, .5, 16, 17):
+        assert director.choose(dict(view(at, people=[]), _patrol_view=None), at) is None
+    assert director.phase == 'patrol_waiting_view'
+    assert director.choose(view(18, people=[]), 18) == 'right'
 
 
 def extract(path, names, scope):

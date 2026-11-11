@@ -13,6 +13,7 @@ from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.sound_review import SoundReviewer
+from tests.embodied.test_camera_director import patrol_view
 from tests.embodied.test_review_motion import source_function
 from tests.embodied.test_sound_followup import Home, SlowEngine
 from tests.embodied.test_sound_review import CAMERA, CONTEXT, Engine, Journey, settle
@@ -39,6 +40,7 @@ class SoundPatrol:
         self.owner, self.episode = owner, episode
         self.index = 0
         self.moving_until = 0
+        self.view_offset = 0.
         self.moves, self.phases = [], []
         self.state = {}
         self.session = "SYNTHETIC-sound-motion"
@@ -71,7 +73,8 @@ class SoundPatrol:
         self.j.runtime.observe_audio(CAMERA["id"], self.j.gate.accept(
             packet, wall=1000+self.j.clock, mono=self.j.clock))
         self.state.update(status="live", _local_received=self.j.clock, session_id=self.session,
-                          tracking_current=True, scene_visible=stable, people=[])
+                          tracking_current=True, scene_visible=stable, people=[],
+                          _patrol_view=patrol_view(self.j.clock, x=self.view_offset) if stable else None)
         self.scope["last_frame"] = self.j.clock
         self.phases.append((self.j.clock, (self.state if self.owner == "primary" else self.item)
                             .get("camera_control", {}).get("phase")))
@@ -85,6 +88,7 @@ class SoundPatrol:
                 review_pending=self.j.runtime.review_pending(CAMERA["id"], self.session))
         self.moves.append((self.j.clock, direction))
         self.moving_until = self.j.clock + 1
+        self.view_offset += .05 if direction == 'right' else -.05
         self.j.runtime.clear(CAMERA["id"])
         if self.owner == "secondary":
             self.director.sent(self.j.clock, direction)
@@ -238,6 +242,7 @@ async def test_eight_patrolling_sound_sources_each_keep_a_disjoint_corroboration
     home = Home(tmp_path, monkeypatch)
     directors = {feed.camera["id"]: CameraDirector() for feed in home.feeds}
     moving_until = {camera: 0 for camera in directors}
+    view_offset = {camera: 0. for camera in directors}
     moves = {camera: [] for camera in directors}
     try:
         for index in range(1, 301):
@@ -262,13 +267,15 @@ async def test_eight_patrolling_sound_sources_each_keep_a_disjoint_corroboration
                 director = directors[camera]
                 director.apply_mode("auto", "SYNTHETIC")
                 sample = dict(status="live", tracking_current=True, scene_visible=stable, people=[],
-                              session_id="SYNTHETIC-visual", _local_received=home.j.clock)
+                              session_id="SYNTHETIC-visual", _local_received=home.j.clock,
+                              _patrol_view=patrol_view(home.j.clock, x=view_offset[camera]) if stable else None)
                 pending = home.j.runtime.review_pending(camera, "SYNTHETIC-visual")
                 direction = director.choose(sample, home.j.clock, review_pending=pending)
                 if direction and director.decision_current(sample, home.j.clock, direction, review_pending=pending):
                     moves[camera].append(home.j.clock)
                     home.j.runtime.clear(camera)
                     moving_until[camera] = home.j.clock+1
+                    view_offset[camera] += .05 if direction == 'right' else -.05
                     director.sent(home.j.clock, direction)
             await settle()
         events = home.j.store.events()

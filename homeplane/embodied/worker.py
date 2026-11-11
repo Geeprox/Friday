@@ -193,7 +193,7 @@ def invalidate_calibration():
     if camera_planner:
         camera_planner.views.clear()
     games.suspend_source()
-    state.update(room=None, people=[], hands=[], animals=[], animals_current=False,
+    state.update(room=None, people=[], hands=[], animals=[], animals_current=False, _patrol_view=None,
                  tracking_current=False, scene={'objects': []})
 
 
@@ -211,7 +211,7 @@ def close_primary_view():
     motion_generation += 1
     calibration_frames.clear()
     state.update(status='shutter_closed',reason='privacy_shutter_closed',people=[],hands=[],frame=None,
-                 animals=[],animals_current=False,scene={'objects': []})
+                 animals=[],animals_current=False,scene={'objects': []},_patrol_view=None)
     pet_tracks.clear()
     wall.clear(SELECTED['id'], primary_wall_epoch)
     clear_camera(SELECTED['id'])
@@ -232,7 +232,7 @@ async def primary_capture_closed(my_generation, wall_epoch, reason, error_class=
     motion_generation += 1
     latest, last_frame, last_jpeg, last_preview, last_preview_at = None, 0, b'', b'', 0.0
     state.update(frame=None, people=[], hands=[], animals=[], animals_current=False, room=None,
-                 scene={'objects': []})
+                 scene={'objects': []}, _patrol_view=None)
     if state.get('status') != 'shutter_closed':
         state.update(status='unavailable', reason=reason, error_class=error_class, error_stage=stage)
     home.armed = False
@@ -389,6 +389,7 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             motion_generation += 1
             calibration_frames.clear()
             motor_last_sent = now
+            state['_patrol_view'] = None
             state['scene'] = {'objects': []}
             identities.discard()
             fleet.clear(SELECTED['id'])
@@ -521,6 +522,7 @@ async def notify():
 
 def view():
     result = dict(state)
+    result.pop('_patrol_view', None)
     result['party_camera'] = party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
         frame_mono=last_frame,now=time.monotonic())
     result["game"] = games.viewer_state()
@@ -617,6 +619,7 @@ async def run_source(my_generation):
         hands=[],
         animals=[],animals_current=False,animals_intent=None,pet_tracking=pet_tracks.public(),
         room=None,
+        _patrol_view=None,
         game={"mode": games.mode, "status": "paused", "reason": "实时画面已过期", "players": []},
     )
     camera_task = None
@@ -1047,6 +1050,7 @@ async def run_source(my_generation):
                     animals=animals,animals_current=pet_tracks.current,
                     animals_intent=pet_revision if pet_active else None,pet_tracking=pet_tracks.public(),
                     scene_visible=scene_visible,
+                    _patrol_view=getattr(frame_room, 'patrol_view', None) if registered else None,
                     reason=None,
                     frame=item["jpeg"],
                     width=item["width"],
@@ -1160,6 +1164,7 @@ async def stop():
         people=[],
         hands=[],
         room=None,
+        _patrol_view=None,
         game={"mode": games.mode, "status": "paused", "reason": "实时画面已过期", "players": []},
     )
     await notify()
