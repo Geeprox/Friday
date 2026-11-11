@@ -89,6 +89,7 @@ class SafetyStore:
     MAX_EVENTS = 100
     MAX_BYTES = 64 * 1024 * 1024
     MAX_FRAME = 512 * 1024
+    MAX_FRAMES = 22
     RETENTION = 30 * 86400
     PRUNE_INTERVAL = 60
     POLICY_FIELDS = (('safety_policy', 'value'), ('safety_posture', 'value'), ('safety_sound_search', 'enabled'))
@@ -303,6 +304,19 @@ class SafetyStore:
             raise ValueError("safety_event_unavailable")
         return json.loads(row[0])
 
+    def recording_target(self, event_id, ordinal=None):
+        """从同一条记录读取事件及指定关键帧的时间。"""
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT e.value, f.at FROM safety_events e
+                   LEFT JOIN safety_frames f ON f.event=e.id AND f.ordinal=?
+                   WHERE e.id=? AND e.at>=?""",
+                (ordinal, event_id, time.time()-self.RETENTION),
+            ).fetchone()
+        if row is None:
+            raise ValueError('safety_event_unavailable')
+        return json.loads(row[0]), row[1]
+
     def recording_receipt(self, event_id):
         """Read only this incident's metadata; no keyframe pixels or NAS access."""
         with self.connect() as db:
@@ -311,7 +325,7 @@ class SafetyStore:
             if not row:
                 return None
             stamps = [value[0] for value in db.execute(
-                'SELECT at FROM safety_frames WHERE event=? ORDER BY ordinal LIMIT 22', (event_id,))]
+                'SELECT at FROM safety_frames WHERE event=? ORDER BY ordinal LIMIT ?', (event_id, self.MAX_FRAMES))]
         return dict(event=json.loads(row[0]), stamps=stamps)
 
     def append_frame(self, event_id, stamp, jpeg, *, policy_revision=None, guard=None, deduplicate=False):
@@ -332,7 +346,7 @@ class SafetyStore:
             count = db.execute(
                 "SELECT COALESCE(MAX(ordinal),-1)+1 FROM safety_frames WHERE event=?", (event_id,)
             ).fetchone()[0]
-            if count < 22:
+            if count < self.MAX_FRAMES:
                 db.execute("INSERT INTO safety_frames VALUES (?,?,?,?)", (event_id, count, stamp, jpeg))
             self._prune(db)
 
@@ -358,7 +372,7 @@ class SafetyStore:
                 return
             ordinal = db.execute('SELECT COALESCE(MAX(ordinal),-1)+1 FROM safety_frames WHERE event=?',
                                  (event_id,)).fetchone()[0]
-            if ordinal >= 22:
+            if ordinal >= self.MAX_FRAMES:
                 return
             db.execute('INSERT INTO safety_frames VALUES (?,?,?,?)', (event_id, ordinal, stamp, jpeg))
             views.append(dict(step=step, ordinal=ordinal))

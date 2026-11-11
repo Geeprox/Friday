@@ -4,7 +4,7 @@ import asyncio
 import sqlite3
 from typing import Literal
 
-from fastapi import HTTPException, Response
+from fastapi import HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .camera_provenance import configured_camera_sources
@@ -164,9 +164,9 @@ def install(router, service, *, archive=None, infrastructure=None):
         return dict(events=await stored(store.events))
 
     @router.get('/api/embodied/safety/events/{event_id}/recordings')
-    async def event_recordings(event_id: str):
+    async def event_recordings(event_id: str, ordinal: int | None = Query(None, ge=0, lt=SafetyStore.MAX_FRAMES)):
         try:
-            return await stored(recordings.references, event_id)
+            return await stored(recordings.references, event_id, ordinal)
         except ValueError:
             raise HTTPException(404, detail='safety_event_unavailable') from None
 

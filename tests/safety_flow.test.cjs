@@ -4,7 +4,9 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
 const event=(id,kind='sound_review',review='unreviewed')=>({id:id.repeat(32),kind,sound_kind:id==='a'?'crying':'glass_break',at:1800000000,
  simulated:false,camera:'cam_1111111111',camera_name:'合成客厅',message:'合成事件 '+id,review,announcement:{status:'not_requested'},frames:[]});
 function fixture(initial=[event('b'),event('a')]){
- let focused,events=structuredClone(initial),tick,heldRecording,recording=null,workerStatus='running',supervision=null,holdRetry=false,heldRetry,postureReview=null;
+ let focused,events=structuredClone(initial),tick,recording=null,workerStatus='running',supervision=null,holdRetry=false,heldRetry,postureReview=null;
+ let holdStatus=false,heldStatus,historyFailure=false;
+ const recordingReads=[];
  class Element{
   constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.dataset={};this.disabled=false;this.hidden=false;this._text='';}
   set textContent(value){this._text=String(value);this.children=[];}
@@ -27,12 +29,15 @@ function fixture(initial=[event('b'),event('a')]){
  const policy={enabled:true,announce:false,visual_review:false,sound_review:true,revision:1};
  const fetch=async(path,options={})=>{
   const body=options.body&&JSON.parse(options.body);calls.push({path,body});let data;
-  if(path.endsWith('/recordings'))return new Promise(resolve=>heldRecording=data=>resolve({ok:true,json:async()=>data}));
+  if(path.includes('/recordings'))return new Promise(resolve=>recordingReads.push(data=>resolve({ok:true,json:async()=>data})));
   if(path.endsWith('/retry')){if(holdRetry)return new Promise(resolve=>heldRetry=()=>resolve({ok:true,json:async()=>supervision}));return{ok:true,json:async()=>supervision};}
   if(path.endsWith('/posture')){assert.equal(body.expected_revision,policy.revision);policy.revision++;postureReview={...postureReview,camera:body.camera,state:body.camera?'waiting':'off'};data={camera:body.camera,revision:policy.revision};}
   else if(path.endsWith('/review')){const id=path.split('/').at(-2),current=events.find(e=>e.id===id);current.review=body.review;data=current;}
-  else if(path.endsWith('/events'))data={events};
-  else if(path==='/api/embodied/safety')data={policy,worker:{status:workerStatus,cameras:[],recording},supervision,visual_review:{available:false},sound_review:{available:false},capabilities:[],posture_review:postureReview};
+  else if(path.endsWith('/events')){if(historyFailure)return{ok:false,status:503};data={events};}
+  else if(path==='/api/embodied/safety'){
+   data={policy,worker:{status:workerStatus,cameras:[],recording},supervision,visual_review:{available:false},sound_review:{available:false},capabilities:[],posture_review:postureReview};
+   if(holdStatus)return new Promise(resolve=>heldStatus=ok=>resolve({ok,status:ok?200:503,json:async()=>structuredClone(data)}));
+  }
   else if(path==='/api/embodied/status')data={configured:true,owned:true,state:'live',safety_recording:recording};
   else data={};
   const snapshot=structuredClone(data);return{ok:true,json:async()=>snapshot};
@@ -50,7 +55,8 @@ function fixture(initial=[event('b'),event('a')]){
  return{root,calls,navigations,opened,context,by,rows,get focused(){return focused;},get events(){return events;},
   mount(options={}){return context.mountSafety(root,{go,onOpenRecording:(out,item)=>{out.replaceChildren();if(item)opened.push(item);},...options});},
   home(devices=[]){return context.mountHomeStatus(root,{api,go,devices});},
-  tick:async()=>{tick();await settle();},resolveRecording:data=>heldRecording(data),
+  tick:async()=>{tick();await settle();},resolveRecording:(data,index=-1)=>recordingReads.at(index)(data),
+  holdStatus(){holdStatus=true;},resolveStatus(ok){holdStatus=false;heldStatus(ok);},historyFailure(value){historyFailure=value;},
   recording(value){recording=value;},
   posture(value){postureReview=value;},
   monitoring(state,owner){workerStatus=state;supervision=owner;},holdRetry(){holdRetry=true;},resolveRetry(){heldRetry();},
@@ -64,6 +70,38 @@ test('a home incident keeps its exact identity through navigation into the revie
  const view=f.mount({initialEventId:f.navigations[0][1].eventId});await settle();
  assert.equal(f.by('h2','疑似哭声')?.textContent,'疑似哭声');assert.equal(f.rows().find(n=>n.attrs['aria-current']==='true')?.textContent.includes('疑似哭声'),true);
  assert.equal(f.calls.some(c=>c.path.endsWith('/recordings')||c.path.endsWith('/test')||c.body),false);view.dispose();
+});
+
+test('监测状态未返回或失败时，链接仍打开已存提醒并确认查看',async()=>{
+ const f=fixture(),id=f.events[1].id;
+ f.holdStatus();
+ const view=f.mount({initialEventId:id});await settle();
+ const heading=f.by('h2','疑似哭声');
+ assert(heading);assert.equal(f.focused,heading);
+ assert.equal(f.by('button','开启监测').disabled,true);
+ await f.tick();
+ assert.equal(f.calls.filter(call=>call.path==='/api/embodied/safety').length,1);
+ await f.by('button','我已查看').onclick();
+ assert.equal(f.events[1].review,'acknowledged');
+ assert(f.by('button','已查看'));
+ f.resolveStatus(false);await settle();
+ assert(f.by('p','暂时无法读取监测状态。'));
+ assert(f.by('h2','疑似哭声'));
+ await f.tick();
+ assert.equal(f.by('button','暂停监测').disabled,false);
+ assert(f.by('h2','疑似哭声'));
+ view.dispose();
+});
+
+test('记录读取失败保留已打开的提醒，刷新记录只读取记录接口',async()=>{
+ const f=fixture(),view=f.mount({initialEventId:f.events[1].id});await settle();
+ f.historyFailure(true);const previous=f.calls.length;
+ await f.by('button','刷新记录').onclick();
+ assert.deepEqual(f.calls.slice(previous).map(call=>call.path),['/api/embodied/safety/events']);
+ assert(f.by('p','暂时无法刷新，显示上次读取的提醒。'));
+ assert(f.by('h2','疑似哭声'));
+ assert.equal(f.by('button','暂停监测').disabled,false);
+ view.dispose();
 });
 
 test('sustained infant cry remains distinguishable on home, event list and detail',async()=>{
@@ -95,6 +133,26 @@ test('verified sound-search views join the same incident in capture order and re
   [[0],[2,1]].map(group=>group.map(i=>'/api/embodied/safety/events/'+sound.id+'/frames/'+i)));
  assert.equal(f.focused,f.by('button','查看附近录像'));
  assert(!f.calls.some(call=>call.path.endsWith('/recordings')||call.body));
+ view.dispose();
+});
+
+test('环视回看按当前关键帧查找，迟到的另一段回看不替换它',async()=>{
+ const sound={...event('a'),frames:[{ordinal:0,at:1800000000},{ordinal:1,at:1800000006},{ordinal:2,at:1800000018}],
+  sound_search_views:[{step:1,ordinal:1},{step:2,ordinal:2}]};
+ const f=fixture([sound]),view=f.mount({initialEventId:sound.id});await settle();
+ const frame=ordinal=>all(f.root).find(n=>n.attrs['data-recording-frame']===String(ordinal));
+ assert(!frame(0));assert(frame(1)&&frame(2));
+ assert(!f.calls.some(call=>call.path.includes('/recordings')));
+ frame(1).onclick();await settle();frame(2).onclick();await settle();
+ const path='/api/embodied/safety/events/'+sound.id+'/recordings?ordinal=';
+ assert.deepEqual(f.calls.filter(call=>call.path.includes('/recordings')).map(call=>call.path),[path+'1',path+'2']);
+ assert.equal(frame(2).attrs['aria-pressed'],'true');assert.equal(frame(1).attrs['aria-pressed'],'false');
+ const latest={camera_name:'示例环视录像',request:{time_range:{start:'selected'}}};
+ f.resolveRecording({event_id:sound.id,frame_ordinal:2,recordings:[latest]});await settle();
+ f.resolveRecording({event_id:sound.id,frame_ordinal:1,recordings:[{camera_name:'旧视角'}]},0);await settle();
+ assert.deepEqual(f.opened,[latest]);
+ frame(2).focus();f.events[0].review='acknowledged';await f.tick();
+ assert.equal(f.focused,frame(2));assert.equal(frame(2).attrs['aria-pressed'],'true');
  view.dispose();
 });
 

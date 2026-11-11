@@ -1,7 +1,8 @@
 /* Local safety review. Untrusted names and observations are always text nodes. */
 import {soundReviewNames as soundNames,isSafetyOutputTest as isOutputTest,safetyEventTitle as eventTitle,isRapidMovementReview} from './safety-event-labels.js';
 export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiveSettings=()=>go('Settings'),initialEventId=null,onEventSelected=()=>{}}={}){
- const base='/api/embodied/safety';let alive=true,report=null,busy=false,version=0,lastEvents='',lastDetail='',selected=null,selectionVersion=0,timer,events=[],historyLoaded=false,retrying=false,retryController=null,retryTimer=null;
+ const base='/api/embodied/safety';let alive=true,report=null,busy=false,lastEvents='',lastDetail='',selected=null,selectionVersion=0,timer,events=[],historyLoaded=false,statusFresh=false,retrying=false,retryController=null,retryTimer=null;
+ const statusFeed={read:null},historyFeed={read:null};
  const validEventId=id=>typeof id==='string'&&/^[a-f0-9]{32}$/.test(id)?id:null;let requested=validEventId(initialEventId);
  const eventTime=event=>Number.isFinite(event.captured_at)?event.captured_at:event.at;
  const el=(tag,text,attrs={})=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;for(const[k,v]of Object.entries(attrs))n.setAttribute(k,v);return n;};
@@ -11,7 +12,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  const root=el('div',null,{class:'safety-page','data-detail-open':'false'});container.append(root);
  if(!document.getElementById('safety-style'))document.head.append(el('link',null,{id:'safety-style',rel:'stylesheet',href:'/static/safety.css'}));
  const status=el('p','正在读取监测状态…',{role:'status','aria-live':'polite',tabindex:'-1'}),enable=button('开启监测',()=>change('enabled')),announce=button('开启语音提醒',()=>change('announce'));
- const test=button('试听跌倒提醒',async()=>{if(busy)return;busy=true;test.disabled=true;status.textContent='正在发送测试提醒…';try{await api('/test',{});await refresh();}catch{status.textContent='试听未发送，请检查播报音箱连接。';}finally{busy=false;test.disabled=false;}});
+ const test=button('试听跌倒提醒',async()=>{if(!alive||busy||!statusFresh)return;busy=true;availability();status.textContent='正在发送测试提醒…';try{await api('/test',{});await Promise.all([refreshStatus(true),refreshHistory(true)]);}catch{if(alive)status.textContent='试听未发送，请检查播报音箱连接。';}finally{busy=false;if(alive)availability();}});
  const intro=add(el('section',null,{class:'safety-intro'}),el('h2','家中提醒'),el('p','发现疑似跌倒时记录事件，按需通过选定音箱提醒家人。'),status,
    add(el('div',null,{class:'safety-actions'}),enable,announce,test,button('选择播报音箱',()=>go('Settings'))),
    el('p','此功能仍在试用，可能漏报或误报。请保持日常照护。事件画面仅保存在本机，保留 30 天。',{class:'caption'}));
@@ -35,17 +36,30 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    add(el('div',null,{class:'safety-actions'}),soundToggle,soundSearch),soundSearchNote,
    el('p','声音仅在本机内存处理。暂停声音输入会同时暂停复核。',{class:'caption'}));
  const capabilities=el('section',null,{class:'safety-capabilities','aria-label':'监测能力'}),list=el('section',null,{class:'safety-events','aria-label':'预警记录'}),detail=el('section',null,{class:'safety-detail','aria-label':'事件详情'});
- const detailBody=el('div'),recordings=el('div',null,{class:'safety-recording','aria-label':'事件附近录像'}),back=button('全部提醒',backToList);back.className='safety-back';detail.append(back,detailBody,recordings);detail.hidden=true;
- const stopRecording=()=>{try{const pending=onOpenRecording(recordings,null);pending?.catch?.(()=>{});}catch{recordings.replaceChildren();}};
+ const detailBody=el('div'),detailFooter=el('div'),recordings=el('section',null,{class:'safety-recording','aria-label':'事件附近录像',tabindex:'-1'}),back=button('全部提醒',backToList);
+ back.className='safety-back';detail.append(back,detailBody,recordings,detailFooter);detail.hidden=true;
+ const frameButtons=new Map();
+ let selectedFrame=null;
+ function selectRecordingFrame(ordinal){
+  selectedFrame=ordinal==null?null:String(ordinal);
+  for(const [key,control] of frameButtons)control.setAttribute('aria-pressed',String(key===selectedFrame));
+ }
+ const stopRecording=()=>{selectRecordingFrame(null);try{const pending=onOpenRecording(recordings,null);pending?.catch?.(()=>{});}catch{recordings.replaceChildren();}};
  const limits=add(el('details',null,{class:'safety-limits'}),el('summary','监测范围与限制'),capabilities);
- const historyView=el('div',null,{class:'safety-history'}),settings=add(el('details',null,{class:'safety-settings'}),el('summary','监测设置'),intro,visual,sound,limits);historyView.append(add(el('div',null,{class:'safety-list-panel'}),add(el('div',null,{class:'safety-actions'}),el('h2','近期提醒'),button('刷新记录',()=>refresh())),list),detail);
+ const historyStatus=el('p','正在读取提醒…',{class:'safety-history-status',role:'status'});
+ const historyView=el('div',null,{class:'safety-history'}),settings=add(el('details',null,{class:'safety-settings'}),el('summary','监测设置'),intro,visual,sound,limits);historyView.append(historyStatus,add(el('div',null,{class:'safety-list-panel'}),add(el('div',null,{class:'safety-actions'}),el('h2','近期提醒'),button('刷新记录',()=>refreshHistory())),list),detail);
  const reconnect=button('重试连接',()=>retryConnection()),cameraCheck=button('查看摄像头',()=>go('Cameras')),recoveryActions=add(el('div',null,{class:'safety-actions',role:'group','aria-label':'监测连接恢复'}),reconnect,cameraCheck);recoveryActions.hidden=true;root.append(status,recoveryActions,historyView,settings);
  const reviewNames={unreviewed:'待查看',acknowledged:'已查看',false_alarm:'已标记误报'};
  const eventRows=new Map();
  const audioNames={not_requested:'未请求播报',requesting:'正在发送播报',accepted:'音箱已接受，实际声音待确认',unconfirmed:'播报结果待确认',paused:'安静模式，未播报',busy:'音箱忙，未播报',unavailable:'播报不可用',cancelled:'已取消播报',interrupted:'播报已中断'};
- function availability(){enable.disabled=announce.disabled=busy;visualToggle.disabled=busy||(!report?.policy?.visual_review&&(!report?.policy?.enabled||!report?.visual_review?.available));soundToggle.disabled=busy||(!report?.policy?.sound_review&&(!report?.policy?.enabled||!report?.sound_review?.available));reconnect.disabled=busy||retrying||!report?.supervision?.recovery?.can_retry;
-  soundSearch.disabled=busy||!report?.sound_search&&!report?.policy?.enabled;
-  const posture=report?.posture_review;postureSelect.disabled=busy||(!posture?.camera&&!posture?.cameras?.length);
+ function availability(){
+  const disabled=busy||!statusFresh;
+  enable.disabled=announce.disabled=test.disabled=disabled;
+  visualToggle.disabled=disabled||(!report?.policy?.visual_review&&(!report?.policy?.enabled||!report?.visual_review?.available));
+  soundToggle.disabled=disabled||(!report?.policy?.sound_review&&(!report?.policy?.enabled||!report?.sound_review?.available));
+  reconnect.disabled=disabled||retrying||!report?.supervision?.recovery?.can_retry;
+  soundSearch.disabled=disabled||!report?.sound_search&&!report?.policy?.enabled;
+  const posture=report?.posture_review;postureSelect.disabled=disabled||(!posture?.camera&&!posture?.cameras?.length);
  }
  function renderPosture(){
   const posture=report?.posture_review;postureField.hidden=!posture;if(!posture)return;
@@ -64,31 +78,31 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  }
  async function selectPostureCamera(){
   const revision=report?.policy?.revision,value=postureSelect.value,posture=report?.posture_review;
-  if(!alive||busy||!Number.isInteger(revision)||!posture||value&&!posture.cameras.some(row=>row.id===value))return;
+  if(!alive||busy||!statusFresh||!Number.isInteger(revision)||!posture||value&&!posture.cameras.some(row=>row.id===value))return;
   const camera=value||null,focused=document.activeElement===postureSelect,previous=report;
   busy=true;availability();postureNote.textContent='正在保存…';
-  try{await api('/posture',{camera,expected_revision:revision});await refresh();if(alive&&report===previous)postureNote.textContent='已保存，等待状态更新。';}
-  catch{await refresh();if(alive&&(report===previous||report.posture_review?.camera!==camera||report.posture_review?.state==='source_changed'))postureNote.textContent='设置未确认，请重新选择。';}
+  try{await api('/posture',{camera,expected_revision:revision});await refreshStatus(true);if(alive&&report===previous)postureNote.textContent='已保存，等待状态更新。';}
+  catch{await refreshStatus(true);if(alive&&(report===previous||report.posture_review?.camera!==camera||report.posture_review?.state==='source_changed'))postureNote.textContent='设置未确认，请重新选择。';}
   finally{busy=false;if(alive){availability();if(focused&&(document.activeElement===document.body||document.activeElement===postureSelect))postureSelect.focus({preventScroll:true});}}
  }
  async function retryConnection(){
   const revision=report?.supervision?.policy?.revision;
-  if(!alive||busy||retrying||!report?.supervision?.recovery?.can_retry||!Number.isInteger(revision))return;
+  if(!alive||busy||!statusFresh||retrying||!report?.supervision?.recovery?.can_retry||!Number.isInteger(revision))return;
   const focused=recoveryActions.contains(document.activeElement);retrying=true;availability();recoveryActions.setAttribute('aria-busy','true');status.textContent='正在重试连接…';if(focused)status.focus({preventScroll:true});
   const controller=typeof AbortController==='function'?new AbortController():null,timeout=controller?setTimeout(()=>controller.abort(),5000):null;retryController=controller;retryTimer=timeout;
-  try{await api('/retry',{expected_revision:revision},controller?{signal:controller.signal}:{});if(alive)await refresh();}
-  catch{if(alive){status.textContent='暂未确认连接结果，正在读取状态…';await refresh();}}
+  try{await api('/retry',{expected_revision:revision},controller?{signal:controller.signal}:{});if(alive)await refreshStatus(true);}
+  catch{if(alive){status.textContent='暂未确认连接结果，正在读取状态…';await refreshStatus(true);}}
   finally{clearTimeout(timeout);retryTimer=null;retryController=null;retrying=false;if(alive){recoveryActions.setAttribute('aria-busy','false');availability();}}
  }
  async function change(key){
-  if(busy||!report)return;
+  if(!alive||busy||!statusFresh||!report)return;
   const search=key==='sound_search',focused=search&&document.activeElement===soundSearch;
   if(search&&(soundSearch.hidden||soundSearch.disabled))return;
   busy=true;availability();
   try{
    if(search)await api('/sound-search',{enabled:!report.sound_search,expected_revision:report.policy.revision});
    else await api('/policy',{...report.policy,[key]:!report.policy[key]});
-   await refresh();
+   await refreshStatus(true);
   }catch{if(alive)(search?soundStatus:status).textContent='设置未保存，请刷新后重试。';}
   finally{
    busy=false;
@@ -96,7 +110,9 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
        (document.activeElement===document.body||document.activeElement===soundSearch))soundSearch.focus({preventScroll:true});}
   }
  }
- async function refresh(){if(!alive)return;const epoch=++version;try{const [next,history]=await Promise.all([api(''),api('/events')]);if(!alive||epoch!==version)return;report=next;
+ function renderStatus(next){
+   if(!next?.policy||!next.worker||!Array.isArray(next.capabilities))throw Error('unavailable');
+   report=next;statusFresh=true;
    enable.textContent=next.policy.enabled?'暂停监测':'开启监测';enable.setAttribute('role','switch');enable.setAttribute('aria-checked',String(next.policy.enabled));
    announce.textContent=next.policy.announce?'关闭语音提醒':'开启语音提醒';announce.setAttribute('role','switch');announce.setAttribute('aria-checked',String(next.policy.announce));
    const model=next.visual_review||{};visualToggle.textContent=next.policy.visual_review?'关闭画面复核':'开启画面复核';visualToggle.setAttribute('aria-checked',String(Boolean(next.policy.visual_review)));visualToggle.disabled=busy||(!next.policy.visual_review&&(!next.policy.enabled||!model.available));
@@ -132,7 +148,10 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
     }
     capabilities.append(add(el('article'),el('strong',c.name),el('span',label,{class:'caption'}),el('p',descriptions[c.id]||c.basis,{class:'caption'})));
    }
-   const fingerprint=JSON.stringify(history.events);historyLoaded=true;events=history.events;historyView.dataset.empty=String(!events.length);
+ }
+ function renderHistory(history){
+   if(!Array.isArray(history?.events))throw Error('unavailable');
+   const fingerprint=JSON.stringify(history.events);historyLoaded=true;events=history.events;historyView.dataset.empty=String(!events.length);historyStatus.hidden=true;
    if(fingerprint!==lastEvents){lastEvents=fingerprint;list.replaceChildren();eventRows.clear();
      if(!events.length)list.append(el('p','暂无提醒记录',{class:'product-empty'}));
      for(const e of events){const row=button('',()=>choose(e.id));row.className='safety-event';row.setAttribute('aria-current',String(e.id===selected));eventRows.set(e.id,row);row.append(el('strong',eventTitle(e)),el('span',(e.camera_name?e.camera_name+' · ':'')+new Date(eventTime(e)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})),el('span',reviewNames[e.review]||'待查看'));list.append(row);}
@@ -140,26 +159,74 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
      else if(selected){const current=events.find(e=>e.id===selected);if(current)show(current);else missingEvent(selected);}
      else if(events.length)show(events.find(e=>e.review==='unreviewed')||events[0]);
    }
- }catch{if(alive&&epoch===version)status.textContent='预警服务暂时不可用，请刷新重试。';}}
+ }
+ function retireRead(feed){
+  const read=feed.read;
+  if(!read)return;
+  feed.read=null;
+  clearTimeout(read.timeout);
+  read.controller?.abort();
+ }
+ function readFeed(feed,path,render,unavailable,replace){
+  if(!alive)return;
+  if(feed.read&&!replace)return feed.read.done;
+  retireRead(feed);
+  const controller=typeof AbortController==='function'?new AbortController():null;
+  const read={controller,timeout:controller?setTimeout(()=>controller.abort(),6500):null};
+  feed.read=read;
+  const owns=()=>alive&&feed.read===read;
+  read.done=api(path,undefined,controller?{signal:controller.signal}:{})
+   .then(data=>{if(owns())render(data);})
+   .catch(()=>{if(owns())unavailable();})
+   .finally(()=>{clearTimeout(read.timeout);if(feed.read===read)feed.read=null;});
+  return read.done;
+ }
+ function refreshStatus(replace=false){
+  return readFeed(statusFeed,'',renderStatus,()=>{
+   const focused=recoveryActions.contains(document.activeElement);
+   statusFresh=false;recoveryActions.hidden=true;availability();
+   status.textContent='暂时无法读取监测状态。';
+   if(focused)status.focus({preventScroll:true});
+  },replace);
+ }
+ function refreshHistory(replace=false){
+  return readFeed(historyFeed,'/events',renderHistory,()=>{
+   historyStatus.hidden=false;
+   historyStatus.textContent=historyLoaded?'暂时无法刷新，显示上次读取的提醒。':'暂时无法读取提醒，请重试。';
+  },replace);
+ }
+ function refresh(){void refreshStatus();void refreshHistory();}
  function backToList(){selectionVersion++;stopRecording();recordings.replaceChildren();root.dataset.detailOpen='false';if(!events.length){selected=null;detail.hidden=true;}onEventSelected(null);eventRows.get(selected)?.focus?.({preventScroll:true});}
  function selectEvent(id){if(!alive||!validEventId(id))return;requested=id;if(!historyLoaded)return;requested=null;const event=events.find(e=>e.id===id);if(event)show(event,{focus:true});else missingEvent(id,{focus:true});}
  function choose(id){selectEvent(id);onEventSelected(id);}
  function focusDetail(heading){root.dataset.detailOpen='true';heading.focus?.({preventScroll:true});detail.scrollIntoView?.({block:'start',behavior:'instant'});}
- function missingEvent(id,{focus=false}={}){selected=id;lastDetail='';selectionVersion++;stopRecording();recordings.replaceChildren();detail.hidden=false;for(const row of eventRows.values())row.setAttribute('aria-current','false');const heading=el('h2','这条提醒已不在记录中',{tabindex:'-1'});detailBody.replaceChildren(heading,button('查看近期提醒',()=>{const current=events.find(e=>e.review==='unreviewed')||events[0];if(current)choose(current.id);else backToList();}));if(focus)focusDetail(heading);}
- function frameGrid(event,frames){
+ function missingEvent(id,{focus=false}={}){selected=id;lastDetail='';selectionVersion++;stopRecording();recordings.replaceChildren();frameButtons.clear();detailFooter.replaceChildren();detail.hidden=false;for(const row of eventRows.values())row.setAttribute('aria-current','false');const heading=el('h2','这条提醒已不在记录中',{tabindex:'-1'});detailBody.replaceChildren(heading,button('查看近期提醒',()=>{const current=events.find(e=>e.review==='unreviewed')||events[0];if(current)choose(current.id);else backToList();}));if(focus)focusDetail(heading);}
+ const frameTime=frame=>new Date(frame.at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'});
+ function frameGrid(event,frames,lookaround=false){
    const grid=el('div',null,{class:'safety-frames'});
    const sequence=isRapidMovementReview(event)&&frames.length===4;
    if(sequence)grid.dataset.sequence='rapid';
    for(const frame of frames){
-     const time=new Date(frame.at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'});
+     const time=frameTime(frame);
      const phase=sequence?['动作前','动作前','动作中','动作后段'][frame.ordinal]:null;
      const caption=phase?phase+' · '+(frame.at-frames[0].at).toFixed(2)+' 秒':time;
-     grid.append(add(el('figure'),el('img',null,{src:base+'/events/'+event.id+'/frames/'+frame.ordinal,alt:(phase||time)+'的关键帧',loading:'lazy'}),el('figcaption',caption)));
+     const playable=lookaround&&event.simulated===false&&event.camera&&Number.isInteger(frame.ordinal)&&frame.ordinal>=0;
+     const image=el('img',null,{src:base+'/events/'+event.id+'/frames/'+frame.ordinal,alt:playable?'':(phase||time)+'的关键帧',loading:'lazy'});
+     if(playable){
+       const play=button('',()=>void openRecordings(event,frame));
+       play.className='safety-frame-play';
+       play.setAttribute('aria-label','回看 '+time+' 附近录像');
+       play.setAttribute('aria-pressed',String(selectedFrame===String(frame.ordinal)));
+       play.setAttribute('data-recording-frame',String(frame.ordinal));
+       play.append(image,add(el('span',null,{class:'safety-frame-caption'}),el('span',time),el('span','回看')));
+       frameButtons.set(String(frame.ordinal),play);
+       grid.append(add(el('figure'),play));
+     }else grid.append(add(el('figure'),image,el('figcaption',caption)));
    }
    return grid;
  }
- function soundFrameGroup(title,event,frames){
-   return add(el('section',null,{class:'safety-sound-evidence'}),el('h3',title),frameGrid(event,frames));
+ function soundFrameGroup(title,event,frames,lookaround=false){
+   return add(el('section',null,{class:'safety-sound-evidence'}),el('h3',title),frameGrid(event,frames,lookaround));
  }
  function show(event,{focus=false}={}){
    const fingerprint=JSON.stringify(event);
@@ -167,9 +234,10 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    lastDetail=fingerprint;
    const focusedReview=selected===event.id&&document.activeElement&&detailBody.contains(document.activeElement)?document.activeElement.getAttribute('data-review'):null;
    const focusedRecording=selected===event.id&&document.activeElement===detailBody.querySelector('.primary');
+   const focusedFrame=selected===event.id&&detailBody.contains(document.activeElement)?document.activeElement.getAttribute('data-recording-frame'):null;
    const extraOpen=selected===event.id&&detailBody.querySelector('.safety-extra-frames')?.open;
    if(selected!==event.id){selectionVersion++;stopRecording();recordings.replaceChildren();}
-   selected=event.id;detail.hidden=false;
+   selected=event.id;detail.hidden=false;frameButtons.clear();
    const heading=el('h2',eventTitle(event),{tabindex:'-1'});
    const rapid=isRapidMovementReview(event),review=reviewNames[event.review]||'待查看';
    const source=event.camera?(event.camera_name||'摄像头记录')+' · '+new Date(eventTime(event)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'';
@@ -188,11 +256,11 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    const actions=el('div',null,{class:'safety-actions'});
    let restoreFocus;
    if(!event.simulated&&event.camera){const recording=button('查看附近录像',()=>void openRecordings(event));recording.className='primary';actions.append(recording);if(focusedRecording)restoreFocus=recording;}
-   for(const[value,label]of [['acknowledged',event.review==='acknowledged'?'已查看':'我已查看'],['false_alarm','标记误报']]){const action=button(label,async()=>{try{await api('/events/'+event.id+'/review',{review:value});await refresh();}catch{status.textContent='标记未保存，请重试。';}});action.setAttribute('data-review',value);action.setAttribute('aria-pressed',String(event.review===value));if(value===focusedReview)restoreFocus=action;actions.append(action);}
+   for(const[value,label]of [['acknowledged',event.review==='acknowledged'?'已查看':'我已查看'],['false_alarm','标记误报']]){const action=button(label,async()=>{try{await api('/events/'+event.id+'/review',{review:value});await refreshHistory(true);}catch{if(alive){historyStatus.hidden=false;historyStatus.textContent='标记未保存，请重试。';}}});action.setAttribute('data-review',value);action.setAttribute('aria-pressed',String(event.review===value));if(value===focusedReview)restoreFocus=action;actions.append(action);}
    if(!rapid)detailBody.append(actions);
    if(searchFrames.length){
      if(eventFrames.length)detailBody.append(soundFrameGroup('异响时的画面',event,eventFrames));
-     detailBody.append(soundFrameGroup('环视画面',event,searchFrames));
+     detailBody.append(soundFrameGroup('环视画面',event,searchFrames,true));
    }else if(eventFrames.length){
      detailBody.append(el('h3','关键帧'));
      if(event.visual_kind==='prone_posture'&&event.frames.length===8){
@@ -203,21 +271,32 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
      }else detailBody.append(frameGrid(event,eventFrames));
    }else detailBody.append(el('p',isOutputTest(event)?'播报测试不采集摄像头画面。':'没有可用关键帧。',{class:'caption'}));
    if(rapid)detailBody.append(actions);
-   const exportEvent=button('导出事件记录',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(event,null,2)],{type:'application/json'}));const a=el('a',null,{href:url,download:'Friday-safety-'+event.id+'.json'});a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});exportEvent.className='text-button safety-export';detailBody.append(exportEvent);
-   if(focus)focusDetail(heading);else restoreFocus?.focus({preventScroll:true});
+   const exportEvent=button('导出事件记录',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(event,null,2)],{type:'application/json'}));const a=el('a',null,{href:url,download:'Friday-safety-'+event.id+'.json'});a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});exportEvent.className='text-button safety-export';detailFooter.replaceChildren(exportEvent);
+   if(focus)focusDetail(heading);else (restoreFocus||frameButtons.get(focusedFrame))?.focus({preventScroll:true});
  }
- async function openRecordings(event){
-  const token=++selectionVersion;stopRecording();recordings.replaceChildren(el('p','正在查找对应录像…',{role:'status','aria-live':'polite'}));
+ async function openRecordings(event,frame=null){
+  if(!alive||selected!==event.id)return;
+  const token=++selectionVersion,owns=()=>alive&&selected===event.id&&token===selectionVersion;
+  const moment=frame?frameTime(frame):null;
+  stopRecording();selectRecordingFrame(frame?.ordinal);
+  recordings.setAttribute('aria-label',moment?moment+' 附近录像':'事件附近录像');
+  recordings.replaceChildren(el('p',moment?'正在查找 '+moment+' 附近的录像…':'正在查找对应录像…',{role:'status'}));
+  recordings.focus({preventScroll:true});recordings.scrollIntoView?.({block:'nearest',behavior:'instant'});
+  const unavailable=()=>{
+   if(owns())recordings.replaceChildren(el('p','暂时无法读取录像。',{role:'status'}),button('重试回看',()=>void openRecordings(event,frame)));
+  };
+  const play=async item=>{if(owns())try{await onOpenRecording(recordings,item);}catch{unavailable();}};
   try{
-   const found=await api('/events/'+event.id+'/recordings');if(!alive||selected!==event.id||token!==selectionVersion)return;
-   if(found.recordings?.length===1){await onOpenRecording(recordings,found.recordings[0]);return;}
+   const found=await api('/events/'+event.id+'/recordings'+(frame?'?ordinal='+frame.ordinal:''));if(!owns())return;
+   if(frame&&(found.event_id!==event.id||found.frame_ordinal!==frame.ordinal))throw Error('unavailable');
+   if(found.recordings?.length===1){await play(found.recordings[0]);return;}
    recordings.replaceChildren();
-   if(found.recordings?.length){recordings.append(el('h3','选择录像来源'));for(const item of found.recordings)recordings.append(button(item.camera_name,()=>onOpenRecording(recordings,item)));return;}
-   const reasons={event_source_unverified:'这条记录缺少可核对的镜头来源，可查看已保存的关键帧。',event_time_unavailable:'这条记录的画面时间不可用，可查看已保存的关键帧。',event_recording_not_applicable:'这条记录不关联摄像头录像。'};
+   if(found.recordings?.length){recordings.append(el('h3','选择录像来源'));for(const item of found.recordings)recordings.append(button(item.camera_name,()=>void play(item)));return;}
+   const reasons={event_source_unverified:'这条记录缺少可核对的镜头来源，可查看已保存的关键帧。',event_time_unavailable:'这条记录的画面时间不可用，可查看已保存的关键帧。',event_recording_not_applicable:'这条记录不关联摄像头录像。',event_frame_unavailable:'这张画面暂时无法关联录像。'};
    recordings.append(el('p',reasons[found.code]||'先在录像设置中对应摄像头并核对时间。',{role:'status'}));
    if(!reasons[found.code])recordings.append(button('录像设置',onArchiveSettings));
-  }catch{if(alive&&selected===event.id&&token===selectionVersion)recordings.replaceChildren(el('p','录像暂不可读取，请刷新记录后重试。',{role:'status'}));}
+  }catch{unavailable();}
  }
- void refresh();timer=setInterval(()=>{if(!busy)void refresh();},5000);
- return{selectEvent,dispose(){alive=false;version++;selectionVersion++;clearInterval(timer);clearTimeout(retryTimer);retryController?.abort();stopRecording();root.remove();}};
+ availability();refresh();timer=setInterval(()=>{if(!busy)refresh();},5000);
+ return{selectEvent,dispose(){alive=false;retireRead(statusFeed);retireRead(historyFeed);selectionVersion++;clearInterval(timer);clearTimeout(retryTimer);retryController?.abort();stopRecording();root.remove();}};
 }

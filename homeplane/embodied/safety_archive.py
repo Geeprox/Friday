@@ -11,11 +11,16 @@ class SafetyArchive:
     def __init__(self, store, archive):
         self.store, self.archive = store, archive
 
-    def references(self, event_id):
-        event = self.store.event(event_id)
+    def references(self, event_id, ordinal=None):
+        event, frame_at = self.store.recording_target(event_id, ordinal)
+
         def answer(code, recordings=()):
-            return dict(event_id=event_id, code=code, recordings=list(recordings),
-                        source_scan_attempted=False, media_read_attempted=False)
+            value = dict(event_id=event_id, code=code, recordings=list(recordings),
+                         source_scan_attempted=False, media_read_attempted=False)
+            if ordinal is not None:
+                value['frame_ordinal'] = ordinal
+            return value
+
         if event.get('simulated') is not False or event.get('kind') not in {'fall', 'visual_review', 'sound_review'}:
             return answer('event_recording_not_applicable')
         source = event.get('camera_source_context')
@@ -26,6 +31,16 @@ class SafetyArchive:
         captured = event.get('captured_at')
         if type(captured) not in (int, float) or not math.isfinite(captured):
             return answer('event_time_unavailable')
+        if ordinal is not None:
+            views = event.get('sound_search_views')
+            if (type(ordinal) is not int or event['kind'] != 'sound_review' or not isinstance(views, list) or
+                    not any(isinstance(view, dict) and type(view.get('ordinal')) is int
+                            and view['ordinal'] == ordinal and type(view.get('step')) is int
+                            and 1 <= view['step'] <= 3 for view in views)):
+                return answer('event_frame_unavailable')
+            if type(frame_at) not in (int, float) or not math.isfinite(frame_at) or frame_at <= captured:
+                return answer('event_frame_unavailable')
+            captured = frame_at
         try:
             stamp = datetime.fromtimestamp(captured, UTC)
             span = dict(start=stamp-timedelta(seconds=15), end=stamp+timedelta(seconds=15))
