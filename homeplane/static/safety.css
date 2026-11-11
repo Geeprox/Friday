@@ -17,6 +17,15 @@
 .safety-event[aria-current=true]{background:var(--soft,#eae9e5);border-color:var(--text,#383936)}
 .safety-back{display:none}
 .safety-export{margin-block-start:16px}
+.safety-posture{display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,240px);align-items:center;gap:6px 16px;padding-block:16px 0;margin-block-start:16px;border-block-start:1px solid var(--line,#deded9)}
+.safety-posture[hidden]{display:none}
+.safety-posture label{font-size:16px;font-weight:600}
+.safety-posture select{inline-size:100%;min-inline-size:0;min-block-size:44px;font-size:16px}
+.safety-posture p{grid-column:1/-1;margin:0;min-block-size:1.5em}
+.safety-extra-frames{margin-block-start:12px}
+.safety-extra-frames summary{padding-block:10px;cursor:pointer}
+.safety-extra-frames[open] summary{margin-block-end:8px}
+@media(max-width:480px){.safety-posture{grid-template-columns:minmax(0,1fr);gap:8px}}
 @media(max-width:1050px){
  .safety-page .safety-history{grid-template-columns:minmax(0,1fr)}
  .safety-page .safety-detail{border-inline-start:0;padding:0}

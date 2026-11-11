@@ -4,7 +4,7 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
 const event=(id,kind='sound_review',review='unreviewed')=>({id:id.repeat(32),kind,sound_kind:id==='a'?'crying':'glass_break',at:1800000000,
  simulated:false,camera:'cam_1111111111',camera_name:'合成客厅',message:'合成事件 '+id,review,announcement:{status:'not_requested'},frames:[]});
 function fixture(initial=[event('b'),event('a')]){
- let focused,events=structuredClone(initial),tick,heldRecording,recording=null,workerStatus='running',supervision=null,holdRetry=false,heldRetry;
+ let focused,events=structuredClone(initial),tick,heldRecording,recording=null,workerStatus='running',supervision=null,holdRetry=false,heldRetry,postureReview=null;
  class Element{
   constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.dataset={};this.disabled=false;this.hidden=false;this._text='';}
   set textContent(value){this._text=String(value);this.children=[];}
@@ -29,9 +29,10 @@ function fixture(initial=[event('b'),event('a')]){
   const body=options.body&&JSON.parse(options.body);calls.push({path,body});let data;
   if(path.endsWith('/recordings'))return new Promise(resolve=>heldRecording=data=>resolve({ok:true,json:async()=>data}));
   if(path.endsWith('/retry')){if(holdRetry)return new Promise(resolve=>heldRetry=()=>resolve({ok:true,json:async()=>supervision}));return{ok:true,json:async()=>supervision};}
-  if(path.endsWith('/review')){const id=path.split('/').at(-2),current=events.find(e=>e.id===id);current.review=body.review;data=current;}
+  if(path.endsWith('/posture')){assert.equal(body.expected_revision,policy.revision);policy.revision++;postureReview={...postureReview,camera:body.camera,state:body.camera?'waiting':'off'};data={camera:body.camera,revision:policy.revision};}
+  else if(path.endsWith('/review')){const id=path.split('/').at(-2),current=events.find(e=>e.id===id);current.review=body.review;data=current;}
   else if(path.endsWith('/events'))data={events};
-  else if(path==='/api/embodied/safety')data={policy,worker:{status:workerStatus,cameras:[],recording},supervision,visual_review:{available:false},sound_review:{available:false},capabilities:[]};
+  else if(path==='/api/embodied/safety')data={policy,worker:{status:workerStatus,cameras:[],recording},supervision,visual_review:{available:false},sound_review:{available:false},capabilities:[],posture_review:postureReview};
   else if(path==='/api/embodied/status')data={configured:true,owned:true,state:'live',safety_recording:recording};
   else data={};
   const snapshot=structuredClone(data);return{ok:true,json:async()=>snapshot};
@@ -51,6 +52,7 @@ function fixture(initial=[event('b'),event('a')]){
   home(devices=[]){return context.mountHomeStatus(root,{api,go,devices});},
   tick:async()=>{tick();await settle();},resolveRecording:data=>heldRecording(data),
   recording(value){recording=value;},
+  posture(value){postureReview=value;},
   monitoring(state,owner){workerStatus=state;supervision=owner;},holdRetry(){holdRetry=true;},resolveRetry(){heldRetry();},
  };
 }
@@ -76,6 +78,35 @@ test('sustained infant cry remains distinguishable on home, event list and detai
  await f.by('button','我已查看').onclick();
  assert.equal(f.events.find(e=>e.id===sustained.id).review,'acknowledged');
  view.dispose();
+});
+
+test('a replaced posture camera needs a fresh selection and keeps its field through refresh',async()=>{
+ const f=fixture([]),id='cam_'+'a'.repeat(10);f.posture({camera:id,state:'source_changed',cameras:[{id,name:'照护镜头'}]});
+ const view=f.mount();await settle();
+ const select=all(f.root).find(n=>n.attrs.id==='safety-posture-camera');
+ assert.equal(select.value,'previous');assert.equal(select.children[1].disabled,true);
+ select.focus();select.value=id;select.onchange();await settle();
+ assert.deepEqual(f.calls.find(c=>c.path.endsWith('/posture')).body,{camera:id,expected_revision:1});
+ assert.equal(select.value,id);assert.equal(f.focused,select);
+ assert(f.by('p','等待这台摄像头的清晰画面。'));
+ const options=[...select.children];await f.tick();assert.deepEqual(select.children,options);
+ select.value='';select.onchange();await settle();assert.equal(f.calls.filter(c=>c.path.endsWith('/posture')).at(-1).body.camera,null);
+ view.dispose();
+});
+
+test('a posture candidate opens its own keyframes without implying a speaker action',async()=>{
+ const prone={...event('a','visual_review'),visual_kind:'prone_posture',frames:Array.from({length:8},(_,ordinal)=>({ordinal,at:1800000000+ordinal}))};
+ const f=fixture([prone]),home=f.home();await settle();
+ const notice=all(f.root).find(n=>n.attrs.class==='home-attention-item'&&n.textContent.includes('疑似趴卧'));
+ assert(notice);notice.onclick();assert.equal(f.navigations[0][1].eventId,prone.id);home.dispose();
+ const view=f.mount({initialEventId:prone.id});await settle();
+ assert(f.by('h2','疑似趴卧'));assert(f.by('h3','关键帧'));
+ const frames=all(f.root).filter(n=>n.attrs.class==='safety-frames');
+ const firstPair=all(frames[0]).filter(n=>n.tagName==='img').map(n=>n.attrs.src);
+ assert.deepEqual(firstPair,[0,4].map(index=>'/api/embodied/safety/events/'+prone.id+'/frames/'+index));
+ assert.equal(all(frames[1]).filter(n=>n.tagName==='img').length,6);
+ assert(!f.root.textContent.includes('未请求播报'));assert(!f.calls.some(c=>c.path.endsWith('/test')));
+ await f.by('button','我已查看').onclick();assert.equal(f.events[0].review,'acknowledged');view.dispose();
 });
 
 test('expanded home attention includes every counted item and keeps its expanded label after refresh',async()=>{

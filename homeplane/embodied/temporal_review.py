@@ -10,7 +10,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from .safety_recording import ReviewReceipt
-from .temporal_model import MlxWindowProcess, VisualResult, VisualSourceChanged, model_readiness
+from .temporal_model import WINDOW_SPAN, MlxWindowProcess, VisualResult, VisualSourceChanged, model_readiness
 
 
 @dataclass
@@ -23,6 +23,13 @@ class WindowState:
     candidate: tuple | None = None
     followup: bool = False
     recorded: dict = field(default_factory=dict)
+    posture_track: int | None = None
+    posture_since: float = math.inf
+
+    def posture_subject(self, frames):
+        if self.posture_track is not None and frames and frames[0][0] >= self.posture_since:
+            return self.posture_track, self.posture_since
+        return None
 
 
 class TemporalReviewer:
@@ -55,7 +62,7 @@ class TemporalReviewer:
         if self.last_camera == camera:
             self.last_camera = None
 
-    def offer(self, camera, session, revision, captured, jpeg, *, stable):
+    def offer(self, camera, session, revision, captured, jpeg, *, stable, posture_track=None):
         now = self.clock()
         if self.closed or not stable or not math.isfinite(captured) or not 0 <= now - captured <= 1.5:
             self.clear(camera)
@@ -80,8 +87,15 @@ class TemporalReviewer:
             # scheduling debt and repeatedly put this camera before its peers.
             state = self.windows[camera] = WindowState(session, revision, submitted=self.served.get(camera, -math.inf))
         state.seen = captured
+        if posture_track != state.posture_track:
+            state.posture_track, state.posture_since = posture_track, captured
+            if state.candidate and state.candidate[0] == 'prone_posture':
+                state.candidate = None
+                state.followup = False
         if not state.frames or captured - state.frames[-1][0] >= 1:
             state.frames.append((captured, jpeg))
+            while captured - state.frames[0][0] > WINDOW_SPAN:
+                state.frames.popleft()
         if len(state.frames) != 4 or now - state.submitted < 6:
             return
         if self.task is not None or (self.cleanup_task and not self.cleanup_task.done()):
@@ -114,14 +128,16 @@ class TemporalReviewer:
         self.task = asyncio.create_task(self._review(camera, state, tuple(state.frames), allow_followup=not followup))
         self.task.add_done_callback(self._finished)
 
-    def _corroboration_limit(self):
+    def _corroboration_limit(self, event=None):
+        if event == 'prone_posture':
+            return 18
         return max(18, min(60, len(self.windows)*6+12))
 
     def _followup_ready(self, state):
         previous = state.candidate
         return bool(state.followup and previous and state.frames
                     and state.frames[0][0] > previous[1]
-                    and 0 < state.frames[-1][0]-previous[1] <= self._corroboration_limit())
+                    and 0 < state.frames[-1][0]-previous[1] <= self._corroboration_limit(previous[0]))
 
     def stability_pending(self, camera, session, revision):
         """Current analysis/corroboration benefits from the existing stable view.
@@ -141,7 +157,7 @@ class TemporalReviewer:
         event, captured, _ = state.candidate
         now = self.clock()
         receipt = state.recorded.get(event)
-        if (not 0 <= now - captured <= self._corroboration_limit() + 12
+        if (not 0 <= now - captured <= self._corroboration_limit(event) + 12
                 or receipt is not None and receipt.suppresses(now)):
             return False
         return bool(state.followup or active)
@@ -168,12 +184,15 @@ class TemporalReviewer:
             if not self._current(camera, state, frames):
                 return
             selected = False
+            subject = None
+
             def current_window():
-                nonlocal frames, selected
+                nonlocal frames, selected, subject
                 latest = tuple(state.frames)
                 if selected or len(latest) != 4 or not self._current(camera, state, latest):
                     raise VisualSourceChanged('visual_source_changed')
                 frames = latest
+                subject = state.posture_subject(frames)
                 selected = True
                 # Reserve cadence at image submission, after any startup or
                 # host-budget wait, rather than at the earlier queue admission.
@@ -182,14 +201,23 @@ class TemporalReviewer:
                 self.served[camera] = submitted
                 self.phase = 'reviewing'
                 return frames
+
+            def scoped_window():
+                selected_frames = current_window()
+                return selected_frames, subject is not None
+
+            scoped = getattr(self.engine, 'analyze_scoped', None)
             latest = getattr(self.engine, 'analyze_latest', None)
-            if callable(latest):
+            if callable(scoped):
+                self.phase = 'preparing'
+                result = await scoped(scoped_window)
+            elif callable(latest):
                 self.phase = 'preparing'
                 result = await latest(current_window)
-                if not selected:
-                    raise ValueError('visual_window_not_submitted')
             else:
                 result = await self.engine.analyze(current_window())
+            if not selected:
+                raise ValueError('visual_window_not_submitted')
             self.last_camera = camera
             result = VisualResult.model_validate(result) if not isinstance(result, VisualResult) else result
             if not self._current(camera, state, frames):
@@ -197,7 +225,9 @@ class TemporalReviewer:
             self.completed += 1
             self.error = None
             self.failures = 0
-            if result.event in {"none", "unclear"}:
+            posture_invalid = (result.event == 'prone_posture'
+                               and (subject is None or subject != state.posture_subject(frames)))
+            if result.event in {"none", "unclear"} or posture_invalid:
                 state.candidate = None
                 return
             previous = state.candidate
@@ -210,7 +240,7 @@ class TemporalReviewer:
                 not previous
                 or previous[0] != result.event
                 or frames[0][0] <= previous[1]
-                or frames[-1][0] - previous[1] > self._corroboration_limit()
+                or frames[-1][0] - previous[1] > self._corroboration_limit(result.event)
             ):
                 state.followup = allow_followup
                 return
@@ -258,6 +288,12 @@ class TemporalReviewer:
             for camera in list(self.windows):
                 self.clear(camera)
         ready = model_readiness()
+        posture = getattr(policy, 'posture_source', None)
+        posture_camera = None
+        if posture is not None and (state := self.windows.get(posture.camera)) is not None:
+            frames = tuple(state.frames)
+            if len(frames) == 4 and state.posture_subject(frames) and self._current(posture.camera, state, frames):
+                posture_camera = posture.camera
         return dict(
             **ready,
             enabled=bool(policy.enabled and policy.visual_review),
@@ -268,6 +304,8 @@ class TemporalReviewer:
             resident=bool(getattr(self.engine, "process", None)),
             peak_mlx_mib=round(getattr(self.engine, "peak_mlx_bytes", 0) / 1024**2),
             camera_count=len(self.windows),
+            posture_ready_camera=posture_camera,
+            posture_revision=policy.revision if posture_camera else None,
         )
 
     async def invalidate(self):

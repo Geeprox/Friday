@@ -28,13 +28,28 @@ class SafetyAdmissionChanged(ValueError):
     pass
 
 
-class SafetyPolicy(BaseModel):
+class SafetyControls(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool = False
     announce: bool = False
     visual_review: bool = False
     sound_review: bool = False
     revision: int = Field(default=0, ge=0)
+
+
+class PostureSource(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    camera: str = Field(pattern=r'^cam_[a-f0-9]{10}$')
+    source_context: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class SafetyPolicy(SafetyControls):
+    posture_source: PostureSource | None = Field(default=None, exclude=True)
+
+    def admits_posture(self, camera, source_context):
+        source = self.posture_source
+        return bool(self.enabled and self.visual_review and source and source.camera == camera
+                    and source.source_context == source_context)
 
 
 CAPABILITIES = [
@@ -89,6 +104,7 @@ class SafetyStore:
             db.execute("PRAGMA secure_delete=ON")
             db.executescript("""
             CREATE TABLE IF NOT EXISTS safety_policy (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS safety_posture (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS safety_events
               (id TEXT PRIMARY KEY, at REAL NOT NULL, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS safety_frames
@@ -107,18 +123,37 @@ class SafetyStore:
             if time.monotonic() - self.last_prune >= 60:
                 self._prune(db)
                 self.last_prune = time.monotonic()
-            row = db.execute("SELECT value FROM safety_policy WHERE id=1").fetchone()
-        return SafetyPolicy.model_validate_json(row[0]) if row else SafetyPolicy()
+            return self._read_policy(db)
+
+    @staticmethod
+    def _read_policy(db):
+        controls, posture = db.execute('''SELECT (SELECT value FROM safety_policy WHERE id=1),
+                                                (SELECT value FROM safety_posture WHERE id=1)''').fetchone()
+        policy = SafetyPolicy.model_validate_json(controls) if controls else SafetyPolicy()
+        source = PostureSource.model_validate_json(posture) if posture else None
+        return policy.model_copy(update={'posture_source': source})
 
     def configure(self, policy):
+        return self._configure(policy.revision, policy.model_dump(exclude={'revision'}))
+
+    def configure_posture(self, expected_revision, source):
+        return self._configure(expected_revision, {'posture_source': source})
+
+    def _configure(self, expected_revision, updates):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT value FROM safety_policy WHERE id=1").fetchone()
-            current = SafetyPolicy.model_validate_json(row[0]) if row else SafetyPolicy()
-            if current.revision != policy.revision:
+            current = self._read_policy(db)
+            if current.revision != expected_revision:
                 raise ValueError("safety_policy_changed")
-            value = policy.model_copy(update={"revision": current.revision + 1})
+            value = current.model_copy(update=updates | {'revision': current.revision + 1})
+            # 原开关记录保持可由旧版读取，新增设置与策略版本在同一事务写入。
             db.execute("INSERT OR REPLACE INTO safety_policy VALUES (1,?)", (value.model_dump_json(),))
+            if 'posture_source' in updates:
+                if value.posture_source is None:
+                    db.execute('DELETE FROM safety_posture WHERE id=1')
+                else:
+                    db.execute('INSERT OR REPLACE INTO safety_posture VALUES (1,?)',
+                               (value.posture_source.model_dump_json(),))
         return value
 
     def _prune(self, db):
@@ -484,6 +519,24 @@ class FallDetector:
         return found
 
 
+def _posture_track(people):
+    """用足够大且完整入镜的单人轨迹连接关键帧。"""
+    if not isinstance(people, list) or len(people) != 1 or not isinstance(people[0], dict):
+        return None
+    person = people[0]
+    track, box = person.get('id'), person.get('box')
+    if type(track) is not int or track < 1 or not isinstance(box, dict):
+        return None
+    values = [box.get(key) for key in ('x', 'y', 'w', 'h', 'confidence')]
+    if not all(type(value) in (int, float) and math.isfinite(value) for value in values):
+        return None
+    x, y, w, h, confidence = values
+    if (.65 <= confidence <= 1 and min(w, h) >= .06 and max(w, h) >= .16
+            and .01 <= x <= x+w <= .99 and .01 <= y <= y+h <= .99):
+        return track
+    return None
+
+
 class SafetyRuntime:
     MAX_CAMERAS = 8
     MAX_PEOPLE = 32
@@ -832,7 +885,8 @@ class SafetyRuntime:
             source_name = None
         self.last_seen[camera] = max(captured, self.last_seen.get(camera, -math.inf))
         if policy.visual_review:
-            self.visual.offer(camera, session, policy.revision, captured, jpeg, stable=stable)
+            track = _posture_track(people) if policy.admits_posture(camera, source_context) else None
+            self.visual.offer(camera, session, policy.revision, captured, jpeg, stable=stable, posture_track=track)
         else:
             self.visual.clear(camera)
         ring = self.frames.setdefault(camera, dict(session=session, source_context=source_context,
@@ -925,21 +979,25 @@ class SafetyRuntime:
             "possible_fall": "画面中疑似出现跌落动作，请查看关键帧。",
             "face_obscured": "画面中疑似出现面部遮挡，请查看关键帧。",
             "rapid_movement": "画面中疑似出现快速移动或搬动，请查看关键帧。",
+            "prone_posture": "请查看两段关键帧，确认是否需要照看。",
         }
         # Model text remains private evidence. It cannot supply identity or speech.
         ring = self.frames.get(camera, {})
         source_context = ring.get('source_context') if ring.get('session') == session else None
         policy = self._cached_policy()
+        posture = result.event == 'prone_posture'
+        if posture and (len(frames) != 8 or not policy.admits_posture(camera, source_context)):
+            return False
         return self._submit_review(
             dict(
                 kind="visual_review", visual_kind=result.event, severity="review",
                 status="pending_review", simulated=False, camera=camera, session=session,
                 track=None, person_id=None, person_name=None,
-                message=messages[result.event], observation=result.observation,
-                captured_at=captured_at, basis="two_disjoint_local_windows",
+                message=messages[result.event], observation=None if posture else result.observation,
+                captured_at=captured_at, basis="same_track_two_local_windows" if posture else "two_disjoint_local_windows",
                 camera_source_context=source_context,
                 camera_name=ring.get('source_name') if ring.get('session') == session else None,
-                detector="qwen3.5-2b-window/1",
+                detector="qwen3.5-2b-window/prone-1" if posture else "qwen3.5-2b-window/1",
             ),
             [(captured_at - (frames[-1][0] - stamp), jpeg) for stamp, jpeg in frames],
             captured=frames[-1][0], revision=policy.revision, max_age=12,

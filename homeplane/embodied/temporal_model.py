@@ -28,7 +28,7 @@ WEIGHT_SHA256 = "713fe7e5d3c3965f7106b0d0ee17615f7869c23c8d327996df8c1196fbcf07d
 MODEL = MODELS / "qwen3.5-2b-4bit"
 GIB = 1024**3
 MEMORY_LIMIT = 3584 * 1024**2
-EVENTS = ("none", "unclear", "possible_fall", "face_obscured", "rapid_movement")
+WINDOW_SPAN = 5.0
 START_TIMEOUT = 12
 
 
@@ -38,7 +38,7 @@ class VisualSourceChanged(RuntimeError):
 
 class VisualResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    event: Literal["none", "unclear", "possible_fall", "face_obscured", "rapid_movement"]
+    event: Literal["none", "unclear", "possible_fall", "face_obscured", "rapid_movement", "prone_posture"]
     observation: str = Field(min_length=1, max_length=240)
 
 
@@ -209,6 +209,9 @@ class MlxWindowProcess:
         The synchronous callback stays in this process, never in JSON or the
         model worker. Startup cannot consume the evidence's freshness budget.
         """
+        return await self.analyze_scoped(lambda: (window(), False))
+
+    async def analyze_scoped(self, window):
         async with self.lock:
             try:
                 if self.process is not None and self.process.returncode is not None:
@@ -217,13 +220,15 @@ class MlxWindowProcess:
                 if reason:
                     raise ValueError(reason)
                 await self._start()
-                frames = window()
+                frames, posture = window()
                 request = dict(
                     frames=[
                         dict(t=round(stamp - frames[0][0], 3), jpeg=base64.b64encode(jpeg).decode())
                         for stamp, jpeg in frames
                     ]
                 )
+                if posture:
+                    request['review_prone'] = True
                 payload = json.dumps(request).encode() + b"\n"
                 if len(payload) > 3 * 1024**2:
                     raise ValueError("window_too_large")
