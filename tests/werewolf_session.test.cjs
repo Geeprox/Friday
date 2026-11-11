@@ -2,7 +2,8 @@ const fs=require('node:fs'),vm=require('node:vm'),test=require('node:test'),asse
 const source=fs.readFileSync('homeplane/static/werewolf-party.js','utf8');
 const all=node=>[node,...node.children.flatMap(all)],settle=()=>new Promise(setImmediate);
 
-function client({publicDisplay=false,phase='wolves',joined=true,lobby=null,privateFields={}}={}){
+function client({publicDisplay=false,phase='wolves',joined=true,lobby=null,privateFields={},
+ invite=null,deferInvite=false,firstAccessDenied=false}={}){
  class Element{
   constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.dataset={};this._text='';this.events={};this.disabled=false;this.classList={toggle(){},add(){},remove(){}};}
   set textContent(value){this._text=String(value);this.children=[];}
@@ -21,6 +22,8 @@ function client({publicDisplay=false,phase='wolves',joined=true,lobby=null,priva
  const game={revision:1,phase,phase_name:dealing?'查看身份':phase==='lobby'?'等待大家入座':'狼人行动',
   player_count:6,round:dealing?0:1,paused:false,seconds_left:dealing?null:30,identities_confirmed:0,
   players:[1,2,3,4,5,6].map(seat=>({seat,name:'合成玩家'+seat,alive:true})),roles:[],announcements:[]};
+ if(invite){game.players.pop();game.lobby_revision=0;}
+ const session='b'.repeat(32);
  const player={seat:1,name:'合成玩家1',role:'wolf',role_name:'狼人',alive:true,
   actions:dealing?[]:[{action:'attack',targets:[2,3,4,5,6]},{action:'pass',targets:[]}],
   ...(dealing?{session:'b'.repeat(32)}:{}),...privateFields,public:game};
@@ -28,9 +31,10 @@ function client({publicDisplay=false,phase='wolves',joined=true,lobby=null,priva
  let deferPoll=false,deferChoice=false,deferIdentity=false,reads=0;
  const reply=(status,data)=>({ok:status===200,status,headers:{get:()=>null},json:async()=>data});
  const context=vm.createContext({console,URLSearchParams,AbortController,AbortSignal,performance:{now:()=>0},crypto:{getRandomValues:a=>a.fill(1)},navigator:{},
-  location:{pathname:publicDisplay?'/display':'/phone',hash:'#code=123456'},history:{replaceState(){}},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
+  location:{pathname:publicDisplay?'/display':'/phone',origin:'http://127.0.0.1:12345',hash:'#code=123456'},history:{replaceState(){}},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
   document:{body:new Element('body'),hidden:false,getElementById:id=>nodes[id],createElement:tag=>new Element(tag),addEventListener(){}},window:{addEventListener:(name,fn)=>events[name]=fn},setInterval(){},
-  fetch:async(path,options)=>{requests.push(path);calls.push({path,options});if(path===(publicDisplay?'/api/public':'/api/player')){reads++;if(reads>1&&deferPoll)return new Promise(resolve=>pending.poll=resolve);return reply(200,structuredClone(publicDisplay?{active:true,game}:player));}
+  fetch:async(path,options)=>{requests.push(path);calls.push({path,options});if(path===(publicDisplay?'/api/public':'/api/player')){reads++;if(reads===1&&firstAccessDenied)return reply(403,{detail:'player_access_required'});if(reads>1&&deferPoll)return new Promise(resolve=>pending.poll=resolve);return reply(200,structuredClone(publicDisplay?{active:true,session,game}:player));}
+   if(path==='/api/invitation'){if(deferInvite)return new Promise(resolve=>pending.invite=resolve);return reply(200,{session,lobby_revision:game.lobby_revision,...invite});}
    if(path==='/api/choice'){if(deferChoice)return new Promise((resolve,reject)=>{pending.choice=resolve;pending.choiceReject=reject;});return reply(200,structuredClone(player));}
    if(path==='/api/identity'){
     if(deferIdentity)return new Promise((resolve,reject)=>{pending.identity=resolve;pending.identityReject=reject;});
@@ -268,6 +272,78 @@ test('public display drops a stale clock and narration, then restores the newest
  c.pending.poll(c.reply(200,{active:true,game}));await fresh;
  assert.match(stage.textContent,/自由发言.*01:30.*请轮流发言/);
  assert.doesNotMatch(stage.textContent,/正在同步|狼人请睁眼/);
+});
+
+test('电视入座邀请在断流时收起，恢复后重新读取',async()=>{
+ const c=client({publicDisplay:true,phase:'lobby',invite:{room_code:'123456',qr_svg:'PHN2Zy8+'}});
+ await settle();
+ const view=vm.runInContext('displayView',c.context);
+ assert.equal(view.invitation.hidden,false);
+ assert.equal(view.number.textContent,'123456');
+ assert.equal(view.qr.hidden,false);
+ assert.equal(view.script.hidden,true);
+ const first=c.calls.find(call=>call.path==='/api/invitation');
+ assert.equal(first.options.headers.Authorization,'Bearer '+'a'.repeat(64));
+ c.events.offline();
+ assert.equal(view.invitation.hidden,true);
+ assert.equal(view.number.textContent,'');
+ assert.equal(view.script.hidden,false);
+ await vm.runInContext('poll()',c.context);await settle();
+ assert.equal(view.invitation.hidden,false);
+ assert.equal(c.requests.filter(path=>path==='/api/invitation').length,2);
+});
+
+test('满座后的晚到二维码不会恢复邀请',async()=>{
+ const c=client({publicDisplay:true,phase:'lobby',invite:{room_code:'123456'},deferInvite:true});
+ await settle();
+ const view=vm.runInContext('displayView',c.context);
+ const request=c.calls.find(call=>call.path==='/api/invitation');
+ c.game.players.push({seat:6,name:'合成玩家6',alive:true});
+ await vm.runInContext('poll()',c.context);
+ assert(request.options.signal.aborted);
+ c.pending.invite(c.reply(200,{session:'b'.repeat(32),lobby_revision:0,room_code:'123456',qr_svg:'PHN2Zy8+'}));
+ await settle();
+ assert.equal(view.invitation.hidden,true);
+ assert.equal(view.number.textContent,'');
+});
+
+test('二维码不可用时，大屏显示手机入口和房间号',async()=>{
+ const c=client({publicDisplay:true,phase:'lobby',invite:{room_code:'123456',qr_svg:null}});
+ await settle();
+ const view=vm.runInContext('displayView',c.context);
+ assert.equal(view.invitation.hidden,false);
+ assert.equal(view.qr.hidden,true);
+ assert.equal(view.address.textContent,'http://127.0.0.1:12345/phone');
+ assert.equal(view.number.textContent,'123456');
+});
+
+test('扫描当前邀请后，失效的旧座位凭据交还给选座页',async()=>{
+ const c=client({firstAccessDenied:true,lobby:{revision:1,phase:'lobby',player_count:6,players:[]}});
+ await settle();
+ assert.equal(c.storage.has('Friday.werewolf.player'),false);
+ assert(c.button('1 空位'));
+ const lookup=c.calls.find(call=>call.path==='/api/lobby');
+ assert.equal(lookup.options.headers.Authorization,undefined);
+ assert.equal(JSON.parse(lookup.options.body).code,'123456');
+ assert.equal(c.requests.includes('/api/join'),false);
+});
+
+test('原手机标签页复扫时保留有效座位，座位撤销后重新选座',async()=>{
+ const c=client({lobby:{revision:1,phase:'lobby',player_count:6,players:[]}});
+ await settle();
+ vm.runInContext("location.hash='#code=123456'",c.context);
+ c.events.hashchange();await settle();
+ assert(c.storage.has('Friday.werewolf.player'));
+ assert.equal(c.requests.includes('/api/lobby'),false);
+ c.defer();
+ const read=vm.runInContext('poll()',c.context);await settle();
+ c.pending.poll(c.reply(403,{detail:'player_access_required'}));await read;
+ assert.match(c.nodes.party.textContent,/本局已关闭/);
+ vm.runInContext("location.hash='#code=123456'",c.context);
+ c.events.hashchange();await settle();
+ assert(c.button('1 空位'));
+ assert.equal(c.requests.filter(path=>path==='/api/lobby').length,1);
+ assert.equal(c.requests.includes('/api/join'),false);
 });
 
 test('editing the room number retires seats and prevents joining an unviewed room',async()=>{

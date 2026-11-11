@@ -1,6 +1,7 @@
 """ASGI-only phone/TV/host acceptance; no LAN listener or household I/O."""
 
 import asyncio
+import base64
 import json
 from types import SimpleNamespace
 
@@ -10,7 +11,7 @@ import pytest
 
 from homeplane.werewolf_api import create_router
 from homeplane.werewolf_effects import HostEffects, SceneLights
-from homeplane.werewolf_service import Choice, Join, WerewolfService, phone_app
+from homeplane.werewolf_service import Choice, Join, WerewolfService, join_qr_svg, phone_app
 from homeplane.werewolf_service import PhoneGateway
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_device_controls import rig
@@ -58,6 +59,67 @@ async def begin_play(service):
     await service.control("start")
     confirm_deal(service.game)
     await service.control("advance")
+
+
+@pytest.mark.asyncio
+async def test_tv_invitation_follows_vacant_seats_and_room_access():
+    service = await owner()
+    session = service.session
+    display_token = service.public_token
+    display = {'Authorization': 'Bearer '+display_token}
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=phone_app(service, service.origin)),
+                                     base_url=service.origin) as client:
+            assert (await client.get('/api/invitation')).status_code == 403
+            assert (await client.get('/api/invitation', params={'token': display_token})).status_code == 403
+            ticket = await client.get('/api/invitation', headers=display)
+            assert ticket.status_code == 200 and ticket.headers['cache-control'] == 'no-store'
+            result = ticket.json()
+            assert set(result) == {'session', 'lobby_revision', 'room_code', 'qr_svg'}
+            assert result['session'] == session and result['lobby_revision'] == 0
+            assert result['room_code'] == service.join_code
+            assert base64.b64decode(result['qr_svg'], validate=True) == join_qr_svg(service.host()['phone_url'])
+            assert 'room_code' not in (await client.get('/api/public', headers=display)).json()
+            for seat in range(1, 7):
+                entered = await client.post('/api/join', json=dict(code=result['room_code'], session=session,
+                                            seat=seat, name=f'合成玩家{seat}'))
+                assert entered.status_code == 200 and entered.json()['player']['seat'] == seat
+                phone = {'Authorization': 'Bearer '+entered.json()['token']}
+                assert (await client.get('/api/invitation', headers=phone)).status_code == 403
+                assert (await client.post('/api/ready', headers=phone, json={'ready': True})).status_code == 200
+            assert (await client.get('/api/invitation', headers=display)).status_code == 404
+            await service.control('start')
+            assert (await client.get('/api/invitation', headers=display)).status_code == 404
+            await service.control('end')
+            await service.control('rematch')
+            assert (await client.get('/api/invitation', headers=display)).status_code == 404
+            await service.control('remove', seat=6)
+            reopened = await client.get('/api/invitation', headers=display)
+            assert reopened.status_code == 200 and reopened.json()['session'] == session
+            assert reopened.json()['lobby_revision'] > result['lobby_revision']
+            await service.close_game()
+            assert (await client.get('/api/invitation', headers=display)).status_code == 403
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_tv_keeps_manual_room_entry_when_qr_dependency_is_missing(monkeypatch):
+    from homeplane import werewolf_service
+
+    def unavailable(_):
+        raise ImportError('合成：二维码模块不可用')
+
+    monkeypatch.setattr(werewolf_service, 'join_qr_svg', unavailable)
+    service = await owner()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=phone_app(service, service.origin)),
+                                     base_url=service.origin) as client:
+            response = await client.get('/api/invitation', headers={'Authorization': 'Bearer '+service.public_token})
+            assert response.status_code == 200
+            assert response.json()['qr_svg'] is None and response.json()['room_code'] == service.join_code
+    finally:
+        await service.close()
 
 
 @pytest.mark.asyncio

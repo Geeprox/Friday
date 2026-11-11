@@ -7,6 +7,7 @@ It has no host controls, household APIs, device IDs, camera frames or raw audio.
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import contextmanager
 from collections import OrderedDict, deque
 import hashlib
@@ -31,6 +32,14 @@ from .werewolf_camera import observation as camera_observation, hints as camera_
 
 STATIC = Path(__file__).parent / "static"
 CHOICE_EVENT_ID = r"^[a-zA-Z0-9_-]{12,64}$"
+
+
+def join_qr_svg(url):
+    """主持端与电视使用同一手机入口生成二维码。"""
+    import qrcode
+    import qrcode.image.svg
+
+    return qrcode.make(url, image_factory=qrcode.image.svg.SvgPathFillImage).to_string()
 
 
 def local_party_addresses():
@@ -200,7 +209,21 @@ class WerewolfService:
         return result
 
     def public_access(self, token):
-        return bool(self.public_token and isinstance(token, str) and secrets.compare_digest(self.public_token, token))
+        return bool(self.public_token and isinstance(token, str) and re.fullmatch(r'[a-f0-9]{64}', token)
+                    and secrets.compare_digest(self.public_token, token))
+
+    def phone_url(self):
+        return self.origin + '/phone#code=' + self.join_code if self.origin and self.join_code else None
+
+    def display_invitation(self):
+        game, url = self.game, self.phone_url()
+        if not url or not self.session or not game or game.phase != 'lobby' or len(game.players) >= game.count:
+            return None
+        try:
+            svg = base64.b64encode(join_qr_svg(url)).decode('ascii')
+        except ImportError:
+            svg = None
+        return dict(session=self.session, lobby_revision=game.lobby_revision, room_code=self.join_code, qr_svg=svg)
 
     def public(self):
         if self.game is None or self.session is None:
@@ -221,7 +244,7 @@ class WerewolfService:
         if report["active"]:
             camera_available = self._camera_current() and self.game.phase == 'lobby'
             report.update(effects=self.effects.status(), join_code=self.join_code,
-                          phone_url=self.origin + "/phone#code=" + self.join_code if self.origin else None,
+                          phone_url=self.phone_url(),
                           display_url=self.origin + "/display#token=" + self.public_token if self.origin else None,
                           speaker_seats=self.game.eligible_speakers(),
                           camera_enabled=self.camera_enabled, camera_available=camera_available,
@@ -790,6 +813,15 @@ def phone_app(owner, origin):
         if not owner.public_access(token(request)):
             raise HTTPException(403, detail="public_access_required")
         return owner.public()
+
+    @app.get('/api/invitation')
+    async def invitation(request: Request):
+        if not owner.public_access(token(request)) or owner.origin != origin:
+            raise HTTPException(403, detail='public_access_required')
+        result = owner.display_invitation()
+        if result is None:
+            raise HTTPException(404, detail='invitation_unavailable')
+        return result
 
     @app.post("/api/join")
     async def join(payload: Join):

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .werewolf import GameError, RULES
 from .werewolf_effects import HostEffects, SceneLights
-from .werewolf_service import WerewolfService
+from .werewolf_service import WerewolfService, join_qr_svg
 
 
 class Create(BaseModel):
@@ -80,16 +80,14 @@ def create_router(core, lock, embodied, directory, *, owner=None):
 
     @router.get("/join-qr")
     async def join_qr(session: str):
-        if session != owner.session or not owner.origin or not owner.join_code:
+        phone = owner.phone_url()
+        if session != owner.session or phone is None:
             raise HTTPException(404)
         try:
-            import qrcode
-            import qrcode.image.svg
+            image = join_qr_svg(phone)
         except ImportError:
             raise HTTPException(409, detail="qr_unavailable") from None
-        image = qrcode.make(owner.origin + "/phone#code=" + owner.join_code,
-                            image_factory=qrcode.image.svg.SvgPathFillImage, border=3)
-        return Response(image.to_string(), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+        return Response(image, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
 
     @router.get("/host")
     async def host():

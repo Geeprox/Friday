@@ -1,6 +1,7 @@
 const root=document.getElementById('party'),notice=document.getElementById('notice'),roomLabel=document.getElementById('roomLabel');
 const display=location.pathname==='/display',fragment=new URLSearchParams(location.hash.slice(1));
-const invitationCode=fragment.get('code')||'';
+const roomCode=params=>{const value=params.get('code')||'';return /^[0-9]{6}$/.test(value)?value:'';};
+let invitationCode=display?'':roomCode(fragment);
 const storeKey=display?'Friday.werewolf.display':'Friday.werewolf.player';
 const joinStoreKey='Friday.werewolf.join';
 const choiceStoreKey='Friday.werewolf.choice';
@@ -48,7 +49,7 @@ function forgetJoin(){joinPending=null;try{sessionStorage.removeItem(joinStoreKe
 function joinRecovery(){
  if(!joinPending||!alive)return;root.replaceChildren();document.body.dataset.night='false';roomLabel.textContent='狼人杀';
  const intro=h('section',null,'join-intro');intro.append(h('span',null,'moon'),h('h1','入座尚未确认'),h('p',joinPending.seat+' 号 · '+joinPending.name));
- const actions=h('div',null,'join-form');actions.append(button('重试入座',()=>{void submitJoin(joinPending);},'primary'),button('更换房间',()=>{forgetJoin();code='';game=null;selectedSeat=null;notice.textContent='';joinForm();}));root.append(intro,actions);
+ const actions=h('div',null,'join-form');actions.append(button('重试入座',()=>{void submitJoin(joinPending);},'primary'),button('更换房间',()=>{forgetJoin();invitationCode=code='';game=null;selectedSeat=null;notice.textContent='';joinForm();}));root.append(intro,actions);
 }
 async function submitJoin(value){
  if(busy||!alive)return;const payload=joinAttempt(value);if(!payload){notice.textContent='入座暂不可用，请重新载入。';return;}
@@ -103,7 +104,7 @@ function seatButton(seat,selected,fn,extra=''){const p=game?.players.find(x=>x.s
 function joinForm(){
  root.replaceChildren();document.body.dataset.night='false';roomLabel.textContent='狼人杀';const intro=h('div',null,'join-intro');intro.append(h('span',null,'moon'),h('h1','一起入座'),h('p','每人一部手机，身份与行动只给自己看。'));root.append(intro);
  let loadedCode='';const form=h('form',null,'join-form'),room=h('label','房间号'),roomInput=h('input');roomInput.type='text';roomInput.inputMode='numeric';roomInput.pattern='[0-9]{6}';roomInput.maxLength=6;roomInput.autocomplete='off';roomInput.value=code;roomInput.required=true;room.append(roomInput);const find=button('查看座位',lookup);form.append(room,find);const seats=h('div',null,'join-seats');form.append(seats);const name=h('label','你的名字'),nameInput=h('input');nameInput.maxLength=20;nameInput.autocomplete='nickname';nameInput.required=true;name.append(nameInput);const join=h('button','坐好了','primary');join.type='submit';join.disabled=true;form.append(name,join);
- roomInput.addEventListener('input',()=>{code=roomInput.value;loadedCode='';selectedSeat=null;game=null;notice.textContent='';renderSeats();});
+ roomInput.addEventListener('input',()=>{invitationCode='';code=roomInput.value;loadedCode='';selectedSeat=null;game=null;notice.textContent='';renderSeats();});
  nameInput.value=joinName;
  form.onsubmit=e=>{e.preventDefault();if(busy||!selectedSeat||!loadedCode||loadedCode!==roomInput.value)return;void submitJoin({code:loadedCode,session:game?.session,seat:selectedSeat,name:nameInput.value.trim(),attempt_id:Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join('')});};
  function lookup(){void perform(async()=>{const requested=roomInput.value;code=requested;loadedCode='';selectedSeat=null;game=null;renderSeats();await api('lobby',{code:requested},data=>{if(!credential&&roomInput.value===requested){loadedCode=requested;game=data;}});}).finally(renderSeats);}
@@ -127,13 +128,17 @@ function retireRequests() {
  const read=readRequest,command=commandRequest;
  readRequest=null;commandRequest=null;busy=false;
  read?.controller.abort();command?.controller.abort();command?.release();
+ retireInvitation(displayView);
 }
 function closedSession(){
+ const reopenInvitation=!display&&invitationCode;
+ invitationCode='';
  forgetJoin();joinName='';
  if (!display) forgetChoice();
  retireRequests();hideRole();credential='';code='';player=null;game=null;roleNode=null;viewedIdentity=null;identityConfirmation=null;viewKey='';displayView=null;lastDisplay=null;selectedSeat=null;selectedAction=null;selectedTarget=null;choiceNoticeRevision=null;syncing=false;nextPollAt=0;pollNotice='';notice.textContent='';document.body.dataset.night='false';roomLabel.textContent='狼人杀';
  try{sessionStorage.removeItem(storeKey);}catch{}
  if(display)root.replaceChildren(h('h1','公共画面已关闭'),h('p','请从 Friday 重新打开。'));
+ else if(reopenInvitation){code=reopenInvitation;joinForm();}
  else{const intro=h('div',null,'join-intro');intro.append(h('span',null,'moon'),h('h1','本局已关闭'),h('p','重新扫码，加入下一局。'));root.replaceChildren(intro,button('输入房间号',joinForm,'primary'));}
 }
 function revealRole(){
@@ -191,6 +196,7 @@ function confirmChoice(result) {
  notice.textContent='已确认，Friday 收到了你的选择。';
 }
 function updatePlayer(result, force=false) {
+ invitationCode='';
  if(player?.public?.phase==='identity'&&(result.identity_confirmed||result.public.revision!==player.public.revision)){
   notice.textContent='';
  }
@@ -355,7 +361,19 @@ function createDisplay() {
  heading.append(title, clock);
  const script = h('p', null, 'public-script');
  script.setAttribute('aria-live', 'polite');
- content.append(heading, script);
+ const invitation = h('section', null, 'public-invitation');
+ invitation.hidden = true;
+ const qr = h('img', null, 'public-join-qr');
+ qr.alt = '扫码加入本局';
+ const instructions = h('div', null, 'public-join-info');
+ const prompt = h('h2');
+ const room = h('div', null, 'public-join-code');
+ const number = h('strong');
+ const address = h('p', null, 'public-join-address');
+ room.append(h('span', '房间号'), number);
+ instructions.append(prompt, room, address);
+ invitation.append(qr, instructions);
+ content.append(heading, script, invitation);
  const art = h('img', null, 'public-art');
  art.setAttribute('src', '/assets/werewolf-scene.png');
  art.setAttribute('alt', '');
@@ -380,11 +398,79 @@ function createDisplay() {
  votes.setAttribute('role', 'list');
  voting.append(h('h2', '最近一次投票'), votes);
  root.replaceChildren(stage, seating, voting);
- return {title, clock, script, seatTitle, seatSummary, roster, composition, voting, votes};
+ qr.onerror = () => {
+  if (invitation.hidden) return;
+  qr.hidden = true;
+  prompt.textContent = '用手机加入';
+  address.hidden = false;
+ };
+ return {title, clock, script, seatTitle, seatSummary, roster, composition, voting, votes,
+  invitation, qr, prompt, number, address, invitationKey:null, invitationRequest:null, invitationRetryAt:0};
+}
+
+function retireInvitation(view) {
+ if (!view?.invitationKey) return;
+ view.invitationRequest?.abort();
+ view.invitationKey = view.invitationRequest = null;
+ view.invitationRetryAt = 0;
+ view.invitation.hidden = true;
+ view.script.hidden = false;
+ view.qr.removeAttribute('src');
+ view.number.textContent = '';
+ view.address.textContent = '';
+}
+
+async function updateInvitation(view, report, waiting) {
+ const game = report.game;
+ if (waiting || document.hidden || game.phase!=='lobby' || game.players.length>=game.player_count
+     || typeof report.session!=='string' || !Number.isSafeInteger(game.lobby_revision)) {
+  retireInvitation(view);
+  return;
+ }
+ const key = report.session+':'+game.lobby_revision;
+ if (view.invitationKey!==key) {
+  retireInvitation(view);
+  view.invitationKey=key;
+ }
+ if (!view.invitation.hidden || view.invitationRequest || performance.now()<view.invitationRetryAt) return;
+ const controller = new AbortController();
+ view.invitationRequest = controller;
+ view.invitationRetryAt = performance.now()+4000;
+ const current = () => view===displayView && view.invitationRequest===controller && !document.hidden;
+ try {
+  const response = await fetch('/api/invitation', {
+   headers:{Authorization:'Bearer '+credential}, cache:'no-store',
+   signal:AbortSignal.any([controller.signal, AbortSignal.timeout(6000)]),
+  });
+  if (!current()) return;
+  if (response.status===429) {
+   const delay = Number(response.headers.get('Retry-After'));
+   view.invitationRetryAt = performance.now()+Math.max(4,Math.min(60,Number.isFinite(delay)?delay:5))*1000;
+  }
+  if (!response.ok) return;
+  const invite = await response.json();
+  if (!current() || invite?.session!==report.session || invite.lobby_revision!==game.lobby_revision
+      || typeof invite.room_code!=='string' || !/^[0-9]{6}$/.test(invite.room_code)) return;
+  const svg = invite.qr_svg;
+  const qrReady = typeof svg==='string' && svg.length<=65_536 && /^[A-Za-z0-9+/]+={0,2}$/.test(svg);
+  view.prompt.textContent = qrReady?'手机扫码入座':'用手机加入';
+  view.number.textContent = invite.room_code;
+  view.address.textContent = location.origin+'/phone';
+  view.address.hidden = qrReady;
+  view.qr.hidden = !qrReady;
+  view.invitation.hidden = false;
+  view.script.hidden = true;
+  if (qrReady) view.qr.src = 'data:image/svg+xml;base64,'+svg;
+ } catch {
+  // 公屏仍按原节奏更新；下一次有效大厅状态可重试邀请。
+ } finally {
+  if (view.invitationRequest===controller) view.invitationRequest=null;
+ }
 }
 
 function renderDisplay(report, waiting=false) {
  if (!report.active) {
+  retireInvitation(displayView);
   displayView = null;
   document.body.dataset.night = 'false';
   roomLabel.textContent = '狼人杀';
@@ -406,6 +492,7 @@ function renderDisplay(report, waiting=false) {
   g.paused ? '等待主持人恢复游戏。' : (g.host_script || g.announcements?.at(-1))?.text || '';
  if (view.title.textContent !== title) view.title.textContent = title;
  if (view.script.textContent !== script) view.script.textContent = script;
+ void updateInvitation(view, report, waiting);
  const seconds = Math.max(0, g.seconds_left ?? 0);
  view.clock.hidden = waiting || g.seconds_left == null && !g.paused;
  view.clock.textContent = view.clock.hidden ? '' : g.paused ? '已暂停' : String(Math.floor(seconds / 60)).padStart(2,'0') + ':' + String(seconds % 60).padStart(2,'0');
@@ -501,8 +588,33 @@ function refresh() {
  if (!busy && (player || lastDisplay) && performance.now()-viewUpdatedAt>3000) holdView();
  void poll();
 }
+function reopenScannedInvitation() {
+ if (!alive) return;
+ const scanned = roomCode(new URLSearchParams(location.hash.slice(1)));
+ if (!scanned) return;
+ history.replaceState(null,'',location.pathname);
+ invitationCode=scanned;
+ if (credential) {
+  // 先读取现有座位；有效座位继续使用，撤销后才回到选座。
+  const oldRead=readRequest;
+  readRequest=null;
+  oldRead?.controller.abort();
+  void poll();
+  return;
+ }
+ if (joinPending?.code===scanned) {
+  if (!busy) {joinRecovery();void submitJoin(joinPending);}
+  return;
+ }
+ retireRequests();
+ forgetJoin();
+ code=scanned;
+ notice.textContent='';
+ joinForm();
+}
+if(!display)window.addEventListener('hashchange',reopenScannedInvitation);
 window.addEventListener('blur',hideRole);
-document.addEventListener('visibilitychange',()=>{hideRole();refresh();});
+document.addEventListener('visibilitychange',()=>{hideRole();if(document.hidden)retireInvitation(displayView);refresh();});
 window.addEventListener('offline',holdView);
 window.addEventListener('online',refresh);
 window.addEventListener('pagehide',()=>{alive=false;retireRequests();hideRole();});

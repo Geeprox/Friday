@@ -231,6 +231,57 @@
   text-wrap: pretty;
 }
 
+.public-invitation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px clamp(14px, 2vw, 28px);
+  margin-block-start: clamp(18px, 2.2vw, 30px);
+}
+
+.public-join-qr {
+  display: block;
+  flex: none;
+  inline-size: clamp(108px, 13.2vw, 192px);
+  block-size: auto;
+  aspect-ratio: 1;
+  background: #fff;
+  border: 1px solid var(--stage-border);
+  border-radius: 8px;
+}
+
+.public-join-info {
+  flex: 1 1 108px;
+  min-width: 0;
+}
+
+.public-join-info h2 {
+  margin: 0 0 10px;
+  font-size: clamp(17px, 1.7vw, 26px);
+}
+
+.public-join-code {
+  display: grid;
+  gap: 3px;
+  color: var(--stage-muted);
+  font-size: clamp(14px, 1.22vw, 19px);
+}
+
+.public-join-code strong {
+  color: var(--ink);
+  font-size: clamp(23px, 2.4vw, 38px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+  letter-spacing: .06em;
+}
+
+.public-join-address {
+  margin: 8px 0 0;
+  color: var(--stage-muted);
+  font-size: clamp(14px, 1.3vw, 21px);
+  overflow-wrap: anywhere;
+}
+
 .public-illustration {
   position: relative;
   min-width: 0;
