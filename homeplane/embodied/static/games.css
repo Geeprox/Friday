@@ -62,6 +62,21 @@ body>.stage-header{grid-row:1}body>.workspace{grid-row:2}body>footer{grid-row:3}
 }
 .live-progress{display:block;width:fit-content;font-size:15px;line-height:1.4;font-weight:650;font-variant-numeric:tabular-nums;color:var(--ink);background:var(--paper);padding:4px 7px;border-radius:6px;margin:8px 0 0}
 .score.tennis-score{min-width:150px}.tennis-scoreline{display:flex;justify-content:space-between;align-items:center;gap:14px}.tennis-player{display:grid;justify-items:center;gap:5px;color:#285e53}.tennis-player[data-player="1"]{color:#8b3c29}.tennis-player small{font-size:12px;font-weight:550;color:inherit;margin:0;line-height:1.2}.tennis-player b{font:inherit;font-weight:650}.tennis-score-separator{font-size:22px;color:var(--muted);align-self:end}.tennis-rules{padding:8px 10px;margin:0;font-size:12px;line-height:1.6;color:var(--ink)}.player-feedback .tennis-event{font-weight:650;margin-top:3px}
+.tennis-player[data-receiving=true] small{font-weight:700;text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:3px}
+.tennis-lineup{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0 0 16px}
+.tennis-lineup:last-child{margin-bottom:0}
+.tennis-lineup>div{padding:9px 4px;border:1px solid #d9ded4;border-radius:9px;background:#edf1e8;color:#285e53}
+.tennis-lineup>div[data-player="1"]{border-color:#e7d7cc;background:#f4ebe4;color:#8b3c29}
+.tennis-lineup dt{font-size:14px;font-weight:650;line-height:1.4}
+.tennis-lineup dd{margin:3px 0 0;font-size:13px;line-height:1.4}
+body[data-mode=tennis] .overlay button{min-height:44px}
+@media(max-width:760px), (max-height:600px){
+ .overlay:has(.tennis-lineup){padding:12px 14px}
+ .overlay:has(.tennis-lineup) h2{margin-bottom:4px;font-size:19px}
+ .overlay:has(.tennis-lineup) p{margin-bottom:9px;font-size:13px;line-height:1.5}
+ .tennis-lineup{margin-bottom:10px}
+ .tennis-lineup>div{padding-block:5px}
+}
 .instruction:empty{display:none}
 .overlay h2:focus-visible{outline:2px solid var(--ink);outline-offset:4px}
 .overlay .resume-notice{margin:12px 0 0}

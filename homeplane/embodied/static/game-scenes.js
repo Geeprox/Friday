@@ -241,16 +241,19 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   for(const z of [.25,.75])line(project(.11,z),project(.89,z),'#fff6d9',3);
   line(project(.5,.25),project(.5,.75),'#fff6d9',3);c.restore();
   const guide=t.guide;
-  if(guide?.active&&Number.isFinite(guide.target_x)){
-   const z=guide.receiver===0?.1:.9,p=project(guide.target_x,z),left=project(guide.target_x-guide.reach,z),right=project(guide.target_x+guide.reach,z);
+  let cue;
+  if(running&&guide?.active&&Number.isFinite(guide.target_x)&&Number.isFinite(guide.reach)){
+   const window=guide.window>0&&guide.window<.5?guide.window:.1,z=guide.receiver===0?window:1-window;
+   const p=project(guide.target_x,z),left=project(guide.target_x-guide.reach,z),right=project(guide.target_x+guide.reach,z);
    const rx=Math.abs(right[0]-left[0])/2,ry=rx*.21,ink=guide.receiver===0?'#285e53':'#8b3c29';
-   c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle=guide.in_position?'#fff6d94d':'#fff6d91f';c.fill();c.strokeStyle=ink;c.lineWidth=4;c.stroke();
+   const swing=t.phase==='rally'&&guide.cue==='swing';
+   c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle=swing?'#fff6d9bd':guide.in_position?'#fff6d94d':'#fff6d91f';c.fill();c.strokeStyle=ink;c.lineWidth=swing?7:4;c.stroke();
    const approach=1+Math.max(0,Math.min(1,guide.seconds/.8))*.42;
-   if(!reduced.matches&&t.phase==='rally'){c.beginPath();c.ellipse(p[0],p[1],rx*approach,ry*approach,0,0,Math.PI*2);c.strokeStyle='#fff6d9';c.lineWidth=2;c.stroke();}
-   const labelFont=portrait?34:20;c.textAlign='center';c.font=`600 ${labelFont}px -apple-system, sans-serif`;
-   const label=t.phase==='ready'||t.phase==='point'?Math.max(1,Math.ceil(t.ready_seconds))+'':guide.cue==='swing'?'挥拍':(guide.receiver+1)+' 号落点';
-   const labelWidth=label.length*labelFont+20;c.fillStyle='#faf9f2';c.fillRect(p[0]-labelWidth/2,p[1]-ry-14-labelFont-5,labelWidth,labelFont+10);c.fillStyle=ink;
-   c.fillText(label,p[0],p[1]-ry-14);c.restore();
+   if(!reduced.matches&&t.phase==='rally'&&!swing){c.beginPath();c.ellipse(p[0],p[1],rx*approach,ry*approach,0,0,Math.PI*2);c.strokeStyle='#fff6d9';c.lineWidth=2;c.stroke();}
+   c.restore();
+   const number=(guide.receiver+1)+' 号';
+   const label=t.phase==='ready'||t.phase==='point'?Math.max(1,Math.ceil(t.ready_seconds||0))+' 秒':number+(swing?' · 挥拍':'落点');
+   cue={label,p,rx,ry,ink,swing};
   }
   const dt=Math.min(.1,Math.max(0,(at-lastAt)/1000));lastAt=at;
   function player(i){
@@ -278,6 +281,15 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   }
   if(!suspended&&t.event?.kind==='point'&&t.event.sequence!==lastTennisEvent){celebrateAt=motionAt;lastTennisEvent=t.event.sequence;}
   paperCelebration(motionAt);
+  if(cue){
+   const {label,p,rx,ry,ink,swing}=cue,font=portrait?36:24;
+   c.save();c.textAlign='center';c.textBaseline='middle';c.font=`650 ${font}px -apple-system, sans-serif`;
+   const halfWidth=c.measureText(label).width/2+font*.48,height=font*1.52;
+   const side=p[0]>800?-1:1,margin=portrait?340:24;
+   const x=Math.max(margin+halfWidth,Math.min(1600-margin-halfWidth,p[0]+side*(rx+halfWidth+12))),y=p[1]-ry;
+   c.beginPath();c.roundRect(x-halfWidth,y-height/2,halfWidth*2,height,font*.32);
+   c.fillStyle=swing?ink:'#faf9f2';c.fill();c.fillStyle=swing?'#fffaf2':ink;c.fillText(label,x,y+font*.05);c.restore();
+  }
  }
  return {prepare,ready,failed,reload,receive,adventure,training,tennis,
   teachingAnchor(mode){return mode==='hiit'?{x:800,y:535}:{x:800,y:790};},

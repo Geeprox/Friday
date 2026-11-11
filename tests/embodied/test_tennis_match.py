@@ -4,6 +4,7 @@ import math
 import pytest
 
 from homeplane.embodied.motion_games import MotionGames
+from tests.embodied.test_motion_games import LOCK, human
 
 
 def players(*, swing=-100, lateral=0, observation='fresh'):
@@ -74,6 +75,7 @@ def test_visible_intercept_is_the_actual_analytic_ball_arrival(receiver, difficu
         remaining -= step
     assert game.ball['x'] == pytest.approx(expected, abs=1e-6)
     window = {'easy':.14, 'standard':.1, 'challenge':.08}[difficulty]
+    assert guide['window'] == pytest.approx(window)
     assert game.ball['z'] == pytest.approx(window if receiver == 0 else 1-window, abs=1e-6)
 
 
@@ -127,3 +129,41 @@ def test_guide_has_no_fake_target_for_unknown_players_or_finished_match():
     state = game.publish(players(), 'complete', '')['tennis']
     assert state['phase'] == 'complete' and not state['guide']['active']
     assert all(math.isfinite(value) for key, value in state['guide'].items() if type(value) is float)
+
+
+def test_lineup_keeps_mirrored_player_numbers_through_dropout_and_replay():
+    game = MotionGames()
+    game.reset('tennis')
+    right, left = human(1, x=.3), human(2, x=.7)
+    state = game.update([right, left], LOCK, 10)
+    assert game.slots == [2, 1]
+    assert state['tennis']['lineup'] == ['calibrating', 'calibrating']
+    for step in range(1, 15):
+        state = game.update([left, right], LOCK, 10 + step * .1)
+    assert state['status'] == 'playing'
+    spectator = human(3, x=.7)
+    state = game.update([right, spectator], LOCK, 11.5)
+    assert state['status'] == 'waiting'
+    assert state['tennis']['lineup'] == ['missing', 'ready']
+    assert not state['tennis']['guide']['active']
+    state = game.update([right, left], LOCK, 11.6)
+    assert state['status'] == 'playing'
+    assert [player['id'] for player in state['players']] == [2, 1]
+    assert game.update([], dict(status='moving'), 11.7)['tennis']['lineup'] == []
+    assert game.set_paused(True)['tennis']['lineup'] == []
+    assert game.set_paused(False)['tennis']['lineup'] == []
+    game.reset('tennis')
+    assert game.public['tennis']['lineup'] == []
+
+
+def test_lineup_requests_visible_feet_for_only_the_affected_player():
+    game = MotionGames()
+    game.reset('tennis')
+    right, left = human(1, x=.3), human(2, x=.7)
+    for step in range(15):
+        game.update([left, right], LOCK, 10 + step * .1)
+    right.pop('motion_anchor')
+    for step in range(15, 20):
+        state = game.update([right, left], LOCK, 10 + step * .1)
+    assert state['status'] == 'paused'
+    assert state['tennis']['lineup'] == ['ready', 'feet']

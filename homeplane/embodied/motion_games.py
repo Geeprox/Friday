@@ -1042,17 +1042,17 @@ class MotionGames:
             self.round_pause = 2.0
 
     def tennis_public(self, players, status):
-        """Guidance uses the exact flight equation and reach used by tennis()."""
+        """站位沿用本局玩家编号，落点提示与击球判定使用同一轨迹和窗口。"""
         phase = ('complete' if self.tennis_winner is not None else
                  'point' if self.round_pause > 0 and self.tennis_event and self.tennis_event['kind']=='point' else
                  'ready' if self.round_pause > 0 else 'rally')
         receiver = self.ball['toward']
         active = self.mode == 'tennis' and status == 'playing' and len(players) == 2 and self.tennis_winner is None
+        window = TENNIS_WINDOW * self.difficulty.tennis_window
         guide = dict(active=active, receiver=receiver, target_x=None, seconds=None,
-                     in_position=False, cue=None, reach=TENNIS_REACH)
+                     in_position=False, cue=None, reach=TENNIS_REACH, window=window)
         if active:
             z = self.ball['z']
-            window = TENNIS_WINDOW * self.difficulty.tennis_window
             seconds = max(0, (z-window if receiver == 0 else 1-window-z)
                           / max(.01, self.ball['speed']))
             target = self.ball['target_x'] + (self.ball['x']-self.ball['target_x'])*math.exp(-TENNIS_CURVE*seconds)
@@ -1062,11 +1062,25 @@ class MotionGames:
                    ('right' if delta > 0 else 'left') if not positioned else
                    'swing' if seconds <= TENNIS_CUE_LEAD else 'wait')
             guide.update(target_x=target, seconds=seconds, in_position=positioned, cue=cue)
+        lineup = []
+        if (self.mode == 'tennis' and len(self.slots) == 2 and self.previous is not None and not self.source_resume_required
+                and not self.manually_paused
+                and (status in {'waiting', 'calibrating'} or (status == 'paused' and players))):
+            by_id = {player['id']: player for player in players}
+            for track in self.slots:
+                player = by_id.get(track)
+                state = 'missing'
+                if player is not None:
+                    if not player['located']:
+                        state = 'feet'
+                    else:
+                        state = 'ready' if player['calibrated'] else 'calibrating'
+                lineup.append(state)
         event = dict(self.tennis_event, age=round(max(0, self.elapsed-self.tennis_event['elapsed']), 3)) if self.tennis_event else None
         return dict(ball=dict(self.ball), score=list(self.score), rally=self.rally, best_rally=self.best_rally,
                     winner=self.tennis_winner, target=TENNIS_TARGET, cap=TENNIS_CAP,
                     phase=phase, ready_seconds=round(self.round_pause, 3), guide=guide,
-                    event=event, flight=self.tennis_flight)
+                    event=event, flight=self.tennis_flight, lineup=lineup)
 
     def publish(self, players, status, reason):
         if self.mode == 'quest' and status not in {'playing', 'complete'}:
