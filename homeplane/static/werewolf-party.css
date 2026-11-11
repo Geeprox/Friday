@@ -34,6 +34,16 @@
   font-size: 20px;
 }
 
+.party-sync {
+  margin-block: 0 22px;
+  font-size: 16px;
+}
+
+.action-panel > .choice-status {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
 .action-panel .seat-grid {
   gap: 8px;
 }

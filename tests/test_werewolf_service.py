@@ -129,6 +129,52 @@ async def test_lobby_tokens_revoked_and_choice_retries_are_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_phone_recovers_its_receipt_after_advancing_without_reapplying_a_choice():
+    service = await owner()
+    try:
+        tokens = {}
+        for seat in range(1, 7):
+            joined = await service.join(Join(code=service.join_code, seat=seat, name=f"合成玩家{seat}"))
+            tokens[seat] = {"Authorization": "Bearer " + joined["token"]}
+            await service.ready(joined["token"], True)
+        await service.control("start")
+        wolf = next(seat for seat, player in service.game.players.items() if player.role == "wolf")
+        other = next(seat for seat in tokens if seat != wolf)
+        app = phone_app(service, service.origin)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=service.origin) as client:
+            initial = (await client.get("/api/player", headers=tokens[wolf])).json()
+            assert initial["session"] == service.session and initial["choice_version"] == 0
+            first = dict(action="pass", target=None, revision=initial["public"]["revision"],
+                         event_id="first_choice_0001", expected_choice_version=0)
+            current = dict(first, action="attack", target=other, event_id="latest_choice_002", expected_choice_version=1)
+            assert (await client.post("/api/choice", headers=tokens[wolf], json=first)).status_code == 200
+            latest = (await client.post("/api/choice", headers=tokens[wolf], json=current)).json()
+            assert latest["submitted"] == ["attack", other] and latest["choice_version"] == 2
+
+            late = dict(first, event_id="delayed_choice_03")
+            rejected = await client.post("/api/choice", headers=tokens[wolf], json=late)
+            assert rejected.status_code == 409 and rejected.json()["detail"] == "choice_changed"
+            replay = (await client.post("/api/choice", headers=tokens[wolf], json=first)).json()
+            assert replay["choice_receipt"] == {"event_id": first["event_id"], "recorded": True}
+            assert replay["submitted"] == ["attack", other] and replay["choice_version"] == 2
+
+            await service.control("advance")
+            probe = {"X-Friday-Choice": current["event_id"]}
+            recovered = (await client.get("/api/player", headers={**tokens[wolf], **probe})).json()
+            assert recovered["public"]["revision"] != initial["public"]["revision"] and recovered["submitted"] is None
+            assert recovered["choice_receipt"] == {"event_id": current["event_id"], "recorded": True}
+            unrelated = (await client.get("/api/player", headers={**tokens[other], **probe})).json()
+            assert unrelated["choice_receipt"]["recorded"] is False
+            malformed = (await client.get("/api/player", headers={**tokens[wolf], "X-Friday-Choice": "!"})).json()
+            assert "choice_receipt" not in malformed
+            public = await client.get("/api/public", headers={**probe, "Authorization": "Bearer " + service.public_token})
+            assert public.status_code == 200
+            assert current["event_id"] not in public.text and "choice_version" not in public.text
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_host_command_origin_and_listener_not_opened_on_inspection():
     service = WerewolfService(HostEffects(SilentLights()), gateway_factory=NoNetwork, addresses=lambda: [])
     app = FastAPI()

@@ -30,6 +30,7 @@ from .werewolf import GameError, WerewolfGame
 from .werewolf_camera import observation as camera_observation, hints as camera_advice, picture as camera_picture
 
 STATIC = Path(__file__).parent / "static"
+CHOICE_EVENT_ID = r"^[a-zA-Z0-9_-]{12,64}$"
 
 
 def local_party_addresses():
@@ -69,7 +70,8 @@ class Choice(BaseModel):
     action: str = Field(pattern=r"^(attack|check|guard|save|poison|vote|shoot|pass)$")
     target: int | None = Field(default=None, ge=1, le=12)
     revision: int = Field(ge=0)
-    event_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{12,64}$")
+    event_id: str = Field(pattern=CHOICE_EVENT_ID)
+    expected_choice_version: int | None = Field(default=None, ge=0)
 
 
 class Ready(BaseModel):
@@ -152,6 +154,7 @@ class WerewolfService:
         self.join_retries = {}
         self.join_key = None
         self.retries = OrderedDict()
+        self.choice_versions = {}
         self.host_retries = OrderedDict()
         self.gateway = self.pump = self.effect_task = None
         self.effect_tasks = set()
@@ -180,6 +183,13 @@ class WerewolfService:
         if seat is None or self.game is None or seat not in self.game.players:
             raise GameError("player_access_required")
         return seat
+
+    def _private(self, seat, receipt_id=None):
+        result = dict(self.game.private(seat), session=self.session,
+                      choice_version=self.choice_versions.get(seat, 0))
+        if receipt_id and re.fullmatch(CHOICE_EVENT_ID, receipt_id):
+            result['choice_receipt'] = dict(event_id=receipt_id, recorded=(seat, receipt_id) in self.retries)
+        return result
 
     def public_access(self, token):
         return bool(self.public_token and isinstance(token, str) and secrets.compare_digest(self.public_token, token))
@@ -268,7 +278,7 @@ class WerewolfService:
                     if self.join_retries[key] != fingerprint:
                         raise GameError('event_conflict')
                     seat = self._player(token)  # Removed players stay revoked.
-                    return dict(token=token, session=self.session, player=self.game.private(seat))
+                    return dict(token=token, session=self.session, player=self._private(seat))
                 # Never evict a revoked receipt and accidentally revive its old
                 # intent. Only a new room retires this bounded in-memory table.
                 if len(self.join_retries) >= 128:
@@ -279,7 +289,7 @@ class WerewolfService:
             self.credentials[self._digest(token)] = payload.seat
             if key is not None:
                 self.join_retries[key] = fingerprint
-            return dict(token=token, session=self.session, player=self.game.private(payload.seat))
+            return dict(token=token, session=self.session, player=self._private(payload.seat))
 
     async def lobby(self, code):
         async with self.lock:
@@ -289,16 +299,16 @@ class WerewolfService:
                 raise GameError("join_closed")
             return dict(self.game.public(), session=self.session)
 
-    async def private(self, token):
+    async def private(self, token, receipt_id=None):
         async with self.lock:
             seat = self._player(token)
-            return self.game.private(seat)
+            return self._private(seat, receipt_id)
 
     async def ready(self, token, value):
         async with self.lock:
             seat = self._player(token)
             self.game.ready(seat, value)
-            return self.game.private(seat)
+            return self._private(seat)
 
     async def choose(self, token, choice: Choice):
         async with self.lock:
@@ -309,12 +319,18 @@ class WerewolfService:
             if key in self.retries:
                 if self.retries[key] != digest:
                     raise GameError("event_conflict")
-                return self.game.private(seat)
+                return self._private(seat, choice.event_id)
+            if choice.revision != self.game.revision:
+                raise GameError("phase_changed")
+            version = self.choice_versions.get(seat, 0)
+            if choice.expected_choice_version is not None and choice.expected_choice_version != version:
+                raise GameError("choice_changed")
             self.game.act(seat, choice.action, choice.target, choice.revision)
+            self.choice_versions[seat] = version + 1
             self.retries[key] = digest
             if len(self.retries) > 2048:
                 self.retries.popitem(last=False)
-            return self.game.private(seat)
+            return self._private(seat, choice.event_id)
 
     def _host_admission(self, proof, action, seat=None):
         if proof is None:
@@ -625,6 +641,7 @@ class WerewolfService:
                     self.effects.lights_active = False
                     self.effects.narration = False
                     self.retries.clear()
+                    self.choice_versions.clear()
                     self.bindings.clear()
                     self.camera_hints = []
                     self.camera_candidates = []
@@ -733,7 +750,7 @@ def phone_app(owner, origin):
 
     @app.get("/api/player")
     async def player(request: Request):
-        return await owner.private(token(request))
+        return await owner.private(token(request), request.headers.get('x-friday-choice'))
 
     @app.post("/api/ready")
     async def ready(payload: Ready, request: Request):
