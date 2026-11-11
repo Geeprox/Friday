@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 class ReviewReceipt:
     pending: bool = True
     saved_at: float | None = None
+    event_id: str | None = None
 
     def suppresses(self, now):
         return self.pending or self.saved_at is not None and 0 <= now - self.saved_at < 60
@@ -81,6 +82,7 @@ class SafetyRecorder:
         self.completed += 1
         if job.receipt is not None:
             job.receipt.saved_at = self.clock()
+            job.receipt.event_id = job.identifier
             job.receipt.pending = False
 
     def has_camera(self, camera):

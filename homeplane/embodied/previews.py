@@ -49,7 +49,7 @@ async def camera_is_open(selected, *, client_factory=None, parameter_factory=Non
 class PreviewPool:
     def __init__(self, identity_store=None, continuous=False, *, recognize=False, control_camera=False,
                  on_observation=None, on_audio=None, on_clear=None, focus=None, occupied_elsewhere=None,
-                 review_pending=None, fall_pending=None, sound_cue=None, wall=None, intent_factory=None):
+                 review_pending=None, fall_pending=None, sound_cue=None, sound_view=None, wall=None, intent_factory=None):
         self.wall = wall
         self.sessions = {}
         self.focus = focus or (lambda camera: None)
@@ -57,6 +57,7 @@ class PreviewPool:
         self.review_pending = review_pending or (lambda camera, session: False)
         self.fall_pending = fall_pending or (lambda camera, session: False)
         self.sound_cue = sound_cue or (lambda camera, session, active: None)
+        self.sound_view = sound_view
         self.runtime_log = RuntimeLog(DATA / "logs" / "camera-motion")
         self.lock = asyncio.Lock()
         self.identity_store = identity_store
@@ -520,6 +521,13 @@ class PreviewPool:
                     item['survey_attempts'] = director.survey_attempts
                     item['survey_confirmed_moves'] = director.survey_confirmed_moves
                     if item['mode']=='hold':director.hold()
+                    if (proof := director.take_sound_view()) and self.sound_view is not None:
+                        def source_current(session=sample['session_id'], expected_epoch=epoch):
+                            return (self.source_current(selected['id'], process)
+                                    and recognizer.session == session and item['mode'] == 'auto'
+                                    and item['control_epoch'] == expected_epoch)
+
+                        self.sound_view(selected['id'], proof, sample['_follow_jpeg'], source_current=source_current)
                     item['camera_control'] = dict(director.public(),mode=item['mode'],
                                                  intent_status=item.get('intent_status', 'default'))
                     if direction:

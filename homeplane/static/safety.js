@@ -158,37 +158,49 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    }
    return grid;
  }
+ function soundFrameGroup(title,event,frames){
+   return add(el('section',null,{class:'safety-sound-evidence'}),el('h3',title),frameGrid(event,frames));
+ }
  function show(event,{focus=false}={}){
    const fingerprint=JSON.stringify(event);
    if(selected===event.id&&lastDetail===fingerprint){if(focus)focusDetail(detailBody.querySelector('h2'));return;}
    lastDetail=fingerprint;
    const focusedReview=selected===event.id&&document.activeElement&&detailBody.contains(document.activeElement)?document.activeElement.getAttribute('data-review'):null;
+   const focusedRecording=selected===event.id&&document.activeElement===detailBody.querySelector('.primary');
    const extraOpen=selected===event.id&&detailBody.querySelector('.safety-extra-frames')?.open;
    if(selected!==event.id){selectionVersion++;stopRecording();recordings.replaceChildren();}
    selected=event.id;detail.hidden=false;
    const heading=el('h2',eventTitle(event),{tabindex:'-1'});
    const rapid=isRapidMovementReview(event),review=reviewNames[event.review]||'待查看';
    const source=event.camera?(event.camera_name||'摄像头记录')+' · '+new Date(eventTime(event)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'';
+   const searchOrdinals=new Set(event.kind==='sound_review'&&Array.isArray(event.sound_search_views)?
+    event.sound_search_views.map(view=>view?.ordinal):[]);
+   const searchFrames=event.frames.filter(frame=>searchOrdinals.has(frame.ordinal)).sort((a,b)=>a.at-b.at);
+   const eventFrames=event.frames.filter(frame=>!searchOrdinals.has(frame.ordinal));
    detailBody.replaceChildren(heading);
-   if(rapid)detailBody.append(el('p',[source,review].filter(Boolean).join(' · '),{class:'caption'}));
+   if(rapid||searchFrames.length)detailBody.append(el('p',[source,review].filter(Boolean).join(' · '),{class:'caption'}));
    else detailBody.append(el('p',event.message),el('p',review));
+   if(searchFrames.length&&event.sound_evidence?.pattern==='sustained_infant_cry')detailBody.append(el('p',event.message));
    for(const[id,row]of eventRows)row.setAttribute('aria-current',String(id===event.id));
    if(event.kind==='fall'||isOutputTest(event))detailBody.append(el('p',audioNames[event.announcement.status]||'播报状态未知',{role:'status'}));
    if(event.observation&&!rapid)detailBody.append(el('h3','模型观察 · 待你核对'),el('p',event.observation));
-   if(source&&!rapid)detailBody.append(el('p',source,{class:'caption'}));
+   if(source&&!rapid&&!searchFrames.length)detailBody.append(el('p',source,{class:'caption'}));
    const actions=el('div',null,{class:'safety-actions'});
-   if(!event.simulated&&event.camera){const recording=button('查看附近录像',()=>void openRecordings(event));recording.className='primary';actions.append(recording);}
    let restoreFocus;
+   if(!event.simulated&&event.camera){const recording=button('查看附近录像',()=>void openRecordings(event));recording.className='primary';actions.append(recording);if(focusedRecording)restoreFocus=recording;}
    for(const[value,label]of [['acknowledged',event.review==='acknowledged'?'已查看':'我已查看'],['false_alarm','标记误报']]){const action=button(label,async()=>{try{await api('/events/'+event.id+'/review',{review:value});await refresh();}catch{status.textContent='标记未保存，请重试。';}});action.setAttribute('data-review',value);action.setAttribute('aria-pressed',String(event.review===value));if(value===focusedReview)restoreFocus=action;actions.append(action);}
    if(!rapid)detailBody.append(actions);
-   if(event.frames.length){
+   if(searchFrames.length){
+     if(eventFrames.length)detailBody.append(soundFrameGroup('异响时的画面',event,eventFrames));
+     detailBody.append(soundFrameGroup('环视画面',event,searchFrames));
+   }else if(eventFrames.length){
      detailBody.append(el('h3','关键帧'));
      if(event.visual_kind==='prone_posture'&&event.frames.length===8){
        const [first,...rest]=event.frames,second=rest[3];
        detailBody.append(frameGrid(event,[first,second]));
        const extra=add(el('details',null,{class:'safety-extra-frames'}),el('summary','查看其余关键帧'),frameGrid(event,rest.filter(frame=>frame!==second)));
        extra.open=Boolean(extraOpen);detailBody.append(extra);
-     }else detailBody.append(frameGrid(event,event.frames));
+     }else detailBody.append(frameGrid(event,eventFrames));
    }else detailBody.append(el('p',isOutputTest(event)?'播报测试不采集摄像头画面。':'没有可用关键帧。',{class:'caption'}));
    if(rapid)detailBody.append(actions);
    const exportEvent=button('导出事件记录',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(event,null,2)],{type:'application/json'}));const a=el('a',null,{href:url,download:'Friday-safety-'+event.id+'.json'});a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});exportEvent.className='text-button safety-export';detailBody.append(exportEvent);

@@ -322,7 +322,7 @@ async def secondary_audio(camera_id, packet):
 previews = PreviewPool(identity_store=identity_store, continuous=True, recognize=True, wall=wall,
     on_observation=secondary_observation,on_audio=secondary_audio,on_clear=clear_camera,
     review_pending=safety.review_pending, fall_pending=safety.fall_pending,
-    sound_cue=safety.sound_search_cue,
+    sound_cue=safety.sound_search_cue, sound_view=safety.offer_sound_search_frame,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
     occupied_elsewhere=lambda cid: (cid!=SELECTED['id'] and bool(view().get('people')))
         or any(other!=cid and previews.status(other)['state']=='live' and item.get('people',0)
@@ -470,6 +470,15 @@ async def camera_search():
                                         sound_cue=safety.sound_search_cue(SELECTED['id'], sample.get('session_id'),
                                                                          director.sound_search_cue)) if planner.mode!='hold' else None
             if planner.mode == 'hold':director.hold()
+            if proof := director.take_sound_view():
+                def source_current(owner=capture, source_generation=generation,
+                                   session=sample['session_id'], revision=planner.intent_revision):
+                    return (owner is not None and owner is capture and owner.returncode is None
+                            and source_generation == generation and state.get('status') == 'live'
+                            and state.get('session_id') == session and camera_planner is planner
+                            and planner.mode == 'auto' and planner.intent_revision == revision)
+
+                safety.offer_sound_search_frame(SELECTED['id'], proof, last_jpeg, source_current=source_current)
             state['camera_control'] = dict(planner.public(lease.presets), **director.public())
             if direction is not None:
                 try:

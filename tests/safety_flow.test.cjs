@@ -80,6 +80,24 @@ test('sustained infant cry remains distinguishable on home, event list and detai
  view.dispose();
 });
 
+test('verified sound-search views join the same incident in capture order and retain review focus',async()=>{
+ const sound={...event('a'),frames:[{ordinal:0,at:1800000000}]};
+ const f=fixture([sound]),view=f.mount({initialEventId:sound.id});
+ await settle();
+ assert(f.by('h3','关键帧'));assert(!f.by('h3','环视画面'));
+ const recording=f.by('button','查看附近录像');recording.focus();
+ f.events[0].frames.push({ordinal:1,at:1800000011},{ordinal:2,at:1800000006});
+ f.events[0].sound_search_views=[{step:2,ordinal:1},{step:1,ordinal:2}];
+ await f.tick();
+ assert(f.by('h3','异响时的画面'));assert(f.by('h3','环视画面'));
+ const grids=all(f.root).filter(n=>n.attrs.class==='safety-frames');
+ assert.deepEqual(grids.map(grid=>all(grid).filter(n=>n.tagName==='img').map(n=>n.attrs.src)),
+  [[0],[2,1]].map(group=>group.map(i=>'/api/embodied/safety/events/'+sound.id+'/frames/'+i)));
+ assert.equal(f.focused,f.by('button','查看附近录像'));
+ assert(!f.calls.some(call=>call.path.endsWith('/recordings')||call.body));
+ view.dispose();
+});
+
 test('a replaced posture camera needs a fresh selection and keeps its field through refresh',async()=>{
  const f=fixture([]),id='cam_'+'a'.repeat(10);f.posture({camera:id,state:'source_changed',cameras:[{id,name:'照护镜头'}]});
  const view=f.mount();await settle();

@@ -103,6 +103,7 @@ class CameraDirector:
         self.sound_view = None
         self.sound_route = ()
         self.sound_step = 0
+        self.sound_confirmed_view = None
         self.sound_intent_since = None
         self.last_sound_captured = -math.inf
 
@@ -407,7 +408,8 @@ class CameraDirector:
                     or sound_cue is not self.sound_search_cue or review_pending or fall_pending):
                 return False
             shift = _view_shift(pending['view'], sample.get('_patrol_view'))
-            return ((self.mode == 'survey' or not (people or occupied_elsewhere))
+            occupied = people or pending['phase'] == 'patrolling' and occupied_elsewhere
+            return ((self.mode == 'survey' or not occupied)
                     and shift is not None and math.hypot(*shift) <= .012)
         if pending['phase'] != 'following':
             return False
@@ -468,7 +470,11 @@ class CameraDirector:
         self.scan_steps = 0
         self.blocked_positions.clear()
 
-    def _confirm_patrol(self, sample, now):
+    def take_sound_view(self):
+        proof, self.sound_confirmed_view = self.sound_confirmed_view, None
+        return proof
+
+    def _confirm_patrol(self, sample, now, sound_cue=None):
         pending = self.patrol_confirmation
         if pending is None:
             return False
@@ -514,6 +520,9 @@ class CameraDirector:
                 self.position = self._next_position(pending['direction'])
                 if pending.get('sound_search'):
                     self.sound_step += 1
+                    if (sound_cue is not None and sound_cue is self.sound_search_cue
+                            and sample.get('tracking_current') is True):
+                        self.sound_confirmed_view = (sound_cue, self.sound_step, stamp)
                 elif self.mode == 'survey':
                     self.survey_confirmed_moves += 1
                 else:
@@ -610,6 +619,7 @@ class CameraDirector:
 
     def choose(self, sample, now, *, focus=None, occupied_elsewhere=False, review_pending=False, fall_pending=False,
                sound_cue=None):
+        self.sound_confirmed_view = None
         if self.mode == 'hold':
             self.phase = 'held'
             self.tilt_observation = None
@@ -657,7 +667,7 @@ class CameraDirector:
             self.visible_samples = self.obscured_samples = 0
             self.clear_since = self.obscured_since = None
             self.phase = 'checking_view'
-        if self._confirm_patrol(sample, now):
+        if self._confirm_patrol(sample, now, sound_cue):
             return None
         if self.mode == 'survey' and (self.survey_interrupted or self.survey_attempts >= self.SURVEY_ATTEMPT_LIMIT
                                       or self.survey_confirmed_moves >= len(self.SURVEY_ROUTE)):
@@ -780,7 +790,7 @@ class CameraDirector:
         if not explicit:
             if self.mode == 'auto' and self.reframe_started is None:
                 direction = self._sound_search(sample, now, sound_cue, may_search=not (
-                    people or occupied_elsewhere or review_pending or fall_pending))
+                    people or review_pending or fall_pending))
                 if direction or self.sound_search_cue is not None:
                     return direction
             ids = {p['id'] for p in people}

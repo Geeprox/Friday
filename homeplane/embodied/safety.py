@@ -216,13 +216,18 @@ class SafetyStore:
             )
             db.execute("DELETE FROM safety_frames WHERE event NOT IN (SELECT id FROM safety_events)")
 
-    @staticmethod
-    def _admit(db, *, policy_revision=None, feature=None, guard=None):
+    @classmethod
+    def _admit(cls, db, *, policy_revision=None, feature=None, guard=None):
         if guard is not None and not guard():
             raise SafetyAdmissionChanged('safety_source_changed')
         if policy_revision is not None:
-            row = db.execute('SELECT value FROM safety_policy WHERE id=1').fetchone()
-            policy = SafetyPolicy.model_validate_json(row[0]) if row else SafetyPolicy()
+            if feature == 'sound_search':
+                policy = cls._read_policy(db)
+                if not policy.sound_review:
+                    raise SafetyAdmissionChanged('safety_policy_changed')
+            else:
+                row = db.execute('SELECT value FROM safety_policy WHERE id=1').fetchone()
+                policy = SafetyPolicy.model_validate_json(row[0]) if row else SafetyPolicy()
             if (not policy.enabled or policy.revision != policy_revision
                     or feature is not None and not getattr(policy, feature)):
                 raise SafetyAdmissionChanged('safety_policy_changed')
@@ -329,6 +334,38 @@ class SafetyStore:
             if count < 22:
                 db.execute("INSERT INTO safety_frames VALUES (?,?,?,?)", (event_id, count, stamp, jpeg))
             self._prune(db)
+
+    def append_sound_search_frame(self, event_id, source, step, stamp, jpeg, *, policy_revision, guard):
+        """将已核实的环视画面追加到同一事件，重复写入不增加关键帧。"""
+        if (not isinstance(event_id, str) or not re.fullmatch(r'[a-f0-9]{32}', event_id)
+                or type(step) is not int or not 1 <= step <= 3
+                or type(stamp) not in (int, float) or not math.isfinite(stamp)
+                or not isinstance(jpeg, bytes) or not 0 < len(jpeg) <= self.MAX_FRAME):
+            raise ValueError('sound_search_frame_invalid')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            self._admit(db, policy_revision=policy_revision, feature='sound_search', guard=guard)
+            row = db.execute('SELECT value FROM safety_events WHERE id=?', (event_id,)).fetchone()
+            event = json.loads(row[0]) if row else {}
+            captured_at = event.get('captured_at')
+            if (event.get('kind') != 'sound_review' or event.get('review') == 'false_alarm'
+                    or (event.get('camera'), event.get('session'), event.get('camera_source_context')) != source
+                    or type(captured_at) not in (int, float) or not math.isfinite(captured_at) or stamp <= captured_at):
+                raise SafetyAdmissionChanged('safety_event_changed')
+            views = event.setdefault('sound_search_views', [])
+            if any(view['step'] == step for view in views):
+                return
+            ordinal = db.execute('SELECT COALESCE(MAX(ordinal),-1)+1 FROM safety_frames WHERE event=?',
+                                 (event_id,)).fetchone()[0]
+            if ordinal >= 22:
+                return
+            db.execute('INSERT INTO safety_frames VALUES (?,?,?,?)', (event_id, ordinal, stamp, jpeg))
+            views.append(dict(step=step, ordinal=ordinal))
+            db.execute('UPDATE safety_events SET value=? WHERE id=?',
+                       (json.dumps(event, ensure_ascii=False), event_id))
+            self._prune(db)
+            if not guard():
+                raise SafetyAdmissionChanged('safety_source_changed')
 
     def claim_output(self, owner, *, policy_revision=None):
         with self.connect() as db:
@@ -618,6 +655,8 @@ class SafetyRuntime:
     MAX_CAMERAS = 8
     MAX_PEOPLE = 32
     POLICY_TTL = 2
+    SOUND_VIEW_MAX_PENDING = 4
+    SOUND_VIEW_SAVE_AGE = 5
 
     def __init__(self, store, *, labels=lambda: {}, speaker=None, visual_engine=None, sound_engine=None):
         self.store, self.labels, self.speaker = store, labels, speaker
@@ -629,6 +668,7 @@ class SafetyRuntime:
         self.frames = {}
         self.post_frames = {}
         self.tasks = set()
+        self.sound_view_tasks = {}
         self.last_seen = {}
         self.source_epochs = {}
         self.source_tokens = {}
@@ -753,6 +793,7 @@ class SafetyRuntime:
         while self.observation_task is not None:
             await asyncio.shield(self.observation_task)
         await self.recording.drain()
+        await asyncio.gather(*self.sound_view_tasks.values())
         await self.io.drain()
 
     def _sound_current(self, camera, session, context):
@@ -777,6 +818,50 @@ class SafetyRuntime:
             return None
         cue = self.sound.search_cue(camera, session, active)
         return cue if cue is not None and self.sources.get(camera) == (session, cue.context) else None
+
+    def offer_sound_search_frame(self, camera, proof, jpeg, *, source_current):
+        cue, step, captured = proof
+        event_id = cue.receipt.event_id
+        key = (event_id, step)
+        if (event_id is None or key in self.sound_view_tasks
+                or len(self.sound_view_tasks) >= self.SOUND_VIEW_MAX_PENDING
+                or type(step) is not int or not 1 <= step <= 3
+                or not isinstance(jpeg, bytes) or not 0 < len(jpeg) <= self.store.MAX_FRAME
+                or not 0 <= time.monotonic() - captured <= 1.5
+                or captured <= cue.captured
+                or self.sound_search_cue(camera, cue.session, cue) is not cue):
+            return False
+        stamp = cue.captured_at + (captured - cue.captured)
+
+        def current():
+            policy = self._cached_policy()
+            return (policy.enabled and policy.sound_review and policy.sound_search and policy.revision == cue.revision
+                    and self.sound.search_generation == cue.generation and self._sound_input_open()
+                    and 0 <= time.monotonic() - captured <= self.SOUND_VIEW_SAVE_AGE and source_current())
+
+        if not current():
+            return False
+
+        async def save():
+            for attempt in range(2):
+                if not current():
+                    return
+                try:
+                    await self.io.call(self.store.append_sound_search_frame, event_id, (camera, cue.session, cue.context),
+                                       step, stamp, jpeg, policy_revision=cue.revision, guard=current)
+                    return
+                except SafetyAdmissionChanged:
+                    return
+                except (OSError, sqlite3.Error, SafetyStorageBusy):
+                    if attempt:
+                        self.error = 'safety_storage_unavailable'
+                    else:
+                        await asyncio.sleep(.2)
+
+        task = asyncio.create_task(save(), name='friday-sound-search-frame')
+        self.sound_view_tasks[key] = task
+        task.add_done_callback(lambda _: self.sound_view_tasks.pop(key, None))
+        return True
 
     def _sound_keyframe(self, camera, session, context, start, end):
         if not self._sound_current(camera, session, context):
@@ -1295,7 +1380,8 @@ class SafetyRuntime:
     async def _close(self):
         failures = []
         try:
-            owners = [task for task in (self.observation_task, self.policy_task, self.retention_task) if task is not None]
+            owners = [task for task in (self.observation_task, self.policy_task, self.retention_task,
+                                        *self.sound_view_tasks.values()) if task is not None]
             for task in owners:
                 task.cancel()
             failures.extend(await asyncio.gather(*owners, return_exceptions=True))

@@ -72,6 +72,7 @@ class SoundSearchCue:
     revision: int
     generation: int
     captured: float
+    captured_at: float
     receipt: ReviewReceipt
 
 
@@ -272,7 +273,7 @@ class SoundReviewer:
                 and self._source_current(camera, state)):
             self.search_cues.pop(camera, None)
             self.search_cues[camera] = SoundSearchCue(camera, state.session, state.context, state.revision,
-                                                     self.search_generation, latest.captured, delivered)
+                                                     self.search_generation, latest.captured, latest.captured_at, delivered)
             if len(self.search_cues) > 8:
                 self.search_cues.pop(next(iter(self.search_cues)))
 

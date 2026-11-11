@@ -12,6 +12,7 @@ from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
+from homeplane.embodied.safety import SafetyAdmissionChanged
 from homeplane.embodied.sound_review import SoundReviewer
 from tests.embodied.test_camera_director import patrol_view
 from tests.embodied.test_review_motion import source_function
@@ -35,7 +36,7 @@ class EpisodeEngine(SlowEngine):
 
 class SoundPatrol:
     def __init__(self, tmp_path, monkeypatch, owner, *, episode=(14.2, 18.2), infant=False,
-                 target=False, motor_shifts_view=True, enable_search=True):
+                 target=False, motor_shifts_view=True, enable_search=True, occupied_elsewhere=False):
         self.j = Journey(tmp_path, monkeypatch)
         if enable_search:
             self.j.store.configure_sound_search(self.j.store.policy().revision, True)
@@ -47,9 +48,12 @@ class SoundPatrol:
         self.view_offset = 0.
         self.moves, self.phases = [], []
         self.sound_moves, self.follow_moves = [], []
+        self.sound_sent_at = []
         self.target, self.motor_shifts_view = target, motor_shifts_view
+        self.occupied_elsewhere = occupied_elsewhere
         self.state = {}
         self.session = "SYNTHETIC-sound-motion"
+        self.process = SimpleNamespace(returncode=None)
         self.director = CameraDirector()
         self.item = dict(privacy_closed=False, source_active=True, control_epoch=1,
                          mode="auto", mode_revision="intent")
@@ -71,8 +75,9 @@ class SoundPatrol:
         if stable and self.target and self.sound_moves:
             x = .43 if self.follow_moves else .76
             people = [dict(id=42, box=dict(x=x, y=.30, w=.14, h=.36))]
+        jpeg = f"SYNTHETIC-FRAME-{self.index}".encode()
         await self.j.runtime.observe(CAMERA["id"], self.session, people, self.j.clock, self.j.clock,
-            stable=stable, jpeg=b"SYNTHETIC-FRAME", source_context=CONTEXT, source_name="合成镜头")
+            stable=stable, jpeg=jpeg, source_context=CONTEXT, source_name="合成镜头")
         frame = dict(type="frame", received_at=1000+self.j.clock, capture_session="a"*32,
                      camera_source_context=CONTEXT)
         assert self.j.gate.observe_frame(frame, wall=1000+self.j.clock, mono=self.j.clock)
@@ -84,8 +89,10 @@ class SoundPatrol:
             packet, wall=1000+self.j.clock, mono=self.j.clock))
         self.state.update(status="live", _local_received=self.j.clock, session_id=self.session,
                           tracking_current=True, scene_visible=stable, people=people,
+                          _follow_jpeg=jpeg,
                           _patrol_view=patrol_view(self.j.clock, x=self.view_offset) if stable else None)
         self.scope["last_frame"] = self.j.clock
+        self.scope["last_jpeg"] = jpeg
         self.phases.append((self.j.clock, (self.state if self.owner == "primary" else self.item)
                             .get("camera_control", {}).get("phase")))
         await settle()
@@ -95,12 +102,14 @@ class SoundPatrol:
             assert callback(), "original final-dispatch guard must still admit this move"
         elif self.owner == "secondary":
             assert self.director.decision_current(self.state, self.j.clock, direction,
+                occupied_elsewhere=self.occupied_elsewhere,
                 review_pending=self.j.runtime.review_pending(CAMERA["id"], self.session),
                 sound_cue=self.j.runtime.sound_search_cue(CAMERA["id"], self.session,
                                                          self.director.sound_search_cue))
         if self.director.phase == 'sound_search':
             assert len(self.j.store.events()) == 1, '先确认原留档成功，再准许转向'
             self.sound_moves.append(direction)
+            self.sound_sent_at.append(self.j.clock)
         if self.director.phase == 'following':
             self.follow_moves.append((direction, self.director.target))
         self.moves.append((self.j.clock, direction))
@@ -118,22 +127,27 @@ class SoundPatrol:
                                     presets=[], active=None, event=lambda *_, **__: None)
             planner = SimpleNamespace(public=lambda _: {}, mode="auto", intent_revision="intent",
                                       intent_status="configured")
+            other = {"cam_2222222222": {"people": 1}} if self.occupied_elsewhere else {}
             self.scope.update(Transport=lambda: SimpleNamespace(close=AsyncMock()),
                 CameraLease=lambda *a, **k: lease, SearchPlanner=lambda *a: planner,
                 camera_intents=SimpleNamespace(load=lambda: SimpleNamespace(
                     mode="auto", revision="intent", status="configured")),
                 os=SimpleNamespace(environ={}), SELECTED={"id": CAMERA["id"]}, state=self.state,
-                games=MotionGames(), party_camera=PartyCamera(),previews=SimpleNamespace(sessions={}),
+                games=MotionGames(), party_camera=PartyCamera(),
+                previews=SimpleNamespace(sessions=other, status=lambda _: {"state": "live"}),
                 home=SimpleNamespace(camera_focus=None), safety=self.j.runtime,
                 motor_step=self.motor, camera_lease=None, camera_planner=None,
-                reap=AsyncMock(), capture=None)
+                reap=AsyncMock(), capture=self.process, generation=1)
             loop = source_function("homeplane/embodied/worker.py", "camera_search", self.scope)
         else:
             self.scope.update(item=self.item, selected={"id": CAMERA["id"]}, director=self.director,
-                self=SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
+                process=self.process, recognizer=SimpleNamespace(session=self.session),
+                self=SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: self.occupied_elsewhere,
                                      review_pending=self.j.runtime.review_pending,
                                      fall_pending=self.j.runtime.fall_pending,
-                                     sound_cue=self.j.runtime.sound_search_cue),
+                                     sound_cue=self.j.runtime.sound_search_cue,
+                                     sound_view=self.j.runtime.offer_sound_search_frame,
+                                     source_current=lambda _, process: process is self.process),
                 current_sample=lambda: dict(self.state), privacy_closed=lambda: None,
                 send_motion=self.motor)
             loop = source_function("homeplane/embodied/previews.py", "direct", self.scope)
@@ -144,6 +158,16 @@ class SoundPatrol:
         else:
             raise AssertionError("original camera loop exited before the bounded replay ended")
         await self.j.runtime.drain()
+
+    def assert_saved_views(self, event):
+        views = sorted(event['sound_search_views'], key=lambda view: view['step'])
+        assert [view['step'] for view in views] == list(range(1, len(self.sound_moves) + 1))
+        for view, sent_at in zip(views, self.sound_sent_at, strict=True):
+            frame = next(f for f in event['frames'] if f['ordinal'] == view['ordinal'])
+            assert frame['at'] > event['captured_at']
+            assert frame['at'] - 1000 >= sent_at + 2.35 - 1e-8
+            index = round((frame['at'] - 1000) / .2)
+            assert self.j.store.frame(event['id'], view['ordinal']) == f"SYNTHETIC-FRAME-{index}".encode()
 
 
 @pytest.mark.asyncio
@@ -165,6 +189,7 @@ async def test_short_sound_near_a_patrol_deadline_keeps_both_original_loops_stab
         assert patrol.engine.qualified == [(71, 80), (81, 90)], "two complete, disjoint synthetic windows"
         assert patrol.moves and any(phase == "review_held" for _, phase in patrol.phases)
         assert patrol.sound_moves == ['right', 'left', 'left']
+        patrol.assert_saved_views(event)
         assert patrol.engine.maximum == 1
         patrol.j.runtime.speaker.say.assert_not_awaited()
     finally:
@@ -174,12 +199,15 @@ async def test_short_sound_near_a_patrol_deadline_keeps_both_original_loops_stab
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner', ['primary', 'secondary'])
 async def test_saved_sound_search_hands_a_new_visual_track_to_existing_follow(tmp_path, monkeypatch, owner):
-    patrol = SoundPatrol(tmp_path, monkeypatch, owner, target=True)
+    patrol = SoundPatrol(tmp_path, monkeypatch, owner, target=True, occupied_elsewhere=True)
     try:
         await patrol.run()
         assert patrol.sound_moves == ['right']
         assert patrol.follow_moves == [('right', 42)]
-        assert not patrol.j.store.events()[0]['directional_audio']
+        event, = patrol.j.store.events()
+        assert not event['directional_audio'] and event['track'] is None
+        patrol.assert_saved_views(event)
+        assert len(patrol.moves) == 2, '普通自动巡视仍受其他镜头在场状态限制'
     finally:
         await patrol.j.runtime.close()
 
@@ -191,6 +219,7 @@ async def test_sound_search_stops_when_the_camera_ack_leaves_the_view_unchanged(
         await patrol.run()
         assert patrol.sound_moves == ['right'] and not patrol.follow_moves
         assert patrol.director.sound_search_cue is None
+        assert 'sound_search_views' not in patrol.j.store.events()[0]
     finally:
         await patrol.j.runtime.close()
 
@@ -202,6 +231,7 @@ async def test_sound_review_only_still_records_without_starting_a_sound_search(t
         await patrol.run()
         assert len(patrol.j.store.events()) == 1
         assert patrol.moves and not patrol.sound_moves
+        assert 'sound_search_views' not in patrol.j.store.events()[0]
     finally:
         await patrol.j.runtime.close()
 
@@ -235,6 +265,69 @@ async def test_sound_search_requires_a_saved_receipt_and_rechecks_the_active_sou
         (tmp_path / 'voice-input-paused').unlink()
         assert runtime.sound_search_cue(camera, session, cue) is None
     finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['pan', 'source', 'policy', 'audio', 'false_alarm'])
+async def test_sound_search_frame_rechecks_custody_and_policy_at_storage(tmp_path, monkeypatch, change):
+    patrol = SoundPatrol(tmp_path, monkeypatch, 'primary', episode=(0, math.inf))
+    runtime, store, camera = patrol.j.runtime, patrol.j.store, CAMERA['id']
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_call = runtime.io.call
+
+    async def delayed(operation, *args, **kwargs):
+        if operation == store.append_sound_search_frame:
+            entered.set()
+            await release.wait()
+        return await original_call(operation, *args, **kwargs)
+
+    live = True
+    try:
+        for _ in range(30):
+            await patrol.advance()
+        await runtime.drain()
+        cue = runtime.sound_search_cue(camera, patrol.session)
+        event, = store.events()
+        assert cue.receipt.event_id == event['id']
+        monkeypatch.setattr(runtime.io, 'call', delayed)
+        proof = (cue, 1, patrol.j.clock)
+        jpeg = b'SYNTHETIC-PAN-RESULT'
+        assert runtime.offer_sound_search_frame(camera, proof, jpeg, source_current=lambda: live)
+        assert not runtime.offer_sound_search_frame(camera, proof, jpeg, source_current=lambda: live)
+        await asyncio.wait_for(entered.wait(), 1)
+        if change == 'pan':
+            # 云台继续查看时重置画面识别。已经核实的上一张仍属同一采集进程。
+            runtime.clear(camera)
+        elif change == 'source':
+            live = False
+        elif change == 'policy':
+            store.configure_sound_search(cue.revision, False)
+        elif change == 'audio':
+            (tmp_path/'voice-input-paused').touch()
+        else:
+            store.update(event['id'], review='false_alarm')
+        release.set()
+        await runtime.drain()
+        result, = store.events()
+        assert result['id'] == event['id'] and result['captured_at'] == event['captured_at']
+        if change == 'pan':
+            view, = result['sound_search_views']
+            assert store.frame(event['id'], view['ordinal']) == jpeg
+            store.append_sound_search_frame(event['id'], (camera, cue.session, cue.context), 1,
+                1000+patrol.j.clock, jpeg, policy_revision=cue.revision, guard=lambda: True)
+            checks = iter((True, False))
+            with pytest.raises(SafetyAdmissionChanged, match='safety_source_changed'):
+                store.append_sound_search_frame(event['id'], (camera, cue.session, cue.context), 2,
+                    1000+patrol.j.clock+1, jpeg, policy_revision=cue.revision, guard=lambda: next(checks))
+            with pytest.raises(SafetyAdmissionChanged, match='safety_event_changed'):
+                store.append_sound_search_frame(event['id'], ('cam_2222222222', cue.session, cue.context), 2,
+                    1000+patrol.j.clock+1, jpeg, policy_revision=cue.revision, guard=lambda: True)
+            assert store.events() == [result]
+        else:
+            assert 'sound_search_views' not in result and result['frames'] == event['frames']
+    finally:
+        release.set()
         await runtime.close()
 
 
