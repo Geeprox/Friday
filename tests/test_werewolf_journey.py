@@ -47,7 +47,56 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
                 phone.headers['Authorization']='Bearer '+joined.json()['token']
                 assert (await phone.post('/api/ready',json=dict(ready=True))).status_code==200
                 phones[seat]=phone
-            assert (await host.post('/api/games/werewolf/control',json=dict(action='start',session=service.session,revision=service.game.revision,event_id=f'SYNTHETIC-start-{count}'))).status_code==200
+            dealt = await host.post('/api/games/werewolf/control', json=dict(
+                action='start', session=service.session, revision=service.game.revision, event_id=f'SYNTHETIC-start-{count}'))
+            assert dealt.status_code == 200
+            deal = (await tv.get('/api/public')).json()['game']
+            assert deal['phase'] == 'identity' and deal['seconds_left'] is None
+            assert deal['round'] == 0 and deal['identities_confirmed'] == 0
+            assert all('role' not in p and 'identity_confirmed' not in p for p in deal['players'])
+            await service.effect_task
+            assert spoken[-1] == deal['host_script']['text'] and not writes
+            service.clock.now += 120
+            await service.step()
+            assert (await tv.get('/api/public')).json()['game'] == deal
+
+            async def first_night(event):
+                return await host.post('/api/games/werewolf/control', json=dict(
+                    action='advance', session=service.session, revision=deal['revision'], event_id=event))
+
+            blocked = await first_night(f'SYNTHETIC-blocked-{count}')
+            assert blocked.status_code == 409 and blocked.json()['detail'] == 'identities_pending'
+            assert (await tv.post('/api/identity', json={'revision': deal['revision']})).status_code == 403
+            if count == 6:
+                old = deal['revision']
+                for _ in range(2):
+                    receipt = (await phones[1].post('/api/identity', json={'revision': old})).json()
+                    assert receipt['identity_confirmed'] and receipt['public']['identities_confirmed'] == 1
+                assert not (await phones[2].get('/api/player')).json()['identity_confirmed']
+                reseated = await host.post('/api/games/werewolf/control', json=dict(
+                    action='reseat', session=service.session, revision=old, event_id='SYNTHETIC-reseat-six'))
+                assert reseated.status_code == 200 and reseated.json()['game']['phase'] == 'lobby'
+                for phone in phones.values():
+                    player = (await phone.get('/api/player')).json()
+                    assert player['role'] is None and not player['ready']
+                    assert (await phone.post('/api/ready', json={'ready': True})).status_code == 200
+                redealt = await host.post('/api/games/werewolf/control', json=dict(
+                    action='start', session=service.session, revision=service.game.revision, event_id='SYNTHETIC-redeal-six'))
+                assert redealt.status_code == 200
+                deal = redealt.json()['game']
+                assert deal['identities_confirmed'] == 0
+                late = await phones[1].post('/api/identity', json={'revision': old})
+                assert late.status_code == 409 and late.json()['detail'] == 'phase_changed'
+            for seat, phone in phones.items():
+                private = (await phone.get('/api/player')).json()
+                assert private['role'] and not private['identity_confirmed'] and not private['actions']
+                confirmed = await phone.post('/api/identity', json={'revision': deal['revision']})
+                assert confirmed.status_code == 200 and confirmed.json()['identity_confirmed']
+                assert confirmed.json()['public']['identities_confirmed'] == seat
+                assert confirmed.json()['public']['revision'] == deal['revision']
+                assert confirmed.json()['public']['players'] == deal['players']
+            assert not writes
+            assert (await first_night(f'SYNTHETIC-first-night-{count}')).status_code == 200
             for step in range(64):
                 await asyncio.gather(service.effect_task,return_exceptions=False)
                 public=(await tv.get('/api/public')).json()['game']

@@ -282,7 +282,7 @@ class HostEffects:
     async def _scene(self, public, current):
         if not current():
             return
-        if public["phase"] in {"finished", "lobby"}:
+        if public["phase"] in {"finished", "lobby", "identity"}:
             if public["phase"] == "finished" and self.lights_active:
                 await self.lights.restore(current=current)
         elif not public["paused"]:

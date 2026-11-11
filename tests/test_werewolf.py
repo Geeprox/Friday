@@ -18,6 +18,11 @@ class FixedRoles:
         pass
 
 
+def confirm_deal(game):
+    for seat in game.players:
+        game.confirm_identity(seat, game.revision)
+
+
 def game(count=9):
     clock = Clock()
     g = WerewolfGame(count, clock=clock, rng=FixedRoles())
@@ -25,6 +30,8 @@ def game(count=9):
         g.join(seat, f"玩家 {seat}")
         g.ready(seat, True)
     g.start()
+    confirm_deal(g)
+    g.advance()
     return g, clock
 
 
@@ -70,6 +77,8 @@ def test_lobby_and_stale_command_guards():
     g.start()
     with pytest.raises(GameError, match="join_closed"):
         g.join(1, "intruder")
+    confirm_deal(g)
+    g.advance()
     with pytest.raises(GameError, match="phase_changed"):
         g.act(1, "pass", None, g.revision - 1)
     with pytest.raises(GameError, match="action_unavailable"):

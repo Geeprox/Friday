@@ -54,3 +54,5 @@
  .ww-join>a,.ww-tv-link>a{display:flex;align-items:center;min-height:44px}
  .ww-rules summary{min-height:44px;padding-block:10px}
 }
+.ww-host-controls>.ww-identity-count{grid-column:1/-1;font-variant-numeric:tabular-nums;font-weight:600}
+.ww-host-controls:has(.ww-identity-count)>button.primary{grid-column:1/-1}

@@ -5,6 +5,7 @@ const storeKey=display?'Friday.werewolf.display':'Friday.werewolf.player';
 const joinStoreKey='Friday.werewolf.join';
 const choiceStoreKey='Friday.werewolf.choice';
 let credential='',code=invitationCode,alive=true,busy=false,readRequest=null,commandRequest=null,player=null,game=null,viewKey='',selectedAction=null,selectedTarget=null,selectedSeat=null,peeked=false,roleNode=null,nextPollAt=0,pollNotice='',sessionGeneration=0;
+let viewedIdentity=null,identityConfirmation=null;
 let joinPending=null,joinName='';
 let choiceStamp=null,choiceNoticeRevision=null,syncing=false;
 let displayView=null,lastDisplay=null;
@@ -85,7 +86,7 @@ async function perform(fn){
  choiceNoticeRevision=null;
  const controls=Array.from(root.querySelectorAll('button,input')).filter(n=>n.className!=='reveal-role').map(n=>[n,n.disabled]);for(const[n]of controls)n.disabled=true;
  request.release=()=>{for(const[n,disabled]of controls)n.disabled=disabled;root.removeAttribute('aria-busy');};
- try{await fn();}catch(e){if(e.message.endsWith('access_required'))closedSession();else if(!retired(e))sayError(e);}finally{if(commandRequest===request){commandRequest=null;busy=false;request.release();}}
+ try{await fn();}catch(e){if(e.message.endsWith('access_required'))closedSession();else if(!retired(e))sayError(e);}finally{if(commandRequest===request){commandRequest=null;busy=false;request.release();updateIdentityConfirmation();}}
 }
 function phaseHeader(g) {
  const header = h('div', null, 'phase');
@@ -93,6 +94,7 @@ function phaseHeader(g) {
  heading.append(h('h1', syncing ? '正在同步对局' : g.phase_name));
  if (!syncing && g.round) heading.append(h('p', '第 ' + g.round + ' 轮'));
  const timer = h('strong', syncing ? '' : g.paused ? '已暂停' : g.seconds_left == null ? '' : g.seconds_left + ' 秒', 'timer');
+ timer.hidden=syncing||g.seconds_left==null&&!g.paused;
  timer.dataset.timer = 'true';
  header.append(heading, timer);
  return header;
@@ -108,7 +110,18 @@ function joinForm(){
  function renderSeats(){seats.replaceChildren();join.disabled=!selectedSeat||loadedCode!==roomInput.value||!game||game.players.some(p=>p.seat===selectedSeat);if(!game||loadedCode!==roomInput.value)return;seats.append(h('p','选一个空座位，和电视上的编号一致。'));const grid=h('div',null,'seat-grid');for(let i=1;i<=game.player_count;i++){const occupied=game.players.some(p=>p.seat===i),b=seatButton(i,selectedSeat===i,()=>{if(!game||loadedCode!==roomInput.value)return;selectedSeat=i;renderSeats();});b.disabled=occupied;grid.append(b);}seats.append(grid);}
  root.append(form);if(code.length===6)lookup();
 }
-function hideRole(){peeked=false;if(roleNode){roleNode.replaceChildren(h('span',null,'role-seal'),h('strong','身份已收起'));}document.body.classList.remove('peeking');}
+function identityStamp(){
+ return player?.public?.phase==='identity'?player.session+':'+player.public.revision:null;
+}
+function updateIdentityConfirmation(){
+ const stamp=identityStamp();
+ if(identityConfirmation)identityConfirmation.disabled=!stamp||busy||syncing||peeked||document.hidden||viewedIdentity!==stamp;
+}
+function hideRole(){
+ peeked=false;
+ if(roleNode)roleNode.replaceChildren(h('span',null,'role-seal'),h('strong',identityStamp()?'身份牌':'身份已收起'));
+ document.body.classList.remove('peeking');updateIdentityConfirmation();
+}
 function retireRequests() {
  sessionGeneration++;
  const read=readRequest,command=commandRequest;
@@ -118,19 +131,69 @@ function retireRequests() {
 function closedSession(){
  forgetJoin();joinName='';
  if (!display) forgetChoice();
- retireRequests();hideRole();credential='';code='';player=null;game=null;roleNode=null;viewKey='';displayView=null;lastDisplay=null;selectedSeat=null;selectedAction=null;selectedTarget=null;choiceNoticeRevision=null;syncing=false;nextPollAt=0;pollNotice='';notice.textContent='';document.body.dataset.night='false';roomLabel.textContent='狼人杀';
+ retireRequests();hideRole();credential='';code='';player=null;game=null;roleNode=null;viewedIdentity=null;identityConfirmation=null;viewKey='';displayView=null;lastDisplay=null;selectedSeat=null;selectedAction=null;selectedTarget=null;choiceNoticeRevision=null;syncing=false;nextPollAt=0;pollNotice='';notice.textContent='';document.body.dataset.night='false';roomLabel.textContent='狼人杀';
  try{sessionStorage.removeItem(storeKey);}catch{}
  if(display)root.replaceChildren(h('h1','公共画面已关闭'),h('p','请从 Friday 重新打开。'));
  else{const intro=h('div',null,'join-intro');intro.append(h('span',null,'moon'),h('h1','本局已关闭'),h('p','重新扫码，加入下一局。'));root.replaceChildren(intro,button('输入房间号',joinForm,'primary'));}
 }
-function revealRole(){if(!player?.role||!roleNode)return;peeked=true;roleNode.replaceChildren(h('strong',player.role_name));if(player.team)roleNode.append(h('p','狼人同伴：'+player.team.filter(p=>p.seat!==player.seat).map(p=>p.seat+' 号 · '+p.name).join('、')));document.body.classList.add('peeking');}
-function identity(){const section=h('section',null,'identity');roleNode=h('div',null,'role-card');hideRole();const reveal=button('按住查看身份',()=>{},'reveal-role');reveal.setAttribute('aria-label','按住查看自己的身份，松开收起');reveal.onpointerdown=e=>{reveal.setPointerCapture?.(e.pointerId);revealRole();};for(const event of ['pointerup','pointercancel','lostpointercapture'])reveal.addEventListener(event,hideRole);reveal.onkeydown=e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();revealRole();}};reveal.onkeyup=e=>{if(e.key===' '||e.key==='Enter')hideRole();};reveal.onblur=hideRole;section.append(roleNode,reveal);return section;}
+function revealRole(){
+ if(!player?.role||!roleNode||document.hidden||identityStamp()&&syncing)return;
+ peeked=true;roleNode.replaceChildren(h('strong',player.role_name));
+ if(player.team)roleNode.append(h('p','狼人同伴 · '+player.team.filter(p=>p.seat!==player.seat).map(p=>p.seat+' 号 · '+p.name).join('、')));
+ if(identityStamp())viewedIdentity=identityStamp();
+ document.body.classList.add('peeking');updateIdentityConfirmation();
+}
+async function confirmIdentity(){
+ const stamp=identityStamp();
+ if(!stamp||viewedIdentity!==stamp||syncing||peeked||document.hidden||player.identity_confirmed)return;
+ const {session,seat,public:{revision}}=player;
+ await perform(async()=>{
+  try{
+   await api('identity',{revision},result=>{
+    if(result.session!==session||result.seat!==seat||result.public?.revision!==revision||
+       result.public.phase!=='identity'||result.identity_confirmed!==true)throw Error('identity_unavailable');
+    updatePlayer(result,true);
+   });
+  }catch(error){
+   if(error.message==='phase_changed'||error.message==='identity_unavailable'){
+    holdView();
+    return;
+   }
+   throw error;
+  }
+ });
+}
+function identity(){
+ const section=h('section',null,'identity'),dealing=identityStamp()!==null;
+ if(dealing)section.dataset.deal='true';
+ roleNode=h('div',null,'role-card');hideRole();
+ const reveal=button('按住查看身份',()=>{},'reveal-role');
+ reveal.setAttribute('aria-label','按住查看自己的身份，松开收起');
+ reveal.onpointerdown=e=>{reveal.setPointerCapture?.(e.pointerId);revealRole();};
+ for(const event of ['pointerup','pointercancel','lostpointercapture'])reveal.addEventListener(event,hideRole);
+ reveal.onkeydown=e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();if(!e.repeat)revealRole();}};
+ reveal.onkeyup=e=>{if(e.key===' '||e.key==='Enter')hideRole();};
+ reveal.onblur=hideRole;section.append(roleNode,reveal);
+ if(dealing){
+  if(player.identity_confirmed){
+   const acknowledged=h('p','已确认身份，等待首夜。','identity-confirmed');
+   acknowledged.setAttribute('role','status');section.append(acknowledged);
+  }else{
+   identityConfirmation=button('我已看完',()=>{void confirmIdentity();},'primary');
+   updateIdentityConfirmation();section.append(identityConfirmation);
+  }
+ }
+ return section;
+}
 function confirmChoice(result) {
  forgetChoice();
  choiceNoticeRevision=result.public.revision;
  notice.textContent='已确认，Friday 收到了你的选择。';
 }
 function updatePlayer(result, force=false) {
+ if(player?.public?.phase==='identity'&&(result.identity_confirmed||result.public.revision!==player.public.revision)){
+  notice.textContent='';
+ }
  if (choiceNoticeRevision!==null && choiceNoticeRevision!==result.public.revision) {
   notice.textContent='';choiceNoticeRevision=null;
  }
@@ -148,6 +211,7 @@ function updatePlayer(result, force=false) {
   }
  }
  player=result;
+ if(viewedIdentity!==identityStamp())viewedIdentity=null;
  const resumed=syncing;
  syncing=false;
  viewUpdatedAt=performance.now();
@@ -243,7 +307,7 @@ function actionPanel() {
  return section;
 }
 function renderPlayer(force=false){
- if(!player||!alive)return;const g=player.public;game=g;const key=[g.revision,JSON.stringify(g.players),JSON.stringify(player.actions),JSON.stringify(player.submitted),JSON.stringify(player.checks),JSON.stringify(player.team_choices)].join('|');if(!force&&key===viewKey){updateTimer(g);return;}
+ if(!player||!alive)return;const g=player.public;game=g;const key=[g.revision,JSON.stringify(g.players),JSON.stringify(player.actions),JSON.stringify(player.submitted),JSON.stringify(player.checks),JSON.stringify(player.team_choices),player.identity_confirmed].join('|');if(!force&&key===viewKey){updateTimer(g);return;}
  const phaseChanged = !viewKey.startsWith(g.revision + '|');
  const focusChoice = phaseChanged ? null : document.activeElement?.dataset?.choiceFocus;
  if (phaseChanged) {
@@ -252,15 +316,16 @@ function renderPlayer(force=false){
   selectedAction = player.submitted?.[0] ?? (only && only.action !== 'save' && only.targets.length ? only.action : null);
   selectedTarget = choiceStamp?.revision===g.revision ? null : player.submitted?.[1] ?? null;
  }
- viewKey=key;hideRole();roleNode=null;root.replaceChildren();document.body.dataset.night=String(nightPhases.has(g.phase));roomLabel.textContent=player.seat+' 号 · '+player.name;root.append(phaseHeader(g));
+ viewKey=key;hideRole();roleNode=null;identityConfirmation=null;root.replaceChildren();document.body.dataset.night=String(nightPhases.has(g.phase));roomLabel.textContent=player.seat+' 号 · '+player.name;root.append(phaseHeader(g));
  if (syncing) {
   const status=h('p','连接恢复后会自动更新。','party-sync');
   status.setAttribute('role','status');
   root.append(status);
-  if (player.role && g.phase!=='finished') root.append(identity());
+  if (player.role && g.phase!=='finished' && g.phase!=='identity') root.append(identity());
   return;
  }
  if(g.phase==='lobby'){const waiting=h('section',null,'lobby-wait');waiting.append(h('div',String(player.seat),'my-seat'),h('h2','你的座位已留好'),h('p',g.players.filter(p=>p.ready).length+' / '+g.player_count+' 人准备好了'));waiting.append(button(player.ready?'取消准备':'准备好了',()=>{void perform(async()=>{await api('ready',{ready:!player.ready},data=>updatePlayer(data,true));});},player.ready?'':'primary'));root.append(waiting);return;}
+ if(g.phase==='identity'){root.append(identity());return;}
  if(g.phase==='finished'){const result=h('section',null,'result');result.append(h('h2',g.winner==='village'?'好人阵营获胜':g.winner==='wolves'?'狼人阵营获胜':'本局已结束'));const list=h('ul');for(const p of g.players)list.append(h('li',p.seat+' 号 · '+p.name+'　'+p.role_name));result.append(list,h('p','由主持端创建下一局后，重新扫码入座。'));root.append(result);return;}
  root.append(actionPanel(),identity());if(player.checks?.length){const checks=h('details',null,'private-records');checks.append(h('summary','我的查验记录'));for(const check of player.checks)checks.append(h('p','第 '+check.round+' 夜 · '+check.seat+' 号是'+(check.wolf?'狼人':'好人')));root.append(checks);}if(player.team_choices?.length){const team=h('details',null,'private-records');team.append(h('summary','同伴的本夜选择'));for(const c of player.team_choices)team.append(h('p',c.seat+' 号 → '+(c.target?c.target+' 号':'放弃')));root.append(team);}
  if (focusChoice) root.querySelector('[data-choice-focus="' + focusChoice + '"]')?.focus({preventScroll:true});
@@ -317,11 +382,14 @@ function renderDisplay(report, waiting=false) {
  const view = displayView;
  const night = nightPhases.has(g.phase);
  const lobby = g.phase === 'lobby';
+ const dealing = g.phase === 'identity';
+ const readyForNight = dealing && g.identities_confirmed === g.player_count;
  const finished = g.phase === 'finished';
  document.body.dataset.night = String(night);
  roomLabel.textContent = g.round ? '狼人杀 · 第 ' + g.round + ' 轮' : '狼人杀 · ' + g.player_count + ' 人局';
- const title = waiting ? '正在同步对局' : g.phase_name;
- const script = waiting ? '连接恢复后会自动更新。' : g.paused ? '等待主持人恢复游戏。' : (g.host_script || g.announcements?.at(-1))?.text || '';
+ const title = waiting ? '正在同步对局' : readyForNight ? '准备入夜' : g.phase_name;
+ const script = waiting ? '连接恢复后会自动更新。' : readyForNight ? '请把手机放低，等候首夜。' :
+  g.paused ? '等待主持人恢复游戏。' : (g.host_script || g.announcements?.at(-1))?.text || '';
  if (view.title.textContent !== title) view.title.textContent = title;
  if (view.script.textContent !== script) view.script.textContent = script;
  const seconds = Math.max(0, g.seconds_left ?? 0);
@@ -331,11 +399,13 @@ function renderDisplay(report, waiting=false) {
  else view.clock.setAttribute('aria-label', g.paused ? '本局已暂停' : '剩余 ' + seconds + ' 秒');
 
  const hints = waiting ? [] : report.camera_hints || [];
+ const summary=finished||dealing&&waiting?'':dealing?(g.identities_confirmed??0)+' / '+g.player_count+' 已确认':
+  lobby?g.players.filter(p=>p.ready).length+' / '+g.player_count+' 已准备':g.players.filter(p=>p.alive).length+' / '+g.player_count+' 在场';
+ if(view.seatSummary.textContent!==summary)view.seatSummary.textContent=summary;
  const rosterKey = JSON.stringify([lobby, finished, night, g.player_count, g.players, g.roles, hints]);
  if (view.rosterKey !== rosterKey) {
   view.rosterKey = rosterKey;
   view.seatTitle.textContent = finished ? '身份揭晓' : '座位';
-  view.seatSummary.textContent = finished ? '' : lobby ? g.players.filter(p => p.ready).length + ' / ' + g.player_count + ' 已准备' : g.players.filter(p => p.alive).length + ' / ' + g.player_count + ' 在场';
   const players = new Map(g.players.map(p => [p.seat, p]));
   const advice = new Map(hints.map(hint => [hint.seat, hint]));
   const seats = [];

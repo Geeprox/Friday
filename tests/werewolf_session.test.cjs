@@ -17,24 +17,82 @@ function client({publicDisplay=false,phase='wolves',joined=true,lobby=null,priva
  }
  const nodes=Object.fromEntries(['party','notice','roomLabel'].map(id=>[id,new Element('div')]));
  const storage=new Map(joined?[[publicDisplay?'Friday.werewolf.display':'Friday.werewolf.player','a'.repeat(64)]]:[]),requests=[],calls=[],pending={};
- const game={revision:1,phase,phase_name:phase==='lobby'?'等待大家入座':'狼人行动',player_count:6,round:1,paused:false,seconds_left:30,
+ const dealing=phase==='identity';
+ const game={revision:1,phase,phase_name:dealing?'查看身份':phase==='lobby'?'等待大家入座':'狼人行动',
+  player_count:6,round:dealing?0:1,paused:false,seconds_left:dealing?null:30,identities_confirmed:0,
   players:[1,2,3,4,5,6].map(seat=>({seat,name:'合成玩家'+seat,alive:true})),roles:[],announcements:[]};
- const player={seat:1,name:'合成玩家1',role:'wolf',role_name:'狼人',alive:true,actions:[{action:'attack',targets:[2,3,4,5,6]},{action:'pass',targets:[]}],...privateFields,public:game};
+ const player={seat:1,name:'合成玩家1',role:'wolf',role_name:'狼人',alive:true,
+  actions:dealing?[]:[{action:'attack',targets:[2,3,4,5,6]},{action:'pass',targets:[]}],
+  ...(dealing?{session:'b'.repeat(32)}:{}),...privateFields,public:game};
  const events={};
- let deferPoll=false,deferChoice=false,reads=0;
+ let deferPoll=false,deferChoice=false,deferIdentity=false,reads=0;
  const reply=(status,data)=>({ok:status===200,status,headers:{get:()=>null},json:async()=>data});
  const context=vm.createContext({console,URLSearchParams,AbortController,AbortSignal,performance:{now:()=>0},crypto:{getRandomValues:a=>a.fill(1)},navigator:{},
   location:{pathname:publicDisplay?'/display':'/phone',hash:'#code=123456'},history:{replaceState(){}},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
   document:{body:new Element('body'),hidden:false,getElementById:id=>nodes[id],createElement:tag=>new Element(tag),addEventListener(){}},window:{addEventListener:(name,fn)=>events[name]=fn},setInterval(){},
   fetch:async(path,options)=>{requests.push(path);calls.push({path,options});if(path===(publicDisplay?'/api/public':'/api/player')){reads++;if(reads>1&&deferPoll)return new Promise(resolve=>pending.poll=resolve);return reply(200,structuredClone(publicDisplay?{active:true,game}:player));}
    if(path==='/api/choice'){if(deferChoice)return new Promise((resolve,reject)=>{pending.choice=resolve;pending.choiceReject=reject;});return reply(200,structuredClone(player));}
+   if(path==='/api/identity'){
+    if(deferIdentity)return new Promise((resolve,reject)=>{pending.identity=resolve;pending.identityReject=reject;});
+    player.identity_confirmed=true;game.identities_confirmed++;
+    return reply(200,structuredClone(player));
+   }
    if(path==='/api/ready')return reply(403,{detail:'player_access_required'});
    if(path==='/api/lobby')return lobby?reply(200,structuredClone(lobby)):reply(409,{detail:'room_not_found'});throw Error('unexpected path '+path);}});
  vm.runInContext(source,context);
  const button=text=>all(nodes.party).find(n=>n.tagName==='button'&&n.textContent===text);
- return{context,nodes,storage,requests,calls,pending,reply,player,game,button,events,defer(){deferPoll=deferChoice=true;},
+ return{context,nodes,storage,requests,calls,pending,reply,player,game,button,events,defer(){deferPoll=deferChoice=true;},deferIdentity(){deferIdentity=true;},
   async choose(){button('放弃本次行动').onclick();button('确认选择').onclick();await settle();}};
 }
+
+test('the phone confirms only after the user has looked and let go of the private card',async()=>{
+ const c=client({phase:'identity'});await settle();
+ const reveal=c.button('按住查看身份'),confirm=c.button('我已看完');
+ assert(confirm.disabled);confirm.onclick();
+ assert(!c.calls.some(call=>call.path==='/api/identity'));
+ reveal.onpointerdown({pointerId:1});
+ assert.match(c.nodes.party.textContent,/狼人/);assert(confirm.disabled);
+ c.game.identities_confirmed=1;await vm.runInContext('poll()',c.context);
+ assert.equal(c.button('按住查看身份'),reveal);
+ reveal.events.pointerup();assert.doesNotMatch(c.nodes.party.textContent,/狼人/);
+ assert(!confirm.disabled);confirm.onclick();await settle();
+ assert.match(c.nodes.party.textContent,/已确认身份，等待首夜/);
+ assert.deepEqual(JSON.parse(c.calls.find(call=>call.path==='/api/identity').options.body),{revision:1});
+ assert.doesNotMatch(c.nodes.party.textContent,/狼人/);
+});
+
+test('lost identity acknowledgement is read back and a new deal requires looking again',async()=>{
+ const c=client({phase:'identity'});await settle();
+ c.deferIdentity();
+ const reveal=c.button('按住查看身份');
+ reveal.onkeydown({key:'Enter',preventDefault(){}});reveal.onkeyup({key:'Enter'});
+ c.button('我已看完').onclick();await settle();
+ c.player.identity_confirmed=true;c.game.identities_confirmed=1;
+ c.pending.identityReject(Error('network'));await settle();
+ assert(c.nodes.notice.textContent);
+ await vm.runInContext('poll()',c.context);
+ assert.match(c.nodes.party.textContent,/已确认身份/);assert.equal(c.nodes.notice.textContent,'');
+ c.events.offline();
+ assert(!c.button('按住查看身份'));
+ c.player.identity_confirmed=false;c.game.revision++;c.game.identities_confirmed=0;
+ await vm.runInContext('poll()',c.context);
+ assert(c.button('我已看完').disabled);
+ assert.equal(c.calls.filter(call=>call.path==='/api/identity').length,1);
+});
+
+test('the television updates only the aggregate identity count and has no night timer',async()=>{
+ const c=client({publicDisplay:true,phase:'identity'});await settle();
+ const stage=c.nodes.party.children[0],seats=c.nodes.party.children[1].children[1];
+ const roster=seats.children;
+ assert.match(c.nodes.party.textContent,/查看身份.*0 \/ 6 已确认/);
+ assert.doesNotMatch(stage.textContent,/00:30/);
+ c.game.identities_confirmed=5;await vm.runInContext('poll()',c.context);
+ assert.match(c.nodes.party.textContent,/5 \/ 6 已确认/);
+ assert.equal(seats.children,roster);
+ c.game.identities_confirmed=6;await vm.runInContext('poll()',c.context);
+ assert.match(stage.textContent,/准备入夜.*等候首夜/);
+ assert(!c.button('我已看完'));assert(!c.button('按住查看身份'));
+});
 
 test('closed phone clears its identity and offers a new room without retrying the old code',async()=>{
  const c=client();await settle();vm.runInContext('revealRole()',c.context);assert.match(c.nodes.party.textContent,/狼人/);

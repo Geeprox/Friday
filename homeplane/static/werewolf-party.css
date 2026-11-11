@@ -95,6 +95,53 @@
   -webkit-user-select: none;
 }
 
+.identity[data-deal=true] {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin-block: 18px 0;
+  padding: 0;
+  border: 0;
+}
+
+.identity[data-deal=true] .role-card {
+  min-height: clamp(132px, 27svh, 205px);
+  flex-direction: column;
+  flex-wrap: nowrap;
+  justify-content: center;
+  gap: 12px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  text-align: center;
+}
+
+.identity[data-deal=true] .role-card strong {
+  font-size: clamp(20px, 6vw, 28px);
+  line-height: 1.25;
+}
+
+.identity[data-deal=true] .role-card p {
+  flex-basis: auto;
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.identity[data-deal=true] button {
+  min-height: 48px;
+}
+
+.identity-confirmed {
+  min-height: 48px;
+  display: grid;
+  place-content: center;
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  text-align: center;
+}
+
 .display {
   --display-gutter: clamp(22px, 4.6vw, 78px);
   --stage: #fcf8f0;

@@ -10,7 +10,7 @@ import pytest
 from homeplane.werewolf_effects import HostEffects
 from homeplane.werewolf_service import Join, WerewolfService
 from tests.test_werewolf import Clock, FixedRoles
-from tests.test_werewolf_service import NoNetwork, SilentLights
+from tests.test_werewolf_service import NoNetwork, SilentLights, begin_play
 
 
 def observation():
@@ -54,7 +54,7 @@ async def party(*,start=True):
         await service.bind(1,'cam_1234567890','SYNTHETIC',7)
         await service.bind(2,'cam_1234567890','SYNTHETIC',8)
         if start:
-            await service.control('start')
+            await begin_play(service)
             while service.game.phase!='discussion':await service.control('advance')
         await service._camera()
         yield service,embodied,clock

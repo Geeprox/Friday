@@ -14,6 +14,7 @@ from homeplane.werewolf_effects import HostEffects, SceneLights
 from homeplane.werewolf_service import Join, WerewolfService
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_device_controls import rig
+from tests.test_werewolf_service import begin_play
 
 
 @asynccontextmanager
@@ -54,7 +55,7 @@ async def until(predicate):
 @pytest.mark.asyncio
 async def test_paused_before_first_output_can_narrate_the_current_phase_on_resume(tmp_path):
     async with party(tmp_path) as table:
-        await table.service.control('start')
+        await begin_play(table.service)
         # No effect task has run yet; the host pauses before any output attempt.
         await table.service.control('pause')
         await table.service.effect_task
@@ -77,13 +78,16 @@ async def test_slow_light_io_does_not_hold_the_current_public_narration(tmp_path
             return await read(*args, **kwargs)
 
         if stage == 'restore':
-            await table.service.control('start')
+            await begin_play(table.service)
             await table.service.effect_task
             table.spoken.clear()
         with monkeypatch.context() as patch:
             patch.setattr(table.lights, '_read', slow_read)
             try:
-                await table.service.control('start' if stage == 'scene' else 'end')
+                if stage == 'scene':
+                    await begin_play(table.service)
+                else:
+                    await table.service.control('end')
                 await asyncio.wait_for(entered.wait(), .5)
                 await until(lambda: bool(table.spoken))
                 assert table.spoken == [table.service.game.public()['host_script']['text']]
@@ -115,7 +119,7 @@ async def test_next_phase_narrates_before_previous_light_cleanup_finishes(tmp_pa
         with monkeypatch.context() as patch:
             patch.setattr(table.lights, '_read', read_with_slow_cleanup)
             try:
-                await table.service.control('start')
+                await begin_play(table.service)
                 previous = table.service.effect_task
                 await asyncio.wait_for(reading.wait(), .5)
                 first = table.service.game.public()['host_script']['text']
@@ -161,7 +165,7 @@ async def test_ending_or_closing_restores_lights_before_previous_speech_cleanup(
         with monkeypatch.context() as patch:
             patch.setattr(table.effects, 'speak', speak_with_slow_cleanup)
             try:
-                await table.service.control('start')
+                await begin_play(table.service)
                 previous = table.service.effect_task
                 first = table.service.game.public()['host_script']['text']
                 await asyncio.wait_for(speaking.wait(), .5)
@@ -198,7 +202,7 @@ async def test_ending_or_closing_restores_lights_before_previous_speech_cleanup(
 @pytest.mark.asyncio
 async def test_concurrent_restore_requests_share_the_original_recovery_responsibility(tmp_path, monkeypatch):
     async with party(tmp_path) as table:
-        await table.service.control('start')
+        await begin_play(table.service)
         await table.service.effect_task
         read = table.lights._read
         entered, release = asyncio.Event(), asyncio.Event()
@@ -237,7 +241,7 @@ async def test_concurrent_restore_requests_share_the_original_recovery_responsib
 @pytest.mark.asyncio
 async def test_interrupted_scene_is_reconciled_even_when_the_next_phase_returns_to_day(tmp_path, monkeypatch):
     async with party(tmp_path) as table:
-        await table.service.control('start')
+        await begin_play(table.service)
         await table.service.effect_task
         while table.service.game.phase != 'discussion':
             await table.service.control('advance')
@@ -275,7 +279,7 @@ async def test_interrupted_scene_is_reconciled_even_when_the_next_phase_returns_
 @pytest.mark.parametrize('replaced', ['scene', 'room'])
 async def test_queued_restore_api_cannot_restore_a_replaced_scene_or_room(tmp_path, replaced):
     async with party(tmp_path) as table:
-        await table.service.control('start')
+        await begin_play(table.service)
         await table.service.effect_task
         await table.service.control('end')
         await table.service.effect_task
@@ -318,7 +322,7 @@ async def test_light_failure_leaves_recovery_visible_without_suppressing_the_pub
         async def scene(*args, **kwargs):
             await cannot_save()
         monkeypatch.setattr(table.lights, 'scene', scene)
-        await table.service.control('start')
+        await begin_play(table.service)
         await table.service.effect_task
         assert table.spoken == [table.service.game.public()['host_script']['text']]
         assert table.service.public()['effects']['lights']['recovery_pending']
@@ -346,7 +350,7 @@ async def test_pause_cleans_up_both_outputs_and_never_replays_an_uncertain_voice
             patch.setattr(table.lights, '_read', slow_read)
             patch.setattr(table.effects, 'speak', slow_speak)
             try:
-                await table.service.control('start')
+                await begin_play(table.service)
                 await asyncio.wait_for(asyncio.gather(reading.wait(), speaking.wait()), .5)
                 await table.service.control('pause')
                 await asyncio.wait_for(table.service.effect_task, .5)
@@ -364,7 +368,7 @@ async def test_pause_cleans_up_both_outputs_and_never_replays_an_uncertain_voice
 @pytest.mark.asyncio
 async def test_restore_api_rechecks_room_after_an_awaited_light_read(tmp_path, monkeypatch):
     async with party(tmp_path) as table:
-        await table.service.control('start')
+        await begin_play(table.service)
         await table.service.effect_task
         await table.service.control('end')
         await table.service.effect_task
@@ -405,7 +409,7 @@ async def test_restore_api_rechecks_room_after_an_awaited_light_read(tmp_path, m
 @pytest.mark.asyncio
 async def test_duplicate_restore_api_returns_restored_after_the_first_request_completes(tmp_path, monkeypatch):
     async with party(tmp_path) as table:
-        await table.service.control('start')
+        await begin_play(table.service)
         await table.service.effect_task
         await table.service.control('end')
         await table.service.effect_task

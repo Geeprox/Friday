@@ -25,7 +25,7 @@ class Create(BaseModel):
 
 class Control(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    action: Literal["start", "advance", "pause", "resume", "end", "remove", "close"]
+    action: Literal["start", "advance", "pause", "resume", "end", "remove", "reseat", "close"]
     seat: int | None = Field(default=None, ge=1, le=12)
     session: str = Field(min_length=1, max_length=128)
     revision: int = Field(ge=0)

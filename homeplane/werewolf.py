@@ -19,7 +19,7 @@ ROLE_NAMES = {
     "hunter": "猎人", "guard": "守卫", "villager": "村民",
 }
 PHASE_NAMES = {
-    "lobby": "等待大家入座", "guard": "守卫行动", "wolves": "狼人行动",
+    "lobby": "等待大家入座", "identity": "查看身份", "guard": "守卫行动", "wolves": "狼人行动",
     "seer": "预言家行动", "witch": "女巫行动", "dawn": "天亮了",
     "discussion": "自由发言", "vote": "放逐投票", "runoff_discussion": "平票发言",
     "runoff": "再次投票", "hunter": "猎人行动", "finished": "本局结束",
@@ -72,6 +72,7 @@ class WerewolfGame:
         if any(type(v) is not int or not 10 <= v <= 600 for v in self.durations.values()):
             raise GameError("duration_invalid")
         self.players: dict[int, Player] = {}
+        self.identities_confirmed: set[int] = set()
         self.phase = "lobby"
         self.revision = 0
         self.deadline = None
@@ -132,7 +133,23 @@ class WerewolfGame:
         self.rng.shuffle(pack)
         for seat, role in zip(sorted(self.players), pack):
             self.players[seat].role = role
-        self._night()
+        self._phase("identity", "请在自己的手机上查看并确认身份。")
+
+    def confirm_identity(self, seat, revision):
+        if type(revision) is not int or self.revision != revision:
+            raise GameError("phase_changed")
+        if self.phase != "identity" or type(seat) is not int or seat not in self.players:
+            raise GameError("identity_unavailable")
+        self.identities_confirmed.add(seat)
+
+    def reseat(self):
+        if self.phase != "identity":
+            raise GameError("reseat_unavailable")
+        for player in self.players.values():
+            player.role = None
+            player.ready = False
+        self.identities_confirmed.clear()
+        self._phase("lobby", "请确认座位，准备好后重新发牌。")
 
     def _phase(self, phase, text):
         self.phase = phase
@@ -160,7 +177,7 @@ class WerewolfGame:
 
     def actions(self, seat):
         p = self.players[seat]
-        if self.paused or self.phase in {"lobby", "finished"}:
+        if self.paused or self.phase in {"lobby", "identity", "finished"}:
             return []
         if self.phase == "hunter":
             return ["shoot", "pass"] if seat == self.pending_hunter else []
@@ -308,7 +325,11 @@ class WerewolfGame:
         if self.paused:
             raise GameError("game_paused")
         first = len(self.announcements)
-        if self.phase in self._night_phases():
+        if self.phase == "identity":
+            if len(self.identities_confirmed) != self.count:
+                raise GameError("identities_pending")
+            self._night()
+        elif self.phase in self._night_phases():
             self._close_night_phase()
         elif self.phase == "dawn":
             self._interrupt_or_continue("discussion")
@@ -341,7 +362,7 @@ class WerewolfGame:
             self.advance()
 
     def pause(self, value):
-        if type(value) is not bool or self.phase in {"lobby", "finished"}:
+        if type(value) is not bool or self.phase in {"lobby", "identity", "finished"}:
             raise GameError("pause_unavailable")
         if self.paused == value:
             return
@@ -370,6 +391,7 @@ class WerewolfGame:
                              for s, p in sorted(self.players.items())],
                     announcements=self.announcements[-16:], host_script=dict(self.host_script), vote_result=self.vote_result,
                     runoff_candidates=list(self.runoff_candidates), recent_deaths=list(self.recent_deaths),
+                    **({"identities_confirmed": len(self.identities_confirmed)} if self.phase == "identity" else {}),
                     winner=self.winner, end_reason=self.end_reason, rules=list(RULES))
 
     def private(self, seat):
@@ -381,6 +403,8 @@ class WerewolfGame:
                       role=p.role, role_name=ROLE_NAMES.get(p.role),
                       actions=[dict(action=a, targets=self.targets(seat, a)) for a in actions],
                       submitted=self.choices.get(seat), public=self.public())
+        if self.phase == "identity":
+            result["identity_confirmed"] = seat in self.identities_confirmed
         if p.role == "wolf":
             result["team"] = [dict(seat=s, name=q.name, alive=q.alive) for s, q in sorted(self.players.items()) if q.role == "wolf"]
             if self.phase == "wolves" and p.alive:

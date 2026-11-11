@@ -79,6 +79,11 @@ class Ready(BaseModel):
     ready: bool
 
 
+class ConfirmIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: int = Field(ge=0)
+
+
 class Lobby(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     code: str = Field(pattern=r"^\d{6}$")
@@ -310,6 +315,12 @@ class WerewolfService:
             self.game.ready(seat, value)
             return self._private(seat)
 
+    async def confirm_identity(self, token, revision):
+        async with self.lock:
+            seat = self._player(token)
+            self.game.confirm_identity(seat, revision)
+            return self._private(seat)
+
     async def choose(self, token, choice: Choice):
         async with self.lock:
             seat = self._player(token)
@@ -367,6 +378,8 @@ class WerewolfService:
                 raise GameError("game_not_found")
             if action == "start":
                 self.game.start()
+            elif action == "reseat":
+                self.game.reseat()
             elif action == "advance":
                 self.game.advance()
             elif action in {"pause", "resume"}:
@@ -685,7 +698,7 @@ def phone_app(owner, origin):
             # Authenticated players sharing a hotspot/proxy must not consume
             # one another's ordinary polling budget. Invalid/random tokens
             # retain the address budget; they cannot mint unlimited buckets.
-            if request.url.path in {'/api/player', '/api/ready', '/api/choice'}:
+            if request.url.path in {'/api/player', '/api/ready', '/api/identity', '/api/choice'}:
                 try:
                     owner._player(supplied)
                 except GameError:
@@ -755,6 +768,10 @@ def phone_app(owner, origin):
     @app.post("/api/ready")
     async def ready(payload: Ready, request: Request):
         return await owner.ready(token(request), payload.ready)
+
+    @app.post("/api/identity")
+    async def confirm_identity(payload: ConfirmIdentity, request: Request):
+        return await owner.confirm_identity(token(request), payload.revision)
 
     @app.post("/api/choice")
     async def choice(payload: Choice, request: Request):

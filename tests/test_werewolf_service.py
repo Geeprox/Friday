@@ -14,6 +14,7 @@ from homeplane.werewolf_service import Choice, Join, WerewolfService, phone_app
 from homeplane.werewolf_service import PhoneGateway
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_device_controls import rig
+from tests.test_werewolf import confirm_deal
 
 
 class SilentLights:
@@ -51,6 +52,12 @@ async def owner():
     service = WerewolfService(effects, gateway_factory=NoNetwork, addresses=lambda: ["192.168.50.20"])
     await service.create(6, address="192.168.50.20")
     return service
+
+
+async def begin_play(service):
+    await service.control("start")
+    confirm_deal(service.game)
+    await service.control("advance")
 
 
 @pytest.mark.asyncio
@@ -109,7 +116,7 @@ async def test_lobby_tokens_revoked_and_choice_retries_are_idempotent():
             joined = await service.join(Join(code=service.join_code, seat=seat, name=str(seat)))
             credentials[seat] = joined["token"]
             await service.ready(joined["token"], True)
-        await service.control("start")
+        await begin_play(service)
         wolf = next(s for s, p in service.game.players.items() if p.role == "wolf")
         choice = Choice(action="attack", target=6, revision=service.game.revision, event_id="retry_event_0001")
         first = await service.choose(credentials[wolf], choice)
@@ -137,7 +144,7 @@ async def test_phone_recovers_its_receipt_after_advancing_without_reapplying_a_c
             joined = await service.join(Join(code=service.join_code, seat=seat, name=f"合成玩家{seat}"))
             tokens[seat] = {"Authorization": "Bearer " + joined["token"]}
             await service.ready(joined["token"], True)
-        await service.control("start")
+        await begin_play(service)
         wolf = next(seat for seat, player in service.game.players.items() if player.role == "wolf")
         other = next(seat for seat in tokens if seat != wolf)
         app = phone_app(service, service.origin)
@@ -415,7 +422,7 @@ async def test_service_pause_resume_cannot_release_uncertain_night_scene(tmp_pat
             joined = await service.join(Join(code=service.join_code, seat=seat, name=f'合成玩家{seat}'))
             await service.ready(joined['token'], True)
         fault['send']='cancel'
-        await service.control('start')
+        await begin_play(service)
         await asyncio.gather(service.effect_task, return_exceptions=True)
         await service.control('pause')
         await asyncio.gather(service.effect_task, return_exceptions=True)
@@ -532,7 +539,7 @@ async def test_next_prompt_waits_for_the_same_speaker_cleanup():
         service.effects.narration = True
         service.effects.speak = speak
         service.effects.speech_status = lambda: dict(quiet=False, configured=True)
-        await service.control('start')
+        await begin_play(service)
         first = service.game.public()['host_script']['text']
         await asyncio.wait_for(entered.wait(), 1)
         await service.control('advance')

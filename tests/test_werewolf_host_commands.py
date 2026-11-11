@@ -14,7 +14,7 @@ from homeplane.werewolf import WerewolfGame
 from homeplane.werewolf_api import Control, create_router
 from homeplane.werewolf_effects import HostEffects
 from homeplane.werewolf_service import Join, WerewolfService
-from tests.test_werewolf import Clock, FixedRoles
+from tests.test_werewolf import Clock, FixedRoles, confirm_deal
 from tests.test_werewolf_service import SilentLights
 
 
@@ -64,6 +64,8 @@ async def test_unbound_host_commands_never_mutate_the_current_room(tmp_path, act
 async def test_acknowledgement_retry_never_starts_or_advances_a_phase_twice(tmp_path):
     async with host(tmp_path) as (service, client):
         for index, action in enumerate(("start", "advance")):
+            if action == "advance":
+                confirm_deal(service.game)
             body = command(service, action, f"SYNTHETIC-command-{index:04d}")
             first = await client.post("/api/games/werewolf/control", json=body)
             assert first.status_code == 200
@@ -81,6 +83,7 @@ async def test_an_old_phase_cannot_advance_or_close_the_current_phase(tmp_path):
         await service.control("start")
         old_advance = command(service, "advance")
         old_close = command(service, "close", "SYNTHETIC-old-close")
+        confirm_deal(service.game)
         await service.control("advance")
         after = service.host()
         for body in (old_advance, old_close):
@@ -151,6 +154,8 @@ async def test_host_retry_memory_is_bounded_and_evicted_old_revisions_stay_inert
     async with host(tmp_path) as (service, client):
         first = command(service, "start")
         assert (await client.post("/api/games/werewolf/control", json=first)).status_code == 200
+        confirm_deal(service.game)
+        await service.control("advance")
         for index in range(260):
             body = command(service, "resume" if index % 2 else "pause", f"SYNTHETIC-event-{index:04d}")
             assert (await client.post("/api/games/werewolf/control", json=body)).status_code == 200
