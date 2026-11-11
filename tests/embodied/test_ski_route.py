@@ -133,7 +133,7 @@ def test_visible_gates_and_trees_share_one_world_plane_and_pause_preserves_earne
         assert item['z'] == pytest.approx((feature.at-game.distance) * 3)
     paused = game.set_paused(True)['ski']
     assert not paused['guide']['active']
-    for key in ['points', 'gates_passed', 'gates_missed', 'best_combo', 'combo', 'gates', 'obstacles']:
+    for key in ['points', 'gates_passed', 'gates_missed', 'best_combo', 'combo', 'gates', 'obstacles', 'trees']:
         assert paused[key] == before[key]
     game.begin_source()
     recovery = game.publish([], 'paused', '')['ski']
@@ -149,12 +149,14 @@ def test_visible_gates_and_trees_share_one_world_plane_and_pause_preserves_earne
 def test_preview_geometry_and_each_completed_section_use_the_scored_gate_plan():
     game = MotionGames()
     assert game.public['ski']['route'] is None
+    assert game.public['ski']['trees'] is None
     selected = game.select('ski', difficulty='challenge')['ski']
     assert selected['section_results'] is None
     assert selected['route'][0] == (0, 0, 0) and selected['route'][-1] == (selected['total_distance'], 0, 0)
     assert selected['route'][1:-1] == [
         (gate.at, gate.x, gate.width * game.difficulty.ski_gate) for gate in SKI_GATES
     ]
+    assert selected['trees'] == [(feature.at, feature.x) for feature in SKI_ROUTE if feature.kind == 'tree']
 
     run = run_ski((.05,), lateral=lambda g: next_gate_center(g) if g.distance < 60 else 1)
     result = run.publish([], 'complete', '')['ski']
@@ -178,6 +180,7 @@ def test_each_named_trail_drives_finish_gates_time_and_replay(trail, length, gat
         ski = result['ski']
         assert result['ski_trail'] == trail
         assert ski['distance'] == ski['total_distance'] == length and ski['progress'] == 1
+        assert ski['trees'] == [(feature.at, feature.x) for feature in plan.features if feature.kind == 'tree']
         assert ski['gates_passed'] == ski['gate_count'] == sum(gate_counts)
         assert ski['gates_missed'] == ski['collisions'] == 0
         assert ski['stars'] == 3 and ski['time_seconds'] > 0

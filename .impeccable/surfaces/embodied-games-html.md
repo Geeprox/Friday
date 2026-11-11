@@ -42,6 +42,8 @@ Ski route: eighteen illustrated wooden crossing arches, six per section. Wide, s
 
 滑雪的成对滑痕沿规则提供的木门中心穿行，雪面刻痕随已观测距离接近。穿门线使用实际判定宽度，终点线和小屋在到达前进入视野。开局前可看到真实第一道门，远山和地平线保持固定，圆头雪板提供近处参照。游戏库用实际门位绘制路线缩略图，选道时并列呈现长度和门数。游戏页延续已选雪道，开滑前可换道。结算在原位置展示总分、用时、星级和各段实际穿门成绩。“再滑一程”与“换雪道”并列，返回成绩时仍可查看本局结果。
 
+画面从当前可见位置续接下一次观测，最多用 120 毫秒抵达已知位置。雪面的纵向纹理按地面深度展开，浅压雪痕的疏密随透视变化。碰撞树取自规则的完整树位，两侧装饰树淡入淡出。减少动态效果时省去雪面细纹、压雪痕和装饰树，保留路线、滑痕、木门和碰撞树。暂停保持最后画面，短暂恢复从这里继续。长时间未看到画面时回到本局当前位置。
+
 山径冒险的 12 站由 `quest.py` 提供。双臂平举、双手上举、浅蹲起立、左右侧迈、交替抬膝、开合步、单腿站立、站姿侧倾、侧弓步、交替上伸、胸前开合、交叉触膝依次出现。关间留出 3 秒准备。已完成的站点打勾，当前站点描边。竖屏上路线占整行，站数与当前动作并排。暂停、画面缺失或镜头移动时保留已完成的计次，清除未完成的动作。
 
 Adventure world and motion thesis: the single route plan also names each station's forest, stream or camp scene and its landmark. Original sibling paper/clay plates change the place without changing the fixed camera. The focal feedback is earned construction: completed side steps and balances place separate rows of creek stones, knee raises build wooden steps, jacks grow a flower path, reaches hang camp flags, open/close cycles place pinwheels, and cross-knee cycles place camp boards. Squats and side bends clear low branches; completed holds open and lift the forest foliage. A picnic basket appears only after the original route reports completion. Keep these objects beside the full clothed demonstration and inside the portrait crop. Do not turn elapsed time into progress, invent currency, replace source teaching or add another renderer/dependency.

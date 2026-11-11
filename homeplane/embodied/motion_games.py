@@ -1005,6 +1005,7 @@ class MotionGames:
             points=max(0, self.passed * 100 - self.collisions * 25 + self.ski_gate_points),
             stars=stars if complete else None, time_seconds=round(self.ski_elapsed, 2) if complete else None,
             route=[(at, x, width * self.difficulty.ski_gate) for at, x, width in trail.path] if skiing else None,
+            trees=[(feature.at, feature.x) for feature in trail.features if feature.kind == 'tree'] if skiing else None,
             section_results=[
                 dict(name=section['name'], gate_count=len(section['gates']),
                      gates_passed=sum(self.ski_results.get(feature.id) == 'gate'

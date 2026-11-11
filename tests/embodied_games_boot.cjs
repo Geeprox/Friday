@@ -33,5 +33,13 @@ for(const match of html.matchAll(/<script defer src="\/assets\/([a-z-]+\.js)"><\
 assert.equal(sockets,1);assert.equal(animationRequests,1,'The first draw must schedule the continuing animation loop');
 vm.runInContext('updateRecording({armed:false,status:"off"});draw();',sandbox,{timeout:1000});
 assert.equal(animationRequests,2);assert.equal(node('recordToggle').textContent,'录制本局');assert.equal(node('recordToggle').disabled,true);
-if(require.main===module)console.log('Game bootstrap, animation continuation and disabled recording: OK');
+if(require.main===module){
+ const drawAt=at=>vm.runInContext(`draw(${at});lastScenePaint`,sandbox,{timeout:1000});
+ vm.runInContext('active=true;lastScenePaint=1000;',sandbox);
+ assert.equal(drawAt(1016.7),1000,'single 60 Hz refresh does not exceed the 30 fps budget');
+ assert.equal(drawAt(1033.3),1033.3,'rounded timestamps should not skip a 30 fps paint');
+ assert.equal(drawAt(1050),1033.3);
+ assert.equal(drawAt(1066.6),1066.6);
+ console.log('Game bootstrap, animation cadence and disabled recording: OK');
+}
 module.exports={sandbox,node,documentEvents,windowEvents};

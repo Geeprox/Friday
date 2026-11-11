@@ -94,7 +94,8 @@ const artRoot=new URL('.',document.currentScript?.src||new URL('/assets/games.js
 let artError=false;
 function sceneRefreshed(){if(!meta)return;if(meta.game?.mode!==selected)selectMode(selected);updateHUD();}
 const scenery=createGameScenery(c,{base:artRoot,onChange:sceneRefreshed});
-const skiScenery=createSkiScenery(c,{scene:winterScene,props:winterProps});
+const skiMotion=matchMedia('(prefers-reduced-motion: reduce)');
+const skiScenery=createSkiScenery(c,{scene:winterScene,props:winterProps,reducedMotion:()=>skiMotion.matches});
 const presentationClient=createGamePresentation({state:()=>meta?.game,current:gameViewCurrent,visible:()=>!document.hidden,assetsReady:gameSceneReady,onChange:()=>{if(!stageClosed)syncGameControls();},send:async(body,options)=>{const response=await fetch(url('/api/game/presentation'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),...options});if(!response.ok)throw Error('game_view_changed');return response.json();}});
 const gameSound=createGameSound({state:()=>meta?.game,current:()=>!commandPending&&gameViewCurrent()&&meta?.status==='live'&&gameDisplayReady(),visible:()=>!document.hidden,onChange:updateGameSound});
 function updateGameSound(value){const button=$('soundToggle');if(!button)return;button.textContent=value.pending?'取消开启音效':value.enabled?'关闭音效':value.state==='blocked'?'重试开启音效':'开启音效';button.setAttribute('aria-pressed',String(value.enabled));button.setAttribute('aria-busy',String(value.pending));}
@@ -425,7 +426,29 @@ function placeTeaching(r,portrait){
  }
 }
 function scheduleStage(){if(stageFrame==null&&!document.hidden&&!stageClosed)stageFrame=requestAnimationFrame(draw);}
-function draw(now=performance.now()){if(meta?.game?.presentation?.required===true)presentationClient.tick();gameSound.tick();stageFrame=null;if(document.hidden||stageClosed)return;watchGameConnection(now);if(now-lastScenePaint<1000/(active?30:10)){scheduleStage();return;}lastScenePaint=now;const r=canvas.getBoundingClientRect(),ratio=Math.min(2,devicePixelRatio||1);if(canvas.width!==Math.round(r.width*ratio)||canvas.height!==Math.round(r.height*ratio)){canvas.width=Math.round(r.width*ratio);canvas.height=Math.round(r.height*ratio)}c.setTransform(1,0,0,1,0,0);c.fillStyle='#eef0e8';c.fillRect(0,0,canvas.width,canvas.height);const portrait=matchMedia('(max-width:760px) and (orientation:portrait)').matches;scenery.setPortrait(portrait);placeTeaching(r,portrait);const scale=Math.min(canvas.width/(portrait?960:1600),canvas.height/900);c.setTransform(scale,0,0,scale,(canvas.width-1600*scale)/2,(canvas.height-900*scale)/2);const paintAt=gameViewCurrent(now)?now:(lastAcceptedAt??now);selected==='home'?homeWorld():selected==='tennis'?tennis(paintAt):selected==='hiit'?hiitWorld(paintAt):world(paintAt);drawDebug();if(typeof drawRecordPage==='function')drawRecordPage(performance.now());scheduleStage();}
+function draw(now=performance.now()){
+ if(meta?.game?.presentation?.required===true)presentationClient.tick();
+ gameSound.tick();stageFrame=null;
+ if(document.hidden||stageClosed)return;
+ watchGameConnection(now);
+ const period=1000/(active?30:10);
+ // 60 Hz 的两个刷新间隔可能被计为 33.3ms，留出半毫秒的时间戳误差。
+ if(now-lastScenePaint+.5<period){scheduleStage();return;}
+ lastScenePaint=now;
+ const r=canvas.getBoundingClientRect(),ratio=Math.min(2,devicePixelRatio||1);
+ if(canvas.width!==Math.round(r.width*ratio)||canvas.height!==Math.round(r.height*ratio)){
+  canvas.width=Math.round(r.width*ratio);canvas.height=Math.round(r.height*ratio);
+ }
+ c.setTransform(1,0,0,1,0,0);c.fillStyle='#eef0e8';c.fillRect(0,0,canvas.width,canvas.height);
+ const portrait=matchMedia('(max-width:760px) and (orientation:portrait)').matches;
+ scenery.setPortrait(portrait);placeTeaching(r,portrait);
+ const scale=Math.min(canvas.width/(portrait?960:1600),canvas.height/900);
+ c.setTransform(scale,0,0,scale,(canvas.width-1600*scale)/2,(canvas.height-900*scale)/2);
+ const paintAt=gameViewCurrent(now)?now:(lastAcceptedAt??now);
+ selected==='home'?homeWorld():selected==='tennis'?tennis(paintAt):selected==='hiit'?hiitWorld(paintAt):world(paintAt);
+ drawDebug();if(typeof drawRecordPage==='function')drawRecordPage(performance.now());
+ scheduleStage();
+}
 document.addEventListener('visibilitychange',()=>{if(document.hidden){gameSound.quiet();presentationClient.release();if(stageFrame!=null)cancelAnimationFrame(stageFrame);stageFrame=null;}else{updateHUD();scheduleStage();}});
 function closeGameView(){gameSound.close();presentationClient.close();stageClosed=true;streamGeneration++;clearTimeout(reconnectTimer);reconnectTimer=null;commandPending?.controller.abort();commandPending=null;const old=gameSocket;gameSocket=null;streamOpen=false;if(old){old.onclose=null;old.close();}if(stageFrame!==null)cancelAnimationFrame(stageFrame);stageFrame=null;}
 window.addEventListener('pagehide',closeGameView);

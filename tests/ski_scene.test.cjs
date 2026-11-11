@@ -1,14 +1,17 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),test=require('node:test');
 const fingerprint=value=>require('node:crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex');
-function scene(){
+function scene({reduced=false}={}){
  const calls=[],texture={save(){},restore(){},translate(){},scale(){},drawImage(){}},pattern={setTransform(m){calls.push(['uv',...m.values]);}};
  const c={save(){},restore(){},beginPath(){},closePath(){},moveTo(...p){calls.push(['move',...p]);},lineTo(...p){calls.push(['line',...p]);},quadraticCurveTo(...p){calls.push(['curve',...p]);},stroke(){},fill(){calls.push(['fill',this.fillStyle]);},fillRect(...p){calls.push(['snow',...p]);},drawImage(im,...p){calls.push([im.id,...p]);},createPattern(){return pattern;}};
  const context=vm.createContext({document:{createElement(){return{getContext:()=>texture};}},DOMMatrix:class{constructor(values){this.values=values;}}});
  vm.runInContext(fs.readFileSync('homeplane/embodied/static/ski-scene.js','utf8'),context);
- const api=context.createSkiScenery(c,{scene:{id:'background',src:'snow.png',complete:true,naturalWidth:1600,naturalHeight:900},props:{id:'tree',complete:true,naturalWidth:1600,naturalHeight:800}});
+ const api=context.createSkiScenery(c,{scene:{id:'background',src:'snow.png',complete:true,naturalWidth:1600,naturalHeight:900},props:{id:'tree',complete:true,naturalWidth:1600,naturalHeight:800},reducedMotion:()=>reduced});
  return{...api,paint(g,at){calls.length=0;api.draw(g,at);return structuredClone(calls);}};
 }
 const game=(distance,status='playing')=>({mode:'ski',status,players:[{lateral:0}],ski:{distance,obstacles:[{x:0,z:12-distance*3}]}});
+const groundUV=(row,y)=>(y-row[6])/row[4];
+function wrap(value){return ((value+256)%512+512)%512-256;}
+const arch=draws=>draws.find(c=>c[0]==='tree'&&c[1]===1200&&c[2]===400);
 test('only observed progress moves the snow, tracks and trees; wall time does not',()=>{
  const s=scene(),g=game(0);s.receive(g,1000);const first=s.paint(g,1000);
  assert.deepEqual(s.paint(g,1400),first);
@@ -20,12 +23,18 @@ test('only observed progress moves the snow, tracks and trees; wall time does no
  const a=obstacle(first),b=obstacle(moved);assert(a&&b);
  assert(Math.abs(a[8]-350/(12+1.8)*3.1)<1e-8);assert(Math.abs(b[8]-350/(9+1.8)*3.1)<1e-8);
  const oldUv=first.find(c=>c[0]==='uv'),newUv=moved.find(c=>c[0]==='uv');
- const wrapped=((newUv[6]-oldUv[6]+3/18*512)%512+512)%512;
- assert(Math.min(wrapped,512-wrapped)<1e-8,'ground uses the same three world units as an obstacle');
+ assert(Math.abs(wrap(groundUV(newUv,384)-groundUV(oldUv,384)-3/18*512))<1e-8,
+  'ground uses the same three world units as an obstacle');
+ const rows=first.filter(c=>c[0]==='uv');
+ assert(rows[0][4]<0&&rows.at(-1)[4]<rows[0][4],'vertical snow detail grows closer to the skis');
+ for(let i=1;i<rows.length;i++){
+  const y=384+i*4;
+  assert(Math.abs(wrap(groundUV(rows[i],y)-groundUV(rows[i-1],y)))<1e-8,'adjacent strips share the same ground edge');
+ }
 });
 test('packet interpolation is bounded by observations, pauses and missing input',()=>{
  const s=scene();s.receive(game(0),1000);s.receive(game(1),1100);
- const direct=scene();assert.deepEqual(s.paint(game(1),1150),direct.paint(game(.5),1150),'halfway between known positions');
+ const direct=scene();assert.deepEqual(s.paint(game(1),1160),direct.paint(game(.5),1160),'halfway between known positions');
  assert.deepEqual(s.paint(game(1),1400),direct.paint(game(1),1400),'never extrapolate past the newest observation');
  const paused=game(1,'paused');s.receive(paused,1500);const frame=s.paint(paused,1500);assert.deepEqual(s.paint(paused,5000),frame);
  s.receive(game(0),5100);assert.deepEqual(s.paint(game(0),5100),direct.paint(game(0),5100),'restarting a course does not tween backward');
@@ -45,6 +54,52 @@ test('a pause during interpolation freezes the displayed frame and a new scope d
  const fresh={...paused,round_id:2};s.receive(fresh,1200);assert.equal(fingerprint(s.paint(fresh,1200)),fingerprint(scene().paint(fresh,1200)));
  const worker={...next,control_context:'b'.repeat(32),players:[{lateral:-.2}]};s.receive(worker,1250);
  assert.equal(fingerprint(s.paint(worker,1250)),fingerprint(scene().paint(worker,1250)));
+});
+test('uneven packet intervals and resuming start from the displayed pose',()=>{
+ const s=scene();
+ const packet=(distance,lateral,status='playing')=>{
+  const g=game(distance,status);
+  g.players=[{lateral}];
+  Object.assign(g.ski,{route:[[0,0,0],[7,0,.54],[54,0,0]],trees:[[4,.65]]});
+  return g;
+ };
+ const first=packet(0,0),next=packet(.6,.1),short=packet(.8,.25);
+ s.receive(first,1000);s.paint(first,1000);s.receive(next,1160);
+ const before=arch(s.paint(next,1210));
+ s.receive(short,1210);
+ assert.deepEqual(arch(s.paint(short,1210)),before,'a short interval must not jump distance or steering');
+ const frozen=s.paint(short,1240),pause=packet(.8,.25,'paused');
+ s.receive(pause,1241);assert.deepEqual(s.paint(pause,1241),frozen);
+ s.receive(pause,6000);assert.deepEqual(s.paint(pause,6000),frozen);
+ const resumed=packet(.81,.22);
+ s.receive(resumed,6050);
+ assert.deepEqual(s.paint(resumed,6050),frozen,'resume continues from the actual paused frame');
+ assert.deepEqual(s.paint(resumed,6170),scene().paint(resumed,6170),'the view settles at the newest observed pose');
+ const rejoined=packet(2,.1);
+ s.receive(rejoined,9100);
+ assert.deepEqual(s.paint(rejoined,9100),scene().paint(rejoined,9100),'joining after a long gap shows the current pose');
+});
+test('collision trees stay on the route as the stage catches up, including with reduced motion',()=>{
+ const collisionTree=draws=>draws.find(c=>c[0]==='tree'&&c[1]===0&&c[2]===0&&c[8]>350);
+ const packet=(distance,obstacles)=>{
+  const g=game(distance);
+  Object.assign(g.ski,{route:[[0,0,0],[7,0,.54],[54,0,0]],trees:[[4,.65]],obstacles});
+  return g;
+ };
+ for(const reduced of[false,true]){
+  const s=scene({reduced}),before=packet(3.9,[{x:.65,z:.3}]),after=packet(4.3,[]);
+  s.receive(before,1000);const visible=s.paint(before,1000);
+  const tree=collisionTree(visible);
+  assert(tree);
+  assert(arch(visible));
+  assert.equal(visible.some(c=>c[0]==='uv'),!reduced);
+  assert.equal(visible.some(c=>c[0]==='tree'&&c[1]===400&&c[2]===0),!reduced);
+  s.receive(after,1100);
+  assert.deepEqual(collisionTree(s.paint(after,1100)),tree,'the latest snapshot has already crossed this tree');
+  const settled=s.paint(after,1220);
+  assert(!collisionTree(settled),'the tree clears the foreground once the camera crosses it');
+  assert(arch(settled)[8]>arch(visible)[8],'reduced motion retains gate approach');
+ }
 });
 test('illustrated gates share observed ground motion and their opening follows rule clearance',()=>{
  const s=scene(),g=game(0);g.ski.gates=[{x:0,z:24,width:.48}];
@@ -77,8 +132,8 @@ test('a preview and the moving snow grooves go through the authored gate at its 
  };
  const before=measure(first,1000),next=game(3);next.ski.route=route;
  assert(measure(next,2000)>before);
- assert.notDeepEqual(path(s.paint(first,1000),'rgba(88,108,119,.23)'),
-  path(s.paint(next,2000),'rgba(88,108,119,.23)'),'snow marks advance even on the straight approach');
+ assert.notDeepEqual(path(s.paint(first,1000),'rgba(113,102,107,.20)'),
+  path(s.paint(next,2000),'rgba(113,102,107,.20)'),'snow scuffs advance even on the straight approach');
  const finish=game(175);finish.ski.route=route;
  const end=s.paint(finish,3000);
  assert(end.some(c=>c[0]==='tree'&&c[1]===800&&c[2]===400),'the finish lodge approaches before completion');
