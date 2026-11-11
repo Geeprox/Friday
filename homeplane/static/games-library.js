@@ -12,9 +12,23 @@ const ktvEntry={id:'ktv',name:'家庭 KTV',description:'搜歌、排歌单，和
 const storeEntries=apps=>[...apps.filter(a=>a.id!=='ktv'),ktvEntry].filter(a=>a.id!=='hiit'||!apps.some(b=>b.id==='quest')).map(a=>a.id==='quest'?{...a,name:'体感闯关',description:'沿山径完成动作，也可选择运动训练。',searchText:'山径冒险 动作闯关 运动闯关 深蹲 抬膝 上伸 胸前开合 单腿站立 交叉触膝'}:a);
 const category=app=>app.id==='ktv'?'音乐聚会':app.kind==='party'?'聚会游戏':isCircuit(app)?'轻运动':'体感游戏';
 const players=app=>app.players_label||(app.players?.[0]===app.players?.[1]?app.players[0]===1?'单人':app.players[0]+' 人同玩':app.players[0]+'–'+app.players[1]+' 人');
+function skiRoutePreview(trail){
+ const canvas=h('canvas',null,'ski-route-preview');
+ canvas.width=216;canvas.height=58;canvas.setAttribute('aria-hidden','true');
+ const ctx=canvas.getContext?.('2d'),path=trail.path;
+ if(!ctx||!Array.isArray(path)||path.length<2||
+    !path.every(point=>Array.isArray(point)&&Number.isFinite(point[0])&&Number.isFinite(point[1])))return canvas;
+ const points=path.map(([distance,lateral])=>[8+200*distance/trail.distance,29-32*lateral]);
+ ctx.strokeStyle=ctx.fillStyle='#3d594f';
+ ctx.lineWidth=3;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();
+ for(const [index,[x,y]] of points.entries()){if(index)ctx.lineTo(x,y);else ctx.moveTo(x,y);}
+ ctx.stroke();
+ for(const [x,y] of points.slice(1,-1)){ctx.beginPath();ctx.arc(x,y,3.5,0,Math.PI*2);ctx.fill();}
+ return canvas;
+}
 export function mountGames(root,{go=()=>{}}={}){
  const difficultySelections=new Map();
- let alive=true,report=null,cameras=[],selection=null,filter='all',query='',busy=false,stageApp=null,frame=null,practice=null,party=null,ktv=null,diagrams=[],generation=0,ui={},lastError='',readOwner=null,readEpoch=0,readAt=null,stateFresh=false,readNotice='',catalogLoaded=false;
+ let alive=true,report=null,cameras=[],selection=null,filter='all',query='',busy=false,stageApp=null,frame=null,practice=null,party=null,ktv=null,diagrams=[],generation=0,ui={},lastError='',readOwner=null,readEpoch=0,readAt=null,stateFresh=false,readNotice='',catalogLoaded=false,pendingSkiTrail=null;
  const wrap=h('section',null,'games-library'),status=h('p','正在读取游戏库…','games-connection'),screen=h('div',null,'games-screen');status.setAttribute('role','status');wrap.append(status,screen);root.append(wrap);
  const abort=new AbortController();
  async function api(path,body,signal){const r=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any([abort.signal,AbortSignal.timeout(12000),...(signal?[signal]:[])])});const data=await r.json();if(!r.ok)throw Error(data.detail||'unavailable');return data;}
@@ -22,6 +36,30 @@ export function mountGames(root,{go=()=>{}}={}){
  function gameIntent(){const value=report?.service?.game_intent;return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)?value:null;}
  function gameDifficulties(app){return ['quest','hiit','ski','tennis'].includes(app?.id)&&Array.isArray(report?.difficulties)?report.difficulties.filter(d=>['easy','standard','challenge'].includes(d?.id)&&typeof d.label==='string'&&d.label.length<=12):[];}
  function chosenDifficulty(app){const options=gameDifficulties(app),current=report?.service?.game;return options.find(d=>d.id===(difficultySelections.get(app.id)||(current?.selected_mode===app.mode?current.difficulty:null)))||options.find(d=>d.id==='standard');}
+ function skiTrails(app){
+  if(app?.id!=='ski'||!Array.isArray(report?.ski_trails))return[];
+  return report.ski_trails.filter(trail=>typeof trail?.id==='string'&&/^[a-z][a-z-]{1,23}$/.test(trail.id)&&
+   typeof trail.name==='string'&&trail.name.length<=16&&Number.isSafeInteger(trail.distance)&&trail.distance>0&&
+   Number.isSafeInteger(trail.gate_count)&&trail.gate_count>0);
+ }
+ function chosenSkiTrail(app){
+  const options=skiTrails(app),id=pendingSkiTrail||report?.service?.game?.ski_trail;
+  return options.find(trail=>trail.id===id)||options.find(trail=>trail.id==='summit')||options[0];
+ }
+ function skiTrailPicker(app){
+  const trails=skiTrails(app);
+  if(!trails.length)return null;
+  const group=h('div',null,'game-ski-trails'),label=h('h3','雪道'),list=h('div',null,'game-ski-trail-list');
+  label.id='game-ski-trail-label';group.setAttribute('role','group');group.setAttribute('aria-labelledby',label.id);
+  for(const trail of trails){
+   const control=button('',()=>{if(!busy){pendingSkiTrail=trail.id;update();}},'game-ski-trail');
+   control.dataset.skiTrail=trail.id;
+   control.append(h('span',trail.name,'ski-route-name'),h('span',trail.distance+' 米 · '+trail.gate_count+' 道门','ski-route-length'),skiRoutePreview(trail));
+   list.append(control);
+  }
+  group.append(label,list);
+  return group;
+ }
  function retireRead(){readEpoch++;const previous=readOwner;readOwner=null;previous?.controller.abort();}
  function clean(){ktv?.dispose();ktv=null;practice?.dispose();practice=null;party?.dispose();party=null;diagrams.forEach(d=>d.dispose());diagrams=[];ui={};frame=null;stageApp=null;wrap.dataset.playing='false';}
  function cover(app,cls='game-cover'){const src=art(app.id);if(src){const image=h('img',null,cls);image.src=src;image.alt=app.name+'封面插画';image.width=1672;image.height=941;image.decoding='async';return image;}const fallback=h('div',null,'game-tool-cover'),icon=h('span',null,'icon icon-users');icon.setAttribute('aria-hidden','true');fallback.append(icon,h('span',app.name));return fallback;}
@@ -51,16 +89,34 @@ export function mountGames(root,{go=()=>{}}={}){
   if(selection.id==='ktv'){void openKtv();return;}
   const app=selection.id==='quest'&&selection.name==='体感闯关'?report.apps.find(a=>a.id==='quest')||selection:selection,back=button('全部游戏',()=>returnToStore(app),'game-back');const arrow=h('span',null,'icon icon-arrow-right');arrow.setAttribute('aria-hidden','true');back.prepend(arrow);screen.append(back);
   if(app.id==='werewolf'){party=mountWerewolf(screen,{go});return;}
-  const top=h('div',null,'game-detail-layout'),visual=h('div',null,'game-detail-art');visual.append(cover(app),h('p','封面插画','game-art-caption'));const info=h('section',null,'game-detail-info');info.append(h('h2',displayName(app)),h('p',players(app)+' · '+category(app),'game-meta'),h('p',app.description,'game-description'));if(isCircuit(app)){const modes=h('div',null,'game-mode-picker');modes.setAttribute('aria-label','闯关玩法');for(const[id,label]of [['quest','山径冒险'],['hiit','运动训练']]){const next=report.apps.find(a=>a.id===id);if(!next)continue;const b=button(label,()=>select(next));b.setAttribute('aria-pressed',String(app.id===id));modes.append(b);}info.append(modes);}
+  const top=h('div',null,'game-detail-layout'),visual=h('div',null,'game-detail-art');top.dataset.game=app.id;visual.append(cover(app));const info=h('section',null,'game-detail-info');info.append(h('h2',displayName(app)),h('p',players(app)+' · '+category(app),'game-meta'),h('p',app.description,'game-description'));if(isCircuit(app)){const modes=h('div',null,'game-mode-picker');modes.setAttribute('aria-label','闯关玩法');for(const[id,label]of [['quest','山径冒险'],['hiit','运动训练']]){const next=report.apps.find(a=>a.id===id);if(!next)continue;const b=button(label,()=>select(next));b.setAttribute('aria-pressed',String(app.id===id));modes.append(b);}info.append(modes);}
   if(app.status==='prototype')info.append(h('p','开发预览 · 座位追踪与指认工具','game-preview-label'));
+  const trailPicker=skiTrailPicker(app);
+  if(trailPicker)info.append(trailPicker);
   let difficulty=null,difficultyNote=null;
   const options=gameDifficulties(app);
   if(options.length){const field=h('div',null,'game-difficulty'),label=h('label','难度');label.setAttribute('for','game-difficulty');difficulty=h('select');difficulty.id='game-difficulty';difficulty.setAttribute('aria-describedby','game-difficulty-note');for(const option of options){const item=h('option',option.label);item.value=option.id;difficulty.append(item);}difficulty.value=chosenDifficulty(app)?.id||'standard';difficultyNote=h('p',null,'game-difficulty-note');difficultyNote.id='game-difficulty-note';difficulty.onchange=()=>{if(busy){difficulty.value=chosenDifficulty(app)?.id||'standard';return;}if(options.some(d=>d.id===difficulty.value))difficultySelections.set(app.id,difficulty.value);update();};field.append(label,difficulty,difficultyNote);info.append(field);}
-  const readiness=h('p',null,'game-readiness');info.append(readiness);const notice=h('p',lastError,'game-notice');notice.setAttribute('role','status');const actions=h('div',null,'game-actions'),start=button(app.kind==='seating'?'打开聚会工具':'开始游戏',()=>perform(async intent=>{practice?.dispose();practice=null;const id=cameras.find(c=>c.id===report.service.camera)?.id||cameras[0]?.id;if(!id)throw Error('camera_missing');const difficulty=chosenDifficulty(app)?.id;const result=await api('/api/embodied/start',{camera:id,app:app.id,expected_intent:intent,...(difficulty?{difficulty}:{})});if(!result.owned||result.game?.selected_mode!==app.mode||difficulty&&result.game?.difficulty!==difficulty)throw Error('game_state_changed');if(alive){difficultySelections.delete(app.id);await openStage();}}),'primary'),resume=button('继续游戏',()=>perform(openStage)),stop=button('结束游戏',()=>perform(stopGame));actions.append(start,resume,stop);info.append(actions,notice);top.append(visual,info);screen.append(top);
+  const readiness=h('p',null,'game-readiness');info.append(readiness);const notice=h('p',lastError,'game-notice');notice.setAttribute('role','status');const actions=h('div',null,'game-actions'),start=button(app.kind==='seating'?'打开聚会工具':'开始游戏',()=>perform(intent=>startGame(app,intent)),'primary'),resume=button('继续游戏',()=>perform(openStage)),stop=button('结束游戏',()=>perform(stopGame));actions.append(start,resume,stop);info.append(actions,notice);top.append(visual,info);screen.append(top);
   const stage=h('div',null,'game-stage-slot');stage.hidden=true;screen.append(stage);const teaching=h('section',null,'game-how-to');teaching.append(h('h3','怎么玩'));const steps=h('div',null,'game-play-steps');for(const text of ['留出活动空间，让全身入镜','比出 OK 选择玩家，放下手后开始',app.players?.[0]===2?'两位玩家都入镜后一起参与':'跟着画面，用动作参与'])steps.append(h('p',text));teaching.append(steps);
   const tutorial=h('div',null,'motion-mini-list'),practiceSlot=h('div');for(const key of moves[app.id]||['hand.point','hand.ok']){const tile=motionTile(key,gesture=>{practice?.dispose();practice=mountPractice(practiceSlot,{gesture,go,cameras,onClose:()=>{practice=null;practiceSlot.replaceChildren();}});practiceSlot.scrollIntoView?.({block:'nearest',behavior:'instant'});});diagrams.push(tile);tutorial.append(tile);}teaching.append(tutorial,practiceSlot);screen.append(teaching);
   if(app.kind==='seating')teaching.append(h('p','此工具提供座位追踪和指认，不含狼人杀角色或裁判规则。','game-meta'));
-  const tv=h('p',null,'game-tv-status');screen.append(tv);ui={start,resume,stop,readiness,notice,stage,tv,difficulty,difficultyNote};update();
+  const tv=h('p',null,'game-tv-status');screen.append(tv);ui={start,resume,stop,readiness,notice,stage,tv,difficulty,difficultyNote,trailPicker};update();
+ }
+ async function startGame(app,intent){
+  practice?.dispose();practice=null;
+  const id=cameras.find(c=>c.id===report.service.camera)?.id||cameras[0]?.id;
+  if(!id)throw Error('camera_missing');
+  const options={},difficulty=chosenDifficulty(app),trail=chosenSkiTrail(app);
+  if(difficulty)options.difficulty=difficulty.id;
+  if(trail)options.ski_trail=trail.id;
+  const result=await api('/api/embodied/start',{camera:id,app:app.id,expected_intent:intent,...options});
+  if(!result.owned||result.game?.selected_mode!==app.mode||
+     Object.entries(options).some(([key,value])=>result.game?.[key]!==value))throw Error('game_state_changed');
+  if(alive){
+   difficultySelections.delete(app.id);
+   if(trail)pendingSkiTrail=null;
+   await openStage();
+  }
  }
  async function openKtv(){
   const stamp=generation;screen.append(h('p','正在连接家庭 KTV…','games-connection'));
@@ -81,7 +137,19 @@ export function mountGames(root,{go=()=>{}}={}){
  }
  async function stopGame(intent){const result=await api('/api/embodied/game/stop',{expected_intent:intent});if(result.mode!=='off')throw Error('invalid_game_response');if(alive){closeStage();if(ui.notice)ui.notice.textContent='本局已结束';}}
  async function perform(fn){if(busy||!alive)return;const intent=gameIntent();if(!controlsCurrent()||!intent){stateFresh=false;update();await refresh(true);return;}busy=true;stateFresh=false;lastError='';if(ui.notice)ui.notice.textContent='';retireRead();update();try{await fn(intent);if(alive)await refresh(true);}catch(e){if(alive){const changed=e.message==='game_state_changed';lastError=changed?'游戏状态已变化，请确认后再操作。':e.message==='camera_missing'?'还没有接入摄像头，请先完成设置。':'暂时无法完成，请重试。';if(changed)await refresh(true);if(ui.notice)ui.notice.textContent=lastError;}}finally{busy=false;if(alive)update();}}
- function update(){serviceStatus();if(!report)return;updateRunning();if(!ui.start)return;const s=report.service,configured=Boolean(s.configured&&cameras.length),disabled=busy||!controlsCurrent()||!gameIntent();ui.start.disabled=disabled||!configured||s.capture_enabled===false;ui.resume.hidden=!(s.owned&&currentGame()?.id===selection?.id);ui.resume.disabled=disabled;ui.resume.textContent=preparingGame()?'进入游戏':'继续游戏';const same=s.owned&&currentGame()?.id===selection?.id;if(ui.difficulty){ui.difficulty.disabled=disabled;ui.difficulty.value=chosenDifficulty(selection)?.id||'standard';ui.difficultyNote.textContent=chosenDifficulty(selection)?.description?.[selection.id]||'';const current=gameDifficulties(selection).find(d=>d.id===s.game?.difficulty);if(same&&current)ui.resume.textContent+=' · '+current.label;}ui.start.textContent=same?'重新开始':'开始游戏';ui.start.className=same?'':'primary';ui.resume.className='primary';if(frame&&ui.playTitle&&currentGame()){ui.playTitle.textContent=displayName(currentGame());frame.title=currentGame().name+'实时画面';}ui.stop.hidden=!s.owned||!currentGame();ui.stop.disabled=disabled;const camera=cameras.find(c=>c.id===s.camera);ui.readiness.textContent=!configured?'还没有接入可用于体感识别的摄像头':s.capture_enabled===false?'摄像头已暂停':camera?(camera.room+' · '+camera.name):'开始后使用已配置的游戏镜头';if(!configured&&!ui.recovery){ui.recovery=button('设置摄像头',()=>go('Settings'));ui.readiness.after(ui.recovery);}const tv=s.tv_viewer,fresh=tv&&Date.now()/1000-tv.reported_at<12;ui.tv.textContent=fresh?'电视已连接，正在同步游戏画面':'大屏同玩：在电视上打开 Friday';if(stageApp&&!ui.stageEnded&&!busy&&controlsCurrent()&&!s.owned)showStoppedStage();}
+ function updateSkiTrails(same){
+  if(!ui.trailPicker)return;
+  const trail=chosenSkiTrail(selection);
+  for(const control of ui.trailPicker.querySelectorAll('button')){
+   control.setAttribute('aria-pressed',String(control.dataset.skiTrail===trail?.id));
+   control.disabled=busy;
+  }
+  const live=same&&skiTrails(selection).find(item=>item.id===report.service.game?.ski_trail);
+  if(!live)return;
+  ui.resume.textContent+=' · '+live.name;
+  if(trail?.id!==live.id)ui.start.textContent='换道并开始';
+ }
+ function update(){serviceStatus();if(!report)return;updateRunning();if(!ui.start)return;const s=report.service,configured=Boolean(s.configured&&cameras.length),disabled=busy||!controlsCurrent()||!gameIntent();ui.start.disabled=disabled||!configured||s.capture_enabled===false;ui.resume.hidden=!(s.owned&&currentGame()?.id===selection?.id);ui.resume.disabled=disabled;ui.resume.textContent=preparingGame()?'进入游戏':'继续游戏';const same=s.owned&&currentGame()?.id===selection?.id;if(ui.difficulty){ui.difficulty.disabled=disabled;ui.difficulty.value=chosenDifficulty(selection)?.id||'standard';ui.difficultyNote.textContent=chosenDifficulty(selection)?.description?.[selection.id]||'';const current=gameDifficulties(selection).find(d=>d.id===s.game?.difficulty);if(same&&current&&!ui.trailPicker)ui.resume.textContent+=' · '+current.label;}ui.start.textContent=same?'重新开始':'开始游戏';updateSkiTrails(same);ui.start.className=same?'':'primary';ui.resume.className='primary';if(frame&&ui.playTitle&&currentGame()){ui.playTitle.textContent=displayName(currentGame());frame.title=currentGame().name+'实时画面';}ui.stop.hidden=!s.owned||!currentGame();ui.stop.disabled=disabled;const camera=cameras.find(c=>c.id===s.camera);ui.readiness.textContent=!configured?'还没有接入可用于体感识别的摄像头':s.capture_enabled===false?'摄像头已暂停':camera?(camera.room+' · '+camera.name):'开始后使用已配置的游戏镜头';if(!configured&&!ui.recovery){ui.recovery=button('设置摄像头',()=>go('Settings'));ui.readiness.after(ui.recovery);}const tv=s.tv_viewer,fresh=tv&&Date.now()/1000-tv.reported_at<12;ui.tv.textContent=fresh?'电视已连接，正在同步游戏画面':'大屏同玩：在电视上打开 Friday';if(stageApp&&!ui.stageEnded&&!busy&&controlsCurrent()&&!s.owned)showStoppedStage();}
  async function refresh(replace=false){
   if(!alive)return false;update();if(readOwner){if(!replace)return readOwner.promise;retireRead();}
   const owner={epoch:++readEpoch,controller:new AbortController(),promise:null};readOwner=owner;readNotice='';

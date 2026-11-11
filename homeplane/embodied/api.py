@@ -14,6 +14,7 @@ from .catalog import RECOGNIZERS, catalog, get_app
 from .game_difficulty import DifficultyId, difficulty_options
 from .household import DeviceCommands, basic_command
 from .paths import PRIVATE
+from .ski_route import SkiTrailId, ski_trail_options
 
 
 class Start(BaseModel):
@@ -22,6 +23,7 @@ class Start(BaseModel):
     camera: str | None = Field(default=None, pattern=r"^cam_[a-f0-9]{10}$")
     app: str | None = Field(default=None, max_length=32)
     difficulty: DifficultyId | None = None
+    ski_trail: SkiTrailId | None = None
     expected_intent: str = Field(pattern=r'^[a-f0-9]{64}$', strict=True)
 
 
@@ -179,7 +181,8 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
 
     @router.get("/api/games")
     async def games():
-        return dict(apps=catalog(), recognition=RECOGNIZERS, difficulties=difficulty_options(), service=await service.status())
+        return dict(apps=catalog(), recognition=RECOGNIZERS, difficulties=difficulty_options(),
+                    ski_trails=ski_trail_options(preview=True), service=await service.status())
 
     @router.get('/api/embodied/scenes')
     async def scenes():
@@ -299,9 +302,9 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
             if get_app(request.app).kind == 'party':
                 raise HTTPException(409, detail='party_host_required')
         try:
+            options = request.model_dump(include={'difficulty', 'ski_trail'}, exclude_none=True)
             return await service.start(request.camera, request.app, open_privacy=request.open_privacy,
-                                       expected_intent=request.expected_intent,
-                                       **({'difficulty':request.difficulty} if request.difficulty is not None else {}))
+                                       expected_intent=request.expected_intent, **options)
         except (OSError, ValueError, httpx.HTTPError) as error:
             detail = 'game_state_changed' if str(error) == 'game_state_changed' else 'embodied_start_unavailable'
             raise HTTPException(409, detail=detail) from None

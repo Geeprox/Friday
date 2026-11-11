@@ -36,7 +36,7 @@ Compact landscape body teaching: keep instructions/earned count in the left pane
 
 Ski route: eighteen illustrated wooden crossing arches, six per section. Wide, small traverses teach steering first; alternating turns and narrower openings build the next two sections. Trees leave a clear corridor between consecutive targets. All encounters are anchored to travelled distance, including exact course and collision boundaries; frame cadence does not choose obstacle count or layout. Gate accuracy and collision count determine stars; sustained gate chains add points. The motion thesis is approach and passage through the actual existing illustrated arch on the shared snow plane, with short textual success/miss/collision feedback. No camera shake, extra wall-clock motion, new dependency or automatic sound. Pause/recovery preserves earned gates and scoring; replay clears them. Final-render/real-person comfort and recognition acceptance remain required.
 
-滑雪的成对滑痕沿规则提供的木门中心穿行，雪面刻痕随已观测距离接近。穿门线使用实际判定宽度，终点线和小屋在到达前进入视野。开局前可看到真实第一道门，远山和地平线保持固定，圆头雪板提供近处参照。结算在原位置展示总分、星级和三段实际穿门成绩，原计分区保留占位，窄屏的“再滑一程”保持可见。
+滑雪的成对滑痕沿规则提供的木门中心穿行，雪面刻痕随已观测距离接近。穿门线使用实际判定宽度，终点线和小屋在到达前进入视野。开局前可看到真实第一道门，远山和地平线保持固定，圆头雪板提供近处参照。游戏库用实际门位绘制路线缩略图，选道时并列呈现长度和门数。游戏页延续已选雪道，开滑前可换道。结算在原位置展示总分、用时、星级和各段实际穿门成绩。“再滑一程”与“换雪道”并列，返回成绩时仍可查看本局结果。
 
 山径冒险的 12 站由 `quest.py` 提供。双臂平举、双手上举、浅蹲起立、左右侧迈、交替抬膝、开合步、单腿站立、站姿侧倾、侧弓步、交替上伸、胸前开合、交叉触膝依次出现。关间留出 3 秒准备。已完成的站点打勾，当前站点描边。竖屏上路线占整行，站数与当前动作并排。暂停、画面缺失或镜头移动时保留已完成的计次，清除未完成的动作。
 

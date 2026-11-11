@@ -38,3 +38,33 @@ test('the completed overlay uses the real section results and keeps the original
  delete finished.ski.section_results;
  assert.match(c.stageOverlayMarkup(finished,true,true),/穿门 12 \/ 18/);
 });
+test('the result picker keeps the round until a trail is explicitly selected and read back',async()=>{
+ const {makeClient,part,game:stageGame}=require('./game_stage_harness.cjs');
+ const options=[{id:'first-snow',name:'初雪坡',distance:54,gate_count:5},{id:'pine-slalom',name:'松林回转',distance:92,gate_count:8}];
+ const finished=stageGame({mode:'ski',selected_mode:'ski',status:'complete',ski_trail:'first-snow',ski_trails:options,
+  ski:{points:2000,stars:3,course_count:1,time_seconds:25.34,section_results:[{name:'初雪坡',gates_passed:5,gate_count:5}]}});
+ const next={...finished,mode:'off',status:'off',control_revision:2,round_id:2,ski_trail:'pine-slalom'};
+ const writes=[];let mismatch=true;
+ const h=makeClient({selected:'ski',meta:{game:finished},artError:false,fetch:async(_path,request)=>{
+  writes.push(JSON.parse(request.body));return{ok:true,json:async()=>({...next,ski_trail:mismatch?'first-snow':next.ski_trail})};
+ }});
+ const {c}=h;vm.runInContext(part('function completedGame(', 'const legacyQuestStages='),c);
+ let markup=c.stageOverlayMarkup(finished,true,true);
+ assert.match(markup,/初雪坡 · 成绩.*25\.3 秒.*穿门<\/dt><dd>5 \/ 5/);
+ assert.match(markup,/再滑一程.*换雪道/);
+ assert.equal(await c.chooseSkiTrail('pine-slalom'),false);
+ c.toggleSkiChooser();markup=c.stageOverlayMarkup(finished,true,true);
+ assert.match(markup,/更换雪道.*aria-pressed="true"><strong>初雪坡.*返回成绩/);
+ assert.equal(writes.length,0);
+ c.toggleSkiChooser();assert.match(c.stageOverlayMarkup(finished,true,true),/初雪坡 · 成绩/);
+ c.toggleSkiChooser();assert.equal(await c.chooseSkiTrail('pine-slalom'),false);
+ assert.equal(c.meta.game.round_id,finished.round_id);
+ mismatch=false;
+ assert.equal(await c.chooseSkiTrail('pine-slalom'),true);
+ assert.deepEqual(writes.at(-1),{mode:'ski',action:'select',ski_trail:'pine-slalom',
+  expected_context:finished.control_context,expected_revision:finished.control_revision});
+ assert.equal(c.meta.game.ski_trail,'pine-slalom');
+ assert.equal(c.meta.game.mode,'off');
+ assert.match(c.stageOverlayMarkup(c.meta.game,true,false),/aria-pressed="true"><strong>松林回转/);
+ h.setNow(1600);assert.equal(await c.chooseSkiTrail('first-snow'),false);assert.equal(writes.length,2);
+});

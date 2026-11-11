@@ -11,9 +11,10 @@ from homeplane.embodied.hiit import PLAN as HIIT_PLAN, HIITCircuit, signals
 from homeplane.embodied.pose_rules import angle
 from homeplane.embodied.quest import STAGES as QUEST_STAGES, TRANSITION_SECONDS
 from homeplane.embodied.ski_route import (
-    SKI_COURSES, SKI_GATES, SKI_LENGTH, SKI_PATH, SKI_ROUTE, SKI_TREE_REACH,
-    SKI_VISIBLE_AHEAD, SKI_WORLD_TRAVEL, advance, crossing_time,
+    DEFAULT_SKI_TRAIL, SKI_TREE_REACH, SKI_VISIBLE_AHEAD, SKI_WORLD_TRAVEL,
+    advance, crossing_time, get_ski_trail, ski_trail_options,
 )
+from homeplane.embodied.ski_route import SKI_COURSES as SKI_COURSES
 TENNIS_TARGET = 7
 TENNIS_CAP = 15
 TENNIS_REACH = .20
@@ -370,6 +371,7 @@ class MotionGames:
         from .game_presentation import GamePresentation
         self.presentation = GamePresentation(clock) if require_presentation else None
         self.difficulty = game_difficulty('standard')
+        self.ski_trail = DEFAULT_SKI_TRAIL
         self.control_context = secrets.token_hex(16)
         self.control_revision = 0
         self.mode = "off"
@@ -464,24 +466,29 @@ class MotionGames:
     def complete(self):
         return ((self.mode == 'quest' and self.level >= len(self.quest_stages))
                 or (self.mode == 'hiit' and self.circuit.complete)
-                or (self.mode == 'ski' and self.distance >= SKI_LENGTH)
+                or (self.mode == 'ski' and self.distance >= self.ski_trail.length)
                 or (self.mode == 'tennis' and self.tennis_winner is not None))
 
     def ski_course(self):
         distance = self.distance
-        for index, course in enumerate(SKI_COURSES):
+        sections = self.ski_trail.sections
+        for index, course in enumerate(sections):
             if distance < course['length']:
                 return index, course, distance
             distance -= course['length']
-        return len(SKI_COURSES)-1, SKI_COURSES[-1], SKI_COURSES[-1]['length']
+        return len(sections)-1, sections[-1], sections[-1]['length']
 
-    def select(self, mode, *, difficulty=None):
+    def select(self, mode, *, difficulty=None, ski_trail=None):
         if mode not in ("quest", "ski", "tennis", "hiit", "home"):
             raise ValueError("invalid_game")
         if mode == 'home' and difficulty is not None:
             raise ValueError('invalid_game_difficulty')
+        if ski_trail is not None and mode != 'ski':
+            raise ValueError('invalid_ski_trail')
+        trail = self.ski_trail if ski_trail is None else get_ski_trail(ski_trail)
         self.reset("off", difficulty=difficulty)
         self.selected_mode = mode
+        self.ski_trail = trail
         self.game_input_enabled = mode != 'home'
         return self.publish([], "off", "OK 保持 1 秒开始 · Yeah 保持 1 秒切换")
 
@@ -879,14 +886,15 @@ class MotionGames:
         if effort > 0.03:
             self.active += dt
         remaining = dt
-        while remaining > 1e-10 and self.distance < SKI_LENGTH:
+        trail = self.ski_trail
+        while remaining > 1e-10 and self.distance < trail.length:
             _, course, local = self.ski_course()
             # Only tests/recovery migrations may begin partway through a route.
             # Never award work for features already behind the observed position.
-            while self.ski_cursor < len(SKI_ROUTE) and SKI_ROUTE[self.ski_cursor].at < self.distance - 1e-8:
+            while self.ski_cursor < len(trail.features) and trail.features[self.ski_cursor].at < self.distance - 1e-8:
                 self.ski_cursor += 1
-            feature = SKI_ROUTE[self.ski_cursor] if self.ski_cursor < len(SKI_ROUTE) else None
-            boundary = min(self.distance + course['length'] - local, feature.at if feature else SKI_LENGTH)
+            feature = trail.features[self.ski_cursor] if self.ski_cursor < len(trail.features) else None
+            boundary = min(self.distance + course['length'] - local, feature.at if feature else trail.length)
             target = effort * course['speed'] * self.difficulty.ski_speed
             speed, travel = advance(self.speed, target, remaining)
             if travel < boundary - self.distance - 1e-10:
@@ -902,7 +910,7 @@ class MotionGames:
                     self.ski_cursor += 1
         self.ski_elapsed += dt - remaining
         self.obstacles, self.ski_gates = [], []
-        for feature in SKI_ROUTE:
+        for feature in trail.features:
             z = (feature.at - self.distance) * SKI_WORLD_TRAVEL
             if -.3 < z <= SKI_VISIBLE_AHEAD:
                 result = self.ski_results.get(feature.id)
@@ -911,7 +919,7 @@ class MotionGames:
                     self.obstacles.append(item)
                 else:
                     self.ski_gates.append(dict(item, width=feature.width * self.difficulty.ski_gate, result=result))
-        if self.distance >= SKI_LENGTH:
+        if self.distance >= trail.length:
             self.speed = 0.0
             self.obstacles = self.ski_gates = []
 
@@ -942,8 +950,9 @@ class MotionGames:
                               elapsed=at, combo=self.ski_combo, points=points)
 
     def ski_public(self, players, status):
+        trail = self.ski_trail
         course_index, course, course_distance = self.ski_course()
-        gate = next((f for f in SKI_GATES if f.at >= self.distance and f.id not in self.ski_results), None)
+        gate = next((f for f in trail.gates if f.at >= self.distance and f.id not in self.ski_results), None)
         active = self.mode == 'ski' and status == 'playing' and bool(players) and gate is not None
         lateral = players[0].get('lateral', 0) if players else 0
         delta = gate.x - lateral if gate else 0
@@ -951,27 +960,29 @@ class MotionGames:
         cue = ('left' if delta < -gate_width + .08 else
                'right' if delta > gate_width - .08 else 'center') if gate else 'finish'
         event = dict(self.ski_event, age=round(max(0, self.ski_elapsed - self.ski_event['elapsed']), 3)) if self.ski_event else None
-        stars = (3 if self.gates_passed >= len(SKI_GATES) - 2 and self.collisions <= 1 else
-                 2 if self.gates_passed >= len(SKI_GATES) * 2 / 3 and self.collisions <= 4 else 1)
+        gate_count = len(trail.gates)
+        stars = (3 if self.gates_passed >= math.ceil(gate_count * 8 / 9) and self.collisions <= 1 else
+                 2 if self.gates_passed >= math.ceil(gate_count * 2 / 3)
+                 and self.collisions <= max(1, gate_count * 2 // 9) else 1)
         skiing = self.mode == 'ski' or self.selected_mode == 'ski'
         complete = self.mode == 'ski' and self.complete
         return dict(
             schema_version=2, speed=round(self.speed, 3), distance=round(self.distance, 2),
             obstacles=[dict(o) for o in self.obstacles], gates=[dict(g) for g in self.ski_gates],
             collisions=self.collisions, passed=self.passed, course=course_index,
-            course_name=course['name'], course_count=len(SKI_COURSES),
+            course_name=course['name'], course_count=len(trail.sections),
             course_progress=round(min(1, course_distance / course['length']), 3),
-            total_distance=SKI_LENGTH, progress=round(min(1, self.distance / SKI_LENGTH), 3),
-            gate_count=len(SKI_GATES), gates_passed=self.gates_passed, gates_missed=self.gates_missed,
+            total_distance=trail.length, progress=round(min(1, self.distance / trail.length), 3),
+            gate_count=gate_count, gates_passed=self.gates_passed, gates_missed=self.gates_missed,
             combo=self.ski_combo, best_combo=self.ski_best_combo,
             points=max(0, self.passed * 100 - self.collisions * 25 + self.ski_gate_points),
-            stars=stars if complete else None,
-            route=[(at, x, width * self.difficulty.ski_gate) for at, x, width in SKI_PATH] if skiing else None,
+            stars=stars if complete else None, time_seconds=round(self.ski_elapsed, 2) if complete else None,
+            route=[(at, x, width * self.difficulty.ski_gate) for at, x, width in trail.path] if skiing else None,
             section_results=[
                 dict(name=section['name'], gate_count=len(section['gates']),
                      gates_passed=sum(self.ski_results.get(feature.id) == 'gate'
-                                      for feature in SKI_GATES if feature.course == index))
-                for index, section in enumerate(SKI_COURSES)
+                                      for feature in trail.gates if feature.course == index))
+                for index, section in enumerate(trail.sections)
             ] if complete else None,
             guide=dict(active=active, cue=cue,
                        next_gate=dict(id=gate.id, x=gate.x, width=gate_width,
@@ -1097,6 +1108,8 @@ class MotionGames:
             "selected_mode": self.selected_mode,
             "difficulty": self.difficulty.id,
             "difficulty_options": difficulty_options(),
+            "ski_trail": self.ski_trail.id if self.selected_mode == 'ski' else None,
+            "ski_trails": ski_trail_options() if self.selected_mode == 'ski' else [],
             "owner_track": self.preferred_track,
             "input_mirrored": True,
             "version": "0.13.0",

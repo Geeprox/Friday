@@ -55,7 +55,7 @@ class GameDifficulty:
     def public(self):
         notes = {
             "easy": ("速度放慢，木门更宽", "来球更慢，回击时间更充裕", "动作次数较少"),
-            "standard": ("循序穿门，完成三段雪道", "来球节奏随回合渐进", "完成整轮动作"),
+            "standard": ("适中的滑速与门宽", "来球节奏随回合渐进", "完成整轮动作"),
             "challenge": ("速度更快，木门更窄", "来球更快，回击时机更紧", "增加动作次数"),
         }[self.id]
         return dict(

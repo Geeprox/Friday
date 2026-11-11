@@ -3,11 +3,13 @@
 import pytest
 
 from homeplane.embodied.motion_games import MotionGames
-from homeplane.embodied.ski_route import SKI_COURSES, SKI_GATES, SKI_ROUTE
+from homeplane.embodied.ski_route import SKI_COURSES, SKI_GATES, SKI_ROUTE, get_ski_trail
 
 
-def run_ski(cadence, *, duration=None, lateral=0, difficulty='standard'):
+def run_ski(cadence, *, duration=None, lateral=0, difficulty='standard', trail=None):
     game = MotionGames()
+    if trail is not None:
+        game.select('ski', ski_trail=trail)
     game.reset("ski", difficulty=difficulty)
     elapsed = 0.0
     for i in range(20000):
@@ -162,3 +164,33 @@ def test_preview_geometry_and_each_completed_section_use_the_scored_gate_plan():
     assert result['gates_passed'] == sum(row['gates_passed'] for row in result['section_results'])
     run.reset('ski')
     assert run.public['ski']['section_results'] is None
+
+
+@pytest.mark.parametrize('trail,length,gate_counts', [
+    ('first-snow', 54, [5]), ('pine-slalom', 92, [4, 4]), ('summit', 180, [6, 6, 6]),
+])
+def test_each_named_trail_drives_finish_gates_time_and_replay(trail, length, gate_counts):
+    plan = get_ski_trail(trail)
+    outcomes = []
+    for cadence in [(.02,), (.12, .019, .057)]:
+        game = run_ski(cadence, lateral=next_gate_center, trail=trail)
+        result = game.publish([], 'complete', '')
+        ski = result['ski']
+        assert result['ski_trail'] == trail
+        assert ski['distance'] == ski['total_distance'] == length and ski['progress'] == 1
+        assert ski['gates_passed'] == ski['gate_count'] == sum(gate_counts)
+        assert ski['gates_missed'] == ski['collisions'] == 0
+        assert ski['stars'] == 3 and ski['time_seconds'] > 0
+        assert [row['gates_passed'] for row in ski['section_results']] == gate_counts
+        assert ski['route'] == list(plan.path)
+        outcomes.append((ski['time_seconds'], ski['points']))
+
+        reconnected = game.begin_source()
+        assert reconnected['ski']['time_seconds'] == ski['time_seconds']
+        game.reset('ski')
+        assert game.public['ski_trail'] == trail and game.public['ski']['route'] == ski['route']
+        assert game.public['ski']['time_seconds'] is None and game.public['ski']['distance'] == 0
+
+    assert outcomes[0] == outcomes[1]
+    missed = run_ski((.07,), lateral=1, trail=trail).publish([], 'complete', '')['ski']
+    assert missed['gates_missed'] == sum(gate_counts) and missed['stars'] == 1

@@ -99,6 +99,23 @@ body[data-mode=tennis] .overlay button{min-height:44px}
 .ski-splits dd{margin:0;color:var(--ink);font-variant-numeric:tabular-nums;font-weight:600}
 .overlay:has(.ski-splits) button:focus-visible{outline-offset:2px}
 .workspace:has(.ski-splits) .score{visibility:hidden}
+.overlay:has(.ski-trail-picker){
+ width:min(424px,calc(100% - 16px));padding:18px 16px;max-height:calc(100% - 16px);overflow:auto
+}
+.ski-trail-picker{
+ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:0 0 14px;
+}
+.overlay .ski-trail-picker button{
+ display:grid;place-content:center;gap:4px;min-width:0;min-height:60px;padding:7px 3px;
+ font-variant-numeric:tabular-nums;
+}
+.ski-trail-picker button[aria-pressed=true]{border-color:var(--ink);background:#e4e8de}
+.ski-trail-picker strong{font-size:13px;font-weight:650;line-height:1.35}
+.ski-trail-picker span{font-size:11px;color:var(--muted);line-height:1.35}
+.overlay .ski-trail-picker button:focus-visible{outline-offset:2px}
+.ski-result-actions{display:flex;justify-content:center;gap:8px}
+.overlay .ski-result-actions button{min-width:0;min-height:44px}
+@media(forced-colors:active){.ski-trail-picker button[aria-pressed=true]{border-color:Highlight;outline:1px solid Highlight;outline-offset:-3px}}
 .quest-trail{display:flex;flex-wrap:wrap;align-items:center;gap:8px;list-style:none;margin:12px 0 0;padding:0;counter-reset:none}
 .quest-trail li{position:relative;display:grid;place-items:center;flex:none;width:24px;height:24px;border:1px solid var(--line);border-radius:50%;font-size:11px;line-height:1;font-variant-numeric:tabular-nums;color:var(--muted);background:var(--paper)}
 .quest-trail li[data-chapter-start=true]{margin-inline-start:8px}
@@ -132,6 +149,9 @@ body[data-simulated=true]{--source-overhead:24px;padding-block-start:24px}
  .overlay p.ski-result-summary{margin-bottom:6px;font-size:13px;line-height:1.4}
  .ski-splits{margin-bottom:8px}
  .ski-splits>div{padding-block:2px}
+ .overlay:has(.ski-trail-picker){padding:12px 10px;max-height:100%}
+ .overlay:has(.ski-trail-picker) h2{font-size:18px;margin-bottom:8px}
+ .ski-trail-picker{margin-bottom:8px}
 }
 /* A landscape phone keeps the score, scene and controls in one viewport. */
 @media(orientation:landscape) and (max-height:600px){
@@ -179,6 +199,22 @@ body[data-simulated=true]{--source-overhead:24px;padding-block-start:24px}
  :is(body[data-mode=quest],body[data-mode=hiit]) .game-tutorial p{width:1px;height:1px;padding:0;margin:0;overflow:hidden;clip-path:inset(50%)}
  :is(body[data-mode=quest],body[data-mode=hiit]) .player-feedback{grid-column:1;grid-row:2;align-self:center;max-width:none;max-height:44px;overflow-y:auto;padding:0;border:0;background:transparent}
  :is(body[data-mode=quest],body[data-mode=hiit]) .actions{grid-column:2;grid-row:2;align-self:end;justify-self:end;min-width:0}
+}
+@media(orientation:landscape) and (max-height:450px){
+ .overlay:has(.ski-splits,.ski-trail-picker){top:calc(50% - 12px);padding:10px 14px}
+ .overlay:has(.ski-splits) h2,.overlay:has(.ski-trail-picker) h2{font-size:19px;margin-bottom:6px}
+ .overlay p.ski-result-summary{margin-bottom:7px}
+ .ski-splits{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:8px;margin-bottom:10px}
+ .ski-splits>div{display:grid;grid-template-columns:1fr;gap:2px;padding:4px 0;text-align:center}
+ .ski-trail-picker{margin-bottom:8px}
+ .overlay:has(.ski-splits):has(.ski-result-actions){
+  display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px 12px;
+  width:min(410px,calc(100% - 24px));top:calc(50% - 16px)
+ }
+ .overlay:has(.ski-result-actions) h2{margin:0;text-align:start}
+ .overlay:has(.ski-result-actions) .ski-result-summary{margin:0;text-align:end}
+ .overlay:has(.ski-result-actions) .ski-splits,.ski-result-actions{grid-column:1/-1;margin:0}
+ .workspace:has([data-click="toggleSkiChooser()"]) .hud{visibility:hidden}
 }
 @media(max-width:760px) and (orientation:landscape) and (max-height:600px){
  .stage-brand h1,.connection{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}

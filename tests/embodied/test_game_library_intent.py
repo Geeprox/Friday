@@ -69,7 +69,10 @@ async def bridge(monkeypatch, tmp_path):
     if hasattr(api_module, 'GameControl'):
         namespace['GameControl'] = api_module.GameControl
     app = FastAPI()
-    app.add_api_route('/api/games', handler('homeplane/embodied/api.py', 'games', service=owner, catalog=api_module.catalog, RECOGNIZERS=api_module.RECOGNIZERS, difficulty_options=api_module.difficulty_options), methods=['GET'])
+    app.add_api_route('/api/games', handler(
+        'homeplane/embodied/api.py', 'games', service=owner, catalog=api_module.catalog,
+        RECOGNIZERS=api_module.RECOGNIZERS, difficulty_options=api_module.difficulty_options,
+        ski_trail_options=api_module.ski_trail_options), methods=['GET'])
     app.add_api_route('/api/embodied/start', handler('homeplane/embodied/api.py', 'start', **namespace), methods=['POST'])
     app.add_api_route('/api/embodied/game/stop', handler('homeplane/embodied/api.py', 'stop_game', **namespace), methods=['POST'])
     app.add_api_route('/api/games/{app_id}/open', handler('homeplane/embodied/api.py', 'open_app', service=owner, get_app=api_module.get_app), methods=['GET'])

@@ -1580,11 +1580,13 @@ async def game_control(request: Request):
     action = data.get('action')
     if action is not None and (not isinstance(action, str) or action not in {'select','start','pause','resume'}):
         raise HTTPException(400, detail='invalid_game_action')
-    if set(data)-{'mode','action','difficulty','expected_context','expected_revision'}:
+    if set(data)-{'mode','action','difficulty','ski_trail','expected_context','expected_revision'}:
         raise HTTPException(400, detail='invalid_game_request')
     if 'difficulty' in data and (type(data['difficulty']) is not str
             or action not in {'select','start'} or data.get('mode') not in {'quest','ski','tennis','hiit'}):
         raise HTTPException(400, detail='invalid_game_difficulty')
+    if 'ski_trail' in data and (type(data['ski_trail']) is not str or action != 'select' or data.get('mode') != 'ski'):
+        raise HTTPException(400, detail='invalid_ski_trail')
     if not games.control_current(data.get('expected_context'),data.get('expected_revision')):
         raise HTTPException(409, detail='game_state_changed')
     if practice.active() and action != 'pause' and data.get("mode", "quest") not in {"off", "home"}:
@@ -1595,7 +1597,8 @@ async def game_control(request: Request):
                 raise ValueError('game_changed')
             games.set_paused(action == 'pause')
         elif action == "select":
-            games.select(data.get("mode", "quest"), **({'difficulty':data['difficulty']} if 'difficulty' in data else {}))
+            options = {key: data[key] for key in ('difficulty', 'ski_trail') if key in data}
+            games.select(data.get("mode", "quest"), **options)
         else:
             games.require_game_view(data.get('mode', 'off'))
             games.reset(data.get("mode", "off"), **({'difficulty':data['difficulty']} if 'difficulty' in data else {}))
