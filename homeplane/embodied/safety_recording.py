@@ -54,6 +54,7 @@ class SafetyRecorder:
     MAX_REVIEW_PENDING = 8
     MAX_REVIEW_BYTES = 8 * 1024 * 1024
     RETRY_WINDOW = 20
+    POST_WINDOW = 3
 
     def __init__(self, *, persist, reconcile, current, clock=time.monotonic):
         self.persist, self.reconcile, self.current, self.clock = persist, reconcile, current, clock
@@ -90,6 +91,13 @@ class SafetyRecorder:
                    and job.receipt is not None and job.receipt.pending and not job.expired
                    and self.current(job) for job in self.jobs.values())
 
+    def pending_fall(self, camera, session, revision):
+        now = self.clock()
+        return any(job.camera == camera and job.session == session and job.revision == revision
+                   and job.feature is None and not job.expired and self.current(job)
+                   and (now <= job.captured + self.POST_WINDOW or job.saved is None
+                        or job.appended < len(job.following)) for job in self.jobs.values())
+
     def maintain(self):
         now = self.clock()
         for job in tuple(self.jobs.values()):
@@ -100,7 +108,7 @@ class SafetyRecorder:
                     self._drop(job)
             elif not self.current(job):
                 self._drop(job)
-            elif job.saved is not None and job.appended == len(job.following) and now > job.captured + 3:
+            elif job.saved is not None and job.appended == len(job.following) and now > job.captured + self.POST_WINDOW:
                 self._drop(job)
 
     def submit(self, *, camera, session, context, token, captured, revision, event, frames,
@@ -138,7 +146,8 @@ class SafetyRecorder:
     def frame(self, camera, captured, stamp, jpeg):
         self.maintain()
         for job in self.jobs.values():
-            if (job.feature is not None or job.camera != camera or not job.captured < captured <= job.captured + 3
+            if (job.feature is not None or job.camera != camera
+                    or not job.captured < captured <= job.captured + self.POST_WINDOW
                     or len(job.following) >= 6):
                 continue
             if job.following and stamp <= job.following[-1][0]:

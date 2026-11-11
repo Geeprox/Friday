@@ -113,7 +113,8 @@ class SoundPatrol:
         else:
             self.scope.update(item=self.item, selected={"id": CAMERA["id"]}, director=self.director,
                 self=SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
-                                     review_pending=self.j.runtime.review_pending),
+                                     review_pending=self.j.runtime.review_pending,
+                                     fall_pending=self.j.runtime.fall_pending),
                 current_sample=lambda: dict(self.state), privacy_closed=lambda: None,
                 send_motion=self.motor)
             loop = source_function("homeplane/embodied/previews.py", "direct", self.scope)

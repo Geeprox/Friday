@@ -191,7 +191,7 @@ async def test_primary_reserves_motion_before_first_await_and_bounds_child_comma
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['direction', 'tracking', 'post_move', 'epoch', 'privacy', 'source', 'review'])
+@pytest.mark.parametrize('change', ['direction', 'tracking', 'post_move', 'epoch', 'privacy', 'source', 'review', 'fall'])
 async def test_secondary_checks_latest_observation_after_privacy_read(change):
     director = CameraDirector()
     now = time.monotonic()
@@ -206,6 +206,7 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
                  waiters={}, recognizer=None, privacy_closed=noop,
                  self=SimpleNamespace(on_clear=None, focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                       review_pending=lambda *_:scope.get('review_pending',False),
+                                      fall_pending=lambda *_:scope.get('fall_pending',False),
                                       runtime_log=SimpleNamespace(record=noop)),
                  latest=dict(now=now, captured_mono=now, session='source', tracking_current=True,
                              people=view(now)['people'], scene_visible=True))
@@ -218,6 +219,8 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
         if change == 'privacy': scope['item']['privacy_closed'] = True
         if change == 'source': scope['item']['source_active'] = False
         if change == 'review': scope['review_pending'] = True
+        if change == 'fall':
+            scope['fall_pending'] = True
         return True
     scope['camera_is_open'] = read_power
     extract('homeplane/embodied/previews.py', {'current_sample', 'send_motion'}, scope)
@@ -229,7 +232,7 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change',[None,'target','review'])
+@pytest.mark.parametrize('change',[None,'target','review','fall'])
 async def test_primary_search_original_guard_rechecks_the_current_target(change):
     from homeplane.embodied.party_camera import PartyCamera
     scope, sent = primary_scope()
@@ -243,13 +246,16 @@ async def test_primary_search_original_guard_rechecks_the_current_target(change)
     assert director.choose(current(at), at) == 'right'
     scope['state'].update(current(at))
     scope.update(director=director, direction='right', games=SimpleNamespace(public={}),
-                 previews=SimpleNamespace(sessions={}),safety=SimpleNamespace(review_pending=lambda *_:False))
+                 previews=SimpleNamespace(sessions={}),
+                 safety=SimpleNamespace(review_pending=lambda *_:False,fall_pending=lambda *_:False))
     extract('homeplane/embodied/worker.py', {'decision_current'}, scope)
     class Wait:
         async def __aenter__(self):
             await asyncio.sleep(0)
             if change=='target':scope['state']['people'] = view(at, x=.05)['people']
             elif change=='review':scope['safety'].review_pending=lambda *_:True
+            elif change == 'fall':
+                scope['safety'].fall_pending = lambda *_: True
         async def __aexit__(self, *_): pass
     scope['room_lock'] = Wait()
     if change is None:

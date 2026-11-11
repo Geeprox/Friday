@@ -42,6 +42,8 @@ def _view_shift(before, after):
 class CameraDirector:
     REVIEW_HOLD_SECONDS = 30
     REVIEW_INTERVAL_SECONDS = 60
+    FALL_HOLD_SECONDS = 8
+    FALL_INTERVAL_SECONDS = 20
     PATROL_CONFIRM_SECONDS = 8
     TILT_DIRECTIONS = ('up', 'down')
 
@@ -82,8 +84,7 @@ class CameraDirector:
         self.patrol_confirmation = None
         self.patrol_view_state = 'idle'
         self.game_hold = False
-        self.review_scope = None
-        self.review_until = self.review_retry_at = -100.0
+        self.review_windows = {}
 
     @staticmethod
     def _game_active(game):
@@ -116,7 +117,7 @@ class CameraDirector:
         intent = (mode, revision)
         if intent != self.intent:
             self._discard_patrol()
-            self.review_scope = None
+            self.review_windows.clear()
             self.tilt_observation = None
             self.tilt_recovery = None
             if self.intent or self.mode != mode:
@@ -201,7 +202,8 @@ class CameraDirector:
         matches = [p for p in sample.get('people', []) if p.get('id') == track]
         return focus if len(matches) == 1 else None
 
-    def decision_current(self, sample, now, direction, *, focus=None, occupied_elsewhere=False, review_pending=False):
+    def decision_current(self, sample, now, direction, *, focus=None, occupied_elsewhere=False,
+                         review_pending=False, fall_pending=False):
         """Recheck the pending purpose without consuming evidence or survey budget."""
         pending = self.pending_decision
         if (not pending or direction != self.pending_direction or self.mode == 'hold'
@@ -212,7 +214,7 @@ class CameraDirector:
                 or sample['_local_received'] < pending['stamp']
                 or sample['_local_received'] <= self.last_move):
             return False
-        if self._review_holds(sample, now, review_pending):
+        if self._review_holds(sample, now, review_pending, fall_pending):
             return False
         if self.mode == 'pets' and not self._pets_current(sample):
             return False
@@ -263,7 +265,7 @@ class CameraDirector:
         self.obscured_since = None
         self.obscured_samples = 0
         self.phase = 'held'
-        self.review_scope = None
+        self.review_windows.clear()
 
     def _discard_patrol(self, *, uncertain_dispatch=False):
         if self.patrol_confirmation is None and not uncertain_dispatch:
@@ -327,28 +329,36 @@ class CameraDirector:
         pending['previous'] = (stamp, view[2], shift)
         return True
 
-    def _review_holds(self, sample, now, pending, *, reserve=False):
-        if (pending is not True or self.mode not in {'auto', 'survey'}
-                or not self._fresh(sample, now) or sample.get('scene_visible') is not True):
+    def _review_holds(self, sample, now, review_pending, fall_pending, *, reserve=False):
+        if not self._fresh(sample, now) or sample.get('scene_visible') is not True:
             return False
         scope = (self.intent, sample.get('session_id'))
-        if self.review_scope == scope:
-            if now < self.review_until:
-                return True
-            if now < self.review_retry_at:
-                return False
-        if reserve:
-            self.review_scope = scope
-            self.review_until = now + self.REVIEW_HOLD_SECONDS
-            self.review_retry_at = now + self.REVIEW_INTERVAL_SECONDS
-        return True
+        for kind, pending, duration, interval in (
+            ('fall', fall_pending is True, self.FALL_HOLD_SECONDS, self.FALL_INTERVAL_SECONDS),
+            ('review', review_pending is True and self.mode in {'auto', 'survey'},
+             self.REVIEW_HOLD_SECONDS, self.REVIEW_INTERVAL_SECONDS),
+        ):
+            if not pending:
+                continue
+            window = self.review_windows.get(kind)
+            if window is not None:
+                previous_scope, until, retry_at = window
+                if previous_scope == scope:
+                    if now < until:
+                        return True
+                    if now < retry_at:
+                        continue
+            if reserve:
+                self.review_windows[kind] = (scope, now + duration, now + interval)
+            return True
+        return False
 
     @staticmethod
     def identity(person):
         identity = person.get('identity') or {}
         return identity.get('person_id') if identity.get('state') in {'matched', 'tracked'} else None
 
-    def choose(self, sample, now, *, focus=None, occupied_elsewhere=False, review_pending=False):
+    def choose(self, sample, now, *, focus=None, occupied_elsewhere=False, review_pending=False, fall_pending=False):
         if self.mode == 'hold':
             self.phase = 'held'
             self.tilt_observation = None
@@ -463,7 +473,7 @@ class CameraDirector:
         self.blocked_positions.discard(self.position)
         if self.clear_since is None:self.clear_since=now
         if now-self.clear_since >= 20:self.recovery_steps=0
-        if self._review_holds(sample, now, review_pending, reserve=True):
+        if self._review_holds(sample, now, review_pending, fall_pending, reserve=True):
             self.pending_direction = self.pending_decision = None
             self.phase = 'review_held'
             return None

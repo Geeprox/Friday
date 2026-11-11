@@ -325,6 +325,8 @@ class FallDetector:
     Gaps, camera motion, bad joints and session changes invalidate a candidate.
     """
 
+    MAX_FRAME_GAP = 0.75
+
     def __init__(self):
         self.cameras = {}
 
@@ -334,9 +336,11 @@ class FallDetector:
     @staticmethod
     def geometry(person, aspect):
         joints, box = person.get("joints", {}), person.get("box", {})
+        if not isinstance(joints, dict) or not isinstance(box, dict):
+            return None
         pts = [joints.get(side + part) for part in ("Shoulder", "Hip") for side in ("left", "right")]
         if any(
-            not p
+            not isinstance(p, dict)
             or type(p.get("confidence")) not in (int, float)
             or not math.isfinite(p["confidence"])
             or not 0.55 <= p["confidence"] <= 1
@@ -382,6 +386,35 @@ class FallDetector:
         person_id = identity.get('person_id')
         return person_id if isinstance(person_id, str) and person_id else None
 
+    @staticmethod
+    def _descent(track, geometry, now):
+        anchor = track["anchor"]
+        return geometry["horizontal"] and (
+            track["down_since"] is not None
+            or anchor is not None and now - anchor["at"] <= 1.2
+            and geometry["center"] - anchor["center"] >= anchor["height"] * 0.25
+        )
+
+    def needs_stable_view(self, camera, session, queued=None):
+        """用最新一帧判断是否需要维持视角，不消耗跌倒确认进度。"""
+        state = self.cameras.get(camera)
+        if state is None or state["session"] != session:
+            return False
+        if queued is None:
+            return any(not track["fired"] and track["down_since"] is not None
+                       for track in state["tracks"].values())
+        people, now, aspect = queued
+        if not 0 < now - state["last"] <= self.MAX_FRAME_GAP or not 0.2 <= aspect <= 5:
+            return False
+        for person in people[:10]:
+            track = state["tracks"].get(str(person.get("id"))) if isinstance(person, dict) else None
+            if track is None or track["fired"] or not 0 < now - track["last"] <= self.MAX_FRAME_GAP:
+                continue
+            geometry = self.geometry(person, aspect)
+            if geometry is not None and self._descent(track, geometry, now):
+                return True
+        return False
+
     def observe(self, camera, session, people, now, captured, *, stable, aspect=16 / 9, evaluated_mono=None):
         evaluated_mono = now if evaluated_mono is None else evaluated_mono
         if (
@@ -396,7 +429,7 @@ class FallDetector:
             self.clear(camera)
             return []
         state = self.cameras.get(camera)
-        if state is None or state["session"] != session or not 0 < now - state["last"] <= 0.75:
+        if state is None or state["session"] != session or not 0 < now - state["last"] <= self.MAX_FRAME_GAP:
             state = dict(session=session, last=now, tracks={})
             self.cameras[camera] = state
         state["last"] = now
@@ -409,7 +442,7 @@ class FallDetector:
                 state["tracks"].pop(track, None)
                 continue
             old = state["tracks"].get(track)
-            if old is None or not 0 < now - old["last"] <= 0.75:
+            if old is None or not 0 < now - old["last"] <= self.MAX_FRAME_GAP:
                 old = dict(last=now, upright_since=None, anchor=None, down_since=None, fired=False)
                 state["tracks"][track] = old
             old["last"] = now
@@ -423,17 +456,10 @@ class FallDetector:
                     old["fired"] = False
                 continue
             old["upright_since"] = None
-            anchor = old["anchor"]
-            if not geometry["horizontal"]:
+            if not self._descent(old, geometry, now):
                 old["down_since"] = None
                 continue
             if old["down_since"] is None:
-                if (
-                    not anchor
-                    or now - anchor["at"] > 1.2
-                    or geometry["center"] - anchor["center"] < anchor["height"] * 0.25
-                ):
-                    continue
                 old["down_since"] = now
             if now - old["down_since"] >= 2 and not old["fired"]:
                 old["fired"] = True
@@ -450,7 +476,7 @@ class FallDetector:
                         status="suspected",
                         basis="upright_rapid_descent_sustained_horizontal",
                         detector="geometry-fall/1",
-                        started_mono=anchor["at"],
+                        started_mono=old["anchor"]["at"],
                     )
                 )
         state["tracks"] = {k: v for k, v in state["tracks"].items() if k in present}
@@ -602,17 +628,40 @@ class SafetyRuntime:
                     and self._sound_current(camera, ring.get('session'), ring.get('source_context'))
                     and self.sound.readiness()['available'])
 
+    def _current_review_source(self, camera, session):
+        token = self.source_tokens.get(camera)
+        source = self.sources.get(camera)
+        return (not self.closed and token is not None and not token.is_set()
+                and source is not None and source[0] == session and source[1] is not None
+                and 0 <= time.monotonic() - self.last_seen.get(camera, -math.inf) <= 1.5)
+
+    def fall_pending(self, camera, session):
+        """仅在当前获准来源的疑似跌倒确认或留档期间请求稳定视角。"""
+        if not self._current_review_source(camera, session):
+            return False
+        # 策略暂时读不到时，已准入的留档仍可短暂停留，新的候选需要有效策略。
+        if self.policy_cache.enabled and self.recording.pending_fall(camera, session, self.policy_cache.revision):
+            return True
+        if not self._cached_policy().enabled:
+            return False
+        queued = self.pending.get(camera)
+        if queued is None:
+            return self.detector.needs_stable_view(camera, session)
+        args, kwargs = queued
+        _, _, people, now, captured = args
+        aspect = kwargs['aspect']
+        if (kwargs['_admission'] is not self.source_tokens.get(camera)
+                or type(now) not in (int, float) or not 0 <= now - captured <= 1.5
+                or type(aspect) not in (int, float)):
+            return False
+        return self.detector.needs_stable_view(camera, session, (people, now, aspect))
+
     def review_pending(self, camera, session):
         """Fresh same-source sound or visual review, without starting a model."""
         policy = self._cached_policy()
         ring = self.frames.get(camera, {})
-        context = ring.get('source_context')
-        token = self.source_tokens.get(camera)
-        current = (not self.closed and policy.enabled
-                    and token is not None and not token.is_set()
-                    and context is not None and ring.get('session') == session
-                    and self.sources.get(camera) == (session, context)
-                    and 0 <= time.monotonic() - self.last_seen.get(camera, -math.inf) <= 1.5)
+        current = (policy.enabled and self._current_review_source(camera, session)
+                   and self.sources.get(camera) == (ring.get('session'), ring.get('source_context')))
         return bool(current and (
             policy.visual_review and self.visual.stability_pending(camera, session, policy.revision)
             or policy.sound_review and self.sound.stability_pending(camera, session, policy.revision)
@@ -819,7 +868,8 @@ class SafetyRuntime:
                 person={'identity': identity},
                 frames=[f for f in ring['items'] if 0 <= time.time() - f[0] <= 8], announce=policy.announce)
             if job is not None:
-                self.post_frames.setdefault(camera, []).append(dict(id=job.identifier, until=captured + 3))
+                self.post_frames.setdefault(camera, []).append(
+                    dict(id=job.identifier, until=captured + self.recording.POST_WINDOW))
 
     def _recording_current(self, job):
         return (not self.closed and not job.token.is_set()

@@ -89,7 +89,8 @@ class Patrol:
         else:
             self.scope.update(item=self.item, selected={'id':self.camera}, director=self.director,
                 self=SimpleNamespace(focus=lambda _:None, occupied_elsewhere=lambda _:False,
-                                     review_pending=self.home.runtime.review_pending),
+                                     review_pending=self.home.runtime.review_pending,
+                                     fall_pending=self.home.runtime.fall_pending),
                 current_sample=lambda:dict(self.state), privacy_closed=lambda:None, send_motion=self.motor)
             loop=source_function('homeplane/embodied/previews.py','direct',self.scope)
         try:
@@ -145,6 +146,7 @@ def test_manual_pet_game_and_expired_source_keep_their_original_priority():
     assert director.choose(pet,2,review_pending=True) is None
     pet.update(_local_received=2.2)
     assert director.choose(pet,2.2,review_pending=True)=='right'
+    assert not director.decision_current(pet,2.2,'right',fall_pending=True)
     director.apply_mode('auto','next');active=dict(sample(3),game={'mode':'ski'})
     assert director.choose(active,3,review_pending=True) is None and director.phase=='game_held'
     assert director.choose(sample(3),5,review_pending=True) is None and director.phase=='waiting_video'
@@ -197,13 +199,14 @@ async def test_active_initial_analysis_is_protected_and_recorded_duplicates_rele
 
 def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
     noop=lambda *_:None
-    safety=SimpleNamespace(review_pending=noop)
+    safety=SimpleNamespace(review_pending=noop,fall_pending=noop)
     tree=ast.parse(Path('homeplane/embodied/worker.py').read_text())
     assignment=next(n for n in tree.body if isinstance(n,ast.Assign)and any(isinstance(t,ast.Name)and t.id=='previews'for t in n.targets))
     scope=dict(PreviewPool=lambda **kwargs:kwargs,identity_store=None,wall=None,safety=safety,
                secondary_observation=noop,secondary_audio=noop,clear_camera=noop)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[assignment],type_ignores=[])),'original-preview-construction','exec'),scope)
     assert scope['previews']['review_pending'] is safety.review_pending
+    assert scope['previews']['fall_pending'] is safety.fall_pending
 
 
 async def patrol_fleet(home,steps=480):

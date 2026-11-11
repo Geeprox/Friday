@@ -234,7 +234,8 @@ async def test_secondary_camera_rechecks_the_live_tilt_before_writing_to_its_wor
         motion_lock=asyncio.Lock(), waiters=waiters, camera_is_open=camera_is_open, recognizer=None,
         process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock())),
         self=SimpleNamespace(focus=Mock(return_value=None), occupied_elsewhere=Mock(return_value=False),
-                             review_pending=Mock(return_value=False), runtime_log=SimpleNamespace(record=Mock()), on_clear=None),
+                             review_pending=Mock(return_value=False), fall_pending=Mock(return_value=False),
+                             runtime_log=SimpleNamespace(record=Mock()), on_clear=None),
         time=SimpleNamespace(monotonic=lambda: latest['now']), json=json, secrets=secrets,
         asyncio=SimpleNamespace(sleep=advance, wait_for=asyncio.wait_for, get_running_loop=asyncio.get_running_loop,
                                 CancelledError=asyncio.CancelledError))
@@ -279,6 +280,22 @@ def test_game_keeps_visible_players_in_a_stable_control_frame():
     edge=sample(3,people=[person(1,.9)]);edge['game']={'status':'playing'}
     assert d.choose(edge,3) is None  # The game owns its frame even when a player is clipped.
     assert d.phase=='game_held'
+
+
+def test_fall_has_a_short_independent_window_and_respects_camera_ownership():
+    director = CameraDirector()
+    director.apply_mode('auto', 1)
+    clear(director)
+    assert director.choose(sample(1), 1, review_pending=True) is None
+    assert director.choose(sample(31), 31, review_pending=True, fall_pending=True) is None
+    assert director.phase == 'review_held'
+    assert director.choose(sample(38.9), 38.9, fall_pending=True) is None
+    assert director.choose(sample(39), 39, review_pending=True, fall_pending=True) == 'right'
+    assert director.decision_current(sample(39.1), 39.1, 'right', fall_pending=True)
+    game = dict(sample(40), game={'mode': 'ski'})
+    assert director.choose(game, 40, fall_pending=True) is None and director.phase == 'game_held'
+    director.apply_mode('hold', 2)
+    assert director.choose(sample(41), 41, fall_pending=True) is None and director.phase == 'held'
 
 
 def test_requested_survey_is_finite_and_repeated_intent_does_not_restart_it():
