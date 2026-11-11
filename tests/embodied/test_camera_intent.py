@@ -12,11 +12,16 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException, Request
+import httpx
 import pytest
 
-from homeplane.embodied.camera_intent import CAMERA_MODES, CameraIntentStore
-from homeplane.embodied import previews
+from homeplane.embodied import previews, service as service_module
+from homeplane.embodied.api import create_router
+from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_intent import CAMERA_MODES, PET_MODES, CameraIntentStore, camera_intent_readback
+from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.party_camera import PartyCamera
 
 
 CAMERA = {'id': 'cam_1111111111', 'region': 'cn', 'device': {'did': 'synthetic-device'}}
@@ -223,7 +228,7 @@ async def test_secondary_save_failure_holds_locally_and_does_not_dispatch(monkey
 
 
 def primary_scope(tmp_path):
-    scope = dict(Request=object, HTTPException=HTTPException, secrets=secrets, time=time, CAMERA_MODES=CAMERA_MODES,
+    scope = dict(Request=Request, HTTPException=HTTPException, secrets=secrets, time=time, CAMERA_MODES=CAMERA_MODES,
                  SELECTED=CAMERA, camera_intents=store_at(tmp_path / 'camera'),
                  camera_planner=SimpleNamespace(mode='auto', intent_revision='old', intent_status='default',
                                                visited=set(), last_person=0, last_move=0),
@@ -267,6 +272,83 @@ async def test_primary_mode_resume_and_survey_restart_preference(tmp_path):
         assert scope['camera_planner'].mode == mode
         assert scope['camera_intents'].load().mode == ('hold' if mode == 'survey' else mode)
     scope['motor_step'].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('primary', [True, False])
+async def test_survey_readback_and_stop_are_bound_to_the_current_round(tmp_path, monkeypatch, primary):
+    other = {'id': 'cam_2222222222', 'region': 'cn', 'device': {'did': 'synthetic-secondary'}}
+    selected = CAMERA if primary else other
+    registered = {entry['id']: entry for entry in (CAMERA, other)}
+    camera_id = selected['id']
+    monkeypatch.setattr(service_module, 'camera', registered.__getitem__)
+    monkeypatch.setattr(previews, 'camera', registered.__getitem__)
+    config = lambda: {'viewer_port': 18743, 'cameras': list(registered.values())}
+    monkeypatch.setattr(service_module, 'configuration', config)
+    monkeypatch.setattr(previews, 'DATA', tmp_path)
+    motor = AsyncMock()
+    pool = previews.PreviewPool(recognize=True, intent_factory=lambda cam: store_at(tmp_path/'secondary', cam))
+    item = dict(mode='auto', mode_revision='initial', control=motor, control_epoch=1,
+                received_at=time.time(), state='live', frames=1, shutter_changed=False)
+    pool.sessions[other['id']] = item
+    scope = primary_scope(tmp_path)
+    state = dict(status='live', received_at=time.time(), processed_frames=1)
+    scope.update(state=state, games=MotionGames(), party_camera=PartyCamera(), last_frame=time.monotonic(),
+                 recorder=SimpleNamespace(public=lambda: {}), safety=SimpleNamespace(recording_status=lambda: {}),
+                 home=SimpleNamespace(public=lambda: {}), secondary_homes={}, fleet=SimpleNamespace(public=lambda _: {}),
+                 PRIVATE=tmp_path, previews=pool, configuration=config, PET_MODES=PET_MODES,
+                 camera_intent_readback=camera_intent_readback)
+    actual_worker_functions({'view', 'preview_status'}, scope)
+    worker = FastAPI()
+    worker.get('/api/previews/{camera_id}')(scope['preview_status'])
+    worker.post('/api/previews/{camera_id}/control')(scope['preview_control'])
+    app = FastAPI()
+    service = service_module.EmbodiedService.__new__(service_module.EmbodiedService)
+    service.cameras = lambda: list(registered.values())
+    service._url = lambda path: 'http://127.0.0.1:18743'+path
+    service.manual_previews = SimpleNamespace(has=lambda _: False, command=AsyncMock())
+    service.capture_enabled, service.process = True, SimpleNamespace(returncode=None)
+    app.include_router(create_router(service, None, None))
+    base = '/api/embodied/cameras/'+camera_id
+    async with (
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=worker)) as service.client,
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://console.invalid') as client,
+    ):
+        first = await client.post(base+'/control', json={'mode': 'survey'})
+        assert first.status_code == 200
+        old = first.json()['intent_revision']
+        director = CameraDirector()
+        director.apply_mode('survey', old)
+        director.survey_confirmed_moves = director.survey_attempts = len(director.SURVEY_ROUTE)
+        director.phase = 'survey_finished'
+        snapshot = dict(director.public(), mode='survey')
+        (state if primary else item)['camera_control'] = snapshot
+        assert (await client.get(base+'/preview')).json()['camera_control']['survey_result'] == 'complete'
+
+        restarted = await client.post(base+'/control', json={'mode': 'survey'})
+        assert restarted.status_code == 200
+        current = restarted.json()['intent_revision']
+        assert current != old
+        pending = (await client.get(base+'/preview')).json()['camera_control']
+        assert pending['intent_revision'] == current and pending['reason'] == '准备巡视'
+        assert pending['survey_result'] is None and pending['survey_confirmed_moves'] == pending['survey_attempts'] == 0
+        assert snapshot['survey_result'] == 'complete' and snapshot['intent_revision'] == old
+
+        state['status'] = item['state'] = 'unavailable'
+        item['control'] = None
+        invalid = await client.post(base+'/control', json={'mode': 'auto', 'survey_revision': current})
+        assert invalid.status_code == 422
+        stale = await client.post(base+'/control', json={'mode': 'hold', 'survey_revision': old})
+        assert stale.status_code == 409
+        assert (await client.get(base+'/preview')).json()['camera_control']['intent_revision'] == current
+        stopped = await client.post(base+'/control', json={'mode': 'hold', 'survey_revision': current})
+        assert stopped.status_code == 200 and stopped.json()['mode'] == 'hold'
+        readback = (await client.get(base+'/preview')).json()['camera_control']
+        assert readback['mode'] == 'hold' and readback['intent_revision'] == stopped.json()['intent_revision']
+        assert readback['survey_result'] is None and not readback['view_usable']
+    motor.assert_not_awaited()
+    scope['motor_step'].assert_not_awaited()
+    service.manual_previews.command.assert_not_awaited()
 
 
 @pytest.mark.asyncio

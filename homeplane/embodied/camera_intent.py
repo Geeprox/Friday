@@ -20,6 +20,28 @@ PET_MODES = {'pets', 'pet_target'}
 CAMERA_MODES = {'auto', 'pets', 'hold', 'survey'} | TARGET_MODES
 
 
+def camera_intent_readback(snapshot, *, mode, revision, status):
+    """切换意图后，旧画面的巡视结果和计数不能跟到新一轮。"""
+    report = dict(snapshot, mode=mode, intent_status=status)
+    if snapshot.get('intent_revision') != revision or snapshot.get('mode') != mode:
+        held = mode == 'hold'
+        report.update(intent_revision=revision, phase='held' if held else 'waiting_video',
+                      reason={'hold': '停留当前视角', 'survey': '准备巡视'}.get(mode, '等待画面'),
+                      view_usable=False, target_locked=False, survey_attempts=0,
+                      survey_confirmed_moves=0, survey_total_steps=None, survey_result=None,
+                      patrol_view_state='idle')
+    return report
+
+
+def finish_camera_survey(report):
+    """只用已确认的视角数结束本轮；转向请求本身不计入进度。"""
+    total = report.get('survey_total_steps')
+    complete = type(total) is int and total > 0 and report.get('survey_confirmed_moves') == total
+    return dict(report, phase='survey_finished', view_usable=False, target_locked=False,
+                survey_result='complete' if complete else 'interrupted',
+                reason='本轮巡视完成' if complete else '本轮巡视未完成')
+
+
 @dataclass(frozen=True)
 class CameraIntent:
     mode: str

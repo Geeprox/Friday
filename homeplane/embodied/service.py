@@ -546,14 +546,17 @@ class EmbodiedService:
             if not self.manual_previews.cameras:await self.manual_previews.close()
         return dict(state='stopped')
 
-    async def camera_control(self,camera_id,*,direction=None,mode=None):
+    async def camera_control(self,camera_id,*,direction=None,mode=None,survey_revision=None):
         camera(camera_id)
         if self.manual_previews.has(camera_id):
-            if mode in {'auto','pets','survey'}:raise ValueError('recognition_required')
+            if survey_revision is not None or mode in {'auto','pets','survey'}:raise ValueError('recognition_required')
             return await self.manual_previews.command('control',camera_id,direction=direction,mode=mode)
         if not self.capture_enabled or not self.process or self.process.returncode is not None:
             raise ValueError('camera_not_running')
-        return await self.request(f'/api/previews/{camera_id}/control',dict(direction=direction) if direction else dict(mode=mode))
+        body = dict(direction=direction) if direction else dict(mode=mode)
+        if survey_revision is not None:
+            body['survey_revision'] = survey_revision
+        return await self.request(f'/api/previews/{camera_id}/control', body)
 
     async def camera_follow_target(self, camera_id, command=None):
         camera(camera_id)

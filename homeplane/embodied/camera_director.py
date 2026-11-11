@@ -7,7 +7,7 @@ import cv2
 import math
 import numpy as np
 
-from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES
+from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES, finish_camera_survey
 
 
 def visible_scene(jpeg):
@@ -621,8 +621,7 @@ class CameraDirector:
             self.game_hold = True
             self._end_sound_search(now)
             self.sound_intent_since = now
-            if self.survey_reference is not None:
-                self._interrupt_survey()
+            self._interrupt_survey()
             self._discard_patrol()
             self.pending_direction = self.pending_decision = None
             self.tilt_observation = None
@@ -937,22 +936,25 @@ class CameraDirector:
                       'target_lost': '未找到所选目标', 'target_reacquiring': '正在确认所选目标'}.get(self.phase, reason)
         if self.sound_search_cue is not None and self.phase in {'confirming_view', 'checking_view', 'patrol_waiting_view'}:
             reason = '异响后环视'
-        survey_result = None
-        if self.phase == 'survey_finished':
-            survey_result = 'complete' if self.survey_confirmed_moves >= len(self.SURVEY_ROUTE) else 'interrupted'
-            reason = '本轮巡视完成' if survey_result == 'complete' else '本轮巡视未完成'
-        elif self.phase == 'patrolling' and self.mode == 'survey':
+        if self.phase == 'patrolling' and self.mode == 'survey':
             reason = {'down': '巡视低处', 'up': '抬回视野'}.get(self.pending_direction, reason)
         elif self.phase == 'observing' and self.mode == 'survey':
             reason = '巡视中，观察当前视角'
-        return dict(owner='friday', phase=self.phase, reason=reason, native_tracking=False,
+        report = dict(owner='friday', phase=self.phase, reason=reason, native_tracking=False,
                     intent_revision=self.intent[1] if self.intent else None,
                     native_patrol=False, view_usable=self.clear and self.phase in {
                         'following','target_ambiguous','patrolling','sound_search','observing','game_held','pet_unavailable',
                         'review_held','patrol_waiting_view','target_reacquiring','target_lost'},
                     uncover_steps=self.uncover_steps, recovery_steps=self.recovery_steps,
                     survey_attempts=self.survey_attempts, survey_command_limit=self.SURVEY_ATTEMPT_LIMIT,
-                    survey_confirmed_moves=self.survey_confirmed_moves, survey_result=survey_result,
+                    survey_confirmed_moves=self.survey_confirmed_moves, survey_total_steps=len(self.SURVEY_ROUTE),
+                    survey_result=None,
                     patrol_view_state=self.patrol_view_state,
                     avoided_angles=len(self.blocked_positions), target_locked=self.phase == 'following',
                     physical_motion_verified=False)
+        if self.phase == 'survey_finished':
+            return finish_camera_survey(report)
+        if self.mode == 'survey' and self.game_hold:
+            finished = finish_camera_survey(report)
+            report.update(survey_result=finished['survey_result'], reason=finished['reason'])
+        return report

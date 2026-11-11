@@ -139,6 +139,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   let power=null,pending=false,viewing=false,previewEpoch=0,previewTimer=null,previewToken=null;
   let modePending=false,directionPending=false,followReport=null,cameraControl=null,previousIntent=null;
   let modeVersion=0,pollSequence=0,appliedPoll=0;
+  let lastPoll=Date.now(),statusReadFailed=false;
   let picker=null;
   const targetPath=endpoint+'/follow-target';
   const frame=h('div',null,{class:'camera-frame'});
@@ -155,11 +156,18 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const liveControls=h('div',null,{class:'camera-live-controls',hidden:''});
   const followControls=h('div',null,{class:'camera-follow-actions',role:'group','aria-label':'镜头模式'});
   const cameraControls=h('div',null,{class:'camera-directions',role:'group','aria-label':'调整视角'});
+  const surveyStatus=h('span',null,{role:'status'});
+  const surveyCount=h('span',null,{'aria-hidden':'true'});
+  const surveyProgress=h('progress',null,{'aria-label':'已确认视角'});
+  const surveyTrack=add(h('div',null,{class:'camera-survey-progress'}),surveyProgress,surveyCount);
+  const surveyReadback=add(h('div',null,{class:'camera-survey-readback'}),surveyStatus,surveyTrack);
   const followButtons=[],directions=[];
   const owns=()=>alive&&frame.isConnected&&previewStop===dispose;
   const current=epoch=>owns()&&epoch===previewEpoch;
-  const live=()=>viewing&&(followReport?.frame_available||followReport?.state==='live'||followReport?.status==='live');
-  const surveying=()=>cameraControl?.mode==='survey'&&cameraControl.phase!=='survey_finished';
+  const hasLiveFrame=()=>followReport?.frame_available||followReport?.state==='live'||followReport?.status==='live';
+  const live=()=>viewing&&hasLiveFrame();
+  const surveyControl=()=>cameraControl?.mode==='survey'?cameraControl:null;
+  const surveying=()=>!!surveyControl()&&!cameraControl.survey_result&&cameraControl.phase!=='survey_finished';
   const selectingMode=()=>['person_target','pet_target'].includes(cameraControl?.mode);
   const setStatus=value=>{if(status.textContent!==value)status.textContent=value;};
   const release=token=>{if(token)void api(endpoint+'/preview/stop',{token}).catch(()=>{});};
@@ -190,18 +198,21 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    image.hidden=true;
    placeholder.hidden=false;
   }
-  function dispose(){
+  function stopViewing(){
    previewEpoch++;
-   clearInterval(previewTimer);
-   previewTimer=null;
    const token=previewToken;
    previewToken=null;
    release(token);
    viewing=false;
    leavePicker();
-   followReport=cameraControl=previousIntent=null;
+   followReport=null;
    clearFrame();
    image.removeAttribute('src');
+  }
+  function dispose(){
+   clearInterval(previewTimer);
+   stopViewing();
+   cameraControl=previousIntent=null;
   }
   function syncControls(){
    workspace.setAttribute('data-viewing',String(viewing));
@@ -241,10 +252,27 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     b.title=!frameCurrent?'等待实时画面':followReport?.recognition_enabled===false?'当前镜头未开启识别':unsupported?'当前识别服务暂不支持宠物跟随':'';
     b.setAttribute('aria-pressed',String(active&&!retry));
    }
-   const running=viewing&&surveying();
+   const report=surveyControl(),running=surveying();
+   const total=report?.survey_total_steps,confirmed=report?.survey_confirmed_moves;
+   const hasProgress=Number.isSafeInteger(total)&&total>0&&Number.isSafeInteger(confirmed)&&confirmed>=0&&confirmed<=total;
+   const surveyHadFocus=globalThis.document?.activeElement===survey;
+   surveyRow.hidden=!!picker||(!report&&(!viewing||followReport?.recognition_enabled===false));
+   surveyReadback.hidden=!report;
+   let surveyText=({complete:'本轮巡视完成',interrupted:'本轮巡视未完成'}[report?.survey_result])||report?.reason||'';
+   if(running&&statusReadFailed)surveyText='巡视状态待更新';
+   else if(running&&followReport&&!hasLiveFrame())surveyText='等待画面恢复';
+   if(surveyStatus.textContent!==surveyText)surveyStatus.textContent=surveyText;
+   surveyTrack.hidden=!hasProgress;
+   if(hasProgress){
+    surveyProgress.max=total;
+    surveyProgress.value=confirmed;
+    surveyCount.textContent=confirmed+' / '+total;
+    surveyProgress.setAttribute('aria-valuetext',confirmed+' / '+total+' 个视角已确认');
+   }
+   survey.hidden=!viewing&&!running;
    survey.textContent=running?'停止巡视':'巡视一轮';
-   survey.setAttribute('data-running',String(running));
-   modeAvailability(survey,running||canStart);
+   modeAvailability(survey,running?!!report.intent_revision:canStart&&cameraControl?.owner==='friday'&&cameraControl.phase!=='game_held');
+   if(surveyHadFocus&&(surveyRow.hidden||survey.hidden))watch.focus({preventScroll:true});
    for(const b of directions)b.disabled=directionPending||!!picker||!frameCurrent||!(followReport?.primary||followReport?.manual_control);
   }
   async function readPower(){
@@ -265,7 +293,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const watch=btn('查看实时画面',async()=>{
    if(!owns())return;
    if(viewing){
-    dispose();setStatus('已停止查看');syncControls();
+    stopViewing();setStatus('已停止查看');syncControls();
+    void poll();
     return;
    }
    if(pending||!power)return;
@@ -287,20 +316,19 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     viewing=true;previewToken=report.preview_token;
     syncControls();
     await poll();
-    if(current(epoch)&&viewing)previewTimer=setInterval(poll,1500);
    }catch(_){if(current(epoch))setStatus('暂时无法查看画面');}
    finally{pending=false;if(owns())syncControls();}
   },{class:'primary'});
   const close=btn('关闭镜头',async()=>{
    if(!owns()||pending||!power?.enabled)return;
-   pending=true;dispose();setStatus('正在关闭镜头…');syncControls();
+   pending=true;stopViewing();setStatus('正在关闭镜头…');syncControls();
    try{
     const result=await api(endpoint+'/power',{enabled:false,revision:power.revision,event_id:crypto.randomUUID()});
     if(!owns())return;
     if(result.status==='reported_match'){power=result;setStatus('镜头已关闭');}
     else{power=null;setStatus('关闭状态待确认');}
    }catch(_){if(owns()){power=null;setStatus('关闭状态待确认');}}
-   finally{pending=false;if(owns())syncControls();}
+   finally{pending=false;if(owns()){syncControls();void poll();}}
   },{class:'text-button'});
   const refresh=btn('刷新状态',()=>void readPower(),{class:'text-button',hidden:''});
   const recordings=btn('回看录像',()=>go('Activity',{recordingCamera:d.id}));
@@ -448,22 +476,26 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   });
   pickerTools.addEventListener('keydown',event=>{if(event.key==='Escape'){event.stopPropagation();void stopTarget();}});
   targetChoices.addEventListener('keydown',event=>{if(event.key==='Escape'){event.stopPropagation();void stopTarget();}});
-  async function changeMode(mode){
-   if(!owns()||modePending||!viewing||picker)return;
+  async function changeMode(mode,surveyRevision=null){
+   if(!owns()||modePending||(!viewing&&!surveyRevision)||picker)return;
    const epoch=previewEpoch,prior=cameraControl?.intent_revision;
    modeVersion++;modePending=true;syncControls();
    try{
-    const result=await api(endpoint+'/control',{mode});
+    const result=await api(endpoint+'/control',surveyRevision?{mode,survey_revision:surveyRevision}:{mode});
     if(!current(epoch))return;
     if(result.mode!==mode)throw Error('camera_mode_unconfirmed');
     modeVersion++;
     const reason={auto:'等待人物',pets:'等待宠物',survey:'准备巡视',hold:'巡视已停止'}[mode];
     previousIntent=result.intent_revision&&prior&&result.intent_revision!==prior?prior:null;
     cameraControl={mode,reason,intent_revision:result.intent_revision};
-    setStatus(reason);
+    statusReadFailed=false;
+    if(mode!=='survey')setStatus(reason);
     await poll();
    }catch(_){
-    if(current(epoch))setStatus(mode==='survey'?'巡视状态待确认':mode==='hold'?'停止状态待确认':'暂时无法切换跟随');
+    if(current(epoch)&&surveyRevision)await poll();
+    if(current(epoch)&&(!surveyRevision||cameraControl?.intent_revision===surveyRevision)){
+     setStatus(mode==='survey'?'巡视状态待确认':mode==='hold'?'停止状态待确认':'暂时无法切换跟随');
+    }
    }finally{modePending=false;if(owns())syncControls();}
   }
   followControls.append(targetToggle,stopTargetButton);
@@ -471,8 +503,10 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    const b=btn(label,()=>changeMode(mode),{'aria-pressed':'false'});
    followButtons.push([mode,b,label]);followControls.append(b);
   }
-  const survey=btn('巡视一轮',()=>changeMode(surveying()?'hold':'survey'));
-  followControls.append(survey);
+  const survey=btn('巡视一轮',()=>surveying()
+   ? changeMode('hold',surveyControl().intent_revision)
+   : changeMode('survey'));
+  const surveyRow=add(h('div',null,{class:'camera-survey'}),surveyReadback,survey);
   for(const [direction,label]of [['up','向上'],['left','向左'],['right','向右'],['down','向下']]){
    const control=btn(null,async()=>{
     if(!owns()||directionPending||!live()||picker)return;
@@ -488,36 +522,39 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    directions.push(control);cameraControls.append(control);
   }
   async function poll(){
-   if(!owns()||!viewing)return;
+   if(!owns())return;
+   lastPoll=Date.now();
    const epoch=previewEpoch,version=modeVersion,sequence=++pollSequence;
-   const accepted=()=>current(epoch)&&viewing&&version===modeVersion&&sequence>=appliedPoll;
+   const accepted=()=>current(epoch)&&version===modeVersion&&sequence>=appliedPoll;
    try{
     const report=await api(endpoint+'/preview');
     if(!accepted())return;
-    appliedPoll=sequence;followReport=report;
+    appliedPoll=sequence;followReport=report;statusReadFailed=false;
     if(report.recognition_enabled===false){cameraControl=null;previousIntent=null;}
-    else if(report.camera_control&&report.camera_control.intent_revision!==previousIntent){
-     cameraControl=report.camera_control;previousIntent=null;
+    else if(report.camera_control?.intent_revision!==previousIntent){
+     cameraControl=report.camera_control||null;previousIntent=null;
     }
+    if(!viewing)return;
     if(live()){
      image.src=endpoint+'/frame?t='+Date.now();
      image.hidden=false;placeholder.hidden=true;
      if(picker?.revision&&(!selectingMode()||cameraControl?.intent_revision!==picker.revision||!report.follow_target_available))leavePicker();
      if(picker)void readTargetPhoto(picker);
-     else setStatus(report.recognition_enabled===false?'实时画面':cameraControl?.reason||'实时画面');
+     else setStatus(report.recognition_enabled===false||surveyControl()?'实时画面':cameraControl?.reason||'实时画面');
     }else{
      leavePicker();
      clearFrame();
      const reason=report.reason||report.state||report.status;
      if(['privacy_closed','privacy_shutter_closed','shutter_closed'].includes(reason)){
-      dispose();power=null;setStatus('镜头已关闭');void readPower();
+      stopViewing();power=null;setStatus('镜头已关闭');void readPower();
      }else{
-      setStatus(cameraControl?.survey_result||modePending&&cameraControl?.mode==='hold'?cameraControl.reason:'正在连接画面，请稍候…');
+      setStatus(modePending&&cameraControl?.mode==='hold'?cameraControl.reason:'正在连接画面，请稍候…');
      }
     }
    }catch(_){
     if(!accepted())return;
-    appliedPoll=sequence;followReport=null;leavePicker();clearFrame();setStatus('画面连接中断，正在重连…');
+    appliedPoll=sequence;followReport=null;statusReadFailed=true;
+    if(viewing){leavePicker();clearFrame();setStatus('画面连接中断，正在重连…');}
    }finally{if(owns())syncControls();}
   }
   image.addEventListener('error',()=>{
@@ -525,13 +562,17 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   });
   const viewActions=add(h('div',null,{class:'camera-view-actions'}),watch,recordings);
   const viewBar=add(h('div',null,{class:'camera-view-bar'}),status,viewActions);
-  const picture=add(h('div',null,{class:'camera-picture'}),pickerTools,frame,targetPhoto,targetChoices,viewBar);
+  const picture=add(h('div',null,{class:'camera-picture'}),pickerTools,frame,targetPhoto,targetChoices,viewBar,surveyRow);
   add(liveControls,add(h('div'),h('h3','镜头模式'),followControls),add(h('div'),h('h3','调整视角'),cameraControls));
   const powerRow=add(h('div',null,{class:'camera-power-row'}),add(h('div'),ico('power'),powerStatus),close,refresh,
     btn('人物识别',()=>go('People'),{class:'text-button'}));
   add(workspace,picture,liveControls,powerRow);slot.append(workspace);
   previewStop=dispose;
   void readPower().then(()=>{if(start&&owns()&&power?.enabled)watch.click();});
+  void poll();
+  previewTimer=setInterval(()=>{
+   if(viewing||surveying()||(!globalThis.document?.hidden&&Date.now()-lastPoll>=4500))return poll();
+  },1500);
  }
 
  function inspect(d,{viewCamera=false}={}){if(!inspectorSlot)return;const wasOpen=selected===d.id&&!inspectorSlot.hidden;if(!wasOpen)inspectorTrigger={device:d.id,key:document.activeElement?.dataset?.controlKey||'details'};selected=d.id;stopPreview();inspectorSlot.replaceChildren();inspectorSlot.setAttribute('tabindex','-1');inspectorSlot.setAttribute('aria-label',d.name+'设备详情');

@@ -55,6 +55,11 @@ def test_active_game_keeps_the_main_camera_still_through_wait_play_pause_and_res
             assert director.phase == "game_held"
             assert director.survey_attempts == director.recovery_steps == 0
             assert director.public()["physical_motion_verified"] is False
+            if mode == 'survey':
+                assert director.public()['survey_result'] == 'interrupted'
+                game.reset('off')
+                assert director.choose(dict(sample(42), game=game.public), 42) is None
+                assert director.phase == 'survey_finished'
 
 
 @pytest.mark.parametrize("finish_before_send", [False, True])

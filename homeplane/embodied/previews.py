@@ -9,7 +9,9 @@ import time
 from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage, capture_environment
 from .camera_director import CameraDirector
 from .camera_follow_picker import CameraFollowPicker
-from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES, CameraIntentStore
+from .camera_intent import (
+    CAMERA_MODES, PET_MODES, TARGET_MODES, CameraIntentStore, camera_intent_readback, finish_camera_survey,
+)
 from .camera_audio import AudioIngress
 from .frame_sampling import CAPTURE_IDLE_TIMEOUT, CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.runtime_log import RuntimeLog
@@ -99,13 +101,9 @@ class PreviewPool:
         fresh = time.time() - item["received_at"] < 2
         control = item.get('camera_control')
         if control:
-            control = dict(control, mode=item.get('mode', control.get('mode')),
-                           intent_status=item.get('intent_status', 'default'))
-            if item.get('camera_control',{}).get('intent_revision') != item.get('mode_revision'):
-                held = item.get('mode') == 'hold'
-                control.update(phase='held' if held else 'waiting_video',
-                    reason='停留当前视角' if held else '等待画面',view_usable=False,target_locked=False,
-                    intent_revision=item.get('mode_revision'))
+            control = camera_intent_readback(control, mode=item.get('mode', control.get('mode')),
+                                             revision=item.get('mode_revision'),
+                                             status=item.get('intent_status', 'default'))
         if control and (not fresh or item['state']!='live'):
             control = dict(control,view_usable=False,target_locked=False)
         return dict(
@@ -149,9 +147,16 @@ class PreviewPool:
             raise ValueError('follow_target_unavailable')
         return item['follow_picker']
 
-    async def control(self, camera_id, *, direction=None, mode=None):
+    async def control(self, camera_id, *, direction=None, mode=None, survey_revision=None):
         item = self.sessions.get(camera_id)
-        if not item or not item.get('control'):
+        if not item:
+            raise RuntimeError('camera_not_owned')
+        if survey_revision is not None:
+            if direction is not None or mode != 'hold':
+                raise ValueError('invalid_camera_control')
+            if item.get('mode') != 'survey' or item.get('mode_revision') != survey_revision:
+                raise RuntimeError('camera_intent_changed')
+        elif not item.get('control'):
             raise RuntimeError('camera_not_owned')
         if bool(direction) == bool(mode):
             raise ValueError('invalid_camera_control')
@@ -236,6 +241,11 @@ class PreviewPool:
             item.pop('follow_picker', None)
             if item.get('mode') in TARGET_MODES:
                 item.update(mode='hold', mode_revision=secrets.token_hex(16))
+            if item.get('mode') == 'survey':
+                readback = camera_intent_readback(item.get('camera_control') or {}, mode='survey',
+                                                 revision=item.get('mode_revision'),
+                                                 status=item.get('intent_status', 'default'))
+                item['camera_control'] = finish_camera_survey(dict(readback, owner='none'))
             previous_state = item['state']
             item.update(source_active=False, frame=None, received_at=0, people=0, hands=0, animals=0,
                         control=None, control_epoch=item['control_epoch']+1)
@@ -586,8 +596,12 @@ class PreviewPool:
                 try:
                     if lease is not None:
                         item['restored'] = await lease.release()
-                        item['camera_control'] = dict(owner='none',phase='restored' if item['restored'] else 'restore_pending',
-                            reason='镜头已释放' if item['restored'] else '镜头待释放',view_usable=False,target_locked=False)
+                        released = dict(owner='none', phase='restored' if item['restored'] else 'restore_pending',
+                                        reason='镜头已释放' if item['restored'] else '镜头待释放',
+                                        view_usable=False, target_locked=False)
+                        if item.get('mode') == 'survey':
+                            released = dict(item['camera_control'], **released)
+                        item['camera_control'] = released
                 finally:
                     if io is not None:
                         await io.close()

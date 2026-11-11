@@ -44,6 +44,7 @@ class CameraControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
     direction: str | None = Field(default=None,pattern="^(left|right|up|down)$")
     mode: str | None = Field(default=None,pattern="^(hold|auto|pets|survey)$")
+    survey_revision: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
 
 
 class CameraPower(BaseModel):
@@ -232,10 +233,14 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     async def camera_control(camera_id: str, request: CameraControl):
         if camera_id not in {c['id'] for c in service.cameras()}:
             raise HTTPException(409,detail="camera_not_running")
-        if bool(request.direction)==bool(request.mode):raise HTTPException(422)
+        if (bool(request.direction)==bool(request.mode)
+                or request.survey_revision is not None and request.mode != 'hold'):
+            raise HTTPException(422)
         try:
-            return await service.camera_control(camera_id,direction=request.direction,mode=request.mode)
-        except (ValueError,OSError):raise HTTPException(409,detail="camera_control_unavailable")from None
+            options = {'survey_revision': request.survey_revision} if request.survey_revision is not None else {}
+            return await service.camera_control(camera_id, direction=request.direction, mode=request.mode, **options)
+        except (ValueError, OSError, httpx.HTTPError):
+            raise HTTPException(409,detail="camera_control_unavailable") from None
 
     @router.get('/api/embodied/connection')
     async def mijia_connection_status():

@@ -16,6 +16,9 @@
 .camera-workspace .camera-frame img {
   background: var(--ink);
 }
+.camera-workspace[data-viewing=false] .camera-frame {
+  display: none;
+}
 .camera-workspace .camera-placeholder {
   color: var(--sidebar);
 }
@@ -114,8 +117,67 @@
 .camera-view-actions > button {
   white-space: nowrap;
 }
-.experience .camera-workspace :is(.camera-view-actions,.camera-live-controls,.camera-power-row) button {
+.experience .camera-workspace :is(.camera-view-actions,.camera-survey,.camera-live-controls,.camera-power-row) button {
   min-height: 44px;
+}
+.camera-survey {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-block-start: 12px;
+  padding-block-start: 12px;
+  border-block-start: 1px solid var(--line);
+}
+.camera-survey[hidden],
+.camera-survey > button[hidden],
+.camera-survey-readback[hidden],
+.camera-survey-progress[hidden] {
+  display: none;
+}
+.camera-survey-readback {
+  flex: 1 1 8rem;
+  max-inline-size: 20rem;
+  font-size: .875rem;
+  line-height: 1.5;
+}
+.camera-survey-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-block-start: 5px;
+  color: var(--muted);
+  font-size: .8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.camera-survey-progress progress {
+  flex: 1;
+  min-inline-size: 0;
+  block-size: 6px;
+  appearance: none;
+  border: 0;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+.camera-survey-progress progress::-webkit-progress-bar {
+  background: var(--line);
+}
+.camera-survey-progress progress::-webkit-progress-value {
+  border-radius: 3px;
+  background: var(--accent);
+}
+.camera-survey-progress progress::-moz-progress-bar {
+  border-radius: 3px;
+  background: var(--accent);
+}
+.camera-survey-progress > span {
+  white-space: nowrap;
+}
+.experience .camera-survey button[aria-disabled=true]:not(:disabled) {
+  opacity: .65;
+  cursor: default;
 }
 .camera-live-controls {
   display: grid;
@@ -150,15 +212,6 @@
   background: var(--accent-soft);
   border-color: var(--accent);
   font-weight: 650;
-}
-.experience .camera-follow-actions > button[data-running=true] {
-  background: var(--accent);
-  color: var(--surface);
-}
-.experience .camera-follow-actions > button[data-running=true]:not(:disabled):hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-  color: var(--surface);
 }
 .camera-directions {
   display: grid;

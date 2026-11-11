@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_intent import camera_intent_readback, finish_camera_survey
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from tests.test_visual_followup import Home
@@ -88,7 +89,8 @@ class Patrol:
                 return True
             lease = SimpleNamespace(acquire=AsyncMock(), release=release,
                                     presets=[], active=None, event=lambda *_,**__:None)
-            planner = SimpleNamespace(public=lambda _: {}, mode=self.mode, intent_revision='intent', intent_status='configured')
+            planner = SimpleNamespace(public=lambda _: {'mode': self.mode}, mode=self.mode, intent_revision='intent',
+                                      intent_status='configured')
             other_views = {'synthetic-other': {'people': 1}} if self.occupied_elsewhere else {}
             self.scope.update(Transport=lambda:SimpleNamespace(close=AsyncMock()), CameraLease=lambda *a,**k:lease,
                 SearchPlanner=lambda *a:planner, camera_intents=SimpleNamespace(load=lambda:SimpleNamespace(mode=self.mode,revision='intent',status='configured')),
@@ -97,7 +99,8 @@ class Patrol:
                 previews=SimpleNamespace(sessions=other_views, status=lambda _: {'state': 'live'}),
                 home=SimpleNamespace(camera_focus=None),
                 safety=self.home.runtime, motor_step=self.motor, camera_lease=None, camera_planner=None,
-                reap=AsyncMock(),capture=None)
+                reap=AsyncMock(),capture=None, camera_intent_readback=camera_intent_readback,
+                finish_camera_survey=finish_camera_survey)
             loop=source_function('homeplane/embodied/worker.py','camera_search',self.scope)
         else:
             self.scope.update(item=self.item, selected={'id':self.camera}, director=self.director,

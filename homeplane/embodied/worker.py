@@ -44,7 +44,9 @@ from homeplane.embodied.calibration_frames import CalibrationFrames
 from homeplane.embodied.static_page import static_asset, static_page
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.party_camera import PartyCamera
-from homeplane.embodied.camera_intent import CAMERA_MODES, PET_MODES, CameraIntentStore
+from homeplane.embodied.camera_intent import (
+    CAMERA_MODES, PET_MODES, CameraIntentStore, camera_intent_readback, finish_camera_survey,
+)
 from homeplane.embodied.camera_follow_picker import FollowCommand
 from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.embodied.camera_wall import CameraWall
@@ -433,6 +435,7 @@ async def camera_search():
     io = Transport()
     lease = CameraLease(io, open_privacy=False, restore_native=True)
     camera_lease = lease
+    planner = None
     try:
         await lease.acquire()
         planner = SearchPlanner(lease.presets, time.monotonic(), lease.active)
@@ -497,13 +500,19 @@ async def camera_search():
     except asyncio.CancelledError:
         raise
     except Exception as error:
-        state["camera_control"] = {
-            "owner": "none",
-            "phase": "unavailable",
-            "reason": "接管失败",
-            "error_class": type(error).__name__,
-        }
+        if planner is None or planner.mode != 'survey':
+            state["camera_control"] = {
+                "owner": "none",
+                "phase": "unavailable",
+                "reason": "接管失败",
+                "error_class": type(error).__name__,
+            }
     finally:
+        survey_ended = planner is not None and planner.mode == 'survey'
+        if survey_ended:
+            readback = camera_intent_readback(state.get('camera_control') or {}, mode='survey',
+                                             revision=planner.intent_revision, status=planner.intent_status)
+            state['camera_control'] = finish_camera_survey(dict(readback, owner='none'))
         camera_planner = None
         try:
             # No queued motor command may run after vendor tracking is restored.
@@ -511,11 +520,9 @@ async def camera_search():
                 await reap(capture)
             finally:
                 restored = await lease.release()
-                state["camera_control"] = {
-                    "owner": "none",
-                    "phase": "restored" if restored else "restore_pending",
-                    "reason": "镜头已释放" if restored else "镜头待释放",
-                }
+                released = dict(owner='none', phase='restored' if restored else 'restore_pending',
+                                reason='镜头已释放' if restored else '镜头待释放')
+                state['camera_control'] = dict(state['camera_control'], **released) if survey_ended else released
         finally:
             try:await io.close()
             finally:camera_lease = None
@@ -545,13 +552,8 @@ def view():
     result['interactions'] = fleet.public(time.monotonic())
     result['voice_input'] = not (PRIVATE/'voice-input-paused').exists()
     if camera_planner and result.get('camera_control'):
-        control = result['camera_control']
-        if control.get('intent_revision') != camera_planner.intent_revision:
-            held = camera_planner.mode == 'hold'
-            result['camera_control'] = dict(control,mode=camera_planner.mode,
-                intent_revision=camera_planner.intent_revision,
-                phase='held' if held else 'waiting_video',
-                reason='停留当前视角' if held else '等待画面',view_usable=False,target_locked=False)
+        result['camera_control'] = camera_intent_readback(result['camera_control'], mode=camera_planner.mode,
+            revision=camera_planner.intent_revision, status=camera_planner.intent_status)
     result["frame_age_ms"] = (
         round((time.time() - state.get("received_at", time.time())) * 1000) if last_frame else None
     )
@@ -1587,14 +1589,17 @@ async def preview_control(camera_id: str, request: Request):
     data = await request.json()
     if not isinstance(data, dict):raise HTTPException(400)
     direction, mode = data.get('direction'), data.get('mode')
-    if bool(direction)==bool(mode):raise HTTPException(400)
+    survey_revision = data.get('survey_revision')
+    if bool(direction)==bool(mode) or survey_revision is not None and (direction is not None or mode != 'hold'):
+        raise HTTPException(400)
     if camera_id == SELECTED['id']:
         if direction:
             if not camera_planner:raise HTTPException(409, detail='camera_not_owned')
             return await manual_motor(request)
         return await camera_control(request)
     try:
-        return await previews.control(camera_id,direction=direction,mode=mode)
+        options = {'survey_revision': survey_revision} if survey_revision is not None else {}
+        return await previews.control(camera_id, direction=direction, mode=mode, **options)
     except ValueError:raise HTTPException(400) from None
     except (RuntimeError,OSError,TimeoutError):
         raise HTTPException(409,detail='motor_not_ready') from None
@@ -1865,10 +1870,14 @@ async def camera_control(request: Request):
     data = await request.json()
     if not isinstance(data, dict):raise HTTPException(400)
     mode = data.get("mode")
-    if mode not in ("auto", "pets", "hold", "survey"):
+    survey_revision = data.get('survey_revision')
+    if mode not in ("auto", "pets", "hold", "survey") or survey_revision is not None and mode != 'hold':
         raise HTTPException(400)
     if not camera_planner:
         raise HTTPException(409, detail="camera_not_owned")
+    if survey_revision is not None and (camera_planner.mode != 'survey'
+                                       or camera_planner.intent_revision != survey_revision):
+        raise HTTPException(409, detail='camera_intent_changed')
     try:
         set_primary_camera_mode(mode)
     except (OSError, ValueError, RuntimeError):
