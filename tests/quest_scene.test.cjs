@@ -2,7 +2,7 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const test=require('node:test'),{execFileSync}=require('node:child_process');
 const source=fs.readFileSync('homeplane/embodied/static/game-scenes.js','utf8');
-const stages=JSON.parse(execFileSync('.venv/bin/python',['-B','-c','import json;from homeplane.embodied.quest import STAGES;print(json.dumps([s.public() for s in STAGES]))'],{encoding:'utf8'}));
+const stages=JSON.parse(execFileSync(process.env.FRIDAY_TEST_PYTHON||'.venv/bin/python',['-B','-c','import json;from homeplane.embodied.quest import STAGES;print(json.dumps([s.public() for s in STAGES]))'],{encoding:'utf8'}));
 const contextId='a'.repeat(32);
 function game(level,extra={}){
  return{mode:'quest',status:level===stages.length?'complete':'playing',round_id:1,control_context:contextId,

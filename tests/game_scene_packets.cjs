@@ -1,7 +1,7 @@
 /* Actual public producer packets, including deliberate removal of paused input. */
 const{execFileSync}=require('node:child_process');
 module.exports=function originalPausePackets(mode){
- return JSON.parse(execFileSync('.venv/bin/python',['-B','-c',`
+ return JSON.parse(execFileSync(process.env.FRIDAY_TEST_PYTHON||'.venv/bin/python',['-B','-c',`
 import json,math
 from homeplane.embodied.motion_games import MotionGames
 from tests.embodied.test_motion_games import human

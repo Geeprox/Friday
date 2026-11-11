@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm'),{execFileSync}=require('node:child_process');
 const source=fs.readFileSync('homeplane/embodied/static/games.js','utf8');
-const stages=JSON.parse(execFileSync('.venv/bin/python',['-B','-c','import json;from homeplane.embodied.quest import STAGES;print(json.dumps([s.public() for s in STAGES]))'],{encoding:'utf8'}));
+const stages=JSON.parse(execFileSync(process.env.FRIDAY_TEST_PYTHON||'.venv/bin/python',['-B','-c','import json;from homeplane.embodied.quest import STAGES;print(json.dumps([s.public() for s in STAGES]))'],{encoding:'utf8'}));
 function setup(){
  const nodes=new Map();
  const create=()=>({textContent:'',innerHTML:'',dataset:{},style:{},children:[],setAttribute(k,v){this[k]=v;},replaceChildren(...values){this.children=values;}});

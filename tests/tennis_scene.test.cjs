@@ -49,7 +49,7 @@ const code=fs.readFileSync('homeplane/embodied/static/games.js','utf8');
 const context=vm.createContext({});
 vm.runInContext(code.slice(code.indexOf('function tennisPresentation('),code.indexOf('function updateTennisHUD(')),context);
 function originalPacket(stage){
- return JSON.parse(execFileSync(path.join(process.cwd(),'.venv/bin/python'),['-B','-c',`
+ return JSON.parse(execFileSync(process.env.FRIDAY_TEST_PYTHON||path.join(process.cwd(),'.venv/bin/python'),['-B','-c',`
 import json
 from homeplane.embodied.motion_games import MotionGames
 game=MotionGames();game.reset('tennis')

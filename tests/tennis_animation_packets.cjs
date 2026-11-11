@@ -1,6 +1,6 @@
 /* Synthetic joints pass through the actual BodyMotion and MotionGames producer. */
 const{execFileSync}=require('node:child_process');
-module.exports=function(receiver=0){return JSON.parse(execFileSync('.venv/bin/python',['-B','-c',`
+module.exports=function(receiver=0){return JSON.parse(execFileSync(process.env.FRIDAY_TEST_PYTHON||'.venv/bin/python',['-B','-c',`
 import copy,json
 from homeplane.embodied.motion_games import MotionGames
 from tests.embodied.test_motion_games import human, LOCK
