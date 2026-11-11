@@ -20,3 +20,21 @@ test('a still-running older backend is not shown gates it cannot supply',()=>{
  const view=presentation({status:'playing',ski:{speed:1,passed:4}});
  assert(view.instruction.includes('障碍'));assert(!view.instruction.includes('木门'));assert(view.detail.includes('避开 4'));
 });
+test('the completed overlay uses the real section results and keeps the original replay control',()=>{
+ const {makeClient,part,game:stageGame}=require('./game_stage_harness.cjs');
+ const {c}=makeClient({selected:'ski',artError:false});
+ vm.runInContext(part('function completedGame(', 'const legacyQuestStages='),c);
+ const finished=stageGame({mode:'ski',status:'complete',ski:{points:4100,stars:2,course_count:3,
+  gate_count:18,gates_passed:12,section_results:[
+   {name:'林间初雪',gates_passed:6,gate_count:6},
+   {name:'松林回弯',gates_passed:4,gate_count:6},
+   {name:'山顶归途',gates_passed:2,gate_count:6},
+  ]}});
+ const markup=c.stageOverlayMarkup(finished,true,true);
+ assert.match(markup,/4100 分.*2 星/);
+ assert.match(markup,/林间初雪<\/dt><dd>6 \/ 6.*松林回弯<\/dt><dd>4 \/ 6.*山顶归途<\/dt><dd>2 \/ 6/);
+ assert.match(markup,/data-click="startGame\(\)">再滑一程/);
+ assert.doesNotMatch(c.stageOverlayMarkup({...finished,status:'playing'},true,true),/ski-splits/);
+ delete finished.ski.section_results;
+ assert.match(c.stageOverlayMarkup(finished,true,true),/穿门 12 \/ 18/);
+});

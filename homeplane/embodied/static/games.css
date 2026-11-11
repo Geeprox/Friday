@@ -66,6 +66,15 @@ body>.stage-header{grid-row:1}body>.workspace{grid-row:2}body>footer{grid-row:3}
 .overlay h2:focus-visible{outline:2px solid var(--ink);outline-offset:4px}
 .overlay .resume-notice{margin:12px 0 0}
 .overlay .resume-notice:empty{margin:0}
+.overlay:has(.ski-splits){padding:16px 20px;max-height:calc(100% - 16px);overflow:auto}
+.overlay:has(.ski-splits) h2{margin-bottom:4px}
+.overlay p.ski-result-summary{margin:0 0 10px;font-variant-numeric:tabular-nums}
+.ski-result-summary strong{color:var(--ink);font-weight:650}
+.ski-splits{margin:0 0 14px;text-align:start;font-size:13px;line-height:1.35}
+.ski-splits>div{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:12px;padding:5px 0;border-top:1px solid var(--line)}
+.ski-splits dd{margin:0;color:var(--ink);font-variant-numeric:tabular-nums;font-weight:600}
+.overlay:has(.ski-splits) button:focus-visible{outline-offset:2px}
+.workspace:has(.ski-splits) .score{visibility:hidden}
 .quest-trail{display:flex;align-items:center;gap:8px;list-style:none;margin:12px 0 0;padding:0;counter-reset:none}
 .quest-trail li{position:relative;display:grid;place-items:center;flex:none;width:24px;height:24px;border:1px solid var(--line);border-radius:50%;font-size:11px;line-height:1;font-variant-numeric:tabular-nums;color:var(--muted);background:var(--paper)}
 .quest-trail li[data-chapter-start=true]{margin-inline-start:8px}
@@ -94,6 +103,11 @@ body[data-simulated=true]{--source-overhead:24px;padding-block-start:24px}
 @media(max-width:360px) and (orientation:portrait){
  :is(body[data-mode=ski],body[data-mode=tennis]) .instruction,
  :is(body[data-mode=ski],body[data-mode=tennis]) .instruction:empty{min-height:3.1em}
+ .overlay:has(.ski-splits){padding:9px 14px;max-height:100%}
+ .overlay:has(.ski-splits) h2{font-size:18px;margin-bottom:3px}
+ .overlay p.ski-result-summary{margin-bottom:6px;font-size:13px;line-height:1.4}
+ .ski-splits{margin-bottom:8px}
+ .ski-splits>div{padding-block:2px}
 }
 /* A landscape phone keeps the score, scene and controls in one viewport. */
 @media(orientation:landscape) and (max-height:600px){

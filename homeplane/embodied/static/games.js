@@ -191,6 +191,19 @@ function connect(){
 }
 function reconnectGame(){if(stageClosed)return;clearTimeout(reconnectTimer);reconnectTimer=null;const old=gameSocket;gameSocket=null;streamOpen=false;commandPending?.controller.abort();commandPending=null;if(old){old.onclose=null;try{old.close();}catch{}}connect();}
 function watchGameConnection(now){const fresh=gameViewCurrent(now);if(fresh!==lastConnectionFresh){lastConnectionFresh=fresh;updateHUD();}if(gameSocket&&!fresh&&now-(received??socketAttemptAt)>5000)reconnectGame();}
+function skiResult(ski){
+ const sections=ski?.section_results;
+ if(!Array.isArray(sections)||sections.length<1||sections.length!==ski.course_count||
+    !Number.isSafeInteger(ski.points)||ski.points<0||![1,2,3].includes(ski.stars)||
+    !sections.every(row=>typeof row?.name==='string'&&Number.isSafeInteger(row.gates_passed)&&
+     Number.isSafeInteger(row.gate_count)&&row.gates_passed>=0&&row.gate_count>=row.gates_passed))return'';
+ const rows=sections.map(row=>{
+  const name=row.name.replace(/[&<>]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[char]));
+  return '<div><dt>'+name+'</dt><dd>'+row.gates_passed+' / '+row.gate_count+'</dd></div>';
+ });
+ return '<p class="ski-result-summary"><strong>'+ski.points+' 分</strong> · '+ski.stars+' 星</p>'+
+  '<dl class="ski-splits" aria-label="各段穿门成绩">'+rows.join('')+'</dl>';
+}
 function stageOverlayMarkup(g,current,playing){
  const bodyGame=selected==='quest'||selected==='hiit',finished=playing&&g.status==='complete';
  const teachingPending=current&&!finished&&bodyGame&&g.presentation?.required===true&&scenery.ready(selected)&&!gameSceneReady();
@@ -203,7 +216,10 @@ function stageOverlayMarkup(g,current,playing){
  if(control.progress>0&&!control.latched)return'<h2>'+(control.gesture==='yeah'?'保持 Yeah，切换游戏':'保持 OK，开始本局')+'</h2><p>'+Math.round(control.progress*100)+'%</p>';
  if(selected==='home'||playing&&g.status==='playing')return'';
  if(!playing){const [,title,detail]=modeDescription(selected,g);return'<h2>'+title+'</h2><p>'+detail+'</p><button class="primary" data-click="startGame()">开始本局</button>';}
- if(finished){const [title,detail,action]=completedGame(g);return'<h2>'+title+'</h2><p>'+detail+'</p><button class="primary" data-click="startGame()">'+action+'</button>';}
+ if(finished){
+  const [title,detail,action]=completedGame(g),result=selected==='ski'?skiResult(g.ski):'';
+  return'<h2>'+title+'</h2>'+(result||'<p>'+detail+'</p>')+'<button class="primary" data-click="startGame()">'+action+'</button>';
+ }
  if(g.status==='waiting'&&g.presentation?.required===true&&!g.presentation.ready&&(g.quest?.phase==='transition'||g.hiit?.phase==='rest'))return'<h2>正在准备下一站</h2>';
  const recovery=g.source_recovery?.required===true,countdown=g.resume_seconds>0&&!g.manually_paused;
  const title=recovery?(g.source_recovery.phase==='display'?'正在准备游戏画面':meta?.status!=='live'||g.source_recovery.phase==='camera'?'正在恢复画面':g.source_recovery.ready===true?'玩家已就绪':g.source_recovery.phase==='players'?'请回到镜头前':'站定片刻'):({'waiting':'等待玩家','calibrating':'站定片刻',paused:'游戏已暂停'}[g.status]||'正在准备');

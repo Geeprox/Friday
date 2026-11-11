@@ -142,3 +142,23 @@ def test_visible_gates_and_trees_share_one_world_plane_and_pause_preserves_earne
     assert replay['points'] == replay['gates_passed'] == replay['gates_missed'] == replay['best_combo'] == 0
     assert replay['event'] is replay['stars'] is None
     assert not game.ski_results
+
+
+def test_preview_geometry_and_each_completed_section_use_the_scored_gate_plan():
+    game = MotionGames()
+    assert game.public['ski']['route'] is None
+    selected = game.select('ski', difficulty='challenge')['ski']
+    assert selected['section_results'] is None
+    assert selected['route'][0] == (0, 0, 0) and selected['route'][-1] == (selected['total_distance'], 0, 0)
+    assert selected['route'][1:-1] == [
+        (gate.at, gate.x, gate.width * game.difficulty.ski_gate) for gate in SKI_GATES
+    ]
+
+    run = run_ski((.05,), lateral=lambda g: next_gate_center(g) if g.distance < 60 else 1)
+    result = run.publish([], 'complete', '')['ski']
+    assert [row['name'] for row in result['section_results']] == [spec['name'] for spec in SKI_COURSES]
+    assert [row['gate_count'] for row in result['section_results']] == [6, 6, 6]
+    assert [row['gates_passed'] for row in result['section_results']] == [6, 0, 0]
+    assert result['gates_passed'] == sum(row['gates_passed'] for row in result['section_results'])
+    run.reset('ski')
+    assert run.public['ski']['section_results'] is None

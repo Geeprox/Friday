@@ -11,7 +11,7 @@ from homeplane.embodied.hiit import PLAN as HIIT_PLAN, HIITCircuit, signals
 from homeplane.embodied.pose_rules import angle
 from homeplane.embodied.quest import STAGES as QUEST_STAGES, TRANSITION_SECONDS
 from homeplane.embodied.ski_route import (
-    SKI_COURSES, SKI_GATES, SKI_LENGTH, SKI_ROUTE, SKI_TREE_REACH,
+    SKI_COURSES, SKI_GATES, SKI_LENGTH, SKI_PATH, SKI_ROUTE, SKI_TREE_REACH,
     SKI_VISIBLE_AHEAD, SKI_WORLD_TRAVEL, advance, crossing_time,
 )
 TENNIS_TARGET = 7
@@ -953,6 +953,8 @@ class MotionGames:
         event = dict(self.ski_event, age=round(max(0, self.ski_elapsed - self.ski_event['elapsed']), 3)) if self.ski_event else None
         stars = (3 if self.gates_passed >= len(SKI_GATES) - 2 and self.collisions <= 1 else
                  2 if self.gates_passed >= len(SKI_GATES) * 2 / 3 and self.collisions <= 4 else 1)
+        skiing = self.mode == 'ski' or self.selected_mode == 'ski'
+        complete = self.mode == 'ski' and self.complete
         return dict(
             schema_version=2, speed=round(self.speed, 3), distance=round(self.distance, 2),
             obstacles=[dict(o) for o in self.obstacles], gates=[dict(g) for g in self.ski_gates],
@@ -963,7 +965,14 @@ class MotionGames:
             gate_count=len(SKI_GATES), gates_passed=self.gates_passed, gates_missed=self.gates_missed,
             combo=self.ski_combo, best_combo=self.ski_best_combo,
             points=max(0, self.passed * 100 - self.collisions * 25 + self.ski_gate_points),
-            stars=stars if self.mode == 'ski' and self.complete else None,
+            stars=stars if complete else None,
+            route=[(at, x, width * self.difficulty.ski_gate) for at, x, width in SKI_PATH] if skiing else None,
+            section_results=[
+                dict(name=section['name'], gate_count=len(section['gates']),
+                     gates_passed=sum(self.ski_results.get(feature.id) == 'gate'
+                                      for feature in SKI_GATES if feature.course == index))
+                for index, section in enumerate(SKI_COURSES)
+            ] if complete else None,
             guide=dict(active=active, cue=cue,
                        next_gate=dict(id=gate.id, x=gate.x, width=gate_width,
                                       distance=round(gate.at - self.distance, 3)) if gate else None),

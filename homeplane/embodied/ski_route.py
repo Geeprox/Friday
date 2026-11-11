@@ -53,6 +53,7 @@ def _build_route():
 
 SKI_ROUTE = _build_route()
 SKI_GATES = tuple(f for f in SKI_ROUTE if f.kind == "gate")
+SKI_PATH = ((0, 0, 0), *((g.at, g.x, g.width) for g in SKI_GATES), (SKI_LENGTH, 0, 0))
 
 
 def advance(speed, target, seconds):
