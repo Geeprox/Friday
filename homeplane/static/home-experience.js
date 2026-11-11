@@ -703,7 +703,11 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    if(!data.layout?.rooms?.length)space.append(add(h('div',null,{class:'home-plan-empty'}),ico('home'),h('h3','把你的家放在这里'),h('p','添加户型，即可在空间中查看和控制设备。'),btn('添加户型',editHouse,{class:'primary'})));
    space.append(add(h('div',null,{class:'home-space-footer'}),h('span',data.rooms.length+' 个房间 · '+data.devices.length+' 个设备'),btn('查看全部设备',()=>go('Devices'),{class:'text-button'})));
    const aside=h('aside',null,{class:'home-brief','aria-label':'运行与待处理事项'});dashboard.append(aside);
-   homeStatus?.dispose();homeStatus=mountHomeStatus(aside,{api,go,devices:data.devices,simulated:data.simulated,onDevice:d=>{if(model)openSpatialDevice(d);else{try{sessionStorage.setItem('Friday.deviceFocus',d.id);}catch(_){}go('Devices');}}});
+   homeStatus?.dispose();homeStatus=mountHomeStatus(aside,{
+    api,go,devices:data.devices,simulated:data.simulated,
+    onCamera:id=>{try{sessionStorage.setItem('Friday.cameraFocus',id);}catch(_){}go('Cameras');},
+    onDevice:d=>{if(model)openSpatialDevice(d);else{try{sessionStorage.setItem('Friday.deviceFocus',d.id);}catch(_){}go('Devices');}},
+   });
    return;
   }
   const browser=h('div',null,{class:'device-browser'});view.append(browser);roomDirectory(browser);

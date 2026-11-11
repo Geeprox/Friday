@@ -5,6 +5,44 @@ const add=(n,...children)=>{n.append(...children);return n;};
 const button=(text,run,attrs={})=>{const n=h('button',text,{type:'button',...attrs});n.onclick=run;return n;};
 const icon=name=>h('span',null,{class:'icon icon-'+name,'aria-hidden':'true'});
 const service=(label,state,text)=>({label,state,text});
+
+function perceptionService(worker) {
+ const row=(state,text)=>service('家庭感知',state,text);
+ if(!worker)return row('unknown','未更新');
+ if(!worker.configured)return row('off','未启用');
+ if(worker.capture_enabled===false)return row('off','已暂停');
+ if(worker.recovery_pending)return row('warning','需要检查');
+ const unavailable=['unavailable','failed'].includes(worker.state);
+ if(!worker.owned)return unavailable?row('degraded','暂不可用'):row('waiting','待命');
+ const sessions=(Array.isArray(worker.camera_sessions)?worker.camera_sessions:[])
+  .filter(session=>typeof session?.camera==='string'&&session.camera);
+ if(!sessions.length)return unavailable?row('degraded','暂不可用'):row('unknown','未更新');
+ const open=sessions.filter(session=>session.state!=='shutter_closed');
+ if(!open.length)return row('off','镜头已关闭');
+
+ const recognizing=session=>session.state==='live'&&session.recognition==='running';
+ const active=open.filter(recognizing);
+ const waiting=open.filter(session=>!recognizing(session));
+ const interrupted=waiting.find(session=>['stale','unavailable','failed'].includes(session.state));
+ const measured=active.filter(session=>Number.isFinite(session.latency_ms)&&session.latency_ms>=0);
+ const slowest=measured.reduce((latest,session)=>!latest||session.latency_ms>latest.latency_ms?session:latest,null);
+ const slow=slowest?.latency_ms>1000;
+ const source=interrupted||waiting[0]||(slow?slowest:null);
+ const sourceText=interrupted?'画面中断':waiting.length?({
+  connecting:'正在连接',stopped:'待命',live:'等待画面',
+ }[source.state]||'状态未更新'):'处理较慢';
+
+ let summary;
+ if(active.length) {
+  const count=waiting.length?active.length+' / '+open.length:active.length;
+  summary=row(interrupted||slow?'degraded':waiting.length?'waiting':'on',count+' 台感知中');
+ }else{
+  summary=interrupted?row('degraded','暂不可用'):row('waiting','等待画面');
+ }
+ return {...summary,source:source?{camera:source.camera,text:sourceText}:null,
+  latency:slowest?{ms:slowest.latency_ms,slow,multiple:measured.length>1}:null};
+}
+
 function voiceService(worker){
  if(!worker)return service('语音交互','unknown','未更新');
  if(!worker.configured)return service('语音交互','off','未启用');
@@ -24,17 +62,16 @@ function voiceService(worker){
  return service('语音交互','waiting','待命');
 }
 export function homeServiceSummary({worker=null,infrastructure=null,rules=null,arl=null,simulated=false}={}){
- const rows=[];
- rows.push(service('家庭感知',!worker?'unknown':!worker.configured?'off':worker.capture_enabled===false?'off':worker.error_class||['failed','unavailable'].includes(worker.state)?'warning':worker.owned&&['running','live','active'].includes(worker.state)?'on':'waiting',!worker?'未更新':!worker.configured?'未启用':worker.capture_enabled===false?'已暂停':worker.error_class?'需要检查':worker.owned&&['running','live','active'].includes(worker.state)?'运行中':'等待画面'));
- rows.push(voiceService(worker));
+ const rows=[perceptionService(worker),voiceService(worker)];
  const automatic=rules?.execution_state,clockRecovering=rules?.clock?.scheduled_count>0&&rules.clock.state==='recovering';
  rows.push(service('自动任务',!rules?'unknown':rules.worker_failure?'warning':!rules.available?'waiting':rules.automatic_enabled===false?'off':automatic==='ready'&&!clockRecovering?'on':'waiting',!rules?'未更新':rules.worker_failure?'需要检查':!rules.available?'未就绪':rules.automatic_enabled===false?'已暂停':clockRecovering?'定时任务恢复中':({ready:'运行中',manual:'手动控制中',sleeping:'睡眠模式',starting:'正在启动',awaiting_mode:'等待家庭状态'}[automatic]||'等待家庭状态')));
  if(worker?.configured){const recording=worker.safety_recording,state=recording?.state;rows.push(service('异常记录',worker.capture_enabled===false?'off':!worker.owned?'waiting':state==='unavailable'?'warning':state==='off'?'off':state==='ready'?'on':['saving','recovering'].includes(state)?'waiting':'unknown',worker.capture_enabled===false?'已暂停':!worker.owned?'待命':({unavailable:'需要检查',off:'已暂停',ready:'已就绪',saving:'正在保存',recovering:'正在恢复'}[state]||'未更新')));}
  const agent=arl?arlRuntimePresentation(arl):null;
  rows.push(service('智能服务',!agent?'unknown':agent.connected?'on':['disabled','sdk_missing','not_running'].includes(agent.state)?'off':['disconnected','unsafe_configuration'].includes(agent.state)?'warning':'waiting',!agent?'未更新':agent.connected?'已连接':['disabled','sdk_missing','not_running'].includes(agent.state)?'未启用':({registering:'正在连接',handshake_required:'尚未连接',upgrade_required:'需要更新'}[agent.state]||agent.label)));
  const issue=infrastructure?.failure||rows.some(r=>r.state==='warning');
+ const degraded=rows.some(r=>r.state==='degraded');
  const unknown=rows.some(r=>r.state==='unknown');
- return {rows,label:simulated?'示例运行状态':issue?'有服务需要检查':unknown?'部分状态未更新':rows.some(r=>r.state==='on')?'按配置运行中':'按配置待命',state:issue?'warning':unknown?'unknown':'on'};
+ return {rows,label:simulated?'示例运行状态':issue?'有服务需要检查':degraded?'部分服务受影响':unknown?'部分状态未更新':rows.some(r=>r.state==='on')?'按配置运行中':'按配置待命',state:issue||degraded?'warning':unknown?'unknown':'on'};
 }
 export function homeAttention(devices,events=[],runs=[],recording=null,proposals=[],taskAttention=null){
  const items=[];
@@ -51,17 +88,43 @@ export function homeAttention(devices,events=[],runs=[],recording=null,proposals
  }else for(const run of runs.filter(r=>['failed','unknown_outcome'].includes(r.status)).slice(0,2))items.push({key:'task:'+run.id,title:run.status==='failed'?'有任务未能完成':'有任务结果需要核对',detail:'查看任务记录',priority:2,page:'Automations'});
  return items.sort((a,b)=>a.priority-b.priority);
 }
-export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice=()=>go('Devices')}={}){
+export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice=()=>go('Devices'),onCamera=()=>go('Cameras')}={}){
  let alive=true,busy=false,controller=null,timer=null,expiry=null,currentDevices=devices;
  const section=h('section',null,{class:'home-runtime','aria-label':'Friday 运行状态'}),status=h('span','正在读取',{class:'runtime-overall',role:'status'}),list=h('dl',null,{class:'runtime-services'}),resources=h('div',null,{class:'runtime-resources'});
  section.append(add(h('div',null,{class:'home-aside-heading'}),h('h2','Friday'),button(null,()=>go('Settings'),{'aria-label':'Friday 设置',class:'quiet-icon'})),status,list,resources);
  section.querySelector('button').append(icon('settings'));
+ const perceptionTitle=h('dt','家庭感知',{tabindex:'-1'}),perceptionValue=h('dd');
+ const sourceName=h('span',null,{class:'runtime-camera-name'}),sourceState=h('small');
+ let cameraId=null;
+ const sourceButton=add(button(null,()=>{if(cameraId)onCamera(cameraId);},{class:'runtime-camera-open'}),
+  icon('video'),sourceName,sourceState,icon('chevron-right'));
+ const sourceDetail=add(h('dd',null,{class:'runtime-camera-detail'}),sourceButton);
+ const perception=add(h('div',null,{class:'runtime-perception'}),perceptionTitle,perceptionValue,sourceDetail);
+ list.append(perception);
  const attention=h('section',null,{class:'home-attention','aria-label':'需要关注'}),count=h('span','',{class:'attention-count'}),items=h('div',null,{class:'home-attention-items'});
  attention.append(add(h('div',null,{class:'home-aside-heading'}),h('h2','需要关注'),count),items);
  root.append(section,attention);
  function draw(report,pending=false){
-  const summary=homeServiceSummary({...report,simulated});status.textContent=summary.label;status.dataset.state=summary.state;
-  list.replaceChildren();for(const row of summary.rows)list.append(add(h('div',null,{'data-state':row.state}),h('dt',row.label),h('dd',row.text)));
+  const summary=homeServiceSummary({...report,simulated});
+  if(status.textContent!==summary.label)status.textContent=summary.label;
+  status.dataset.state=summary.state;
+  const [camera,...otherServices]=summary.rows;
+  perception.dataset.state=camera.state;
+  perceptionValue.textContent=camera.text;
+  const nextCameraId=camera.source?.camera??null;
+  if(cameraId!==nextCameraId&&document.activeElement===sourceButton)perceptionTitle.focus({preventScroll:true});
+  cameraId=nextCameraId;
+  sourceDetail.hidden=!cameraId;
+  if(cameraId){
+   const name=currentDevices.find(d=>d.kind==='camera'&&d.id===cameraId)?.name;
+   const caption=name||'查看镜头';
+   if(sourceName.textContent!==caption)sourceName.textContent=caption;
+   if(sourceState.textContent!==camera.source.text)sourceState.textContent=camera.source.text;
+   const label=(name?'查看'+name:caption)+'，'+camera.source.text;
+   if(sourceButton.getAttribute('aria-label')!==label)sourceButton.setAttribute('aria-label',label);
+  }
+  for(const group of Array.from(list.children).slice(1))group.remove();
+  for(const row of otherServices)list.append(add(h('div',null,{'data-state':row.state}),h('dt',row.label),h('dd',row.text)));
   const sample=report?.resources,age=sample?Date.now()-Date.parse(sample.sampled_at):NaN;
   const fresh=sample?.available&&Number.isFinite(age)&&age>=-2000&&age<=Math.min(15,sample.valid_for_seconds||0)*1000;
   resources.replaceChildren();
@@ -71,8 +134,11 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
    const row=add(h('div',null,{class:'runtime-resource'}),add(h('div'),h('span',label),h('strong',value)));
    if(ratio!=null)row.append(h('meter',null,{min:0,max:100,value:Math.max(0,Math.min(100,ratio)),'aria-label':label+'使用率'}));resources.append(row);
   }
-  if(Number.isFinite(report?.worker?.latency_ms))resources.append(h('p','画面处理 '+Math.round(report.worker.latency_ms)+' ms',{class:'runtime-latency'}));
-  if(report?.worker?.latency_ms>1000)resources.append(h('p','画面处理较慢',{class:'runtime-performance-note'}));
+  if(camera.latency){
+   const {ms,slow,multiple}=camera.latency;
+   const label=slow?'画面处理较慢 · ':multiple?'最慢画面处理 ':'画面处理 ';
+   resources.append(h('p',label+Math.round(ms)+' ms',{class:'runtime-latency','data-state':slow?'degraded':'on'}));
+  }
   const notices=homeAttention(report?currentDevices:[],report?.events?.events||[],report?.rules?.runs||[],report?.worker?.owned?report.worker.safety_recording:null,report?.proposals?.proposals||[],report?.rules?.task_attention);count.textContent=notices.length?String(notices.length):'';items.replaceChildren();
   if(!report)items.append(h('p',pending?'正在更新待处理事项…':'提醒暂未更新',{class:'home-attention-empty'}));
   else if(!notices.length)items.append(add(h('div',null,{class:'home-attention-empty'}),icon('check'),h('p',report.events?'暂无需要你处理的事项':'事件记录暂未更新')));

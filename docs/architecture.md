@@ -17,6 +17,24 @@ are derived from the current user; it does not embed an author's repository path
 login session or signing identity. NAS and People content stay local. Optional
 ARL provides the model-runtime boundary and is not a prerequisite for simulation.
 
+## 首页家庭感知
+
+主镜头和副镜头的采集控制者分别发布自己的识别状态与最近一次已处理画面的耗时。
+只统计当前仍有有效识别画面的镜头。关闭镜头、画面过期或读取途中切换服务后，撤下对应旧读数。
+首页从现有状态接口统计感知中的镜头，显示当前读数里最慢的画面处理耗时。
+该耗时从本机收到画面算起。CPU 和内存各自读取主机采样。
+
+```mermaid
+flowchart LR
+  A[主镜头采集与识别] -->|当前状态和耗时| C[摄像头状态接口]
+  B[各副镜头采集与识别] -->|各自状态和耗时| C
+  C --> D[首页家庭感知]
+  D -->|打开对应镜头| E[摄像头详情]
+```
+
+局部画面中断显示在服务状态内，沿用采集控制者的自动恢复。
+从首页打开镜头详情时只读取当前状态，预览需单独操作。
+
 ## 单轮巡视
 
 摄像头详情通过原 `/control` 路由启动单轮巡视，回执带当前操作版本。主副镜头使用同一个 `CameraDirector`，按平视、下探、低位横扫和抬回的顺序执行。前一步在同一采集会话与背景基准上取得两次独立的预期轴向变化后，才进入下一步。全程十步，发送前预留的尝试总计至多十二次。

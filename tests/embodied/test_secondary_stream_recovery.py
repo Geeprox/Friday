@@ -117,6 +117,8 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         await asyncio.wait_for(accepted.wait(), .5)
         await asyncio.sleep(0)
         assert item['state'] == 'live' and item['frames'] == 1
+        status = pool.status(CAMERA['id'])
+        assert status['recognition'] == 'running' and 0 <= status['latency_ms'] < 500
         reads.put_nowait(frame())
         await asyncio.wait_for(entered.wait(), .5)
         assert not task.done() and wall.frame(CAMERA['id'])
@@ -128,7 +130,8 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         assert wall.frame(CAMERA['id']) is None
         assert cleared == [CAMERA['id']]
         assert item.get('control') is None
-        assert pool.status(CAMERA['id'])['recognition'] == 'waiting'
+        status = pool.status(CAMERA['id'])
+        assert status['recognition'] == 'waiting' and status['latency_ms'] is None
         assert 'private-' not in json.dumps(pool.status(CAMERA['id']))
         release.set()
         await asyncio.wait_for(task, .5)
@@ -141,6 +144,21 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(('age', 'state', 'recognition', 'latency'), [
+    (.5, 'live', 'running', 320),
+    (1.8, 'live', 'waiting', None),
+    (3, 'stale', 'waiting', None),
+    (-1, 'stale', 'waiting', None),
+])
+def test_secondary_status_never_reuses_latency_from_an_expired_frame(monkeypatch, age, state, recognition, latency):
+    monkeypatch.setattr(previews,'time',SimpleNamespace(time=lambda:100))
+    pool = previews.PreviewPool(recognize=True)
+    pool.sessions[CAMERA['id']] = dict(state='live',received_at=100-age,frames=4,
+                                      shutter_changed=False,latency_ms=320)
+    status = pool.status(CAMERA['id'])
+    assert (status['state'], status['recognition'], status['latency_ms']) == (state, recognition, latency)
 
 
 @pytest.mark.asyncio

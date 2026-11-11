@@ -540,16 +540,17 @@ async def notify():
 
 
 def view():
+    now = time.monotonic()
     result = dict(state)
     result.pop('_patrol_view', None)
     result['party_camera'] = party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
-        frame_mono=last_frame,now=time.monotonic())
+        frame_mono=last_frame,now=now)
     result["game"] = games.viewer_state()
     result["recording"] = recorder.public()
     result['safety_recording'] = safety.recording_status()
     result["home"] = home.public()
     result["voice_sessions"] = [dict(camera=cid,**{key:service.public().get(key) for key in ("enabled","voice","reason","last_transcript","last_event","voice_command","audio_input","audio_analysis")}) for cid,service in [(SELECTED["id"],home),*secondary_homes.items()]]
-    result['interactions'] = fleet.public(time.monotonic())
+    result['interactions'] = fleet.public(now)
     result['voice_input'] = not (PRIVATE/'voice-input-paused').exists()
     if camera_planner and result.get('camera_control'):
         result['camera_control'] = camera_intent_readback(result['camera_control'], mode=camera_planner.mode,
@@ -581,8 +582,15 @@ def view():
     if not pet_current:
         result.update(animals=[],animals_current=False)
         if result.get('pet_tracking'):result['pet_tracking'] = dict(result['pet_tracking'],current=False)
-    result['camera_sessions'] = [dict(camera=SELECTED['id'],state=result['status'],recognition='running' if result['status']=='live' else 'waiting',frames=state['processed_frames']),
-        *[previews.status(c['id']) for c in configuration()['cameras'] if c['id']!=SELECTED['id']]]
+    primary_state = result['status']
+    if primary_state == 'live' and not (last_frame and 0 <= now - last_frame <= 1.5):
+        primary_state = 'stale'
+    recognizing = primary_state == 'live'
+    primary = dict(camera=SELECTED['id'], state=primary_state, frames=state['processed_frames'],
+                   recognition='running' if recognizing else 'waiting',
+                   latency_ms=state.get('pipeline_ms') if recognizing else None)
+    result['camera_sessions'] = [primary, *[previews.status(c['id'])
+        for c in configuration()['cameras'] if c['id'] != SELECTED['id']]]
     return result
 
 

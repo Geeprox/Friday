@@ -264,11 +264,12 @@ class EmbodiedService:
                     voice_sessions=value.get('voice_sessions',[]),
                 )
             except (httpx.HTTPError, OSError, ValueError, KeyError):
-                base["state"] = "unavailable"
+                base.update(state='unavailable', camera_sessions=[])
         if source != self._game_source():
             base.pop('game', None)
             base.pop('safety_recording', None)
-            base.update(state='unavailable', owned=False, capture_enabled=self.capture_enabled)
+            base.update(state='unavailable', owned=False, capture_enabled=self.capture_enabled,
+                        recovery_pending=self.recovery_pending, camera_sessions=[], latency_ms=None)
         elif base['state'] != 'unavailable':
             base['game_intent'] = self._game_intent(base.get('game'))
         return base

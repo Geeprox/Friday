@@ -98,7 +98,9 @@ class PreviewPool:
         item = self.sessions.get(camera_id)
         if not item:
             return dict(state="stopped", camera=camera_id, frames=0)
-        fresh = time.time() - item["received_at"] < 2
+        age = time.time() - item["received_at"]
+        fresh = 0 <= age < 2
+        recognizing = self.recognize and 0 <= age <= 1.5 and item['state'] == 'live'
         control = item.get('camera_control')
         if control:
             control = camera_intent_readback(control, mode=item.get('mode', control.get('mode')),
@@ -114,7 +116,8 @@ class PreviewPool:
             shutter_changed=item['shutter_changed'],
             follow_target_available=bool(item.get('follow_picker') and fresh and item['state'] == 'live'),
             audio_enabled=bool(self.recognize and self.on_audio),
-            recognition='running' if self.recognize and fresh and item['state']=='live' else 'waiting',
+            recognition='running' if recognizing else 'waiting',
+            latency_ms=item.get('latency_ms') if recognizing else None,
             people=item.get('people',0) if fresh else 0,
             hands=item.get('hands',0) if fresh else 0,
             animals=item.get('animals',0) if fresh else 0,
@@ -247,7 +250,7 @@ class PreviewPool:
                                                  status=item.get('intent_status', 'default'))
                 item['camera_control'] = finish_camera_survey(dict(readback, owner='none'))
             previous_state = item['state']
-            item.update(source_active=False, frame=None, received_at=0, people=0, hands=0, animals=0,
+            item.update(source_active=False, frame=None, received_at=0, latency_ms=None, people=0, hands=0, animals=0,
                         control=None, control_epoch=item['control_epoch']+1)
             if item.get('pet_tracking'):
                 item['pet_tracking'] = dict(item['pet_tracking'], current=False)
@@ -544,12 +547,16 @@ class PreviewPool:
                     if not self.source_current(selected['id'], process):break
                     if not item["frames"]:
                         item["expires"] = max(item["expires"], time.monotonic() + 60)
+                    frame = base64.b64decode(packet.get("preview") or packet["jpeg"])
+                    # 只记录这张已处理画面的耗时，丢弃的识别结果不能覆盖上次读数。
+                    age = time.time() - packet["received_at"]
                     item.update(
                         state="live",
                         error_class=None,error_stage=None,
-                        frame=base64.b64decode(packet.get("preview") or packet["jpeg"]),
+                        frame=frame,
                         frames=item["frames"] + 1,
                         received_at=packet["received_at"],
+                        latency_ms=round(age * 1000, 1) if recognizer is not None and 0 <= age <= 1.5 else None,
                     )
                 elif packet.get("type") == "error":
                     break
