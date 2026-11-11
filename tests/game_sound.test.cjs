@@ -26,9 +26,9 @@ test('current gate, miss and collision use only adjacent original event and coun
   assert.equal(cue(f,before,{...after,ski:{...after.ski,[key]:0}}),null);
  }
 });
-test('tennis uses rule hit/point events, never a swing, score change or predicted contact',()=>{
+test('tennis uses rule serve/hit/point events, never a swing, score change or predicted contact',()=>{
  const f=fixture(),before=g('tennis');
- for(const[kind,sound]of [['hit','racket'],['point','point']])assert.equal(cue(f,before,g('tennis',{tennis:{event:{sequence:1,kind,player:0,age:.1}}})),sound);
+ for(const[kind,sound]of [['serve','racket'],['hit','racket'],['point','point']])assert.equal(cue(f,before,g('tennis',{tennis:{event:{sequence:1,kind,player:0,age:.1}}})),sound);
  assert.equal(cue(f,before,g('tennis',{tennis:{score:[1,0],rally:1}})),null);
  assert.equal(cue(f,before,g('tennis',{tennis:{event:{sequence:1,kind:'hit',player:2,age:0}}})),null);
 });

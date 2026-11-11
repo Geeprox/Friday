@@ -56,11 +56,14 @@ function createGameScenery(c,{base,onChange=()=>{}}){
  function receiveTennis(g,at){
   const running=g.mode==='tennis'&&g.status==='playing';
   const continuous=running&&tennisPacketPlaying&&tennisPacketAt!==null&&at>tennisPacketAt&&at-tennisPacketAt<=250;
+  const served=tennisPhase==='serve'&&g.tennis?.phase==='rally';
   for(let i=0;i<2;i++){
    const player=g.players?.[i],count=player?.swings;
    if(!Number.isSafeInteger(count)||count<0)continue;
+   const currentSwing=served?g.tennis.event?.kind==='serve'&&g.tennis.event.player===i:
+    g.tennis?.phase==='rally'||g.tennis?.phase==='point'&&tennisPhase==='rally';
    if(continuous&&player.observation==='fresh'&&tennisCounts[i]!==null&&count===tennisCounts[i]+1
-     &&(g.tennis?.phase==='rally'||g.tennis?.phase==='point'&&tennisPhase==='rally'))tennisPending[i]=at;
+     &&currentSwing)tennisPending[i]=at;
    if(tennisCounts[i]!==null&&count<tennisCounts[i]){tennisPending[i]=null;tennisHitAt[i]=-10000;}
    tennisCounts[i]=count;
   }
@@ -212,6 +215,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   const age=tennisClock-tennisHitAt[i],guide=g.tennis?.guide;
   // These are illustrations of an observed swing, never a hit/score decision.
   if(age>=0&&age<(reduced.matches?120:420))tennisPoses[i]=reduced.matches?5:5+Math.floor(age/60);
+  else if(!reduced.matches&&g.tennis?.serve?.ready&&g.tennis.serve.player===i)tennisPoses[i]=3;
   else if(!reduced.matches&&g.tennis?.phase==='rally'&&guide?.active&&guide.receiver===i&&guide.in_position
     &&g.players?.[i]?.observation==='fresh'&&Number.isFinite(guide.seconds)&&guide.seconds>=0&&guide.seconds<=.65)
    tennisPoses[i]=1+Math.min(3,Math.floor((.65-guide.seconds)/.65*4));
@@ -254,8 +258,13 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    if(!reduced.matches&&t.phase==='rally'&&!swing){c.beginPath();c.ellipse(p[0],p[1],rx*approach,ry*approach,0,0,Math.PI*2);c.strokeStyle='#fff6d9';c.lineWidth=2;c.stroke();}
    c.restore();
    const number=(guide.receiver+1)+' 号';
-   const label=t.phase==='ready'||t.phase==='point'?Math.max(1,Math.ceil(t.ready_seconds||0))+' 秒':number+(swing?' · 挥拍':'落点');
+   const label=number+(swing?' · 挥拍':'落点');
    cue={label,p,rx,ry,ink,swing};
+  }else if(running&&t.serve?.ready){
+   const p=project(t.ball.x,t.ball.z),rx=portrait?50:44,ry=rx*.25,ink=t.serve.player===0?'#285e53':'#8b3c29';
+   c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle='#fff6d9bd';c.fill();
+   c.strokeStyle=ink;c.lineWidth=5;c.stroke();c.restore();
+   cue={label:(t.serve.player+1)+' 号 · 发球',p,rx,ry,ink,swing:true,side:t.serve.player===0?-1:1};
   }
   const dt=Math.min(.1,Math.max(0,(at-lastAt)/1000));lastAt=at;
   function player(i){
@@ -277,7 +286,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   for(const p of [netLeft,netRight])line([p[0],p[1]+5],[p[0],p[1]-netHeight-7],'#2f6053',9);c.restore();
   player(0);
   if(!['ready','point','complete'].includes(t.phase)){
-   const ball=suspended&&shownBall?shownBall:ballFrame(g,at),p=project(ball.x,ball.z),lift=Math.sin(Math.max(0,Math.min(1,ball.z))*Math.PI)*90+18;
+   const ball=suspended&&t.phase==='rally'&&shownBall?shownBall:ballFrame(g,at),p=project(ball.x,ball.z),lift=Math.sin(Math.max(0,Math.min(1,ball.z))*Math.PI)*90+18;
    if(!suspended)shownBall={x:ball.x,z:ball.z};
    c.save();c.fillStyle='#59391d40';c.beginPath();c.ellipse(p[0],p[1],13,5,0,0,Math.PI*2);c.fill();c.restore();sprite(6,p[0],p[1]-lift+14,portrait?52:42);
   }
@@ -287,8 +296,10 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    const {label,p,rx,ry,ink,swing}=cue,font=portrait?36:24;
    c.save();c.textAlign='center';c.textBaseline='middle';c.font=`650 ${font}px -apple-system, sans-serif`;
    const halfWidth=c.measureText(label).width/2+font*.48,height=font*1.52;
-   const side=p[0]>800?-1:1,margin=portrait?340:24;
-   const x=Math.max(margin+halfWidth,Math.min(1600-margin-halfWidth,p[0]+side*(rx+halfWidth+12))),y=p[1]-ry;
+   const side=cue.side??(p[0]>800?-1:1),margin=portrait?340:24,offset=rx+halfWidth+12;
+   const minX=margin+halfWidth,maxX=1600-margin-halfWidth,preferred=p[0]+side*offset;
+   const beside=cue.side&&(preferred<minX||preferred>maxX)?p[0]-side*offset:preferred;
+   const x=Math.max(minX,Math.min(maxX,beside)),y=p[1]-ry;
    c.beginPath();c.roundRect(x-halfWidth,y-height/2,halfWidth*2,height,font*.32);
    c.fillStyle=swing?ink:'#faf9f2';c.fill();c.fillStyle=swing?'#fffaf2':ink;c.fillText(label,x,y+font*.05);c.restore();
   }

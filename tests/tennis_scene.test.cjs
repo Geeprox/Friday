@@ -29,19 +29,31 @@ test('pause, new return, replay and reduced motion never tween through an old ba
  assert.deepEqual(ball(still.paint(second,1100)),ball(direct.paint(second,1100)));
 });
 
-test('preparation and point states show a landing cue and no flying ball',()=>{
+test('preparation and point states hide the flight and the receiving marker',()=>{
  const s=scene();
- for(const phase of ['ready','point','complete']){
-  const current=game(.5,.5,phase);current.tennis.ready_seconds=1.5;
-  current.tennis.guide={active:phase!=='complete',receiver:0,target_x:.25,reach:.2,seconds:.8,cue:'prepare'};
+ for(const current of [originalPacket('ready'),originalPacket('point'),game(.5,.5,'complete')]){
   s.receive(current,1000);
   const drawn=s.paint(current,1000);
   assert.equal(ball(drawn),undefined);
-  if(phase!=='complete'){
-   const ring=drawn.find(c=>c[0]==='ellipse');
-   assert(Math.abs(ring[1]-(800+(.25-.5)*(1120-.1*580)))<1e-7,'marker uses the source intercept');
-   assert(drawn.some(c=>c[0]==='text'&&c[1]==='2 秒'),'source countdown, not a local timer');
-  }
+  assert(!drawn.some(c=>c[0]==='text'&&c[1].endsWith('落点')));
+ }
+});
+
+test('the stationary service marker tracks the designated server and survives reduced motion',()=>{
+ const parked=originalPacket('serve');
+ for(const server of [0,1]){
+  const current=structuredClone(parked),s=scene(true);
+  current.tennis.serve.player=server;
+  current.tennis.ball.z=server===0?.12:.88;
+  s.setPortrait(true);
+  const drawn=s.paint(current,1000),label=`${server+1} 号 · 发球`;
+  const callout=drawn.find(c=>c[0]==='text'&&c[1]===label);
+  assert(callout);
+  const ring=drawn.find(c=>c[0]==='ellipse');
+  assert.equal(ring[2],840-current.tennis.ball.z*460);
+  assert((callout[2]-ring[1])*(server===0?-1:1)>ring[3],'发球提示放在球拍外侧');
+  assert.deepEqual(ball(s.paint(current,5000)),ball(drawn),'等待期间球保持在发球位置');
+  assert(!s.paint({...current,status:'paused'},5050).some(c=>c[0]==='text'&&c[1]===label));
  }
 });
 
@@ -69,6 +81,13 @@ import json
 from homeplane.embodied.motion_games import MotionGames
 game=MotionGames();game.reset('tennis')
 players=[dict(lateral=0,last_swing=10,swing_direction=1,observation='fresh'),dict(lateral=0,last_swing=-100,swing_direction=-1,observation='fresh')]
+if '${stage}' in {'serve','launched'}:
+ game.round_pause=0
+ for player in players:player.update(observed_wrists=2,foot_observation='fresh',arm_speed=0,last_swing=-100)
+ for i in range(7):game.tennis(players,.05,10+i*.05)
+ if '${stage}'=='launched':
+  players[0]['last_swing']=10.4
+  game.tennis(players,.05,10.4)
 if '${stage}'=='hit':
  game.round_pause=0;game.ball.update(x=.5,z=.06,toward=0);game.tennis(players,.01,10)
 if '${stage}' in {'point','position','unobserved'}:
@@ -77,13 +96,17 @@ if '${stage}' in {'point','position','unobserved'}:
 print(json.dumps(game.publish(players,'playing','')))
 `],{encoding:'utf8'}));
 }
-test('original rule packet reaches the hit acknowledgement and point/ready prompts',()=>{
+test('original rule packets connect serve, receiving and change of service to the HUD',()=>{
  const ready=context.tennisPresentation(originalPacket('ready'));
- assert.equal(ready.title,'1 号准备接球');assert(ready.instruction.startsWith('2 秒'));
+ assert.equal(ready.title,'1 号准备发球');assert(ready.instruction.startsWith('2 秒'));
+ const serve=context.tennisPresentation(originalPacket('serve'));
+ assert.equal(serve.title,'1 号发球');assert.equal(serve.instruction,'现在挥拍！');
+ const launched=context.tennisPresentation(originalPacket('launched'));
+ assert.equal(launched.title,'2 号接球');assert.equal(launched.event,'1 号 · 发球成功');
  const hit=context.tennisPresentation(originalPacket('hit'));
  assert.equal(hit.title,'2 号接球');assert.equal(hit.event,'1 号 · 漂亮回击');
  const point=context.tennisPresentation(originalPacket('point'));
- assert.equal(point.title,'2 号得分');assert.equal(point.instruction,'下一球：1 号接球 · 2 秒');assert.equal(point.event,'1 号 · 看到挥拍提示再出手');
+ assert.equal(point.title,'2 号得分');assert.equal(point.instruction,'2 号准备发球 · 2 秒');assert.equal(point.event,'1 号 · 看到挥拍提示再出手');
 });
 test('point coaching uses known source evidence and stays quiet when input was not observed',()=>{
  const packet=originalPacket('position');assert.equal(packet.tennis.event.next_focus,'position');
@@ -103,12 +126,12 @@ test('the original HUD exposes coaching once, hides it during pause and clears i
  const packet=originalPacket('position');hud.updateTennisHUD(packet);
  const feedback=node('tennisEvent');assert.equal(feedback.hidden,false);assert.equal(feedback.textContent,'1 号 · 先站进光圈，再挥拍');
  const writes=feedback.writes;hud.updateTennisHUD(packet);assert.equal(feedback.writes,writes,'polling cannot repeat the same announcement');
- const scoreboard=node('score');assert.match(scoreboard.innerHTML,/data-player="0" data-receiving="true"/);
+ const scoreboard=node('score');assert.match(scoreboard.innerHTML,/data-player="1" data-serving="true"/);
  const replacement=originalPacket('point');assert.notEqual(replacement.control_context,packet.control_context);
  assert.equal(replacement.round_id,packet.round_id);assert.equal(replacement.tennis.event.sequence,packet.tennis.event.sequence);
  hud.updateTennisHUD(replacement);assert.equal(feedback.textContent,'1 号 · 看到挥拍提示再出手','a new source must not retain the old source\'s coaching');
  hud.updateTennisHUD({...replacement,status:'paused'});assert.equal(feedback.hidden,true);
- assert.doesNotMatch(scoreboard.innerHTML,/data-receiving/);
+ assert.doesNotMatch(scoreboard.innerHTML,/data-(receiving|serving)/);
  hud.updateTennisHUD(originalPacket('ready'));assert.equal(feedback.hidden,true);assert.equal(feedback.textContent,'');assert.equal(feedback.dataset.event,'');
 });
 

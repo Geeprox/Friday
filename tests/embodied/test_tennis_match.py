@@ -19,6 +19,63 @@ def rally(difficulty='standard'):
     return game
 
 
+def pose_players(swing_track=None):
+    people = [human(1, x=.3), human(2, x=.7)]
+    if swing_track is not None:
+        wrist = people[swing_track - 1]['joints']['rightWrist']
+        wrist['x'] += .22
+        wrist['y'] -= .15
+    return people
+
+
+def test_first_ball_waits_for_the_designated_players_fresh_swing():
+    game = MotionGames()
+    game.reset('tennis')
+    for step in range(160):
+        state = game.update(pose_players(), LOCK, step * .05)
+    waiting = state['tennis']
+    assert waiting['phase'] == 'serve' and waiting['serve'] == {'player': 0, 'ready': True}
+    assert waiting['score'] == [0, 0] and not waiting['guide']['active']
+
+    wrong_player = game.update(pose_players(swing_track=1), LOCK, 8.)
+    assert wrong_player['players'][1]['swings'] == 1
+    assert wrong_player['tennis']['ball'] == waiting['ball'] and wrong_player['tennis']['event'] is None
+    served = game.update(pose_players(swing_track=2), LOCK, 8.05)['tennis']
+    assert served['phase'] == 'rally' and served['serve'] is None
+    assert served['event']['kind'] == 'serve' and served['event']['player'] == 0
+    assert served['flight'] == waiting['flight'] + 1 and served['ball']['toward'] == 1
+    assert served['guide']['receiver'] == 1 and served['score'] == [0, 0]
+    assert served['rally'] == 0
+
+
+def test_service_switches_after_the_first_point_and_then_every_two():
+    game = rally()
+    for score, server in [([0, 1], 1), ([0, 2], 1), ([0, 3], 0), ([0, 4], 0), ([0, 5], 1)]:
+        game.round_pause = 0
+        game.ball.update(x=.5, z=.001, target_x=.5, toward=0)
+        game.tennis(players(), .01, 10)
+        point = game.publish(players(), 'playing', '')['tennis']
+        assert point['score'] == score and point['phase'] == 'point'
+        assert point['serve'] == {'player': server, 'ready': False} and not point['guide']['active']
+
+
+def test_pause_requires_a_new_serve_after_standing_ready_again():
+    game = MotionGames()
+    game.reset('tennis')
+    for step in range(80):
+        game.update(pose_players(), LOCK, step * .05)
+    game.set_paused(True)
+    game.set_paused(False)
+    # 第一个回来的挥拍发生在重新就位提示之前。
+    old_swing = game.update(pose_players(swing_track=2), LOCK, 4.)
+    assert old_swing['tennis']['event'] is None and old_swing['tennis']['ball']['toward'] is None
+    for step in range(81, 110):
+        ready = game.update(pose_players(), LOCK, step * .05)
+    assert ready['tennis']['phase'] == 'serve' and ready['tennis']['serve']['ready']
+    fresh = game.update(pose_players(swing_track=2), LOCK, 5.5)['tennis']
+    assert fresh['event']['kind'] == 'serve' and fresh['ball']['toward'] == 1
+
+
 @pytest.mark.parametrize('stamp', [10.1, float('nan'), float('inf'), True])
 def test_future_or_invalid_swing_cannot_return_a_ball(stamp):
     game = rally()

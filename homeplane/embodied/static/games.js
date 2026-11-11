@@ -126,17 +126,24 @@ async function stopGame(){return commandGame({mode:'off'},'暂时无法结束本
 let gamePackets=0,gameWindow=performance.now(),gameReport=0;function reportViewer(){if(location.hostname==='127.0.0.1')return;const now=performance.now();if(now-gameReport<4000)return;gameReport=now;fetch(url('/api/viewer'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.5.0',mode:'games',frames:gamePackets,fps:Math.round(gamePackets*10000/Math.max(1,now-gameWindow))/10,server_frame_age_ms:meta?.frame_age_ms,event:'metadata_received'})}).catch(()=>{})}
 function tennisPresentation(g){
  const t=g.tennis||{},guide=t.guide||{},receiver=(guide.receiver===1?2:1),event=t.event;
+ const serve=[0,1].includes(t.serve?.player)?t.serve:null;
+ const live=g.status==='playing',seconds=Math.max(1,Math.ceil(t.ready_seconds||0));
  let title='双人网球',instruction='';
- if(g.status==='complete'){title='双人网球';instruction='';}
- else if(g.status==='playing'&&guide.active){
-  if(t.phase==='point'){title=event?.kind==='point'?(event.player+1)+' 号得分':'这一球结束';instruction='下一球：'+receiver+' 号接球 · '+Math.max(1,Math.ceil(t.ready_seconds||0))+' 秒';}
-  else if(t.phase==='ready'){title=receiver+' 号准备接球';instruction=Math.max(1,Math.ceil(t.ready_seconds||0))+' 秒后开始，先看光圈位置。';}
-  else{title=receiver+' 号接球';instruction=({left:'向左移动到光圈处。',right:'向右移动到光圈处。',wait:'站位就绪，等挥拍提示。',swing:'现在挥拍！'})[guide.cue]||'看准来球，准备挥拍。';}
+ if(live&&serve){
+  const server=serve.player+1;
+  if(t.phase==='point'){title=event?.kind==='point'?(event.player+1)+' 号得分':'这一球结束';instruction=server+' 号准备发球 · '+seconds+' 秒';}
+  else if(t.phase==='ready'){title=server+' 号准备发球';instruction=seconds+' 秒后就绪';}
+  else{title=server+' 号发球';instruction=serve.ready?'现在挥拍！':'双脚入镜，发球手先停稳';}
+ }else if(live&&guide.active){
+  title=receiver+' 号接球';
+  instruction=({left:'向左移动到光圈处。',right:'向右移动到光圈处。',wait:'站位就绪，等挥拍提示。',swing:'现在挥拍！'})[guide.cue]||'看准来球，准备挥拍。';
  }
- const hit=event?.kind==='hit'&&event.age>=0&&event.age<1.4&&g.status==='playing';
- const focus=g.status==='playing'&&t.phase==='point'&&event?.kind==='point'?({position:'先站进光圈，再挥拍',timing:'看到挥拍提示再出手'})[event.next_focus]:null;
- return{title,instruction,event:hit?(event.player+1)+' 号 · '+(event.quality==='perfect'?'漂亮回击':'回球成功'):focus?receiver+' 号 · '+focus:'',
-  eventKey:hit||focus?g.control_context+':'+g.round_id+':'+event.sequence:'',rules:'先得 '+(t.target||7)+' 分并领先 2 分获胜，'+(t.cap||15)+' 分封顶。'};
+ const shot=live&&['serve','hit'].includes(event?.kind)&&event.age>=0&&event.age<1.4;
+ const focus=live&&t.phase==='point'&&event?.kind==='point'?({position:'先站进光圈，再挥拍',timing:'看到挥拍提示再出手'})[event.next_focus]:null;
+ const feedback=shot?(event.player+1)+' 号 · '+(event.kind==='serve'?'发球成功':event.quality==='perfect'?'漂亮回击':'回球成功'):
+  focus?(2-event.player)+' 号 · '+focus:'';
+ return{title,instruction,event:feedback,
+  eventKey:feedback?g.control_context+':'+g.round_id+':'+event.sequence:'',rules:'先得 '+(t.target||7)+' 分并领先 2 分获胜，'+(t.cap||15)+' 分封顶。'};
 }
 function skiPresentation(g){
  const s=g.ski||{},route=s.gate_count>0,event=s.event;
@@ -156,10 +163,11 @@ function updateTennisHUD(g){
  if(!view.eventKey&&g.tennis?.event==null){event.textContent='';event.dataset.event='';}
  event.hidden=!view.event;
  const receiver=g.status==='playing'&&t.guide?.active?t.guide.receiver:null;
- const signature=[...scores,t.rally||0,t.best_rally||0,receiver].join('/');
+ const server=g.status==='playing'?t.serve?.player:null;
+ const signature=[...scores,t.rally||0,t.best_rally||0,receiver,server].join('/');
  if(scoreboard.dataset.tennis!==signature){
   scoreboard.dataset.tennis=signature;
-  scoreboard.innerHTML='<div class="tennis-scoreline">'+scores.map((score,i)=>'<span class="tennis-player" data-player="'+i+'"'+(receiver===i?' data-receiving="true"':'')+'><small>'+(i+1)+' 号</small><b>'+score+'</b></span>').join('<span class="tennis-score-separator" aria-hidden="true">:</span>')+'</div><small>回合 '+(t.rally||0)+' · 最长 '+(t.best_rally||0)+'</small>';
+  scoreboard.innerHTML='<div class="tennis-scoreline">'+scores.map((score,i)=>'<span class="tennis-player" data-player="'+i+'"'+(server===i?' data-serving="true"':receiver===i?' data-receiving="true"':'')+'><small>'+(i+1)+' 号</small><b>'+score+'</b></span>').join('<span class="tennis-score-separator" aria-hidden="true">:</span>')+'</div><small>回合 '+(t.rally||0)+' · 最长 '+(t.best_rally||0)+'</small>';
  }
 }
 function streamLost(ws){
@@ -263,7 +271,7 @@ function stageOverlayMarkup(g,current,playing){
  if(control.progress>0&&!control.latched)return'<h2>'+(control.gesture==='yeah'?'保持 Yeah，切换游戏':'保持 OK，开始本局')+'</h2><p>'+Math.round(control.progress*100)+'%</p>';
  if(selected==='home'||playing&&g.status==='playing')return'';
  if(!playing){
-  if(selected==='tennis')return '<h2>准备开球</h2><p>两位玩家并排站开，双脚完整入镜。</p>'+tennisLineupMarkup()+'<button class="primary" data-click="startGame()">开始本局</button>';
+  if(selected==='tennis')return '<h2>准备开球</h2><p>两位玩家并排站好，双脚入镜。左侧先发球。</p>'+tennisLineupMarkup()+'<button class="primary" data-click="startGame()">开始本局</button>';
   const trailPicker=selected==='ski'?skiTrailPicker(g):'';
   if(trailPicker)return '<h2>选择雪道</h2>'+trailPicker+'<button class="primary" data-click="startGame()">开始本局</button>';
   const [,title,detail]=modeDescription(selected,g);
