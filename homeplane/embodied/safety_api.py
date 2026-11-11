@@ -29,6 +29,12 @@ class PostureSelection(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
+class SoundSearchSelection(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    enabled: bool
+    expected_revision: int = Field(ge=0)
+
+
 def posture_status(policy, sources, visual):
     source = policy.posture_source
     camera = source.camera if source else None
@@ -103,6 +109,7 @@ def install(router, service, *, archive=None, infrastructure=None):
             evidence_kind="private_keyframes",
             visual_review=visual_review,
             sound_review=sound_review,
+            sound_search=runtime.policy_cache.sound_search,
             posture_review=posture_status(runtime.policy_cache, sources, visual_review),
         )
 
@@ -125,6 +132,16 @@ def install(router, service, *, archive=None, infrastructure=None):
             raise HTTPException(409, detail="safety_policy_changed") from None
         await refresh_policy()
         return saved.model_dump()
+
+    @router.post('/api/embodied/safety/sound-search')
+    async def configure_sound_search(request: SoundSearchSelection):
+        try:
+            saved = await stored(store.configure_sound_search, request.expected_revision, request.enabled)
+        except ValueError as error:
+            code = 'sound_search_unavailable' if str(error) == 'sound_search_unavailable' else 'safety_policy_changed'
+            raise HTTPException(409, detail=code) from None
+        await refresh_policy()
+        return dict(enabled=saved.sound_search, revision=saved.revision)
 
     @router.post('/api/embodied/safety/posture')
     async def configure_posture(request: PostureSelection):

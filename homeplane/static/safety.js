@@ -26,8 +26,14 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    add(el('div',null,{class:'safety-actions'}),visualToggle),postureField);
  const soundStatus=el('p','正在读取声音复核状态…',{role:'status','aria-live':'polite'});
  const soundToggle=button('开启声音复核',()=>change('sound_review'));soundToggle.setAttribute('role','switch');soundToggle.setAttribute('aria-checked','false');soundToggle.disabled=true;
+ const soundSearch=button('开启异响后环视',()=>change('sound_search'));
+ soundSearch.setAttribute('role','switch');soundSearch.setAttribute('aria-checked','false');
+ soundSearch.setAttribute('aria-describedby','safety-sound-search-note');soundSearch.hidden=true;
+ const soundSearchNote=el('p','自动镜头在异响留档后查看附近画面。',{class:'caption',id:'safety-sound-search-note'});
+ soundSearchNote.hidden=true;
  const sound=add(el('section',null,{class:'safety-sound'}),el('h2','声音复核'),el('p','留意疑似哭声、尖叫、破碎声和警报，记录后由你查看。'),soundStatus,
-   add(el('div',null,{class:'safety-actions'}),soundToggle),el('p','声音仅在本机内存处理。暂停声音输入会同时暂停复核。',{class:'caption'}));
+   add(el('div',null,{class:'safety-actions'}),soundToggle,soundSearch),soundSearchNote,
+   el('p','声音仅在本机内存处理。暂停声音输入会同时暂停复核。',{class:'caption'}));
  const capabilities=el('section',null,{class:'safety-capabilities','aria-label':'监测能力'}),list=el('section',null,{class:'safety-events','aria-label':'预警记录'}),detail=el('section',null,{class:'safety-detail','aria-label':'事件详情'});
  const detailBody=el('div'),recordings=el('div',null,{class:'safety-recording','aria-label':'事件附近录像'}),back=button('全部提醒',backToList);back.className='safety-back';detail.append(back,detailBody,recordings);detail.hidden=true;
  const stopRecording=()=>{try{const pending=onOpenRecording(recordings,null);pending?.catch?.(()=>{});}catch{recordings.replaceChildren();}};
@@ -38,6 +44,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  const eventRows=new Map();
  const audioNames={not_requested:'未请求播报',requesting:'正在发送播报',accepted:'音箱已接受，实际声音待确认',unconfirmed:'播报结果待确认',paused:'安静模式，未播报',busy:'音箱忙，未播报',unavailable:'播报不可用',cancelled:'已取消播报',interrupted:'播报已中断'};
  function availability(){enable.disabled=announce.disabled=busy;visualToggle.disabled=busy||(!report?.policy?.visual_review&&(!report?.policy?.enabled||!report?.visual_review?.available));soundToggle.disabled=busy||(!report?.policy?.sound_review&&(!report?.policy?.enabled||!report?.sound_review?.available));reconnect.disabled=busy||retrying||!report?.supervision?.recovery?.can_retry;
+  soundSearch.disabled=busy||!report?.sound_search&&!report?.policy?.enabled;
   const posture=report?.posture_review;postureSelect.disabled=busy||(!posture?.camera&&!posture?.cameras?.length);
  }
  function renderPosture(){
@@ -73,7 +80,22 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
   catch{if(alive){status.textContent='暂未确认连接结果，正在读取状态…';await refresh();}}
   finally{clearTimeout(timeout);retryTimer=null;retryController=null;retrying=false;if(alive){recoveryActions.setAttribute('aria-busy','false');availability();}}
  }
- async function change(key){if(busy||!report)return;busy=true;availability();try{await api('/policy',{...report.policy,[key]:!report.policy[key]});await refresh();}catch{if(alive)status.textContent='设置未保存，请刷新后重试。';}finally{busy=false;if(alive)availability();}}
+ async function change(key){
+  if(busy||!report)return;
+  const search=key==='sound_search',focused=search&&document.activeElement===soundSearch;
+  if(search&&(soundSearch.hidden||soundSearch.disabled))return;
+  busy=true;availability();
+  try{
+   if(search)await api('/sound-search',{enabled:!report.sound_search,expected_revision:report.policy.revision});
+   else await api('/policy',{...report.policy,[key]:!report.policy[key]});
+   await refresh();
+  }catch{if(alive)(search?soundStatus:status).textContent='设置未保存，请刷新后重试。';}
+  finally{
+   busy=false;
+   if(alive){availability();if(focused&&!soundSearch.hidden&&!soundSearch.disabled&&
+       (document.activeElement===document.body||document.activeElement===soundSearch))soundSearch.focus({preventScroll:true});}
+  }
+ }
  async function refresh(){if(!alive)return;const epoch=++version;try{const [next,history]=await Promise.all([api(''),api('/events')]);if(!alive||epoch!==version)return;report=next;
    enable.textContent=next.policy.enabled?'暂停监测':'开启监测';enable.setAttribute('role','switch');enable.setAttribute('aria-checked',String(next.policy.enabled));
    announce.textContent=next.policy.announce?'关闭语音提醒':'开启语音提醒';announce.setAttribute('role','switch');announce.setAttribute('aria-checked',String(next.policy.announce));
@@ -83,6 +105,10 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    const visualMessage=!model.available?(modelReasons[model.reason]||'本机模型尚未就绪，完成配置后可开启。'):!next.policy.enabled?'先开启监测。':next.policy.visual_review&&model.error?(modelReasons[model.error]||'画面复核已暂缓，稍后重试。'):'';
    if(visualStatus.textContent!==visualMessage)visualStatus.textContent=visualMessage;visualStatus.hidden=!visualMessage;
    const soundModel=next.sound_review||{};soundToggle.textContent=next.policy.sound_review?'关闭声音复核':'开启声音复核';soundToggle.setAttribute('aria-checked',String(Boolean(next.policy.sound_review)));availability();
+   soundSearch.hidden=soundSearchNote.hidden=typeof next.sound_search!=='boolean'||
+    !next.sound_search&&(!next.policy.sound_review||!soundModel.available);
+   soundSearch.textContent=next.sound_search?'关闭异响后环视':'开启异响后环视';
+   soundSearch.setAttribute('aria-checked',String(next.sound_search===true));
    const supported=(soundModel.supported_types||[]).filter(kind=>soundNames[kind]).map(kind=>soundNames[kind]);
    soundStatus.textContent=!soundModel.available?'当前版本尚未提供本机声音复核。':!next.policy.enabled?'开启监测后可使用声音复核。':!next.policy.sound_review?'声音复核已关闭。':soundModel.input_paused?'声音输入已暂停。':soundModel.error?({'sound_memory_pressure':'本机内存紧张，稍后自动重试。','sound_cpu_busy':'本机正忙，稍后自动重试。','sound_labels_unavailable':'本机分类器尚未提供这些声音类别。'}[soundModel.error]||'声音复核暂缓，稍后自动重试。'):supported.length?'已开启 · '+supported.join('、'):'已开启，等待摄像头声音。';
    const count=next.worker.cameras?.filter(c=>c.fresh).length||0;

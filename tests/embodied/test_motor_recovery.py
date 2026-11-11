@@ -207,6 +207,7 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
                  self=SimpleNamespace(on_clear=None, focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                       review_pending=lambda *_:scope.get('review_pending',False),
                                       fall_pending=lambda *_:scope.get('fall_pending',False),
+                                      sound_cue=lambda *_:None,
                                       runtime_log=SimpleNamespace(record=noop)),
                  latest=dict(now=now, captured_mono=now, session='source', tracking_current=True,
                              people=view(now)['people'], scene_visible=True))
@@ -247,7 +248,8 @@ async def test_primary_search_original_guard_rechecks_the_current_target(change)
     scope['state'].update(current(at))
     scope.update(director=director, direction='right', games=SimpleNamespace(public={}),
                  previews=SimpleNamespace(sessions={}),
-                 safety=SimpleNamespace(review_pending=lambda *_:False,fall_pending=lambda *_:False))
+                 safety=SimpleNamespace(review_pending=lambda *_:False,fall_pending=lambda *_:False,
+                                        sound_search_cue=lambda *_:None))
     extract('homeplane/embodied/worker.py', {'decision_current'}, scope)
     class Wait:
         async def __aenter__(self):

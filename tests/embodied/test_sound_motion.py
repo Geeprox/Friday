@@ -34,8 +34,11 @@ class EpisodeEngine(SlowEngine):
 
 
 class SoundPatrol:
-    def __init__(self, tmp_path, monkeypatch, owner, *, episode=(14.2, 18.2), infant=False):
+    def __init__(self, tmp_path, monkeypatch, owner, *, episode=(14.2, 18.2), infant=False,
+                 target=False, motor_shifts_view=True, enable_search=True):
         self.j = Journey(tmp_path, monkeypatch)
+        if enable_search:
+            self.j.store.configure_sound_search(self.j.store.policy().revision, True)
         self.engine = EpisodeEngine(lambda: self.j.clock, infant=infant)
         self.j.runtime.sound.engine = self.engine
         self.owner, self.episode = owner, episode
@@ -43,6 +46,8 @@ class SoundPatrol:
         self.moving_until = 0
         self.view_offset = 0.
         self.moves, self.phases = [], []
+        self.sound_moves, self.follow_moves = [], []
+        self.target, self.motor_shifts_view = target, motor_shifts_view
         self.state = {}
         self.session = "SYNTHETIC-sound-motion"
         self.director = CameraDirector()
@@ -62,7 +67,11 @@ class SoundPatrol:
             await task
             await settle()
         stable = self.j.clock >= self.moving_until
-        await self.j.runtime.observe(CAMERA["id"], self.session, [], self.j.clock, self.j.clock,
+        people = []
+        if stable and self.target and self.sound_moves:
+            x = .43 if self.follow_moves else .76
+            people = [dict(id=42, box=dict(x=x, y=.30, w=.14, h=.36))]
+        await self.j.runtime.observe(CAMERA["id"], self.session, people, self.j.clock, self.j.clock,
             stable=stable, jpeg=b"SYNTHETIC-FRAME", source_context=CONTEXT, source_name="合成镜头")
         frame = dict(type="frame", received_at=1000+self.j.clock, capture_session="a"*32,
                      camera_source_context=CONTEXT)
@@ -74,7 +83,7 @@ class SoundPatrol:
         self.j.runtime.observe_audio(CAMERA["id"], self.j.gate.accept(
             packet, wall=1000+self.j.clock, mono=self.j.clock))
         self.state.update(status="live", _local_received=self.j.clock, session_id=self.session,
-                          tracking_current=True, scene_visible=stable, people=[],
+                          tracking_current=True, scene_visible=stable, people=people,
                           _patrol_view=patrol_view(self.j.clock, x=self.view_offset) if stable else None)
         self.scope["last_frame"] = self.j.clock
         self.phases.append((self.j.clock, (self.state if self.owner == "primary" else self.item)
@@ -86,10 +95,18 @@ class SoundPatrol:
             assert callback(), "original final-dispatch guard must still admit this move"
         elif self.owner == "secondary":
             assert self.director.decision_current(self.state, self.j.clock, direction,
-                review_pending=self.j.runtime.review_pending(CAMERA["id"], self.session))
+                review_pending=self.j.runtime.review_pending(CAMERA["id"], self.session),
+                sound_cue=self.j.runtime.sound_search_cue(CAMERA["id"], self.session,
+                                                         self.director.sound_search_cue))
+        if self.director.phase == 'sound_search':
+            assert len(self.j.store.events()) == 1, '先确认原留档成功，再准许转向'
+            self.sound_moves.append(direction)
+        if self.director.phase == 'following':
+            self.follow_moves.append((direction, self.director.target))
         self.moves.append((self.j.clock, direction))
         self.moving_until = self.j.clock + 1
-        self.view_offset += .05 if direction == 'right' else -.05
+        if self.motor_shifts_view:
+            self.view_offset += .05 if direction == 'right' else -.05
         self.j.runtime.clear(CAMERA["id"])
         if self.owner == "secondary":
             self.director.sent(self.j.clock, direction)
@@ -115,7 +132,8 @@ class SoundPatrol:
             self.scope.update(item=self.item, selected={"id": CAMERA["id"]}, director=self.director,
                 self=SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                      review_pending=self.j.runtime.review_pending,
-                                     fall_pending=self.j.runtime.fall_pending),
+                                     fall_pending=self.j.runtime.fall_pending,
+                                     sound_cue=self.j.runtime.sound_search_cue),
                 current_sample=lambda: dict(self.state), privacy_closed=lambda: None,
                 send_motion=self.motor)
             loop = source_function("homeplane/embodied/previews.py", "direct", self.scope)
@@ -146,10 +164,78 @@ async def test_short_sound_near_a_patrol_deadline_keeps_both_original_loops_stab
         assert event["person_id"] is None and not event["directional_audio"]
         assert patrol.engine.qualified == [(71, 80), (81, 90)], "two complete, disjoint synthetic windows"
         assert patrol.moves and any(phase == "review_held" for _, phase in patrol.phases)
+        assert patrol.sound_moves == ['right', 'left', 'left']
         assert patrol.engine.maximum == 1
         patrol.j.runtime.speaker.say.assert_not_awaited()
     finally:
         await patrol.j.runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+async def test_saved_sound_search_hands_a_new_visual_track_to_existing_follow(tmp_path, monkeypatch, owner):
+    patrol = SoundPatrol(tmp_path, monkeypatch, owner, target=True)
+    try:
+        await patrol.run()
+        assert patrol.sound_moves == ['right']
+        assert patrol.follow_moves == [('right', 42)]
+        assert not patrol.j.store.events()[0]['directional_audio']
+    finally:
+        await patrol.j.runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_sound_search_stops_when_the_camera_ack_leaves_the_view_unchanged(tmp_path, monkeypatch):
+    patrol = SoundPatrol(tmp_path, monkeypatch, 'primary', motor_shifts_view=False)
+    try:
+        await patrol.run()
+        assert patrol.sound_moves == ['right'] and not patrol.follow_moves
+        assert patrol.director.sound_search_cue is None
+    finally:
+        await patrol.j.runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_sound_review_only_still_records_without_starting_a_sound_search(tmp_path, monkeypatch):
+    patrol = SoundPatrol(tmp_path, monkeypatch, 'primary', enable_search=False)
+    try:
+        await patrol.run()
+        assert len(patrol.j.store.events()) == 1
+        assert patrol.moves and not patrol.sound_moves
+    finally:
+        await patrol.j.runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_sound_search_requires_a_saved_receipt_and_rechecks_the_active_source(tmp_path, monkeypatch):
+    patrol = SoundPatrol(tmp_path, monkeypatch, 'primary', episode=(0, math.inf))
+    runtime, camera, session = patrol.j.runtime, CAMERA['id'], patrol.session
+    wake = runtime.recording.wake
+    monkeypatch.setattr(runtime.recording, 'wake', lambda: None)
+    try:
+        for _ in range(30):
+            await patrol.advance()
+        assert len(runtime.recording.jobs) == 1 and not patrol.j.store.events()
+        assert runtime.sound_search_cue(camera, session) is None
+        monkeypatch.setattr(runtime.recording, 'wake', wake)
+        wake()
+        await runtime.drain()
+        cue = runtime.sound_search_cue(camera, session)
+        assert cue is not None and len(patrol.j.store.events()) == 1
+        assert runtime.sound_search_cue('cam_2222222222', session, cue) is None
+        assert runtime.sound_search_cue(camera, 'next-session', cue) is None
+        runtime.clear(camera)
+        assert runtime.sound_search_cue(camera, session, cue) is None
+        await patrol.advance()
+        assert runtime.sound_search_cue(camera, session) is None
+        assert runtime.sound_search_cue(camera, session, cue) is cue
+        (tmp_path / 'voice-input-paused').touch()
+        assert runtime.sound_search_cue(camera, session, cue) is None
+        await runtime.pause_sound()
+        (tmp_path / 'voice-input-paused').unlink()
+        assert runtime.sound_search_cue(camera, session, cue) is None
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

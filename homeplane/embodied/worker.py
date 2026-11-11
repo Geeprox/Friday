@@ -320,6 +320,7 @@ async def secondary_audio(camera_id, packet):
 previews = PreviewPool(identity_store=identity_store, continuous=True, recognize=True, wall=wall,
     on_observation=secondary_observation,on_audio=secondary_audio,on_clear=clear_camera,
     review_pending=safety.review_pending, fall_pending=safety.fall_pending,
+    sound_cue=safety.sound_search_cue,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
     occupied_elsewhere=lambda cid: (cid!=SELECTED['id'] and bool(view().get('people')))
         or any(other!=cid and previews.status(other)['state']=='live' and item.get('people',0)
@@ -458,7 +459,9 @@ async def camera_search():
             direction = director.choose(sample, now, focus=getattr(home,'camera_focus',None),
                                         occupied_elsewhere=elsewhere,
                                         review_pending=safety.review_pending(SELECTED['id'], sample.get('session_id')),
-                                        fall_pending=safety.fall_pending(SELECTED['id'], sample.get('session_id'))) if planner.mode!='hold' else None
+                                        fall_pending=safety.fall_pending(SELECTED['id'], sample.get('session_id')),
+                                        sound_cue=safety.sound_search_cue(SELECTED['id'], sample.get('session_id'),
+                                                                         director.sound_search_cue)) if planner.mode!='hold' else None
             if planner.mode == 'hold':director.hold()
             state['camera_control'] = dict(planner.public(lease.presets), **director.public())
             if direction is not None:
@@ -472,7 +475,9 @@ async def camera_search():
                         return director.decision_current(current, time.monotonic(), direction,
                             focus=getattr(home,'camera_focus',None), occupied_elsewhere=occupied,
                             review_pending=safety.review_pending(SELECTED['id'], current.get('session_id')),
-                            fall_pending=safety.fall_pending(SELECTED['id'], current.get('session_id')))
+                            fall_pending=safety.fall_pending(SELECTED['id'], current.get('session_id')),
+                            sound_cue=safety.sound_search_cue(SELECTED['id'], current.get('session_id'),
+                                                             director.sound_search_cue))
                     await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
                                      decision_current=decision_current)
                     director.sent(time.monotonic())

@@ -235,6 +235,7 @@ async def test_secondary_camera_rechecks_the_live_tilt_before_writing_to_its_wor
         process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock())),
         self=SimpleNamespace(focus=Mock(return_value=None), occupied_elsewhere=Mock(return_value=False),
                              review_pending=Mock(return_value=False), fall_pending=Mock(return_value=False),
+                                 sound_cue=Mock(return_value=None),
                              runtime_log=SimpleNamespace(record=Mock()), on_clear=None),
         time=SimpleNamespace(monotonic=lambda: latest['now']), json=json, secrets=secrets,
         asyncio=SimpleNamespace(sleep=advance, wait_for=asyncio.wait_for, get_running_loop=asyncio.get_running_loop,

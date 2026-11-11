@@ -120,7 +120,8 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
         scope.update(item=item, selected={'id': camera}, director=director,
             self=SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                  review_pending=runtime.review_pending,
-                                 fall_pending=lambda *args: runtime.fall_pending(*args)),
+                                 fall_pending=lambda *args: runtime.fall_pending(*args),
+                                 sound_cue=runtime.sound_search_cue),
             current_sample=lambda: dict(state), privacy_closed=lambda: None, send_motion=motor)
         loop = source_function('homeplane/embodied/previews.py', 'direct', scope)
 

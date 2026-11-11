@@ -45,6 +45,7 @@ class PostureSource(BaseModel):
 
 class SafetyPolicy(SafetyControls):
     posture_source: PostureSource | None = Field(default=None, exclude=True)
+    sound_search: bool = Field(default=False, exclude=True)
 
     def admits_posture(self, camera, source_context):
         source = self.posture_source
@@ -105,6 +106,7 @@ class SafetyStore:
             db.executescript("""
             CREATE TABLE IF NOT EXISTS safety_policy (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS safety_posture (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS safety_sound_search (id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS safety_events
               (id TEXT PRIMARY KEY, at REAL NOT NULL, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS safety_frames
@@ -127,11 +129,11 @@ class SafetyStore:
 
     @staticmethod
     def _read_policy(db):
-        controls, posture = db.execute('''SELECT (SELECT value FROM safety_policy WHERE id=1),
-                                                (SELECT value FROM safety_posture WHERE id=1)''').fetchone()
+        controls, posture, sound_search = db.execute('''SELECT (SELECT value FROM safety_policy WHERE id=1),
+            (SELECT value FROM safety_posture WHERE id=1), (SELECT enabled FROM safety_sound_search WHERE id=1)''').fetchone()
         policy = SafetyPolicy.model_validate_json(controls) if controls else SafetyPolicy()
         source = PostureSource.model_validate_json(posture) if posture else None
-        return policy.model_copy(update={'posture_source': source})
+        return policy.model_copy(update={'posture_source': source, 'sound_search': sound_search == 1})
 
     def configure(self, policy):
         return self._configure(policy.revision, policy.model_dump(exclude={'revision'}))
@@ -139,12 +141,19 @@ class SafetyStore:
     def configure_posture(self, expected_revision, source):
         return self._configure(expected_revision, {'posture_source': source})
 
+    def configure_sound_search(self, expected_revision, enabled):
+        return self._configure(expected_revision, {'sound_search': enabled})
+
     def _configure(self, expected_revision, updates):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             current = self._read_policy(db)
             if current.revision != expected_revision:
                 raise ValueError("safety_policy_changed")
+            if updates.get('sound_search') is True and not (current.enabled and current.sound_review):
+                raise ValueError('sound_search_unavailable')
+            if updates.get('sound_review') is False:
+                updates = updates | {'sound_search': False}
             value = current.model_copy(update=updates | {'revision': current.revision + 1})
             # 原开关记录保持可由旧版读取，新增设置与策略版本在同一事务写入。
             db.execute("INSERT OR REPLACE INTO safety_policy VALUES (1,?)", (value.model_dump_json(),))
@@ -154,6 +163,11 @@ class SafetyStore:
                 else:
                     db.execute('INSERT OR REPLACE INTO safety_posture VALUES (1,?)',
                                (value.posture_source.model_dump_json(),))
+            if 'sound_search' in updates:
+                if value.sound_search:
+                    db.execute('INSERT OR REPLACE INTO safety_sound_search VALUES (1,1)')
+                else:
+                    db.execute('DELETE FROM safety_sound_search WHERE id=1')
         return value
 
     def _prune(self, db):
@@ -685,6 +699,12 @@ class SafetyRuntime:
 
     def sound_requested(self, camera):
         return self._sound_source(camera) is not None and self.sound.readiness()['available']
+
+    def sound_search_cue(self, camera, session, active=None):
+        if not self._cached_policy().sound_search or not self._current_review_source(camera, session):
+            return None
+        cue = self.sound.search_cue(camera, session, active)
+        return cue if cue is not None and self.sources.get(camera) == (session, cue.context) else None
 
     def _sound_keyframe(self, camera, session, context, start, end):
         if not self._sound_current(camera, session, context):

@@ -18,6 +18,8 @@ INFANT_CRY_MAX_GAP_SAMPLES = int(SAMPLE_RATE * .4)
 INFANT_CRY_INTERVAL = 2.6
 INFANT_CRY_DEADLINE = INFANT_CRY_INTERVAL + MAX_AGE
 REVIEW_MAX_AGE = 6
+SOUND_SEARCH_START_AGE = 8
+SOUND_SEARCH_MAX_AGE = 20
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,19 @@ class QualifiedCry:
     evidence: tuple[SoundEvidence, SoundEvidence]
 
 
+@dataclass(frozen=True, eq=False)
+class SoundSearchCue:
+    """已留档异响的来源和时效，不含音频、画面或方向。"""
+
+    camera: str
+    session: str
+    context: str
+    revision: int
+    generation: int
+    captured: float
+    receipt: ReviewReceipt
+
+
 class SoundReviewer:
     def __init__(self, *, policy, current, deliver, keyframe=None, engine=None, clock=time.monotonic):
         self.policy, self.current, self.deliver = policy, current, deliver
@@ -70,6 +85,8 @@ class SoundReviewer:
         self.qualified_cries: dict[str, QualifiedCry] = {}
         self.served = {}
         self.recorded = {}
+        self.search_cues = {}
+        self.search_generation = 0
         self.task = self.active_camera = None
         self.active_refinement = None
         self.last_camera = None
@@ -84,6 +101,7 @@ class SoundReviewer:
         return self.engine.readiness()
 
     def clear(self, camera, *, keep_qualified=False):
+        self.search_cues.pop(camera, None)
         state = self.windows.pop(camera, None)
         if state is not None:
             state.packets.clear()
@@ -205,6 +223,18 @@ class SoundReviewer:
         return (not self.closed and p.enabled and p.sound_review and p.revision == state.revision
                 and self.current(camera, state.session, state.context))
 
+    def search_cue(self, camera, session, active=None):
+        """转向会清空采样。已开始的环视仅在原来源恢复后继续复查同一回执。"""
+        cue = active if active is not None else self.search_cues.get(camera)
+        if cue is None or cue.camera != camera or cue.session != session or cue.generation != self.search_generation:
+            return None
+        now = self.clock()
+        max_age = SOUND_SEARCH_MAX_AGE if active is not None else SOUND_SEARCH_START_AGE
+        if (cue.receipt.pending or cue.receipt.saved_at is None or not 0 <= now-cue.receipt.saved_at
+                or not 0 <= now-cue.captured <= max_age or not self._source_current(camera, cue)):
+            return None
+        return cue
+
     def _current(self, camera, state, packets):
         now = self.clock()
         return (self.windows.get(camera) is state and 0 <= now-state.seen <= MAX_AGE
@@ -226,6 +256,7 @@ class SoundReviewer:
                       keyframes=[(latest.captured_at + (stamp-latest.captured), jpeg) for stamp, jpeg in frames])
         if len(evidence) == 3:
             result['pattern'] = 'sustained_infant_cry'
+        search_generation = self.search_generation
         delivered = self.deliver(camera, state.session, state.context, result)
         if inspect.isawaitable(delivered):
             delivered = await delivered
@@ -236,6 +267,14 @@ class SoundReviewer:
                               else ReviewReceipt(pending=False, saved_at=self.clock()))
         if len(self.recorded) > 32:
             self.recorded.pop(next(iter(self.recorded)))
+        if (isinstance(delivered, ReviewReceipt) and self.policy().sound_search
+                and search_generation == self.search_generation
+                and self._source_current(camera, state)):
+            self.search_cues.pop(camera, None)
+            self.search_cues[camera] = SoundSearchCue(camera, state.session, state.context, state.revision,
+                                                     self.search_generation, latest.captured, delivered)
+            if len(self.search_cues) > 8:
+                self.search_cues.pop(next(iter(self.search_cues)))
 
     async def _review(self, camera, state, packets, *, allow_followup=True):
         try:
@@ -331,6 +370,8 @@ class SoundReviewer:
             await self.engine.close()
 
     async def invalidate(self):
+        self.search_generation += 1
+        self.search_cues.clear()
         self.windows.clear()
         self.qualified_cries.clear()
         self.served.clear()

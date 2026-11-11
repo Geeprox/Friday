@@ -229,6 +229,39 @@ async def test_api_reading_is_silent_no_evidence_injection_and_test_is_explicit(
 
 
 @pytest.mark.asyncio
+async def test_sound_search_is_separately_opted_in_revision_bound_and_legacy_policy_readable(tmp_path, monkeypatch):
+    from homeplane.embodied.safety import SafetyControls
+
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
+    router = APIRouter()
+    runtime = safety_api.install(router, SimpleNamespace(process=None))
+    app = FastAPI()
+    app.include_router(router)
+    base = '/api/embodied/safety'
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
+            assert (await client.get(base)).json()['sound_search'] is False
+            denied = await client.post(base+'/sound-search', json=dict(enabled=True, expected_revision=0))
+            assert denied.status_code == 409 and denied.json()['detail'] == 'sound_search_unavailable'
+            policy = (await client.post(base+'/policy', json=dict(enabled=True, sound_review=True, revision=0))).json()
+            assert (await client.get(base)).json()['sound_search'] is False
+            selection = dict(enabled=True, expected_revision=policy['revision'])
+            saved = (await client.post(base+'/sound-search', json=selection)).json()
+            assert saved == dict(enabled=True, revision=policy['revision']+1)
+            assert (await client.post(base+'/sound-search', json=selection)).status_code == 409
+            status = (await client.get(base)).json()
+            assert status['sound_search'] is True and status['policy']['revision'] == saved['revision']
+            with runtime.store.connect() as db:
+                old_schema = db.execute('SELECT value FROM safety_policy WHERE id=1').fetchone()[0]
+                assert SafetyControls.model_validate_json(old_schema).sound_review is True
+            disabled = dict(status['policy'], sound_review=False)
+            assert (await client.post(base+'/policy', json=disabled)).status_code == 200
+            assert (await client.get(base)).json()['sound_search'] is False
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_disabled_monitor_has_no_image_buffer_and_revocation_clears_post_capture(tmp_path, monkeypatch):
     store = SafetyStore(tmp_path / "safety.sqlite")
     runtime = SafetyRuntime(store)

@@ -103,7 +103,8 @@ class Patrol:
             self.scope.update(item=self.item, selected={'id':self.camera}, director=self.director,
                 self=SimpleNamespace(focus=lambda _:None, occupied_elsewhere=lambda _:self.occupied_elsewhere,
                                      review_pending=self.home.runtime.review_pending,
-                                     fall_pending=self.home.runtime.fall_pending),
+                                     fall_pending=self.home.runtime.fall_pending,
+                                     sound_cue=self.home.runtime.sound_search_cue),
                 current_sample=lambda:dict(self.state), privacy_closed=lambda:None, send_motion=self.motor)
             loop=source_function('homeplane/embodied/previews.py','direct',self.scope)
         try:
@@ -234,7 +235,7 @@ async def test_active_initial_analysis_is_protected_and_recorded_duplicates_rele
 
 def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
     noop=lambda *_:None
-    safety=SimpleNamespace(review_pending=noop,fall_pending=noop)
+    safety=SimpleNamespace(review_pending=noop,fall_pending=noop,sound_search_cue=noop)
     tree=ast.parse(Path('homeplane/embodied/worker.py').read_text())
     assignment=next(n for n in tree.body if isinstance(n,ast.Assign)and any(isinstance(t,ast.Name)and t.id=='previews'for t in n.targets))
     scope=dict(PreviewPool=lambda **kwargs:kwargs,identity_store=None,wall=None,safety=safety,
@@ -242,6 +243,7 @@ def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
     exec(compile(ast.fix_missing_locations(ast.Module(body=[assignment],type_ignores=[])),'original-preview-construction','exec'),scope)
     assert scope['previews']['review_pending'] is safety.review_pending
     assert scope['previews']['fall_pending'] is safety.fall_pending
+    assert scope['previews']['sound_cue'] is safety.sound_search_cue
 
 
 async def patrol_fleet(home,steps=480):

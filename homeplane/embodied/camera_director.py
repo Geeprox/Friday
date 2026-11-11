@@ -90,6 +90,12 @@ class CameraDirector:
         self.patrol_view_state = 'idle'
         self.game_hold = False
         self.review_windows = {}
+        self.sound_search_cue = None
+        self.sound_view = None
+        self.sound_route = ()
+        self.sound_step = 0
+        self.sound_intent_since = None
+        self.last_sound_captured = -math.inf
 
     @staticmethod
     def _game_active(game):
@@ -123,6 +129,8 @@ class CameraDirector:
         if intent != self.intent:
             self._discard_patrol()
             self.review_windows.clear()
+            self.sound_search_cue = None
+            self.sound_intent_since = None
             self.tilt_observation = None
             self.tilt_recovery = None
             if self.intent or self.mode != mode:
@@ -183,8 +191,10 @@ class CameraDirector:
         self.pending_decision = dict(direction=direction, phase=self.phase, intent=self.intent,
             session=sample.get('session_id'), stamp=sample['_local_received'],
             target=self.target, identity=self.target_identity, game_window=self._camera_window(sample))
-        if self.phase == 'patrolling':
+        if self.phase in {'patrolling', 'sound_search'}:
             self.pending_decision['view'] = sample['_patrol_view']
+            if self.phase == 'sound_search':
+                self.pending_decision['sound_cue'] = self.sound_search_cue
         return direction
 
     @staticmethod
@@ -236,7 +246,7 @@ class CameraDirector:
         return focus if len(matches) == 1 else None
 
     def decision_current(self, sample, now, direction, *, focus=None, occupied_elsewhere=False,
-                         review_pending=False, fall_pending=False):
+                         review_pending=False, fall_pending=False, sound_cue=None):
         """Recheck the pending purpose without consuming evidence or survey budget."""
         pending = self.pending_decision
         if (not pending or direction != self.pending_direction or self.mode == 'hold'
@@ -256,7 +266,11 @@ class CameraDirector:
         if sample.get('scene_visible') is not True:
             return False
         people = self._subjects(sample)
-        if pending['phase'] == 'patrolling':
+        if pending['phase'] in {'patrolling', 'sound_search'}:
+            if pending['phase'] == 'sound_search' and (
+                    self.mode != 'auto' or sound_cue is None or sound_cue is not pending['sound_cue']
+                    or sound_cue is not self.sound_search_cue or review_pending or fall_pending):
+                return False
             shift = _view_shift(pending['view'], sample.get('_patrol_view'))
             return ((self.mode == 'survey' or not (people or occupied_elsewhere))
                     and shift is not None and math.hypot(*shift) <= .012)
@@ -287,6 +301,7 @@ class CameraDirector:
     def hold(self):
         # Manual positioning changes the relative origin. Do not reuse old angles.
         self._discard_patrol()
+        self.sound_search_cue = None
         self.position = (0,0)
         self.blocked_positions.clear()
         self.scan_steps = 0
@@ -305,6 +320,8 @@ class CameraDirector:
         if self.patrol_confirmation is None and not uncertain_dispatch:
             return
         self._interrupt_survey()
+        if self.patrol_confirmation and self.patrol_confirmation.get('sound_search'):
+            self.sound_search_cue = None
         self.patrol_confirmation = None
         self.patrol_view_state = 'unconfirmed'
         # 转过多少未知，相对角度及其遮挡记录已失去基准。
@@ -336,7 +353,7 @@ class CameraDirector:
         if stamp < self.last_move + 2:
             return True
         view = sample.get('_patrol_view')
-        if self.mode == 'survey' and view is not None and view[0] != pending['view'][0]:
+        if (self.mode == 'survey' or pending.get('sound_search')) and view is not None and view[0] != pending['view'][0]:
             self._discard_patrol()
             return False
         shift = _view_shift(pending['view'], view) if sample.get('scene_visible') is True else None
@@ -356,7 +373,9 @@ class CameraDirector:
                 self.failed_moves = 0
                 self.retry_at = 0.0
                 self.position = self._next_position(pending['direction'])
-                if self.mode == 'survey':
+                if pending.get('sound_search'):
+                    self.sound_step += 1
+                elif self.mode == 'survey':
                     self.survey_confirmed_moves += 1
                 else:
                     self.scan_steps += 1
@@ -409,12 +428,49 @@ class CameraDirector:
         self.phase = 'patrolling'
         return self._aim(direction, sample, now)
 
+    def _end_sound_search(self, now):
+        if self.sound_search_cue is not None:
+            self.last_person = now
+            self.sound_search_cue = None
+
+    def _sound_search(self, sample, now, cue, *, may_search):
+        view = sample.get('_patrol_view')
+        scope = (sample.get('session_id'), view[0], self._camera_window(sample)) if view is not None else None
+        if (self.sound_search_cue is None and cue is not None and view is not None
+                and cue.captured > self.last_sound_captured and cue.captured >= self.sound_intent_since):
+            self.last_sound_captured = cue.captured
+            if may_search:
+                first = self.scan_direction
+                other = 'left' if first == 'right' else 'right'
+                if self._next_position(first) in self.blocked_positions:
+                    first, other = other, first
+                self.sound_search_cue = cue
+                self.sound_view = scope
+                self.sound_route = (first, other, other)
+                self.sound_step = 0
+        if self.sound_search_cue is None:
+            return None
+        if (cue is not self.sound_search_cue or not may_search or self.sound_step >= len(self.sound_route)
+                or scope is not None and scope != self.sound_view):
+            self._end_sound_search(now)
+            return None
+        direction = self.sound_route[self.sound_step]
+        if self._next_position(direction) in self.blocked_positions:
+            self._end_sound_search(now)
+            return None
+        if view is None:
+            self.phase = 'patrol_waiting_view'
+            return None
+        self.phase = 'sound_search'
+        return self._aim(direction, sample, now)
+
     @staticmethod
     def identity(person):
         identity = person.get('identity') or {}
         return identity.get('person_id') if identity.get('state') in {'matched', 'tracked'} else None
 
-    def choose(self, sample, now, *, focus=None, occupied_elsewhere=False, review_pending=False, fall_pending=False):
+    def choose(self, sample, now, *, focus=None, occupied_elsewhere=False, review_pending=False, fall_pending=False,
+               sound_cue=None):
         if self.mode == 'hold':
             self.phase = 'held'
             self.tilt_observation = None
@@ -424,6 +480,8 @@ class CameraDirector:
             # including waiting, pause and results. Perception still consumes
             # frames; neither clipped players nor an obscured view may pan it.
             self.game_hold = True
+            self._end_sound_search(now)
+            self.sound_intent_since = now
             if self.survey_reference is not None:
                 self._interrupt_survey()
             self._discard_patrol()
@@ -442,8 +500,11 @@ class CameraDirector:
                 self.last_person = now
             self.phase = 'game_held' if fresh else 'waiting_video'
             return None
+        if self.sound_intent_since is None:
+            self.sound_intent_since = now
         if self.game_hold:
             self.game_hold = False
+            self.sound_intent_since = now
             self.clear = False
             self.visible_samples = self.obscured_samples = 0
             self.clear_since = self.obscured_since = None
@@ -481,6 +542,7 @@ class CameraDirector:
                 return None
         session = sample.get('session_id')
         if session != self.source_session:
+            self._end_sound_search(now)
             self.source_session = session
             self.target = self.target_identity = self.last_focus = None
             self.last_sample = None
@@ -497,6 +559,7 @@ class CameraDirector:
         visible = sample.get('scene_visible') is True
         self.visible_samples = self.visible_samples+1 if visible else 0
         if not visible:
+            self._end_sound_search(now)
             self.clear_since = None
             self.obscured_samples += 1
             if self.obscured_since is None:self.obscured_since = now
@@ -551,6 +614,11 @@ class CameraDirector:
                 return None
             return self._patrol(sample, now)
         people = self._subjects(sample)
+        if self.mode == 'auto':
+            direction = self._sound_search(sample, now, sound_cue, may_search=not (
+                people or occupied_elsewhere or review_pending or fall_pending))
+            if direction or self.sound_search_cue is not None:
+                return direction
         ids = {p['id'] for p in people}
         self.target_session = session
         focus = self._current_focus(sample, now, focus)
@@ -613,11 +681,12 @@ class CameraDirector:
         self.last_move = now
         direction=direction or self.pending_direction
         pending = self.pending_decision
-        patrol = automatic and direction == self.pending_direction and pending and pending['phase'] == 'patrolling'
+        patrol = automatic and direction == self.pending_direction and pending and pending['phase'] in {'patrolling', 'sound_search'}
         if patrol:
             self.patrol_confirmation = dict(direction=direction, session=pending['session'],
                 game_window=pending['game_window'], view=pending['view'],
-                stamp=now, deadline=now + self.PATROL_CONFIRM_SECONDS, previous=None)
+                stamp=now, deadline=now + self.PATROL_CONFIRM_SECONDS, previous=None,
+                sound_search=pending['phase'] == 'sound_search')
             self.patrol_view_state = 'checking'
         else:
             if self.survey_confirmed_moves:
@@ -651,7 +720,8 @@ class CameraDirector:
         pending = self.pending_decision
         if self.survey_confirmed_moves:
             self._interrupt_survey()
-        self._discard_patrol(uncertain_dispatch=pending is not None and pending['phase'] == 'patrolling')
+        self._end_sound_search(now)
+        self._discard_patrol(uncertain_dispatch=pending is not None and pending['phase'] in {'patrolling', 'sound_search'})
         self.last_move = now
         self.failed_moves += 1
         if self.failed_moves >= 3:
@@ -671,10 +741,13 @@ class CameraDirector:
                   'view_obscured':'视野受阻', 'motor_unavailable':'云台待恢复',
                   'following':'跟随人物', 'target_ambiguous':'等待确认目标',
                   'patrolling':'环视房间', 'observing':'静候互动', 'held':'停留当前视角',
+                  'sound_search':'异响后环视',
                   'confirming_view':'确认新视角', 'patrol_waiting_view':'等待清晰视角',
                   'survey_finished':'本轮巡视已结束', 'pet_unavailable':'宠物识别暂不可用',
                   'game_held':'游戏中，镜头保持稳定', 'review_held':'停留观察'}[self.phase]
         if self.phase == 'following' and self.mode == 'pets':reason = '跟随宠物'
+        if self.sound_search_cue is not None and self.phase in {'confirming_view', 'checking_view', 'patrol_waiting_view'}:
+            reason = '异响后环视'
         survey_result = None
         if self.phase == 'survey_finished':
             survey_result = 'complete' if self.survey_confirmed_moves >= len(self.SURVEY_ROUTE) else 'interrupted'
@@ -686,7 +759,7 @@ class CameraDirector:
         return dict(owner='friday', phase=self.phase, reason=reason, native_tracking=False,
                     intent_revision=self.intent[1] if self.intent else None,
                     native_patrol=False, view_usable=self.clear and self.phase in {
-                        'following','target_ambiguous','patrolling','observing','game_held','pet_unavailable',
+                        'following','target_ambiguous','patrolling','sound_search','observing','game_held','pet_unavailable',
                         'review_held','patrol_waiting_view'},
                     uncover_steps=self.uncover_steps, recovery_steps=self.recovery_steps,
                     survey_attempts=self.survey_attempts, survey_command_limit=self.SURVEY_ATTEMPT_LIMIT,

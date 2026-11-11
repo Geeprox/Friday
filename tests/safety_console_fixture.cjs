@@ -25,16 +25,17 @@ class Element{
 (async()=>{
  const root=new Element('main'),head=new Element('head'),all=n=>[n,...n.children.flatMap(all)];
  const find=(tag,text)=>all(root).find(n=>n.tagName===tag&&n.textContent===text),calls=[];
- let policy={enabled:false,announce:false,visual_review:false,sound_review:false,revision:0},events=[],interval,reference={code:'archive_capture_mapping_required',recordings:[]},opened=[],setups=0,sound={available:true,state:'idle',supported_types:['crying']};
+ let policy={enabled:false,announce:false,visual_review:false,sound_review:false,revision:0},soundSearch=false,events=[],interval,reference={code:'archive_capture_mapping_required',recordings:[]},opened=[],setups=0,sound={available:true,state:'idle',supported_types:['crying']};
  const fakeEvent={id:'a'.repeat(32),at:1800000000,kind:'fall',simulated:true,status:'test',message:'测试播报',review:'unreviewed',announcement:{status:'paused'},frames:[],camera:null};
  const fetch=async(path,options)=>{const body=options.body&&JSON.parse(options.body);calls.push({path,body});
    let value;
-   if(path.endsWith('/policy')){policy={...body,revision:policy.revision+1};value=policy;}
+   if(path.endsWith('/policy')){policy={...body,revision:policy.revision+1};if(!policy.sound_review)soundSearch=false;value=policy;}
+   else if(path.endsWith('/sound-search')){assert.equal(body.expected_revision,policy.revision);soundSearch=body.enabled;value={enabled:soundSearch,revision:++policy.revision};}
    else if(path.endsWith('/review')){events[0]={...events[0],review:body.review};value=events[0];}
    else if(path.endsWith('/test')){events=[fakeEvent];value=fakeEvent;}
    else if(path.endsWith('/events'))value={events};
    else if(path.endsWith('/recordings'))value=reference;
-   else value={policy,worker:{cameras:[]},visual_review:{available:true,state:'idle'},sound_review:sound,capabilities:[{name:'疑似跌倒',status:'experimental',basis:'骨骼时序'},{name:'粗暴照护',status:'unavailable',basis:'尚未接入'}]};
+   else value={policy,worker:{cameras:[]},visual_review:{available:true,state:'idle'},sound_review:sound,sound_search:soundSearch,capabilities:[{name:'疑似跌倒',status:'experimental',basis:'骨骼时序'},{name:'粗暴照护',status:'unavailable',basis:'尚未接入'}]};
    return {ok:true,json:async()=>value};
  };
  const document={head,createElement:t=>new Element(t),getElementById:id=>all(head).find(n=>n.attrs.id===id),get activeElement(){return focusedElement;}};
@@ -46,6 +47,7 @@ class Element{
  vm.runInContext(fs.readFileSync('homeplane/static/safety.js','utf8').replace(/^import .*;$/gm,'').replace('export function mountSafety','function mountSafety'),context);
  const owner=vm.runInContext('mountSafety(root,safetyOptions)',context),settle=()=>new Promise(setImmediate);await settle();
  assert.equal(calls.length,2);assert(calls.every(c=>!c.body),'viewing safety must be silent and read-only');
+ assert.equal(find('button','开启异响后环视').hidden,true);
  assert(find('span','尚未提供'));assert(find('p','监测已暂停'));
  await find('button','开启监测').onclick();assert.equal(policy.enabled,true);assert.equal(policy.announce,false);
  const visualOn=find('button','开启画面复核');
@@ -53,6 +55,9 @@ class Element{
  await visualOn.onclick();assert.equal(policy.visual_review,true);
  await find('button','开启声音复核').onclick();assert.equal(policy.sound_review,true);
  assert.equal(find('button','关闭声音复核').attrs['aria-checked'],'true');assert(find('p','已开启 · 疑似哭声'));
+ const search=find('button','开启异响后环视');assert.equal(search.hidden,false);assert.equal(search.attrs['aria-checked'],'false');
+ search.focus();await search.onclick();assert.equal(soundSearch,true);
+ assert.equal(find('button','关闭异响后环视').attrs['aria-checked'],'true');assert.equal(focusedElement,search);
  const visualOff=find('button','关闭画面复核');
  assert(visualOff);assert.equal(visualOff.attrs['aria-checked'],'true');
  assert.equal(visualOff.disabled,false,'successful refresh must restore the model switch');
@@ -81,6 +86,7 @@ class Element{
  assert(!find('p','安静模式，未播报'),'unrequested sound review must not show irrelevant speech diagnostics');
  sound={available:false};interval();await settle();assert.equal(find('button','关闭声音复核').disabled,false,'an unavailable saved feature can still be disabled');
  await find('button','关闭声音复核').onclick();assert.equal(policy.sound_review,false);assert.equal(find('button','开启声音复核').disabled,true);
+ assert.equal(soundSearch,false);assert.equal(find('button','开启异响后环视').hidden,true);
  owner.dispose();assert.equal(root.children.length,0);interval();await settle();assert.equal(root.children.length,0);
  console.log('Safety UI: silent reads, policy revisions, explicit quiet test, review, safe names, keyframes, disposal: OK');
 })().catch(error=>{console.error(error);process.exitCode=1;});
