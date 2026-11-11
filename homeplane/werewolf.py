@@ -92,6 +92,7 @@ class WerewolfGame:
         self.witch_choice = ("pass", None)
         self.vote_result = None
         self.runoff_candidates: list[int] = []
+        self.speaker_seat: int | None = None
         self.pending_hunter = None
         self.after_hunter = None
         self.recent_deaths: list[int] = []
@@ -155,6 +156,7 @@ class WerewolfGame:
         self.phase = phase
         self.revision += 1
         self.choices = {}
+        self.speaker_seat = None
         self.deadline = self.clock() + self.durations[phase] if phase in self.durations else None
         self._announce(text)
 
@@ -299,9 +301,35 @@ class WerewolfGame:
             self._phase("hunter", f"{self.pending_hunter} 号猎人，请在手机上选择是否开枪。")
         elif not self._check_win():
             if continuation == "discussion":
-                self._phase("discussion", "现在开始自由发言。请依次说明你的判断。")
+                self._phase("discussion", "现在开始自由发言。")
             else:
                 self._night()
+
+    def eligible_speakers(self):
+        if self.paused:
+            return []
+        if self.phase == "discussion":
+            return [seat for seat, player in sorted(self.players.items()) if player.alive]
+        if self.phase == "runoff_discussion":
+            return [seat for seat in self.runoff_candidates if self.players[seat].alive]
+        return []
+
+    def set_speaker(self, seat):
+        eligible = self.eligible_speakers()
+        if not eligible or self.deadline is None or self.clock() >= self.deadline:
+            raise GameError("speaker_unavailable")
+        if seat is not None and (type(seat) is not int or seat not in eligible):
+            raise GameError("speaker_unavailable")
+        if self.speaker_seat == seat:
+            return
+        self.speaker_seat = seat
+        self.revision += 1
+        if seat is not None:
+            self._announce(f"请 {seat} 号发言。")
+        elif self.phase == "runoff_discussion":
+            self._announce("请平票玩家继续发言。")
+        else:
+            self._announce("继续自由发言。")
 
     def _close_vote(self):
         voters = [s for s in sorted(self.players) if "vote" in self.actions(s)]
@@ -391,6 +419,7 @@ class WerewolfGame:
                              for s, p in sorted(self.players.items())],
                     announcements=self.announcements[-16:], host_script=dict(self.host_script), vote_result=self.vote_result,
                     runoff_candidates=list(self.runoff_candidates), recent_deaths=list(self.recent_deaths),
+                    speaker_seat=self.speaker_seat,
                     **({"identities_confirmed": len(self.identities_confirmed)} if self.phase == "identity" else {}),
                     winner=self.winner, end_reason=self.end_reason, rules=list(RULES))
 

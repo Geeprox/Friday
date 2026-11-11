@@ -29,6 +29,8 @@ Werewolf phone join recovery: persist only the exact pending join intent in curr
 
 狼人杀在入座和首夜之间设置认牌环节。手机沿用浅色纸面，按住显示自己的身份，松开收起后才启用「我已看完」。公屏和主持端原地更新确认人数，全员确认后主持端才能点击「开始首夜」。等待期间没有计时，返回入座前提示会重新发牌。画面同步时暂收身份牌，恢复后只显示当次发牌的私有状态。
 
+狼人杀在自由发言和平票发言时提供一个点名选择器。举手标在现有座位和选项内，镜头提示刷新时保留选中的座位和键盘焦点。确认后主持端突出该座位，电视显示「发言中」，被点名的手机显示「轮到你发言」。窄屏将选择器和确认动作排在同一行。电视断线和对局暂停时暂收发言提示，恢复后按当前对局读回。
+
 Werewolf camera alignment: keep the native seat fields inline. “显示画面” reads an already running source beside those fields and overlays the numbers from that same decoded image. This is an explicit local host view, never a capture-start command or a phone/TV feed. Image and choices retire together on expiry, hiding or leaving the lobby; delayed replies cannot revive a retired view. Keep the existing paper/graphite controls, accessible numbered alternative and source-bound binding/readback. No camera, identity or physical accuracy claim follows from synthetic rendering.
 
 Seat correction stays inside the same native chooser: show which seat owns an unavailable number, disable that choice, and offer “取消当前对应” only when that seat has a saved mapping. Releasing it keeps the player and ready state. Waiting for a fresh camera must read “等待画面恢复”; a current picture without the bound person may say “原位置暂不可见”, without declaring that the camera or person moved. Do not replace fields or repeatedly rewrite unchanged native options during picture refresh. A correction changes the existing room version and cannot be undone by an old clear request.

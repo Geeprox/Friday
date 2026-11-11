@@ -253,7 +253,12 @@ function actionPanel() {
  }
  if (!player.actions.length) {
   if (!player.alive) section.append(h('h2', '你已出局'), h('p', '可以继续观看，请保留本局身份。'));
-  else if (game.phase === 'discussion') section.append(h('h2', '轮到大家推理'), h('p', '举手参与发言，随后在手机上投票。'));
+  else if (game.phase === 'discussion' || game.phase === 'runoff_discussion') {
+   const seat = game.speaker_seat;
+   const prompt = seat === player.seat ? '轮到你发言' : seat ? seat + ' 号正在发言' :
+    game.phase === 'runoff_discussion' ? '请平票玩家发言' : '现在可以发言';
+   section.append(h('h2', prompt));
+  }
   else section.append(h('h2', '等待你的回合'));
   return section;
  }
@@ -399,10 +404,11 @@ function renderDisplay(report, waiting=false) {
  else view.clock.setAttribute('aria-label', g.paused ? '本局已暂停' : '剩余 ' + seconds + ' 秒');
 
  const hints = waiting ? [] : report.camera_hints || [];
+ const speaker = waiting || g.paused ? null : g.speaker_seat;
  const summary=finished||dealing&&waiting?'':dealing?(g.identities_confirmed??0)+' / '+g.player_count+' 已确认':
   lobby?g.players.filter(p=>p.ready).length+' / '+g.player_count+' 已准备':g.players.filter(p=>p.alive).length+' / '+g.player_count+' 在场';
  if(view.seatSummary.textContent!==summary)view.seatSummary.textContent=summary;
- const rosterKey = JSON.stringify([lobby, finished, night, g.player_count, g.players, g.roles, hints]);
+ const rosterKey = JSON.stringify([lobby, finished, night, g.player_count, g.players, g.roles, hints, speaker]);
  if (view.rosterKey !== rosterKey) {
   view.rosterKey = rosterKey;
   view.seatTitle.textContent = finished ? '身份揭晓' : '座位';
@@ -413,7 +419,7 @@ function renderDisplay(report, waiting=false) {
    const p = players.get(seat);
    const hint = advice.get(seat);
    const item = h('li');
-   item.dataset.state = !p ? 'empty' : p.alive === false ? 'out' : lobby && p.ready ? 'ready' : 'present';
+   item.dataset.state = !p ? 'empty' : p.alive === false ? 'out' : seat === speaker ? 'speaking' : lobby && p.ready ? 'ready' : 'present';
    const label = h('div', null, 'public-seat-label');
    const name = h('strong', p?.name || '空位');
    if (p) name.title = p.name;
@@ -423,10 +429,11 @@ function renderDisplay(report, waiting=false) {
    if (p?.alive === false) status.push('出局');
    else if (lobby && p) status.push(p.ready ? '已准备' : '未准备');
    else if (p && !night && !finished) {
-    if (hint?.hand_raised) status.push('举手');
+    if (seat === speaker) status.push('发言中');
+    else if (hint?.hand_raised) status.push('举手');
     if (hint?.pointing_at) status.push('指向 ' + hint.pointing_at + ' 号');
    }
-   if (status.length) label.append(h('small', status.join(' · '), hint ? 'public-hint' : ''));
+   if (status.length) label.append(h('small', status.join(' · '), hint || seat === speaker ? 'public-hint' : ''));
    item.append(h('span', String(seat), 'display-seat'), label);
    seats.push(item);
   }

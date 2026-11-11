@@ -87,6 +87,48 @@ def test_lobby_and_stale_command_guards():
         act(g, role(g, "wolf"), "attack", True)
 
 
+def test_speaker_selection_respects_alive_seats_runoff_and_the_existing_timer():
+    g, clock = game(6)
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(4)
+    act(g, 1, "attack", 6)
+    until(g, "discussion")
+    assert g.eligible_speakers() == [1, 2, 3, 4, 5]
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(6)
+    deadline = g.deadline
+    g.set_speaker(4)
+    assert g.public()["speaker_seat"] == 4 and g.deadline == deadline
+    called = g.public()
+    g.set_speaker(4)
+    assert g.public() == called
+    g.pause(True)
+    assert g.eligible_speakers() == []
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(5)
+    g.pause(False)
+    assert g.public()["speaker_seat"] == 4 and g.deadline == deadline
+    clock.now = deadline
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(5)
+    g.tick()
+    assert g.phase == "vote" and g.public()["speaker_seat"] is None
+    act(g, 3, "vote", 4)
+    act(g, 5, "vote", 1)
+    g.advance()
+    assert g.phase == "runoff_discussion" and g.eligible_speakers() == [1, 4]
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(2)
+    deadline = g.deadline
+    g.set_speaker(1)
+    g.set_speaker(None)
+    assert g.public()["speaker_seat"] is None and g.deadline == deadline
+    g.set_speaker(4)
+    g.advance()
+    assert g.phase == "runoff" and g.public()["speaker_seat"] is None
+    assert g.actions(4) == [] and g.targets(5, "vote") == [1, 4]
+
+
 def test_night_choices_and_seer_result_never_reach_public_or_other_phones():
     g, _ = game()
     public_before = g.public()
@@ -271,7 +313,7 @@ def test_public_host_script_keeps_vote_result_with_the_next_phase(target):
 def test_hunter_result_and_victory_are_not_lost_from_the_current_public_script():
     g,_=game();hunter=role(g,'hunter');act(g,1,'attack',hunter);until(g,'hunter')
     act(g,hunter,'shoot',1);g.advance()
-    assert g.public()['host_script']['text']=='猎人带走了 1 号。 现在开始自由发言。请依次说明你的判断。'
+    assert g.public()['host_script']['text']=='猎人带走了 1 号。 现在开始自由发言。'
     for target in [2,3]:
         until(g,'vote')
         for seat,p in g.players.items():

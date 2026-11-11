@@ -15,7 +15,41 @@ from homeplane.werewolf_service import WerewolfService, phone_app
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_device_controls import rig
 from tests.test_werewolf import Clock, FixedRoles
+from tests.test_werewolf_camera import Embodied
 from tests.test_werewolf_service import NoNetwork
+
+
+async def check_speaking_turn(service, host, tv, phones, camera, spoken, writes):
+    await service.step()
+    advisory = (await tv.get('/api/public')).json()
+    assert advisory['camera_hints'][0]['seat'] == 4 and advisory['camera_hints'][0]['hand_raised']
+    assert advisory['game']['speaker_seat'] is None
+    deadline, lights_before, announcements_before = service.game.deadline, len(writes), len(spoken)
+    request = dict(action='speaker', seat=4, session=service.session, revision=advisory['game']['revision'],
+                   event_id='SYNTHETIC-speaker-first')
+    path = '/api/games/werewolf/control'
+    called = await host.post(path, json=request)
+    assert called.status_code == 200 and called.json()['game']['speaker_seat'] == 4
+    await service.effect_task
+    assert spoken[announcements_before:] == ['请 4 号发言。']
+    assert (await host.post(path, json=request)).json()['game'] == called.json()['game']
+    stale = await host.post(path, json={**request, 'seat': 5, 'event_id': 'SYNTHETIC-speaker-stale'})
+    assert stale.status_code == 409 and stale.json()['detail'] == 'phase_changed'
+    assert len(writes) == lights_before and service.game.deadline == deadline
+    camera.report['tracking_current'] = False
+    await service.step()
+    report = (await tv.get('/api/public')).json()
+    assert report['game'] == called.json()['game'] and report['camera_hints'] == []
+    assert 'speaker_seats' not in report
+    assert all('role' not in player for player in report['game']['players'])
+    for phone in (phones[4], phones[5]):
+        private = (await phone.get('/api/player')).json()
+        assert private['public'] == report['game'] and private['actions'] == []
+    await host.post(path, json=dict(action='speaker', seat=None, session=service.session,
+                                    revision=report['game']['revision'], event_id='SYNTHETIC-speaker-clear'))
+    await service.effect_task
+    assert service.game.speaker_seat is None and spoken[announcements_before:] == ['请 4 号发言。', '继续自由发言。']
+    assert len(writes) == lights_before and service.game.deadline == deadline
 
 
 @pytest.mark.asyncio
@@ -27,12 +61,13 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
     async def speak(text, *, current):
         spoken.append(text);return dict(status='accepted',physical_audio_verified=False)
     effects=HostEffects(lights,speak=speak,speech_status=lambda:dict(quiet=False,configured=True))
-    service=WerewolfService(effects,gateway_factory=NoNetwork,addresses=lambda:['192.168.50.20'],
+    camera = Embodied() if count == 6 else None
+    service=WerewolfService(effects,embodied=camera,gateway_factory=NoNetwork,addresses=lambda:['192.168.50.20'],
         clock=Clock(),game_factory=partial(WerewolfGame,rng=FixedRoles()))
     script=set()
     try:
         target=(await lights.choices())[0]['id']
-        await service.create(count,address='192.168.50.20',lights=[target],narration=True)
+        await service.create(count,address='192.168.50.20',lights=[target],narration=True,camera=camera is not None)
         service.pump.cancel();await asyncio.gather(service.pump,return_exceptions=True);service.pump=None
         party=phone_app(service,service.origin)
         host_app=FastAPI();host_app.include_router(create_router(core,None,None,tmp_path,owner=service))
@@ -47,6 +82,12 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
                 phone.headers['Authorization']='Bearer '+joined.json()['token']
                 assert (await phone.post('/api/ready',json=dict(ready=True))).status_code==200
                 phones[seat]=phone
+            if camera:
+                # 六人局稍后会重新认牌，座位和镜头对应沿用原局。
+                binding = await host.post('/api/games/werewolf/camera-bind', json=dict(
+                    seat=4, camera=camera.report['camera_id'], session=camera.report['session_id'], track=7,
+                    game_session=service.session, revision=service.game.revision, event_id='SYNTHETIC-bind-speaker'))
+                assert binding.status_code == 200
             dealt = await host.post('/api/games/werewolf/control', json=dict(
                 action='start', session=service.session, revision=service.game.revision, event_id=f'SYNTHETIC-start-{count}'))
             assert dealt.status_code == 200
@@ -100,6 +141,9 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
             for step in range(64):
                 await asyncio.gather(service.effect_task,return_exceptions=False)
                 public=(await tv.get('/api/public')).json()['game']
+                if camera and public['phase'] == 'discussion' and public['round'] == 1:
+                    await check_speaking_turn(service, host, tv, phones, camera, spoken, writes)
+                    public = (await tv.get('/api/public')).json()['game']
                 script.update(a['text']for a in public['announcements'])
                 script.add(public['host_script']['text'])
                 if public['phase']=='finished':break

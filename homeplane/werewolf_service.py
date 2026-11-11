@@ -220,6 +220,7 @@ class WerewolfService:
             report.update(effects=self.effects.status(), join_code=self.join_code,
                           phone_url=self.origin + "/phone#code=" + self.join_code if self.origin else None,
                           display_url=self.origin + "/display#token=" + self.public_token if self.origin else None,
+                          speaker_seats=self.game.eligible_speakers(),
                           camera_enabled=self.camera_enabled, camera_available=camera_available,
                           camera_candidates=list(self.camera_candidates) if camera_available else [],
                           camera_bindings=[dict(seat=s, camera=v[0], session=v[1], track=v[2]) for s, v in self.bindings.items()])
@@ -382,6 +383,8 @@ class WerewolfService:
                 self.game.reseat()
             elif action == "advance":
                 self.game.advance()
+            elif action == "speaker":
+                self.game.set_speaker(seat)
             elif action in {"pause", "resume"}:
                 self.game.pause(action == "pause")
             elif action == "end":

@@ -337,6 +337,10 @@
   font-weight: 650;
 }
 
+.display-roster [data-state=speaking] {
+  border-top-color: var(--stage-clock);
+}
+
 .display-roster [data-state=out] strong,
 .display-roster [data-state=empty] strong {
   color: var(--muted);
