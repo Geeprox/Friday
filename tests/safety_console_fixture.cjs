@@ -5,6 +5,17 @@ class Element{
  setAttribute(k,v){this.attrs[k]=String(v);}
  getAttribute(k){return this.attrs[k]??null;}
  contains(other){return this===other||this.children.some(n=>n.contains(other));}
+ querySelector(selector){
+  const matches=selector.startsWith('.')
+   ? node=>(node.attrs.class||node.className||'').split(/\s+/).includes(selector.slice(1))
+   : node=>node.tagName===selector;
+  for(const child of this.children){
+   if(matches(child))return child;
+   const match=child.querySelector(selector);
+   if(match)return match;
+  }
+  return null;
+ }
  focus(){focusedElement=this;}
  append(...nodes){for(const n of nodes){this.children.push(n);n.parent=this;}}
  replaceChildren(...nodes){this.children=[];this.append(...nodes);}
@@ -15,7 +26,7 @@ class Element{
  const root=new Element('main'),head=new Element('head'),all=n=>[n,...n.children.flatMap(all)];
  const find=(tag,text)=>all(root).find(n=>n.tagName===tag&&n.textContent===text),calls=[];
  let policy={enabled:false,announce:false,visual_review:false,sound_review:false,revision:0},events=[],interval,reference={code:'archive_capture_mapping_required',recordings:[]},opened=[],setups=0,sound={available:true,state:'idle',supported_types:['crying']};
- const fakeEvent={id:'a'.repeat(32),at:1800000000,simulated:true,status:'test',message:'测试播报',review:'unreviewed',announcement:{status:'paused'},frames:[],camera:null};
+ const fakeEvent={id:'a'.repeat(32),at:1800000000,kind:'fall',simulated:true,status:'test',message:'测试播报',review:'unreviewed',announcement:{status:'paused'},frames:[],camera:null};
  const fetch=async(path,options)=>{const body=options.body&&JSON.parse(options.body);calls.push({path,body});
    let value;
    if(path.endsWith('/policy')){policy={...body,revision:policy.revision+1};value=policy;}
@@ -37,11 +48,14 @@ class Element{
  assert.equal(calls.length,2);assert(calls.every(c=>!c.body),'viewing safety must be silent and read-only');
  assert(find('span','尚未提供'));assert(find('p','监测已暂停'));
  await find('button','开启监测').onclick();assert.equal(policy.enabled,true);assert.equal(policy.announce,false);
- assert.equal(find('button','本机画面复核').disabled,false);
- await find('button','本机画面复核').onclick();assert.equal(policy.visual_review,true);
+ const visualOn=find('button','开启画面复核');
+ assert(visualOn);assert.equal(visualOn.disabled,false);assert.equal(visualOn.attrs['aria-checked'],'false');
+ await visualOn.onclick();assert.equal(policy.visual_review,true);
  await find('button','开启声音复核').onclick();assert.equal(policy.sound_review,true);
  assert.equal(find('button','关闭声音复核').attrs['aria-checked'],'true');assert(find('p','已开启 · 疑似哭声'));
- assert.equal(find('button','本机画面复核').disabled,false,'successful refresh must restore the model switch');
+ const visualOff=find('button','关闭画面复核');
+ assert(visualOff);assert.equal(visualOff.attrs['aria-checked'],'true');
+ assert.equal(visualOff.disabled,false,'successful refresh must restore the model switch');
  assert(calls.every(c=>!c.path.endsWith('/test')),'enabling visual review must never test or request speech');
  await find('button','开启语音提醒').onclick();assert.equal(policy.announce,true);
  await find('button','试听跌倒提醒').onclick();find('button','').onclick();
@@ -50,7 +64,7 @@ class Element{
  find('button','标记误报').focus();const previousFocus=focusedElement;
  await find('button','标记误报').onclick();assert.equal(events[0].review,'false_alarm');
  assert.notEqual(focusedElement,previousFocus);assert.equal(focusedElement.textContent,'标记误报','review refresh preserves keyboard position');
- events=[{...fakeEvent,person_name:'<img src=x onerror=alert(1)>',simulated:false,message:'<unsafe>',frames:[{ordinal:0,at:1800000000}]}];interval();await settle();
+ events=[{...fakeEvent,status:'suspected',person_name:'<img src=x onerror=alert(1)>',simulated:false,message:'<unsafe>',frames:[{ordinal:0,at:1800000000}]}];interval();await settle();
  find('button','').onclick();assert(find('p','<unsafe>'));assert.equal(all(root).filter(n=>n.tagName==='img').length,1);
  assert(all(root).find(n=>n.tagName==='img').attrs.src.endsWith('/frames/0'));
  events=[{...events[0],camera:'cam_1111111111'}];interval();await settle();find('button','').onclick();
