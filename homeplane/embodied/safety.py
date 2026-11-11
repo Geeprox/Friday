@@ -12,10 +12,11 @@ import math
 import re
 import secrets
 import sqlite3
+import stat
 import threading
 import time
 from collections import OrderedDict, deque
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -88,10 +89,12 @@ class SafetyStore:
     MAX_BYTES = 64 * 1024 * 1024
     MAX_FRAME = 512 * 1024
     RETENTION = 30 * 86400
+    PRUNE_INTERVAL = 60
+    POLICY_FIELDS = (('safety_policy', 'value'), ('safety_posture', 'value'), ('safety_sound_search', 'enabled'))
 
     def __init__(self, path):
         self.path = Path(path)
-        self.last_prune = 0
+        self.last_prune = -math.inf
 
     @contextmanager
     def connect(self):
@@ -121,15 +124,42 @@ class SafetyStore:
 
     def policy(self):
         with self.connect() as db:
-            if time.monotonic() - self.last_prune >= 60:
-                self._prune(db)
-                self.last_prune = time.monotonic()
+            self._prune_if_due(db)
             return self._read_policy(db)
 
-    @staticmethod
-    def _read_policy(db):
-        controls, posture, sound_search = db.execute('''SELECT (SELECT value FROM safety_policy WHERE id=1),
-            (SELECT value FROM safety_posture WHERE id=1), (SELECT enabled FROM safety_sound_search WHERE id=1)''').fetchone()
+    def read_policy(self):
+        """读同一事务中的策略字段，兼容尚未建立新设置表的数据库。"""
+        try:
+            metadata = self.path.lstat()
+        except FileNotFoundError:
+            return SafetyPolicy()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError('safety_private_path_required')
+        uri = self.path.absolute().as_uri() + '?mode=ro'
+        with closing(sqlite3.connect(uri, uri=True, timeout=.25)) as db:
+            db.execute('BEGIN')
+            names = tuple(table for table, _ in self.POLICY_FIELDS)
+            tables = {name for name, in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?)", names)}
+            return self._read_policy(db, tables=tables)
+
+    def prune_expired(self):
+        if self.path.exists():
+            with self.connect() as db:
+                self._prune_if_due(db)
+
+    def _prune_if_due(self, db):
+        if time.monotonic() - self.last_prune >= self.PRUNE_INTERVAL:
+            with db:
+                self._prune(db)
+            self.last_prune = time.monotonic()
+
+    @classmethod
+    def _read_policy(cls, db, *, tables=None):
+        # 表和列来自固定字段列表。旧库中缺失的扩展开关使用关闭默认值。
+        fields = [f'(SELECT {column} FROM {table} WHERE id=1)' if tables is None or table in tables else 'NULL'
+                  for table, column in cls.POLICY_FIELDS]
+        controls, posture, sound_search = db.execute('SELECT ' + ', '.join(fields)).fetchone()
         policy = SafetyPolicy.model_validate_json(controls) if controls else SafetyPolicy()
         source = PostureSource.model_validate_json(posture) if posture else None
         return policy.model_copy(update={'posture_source': source, 'sound_search': sound_search == 1})
@@ -592,6 +622,7 @@ class SafetyRuntime:
     def __init__(self, store, *, labels=lambda: {}, speaker=None, visual_engine=None, sound_engine=None):
         self.store, self.labels, self.speaker = store, labels, speaker
         self.io = SafetyIO()
+        self.policy_io = SafetyIO(max_pending=1, thread_name_prefix='friday-safety-policy-read')
         self.closed = False
         self.close_task = None
         self.detector = FallDetector()
@@ -608,6 +639,8 @@ class SafetyRuntime:
         self.output_revisions = {}
         self.policy_revision = None
         self.policy_task = None
+        self.retention_task = None
+        self.retention_failed = False
         self.policy_lock = asyncio.Lock()
         self.error = None
         self.policy_cache = SafetyPolicy()
@@ -850,13 +883,17 @@ class SafetyRuntime:
 
     async def sync_policy(self):
         async with self.policy_lock:
+            if self.closed:
+                raise SafetyStorageBusy('safety_storage_closed')
             try:
-                policy = await self.io.call(self.store.policy)
+                policy = await self.policy_io.call(self.store.read_policy)
             except (OSError, sqlite3.Error, ValueError, TypeError, SafetyStorageBusy):
                 if self.policy_failure_since is None:
                     self.policy_failure_since = time.monotonic()
                 self.policy_read_at = -math.inf
                 raise
+            if self.closed:
+                return
             self.policy_cache = policy
             self.policy_read_at = time.monotonic()
             self.policy_failure_since = None
@@ -886,21 +923,39 @@ class SafetyRuntime:
         async def sync_safely():
             try:
                 await self.sync_policy()
+                if self.closed:
+                    return
                 if not self._sound_input_open():
                     await self.pause_sound()
                 else:
                     await self.sound.maintain()
             except (OSError, sqlite3.Error, ValueError, TypeError, KeyError, SafetyStorageBusy):
+                if self.closed:
+                    return
                 self.error = 'safety_storage_unavailable'
                 self.policy_read_at = -math.inf
                 await self.visual.invalidate()
                 await self.sound.invalidate()
         await sync_safely()
+        if self.policy_task is not None or self.closed:
+            return
         async def watch():
             while True:
                 await sync_safely()
                 await asyncio.sleep(interval)
         self.policy_task = asyncio.create_task(watch(), name='friday-safety-policy')
+        self.retention_task = asyncio.create_task(self._maintain_retention(), name='friday-safety-retention')
+
+    async def _maintain_retention(self):
+        while True:
+            try:
+                await self.io.call(self.store.prune_expired)
+            except (OSError, sqlite3.Error, ValueError, SafetyStorageBusy):
+                self.retention_failed = True
+                await asyncio.sleep(5)
+            else:
+                self.retention_failed = False
+                await asyncio.sleep(self.store.PRUNE_INTERVAL)
 
     def clear(self, camera):
         token = self.source_tokens.pop(camera, None)
@@ -1188,7 +1243,7 @@ class SafetyRuntime:
         failed_for = (max(0, time.monotonic() - self.policy_failure_since)
                       if self.policy_failure_since is not None else 0)
         state = ('unavailable' if report['dropped'] or report['partial'] or report['unconfirmed'] or failed_for >= self.recording.RETRY_WINDOW
-                 else 'recovering' if not current or report['error']
+                 else 'recovering' if not current or report['error'] or self.retention_failed
                  else 'off' if not self.policy_cache.enabled
                  else 'saving' if report['pending'] else 'ready')
         return dict(report, state=state, enabled=self.policy_cache.enabled if current else None,
@@ -1209,7 +1264,7 @@ class SafetyRuntime:
             coalesced_observations=self.coalesced,
             skipped_observations=self.skipped,
             pending_storage=self.io.pending,
-            error=self.error or recording['error'],
+            error=self.error or recording['error'] or ('safety_storage_unavailable' if self.retention_failed else None),
             recording=recording,
             visual_review=self.visual.status(),
             sound_review=dict(self.sound.status(),input_paused=not self._sound_input_open()),
@@ -1240,11 +1295,12 @@ class SafetyRuntime:
     async def _close(self):
         failures = []
         try:
-            owners = [task for task in (self.observation_task, self.policy_task) if task is not None]
+            owners = [task for task in (self.observation_task, self.policy_task, self.retention_task) if task is not None]
             for task in owners:
                 task.cancel()
             failures.extend(await asyncio.gather(*owners, return_exceptions=True))
             self.policy_task = None
+            self.retention_task = None
             failures.extend(await asyncio.gather(self.recording.close(), return_exceptions=True))
             failures.extend(await asyncio.gather(self.visual.close(), self.sound.close(), return_exceptions=True))
             outputs = tuple(self.tasks)
@@ -1252,7 +1308,7 @@ class SafetyRuntime:
                 task.cancel()
             failures.extend(await asyncio.gather(*outputs, return_exceptions=True))
         finally:
-            await self.io.close()
+            failures.extend(await asyncio.gather(self.io.close(), self.policy_io.close(), return_exceptions=True))
         if any(isinstance(result, Exception) for result in failures):
             self.error = 'safety_cleanup_unavailable'
             raise RuntimeError(self.error)

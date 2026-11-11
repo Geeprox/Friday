@@ -293,7 +293,7 @@ async def test_storage_failure_does_not_crash_camera_observer(tmp_path, monkeypa
     def failed():
         raise OSError("synthetic disk full")
 
-    monkeypatch.setattr(store, "policy", failed)
+    monkeypatch.setattr(store, "read_policy", failed)
     await runtime.observe("a", "s", [person()], 100, 100, stable=True)
     assert runtime.status()["error"] == "safety_storage_unavailable"
     await runtime.close()

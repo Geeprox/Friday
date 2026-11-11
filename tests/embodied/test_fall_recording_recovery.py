@@ -599,6 +599,59 @@ async def test_real_sqlite_writer_wait_does_not_age_out_a_qualified_incident(mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('revoke', [False, True], ids=['write-lock', 'policy-revoked'])
+async def test_policy_refresh_while_writer_is_busy_preserves_only_authorized_fall(monitor, revoke):
+    runtime, store = monitor.runtime, monitor.store
+    await runtime.sync_policy()
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_writer():
+        with store.connect() as db:
+            # 撤销分支由另一个连接提交新策略，写入线程仍被占用。
+            if not revoke:
+                db.execute('BEGIN IMMEDIATE')
+            entered.set()
+            assert release.wait(5), '测试事件写入闸门未释放'
+
+    writer = asyncio.create_task(runtime.io.call(hold_writer))
+    camera, context = 'secondary', 'c' * 64
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        async with asyncio.timeout(3):
+            for index in range(25):
+                monitor.clock[0] = 100 + index * .25
+                assert await frame(monitor, camera=camera, context=context, down=index >= 7, sync=index % 2 == 0)
+                await runtime.observation_task
+        assert not writer.done()
+        assert runtime.recording_status()['policy_current']
+        job, = runtime.recording.jobs.values()
+        assert job.captured == 103.75 and job.initial and job.following
+        if revoke:
+            updated = await asyncio.to_thread(store.configure, SafetyPolicy(revision=job.revision))
+            async with asyncio.timeout(2):
+                await runtime.sync_policy()
+            assert not writer.done() and runtime.policy_revision == updated.revision
+            assert job.token.is_set() and not runtime.recording.jobs
+            monitor.clock[0] += .25
+            assert not await frame(monitor, camera=camera, context=context)
+        release.set()
+        await writer
+        await runtime.drain()
+        records = store.events()
+        if revoke:
+            assert records == []
+        else:
+            saved, = records
+            assert saved['id'] == job.identifier and saved['captured_at'] == 1800000000 + job.captured
+            assert saved['kind'] == 'fall' and saved['camera'] == camera and saved['camera_source_context'] == context
+            assert len(saved['frames']) == len(job.initial) + len(job.following)
+        runtime.speaker.say.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.gather(writer, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_recording_health_recovers_without_probing_native_models(monitor, monkeypatch):
     from unittest.mock import Mock
 
@@ -606,14 +659,17 @@ async def test_recording_health_recovers_without_probing_native_models(monitor, 
     monkeypatch.setattr(monitor.runtime.sound, 'status', Mock(side_effect=AssertionError('no sound model probe')))
     await monitor.runtime.sync_policy()
     assert monitor.runtime.recording_status()['state'] == 'ready'
-    original = monitor.store.policy
-    monkeypatch.setattr(monitor.store, 'policy', lambda: (_ for _ in ()).throw(OSError('synthetic unreadable store')))
-    with pytest.raises(OSError):
-        await monitor.runtime.sync_policy()
-    assert monitor.runtime.recording_status()['state'] == 'recovering'
-    monitor.clock[0] += monitor.runtime.recording.RETRY_WINDOW
-    assert monitor.runtime.recording_status()['state'] == 'unavailable'
-    monkeypatch.setattr(monitor.store, 'policy', original)
+    lock = sqlite3.connect(monitor.store.path)
+    try:
+        lock.execute('BEGIN EXCLUSIVE')
+        with pytest.raises(sqlite3.OperationalError):
+            await monitor.runtime.sync_policy()
+        assert monitor.runtime.recording_status()['state'] == 'recovering'
+        assert not await frame(monitor, down=False)
+        monitor.clock[0] += monitor.runtime.recording.RETRY_WINDOW
+        assert monitor.runtime.recording_status()['state'] == 'unavailable'
+    finally:
+        lock.close()
     await monitor.runtime.sync_policy()
     assert monitor.runtime.recording_status()['state'] == 'ready'
 

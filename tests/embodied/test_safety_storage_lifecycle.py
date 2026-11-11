@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -21,26 +22,83 @@ from tests.embodied.test_camera_audio import actual
 async def test_camera_policy_storage_wait_does_not_block_the_event_loop(tmp_path, monkeypatch):
     store = SafetyStore(tmp_path / 'safety.sqlite')
     store.configure(SafetyPolicy(enabled=True))
-    read = store.policy
-    release = threading.Event()
+    read = store.read_policy
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 
     def slow_policy():
-        release.wait(.3)
-        return read()
+        entered.set()
+        try:
+            assert release.wait(5), '测试策略读回闸门未释放'
+            return read()
+        finally:
+            finished.set()
 
-    monkeypatch.setattr(store, 'policy', slow_policy)
+    monkeypatch.setattr(store, 'read_policy', slow_policy)
     runtime = SafetyRuntime(store, speaker=SimpleNamespace(say=AsyncMock()))
     now = time.monotonic()
     observation = asyncio.create_task(runtime.observe('synthetic', 'session', [], now, now, stable=True))
+    shutdown = None
     try:
-        started = time.perf_counter()
-        await asyncio.sleep(.01)
-        assert time.perf_counter() - started < .15, 'Storage blocked the shared camera/game event loop'
-        assert not observation.done(), 'The deliberately held policy read already ran on the event loop'
+        assert await asyncio.to_thread(entered.wait, 1)
+        assert not finished.is_set() and not observation.done()
+        shutdown = asyncio.create_task(runtime.close())
+        await asyncio.sleep(0)
+        assert runtime.closed and not shutdown.done()
+        assert not finished.is_set()
     finally:
         release.set()
         await observation
+        if shutdown is None:
+            await runtime.close()
+        else:
+            await shutdown
+    assert runtime.policy_revision is None and not runtime.source_tokens
+
+
+def test_readonly_policy_uses_legacy_database_without_upgrading_it(tmp_path):
+    store = SafetyStore(tmp_path / 'legacy #?.sqlite')
+    assert not store.read_policy().enabled and not store.path.exists()
+    legacy = SafetyPolicy(enabled=True, announce=True, revision=3)
+    with closing(sqlite3.connect(store.path)) as db, db:
+        db.execute('CREATE TABLE safety_policy (id INTEGER PRIMARY KEY, value TEXT NOT NULL)')
+        db.execute('INSERT INTO safety_policy VALUES (1, ?)', (legacy.model_dump_json(),))
+    assert store.read_policy() == legacy
+    with closing(sqlite3.connect(store.path)) as db:
+        tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    assert tables == [('safety_policy',)]
+    link = tmp_path / 'redirected.sqlite'
+    link.symlink_to(store.path)
+    with pytest.raises(ValueError, match='safety_private_path_required'):
+        SafetyStore(link).read_policy()
+
+
+@pytest.mark.asyncio
+async def test_worker_prunes_expired_events_and_frames_without_a_console_request(tmp_path, monkeypatch):
+    store = SafetyStore(tmp_path / 'safety.sqlite')
+    policy = store.configure(SafetyPolicy(enabled=True))
+    store.create(dict(kind='fall'), [(1, b'SYNTHETIC-FRAME')])
+    with store.connect() as db:
+        db.execute('UPDATE safety_events SET at=0')
+    prune = store.prune_expired
+    finished = threading.Event()
+
+    def measured_prune():
+        prune()
+        finished.set()
+
+    monkeypatch.setattr(store, 'prune_expired', measured_prune)
+    runtime = SafetyRuntime(store)
+    monkeypatch.setattr(runtime, '_sound_input_open', lambda: False)
+    try:
+        await runtime.start()
+        assert await asyncio.to_thread(finished.wait, 2)
+        assert runtime.recording_status()['policy_current'] and runtime.policy_revision == policy.revision
+        with closing(sqlite3.connect(store.path)) as db:
+            assert db.execute('SELECT COUNT(*) FROM safety_events').fetchone() == (0,)
+            assert db.execute('SELECT COUNT(*) FROM safety_frames').fetchone() == (0,)
+    finally:
         await runtime.close()
+    assert runtime.retention_task is None and runtime.policy_task is None
 
 
 def synthetic_runtime(tmp_path):
@@ -255,14 +313,14 @@ async def test_runtime_close_revokes_inputs_before_waiting_for_actual_storage_co
             closing.cancel()
             await asyncio.sleep(0)
             assert not closing.done(), 'Repeated cancellation abandoned the actual cleanup owner'
-        threads = tuple(runtime.io.executor._threads)
+        threads = (*runtime.io.executor._threads, *runtime.policy_io.executor._threads)
         release.set()
         if cancel_close:
             with pytest.raises(asyncio.CancelledError):
                 await closing
         else:
             await closing
-        assert runtime.store.events() == [] and not runtime.io.pending
+        assert runtime.store.events() == [] and not runtime.io.pending and not runtime.policy_io.pending
         assert all(not thread.is_alive() for thread in threads)
     finally:
         release.set()
@@ -425,12 +483,11 @@ async def test_original_service_always_stops_worker_and_closes_client_after_opti
 
 
 @pytest.mark.asyncio
-async def test_console_stays_responsive_during_a_real_private_sqlite_write_lock(tmp_path, monkeypatch):
+async def test_console_reads_enabled_policy_while_sqlite_writer_holds_a_reserved_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
     router = APIRouter()
     runtime = safety_api.install(router, SimpleNamespace(process=None))
-    runtime.store.policy()
-    runtime.store.last_prune = -100
+    policy = runtime.store.configure(SafetyPolicy(enabled=True))
     app = FastAPI()
     app.include_router(router)
 
@@ -438,20 +495,14 @@ async def test_console_stays_responsive_during_a_real_private_sqlite_write_lock(
     async def probe():
         return {'ready': True}
 
-    lock = sqlite3.connect(runtime.store.path, check_same_thread=False)
+    lock = sqlite3.connect(runtime.store.path)
     lock.execute('BEGIN IMMEDIATE')
-    release = threading.Timer(.3, lock.rollback)
-    release.start()
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
-            reading = asyncio.create_task(client.get('/api/embodied/safety'))
-            started = time.perf_counter()
-            await asyncio.sleep(.01)
-            response = await client.get('/synthetic-probe')
-            assert response.json() == {'ready': True}
-            assert time.perf_counter() - started < .15, 'A safety SQLite lock froze unrelated Console requests'
-            assert (await reading).status_code == 200
+            async with asyncio.timeout(2):
+                status, probe = await asyncio.gather(client.get('/api/embodied/safety'), client.get('/synthetic-probe'))
+            assert lock.in_transaction and probe.json() == {'ready': True}
+            assert status.status_code == 200 and status.json()['policy'] == policy.model_dump()
     finally:
-        await asyncio.to_thread(release.join)
         lock.close()
         await runtime.close()

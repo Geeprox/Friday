@@ -490,7 +490,7 @@ async def test_policy_watcher_revokes_inference_without_more_frames_or_status_re
 async def test_unreadable_optional_safety_policy_does_not_abort_perception_startup(tmp_path):
     from unittest.mock import Mock
     store=SafetyStore(tmp_path/'safety.sqlite')
-    store.policy=Mock(side_effect=OSError('synthetic_unreadable_policy'))
+    store.read_policy=Mock(side_effect=OSError('synthetic_unreadable_policy'))
     runtime=SafetyRuntime(store,visual_engine=Engine())
     try:
         await runtime.start(interval=.01)
