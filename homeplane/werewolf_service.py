@@ -184,10 +184,14 @@ class WerewolfService:
         self.camera_enabled = False
         self.camera_context = None
         self.bindings = {}
+        self.camera_binding_revision = 0
+        self.camera_read_lock = asyncio.Lock()
+        self.camera_task = None
         self.camera_hints = []
         self.camera_candidates = []
         self.camera_generation = 0
         self.camera_process = None
+        self.camera_source = None
         self.camera_until = None
         self.camera_view_busy = False
         self.camera_sequence = 0
@@ -247,12 +251,17 @@ class WerewolfService:
     def host(self):
         report = self.public()
         if report["active"]:
-            camera_available = self._camera_current() and self.game.phase == 'lobby'
+            binding_open = self._camera_binding_window() is not None
+            camera_available = binding_open and self._camera_current()
             report.update(effects=self.effects.status(), join_code=self.join_code,
                           phone_url=self.phone_url(),
                           display_url=self.origin + "/display#token=" + self.public_token if self.origin else None,
                           speaker_seats=[] if self.game.speaker_order else self.game.eligible_speakers(),
                           camera_enabled=self.camera_enabled, camera_available=camera_available,
+                          camera_binding_open=binding_open, camera_binding_revision=self.camera_binding_revision,
+                          camera_binding_seats=self._camera_binding_seats() if binding_open else [],
+                          camera_source=dict(camera=self.camera_source[0], session=self.camera_source[1])
+                              if camera_available else None,
                           camera_candidates=list(self.camera_candidates) if camera_available else [],
                           camera_bindings=[dict(seat=s, camera=v[0], session=v[1], track=v[2]) for s, v in self.bindings.items()])
         return report
@@ -281,6 +290,7 @@ class WerewolfService:
             self.effects.voice_state = 'off'
             self.camera_enabled = camera
             self.camera_context = session
+            self.camera_binding_revision = 0
             try:
                 if gateway:
                     self.origin = await gateway.open(address, self)
@@ -406,6 +416,9 @@ class WerewolfService:
             raise GameError("room_changed")
         if self.game.revision != proof.revision:
             raise GameError("phase_changed")
+        if camera_command and (self.game.phase != 'lobby' or proof.binding_revision is not None):
+            if proof.binding_revision != self.camera_binding_revision:
+                raise GameError('camera_binding_changed')
         return (key, digest), False
 
     def _remember_host(self, admission):
@@ -439,7 +452,8 @@ class WerewolfService:
             elif action == "remove":
                 self.game.remove(seat)
                 self.credentials = {key: s for key, s in self.credentials.items() if s != seat}
-                self.bindings.pop(seat, None)
+                if self.bindings.pop(seat, None) is not None:
+                    self.camera_binding_revision += 1
             else:
                 raise GameError("host_action_invalid")
             self._remember_host(admission)
@@ -497,7 +511,7 @@ class WerewolfService:
                 task.exception()
         self.effect_task.add_done_callback(finished)
 
-    async def step(self):
+    async def step(self, *, wait_for_camera=True):
         async with self.lock:
             if self.game is None:
                 return
@@ -507,23 +521,41 @@ class WerewolfService:
                 self.game.tick()
         self._schedule_effects()
         if self.camera_enabled and self.game is not None and self.game.phase!='finished':
-            await self._camera()
+            if wait_for_camera:
+                await self._camera()
+            elif self.camera_task is None or self.camera_task.done():
+                self.camera_task = asyncio.create_task(self._camera(), name='friday-werewolf-camera')
+                self.camera_task.add_done_callback(self._camera_finished)
         else:
+            if self.camera_task is not None and not self.camera_task.done():
+                self.camera_task.cancel()
             self._clear_camera()
             await self._release_camera()
 
     async def _run(self):
-        while self.game is not None:
-            if self.clock() - self.created > 6 * 3600:
-                asyncio.create_task(self.close_game(), name="friday-werewolf-expire")
-                return
-            await self.step()
-            await asyncio.sleep(.5)
+        try:
+            while self.game is not None:
+                if self.clock() - self.created > 6 * 3600:
+                    asyncio.create_task(self.close_game(), name="friday-werewolf-expire")
+                    return
+                await self.step(wait_for_camera=False)
+                await asyncio.sleep(.5)
+        finally:
+            task = self.camera_task
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    @staticmethod
+    def _camera_finished(task):
+        if not task.cancelled():
+            task.exception()
 
     def _clear_camera(self):
         self.camera_hints = []
         self.camera_candidates = []
         self.camera_process = None
+        self.camera_source = None
         self.camera_until = None
 
     async def _hold_camera(self,report,game,session,process):
@@ -569,52 +601,86 @@ class WerewolfService:
                 and process is not None and process is self.camera_process and process.returncode is None
                 and self.camera_until is not None and self.clock() < self.camera_until)
 
+    def _camera_binding_window(self):
+        game = self.game
+        if not self.camera_enabled or not self.session or game is None:
+            return None
+        if game.phase == 'lobby' or (game.phase in {'discussion', 'runoff_discussion'}
+                and (game.paused or game.deadline is not None and self.clock() < game.deadline)):
+            return game.phase, game.round
+        return None
+
+    def _camera_binding_seats(self):
+        return [seat for seat, player in self.game.players.items() if self.game.phase == 'lobby' or player.alive]
+
     async def _camera(self):
+        async with self.camera_read_lock:
+            return await self._refresh_camera()
+
+    async def _refresh_camera(self):
         self.camera_generation += 1
         generation = self.camera_generation
-        self._clear_camera()
         if self.embodied is None or not self.game or not self.camera_enabled or self.game.phase=='finished':
+            self._clear_camera()
             return
         owner, game, session = self.embodied, self.game, self.session
         process = getattr(owner, "process", None)
         if process is None or process.returncode is not None:
+            self._clear_camera()
             return
+        def current():
+            return (generation == self.camera_generation and self.game is game and self.session == session
+                    and game.phase != 'finished' and self.camera_enabled and self.embodied is owner
+                    and getattr(owner, 'process', None) is process and process.returncode is None)
+
         began = self.clock()
         try:
             async with asyncio.timeout(1):
                 report = await owner.request("/api/status", timeout=1)
         except (ValueError, OSError, TimeoutError, httpx.HTTPError):
+            if generation == self.camera_generation:
+                self._clear_camera()
             return
-        if (generation != self.camera_generation or self.game is not game or self.session != session
-                or not self.camera_enabled or self.embodied is not owner
-                or getattr(owner, 'process', None) is not process or process.returncode is not None):
+        if not current():
+            if generation == self.camera_generation:
+                self._clear_camera()
             return
         sample = camera_observation(report)
         if sample is None:
+            self._clear_camera()
             return
+        source = sample['camera'], sample['session']
+        if self.camera_source != source:
+            self._clear_camera()
         try:
             async with asyncio.timeout(1):
                 held=await self._hold_camera(report,game,session,process)
         except(ValueError,OSError,TimeoutError,httpx.HTTPError):
+            if generation == self.camera_generation:
+                self._clear_camera()
             return
-        if (not held or generation!=self.camera_generation or self.game is not game or self.session!=session
-                or not self.camera_enabled or self.embodied is not owner
-                or getattr(owner,'process',None)is not process or process.returncode is not None):
+        if not current():
+            if generation == self.camera_generation:
+                self._clear_camera()
             return
         now = self.clock()
         elapsed = now - began
         remaining = 1 - sample['age_ms'] / 1000 - elapsed
-        if not 0 <= elapsed < 1 or remaining <= 0:
+        if not held or not 0 <= elapsed < 1 or remaining <= 0:
+            self._clear_camera()
             return
         self.camera_candidates = [dict(camera=sample['camera'], session=sample['session'], track=track)
                                   for track in sample['people']]
         self.camera_hints = camera_advice(sample, self.bindings, game.players)
-        self.camera_until, self.camera_process = now + remaining, process
+        self.camera_until, self.camera_process, self.camera_source = now + remaining, process, source
+        return generation, sample
 
-    async def camera_view(self, game_session):
+    async def camera_view(self, game_session, phase=None, round_number=None):
         if game_session != self.session or self.game is None:
             raise GameError('room_changed')
-        if not self.camera_enabled or self.game.phase != 'lobby':
+        window = self._camera_binding_window()
+        if ((phase is None) != (round_number is None) or window is None
+                or window != (('lobby', self.game.round) if phase is None else (phase, round_number))):
             raise GameError('camera_binding_unavailable')
         owner, game, session = self.embodied, self.game, self.session
         process = getattr(owner, 'process', None)
@@ -622,12 +688,15 @@ class WerewolfService:
             return dict(available=False)
         began = self.clock()
         self.camera_view_busy = True
+        def current():
+            return (self.game is game and self.session == session and self._camera_binding_window() == window
+                    and self.embodied is owner and getattr(owner, 'process', None) is process
+                    and process.returncode is None)
+
         try:
             async with asyncio.timeout(1):
                 report = await owner.party_frame()
-            if (self.game is not game or self.session != session or not self.camera_enabled
-                    or game.phase != 'lobby' or self.embodied is not owner
-                    or getattr(owner, 'process', None) is not process or process.returncode is not None):
+            if not current():
                 return dict(available=False)
             sample = camera_picture(report)
             elapsed = self.clock() - began
@@ -636,10 +705,7 @@ class WerewolfService:
             async with asyncio.timeout(1):
                 held=await self._hold_camera(report,game,session,process)
             elapsed=self.clock()-began
-            if (not held or self.game is not game or self.session!=session or not self.camera_enabled
-                    or game.phase!='lobby'or self.embodied is not owner
-                    or getattr(owner,'process',None)is not process or process.returncode is not None
-                    or not 0<=elapsed<1):
+            if not held or not current() or not 0 <= elapsed < 1:
                 return dict(available=False)
             remaining = 1 - sample.pop('age_ms') / 1000 - elapsed
             if remaining <= 0:
@@ -652,18 +718,33 @@ class WerewolfService:
 
     async def bind(self, seat, camera, session, track, *, proof=None):
         async with self.lock:
+            _, replay = self._host_admission(proof, "bind", seat)
+            if replay:
+                return self.host()
+            window = self._camera_binding_window()
+            if window is None or seat not in self._camera_binding_seats():
+                raise GameError("camera_binding_unavailable")
+            game, room, revision = self.game, self.session, self.game.revision
+        sample = await self._camera()
+        async with self.lock:
             admission, replay = self._host_admission(proof, "bind", seat)
             if replay:
                 return self.host()
-            if self.game is None or self.game.phase != "lobby" or seat not in self.game.players or not self.camera_enabled:
+            if self.game is not game or self.session != room or game.revision != revision:
+                raise GameError("phase_changed")
+            if self._camera_binding_window() != window or seat not in self._camera_binding_seats():
                 raise GameError("camera_binding_unavailable")
-            await self._camera()
             value = dict(camera=camera, session=session, track=track)
-            if value not in self.camera_candidates or any(v == (camera, session, track) for s, v in self.bindings.items() if s != seat):
+            if (sample is None or sample[0] != self.camera_generation or not self._camera_current()
+                    or value not in self.camera_candidates
+                    or any(v == (camera, session, track) for s, v in self.bindings.items() if s != seat)):
                 raise GameError("camera_track_unavailable")
             if self.bindings.get(seat) != (camera, session, track):
                 self.bindings[seat] = (camera, session, track)
-                self.game.revision += 1
+                self.camera_binding_revision += 1
+                if game.phase == 'lobby':
+                    game.revision += 1
+                self.camera_hints = camera_advice(sample[1], self.bindings, game.players)
             self._remember_host(admission)
             return self.host()
 
@@ -672,12 +753,16 @@ class WerewolfService:
             admission, replay = self._host_admission(proof, 'unbind', seat)
             if replay:
                 return self.host()
-            if self.game is None or self.game.phase != 'lobby' or seat not in self.game.players:
+            if self._camera_binding_window() is None or seat not in self._camera_binding_seats():
                 raise GameError('camera_binding_unavailable')
             if self.bindings.get(seat) != (camera, session, track):
                 raise GameError('camera_binding_changed')
             del self.bindings[seat]
-            self.game.revision += 1
+            self.camera_binding_revision += 1
+            if self.game.phase == 'lobby':
+                self.game.revision += 1
+            self.camera_hints = [dict(h, pointing_at=None) if h['pointing_at'] == seat else h
+                                 for h in self.camera_hints if h['seat'] != seat]
             self._remember_host(admission)
             return self.host()
 
@@ -698,6 +783,8 @@ class WerewolfService:
             self._clear_camera()
             self.camera_enabled = False
             self.camera_context = None
+            if self.camera_task is not None and not self.camera_task.done():
+                self.camera_task.cancel()
             try:
                 await self._release_camera()
                 if self.pump:
@@ -715,7 +802,7 @@ class WerewolfService:
                         self.effects.lights.recovery = True
             finally:
                 try:
-                    tasks=set(self.effect_tasks)|{task for task in (self.pump,self.effect_task) if task is not None}
+                    tasks=set(self.effect_tasks)|{task for task in (self.pump,self.effect_task,self.camera_task) if task is not None}
                     for task in tasks:
                         if not task.done() and not task.cancelling():task.cancel()
                     await asyncio.shield(asyncio.gather(*tasks,return_exceptions=True))
@@ -723,7 +810,7 @@ class WerewolfService:
                         await self.gateway.close()
                 finally:
                     self.game = self.gateway = None
-                    self.pump = self.effect_task = None
+                    self.pump = self.effect_task = self.camera_task = None
                     self.origin = None
                     self.effects.lights_active = False
                     self.light_bindings = {}

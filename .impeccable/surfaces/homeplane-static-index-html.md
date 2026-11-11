@@ -37,9 +37,9 @@ Werewolf phone join recovery: persist only the exact pending join intent in curr
 
 狼人杀公屏在等待入座的标题下显示可扫描的二维码和房间号，现有插画与座位区继续提供场景和位置参照。二维码不可用时显示手机入口。满座、发牌或断流时收起邀请，恢复后按当前大厅读取。窄屏保留同一阅读顺序。
 
-Werewolf camera alignment: keep the native seat fields inline. “显示画面” reads an already running source beside those fields and overlays the numbers from that same decoded image. This is an explicit local host view, never a capture-start command or a phone/TV feed. Image and choices retire together on expiry, hiding or leaving the lobby; delayed replies cannot revive a retired view. Keep the existing paper/graphite controls, accessible numbered alternative and source-bound binding/readback. No camera, identity or physical accuracy claim follows from synthetic rendering.
+狼人杀沿用现有纸面与深灰控件。大厅的「显示画面」和发言侧栏的「调整座位」读取已运行的镜头，将同一画面的人物编号叠在预览上。发言时显示对应进度，并以座位、人物编号和确认按钮完成调整。窄屏将调整区域排在座位列表前。画面与编号在过期、隐藏或切换阶段时一同收起。预览仅供本机主持端查看。
 
-Seat correction stays inside the same native chooser: show which seat owns an unavailable number, disable that choice, and offer “取消当前对应” only when that seat has a saved mapping. Releasing it keeps the player and ready state. Waiting for a fresh camera must read “等待画面恢复”; a current picture without the bound person may say “原位置暂不可见”, without declaring that the camera or person moved. Do not replace fields or repeatedly rewrite unchanged native options during picture refresh. A correction changes the existing room version and cannot be undone by an old clear request.
+同一阶段刷新画面时保留当前选项和键盘焦点。已对应的编号显示所属座位并禁用。新会话清除旧画面的举手和指向提示，主持人确认新编号后恢复提示。局中调整只更新镜头对应，发言座位和计时继续推进。可移除已有对应，玩家的座位及准备状态继续由对局保管。
 
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
 

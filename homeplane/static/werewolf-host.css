@@ -14,6 +14,7 @@
 .ww-camera-align-heading h3{font-size:16px;margin:0}
 .ww-camera-align-heading .ww-text-button{min-height:44px;font-size:14px;flex:none}
 .ww-camera-view-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.ww-camera-view-actions[hidden]{display:none}
 .ww-camera-alignment[data-viewing=true]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:24px;align-items:start}
 .ww-camera-alignment[data-viewing=true]>.ww-camera-align-heading,.ww-camera-alignment[data-viewing=true]>.ww-field-help{grid-column:1/-1}
 .ww-camera-alignment[data-viewing=true]>.ww-seat-camera{position:sticky;top:24px;margin:0}
@@ -29,6 +30,20 @@
 .ww-camera-seat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
 .ww-camera-seat-grid .ww-camera-binding{display:grid;grid-template-columns:minmax(0,1fr);justify-content:normal;align-items:stretch;gap:8px;min-width:0;margin:0;font-size:14px;line-height:1.5;overflow-wrap:anywhere}
 .ww-camera-seat-grid select{width:100%;max-width:none;min-height:44px;font-size:14px}
+.ww-live-layout[data-camera-open=true]{grid-template-columns:minmax(0,1fr) minmax(280px,350px)}
+.ww-round-camera{min-width:0;border-block:1px solid var(--line);padding-block:12px}
+.ww-round-camera-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.ww-round-camera-heading h3{margin:0;font-size:15px}
+.ww-round-camera-heading .ww-field-help{margin:4px 0 0;font-variant-numeric:tabular-nums}
+.ww-round-camera-heading button{flex:none}
+.ww-round-camera .ww-round-camera-panel[data-viewing=true]{display:block;padding-top:8px;border:0}
+.ww-round-camera-panel .ww-camera-align-heading{justify-content:flex-end}
+.ww-round-camera .ww-round-camera-panel[data-viewing=true]>.ww-seat-camera{position:static;margin-bottom:12px;padding-bottom:0}
+.ww-round-camera-panel .ww-seat-camera>.ww-field-help:empty{margin:0}
+.ww-round-camera .ww-round-camera-panel[data-viewing=true] .ww-seat-camera-frame{width:100%}
+.ww-round-camera .ww-round-camera-panel[data-viewing=true] .ww-seat-camera canvas{width:100%;height:auto;max-height:none}
+.ww-round-camera-panel .ww-camera-seat-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.ww-round-camera-panel .ww-camera-seat-grid>button{grid-column:1/-1;justify-self:start}
 @media(min-width:681px) and (max-width:1120px){.ww-camera-alignment[data-viewing=true] .ww-camera-seat-grid{grid-template-columns:1fr}}
 
 /* Put active host actions within reach before the roster on narrow screens. */
@@ -44,6 +59,11 @@
  .ww-camera-seat-grid{grid-template-columns:1fr}
  .ww-camera-seat-grid select{font-size:16px}
  .ww-live-layout[data-playing=true]{grid-template-areas:"controls" "scene" "tv" "effects"}
+ .ww-live-layout[data-playing=true][data-round-camera=true]{grid-template-areas:"controls" "camera" "scene" "tv" "effects"}
+ .ww-live-layout[data-playing=true][data-camera-open=true]{grid-template-columns:minmax(0,1fr)}
+ .ww-round-camera{grid-area:camera}
+ .ww-round-camera-panel .ww-camera-seat-grid{grid-template-columns:minmax(0,1fr)}
+ .ww-round-camera-panel[data-viewing=true] select{scroll-margin-block-start:var(--ww-camera-top,128px)}
  .ww-live-layout[data-playing=true] .ww-room-tools{display:contents}
  .ww-live-layout[data-playing=true] .ww-host-controls{grid-area:controls;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
  .ww-live-layout[data-playing=true] .ww-host-controls>button:last-child:nth-child(odd){grid-column:1/-1}

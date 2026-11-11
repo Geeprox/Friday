@@ -41,12 +41,15 @@ class Binding(BaseModel):
     track: int = Field(ge=0)
     game_session: str = Field(min_length=1, max_length=128)
     revision: int = Field(ge=0)
+    binding_revision: int | None = Field(default=None, ge=0)
     event_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{12,64}$")
 
 
 class CameraView(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     session: str = Field(min_length=1, max_length=128)
+    phase: Literal['lobby', 'discussion', 'runoff_discussion'] | None = None
+    round: int | None = Field(default=None, ge=0)
 
 
 def create_router(core, lock, embodied, directory, *, owner=None):
@@ -117,7 +120,8 @@ def create_router(core, lock, embodied, directory, *, owner=None):
 
     @router.post("/camera-view")
     async def camera_view(payload: CameraView):
-        return JSONResponse(await guarded(owner.camera_view(payload.session)), headers={"Cache-Control": "no-store"})
+        return JSONResponse(await guarded(owner.camera_view(payload.session, payload.phase, payload.round)),
+                            headers={"Cache-Control": "no-store"})
 
     @router.post("/restore-lights")
     async def restore_lights():

@@ -42,7 +42,7 @@ async def host(directory, monkeypatch):
     await camera.client.aclose()
     camera.process = SimpleNamespace(returncode=None)
     camera.selected = 'cam_1234567890'
-    state = SimpleNamespace(report=packet(), calls=[], handler=None)
+    state = SimpleNamespace(report=packet(), calls=[], handler=None, status_handler=None, tokens={})
 
     async def transport(request):
         state.calls.append(request)
@@ -57,6 +57,8 @@ async def host(directory, monkeypatch):
         assert request.method=='GET'
         if state.handler and request.url.path == '/api/frame':
             return await state.handler(request)
+        if state.status_handler and request.url.path == '/api/status':
+            return await state.status_handler(request)
         return httpx.Response(200, json=state.report)
 
     camera.client = httpx.AsyncClient(transport=httpx.MockTransport(transport), trust_env=False)
@@ -69,6 +71,7 @@ async def host(directory, monkeypatch):
     party.pump = None
     for seat in range(1, 7):
         joined = await party.join(Join(code=party.join_code, seat=seat, name=f'合成{seat}'))
+        state.tokens[seat] = joined['token']
         await party.ready(joined['token'], True)
     app = FastAPI()
     app.include_router(create_router(None, None, camera, directory, owner=party))
@@ -83,6 +86,33 @@ async def host(directory, monkeypatch):
 
 async def view(client, party):
     return await client.post('/api/games/werewolf/camera-view', json=dict(session=party.session))
+
+
+async def discussion(party, state):
+    await party.control('start')
+    for token in state.tokens.values():
+        await party.confirm_identity(token, party.game.revision)
+    for _ in range(10):
+        if party.game.phase == 'discussion':
+            break
+        await party.control('advance')
+    assert party.game.phase == 'discussion'
+
+
+def binding_request(party, seat, track, event):
+    return dict(seat=seat, track=track, camera='cam_1234567890', session='SYNTHETIC-recovered',
+                game_session=party.session, revision=party.game.revision,
+                binding_revision=party.camera_binding_revision, event_id=event)
+
+
+def recover_source(state):
+    state.report['session_id'] = 'SYNTHETIC-recovered'
+    for person in state.report['people']:
+        person['id'] += 30
+    for seat in state.report['room']['seats']:
+        seat['track'] += 30
+    for ray in state.report['room']['pointing']:
+        ray['person_id'] += 30
 
 
 @pytest.mark.asyncio
@@ -108,7 +138,7 @@ async def test_same_snapshot_numbers_reach_host_and_bind_through_original_source
 
 
 @pytest.mark.asyncio
-async def test_picture_requires_current_room_exact_origin_opt_in_and_lobby(tmp_path, monkeypatch):
+async def test_picture_requires_current_room_exact_origin_opt_in_and_permitted_phase(tmp_path, monkeypatch):
     async with host(tmp_path, monkeypatch) as (party, _, state, _, client):
         path = '/api/games/werewolf/camera-view'
         assert (await client.post(path, json=dict(session=party.session), headers={'Origin': 'http://elsewhere.invalid'})).status_code == 403
@@ -119,6 +149,101 @@ async def test_picture_requires_current_room_exact_origin_opt_in_and_lobby(tmp_p
         await party.control('start')
         assert (await view(client, party)).status_code == 409
         assert state.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['discussion', 'runoff_discussion'])
+async def test_round_rebind_recovers_the_new_camera_source_without_changing_phone_state(tmp_path, monkeypatch, phase):
+    async with host(tmp_path, monkeypatch) as (party, _, state, _, client):
+        await party.bind(1,'cam_1234567890','SYNTHETIC',7)
+        await party.bind(2,'cam_1234567890','SYNTHETIC',8)
+        await discussion(party, state)
+        if phase == 'runoff_discussion':
+            party.game._phase(phase, '合成平票发言')
+        before = await party.private(state.tokens[1])
+        recover_source(state)
+        await party._camera()
+        status = party.host()
+        assert status['camera_binding_open'] and status['camera_source']['session'] == 'SYNTHETIC-recovered'
+        assert status['camera_hints'] == []
+        assert (await view(client, party)).status_code == 409
+        path = '/api/games/werewolf/camera-view'
+        request = dict(session=party.session, phase=phase, round=party.game.round)
+        assert (await client.post(path,json=dict(request,round=request['round']+1))).status_code == 409
+        frame = (await client.post(path,json=request)).json()
+        assert frame['available'] and frame['session']=='SYNTHETIC-recovered'
+        assert [p['track'] for p in frame['people']]==[37,38]
+        path = '/api/games/werewolf/camera-bind'
+        first = binding_request(party,1,37,'SYNTHETIC-recovery-first')
+        other = binding_request(party,2,38,'SYNTHETIC-recovery-second')
+        assert (await client.post(path,json=first)).status_code == 200
+        assert (await client.post(path,json=first)).status_code == 200
+        assert (await client.post(path,json=other)).json()['detail']=='camera_binding_changed'
+        other['binding_revision'] = party.camera_binding_revision
+        complete = await client.post(path,json=other)
+        assert complete.status_code == 200
+        assert complete.json()['camera_hints'][0]==dict(seat=1,hand_raised=True,pointing_at=2,
+                                                        advisory=True,vote_submitted=False)
+        assert await party.private(state.tokens[1]) == before
+        assert not party.game.choices
+        assert 'camera_source' not in party.public() and 'camera_bindings' not in party.public()
+        unbind= binding_request(party,2,38,'SYNTHETIC-recovery-clear')
+        removed= await client.post('/api/games/werewolf/camera-unbind',json=unbind)
+        assert removed.status_code == 200
+        assert removed.json()['camera_hints'][0]['hand_raised'] and removed.json()['camera_hints'][0]['pointing_at'] is None
+        assert await party.private(state.tokens[1]) == before
+
+
+@pytest.mark.asyncio
+async def test_delayed_round_binding_does_not_hold_the_room_lock_or_cross_into_vote(tmp_path, monkeypatch):
+    async with host(tmp_path, monkeypatch) as (party, _, state, _, client):
+        await discussion(party, state)
+        recover_source(state)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow(_):
+            entered.set()
+            await release.wait()
+            return httpx.Response(200,json=state.report)
+
+        state.status_handler=slow
+        task=asyncio.create_task(client.post('/api/games/werewolf/camera-bind',
+            json=binding_request(party,1,37,'SYNTHETIC-recovery-delayed')))
+        try:
+            await asyncio.wait_for(entered.wait(),.5)
+            await asyncio.wait_for(party.control('advance'),.3)
+            assert party.game.phase == 'vote' and not party.host()['camera_binding_open']
+        finally:
+            release.set()
+        assert (await task).json()['detail']=='phase_changed' and not party.bindings
+
+
+@pytest.mark.asyncio
+async def test_slow_camera_poll_does_not_delay_automatic_round_tick(tmp_path, monkeypatch):
+    async with host(tmp_path, monkeypatch) as (party, _, state, clock, _):
+        await discussion(party, state)
+        await party._camera()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow(_):
+            entered.set()
+            await release.wait()
+            return httpx.Response(200,json=state.report)
+
+        async def voting():
+            while party.game.phase!='vote':
+                await asyncio.sleep(.01)
+
+        state.status_handler=slow
+        party.pump=asyncio.create_task(party._run())
+        try:
+            await asyncio.wait_for(entered.wait(),.5)
+            assert party.host()['camera_available']
+            clock.now=party.game.deadline+.1
+            await asyncio.wait_for(voting(),.8)
+            assert not party.camera_task.done() and not party.host()['camera_available']
+        finally:
+            release.set()
 
 
 @pytest.mark.asyncio
@@ -158,16 +283,23 @@ async def test_invalid_or_stale_photo_never_returns_picture_or_numbers(tmp_path,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['worker', 'selected', 'capture', 'closed', 'recovery', 'lifecycle', 'room', 'phase'])
+@pytest.mark.parametrize('change', ['worker', 'selected', 'capture', 'closed', 'recovery', 'lifecycle',
+                                    'room', 'phase', 'discussion_vote'])
 async def test_retired_photo_cannot_arrive_from_a_held_original_source_read(tmp_path, monkeypatch, change):
     async with host(tmp_path, monkeypatch) as (party, camera, state, _, client):
+        if change == 'discussion_vote':
+            await discussion(party, state)
+            request = client.post('/api/games/werewolf/camera-view',
+                json=dict(session=party.session, phase=party.game.phase, round=party.game.round))
+        else:
+            request = view(client, party)
         entered, release = asyncio.Event(), asyncio.Event()
         async def held(request):
             entered.set()
             await release.wait()
             return httpx.Response(200, json=state.report)
         state.handler = held
-        task = asyncio.create_task(view(client, party))
+        task = asyncio.create_task(request)
         await asyncio.wait_for(entered.wait(), 1)
         if change == 'worker':
             camera.process = SimpleNamespace(returncode=None)
@@ -184,7 +316,7 @@ async def test_retired_photo_cannot_arrive_from_a_held_original_source_read(tmp_
         elif change == 'room':
             await party.close_game()
         else:
-            await party.control('start')
+            await party.control('advance' if change == 'discussion_vote' else 'start')
         release.set()
         assert (await task).json() == dict(available=False)
 

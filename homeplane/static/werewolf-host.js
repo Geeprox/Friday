@@ -6,16 +6,24 @@ const errors={players_not_ready:'等大家准备好后再发身份。',identitie
 
 export function mountWerewolf(root,{go=()=>{}}={}){
  let alive=true,busy=false,context=null,current=null,revision='',lastNotice='',confirmation=null;
- let generation=0,readRequest=null,commandRequest=null,syncFailed=false,lobbyUI=null;
+ let generation=0,readRequest=null,commandRequest=null,syncFailed=false,lobbyUI=null,roundCamera=null;
  const syncNotice='对局服务暂时无法连接，正在重试。';
  const abort=new AbortController(),wrap=node('section',null,'werewolf-host'),notice=node('p',null,'ww-notice'),content=node('div');notice.setAttribute('role','status');wrap.append(notice,content);root.append(wrap);
  async function api(path,body,signal){const signals=[abort.signal,AbortSignal.timeout(10000)];if(signal)signals.push(signal);const r=await fetch('/api/games/werewolf/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any(signals)});const data=await r.json();if(!r.ok)throw Error(data.detail||'game_unavailable');return data;}
  async function perform(fn){
   if(busy||!alive)return;
-  const request={generation:++generation,controller:new AbortController(),session:current?.session,revision:current?.game?.revision,event:null,focused:document.activeElement};
+  const request={generation:++generation,controller:new AbortController(),session:current?.session,revision:current?.game?.revision,bindingRevision:current?.camera_binding_revision,event:null,focused:document.activeElement};
   readRequest?.controller.abort();readRequest=null;commandRequest=request;
   const owns=()=>alive&&commandRequest===request&&generation===request.generation;
-  const commandApi=(path,body)=>{if(path==='control'||path==='camera-bind'||path==='camera-unbind'){request.event??=crypto.randomUUID();body={...body,[path==='control'?'session':'game_session']:request.session,revision:request.revision,event_id:request.event};}return api(path,body,request.controller.signal);};
+  const commandApi=(path,body)=>{
+   const mapping=path==='camera-bind'||path==='camera-unbind';
+   if(path==='control'||mapping){
+    request.event??=crypto.randomUUID();
+    body={...body,[mapping?'game_session':'session']:request.session,revision:request.revision,event_id:request.event};
+    if(mapping&&Number.isSafeInteger(request.bindingRevision))body.binding_revision=request.bindingRevision;
+   }
+   return api(path,body,request.controller.signal);
+  };
   busy=true;syncFailed=false;lastNotice='';notice.textContent='';content.setAttribute('aria-busy','true');updateControls();
   try{
    const data=await fn(commandApi);if(!owns())return;
@@ -27,8 +35,10 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    if(commandRequest===request){
     commandRequest=null;busy=false;
     if(alive){
-     content.removeAttribute('aria-busy');updateControls();
+     content.removeAttribute('aria-busy');
      if(lobbyUI?.alignment)updateAlignment(lobbyUI.alignment,true);
+     if(roundCamera?.alignment)updateAlignment(roundCamera.alignment,true);
+     updateControls();
      restoreControlFocus(request);
     }
    }
@@ -46,6 +56,8 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   }else if(previous?.dataset.turnCommand){
    const next=content.querySelector('[data-turn-command]:not(:disabled)')||content.querySelector('.ww-phase-heading h3');
    next?.focus({preventScroll:true});
+  }else if(previous?.dataset.cameraApply){
+   content.querySelector('[data-camera-person]')?.focus({preventScroll:true});
   }
  }
  function rules(game){const details=node('details',null,'ww-rules'),summary=node('summary','本局规则');details.append(summary);const list=node('ul');for(const text of game.rules||[])list.append(node('li',text));details.append(list);return details;}
@@ -119,27 +131,59 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   return scene;
  }
  function candidateKey(candidate){return JSON.stringify([candidate.camera,candidate.session,candidate.track]);}
+ function visibleCandidates(ui){
+  const fallback=current.camera_candidates||[];
+  return ui.view?.candidates(fallback,current.camera_source)||fallback;
+ }
+ function applyAlignment(ui,seat,select){
+  if(!ui.isCurrent()||busy||syncFailed||!content.contains(select))return;
+  const binding=current.camera_bindings?.find(b=>b.seat===seat);
+  if(select.value==='__clear__'){
+   if(binding)void perform(api=>api('camera-unbind',{...binding}));
+   return;
+  }
+  const candidate=visibleCandidates(ui).find(c=>candidateKey(c)===select.value);
+  if(!candidate||current.camera_bindings?.some(b=>b.seat!==seat&&candidateKey(b)===select.value)){
+   updateAlignment(ui,true);return;
+  }
+  void perform(api=>api('camera-bind',{seat,...candidate}));
+ }
+ function alignmentPlayers(ui,candidates){
+  const players=current.game.players;
+  if(!ui.seatPicker)return players;
+  const eligible=players.filter(p=>current.camera_binding_seats?.includes(p.seat));
+  const stamp=JSON.stringify(eligible.map(p=>[p.seat,p.name]));
+  if(ui.seatStamp!==stamp){
+   const selected=Number(ui.seatPicker.value);
+   const visible=new Set(candidates.map(candidateKey));
+   const bound=new Set((current.camera_bindings||[]).filter(b=>visible.has(candidateKey(b))).map(b=>b.seat));
+   const initial=eligible.find(p=>p.seat===selected)||eligible.find(p=>!bound.has(p.seat))||eligible[0];
+   ui.seatPicker.replaceChildren(...eligible.map(p=>{
+    const option=node('option',p.seat+' 号 · '+p.name);option.value=String(p.seat);return option;
+   }));
+   if(initial)ui.seatPicker.value=String(initial.seat);
+   ui.seatStamp=stamp;
+  }
+  return eligible.filter(p=>String(p.seat)===ui.seatPicker.value);
+ }
  function updateAlignment(ui,force=false){
-  const candidates=ui.view?.candidates(current.camera_candidates||[])||current.camera_candidates||[],players=current.game.players,available=ui.view?.available(current.camera_available)??current.camera_available===true;
-  for(const [seat,row]of ui.rows){if(!players.some(p=>p.seat===seat&&p.name===row.name)){row.label.remove();ui.rows.delete(seat);}}
+  const candidates=visibleCandidates(ui),players=alignmentPlayers(ui,candidates);
+  const available=ui.view?.available(current.camera_available)??current.camera_available===true;
+  for(const [seat,row]of ui.rows){if(!players.some(p=>p.seat===seat&&p.name===row.name)){row.label.remove();row.action?.remove();ui.rows.delete(seat);}}
   for(const player of players){
    let row=ui.rows.get(player.seat);
    if(!row){
-    const label=node('label',null,'ww-camera-binding'),title=node('span',player.seat+' 号 · '+player.name),select=node('select'),empty=node('option','选择镜头中的编号');empty.value='';empty.disabled=true;label.append(title,select);select.append(empty);
+    const label=node('label',null,'ww-camera-binding'),title=node('span',ui.seatPicker?'画面中的人物':player.seat+' 号 · '+player.name),select=node('select'),empty=node('option','选择镜头中的编号');empty.value='';empty.disabled=true;label.append(title,select);select.append(empty);
+    select.dataset.cameraPicker='true';
     const next=[...ui.rows].filter(([seat])=>seat>player.seat).sort((a,b)=>a[0]-b[0])[0]?.[1].label;
     row={label,select,empty,name:player.name,options:new Map()};ui.rows.set(player.seat,row);ui.grid.insertBefore(label,next||null);
-    select.onchange=()=>{
-     if(!alive||!current?.active||current.session!==ui.session||current.game.phase!=='lobby'||!content.contains(select))return;
-     if(select.value==='__clear__'){
-      const binding=current.camera_bindings?.find(b=>b.seat===player.seat);
-      if(binding)void perform(api=>api('camera-unbind',{...binding}));
-      return;
-     }
-     const candidate=(ui.view?.candidates(current.camera_candidates||[])||current.camera_candidates||[]).find(c=>candidateKey(c)===select.value);
-     if(!candidate){updateAlignment(ui,true);return;}
-     if(current.camera_bindings?.some(b=>b.seat!==player.seat&&candidateKey(b)===candidateKey(candidate))){updateAlignment(ui,true);return;}
-     void perform(api=>api('camera-bind',{seat:player.seat,...candidate}));
-    };
+    if(ui.seatPicker){
+     select.dataset.cameraPerson='true';
+     row.action=button('确认对应',()=>applyAlignment(ui,player.seat,select),'primary');
+     row.action.dataset.cameraApply='true';
+     ui.grid.append(row.action);
+     select.onchange=()=>{updateAlignment(ui);updateControls();};
+    }else select.onchange=()=>applyAlignment(ui,player.seat,select);
    }
    const keys=new Set(candidates.map(candidateKey));
    for(const [key,option]of row.options){if(!keys.has(key)){option.remove();row.options.delete(key);}}
@@ -156,15 +200,84 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    const placeholder=binding&&!keys.has(key)?available?'原位置暂不可见':'等待画面恢复':'选择镜头中的编号';if(row.empty.textContent!==placeholder)row.empty.textContent=placeholder;
    const value=keys.has(key)?key:'',draft=row.select.value,valid=draft===''||(draft==='__clear__'?Boolean(binding):row.options.has(draft)&&!row.options.get(draft).disabled);
    if(force||row.readbackValue!==value||!valid){if(row.select.value!==value)row.select.value=value;row.readbackValue=value;}
+   if(row.action){
+    const applied=value&&row.select.value===value;
+    const label=applied?'已对应':row.select.value==='__clear__'?'取消对应':'确认对应';
+    if(row.action.textContent!==label)row.action.textContent=label;
+    row.action.dataset.unavailable=String(syncFailed||!row.select.value||row.select.value===value);
+   }
   }
-  ui.hint.textContent=!players.length?'大家入座后，在这里对应镜头中的编号。':!candidates.length?available?'还没有可对应的编号。':'等画面恢复后，可继续对应。':'投票仍在各自手机上完成。';
+  if(!ui.seatPicker)ui.hint.textContent=!players.length?'大家入座后，在这里对应镜头中的编号。':!candidates.length?available?'还没有可对应的编号。':'等画面恢复后，可继续对应。':'投票仍在各自手机上完成。';
  }
- function cameraAlignment(){
+ function cameraAlignment(inRound=false){
   const section=node('section',null,'ww-camera-alignment'),heading=node('div',null,'ww-camera-align-heading'),title=node('h3','对齐镜头中的座位'),hint=node('p',null,'ww-field-help'),grid=node('div',null,'ww-camera-seat-grid');
-  heading.append(title);section.append(heading,hint);
-  const ui={section,hint,grid,session:current.session,rows:new Map()};
-  ui.view=mountSeatCamera(section,{heading,session:ui.session,api:(body,signal)=>api('camera-view',body,signal),isCurrent:()=>alive&&current?.session===ui.session&&current?.game?.phase==='lobby'&&lobbyUI?.alignment===ui,onChange:()=>{updateAlignment(ui);updateControls();},go});
+  const session=current.session,phase=current.game.phase,round=current.game.round;
+  const ui={section,hint,grid,rows:new Map(),isCurrent:()=>alive&&!syncFailed&&current?.session===session&&
+   (inRound?roundCamera?.alignment===ui&&roundCameraKey()===roundCamera.key:current?.game?.phase==='lobby'&&lobbyUI?.alignment===ui)};
+  section.append(heading);
+  if(inRound){
+   section.id='ww-round-camera-panel';
+   section.className+=' ww-round-camera-panel';
+   const seatLabel=node('label','座位','ww-camera-binding');
+   ui.seatPicker=node('select');ui.seatPicker.dataset.cameraPicker='true';seatLabel.append(ui.seatPicker);grid.append(seatLabel);
+   ui.seatPicker.onchange=()=>{updateAlignment(ui,true);updateControls();};
+  }else{heading.append(title);section.append(hint);}
+  ui.view=mountSeatCamera(section,{heading,session,...(inRound?{phase,round,hostOpens:true}:{}),
+   api:(body,signal)=>api('camera-view',body,signal),isCurrent:ui.isCurrent,
+   onChange:()=>{updateAlignment(ui);updateControls();},go});
   section.append(grid);updateAlignment(ui);return ui;
+ }
+ function roundCameraKey(){
+  const game=current?.game;
+  return current?.camera_binding_open===true&&['discussion','runoff_discussion'].includes(game?.phase)
+   ?JSON.stringify([current.session,game.round,game.phase]):null;
+ }
+ function closeRoundPanel(ui){
+  ui.alignment?.view.dispose();
+  ui.alignment?.section.remove();
+  ui.alignment=null;
+  ui.layout.dataset.cameraOpen='false';
+  ui.toggle.setAttribute('aria-expanded','false');
+  ui.toggle.removeAttribute('aria-controls');
+  ui.toggle.textContent='调整座位';
+ }
+ function mountRoundCamera(aside,layout){
+  const key=roundCameraKey();
+  if(!key)return;
+  if(!roundCamera){
+   const section=node('section',null,'ww-round-camera'),heading=node('div',null,'ww-round-camera-heading');
+   const title=node('div'),status=node('p',null,'ww-field-help');
+   status.setAttribute('role','status');
+   title.append(node('h3','镜头座位'),status);
+   const toggle=button('调整座位',()=>{
+    if(roundCamera!==ui||roundCameraKey()!==key||syncFailed)return;
+    if(ui.alignment){closeRoundPanel(ui);ui.toggle.focus();return;}
+    ui.alignment=cameraAlignment(true);ui.section.append(ui.alignment.section);
+    ui.layout.dataset.cameraOpen='true';ui.toggle.setAttribute('aria-expanded','true');
+    ui.toggle.setAttribute('aria-controls',ui.alignment.section.id);ui.toggle.textContent='完成';
+    ui.alignment.view.show();
+    ui.alignment.seatPicker.focus();
+   },'ww-text-button');
+   toggle.setAttribute('aria-expanded','false');
+   heading.append(title,toggle);section.append(heading);
+   const ui={key,section,status,toggle,alignment:null,layout};
+   roundCamera=ui;
+  }
+  roundCamera.layout=layout;
+  layout.dataset.cameraOpen=String(Boolean(roundCamera.alignment));
+  layout.dataset.roundCamera='true';
+  aside.append(roundCamera.section);
+ }
+ function updateRoundCamera(){
+  const ui=roundCamera;
+  if(!ui)return;
+  const eligible=current.camera_binding_seats||[];
+  const candidates=new Set((current.camera_candidates||[]).map(candidateKey));
+  const count=(current.camera_bindings||[]).filter(b=>eligible.includes(b.seat)&&candidates.has(candidateKey(b))).length;
+  const text=syncFailed?'正在同步对局':current.camera_available?'已对应 '+count+' / '+eligible.length:'等待镜头恢复';
+  if(ui.status.textContent!==text)ui.status.textContent=text;
+  ui.toggle.dataset.unavailable=String(syncFailed&&!ui.alignment);
+  if(ui.alignment){ui.alignment.view.recheck();updateAlignment(ui.alignment);}
  }
  function updateLobby(){
   const g=current.game;
@@ -220,7 +333,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   submit.disabled=select.disabled||(!select.value&&!current.game.speaker_seat);
  }
  function updateSeatSignals(){
-  const hints=new Map((current?.camera_hints||[]).map(hint=>[hint.seat,hint]));
+  const hints=new Map((syncFailed?[]:current?.camera_hints||[]).map(hint=>[hint.seat,hint]));
   for(const seat of content.querySelectorAll('[data-seat]')){
    const signal=seat.querySelector('.ww-seat-signal');
    if(!signal)continue;
@@ -277,6 +390,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   }
   if(g.phase==='finished')controls.append(button('再开一局',()=>perform(api=>api('control',{action:'rematch'})),'primary'));
   const close=button(confirmation==='close'?'确认关闭房间':'关闭房间',()=>confirmControl('close'),'ww-text-button');controls.append(close);aside.append(controls);
+  mountRoundCamera(aside,layout);
   if(current.display_url){const tv=node('div',null,'ww-tv-link');tv.append(node('h3','大屏同玩'),node('p','有空座时，大屏会显示入座二维码。'));const link=node('a','打开公共画面');link.href=current.display_url;link.target='_blank';link.rel='noopener noreferrer';tv.append(link,button('复制大屏地址',async()=>{try{await navigator.clipboard.writeText(current.display_url);notice.textContent='大屏地址已复制。';}catch{notice.textContent=current.display_url;}},'ww-text-button'));aside.append(tv);}const effects=node('div',null,'ww-effects'),voice=node('p',null,'ww-field-help');voice.dataset.voiceState='true';effects.append(voice);const recovery=node('div',null,'ww-recovery');recovery.dataset.lightRecovery='true';recovery.append(node('p','灯光有待恢复。'));const restore=button('恢复灯光',()=>perform(async api=>{await api('restore-lights',{});return api('host');}));restore.dataset.restoreLights='true';recovery.append(restore);effects.append(recovery);aside.append(effects);layout.append(aside);content.append(layout);
   if(g.vote_result){const votes=node('section',null,'ww-vote-results');votes.append(node('h3','上轮票型'));const line=node('div');for(const vote of g.vote_result.votes)line.append(node('span',vote.seat+' 号 → '+(vote.target?vote.target+' 号':'弃票')));votes.append(line);content.append(votes);}const roleLine=node('p',g.roles.map(r=>r.name+' × '+r.count).join('　'),'ww-role-line');content.append(roleLine,rules(g));
   if(current.camera_enabled&&g.phase==='lobby'){lobbyUI.alignment=cameraAlignment();layout.append(lobbyUI.alignment.section);}
@@ -291,28 +405,35 @@ export function mountWerewolf(root,{go=()=>{}}={}){
  }
  function renderKey(){
   if(!current?.active)return 'setup';
-  return [current.session,current.game.revision,JSON.stringify(current.game.players),JSON.stringify(current.camera_candidates),
-   JSON.stringify(current.camera_bindings),current.camera_available].join('|');
+  return [current.session,current.game.revision,JSON.stringify(current.game.players),roundCameraKey()].join('|');
  }
  function render(){
   if(!alive)return;
   revision=renderKey();
+  const focus=document.activeElement;
+  const cameraFocused=Boolean(roundCamera?.section.contains(focus));
+  if(roundCamera&&roundCamera.key!==roundCameraKey()){
+   closeRoundPanel(roundCamera);roundCamera=null;
+  }
   if(current?.active&&current.game.phase==='lobby'&&lobbyUI?.session===current.session&&
      lobbyUI.count===current.game.player_count&&lobbyUI.cameraEnabled===Boolean(current.camera_enabled)){
    updateLobby();
   }else{
    lobbyUI?.alignment?.view.dispose();lobbyUI=null;
-   const focus=document.activeElement,focused=wrap.contains(focus)?focus?.textContent:null;
+   const focused=wrap.contains(focus)?focus?.textContent:null;
    content.replaceChildren();
    if(current?.active)live();else setup();
-   if(focused){
+   if(cameraFocused){
+    const next=content.contains(focus)?focus:content.querySelector('.ww-phase-heading h3');
+    next?.focus({preventScroll:true});
+   }else if(focused){
     const candidate=focus?.dataset.turnCommand?
      content.querySelector('[data-turn-command]')||content.querySelector('.ww-phase-heading h3'):
      [...content.querySelectorAll('button')].find(b=>b.textContent===focused);
     candidate?.focus({preventScroll:true});
    }
   }
-  notice.textContent=lastNotice||notice.textContent;updateControls();updateEffects();updateSeatSignals();
+  notice.textContent=lastNotice||notice.textContent;updateRoundCamera();updateControls();updateEffects();updateSeatSignals();
  }
  function updateIdentityProgress(){
   const g=current?.game;
@@ -327,7 +448,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   if(title&&title.textContent!==phaseTitle)title.textContent=phaseTitle;
   if(prompt&&prompt.textContent!==publicPrompt)prompt.textContent=publicPrompt;
  }
- function updateControls(){for(const b of content.querySelectorAll('button')){if(b.dataset.start==='true'){b.disabled=busy||current.game.players.filter(p=>p.ready).length!==current.game.player_count;}else if(!b.dataset.startNight&&!b.dataset.speakerCommand)b.disabled=busy||b.dataset.unavailable==='true';}for(const select of content.querySelectorAll('select'))if(!select.dataset.speakerPicker)select.disabled=busy;updateIdentityProgress();updateSpeakerControls();}
+ function updateControls(){for(const b of content.querySelectorAll('button')){if(b.dataset.start==='true'){b.disabled=busy||current.game.players.filter(p=>p.ready).length!==current.game.player_count;}else if(!b.dataset.startNight&&!b.dataset.speakerCommand)b.disabled=busy||b.dataset.unavailable==='true';}for(const select of content.querySelectorAll('select'))if(!select.dataset.speakerPicker)select.disabled=busy||Boolean(select.dataset.cameraPicker&&syncFailed);updateIdentityProgress();updateSpeakerControls();}
  async function refresh(first=false){
   if(!alive||busy||readRequest)return;
   const request={generation:++generation,controller:new AbortController()};readRequest=request;
@@ -340,10 +461,10 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    syncFailed=false;
    const next=renderKey();
    if(needsContext||revision!==next){if(needsContext||previousSession!==current?.session||previousRevision!==current?.game?.revision)confirmation=null;render();}
-   else if(current.active){const timer=content.querySelector('[data-timer]');if(timer)timer.textContent=current.game.paused?'已暂停':current.game.seconds_left==null?'':Math.max(0,current.game.seconds_left)+' 秒';if(current.game.phase==='identity')updateIdentityProgress();updateEffects();updateSeatSignals();updateSpeakerControls();}
-  }catch{if(owns()){syncFailed=true;notice.textContent=syncNotice;updateSpeakerControls();}}
+   else if(current.active){const timer=content.querySelector('[data-timer]');if(timer)timer.textContent=current.game.paused?'已暂停':current.game.seconds_left==null?'':Math.max(0,current.game.seconds_left)+' 秒';if(lobbyUI?.alignment){lobbyUI.alignment.view.recheck();updateAlignment(lobbyUI.alignment);}updateRoundCamera();updateEffects();updateSeatSignals();updateControls();}
+  }catch{if(owns()){syncFailed=true;notice.textContent=syncNotice;lobbyUI?.alignment?.view.recheck();updateRoundCamera();updateSeatSignals();updateControls();}}
   finally{if(readRequest===request)readRequest=null;}
  }
  content.append(node('p','正在准备房间…','ww-field-help'));void refresh(true);const timer=setInterval(()=>{if(!busy)void refresh();},1000);
- return{dispose(){alive=false;lobbyUI?.alignment?.view.dispose();generation++;readRequest?.controller.abort();commandRequest?.controller.abort();readRequest=commandRequest=lobbyUI=null;abort.abort();clearInterval(timer);wrap.remove();}};
+ return{dispose(){alive=false;lobbyUI?.alignment?.view.dispose();if(roundCamera)closeRoundPanel(roundCamera);roundCamera=null;generation++;readRequest?.controller.abort();commandRequest?.controller.abort();readRequest=commandRequest=lobbyUI=null;abort.abort();clearInterval(timer);wrap.remove();}};
 }
