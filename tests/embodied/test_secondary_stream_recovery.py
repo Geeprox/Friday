@@ -142,6 +142,125 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('fault', ['recognizer_close', 'capture_reap', 'stop_during_cleanup'])
+async def test_continuous_owner_reconnects_after_cleanup_failure(tmp_path, monkeypatch, fault):
+    """用原生产重连循环验证清理故障、镜头关闭和主动停止。"""
+    retry_delays, resume, observed = asyncio.Queue(), asyncio.Queue(), asyncio.Queue()
+    reads = [asyncio.Queue(), asyncio.Queue()]
+    shutter_open = True
+    read_shutter = AsyncMock(side_effect=lambda _: shutter_open)
+
+    async def sleep(seconds):
+        if seconds in {5, 15}:
+            retry_delays.put_nowait(seconds)
+            await resume.get()
+        else:
+            await asyncio.sleep(seconds)
+
+    def capture(index):
+        process = SimpleNamespace(returncode=None, stdout=SimpleNamespace(readline=reads[index].get),
+                                  stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()), wait=AsyncMock())
+
+        def terminate():
+            if index == 0 and fault == 'capture_reap':
+                raise OSError('synthetic-reap-failure')
+            process.returncode = 0
+
+        process.terminate = process.kill = Mock(side_effect=terminate)
+        return process
+
+    processes = [capture(0), capture(1)]
+    spawn = AsyncMock(side_effect=processes)
+    leases, recognizers = [], []
+
+    def lease(*_, **__):
+        owner = SimpleNamespace(snapshot={'before': {'camera_power': True}},
+                                acquire=AsyncMock(), release=AsyncMock(return_value=True))
+        leases.append(owner)
+        return owner
+
+    def recognizer(*_):
+        index = len(recognizers)
+        session = f'synthetic-reconnect-{index}'
+        cleanup_error = (ProcessLookupError('synthetic-cleanup-failure')
+                         if index == 0 and fault != 'capture_reap' else None)
+
+        async def observe(*_, **__):
+            now = time.monotonic()
+            return dict(camera=CAMERA['id'], session=session, people=[], hands=[], now=now, captured_mono=now)
+
+        owner = SimpleNamespace(start=AsyncMock(), close=AsyncMock(side_effect=cleanup_error),
+                                observe=observe, timing={}, session=session)
+        recognizers.append(owner)
+        return owner
+
+    async def observation(value, process):
+        observed.put_nowait((value['session'], process))
+
+    monkeypatch.setattr(previews, 'asyncio', SimpleNamespace(**(vars(asyncio) | {
+        'sleep': sleep, 'create_subprocess_exec': spawn})))
+    monkeypatch.setattr(previews, 'DATA', tmp_path)
+    monkeypatch.setattr(previews, 'camera', lambda _: CAMERA)
+    monkeypatch.setattr(previews, 'camera_is_open', read_shutter)
+    monkeypatch.setattr(previews, 'camera_storage', lambda _: tmp_path)
+    monkeypatch.setattr(previews, 'capture_environment', lambda: {})
+    monkeypatch.setattr(ptz_control, 'Transport', lambda _: SimpleNamespace(close=AsyncMock()))
+    monkeypatch.setattr(ptz_control, 'CameraLease', lease)
+    monkeypatch.setattr(camera_recognition, 'CameraRecognition', recognizer)
+    intent = SimpleNamespace(mode='hold', revision='synthetic-hold', status='saved')
+    pool = previews.PreviewPool(continuous=True, recognize=True, on_observation=observation,
+                                intent_factory=lambda _: SimpleNamespace(load=lambda **__: intent))
+
+    def frame():
+        jpeg = base64.b64encode(b'\xff\xd8SYNTHETIC-NOT-CAMERA-PIXELS\xff\xd9').decode()
+        return json.dumps(dict(type='frame', jpeg=jpeg, received_at=time.time(), width=640, height=360)).encode()
+
+    camera_id = CAMERA['id']
+    await pool.start(camera_id)
+    item = pool.sessions[camera_id]
+    try:
+        reads[0].put_nowait(frame())
+        assert await asyncio.wait_for(observed.get(), 2) == ('synthetic-reconnect-0', processes[0])
+        assert pool.status(camera_id)['recognition'] == 'running'
+        if fault == 'stop_during_cleanup':
+            await asyncio.wait_for(pool.close(), 2)
+            assert item['task'].cancelled()
+            assert not pool.source_current(camera_id, processes[0])
+            assert retry_delays.empty() and spawn.await_count == 1
+            return
+
+        shutter_reads = read_shutter.await_count
+        shutter_open = False
+        reads[0].put_nowait(b'')
+        assert await asyncio.wait_for(retry_delays.get(), 2) == 5
+        assert pool.status(camera_id)['state'] == 'unavailable'
+        assert pool.status(camera_id)['error_stage'] == 'cleanup'
+        assert pool.frame(camera_id) is None and not pool.source_current(camera_id, processes[0])
+        leases[0].release.assert_awaited_once()
+        resume.put_nowait(None)
+        if fault == 'capture_reap':
+            assert await asyncio.wait_for(retry_delays.get(), 2) == 5
+            assert processes[0].returncode is None and read_shutter.await_count == shutter_reads
+            assert spawn.await_count == 1
+            processes[0].returncode = 0
+            resume.put_nowait(None)
+        assert await asyncio.wait_for(retry_delays.get(), 2) == 15
+        assert pool.status(camera_id)['state'] == 'shutter_closed'
+        assert spawn.await_count == len(leases) == 1
+        shutter_open = True
+        resume.put_nowait(None)
+        reads[1].put_nowait(frame())
+        assert await asyncio.wait_for(observed.get(), 2) == ('synthetic-reconnect-1', processes[1])
+        status = pool.status(camera_id)
+        assert status['recognition'] == 'running' and status['error_stage'] is None
+        assert item['mode'] == intent.mode and item['mode_revision'] == intent.revision
+        assert processes[0].returncode == 0 and pool.source_current(camera_id, processes[1])
+        assert spawn.await_count == len(leases) == 2
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('phase',[None,'vision','registration','layout','identity','room_unavailable'])
 async def test_original_secondary_recognizer_stops_at_the_first_retired_stage(monkeypatch,phase):
     from tests.embodied.test_room_process import room_port

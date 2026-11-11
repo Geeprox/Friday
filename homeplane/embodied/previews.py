@@ -170,8 +170,23 @@ class PreviewPool:
         return {'mode':item['mode']}
 
     async def _monitor(self, selected, item):
-        while True:
-            await self._run(selected, item)
+        while self.sessions.get(selected['id']) is item:
+            process = item.get('process')
+            if process is not None and process.returncode is None:
+                # 旧采集进程尚未确认退出，继续等待这一进程的退出状态。
+                await asyncio.sleep(5)
+                continue
+            try:
+                await self._run(selected, item)
+            except Exception as error:
+                # 清理异常可能覆盖取消信号。主动停止优先于后台重试。
+                if asyncio.current_task().cancelling():
+                    raise asyncio.CancelledError from None
+                if not self.continuous:
+                    raise
+                if item['state'] != 'shutter_closed':
+                    item['state'] = 'unavailable'
+                item.update(error_class=type(error).__name__, error_stage='cleanup')
             if not self.continuous:
                 return
             await asyncio.sleep(15 if item["state"] == "shutter_closed" else 5)
