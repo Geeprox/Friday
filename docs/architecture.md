@@ -17,6 +17,21 @@ are derived from the current user; it does not embed an author's repository path
 login session or signing identity. NAS and People content stay local. Optional
 ARL provides the model-runtime boundary and is not a prerequisite for simulation.
 
+## 异常留档
+
+`SafetyRuntime` 只把已经判定的疑似跌倒或完成两段印证的复核交给 `SafetyRecorder`。
+保存和重试使用同一个事件编号，SQLite 写事务内重新检查镜头和策略。留档队列仅保留事件信息与关键帧。
+声音与画面继续各自串行识别，复核待留档时可以让下一台镜头先使用识别通道。
+
+```mermaid
+flowchart LR
+  S[疑似跌倒或两段复核一致] --> Q[按原采集时间和事件编号排队]
+  Q --> W[SQLite 核对来源和策略后保存]
+  W -->|临时写入故障| Q
+  W -->|确认保存| R[本机待复核记录]
+  W -->|权限撤销或来源变化| D[撤销待保存证据]
+```
+
 ## 游戏画面与关间衔接
 
 `MotionGames` 决定本局进度，`GamePresentation` 只接纳有界的画面可见性与素材就绪回执。同局同模式的相邻动作切换时，保留上一有效回执剩余的可见期限等待新画面；不延长期限、不继承素材就绪，也不推进动作或关间时钟。当前动作的示范已经挂载且素材可用后，页面才申报就绪。

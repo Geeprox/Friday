@@ -11,6 +11,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from .camera_audio import AdmittedAudio
+from .safety_recording import ReviewReceipt
 from .sound_model import AppleSoundProcess
 
 
@@ -130,8 +131,9 @@ class SoundReviewer:
         if state.candidate is None:
             return active
         kind, _, captured, _ = state.candidate
+        receipt = self.recorded.get((camera, kind))
         if (not 0 <= self.clock()-captured <= 12
-                or self.clock()-self.recorded.get((camera, kind), -math.inf) < 60):
+                or receipt is not None and receipt.suppresses(self.clock())):
             return False
         return bool(state.followup or active)
 
@@ -162,7 +164,8 @@ class SoundReviewer:
             previous = state.candidate
             state.candidate = (result['kind'], packets[-1][2]+3200, packets[-1][0], result['confidence'])
             key = (camera, result['kind'])
-            if self.clock()-self.recorded.get(key, -math.inf) < 60:
+            receipt = self.recorded.get(key)
+            if receipt is not None and receipt.suppresses(self.clock()):
                 return
             if (not previous or previous[0] != result['kind'] or packets[0][2] < previous[1]
                     or not 0 < packets[-1][0]-previous[2] <= 6):
@@ -170,15 +173,18 @@ class SoundReviewer:
                 return
             delivered = self.deliver(camera, state.session, state.context, dict(
                 kind=result['kind'], confidence=min(previous[3], result['confidence']),
+                captured_mono=packets[-1][0],
                 captured_at=self.wall()-(self.clock()-packets[-1][0]), corroborating_windows=2,
                 audio_seconds=4, age_basis='local_sdk_receive',policy_revision=state.revision))
             if inspect.isawaitable(delivered):
                 delivered = await delivered
             if delivered is False:
                 return
-            self.recorded[key] = self.clock()
+            self.recorded.pop(key, None)
+            self.recorded[key] = (delivered if isinstance(delivered, ReviewReceipt)
+                                  else ReviewReceipt(pending=False, saved_at=self.clock()))
             if len(self.recorded) > 32:
-                self.recorded = dict(sorted(self.recorded.items(), key=lambda x:x[1])[-32:])
+                self.recorded.pop(next(iter(self.recorded)))
         except asyncio.CancelledError:
             await self.engine.close()
             raise

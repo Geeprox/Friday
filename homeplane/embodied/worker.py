@@ -1369,7 +1369,8 @@ async def voice_control(request: Request):
     else:
         marker.unlink(missing_ok=True)
     if is_input:
-        if paused:await safety.sound.invalidate()
+        if paused:
+            await safety.pause_sound()
         armed=home.armed
         for service in [*secondary_homes.values(),home]:await service.close()
         if armed:await home.enable()

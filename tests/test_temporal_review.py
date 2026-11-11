@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sqlite3
 import time
 from types import SimpleNamespace
 
@@ -214,18 +215,64 @@ async def test_model_text_cannot_supply_identity_severity_or_actions(tmp_path):
     runtime = SafetyRuntime(store)
     now = time.monotonic()
     await runtime.observe('camera', 'session', [], now, now, stable=True, jpeg=b'jpeg')
-    await runtime._visual_event(
+    assert runtime._visual_event(
         "camera",
         "session",
         [(now - 1, b"jpeg"), (now, b"jpeg")],
         VisualResult(event="face_obscured", observation="模型观察待复核"),
         1800000000,
     )
+    await runtime.drain()
     event = runtime.store.events()[0]
     assert event["kind"] == "visual_review" and event["severity"] == "review"
     assert event["person_id"] is None and event["announcement"]["status"] == "not_requested"
     assert len(event["frames"]) == 2 and not runtime.tasks
     await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_corroborated_visual_review_saves_original_frames_after_write_failure(tmp_path, monkeypatch):
+    from homeplane.embodied import safety
+
+    clock = Clock()
+
+    def wall():
+        return 1800000000 + clock()
+
+    monkeypatch.setattr(safety, 'time', SimpleNamespace(monotonic=clock, time=wall))
+    store = SafetyStore(tmp_path / 'safety.sqlite')
+    store.configure(SafetyPolicy(enabled=True, visual_review=True))
+    engine = Engine()
+    runtime = SafetyRuntime(store, visual_engine=engine)
+    runtime.visual.clock = clock
+    runtime.visual.wall = wall
+    create = store.create
+    attempts = []
+
+    def interrupted_write(event, frames, **options):
+        attempts.append((options.get('event_id'), event['captured_at'], tuple(frames)))
+        if len(attempts) == 1:
+            raise sqlite3.OperationalError('synthetic interrupted write')
+        return create(event, frames, **options)
+
+    monkeypatch.setattr(store, 'create', interrupted_write)
+    try:
+        for index in range(13):
+            clock.value = 100 + index
+            await runtime.observe('camera', 'session', [], clock(), clock(), stable=True,
+                                  jpeg=bytes([index]), source_context='a' * 64)
+            if runtime.visual.task:
+                await runtime.visual.task
+                await asyncio.sleep(0)
+        await asyncio.wait_for(runtime.drain(), 1)
+        assert len(attempts) == 2 and attempts[0] == attempts[1]
+        saved, = store.events()
+        assert saved['id'] == attempts[0][0] and saved['captured_at'] == 1800000109
+        assert [store.frame(saved['id'], index) for index in range(8)] == [bytes([i]) for i in (0, 1, 2, 3, 6, 7, 8, 9)]
+        assert len(engine.calls) == 2 and runtime.visual.error is None
+        assert not runtime.tasks
+    finally:
+        await runtime.close()
 
 
 class FakeProcess:

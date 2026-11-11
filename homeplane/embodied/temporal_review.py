@@ -9,6 +9,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from .safety_recording import ReviewReceipt
 from .temporal_model import MlxWindowProcess, VisualResult, VisualSourceChanged, model_readiness
 
 
@@ -139,8 +140,9 @@ class TemporalReviewer:
             return active
         event, captured, _ = state.candidate
         now = self.clock()
+        receipt = state.recorded.get(event)
         if (not 0 <= now - captured <= self._corroboration_limit() + 12
-                or now - state.recorded.get(event, -math.inf) < 60):
+                or receipt is not None and receipt.suppresses(now)):
             return False
         return bool(state.followup or active)
 
@@ -200,7 +202,8 @@ class TemporalReviewer:
                 return
             previous = state.candidate
             state.candidate = (result.event, frames[-1][0], frames)
-            if self.clock() - state.recorded.get(result.event, -math.inf) < 60:
+            receipt = state.recorded.get(result.event)
+            if receipt is not None and receipt.suppresses(self.clock()):
                 return
             # Two disjoint windows of the same kind; a repeated snapshot is not corroboration.
             if (
@@ -222,7 +225,8 @@ class TemporalReviewer:
                 delivered = await delivered
             if delivered is False:
                 return
-            state.recorded[result.event] = self.clock()
+            state.recorded[result.event] = (delivered if isinstance(delivered, ReviewReceipt)
+                                            else ReviewReceipt(pending=False, saved_at=self.clock()))
         except asyncio.CancelledError:
             raise
         except VisualSourceChanged:

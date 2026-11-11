@@ -165,6 +165,46 @@ def test_retried_post_frame_is_not_duplicate_evidence(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_review_quota_reserves_space_and_falls_precede_waiting_reviews():
+    from homeplane.embodied.safety_recording import SafetyRecorder
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    writes = []
+
+    async def persist(job):
+        writes.append(job.event['kind'])
+        if job.event['kind'] == 'sound_review':
+            entered.set()
+            await release.wait()
+        job.saved = job.event
+        recorder.recorded(job)
+
+    recorder = SafetyRecorder(persist=persist, reconcile=AsyncMock(), current=lambda job: True, clock=lambda: 100.)
+    recorder.MAX_REVIEW_PENDING, recorder.MAX_REVIEW_BYTES = 2, 4
+
+    def submit(kind, frames):
+        feature = None if kind == 'fall' else kind
+        return recorder.submit(camera='camera', session='session', context='source', token=object(),
+                               captured=100., revision=1, event={'kind': kind}, frames=frames, feature=feature)
+
+    try:
+        first = submit('sound_review', [(1, b'123')])
+        await asyncio.wait_for(entered.wait(), 1)
+        waiting = submit('visual_review', [(2, b'12'), (3, b'3')])
+        assert waiting.initial == ((3, b'3'),)
+        assert submit('visual_review', [(4, b'1')]) is None
+        assert submit('fall', [(4, b'12345')]).initial == ((4, b'12345'),)
+        assert recorder.status()['retained_bytes'] == 9
+        release.set()
+        await asyncio.wait_for(recorder.drain(), 1)
+        assert writes == ['sound_review', 'fall', 'visual_review']
+        assert first.receipt.saved_at == waiting.receipt.saved_at == 100.
+    finally:
+        release.set()
+        await recorder.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('fence', ['session', 'context', 'clear', 'policy_off', 'policy_revision', 'input_gap', 'close'])
 async def test_pending_incident_cannot_cross_revocation_or_source_replacement(monitor, monkeypatch, fence):
     create = monitor.store.create
