@@ -226,6 +226,8 @@ async def test_active_initial_analysis_is_protected_and_recorded_duplicates_rele
         assert home.runtime.review_pending(camera,'SYNTHETIC-visual')
         for index in range(8,49):
             await home.tick(index)
+        # 镜头在留档回执送回事件循环后才放行。
+        await asyncio.wait_for(home.runtime.drain(), 2)
         assert len(home.store.events())==1
         assert not home.runtime.review_pending(camera,'SYNTHETIC-visual')
         assert home.engine.maximum==1
