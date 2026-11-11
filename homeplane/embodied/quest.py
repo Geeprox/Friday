@@ -54,6 +54,12 @@ STAGES = (
     QuestStage("cross_knee", "交叉触膝", "交叉触膝，铺好营地踏板",
                "抬膝，用对侧手靠近膝盖，再放下换侧，共 4 次。", "exercise.cross_knee", "山顶营地", reps=4,
                scene="camp", landmark="landing"),
+    QuestStage("side_raise", "交替侧抬腿", "侧抬腿，种下营地野花",
+               "向侧面轻抬一只脚，停一下再落地，左右交替，共 4 次。", "exercise.side_raise", "山顶营地", reps=4,
+               scene="camp", landmark="camp_flowers"),
+    QuestStage("overhead_clap", "头顶合掌", "头顶合掌，点亮营地",
+               "举起并打开双臂，头顶合掌后再打开，重复 4 次。", "exercise.overhead_clap", "山顶营地", reps=4,
+               scene="camp", landmark="lanterns"),
 )
 
 TRANSITION_SECONDS = 3.0

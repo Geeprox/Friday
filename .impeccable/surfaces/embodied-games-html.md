@@ -44,7 +44,9 @@ Ski route: eighteen illustrated wooden crossing arches, six per section. Wide, s
 
 画面从当前可见位置续接下一次观测，最多用 120 毫秒抵达已知位置。雪面的纵向纹理按地面深度展开，浅压雪痕的疏密随透视变化。碰撞树取自规则的完整树位，两侧装饰树淡入淡出。减少动态效果时省去雪面细纹、压雪痕和装饰树，保留路线、滑痕、木门和碰撞树。暂停保持最后画面，短暂恢复从这里继续。长时间未看到画面时回到本局当前位置。
 
-山径冒险的 12 站由 `quest.py` 提供。双臂平举、双手上举、浅蹲起立、左右侧迈、交替抬膝、开合步、单腿站立、站姿侧倾、侧弓步、交替上伸、胸前开合、交叉触膝依次出现。关间留出 3 秒准备。已完成的站点打勾，当前站点描边。竖屏上路线占整行，站数与当前动作并排。暂停、画面缺失或镜头移动时保留已完成的计次，清除未完成的动作。
+山径冒险的 14 站由 `quest.py` 提供。双臂平举、双手上举、浅蹲起立、左右侧迈、交替抬膝、开合步、单腿站立、站姿侧倾、侧弓步、交替上伸、胸前开合、交叉触膝、交替侧抬腿、头顶合掌依次出现。关间留出 3 秒准备。已完成的站点打勾，当前站点描边。竖屏上路线占整行，站数与当前动作并排。暂停、画面缺失或镜头移动时保留已完成的计次，清除未完成的动作。
+
+营地最后两站沿用穿衣角色、同源定格图和已有反馈区域。侧抬腿每次落脚种下一丛野花，头顶合掌后重新打开双臂点亮一盏纸雕灯。两组道具分布在示范两侧，按当前难度和实际次数放置。最后一次完成后在原结算显示 14 站，画面出现野餐篮。灯笼沿用现有素材就绪、重试和画布时钟。
 
 Adventure world and motion thesis: the single route plan also names each station's forest, stream or camp scene and its landmark. Original sibling paper/clay plates change the place without changing the fixed camera. The focal feedback is earned construction: completed side steps and balances place separate rows of creek stones, knee raises build wooden steps, jacks grow a flower path, reaches hang camp flags, open/close cycles place pinwheels, and cross-knee cycles place camp boards. Squats and side bends clear low branches; completed holds open and lift the forest foliage. A picnic basket appears only after the original route reports completion. Keep these objects beside the full clothed demonstration and inside the portrait crop. Do not turn elapsed time into progress, invent currency, replace source teaching or add another renderer/dependency.
 

@@ -1,6 +1,6 @@
 import {createSourceBodyDiagram} from './body-motions.js';
 const root=document.getElementById('gameTutorial');let diagram=null,key=null;
-const names={'pose.horizontal':'双臂平举','pose.overhead':'双手上举','exercise.squat':'下蹲后站起','exercise.jack':'开合步','exercise.high_knee':'交替抬膝','exercise.side_lunge':'侧弓步','exercise.side_step':'左右侧迈','exercise.side_bend':'站姿侧倾','exercise.reach_up':'交替上伸','exercise.arm_open':'胸前开合','exercise.balance':'单腿站立','exercise.cross_knee':'交叉触膝'};
+const names={'pose.horizontal':'双臂平举','pose.overhead':'双手上举','exercise.squat':'下蹲后站起','exercise.jack':'开合步','exercise.high_knee':'交替抬膝','exercise.side_lunge':'侧弓步','exercise.side_step':'左右侧迈','exercise.side_bend':'站姿侧倾','exercise.reach_up':'交替上伸','exercise.arm_open':'胸前开合','exercise.balance':'单腿站立','exercise.cross_knee':'交叉触膝','exercise.side_raise':'交替侧抬腿','exercise.overhead_clap':'头顶合掌'};
 function update(event){
  const state=event.detail;
  if(!root)return;

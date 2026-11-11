@@ -49,6 +49,8 @@ const mappings = {
   'exercise.arm_open': {key:'open-close-swings', times:[.6,1.2333333492], fallback:'body.arms_open'},
   'exercise.balance': {key:'balance', mirrorCycle:true, yaw:0},
   'exercise.cross_knee': {key:'cross_knee', mirrorCycle:true, yaw:0},
+  'exercise.side_raise': {key:'side_raise', mirrorCycle:true, yaw:0},
+  'exercise.overhead_clap': {key:'dance-overhead-clap', times:[0,.50], fromStart:true, yaw:0},
 };
 export const hasSourceBodyDiagram = key => Boolean(mappings[key]);
 async function load() {
@@ -74,13 +76,14 @@ function paint(at) {
   const cols=Math.min(4,active.length), rows=Math.ceil(active.length/cols), w=width*cols,h=height*rows;
   const items=active.map((item,i) => {
     const map=mappings[item.key];
-    if(map.mirrorCycle){
+    const localClock=map.mirrorCycle||map.fromStart;
+    if(localClock){
       const step=item.lastPaint===null?0:at-item.lastPaint;
       const playing=canAnimate(item);
       if(playing&&step>0&&step<=250)item.motionTime+=step;
       item.lastPaint=playing?at:null;
     }
-    const elapsed=map.mirrorCycle?item.motionTime:at;
+    const elapsed=localClock?item.motionTime:at;
     const phase=item.paused || reduced?.matches ? .57 : (elapsed%period)/period;
     const instruction={key:map.key,phase,yaw:map.yaw,mirror:map.mirrorCycle&&Math.floor(elapsed/period)%2===1,
       transparentBackground:item.transparentBackground,rect:{x:(i%cols)*width,y:Math.floor(i/cols)*height,width,height}};

@@ -15,7 +15,7 @@ function questWorld(g){
  const stages=Array.isArray(q.stages)&&q.stages.length?q.stages:legacy;
  const level=Math.max(0,Math.min(stages.length,Number.isSafeInteger(q.level)?q.level:0));
  const stage=stages[Math.min(level,stages.length-1)],scenes=['forest','stream','camp'];
- const landmarks=['gate','canopy','branches','stones','steps','flowers','crossing','boughs','trail','flags','breeze','landing'];
+ const landmarks=['gate','canopy','branches','stones','steps','flowers','crossing','boughs','trail','flags','breeze','landing','camp_flowers','lanterns'];
  const requestedScene=stage?.scene??oldWorld[stage?.action]?.[0];
  const scene=scenes.includes(requestedScene)?requestedScene:'forest',values={};
  for(const[s,part]of stages.entries()){
@@ -98,7 +98,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   return images.get(name);
  }
  const complete=im=>im?.complete&&im.naturalWidth>0;
- const assets=mode=>mode==='quest'?['summer-scene.png','quest-stream-scene.png','quest-camp-scene.png','quest-props.png']:
+ const assets=mode=>mode==='quest'?['summer-scene.png','quest-stream-scene.png','quest-camp-scene.png','quest-props.png','quest-lantern.webp']:
   mode==='ski'?['winter-scene.png','winter-props.png']:
   mode==='tennis'?['summer-scene.png','summer-props.png',...tennisArt]:['summer-scene.png','summer-props.png'];
  function prepare(mode){for(const name of assets(mode))image(name);}
@@ -125,10 +125,11 @@ function createGameScenery(c,{base,onChange=()=>{}}){
  const questRects=[[49,185,352,176],[472,192,390,168],[915,117,394,246],[1341,100,421,242],
   [53,511,340,321],[498,508,337,320],[964,470,265,372],[1373,500,350,333]];
  function questSprite(index,x,y,width,{alpha=1,angle=0,mirror=false,top=false}={}){
-  const im=image('quest-props.png');if(!complete(im))return;
-  const[sx,sy,sw,sh]=questRects[index],height=width*sh/sw;
+  const lantern=index==='lantern',im=image(lantern?'quest-lantern.webp':'quest-props.png');if(!complete(im))return;
+  const[sx,sy,sw,sh]=lantern?[59,13,221,298]:questRects[index],height=width*sh/sw;
+  const aw=lantern?320:1774,ah=lantern?320:887;
   c.save();c.globalAlpha*=alpha;c.translate(x,y);c.rotate(angle);if(mirror)c.scale(-1,1);
-  c.drawImage(im,sx*im.naturalWidth/1774,sy*im.naturalHeight/887,sw*im.naturalWidth/1774,sh*im.naturalHeight/887,
+  c.drawImage(im,sx*im.naturalWidth/aw,sy*im.naturalHeight/ah,sw*im.naturalWidth/aw,sh*im.naturalHeight/ah,
    -width/2,top?0:-height,width,height);c.restore();
  }
  const ease=t=>1-Math.pow(1-Math.max(0,Math.min(1,t)),3);
@@ -172,8 +173,10 @@ function createGameScenery(c,{base,onChange=()=>{}}){
     c.save();c.beginPath();c.moveTo(450,230);c.bezierCurveTo(630,295,970,295,1150,230);c.strokeStyle='#826747';c.lineWidth=3;c.stroke();c.restore();
     row('flags',4,[[470,237,80],[1130,237,80],[615,271,80],[985,271,80]],{top:true,marker:false});
    }
-   row('breeze',6,[[460,850,85],[1140,850,85],[590,885,100],[1010,885,100]]);
+   row('breeze',6,[[460,850,85],[1140,850,85],[391,882,88],[1209,882,88]]);
    row('landing',1,[[610,802,110],[990,802,110],[625,736,96],[975,736,96]]);
+   row('camp_flowers',5,[[455,730,98],[1210,742,94],[510,440,74],[1090,438,74]]);
+   row('lanterns','lantern',[[615,650,92],[985,650,92],[555,510,70],[930,515,70]]);
    if(world.done)questSlot('picnic',7,1120,690,170,true,{marker:false});
   }
  }

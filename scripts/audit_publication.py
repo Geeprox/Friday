@@ -85,6 +85,12 @@ SYNTHETIC_MEDIA = {
         'c1ee438bd4f1b9f16daac38a0e4e9a7c2ffa101efc482c709051815a0e1d9278',
     'homeplane/static/motion-art/body/targets/exercise-cross_knee.png':
         '38005bc9a21ce52217a5987f955dfe418d5cbe4162d0fd6c3cd288e710f82802',
+    'homeplane/embodied/static/game-art/quest-lantern.webp':
+        '08069e55ec432673bcf9c6e53e3f008162c1a6baa87626525ed2c2777d8f6137',
+    'homeplane/static/motion-art/body/targets/exercise-side_raise.png':
+        '97466f4b4992631b62631d1c5713adfc15ef326598b0dc4b20048ae50e99859b',
+    'homeplane/static/motion-art/body/targets/exercise-overhead_clap.png':
+        '810ace5e89e85db9a3a9865f292102626a6f8c561308c30f1ae2f33030cba5c0',
     # Original game environment art; exact prompts/provenance in adjacent JSON.
     'homeplane/embodied/static/game-art/winter-props.png':
         '73bba0b51c57e6470ea71bb87761a3d9b264a7f63844ea6468fb4f26fc6aebb0',

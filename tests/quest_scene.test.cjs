@@ -59,9 +59,11 @@ if(process.argv.includes('--packets')){
    assert.equal(sprites(draws,4).length,count('reach_up'));
    assert.equal(sprites(draws,6).length,count('arm_open'));
    assert.equal(sprites(draws,1).length,count('cross_knee'));
+   assert.equal(sprites(draws,5).length,count('side_bend')+count('side_raise'));
+   assert.equal(draws.filter(call=>call.asset==='quest-lantern.webp'&&call.alpha>.99).length,count('overhead_clap'));
    assert.equal(sprites(draws,7).length,q.phase==='complete'?1:0);
   }
-  for(const draw of draws.filter(call=>call.sprite!==null)){
+  for(const draw of draws.filter(call=>call.sprite!==null||call.asset==='quest-lantern.webp')){
    const[,,,,x,y,w,h]=draw.args,[a,b,c,d,tx,ty]=draw.transform;
    const corners=[[x,y],[x+w,y],[x,y+h],[x+w,y+h]].map(([px,py])=>[a*px+c*py+tx,b*px+d*py+ty]);
    assert(corners.every(([px,py])=>px>=320&&px<=1280&&py>=0&&py<=900),JSON.stringify({difficulty:g.difficulty,level:q.level,sprite:draw.sprite,corners}));
@@ -135,7 +137,7 @@ if(process.argv.includes('--packets')){
  });
  test('new chapter errors stay recoverable and retry covers the exact public art set',()=>{
   const s=scene({autoLoad:false});assert.equal(s.ready('quest'),false);
-  const names=['summer-scene.png','quest-stream-scene.png','quest-camp-scene.png','quest-props.png'];
+  const names=['summer-scene.png','quest-stream-scene.png','quest-camp-scene.png','quest-props.png','quest-lantern.webp'];
   assert.deepEqual([...s.images.keys()],names);
   for(const name of names){const im=s.images.get(name);im.complete=true;im.naturalWidth=100;im.onload();}
   assert.equal(s.ready('quest'),true);
@@ -151,7 +153,7 @@ if(process.argv.includes('--packets')){
  });
  test('an already-running ten-station backend retains its actual scene without the new art metadata',()=>{
   const s=scene(),g=game(8,{reps:2});
-  g.quest.stages=stages.filter(stage=>!['balance','cross_knee'].includes(stage.action)).map(({scene,landmark,...stage})=>stage);
+  g.quest.stages=stages.filter(stage=>!['balance','cross_knee','side_raise','overhead_clap'].includes(stage.action)).map(({scene,landmark,...stage})=>stage);
   const draws=s.settle(g,1000);assert.equal(plate(draws),'quest-camp-scene.png');
   assert.equal(sprites(draws,4).length,2);assert.equal(sprites(draws,0).length,4);
  });

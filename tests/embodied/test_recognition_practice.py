@@ -2,6 +2,7 @@
 import pytest
 
 from homeplane.embodied.practice import RecognitionPractice
+from tests.embodied.test_adventure import actor
 from tests.embodied.test_hiit import new_action_pose
 from tests.embodied.test_motion_games import LOCK, human
 
@@ -118,6 +119,33 @@ def test_new_exercise_practice_reports_success_after_return_to_neutral(lesson, a
     result = feed(human(), 6)
     assert result['phase'] == 'success'
     assert result['event']['camera'] == 'b' and result['event']['gesture'] == gesture
+    assert runtime.suppresses('b')
+
+
+@pytest.mark.parametrize(('action','neutral','joint'), [
+    ('side_raise', 'neutral', 'leftAnkle'), ('overhead_clap', 'arms_high_open', 'leftWrist'),
+])
+def test_rehearsal_rejects_a_single_occluded_frame_between_target_and_return(lesson, action, neutral, joint):
+    runtime, clock = lesson
+    token = runtime.begin(f'exercise.{action}', ['a', 'b'])['token']
+
+    def feed(person, frames=16, camera='b'):
+        for _ in range(frames):
+            clock[0] += .05
+            runtime.observe(camera, 'session', [person], [], LOCK, clock[0], clock[0])
+        return runtime.status(token)
+
+    feed(actor(neutral))
+    assert feed(actor(action))['phase'] != 'success'
+    occluded = actor(action)
+    occluded['joints'].pop(joint)
+    feed(occluded, 1)
+    assert feed(actor(neutral))['phase'] != 'success'
+    assert feed(actor(action))['phase'] != 'success'
+    assert feed(actor(neutral), frames=3, camera='a')['phase'] != 'success'
+    result = feed(actor(neutral), frames=3)
+    assert result['phase'] == 'success'
+    assert result['event']['gesture'] == f'exercise.{action}' and result['event']['camera'] == 'b'
     assert runtime.suppresses('b')
 
 

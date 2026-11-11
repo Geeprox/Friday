@@ -13,13 +13,13 @@ from homeplane.embodied.static_page import static_asset
 def test_game_graphics_are_an_exact_public_allowlist():
     for name in ('games.js','game-scenes.js','game-teaching.js','summer-props.png',
                  'body-motions.js','motion-art/body/body.gltf','vendor/three.core.js',
-                 'quest-stream-scene.png','quest-camp-scene.png','quest-props.png',
+                 'quest-stream-scene.png','quest-camp-scene.png','quest-props.png','quest-lantern.webp',
                  'tennis-near-v1.png','tennis-far-v1.png'):
         path=game_asset_path(name)
         assert path is not None and path.is_file()
     for name in ('../config.json','motion-art/body/../../../../data/config.json',
                  'camera.jpg','private/config.json','/etc/passwd','body.gltf.json',
-                 'quest-stream-scene.png.json','quest-camp-scene.png.json','quest-props.png.json',
+                 'quest-stream-scene.png.json','quest-camp-scene.png.json','quest-props.png.json','quest-lantern.webp.json',
                  'tennis-near-v1.png.json','tennis-far-v1.png.json'):
         assert game_asset_path(name) is None
 

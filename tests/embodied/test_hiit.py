@@ -61,7 +61,7 @@ class CircuitTests(unittest.TestCase):
         self.feed(c, "neutral")
         self.assertEqual(c.reps, 2)
 
-    def test_completed_ten_stage_circuit_has_bounded_history(self):
+    def test_completed_twelve_stage_circuit_has_bounded_history(self):
         c = HIITCircuit()
         for level, (key, _, target, _) in enumerate(PLAN):
             self.assertEqual(c.level, level)
@@ -73,14 +73,16 @@ class CircuitTests(unittest.TestCase):
                     if key == "squat"
                     else "open"
                     if key in {"jack", "arm_open"}
+                    else "active"
+                    if key == "overhead_clap"
                     else ("left" if i % 2 == 0 else "right")
                 )
                 neutral = 0.0 if key == "squat" else "closed" if key in {"jack", "arm_open"} else "neutral"
-                self.feed(c, value, 22 if key == 'balance' else 4)
+                self.feed(c, value, 22 if key == 'balance' else 6)
                 self.feed(c, neutral)
         self.assertTrue(c.complete)
-        self.assertEqual(c.total_reps, 41)
-        self.assertEqual(len(c.history), 10)
+        self.assertEqual(c.total_reps, 49)
+        self.assertEqual(len(c.history), 12)
 
     def test_new_side_moves_need_other_side_and_cannot_bridge_occlusion(self):
         for level in (4, 5):

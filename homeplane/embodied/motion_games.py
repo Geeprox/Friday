@@ -361,6 +361,8 @@ class BodyMotion:
             "exercise_signals": signals(j, quality, depth, self.leg_origin, self.knee_origin),
         }
         exercise = result['exercise_signals']
+        if not fresh_ankles:
+            exercise['side_raise'] = exercise['overhead_clap'] = None
         if (fresh_ankles and self.origin is not None and exercise['visible']
                 and .5 <= exercise['leg_spread'] <= 2.2 and exercise['leg_bend'] < 18):
             exercise['side_step'] = ('left' if self.lateral < -.35 else
