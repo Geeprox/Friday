@@ -41,6 +41,8 @@ Synthetic preview only. No live camera/microphone/model/TV/device activation. De
 
 「趴卧复核镜头」使用本机画面复核内的一项选择。默认关闭，保留用户选定的镜头和暂停状态。镜头来源变化时，请使用者重新选定。首页和提醒详情共用「疑似趴卧」标题，显示镜头、时间和两段画面各一张关键帧，其余画面按需查看。窄屏使用同一套选择与返回动线。
 
+快速搬动的短窗口在首页和提醒列表共用「快速搬动」标题。详情先呈现完整四帧，用相对时间区分动作前、中和后段，回看、确认与误报操作接在画面之后。
+
 Generated reports and screenshots remain under ignored .artifacts/design-20261103/. The synthetic preview's room geometry and devices never ship as defaults.
 
 Task attention: Home names the actual task and links an immutable notice to the automatic-task tab, where a quiet row shows the execution time and result. A missed or unavailable one-off task offers “重新安排”; an uncertain device outcome offers “查看设备”. “已了解” acknowledges only that notice and never retries execution. The existing polling owner updates keyed rows without replacing the focused control; removing a focused notice moves focus to the next notice or the workspace heading. A changed/handled URL stays understandable instead of opening an obsolete editor. Native controls, paper surfaces and dividers remain the visual structure. No new modal, automatic sound or extra polling owner. Current actual browser/native capture remains required; inert DOM evidence is insufficient for visual finish.

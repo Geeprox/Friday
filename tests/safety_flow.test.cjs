@@ -43,7 +43,7 @@ function fixture(initial=[event('b'),event('a')]){
  const context=vm.createContext({document,fetch,Date,JSON,console,AbortController,Blob,URL,
   setInterval(fn){tick=fn;return 1;},clearInterval(){},setTimeout(){return 1;},clearTimeout(){}});
  const labels=fs.readFileSync('homeplane/static/safety-event-labels.js','utf8').replace(/export /g,'');
- Object.assign(context,vm.runInContext('(function(){'+labels+';return {soundNames:soundReviewNames,isOutputTest:isSafetyOutputTest,eventTitle:safetyEventTitle,safetyEventTitle};})()',context));
+ Object.assign(context,vm.runInContext('(function(){'+labels+';return {soundNames:soundReviewNames,isOutputTest:isSafetyOutputTest,eventTitle:safetyEventTitle,safetyEventTitle,isRapidMovementReview};})()',context));
  for(const file of ['homeplane/static/arl-status.js','homeplane/static/safety.js','homeplane/static/home-status.js'])vm.runInContext(fs.readFileSync(file,'utf8').replace(/^import .*;$/gm,'').replace(/export /g,''),context);
  const go=(...args)=>navigations.push(args),api=async(path)=>{const r=await fetch(path);return r.json();};
  const by=(tag,text)=>all(root).find(n=>n.tagName===tag&&n.textContent===text),rows=()=>all(root).filter(n=>n.attrs.class==='safety-event');
@@ -107,6 +107,22 @@ test('a posture candidate opens its own keyframes without implying a speaker act
  assert.equal(all(frames[1]).filter(n=>n.tagName==='img').length,6);
  assert(!f.root.textContent.includes('未请求播报'));assert(!f.calls.some(c=>c.path.endsWith('/test')));
  await f.by('button','我已查看').onclick();assert.equal(f.events[0].review,'acknowledged');view.dispose();
+});
+
+test('short rapid movement opens its exact four-frame sequence while legacy reviews keep their title',async()=>{
+ const movement={...event('a','visual_review'),visual_kind:'rapid_movement',basis:'same_pair_rapid_window',
+  frames:Array.from({length:4},(_,ordinal)=>({ordinal,at:1800000000+ordinal*.25}))};
+ const legacy={...event('b','visual_review'),visual_kind:'rapid_movement',basis:'two_disjoint_local_windows'};
+ const f=fixture([movement,legacy]),home=f.home();await settle();
+ const notice=all(f.root).find(n=>n.attrs.class==='home-attention-item'&&n.textContent.includes('快速搬动'));
+ assert(notice);notice.onclick();assert.equal(f.navigations[0][1].eventId,movement.id);home.dispose();
+ const view=f.mount({initialEventId:f.navigations[0][1].eventId});await settle();
+ assert(f.by('h2','快速搬动'));assert(f.rows().some(n=>n.children[0].textContent==='画面待复核'));
+ const sequence=all(f.root).find(n=>n.dataset.sequence==='rapid');
+ assert.deepEqual(sequence.children.map(n=>n.children[1].textContent),['动作前 · 0.00 秒','动作前 · 0.25 秒','动作中 · 0.50 秒','动作后段 · 0.75 秒']);
+ assert.deepEqual(sequence.children.map(n=>n.children[0].attrs.src),[0,1,2,3].map(i=>'/api/embodied/safety/events/'+movement.id+'/frames/'+i));
+ assert(!f.by('p','未请求播报'));
+ await f.by('button','标记误报').onclick();assert.equal(f.events[0].review,'false_alarm');view.dispose();
 });
 
 test('expanded home attention includes every counted item and keeps its expanded label after refresh',async()=>{

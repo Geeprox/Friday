@@ -753,7 +753,7 @@ class SafetyRuntime:
             [f for f in ring['items'] if 0 <= time.time()-f[0] <= 8],
             captured=result['captured_mono'], revision=result['policy_revision'], max_age=6)
 
-    def _submit_review(self, event, frames, *, captured, revision, max_age):
+    def _submit_review(self, event, frames, *, captured, revision, max_age, require_complete=False):
         camera, session, context = event['camera'], event['session'], event['camera_source_context']
         feature = event['kind']
         policy = self._cached_policy()
@@ -761,7 +761,8 @@ class SafetyRuntime:
                 or not self._guard(camera, session, context, captured, max_age=max_age)()):
             return False
         job = self.recording.submit(camera=camera, session=session, context=context, token=self.source_tokens[camera],
-            captured=captured, revision=revision, event=event, frames=frames, feature=feature)
+            captured=captured, revision=revision, event=event, frames=frames, feature=feature,
+            require_complete=require_complete)
         return job.receipt if job is not None else False
 
     async def pause_sound(self):
@@ -886,7 +887,8 @@ class SafetyRuntime:
         self.last_seen[camera] = max(captured, self.last_seen.get(camera, -math.inf))
         if policy.visual_review:
             track = _posture_track(people) if policy.admits_posture(camera, source_context) else None
-            self.visual.offer(camera, session, policy.revision, captured, jpeg, stable=stable, posture_track=track)
+            self.visual.offer(camera, session, policy.revision, captured, jpeg, stable=stable, posture_track=track,
+                              rapid_people=people if source_context is not None else None, aspect=aspect)
         else:
             self.visual.clear(camera)
         ring = self.frames.setdefault(camera, dict(session=session, source_context=source_context,
@@ -974,7 +976,7 @@ class SafetyRuntime:
             raise SafetyAdmissionChanged('safety_event_changed')
         return receipt
 
-    def _visual_event(self, camera, session, frames, result, captured_at):
+    def _visual_event(self, camera, session, frames, result, captured_at, *, rapid=False):
         messages = {
             "possible_fall": "画面中疑似出现跌落动作，请查看关键帧。",
             "face_obscured": "画面中疑似出现面部遮挡，请查看关键帧。",
@@ -988,19 +990,27 @@ class SafetyRuntime:
         posture = result.event == 'prone_posture'
         if posture and (len(frames) != 8 or not policy.admits_posture(camera, source_context)):
             return False
+        if rapid and (result.event != 'rapid_movement' or len(frames) != 4 or source_context is None):
+            return False
+        message, basis, detector = messages[result.event], 'two_disjoint_local_windows', 'qwen3.5-2b-window/1'
+        if posture:
+            basis, detector = 'same_track_two_local_windows', 'qwen3.5-2b-window/prone-1'
+        elif rapid:
+            message = '请核对动作前后的画面。'
+            basis, detector = 'same_pair_rapid_window', 'pose-pair/qwen3.5-2b-window/1'
         return self._submit_review(
             dict(
                 kind="visual_review", visual_kind=result.event, severity="review",
                 status="pending_review", simulated=False, camera=camera, session=session,
                 track=None, person_id=None, person_name=None,
-                message=messages[result.event], observation=None if posture else result.observation,
-                captured_at=captured_at, basis="same_track_two_local_windows" if posture else "two_disjoint_local_windows",
+                message=message, observation=None if posture or rapid else result.observation,
+                captured_at=captured_at, basis=basis,
                 camera_source_context=source_context,
                 camera_name=ring.get('source_name') if ring.get('session') == session else None,
-                detector="qwen3.5-2b-window/prone-1" if posture else "qwen3.5-2b-window/1",
+                detector=detector,
             ),
             [(captured_at - (frames[-1][0] - stamp), jpeg) for stamp, jpeg in frames],
-            captured=frames[-1][0], revision=policy.revision, max_age=12,
+            captured=frames[-1][0], revision=policy.revision, max_age=12, require_complete=rapid,
         )
 
     async def schedule(self, event, revision=None):

@@ -12,6 +12,7 @@ from fastapi import APIRouter, FastAPI
 
 from homeplane.embodied import paths, safety, safety_api
 from homeplane.embodied import temporal_model as model
+from homeplane.embodied.rapid_review import RapidReviewWindow
 from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
 from homeplane.embodied.temporal_model import GIB, HostBudget, MlxWindowProcess, VisualResult
 from homeplane.embodied.temporal_review import TemporalReviewer
@@ -73,6 +74,182 @@ async def feed(reviewer, clock, start, end, session="s", settle=True):
         if settle and reviewer.task:
             await reviewer.task
             await asyncio.sleep(0)
+
+
+def paired_poses(offset, *, anchor_offset=0, near=True, track=2):
+    def joint(x, y):
+        return dict(x=x, y=y, confidence=.96)
+
+    def torso(x, y, length):
+        return {side+part: joint(x+dx, y+dy*length) for side, dx in (('left', -.024), ('right', .024))
+                for part, dy in (('Shoulder', -.5), ('Hip', .5))}
+
+    y = .59+offset
+    anchor_joints = torso(.36, .49+anchor_offset, .20)
+    anchor_joints.update(leftWrist=joint(.50 if near else .25, y), rightWrist=joint(.55 if near else .29, y))
+    return [
+        dict(id=1, box=dict(x=.19, y=.24+anchor_offset, w=.40, h=.52, confidence=.97), joints=anchor_joints),
+        dict(id=track, box=dict(x=.44, y=y-.14, w=.20, h=.28, confidence=.96), joints=torso(.53, y, .12)),
+    ]
+
+
+@pytest.mark.parametrize('scenario', ['no_contact', 'shared_motion', 'new_track', 'occluded', 'three_people',
+                                      'jumped_sample', 'slow', 'new_aspect', 'valid'])
+def test_rapid_window_requires_visible_pair_and_two_continuous_motion_steps(scenario):
+    detector = RapidReviewWindow()
+    offsets = (0, 0, -.15, -.15) if scenario == 'jumped_sample' else (0, 0, -.07, -.15)
+    interval = .6 if scenario == 'slow' else .25
+    for index, offset in enumerate(offsets):
+        now = 100 + index*interval
+        people = paired_poses(offset, anchor_offset=offset if scenario == 'shared_motion' else 0,
+                              near=scenario != 'no_contact', track=3 if scenario == 'new_track' and index >= 2 else 2)
+        if scenario == 'occluded' and index == 2:
+            del people[1]['joints']['leftShoulder']
+        if scenario == 'three_people' and index == 2:
+            people.append({'id': 4})
+        aspect = 4/3 if scenario == 'new_aspect' and index >= 2 else 16/9
+        detector.offer(people, aspect, now, bytes([index]), now)
+    if scenario == 'valid':
+        assert detector.pending(now) == tuple((100 + i*.25, bytes([i])) for i in range(4))
+        assert not detector.samples and not detector.pending(now+6.01)
+    else:
+        assert not detector.pending(now)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('event_kind','capacity','should_save'), [
+    ('rapid_movement', None, True), ('none', None, False), ('possible_fall', None, False),
+    ('rapid_movement', 3, False),
+])
+async def test_single_rapid_window_reaches_real_private_event_and_frames(tmp_path, monkeypatch,
+                                                                       event_kind, capacity, should_save):
+    clock = Clock()
+
+    def wall():
+        return 1800000000+clock()
+
+    monkeypatch.setattr(safety, 'time', SimpleNamespace(monotonic=clock, time=wall))
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
+    router = APIRouter()
+    runtime = safety_api.install(router, SimpleNamespace(process=None))
+    engine = Engine(event=event_kind)
+    runtime.visual.engine, runtime.visual.clock, runtime.visual.wall = engine, clock, wall
+    runtime.recording.clock = clock
+    if capacity is not None:
+        runtime.recording.MAX_REVIEW_BYTES = capacity
+    app = FastAPI()
+    app.include_router(router)
+    base = '/api/embodied/safety'
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
+            configured = await client.post(base+'/policy', json=dict(enabled=True, visual_review=True, announce=True))
+            assert configured.status_code == 200
+            for index, offset in enumerate((0, 0, -.07, -.15)):
+                clock.value = 100 + index*.25
+                assert runtime.offer('cam_'+'a'*10, 'session', paired_poses(offset), clock(), clock(), stable=True,
+                                     jpeg=bytes([index]), source_context='b'*64, source_name='合成镜头')
+                await runtime.drain()
+                if runtime.visual.task is not None:
+                    await runtime.visual.task
+                    await asyncio.sleep(0)
+            await runtime.drain()
+            assert engine.calls == [tuple((100+i*.25, bytes([i])) for i in range(4))]
+            events = (await client.get(base+'/events')).json()['events']
+            assert bool(events) == should_save
+            assert not runtime.tasks
+            if not should_save:
+                assert runtime.recording.dropped == (1 if capacity is not None else 0)
+                return
+            saved, = events
+            assert saved['basis'] == 'same_pair_rapid_window' and saved['visual_kind'] == 'rapid_movement'
+            assert saved['captured_at'] == wall() and saved['observation'] is None
+            assert saved['person_name'] is None and saved['person_id'] is None and saved['track'] is None
+            assert saved['announcement']['status'] == 'not_requested'
+            event_url = base+'/events/'+saved['id']
+            for ordinal in range(4):
+                response = await client.get(event_url+'/frames/'+str(ordinal))
+                assert response.content == bytes([ordinal])
+            assert (await client.post(event_url+'/review', json=dict(review='false_alarm'))).json()['review'] == 'false_alarm'
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_rapid_window_hands_the_following_slot_back_to_ready_ordinary_camera():
+    engine = Engine(event='none')
+    reviewer, clock, _, _ = rig(engine)
+    try:
+        for index, offset in enumerate((0, 0, -.07, -.15)):
+            clock.value = 100+index*.25
+            reviewer.offer('first', 's', 1, clock(), b'first', stable=True, rapid_people=paired_poses(offset))
+        await reviewer.task
+        await asyncio.sleep(0)
+        assert reviewer.last_rapid and len(engine.calls) == 1
+        for value in (103.5,104.5,105.5,106.5):
+            clock.value = value
+            reviewer.offer('ordinary', 's', 1, value, b'ordinary', stable=True)
+        for index, offset in enumerate((0, 0, -.07, -.15)):
+            clock.value = 106.5+index*.25
+            reviewer.offer('later', 's', 1, clock(), b'later', stable=True, rapid_people=paired_poses(offset))
+        assert reviewer.task is None and reviewer.windows['later'].rapid.pending(clock())
+        clock.value = 107.3
+        reviewer.offer('ordinary', 's', 1, clock(), b'ordinary', stable=True)
+        assert reviewer.active_camera == 'ordinary'
+        await reviewer.task
+        assert len(engine.calls) == 2 and not reviewer.last_rapid
+    finally:
+        await reviewer.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('wait_frames', [2, 8])
+async def test_rapid_window_is_frozen_during_model_startup_and_expires(wait_frames):
+    class StartingEngine(Engine):
+        async def analyze_latest(self, select):
+            await self.ready.wait()
+            return await self.analyze(select())
+
+    engine = StartingEngine(event='none', block=True)
+    reviewer, clock, _, _ = rig(engine)
+    try:
+        for index, offset in enumerate((0, 0, -.07, -.15)):
+            clock.value = 100+index*.25
+            reviewer.offer('camera', 's', 1, clock(), bytes([index]), stable=True, rapid_people=paired_poses(offset))
+        task = reviewer.task
+        assert task and reviewer.stability_pending('camera', 's', 1)
+        await asyncio.sleep(0)
+        for index in range(wait_frames):
+            clock.value = 101.5 + index*.85
+            reviewer.offer('camera', 's', 1, clock(), b'later', stable=True, rapid_people=[])
+        engine.ready.set()
+        await task
+        expected = [tuple((100+i*.25, bytes([i])) for i in range(4))] if wait_frames == 2 else []
+        assert engine.calls == expected
+    finally:
+        await reviewer.close()
+
+
+@pytest.mark.asyncio
+async def test_retiring_a_previous_source_does_not_cancel_the_current_camera():
+    engine = Engine()
+    reviewer, clock, _, _ = rig(engine)
+    try:
+        await feed(reviewer, clock, 0, 4)
+        assert reviewer.last_camera == 'camera'
+        engine.ready.clear()
+        for value in (106,107,108,109):
+            clock.value = value
+            reviewer.offer('other', 's', 1, value, b'current', stable=True)
+        await asyncio.sleep(0)
+        task = reviewer.task
+        assert reviewer.active_camera == 'other' and task
+        reviewer.clear('camera')
+        assert not task.cancelling()
+        engine.ready.set()
+        await task
+        assert reviewer.last_camera == 'other'
+    finally:
+        await reviewer.close()
 
 
 @pytest.mark.asyncio

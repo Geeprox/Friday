@@ -25,6 +25,7 @@
 .safety-extra-frames{margin-block-start:12px}
 .safety-extra-frames summary{padding-block:10px;cursor:pointer}
 .safety-extra-frames[open] summary{margin-block-end:8px}
+.safety-frames[data-sequence=rapid]{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:480px){.safety-posture{grid-template-columns:minmax(0,1fr);gap:8px}}
 @media(max-width:1050px){
  .safety-page .safety-history{grid-template-columns:minmax(0,1fr)}

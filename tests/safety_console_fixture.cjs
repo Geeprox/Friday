@@ -41,8 +41,8 @@ class Element{
  const safetyOptions={onOpenRecording:(output,item)=>{output.replaceChildren();if(item){opened.push(item);output.append(new Element('video'));}},onArchiveSettings:()=>setups++};
  const context=vm.createContext({document,fetch,Date,JSON,console,root,safetyOptions,setInterval:f=>(interval=f,1),clearInterval(){},setTimeout(){},clearTimeout(){},Blob,URL});
  const labelsSource=fs.readFileSync('homeplane/static/safety-event-labels.js','utf8').replace(/export /g,'');
- const labels=vm.runInContext('(function(){'+labelsSource+';return {soundReviewNames,isSafetyOutputTest,safetyEventTitle};})()',context);
- Object.assign(context,{soundNames:labels.soundReviewNames,isOutputTest:labels.isSafetyOutputTest,eventTitle:labels.safetyEventTitle});
+ const labels=vm.runInContext('(function(){'+labelsSource+';return {soundReviewNames,isSafetyOutputTest,safetyEventTitle,isRapidMovementReview};})()',context);
+ Object.assign(context,{soundNames:labels.soundReviewNames,isOutputTest:labels.isSafetyOutputTest,eventTitle:labels.safetyEventTitle,isRapidMovementReview:labels.isRapidMovementReview});
  vm.runInContext(fs.readFileSync('homeplane/static/safety.js','utf8').replace(/^import .*;$/gm,'').replace('export function mountSafety','function mountSafety'),context);
  const owner=vm.runInContext('mountSafety(root,safetyOptions)',context),settle=()=>new Promise(setImmediate);await settle();
  assert.equal(calls.length,2);assert(calls.every(c=>!c.body),'viewing safety must be silent and read-only');

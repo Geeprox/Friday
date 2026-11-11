@@ -1,5 +1,5 @@
 /* Local safety review. Untrusted names and observations are always text nodes. */
-import {soundReviewNames as soundNames,isSafetyOutputTest as isOutputTest,safetyEventTitle as eventTitle} from './safety-event-labels.js';
+import {soundReviewNames as soundNames,isSafetyOutputTest as isOutputTest,safetyEventTitle as eventTitle,isRapidMovementReview} from './safety-event-labels.js';
 export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiveSettings=()=>go('Settings'),initialEventId=null,onEventSelected=()=>{}}={}){
  const base='/api/embodied/safety';let alive=true,report=null,busy=false,version=0,lastEvents='',lastDetail='',selected=null,selectionVersion=0,timer,events=[],historyLoaded=false,retrying=false,retryController=null,retryTimer=null;
  const validEventId=id=>typeof id==='string'&&/^[a-f0-9]{32}$/.test(id)?id:null;let requested=validEventId(initialEventId);
@@ -122,9 +122,13 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  function missingEvent(id,{focus=false}={}){selected=id;lastDetail='';selectionVersion++;stopRecording();recordings.replaceChildren();detail.hidden=false;for(const row of eventRows.values())row.setAttribute('aria-current','false');const heading=el('h2','这条提醒已不在记录中',{tabindex:'-1'});detailBody.replaceChildren(heading,button('查看近期提醒',()=>{const current=events.find(e=>e.review==='unreviewed')||events[0];if(current)choose(current.id);else backToList();}));if(focus)focusDetail(heading);}
  function frameGrid(event,frames){
    const grid=el('div',null,{class:'safety-frames'});
+   const sequence=isRapidMovementReview(event)&&frames.length===4;
+   if(sequence)grid.dataset.sequence='rapid';
    for(const frame of frames){
      const time=new Date(frame.at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'});
-     grid.append(add(el('figure'),el('img',null,{src:base+'/events/'+event.id+'/frames/'+frame.ordinal,alt:time+' 的关键帧',loading:'lazy'}),el('figcaption',time)));
+     const phase=sequence?['动作前','动作前','动作中','动作后段'][frame.ordinal]:null;
+     const caption=phase?phase+' · '+(frame.at-frames[0].at).toFixed(2)+' 秒':time;
+     grid.append(add(el('figure'),el('img',null,{src:base+'/events/'+event.id+'/frames/'+frame.ordinal,alt:(phase||time)+'的关键帧',loading:'lazy'}),el('figcaption',caption)));
    }
    return grid;
  }
@@ -134,16 +138,23 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    lastDetail=fingerprint;
    const focusedReview=selected===event.id&&document.activeElement&&detailBody.contains(document.activeElement)?document.activeElement.getAttribute('data-review'):null;
    const extraOpen=selected===event.id&&detailBody.querySelector('.safety-extra-frames')?.open;
-   if(selected!==event.id){selectionVersion++;stopRecording();recordings.replaceChildren();}selected=event.id;detail.hidden=false;const heading=el('h2',eventTitle(event),{tabindex:'-1'});detailBody.replaceChildren(heading,el('p',event.message),el('p',reviewNames[event.review]||'待查看'));
+   if(selected!==event.id){selectionVersion++;stopRecording();recordings.replaceChildren();}
+   selected=event.id;detail.hidden=false;
+   const heading=el('h2',eventTitle(event),{tabindex:'-1'});
+   const rapid=isRapidMovementReview(event),review=reviewNames[event.review]||'待查看';
+   const source=event.camera?(event.camera_name||'摄像头记录')+' · '+new Date(eventTime(event)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'';
+   detailBody.replaceChildren(heading);
+   if(rapid)detailBody.append(el('p',[source,review].filter(Boolean).join(' · '),{class:'caption'}));
+   else detailBody.append(el('p',event.message),el('p',review));
    for(const[id,row]of eventRows)row.setAttribute('aria-current',String(id===event.id));
    if(event.kind==='fall'||isOutputTest(event))detailBody.append(el('p',audioNames[event.announcement.status]||'播报状态未知',{role:'status'}));
-   if(event.observation)detailBody.append(el('h3','模型观察 · 待你核对'),el('p',event.observation));
-   if(event.camera)detailBody.append(el('p',(event.camera_name||'摄像头记录')+' · '+new Date(eventTime(event)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}),{class:'caption'}));
+   if(event.observation&&!rapid)detailBody.append(el('h3','模型观察 · 待你核对'),el('p',event.observation));
+   if(source&&!rapid)detailBody.append(el('p',source,{class:'caption'}));
    const actions=el('div',null,{class:'safety-actions'});
    if(!event.simulated&&event.camera){const recording=button('查看附近录像',()=>void openRecordings(event));recording.className='primary';actions.append(recording);}
    let restoreFocus;
    for(const[value,label]of [['acknowledged',event.review==='acknowledged'?'已查看':'我已查看'],['false_alarm','标记误报']]){const action=button(label,async()=>{try{await api('/events/'+event.id+'/review',{review:value});await refresh();}catch{status.textContent='标记未保存，请重试。';}});action.setAttribute('data-review',value);action.setAttribute('aria-pressed',String(event.review===value));if(value===focusedReview)restoreFocus=action;actions.append(action);}
-   detailBody.append(actions);
+   if(!rapid)detailBody.append(actions);
    if(event.frames.length){
      detailBody.append(el('h3','关键帧'));
      if(event.visual_kind==='prone_posture'&&event.frames.length===8){
@@ -153,6 +164,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
        extra.open=Boolean(extraOpen);detailBody.append(extra);
      }else detailBody.append(frameGrid(event,event.frames));
    }else detailBody.append(el('p',isOutputTest(event)?'播报测试不采集摄像头画面。':'没有可用关键帧。',{class:'caption'}));
+   if(rapid)detailBody.append(actions);
    const exportEvent=button('导出事件记录',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(event,null,2)],{type:'application/json'}));const a=el('a',null,{href:url,download:'Friday-safety-'+event.id+'.json'});a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});exportEvent.className='text-button safety-export';detailBody.append(exportEvent);
    if(focus)focusDetail(heading);else restoreFocus?.focus({preventScroll:true});
  }

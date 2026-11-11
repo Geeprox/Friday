@@ -1,7 +1,9 @@
 export const soundReviewNames={crying:'疑似哭声',scream:'疑似尖叫声',glass_break:'疑似破碎声',alarm:'疑似警报声'};
 export const isSafetyOutputTest=event=>event.simulated&&event.status==='test';
+export const isRapidMovementReview=event=>event.kind==='visual_review'&&event.visual_kind==='rapid_movement'&&event.basis==='same_pair_rapid_window';
 export function safetyEventTitle(event,{includePerson=true}={}){
  if(isSafetyOutputTest(event))return '播报测试';
+ if(isRapidMovementReview(event))return '快速搬动';
  if(event.kind==='visual_review')return event.visual_kind==='prone_posture'?'疑似趴卧':'画面待复核';
  if(event.kind==='sound_review'){
   if(event.sound_kind==='crying'&&event.sound_evidence?.pattern==='sustained_infant_cry')return '疑似持续婴儿哭声';

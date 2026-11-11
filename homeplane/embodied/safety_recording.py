@@ -112,7 +112,7 @@ class SafetyRecorder:
                 self._drop(job)
 
     def submit(self, *, camera, session, context, token, captured, revision, event, frames,
-               person=None, announce=False, feature=None):
+               person=None, announce=False, feature=None, require_complete=False):
         self.maintain()
         owned = list(self.jobs.values())
         if self.active is not None and self.active.identifier not in self.jobs:
@@ -128,8 +128,12 @@ class SafetyRecorder:
                 self.dropped += 1
                 return None
             available = min(available, self.MAX_REVIEW_BYTES - sum(self.size(job) for job in reviews))
+        frames = tuple(frames)[-16:]
+        if require_complete and sum(len(jpeg) for _, jpeg in frames) > available:
+            self.dropped += 1
+            return None
         chosen = []
-        for stamp, jpeg in reversed(tuple(frames)[-16:]):
+        for stamp, jpeg in reversed(frames):
             if len(jpeg) <= available:
                 chosen.append((stamp, jpeg))
                 available -= len(jpeg)
