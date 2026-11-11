@@ -32,6 +32,7 @@ RULES = (
     "守卫不能连续两晚守护同一人；同守同救会出局。猎人被毒杀时不能开枪。",
     "夜间各角色环节均按固定时长进行；未提交行动视为放弃。摄像头指认不直接计入投票。",
 )
+SPEAKER_SECONDS = 30
 
 
 class GameError(ValueError):
@@ -61,8 +62,12 @@ class Player:
 
 class WerewolfGame:
     def __init__(self, count: int, *, clock: Callable[[], float] = time.monotonic,
-                 rng=None, night_seconds=30, discussion_seconds=90, vote_seconds=45):
+                 rng=None, night_seconds=30, discussion_seconds=90, vote_seconds=45,
+                 discussion_mode="free"):
         self.pack = role_pack(count)
+        if discussion_mode not in ("free", "turns"):
+            raise GameError("discussion_mode_invalid")
+        self.discussion_mode = discussion_mode
         self.count = count
         self.clock = clock
         self.rng = rng or random.SystemRandom()
@@ -95,6 +100,8 @@ class WerewolfGame:
         self.vote_result = None
         self.runoff_candidates: list[int] = []
         self.speaker_seat: int | None = None
+        self.speaker_order: tuple[int, ...] = ()
+        self.speaker_index = 0
         self.pending_hunter = None
         self.after_hunter = None
         self.recent_deaths: list[int] = []
@@ -165,13 +172,30 @@ class WerewolfGame:
         self._phase("lobby", "请确认座位，准备好后重新发牌。")
         self.lobby_revision = self.revision
 
-    def _phase(self, phase, text):
+    def _phase(self, phase, text, *, speakers=()):
         self.phase = phase
         self.revision += 1
         self.choices = {}
-        self.speaker_seat = None
-        self.deadline = self.clock() + self.durations[phase] if phase in self.durations else None
+        self.speaker_order, self.speaker_index = speakers, 0
+        self.speaker_seat = speakers[0] if speakers else None
+        duration = SPEAKER_SECONDS if speakers else self.durations.get(phase)
+        self.deadline = self.clock() + duration if duration is not None else None
+        if speakers:
+            call = f"请 {self.speaker_seat} 号发言。"
+            text = f"{text} {call}" if text else call
         self._announce(text)
+
+    def _discussion(self, phase, text):
+        speakers = ()
+        if self.discussion_mode == "turns":
+            if phase == "runoff_discussion":
+                speakers = tuple(self.runoff_candidates)
+            else:
+                start = (self.round - 1) % self.count + 1
+                # 每个白天顺延起始座位，跳过已经出局的玩家。
+                alive = (seat for seat, player in self.players.items() if player.alive)
+                speakers = tuple(sorted(alive, key=lambda seat: (seat - start) % self.count))
+        self._phase(phase, text, speakers=speakers)
 
     def _night_phases(self):
         return (["guard"] if "guard" in self.pack else []) + ["wolves", "seer", "witch"]
@@ -314,7 +338,8 @@ class WerewolfGame:
             self._phase("hunter", f"{self.pending_hunter} 号猎人，请在手机上选择是否开枪。")
         elif not self._check_win():
             if continuation == "discussion":
-                self._phase("discussion", "现在开始自由发言。")
+                text = "" if self.discussion_mode == "turns" else "现在开始自由发言。"
+                self._discussion("discussion", text)
             else:
                 self._night()
 
@@ -329,7 +354,7 @@ class WerewolfGame:
 
     def set_speaker(self, seat):
         eligible = self.eligible_speakers()
-        if not eligible or self.deadline is None or self.clock() >= self.deadline:
+        if self.speaker_order or not eligible or self.deadline is None or self.clock() >= self.deadline:
             raise GameError("speaker_unavailable")
         if seat is not None and (type(seat) is not int or seat not in eligible):
             raise GameError("speaker_unavailable")
@@ -344,6 +369,14 @@ class WerewolfGame:
         else:
             self._announce("继续自由发言。")
 
+    def finish_speaking(self, seat, revision):
+        if type(revision) is not int or revision != self.revision:
+            raise GameError("phase_changed")
+        if (not self.speaker_order or self.paused or seat != self.speaker_seat
+                or self.deadline is None or self.clock() >= self.deadline):
+            raise GameError("speaker_unavailable")
+        self.advance()
+
     def _close_vote(self):
         voters = [s for s in sorted(self.players) if "vote" in self.actions(s)]
         votes = {s: self.choices.get(s, ("pass", None))[1] for s in voters}
@@ -355,7 +388,7 @@ class WerewolfGame:
                                 tied=leaders if len(leaders) > 1 else [])
         if len(leaders) > 1 and self.phase == "vote":
             self.runoff_candidates = leaders
-            self._phase("runoff_discussion", "、".join(f"{s} 号" for s in leaders) + "平票。请平票玩家发言。")
+            self._discussion("runoff_discussion", "、".join(f"{s} 号" for s in leaders) + "平票。请平票玩家发言。")
         else:
             out = leaders[0] if len(leaders) == 1 else None
             self._kill(out, "vote")
@@ -365,6 +398,13 @@ class WerewolfGame:
     def advance(self):
         if self.paused:
             raise GameError("game_paused")
+        if self.speaker_index + 1 < len(self.speaker_order):
+            self.speaker_index += 1
+            self.speaker_seat = self.speaker_order[self.speaker_index]
+            self.deadline = self.clock() + SPEAKER_SECONDS
+            self.revision += 1
+            self._announce(f"请 {self.speaker_seat} 号发言。")
+            return
         first = len(self.announcements)
         if self.phase == "identity":
             if len(self.identities_confirmed) != self.count:
@@ -424,6 +464,16 @@ class WerewolfGame:
     def public(self):
         seconds = self.remaining if self.paused else max(0, self.deadline - self.clock()) if self.deadline else None
         phase_name = '重新准备' if self.phase == 'lobby' and self.lobby_revision else PHASE_NAMES[self.phase]
+        speaking_turn = None
+        if self.speaker_order:
+            if self.phase == 'discussion':
+                phase_name = '轮流发言'
+            upcoming = self.speaker_order[self.speaker_index + 1:self.speaker_index + 2]
+            speaking_turn = dict(position=self.speaker_index + 1, total=len(self.speaker_order),
+                                 next_seat=upcoming[0] if upcoming else None)
+        rules = list(RULES)
+        if self.discussion_mode == "turns":
+            rules.append(f"白天及平票时按座位轮流发言，每位 {SPEAKER_SECONDS} 秒。")
         return dict(phase=self.phase, phase_name=phase_name, revision=self.revision,
                     round=self.round, paused=self.paused, seconds_left=round(seconds) if seconds is not None else None,
                     player_count=self.count, joined=len(self.players),
@@ -433,10 +483,11 @@ class WerewolfGame:
                              for s, p in sorted(self.players.items())],
                     announcements=self.announcements[-16:], host_script=dict(self.host_script), vote_result=self.vote_result,
                     runoff_candidates=list(self.runoff_candidates), recent_deaths=list(self.recent_deaths),
-                    speaker_seat=self.speaker_seat,
+                    discussion_mode=self.discussion_mode, speaker_seat=self.speaker_seat,
+                    **({"speaking_turn": speaking_turn} if speaking_turn else {}),
                     **({"lobby_revision": self.lobby_revision} if self.phase == "lobby" else {}),
                     **({"identities_confirmed": len(self.identities_confirmed)} if self.phase == "identity" else {}),
-                    winner=self.winner, end_reason=self.end_reason, rules=list(RULES))
+                    winner=self.winner, end_reason=self.end_reason, rules=rules)
 
     def private(self, seat):
         if seat not in self.players:

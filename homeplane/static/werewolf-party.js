@@ -254,6 +254,17 @@ async function submitChoice() {
   }
  });
 }
+async function finishSpeaking(revision) {
+ if(syncing)return;
+ await perform(async()=>{
+  try{
+   await api('speaker-done',{revision},data=>updatePlayer(data,true));
+  }catch(error){
+   if(retired(error)||error.message.endsWith('access_required'))throw error;
+   holdView();
+  }
+ });
+}
 function actionPanel() {
  const section = h('section', null, 'action-panel');
  if (game.paused) {
@@ -264,9 +275,16 @@ function actionPanel() {
   if (!player.alive) section.append(h('h2', '你已出局'), h('p', '可以继续观看，请保留本局身份。'));
   else if (game.phase === 'discussion' || game.phase === 'runoff_discussion') {
    const seat = game.speaker_seat;
+   const turn = game.speaking_turn;
    const prompt = seat === player.seat ? '轮到你发言' : seat ? seat + ' 号正在发言' :
     game.phase === 'runoff_discussion' ? '请平票玩家发言' : '现在可以发言';
    section.append(h('h2', prompt));
+   if(turn&&seat===player.seat){
+    const revision=game.revision;
+    section.append(button('发言完毕',()=>finishSpeaking(revision),'primary'));
+   }else if(turn?.next_seat===player.seat){
+    section.append(h('p','你是下一位。'));
+   }
   }
   else section.append(h('h2', '等待你的回合'));
   return section;
@@ -487,9 +505,14 @@ function renderDisplay(report, waiting=false) {
  const finished = g.phase === 'finished';
  document.body.dataset.night = String(night);
  roomLabel.textContent = g.round ? '狼人杀 · 第 ' + g.round + ' 轮' : '狼人杀 · ' + g.player_count + ' 人局';
- const title = waiting ? '正在同步对局' : readyForNight ? '准备入夜' : g.phase_name;
+ const speaker = waiting || g.paused ? null : g.speaker_seat;
+ const turn = waiting || g.paused ? null : g.speaking_turn;
+ const upcoming = turn?.next_seat;
+ const turnPrompt = (g.phase === 'runoff_discussion' ? '平票发言 · ' : '') +
+  (upcoming ? '下一位 ' + upcoming + ' 号' : '发言后进入投票');
+ const title = waiting ? '正在同步对局' : readyForNight ? '准备入夜' : turn ? speaker + ' 号发言' : g.phase_name;
  const script = waiting ? '连接恢复后会自动更新。' : readyForNight ? '请把手机放低，等候首夜。' :
-  g.paused ? '等待主持人恢复游戏。' : (g.host_script || g.announcements?.at(-1))?.text || '';
+  g.paused ? '等待主持人恢复游戏。' : turn ? turnPrompt : (g.host_script || g.announcements?.at(-1))?.text || '';
  if (view.title.textContent !== title) view.title.textContent = title;
  if (view.script.textContent !== script) view.script.textContent = script;
  void updateInvitation(view, report, waiting);
@@ -500,11 +523,11 @@ function renderDisplay(report, waiting=false) {
  else view.clock.setAttribute('aria-label', g.paused ? '本局已暂停' : '剩余 ' + seconds + ' 秒');
 
  const hints = waiting ? [] : report.camera_hints || [];
- const speaker = waiting || g.paused ? null : g.speaker_seat;
  const summary=finished||dealing&&waiting?'':dealing?(g.identities_confirmed??0)+' / '+g.player_count+' 已确认':
-  lobby?g.players.filter(p=>p.ready).length+' / '+g.player_count+' 已准备':g.players.filter(p=>p.alive).length+' / '+g.player_count+' 在场';
+  lobby?g.players.filter(p=>p.ready).length+' / '+g.player_count+' 已准备':
+   turn?'发言 '+turn.position+' / '+turn.total:g.players.filter(p=>p.alive).length+' / '+g.player_count+' 在场';
  if(view.seatSummary.textContent!==summary)view.seatSummary.textContent=summary;
- const rosterKey = JSON.stringify([lobby, finished, night, g.player_count, g.players, g.roles, hints, speaker]);
+ const rosterKey = JSON.stringify([lobby, finished, night, g.player_count, g.players, g.roles, hints, speaker, upcoming]);
  if (view.rosterKey !== rosterKey) {
   view.rosterKey = rosterKey;
   view.seatTitle.textContent = finished ? '身份揭晓' : '座位';
@@ -515,7 +538,8 @@ function renderDisplay(report, waiting=false) {
    const p = players.get(seat);
    const hint = advice.get(seat);
    const item = h('li');
-   item.dataset.state = !p ? 'empty' : p.alive === false ? 'out' : seat === speaker ? 'speaking' : lobby && p.ready ? 'ready' : 'present';
+   item.dataset.state = !p ? 'empty' : p.alive === false ? 'out' : seat === speaker ? 'speaking' :
+    seat === upcoming ? 'upcoming' : lobby && p.ready ? 'ready' : 'present';
    const label = h('div', null, 'public-seat-label');
    const name = h('strong', p?.name || '空位');
    if (p) name.title = p.name;
@@ -526,6 +550,7 @@ function renderDisplay(report, waiting=false) {
    else if (lobby && p) status.push(p.ready ? '已准备' : '未准备');
    else if (p && !night && !finished) {
     if (seat === speaker) status.push('发言中');
+    else if (seat === upcoming) status.push('下一位');
     else if (hint?.hand_raised) status.push('举手');
     if (hint?.pointing_at) status.push('指向 ' + hint.pointing_at + ' 号');
    }

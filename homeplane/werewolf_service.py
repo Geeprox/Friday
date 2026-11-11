@@ -94,6 +94,11 @@ class ConfirmIdentity(BaseModel):
     revision: int = Field(ge=0)
 
 
+class FinishSpeaking(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: int = Field(ge=0)
+
+
 class Lobby(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     code: str = Field(pattern=r"^\d{6}$")
@@ -246,17 +251,17 @@ class WerewolfService:
             report.update(effects=self.effects.status(), join_code=self.join_code,
                           phone_url=self.phone_url(),
                           display_url=self.origin + "/display#token=" + self.public_token if self.origin else None,
-                          speaker_seats=self.game.eligible_speakers(),
+                          speaker_seats=[] if self.game.speaker_order else self.game.eligible_speakers(),
                           camera_enabled=self.camera_enabled, camera_available=camera_available,
                           camera_candidates=list(self.camera_candidates) if camera_available else [],
                           camera_bindings=[dict(seat=s, camera=v[0], session=v[1], track=v[2]) for s, v in self.bindings.items()])
         return report
 
-    async def create(self, count, *, address=None, lights=(), narration=False, camera=False):
+    async def create(self, count, *, address=None, lights=(), narration=False, camera=False, discussion_mode="free"):
         async with self.lock:
             if self.game:
                 raise GameError("game_already_exists")
-            game = self.game_factory(count, clock=self.clock)
+            game = self.game_factory(count, clock=self.clock, discussion_mode=discussion_mode)
             addresses = await asyncio.to_thread(self.addresses) if address else []
             if address is not None and address not in addresses:
                 raise GameError("phone_address_unavailable")
@@ -353,6 +358,15 @@ class WerewolfService:
             self.game.confirm_identity(seat, revision)
             return self._private(seat)
 
+    async def finish_speaking(self, token, revision):
+        async with self.lock:
+            seat = self._player(token)
+            self.game.tick()
+            self.game.finish_speaking(seat, revision)
+            result = self._private(seat)
+        self._schedule_effects()
+        return result
+
     async def choose(self, token, choice: Choice):
         async with self.lock:
             seat = self._player(token)
@@ -439,7 +453,7 @@ class WerewolfService:
         previous = self.game
         if previous.phase != 'finished':
             raise GameError('rematch_unavailable')
-        game = self.game_factory(previous.count, clock=self.clock)
+        game = self.game_factory(previous.count, clock=self.clock, discussion_mode=previous.discussion_mode)
         game.carry_seats(previous)
         await self._release_camera()
         if self.light_bindings:
@@ -759,7 +773,7 @@ def phone_app(owner, origin):
             # Authenticated players sharing a hotspot/proxy must not consume
             # one another's ordinary polling budget. Invalid/random tokens
             # retain the address budget; they cannot mint unlimited buckets.
-            if request.url.path in {'/api/player', '/api/ready', '/api/identity', '/api/choice'}:
+            if request.url.path in {'/api/player', '/api/ready', '/api/identity', '/api/choice', '/api/speaker-done'}:
                 try:
                     owner._player(supplied)
                 except GameError:
@@ -842,6 +856,10 @@ def phone_app(owner, origin):
     @app.post("/api/identity")
     async def confirm_identity(payload: ConfirmIdentity, request: Request):
         return await owner.confirm_identity(token(request), payload.revision)
+
+    @app.post("/api/speaker-done")
+    async def finish_speaking(payload: FinishSpeaking, request: Request):
+        return await owner.finish_speaking(token(request), payload.revision)
 
     @app.post("/api/choice")
     async def choice(payload: Choice, request: Request):

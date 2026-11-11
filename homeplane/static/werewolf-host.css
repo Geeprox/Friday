@@ -81,6 +81,16 @@
  font-weight:650;
  opacity:1;
 }
+.ww-setup-fields > .ww-discussion-mode {
+ grid-column:1/-1;
+}
+.ww-host-controls:has(>[data-turn-command]) {
+ display:grid;
+ grid-template-columns:repeat(2,minmax(0,1fr));
+}
+.ww-host-controls:has(>[data-turn-command]) > button:last-child {
+ grid-column:1/-1;
+}
 @media(max-width:680px) {
  .ww-speaker-controls {
   grid-column:1/-1;

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from .werewolf import GameError, RULES
+from .werewolf import GameError, RULES, SPEAKER_SECONDS
 from .werewolf_effects import HostEffects, SceneLights
 from .werewolf_service import WerewolfService, join_qr_svg
 
@@ -21,6 +21,7 @@ class Create(BaseModel):
     lights: list[str] = Field(default_factory=list, max_length=12)
     narration: bool = False
     camera: bool = False
+    discussion_mode: Literal["free", "turns"] = "free"
 
 
 class Control(BaseModel):
@@ -76,7 +77,8 @@ def create_router(core, lock, embodied, directory, *, owner=None):
         addresses, lights = await asyncio.gather(asyncio.to_thread(owner.addresses), owner.effects.lights.choices())
         return dict(addresses=addresses, lights=lights, speech=report(),
                     recovery=owner.effects.lights.status(), current=owner.host(),
-                    rules=list(RULES), qr_available=importlib.util.find_spec("qrcode") is not None)
+                    rules=list(RULES), speaker_seconds=SPEAKER_SECONDS,
+                    qr_available=importlib.util.find_spec("qrcode") is not None)
 
     @router.get("/join-qr")
     async def join_qr(session: str):
@@ -96,7 +98,8 @@ def create_router(core, lock, embodied, directory, *, owner=None):
     @router.post("/create")
     async def create(payload: Create):
         return await guarded(owner.create(payload.players, address=payload.address,
-                                           lights=payload.lights, narration=payload.narration, camera=payload.camera))
+                                           lights=payload.lights, narration=payload.narration, camera=payload.camera,
+                                           discussion_mode=payload.discussion_mode))
 
     @router.post("/control")
     async def control(payload: Control):

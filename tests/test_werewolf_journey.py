@@ -9,7 +9,7 @@ from fastapi import FastAPI
 import httpx
 import pytest
 
-from homeplane.werewolf import WerewolfGame
+from homeplane.werewolf import SPEAKER_SECONDS, WerewolfGame
 from homeplane.werewolf_api import create_router
 from homeplane.werewolf_effects import HostEffects, SceneLights
 from homeplane.werewolf_service import WerewolfService, phone_app
@@ -78,6 +78,7 @@ async def check_rematch(service, host, tv, phones, lights, lamp, spoken, writes)
     assert next_room['session']==room['session'] and next_room['phone_url']==room['phone_url']
     assert next_room['display_url']==room['display_url'] and next_room['join_code']==room['join_code']
     assert lobby['phase']=='lobby' and lobby['revision']>previous['revision']
+    assert lobby['discussion_mode']==previous['discussion_mode'] and 'speaking_turn' not in lobby
     assert lobby['phase_name']=='重新准备'
     assert lobby['host_script']['id']>previous['host_script']['id']
     assert not lobby['vote_result'] and lobby['winner'] is None and lobby['round']==0
@@ -110,10 +111,54 @@ async def check_rematch(service, host, tv, phones, lights, lamp, spoken, writes)
     assert lamp['state']=='on' and lamp['attributes']['brightness']==123 and not lights.records
 
 
+async def check_ordered_turns(service, host, tv, phones, spoken, writes, first):
+    current, next_seat = first['speaker_seat'], first['speaking_turn']['next_seat']
+    third = next(p['seat'] for p in first['players'] if p['alive'] and p['seat'] not in {current, next_seat})
+    before_writes = len(writes)
+    assert current == 1 and next_seat == 2 and first['seconds_left'] == SPEAKER_SECONDS
+    path = '/api/speaker-done'
+    request = dict(revision=first['revision'])
+    assert (await tv.post(path, json=request)).status_code == 403
+    denied = await phones[next_seat].post(path, json=request)
+    assert denied.status_code == 409 and denied.json()['detail'] == 'speaker_unavailable'
+
+    async def control(action, state):
+        return await host.post('/api/games/werewolf/control', json=dict(
+            action=action, session=service.session, revision=state['revision'], event_id=f'SYNTHETIC-turn-{action}'))
+
+    service.clock.now += 7
+    paused = (await control('pause', first)).json()['game']
+    assert paused['paused'] and paused['seconds_left'] == SPEAKER_SECONDS - 7
+    service.clock.now += 60
+    await service.step()
+    assert (await tv.get('/api/public')).json()['game'] == paused
+    assert (await phones[current].post(path,json=dict(revision=paused['revision']))).status_code == 409
+    resumed = (await control('resume', paused)).json()['game']
+    assert resumed['speaker_seat'] == current and resumed['seconds_left'] == paused['seconds_left']
+    request = dict(revision=resumed['revision'])
+    finished = await asyncio.gather(*(phones[current].post(path, json=request) for _ in range(2)))
+    assert sorted(r.status_code for r in finished) == [200, 409]
+    handoff = (await tv.get('/api/public')).json()['game']
+    assert handoff['revision'] == resumed['revision'] + 1
+    assert handoff['speaker_seat'] == next_seat and handoff['seconds_left'] == SPEAKER_SECONDS
+    assert handoff['speaking_turn'] == dict(position=2,total=first['speaking_turn']['total'],next_seat=third)
+    assert (await phones[next_seat].get('/api/player')).json()['public'] == handoff
+    await service.effect_task
+    assert spoken[-1] == f'请 {next_seat} 号发言。'
+    service.clock.now += SPEAKER_SECONDS
+    await service.step()
+    timed = (await tv.get('/api/public')).json()['game']
+    assert timed['speaker_seat'] == third and timed['seconds_left'] == SPEAKER_SECONDS
+    assert timed['revision'] == handoff['revision'] + 1
+    assert not timed['vote_result'] and len(writes) == before_writes
+    await service.effect_task
+    assert spoken[-1] == f'请 {third} 号发言。'
+    return timed
+
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('count',[6,9,12])
-async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_path,count):
+@pytest.mark.parametrize('count,mode',[(6,'free'),(9,'free'),(12,'free'),(6,'turns'),(12,'turns')])
+async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_path,count,mode):
     core, rows, writes, *_=rig(tmp_path)
     lights=SceneLights(core,asyncio.Lock(),tmp_path/'scene.json')
     spoken=[]
@@ -126,12 +171,14 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
     script=set()
     try:
         target=(await lights.choices())[0]['id']
-        await service.create(count,address='192.168.50.20',lights=[target],narration=True,camera=camera is not None)
-        service.pump.cancel();await asyncio.gather(service.pump,return_exceptions=True);service.pump=None
-        party=phone_app(service,service.origin)
         host_app=FastAPI();host_app.include_router(create_router(core,None,None,tmp_path,owner=service))
         async with AsyncExitStack() as stack:
             host=await stack.enter_async_context(httpx.AsyncClient(transport=httpx.ASGITransport(app=host_app),base_url='http://host.invalid',headers={'Origin':'http://host.invalid'}))
+            created=await host.post('/api/games/werewolf/create',json=dict(players=count,address='192.168.50.20',
+                lights=[target],narration=True,camera=camera is not None,discussion_mode=mode))
+            assert created.status_code==200 and created.json()['game']['discussion_mode']==mode
+            service.pump.cancel();await asyncio.gather(service.pump,return_exceptions=True);service.pump=None
+            party=phone_app(service,service.origin)
             tv=await stack.enter_async_context(httpx.AsyncClient(transport=httpx.ASGITransport(app=party),base_url=service.origin,headers={'Authorization':'Bearer '+service.public_token}))
             phones={}
             for seat in range(1,count+1):
@@ -198,12 +245,15 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
                 assert confirmed.json()['public']['players'] == deal['players']
             assert not writes
             assert (await first_night(f'SYNTHETIC-first-night-{count}')).status_code == 200
-            for step in range(64):
+            for step in range(100):
                 await asyncio.gather(service.effect_task,return_exceptions=False)
                 public=(await tv.get('/api/public')).json()['game']
-                if camera and public['phase'] == 'discussion' and public['round'] == 1:
-                    await check_speaking_turn(service, host, tv, phones, camera, spoken, writes)
-                    public = (await tv.get('/api/public')).json()['game']
+                if public['phase'] == 'discussion' and public['round'] == 1:
+                    if mode == 'turns' and public['speaking_turn']['position'] == 1:
+                        public = await check_ordered_turns(service,host,tv,phones,spoken,writes,public)
+                    elif mode == 'free' and camera:
+                        await check_speaking_turn(service, host, tv, phones, camera, spoken, writes)
+                        public = (await tv.get('/api/public')).json()['game']
                 script.update(a['text']for a in public['announcements'])
                 script.add(public['host_script']['text'])
                 if public['phase']=='finished':break
@@ -228,7 +278,11 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
                     assert response.status_code==200,response.text
                 # All private choices remain absent from the public game.
                 assert (await tv.get('/api/public')).json()['game']==public
-                assert (await host.post('/api/games/werewolf/control',json=dict(action='advance',session=service.session,revision=service.game.revision,event_id=f'SYNTHETIC-advance-{count}-{step}'))).status_code==200
+                if public.get('speaking_turn', {}).get('position', 0) % 2 == 1:
+                    assert (await phones[public['speaker_seat']].post('/api/speaker-done',
+                        json=dict(revision=public['revision']))).status_code==200
+                else:
+                    assert (await host.post('/api/games/werewolf/control',json=dict(action='advance',session=service.session,revision=service.game.revision,event_id=f'SYNTHETIC-advance-{count}-{step}'))).status_code==200
             else:raise AssertionError('match did not complete within its phase budget')
             assert public['winner']=='village' and public['phase']=='finished'
             assert all('role'in p for p in public['players'])

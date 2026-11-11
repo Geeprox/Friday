@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from homeplane.werewolf import GameError, WerewolfGame, role_pack
+from homeplane.werewolf import GameError, SPEAKER_SECONDS, WerewolfGame, role_pack
 
 
 class Clock:
@@ -23,9 +23,9 @@ def confirm_deal(game):
         game.confirm_identity(seat, game.revision)
 
 
-def game(count=9):
+def game(count=9, *, discussion_mode="free"):
     clock = Clock()
-    g = WerewolfGame(count, clock=clock, rng=FixedRoles())
+    g = WerewolfGame(count, clock=clock, rng=FixedRoles(), discussion_mode=discussion_mode)
     for seat in range(1, count + 1):
         g.join(seat, f"玩家 {seat}")
         g.ready(seat, True)
@@ -49,6 +49,31 @@ def until(g, phase):
             return
         g.advance()
     raise AssertionError((g.phase, phase))
+
+
+def test_ordered_discussion_only_gives_runoff_candidates_turns_and_rotates_next_day():
+    g, clock = game(6, discussion_mode="turns")
+    until(g, "discussion")
+    assert g.speaker_order == (1, 2, 3, 4, 5, 6)
+    assert g.public()["speaking_turn"] == dict(position=1, total=6, next_seat=2)
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(4)
+    until(g, "vote")
+    for seat, target in [(1, 2), (2, 3), (3, 2), (4, 3)]:
+        act(g, seat, "vote", target)
+    g.advance()
+    assert g.phase == "runoff_discussion" and g.speaker_order == (2, 3)
+    assert g.speaker_seat == 2 and g.public()["seconds_left"] == SPEAKER_SECONDS
+    g.finish_speaking(2, g.revision)
+    assert g.public()["speaking_turn"] == dict(position=2, total=2, next_seat=None)
+    clock.now += SPEAKER_SECONDS
+    g.tick()
+    assert g.phase == "runoff" and g.speaker_seat is None and "speaking_turn" not in g.public()
+    assert not g.actions(2) and not g.actions(3)
+    act(g, 1, "vote", 2)
+    g.advance()
+    until(g, "discussion")
+    assert g.round == 2 and g.speaker_order == (3, 4, 5, 6, 1)
 
 
 @pytest.mark.parametrize("count", range(6, 13))
