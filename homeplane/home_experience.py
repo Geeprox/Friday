@@ -325,7 +325,8 @@ class HomeExperience:
         if cameras and callable(getattr(self.embodied,'status',None)):
             try:
                 report=await self.embodied.status()
-                camera_sessions={r['camera']:r.get('state','unknown') for r in report.get('camera_sessions',[])}
+                camera_sessions={r['camera']:'recovering' if r.get('recognition')=='recovering'
+                                 else r.get('state','unknown') for r in report.get('camera_sessions',[])}
                 if not report.get('capture_enabled',True):
                     camera_sessions={c['id']:'paused' for c in cameras}
             except (OSError,ValueError,KeyError):pass

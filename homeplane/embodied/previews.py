@@ -101,6 +101,7 @@ class PreviewPool:
         age = time.time() - item["received_at"]
         fresh = 0 <= age < 2
         recognizing = self.recognize and 0 <= age <= 1.5 and item['state'] == 'live'
+        recovering = item.get('recognition_recovering') and item['state'] == 'connecting'
         control = item.get('camera_control')
         if control:
             control = camera_intent_readback(control, mode=item.get('mode', control.get('mode')),
@@ -116,7 +117,8 @@ class PreviewPool:
             shutter_changed=item['shutter_changed'],
             follow_target_available=bool(item.get('follow_picker') and fresh and item['state'] == 'live'),
             audio_enabled=bool(self.recognize and self.on_audio),
-            recognition='running' if recognizing else 'waiting',
+            recognition='running' if recognizing else 'recovering' if recovering else 'waiting',
+            frame_available=bool(self._recovery_frame(camera_id, item)),
             latency_ms=item.get('latency_ms') if recognizing else None,
             people=item.get('people',0) if fresh else 0,
             hands=item.get('hands',0) if fresh else 0,
@@ -131,12 +133,21 @@ class PreviewPool:
             manual_control=bool(item.get('control')),
         )
 
+    def _recovery_frame(self, camera_id, item):
+        if (item.get('recognition_recovering') and self.wall
+                and self.source_current(camera_id, item.get('process'))):
+            return self.wall.frame(camera_id)
+        return None
+
     def frame(self, camera_id):
         item = self.sessions.get(camera_id)
-        if not item or self.status(camera_id)["state"] != "live":
+        if not item:
+            return None
+        recovery_frame = self._recovery_frame(camera_id, item)
+        if not recovery_frame and self.status(camera_id)["state"] != "live":
             return None
         item["expires"] = time.monotonic() + 60
-        return item["frame"]
+        return recovery_frame[0] if recovery_frame else item["frame"]
 
     def source_current(self, camera_id, process):
         item = self.sessions.get(camera_id)
@@ -230,7 +241,7 @@ class PreviewPool:
         mode = item.get('mode')
         item.update(mode=mode if mode in CAMERA_MODES else 'auto' if self.recognize else 'hold',
                     control_epoch=item.get('control_epoch', 0)+1, control=None, manual_tasks=set(),
-                    source_active=False, state='connecting')
+                    source_active=False, state='connecting', recognition_recovering=False)
         latest = None
         stage='initializing'
         wall_epoch = self.wall.begin(selected['id']) if self.wall else None
@@ -250,7 +261,8 @@ class PreviewPool:
                                                  status=item.get('intent_status', 'default'))
                 item['camera_control'] = finish_camera_survey(dict(readback, owner='none'))
             previous_state = item['state']
-            item.update(source_active=False, frame=None, received_at=0, latency_ms=None, people=0, hands=0, animals=0,
+            item.update(source_active=False, recognition_recovering=False, frame=None, received_at=0,
+                        latency_ms=None, people=0, hands=0, animals=0,
                         control=None, control_epoch=item['control_epoch']+1)
             if item.get('pet_tracking'):
                 item['pet_tracking'] = dict(item['pet_tracking'], current=False)
@@ -268,6 +280,19 @@ class PreviewPool:
             owner = self.sessions.get(selected['id'])
             if self.on_clear and (owner is None or owner is item):
                 self.on_clear(selected['id'])
+
+        def recognition_failed(error_class):
+            nonlocal latest
+            if not item['recognition_recovering']:
+                latest = None
+                item.update(frame=None, received_at=0, latency_ms=None, people=0, hands=0, animals=0,
+                            pet_tracking=None, control_epoch=item['control_epoch']+1)
+                if self.wall:
+                    self.wall.clear_observation(selected['id'])
+                if self.on_clear:
+                    self.on_clear(selected['id'])
+            item.update(state='connecting', recognition_recovering=True, error_class=error_class,
+                        error_stage='recognition')
 
         try:
             stage='shutter_readback'
@@ -289,7 +314,6 @@ class PreviewPool:
                 from .camera_recognition import CameraRecognition
                 recognizer = CameraRecognition(selected['id'], self.identity_store)
                 item['recognizer'] = recognizer
-                await recognizer.start()
             elif self.identity_store is not None:
                 from homeplane.people.identity_session import IdentitySession
                 pipeline = IdentitySession(self.identity_store, selected["id"], secrets.token_hex(12), MODELS)
@@ -525,13 +549,15 @@ class PreviewPool:
                         recognizer.animals_enabled = item['mode'] in PET_MODES
                         recognizer.animals_intent = item.get('mode_revision')
                         observation = await recognizer.observe(packet,
-                            source_current=lambda: self.source_current(selected['id'], process))
+                            source_current=lambda: self.source_current(selected['id'], process),
+                            on_vision_failure=recognition_failed)
                         if item['privacy_closed'] or not item['source_active']:break
                         # Inference finishing after a stale input cannot trigger.
                         item['timing'] = recognizer.timing
                         if observation is None or not 0 <= time.time()-packet['received_at'] <= 1.5:
                             item['dropped_frames'] = item.get('dropped_frames',0)+1
-                            if self.on_clear:self.on_clear(selected['id'])
+                            if self.on_clear and not item['recognition_recovering']:
+                                self.on_clear(selected['id'])
                             continue
                         latest = observation
                         if self.on_observation:
@@ -552,6 +578,7 @@ class PreviewPool:
                     age = time.time() - packet["received_at"]
                     item.update(
                         state="live",
+                        recognition_recovering=False,
                         error_class=None,error_stage=None,
                         frame=frame,
                         frames=item["frames"] + 1,

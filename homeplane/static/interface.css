@@ -379,7 +379,7 @@ body .files-root { --files-muted: var(--muted); --files-line: var(--line); --fil
   .product-inspector { width: 100%; padding: 20px; }
   .experience .camera-device-layout:has(.product-inspector:not([hidden])) { grid-template-columns: minmax(0,1fr); }
   .experience .camera-device-layout .product-device-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .camera-device-layout .product-inspector { grid-row: 1; }
+  .camera-device-layout .product-inspector { grid-row: 1; scroll-margin-block-start: 7rem; }
   .experience .house-scene { min-height: 380px; height: 380px; }
   .experience .house-scene.with-spatial-panel { height: 760px; }
   .experience .with-spatial-panel .house-canvas { width: 100%; height: 360px; bottom: auto; }

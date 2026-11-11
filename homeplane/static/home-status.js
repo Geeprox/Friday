@@ -24,20 +24,21 @@ function perceptionService(worker) {
  const active=open.filter(recognizing);
  const waiting=open.filter(session=>!recognizing(session));
  const interrupted=waiting.find(session=>['stale','unavailable','failed'].includes(session.state));
+ const recovering=waiting.find(session=>session.recognition==='recovering');
  const measured=active.filter(session=>Number.isFinite(session.latency_ms)&&session.latency_ms>=0);
  const slowest=measured.reduce((latest,session)=>!latest||session.latency_ms>latest.latency_ms?session:latest,null);
  const slow=slowest?.latency_ms>1000;
- const source=interrupted||waiting[0]||(slow?slowest:null);
- const sourceText=interrupted?'画面中断':waiting.length?({
+ const source=interrupted||recovering||waiting[0]||(slow?slowest:null);
+ const sourceText=interrupted?'画面中断':recovering?'感知恢复中':waiting.length?({
   connecting:'正在连接',stopped:'待命',live:'等待画面',
  }[source.state]||'状态未更新'):'处理较慢';
 
  let summary;
  if(active.length) {
   const count=waiting.length?active.length+' / '+open.length:active.length;
-  summary=row(interrupted||slow?'degraded':waiting.length?'waiting':'on',count+' 台感知中');
+  summary=row(interrupted||recovering||slow?'degraded':waiting.length?'waiting':'on',count+' 台感知中');
  }else{
-  summary=interrupted?row('degraded','暂不可用'):row('waiting','等待画面');
+  summary=interrupted?row('degraded','暂不可用'):recovering?row('degraded','正在恢复'):row('waiting','等待画面');
  }
  return {...summary,source:source?{camera:source.camera,text:sourceText}:null,
   latency:slowest?{ms:slowest.latency_ms,slow,multiple:measured.length>1}:null};

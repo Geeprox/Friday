@@ -48,7 +48,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  const readingValue=r=>r.available===false||r.value==null?'暂时不可用':String(r.value)+(r.unit||'');
  function deviceSummary(d){
   if(d.available===false)return '暂时不可用';
-  if(d.kind==='camera')return ({shutter_closed:'镜头已关闭',privacy_shutter_closed:'镜头已关闭',privacy_closed:'镜头已关闭',paused:'摄像头感知已暂停',live:'正在接收画面',connecting:'正在连接',stopped:'尚未查看'})[d.camera_state]||'查看画面与隐私状态';
+  if(d.kind==='camera')return ({shutter_closed:'镜头已关闭',privacy_shutter_closed:'镜头已关闭',privacy_closed:'镜头已关闭',paused:'摄像头感知已暂停',live:'正在接收画面',connecting:'正在连接',recovering:'感知恢复中',stopped:'尚未查看'})[d.camera_state]||'查看画面与隐私状态';
   if(d.kind==='trigger')return d.triggers?.some(t=>t.role==='unknown')?'按键模式待确认':`${d.triggers?.length||0} 个动作按键`;
   if(d.kind==='lock'){const r=d.readings.find(r=>r.available!==false&&(/门状态|锁定状态/.test(r.name)||r.device_class==='lock'));return r?readingValue(r):'锁定状态未知';}
   if(d.controls.length&&d.triggers?.length)return `${d.controls.filter(c=>c.available&&c.value==='on').length} 路开启 · ${d.triggers.length} 个动作按键`;
@@ -227,7 +227,9 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    refresh.disabled=pending;
    powerStatus.textContent=power?.enabled===true?'镜头已开启':power?.enabled===false?'镜头已关闭':pending?'正在读取…':'镜头状态待确认';
    const frameCurrent=live();
-   const canStart=frameCurrent&&followReport?.recognition_enabled!==false;
+   const recovering=followReport?.recognition==='recovering';
+   const focused=globalThis.document?.activeElement;
+   const canStart=frameCurrent&&!recovering&&followReport?.recognition_enabled!==false;
    const canPick=canStart&&followReport?.follow_target_available===true;
    targetToggle.hidden=!canPick;
    targetToggle.disabled=modePending||directionPending||!!picker;
@@ -249,7 +251,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     const title=retry?'重新'+label:label;
     if(b.textContent!==title)b.textContent=title;
     modeAvailability(b,canStart&&!unsupported);
-    b.title=!frameCurrent?'等待实时画面':followReport?.recognition_enabled===false?'当前镜头未开启识别':unsupported?'当前识别服务暂不支持宠物跟随':'';
+    b.title=recovering?'感知恢复中':!frameCurrent?'等待实时画面':followReport?.recognition_enabled===false?'当前镜头未开启识别':unsupported?'当前识别服务暂不支持宠物跟随':'';
     b.setAttribute('aria-pressed',String(active&&!retry));
    }
    const report=surveyControl(),running=surveying();
@@ -260,6 +262,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    surveyReadback.hidden=!report;
    let surveyText=({complete:'本轮巡视完成',interrupted:'本轮巡视未完成'}[report?.survey_result])||report?.reason||'';
    if(running&&statusReadFailed)surveyText='巡视状态待更新';
+   else if(running&&recovering)surveyText='等待感知恢复';
    else if(running&&followReport&&!hasLiveFrame())surveyText='等待画面恢复';
    if(surveyStatus.textContent!==surveyText)surveyStatus.textContent=surveyText;
    surveyTrack.hidden=!hasProgress;
@@ -273,6 +276,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    survey.textContent=running?'停止巡视':'巡视一轮';
    modeAvailability(survey,running?!!report.intent_revision:canStart&&cameraControl?.owner==='friday'&&cameraControl.phase!=='game_held');
    if(surveyHadFocus&&(surveyRow.hidden||survey.hidden))watch.focus({preventScroll:true});
+   if(recovering&&(focused===targetToggle||focused===survey&&survey.disabled
+      ||followButtons.some(([,control])=>control===focused)))watch.focus({preventScroll:true});
    for(const b of directions)b.disabled=directionPending||!!picker||!frameCurrent||!(followReport?.primary||followReport?.manual_control);
   }
   async function readPower(){
@@ -535,12 +540,19 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
      cameraControl=report.camera_control||null;previousIntent=null;
     }
     if(!viewing)return;
+    const recovering=report.recognition==='recovering';
+    if(recovering&&picker){
+     const focused=pickerTools.contains(document.activeElement)||targetChoices.contains(document.activeElement);
+     leavePicker();
+     if(focused)watch.focus({preventScroll:true});
+    }
     if(live()){
      image.src=endpoint+'/frame?t='+Date.now();
      image.hidden=false;placeholder.hidden=true;
      if(picker?.revision&&(!selectingMode()||cameraControl?.intent_revision!==picker.revision||!report.follow_target_available))leavePicker();
      if(picker)void readTargetPhoto(picker);
-     else setStatus(report.recognition_enabled===false||surveyControl()?'实时画面':cameraControl?.reason||'实时画面');
+     else setStatus(recovering?'实时画面 · 感知恢复中':
+      report.recognition_enabled===false||surveyControl()?'实时画面':cameraControl?.reason||'实时画面');
     }else{
      leavePicker();
      clearFrame();
@@ -548,7 +560,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
      if(['privacy_closed','privacy_shutter_closed','shutter_closed'].includes(reason)){
       stopViewing();power=null;setStatus('镜头已关闭');void readPower();
      }else{
-      setStatus(modePending&&cameraControl?.mode==='hold'?cameraControl.reason:'正在连接画面，请稍候…');
+      setStatus(recovering?'感知恢复中':modePending&&cameraControl?.mode==='hold'?cameraControl.reason:'正在连接画面，请稍候…');
      }
     }
    }catch(_){

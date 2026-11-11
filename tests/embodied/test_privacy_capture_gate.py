@@ -109,7 +109,7 @@ async def test_closed_primary_uses_real_source_function_without_capture(monkeypa
     else:await scope['run_source'](1)
     assert scope['state']['status']=='shutter_closed' and not home.selected
     spawn.assert_not_awaited()
-    assert scope['reap'].await_count==2
+    scope['reap'].assert_awaited_once_with(None)
 
 
 @pytest.mark.asyncio

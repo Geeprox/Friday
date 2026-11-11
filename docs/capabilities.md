@@ -7,6 +7,7 @@
 | Home Assistant | Registry discovery, OAuth, readback and scoped device operations | Your instance, permissions and physical effects |
 | Mi Home layout | BakeData/floormap validation, preview, revisioned import, 3D rendering | Your export, accessible files and device positions |
 | Cameras | Optional Miloco media/SDK adapters, worker lifetime, bounded frame pipelines | Supported SDK/platform/device and actual video/audio |
+| 镜头感知恢复 | 原生识别子进程故障时只恢复识别，保持仍有效的采集连接。实时预览继续读取新画面，自动动作及异常判定等待有效识别。镜头关闭后撤下画面 | 主副镜头的原采集循环以合成读写超时、异常回复和恢复帧验证。真实设备的恢复时长与识别准确率仍待实测 |
 | 镜头回看 | 从镜头详情打开该镜头的录像，按已保存且当前有效的录像目录对应读取列表。日期筛选保留镜头范围。选择片段后进入保护播放 | 使用合成目录、原录像 API 和保护播放路径验证。真实目录配置、录像读回和原生播放仍待验收 |
 | Camera spatial mapping | Empty unconfigured layout, explicit manual projection and preserved legacy editing candidates. Actual image anchors support body games and current player pointing without floor coordinates; owned subprocesses isolate native registration/layout/visibility waits, and immutable editor snapshots bind draft to reference pixels. Spatial failure keeps video while suspending spatial input; damaged optional calibration falls back without overwriting files | Manual point/reference correctness, actual background registration and household geometry still require acceptance. Unit-canvas editing handles are not an observed floor plan; synthetic rules do not prove physical location accuracy |
 | Camera following | 人物和宠物均可按画面上下边缘调整构图。上下转向使用同一目标的两帧连续观测，发送时再核对当前框、来源和方向。每台镜头同一时间只处理一次转向，子进程再次拒绝过期指令 | 两个原摄像头入口与合成目标已覆盖方向和过期拒绝。真实云台移动、低处目标识别率和家庭可用性仍待验收 |

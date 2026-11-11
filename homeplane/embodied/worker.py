@@ -53,7 +53,7 @@ from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.embodied.camera_audio import AudioIngress, deliver_audio
-from homeplane.embodied.vision_pipe import request_vision
+from homeplane.embodied.vision_pipe import VisionProcess
 from homeplane.people.live import IdentityStore, analyze, close_identity
 from homeplane.people.identity_session import IdentitySession
 
@@ -87,7 +87,6 @@ state = {
 }
 task = None
 capture = None
-vision = None
 generation = 0
 tracks = Tracks()
 pet_tracks = PetTracks()
@@ -213,7 +212,7 @@ def close_primary_view():
     global motion_generation
     motion_generation += 1
     calibration_frames.clear()
-    state.update(status='shutter_closed',reason='privacy_shutter_closed',people=[],hands=[],frame=None,
+    state.update(status='shutter_closed',recognition='waiting',reason='privacy_shutter_closed',people=[],hands=[],frame=None,
                  animals=[],animals_current=False,scene={'objects': []},_patrol_view=None)
     pet_tracks.clear()
     wall.clear(SELECTED['id'], primary_wall_epoch)
@@ -234,7 +233,7 @@ async def primary_capture_closed(my_generation, wall_epoch, reason, error_class=
     games.suspend_source()
     motion_generation += 1
     latest, last_frame, last_jpeg, last_preview, last_preview_at = None, 0, b'', b'', 0.0
-    state.update(frame=None, people=[], hands=[], animals=[], animals_current=False, room=None,
+    state.update(frame=None, recognition='waiting', people=[], hands=[], animals=[], animals_current=False, room=None,
                  scene={'objects': []}, _patrol_view=None)
     if state.get('status') != 'shutter_closed':
         state.update(status='unavailable', reason=reason, error_class=error_class, error_stage=stage)
@@ -586,8 +585,11 @@ def view():
     if primary_state == 'live' and not (last_frame and 0 <= now - last_frame <= 1.5):
         primary_state = 'stale'
     recognizing = primary_state == 'live'
+    recognition = ('running' if recognizing else 'recovering'
+                   if primary_state == 'connecting' and state.get('recognition') == 'recovering' else 'waiting')
+    result['recognition'] = recognition
     primary = dict(camera=SELECTED['id'], state=primary_state, frames=state['processed_frames'],
-                   recognition='running' if recognizing else 'waiting',
+                   recognition=recognition,
                    latency_ms=state.get('pipeline_ms') if recognizing else None)
     result['camera_sessions'] = [primary, *[previews.status(c['id'])
         for c in configuration()['cameras'] if c['id'] != SELECTED['id']]]
@@ -611,7 +613,7 @@ async def reap(process):
 
 
 async def run_source(my_generation):
-    global capture, vision, latest, last_frame, tracks, pet_tracks, last_jpeg, room, primary_wall_epoch
+    global capture, latest, last_frame, tracks, pet_tracks, last_jpeg, room, primary_wall_epoch
     global last_preview, last_preview_at
     primary_wall_epoch = wall.begin(SELECTED['id'])
     wall_epoch = primary_wall_epoch
@@ -635,6 +637,7 @@ async def run_source(my_generation):
     captured_times.clear()
     state.update(
         status="connecting",
+        recognition="waiting",
         reason=None,
         frame=None,
         people=[],
@@ -645,7 +648,23 @@ async def run_source(my_generation):
         game={"mode": games.mode, "status": "paused", "reason": "实时画面已过期", "players": []},
     )
     camera_task = None
+    vision = None
     stage = "source_start"
+
+    def recognition_failed(error_class):
+        global latest, last_frame, last_jpeg, last_preview, last_preview_at
+        nonlocal room_ok
+        if (my_generation != generation or primary_wall_epoch != wall_epoch
+                or state['status'] not in {'connecting', 'live'}):
+            return
+        if state.get('recognition') != 'recovering':
+            # 撤销依赖识别的旧画面、跟踪和动作。原采集继续更新未标注预览。
+            invalidate_calibration()
+            room_ok = False
+            latest, last_frame, last_jpeg, last_preview, last_preview_at = None, 0, b'', b'', 0.0
+            identities.session = f"{SESSION}_{my_generation}_{secrets.token_hex(3)}"
+        state.update(status='connecting', recognition='recovering', session_id=identities.session, frame=None,
+                     reason='recognition_recovering', error_stage='vision_request', error_class=error_class)
     try:
         if not await camera_is_open(SELECTED):
             state.update(status='shutter_closed', reason='privacy_shutter_closed')
@@ -684,13 +703,7 @@ async def run_source(my_generation):
             stderr=asyncio.subprocess.DEVNULL,
             limit=6_000_000,
         )
-        vision = await asyncio.create_subprocess_exec(
-            str(VISION),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            limit=6_000_000,
-        )
+        vision = VisionProcess(VISION)
         capture.stdin.write(
             (
                 json.dumps(
@@ -863,14 +876,16 @@ async def run_source(my_generation):
                 pet_owner = camera_planner
                 pet_revision = pet_owner.intent_revision if pet_owner and pet_owner.mode in PET_MODES else None
                 stage = "vision_request"
-                detection = await request_vision(vision, {
+                detection = await vision.detect({
                     "jpeg": item["jpeg"],
                     "face_jpeg": item.get("face_jpeg"),
                     "person_rois": rois,
                     "hand_interval_ms": 140 if games.mode not in ("off", "home") else 80,
                     "attention_enabled": True,
                     "animals_enabled": pet_revision is not None,
-                })
+                }, on_failure=recognition_failed)
+                if detection is None:
+                    continue
                 timings['vision_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 phase_at = time.monotonic()
                 if my_generation != generation:
@@ -1068,6 +1083,7 @@ async def run_source(my_generation):
                     calibration_source(),item['received_at'])
                 state.update(
                     status="live",
+                    recognition="running",
                     tracking_current=tracks.input_valid,
                     animals=animals,animals_current=pet_tracks.current,
                     animals_intent=pet_revision if pet_active else None,pet_tracking=pet_tracks.public(),
@@ -1132,8 +1148,9 @@ async def run_source(my_generation):
                 finally:
                     try:await reap(capture)
                     finally:
-                        try:await reap(vision)
-                        finally:capture = vision = None
+                        try:
+                            if vision is not None:await vision.close()
+                        finally:capture = None
 
 
 async def supervised_source(my_generation):
@@ -1181,6 +1198,7 @@ async def stop():
     games.reset("off")
     state.update(
         status="stopped",
+        recognition="waiting",
         reason=None,
         frame=None,
         people=[],
@@ -1413,17 +1431,27 @@ async def start_preview(camera_id: str, request: Request):
     return await previews.start(camera_id)
 
 
+def primary_recovery_frame():
+    if (state.get('status') == 'connecting' and state.get('recognition') == 'recovering'
+            and capture is not None and capture.returncode is None):
+        return wall.frame(SELECTED['id'])
+    return None
+
+
 @app.get("/api/previews/{camera_id}")
 async def preview_status(camera_id: str, request: Request):
     if request.client.host not in {"127.0.0.1", "::1"}:
         raise HTTPException(403)
     if camera_id == SELECTED["id"]:
         report = view()
+        session = report['camera_sessions'][0]
         return {
             "state": report["status"],
             "camera": camera_id,
             "frames": state["processed_frames"],
             "primary": True,
+            "recognition": session['recognition'],
+            "frame_available": session['recognition'] == 'recovering' and bool(primary_recovery_frame()),
             "camera_control": report.get('camera_control'),
             "pet_tracking": report.get('pet_tracking'),
             "follow_target_available": report['status'] == 'live' and (report.get('camera_control') or {}).get('owner') == 'friday',
@@ -1435,11 +1463,11 @@ async def preview_status(camera_id: str, request: Request):
 async def preview_frame(camera_id: str, request: Request):
     if request.client.host not in {"127.0.0.1", "::1"}:
         raise HTTPException(403)
-    frame = (
-        last_preview
-        if camera_id == SELECTED["id"] and view()["status"] == "live"
-        else previews.frame(camera_id)
-    )
+    if camera_id == SELECTED['id']:
+        recovery_frame = primary_recovery_frame()
+        frame = recovery_frame[0] if recovery_frame else last_preview if view()['status'] == 'live' else None
+    else:
+        frame = previews.frame(camera_id)
     if not frame:
         raise HTTPException(409, detail="camera_frame_unavailable")
     return Response(frame, media_type="image/jpeg")

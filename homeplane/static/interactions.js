@@ -24,6 +24,7 @@ export function mountInteractions(root,{data,go,toast}){
  const field=(label,input)=>add(h('label',null,{class:'product-field'}),h('span',label),input);
  function cameraInputStatus(id){
   const session=report.camera_sessions?.find(s=>s.camera===id),live=['live','ready'].includes(session?.state),physical={text:states[session?.state]||'未开启',available:live};
+  if(session?.recognition==='recovering')return{text:'感知恢复中',available:false};
   if(mode==='voice'||!live)return physical;
   const view=report.interactions?.cameras?.find(c=>c.camera===id);if(!view)return physical;
   const stateText={game:'游戏进行中',paused:'手势已暂停',waiting:'等待动作画面',connecting:'等待动作画面',moving:'等待镜头稳定'};
@@ -43,11 +44,12 @@ export function mountInteractions(root,{data,go,toast}){
   if(voicePreferences&&voiceExample&&voiceCue){voiceExample.textContent=`“${voicePreferences.wake_word}，把客厅的灯打开。”`;voiceCue.textContent=`看向镜头直接说话，也可以先叫 ${voicePreferences.wake_word}。`;}
   const chosen=draft.camera?cameras.filter(c=>c.id===draft.camera):cameras;
   const live=chosen.filter(c=>['live','ready'].includes(report.camera_sessions?.find(s=>s.camera===c.id)?.state));
+  const recovering=chosen.some(c=>report.camera_sessions?.some(s=>s.camera===c.id&&s.recognition==='recovering'));
   const ready=live.map(c=>cameraInputStatus(c.id)),available=ready.filter(s=>s.available),waiting=ready.length&&ready.every(s=>s.text===ready[0].text)?ready[0].text:'等待动作就绪';
   const line=slot.querySelector?.('[data-interaction-readiness]');
   if(line&&!line.contains?.(document.activeElement)){
-   line.replaceChildren(h('strong',!policy?.enabled||!policy?.recognition?'手势识别未开启':!policy?.interaction?'手势控制已暂停':available.length?`${available.length} 个镜头可使用`:live.length?waiting:'镜头暂不可用'));
-   if(!live.length){line.append(h('p','可以先保存设置。使用时，请打开所选房间的镜头。',{class:'caption'}));if(chosen[0])line.append(btn('查看'+chosen[0].room+'镜头',()=>openCamera(chosen[0].id)));}
+   line.replaceChildren(h('strong',!policy?.enabled||!policy?.recognition?'手势识别未开启':!policy?.interaction?'手势控制已暂停':available.length?`${available.length} 个镜头可使用`:live.length?waiting:recovering?'感知恢复中':'镜头暂不可用'));
+   if(!live.length&&!recovering){line.append(h('p','可以先保存设置。使用时，请打开所选房间的镜头。',{class:'caption'}));if(chosen[0])line.append(btn('查看'+chosen[0].room+'镜头',()=>openCamera(chosen[0].id)));}
   }
   const scopeStatus=slot.querySelector?.('[data-all-camera-summary]');if(scopeStatus)scopeStatus.textContent=cameras.length?`${live.length} / ${cameras.length} 个镜头可用`:'还没有接入摄像头';
   const toggle=slot.querySelector?.('[data-interaction-toggle]');if(toggle){toggle.textContent=mode==='voice'?(policy?.enabled&&policy?.recognition&&policy?.interaction&&report.voice_input?'暂停语音输入':'开启语音控制'):policy?.enabled&&policy?.recognition&&policy?.interaction?'暂停手势控制':'启用手势控制';toggle.disabled=busy;}

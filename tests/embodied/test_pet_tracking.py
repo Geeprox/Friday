@@ -168,7 +168,8 @@ async def test_original_secondary_native_pipe_keeps_pets_out_of_human_pipelines(
     c.camera='cam_1111111111';c.session='synthetic-session';c.tracks=StableTracks();c.pet_tracks=PetTracks()
     c.animals_enabled=False;c.animals_intent='choice-one';c.motion_generation=0;c.motion_until=0
     c.identities=SimpleNamespace(discard=Mock())
-    c.vision=SimpleNamespace(stdin=SimpleNamespace(write=sent.append,drain=AsyncMock()),
+    c.vision=module.VisionProcess('synthetic-vision')
+    c.vision.process=SimpleNamespace(stdin=SimpleNamespace(write=sent.append,drain=AsyncMock()),
                             stdout=SimpleNamespace(readline=AsyncMock(return_value=detection_bytes)))
     from tests.embodied.test_room_process import room_port
     c.room=room_port()

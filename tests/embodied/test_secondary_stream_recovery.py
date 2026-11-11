@@ -308,7 +308,7 @@ async def test_background_owner_waits_for_native_stream_recovery(tmp_path, monke
                             release=AsyncMock(return_value=True))
     read_shutter = AsyncMock(side_effect=lambda _: shutter_open)
 
-    async def recognize(packet, *, source_current):
+    async def recognize(packet, *, source_current, on_vision_failure):
         assert source_current()
         return dict(camera=CAMERA['id'], session='synthetic-stream', people=[], hands=[],
                     now=now, captured_mono=packet['received_at'])
@@ -407,7 +407,8 @@ async def test_original_secondary_recognizer_stops_at_the_first_retired_stage(mo
     async def identity(*_,**__):retire('identity');return []
     room.register.side_effect=register;room.update.side_effect=layout
     monkeypatch.setattr(camera_recognition,'analyze',AsyncMock(side_effect=identity))
-    recognizer.vision=SimpleNamespace(stdin=SimpleNamespace(write=Mock(),drain=AsyncMock()),stdout=SimpleNamespace(readline=read))
+    recognizer.vision=camera_recognition.VisionProcess('synthetic-vision')
+    recognizer.vision.process=SimpleNamespace(stdin=SimpleNamespace(write=Mock(),drain=AsyncMock()),stdout=SimpleNamespace(readline=read))
     result=await recognizer.observe(dict(received_at=time.time(),jpeg=base64.b64encode(b'SYNTHETIC').decode(),width=640,height=360),source_current=lambda:current[0])
     if phase in {None,'room_unavailable'}:
         assert result is recognizer.last
@@ -565,7 +566,8 @@ async def test_identity_cleanup_error_still_reaps_the_original_native_vision_chi
     process.terminate = Mock(side_effect=ProcessLookupError() if exit_race else None)
     async def wait():process.returncode = 0;return 0
     process.wait = AsyncMock(side_effect=wait)
-    recognizer.vision = process
+    recognizer.vision = camera_recognition.VisionProcess('synthetic-vision')
+    recognizer.vision.process = process
     recognizer.room = None
     with pytest.raises(RuntimeError, match='^synthetic-identity-close$'):
         await recognizer.close()

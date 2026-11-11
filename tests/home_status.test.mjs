@@ -33,6 +33,10 @@ test('household perception counts the whole camera fleet and ignores deliberatel
  assert.equal(row([]).text,'未更新');
  assert.equal(row([{camera:'preview',state:'live',recognition:'waiting'}]).text,'等待画面');
  assert.equal(row([{camera:'hall',state:'connecting'}]).source.text,'正在连接');
+ const recovering=row([ready,{camera:'hall',state:'connecting',recognition:'recovering',frame_available:true}]);
+ assert.equal(recovering.state,'degraded');
+ assert.equal(recovering.text,'1 / 2 台感知中');
+ assert.deepEqual(recovering.source,{camera:'hall',text:'感知恢复中'});
 });
 
 test('processing latency follows the slowest current recognition source',()=>{

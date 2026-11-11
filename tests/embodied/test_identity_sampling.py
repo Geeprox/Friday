@@ -36,10 +36,10 @@ async def test_original_secondary_body_pipeline_continues_while_identity_startup
     recognizer.room=room_port(registration=np.eye(3))
     process=SimpleNamespace(returncode=None,
         stdin=SimpleNamespace(write=Mock(),drain=AsyncMock()),
-        stdout=SimpleNamespace(readline=AsyncMock(return_value=json.dumps(frame()).encode())))
+        stdout=SimpleNamespace(readline=AsyncMock(return_value=(json.dumps(frame())+'\n').encode())))
     def terminate():process.returncode=0
     process.terminate=process.kill=terminate;process.wait=AsyncMock(return_value=0)
-    recognizer.vision=process
+    recognizer.vision.process=process
     try:
         observed=[]
         for _ in range(6):
