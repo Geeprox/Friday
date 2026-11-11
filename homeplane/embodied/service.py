@@ -552,6 +552,17 @@ class EmbodiedService:
             raise ValueError('camera_not_running')
         return await self.request(f'/api/previews/{camera_id}/control',dict(direction=direction) if direction else dict(mode=mode))
 
+    async def camera_follow_target(self, camera_id, command=None):
+        camera(camera_id)
+        source = self._game_source()
+        if (self.closed or not self.capture_enabled or self.recovery_pending or self.manual_previews.has(camera_id)
+                or self.process is None or self.process.returncode is not None):
+            raise ValueError('follow_target_unavailable')
+        result = await self.request(f'/api/previews/{camera_id}/follow-target', command)
+        if source != self._game_source() or self.manual_previews.has(camera_id):
+            raise ValueError('follow_target_unavailable')
+        return result
+
     async def camera_power(self,camera_id,*,enabled=None,revision=None,event_id=None):
         camera(camera_id)
         if self.closed or not self.configured():raise ValueError('embodied_not_configured')

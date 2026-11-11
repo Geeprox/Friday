@@ -15,6 +15,11 @@ import secrets
 import stat
 
 
+TARGET_MODES = {'person_target', 'pet_target'}
+PET_MODES = {'pets', 'pet_target'}
+CAMERA_MODES = {'auto', 'pets', 'hold', 'survey'} | TARGET_MODES
+
+
 @dataclass(frozen=True)
 class CameraIntent:
     mode: str
@@ -103,11 +108,11 @@ class CameraIntentStore:
             os.close(directory)
 
     def save(self, mode):
-        if mode not in ('auto', 'pets', 'hold', 'survey'):
+        if mode not in CAMERA_MODES:
             raise ValueError('invalid_camera_mode')
         revision = secrets.token_hex(16)
         value = dict(version=1, camera=self.camera, binding=self.binding,
-                     mode='hold' if mode == 'survey' else mode, revision=revision)
+                     mode='hold' if mode == 'survey' or mode in TARGET_MODES else mode, revision=revision)
         directory = self._directory(create=True)
         lock = None
         temporary = '.director-intent-' + revision + '.tmp'

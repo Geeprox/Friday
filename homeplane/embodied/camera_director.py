@@ -7,6 +7,8 @@ import cv2
 import math
 import numpy as np
 
+from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES
+
 
 def visible_scene(jpeg):
     image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_GRAYSCALE)
@@ -127,7 +129,7 @@ class CameraDirector:
 
     def apply_mode(self, mode, revision):
         """A survey is a finite command window, never a claim of full room coverage."""
-        if mode not in {'auto', 'pets', 'hold', 'survey'}:
+        if mode not in CAMERA_MODES:
             raise ValueError('invalid_camera_mode')
         intent = (mode, revision)
         if intent != self.intent:
@@ -145,7 +147,7 @@ class CameraDirector:
                 self.last_focus = None
                 self.target_seen = -100.0
                 self.visible_samples = 0
-                if (self.mode == 'pets') != (mode == 'pets'):
+                if (self.mode in PET_MODES) != (mode in PET_MODES):
                     self.last_person = None
                 self.pending_decision = None
                 self.pending_direction = None
@@ -162,6 +164,8 @@ class CameraDirector:
                 self.phase = 'checking_view'
             if mode == 'hold':
                 self.hold()
+            elif mode in TARGET_MODES:
+                self.phase = 'target_selecting'
 
     def restore_survey_progress(self, attempts, confirmed):
         """副镜头重连时保留计数，新采集进程不能接着旧视野移动。"""
@@ -220,7 +224,27 @@ class CameraDirector:
                 and isinstance(sample.get('animals'), list))
 
     def _subjects(self, sample):
-        return sample.get('animals', []) if self.mode == 'pets' else sample.get('people', [])
+        return sample.get('animals', []) if self.mode in PET_MODES else sample.get('people', [])
+
+    def target_frame_current(self, sample, now, *, stable=True):
+        session = sample.get('session_id')
+        captured = sample.get('_local_received', -100)
+        return (sample.get('status') == 'live' and isinstance(session, str) and bool(session)
+                and type(captured) in (int, float) and 0 <= now-captured <= 1.5 and not self._game_holds(sample)
+                and (not stable or (captured > self.last_move and sample.get('tracking_current') is True
+                                    and sample.get('scene_visible') is True
+                                    and sample.get('_follow_stable', True))))
+
+    def select_target(self, sample, subject, now):
+        if self.mode not in TARGET_MODES or not self.target_frame_current(sample, now):
+            raise ValueError('follow_target_changed')
+        self.target = subject['id']
+        self.target_identity = self.identity(subject)
+        self.target_session = self.source_session = sample['session_id']
+        self.target_seen = now
+        self.visible_samples = 0
+        self.last_sample = sample['_local_received']
+        self.phase = 'target_reacquiring'
 
     def _clear_reframe(self):
         self.reframe_started = self.reframe_appearance = self.reframe_candidate = None
@@ -298,7 +322,9 @@ class CameraDirector:
             return False
         if self._review_holds(sample, now, review_pending, fall_pending):
             return False
-        if self.mode == 'pets' and not self._pets_current(sample):
+        if self.mode in PET_MODES and not self._pets_current(sample):
+            return False
+        if self.mode in TARGET_MODES and (pending['phase'] != 'following' or self.target_session != sample.get('session_id')):
             return False
         if pending['phase'] in {'uncovering', 'recovering_view'}:
             return sample.get('scene_visible') is False
@@ -316,7 +342,7 @@ class CameraDirector:
         if pending['phase'] != 'following':
             return False
         focus = self._current_focus(sample, now, focus)
-        if (self.mode != 'pets' and focus
+        if (self.mode == 'auto' and focus
                 and focus.get('track') != pending['target']):
             return False
         tilt = direction in self.TILT_DIRECTIONS
@@ -433,7 +459,7 @@ class CameraDirector:
         scope = (self.intent, sample.get('session_id'))
         for kind, pending, duration, interval in (
             ('fall', fall_pending is True, self.FALL_HOLD_SECONDS, self.FALL_INTERVAL_SECONDS),
-            ('review', review_pending is True and self.mode in {'auto', 'survey'},
+            ('review', review_pending is True and (self.mode in {'auto', 'survey'} or self.mode in TARGET_MODES),
              self.REVIEW_HOLD_SECONDS, self.REVIEW_INTERVAL_SECONDS),
         ):
             if not pending:
@@ -541,6 +567,11 @@ class CameraDirector:
                 self.last_person = now
             self.phase = 'game_held' if fresh else 'waiting_video'
             return None
+        explicit = self.mode in TARGET_MODES
+        if explicit and (self.target_session is None or self.target_session != sample.get('session_id')):
+            self.phase = 'target_selecting' if self.target_session is None else 'target_lost'
+            self._clear_reframe()
+            return None
         if self.reframe_started is not None and now - self.reframe_started > self.FOLLOW_REACQUIRE_SECONDS:
             self.reframe_appearance = self.reframe_candidate = None
         if self.sound_intent_since is None:
@@ -578,7 +609,7 @@ class CameraDirector:
             self._interrupt_survey()
             self.phase = 'survey_finished'
             return None
-        if self.mode == 'pets':
+        if self.mode in PET_MODES:
             if not self._pets_current(sample):
                 self.phase = 'pet_unavailable'
                 self.tilt_observation = None
@@ -609,6 +640,8 @@ class CameraDirector:
             if self.obscured_since is None:self.obscured_since = now
             self.phase = 'view_obscured'
             self.reframe_candidate = None
+            if explicit:
+                return None
             if self.obscured_samples < 3 or now-self.obscured_since < 1:
                 return None
             if self.mode == 'survey' and self.survey_confirmed_moves:
@@ -668,13 +701,13 @@ class CameraDirector:
         ids = {p['id'] for p in people}
         self.target_session = session
         focus = self._current_focus(sample, now, focus)
-        if self.mode != 'pets' and focus and focus.get('track') in ids:
+        if self.mode == 'auto' and focus and focus.get('track') in ids:
             key = (session, focus['at'], focus['track'])
             if key != self.last_focus:
                 self.target = focus['track']; self.last_focus = key
                 self.target_identity = None
                 self._clear_reframe()
-        if self.target is None and len(people) == 1:
+        if not explicit and self.target is None and len(people) == 1:
             self.target = people[0]['id']
         target = next((p for p in people if p['id'] == self.target), None)
         if (target and self.target_identity and self.identity(target)
@@ -685,7 +718,7 @@ class CameraDirector:
             if target is not None:
                 self.target = target['id']
                 self._clear_reframe()
-            elif people or now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS:
+            elif explicit or people or now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS:
                 if people:
                     self.last_person = now
                 self.phase = ('target_reacquiring' if now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS
@@ -698,14 +731,14 @@ class CameraDirector:
             if len(matches) == 1:
                 target = matches[0]
                 self.target = target['id']
-        elif target is None and len(people) == 1:
+        elif not explicit and target is None and len(people) == 1:
             # 静止视野只有一个目标时，沿用自动跟随的原选择方式。
             target = people[0]
             self.target = target['id']
         if people:
             self.last_person = now
             if target is None:
-                self.phase = 'target_ambiguous'
+                self.phase = 'target_lost' if explicit else 'target_ambiguous'
                 return None
             self.target_seen = now
             self.target_identity = self.target_identity or self.identity(target)
@@ -726,6 +759,9 @@ class CameraDirector:
                         or not 0 < stamp - previous_tilt[1] <= 1.5):
                     return None
             return self._aim(direction, sample, now) if direction else None
+        if explicit:
+            self.phase = 'target_lost'
+            return None
         if self.last_person is None:
             self.last_person = now
         if now-self.target_seen > 8:
@@ -802,13 +838,16 @@ class CameraDirector:
                   'recovering_view':'调整视野',
                   'view_obscured':'视野受阻', 'motor_unavailable':'云台待恢复',
                   'following':'跟随人物', 'target_ambiguous':'等待确认目标',
-                  'target_reacquiring':'正在确认原目标', 'target_lost':'未找到原目标',
+                  'target_reacquiring':'正在确认原目标', 'target_lost':'未找到原目标', 'target_selecting':'等待选择目标',
                   'patrolling':'环视房间', 'observing':'静候互动', 'held':'停留当前视角',
                   'sound_search':'异响后环视',
                   'confirming_view':'确认新视角', 'patrol_waiting_view':'等待清晰视角',
                   'survey_finished':'本轮巡视已结束', 'pet_unavailable':'宠物识别暂不可用',
                   'game_held':'游戏中，镜头保持稳定', 'review_held':'停留观察'}[self.phase]
-        if self.phase == 'following' and self.mode == 'pets':reason = '跟随宠物'
+        if self.phase == 'following' and self.mode in PET_MODES:reason = '跟随宠物'
+        if self.mode in TARGET_MODES:
+            reason = {'following': '跟随所选宠物' if self.mode == 'pet_target' else '跟随所选人物',
+                      'target_lost': '未找到所选目标', 'target_reacquiring': '正在确认所选目标'}.get(self.phase, reason)
         if self.sound_search_cue is not None and self.phase in {'confirming_view', 'checking_view', 'patrol_waiting_view'}:
             reason = '异响后环视'
         survey_result = None

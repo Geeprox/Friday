@@ -10,6 +10,7 @@ import pytest
 
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_intent import CAMERA_MODES
 from homeplane.embodied.stable_tracks import StableTracks
 from tests.embodied.test_camera_follow_appearance import appearance_sample
 
@@ -205,7 +206,8 @@ async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once
     selected=dict(id='cam_1111111111',device={'did':'synthetic-camera'})
     store=CameraIntentStore(tmp_path/'camera',selected)
     clock=[0.0];sent=[];noop=lambda *_,**__:None
-    scope=dict(asyncio=asyncio,secrets=secrets,json=json,time=SimpleNamespace(monotonic=lambda:clock[0],time=lambda:1000+clock[0]),
+    scope=dict(asyncio=asyncio,secrets=secrets,json=json,CAMERA_MODES=CAMERA_MODES,
+        time=SimpleNamespace(monotonic=lambda:clock[0],time=lambda:1000+clock[0]),
         camera_intents=store,camera_planner=SimpleNamespace(mode='auto',intent_revision='old',intent_status='default'),
         motor_sequence=0,motor_waiters={},motor_last_sent=-100,motion_generation=0,calibration_frames=CalibrationFrames(),
         camera_lease=SimpleNamespace(snapshot={'status':'owned'}),room_lock=asyncio.Lock(),

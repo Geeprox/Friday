@@ -45,6 +45,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
 云台转动后，画面下方显示「正在确认原目标」或「未找到原目标」。无法确认时，原来的模式按钮改为「重新跟随人物」或「重新跟随宠物」，焦点留在同一按钮。重新跟随先显示等待，画面确认后才显示跟随状态。
 
+「选择跟随目标」进入画面内点选。人物和宠物切换在画面上方，点画框或对应编号都可选。桌面将编号放在画面旁，窄屏放在画面下。画面过期时在同处刷新。确认后回到实时画面，画面下方读回跟随状态。目标丢失时可直接重新选择，或用「停止跟随」留在当前视角。
+
 Synthetic preview only. No live camera/microphone/model/TV/device activation. Desired gaze/wake confidence semantics and configurable wake words are captured as product truth; correcting the full speech execution chain and a Rust migration are separate functional changes, not claimed by this UI refactor. Host resource sampling is passive and bounded, with null values when unavailable. Background service and safety/event summaries read existing owners and never start them.
 
 持续婴儿哭声复核使用现有提醒列表、首页入口和详情。符合三段同源证据时显示“疑似持续婴儿哭声”，保留镜头名、时间、关键帧和查看附近录像入口。普通哭声沿用原名称。设置页以本机已知标签和声音复核开关显示可用状态。照护行为仍显示原能力状态。

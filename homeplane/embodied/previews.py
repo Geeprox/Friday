@@ -8,7 +8,8 @@ import time
 
 from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage, capture_environment
 from .camera_director import CameraDirector
-from .camera_intent import CameraIntentStore
+from .camera_follow_picker import CameraFollowPicker
+from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES, CameraIntentStore
 from .camera_audio import AudioIngress
 from .frame_sampling import CAPTURE_IDLE_TIMEOUT, CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.runtime_log import RuntimeLog
@@ -103,7 +104,8 @@ class PreviewPool:
             if item.get('camera_control',{}).get('intent_revision') != item.get('mode_revision'):
                 held = item.get('mode') == 'hold'
                 control.update(phase='held' if held else 'waiting_video',
-                    reason='停留当前视角' if held else '等待画面',view_usable=False,target_locked=False)
+                    reason='停留当前视角' if held else '等待画面',view_usable=False,target_locked=False,
+                    intent_revision=item.get('mode_revision'))
         if control and (not fresh or item['state']!='live'):
             control = dict(control,view_usable=False,target_locked=False)
         return dict(
@@ -112,6 +114,7 @@ class PreviewPool:
             frames=item["frames"],
             received_at=item["received_at"],
             shutter_changed=item['shutter_changed'],
+            follow_target_available=bool(item.get('follow_picker') and fresh and item['state'] == 'live'),
             audio_enabled=bool(self.recognize and self.on_audio),
             recognition='running' if self.recognize and fresh and item['state']=='live' else 'waiting',
             people=item.get('people',0) if fresh else 0,
@@ -140,6 +143,12 @@ class PreviewPool:
                     and process is not None and process.returncode is None
                     and not item.get('privacy_closed') and item['state'] in {'connecting', 'live'})
 
+    def follow_picker(self, camera_id):
+        item = self.sessions.get(camera_id)
+        if not item or not item.get('follow_picker') or not self.source_current(camera_id, item.get('process')):
+            raise ValueError('follow_target_unavailable')
+        return item['follow_picker']
+
     async def control(self, camera_id, *, direction=None, mode=None):
         item = self.sessions.get(camera_id)
         if not item or not item.get('control'):
@@ -152,6 +161,15 @@ class PreviewPool:
             raise ValueError('recognition_required')
         if direction is not None and direction not in {'left','right','up','down'}:
             raise ValueError('invalid_motor_direction')
+        self._set_mode(camera_id, item, mode or 'hold')
+        if direction:
+            task = asyncio.current_task()
+            item['manual_tasks'].add(task)
+            try:return await item['control'](direction,expected_epoch=item['control_epoch'])
+            finally:item['manual_tasks'].discard(task)
+        return {'mode':item['mode'], 'intent_revision':item['mode_revision']}
+
+    def _set_mode(self, camera_id, item, mode):
         # Manual aiming suspends the automatic director before any network wait.
         # A pending automatic decision must not fight this newer user intent.
         item['control_epoch'] += 1
@@ -160,19 +178,13 @@ class PreviewPool:
         item['survey_attempts'] = 0
         item['survey_confirmed_moves'] = 0
         try:
-            intent = self.intent_factory(camera(camera_id)).save(mode or 'hold')
+            intent = self.intent_factory(camera(camera_id)).save(mode)
         except (OSError, ValueError, RuntimeError):
             item['intent_status'] = 'unavailable'
             raise RuntimeError('camera_intent_unavailable') from None
         item.update(mode=intent.mode, mode_revision=intent.revision, intent_status=intent.status)
         item['animals'] = 0
         if item.get('pet_tracking'):item['pet_tracking'] = dict(item['pet_tracking'],current=False)
-        if direction:
-            task = asyncio.current_task()
-            item['manual_tasks'].add(task)
-            try:return await item['control'](direction,expected_epoch=item['control_epoch'])
-            finally:item['manual_tasks'].discard(task)
-        return {'mode':item['mode'], 'intent_revision':item['mode_revision']}
 
     async def _monitor(self, selected, item):
         while self.sessions.get(selected['id']) is item:
@@ -208,7 +220,7 @@ class PreviewPool:
         retired = False
         item["privacy_closed"] = False
         mode = item.get('mode')
-        item.update(mode=mode if mode in {'auto','pets','hold','survey'} else 'auto' if self.recognize else 'hold',
+        item.update(mode=mode if mode in CAMERA_MODES else 'auto' if self.recognize else 'hold',
                     control_epoch=item.get('control_epoch', 0)+1, control=None, manual_tasks=set(),
                     source_active=False, state='connecting')
         latest = None
@@ -221,6 +233,9 @@ class PreviewPool:
                 return
             retired = True
             latest = None
+            item.pop('follow_picker', None)
+            if item.get('mode') in TARGET_MODES:
+                item.update(mode='hold', mode_revision=secrets.token_hex(16))
             previous_state = item['state']
             item.update(source_active=False, frame=None, received_at=0, people=0, hands=0, animals=0,
                         control=None, control_epoch=item['control_epoch']+1)
@@ -365,6 +380,14 @@ class PreviewPool:
                     scene_visible=observation.get('scene_visible',False) if observation else False,
                     _follow_jpeg=observation.get('safety_jpeg') if observation else None,
                     _patrol_view=observation.get('_patrol_view') if observation else None)
+            def follow_sample():
+                sample = current_sample()
+                last_motor_sent = item.get('last_motor_sent', -100)
+                return dict(sample, _follow_motion=last_motor_sent,
+                            _follow_stable=not motion_lock.locked() and sample['_local_received'] > last_motor_sent)
+            if lease is not None and self.recognize:
+                item['follow_picker'] = CameraFollowPicker(director, follow_sample,
+                    lambda: (item['mode'], item['mode_revision']), lambda mode: self._set_mode(selected['id'], item, mode))
             async def send_motion(direction, observed=None, expected_epoch=None):
                 if direction not in {'left','right','up','down'}:raise ValueError('invalid_motor_direction')
                 if item['privacy_closed']:raise RuntimeError('privacy_shutter_closed')
@@ -486,7 +509,7 @@ class PreviewPool:
                 if packet.get("type") == "frame":
                     if recognizer is not None:
                         stage='recognition'
-                        recognizer.animals_enabled = item['mode'] == 'pets'
+                        recognizer.animals_enabled = item['mode'] in PET_MODES
                         recognizer.animals_intent = item.get('mode_revision')
                         observation = await recognizer.observe(packet,
                             source_current=lambda: self.source_current(selected['id'], process))

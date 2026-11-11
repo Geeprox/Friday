@@ -44,7 +44,8 @@ from homeplane.embodied.calibration_frames import CalibrationFrames
 from homeplane.embodied.static_page import static_asset, static_page
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.party_camera import PartyCamera
-from homeplane.embodied.camera_intent import CameraIntentStore
+from homeplane.embodied.camera_intent import CAMERA_MODES, PET_MODES, CameraIntentStore
+from homeplane.embodied.camera_follow_picker import FollowCommand
 from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
@@ -441,6 +442,10 @@ async def camera_search():
         if os.environ.get("FRIDAY_CAMERA_HOLD")=="1":planner.mode="hold"
         camera_planner = planner
         director = CameraDirector()
+        from homeplane.embodied.camera_follow_picker import CameraFollowPicker
+
+        planner.follow_picker = CameraFollowPicker(director, lambda: primary_follow_sample(),
+            lambda: (planner.mode, planner.intent_revision), lambda mode: set_primary_camera_mode(mode))
         checked = 0.0
         while True:
             now = time.monotonic()
@@ -568,7 +573,7 @@ def view():
             result['game'].update(status='paused', reason='实时画面已过期')
         if result['game']['source_recovery']['required']:
             result['game']['source_recovery'] = dict(result['game']['source_recovery'],ready=False,phase='camera')
-    pet_current = (result['status'] == 'live' and camera_planner and camera_planner.mode == 'pets'
+    pet_current = (result['status'] == 'live' and camera_planner and camera_planner.mode in PET_MODES
                    and result.get('animals_intent') == camera_planner.intent_revision
                    and result.get('animals_current') is True)
     if not pet_current:
@@ -846,7 +851,7 @@ async def run_source(my_generation):
                     if o["class"] == "person" and o["confidence"] >= 0.5
                 ]
                 pet_owner = camera_planner
-                pet_revision = pet_owner.intent_revision if pet_owner and pet_owner.mode == 'pets' else None
+                pet_revision = pet_owner.intent_revision if pet_owner and pet_owner.mode in PET_MODES else None
                 stage = "vision_request"
                 detection = await request_vision(vision, {
                     "jpeg": item["jpeg"],
@@ -886,7 +891,7 @@ async def run_source(my_generation):
                     people = tracks.update(detection, now, transform=frame_room.registration,
                         camera_moving=not registered or now < frame_room.command_until or frame_room.reg_info.get('status') in {'moving','settling'})
                     pet_active = (pet_revision is not None and camera_planner is pet_owner
-                        and pet_owner.mode == 'pets' and pet_owner.intent_revision == pet_revision)
+                        and pet_owner.mode in PET_MODES and pet_owner.intent_revision == pet_revision)
                     animals = pet_tracks.update(detection, now, intent=pet_revision if pet_active else None,
                         transform=frame_room.registration,
                         camera_moving=not registered or now < frame_room.command_until or frame_room.reg_info.get('status') in {'moving','settling'})
@@ -1411,6 +1416,7 @@ async def preview_status(camera_id: str, request: Request):
             "primary": True,
             "camera_control": report.get('camera_control'),
             "pet_tracking": report.get('pet_tracking'),
+            "follow_target_available": report['status'] == 'live' and (report.get('camera_control') or {}).get('owner') == 'friday',
         }
     return previews.status(camera_id)
 
@@ -1427,6 +1433,47 @@ async def preview_frame(camera_id: str, request: Request):
     if not frame:
         raise HTTPException(409, detail="camera_frame_unavailable")
     return Response(frame, media_type="image/jpeg")
+
+
+def primary_follow_sample():
+    if capture is None or capture.returncode is not None:
+        return {}
+    now = time.monotonic()
+    return dict(state, _local_received=last_frame, game=games.public,
+                _follow_motion=motion_generation, _follow_stable=not motor_waiters and last_frame > motor_last_sent,
+                party_camera=party_camera.status(camera=SELECTED['id'], session=state.get('session_id'),
+                                                 frame_mono=last_frame, now=now))
+
+
+def follow_picker(camera_id, request):
+    if request.client.host not in {'127.0.0.1', '::1'}:
+        raise HTTPException(403)
+    origin = request.headers.get('origin')
+    if origin and origin != 'http://' + request.headers.get('host', ''):
+        raise HTTPException(403)
+    if camera_id != SELECTED['id']:
+        return previews.follow_picker(camera_id)
+    if (camera_planner is None or camera_lease is None or not camera_lease.snapshot
+            or camera_lease.snapshot.get('status') != 'owned'):
+        raise ValueError('follow_target_unavailable')
+    return camera_planner.follow_picker
+
+
+@app.get('/api/previews/{camera_id}/follow-target')
+async def follow_target_view(camera_id: str, request: Request):
+    try:
+        result = follow_picker(camera_id, request).snapshot()
+    except ValueError:
+        raise HTTPException(409, detail='follow_target_unavailable') from None
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/api/previews/{camera_id}/follow-target')
+async def follow_target_command(camera_id: str, command: FollowCommand, request: Request):
+    try:
+        return follow_picker(camera_id, request).command(command)
+    except (ValueError, RuntimeError, OSError):
+        raise HTTPException(409, detail='follow_target_unavailable') from None
 
 
 @app.post('/api/party-camera')
@@ -1830,7 +1877,7 @@ async def camera_control(request: Request):
 
 
 def set_primary_camera_mode(mode):
-    if mode not in ('auto', 'pets', 'hold', 'survey'):
+    if mode not in CAMERA_MODES:
         raise ValueError('invalid_camera_mode')
     if not camera_planner:
         raise RuntimeError('camera_not_owned')

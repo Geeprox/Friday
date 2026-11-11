@@ -23,6 +23,74 @@
   inline-size: 32px;
   block-size: 32px;
 }
+.camera-target-tools,
+.camera-target-choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.camera-target-tools {
+  margin-block-end: 10px;
+}
+.camera-target-tools > div {
+  display: flex;
+  gap: 6px;
+  margin-inline-end: auto;
+}
+.camera-target-choices {
+  margin-block-start: 8px;
+}
+.camera-target-photo {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--ink);
+  cursor: crosshair;
+}
+.camera-target-photo canvas {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+}
+.camera-target-marks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.camera-target-mark {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #fff;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px #202124bb;
+}
+.camera-target-mark[data-focus=true] {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+.camera-target-mark span {
+  display: inline-block;
+  padding: 1px 6px;
+  background: var(--ink);
+  color: var(--surface);
+  font-size: .75rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.experience :is(.camera-target-tools,.camera-target-choices) button {
+  min-block-size: 44px;
+}
+.experience .camera-target-tools button[aria-pressed=true] {
+  color: var(--surface);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.camera-target-photo[hidden],
+.camera-target-tools[hidden],
+.camera-target-choices[hidden] {
+  display: none;
+}
 .camera-view-bar,
 .camera-view-actions,
 .camera-power-row {
@@ -128,9 +196,34 @@
   block-size: 16px;
 }
 @container camera-panel (min-width: 720px) {
-  .camera-workspace[data-viewing=true] {
+  .camera-workspace[data-viewing=true]:not([data-picking=true]),
+  .camera-workspace[data-picking=true] .camera-picture {
     grid-template-columns: minmax(0, 1fr) 188px;
     column-gap: 24px;
+  }
+  .camera-workspace[data-picking=true] .camera-picture {
+    display: grid;
+    align-items: start;
+  }
+  .camera-workspace[data-picking=true] :is(.camera-target-tools, .camera-frame, .camera-target-photo, .camera-view-bar) {
+    grid-column: 1;
+  }
+  .camera-workspace[data-picking=true] :is(.camera-frame, .camera-target-photo) {
+    grid-row: 2;
+  }
+  .camera-workspace[data-picking=true] .camera-view-bar {
+    grid-row: 3;
+  }
+  .camera-target-choices:not([hidden]) {
+    grid-column: 2;
+    grid-row: 2;
+    display: grid;
+    margin: 0;
+    padding-inline-start: 16px;
+    border-inline-start: 1px solid var(--line);
+  }
+  .experience .camera-target-choices > button {
+    justify-content: flex-start;
   }
   .camera-live-controls {
     grid-template-columns: minmax(0, 1fr);

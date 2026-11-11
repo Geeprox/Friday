@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 from fastapi import HTTPException
 import pytest
 
-from homeplane.embodied.camera_intent import CameraIntentStore
+from homeplane.embodied.camera_intent import CAMERA_MODES, CameraIntentStore
 from homeplane.embodied import previews
 
 
@@ -223,7 +223,7 @@ async def test_secondary_save_failure_holds_locally_and_does_not_dispatch(monkey
 
 
 def primary_scope(tmp_path):
-    scope = dict(Request=object, HTTPException=HTTPException, secrets=secrets, time=time,
+    scope = dict(Request=object, HTTPException=HTTPException, secrets=secrets, time=time, CAMERA_MODES=CAMERA_MODES,
                  SELECTED=CAMERA, camera_intents=store_at(tmp_path / 'camera'),
                  camera_planner=SimpleNamespace(mode='auto', intent_revision='old', intent_status='default',
                                                visited=set(), last_person=0, last_move=0),

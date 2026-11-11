@@ -5,6 +5,7 @@ import ast
 import base64
 import copy
 import json
+import secrets
 import time
 from collections import deque
 from pathlib import Path
@@ -16,6 +17,7 @@ from homeplane.embodied.party_camera import PartyCamera
 
 from homeplane.embodied import camera_recognition, previews, ptz_control
 from homeplane.embodied.camera_wall import CameraWall
+from homeplane.embodied.camera_intent import TARGET_MODES
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.people.live import close_identity
 from tests.embodied.test_camera_audio import actual
@@ -464,7 +466,8 @@ async def test_original_retirement_fails_pending_motion_once_and_does_not_clear_
     old_epoch = wall.begin(CAMERA['id'])
     old_process, new_process = SimpleNamespace(returncode=None), SimpleNamespace(returncode=None)
     old = dict(source_active=True, process=old_process, state='live', control_epoch=2,
-               frame=b'private', received_at=1000, people=1, hands=1, animals=1)
+               frame=b'private', received_at=1000, people=1, hands=1, animals=1,
+               mode='person_target', mode_revision='old', follow_picker=object())
     new = dict(source_active=True, process=new_process, state='live', privacy_closed=False)
     cleared = Mock()
     pool = previews.PreviewPool.__new__(previews.PreviewPool)
@@ -478,12 +481,14 @@ async def test_original_retirement_fails_pending_motion_once_and_does_not_clear_
     acknowledged = asyncio.get_running_loop().create_future()
     acknowledged.set_result({'native_code': 0})
     scope = dict(latest={'private': 'old'}, retired=False, item=old, self=pool, selected=CAMERA,
+                 TARGET_MODES=TARGET_MODES, secrets=secrets,
                  wall_epoch=old_epoch, waiters={'pending': pending, 'ack': acknowledged})
     retire = actual('homeplane/embodied/previews.py', 'retire_source', scope)
     retire('source_closed');retire('capture_stream_unavailable')
     with pytest.raises(RuntimeError, match='^source_closed$'):await pending
     assert acknowledged.result() == {'native_code': 0}
     assert not old['source_active'] and old['frame'] is None and scope['latest'] is None
+    assert 'follow_picker' not in old and old['mode'] == 'hold' and old['mode_revision'] != 'old'
     assert old['control_epoch'] == 3
     if replacement:
         cleared.assert_not_called()

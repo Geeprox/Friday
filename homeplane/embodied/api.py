@@ -5,12 +5,13 @@ import time
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from homeplane.runtime_log import observe
 
 from .catalog import RECOGNIZERS, catalog, get_app
+from .camera_follow_picker import FollowCommand
 from .game_difficulty import DifficultyId, difficulty_options
 from .household import DeviceCommands, basic_command
 from .paths import PRIVATE
@@ -295,6 +296,21 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
             return Response(await service.preview(camera_id, frame=True), media_type="image/jpeg")
         except ValueError:
             raise HTTPException(409, detail="camera_frame_unavailable") from None
+
+    @router.get('/api/embodied/cameras/{camera_id}/follow-target')
+    async def follow_target_view(camera_id: str):
+        try:
+            report = await service.camera_follow_target(camera_id)
+        except (ValueError, OSError, httpx.HTTPError):
+            raise HTTPException(409, detail='follow_target_unavailable') from None
+        return JSONResponse(report, headers={'Cache-Control': 'no-store'})
+
+    @router.post('/api/embodied/cameras/{camera_id}/follow-target')
+    async def follow_target_command(camera_id: str, command: FollowCommand):
+        try:
+            return await service.camera_follow_target(camera_id, command.model_dump())
+        except (ValueError, OSError, httpx.HTTPError):
+            raise HTTPException(409, detail='follow_target_unavailable') from None
 
     @router.post("/api/embodied/start")
     async def start(request: Start):
