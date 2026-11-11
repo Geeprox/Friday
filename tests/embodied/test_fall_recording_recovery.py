@@ -6,10 +6,12 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 import pytest_asyncio
+from fastapi import APIRouter, FastAPI
 
-from homeplane.embodied import safety
+from homeplane.embodied import safety, safety_api
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
@@ -51,7 +53,8 @@ async def before_fall(monitor):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner', ['primary', 'secondary'])
-async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(monitor, owner):
+@pytest.mark.parametrize('joint_gap', [False, True])
+async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(monitor, owner, joint_gap, monkeypatch):
     runtime, camera, session = monitor.runtime, monitor.camera, 'synthetic-source'
     state = {}
     item = dict(privacy_closed=False, source_active=True, control_epoch=1, mode='auto', mode_revision='intent')
@@ -59,15 +62,16 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
     index = -1
     moving_until = 0
     moves = []
+    after_post_frames = 30 if joint_gap else 28
 
     async def advance(_=0):
         nonlocal index
         if runtime.observation_task is not None:
             await runtime.observation_task
         index += 1
-        if index > 32:
+        if index > after_post_frames + 6:
             raise asyncio.CancelledError
-        if index == 28:
+        if index == after_post_frames:
             # 给写入队列处理完最后一批关键帧的机会，再推进合成时钟。
             await runtime.recording.drain()
         monitor.clock[0] = now = 100 + index * .25
@@ -81,6 +85,8 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
                 joint['x'] += .24
         else:
             actor['box']['y'] = .14
+        if joint_gap and index == 10:
+            actor['joints'].pop('leftShoulder')
         people = [actor] if stable else []
         runtime.offer(camera, session, people, now, now, stable=stable,
                       source_context=monitor.context, jpeg=b'SYNTHETIC-FALL-FRAME')
@@ -132,7 +138,77 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
     events = monitor.store.events()
     assert len(events) == 1 and events[0]['kind'] == 'fall', (owner, moves)
     assert len(events[0]['frames']) >= 12, (owner, moves)
-    assert moves and min(moves) > 106.75, '确认及后续画面收齐后，镜头才恢复自动跟随'
+    gap = .5 if joint_gap else 0
+    assert events[0]['captured_at'] == 1800000103.75 + gap
+    assert moves and min(moves) > 106.75 + gap, '确认及后续画面收齐后，镜头才恢复自动跟随'
+    monkeypatch.setattr(safety_api, 'PRIVATE', monitor.store.path.parent)
+    router = APIRouter()
+    console = safety_api.install(router, SimpleNamespace(process=None))
+    app = FastAPI()
+    app.include_router(router)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
+            path = '/api/embodied/safety/events'
+            result = await client.get(path)
+            visible, = result.json()['events']
+            assert result.status_code == 200 and visible['id'] == events[0]['id']
+            assert visible['camera'] == camera and visible['captured_at'] == events[0]['captured_at']
+            ordinal = visible['frames'][0]['ordinal']
+            keyframe = await client.get(f'{path}/{visible["id"]}/frames/{ordinal}')
+            assert keyframe.headers['Cache-Control'] == 'no-store'
+            assert keyframe.status_code == 200 and keyframe.content == b'SYNTHETIC-FALL-FRAME'
+    finally:
+        await console.close()
+
+
+@pytest.mark.asyncio
+async def test_coalescing_keeps_the_fall_candidate_but_does_not_add_an_unobserved_interval(monitor):
+    runtime, camera, session = monitor.runtime, monitor.camera, 'same-session'
+    await before_fall(monitor)
+    at = monitor.clock[0]
+    actor = person(True)
+    actor['joints'].pop('leftShoulder')
+    assert runtime.offer(camera, session, [actor], at, at, stable=True, source_context=monitor.context)
+    monitor.clock[0] += .25
+    assert await frame(monitor)
+    assert runtime.fall_pending(camera, session)
+    await runtime.drain()
+    assert runtime.coalesced == 1 and not monitor.store.events()
+    monitor.clock[0] += .25
+    assert await frame(monitor)
+    await runtime.drain()
+    events = monitor.store.events()
+    assert len(events) == 1 and events[0]['captured_at'] == 1800000104.25
+
+
+@pytest.mark.asyncio
+async def test_a_partial_pose_during_save_does_not_authorize_a_new_announcement(monitor, monkeypatch):
+    await before_fall(monitor)
+    entered, release = threading.Event(), threading.Event()
+    create = monitor.store.create
+
+    def delayed_save(*args, **kwargs):
+        entered.set()
+        assert release.wait(2)
+        return create(*args, **kwargs)
+
+    monkeypatch.setattr(monitor.store, 'create', delayed_save)
+    runtime, session = monitor.runtime, 'same-session'
+    try:
+        assert await frame(monitor)
+        assert await asyncio.to_thread(entered.wait, 1)
+        monitor.clock[0] += .25
+        at = monitor.clock[0]
+        actor = person(True)
+        actor['joints'].pop('leftShoulder')
+        assert runtime.offer(monitor.camera, session, [actor], at, at, stable=True,
+                             source_context=monitor.context)
+        await runtime.observation_task
+    finally:
+        release.set()
+    await runtime.drain()
+    assert len(monitor.store.events()) == 1
+    runtime.speaker.say.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -57,7 +57,8 @@ def test_fall_requires_transition_and_dwell_and_only_one_event_per_episode():
 
 
 @pytest.mark.parametrize(
-    "fence", ["motion", "stale", "gap", "session", "missing_joints", "missing_person", "bad_coordinate"]
+    "fence", ["motion", "stale", "gap", "captured_gap", "replay", "session",
+              "missing_joints", "missing_person", "bad_coordinate"]
 )
 def test_invalid_observation_breaks_fall_continuity(fence):
     detector = FallDetector()
@@ -65,6 +66,8 @@ def test_invalid_observation_breaks_fall_continuity(fence):
     for index in range(18):
         now = 100 + index * 0.25
         p, session, stable, captured = person(index >= 7), "a", True, now
+        if fence == "captured_gap" and index >= 8:
+            now = captured = now + 0.8
         if index == 8:
             if fence == "motion":
                 stable = False
@@ -72,6 +75,8 @@ def test_invalid_observation_breaks_fall_continuity(fence):
                 captured = now - 2
             if fence == "gap":
                 now += 3
+            if fence == "replay":
+                captured -= .25
             if fence == "session":
                 session = "b"
             if fence == "missing_joints":
@@ -117,6 +122,61 @@ def test_short_horizontal_pose_and_slow_descent_do_not_trigger():
                 p["box"]["h"] = 0.3  # neither standing nor horizontal during descent
             events += d.observe("a", "s", [p], now, now, stable=True)
         assert events == []
+
+
+@pytest.mark.parametrize("latency", ["growing", "jump"])
+def test_fall_confirmation_uses_capture_intervals_under_processing_jitter(latency):
+    detector = FallDetector()
+    events = []
+    for index in range(24):
+        captured = 100 + index * .25
+        delay = min(1.38, max(0, index-7)*.23) if latency == "growing" else (.6 if index >= 10 else 0)
+        now = captured + delay
+        events.extend((captured, event) for event in detector.observe(
+            "a", "s", [person(index >= 7)], now, captured, stable=True))
+    assert len(events) == 1
+    confirmed_at, event = events[0]
+    assert confirmed_at == 103.75
+    assert event["started_mono"] == 101.5 and event["detector"] == "geometry-fall/2"
+
+
+@pytest.mark.parametrize("missing", ["absent", "weak"])
+def test_one_missing_joint_holds_same_track_without_counting_the_gap(missing):
+    detector = FallDetector()
+    confirmations = []
+    for index in range(25):
+        captured = 100 + index * .25
+        actor = person(index >= 7)
+        if index == 10:
+            if missing == "absent":
+                actor["joints"].pop("leftShoulder")
+            else:
+                actor["joints"]["leftShoulder"]["confidence"] = .4
+            assert detector.needs_stable_view("a", "s", captured, ([actor], captured, 16/9, False))
+        events = detector.observe("a", "s", [actor], captured, captured, stable=True)
+        confirmations.extend([captured]*len(events))
+        if index == 10:
+            assert detector.needs_stable_view("a", "s", captured + .8)
+            assert not detector.needs_stable_view("a", "s", captured + 1.51)
+    assert confirmations == [104.25]
+
+
+@pytest.mark.parametrize("break_in_pose", ["too_long", "different_box", "reappears_elsewhere", "before_descent"])
+def test_partial_pose_never_borrows_a_different_track_or_an_unseen_descent(break_in_pose):
+    detector = FallDetector()
+    events = []
+    for index in range(25):
+        captured = 100 + index * .25
+        actor = person(index >= 7)
+        if (index == (7 if break_in_pose == "before_descent" else 10)
+                or break_in_pose == "too_long" and 11 <= index <= 12):
+            actor["joints"].pop("leftShoulder")
+        if (break_in_pose == "different_box" and index == 10
+                or break_in_pose == "reappears_elsewhere" and index == 11):
+            actor["box"]["x"] = 0
+            actor["box"]["w"] = .23
+        events.extend(detector.observe("a", "s", [actor], captured, captured, stable=True))
+    assert not events
 
 
 def test_store_restart_review_retention_and_disk_budget(tmp_path, monkeypatch):
