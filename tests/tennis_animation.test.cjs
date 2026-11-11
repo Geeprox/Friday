@@ -39,6 +39,25 @@ test('the source-confirmed serve animates only the server when both players swin
   assert.equal(pose(contact,1),0);
  }
 });
+test('单人挑战的对手只为收到的新击球回执挥拍一次',()=>{
+ for(const reduced of [false,true]){
+  const s=scene(reduced),incoming=packet();
+  incoming.players.length=1;
+  Object.assign(incoming.tennis,{opponent:{x:.72},guide:{active:false},event:{sequence:1,kind:'serve',player:0,age:.4}});
+  s.receive(incoming,1000);
+  assert.equal(pose(s.paint(incoming,1000),1),0);
+  const hit=structuredClone(incoming);
+  hit.tennis.event={sequence:2,kind:'hit',player:1,age:0};
+  s.receive(hit,1050);
+  assert.equal(pose(s.paint(hit,1050),1),5);
+  for(const at of [1150,1250,1350,1450,1500]){
+   s.receive(hit,at);s.paint(hit,at);
+  }
+  assert.equal(pose(s.paint(hit,1550),1),0);
+  const joined=scene(reduced);joined.receive(hit,1550);
+  assert.equal(pose(joined.paint(hit,1550),1),0);
+ }
+});
 test('joining a live game, stale counts, joint gaps and a new context cannot replay a past swing',()=>{
  const s=scene(),first=packet(30);s.receive(first,1000);assert.equal(pose(s.paint(first,1000)),0);
  const missed=packet(31);missed.players[0].observation='brief_joint_gap';s.receive(missed,1020);assert.equal(pose(s.paint(missed,1020)),0);

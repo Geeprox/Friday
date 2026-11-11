@@ -4,6 +4,7 @@ import collections
 import math
 import secrets
 import time
+from dataclasses import dataclass
 
 from homeplane.embodied.catalog import TENNIS_VARIANTS
 from homeplane.embodied.game_difficulty import difficulty_options, game_difficulty
@@ -26,6 +27,25 @@ TENNIS_SERVE_SETTLE = .25
 TENNIS_PRACTICE_LANES = (.5, .5, .5, .26, .74, .26, .74, .5, .26)
 TENNIS_PRACTICE_SPEEDS = (.85, 1., 1.3)
 TENNIS_PRACTICE_BREAK = 1.15
+TENNIS_OPPONENT_SERVE_WAIT = .65
+TENNIS_OPPONENT_FOLLOW_THROUGH = .34
+TENNIS_OPPONENT_LANES = (-1., .65, -.55, 1., -.8, .8)
+
+
+@dataclass(frozen=True)
+class TennisOpponentLevel:
+    reaction: float
+    speed: float
+    placement_error: float
+    settle: float
+    shot_width: float
+
+
+TENNIS_OPPONENT_LEVELS = {
+    'easy': TennisOpponentLevel(.92, .17, .17, .26, .16),
+    'standard': TennisOpponentLevel(.64, .23, .14, .23, .24),
+    'challenge': TennisOpponentLevel(.41, .30, .11, .18, .31),
+}
 
 
 def clamp(x, a=-1.0, b=1.0):
@@ -66,6 +86,54 @@ def tennis_contact(ball, px, swing, dt, now, window):
             return None
     z = ball['z']+(-1 if ball['toward'] == 0 else 1)*speed*first
     return first, x, z
+
+
+class TennisOpponent:
+    """以本局时间移动的球场对手，击球仍由共用判定受理。"""
+
+    def __init__(self):
+        self.x = .5
+        self.flight = None
+        self.seen = 0.
+        self.settled = 0.
+        self.recovering = 0.
+
+    def move(self, ball, flight, rally, dt, difficulty):
+        level = TENNIS_OPPONENT_LEVELS[difficulty]
+        if ball['toward'] != 1:
+            self.flight, self.seen, self.settled = None, 0., 0.
+            distance = level.speed*max(0., dt-self.recovering)
+            self.recovering = max(0., self.recovering-dt)
+            self.x += clamp(.5-self.x, -distance, distance)
+            return None
+        if self.flight != flight:
+            self.flight, self.seen, self.settled = flight, 0., 0.
+        # 多拍相持后，对手需要更长时间恢复站位。
+        effort = min(16, max(0, rally-6))
+        wait = max(0., level.reaction+.026*effort-self.seen)
+        self.seen += dt
+        if wait >= dt or ball['speed'] <= 0:
+            return None
+        arrival = max(0., (1-ball['z'])/ball['speed'])
+        landing = ball['target_x']+(ball['x']-ball['target_x'])*math.exp(-TENNIS_CURVE*arrival)
+        lane = TENNIS_OPPONENT_LANES[flight % len(TENNIS_OPPONENT_LANES)]
+        destination = clamp(landing+level.placement_error*lane, .12, .88)
+        # 先移动到接球点附近，再站定挥拍。高速变线时也可能来不及。
+        approach = max(0., abs(destination-self.x)-.045)/level.speed
+        distance = level.speed*(dt-wait)
+        self.x += clamp(destination-self.x, -distance, distance)
+        if approach > 0:
+            self.settled = 0.
+        planted_at = wait+approach
+        swing_at = planted_at+max(0., level.settle+.011*effort-self.settled)
+        self.settled += max(0., dt-planted_at)
+        return swing_at if swing_at < dt else None
+
+    def aim(self, flight, difficulty, human_x=None):
+        lane = TENNIS_OPPONENT_LANES[flight % len(TENNIS_OPPONENT_LANES)]
+        if human_x is not None and abs(human_x-.5) > .09:
+            lane = 1. if human_x < .5 else -1.
+        return .5 + TENNIS_OPPONENT_LEVELS[difficulty].shot_width*lane
 
 
 def point(j, k):
@@ -460,6 +528,7 @@ class MotionGames:
         self.best_rally = 0
         self.tennis_winner = None
         self.tennis_practice_results = []
+        self.tennis_opponent = TennisOpponent()
         self.tennis_event = None
         self.tennis_event_sequence = 0
         self.tennis_flight = 0
@@ -806,7 +875,7 @@ class MotionGames:
             return self.publish(selected, "paused", "请让双脚完整入镜")
         if any(not p["calibrated"] for p in selected):
             return self.publish(selected, "calibrating", "站定约 1 秒，记录左右移动原点")
-        if self.mode == 'tennis' and self.tennis_variant == 'practice':
+        if self.mode == 'tennis' and self.tennis_variant != 'match':
             player = selected[0]
             if (player['observation'] != 'fresh' or player['foot_observation'] != 'fresh'
                     or not player['observed_wrists']):
@@ -1025,6 +1094,15 @@ class MotionGames:
 
     def _tennis_serve(self, players, now):
         server = self.tennis_server
+        if server == 1 and self.tennis_variant == 'solo':
+            self.ball.update(x=clamp(self.tennis_opponent.x+.07, .12, .88), z=.88)
+            self.tennis_serve_ready = True
+            if self.tennis_serve_since is None:
+                self.tennis_serve_since = self.elapsed
+            elif self.elapsed-self.tennis_serve_since >= TENNIS_OPPONENT_SERVE_WAIT:
+                self.tennis_opponent.recovering = TENNIS_OPPONENT_FOLLOW_THROUGH
+                self._launch_tennis_serve(server, self.tennis_opponent.aim(self.tennis_flight, self.difficulty.id), now)
+            return
         player = players[server]
         ready = (player.get('observed_wrists', 0) > 0 and all(
             p.get('observation') == 'fresh' and p.get('foot_observation') == 'fresh' for p in players))
@@ -1048,12 +1126,15 @@ class MotionGames:
         if type(swing) not in (int, float) or swing != now or swing <= self.tennis_serve_since:
             return
         self.tennis_used_swings[server] = swing
+        self._launch_tennis_serve(server, position+player['swing_direction']*.27, now)
+
+    def _launch_tennis_serve(self, server, target, now):
         self._clear_tennis_serve()
         self.tennis_event_sequence += 1
         self.tennis_event = dict(sequence=self.tennis_event_sequence, kind='serve', player=server, elapsed=self.elapsed)
         self.tennis_flight += 1
         self.hit_flash = now
-        self.ball.update(toward=1-server, target_x=clamp(position + player['swing_direction']*.27, .12, .88))
+        self.ball.update(toward=1-server, target_x=clamp(target, .12, .88))
 
     def _feed_tennis_practice(self, now):
         index = len(self.tennis_practice_results)
@@ -1071,6 +1152,8 @@ class MotionGames:
             return
         practice = self.tennis_variant == 'practice'
         b = self.ball
+        solo = self.tennis_variant == 'solo'
+        reaction = self.tennis_opponent.move(b, self.tennis_flight, self.rally, dt, self.difficulty.id) if solo else None
         if self.round_pause > 0:
             self.round_pause = max(0, self.round_pause-dt)
             if self.round_pause > 0 or b['toward'] is not None:
@@ -1084,13 +1167,17 @@ class MotionGames:
         start_x, start_z = b['x'], b['z']
         direction = -1 if b["toward"] == 0 else 1
         receiver = b["toward"]
-        p = None if practice and receiver == 1 else players[receiver]
-        px = .5 + p['lateral'] * .4 if p else .5
+        opponent_receiving = solo and receiver == 1
+        p = None if receiver == 1 and (solo or practice) else players[receiver]
+        px = self.tennis_opponent.x if opponent_receiving else .5 + p['lateral'] * .4 if p else .5
         window = TENNIS_WINDOW * self.difficulty.tennis_window
         swing = p.get('last_swing') if p else None
         fresh_swing = (type(swing) in (int, float) and math.isfinite(swing)
                        and 0 <= now-swing < .35 and swing > self.tennis_used_swings[receiver]
                        and p.get('observation', 'fresh') == 'fresh')
+        if opponent_receiving and reaction is not None:
+            swing = now-dt+reaction
+            fresh_swing = True
         contact = tennis_contact(b, px, swing, dt, now, window) if fresh_swing else None
         if contact and now-dt+contact[0]-self.hit_flash > .4:
             at, hit_x, hit_z = contact
@@ -1103,7 +1190,12 @@ class MotionGames:
             b['x'] = hit_x
             b["toward"] = 1 - receiver
             b["z"] = 0.12 if receiver == 0 else 0.88
-            b["target_x"] = clamp(px + p["swing_direction"] * 0.27, 0.12, 0.88)
+            if opponent_receiving:
+                aim = self.tennis_opponent.aim(self.tennis_flight, self.difficulty.id, .5+players[0]['lateral']*.4)
+                b['target_x'] = clamp(aim, max(.12, px-.27), min(.88, px+.27))
+                self.tennis_opponent.recovering = TENNIS_OPPONENT_FOLLOW_THROUGH
+            else:
+                b['target_x'] = clamp(px+p['swing_direction']*.27, .12, .88)
             b["speed"] = min(self.difficulty.tennis_max_speed, b["speed"] + 0.015)
             remaining = max(0., dt-at)
             b['z'] += (1 if receiver == 0 else -1)*b['speed']*remaining
@@ -1157,6 +1249,7 @@ class MotionGames:
     def tennis_public(self, players, status):
         """站位沿用本局玩家编号，落点提示与击球判定使用同一轨迹和窗口。"""
         practice = self.selected_mode == 'tennis' and self.tennis_variant == 'practice'
+        solo = self.selected_mode == 'tennis' and self.tennis_variant == 'solo'
         receiver = self.ball['toward']
         phase = ('complete' if self._tennis_complete() else
                  'point' if self.round_pause > 0 and self.tennis_event and self.tennis_event['kind'] in {'point','miss'} else
@@ -1166,7 +1259,7 @@ class MotionGames:
         serve = (dict(player=self.tennis_server, ready=active and phase == 'serve' and self.tennis_serve_ready)
                  if self.mode == 'tennis' and not practice and receiver is None else None)
         window = TENNIS_WINDOW * self.difficulty.tennis_window
-        guide = dict(active=active and phase == 'rally' and (not practice or receiver == 0),
+        guide = dict(active=active and phase == 'rally' and (receiver == 0 or not (practice or solo)),
                      receiver=receiver, target_x=None, seconds=None,
                      in_position=False, cue=None, reach=TENNIS_REACH, window=window)
         if guide['active']:
@@ -1203,7 +1296,8 @@ class MotionGames:
         return dict(ball=dict(self.ball), score=list(self.score), rally=self.rally, best_rally=self.best_rally,
                     winner=self.tennis_winner, target=TENNIS_TARGET, cap=TENNIS_CAP,
                     phase=phase, ready_seconds=round(self.round_pause, 3), guide=guide,
-                    event=event, flight=self.tennis_flight, lineup=lineup, serve=serve, practice=drill)
+                    event=event, flight=self.tennis_flight, lineup=lineup, serve=serve, practice=drill,
+                    opponent=dict(x=round(self.tennis_opponent.x, 4)) if solo else None)
 
     def publish(self, players, status, reason):
         if self.mode == 'quest' and status not in {'playing', 'complete'}:

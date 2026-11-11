@@ -276,3 +276,79 @@ def test_practice_preserves_the_in_flight_ball_when_the_players_hands_are_missin
     assert held['tennis']['practice']['results'] == [] and not held['tennis']['guide']['active']
     held = game.suspend_source()
     assert held['source_recovery']['required_players'] == 1 and held['tennis']['ball'] == state['tennis']['ball']
+
+
+def solo_pose(game, *, miss_once=False, change_direction=False):
+    """给原动作识别器提供合成站位和挥拍，不写入球路或分数。"""
+    tennis = game.public['tennis']
+    guide, serve = tennis['guide'], tennis['serve']
+    direction = 1 if tennis['opponent']['x'] < .5 else -1
+    human_serving = serve is not None and serve['player'] == 0
+    x = .5
+    if guide['active']:
+        x = guide['target_x'] + (.11*direction if change_direction else 0.)
+    elif change_direction and human_serving and game.status == 'playing':
+        x += .24*direction
+    player = human(x=.5-(x-.5)*.30)
+    returning = guide['cue'] == 'swing' and (not miss_once or tennis['score'][1] > 0)
+    if (human_serving and serve['ready']) or returning:
+        player['joints']['rightWrist']['x'] += .22*direction
+        player['joints']['rightWrist']['y'] -= .15
+    return player
+
+
+@pytest.mark.parametrize('difficulty', ['easy', 'standard', 'challenge'])
+def test_solo_can_play_and_finish_a_scored_match_from_one_pose_source(difficulty):
+    game = MotionGames()
+    lobby = game.select('tennis', tennis_variant='solo', difficulty=difficulty)
+    assert lobby['tennis_variant'] == 'solo' and lobby['tennis']['practice'] is None
+    game.reset('tennis')
+    first_round = game.round_id
+    observed_events, positions = {}, set()
+    for frame in range(7200):
+        pose = solo_pose(game, miss_once=True, change_direction=difficulty == 'challenge')
+        result = game.update([pose], LOCK, frame*.05)
+        tennis = result['tennis']
+        assert result['source_recovery']['required_players'] == 1
+        assert len(result['players']) <= 1
+        positions.add(tennis['opponent']['x'])
+        if tennis['event']:
+            event = tennis['event']
+            observed_events[event['sequence']] = (event['kind'], event['player'])
+        if result['status'] == 'complete':
+            break
+    assert result['status'] == 'complete'
+    assert tennis['winner'] == 0 and tennis['score'][0] == 7 and tennis['score'][1] >= 1
+    assert tennis['score'][0]-tennis['score'][1] >= 2
+    assert {('serve', 0), ('serve', 1), ('hit', 0), ('hit', 1), ('point', 0), ('point', 1)} <= set(observed_events.values())
+    assert len(positions) > 10 and not tennis['guide']['active']
+
+    game.reset('tennis')
+    reset = game.public
+    assert reset['round_id'] > first_round and reset['tennis_variant'] == 'solo' and reset['difficulty'] == difficulty
+    assert reset['tennis']['score'] == [0, 0] and reset['tennis']['opponent']['x'] == .5
+    assert reset['tennis']['winner'] is None and reset['tennis']['event'] is None
+
+
+def test_solo_opponent_and_ball_wait_for_the_same_fresh_player():
+    game = MotionGames()
+    game.select('tennis', tennis_variant='solo')
+    game.reset('tennis')
+    for frame in range(160):
+        played = game.update([solo_pose(game)], LOCK, frame*.05)
+        tennis = played['tennis']
+        if tennis['ball']['toward'] == 1 and tennis['opponent']['x'] != .5:
+            break
+    assert played['status'] == 'playing' and tennis['ball']['toward'] == 1
+    assert tennis['opponent']['x'] != .5
+    no_wrists = human()
+    no_wrists['joints'].pop('leftWrist')
+    no_wrists['joints'].pop('rightWrist')
+    for t in range(8, 22):
+        held = game.update([no_wrists], LOCK, float(t))
+        assert held['status'] == 'paused'
+        assert held['tennis']['ball'] == tennis['ball'] and held['tennis']['opponent'] == tennis['opponent']
+        assert held['tennis']['score'] == tennis['score']
+    interrupted = game.suspend_source()
+    assert interrupted['source_recovery']['required_players'] == 1
+    assert interrupted['tennis']['ball'] == tennis['ball']

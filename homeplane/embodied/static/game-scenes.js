@@ -43,6 +43,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
  const images=new Map(),errors=new Set(),positions=[.5,.5];
  const tennisArt=['tennis-near-v1.png','tennis-far-v1.png'];
  const tennisCounts=[null,null],tennisPending=[null,null],tennisHitAt=[-10000,-10000],tennisPoses=[0,0];
+ let opponentSequence=0;
  let tennisClock=0,tennisAt=null,tennisRunning=false,tennisPacketAt=null,tennisPacketPlaying=false,tennisPhase=null;
  const reduced=matchMedia('(prefers-reduced-motion: reduce)');
  let lastAt=0,celebrateAt=-10000,lastLevel=0,portrait=false,lastRound=null,lastContext=null,lastTennisEvent=null,ballFrames=null,motionAt=null,shownBall=null;
@@ -51,6 +52,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
  function resetQuest(){questClock=0;questAt=null;questRunning=false;questShown=questPrevious=null;questReveals.clear();}
  function resetTennis(){
   tennisClock=0;tennisAt=tennisPacketAt=null;tennisRunning=tennisPacketPlaying=false;tennisPhase=null;
+  opponentSequence=0;
   tennisCounts.fill(null);tennisPending.fill(null);tennisHitAt.fill(-10000);tennisPoses.fill(0);
  }
  function receiveTennis(g,at){
@@ -60,6 +62,11 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   const feed=g.tennis?.event;
   if(continuous&&g.tennis?.practice&&['ready','point'].includes(tennisPhase)&&g.tennis.phase==='rally'&&
      feed?.kind==='serve'&&feed.player===1&&feed.age>=0&&feed.age<=.25)tennisPending[1]=at;
+  if(g.tennis?.opponent&&Number.isSafeInteger(feed?.sequence)&&feed.sequence>opponentSequence){
+   if(continuous&&feed.sequence===opponentSequence+1&&feed.player===1&&
+      ['serve','hit'].includes(feed.kind)&&feed.age>=0&&feed.age<=.25)tennisPending[1]=at;
+   opponentSequence=feed.sequence;
+  }
   for(let i=0;i<2;i++){
    const player=g.players?.[i],count=player?.swings;
    if(!Number.isSafeInteger(count)||count<0)continue;
@@ -264,24 +271,27 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    if(!reduced.matches&&t.phase==='rally'&&!swing){c.beginPath();c.ellipse(p[0],p[1],rx*approach,ry*approach,0,0,Math.PI*2);c.strokeStyle='#fff6d9';c.lineWidth=2;c.stroke();}
    c.restore();
    const number=(guide.receiver+1)+' 号';
-   const label=t.practice?(swing?'挥拍':'落点'):number+(swing?' · 挥拍':'落点');
+   const label=t.practice||t.opponent?(swing?'挥拍':'落点'):number+(swing?' · 挥拍':'落点');
    cue={label,p,rx,ry,ink,swing};
   }else if(running&&t.serve?.ready){
    const p=project(t.ball.x,t.ball.z),rx=portrait?50:44,ry=rx*.25,ink=t.serve.player===0?'#285e53':'#8b3c29';
    c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle='#fff6d9bd';c.fill();
    c.strokeStyle=ink;c.lineWidth=5;c.stroke();c.restore();
-   cue={label:(t.serve.player+1)+' 号 · 发球',p,rx,ry,ink,swing:true,side:t.serve.player===0?-1:1};
+   const label=t.opponent?(t.serve.player===0?'挥拍发球':'对手发球'):(t.serve.player+1)+' 号 · 发球';
+   cue={label,p,rx,ry,ink,swing:true,side:t.serve.player===0?-1:1};
   }
   const dt=Math.min(.1,Math.max(0,(at-lastAt)/1000));lastAt=at;
   function player(i){
-   const p=players[i],feed=i===1&&t.practice&&Number.isFinite(t.practice.feed_x)?t.practice.feed_x:null;
+   const p=players[i],far=i===1?(t.opponent?.x??t.practice?.feed_x):null;
+   const feed=Number.isFinite(far)?far:null;
    const wanted=feed??(.5+Math.max(-1,Math.min(1,p?.lateral||0))*.39);
    if(g.status==='playing'&&(feed!==null||Number.isFinite(p?.lateral)))positions[i]+=(wanted-positions[i])*(reduced.matches?1:1-Math.exp(-dt/.075));
    const point=project(positions[i],i===0?.025:.98),size=portrait?(i===0?300:205):(i===0?245:160);
    tennisActor(i,tennisPose(i,g,at),point[0],point[1],size);
    c.save();c.textAlign='center';c.font=`600 ${portrait?34:20}px -apple-system, sans-serif`;
    const labelWidth=portrait?90:60;c.fillStyle='#faf9f2';c.fillRect(point[0]-labelWidth/2,point[1]+8,labelWidth,portrait?44:27);
-   c.fillStyle=i?'#8a4030':'#234f49';c.fillText(t.practice?(i?'陪练':'你'):(i+1)+' 号',point[0],point[1]+(portrait?42:29));
+   const label=t.opponent?(i?'对手':'你'):t.practice?(i?'陪练':'你'):(i+1)+' 号';
+   c.fillStyle=i?'#8a4030':'#234f49';c.fillText(label,point[0],point[1]+(portrait?42:29));
    c.restore();
   }
   player(1);

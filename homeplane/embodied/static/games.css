@@ -79,7 +79,7 @@ body>.stage-header{grid-row:1}body>.workspace{grid-row:2}body>footer{grid-row:3}
 .tennis-lineup>div[data-player="1"]{border-color:#e7d7cc;background:#f4ebe4;color:#8b3c29}
 .tennis-lineup dt{font-size:14px;font-weight:650;line-height:1.4}
 .tennis-lineup dd{margin:3px 0 0;font-size:13px;line-height:1.4}
-.tennis-variants,.tennis-result-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.tennis-variants,.tennis-result-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .tennis-variants{margin:0 0 12px}
 .tennis-variants button,.tennis-result-actions button{min-width:0;padding-inline:8px}
 .tennis-variants button[aria-pressed=true]{border-color:#65796b;background:#e6ece2;color:#274f44;font-weight:700}

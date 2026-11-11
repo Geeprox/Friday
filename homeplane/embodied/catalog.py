@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from typing import Literal, get_args
 
 
-TennisVariant = Literal["match", "practice"]
+TennisVariant = Literal["match", "practice", "solo"]
 TENNIS_VARIANTS = get_args(TennisVariant)
 
 
@@ -21,7 +21,7 @@ class GameApp:
 
 APPS = (
     GameApp("ski", "林间滑雪", "摆臂滑行，左右移动穿过木门", (1, 1), "ski"),
-    GameApp("tennis", "体感网球", "独自练回球，或和家人对打", (1, 2), "tennis"),
+    GameApp("tennis", "体感网球", "单人练习、挑战球场对手，或和家人对打", (1, 2), "tennis"),
     GameApp("quest", "山径冒险", "跟着动作走过林间和溪畔，点亮山顶营地", (1, 1), "quest"),
     GameApp("hiit", "运动闯关", "跟随示范完成一轮站姿动作", (1, 1), "hiit"),
     GameApp("werewolf", "狼人杀", "手机私下行动，Friday 主持，和家人一起推理", (6, 12), None, "party"),

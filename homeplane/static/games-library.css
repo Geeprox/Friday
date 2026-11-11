@@ -19,14 +19,17 @@
 .game-detail-layout:is([data-game=ski],[data-game=tennis]){align-items:start}
 .game-tennis-variants{min-inline-size:0;margin:18px 0;padding:0;border:0}
 .game-tennis-variants legend{padding:0;font-size:14px;font-weight:650;margin-bottom:8px}
-.game-tennis-variant-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.game-tennis-variant-list{display:grid;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
 .game-tennis-variant{
  display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px;
- min-height:56px;padding:8px 10px;border:1px solid var(--line);border-radius:9px;
- background:var(--surface);color:var(--ink);cursor:pointer;
+ min-height:44px;padding:8px 12px;color:var(--ink);cursor:pointer;
 }
-.game-tennis-variant:has(input:checked){background:var(--accent-soft);border-color:var(--ink)}
-.game-tennis-variant:has(input:focus-visible){outline:2px solid var(--ink);outline-offset:2px}
+.game-tennis-variant:first-child{border-radius:9px 9px 0 0}
+.game-tennis-variant:last-child{border-radius:0 0 9px 9px}
+.game-tennis-variant+.game-tennis-variant{border-top:1px solid var(--line)}
+.game-tennis-variant>span{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.game-tennis-variant:has(input:checked){background:var(--accent-soft)}
+.game-tennis-variant:has(input:focus-visible){outline:2px solid var(--ink);outline-offset:-2px}
 .game-tennis-variant:has(input:focus-visible) input{outline:none}
 .game-tennis-variant:has(input:disabled){cursor:default;opacity:.62}
 .game-tennis-variant input{width:16px;height:16px;margin:0;accent-color:var(--ink)}

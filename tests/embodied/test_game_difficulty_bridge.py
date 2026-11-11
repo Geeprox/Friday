@@ -221,7 +221,7 @@ async def test_actual_worker_receipts_drive_stage_difficulty_replay_and_stop(tmp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('variant,players', [('practice', 1), ('match', 2)])
+@pytest.mark.parametrize('variant,players', [('practice', 1), ('solo', 1), ('match', 2)])
 @pytest.mark.parametrize('previous', ['off', 'ski', 'tennis'])
 async def test_library_prepares_the_chosen_tennis_variant_as_a_new_round(bridge, variant, players, previous):
     if previous == 'tennis' and variant == 'match':

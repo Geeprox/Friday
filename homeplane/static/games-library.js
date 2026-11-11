@@ -6,7 +6,11 @@ const h=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.tex
 const button=(text,fn,cls)=>{const b=h('button',text,cls);b.type='button';b.onclick=fn;return b;};
 const art=id=>['ski','tennis','quest','hiit','werewolf','ktv'].includes(id)?'/static/games-art/'+id+'.png':null;
 const moves={ski:['body.arm_effort','body.lateral'],tennis:['body.lateral','body.swing'],quest:['pose.horizontal','pose.overhead','exercise.squat','exercise.side_step','exercise.high_knee','exercise.jack','exercise.side_bend','exercise.side_lunge','exercise.reach_up','exercise.arm_open','exercise.balance','exercise.cross_knee','exercise.side_raise','exercise.overhead_clap'],hiit:['exercise.squat','exercise.jack','exercise.high_knee','exercise.side_lunge','exercise.side_step','exercise.side_bend','exercise.reach_up','exercise.arm_open','exercise.balance','exercise.cross_knee','exercise.side_raise','exercise.overhead_clap']};
-const tennisVariants=[['practice','单人练习','1 人 · 9 球'],['match','双人对打','2 人']];
+const tennisVariants=[
+ ['practice','单人练习','1 人 · 9 球'],
+ ['solo','单人挑战','1 人 · 抢七'],
+ ['match','双人对打','2 人 · 抢七']
+];
 const isCircuit=app=>['quest','hiit'].includes(app.id);
 const displayName=app=>isCircuit(app)?'体感闯关':app.name;
 const ktvEntry={id:'ktv',name:'家庭 KTV',description:'搜歌、排歌单，和家人一起唱。',searchText:'唱歌 点歌 K歌 卡拉OK 曲库',kind:'party',players_label:'一起唱'};
@@ -184,7 +188,11 @@ export function mountGames(root,{go=()=>{}}={}){
    input.checked=input.value===choice;
    input.disabled=busy;
   }
-  ui.tennisTip.textContent=choice==='practice'?'跟着落点移动，在击球圈内挥拍。':'两人站稳后，由发球者挥拍开球。';
+  ui.tennisTip.textContent={
+   practice:'跟着落点移动，在击球圈内挥拍。',
+   solo:'和球场对手轮流发球，先得 7 分并领先 2 分获胜。',
+   match:'两人站稳后，由发球者挥拍开球。'
+  }[choice];
   if(!same||!current){ui.start.textContent='进入'+label;return;}
   if(completed){
    ui.start.textContent='再开'+label;
