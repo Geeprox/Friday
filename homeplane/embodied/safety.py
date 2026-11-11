@@ -45,7 +45,8 @@ CAPABILITIES = [
         severity="urgent",
         basis="持续直立后快速倒下，并持续倒卧；需要清晰骨骼和稳定镜头",
     ),
-    dict(id="crying", name="持续哭闹", status="unavailable", basis="尚未接入哭声时序分类器"),
+    dict(id="crying", name="婴儿持续哭声", status="experimental",
+         basis="连续识别到疑似婴儿哭声时，保留同时段的关键帧。"),
     dict(
         id="infant_face_covered",
         name="婴儿口鼻疑似被遮挡",
@@ -682,13 +683,19 @@ class SafetyRuntime:
         if not self._sound_current(camera, session, context):
             return False
         ring = self.frames[camera]
+        evidence = {k:result[k] for k in ('confidence','corroborating_windows','audio_seconds','age_basis')}
+        sustained = (result['kind'] == 'crying' and result.get('pattern') == 'sustained_infant_cry'
+                     and evidence['corroborating_windows'] == 3 and evidence['audio_seconds'] == 6)
+        if sustained:
+            evidence['pattern'] = 'sustained_infant_cry'
         return self._submit_review(dict(kind='sound_review', sound_kind=result['kind'], severity='review',
             status='pending_review', simulated=False, camera=camera, session=session, track=None,
-            person_id=None, person_name=None, message=MESSAGES[result['kind']],
+            person_id=None, person_name=None, message=(
+                '约 6 秒的声音符合婴儿哭声特征。' if sustained else MESSAGES[result['kind']]),
             camera_source_context=context, camera_name=ring.get('source_name'),
             captured_at=result['captured_at'], detector='apple-soundanalysis-version1/1',
-            basis='two_disjoint_local_audio_windows',
-            sound_evidence={k:result[k] for k in ('confidence','corroborating_windows','audio_seconds','age_basis')},
+            basis='three_local_infant_cry_windows' if sustained else 'two_disjoint_local_audio_windows',
+            sound_evidence=evidence,
             raw_audio_stored=False, directional_audio=False),
             [f for f in ring['items'] if 0 <= time.time()-f[0] <= 8],
             captured=result['captured_mono'], revision=result['policy_revision'], max_age=6)

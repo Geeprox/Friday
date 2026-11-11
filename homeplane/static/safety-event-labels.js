@@ -3,7 +3,10 @@ export const isSafetyOutputTest=event=>event.simulated&&event.status==='test';
 export function safetyEventTitle(event,{includePerson=true}={}){
  if(isSafetyOutputTest(event))return '播报测试';
  if(event.kind==='visual_review')return '画面待复核';
- if(event.kind==='sound_review')return soundReviewNames[event.sound_kind]||'声音待核对';
+ if(event.kind==='sound_review'){
+  if(event.sound_kind==='crying'&&event.sound_evidence?.pattern==='sustained_infant_cry')return '疑似持续婴儿哭声';
+  return soundReviewNames[event.sound_kind]||'声音待核对';
+ }
  if(event.kind==='fall')return includePerson?(event.person_name?event.person_name+' · 疑似跌倒':'有人疑似跌倒'):'疑似跌倒';
  return '待核对提醒';
 }

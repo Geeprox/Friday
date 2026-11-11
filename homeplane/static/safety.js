@@ -61,8 +61,18 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    const message=next.worker.error||recording?.state==='unavailable'?recordingFailure:paused?'监测已暂停':disconnected?(recovering?'正在恢复监测，稍后自动重试。':next.worker.status==='not_running'?'监测尚未运行':'暂时无法读取监测状态'):next.worker.status!=='running'?'监测状态尚未更新':recording?.state==='recovering'?'提醒正在保存，稍后自动重试。':recording?.state==='saving'?'提醒正在保存。':count?`${count} 台摄像头正在监测 · ${next.policy.announce?'单设备语音提醒':'只记录事件'}`:'监测已开启，等待清晰、稳定的摄像头画面';if(status.textContent!==message)status.textContent=message;
    if(recoveryFocused&&(recoveryActions.hidden||document.activeElement===reconnect&&reconnect.disabled))status.focus({preventScroll:true});
    capabilities.replaceChildren(el('h2','监测场景'));
-   const descriptions={crying:'目前无法根据声音判断持续哭闹。',rough_handling:'目前无法可靠判断照护动作的力度或意图。'};
-   for(const c of next.capabilities)capabilities.append(add(el('article'),el('strong',c.name),el('span',c.id==='visual_review'&&!model.available?'需要设置':c.id==='sound_review'&&!soundModel.available?'尚未提供':c.status==='experimental'?'试用功能':'尚未提供',{class:'caption'}),el('p',descriptions[c.id]||c.basis,{class:'caption'})));
+   const descriptions={rough_handling:'目前无法可靠判断照护动作的力度或意图。'};
+   for(const c of next.capabilities){
+    let label=c.status==='experimental'?'试用功能':'尚未提供';
+    if(c.id==='visual_review'&&!model.available)label='需要设置';
+    if(c.id==='sound_review'&&!soundModel.available)label='尚未提供';
+    if(c.id==='crying'&&c.status==='experimental'){
+     if(!soundModel.available||soundModel.infant_cry_supported===false)label='尚未提供';
+     else if(!next.policy.enabled||!next.policy.sound_review)label='随声音复核开启';
+     else if(soundModel.infant_cry_supported!==true)label='等待声音输入';
+    }
+    capabilities.append(add(el('article'),el('strong',c.name),el('span',label,{class:'caption'}),el('p',descriptions[c.id]||c.basis,{class:'caption'})));
+   }
    const fingerprint=JSON.stringify(history.events);historyLoaded=true;events=history.events;historyView.dataset.empty=String(!events.length);
    if(fingerprint!==lastEvents){lastEvents=fingerprint;list.replaceChildren();eventRows.clear();
      if(!events.length)list.append(el('p','暂无提醒记录',{class:'product-empty'}));
@@ -88,7 +98,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    let restoreFocus;
    for(const[value,label]of [['acknowledged',event.review==='acknowledged'?'已查看':'我已查看'],['false_alarm','标记误报']]){const action=button(label,async()=>{try{await api('/events/'+event.id+'/review',{review:value});await refresh();}catch{status.textContent='标记未保存，请重试。';}});action.setAttribute('data-review',value);action.setAttribute('aria-pressed',String(event.review===value));if(value===focusedReview)restoreFocus=action;actions.append(action);}
    detailBody.append(actions);
-   if(event.frames.length){detailBody.append(el('h3','事件前后关键帧'),el('p','已保存在本机的关键画面。',{class:'caption'}));const frames=el('div',null,{class:'safety-frames'});for(const f of event.frames)frames.append(add(el('figure'),el('img',null,{src:base+'/events/'+event.id+'/frames/'+f.ordinal,alt:'事件关键帧 '+f.ordinal,loading:'lazy'}),el('figcaption',new Date(f.at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'}))));detailBody.append(frames);}else detailBody.append(el('p',isOutputTest(event)?'播报测试不采集摄像头画面。':'没有可用关键帧。',{class:'caption'}));
+   if(event.frames.length){detailBody.append(el('h3','关键帧'));const frames=el('div',null,{class:'safety-frames'});for(const f of event.frames)frames.append(add(el('figure'),el('img',null,{src:base+'/events/'+event.id+'/frames/'+f.ordinal,alt:'事件关键帧 '+f.ordinal,loading:'lazy'}),el('figcaption',new Date(f.at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'}))));detailBody.append(frames);}else detailBody.append(el('p',isOutputTest(event)?'播报测试不采集摄像头画面。':'没有可用关键帧。',{class:'caption'}));
    const exportEvent=button('导出事件记录',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(event,null,2)],{type:'application/json'}));const a=el('a',null,{href:url,download:'Friday-safety-'+event.id+'.json'});a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});exportEvent.className='text-button safety-export';detailBody.append(exportEvent);
    if(focus)focusDetail(heading);else restoreFocus?.focus({preventScroll:true});
  }

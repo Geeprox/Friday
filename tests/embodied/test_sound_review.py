@@ -88,6 +88,49 @@ async def test_actual_qualified_audio_creates_one_reviewable_event_without_audio
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('ending', ['quiet', 'gap', 'busy', 'model_error', 'retired'])
+async def test_two_infant_windows_require_a_continuous_third_before_sustained_review(tmp_path, monkeypatch, ending):
+    j = Journey(tmp_path, monkeypatch)
+    infant = sound_result(reply(), catalog(['baby_crying', 'screaming']))
+    third = infant
+    if ending == 'quiet':
+        third = None
+    elif ending == 'model_error':
+        third = RuntimeError('synthetic classifier fault')
+    j.engine.analyze.side_effect = [infant, infant, third]
+    try:
+        for index in range(20):
+            await j.tick(index)
+        assert j.engine.analyze.await_count == 2 and not j.store.events()
+        assert j.runtime.review_pending(CAMERA['id'], 'visual-session')
+        if ending == 'gap':
+            j.runtime.sound.retry_after = 6.8
+        elif ending == 'busy':
+            j.runtime.sound.retry_after = 20
+        elif ending == 'retired':
+            await j.tick(20, stable=False)
+            assert not j.runtime.review_pending(CAMERA['id'], 'visual-session')
+        start = 21 if ending == 'retired' else 20
+        end = 44 if ending in {'busy', 'model_error'} else 36
+        for index in range(start, end):
+            await j.tick(index)
+            await j.runtime.sound.maintain()
+        await j.runtime.drain()
+        assert j.engine.analyze.await_count == (2 if ending == 'busy' else 3)
+        events = j.store.events()
+        if ending == 'retired':
+            assert not events
+        else:
+            assert len(events) == 1
+            event = events[0]
+            assert event['sound_kind'] == 'crying' and event['captured_at'] == pytest.approx(1003.8)
+            assert event['sound_evidence']['corroborating_windows'] == 2
+            assert 'pattern' not in event['sound_evidence']
+    finally:
+        await j.runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('committed', [False, True])
 async def test_qualified_sound_retries_same_incident_without_another_sound(tmp_path, monkeypatch, committed):
     j = Journey(tmp_path, monkeypatch)
@@ -275,9 +318,44 @@ def test_host_vocabulary_is_authoritative_and_competing_sounds_are_not_alerts():
     supported=catalog(['baby_crying','screaming','music'])
     assert supported=={'crying':('baby_crying',),'scream':('screaming',)}
     assert catalog(['music','different_cry_label'])=={}
-    assert sound_result(reply(),supported)=={'kind':'crying','confidence':.95}
+    assert sound_result(reply(),supported)=={'kind':'crying','confidence':.95,'infant_cry':True}
     assert sound_result(reply(competing_confidence=.9),supported) is None
     assert sound_result(reply(scores={'baby_crying':.84,'screaming':.02}),supported) is None
+
+
+def test_infant_label_must_be_distinct_from_other_cry_labels_on_every_native_result():
+    supported = catalog(['baby_crying', 'crying'])
+    infant = reply(scores={'baby_crying': .96, 'crying': .02})
+    uncertain = reply(scores={'baby_crying': .96, 'crying': .90})
+    combined = dict(windows=[*infant['windows'], *uncertain['windows']])
+    assert sound_result(infant, supported)['infant_cry'] is True
+    assert sound_result(combined, supported) == {'kind': 'crying', 'confidence': .96}
+    assert sound_result(reply(scores={'crying': .92}), catalog(['crying'])) == {'kind': 'crying', 'confidence': .92}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('supported,expected', [(None, 'experimental'), (True, 'experimental'), (False, 'unavailable')])
+async def test_safety_status_uses_the_worker_vocabulary_for_infant_cry(tmp_path, monkeypatch, supported, expected):
+    import httpx
+    from fastapi import APIRouter, FastAPI
+
+    from homeplane.embodied import safety_api
+
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
+    worker = SimpleNamespace(process=SimpleNamespace(returncode=None), request=AsyncMock(return_value=dict(
+        sound_review=dict(available=True, labels_verified=supported is not None, infant_cry_supported=supported))))
+    router = APIRouter()
+    runtime = safety_api.install(router, worker)
+    app = FastAPI()
+    app.include_router(router)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://synthetic') as client:
+            report = (await client.get('/api/embodied/safety')).json()
+        crying = next(row for row in report['capabilities'] if row['id'] == 'crying')
+        assert crying['status'] == expected and report['sound_review']['infant_cry_supported'] is supported
+        worker.request.assert_awaited_once_with('/api/safety/status')
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.parametrize('bad',[dict(scores={'invented':.99}),dict(scores={'baby_crying':float('nan'),'screaming':.1}),
@@ -323,7 +401,9 @@ async def test_native_adapter_validates_protocol_and_releases_the_exact_process(
     spawn=AsyncMock(return_value=process);monkeypatch.setattr(module.asyncio,'create_subprocess_exec',spawn)
     model=AppleSoundProcess(binary,tmp_path,budget=lambda:SimpleNamespace(total_bytes=8*1024**3,free_percent=50,load=0,cores=4))
     assert model.readiness()['available'] and not model.readiness()['labels_verified'];spawn.assert_not_awaited()
-    assert await model.analyze(bytes(64000))=={'kind':'crying','confidence':.95}
+    assert model.readiness()['infant_cry_supported'] is None
+    assert await model.analyze(bytes(64000))=={'kind':'crying','confidence':.95,'infant_cry':True}
+    assert model.readiness()['infant_cry_supported'] is True
     request=json.loads(process.stdin.write.call_args.args[0]);assert len(base64.b64decode(request['pcm']))==64000
     assert request['identifiers']==['baby_crying']
     await model.close();process.terminate.assert_called_once();assert model.lease is None

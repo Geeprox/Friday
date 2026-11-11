@@ -35,7 +35,9 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
 ## Scope and evidence
 
-Synthetic preview only. No live camera/microphone/model/TV/device activation. Desired gaze/wake confidence semantics and configurable wake words are captured as product truth; correcting the full speech execution chain and a Rust migration are separate functional changes, not claimed by this UI refactor. Host resource sampling is passive and bounded, with null values when unavailable. Background service and safety/event summaries read existing owners and never start them. Do not present planned crying/rough-care detection as a functioning capability.
+Synthetic preview only. No live camera/microphone/model/TV/device activation. Desired gaze/wake confidence semantics and configurable wake words are captured as product truth; correcting the full speech execution chain and a Rust migration are separate functional changes, not claimed by this UI refactor. Host resource sampling is passive and bounded, with null values when unavailable. Background service and safety/event summaries read existing owners and never start them.
+
+持续婴儿哭声复核使用现有提醒列表、首页入口和详情。符合三段同源证据时显示“疑似持续婴儿哭声”，保留镜头名、时间、关键帧和查看附近录像入口。普通哭声沿用原名称。设置页以本机已知标签和声音复核开关显示可用状态。照护行为仍显示原能力状态。
 
 Generated reports and screenshots remain under ignored .artifacts/design-20261103/. The synthetic preview's room geometry and devices never ship as defaults.
 

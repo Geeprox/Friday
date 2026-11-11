@@ -64,6 +64,20 @@ test('a home incident keeps its exact identity through navigation into the revie
  assert.equal(f.calls.some(c=>c.path.endsWith('/recordings')||c.path.endsWith('/test')||c.body),false);view.dispose();
 });
 
+test('sustained infant cry remains distinguishable on home, event list and detail',async()=>{
+ const sustained={...event('a'),sound_evidence:{pattern:'sustained_infant_cry',corroborating_windows:3,audio_seconds:6}};
+ const legacy={...event('c'),sound_kind:'crying'};
+ const f=fixture([sustained,legacy]),home=f.home();await settle();
+ const notice=all(f.root).find(n=>n.attrs.class==='home-attention-item'&&n.textContent.includes('疑似持续婴儿哭声'));
+ assert(notice);notice.onclick();assert.equal(f.navigations[0][1].eventId,sustained.id);home.dispose();
+ const view=f.mount({initialEventId:sustained.id});await settle();
+ assert.ok(f.by('h2','疑似持续婴儿哭声'));
+ assert(f.rows().some(row=>row.children[0].textContent==='疑似哭声'));
+ await f.by('button','我已查看').onclick();
+ assert.equal(f.events.find(e=>e.id===sustained.id).review,'acknowledged');
+ view.dispose();
+});
+
 test('expanded home attention includes every counted item and keeps its expanded label after refresh',async()=>{
  const f=fixture([]),devices=Array.from({length:7},(_,i)=>({id:'device'+i,name:'合成设备'+i,room:'合成房间',available:false}));
  const home=f.home(devices);await settle();

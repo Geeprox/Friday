@@ -46,18 +46,23 @@ def install(router, service, *, archive=None, infrastructure=None):
                 worker = dict(status="running", **await asyncio.wait_for(service.request("/api/safety/status"), 2))
             except Exception:
                 worker = dict(status="unavailable", cameras=[])
+        sound_review = worker.get('sound_review') or runtime.sound.status()
+        crying_available = (sound_review.get('available') is True and 'infant_cry_supported' in sound_review
+                            and sound_review['infant_cry_supported'] is not False)
+        capabilities = [dict(row, status='unavailable') if row['id'] == 'crying' and not crying_available else row
+                        for row in CAPABILITIES]
         return dict(
             policy=runtime.policy_cache,
             worker=worker,
             supervision=infrastructure.report() if infrastructure is not None else None,
-            capabilities=CAPABILITIES,
+            capabilities=capabilities,
             output_scope="selected_device",
             retention_days=30,
             max_events=store.MAX_EVENTS,
             max_evidence_bytes=store.MAX_BYTES,
             evidence_kind="private_keyframes",
             visual_review=worker.get("visual_review") or runtime.visual.status(),
-            sound_review=worker.get('sound_review') or runtime.sound.status(),
+            sound_review=sound_review,
         )
 
     @router.post('/api/embodied/safety/retry')

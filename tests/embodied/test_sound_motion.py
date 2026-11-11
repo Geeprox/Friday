@@ -20,22 +20,23 @@ from tests.embodied.test_sound_review import CAMERA, CONTEXT, Engine, Journey, s
 
 
 class EpisodeEngine(SlowEngine):
-    def __init__(self, clock):
+    def __init__(self, clock, *, infant=False):
         super().__init__(clock)
         self.qualified = []
+        self.infant = infant
 
     async def run(self, pcm):
         result = await super().run(pcm)
         if all(pcm[i * 6400] == 1 for i in range(10)):
             self.qualified.append((pcm[1]+256*pcm[2], pcm[-6399]+256*pcm[-6398]))
-            return result
+            return dict(result, infant_cry=True) if self.infant else result
         return None
 
 
 class SoundPatrol:
-    def __init__(self, tmp_path, monkeypatch, owner, *, episode=(14.2, 18.2)):
+    def __init__(self, tmp_path, monkeypatch, owner, *, episode=(14.2, 18.2), infant=False):
         self.j = Journey(tmp_path, monkeypatch)
-        self.engine = EpisodeEngine(lambda: self.j.clock)
+        self.engine = EpisodeEngine(lambda: self.j.clock, infant=infant)
         self.j.runtime.sound.engine = self.engine
         self.owner, self.episode = owner, episode
         self.index = 0
@@ -146,6 +147,29 @@ async def test_short_sound_near_a_patrol_deadline_keeps_both_original_loops_stab
         assert patrol.engine.qualified == [(71, 80), (81, 90)], "two complete, disjoint synthetic windows"
         assert patrol.moves and any(phase == "review_held" for _, phase in patrol.phases)
         assert patrol.engine.maximum == 1
+        patrol.j.runtime.speaker.say.assert_not_awaited()
+    finally:
+        await patrol.j.runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+async def test_sustained_infant_cry_reaches_one_review_item_while_original_patrol_holds(tmp_path, monkeypatch, owner):
+    patrol = SoundPatrol(tmp_path, monkeypatch, owner, episode=(14.2, 20.6), infant=True)
+    try:
+        await patrol.run()
+        events = patrol.j.store.events()
+        assert len(events) == 1, (owner, patrol.moves, patrol.engine.qualified)
+        event = events[0]
+        assert event['sound_evidence'] == dict(confidence=.96, corroborating_windows=3,
+            audio_seconds=6, age_basis='local_sdk_receive', pattern='sustained_infant_cry')
+        assert event['camera_source_context'] == CONTEXT and event['frames']
+        assert event['status'] == 'pending_review' and event['person_id'] is None
+        assert not event['directional_audio'] and not event['raw_audio_stored']
+        assert len(patrol.engine.qualified) == 3 and patrol.engine.maximum == 1
+        assert any(18.2 < at < 20.6 and phase == 'review_held' for at, phase in patrol.phases)
+        assert not any(14.2 < at < 20.6 for at, _ in patrol.moves)
+        assert any(at > 20.6 for at, _ in patrol.moves)
         patrol.j.runtime.speaker.say.assert_not_awaited()
     finally:
         await patrol.j.runtime.close()
