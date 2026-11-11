@@ -24,6 +24,25 @@ test('confirmed selection consumes the bound response; double clicks make one re
  finish({ok:true,json:async()=>game({mode:'off',selected_mode:'ski',round_id:2,control_revision:2})});
  await pending;assert.equal(h.c.selected,'ski');assert.equal(h.c.commandPending,null);assert.equal(h.node('start').disabled,false);
 });
+test('a tennis variant change binds the option and current revision without starting a round',async()=>{
+ const old=game({mode:'off',selected_mode:'tennis',tennis_variant:'match'});
+ const requests=[];
+ const h=makeClient({selected:'tennis',meta:{game:old},fetch:async(_,options)=>{
+  const body=JSON.parse(options.body);requests.push(body);
+  return {ok:true,json:async()=>({...old,control_revision:2,round_id:2,
+    tennis_variant:requests.length===1?'match':'practice'})};
+ }});
+ assert.equal(await h.c.chooseTennisVariant('practice'),false);
+ assert.equal(h.c.meta.game,old);
+ assert.equal(await h.c.chooseTennisVariant('practice'),true);
+ assert.equal(h.c.meta.game.tennis_variant,'practice');
+ assert.deepEqual(requests,[1,2].map(()=>({mode:'tennis',action:'select',tennis_variant:'practice',
+  expected_context:'a'.repeat(32),expected_revision:1})));
+ assert.equal(await h.c.chooseTennisVariant('practice'),false);
+ h.c.meta.game={...h.c.meta.game,mode:'tennis',status:'playing'};
+ assert.equal(await h.c.chooseTennisVariant('match'),false);
+ assert.equal(requests.length,2);
+});
 test('same-revision live score is newer than the HTTP transition snapshot',async()=>{
  let finish;const h=makeClient({fetch:()=>new Promise(r=>finish=r)}),pending=h.c.startGame();
  const live=game({round_id:2,control_revision:2,elapsed:2.3});h.c.meta={game:live};

@@ -70,6 +70,10 @@ async def test_profile_change_after_read_invalidates_the_old_launch_without_retr
         {"mode": "ski", "action": "select", "ski_trail": "missing"},
         {"mode": "ski", "action": "select", "ski_trail": ["first-snow"]},
         {"mode": "tennis", "action": "select", "ski_trail": "first-snow"},
+        {"mode": "tennis", "action": "start", "tennis_variant": "practice"},
+        {"mode": "ski", "action": "select", "tennis_variant": "practice"},
+        {"mode": "tennis", "action": "select", "tennis_variant": "unknown"},
+        {"mode": "tennis", "action": "select", "tennis_variant": ["practice"]},
     ],
 )
 async def test_worker_rejects_invalid_game_options_without_effects(data):
@@ -81,6 +85,25 @@ async def test_worker_rejects_invalid_game_options_without_effects(data):
         await control(request(data, game=game))
     assert error.value.status_code == 400 and game.public == before
     start.assert_not_awaited()
+    home.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_worker_selects_tennis_practice_before_start_and_rejects_mid_round_switch():
+    game = MotionGames()
+    game.select('tennis')
+    control, start, home = game_handler(game)
+    solo = dict(mode='tennis', action='select', tennis_variant='practice')
+    selected = await control(request(solo, game=game))
+    assert selected['mode'] == 'off' and selected['tennis_variant'] == 'practice'
+    start.assert_not_awaited()
+    active = await control(request(dict(mode='tennis', action='start'), game=game))
+    assert active['mode'] == 'tennis' and active['source_recovery']['required_players'] == 1
+    assert active['tennis_variant'] == 'practice'
+    start.assert_awaited_once()
+    with pytest.raises(HTTPException) as error:
+        await control(request(dict(solo, tennis_variant='match'), game=game))
+    assert error.value.status_code == 400 and game.public == active
     home.assert_not_awaited()
 
 

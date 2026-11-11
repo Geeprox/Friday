@@ -224,3 +224,55 @@ def test_lineup_requests_visible_feet_for_only_the_affected_player():
         state = game.update([right, left], LOCK, 10 + step * .1)
     assert state['status'] == 'paused'
     assert state['tennis']['lineup'] == ['ready', 'feet']
+
+
+def test_single_player_practice_goes_from_center_to_wide_to_faster_and_can_replay():
+    game = MotionGames()
+    lobby = game.select('tennis', tennis_variant='practice')
+    assert lobby['tennis_variant'] == 'practice' and lobby['tennis']['practice']['results'] == []
+    game.reset('tennis')
+    state = game.public
+    fed = {}
+    for step in range(1600):
+        tennis = state['tennis']
+        guide = tennis['guide']
+        attempt = len(tennis['practice']['results'])
+        lane = guide['target_x'] if guide['active'] else .5
+        if guide['active']:
+            fed.setdefault(attempt, (lane, tennis['ball']['speed']))
+        pose = human(x=.5 if attempt == 3 else .5 - (lane - .5) * .30)
+        if guide['cue'] == 'swing' and attempt not in {3, 6}:
+            pose['joints']['rightWrist']['x'] += .22
+            pose['joints']['rightWrist']['y'] -= .15
+        state = game.update([pose], LOCK, step * .05)
+        if state['status'] == 'complete':
+            break
+    assert state['status'] == 'complete'
+    assert state['tennis']['practice']['results'] == [True, True, True, False, True, True, False, True, True]
+    assert state['tennis']['best_rally'] == 3 and state['tennis']['score'] == [0, 0]
+    assert state['tennis']['winner'] is None and not state['tennis']['guide']['active']
+    assert [fed[index][0] for index in (0, 1, 2)] == [.5, .5, .5]
+    assert fed[3][0] < .3 and fed[4][0] > .7 and fed[3][1] < fed[6][1]
+
+    game.reset('tennis')
+    assert game.public['tennis_variant'] == 'practice'
+    assert game.public['tennis']['practice']['results'] == []
+    assert game.public['tennis']['best_rally'] == 0 and game.public['tennis']['event'] is None
+
+
+def test_practice_preserves_the_in_flight_ball_when_the_players_hands_are_missing():
+    game = MotionGames()
+    game.select('tennis', tennis_variant='practice')
+    game.reset('tennis')
+    for step in range(70):
+        state = game.update([human()], LOCK, step * .05)
+    assert state['tennis']['guide']['active'] and state['tennis']['ball']['toward'] == 0
+    no_wrists = human()
+    no_wrists['joints'].pop('leftWrist')
+    no_wrists['joints'].pop('rightWrist')
+    for step in range(70, 200):
+        held = game.update([no_wrists], LOCK, step * .05)
+    assert held['status'] == 'paused' and held['tennis']['ball'] == state['tennis']['ball']
+    assert held['tennis']['practice']['results'] == [] and not held['tennis']['guide']['active']
+    held = game.suspend_source()
+    assert held['source_recovery']['required_players'] == 1 and held['tennis']['ball'] == state['tennis']['ball']

@@ -78,6 +78,22 @@ body>.stage-header{grid-row:1}body>.workspace{grid-row:2}body>footer{grid-row:3}
 .tennis-lineup>div[data-player="1"]{border-color:#e7d7cc;background:#f4ebe4;color:#8b3c29}
 .tennis-lineup dt{font-size:14px;font-weight:650;line-height:1.4}
 .tennis-lineup dd{margin:3px 0 0;font-size:13px;line-height:1.4}
+.tennis-variants,.tennis-result-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.tennis-variants{margin:0 0 12px}
+.tennis-variants button,.tennis-result-actions button{min-width:0;padding-inline:8px}
+.tennis-variants button[aria-pressed=true]{border-color:#65796b;background:#e6ece2;color:#274f44;font-weight:700}
+.tennis-drill-count{display:flex;align-items:baseline;justify-content:space-between;gap:12px;color:#285e53}
+.score .tennis-drill-count small{margin:0;color:inherit;font-weight:650;white-space:nowrap}
+.tennis-drill-count b{font:inherit}
+.tennis-drill-count b span{font-size:.6em;color:var(--muted);font-weight:500;white-space:nowrap}
+.tennis-drill-balls{display:flex;justify-content:space-between;gap:3px;list-style:none;padding:0;margin:8px 0 0}
+.tennis-drill-balls li{position:relative;display:grid;place-items:center;width:9px;height:9px;border:1px solid #999d91;border-radius:50%}
+.tennis-drill-balls li:nth-child(3n + 4){margin-inline-start:4px}
+.tennis-drill-balls li[data-state=current]{border:2px solid #285e53}
+.tennis-drill-balls li[data-state=hit]{border-color:#285e53;background:#285e53}
+.tennis-drill-balls li[data-state=hit]::after{content:'';width:2px;height:4px;border:solid #fffaf2;border-width:0 1px 1px 0;transform:translateY(-.5px) rotate(45deg)}
+.tennis-drill-balls li[data-state=miss]{border-color:#8b3c29}
+.tennis-drill-balls li[data-state=miss]::after{content:'';width:3px;border-block-start:1px solid #8b3c29}
 body[data-mode=tennis] .overlay button{min-height:44px}
 @media(max-width:760px), (max-height:600px){
  .overlay:has(.tennis-lineup){padding:12px 14px}
@@ -85,6 +101,10 @@ body[data-mode=tennis] .overlay button{min-height:44px}
  .overlay:has(.tennis-lineup) p{margin-bottom:9px;font-size:13px;line-height:1.5}
  .tennis-lineup{margin-bottom:10px}
  .tennis-lineup>div{padding-block:5px}
+ .overlay:has(.tennis-variants){padding:12px 14px}
+ .overlay:has(.tennis-variants) h2{font-size:19px;margin-bottom:7px}
+ .overlay:has(.tennis-variants) p{font-size:13px;margin-bottom:10px;line-height:1.45}
+ .tennis-variants{margin-bottom:8px}
 }
 .instruction:empty{display:none}
 .overlay h2:focus-visible{outline:2px solid var(--ink);outline-offset:4px}

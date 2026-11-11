@@ -57,6 +57,9 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   const running=g.mode==='tennis'&&g.status==='playing';
   const continuous=running&&tennisPacketPlaying&&tennisPacketAt!==null&&at>tennisPacketAt&&at-tennisPacketAt<=250;
   const served=tennisPhase==='serve'&&g.tennis?.phase==='rally';
+  const feed=g.tennis?.event;
+  if(continuous&&g.tennis?.practice&&['ready','point'].includes(tennisPhase)&&g.tennis.phase==='rally'&&
+     feed?.kind==='serve'&&feed.player===1&&feed.age>=0&&feed.age<=.25)tennisPending[1]=at;
   for(let i=0;i<2;i++){
    const player=g.players?.[i],count=player?.swings;
    if(!Number.isSafeInteger(count)||count<0)continue;
@@ -258,7 +261,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    if(!reduced.matches&&t.phase==='rally'&&!swing){c.beginPath();c.ellipse(p[0],p[1],rx*approach,ry*approach,0,0,Math.PI*2);c.strokeStyle='#fff6d9';c.lineWidth=2;c.stroke();}
    c.restore();
    const number=(guide.receiver+1)+' 号';
-   const label=number+(swing?' · 挥拍':'落点');
+   const label=t.practice?(swing?'挥拍':'落点'):number+(swing?' · 挥拍':'落点');
    cue={label,p,rx,ry,ink,swing};
   }else if(running&&t.serve?.ready){
    const p=project(t.ball.x,t.ball.z),rx=portrait?50:44,ry=rx*.25,ink=t.serve.player===0?'#285e53':'#8b3c29';
@@ -268,13 +271,14 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   }
   const dt=Math.min(.1,Math.max(0,(at-lastAt)/1000));lastAt=at;
   function player(i){
-   const p=players[i],wanted=.5+Math.max(-1,Math.min(1,p?.lateral||0))*.39;
-   if(g.status==='playing'&&p&&Number.isFinite(p.lateral))positions[i]+=(wanted-positions[i])*(reduced.matches?1:1-Math.exp(-dt/.075));
+   const p=players[i],feed=i===1&&t.practice&&Number.isFinite(t.practice.feed_x)?t.practice.feed_x:null;
+   const wanted=feed??(.5+Math.max(-1,Math.min(1,p?.lateral||0))*.39);
+   if(g.status==='playing'&&(feed!==null||Number.isFinite(p?.lateral)))positions[i]+=(wanted-positions[i])*(reduced.matches?1:1-Math.exp(-dt/.075));
    const point=project(positions[i],i===0?.025:.98),size=portrait?(i===0?300:205):(i===0?245:160);
    tennisActor(i,tennisPose(i,g,at),point[0],point[1],size);
    c.save();c.textAlign='center';c.font=`600 ${portrait?34:20}px -apple-system, sans-serif`;
    const labelWidth=portrait?90:60;c.fillStyle='#faf9f2';c.fillRect(point[0]-labelWidth/2,point[1]+8,labelWidth,portrait?44:27);
-   c.fillStyle=i?'#8a4030':'#234f49';c.fillText((i+1)+' 号',point[0],point[1]+(portrait?42:29));
+   c.fillStyle=i?'#8a4030':'#234f49';c.fillText(t.practice?(i?'陪练':'你'):(i+1)+' 号',point[0],point[1]+(portrait?42:29));
    c.restore();
   }
   player(1);

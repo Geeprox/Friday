@@ -142,12 +142,26 @@ test('the stage presents fixed player numbers and does not compete with a recove
  vm.runInContext(part('function gamePhaseMessage(', '\nconst artRoot'),c);
  const initial=stageGame({mode:'off',selected_mode:'tennis'});
  const intro=c.stageOverlayMarkup(initial,true,false);
- assert.match(intro,/1 号玩家<\/dt><dd>左侧起站.*2 号玩家<\/dt><dd>右侧起站/);
+ assert.match(intro,/双人对打.*两位玩家并排站好，双脚入镜。左侧先发球。/);
  assert.match(intro,/data-click="startGame\(\)"/);
+ const practice=c.stageOverlayMarkup({...initial,tennis_variant:'practice'},true,false);
+ assert.match(practice,/data-tennis-variant="practice" aria-pressed="true">单人练习/);
+ assert.match(practice,/陪练发 9 球/);
  const waiting={...initial,mode:'tennis',status:'waiting',tennis:{lineup:['missing','ready']}};
  const waitingUI=c.stageOverlayMarkup(waiting,true,true);
  assert.match(waitingUI,/1 号玩家<\/dt><dd>请回到画面.*2 号玩家<\/dt><dd>已就位/);
  assert.doesNotMatch(c.stageOverlayMarkup({...waiting,source_recovery:{required:true,phase:'camera'}},true,true),/tennis-lineup/);
+});
+test('practice shows one player and labels each confirmed outcome without using match points',()=>{
+ const current=game(.5,.5);current.tennis_variant='practice';
+ Object.assign(current.tennis,{practice:{balls:9,results:[true,false,true],feed_x:.26},
+  guide:{active:true,receiver:0,target_x:.26,reach:.2,seconds:.1,window:.1,cue:'swing'}});
+ const score={dataset:{}};context.tennisPracticeScore(current.tennis,current,score);
+ assert.match(score.innerHTML,/命中<\/small><b>2<span> \/ 9/);
+ assert.match(score.innerHTML,/第 1 球，命中.*第 2 球，未命中.*第 4 球，接球中/);
+ assert.equal(context.tennisPresentation(current).title,'左右回球');
+ const names=scene(true).paint(current,1000).filter(item=>item[0]==='text').map(item=>item[1]);
+ assert.deepEqual(names,['陪练','你','挥拍']);
 });
 test('old hit events and unknown completion never fabricate a new result',()=>{
  const packet=originalPacket('hit');packet.tennis.event.age=2;
