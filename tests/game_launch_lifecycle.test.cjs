@@ -39,3 +39,40 @@ test('a failed service read leaves the running game and its back control intact'
  assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
  h.owner.dispose();
 });
+
+test('tennis can choose practice before starting and continue the confirmed court',async()=>{
+ const h=library({mode:'off',owned:false});await h.settle();
+ h.button('体感网球').onclick();
+ const radio=value=>h.all().find(node=>node.type==='radio'&&node.value===value);
+ assert.equal(radio('match').checked,true);
+ radio('practice').checked=true;radio('practice').onchange();
+ assert.equal(radio('match').checked,false);
+ assert.equal(h.requests.filter(item=>item.options.method==='POST').length,0);
+ await h.button('进入单人练习').onclick();await h.settle();
+ const commands=()=>h.requests.filter(item=>item.options.method==='POST').map(item=>JSON.parse(item.options.body));
+ const opens=()=>h.requests.filter(item=>item.path==='/api/games/tennis/open');
+ assert.equal(commands().length,1);
+ assert.equal(commands()[0].tennis_variant,'practice');
+ assert.equal(opens()[0].options.headers['X-Friday-Game-Intent'],h.service.game_intent);
+ assert(h.all().some(node=>node.tagName==='iframe'));
+ h.button('返回详情').onclick();await h.settle();
+ radio('match').checked=true;radio('match').onchange();
+ assert(h.button('换玩法并开局'));
+ await h.button('进入单人练习').onclick();await h.settle();
+ assert.equal(commands().length,1,'continue may not apply the pending choice');
+ assert.equal(h.service.game.tennis_variant,'practice');
+ assert.equal(opens()[1].options.headers['X-Friday-Game-Intent'],h.service.game_intent);
+ h.owner.dispose();
+});
+
+test('the library keeps a late handoff off screen when another viewer changes the round',async()=>{
+ const h=library({mode:'tennis'});await h.settle();
+ h.button('体感网球').onclick();
+ h.changeBeforeOpen(()=>{h.service.game.control_revision++;h.service.game.tennis_variant='practice';});
+ await h.button('继续双人对打').onclick();await h.settle();
+ assert(!h.all().some(node=>node.tagName==='iframe'));
+ assert(h.root.textContent.includes('游戏状态已变化'));
+ assert(h.button('继续单人练习'));
+ assert.equal(h.requests.filter(item=>item.options.method==='POST').length,0);
+ h.owner.dispose();
+});

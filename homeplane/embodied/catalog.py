@@ -1,6 +1,11 @@
 """Small App and recognizer contracts, independent of optional ML dependencies."""
 
 from dataclasses import asdict, dataclass
+from typing import Literal, get_args
+
+
+TennisVariant = Literal["match", "practice"]
+TENNIS_VARIANTS = get_args(TennisVariant)
 
 
 @dataclass(frozen=True)

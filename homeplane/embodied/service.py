@@ -16,7 +16,7 @@ import httpx
 
 from homeplane.runtime_log import observe
 
-from .catalog import get_app
+from .catalog import TENNIS_VARIANTS, get_app
 from .game_difficulty import game_difficulty
 from .paths import DATA, PRIVATE, PROJECT, PYTHON, VISION, camera, configuration
 from .ski_route import get_ski_trail
@@ -291,7 +291,7 @@ class EmbodiedService:
 
     @observe("embodied.start")
     async def start(self, camera_id=None, app_id=None, *, open_privacy=False, expected_intent=None,
-                    difficulty=None, ski_trail=None):
+                    difficulty=None, ski_trail=None, tennis_variant=None):
         async with self.lock:
             if difficulty is not None:
                 game_difficulty(difficulty)
@@ -301,8 +301,10 @@ class EmbodiedService:
                 get_ski_trail(ski_trail)
                 if not app_id or get_app(app_id).mode != 'ski':
                     raise ValueError('invalid_ski_trail')
-            options = {key: value for key, value in (('difficulty', difficulty), ('ski_trail', ski_trail))
-                       if value is not None}
+            if tennis_variant is not None and (tennis_variant not in TENNIS_VARIANTS or app_id != 'tennis'):
+                raise ValueError('invalid_tennis_variant')
+            options = {key: value for key, value in (('difficulty', difficulty), ('ski_trail', ski_trail),
+                                                      ('tennis_variant', tennis_variant)) if value is not None}
             if app_id and app_id != 'home' and time.monotonic() < self.practice_deadline:
                 raise ValueError('practice_active')
             if not self.capture_enabled:
@@ -377,7 +379,8 @@ class EmbodiedService:
                         raise ValueError('game_state_changed')
                 else:
                     game = snapshot['game']
-                selected_game = await self._send_game_command({"action": "select", "mode": app.mode, **options}, game)
+                action = 'prepare' if tennis_variant is not None else 'select'
+                selected_game = await self._send_game_command(dict(action=action, mode=app.mode, **options), game)
                 if options and (not isinstance(selected_game, dict)
                                 or any(selected_game.get(key) != value for key, value in options.items())):
                     raise ValueError('game_state_changed')

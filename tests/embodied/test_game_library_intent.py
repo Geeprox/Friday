@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from homeplane.embodied import api as api_module
 from homeplane.embodied import service as module
@@ -75,7 +75,7 @@ async def bridge(monkeypatch, tmp_path):
         ski_trail_options=api_module.ski_trail_options), methods=['GET'])
     app.add_api_route('/api/embodied/start', handler('homeplane/embodied/api.py', 'start', **namespace), methods=['POST'])
     app.add_api_route('/api/embodied/game/stop', handler('homeplane/embodied/api.py', 'stop_game', **namespace), methods=['POST'])
-    app.add_api_route('/api/games/{app_id}/open', handler('homeplane/embodied/api.py', 'open_app', service=owner, get_app=api_module.get_app), methods=['GET'])
+    app.add_api_route('/api/games/{app_id}/open', handler('homeplane/embodied/api.py', 'open_app', service=owner, get_app=api_module.get_app, Request=Request), methods=['GET'])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
         ports.client = client
         yield ports

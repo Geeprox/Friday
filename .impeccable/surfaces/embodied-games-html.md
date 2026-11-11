@@ -28,7 +28,7 @@ Tennis contact and feedback: evaluate the incoming flight's overlap with the hit
 
 网球发球。开局提示左侧先发，分间提示下一位发球人。球停在发球者的球拍一侧，就绪时显示球旁的发球标记及记分牌中的对应编号。停稳后挥拍，球从同一点飞出，提示交给接球人。球路、角色挥拍和可选击球声使用当前发球回执。减弱动态效果时保留发球标记和短暂的击球确认，沿用现有画布时钟。
 
-网球单人练习。游戏库保留一项体感网球，候场同时给出单人练习与双人对打。练习沿用红土球场、服装角色与落点圈。九球分为三组，HUD 用同一组发球回执显示待接、接球中、命中和未命中。回球成功后让球飞完再接下一球。结算直接提供重练和切换玩法。当前选择只在 worker 读回后更新，活跃局保留已选玩法，离开画面时不计失误。实机反应节奏和识别准确度仍须验收。
+网球单人练习。游戏库保留一项体感网球，详情在难度上方用原生单选提供单人练习与双人对打。玩法先保存在当前详情，进入时由规则确认后才打开对应舞台。继续现有对局时，按钮始终显示该局已确认的玩法；新选择用于开新局。候场仍可切换，返回详情时读取实际选择。练习沿用红土球场、服装角色与落点圈。九球分为三组，HUD 用同一组发球回执显示待接、接球中、命中和未命中。回球成功后让球飞完再接下一球。结算直接提供重练和切换玩法。当前选择只在 worker 读回后更新，活跃局保留已选玩法，离开画面时不计失误。实机反应节奏和识别准确度仍须验收。
 
 Tennis character motion: preserve the existing near-view teal woman and far-view coral man as original generated matte-clay artwork. Each has a twelve-cel, alpha-transparent forehand sheet; these are generated animation poses, not a licensed skeletal or motion-capture claim. The current source landing guide prepares only its positioned, freshly observed receiver. A newly observed swing enters contact immediately and runs through extension, follow-through and recovery; only the rule event decides a successful return. First connection, counter jumps, stale reports and unseen time do not replay swings. Pause/recovery freezes the exact cel; a new context/round resets it. Reduced motion omits anticipation and keeps a short static contact confirmation. Both sheets share existing asset loading/error/retry, restricted asset delivery and the caller-owned canvas clock. Atlas art and original-producer/inert-command checks are source evidence; current browser/WKWebView/TV motion, texture continuity and physical comfort still require rendered acceptance.
 

@@ -5,6 +5,7 @@ import math
 import secrets
 import time
 
+from homeplane.embodied.catalog import TENNIS_VARIANTS
 from homeplane.embodied.game_difficulty import difficulty_options, game_difficulty
 from homeplane.embodied.hiit import PLAN as HIIT_PLAN, HIITCircuit, signals
 from homeplane.embodied.pose_rules import angle
@@ -493,16 +494,16 @@ class MotionGames:
             distance -= course['length']
         return len(sections)-1, sections[-1], sections[-1]['length']
 
-    def select(self, mode, *, difficulty=None, ski_trail=None, tennis_variant=None):
+    def select(self, mode, *, difficulty=None, ski_trail=None, tennis_variant=None, replace_round=False):
         if mode not in ("quest", "ski", "tennis", "hiit", "home"):
             raise ValueError("invalid_game")
         if mode == 'home' and difficulty is not None:
             raise ValueError('invalid_game_difficulty')
         if ski_trail is not None and mode != 'ski':
             raise ValueError('invalid_ski_trail')
-        if tennis_variant is not None and (mode != 'tennis' or tennis_variant not in ('match', 'practice')):
+        if tennis_variant is not None and (mode != 'tennis' or tennis_variant not in TENNIS_VARIANTS):
             raise ValueError('invalid_tennis_variant')
-        if tennis_variant is not None and self.mode != 'off' and not self.complete:
+        if tennis_variant is not None and not replace_round and self.mode != 'off' and not self.complete:
             raise ValueError('game_changed')
         trail = self.ski_trail if ski_trail is None else get_ski_trail(ski_trail)
         self.reset("off", difficulty=difficulty)

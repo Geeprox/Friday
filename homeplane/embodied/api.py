@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from homeplane.runtime_log import observe
 
-from .catalog import RECOGNIZERS, catalog, get_app
+from .catalog import RECOGNIZERS, TennisVariant, catalog, get_app
 from .camera_follow_picker import FollowCommand
 from .game_difficulty import DifficultyId, difficulty_options
 from .household import DeviceCommands, basic_command
@@ -25,6 +25,7 @@ class Start(BaseModel):
     app: str | None = Field(default=None, max_length=32)
     difficulty: DifficultyId | None = None
     ski_trail: SkiTrailId | None = None
+    tennis_variant: TennisVariant | None = None
     expected_intent: str = Field(pattern=r'^[a-f0-9]{64}$', strict=True)
 
 
@@ -318,7 +319,7 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
             if get_app(request.app).kind == 'party':
                 raise HTTPException(409, detail='party_host_required')
         try:
-            options = request.model_dump(include={'difficulty', 'ski_trail'}, exclude_none=True)
+            options = request.model_dump(include={'difficulty', 'ski_trail', 'tennis_variant'}, exclude_none=True)
             return await service.start(request.camera, request.app, open_privacy=request.open_privacy,
                                        expected_intent=request.expected_intent, **options)
         except (OSError, ValueError, httpx.HTTPError) as error:
@@ -344,12 +345,21 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         return await service.quiet(request.quiet)
 
     @router.get("/api/games/{app_id}/open")
-    async def open_app(app_id: str):
-        if get_app(app_id).kind == 'party':
+    async def open_app(app_id: str, request: Request):
+        app = get_app(app_id)
+        if app.kind == 'party':
             raise HTTPException(409, detail='party_host_required')
         report = await service.status()
         if not report["owned"]:
             raise HTTPException(409, detail="embodied_not_running")
+        intent = request.headers.get('x-friday-game-intent')
+        if intent is not None:
+            game = report.get('game') or {}
+            mode = game.get('mode')
+            if mode == 'off' and game.get('game_input_enabled') is True:
+                mode = game.get('selected_mode')
+            if intent != report.get('game_intent') or mode != app.mode:
+                raise HTTPException(409, detail='game_state_changed')
         return dict(url=service.viewer(app_id), tv_url=service.viewer(app_id, tv=True))
 
     @router.get('/api/embodied/recognition/open')

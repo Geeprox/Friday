@@ -71,6 +71,8 @@ async def test_profile_change_after_read_invalidates_the_old_launch_without_retr
         {"mode": "ski", "action": "select", "ski_trail": ["first-snow"]},
         {"mode": "tennis", "action": "select", "ski_trail": "first-snow"},
         {"mode": "tennis", "action": "start", "tennis_variant": "practice"},
+        {"mode": "tennis", "action": "prepare"},
+        {"mode": "ski", "action": "prepare", "tennis_variant": "practice"},
         {"mode": "ski", "action": "select", "tennis_variant": "practice"},
         {"mode": "tennis", "action": "select", "tennis_variant": "unknown"},
         {"mode": "tennis", "action": "select", "tennis_variant": ["practice"]},
@@ -216,3 +218,72 @@ async def test_actual_worker_receipts_drive_stage_difficulty_replay_and_stop(tmp
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert all(json.loads(result.stdout).values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('variant,players', [('practice', 1), ('match', 2)])
+@pytest.mark.parametrize('previous', ['off', 'ski', 'tennis'])
+async def test_library_prepares_the_chosen_tennis_variant_as_a_new_round(bridge, variant, players, previous):
+    if previous == 'tennis' and variant == 'match':
+        bridge.game.reset('off')
+        bridge.game.select('tennis', tennis_variant='practice')
+    bridge.game.reset(previous)
+    old = await displayed(bridge)
+    chosen = await bridge.client.post('/api/embodied/start', json=dict(
+        camera=CAMERA, app='tennis', tennis_variant=variant, difficulty='easy', expected_intent=old))
+    assert chosen.status_code == 200
+    result = chosen.json()
+    assert result['game']['mode'] == 'off' and result['game']['selected_mode'] == 'tennis'
+    assert result['game']['tennis_variant'] == variant and result['game']['difficulty'] == 'easy'
+    assert result['game_intent'] != old
+    writes = [(path, body) for path, body in bridge.calls if path in {'/api/game', '/api/start'}]
+    assert [path for path, _ in writes] == ['/api/game', '/api/start']
+    assert writes[0][1]['tennis_variant'] == variant
+    bridge.owner._spawn_guarded_worker.assert_not_awaited()
+    bridge.owner._stop.assert_not_awaited()
+    stage = await bridge.client.get('/api/games/tennis/open', headers={'X-Friday-Game-Intent': result['game_intent']})
+    assert stage.status_code == 200
+    outdated = await bridge.client.get('/api/games/tennis/open', headers={'X-Friday-Game-Intent': old})
+    assert outdated.status_code == 409 and outdated.json()['detail'] == 'game_state_changed'
+    control, start, _ = game_handler(bridge.game)
+    playing = await control(request(dict(mode='tennis', action='start'), game=bridge.game))
+    assert playing['tennis_variant'] == variant and playing['source_recovery']['required_players'] == players
+    start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_library_stage_handoff_rejects_a_newer_round_even_on_the_same_court(bridge):
+    bridge.game.select('tennis')
+    intent = await displayed(bridge)
+    bridge.game.select('tennis', tennis_variant='practice')
+    response = await bridge.client.get('/api/games/tennis/open', headers={'X-Friday-Game-Intent': intent})
+    assert response.status_code == 409
+    current = await displayed(bridge)
+    wrong_app = await bridge.client.get('/api/games/ski/open', headers={'X-Friday-Game-Intent': current})
+    assert wrong_app.status_code == 409
+    assert not any(path in {'/api/game', '/api/start'} for path, _ in bridge.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('app,variant,code', [('ski', 'practice', 409), ('tennis', 'unknown', 422)])
+async def test_invalid_tennis_setup_leaves_the_current_round(bridge, app, variant, code):
+    before = copy.deepcopy(bridge.game.public)
+    selected = await bridge.client.post('/api/embodied/start', json=dict(
+        camera=CAMERA, app=app, tennis_variant=variant, expected_intent=await displayed(bridge)))
+    assert selected.status_code == code and bridge.game.public == before
+    assert not any(path in {'/api/game', '/api/start'} for path, _ in bridge.calls)
+
+
+@pytest.mark.asyncio
+async def test_tennis_launch_requires_the_worker_to_acknowledge_the_requested_variant(bridge, monkeypatch):
+    original = bridge.owner._send_game_command
+
+    async def other_variant(body, game):
+        result = await original(body, game)
+        return dict(result, tennis_variant='match')
+
+    monkeypatch.setattr(bridge.owner, '_send_game_command', other_variant)
+    response = await bridge.client.post('/api/embodied/start', json=dict(
+        camera=CAMERA, app='tennis', tennis_variant='practice', expected_intent=await displayed(bridge)))
+    assert response.status_code == 409 and response.json()['detail'] == 'game_state_changed'
+    assert not any(path == '/api/start' for path, _ in bridge.calls)
