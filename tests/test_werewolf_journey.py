@@ -3,6 +3,7 @@ import asyncio
 from contextlib import AsyncExitStack
 from functools import partial
 import json
+from unittest.mock import patch
 
 from fastapi import FastAPI
 import httpx
@@ -50,6 +51,64 @@ async def check_speaking_turn(service, host, tv, phones, camera, spoken, writes)
     await service.effect_task
     assert service.game.speaker_seat is None and spoken[announcements_before:] == ['请 4 号发言。', '继续自由发言。']
     assert len(writes) == lights_before and service.game.deadline == deadline
+
+
+async def check_rematch(service, host, tv, phones, lights, lamp, spoken, writes):
+    previous = (await tv.get('/api/public')).json()['game']
+    room = service.host()
+    old_seat, old_choice = next(iter(service.retries))
+    path = '/api/games/werewolf/control'
+
+    def command(action, event):
+        return dict(action=action, session=service.session, revision=service.game.revision, event_id=event)
+
+    original_writes = len(writes)
+    with patch.object(lights.core.actions, 'binding_fingerprint', return_value='f'*64):
+        changed = await host.post(path, json=command('rematch','SYNTHETIC-changed-lamp'))
+    assert changed.status_code == 409 and changed.json()['detail'] == 'scene_light_binding_changed'
+    assert (await tv.get('/api/public')).json()['game'] == previous and len(writes) == original_writes
+
+    lamp.update(state='on')
+    lamp['attributes']['brightness'] = 123
+    request = command('rematch', 'SYNTHETIC-second-match')
+    joined = await host.post(path, json=request)
+    assert joined.status_code == 200, joined.text
+    next_room = joined.json()
+    lobby = (await tv.get('/api/public')).json()['game']
+    assert next_room['session']==room['session'] and next_room['phone_url']==room['phone_url']
+    assert next_room['display_url']==room['display_url'] and next_room['join_code']==room['join_code']
+    assert lobby['phase']=='lobby' and lobby['revision']>previous['revision']
+    assert lobby['phase_name']=='重新准备'
+    assert lobby['host_script']['id']>previous['host_script']['id']
+    assert not lobby['vote_result'] and lobby['winner'] is None and lobby['round']==0
+    assert all(player['alive'] and not player['ready'] and 'role' not in player for player in lobby['players'])
+    assert [(p['seat'],p['name']) for p in lobby['players']]==[(p['seat'],p['name']) for p in previous['players']]
+    await service.effect_task
+    assert spoken[-1]==lobby['host_script']['text'] and len(writes)==original_writes
+
+    private = (await phones[old_seat].get('/api/player', headers={'X-Friday-Choice':old_choice})).json()
+    assert private['role'] is None and private['submitted'] is None and private['choice_version']==0
+    assert private['choice_receipt']==dict(event_id=old_choice,recorded=False)
+    stale = await phones[1].post('/api/ready',json=dict(ready=True,lobby_revision=0))
+    assert stale.status_code==409 and stale.json()['detail']=='phase_changed'
+    for phone in phones.values():
+        accepted = await phone.post('/api/ready',json=dict(ready=True,lobby_revision=lobby['lobby_revision']))
+        assert accepted.status_code==200
+    replayed = (await host.post(path,json=request)).json()
+    assert replayed['game']['phase']=='lobby' and all(p['ready'] for p in replayed['game']['players'])
+
+    deal = (await host.post(path,json=command('start','SYNTHETIC-second-deal'))).json()['game']
+    assert deal['phase']=='identity' and deal['identities_confirmed']==0
+    assert all('role' not in p for p in (await tv.get('/api/public')).json()['game']['players'])
+    for phone in phones.values():
+        assert (await phone.post('/api/identity',json=dict(revision=deal['revision']))).status_code==200
+    await host.post(path,json=command('advance','SYNTHETIC-second-night'))
+    await service.effect_task
+    assert service.game.phase=='wolves' and lamp['attributes']['brightness']==46
+    await host.post(path,json=command('end','SYNTHETIC-second-end'))
+    await service.effect_task
+    assert lamp['state']=='on' and lamp['attributes']['brightness']==123 and not lights.records
+
 
 
 @pytest.mark.asyncio
@@ -120,7 +179,8 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
                 for phone in phones.values():
                     player = (await phone.get('/api/player')).json()
                     assert player['role'] is None and not player['ready']
-                    assert (await phone.post('/api/ready', json={'ready': True})).status_code == 200
+                    assert (await phone.post('/api/ready', json={'ready': True,
+                        'lobby_revision': service.game.lobby_revision})).status_code == 200
                 redealt = await host.post('/api/games/werewolf/control', json=dict(
                     action='start', session=service.session, revision=service.game.revision, event_id='SYNTHETIC-redeal-six'))
                 assert redealt.status_code == 200
@@ -179,6 +239,9 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
             assert next(row for row in rows if row['entity_id']=='light.simulated')['state']=='off'
             assert writes and all(json.loads(w.content)['entity_id']=='light.simulated'for w in writes)
             assert {json.loads(w.content).get('brightness')for w in writes}>={46,179}
+            if count == 6:
+                lamp = next(row for row in rows if row['entity_id']=='light.simulated')
+                await check_rematch(service,host,tv,phones,lights,lamp,spoken,writes)
             assert (await host.post('/api/games/werewolf/control',json=dict(action='close',session=service.session,revision=service.game.revision,event_id=f'SYNTHETIC-close-{count}'))).json()['active'] is False
             assert (await tv.get('/api/public')).status_code==403
             assert all([(await phone.get('/api/player')).status_code==403 for phone in phones.values()])

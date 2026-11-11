@@ -77,6 +77,7 @@ class Choice(BaseModel):
 class Ready(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     ready: bool
+    lobby_revision: int | None = Field(default=None, ge=0)
 
 
 class ConfirmIdentity(BaseModel):
@@ -160,12 +161,14 @@ class WerewolfService:
         self.join_key = None
         self.retries = OrderedDict()
         self.choice_versions = {}
+        self.light_bindings = {}
         self.host_retries = OrderedDict()
         self.gateway = self.pump = self.effect_task = None
         self.effect_tasks = set()
         self.origin = None
         self.created = None
         self.camera_enabled = False
+        self.camera_context = None
         self.bindings = {}
         self.camera_hints = []
         self.camera_candidates = []
@@ -235,8 +238,7 @@ class WerewolfService:
             if address is not None and address not in addresses:
                 raise GameError("phone_address_unavailable")
             session = secrets.token_hex(16)
-            if lights:
-                await self.effects.lights.select(session, list(lights))
+            self.light_bindings = await self.effects.lights.select(session, list(lights)) if lights else {}
             gateway = self.gateway_factory() if address else None
             self.game, self.session = game, session
             self.join_retries.clear()
@@ -250,6 +252,7 @@ class WerewolfService:
             self.effects.last_scene = None
             self.effects.voice_state = 'off'
             self.camera_enabled = camera
+            self.camera_context = session
             try:
                 if gateway:
                     self.origin = await gateway.open(address, self)
@@ -262,6 +265,8 @@ class WerewolfService:
                     await self.effects.lights.restore()
                 self.game = None
                 self.session = None
+                self.light_bindings = {}
+                self.camera_context = None
                 self.join_retries.clear()
                 self.join_key = None
                 raise
@@ -310,9 +315,12 @@ class WerewolfService:
             seat = self._player(token)
             return self._private(seat, receipt_id)
 
-    async def ready(self, token, value):
+    async def ready(self, token, value, lobby_revision=None):
         async with self.lock:
             seat = self._player(token)
+            expected = 0 if lobby_revision is None else lobby_revision
+            if self.game.phase == 'lobby' and expected != self.game.lobby_revision:
+                raise GameError('phase_changed')
             self.game.ready(seat, value)
             return self._private(seat)
 
@@ -381,6 +389,8 @@ class WerewolfService:
                 self.game.start()
             elif action == "reseat":
                 self.game.reseat()
+            elif action == "rematch":
+                await self._rematch()
             elif action == "advance":
                 self.game.advance()
             elif action == "speaker":
@@ -401,6 +411,28 @@ class WerewolfService:
         if self.game is not None and self.game.phase=='finished':
             await self._release_camera()
         return result
+
+    async def _rematch(self):
+        previous = self.game
+        if previous.phase != 'finished':
+            raise GameError('rematch_unavailable')
+        game = self.game_factory(previous.count, clock=self.clock)
+        game.carry_seats(previous)
+        await self._release_camera()
+        if self.light_bindings:
+            # 恢复原灯具后重新读取基线，重绑过的设备须由主持人重新选择。
+            try:
+                await self.effects.lights.restore()
+                await self.effects.lights.select(secrets.token_hex(16), list(self.light_bindings), bindings=self.light_bindings)
+            except httpx.HTTPError as exc:
+                raise GameError('scene_light_unavailable') from exc
+        self.game = game
+        self.retries.clear()
+        self.choice_versions.clear()
+        self.camera_generation += 1
+        self.camera_context = secrets.token_hex(16)
+        self._clear_camera()
+        self.effects.last_scene = None
 
     def _schedule_effects(self):
         if self.game is None or self.game.revision == self.last_effect_revision:
@@ -470,13 +502,14 @@ class WerewolfService:
             return False
         self.camera_sequence+=1
         sequence=self.camera_sequence
+        context = self.camera_context or session
         # Record before sending: a lost acknowledgement still owes this room an end.
-        self.camera_hold=(owner,process,session,capability['scope'])
-        result=await owner.party_camera(dict(action='renew',context=session,
+        self.camera_hold=(owner,process,context,capability['scope'])
+        result=await owner.party_camera(dict(action='renew',context=context,
             sequence=sequence,expected_scope=capability['scope'],not_after=self.clock()+1,
             camera=report['camera_id'],session=report['session_id'],frame_mono=capability['frame_mono']))
         return (isinstance(result,dict)and result.get('scope')==capability['scope']
-                and result.get('context')==session and type(result.get('sequence'))is int and result['sequence']==sequence
+                and result.get('context')==context and type(result.get('sequence'))is int and result['sequence']==sequence
                 and result.get('active')is True)
 
     async def _release_camera(self):
@@ -627,6 +660,7 @@ class WerewolfService:
             self.camera_generation += 1
             self._clear_camera()
             self.camera_enabled = False
+            self.camera_context = None
             try:
                 await self._release_camera()
                 if self.pump:
@@ -655,6 +689,7 @@ class WerewolfService:
                     self.pump = self.effect_task = None
                     self.origin = None
                     self.effects.lights_active = False
+                    self.light_bindings = {}
                     self.effects.narration = False
                     self.retries.clear()
                     self.choice_versions.clear()
@@ -770,7 +805,7 @@ def phone_app(owner, origin):
 
     @app.post("/api/ready")
     async def ready(payload: Ready, request: Request):
-        return await owner.ready(token(request), payload.ready)
+        return await owner.ready(token(request), payload.ready, payload.lobby_revision)
 
     @app.post("/api/identity")
     async def confirm_identity(payload: ConfirmIdentity, request: Request):

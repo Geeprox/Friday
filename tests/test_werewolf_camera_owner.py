@@ -79,6 +79,34 @@ async def test_party_observation_acquires_a_scoped_hold_and_close_releases_it():
         await owner.close()
 
 
+@pytest.mark.asyncio
+async def test_same_room_rematch_gets_a_new_hold_after_the_previous_context_is_retired():
+    camera, holder = Camera(), PartyCamera()
+    camera.report['party_camera'] = holder.status(camera='cam_1234567890',session='SYNTHETIC',frame_mono=10.,now=10.)
+
+    async def command(payload):
+        return holder.command(payload, source(), 10.)
+
+    camera.party_camera = command
+    owner = WerewolfService(HostEffects(SilentLights()), embodied=camera, clock=lambda: 10.)
+    try:
+        await owner.create(6, camera=True)
+        owner.pump.cancel()
+        await asyncio.gather(owner.pump,return_exceptions=True)
+        owner.pump = None
+        room = owner.session
+        await owner._camera()
+        assert holder.current['context']==room
+        await owner.control('end')
+        assert holder.current is None and holder.requests[room]['closed']
+        await owner.control('rematch')
+        await owner._camera()
+        assert owner.session==room and owner.camera_context!=room
+        assert holder.current['context']==owner.camera_context and owner.host()['camera_available']
+    finally:
+        await owner.close()
+
+
 def test_party_hold_freezes_auto_follow_even_when_the_motion_game_is_off():
     director = CameraDirector()
     clear(director)

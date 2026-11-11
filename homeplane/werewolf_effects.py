@@ -117,11 +117,11 @@ class SceneLights:
             raise ValueError("scene_light_brightness_unavailable")
         return entity, binding, {k: v for k, v in value.items() if k == "power" or k == "brightness" and value["power"] == "on"}
 
-    async def select(self, session, targets):
+    async def select(self, session, targets, *, bindings=None):
         async with self.operation_lock:
-            await self._select(session, targets)
+            return await self._select(session, targets, bindings=bindings)
 
-    async def _select(self, session, targets):
+    async def _select(self, session, targets, *, bindings=None):
         if self.records or self.recovery or self.journal.exists() and not self.session:
             raise ValueError("scene_recovery_required")
         allowed = {item["id"] for item in await self.choices()}
@@ -129,11 +129,17 @@ class SceneLights:
             raise ValueError("scene_selection_invalid")
         records = {}
         for target in targets:
-            _, binding, value = await self._read(target)
+            _, binding, value = await self._read(target, bindings[target] if bindings is not None else None)
             records[target] = dict(binding=binding, original=value, expected=value, status="selected")
+        previous = self.records, self.session
         self.records, self.session = records, session
         if records:
-            self._save()
+            try:
+                self._save()
+            except OSError:
+                self.records, self.session = previous
+                raise
+        return {target: record['binding'] for target, record in records.items()}
 
     async def _write(self, target, record, desired, event, current):
         async with self.lock:

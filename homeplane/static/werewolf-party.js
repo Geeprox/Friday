@@ -199,6 +199,9 @@ function updatePlayer(result, force=false) {
  }
  const stamp=choiceStamp;
  if (stamp && (stamp.session!==result.session || stamp.seat!==result.seat)) forgetChoice();
+ else if(stamp && result.public.phase==='lobby' && result.public.lobby_revision>stamp.revision){
+  forgetChoice();notice.textContent='';
+ }
  else if (stamp && result.choice_receipt?.event_id===stamp.event_id) {
   if (result.choice_receipt.recorded===true) {
    if (syncing) viewKey='';
@@ -329,9 +332,15 @@ function renderPlayer(force=false){
   if (player.role && g.phase!=='finished' && g.phase!=='identity') root.append(identity());
   return;
  }
- if(g.phase==='lobby'){const waiting=h('section',null,'lobby-wait');waiting.append(h('div',String(player.seat),'my-seat'),h('h2','你的座位已留好'),h('p',g.players.filter(p=>p.ready).length+' / '+g.player_count+' 人准备好了'));waiting.append(button(player.ready?'取消准备':'准备好了',()=>{void perform(async()=>{await api('ready',{ready:!player.ready},data=>updatePlayer(data,true));});},player.ready?'':'primary'));root.append(waiting);return;}
+ if(g.phase==='lobby'){
+  const waiting=h('section',null,'lobby-wait');waiting.append(h('div',String(player.seat),'my-seat'),h('h2','你的座位已留好'),h('p',g.players.filter(p=>p.ready).length+' / '+g.player_count+' 人准备好了'));
+  waiting.append(button(player.ready?'取消准备':'准备好了',()=>perform(async()=>{
+   await api('ready',{ready:!player.ready,lobby_revision:g.lobby_revision},data=>updatePlayer(data,true));
+  }),player.ready?'':'primary'));
+  root.append(waiting);return;
+ }
  if(g.phase==='identity'){root.append(identity());return;}
- if(g.phase==='finished'){const result=h('section',null,'result');result.append(h('h2',g.winner==='village'?'好人阵营获胜':g.winner==='wolves'?'狼人阵营获胜':'本局已结束'));const list=h('ul');for(const p of g.players)list.append(h('li',p.seat+' 号 · '+p.name+'　'+p.role_name));result.append(list,h('p','由主持端创建下一局后，重新扫码入座。'));root.append(result);return;}
+ if(g.phase==='finished'){const result=h('section',null,'result');result.append(h('h2',g.winner==='village'?'好人阵营获胜':g.winner==='wolves'?'狼人阵营获胜':'本局已结束'));const list=h('ul');for(const p of g.players)list.append(h('li',p.seat+' 号 · '+p.name+'　'+p.role_name));result.append(list,h('p','留在这个页面，等待主持人开启下一局。'));root.append(result);return;}
  root.append(actionPanel(),identity());if(player.checks?.length){const checks=h('details',null,'private-records');checks.append(h('summary','我的查验记录'));for(const check of player.checks)checks.append(h('p','第 '+check.round+' 夜 · '+check.seat+' 号是'+(check.wolf?'狼人':'好人')));root.append(checks);}if(player.team_choices?.length){const team=h('details',null,'private-records');team.append(h('summary','同伴的本夜选择'));for(const c of player.team_choices)team.append(h('p',c.seat+' 号 → '+(c.target?c.target+' 号':'放弃')));root.append(team);}
  if (focusChoice) root.querySelector('[data-choice-focus="' + focusChoice + '"]')?.focus({preventScroll:true});
 }

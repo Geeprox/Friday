@@ -75,6 +75,7 @@ class WerewolfGame:
         self.identities_confirmed: set[int] = set()
         self.phase = "lobby"
         self.revision = 0
+        self.lobby_revision = 0
         self.deadline = None
         self.paused = False
         self.remaining = None
@@ -82,6 +83,7 @@ class WerewolfGame:
         self.winner = None
         self.end_reason = None
         self.announcements: list[dict] = []
+        self.announcement_base = 0
         self.choices: dict[int, tuple[str, int | None]] = {}
         self.seer_results: dict[int, list[dict]] = {}
         self.antidote = True
@@ -99,8 +101,18 @@ class WerewolfGame:
         self._announce("一起入座，准备开始。")
 
     def _announce(self, text):
-        self.host_script = {"id": len(self.announcements) + 1, "text": text}
+        self.host_script = {"id": self.announcement_base + len(self.announcements) + 1, "text": text}
         self.announcements.append(dict(self.host_script))
+
+    def carry_seats(self, previous):
+        """新局只继承座位和昵称，阶段与播报编号继续递增。"""
+        if previous.phase != 'finished' or self.players or self.count != previous.count:
+            raise GameError('rematch_unavailable')
+        self.players = {seat: Player(seat, player.name) for seat, player in previous.players.items()}
+        self.revision = self.lobby_revision = previous.revision + 1
+        self.announcement_base = previous.host_script['id']
+        self.announcements.clear()
+        self._announce('下一局准备开始。请在手机上确认准备。')
 
     def join(self, seat, name):
         if self.phase != "lobby":
@@ -151,6 +163,7 @@ class WerewolfGame:
             player.ready = False
         self.identities_confirmed.clear()
         self._phase("lobby", "请确认座位，准备好后重新发牌。")
+        self.lobby_revision = self.revision
 
     def _phase(self, phase, text):
         self.phase = phase
@@ -410,7 +423,8 @@ class WerewolfGame:
 
     def public(self):
         seconds = self.remaining if self.paused else max(0, self.deadline - self.clock()) if self.deadline else None
-        return dict(phase=self.phase, phase_name=PHASE_NAMES[self.phase], revision=self.revision,
+        phase_name = '重新准备' if self.phase == 'lobby' and self.lobby_revision else PHASE_NAMES[self.phase]
+        return dict(phase=self.phase, phase_name=phase_name, revision=self.revision,
                     round=self.round, paused=self.paused, seconds_left=round(seconds) if seconds is not None else None,
                     player_count=self.count, joined=len(self.players),
                     roles=[dict(role=r, name=ROLE_NAMES[r], count=n) for r, n in Counter(self.pack).items()],
@@ -420,6 +434,7 @@ class WerewolfGame:
                     announcements=self.announcements[-16:], host_script=dict(self.host_script), vote_result=self.vote_result,
                     runoff_candidates=list(self.runoff_candidates), recent_deaths=list(self.recent_deaths),
                     speaker_seat=self.speaker_seat,
+                    **({"lobby_revision": self.lobby_revision} if self.phase == "lobby" else {}),
                     **({"identities_confirmed": len(self.identities_confirmed)} if self.phase == "identity" else {}),
                     winner=self.winner, end_reason=self.end_reason, rules=list(RULES))
 
