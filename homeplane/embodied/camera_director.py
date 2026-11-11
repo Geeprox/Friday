@@ -258,7 +258,8 @@ class CameraDirector:
         people = self._subjects(sample)
         if pending['phase'] == 'patrolling':
             shift = _view_shift(pending['view'], sample.get('_patrol_view'))
-            return not people and not occupied_elsewhere and shift is not None and math.hypot(*shift) <= .012
+            return ((self.mode == 'survey' or not (people or occupied_elsewhere))
+                    and shift is not None and math.hypot(*shift) <= .012)
         if pending['phase'] != 'following':
             return False
         focus = self._current_focus(sample, now, focus)
@@ -390,6 +391,23 @@ class CameraDirector:
                 self.review_windows[kind] = (scope, now + duration, now + interval)
             return True
         return False
+
+    def _patrol(self, sample, now):
+        session = sample.get('session_id')
+        if not isinstance(session, str) or not session or sample.get('_patrol_view') is None:
+            self.phase = 'patrol_waiting_view'
+            return None
+        if self.mode == 'survey':
+            direction = self.SURVEY_ROUTE[self.survey_confirmed_moves]
+        else:
+            if self._next_position(self.scan_direction) in self.blocked_positions:
+                self.scan_direction = 'left' if self.scan_direction == 'right' else 'right'
+            if self._next_position(self.scan_direction) in self.blocked_positions:
+                self.phase = 'observing'
+                return None
+            direction = self.scan_direction
+        self.phase = 'patrolling'
+        return self._aim(direction, sample, now)
 
     @staticmethod
     def identity(person):
@@ -526,6 +544,12 @@ class CameraDirector:
             self.pending_direction = self.pending_decision = None
             self.phase = 'review_held'
             return None
+        if self.mode == 'survey':
+            # 路线只依赖本镜头的画面。普通在场或语音选人不改变巡视方向。
+            if now - self.last_move < 12 or (not self.survey_confirmed_moves and now - self.clear_since < 15):
+                self.phase = 'observing'
+                return None
+            return self._patrol(sample, now)
         people = self._subjects(sample)
         ids = {p['id'] for p in people}
         self.target_session = session
@@ -580,25 +604,10 @@ class CameraDirector:
         if now-self.target_seen > 8:
             self.target = None
             self.target_identity = None
-        if occupied_elsewhere or now-self.last_person < 15:
+        if occupied_elsewhere or now-self.last_person < 15 or now-self.last_move < 12:
             self.phase = 'observing'
             return None
-        if now-self.last_move < 12:
-            self.phase = 'observing'
-            return None
-        if not isinstance(session, str) or not session or sample.get('_patrol_view') is None:
-            self.phase = 'patrol_waiting_view'
-            return None
-        self.phase = 'patrolling'
-        if self.mode == 'survey':
-            direction = self.SURVEY_ROUTE[self.survey_confirmed_moves]
-            return self._aim(direction, sample, now)
-        if self._next_position(self.scan_direction) in self.blocked_positions:
-            self.scan_direction='left' if self.scan_direction=='right' else 'right'
-        if self._next_position(self.scan_direction) in self.blocked_positions:
-            self.phase='observing'
-            return None
-        return self._aim(self.scan_direction, sample, now)
+        return self._patrol(sample, now)
 
     def sent(self, now, direction=None, *, automatic=True):
         self.last_move = now
@@ -672,6 +681,8 @@ class CameraDirector:
             reason = '本轮巡视完成' if survey_result == 'complete' else '本轮巡视未完成'
         elif self.phase == 'patrolling' and self.mode == 'survey':
             reason = {'down': '巡视低处', 'up': '抬回视野'}.get(self.pending_direction, reason)
+        elif self.phase == 'observing' and self.mode == 'survey':
+            reason = '巡视中，观察当前视角'
         return dict(owner='friday', phase=self.phase, reason=reason, native_tracking=False,
                     intent_revision=self.intent[1] if self.intent else None,
                     native_patrol=False, view_usable=self.clear and self.phase in {

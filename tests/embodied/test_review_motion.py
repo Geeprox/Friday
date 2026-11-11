@@ -11,7 +11,7 @@ from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from tests.test_visual_followup import Home
-from tests.embodied.test_camera_director import patrol_view
+from tests.embodied.test_camera_director import patrol_view, person
 from tests.embodied.test_sound_review import settle
 
 
@@ -24,9 +24,11 @@ def source_function(path, name, scope):
 
 
 class Patrol:
-    def __init__(self, home, owner, *, mode='auto', duration=80):
+    def __init__(self, home, owner, *, mode='auto', duration=80, activity=None):
         self.home, self.owner = home, owner
         self.mode, self.duration = mode, duration
+        self.people = [person(1, .08)] if activity == 'same_camera' else []
+        self.occupied_elsewhere = activity == 'other_camera'
         self.marker, self.camera, self.context = home.feeds[0]
         self.moves, self.phases = [], []
         self.exit_state = None
@@ -51,11 +53,11 @@ class Patrol:
             await task
             await settle()
         stable = home.clock >= self.moving_until
-        await home.runtime.observe(self.camera, self.session, [], home.clock, home.clock,
+        await home.runtime.observe(self.camera, self.session, self.people if stable else [], home.clock, home.clock,
             stable=stable, jpeg=bytes([self.marker])+b'SYNTHETIC-FRAME',
             source_context=self.context, source_name='合成镜头')
         self.state.update(status='live', _local_received=home.clock, session_id=self.session,
-                          tracking_current=True, scene_visible=stable, people=[],
+                          tracking_current=True, scene_visible=stable, people=self.people if stable else [],
                           _patrol_view=patrol_view(home.clock, x=self.view_offset, y=self.view_height) if stable else None)
         self.scope['last_frame'] = home.clock
         self.phases.append((home.clock, (self.state if self.owner=='primary' else self.item).get('camera_control',{}).get('phase')))
@@ -63,6 +65,11 @@ class Patrol:
 
     async def motor(self, direction, *_, **kwargs):
         if kwargs.get('decision_current') and not kwargs['decision_current']():
+            raise RuntimeError('stale_input')
+        if self.owner == 'secondary' and not self.director.decision_current(
+                self.state, self.home.clock, direction, occupied_elsewhere=self.occupied_elsewhere,
+                review_pending=self.home.runtime.review_pending(self.camera, self.session),
+                fall_pending=self.home.runtime.fall_pending(self.camera, self.session)):
             raise RuntimeError('stale_input')
         self.moves.append((self.home.clock, direction))
         self.moving_until = self.home.clock + 1
@@ -82,16 +89,19 @@ class Patrol:
             lease = SimpleNamespace(acquire=AsyncMock(), release=release,
                                     presets=[], active=None, event=lambda *_,**__:None)
             planner = SimpleNamespace(public=lambda _: {}, mode=self.mode, intent_revision='intent', intent_status='configured')
+            other_views = {'synthetic-other': {'people': 1}} if self.occupied_elsewhere else {}
             self.scope.update(Transport=lambda:SimpleNamespace(close=AsyncMock()), CameraLease=lambda *a,**k:lease,
                 SearchPlanner=lambda *a:planner, camera_intents=SimpleNamespace(load=lambda:SimpleNamespace(mode=self.mode,revision='intent',status='configured')),
                 os=SimpleNamespace(environ={}), SELECTED={'id':self.camera}, state=self.state,
-                games=MotionGames(), party_camera=PartyCamera(),previews=SimpleNamespace(sessions={}), home=SimpleNamespace(camera_focus=None),
+                games=MotionGames(), party_camera=PartyCamera(),
+                previews=SimpleNamespace(sessions=other_views, status=lambda _: {'state': 'live'}),
+                home=SimpleNamespace(camera_focus=None),
                 safety=self.home.runtime, motor_step=self.motor, camera_lease=None, camera_planner=None,
                 reap=AsyncMock(),capture=None)
             loop=source_function('homeplane/embodied/worker.py','camera_search',self.scope)
         else:
             self.scope.update(item=self.item, selected={'id':self.camera}, director=self.director,
-                self=SimpleNamespace(focus=lambda _:None, occupied_elsewhere=lambda _:False,
+                self=SimpleNamespace(focus=lambda _:None, occupied_elsewhere=lambda _:self.occupied_elsewhere,
                                      review_pending=self.home.runtime.review_pending,
                                      fall_pending=self.home.runtime.fall_pending),
                 current_sample=lambda:dict(self.state), privacy_closed=lambda:None, send_motion=self.motor)
@@ -109,10 +119,11 @@ class Patrol:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner', ['primary', 'secondary'])
-async def test_original_owners_complete_a_two_level_survey(tmp_path, monkeypatch, owner):
+@pytest.mark.parametrize('activity', [None, 'same_camera', 'other_camera'])
+async def test_original_owners_complete_a_two_level_survey(tmp_path, monkeypatch, owner, activity):
     home = Home(tmp_path, monkeypatch)
     home.store.configure(home.store.policy().model_copy(update={'visual_review': False}))
-    patrol = Patrol(home, owner, mode='survey', duration=155)
+    patrol = Patrol(home, owner, mode='survey', duration=155, activity=activity)
     try:
         await patrol.run()
         assert [direction for _, direction in patrol.moves] == [
@@ -128,17 +139,19 @@ async def test_original_owners_complete_a_two_level_survey(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner',['primary','secondary'])
-async def test_a_positive_review_survives_the_original_automatic_patrol_loop(tmp_path,monkeypatch,owner):
-    home=Home(tmp_path,monkeypatch);patrol=Patrol(home,owner)
+@pytest.mark.parametrize('mode',['auto','survey'])
+async def test_patrol_preserves_a_positive_review_and_resumes_afterward(tmp_path,monkeypatch,owner,mode):
+    home=Home(tmp_path,monkeypatch)
+    patrol=Patrol(home,owner,mode=mode,activity='other_camera' if mode=='survey' else None)
     try:
         await patrol.run()
         events=home.store.events()
         assert events, (owner, 'patrol erased every corroboration', patrol.moves, home.engine.windows)
         assert all(e['kind']=='visual_review' and len(e['frames'])==8 for e in events)
         assert home.engine.maximum==1
-        assert patrol.moves, 'completed or bounded review must not disable patrol permanently'
-        assert patrol.director.patrol_view_state == 'confirmed'
-        assert any(phase=='review_held' for _,phase in patrol.phases)
+        held_at=next(at for at,phase in patrol.phases if phase=='review_held')
+        assert any(at>held_at for at,_ in patrol.moves), 'completed review must not disable patrol permanently'
+        assert patrol.director.scan_steps or patrol.director.survey_confirmed_moves
         home.runtime.speaker.say.assert_not_awaited()
     finally:
         await home.runtime.close()

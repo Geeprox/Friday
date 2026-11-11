@@ -323,6 +323,25 @@ def test_two_level_survey_is_finite_and_repeated_intent_does_not_restart_it():
     assert d.phase=='held'
 
 
+def test_explicit_survey_uses_its_route_when_people_or_speech_focus_change():
+    director = CameraDirector()
+    director.apply_mode('survey', 'explicit')
+    clear(director)
+    assert director.public()['reason'] == '巡视中，观察当前视角'
+    current = sample(16, people=[person(1, .08)])
+    assert director.choose(current, 16, occupied_elsewhere=True,
+                           focus=dict(track=1, at=16, session_id='first')) == 'right'
+    updated = sample(16.3, people=[person(2, .08), person(3, .1)])
+    assert director.decision_current(updated, 16.3, 'right', occupied_elsewhere=True,
+                                     focus=dict(track=2, at=16.3, session_id='first'))
+    assert not director.decision_current(updated, 16.3, 'right', fall_pending=True)
+    assert not director.decision_current(updated, 16.3, 'right', review_pending=True)
+    assert not director.decision_current(dict(updated, game={'mode': 'ski'}), 16.3, 'right')
+    assert not director.decision_current(dict(updated, _patrol_view=patrol_view(16.3, x=.03)), 16.3, 'right')
+    assert not director.decision_current(dict(updated, _patrol_view=None), 16.3, 'right')
+    assert director.target is None and director.survey_attempts == 1
+
+
 def start_low_pass(director):
     director.apply_mode('survey', 'synthetic-route')
     clear(director)

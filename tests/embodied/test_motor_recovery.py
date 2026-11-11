@@ -68,9 +68,9 @@ def test_a_late_pre_move_frame_cannot_start_the_next_impulse():
 
 
 @pytest.mark.parametrize('change', ['center', 'direction', 'lost', 'ambiguous', 'invalid', 'session', 'game', 'focus', 'hold'])
-def test_decision_is_rechecked_without_charging_another_survey_step(change):
+def test_follow_decision_is_rechecked_after_the_view_or_intent_changes(change):
     director = CameraDirector()
-    director.apply_mode('survey', 1)
+    director.apply_mode('auto', 1)
     director.choose(view(1), 1)
     assert director.choose(view(1.1), 1.1) == 'right'
     current = view(1.2)
@@ -89,7 +89,7 @@ def test_decision_is_rechecked_without_charging_another_survey_step(change):
         kwargs['focus'] = dict(track=2, at=1.2, session_id=current['session_id'])
     if change == 'hold': director.apply_mode('hold', 2)
     assert not director.decision_current(current, 1.2, 'right', **kwargs)
-    if change != 'hold': assert director.survey_attempts == 1
+    assert director.survey_attempts == 0
 
 
 def test_current_follow_and_empty_room_guards_accept_only_their_original_purpose():
