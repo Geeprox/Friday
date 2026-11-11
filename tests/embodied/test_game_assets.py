@@ -38,7 +38,9 @@ async def test_original_worker_asset_handler_serves_chapters_and_revalidates_byt
     app.get('/assets/{name:path}')(scope['asset'])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
         for name in ('quest-stream-scene.png', 'quest-camp-scene.png', 'quest-props.png',
-                     'tennis-near-v1.png', 'tennis-far-v1.png'):
+                     'tennis-near-v1.png', 'tennis-far-v1.png',
+                     'motion-art/body/targets/exercise-balance.png',
+                     'motion-art/body/targets/exercise-cross_knee.png'):
             response = await client.get('/assets/' + name)
             assert response.status_code == 200
             assert response.headers['content-type'] == 'image/png'

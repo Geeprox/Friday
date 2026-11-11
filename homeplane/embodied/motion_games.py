@@ -596,7 +596,7 @@ class MotionGames:
         self.previous = None
         self.squat_down = False
         self.down_since = self.up_since = None
-        self.circuit.invalidate_motion(keep_completed_side=recovered or self.source_resume_required)
+        self.circuit.invalidate_motion(keep_completed_side=True)
         self._invalidate_quest_motion()
         for reader in self.readers.values():
             reader.invalidate_motion(keep_stance=recovered)
@@ -1085,6 +1085,8 @@ class MotionGames:
     def publish(self, players, status, reason):
         if self.mode == 'quest' and status not in {'playing', 'complete'}:
             self._invalidate_quest_motion()
+        if self.mode == 'hiit' and status not in {'playing', 'complete'}:
+            self.circuit.invalidate_motion(keep_completed_side=True)
         self.status = status
         self.reason = reason
         self.public = {

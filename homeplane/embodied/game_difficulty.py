@@ -4,8 +4,9 @@ import math
 from dataclasses import dataclass, replace
 from typing import Literal
 
+from .hiit import ALTERNATING_ACTIONS
+
 DifficultyId = Literal["easy", "standard", "challenge"]
-_ALTERNATING = frozenset({"high_knee", "lunge", "side_step", "side_bend", "reach_up"})
 
 
 @dataclass(frozen=True)
@@ -22,7 +23,7 @@ class GameDifficulty:
 
     def reps(self, action, count):
         value = max(1, math.ceil(count * self.repetitions))
-        return value + value % 2 if action in _ALTERNATING else value
+        return value + value % 2 if action in ALTERNATING_ACTIONS else value
 
     def quest_plan(self, stages):
         if self.id == "standard":

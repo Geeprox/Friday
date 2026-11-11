@@ -5,11 +5,11 @@ import {mountKtv} from './ktv-console/app.js';
 const h=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
 const button=(text,fn,cls)=>{const b=h('button',text,cls);b.type='button';b.onclick=fn;return b;};
 const art=id=>['ski','tennis','quest','hiit','werewolf','ktv'].includes(id)?'/static/games-art/'+id+'.png':null;
-const moves={ski:['body.arm_effort','body.lateral'],tennis:['body.lateral','body.swing'],quest:['pose.horizontal','pose.overhead','exercise.squat','exercise.side_step','exercise.high_knee','exercise.jack','exercise.side_bend','exercise.side_lunge','exercise.reach_up','exercise.arm_open'],hiit:['exercise.squat','exercise.jack','exercise.high_knee','exercise.side_lunge','exercise.side_step','exercise.side_bend','exercise.reach_up','exercise.arm_open']};
+const moves={ski:['body.arm_effort','body.lateral'],tennis:['body.lateral','body.swing'],quest:['pose.horizontal','pose.overhead','exercise.squat','exercise.side_step','exercise.high_knee','exercise.jack','exercise.side_bend','exercise.side_lunge','exercise.reach_up','exercise.arm_open','exercise.balance','exercise.cross_knee'],hiit:['exercise.squat','exercise.jack','exercise.high_knee','exercise.side_lunge','exercise.side_step','exercise.side_bend','exercise.reach_up','exercise.arm_open','exercise.balance','exercise.cross_knee']};
 const isCircuit=app=>['quest','hiit'].includes(app.id);
 const displayName=app=>isCircuit(app)?'体感闯关':app.name;
 const ktvEntry={id:'ktv',name:'家庭 KTV',description:'搜歌、排歌单，和家人一起唱。',searchText:'唱歌 点歌 K歌 卡拉OK 曲库',kind:'party',players_label:'一起唱'};
-const storeEntries=apps=>[...apps.filter(a=>a.id!=='ktv'),ktvEntry].filter(a=>a.id!=='hiit'||!apps.some(b=>b.id==='quest')).map(a=>a.id==='quest'?{...a,name:'体感闯关',description:'沿山径完成动作，也可选择运动训练。',searchText:'山径冒险 动作闯关 运动闯关 深蹲 抬膝 上伸 胸前开合'}:a);
+const storeEntries=apps=>[...apps.filter(a=>a.id!=='ktv'),ktvEntry].filter(a=>a.id!=='hiit'||!apps.some(b=>b.id==='quest')).map(a=>a.id==='quest'?{...a,name:'体感闯关',description:'沿山径完成动作，也可选择运动训练。',searchText:'山径冒险 动作闯关 运动闯关 深蹲 抬膝 上伸 胸前开合 单腿站立 交叉触膝'}:a);
 const category=app=>app.id==='ktv'?'音乐聚会':app.kind==='party'?'聚会游戏':isCircuit(app)?'轻运动':'体感游戏';
 const players=app=>app.players_label||(app.players?.[0]===app.players?.[1]?app.players[0]===1?'单人':app.players[0]+' 人同玩':app.players[0]+'–'+app.players[1]+' 人');
 export function mountGames(root,{go=()=>{}}={}){

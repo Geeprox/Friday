@@ -1,5 +1,7 @@
 """Small local exercise circuit; geometric observations, not form coaching."""
 
+import math
+
 PLAN = (
     ("squat", "深蹲", 3, "屈膝下蹲后站直，完整往返计一次"),
     ("jack", "开合动作", 4, "双脚打开、双手上举，再收脚放手；可用开合步"),
@@ -9,13 +11,18 @@ PLAN = (
     ("side_bend", "站姿侧倾", 4, "双脚站稳，上身向一侧轻倾再回正，左右交替"),
     ("reach_up", "交替上伸", 4, "一只手向上伸展再放下，左右交替，每次放回计一次"),
     ("arm_open", "胸前开合", 4, "双手在胸前靠拢，平举打开，再合回胸前"),
+    ("balance", "单腿站立", 4, "轻抬一脚，站稳 1 秒后落地，左右换脚"),
+    ("cross_knee", "交叉触膝", 4, "抬膝，用对侧手靠近膝盖，再放下换侧"),
 )
+
+ALTERNATING_ACTIONS = frozenset({"high_knee", "lunge", "side_step", "side_bend", "reach_up", "balance", "cross_knee"})
 
 EXERCISE_GESTURES = {
     'exercise.squat': 'squat', 'exercise.jack': 'jack',
     'exercise.high_knee': 'high_knee', 'exercise.side_lunge': 'lunge',
     'exercise.side_step': 'side_step', 'exercise.side_bend': 'side_bend',
     'exercise.reach_up': 'reach_up', 'exercise.arm_open': 'arm_open',
+    'exercise.balance': 'balance', 'exercise.cross_knee': 'cross_knee',
 }
 
 
@@ -29,7 +36,8 @@ def signals(j, quality, depth, standing_span, knee_origin):
     names = [s + n for s in ("left", "right") for n in ("Hip", "Knee", "Ankle", "Shoulder")]
     if not all(q(n) for n in names):
         return {"visible": False, "jack": None, "high_knee": None, "lunge": None,
-                "side_step": None, "side_bend": None, "reach_up": None, "arm_open": None, "squat": depth}
+                "side_step": None, "side_bend": None, "reach_up": None, "arm_open": None,
+                "balance": None, "cross_knee": None, "squat": depth}
     shoulder = abs(q("leftShoulder")["x"] - q("rightShoulder")["x"]) * 16 / 9
     spread = abs(q("leftAnkle")["x"] - q("rightAnkle")["x"]) * 16 / 9 / max(0.025, shoulder)
     hip = sum(q(s + "Hip")["y"] for s in ("left", "right")) / 2
@@ -58,9 +66,10 @@ def signals(j, quality, depth, standing_span, knee_origin):
             high = "right"
         elif max(lifts.values()) < 0.12:
             high = "neutral"
-    bends = {}
+    bends, knees = {}, {}
     for s in ("left", "right"):
         a = angle(*[{**q(s + n), "x": q(s + n)["x"] * 16 / 9} for n in ("Hip", "Knee", "Ankle")])
+        knees[s] = a
         bends[s] = (knee_origin or 175) - (a or 175)
     lunge = None
     if spread >= 1.5:
@@ -93,6 +102,34 @@ def signals(j, quality, depth, standing_span, knee_origin):
             closed = (abs(wrists[0]['x']-wrists[1]['x'])*16/9 < .55*shoulder
                       and abs(sum(w['x'] for w in wrists)/2-center_x)*16/9 < .35*shoulder)
             arm_open = 'open' if quality['horizontal'] >= .6 else 'closed' if closed else None
+    balance = cross_knee = None
+    if standing_span and abs(lean) < .45 and all(knees.values()):
+        lift = (q('rightAnkle')['y'] - q('leftAnkle')['y']) / standing_span
+        grounded = abs(lift) < .10 and .35 <= spread <= 1.6 and max(bends.values()) < 18 and high == 'neutral'
+        supporting = {}
+        for side in ('left', 'right'):
+            extension = (q(side+'Ankle')['y'] - q(side+'Hip')['y']) / standing_span
+            supporting[side] = bends[side] < 18 and .85 <= extension <= 1.18 and lifts[side] < .12
+        if grounded:
+            balance = 'neutral'
+        elif .13 <= abs(lift) < .80:
+            raised, support = ('left', 'right') if lift > 0 else ('right', 'left')
+            if supporting[support]:
+                balance = raised
+        if all(wrists):
+            cross_knee = 'transition'
+            center_x = sum(q(s+'Shoulder')['x'] for s in ('left', 'right')) / 2
+            if grounded and down and all((w['x']-center_x)*(q(s+'Shoulder')['x']-center_x) > 0
+                                          for s, w in zip(('left', 'right'), wrists)):
+                cross_knee = 'neutral'
+            elif high in ('left', 'right'):
+                support = 'right' if high == 'left' else 'left'
+                knee, hand = q(high+'Knee'), q(support+'Wrist')
+                across = (hand['x']-center_x)*(q(high+'Shoulder')['x']-center_x) > 0
+                near = math.hypot((hand['x']-knee['x'])*16/9, hand['y']-knee['y']) <= .68*torso
+                raised = lift if high == 'left' else -lift
+                if across and near and hand['y'] >= hip-.35*torso and raised >= .12 and supporting[support]:
+                    cross_knee = high
     return {
         "visible": True,
         "jack": jack,
@@ -101,6 +138,8 @@ def signals(j, quality, depth, standing_span, knee_origin):
         "side_bend": side_bend,
         "reach_up": reach_up,
         "arm_open": arm_open,
+        "balance": balance,
+        "cross_knee": cross_knee,
         # BodyMotion owns the calibrated, background-aligned lateral origin.
         "side_step": None,
         "squat": depth,
@@ -170,27 +209,44 @@ class HIITCircuit:
             value = "active" if value == "open" else "neutral" if value == "closed" else None
         if not f.get("visible", False):
             value = None
-        if value is None:
+        if value is None and (key == 'cross_knee' or key == 'balance' and not f.get('visible')):
+            self.invalidate_motion(keep_completed_side=True)
+            self.feedback = '让手、膝盖和脚踝清晰入镜' if key == 'cross_knee' else '让膝盖和脚踝清晰入镜'
+            return
+        if value is None or value == 'transition':
             self.gap += dt
             self.stable_for = 0.0
             self.stable = None
-            if self.gap > 0.35:
+            grace = 1.2 if value == 'transition' else .35
+            if self.gap > grace:
                 self.pending = None
                 self.ready = not self.require_neutral
-            self.feedback = "让膝盖和脚踝清晰入镜" if not f.get("visible") else instruction
+            self.feedback = ('回到站姿，再换侧' if self.pending is not None and value == 'transition'
+                             else instruction if f.get('visible') else '让膝盖和脚踝清晰入镜')
             return
         self.gap = 0.0
         if value != self.stable:
             self.stable = value
             self.stable_for = 0.0
         self.stable_for += dt
-        if self.stable_for < 0.09:
+        if self.ready and key in {'balance', 'cross_knee'} and value != 'neutral':
+            if self.pending is not None and self.pending != value:
+                self.invalidate_motion(keep_completed_side=True)
+                self.feedback = '双脚落地，再换侧'
+                return
+            if value == self.last_side:
+                self.feedback = '换另一侧'
+                return
+        dwell = 1.0 if key == 'balance' and value != 'neutral' else .09
+        if self.stable_for + 1e-6 < dwell:
+            if self.ready and dwell == 1.0:
+                self.feedback = '稳住，稍后再落脚'
             return
         if not self.ready:
             self.ready = value == "neutral"
             self.feedback = instruction if self.ready else "先回到起点，再开始动作"
             return
-        alternating = key in ("high_knee", "lunge", "side_step", "side_bend", "reach_up")
+        alternating = key in ALTERNATING_ACTIONS
         if value != "neutral":
             if alternating and value == self.last_side:
                 self.feedback = "换另一侧，再回到中间"

@@ -47,6 +47,8 @@ const mappings = {
   'exercise.side_bend': {key:'side_bend'},
   'exercise.reach_up': {key:'overhead-reach', alternatingTimes:[.9,0,1.8], fallback:'body.left_hand_up'},
   'exercise.arm_open': {key:'open-close-swings', times:[.6,1.2333333492], fallback:'body.arms_open'},
+  'exercise.balance': {key:'balance', mirrorCycle:true, yaw:0},
+  'exercise.cross_knee': {key:'cross_knee', mirrorCycle:true, yaw:0},
 };
 export const hasSourceBodyDiagram = key => Boolean(mappings[key]);
 async function load() {
@@ -71,8 +73,17 @@ function paint(at) {
   if (!active.length) return;
   const cols=Math.min(4,active.length), rows=Math.ceil(active.length/cols), w=width*cols,h=height*rows;
   const items=active.map((item,i) => {
-    const phase=item.paused || reduced?.matches ? .57 : (at%period)/period;
-    const map=mappings[item.key], instruction={key:map.key,phase,transparentBackground:item.transparentBackground,rect:{x:(i%cols)*width,y:Math.floor(i/cols)*height,width,height}};
+    const map=mappings[item.key];
+    if(map.mirrorCycle){
+      const step=item.lastPaint===null?0:at-item.lastPaint;
+      const playing=canAnimate(item);
+      if(playing&&step>0&&step<=250)item.motionTime+=step;
+      item.lastPaint=playing?at:null;
+    }
+    const elapsed=map.mirrorCycle?item.motionTime:at;
+    const phase=item.paused || reduced?.matches ? .57 : (elapsed%period)/period;
+    const instruction={key:map.key,phase,yaw:map.yaw,mirror:map.mirrorCycle&&Math.floor(elapsed/period)%2===1,
+      transparentBackground:item.transparentBackground,rect:{x:(i%cols)*width,y:Math.floor(i/cols)*height,width,height}};
     if (map.times) instruction.sourceTime=sourceTime(phase,...map.times);
     if (map.alternatingTimes) instruction.sourceTime=alternatingSourceTime(phase,...map.alternatingTimes);
     return instruction;
@@ -87,6 +98,7 @@ function paint(at) {
 }
 function tick(at) {
   raf=null;
+  if(reduced?.matches){targetFrame();return;}
   if(at-last>=50){last=at;paint(at);}
   schedule();
 }
@@ -104,13 +116,14 @@ function prepare(item){
     item.dirty=true;paint(performance.now());schedule();
   }).catch(fail);
 }
-function targetFrame() { for(const item of tiles){item.dirty=true;if(reduced?.matches)fallback(item);else if(!renderer&&!failed)prepare(item);}paint(performance.now());schedule(); }
+function targetFrame() { for(const item of tiles){item.lastPaint=null;item.dirty=true;if(reduced?.matches)fallback(item);else if(!renderer&&!failed)prepare(item);}paint(performance.now());schedule(); }
 export function createSourceBodyDiagram(key,{label=true,name='体感动作',transparentBackground=false}={}) {
   const node=document.createElement('canvas');node.width=width*ratio;node.height=height*ratio;
   node.className='motion-diagram motion-body-source';node.dataset.motion='loading';
   if(label){node.setAttribute('role','img');node.setAttribute('aria-label',name+'：准备、动作、保持、复位');}
   else node.setAttribute('aria-hidden','true');
-  const item={node,key,context:node.getContext('2d'),fallback:new Image(),visible:false,paused:false,dirty:true,transparentBackground};tiles.add(item);
+  const item={node,key,context:node.getContext('2d'),fallback:new Image(),visible:false,paused:false,dirty:true,
+    motionTime:0,lastPaint:null,transparentBackground};tiles.add(item);
   item.fallback.onload=()=>{if(tiles.has(item)&&(node.dataset.motion!=='ready'||reduced?.matches||failed))fallback(item);};
   item.fallback.src=new URL('targets/'+(mappings[key]?.fallback||key).replaceAll('.','-')+'.png',source).href;
   const observer=globalThis.IntersectionObserver ? new IntersectionObserver(entries=> {
@@ -118,7 +131,7 @@ export function createSourceBodyDiagram(key,{label=true,name='体感动作',tran
   },{threshold:.15}) : null;
   observer?.observe(node);if(!observer)item.visible=true;
   if(!reduced?.matches)prepare(item);
-  node.setPaused=value=> {item.paused=Boolean(value);item.dirty=true;paint(performance.now());schedule();};
+  node.setPaused=value=> {const paused=Boolean(value);if(item.paused===paused)return;item.paused=paused;item.lastPaint=null;item.dirty=true;paint(performance.now());schedule();};
   node.dispose=()=> {tiles.delete(item);observer?.disconnect();item.fallback.onload=null;if(!tiles.size){if(raf)cancelAnimationFrame(raf);raf=null;renderer?.dispose();renderer=null;atlas=null;failed=false;}};
   return node;
 }

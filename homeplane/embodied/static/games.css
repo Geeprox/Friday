@@ -29,6 +29,15 @@ body>.stage-header{grid-row:1}body>.workspace{grid-row:2}body>footer{grid-row:3}
  :is(body[data-mode=quest],body[data-mode=hiit]) .mission-block{min-width:0}
  .hud,.embedded .hud{position:static;grid-column:1/-1;grid-row:1;gap:12px;align-items:flex-start}
  .mission-block{padding:0;max-width:none;flex:1;background:transparent;border:0;border-radius:0}
+ body[data-mode=quest] .hud{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 12px}
+ body[data-mode=quest] .mission-block{display:contents}
+ body[data-mode=quest] .mission{grid-column:1;grid-row:1}
+ body[data-mode=quest] .instruction{grid-column:1;grid-row:2}
+ body[data-mode=quest] .score{grid-column:2;grid-row:1 / span 2}
+ body[data-mode=quest] .live-progress{grid-column:1;grid-row:3}
+ body[data-mode=quest] .bar{grid-column:1/-1;grid-row:4}
+ body[data-mode=quest] .quest-trail{grid-column:1/-1;grid-row:5;gap:3px}
+ body[data-mode=quest] .quest-trail li{width:clamp(17px,6vw,22px);height:clamp(17px,6vw,22px)}
  .mission,.embedded .mission{font-size:17px;line-height:1.45;text-wrap:wrap}
  .instruction{margin-top:5px;font-size:12px;line-height:1.55}
  .bar{margin-top:9px;width:100%;height:3px}
@@ -41,7 +50,7 @@ body>.stage-header{grid-row:1}body>.workspace{grid-row:2}body>footer{grid-row:3}
  :is(body[data-mode=quest],body[data-mode=hiit]) .instruction:empty{visibility:hidden}
  :is(body[data-mode=quest],body[data-mode=hiit]) .score{min-width:max-content;white-space:nowrap;flex:none}
  :is(body[data-mode=quest],body[data-mode=hiit]) .score small{max-width:104px;white-space:normal}
- .game-tutorial{width:min(68%,250px)}
+ .game-tutorial{width:min(68%,250px,var(--teaching-fit,250px))}
  .game-tutorial p{font-size:12px}
  .bottom,.embedded .bottom{display:contents}
  .player-feedback{grid-column:1/-1;grid-row:3;align-self:center;padding:0;border:0;background:transparent;border-radius:0;max-width:none}
@@ -90,7 +99,7 @@ body[data-mode=tennis] .overlay button{min-height:44px}
 .ski-splits dd{margin:0;color:var(--ink);font-variant-numeric:tabular-nums;font-weight:600}
 .overlay:has(.ski-splits) button:focus-visible{outline-offset:2px}
 .workspace:has(.ski-splits) .score{visibility:hidden}
-.quest-trail{display:flex;align-items:center;gap:8px;list-style:none;margin:12px 0 0;padding:0;counter-reset:none}
+.quest-trail{display:flex;flex-wrap:wrap;align-items:center;gap:8px;list-style:none;margin:12px 0 0;padding:0;counter-reset:none}
 .quest-trail li{position:relative;display:grid;place-items:center;flex:none;width:24px;height:24px;border:1px solid var(--line);border-radius:50%;font-size:11px;line-height:1;font-variant-numeric:tabular-nums;color:var(--muted);background:var(--paper)}
 .quest-trail li[data-chapter-start=true]{margin-inline-start:8px}
 .quest-trail li[data-state=current]{border:2px solid var(--ink);color:var(--ink);font-weight:650;outline:2px solid var(--paper);outline-offset:-4px}

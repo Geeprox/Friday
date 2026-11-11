@@ -2,6 +2,8 @@
 import pytest
 
 from homeplane.embodied.practice import RecognitionPractice
+from tests.embodied.test_hiit import new_action_pose
+from tests.embodied.test_motion_games import LOCK, human
 
 
 @pytest.fixture
@@ -87,6 +89,36 @@ def test_unknown_input_does_not_create_a_lease(lesson):
     with pytest.raises(ValueError):
         runtime.begin('gesture.made_up', ['a'])
     assert not runtime.active()
+
+
+@pytest.mark.parametrize('action', ['balance', 'cross_knee'])
+def test_new_exercise_practice_reports_success_after_return_to_neutral(lesson, action):
+    runtime, clock = lesson
+    gesture = f'exercise.{action}'
+    token = runtime.begin(gesture, ['a', 'b'])['token']
+
+    def feed(person, frames):
+        for _ in range(frames):
+            clock[0] += .05
+            runtime.observe('b', 'session', [person], [], LOCK, clock[0], clock[0])
+        return runtime.status(token)
+
+    feed(human(), 22)
+    if action == 'cross_knee':
+        feed(new_action_pose(action), 6)
+        occluded = new_action_pose(action)
+        occluded['joints'].pop('rightWrist')
+        feed(occluded, 1)
+        assert feed(human(), 6)['phase'] != 'success'
+    assert feed(new_action_pose(action), 27)['phase'] != 'success'
+    if action == 'cross_knee':
+        release = new_action_pose(action)
+        release['joints']['rightWrist'] = human()['joints']['rightWrist']
+        assert feed(release, 12)['phase'] != 'success'
+    result = feed(human(), 6)
+    assert result['phase'] == 'success'
+    assert result['event']['camera'] == 'b' and result['event']['gesture'] == gesture
+    assert runtime.suppresses('b')
 
 
 @pytest.mark.asyncio

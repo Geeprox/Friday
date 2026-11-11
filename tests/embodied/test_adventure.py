@@ -9,12 +9,16 @@ import pytest
 
 from homeplane.embodied.hiit import HIITCircuit
 from homeplane.embodied.motion_games import MotionGames
+from tests.embodied.test_hiit import new_action_pose
 from tests.embodied.test_motion_games import LOCK, human
 
-ACTIONS = ["horizontal", "overhead", "squat", "side_step", "high_knee", "jack", "side_bend", "lunge", "reach_up", "arm_open"]
+ACTIONS = ["horizontal", "overhead", "squat", "side_step", "high_knee", "jack", "balance",
+           "side_bend", "lunge", "reach_up", "arm_open", "cross_knee"]
 
 
 def actor(action="neutral", side="left"):
+    if action in {"balance", "cross_knee"}:
+        return new_action_pose(action, side)
     p = human(arms=action if action in {"horizontal", "overhead"} else "down")
     j = p["joints"]
     if action == "squat":
@@ -71,7 +75,7 @@ class Journey:
 
 
 @pytest.mark.parametrize('difficulty', ['easy', 'standard', 'challenge'])
-def test_ten_station_journey_completes_from_joints_and_replay_starts_clean(difficulty):
+def test_twelve_station_journey_completes_from_joints_and_replay_starts_clean(difficulty):
     journey = Journey()
     g = journey.game
     g.reset('quest', difficulty=difficulty)
@@ -79,8 +83,8 @@ def test_ten_station_journey_completes_from_joints_and_replay_starts_clean(diffi
     initial = initial_state["quest"]
     packets = [copy.deepcopy(initial_state)]
     assert initial["targets"] == ACTIONS
-    assert initial["total_levels"] == 10
-    assert len({stage["teaching"] for stage in initial["stages"]}) == 10
+    assert initial["total_levels"] == len(ACTIONS)
+    assert len({stage["teaching"] for stage in initial["stages"]}) == len(ACTIONS)
     history = []
     for level, action in enumerate(ACTIONS):
         state = journey.feed(count=76)
@@ -95,18 +99,18 @@ def test_ten_station_journey_completes_from_joints_and_replay_starts_clean(diffi
             if action == "arm_open":
                 journey.feed("arms_closed")
             for rep in range(stage["reps"]):
-                journey.feed(action, side="left" if rep % 2 == 0 else "right")
+                journey.feed(action, 26 if action == "balance" else 16, side="left" if rep % 2 == 0 else "right")
                 packets.append(copy.deepcopy(g.public))
                 journey.feed("arms_closed" if action == "arm_open" else "neutral")
                 packets.append(copy.deepcopy(g.public))
         assert g.level == level + 1, (action, g.public["quest"])
         history.append(action)
         assert [item["action"] for item in g.public["quest"]["history"]] == history
-        assert g.public["quest"]["progress"] == pytest.approx((level + 1) / 10)
-        assert g.complete is (level == 9)
+        assert g.public["quest"]["progress"] == round((level + 1) / len(ACTIONS), 4)
+        assert g.complete is (level == len(ACTIONS) - 1)
         packets.append(copy.deepcopy(g.public))
     done = copy.deepcopy(g.public)
-    assert done["quest"]["total_reps"] == {'easy':18, 'standard':33, 'challenge':51}[difficulty]
+    assert done["quest"]["total_reps"] == {'easy':22, 'standard':41, 'challenge':63}[difficulty]
     assert done["quest"]["phase"] == "complete"
     assert journey.feed("horizontal", 80)["quest"] == done["quest"]
     g.reset("quest")
@@ -124,7 +128,7 @@ def test_ten_station_journey_completes_from_joints_and_replay_starts_clean(diffi
 
 
 @pytest.mark.parametrize('difficulty', ['easy', 'standard', 'challenge'])
-def test_full_training_difficulty_finishes_eight_original_joint_cycles(difficulty):
+def test_full_training_difficulty_finishes_all_ten_actions_from_joints(difficulty):
     journey = Journey()
     game = journey.game
     game.reset('hiit', difficulty=difficulty)
@@ -136,11 +140,11 @@ def test_full_training_difficulty_finishes_eight_original_joint_cycles(difficult
         if action == 'arm_open':
             journey.feed('arms_closed')
         for rep in range(count):
-            journey.feed(action, side='left' if rep % 2 == 0 else 'right')
+            journey.feed(action, 26 if action == 'balance' else 16, side='left' if rep % 2 == 0 else 'right')
             journey.feed('arms_closed' if action == 'arm_open' else 'neutral')
         assert game.circuit.level == level + 1, (action, game.public['hiit'])
     assert game.complete and game.public['status'] == 'complete'
-    assert game.public['hiit']['total_reps'] == {'easy':18, 'standard':33, 'challenge':51}[difficulty]
+    assert game.public['hiit']['total_reps'] == {'easy':22, 'standard':41, 'challenge':63}[difficulty]
     assert game.public['difficulty'] == difficulty
     game.reset('hiit')
     assert game.public['difficulty'] == difficulty and game.public['hiit']['total_reps'] == 0

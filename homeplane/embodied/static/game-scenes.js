@@ -15,7 +15,7 @@ function questWorld(g){
  const stages=Array.isArray(q.stages)&&q.stages.length?q.stages:legacy;
  const level=Math.max(0,Math.min(stages.length,Number.isSafeInteger(q.level)?q.level:0));
  const stage=stages[Math.min(level,stages.length-1)],scenes=['forest','stream','camp'];
- const landmarks=['gate','canopy','branches','stones','steps','flowers','boughs','trail','flags','breeze'];
+ const landmarks=['gate','canopy','branches','stones','steps','flowers','crossing','boughs','trail','flags','breeze','landing'];
  const requestedScene=stage?.scene??oldWorld[stage?.action]?.[0];
  const scene=scenes.includes(requestedScene)?requestedScene:'forest',values={};
  for(const[s,part]of stages.entries()){
@@ -158,6 +158,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    row('stones',0,[[470,810,170],[540,700,150],[470,600,130],[545,510,115]]);
    row('steps',1,[[1100,825,170],[1150,750,160],[1070,675,150],[1140,605,140],[1080,540,130],[1150,485,120]]);
    row('flowers',5,[[585,860,120],[1040,865,120],[565,460,100],[1040,455,100]]);
+   row('crossing',0,[[615,793,110],[985,793,110],[620,724,96],[980,724,96]]);
   }else if(world.scene==='camp'){
    row('boughs',2,[[470,825,235],[550,700,210],[470,590,185],[550,500,160]],{clear:true});
    row('trail',0,[[1130,820,175],[1060,710,155],[1140,600,135],[1070,510,115]]);
@@ -166,6 +167,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
     row('flags',4,[[470,237,80],[1130,237,80],[615,271,80],[985,271,80]],{top:true,marker:false});
    }
    row('breeze',6,[[460,850,85],[1140,850,85],[590,885,100],[1010,885,100]]);
+   row('landing',1,[[610,802,110],[990,802,110],[625,736,96],[975,736,96]]);
    if(world.done)questSlot('picnic',7,1120,690,170,true,{marker:false});
   }
  }
