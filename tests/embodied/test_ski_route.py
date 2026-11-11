@@ -1,9 +1,81 @@
-"""Distance-driven skiing must stay fair across observed frame cadences."""
+"""验证不同画面间隔下的滑雪规则与试滑。"""
+
+import math
 
 import pytest
 
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.ski_route import SKI_COURSES, SKI_GATES, SKI_ROUTE, get_ski_trail
+from tests.embodied.test_motion_games import LOCK, human
+
+
+def test_warmup_uses_real_steering_and_wrist_motion_without_consuming_a_race():
+    game = MotionGames()
+    game.select('ski', difficulty='challenge', ski_trail='pine-slalom')
+    game.reset('ski', ski_warmup=True)
+    now = 0.0
+
+    def feed(x, *, seconds=1, arms=False, occluded=False, capture=True):
+        nonlocal now
+        for _ in range(int(seconds / .05)):
+            now += .05
+            person = human(x=x)
+            if arms:
+                swing = .14 * math.sin(now * math.tau / .8)
+                person['joints']['leftWrist']['y'] = .47 + swing
+                person['joints']['rightWrist']['y'] = .47 - swing
+            if occluded:
+                person['joints'].pop('rightWrist')
+            game.update([person], LOCK, now, [{'person_id': 1, 'gesture': 'yeah'}],
+                        captured_at=now if capture else now - 2)
+        ski = game.public['ski']
+        assert ski['points'] == ski['distance'] == ski['speed'] == game.ski_elapsed == game.elapsed == 0
+        assert ski['event'] is None and not ski['guide']['active']
+        assert game.selected_mode == 'ski'
+        return ski['warmup']['step']
+
+    assert feed(.5) == 'left'
+    assert feed(.42) == 'left'
+    assert feed(.58, capture=False) == 'left'
+    assert feed(.58) == 'right'
+    assert feed(.42) == 'arms'
+    assert feed(.42, arms=True) == 'arms'
+    assert feed(.5, arms=True, occluded=True) == 'arms'
+    assert feed(.5, seconds=1.6, arms=True) == 'ready'
+
+    game.reset('ski')
+    assert game.public['ski']['warmup'] is None
+    assert game.public['ski_trail'] == 'pine-slalom' and game.public['difficulty'] == 'challenge'
+    assert game.public['ski']['distance'] == 0
+    for _ in range(80):
+        now += .05
+        p = human()
+        swing = .14 * math.sin(now * math.tau / .8)
+        p['joints']['leftWrist']['y'] = .47 + swing
+        p['joints']['rightWrist']['y'] = .47 - swing
+        game.update([p], LOCK, now)
+    assert game.public['ski']['distance'] > 0
+
+
+def test_warmup_requires_new_frames_and_drops_unfinished_holds():
+    game = MotionGames()
+    game.reset('ski', ski_warmup=True)
+    for i in range(20):
+        game.update([human()], LOCK, i * .05)
+    for i in range(20, 25):
+        game.update([human(x=.58)], LOCK, i * .05)
+    progress = game.public['ski']['warmup']
+    assert progress['step'] == 'left' and 0 < progress['fraction'] < 1
+    for i in range(25, 32):
+        game.update([human(x=.58)], LOCK, i * .05, captured_at=1.2)
+    assert game.public['ski']['warmup'] == {'step': 'left', 'fraction': 0}
+    for i in range(32, 40):
+        game.update([human(x=.58)], LOCK, i * .05)
+    assert game.public['ski']['warmup']['step'] == 'right'
+    game.set_paused(True)
+    assert game.public['ski']['warmup'] == {'step': 'right', 'fraction': 0}
+    game.suspend_source()
+    assert game.public['ski']['warmup'] == {'step': 'left', 'fraction': 0}
 
 
 def run_ski(cadence, *, duration=None, lateral=0, difficulty='standard', trail=None):

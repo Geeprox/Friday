@@ -13,7 +13,7 @@ from homeplane.embodied.pose_rules import angle
 from homeplane.embodied.quest import STAGES as QUEST_STAGES, TRANSITION_SECONDS
 from homeplane.embodied.ski_route import (
     DEFAULT_SKI_TRAIL, SKI_TREE_REACH, SKI_VISIBLE_AHEAD, SKI_WORLD_TRAVEL,
-    advance, crossing_time, get_ski_trail, ski_trail_options,
+    SkiWarmup, advance, crossing_time, get_ski_trail, ski_trail_options,
 )
 from homeplane.embodied.ski_route import SKI_COURSES as SKI_COURSES
 TENNIS_TARGET = 7
@@ -465,9 +465,11 @@ class MotionGames:
         self.previous = None
         self.reset("off")
 
-    def reset(self, mode, *, difficulty=None):
+    def reset(self, mode, *, difficulty=None, ski_warmup=False):
         if mode not in ("off", "quest", "ski", "tennis", "hiit", "home"):
             raise ValueError("invalid_game")
+        if type(ski_warmup) is not bool or ski_warmup and mode != 'ski':
+            raise ValueError('invalid_ski_warmup')
         chosen = game_difficulty(difficulty) if difficulty is not None else self.difficulty
         stages, plan = chosen.quest_plan(QUEST_STAGES), chosen.training_plan(HIIT_PLAN)
         self.difficulty, self.quest_stages = chosen, stages
@@ -512,6 +514,11 @@ class MotionGames:
         self.up_since = None
         self.speed = 0.0
         self.distance = 0.0
+        self.ski_warmup = SkiWarmup() if ski_warmup else None
+        if ski_warmup:
+            self.gesture_key = self.gesture_since = self.gesture_release = None
+            self.gesture_progress = 0.0
+            self.gesture_latched = True
         self.obstacles = []
         self.ski_gates = []
         self.ski_cursor = 0
@@ -596,6 +603,8 @@ class MotionGames:
         self.pose_gap = 0.0
         self.hold = 0.0
         self.speed = 0.0
+        if self.ski_warmup:
+            self.ski_warmup = SkiWarmup()
         self.tennis_used_swings = [-100.0, -100.0]
         self.tennis_event = None
         self.hit_flash = -10.0
@@ -819,7 +828,7 @@ class MotionGames:
         self.previous = now
         if self.source_resume_required:
             return self._recover_source(people, registration, now, now if captured_at is None else captured_at)
-        if not self.manually_paused and self.resume_seconds <= 0:
+        if not self.ski_warmup and not self.manually_paused and self.resume_seconds <= 0:
             self.gesture_control(people, hands, registration, now)
         if self._hold_for_presentation():
             return self.public
@@ -836,6 +845,9 @@ class MotionGames:
             for reader in self.readers.values():
                 reader.invalidate_motion()
             return self.publish([], "paused", "镜头转动或背景未对齐")
+        warmup = self.ski_warmup
+        if warmup and not warmup.accept_frame(now if captured_at is None else captured_at, now):
+            return self.publish([], 'paused', '等待最新画面')
         observed = []
         for p in people:
             key = p["id"]
@@ -875,10 +887,10 @@ class MotionGames:
             return self.publish(selected, "paused", "请让双脚完整入镜")
         if any(not p["calibrated"] for p in selected):
             return self.publish(selected, "calibrating", "站定约 1 秒，记录左右移动原点")
-        if self.mode == 'tennis' and self.tennis_variant != 'match':
+        if warmup or self.mode == 'tennis' and self.tennis_variant != 'match':
             player = selected[0]
             if (player['observation'] != 'fresh' or player['foot_observation'] != 'fresh'
-                    or not player['observed_wrists']):
+                    or player['observed_wrists'] < (2 if warmup else 1)):
                 return self.publish(selected, 'paused', '请让手和双脚入镜')
         if self.resume_seconds > 0:
             self.resume_seconds = max(0.0, self.resume_seconds-dt)
@@ -888,6 +900,9 @@ class MotionGames:
                 for reader in self.readers.values():
                     reader.invalidate_motion(keep_stance=True)
             return self.publish(selected, 'calibrating' if self.resume_seconds > 0 else 'playing', '准备继续本局')
+        if warmup:
+            warmup.observe(selected[0])
+            return self.publish(selected, 'playing', '试滑')
         self.elapsed += dt
         if self.mode == "quest":
             self.quest(selected[0], dt)
@@ -1051,7 +1066,7 @@ class MotionGames:
         trail = self.ski_trail
         course_index, course, course_distance = self.ski_course()
         gate = next((f for f in trail.gates if f.at >= self.distance and f.id not in self.ski_results), None)
-        active = self.mode == 'ski' and status == 'playing' and bool(players) and gate is not None
+        active = self.mode == 'ski' and not self.ski_warmup and status == 'playing' and bool(players) and gate is not None
         lateral = players[0].get('lateral', 0) if players else 0
         delta = gate.x - lateral if gate else 0
         gate_width = gate.width * self.difficulty.ski_gate if gate else 0
@@ -1066,6 +1081,7 @@ class MotionGames:
         complete = self.mode == 'ski' and self.complete
         return dict(
             schema_version=2, speed=round(self.speed, 3), distance=round(self.distance, 2),
+            warmup=self.ski_warmup.public() if self.ski_warmup else None,
             obstacles=[dict(o) for o in self.obstacles], gates=[dict(g) for g in self.ski_gates],
             collisions=self.collisions, passed=self.passed, course=course_index,
             course_name=course['name'], course_count=len(trail.sections),
@@ -1306,6 +1322,8 @@ class MotionGames:
             self.circuit.invalidate_motion(keep_completed_side=True)
         if self.mode == 'tennis' and status != 'playing':
             self._clear_tennis_serve()
+        if self.ski_warmup and status != 'playing':
+            self.ski_warmup.clear_hold()
         self.status = status
         self.reason = reason
         self.public = {

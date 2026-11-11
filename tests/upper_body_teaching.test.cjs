@@ -16,6 +16,14 @@ test('chest open samples the real closed-to-open clip and returns to chest',()=>
  assert.equal(sample(0),.6);assert.equal(sample(.57),1.2333333492);assert.equal(sample(.99),.6);
 });
 
+test('ski teaching uses only one side of the alternating step clip',()=>{
+ const map=mapping('ski.side_step'),sample=p=>scope.sourceTime(p,...map.times);
+ assert.equal(sample(0),.6);assert.equal(sample(.57),1.2);assert.equal(sample(.99),.6);
+ assert(sample(.27)>.6&&sample(.27)<1.2);
+ assert.equal(map.fromStart,true);
+ assert.equal(map.fallback,'exercise.side_step');
+});
+
 test('new tutorials reuse licensed rig clips and exact existing static targets',()=>{
  const root='homeplane/static/motion-art/body',model=JSON.parse(fs.readFileSync(path.join(root,'body.gltf'))),targets=JSON.parse(fs.readFileSync(path.join(root,'targets.json'))).targets;
  for(const key of['exercise.reach_up','exercise.arm_open']){

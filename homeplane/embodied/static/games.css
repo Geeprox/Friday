@@ -134,8 +134,8 @@ body[data-mode=tennis] .overlay button{min-height:44px}
 .ski-trail-picker strong{font-size:13px;font-weight:650;line-height:1.35}
 .ski-trail-picker span{font-size:11px;color:var(--muted);line-height:1.35}
 .overlay .ski-trail-picker button:focus-visible{outline-offset:2px}
-.ski-result-actions{display:flex;justify-content:center;gap:8px}
-.overlay .ski-result-actions button{min-width:0;min-height:44px}
+.ski-result-actions,.ski-lobby-actions{display:flex;justify-content:center;gap:8px}
+.overlay :is(.ski-result-actions,.ski-lobby-actions) button{min-width:0;min-height:44px}
 @media(forced-colors:active){.ski-trail-picker button[aria-pressed=true]{border-color:Highlight;outline:1px solid Highlight;outline-offset:-3px}}
 .quest-trail{display:flex;flex-wrap:wrap;align-items:center;gap:6px;list-style:none;margin:12px 0 0;padding:0;counter-reset:none}
 .quest-trail li{position:relative;display:grid;place-items:center;flex:none;width:24px;height:24px;border:1px solid var(--line);border-radius:50%;font-size:11px;line-height:1;font-variant-numeric:tabular-nums;color:var(--muted);background:var(--paper)}
@@ -239,4 +239,62 @@ body[data-simulated=true]{--source-overhead:24px;padding-block-start:24px}
 }
 @media(max-width:760px) and (orientation:landscape) and (max-height:600px){
  .stage-brand h1,.connection{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+}
+
+body[data-ski-warmup] .hud,body[data-ski-warmup] .player-feedback{display:none}
+body[data-ski-warmup] .actions :is(button,summary){min-height:44px}
+body[data-ski-warmup] #pauseToggle{background:#fafaf6;border-color:#cfd0c8;color:var(--ink)}
+body[data-ski-warmup] #pauseToggle:hover{background:#efefe8}
+.ski-warmup{
+ position:absolute;inset-inline-end:28px;inset-block-start:47%;z-index:1;
+ width:min(320px,38%);padding:20px;transform:translateY(-50%);
+ border:1px solid var(--line);border-radius:16px;background:var(--paper);
+ grid-template-columns:minmax(0,1fr);align-items:center;gap:14px;
+}
+.ski-warmup:not([hidden]){display:grid}
+.ski-warmup h2{margin:0;font-size:clamp(21px,2.25vw,28px);line-height:1.25;letter-spacing:-.025em}
+.ski-warmup h2:focus{outline:none}
+.ski-warmup-prompt p{margin:6px 0 0;font-size:14px;line-height:1.55;color:var(--muted);min-height:2.9em}
+.ski-warmup-demo{margin:0;height:clamp(136px,23vh,216px);justify-self:stretch;background:#edeee6;border-radius:10px;overflow:hidden}
+.ski-warmup-demo canvas{display:block;width:100%;height:100%;object-fit:contain;transform:scale(var(--ski-demo-x,1.18),1.18);transform-origin:50% 86%}
+.ski-warmup[data-step=right] canvas{--ski-demo-x:-1.18}
+.ski-warmup-steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;list-style:none;margin:0;padding:0}
+.ski-warmup-steps li{position:relative;min-width:0;padding:7px 0 0;color:var(--muted);font-size:13px;line-height:1.45}
+.ski-warmup-steps li::before,.ski-warmup-steps li::after{content:'';position:absolute;inset-inline-start:0;top:0;height:2px;border-radius:1px}
+.ski-warmup-steps li::before{width:100%;background:var(--line)}
+.ski-warmup-steps li::after{width:var(--ski-hold,0%);background:#3d6550}
+.ski-warmup-steps li:is([data-state=done],[data-state=current]){color:var(--ink)}
+.ski-warmup-steps li[data-state=current]{font-weight:650}
+.ski-warmup-steps li[data-state=done] span::after{content:'';display:inline-block;width:7px;height:4px;margin-inline-start:5px;
+ border:solid #3d6550;border-width:0 0 1.5px 1.5px;transform:translateY(-3px) rotate(-45deg)}
+.ski-warmup button{min-height:44px;justify-self:start}
+.ski-warmup[data-step=ready] button{justify-self:stretch}
+@media(forced-colors:active){
+ .ski-warmup-steps li::before,.ski-warmup-steps li::after{forced-color-adjust:none;background:GrayText}
+ .ski-warmup-steps li::after{background:Highlight}
+ .ski-warmup-steps li[data-state=done] span::after{border-color:CanvasText}
+}
+@media(max-width:760px) and (orientation:portrait){
+ body[data-ski-warmup] .workspace{grid-template-rows:minmax(110px,1fr) auto minmax(44px,auto);align-content:stretch;gap:8px}
+ body[data-ski-warmup] :is(#world,.overlay){grid-row:1}
+ body[data-ski-warmup] .actions{grid-row:3}
+ .ski-warmup{position:relative;inset:auto;transform:none;grid-column:1/-1;grid-row:2;width:100%;padding:12px;gap:9px 12px;
+  grid-template-columns:minmax(0,1fr) minmax(80px,30%)}
+ .ski-warmup h2{font-size:20px}
+ .ski-warmup-prompt p{font-size:13px;min-height:0}
+ .ski-warmup-demo{height:108px;grid-column:2;grid-row:1}
+ .ski-warmup-steps{grid-column:1/-1}
+ .ski-warmup button{grid-column:1/-1}
+}
+@media(orientation:landscape) and (max-height:600px){
+ .ski-warmup{inset-inline-end:12px;inset-block-start:50%;padding:12px;gap:8px 12px;
+  width:min(330px,46%);grid-template-columns:minmax(0,1fr) minmax(70px,32%)}
+ .ski-warmup h2{font-size:20px}
+ .ski-warmup-prompt p{font-size:13px;min-height:0}
+ .ski-warmup-demo{height:100%;max-height:144px;grid-column:2;grid-row:1/4}
+ .ski-warmup-steps,.ski-warmup button{grid-column:1}
+ .ski-warmup-steps{gap:5px}
+ .ski-warmup-steps li{font-size:12px}
+ .ski-warmup-steps li[data-state=done] span::after{margin-inline-start:3px}
+ body[data-ski-warmup] .actions{margin-inline-start:0}
 }

@@ -20,6 +20,33 @@ test('a still-running older backend is not shown gates it cannot supply',()=>{
  const view=presentation({status:'playing',ski:{speed:1,passed:4}});
  assert(view.instruction.includes('障碍'));assert(!view.instruction.includes('木门'));assert(view.detail.includes('避开 4'));
 });
+test('trial and scored start require their corresponding worker readback',async()=>{
+ const {makeClient,game:stageGame}=require('./game_stage_harness.cjs');
+ const lobby=stageGame({mode:'off',selected_mode:'ski',status:'off',ski_trail:'first-snow',
+  ski_trails:[{id:'first-snow',name:'初雪坡',distance:54,gate_count:5}],ski:{warmup:null}});
+ const running={...lobby,mode:'ski',status:'waiting',round_id:2,control_revision:2};
+ const trial={...running,ski:{warmup:{step:'left',fraction:0}}},writes=[];
+ let response=running;
+ const {c}=makeClient({selected:'ski',meta:{game:lobby},fetch:async(_url,request)=>{
+  writes.push(JSON.parse(request.body));return{ok:true,json:async()=>response};
+ }});
+ assert.match(c.stageOverlayMarkup(lobby,true,false),/先试滑/);
+ assert.doesNotMatch(c.stageOverlayMarkup({...lobby,ski:{}},true,false),/先试滑/);
+ assert.equal(await c.startGame(true),false);
+ assert.equal(c.meta.game.mode,'off');
+ response=trial;
+ assert.equal(await c.startGame(true),true);
+ assert.equal(writes.at(-1).ski_warmup,true);
+ assert.equal(c.stageOverlayMarkup(trial,true,true),'');
+ assert.equal(await c.startGame(true),false);
+ response={...trial,round_id:3,control_revision:3};
+ assert.equal(await c.startGame(),false);
+ assert.equal(c.meta.game.ski.warmup.step,'left');
+ response={...running,round_id:3,control_revision:3};
+ assert.equal(await c.startGame(),true);
+ assert.equal(c.meta.game.ski.warmup,null);
+ assert(!Object.hasOwn(writes.at(-1),'ski_warmup'));
+});
 test('the completed overlay uses the real section results and keeps the original replay control',()=>{
  const {makeClient,part,game:stageGame}=require('./game_stage_harness.cjs');
  const {c}=makeClient({selected:'ski',artError:false});

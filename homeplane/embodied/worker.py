@@ -1682,7 +1682,7 @@ async def game_control(request: Request):
     action = data.get('action')
     if action is not None and (not isinstance(action, str) or action not in {'select','prepare','start','pause','resume'}):
         raise HTTPException(400, detail='invalid_game_action')
-    if set(data)-{'mode','action','difficulty','ski_trail','tennis_variant','expected_context','expected_revision'}:
+    if set(data)-{'mode','action','difficulty','ski_trail','ski_warmup','tennis_variant','expected_context','expected_revision'}:
         raise HTTPException(400, detail='invalid_game_request')
     if action == 'prepare' and (data.get('mode') != 'tennis' or 'tennis_variant' not in data):
         raise HTTPException(400, detail='invalid_tennis_variant')
@@ -1691,6 +1691,8 @@ async def game_control(request: Request):
         raise HTTPException(400, detail='invalid_game_difficulty')
     if 'ski_trail' in data and (type(data['ski_trail']) is not str or action != 'select' or data.get('mode') != 'ski'):
         raise HTTPException(400, detail='invalid_ski_trail')
+    if 'ski_warmup' in data and (data['ski_warmup'] is not True or action != 'start' or data.get('mode') != 'ski'):
+        raise HTTPException(400, detail='invalid_ski_warmup')
     if 'tennis_variant' in data and (type(data['tennis_variant']) is not str or action not in {'select', 'prepare'}
                                      or data.get('mode') != 'tennis'):
         raise HTTPException(400, detail='invalid_tennis_variant')
@@ -1710,7 +1712,10 @@ async def game_control(request: Request):
             games.select(data.get("mode", "quest"), **options)
         else:
             games.require_game_view(data.get('mode', 'off'))
-            games.reset(data.get("mode", "off"), **({'difficulty':data['difficulty']} if 'difficulty' in data else {}))
+            if data.get('ski_warmup') and games.mode != 'off' and not games.complete:
+                raise ValueError('game_changed')
+            options = {key: data[key] for key in ('difficulty', 'ski_warmup') if key in data}
+            games.reset(data.get("mode", "off"), **options)
         if data.get("action") == "start" and games.mode != "off":
             await start()
         if action not in {'pause','resume'} and games.selected_mode == "home" and data.get("mode") != "off":

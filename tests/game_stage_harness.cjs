@@ -27,7 +27,7 @@ function makeClient(extra={}){
  vm.runInContext(part('let renderedOverlay=null;', '\nfunction updateSourceMode('),c);
  vm.runInContext(part('const legacyQuestStages=', '\nfunction updateQuestHUD('),c);
  vm.runInContext(part('async function commandGame(', '\nfunction selectMode('),c);
- vm.runInContext(part('async function startGame()', '\nlet gamePackets'),c);
+ vm.runInContext(part('async function startGame(', '\nlet gamePackets'),c);
  vm.runInContext(part('async function pauseGame()', '\nfunction togglePlayerView('),c);
  vm.runInContext(part('function streamLost(', '\nfunction updateHUD('),c);
  vm.runInContext(part('function closeGameView()', "\nwindow.addEventListener('pagehide'"),c);

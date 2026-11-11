@@ -20,6 +20,52 @@ SKI_VISIBLE_AHEAD = 30.0
 SKI_TREE_REACH = .30
 
 
+class SkiWarmup:
+    """在原地练习左右转向和摆臂，每一步由连续的新画面确认。"""
+
+    steps = ('left', 'right', 'arms', 'ready')
+
+    def __init__(self):
+        self.step = 0
+        self.frame_at = None
+        self.clear_hold()
+
+    def clear_hold(self):
+        self.match_at = None
+        self.held = 0.0
+
+    def accept_frame(self, captured_at, now):
+        if (type(captured_at) not in (int, float) or not 0 <= now - captured_at <= 1.5
+                or self.frame_at is not None and captured_at <= self.frame_at):
+            return False
+        self.frame_at = captured_at
+        return True
+
+    def observe(self, player):
+        if self.steps[self.step] == 'ready':
+            return
+        lateral = player['lateral']
+        matched = (lateral <= -.35, lateral >= .35,
+                   abs(lateral) <= .30 and player['arm_effort'] >= .16)[self.step]
+        if not matched:
+            self.clear_hold()
+            return
+        if self.match_at is not None:
+            gap = self.frame_at - self.match_at
+            self.held = self.held + min(.12, gap) if gap <= .35 else 0.0
+        self.match_at = self.frame_at
+        if self.held >= self.duration:
+            self.step += 1
+            self.clear_hold()
+
+    @property
+    def duration(self):
+        return .35 if self.steps[self.step] == 'arms' else .24
+
+    def public(self):
+        return dict(step=self.steps[self.step], fraction=round(self.held / self.duration, 2))
+
+
 @dataclass(frozen=True)
 class SkiFeature:
     id: str

@@ -26,6 +26,16 @@ test('current gate, miss and collision use only adjacent original event and coun
   assert.equal(cue(f,before,{...after,ski:{...after.ski,[key]:0}}),null);
  }
 });
+test('ski warmup sounds once on each freshly recognized step',()=>{
+ const f=fixture(),state=(step,extra={})=>g('ski',{ski:{warmup:{step}},...extra});
+ assert.equal(cue(f,state('left'),state('right')),'stage');
+ assert.equal(cue(f,state('arms'),state('ready')),'stage');
+ assert.equal(cue(f,state('right'),state('right')),null);
+ assert.equal(cue(f,state('left'),state('arms')),null);
+ assert.equal(cue(f,state('arms',{status:'paused'}),state('ready')),null);
+ assert.equal(cue(f,state('arms'),state('ready',{round_id:2})),null);
+ assert.equal(cue(f,state('ready'),g()),null);
+});
 test('tennis uses rule serve/hit/point events, never a swing, score change or predicted contact',()=>{
  const f=fixture(),before=g('tennis');
  for(const[kind,sound]of [['serve','racket'],['hit','racket'],['point','point']])assert.equal(cue(f,before,g('tennis',{tennis:{event:{sequence:1,kind,player:0,age:.1}}})),sound);

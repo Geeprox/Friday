@@ -39,6 +39,7 @@ const mappings = {
   'body.lean_left': {key:'hands-on-hips-side-bend', times:[0,1.1]},
   'body.lean_right': {key:'hands-on-hips-side-bend', times:[2.2,3.3]},
   'body.lateral': {key:'lateral_step'},
+  'ski.side_step': {key:'side_step', times:[.6,1.2], fromStart:true, fallback:'exercise.side_step'},
   'body.arm_effort': {key:'ski_alternate'},
   'body.swing': {key:'tennis_swing'},
   'exercise.jack': {key:'step_jack'},
