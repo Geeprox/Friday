@@ -214,10 +214,11 @@ test('leaving during explicit recovery ignores its late acknowledgement and does
 function navigationFixture(){
  const source=fs.readFileSync('homeplane/static/app.js','utf8'),routes=source.slice(source.indexOf('function safetyEventId('),source.indexOf('\nfunction button(')),selected=[];
  const location={hash:'#home'},history={replaceState(_state,_unused,hash){location.hash=hash;}};
- const context=vm.createContext({location,history,URLSearchParams,pages:['Home','Safety','Devices','Settings'],page:'Home',requestedSafetyEvent:null,
+ let disposed=0;
+ const context=vm.createContext({location,history,URLSearchParams,pages:['Home','Safety','Devices','Settings','Activity'],page:'Home',requestedSafetyEvent:null,requestedRecordingCamera:null,
   archiveVersion:0,archiveSetupVersion:0,lastTrace:null,stopArchivePlayer(){},render(){},refreshHaStatus(){},$:()=>null,
-  experienceView:{selectEvent:id=>selected.push(id)}});
- vm.runInContext(routes,context);return{context,location,selected};
+  experiencePage:'Home',experienceView:{selectEvent:id=>selected.push(id),dispose(){disposed++;}}});
+ vm.runInContext(routes,context);return{context,location,selected,disposed:()=>disposed};
 }
 
 test('the real Console router preserves an event on reload and can select another event on the same page',()=>{
@@ -231,4 +232,14 @@ test('invalid event links cannot become a route or carry event data into another
  const f=navigationFixture();f.location.hash='#safety?event=%3Cimg%3E';assert.equal(f.context.pageLocation().eventId,null);
  f.context.go('Devices',{eventId:'a'.repeat(32)});assert.equal(f.location.hash,'#devices');assert.equal(f.context.pageLocation().eventId,null);
  f.context.rememberSafetyEvent('a'.repeat(32));assert.equal(f.location.hash,'#devices');
+});
+
+test('camera recording links survive reload and returning to all recordings retires the scoped view',()=>{
+ const f=navigationFixture(),camera='cam_1111111111';
+ f.context.go('Activity',{recordingCamera:camera});
+ assert.equal(f.location.hash,'#activity?camera='+camera);
+ assert.equal(f.context.pageLocation().recordingCamera,camera);
+ f.context.go('Activity');assert.equal(f.location.hash,'#activity');assert.equal(f.disposed(),1);
+ f.location.hash='#activity?camera=../other';assert.equal(f.context.pageLocation().recordingCamera,null);
+ f.location.hash='#safety?camera='+camera;assert.equal(f.context.pageLocation().recordingCamera,null);
 });

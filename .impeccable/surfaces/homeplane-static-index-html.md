@@ -39,7 +39,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
 ## Scope and evidence
 
-摄像头详情把「巡视一轮」放在现有镜头模式组，与人物和宠物跟随相邻。巡视中同一按钮变为「停止巡视」，在画面暂时断开时仍可提交停止。下探、完成和中断复用画面下方状态行，按当前操作版本读回。窄屏沿用现有按钮换行与键盘焦点。
+摄像头详情以画面为主体。同一个按钮查看和结束预览，「回看录像」在旁边打开当前镜头的录像。实时查看时显示镜头模式和方向键，物理开关单独放在底部。巡视中同一按钮变为「停止巡视」，画面暂时断开时仍可操作。下探、完成和中断复用画面下方的状态行。窄屏先显示画面和回看，再显示模式和方向键。
 
 Synthetic preview only. No live camera/microphone/model/TV/device activation. Desired gaze/wake confidence semantics and configurable wake words are captured as product truth; correcting the full speech execution chain and a Rust migration are separate functional changes, not claimed by this UI refactor. Host resource sampling is passive and bounded, with null values when unavailable. Background service and safety/event summaries read existing owners and never start them.
 

@@ -70,6 +70,78 @@ def listed(client):
     return report["files"][0]["id"]
 
 
+def test_camera_route_uses_only_a_current_unique_archive_mapping(session):
+    client, app, source = session
+    archive = app.state.archive
+    first, second = "cam_1111111111", "cam_2222222222"
+    cameras = [
+        dict(id=first, name="合成门厅", source_context="a" * 64),
+        dict(id=second, name="合成客厅", source_context="b" * 64),
+    ]
+    archive.simulated = lambda: False
+    archive.capture_cameras = lambda: cameras
+    root_calls = []
+    root = source.parent.parent
+
+    async def source_root():
+        root_calls.append(True)
+        return str(root)
+
+    archive._root = source_root
+    other = root / "XiaomiCamera_01_556677889900"
+    other.mkdir()
+    other_clip = other / "00_20260102000000_20260102000002.mp4"
+    shutil.copyfile(source, other_clip)
+
+    def browse(camera, **filters):
+        return client.get("/api/home/recordings", params=dict(camera=camera, **filters)).json()
+
+    assert browse(first)["code"] == "recording_camera_mapping_required"
+    assert root_calls == []
+    assert client.get("/api/home/recordings", params={"camera": "invalid"}).status_code == 422
+    assert client.get("/api/home/recordings", params={"camera": first, "folder": other.name}).status_code == 422
+    context = client.get("/api/archive/context").json()
+    scan = client.post("/api/archive/scan", json={"expected_context": context["fingerprint"]})
+    assert scan.status_code == 200, scan.text
+    context = scan.json()
+    refs = {name: row["folder_ref"] for row in context["folders"] for name in row["sample_filenames"]}
+
+    def bind(clip, camera, profile=None):
+        nonlocal context
+        response = client.post("/api/archive/cameras", json=dict(
+            expected_context=context["fingerprint"], folder_ref=refs[clip.name], capture_camera_id=camera,
+            camera_id=profile, name="合成录像",
+        ))
+        assert response.status_code == 200, response.text
+        context = response.json()
+        return next(row["id"] for row in context["cameras"] if row["folder_ref"] == refs[clip.name])
+
+    bind(source, first)
+    profile = bind(other_clip, second)
+    listing = browse(first)
+    assert listing["camera"] == {"id": first, "name": "合成门厅"}
+    assert listing["folders"] == [source.parent.name]
+    item, = listing["files"]
+    assert item["name"] == source.name
+    protected = client.post("/api/home/recordings/play", json={"id": item["id"]})
+    assert protected.status_code == 200, protected.text
+    plan = protected.json()
+    assert plan["privacy_protected"] and plan["privacy_preview_generated"]
+    assert client.get(plan["url"], headers={"Range": "bytes=0-63"}).status_code == 206
+    assert client.post("/api/home/recordings/stop", json={"token": plan["token"]}).json()["status"] == "revoked"
+    assert not browse(first, date="20260102")["files"]
+    assert browse(second)["files"][0]["name"] == other_clip.name
+    bind(other_clip, first, profile)
+    before = len(root_calls)
+    assert browse(first)["code"] == "recording_camera_mapping_required"
+    assert len(root_calls) == before
+    bind(other_clip, second, profile)
+    cameras[0]["source_context"] = "c" * 64
+    assert browse(first)["code"] == "recording_camera_mapping_required"
+    assert len(root_calls) == before
+    assert len(client.get("/api/home/recordings").json()["files"]) == 2
+
+
 def test_formal_routes_only_serve_protected_preview_and_stop_revokes_it(session):
     client, app, source = session
     response = client.post("/api/home/recordings/play", json={"id": listed(client)})
