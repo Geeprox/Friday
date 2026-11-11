@@ -373,24 +373,21 @@ class WerewolfService:
     def _schedule_effects(self):
         if self.game is None or self.game.revision == self.last_effect_revision:
             return
-        # State progression never queues stale narration. A send already issued
-        # is not retried; cancellation retains the light recovery journal.
-        previous = tuple(task for task in self.effect_tasks if not task.done())
-        for task in previous:
-            if not task.cancelling():
+        # 撤销旧阶段。播报与灯光各自等待同一路旧任务完成清理。
+        for task in tuple(self.effect_tasks):
+            if not task.done() and not task.cancelling():
                 task.cancel()
         session, revision = self.session, self.game.revision
         self.last_effect_revision = revision
         public = self.game.public()
         current = lambda: self.session == session and self.game is not None and self.game.revision == revision
         async def apply():
-            if previous:
-                await asyncio.shield(asyncio.gather(*previous, return_exceptions=True))
             if current():
                 try:
                     await self.effects.apply(public, current)
                 except (ValueError, OSError, TimeoutError):
-                    self.effects.voice_state = 'unavailable'
+                    if current():
+                        self.effects.voice_state = 'unavailable'
         self.effect_task = asyncio.create_task(apply(), name="friday-werewolf-effects")
         self.effect_tasks.add(self.effect_task)
         def finished(task):
@@ -604,12 +601,10 @@ class WerewolfService:
                     self.pump.cancel()
                     await asyncio.gather(self.pump, return_exceptions=True)
                     self.pump = None
-                if self.effect_tasks:
-                    for task in tuple(self.effect_tasks):
-                        if not task.done() and not task.cancelling():
-                            task.cancel()
-                    await asyncio.shield(asyncio.gather(*self.effect_tasks, return_exceptions=True))
-                    self.effect_task = None
+                for task in tuple(self.effect_tasks):
+                    if not task.done() and not task.cancelling():
+                        task.cancel()
+                # 灯光恢复由 SceneLights 串行，扬声器清理在下方单独回收。
                 if getattr(self.effects, "lights_active", False):
                     try:
                         await self.effects.lights.restore()

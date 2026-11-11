@@ -453,31 +453,47 @@ async def test_proven_unsent_scene_can_recompute_for_the_next_phase(tmp_path, mo
 
 
 @pytest.mark.asyncio
-async def test_next_effect_waits_for_the_old_effect_cleanup():
-    service=await owner()
-    events=[];entered=asyncio.Event();release=asyncio.Event();never=asyncio.Event()
-    try:
-        service.pump.cancel();await asyncio.gather(service.pump,return_exceptions=True);service.pump=None
-        for seat in range(1,7):
-            joined=await service.join(Join(code=service.join_code,seat=seat,name=f'合成{seat}'))
-            await service.ready(joined['token'],True)
-        async def apply(public,current):
-            if public['paused']:
-                events.append('paused');return
+async def test_next_prompt_waits_for_the_same_speaker_cleanup():
+    service = await owner()
+    events = []
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def speak(text, *, current):
+        assert current()
+        events.append(text)
+        if not entered.is_set():
+            entered.set()
             try:
-                entered.set();await never.wait()
+                await asyncio.Event().wait()
             finally:
-                events.append('cleaning');await release.wait();events.append('cleaned')
-        service.effects.apply=apply
+                cleaning.set()
+                await release.wait()
+                events.append('cleaned')
+        return {'status': 'accepted'}
+
+    try:
+        service.pump.cancel()
+        await asyncio.gather(service.pump, return_exceptions=True)
+        service.pump = None
+        for seat in range(1, 7):
+            joined = await service.join(Join(code=service.join_code, seat=seat, name=f'合成{seat}'))
+            await service.ready(joined['token'], True)
+        service.effects.narration = True
+        service.effects.speak = speak
+        service.effects.speech_status = lambda: dict(quiet=False, configured=True)
         await service.control('start')
-        await asyncio.wait_for(entered.wait(),1)
-        await service.control('pause')
-        await asyncio.sleep(0);await asyncio.sleep(0)
-        assert 'cleaning' in events and 'paused' not in events
-        release.set();await service.effect_task
-        assert events.index('cleaned')<events.index('paused')
+        first = service.game.public()['host_script']['text']
+        await asyncio.wait_for(entered.wait(), 1)
+        await service.control('advance')
+        second = service.game.public()['host_script']['text']
+        await asyncio.wait_for(cleaning.wait(), 1)
+        assert events == [first] and not service.effect_task.done()
+        release.set()
+        await asyncio.wait_for(service.effect_task, 1)
+        assert events == [first, 'cleaned', second]
     finally:
-        release.set();await service.close()
+        release.set()
+        await service.close()
 
 
 @pytest.mark.asyncio
