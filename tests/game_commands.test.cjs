@@ -42,7 +42,7 @@ test('request timeout releases busy controls without claiming the command succee
 });
 test('a pause reply must confirm the requested pause state',async()=>{
  const h=makeClient({fetch:async()=>({ok:true,json:async()=>game({control_revision:2,manually_paused:false})})}),old=h.c.meta.game;
- await h.c.pauseGame();assert.equal(h.c.meta.game,old);assert.equal(h.node('gameNotice').textContent,'暂时无法暂停或继续，请重试。');
+ await h.c.pauseGame();assert.equal(h.c.meta.game,old);assert.equal(h.node('gameNotice').textContent,'暂时无法暂停，请重试。');
 });
 test('new connection needs its own fresh packet and ignores retired socket messages',()=>{
  const h=makeClient(),c=h.c;c.connect();const first=h.sockets[0];first.onopen();
@@ -77,17 +77,34 @@ test('socket error creates one reconnect and closing the view retires every call
 
 test('source recovery disables only continue until real readiness arrives',()=>{
  const h=makeClient(),c=h.c;
- c.document.querySelectorAll=()=>[h.node('mode'),h.node('pauseToggle'),h.node('stopToggle')];
+ const resume=h.node('resume');resume.attrs['data-click']='resumeGame()';
+ c.document.querySelectorAll=()=>[h.node('mode'),resume,h.node('stopToggle')];
  c.meta.game=game({manually_paused:true,status:'paused',source_recovery:{required:true,ready:false}});
- c.syncGameControls();assert.equal(h.node('pauseToggle').disabled,true);
+ c.syncGameControls();assert.equal(resume.disabled,true);
  assert.equal(h.node('stopToggle').disabled,false);assert.equal(h.node('mode').disabled,false);
- c.meta.game.source_recovery.ready=true;c.syncGameControls();assert.equal(h.node('pauseToggle').disabled,false);
- h.setNow(1600);c.syncGameControls();assert.equal(h.node('pauseToggle').disabled,true);
+ c.meta.game.source_recovery.ready=true;c.syncGameControls();assert.equal(resume.disabled,false);
+ h.setNow(1600);c.syncGameControls();assert.equal(resume.disabled,true);
 });
 test('resume readiness rejection offers a useful action without replaying the command',async()=>{
  let requests=0;const h=makeClient({fetch:async()=>{requests++;return {ok:false,status:409,json:async()=>({detail:'game_input_not_ready'})};}});
- const old=h.c.meta.game;await h.c.pauseGame();assert.equal(requests,1);assert.equal(h.c.meta.game,old);
- assert.equal(h.node('gameNotice').textContent,'请先回到镜头前站定，再继续。');
+ const old=h.c.meta.game=game({manually_paused:true,status:'paused'});await h.c.resumeGame();assert.equal(requests,1);assert.equal(h.c.meta.game,old);
+ assert.equal(h.node('resumeNotice').textContent,'请先回到镜头前站定，再继续。');assert.equal(h.node('gameNotice').textContent,'');
+});
+test('an outdated pause or continue button cannot reverse the current intent',async()=>{
+ const sent=[],h=makeClient({fetch:async(_,o)=>{sent.push(JSON.parse(o.body));return{ok:false};}}),c=h.c;
+ await c.resumeGame();assert.equal(sent.length,0);
+ c.meta.game=game({manually_paused:true,status:'paused',source_recovery:{required:true,ready:false}});
+ await c.pauseGame();await c.resumeGame();assert.equal(sent.length,0);
+ c.meta.game.source_recovery.ready=true;await c.resumeGame();
+ assert.equal(sent.length,1);assert.equal(sent[0].action,'resume');
+});
+test('an unchanged stage message preserves its control during live updates',()=>{
+ const h=makeClient(),overlay=h.node('overlay');let replacements=0,html='';overlay.querySelector=()=>null;
+ Object.defineProperty(overlay,'innerHTML',{get:()=>html,set:value=>{replacements++;html=value;}});
+ const markup='<h2>游戏已暂停</h2><button>继续本局</button>';
+ h.c.showOverlay(markup);html=html.replace('<button>','<button disabled="">');h.c.showOverlay(markup);
+ assert.equal(replacements,1);assert.match(html,/disabled/);
+ h.c.showOverlay('');assert.equal(replacements,2);assert.equal(html,'');
 });
 test('a late conflict detail cannot report an old recovery failure in a new connection',async()=>{
  let finish,entered;const reading=new Promise(r=>entered=r);
@@ -100,7 +117,7 @@ test('recovery guidance distinguishes camera loss, player confirmation and a del
  c.selected='tennis';c.meta.status='unavailable';let g=game({manually_paused:true,source_recovery:{required:true,phase:'camera'}});
  assert.match(c.gamePhaseMessage(g),/进度已保留/);
  c.meta.status='live';g.source_recovery.phase='players';assert.match(c.gamePhaseMessage(g),/两位玩家/);
- g.source_recovery.ready=true;assert.match(c.gamePhaseMessage(g),/继续本局/);
+ g.source_recovery.ready=true;assert.equal(c.gamePhaseMessage(g),'本局进度已保留。');
  g=game({status:'calibrating',resume_seconds:3});assert.equal(c.gamePhaseMessage(g),'准备继续本局');
- g.manually_paused=true;assert.match(c.gamePhaseMessage(g),/休息/);
+ g.manually_paused=true;assert.equal(c.gamePhaseMessage(g),'');
 });

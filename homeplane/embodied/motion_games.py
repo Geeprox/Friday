@@ -643,7 +643,7 @@ class MotionGames:
                 self.previous = None
             return False
         between_stages = self.quest_transition > 0 or self.mode == 'hiit' and self.circuit.public()['phase'] == 'rest'
-        loading_transition = between_stages and self.presentation.visible(self.presentation_scope())
+        loading_transition = between_stages and self.presentation.transition_visible(self.presentation_scope())
         if self.elapsed > 0 and not self.source_resume_required and not loading_transition:
             self.suspend_source()
             self.presentation_recovery = True

@@ -63,6 +63,9 @@ body>.stage-header{grid-row:1}body>.workspace{grid-row:2}body>footer{grid-row:3}
 .live-progress{display:block;width:fit-content;font-size:15px;line-height:1.4;font-weight:650;font-variant-numeric:tabular-nums;color:var(--ink);background:var(--paper);padding:4px 7px;border-radius:6px;margin:8px 0 0}
 .score.tennis-score{min-width:150px}.tennis-scoreline{display:flex;justify-content:space-between;align-items:center;gap:14px}.tennis-player{display:grid;justify-items:center;gap:5px;color:#285e53}.tennis-player[data-player="1"]{color:#8b3c29}.tennis-player small{font-size:12px;font-weight:550;color:inherit;margin:0;line-height:1.2}.tennis-player b{font:inherit;font-weight:650}.tennis-score-separator{font-size:22px;color:var(--muted);align-self:end}.tennis-rules{padding:8px 10px;margin:0;font-size:12px;line-height:1.6;color:var(--ink)}.player-feedback .tennis-event{font-weight:650;margin-top:3px}
 .instruction:empty{display:none}
+.overlay h2:focus-visible{outline:2px solid var(--ink);outline-offset:4px}
+.overlay .resume-notice{margin:12px 0 0}
+.overlay .resume-notice:empty{margin:0}
 .quest-trail{display:flex;align-items:center;gap:8px;list-style:none;margin:12px 0 0;padding:0;counter-reset:none}
 .quest-trail li{position:relative;display:grid;place-items:center;flex:none;width:24px;height:24px;border:1px solid var(--line);border-radius:50%;font-size:11px;line-height:1;font-variant-numeric:tabular-nums;color:var(--muted);background:var(--paper)}
 .quest-trail li[data-chapter-start=true]{margin-inline-start:8px}
@@ -121,6 +124,7 @@ body[data-simulated=true]{--source-overhead:24px;padding-block-start:24px}
  footer{height:24px;padding:0 12px;font-size:10px}
  :is(body[data-mode=quest],body[data-mode=hiit]) .workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr) 44px;gap:8px;padding:8px}
  :is(body[data-mode=quest],body[data-mode=hiit]) #world{grid-column:2;grid-row:1;min-height:0;height:100%;border-radius:10px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .overlay{grid-column:2;grid-row:1;position:relative;left:auto;top:auto;transform:none;align-self:center;justify-self:center;width:min(380px,calc(100% - 16px));max-height:calc(100% - 16px);z-index:2}
  :is(body[data-mode=quest],body[data-mode=hiit]) .hud,
  :is(body[data-mode=quest],body[data-mode=hiit]) .bottom{display:contents}
  :is(body[data-mode=quest],body[data-mode=hiit]) .mission-block{grid-column:1;grid-row:1;max-width:none;min-height:0;height:100%;padding:8px;overflow-y:auto;pointer-events:auto}

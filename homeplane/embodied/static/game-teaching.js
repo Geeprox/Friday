@@ -5,7 +5,7 @@ function update(event){
  const state=event.detail;
  if(!root)return;
  root.hidden=!state.key||!state.visible;root.dataset.mode=state.mode;
- if(state.key&&key!==state.key){diagram?.dispose();key=state.key;diagram=createSourceBodyDiagram(key,{name:names[key]||'动作',transparentBackground:true});const caption=document.createElement('p');caption.textContent='动作示范';root.replaceChildren(diagram,caption);}
+ if(state.key&&key!==state.key){diagram?.dispose();key=state.key;diagram=createSourceBodyDiagram(key,{name:names[key]||'动作',transparentBackground:true});const caption=document.createElement('p');caption.textContent='动作示范';root.replaceChildren(diagram,caption);root.dataset.teachingKey=key;}
  diagram?.setPaused(state.paused);
 }
 document.addEventListener('friday:game-teaching',update);
