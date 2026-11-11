@@ -49,7 +49,7 @@ def synthetic_runtime(tmp_path):
     runtime = SafetyRuntime(store, speaker=SimpleNamespace(say=AsyncMock()))
 
     def detect(camera, session, people, *_args, **_kwargs):
-        if not people or not people[0].get('trigger'):
+        if not people or people[0].get('id') != 'synthetic-fall':
             return []
         return [dict(kind='fall', severity='urgent', camera=camera, session=session,
                      track='synthetic-track', person_id=None, simulated=False, status='suspected')]
@@ -60,7 +60,8 @@ def synthetic_runtime(tmp_path):
 
 def offer(runtime, camera='primary', *, session='session', context='a' * 64, trigger=False):
     now = time.monotonic()
-    return runtime.offer(camera, session, [dict(trigger=trigger)], now, now, stable=True,
+    person = dict(id='synthetic-fall' if trigger else 'synthetic-standing')
+    return runtime.offer(camera, session, [person], now, now, stable=True,
                          jpeg=b'SYNTHETIC-NOT-CAMERA-PIXELS', source_context=context)
 
 
@@ -68,14 +69,16 @@ def offer(runtime, camera='primary', *, session='session', context='a' * 64, tri
 async def test_latest_mailboxes_keep_actual_secondary_callback_live_and_revoke_old_writes(tmp_path, monkeypatch):
     runtime = synthetic_runtime(tmp_path)
     await runtime.sync_policy()
-    entered, release = threading.Event(), threading.Event()
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     create = runtime.store.create
 
     def held_create(*args, **kwargs):
         entered.set()
-        if not release.wait(5):
-            raise AssertionError('测试写入闸门未释放')
-        return create(*args, **kwargs)
+        try:
+            assert release.wait(5), '测试写入闸门未释放'
+            return create(*args, **kwargs)
+        finally:
+            finished.set()
 
     monkeypatch.setattr(runtime.store, 'create', held_create)
     camera = 'cam_1111111111'
@@ -90,25 +93,42 @@ async def test_latest_mailboxes_keep_actual_secondary_callback_live_and_revoke_o
     try:
         assert offer(runtime, trigger=True)
         assert await asyncio.to_thread(entered.wait, 1)
-        started = time.thread_time()
+        source_token = None
+        # 在真实 SQLite 写入仍被扣住时验证帧和交互均能前进。
         async with asyncio.timeout(2):
             for index in range(100):
                 now = time.monotonic()
-                people = [dict(id=index)]
+                wrist = dict(x=.4, y=.3, confidence=.9)
+                box = dict(x=.2, y=.1, w=.3, h=.5, confidence=.9)
+                identity = dict(state='tracked', person_id='synthetic-person', observed_monotonic=now,
+                                face_observed_monotonic=now, label='ignored')
+                first = dict(id=index, box=box, identity=identity, joints=dict(rightWrist=wrist, nose=wrist),
+                             motion='still', unrelated={'values': [1, 2]})
+                people = [first] + [dict(id=other) for other in range(100, 111)]
                 await callback(dict(camera=camera, session='secondary', people=people, hands=[], faces=[],
                                     registration={'status': 'locked'}, now=now, captured_mono=now,
                                     scene_visible=True, camera_source_context='c' * 64), object())
-                people[0]['id'] = 'changed-after-admission'
-        # 独立验证回调的 CPU 预算与存储等待隔离，避免把宿主调度计为回调计算。
-        assert time.thread_time() - started < .15
+                if index == 0:
+                    source_token = runtime.source_tokens[camera]
+                first['id'] = 'changed-after-admission'
+                wrist['x'] = box['x'] = .8
+                identity['state'] = 'unknown'
+        assert not release.is_set() and not finished.is_set()
         assert runtime.io.active is not None and not runtime.io.active.done()
         assert home.observe.await_count == scope['wall'].observe.call_count == 100
-        assert runtime.pending[camera][0][2][0]['id'] == 99
+        queued_people = runtime.pending[camera][0][2]
+        assert len(queued_people) == 10
+        assert queued_people[0] == dict(id=99, box=dict(x=.2, y=.1, w=.3, h=.5, confidence=.9),
+                                       identity=dict(state='tracked', person_id='synthetic-person',
+                                                     observed_monotonic=now, face_observed_monotonic=now),
+                                       joints=dict(rightWrist=dict(x=.4, y=.3, confidence=.9)), motion='still')
+        assert runtime.source_tokens[camera] is source_token and not source_token.is_set()
         for index in range(10):
             offer(runtime, f'extra-{index}')
         assert len(runtime.sources) == 8 and len(runtime.pending) <= 8
         assert runtime.coalesced == 99 and runtime.skipped >= 4
         runtime.clear(camera)
+        assert source_token.is_set()
         runtime.clear('primary')
         assert offer(runtime, session='replacement', context='b' * 64)
         release.set()
@@ -361,7 +381,8 @@ async def test_actual_primary_frame_continues_game_and_home_input_while_safety_s
     scope, published = primary_frame_scope(tmp_path)
     scope['safety'] = runtime
     try:
-        assert runtime.offer('held', 'session', [dict(trigger=True)], 10, 10, stable=True, source_context='a' * 64)
+        assert runtime.offer('held', 'session', [dict(id='synthetic-fall')], 10, 10, stable=True,
+                             source_context='a' * 64)
         assert await asyncio.to_thread(entered.wait, 1)
         # 原帧处理必须在持久化闸门仍关闭时完成；墙钟只作死锁上限。
         async with asyncio.timeout(2):

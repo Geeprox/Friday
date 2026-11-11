@@ -7,7 +7,6 @@ No camera is opened here. Only the perception owner may supply observations.
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import math
 import re
@@ -376,6 +375,7 @@ class FallDetector:
     """
 
     MAX_FRAME_GAP = 0.75
+    MAX_TRACKS = 10
 
     def __init__(self):
         self.cameras = {}
@@ -456,7 +456,7 @@ class FallDetector:
         people, now, aspect = queued
         if not 0 < now - state["last"] <= self.MAX_FRAME_GAP or not 0.2 <= aspect <= 5:
             return False
-        for person in people[:10]:
+        for person in people[:self.MAX_TRACKS]:
             track = state["tracks"].get(str(person.get("id"))) if isinstance(person, dict) else None
             if track is None or track["fired"] or not 0 < now - track["last"] <= self.MAX_FRAME_GAP:
                 continue
@@ -484,7 +484,7 @@ class FallDetector:
             self.cameras[camera] = state
         state["last"] = now
         found, present = [], set()
-        for person in people[:10]:
+        for person in people[:self.MAX_TRACKS]:
             track = str(person["id"])
             present.add(track)
             geometry = self.geometry(person, aspect)
@@ -551,6 +551,39 @@ def _posture_track(people):
     return None
 
 
+def _scalar_fields(row, fields):
+    if not isinstance(row, dict):
+        return {}
+    result = {}
+    for key in fields:
+        value = row.get(key)
+        if type(value) in (str, int, float, bool):
+            result[key] = value
+    return result
+
+
+def _snapshot_people(people):
+    """给异步检测队列保留独立的人体坐标和身份时戳。"""
+    # 跌倒检测最多读取十人。单人趴卧和双人快速搬动仍能区分人数是否超限。
+    snapshot = []
+    for person in people[:FallDetector.MAX_TRACKS]:
+        if not isinstance(person, dict):
+            snapshot.append(None)
+            continue
+        row = _scalar_fields(person, ('id', 'motion'))
+        row['box'] = _scalar_fields(person.get('box'), ('x', 'y', 'w', 'h', 'confidence'))
+        row['identity'] = _scalar_fields(person.get('identity'), (
+            'state', 'person_id', 'observed_monotonic', 'face_observed_monotonic'))
+        row['joints'] = {}
+        joints = person.get('joints')
+        if isinstance(joints, dict):
+            for name in ('leftShoulder', 'rightShoulder', 'leftHip', 'rightHip', 'leftWrist', 'rightWrist'):
+                if name in joints:
+                    row['joints'][name] = _scalar_fields(joints[name], ('x', 'y', 'confidence'))
+        snapshot.append(row)
+    return snapshot
+
+
 class SafetyRuntime:
     MAX_CAMERAS = 8
     MAX_PEOPLE = 32
@@ -599,6 +632,12 @@ class SafetyRuntime:
     def _context(value):
         return value if isinstance(value, str) and re.fullmatch(r'[a-f0-9]{64}', value) else None
 
+    def _source_token(self, camera):
+        token = self.source_tokens.get(camera)
+        if token is None:
+            token = self.source_tokens[camera] = threading.Event()
+        return token
+
     def _guard(self, camera, session, context, captured, *, max_age=1.5):
         token = self.source_tokens.get(camera)
 
@@ -634,7 +673,7 @@ class SafetyRuntime:
         if previous_seen is not None and not 0 < captured - previous_seen <= 1.5:
             self.clear(camera)
         self.sources[camera] = source
-        token = self.source_tokens.setdefault(camera, threading.Event())
+        token = self._source_token(camera)
         self.last_seen[camera] = captured
         if not self._cached_policy().enabled:
             if self.policy_cache.enabled and self.recording.has_camera(camera):
@@ -654,7 +693,7 @@ class SafetyRuntime:
         if camera in self.pending:
             self.coalesced += 1
         self.pending[camera] = (
-            (camera, session, copy.deepcopy(people), now, captured),
+            (camera, session, _snapshot_people(people), now, captured),
             dict(stable=stable, jpeg=jpeg if isinstance(jpeg, bytes) and len(jpeg) <= self.store.MAX_FRAME else b'',
                  aspect=aspect, source_context=source_context, source_name=source_name, _admission=token),
         )
@@ -892,7 +931,7 @@ class SafetyRuntime:
             if camera in self.sources and self.sources[camera] != source:
                 self.clear(camera)
             self.sources[camera] = source
-            token = self.source_tokens.setdefault(camera, threading.Event())
+            token = self._source_token(camera)
             if stable and type(captured) in (int, float) and 0 <= time.monotonic() - captured <= 1.5:
                 self.last_seen[camera] = max(captured, self.last_seen.get(camera, -math.inf))
         try:
