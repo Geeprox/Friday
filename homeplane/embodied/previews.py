@@ -405,7 +405,7 @@ class PreviewPool:
                             raise RuntimeError('motor_request_expired')
                         if result.get('error_class') or result.get('native_code')!=0:
                             raise RuntimeError('local_motor_rejected')
-                        director.sent(time.monotonic(), direction)
+                        director.sent(time.monotonic(), direction, automatic=observed is not None)
                         self.runtime_log.record('embodied.command','result',correlation=correlation,
                             elapsed_ms=round((time.monotonic()-began)*1000))
                         return result

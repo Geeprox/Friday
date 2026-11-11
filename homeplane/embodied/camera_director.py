@@ -29,6 +29,7 @@ def visible_scene(jpeg):
 class CameraDirector:
     REVIEW_HOLD_SECONDS = 30
     REVIEW_INTERVAL_SECONDS = 60
+    TILT_DIRECTIONS = ('up', 'down')
 
     def __init__(self):
         self.phase = 'waiting_video'
@@ -45,6 +46,8 @@ class CameraDirector:
         self.scan_steps = 0
         self.last_focus = None
         self.last_sample = None
+        self.tilt_observation = None
+        self.tilt_recovery = None
         self.failed_moves = 0
         self.retry_at = 0.0
         self.target_identity = None
@@ -96,6 +99,8 @@ class CameraDirector:
         intent = (mode, revision)
         if intent != self.intent:
             self.review_scope = None
+            self.tilt_observation = None
+            self.tilt_recovery = None
             if self.intent or self.mode != mode:
                 self.target = None
                 self.target_identity = None
@@ -138,11 +143,27 @@ class CameraDirector:
     def _subjects(self, sample):
         return sample.get('animals', []) if self.mode == 'pets' else sample.get('people', [])
 
-    @staticmethod
-    def _follow_direction(target):
-        box = target['box']
-        error = box['x']+box['w']/2-.5
-        return ('right' if error > 0 else 'left') if abs(error) > .20 else None
+    def _follow_direction(self, target):
+        box = target.get('box')
+        if not isinstance(box, dict):
+            return None
+        values = tuple(box.get(key) for key in ('x', 'y', 'w', 'h'))
+        if any(type(value) not in (int, float) or not 0 <= value <= 1.000001 for value in values):
+            return None
+        left, top, width, height = values
+        right, bottom = 1 - left - width, 1 - top - height
+        if not width or not height or min(right, bottom) < -.000001:
+            return None
+        horizontal_error = left + width / 2 - .5
+        horizontal = ('right' if horizontal_error > 0 else 'left') if abs(horizontal_error) > .20 else None
+        vertical_error = top + height / 2 - .5
+        vertical_margin = min(top, bottom)
+        # 目标贴近上下边缘且明显偏向一侧才俯仰。两轴都偏离时，先保住更近的边缘。
+        if (vertical_margin >= .12 or abs(vertical_error) <= .12
+                or horizontal is not None and vertical_margin + .04 >= min(left, right)):
+            return horizontal
+        tilt = 'down' if vertical_error > 0 else 'up'
+        return horizontal if self._next_position(tilt) in self.blocked_positions else tilt
 
     @staticmethod
     def _current_focus(sample, now, focus):
@@ -185,8 +206,12 @@ class CameraDirector:
         if (self.mode != 'pets' and focus
                 and focus.get('track') != pending['target']):
             return False
+        tilt = direction in self.TILT_DIRECTIONS
+        if tilt and self.tilt_observation != (
+                (pending['session'], pending['target'], direction, pending['game_window']), pending['stamp']):
+            return False
         matches = [p for p in people if p['id'] == pending['target']]
-        if not matches and pending['identity']:
+        if not matches and pending['identity'] and not tilt:
             matches = [p for p in people if self.identity(p) == pending['identity']]
         if len(matches) != 1:
             return False
@@ -205,6 +230,8 @@ class CameraDirector:
         self.blocked_positions.clear()
         self.pending_direction = None
         self.pending_decision = None
+        self.tilt_observation = None
+        self.tilt_recovery = None
         self.visible_samples = 0
         self.recovery_steps = 0
         self.obscured_since = None
@@ -236,6 +263,7 @@ class CameraDirector:
     def choose(self, sample, now, *, focus=None, occupied_elsewhere=False, review_pending=False):
         if self.mode == 'hold':
             self.phase = 'held'
+            self.tilt_observation = None
             return None
         if self._game_holds(sample):
             # Keep the selected camera stable for the whole admitted game,
@@ -243,6 +271,8 @@ class CameraDirector:
             # frames; neither clipped players nor an obscured view may pan it.
             self.game_hold = True
             self.pending_direction = self.pending_decision = None
+            self.tilt_observation = None
+            self.tilt_recovery = None
             self.target = self.target_identity = self.target_session = None
             self.last_focus = None
             self.visible_samples = self.obscured_samples = 0
@@ -268,11 +298,13 @@ class CameraDirector:
             self.visible_samples = 0
             self.obscured_samples = 0
             self.obscured_since = None
+            self.tilt_observation = None
             self.phase = 'motor_unavailable'
             return None
         if not self._fresh(sample, now) or sample['_local_received'] <= self.last_move:
             self.visible_samples = 0
             self.clear_since = None
+            self.tilt_observation = None
             self.phase = 'waiting_video'
             return None
         if now-self.last_move < 2:
@@ -281,6 +313,7 @@ class CameraDirector:
         if self.mode == 'pets':
             if not self._pets_current(sample):
                 self.phase = 'pet_unavailable'
+                self.tilt_observation = None
                 return None
         session = sample.get('session_id')
         if session != self.source_session:
@@ -290,10 +323,13 @@ class CameraDirector:
             self.visible_samples = self.obscured_samples = 0
             self.clear_since = self.obscured_since = None
             self.pending_direction = self.pending_decision = None
+            self.tilt_observation = None
+            self.tilt_recovery = None
         stamp = sample.get('_local_received')
         if self.last_sample is not None and stamp <= self.last_sample:
             return None
         self.last_sample = stamp
+        previous_tilt, self.tilt_observation = self.tilt_observation, None
         visible = sample.get('scene_visible') is True
         self.visible_samples = self.visible_samples+1 if visible else 0
         if not visible:
@@ -307,6 +343,13 @@ class CameraDirector:
             if len(self.blocked_positions)>64:self.blocked_positions.pop()
             if self.recovery_steps >= 20:
                 return None
+            if self.tilt_recovery is not None:
+                # 俯仰后仍无清晰画面，先尝试一次反向调整，再交还给原来的视野恢复。
+                direction, camera_window = self.tilt_recovery
+                self.tilt_recovery = None
+                if camera_window == self._camera_window(sample):
+                    self.phase = 'recovering_view'
+                    return self._aim(direction, sample, now)
             if not self.clear:
                 # Two opening impulses, then pan out of a wall-facing angle.
                 # If still covered after a bounded sweep, try two further tilts.
@@ -324,6 +367,7 @@ class CameraDirector:
         if self.visible_samples < 2:
             self.phase='checking_view'
             return None
+        self.tilt_recovery = None
         self.clear = True
         self.blocked_positions.discard(self.position)
         if self.clear_since is None:self.clear_since=now
@@ -371,6 +415,15 @@ class CameraDirector:
             if not self.identity(target) and now-self.last_move < 4:
                 return None
             direction = self._follow_direction(target)
+            if direction in self.TILT_DIRECTIONS:
+                if not isinstance(session, str) or not session or sum(p['id'] == target['id'] for p in people) != 1:
+                    return None
+                target_view = (session, target['id'], direction, self._camera_window(sample))
+                self.tilt_observation = (target_view, stamp)
+                # 两次连续观测必须属于同一来源、同一跟踪框和同一转向。
+                if (previous_tilt is None or previous_tilt[0] != target_view
+                        or not 0 < stamp - previous_tilt[1] <= 1.5):
+                    return None
             return self._aim(direction, sample, now) if direction else None
         if self.last_person is None:
             self.last_person = now
@@ -391,16 +444,22 @@ class CameraDirector:
             return None
         return self._aim(self.scan_direction, sample, now)
 
-    def sent(self, now, direction=None):
+    def sent(self, now, direction=None, *, automatic=True):
         self.last_move = now
         self.failed_moves = 0
         self.retry_at = 0.0
         direction=direction or self.pending_direction
+        self.tilt_recovery = None
+        if (automatic and direction in self.TILT_DIRECTIONS and direction == self.pending_direction
+                and self.pending_decision and self.pending_decision['phase'] == 'following'):
+            reverse = 'up' if direction == 'down' else 'down'
+            self.tilt_recovery = (reverse, self.pending_decision['game_window'])
         if direction in {'up','down','left','right'}:
             self.position=self._next_position(direction)
             self.last_direction=direction
         self.pending_direction=None
         self.pending_decision=None
+        self.tilt_observation = None
         if self.phase in {'uncovering','recovering_view'}:
             self.recovery_steps+=1
         # Every impulse requires a new stable multi-frame view, never the frame
@@ -423,6 +482,7 @@ class CameraDirector:
             self.retry_at = now + 60
         self.pending_direction = None
         self.pending_decision = None
+        self.tilt_observation = None
         self.visible_samples = 0
         self.obscured_samples = 0
         self.obscured_since = None

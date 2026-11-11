@@ -23,8 +23,8 @@ def sample(at, *, visible=True, people=(), session='first'):
                 people=list(people), session_id=session)
 
 
-def person(track=1, x=.75, identity=None):
-    return dict(id=track, box=dict(x=x, y=.2, w=.15, h=.6),
+def person(track=1, x=.75, identity=None, *, y=.2, h=.6):
+    return dict(id=track, box=dict(x=x, y=y, w=min(.15, 1 - x), h=h),
                 identity=dict(state='matched', person_id=identity) if identity else {})
 
 
@@ -79,6 +79,174 @@ def test_following_uses_fresh_visible_body_and_keeps_registered_target():
     assert d.choose(sample(4,people=[person(2,identity='other')]),4) is None
     assert d.phase=='target_ambiguous'
     assert d.choose(sample(4,people=[person()]),6) is None
+
+
+@pytest.mark.parametrize(('y', 'height', 'direction'), [(.79, .18, 'down'), (.03, .60, 'up')])
+def test_follow_tilts_only_after_two_fresh_observations_of_the_same_target(y, height, direction):
+    director = CameraDirector()
+    clear(director)
+    target = person(x=.43, y=y, h=height, identity='synthetic-target')
+    first = sample(1, people=[target])
+    assert director.choose(first, 1) is None
+    assert director.choose(first, 1.1) is None
+    second = sample(1.2, people=[target])
+    assert director.choose(second, 1.2) == direction
+    assert director.decision_current(second, 1.2, direction)
+    centered = sample(1.3, people=[person(x=.43, identity='synthetic-target')])
+    assert not director.decision_current(centered, 1.3, direction)
+    replacement = sample(1.3, people=[dict(target, id=2)])
+    assert not director.decision_current(replacement, 1.3, direction)
+    assert not director.decision_current(second, 2.8, direction)
+    director.sent(1.2)
+    assert director.choose(second, 3.3) is None
+    assert director.choose(sample(3.5, people=[target]), 3.5) is None
+    assert director.choose(sample(3.6, people=[target]), 3.6) is None
+    assert director.choose(sample(3.7, people=[target]), 3.7) == direction
+
+
+def test_tilt_favors_the_nearest_edge_and_ignores_an_oversized_or_invalid_box():
+    director = CameraDirector()
+    clear(director)
+    closest_to_right = person(x=.84, y=.78, h=.19)
+    assert director.choose(sample(1, people=[closest_to_right]), 1) == 'right'
+    closest_to_bottom = person(x=.75, y=.78, h=.20)
+    assert director.choose(sample(1.2, people=[closest_to_bottom]), 1.2) is None
+    assert director.choose(sample(1.4, people=[closest_to_bottom]), 1.4) == 'down'
+    tall = person(x=.43, y=.03, h=.94)
+    for at in (1.6, 1.8):
+        assert director.choose(sample(at, people=[tall]), at) is None
+    for at in (2, 2.2):
+        assert director.choose(sample(at, people=[person(y=float('nan'))]), at) is None
+
+
+def test_interrupted_or_replaced_target_cannot_inherit_a_tilt_observation():
+    director = CameraDirector()
+    clear(director)
+    low = person(1, x=.43, y=.78, h=.20)
+    assert director.choose(sample(1, people=[low]), 1) is None
+    replaced = dict(low, id=2)
+    assert director.choose(sample(1.2, people=[replaced]), 1.2) is None
+    assert director.choose(sample(1.4, people=[replaced]), 1.4, review_pending=True) is None
+    assert director.choose(sample(1.6, people=[replaced]), 1.6) is None
+    assert director.choose(sample(1.8, people=[replaced]), 1.8) == 'down'
+    switched = sample(2, people=[replaced], session='replacement')
+    assert not director.decision_current(switched, 2, 'down')
+    assert director.choose(switched, 2) is None
+    assert director.choose(dict(switched, _local_received=2.2), 2.2) is None
+    assert director.choose(dict(switched, _local_received=2.4), 2.4) == 'down'
+
+
+def test_finished_game_cannot_supply_the_first_observation_for_a_new_tilt():
+    from homeplane.embodied.motion_games import MotionGames
+
+    director = CameraDirector()
+    game = MotionGames()
+    clear(director)
+    low = person(x=.43, y=.78, h=.20)
+    assert director.choose(dict(sample(1, people=[low]), game=game.public), 1) is None
+    game.reset('ski')
+    game.reset('off')
+    assert director.choose(dict(sample(1.2, people=[low]), game=game.public), 1.2) is None
+    assert director.choose(dict(sample(1.4, people=[low]), game=game.public), 1.4) == 'down'
+
+
+@pytest.mark.parametrize('restored', [False, True])
+def test_obscured_view_reverses_a_confirmed_tilt_once_and_avoids_that_angle(restored):
+    director = CameraDirector()
+    clear(director)
+    low = person(x=.43, y=.78, h=.20, identity='synthetic-target')
+    assert director.choose(sample(1, people=[low]), 1) is None
+    assert director.choose(sample(1.2, people=[low]), 1.2) == 'down'
+    director.sent(1.2)
+    for at in (3.5, 4):
+        assert director.choose(sample(at, visible=False), at) is None
+    obscured = sample(4.6, visible=False)
+    assert director.choose(obscured, 4.6) == 'up'
+    assert director.decision_current(obscured, 4.6, 'up')
+    director.sent(4.6)
+    if restored:
+        for at in (6.7, 7.2, 7.8):
+            assert director.choose(sample(at, people=[low]), at) is None
+        assert director.public()['view_usable'] and director.position == (0, 0)
+        assert (0, -1) in director.blocked_positions
+    else:
+        for at in (6.7, 7.2):
+            assert director.choose(sample(at, visible=False), at) is None
+        assert director.choose(sample(7.8, visible=False), 7.8) in ('left', 'right')
+
+
+@pytest.mark.parametrize('interruption', ['manual', 'game_cycle'])
+def test_manual_and_game_changes_retire_recovery_for_the_previous_tilt(interruption):
+    from homeplane.embodied.motion_games import MotionGames
+
+    director = CameraDirector()
+    game = MotionGames()
+    clear(director)
+    low = person(x=.43, y=.78, h=.20)
+    assert director.choose(dict(sample(1, people=[low]), game=game.public), 1) is None
+    assert director.choose(dict(sample(1.2, people=[low]), game=game.public), 1.2) == 'down'
+    director.sent(1.2, 'down', automatic=interruption != 'manual')
+    if interruption == 'game_cycle':
+        game.reset('ski')
+        game.reset('off')
+    for at in (3.5, 4):
+        assert director.choose(dict(sample(at, visible=False), game=game.public), at) is None
+    assert director.choose(dict(sample(4.6, visible=False), game=game.public), 4.6) in ('left', 'right')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('target_recenters', [False, True])
+async def test_secondary_camera_rechecks_the_live_tilt_before_writing_to_its_worker(target_recenters):
+    import secrets
+
+    from tests.embodied.test_review_motion import source_function
+
+    director = CameraDirector()
+    commands, waiters = [], {}
+    low = person(x=.43, y=.78, h=.20)
+    centered = person(x=.43)
+    latest = dict(now=0., captured_mono=0., session='secondary', people=[low],
+                  tracking_current=True, scene_visible=True)
+    item = dict(source_active=True, privacy_closed=False, control_epoch=1, mode='auto', mode_revision='current')
+
+    async def camera_is_open(_):
+        if target_recenters:
+            now = latest['now'] + .04
+            latest.update(people=[centered], now=now, captured_mono=now)
+        return True
+
+    async def advance(delay):
+        latest['now'] += delay
+        if latest['now'] > .8:
+            raise asyncio.CancelledError
+        latest['captured_mono'] = latest['now']
+
+    def write(raw):
+        command = json.loads(raw)
+        commands.append(command)
+        waiters[command['request_id']].set_result({'native_code': 0})
+
+    scope = dict(director=director, latest=latest, item=item, selected={'id': 'synthetic-camera'},
+        motion_lock=asyncio.Lock(), waiters=waiters, camera_is_open=camera_is_open, recognizer=None,
+        process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock())),
+        self=SimpleNamespace(focus=Mock(return_value=None), occupied_elsewhere=Mock(return_value=False),
+                             review_pending=Mock(return_value=False), runtime_log=SimpleNamespace(record=Mock()), on_clear=None),
+        time=SimpleNamespace(monotonic=lambda: latest['now']), json=json, secrets=secrets,
+        asyncio=SimpleNamespace(sleep=advance, wait_for=asyncio.wait_for, get_running_loop=asyncio.get_running_loop,
+                                CancelledError=asyncio.CancelledError))
+    path = 'homeplane/embodied/previews.py'
+    for name in ('current_sample', 'send_motion', 'direct'):
+        source_function(path, name, scope)
+    with pytest.raises(asyncio.CancelledError):
+        await scope['direct']()
+    assert not waiters
+    if target_recenters:
+        assert not commands and 'last_motor_sent' not in item
+    else:
+        command, = commands
+        assert command['action'] == 'motor_step' and command['direction'] == 'down'
+        assert command['expires_mono'] == pytest.approx(2.1)
+        assert item['last_motor_sent'] == pytest.approx(.6)
 
 
 def test_wake_focus_and_empty_view_patrol_do_not_guess_between_people():

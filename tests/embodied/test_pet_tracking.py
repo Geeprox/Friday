@@ -32,8 +32,8 @@ async def test_existing_api_routes_pet_choice_only_to_registered_camera():
         assert control.await_count==1
 
 
-def animal(species='cat', x=.78):
-    return dict(species=species, box=dict(x=x,y=.3,w=.15,h=.25,confidence=.9))
+def animal(species='cat', x=.78, *, y=.3, h=.25):
+    return dict(species=species, box=dict(x=x,y=y,w=.15,h=h,confidence=.9))
 
 
 def detection(*animals):
@@ -123,6 +123,24 @@ def test_pets_do_not_borrow_human_focus_or_choose_between_multiple_animals():
     assert d.choose(packet(.3,animals),.3) is None and d.target is None
 
 
+def test_rebuilt_pet_tracks_cannot_silently_select_a_different_animal_after_motion():
+    tracks = PetTracks()
+    director = CameraDirector()
+    director.apply_mode('pets', 'choice-one')
+    for at in (0, .1, .2):
+        animals = observed(tracks, [animal()], at)
+        direction = director.choose(packet(at, animals), at)
+    assert direction == 'right'
+    original = animals[0]['id']
+    director.sent(.2)
+    tracks.clear()
+    for at in (4.3, 4.4, 4.5):
+        animals = observed(tracks, [animal(x=.04), animal(x=.78)], at)
+        direction = director.choose(packet(at, animals), at)
+    assert len(animals) == 2 and original not in {pet['id'] for pet in animals}
+    assert direction is None and director.phase == 'target_ambiguous'
+
+
 def test_unavailable_pet_detection_prevents_patrol_and_cover_recovery_too():
     d=CameraDirector();d.apply_mode('pets','choice-one')
     for at in range(200):
@@ -172,7 +190,10 @@ async def test_original_secondary_native_pipe_keeps_pets_out_of_human_pipelines(
 
 
 @pytest.mark.asyncio
-async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once(tmp_path):
+@pytest.mark.parametrize(('target', 'expected_direction'), [
+    (animal(), 'right'), (animal(x=.43, y=.78, h=.20), 'down'), (animal(x=.43, y=.02, h=.2), 'up'),
+])
+async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once(tmp_path, target, expected_direction):
     from homeplane.embodied.calibration_frames import CalibrationFrames
     import ast
     import asyncio
@@ -204,16 +225,19 @@ async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once
     restored=CameraIntentStore(tmp_path/'camera',selected).load()
     assert restored.mode=='pets'
     d=CameraDirector();d.apply_mode(restored.mode,restored.revision);tracks=PetTracks()
-    for at in (0,.1,.2):
+    for at in (0, .1, .2, .3):
         clock[0]=at
-        animals=tracks.update(detection(animal()),at,intent=restored.revision)
+        animals=tracks.update(detection(target),at,intent=restored.revision)
         s=packet(at,animals);s['animals_intent']=restored.revision
         direction=d.choose(s,at)
-    assert direction=='right'
-    scope.update(state=s,last_frame=.2)
-    reply=await scope['motor_step'](direction,.2,expected_intent=restored.revision,
+        if direction:
+            break
+    assert direction == expected_direction
+    scope.update(state=s, last_frame=at)
+    reply=await scope['motor_step'](direction,at,expected_intent=restored.revision,
         decision_current=lambda:d.decision_current(scope['state'],clock[0],direction))
-    assert reply['native_code']==0 and len(sent)==1 and sent[0]['direction']=='right'
-    assert sent[0]['action']=='motor_step' and sent[0]['expires_mono']==pytest.approx(1.7)
-    d.sent(.2);clock[0]=2.3
+    assert reply['native_code']==0 and len(sent)==1 and sent[0]['direction']==expected_direction
+    assert sent[0]['action']=='motor_step' and sent[0]['expires_mono']==pytest.approx(at+1.5)
+    d.sent(at)
+    clock[0] = at + 2.1
     assert d.choose(s,clock[0]) is None and len(sent)==1 and not scope['motor_waiters']
