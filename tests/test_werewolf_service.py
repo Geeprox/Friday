@@ -73,6 +73,11 @@ async def test_phone_private_cards_public_tv_and_no_host_or_household_routes():
             assert all("role" not in p for p in public.json()["game"]["players"])
             assert "join_code" not in public.json() and "camera_candidates" not in public.json()
             assert "receipts" not in public.json()["effects"]["lights"]
+            art = await client.get("/assets/werewolf-scene.png")
+            assert art.status_code == 200 and art.headers["content-type"] == "image/png"
+            assert art.content.startswith(b"\x89PNG\r\n\x1a\n")
+            assert "frame-ancestors 'none'" in (await client.get("/display")).headers["content-security-policy"]
+            assert (await client.get("/assets/werewolf-host.js")).status_code == 404
             for token in tokens:
                 response = await client.get("/api/player", headers={"Authorization": "Bearer " + token})
                 assert response.status_code == 200 and response.json()["role"]

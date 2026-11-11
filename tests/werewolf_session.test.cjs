@@ -86,6 +86,45 @@ test('revoked public display clears its token and night appearance without offer
  assert.equal(c.nodes.party.textContent.includes('输入房间号'),false);assert.equal(vm.runInContext('document.body.dataset.night',c.context),'false');
 });
 
+test('public stage keeps the prompt above seats and refreshes the clock without rebuilding the stage', async () => {
+ const c = client({publicDisplay:true});
+ await settle();
+ const stage = c.nodes.party.children[0];
+ assert.equal(stage.className, 'public-stage');
+ c.game.host_script = {id:1, text:'其他玩家请闭眼。'};
+ c.game.players[0].role_name = '守卫';
+ c.game.seconds_left = 27;
+ await vm.runInContext('poll()', c.context);
+ assert.equal(c.nodes.party.children[0], stage);
+ assert.match(stage.textContent, /00:27.*其他玩家请闭眼/);
+ assert.doesNotMatch(c.nodes.party.textContent, /守卫/);
+ c.game.paused = true;
+ await vm.runInContext('poll()', c.context);
+ assert.match(stage.textContent, /已暂停.*等待主持人恢复游戏/);
+ assert.doesNotMatch(stage.textContent, /其他玩家请闭眼/);
+ c.game.paused = false;
+ c.game.phase = 'finished';
+ c.game.phase_name = '对局结束';
+ await vm.runInContext('poll()', c.context);
+ assert.match(c.nodes.party.textContent, /身份揭晓.*守卫/);
+});
+
+test('phone offers the sole target action first and sends it only after selecting a seat and confirming', async () => {
+ const c = client();
+ await settle();
+ assert.deepEqual(c.nodes.party.children.slice(0,3).map(node => node.className), ['phase', 'action-panel', 'identity']);
+ assert.equal(c.button('袭击').attrs['aria-pressed'], 'true');
+ assert.equal(c.button('确认选择').disabled, true);
+ all(c.nodes.party).find(node => node.dataset.choiceFocus === 'seat-2').onclick();
+ assert.equal(c.button('确认选择').disabled, false);
+ assert.equal(c.requests.includes('/api/choice'), false);
+ c.button('确认选择').onclick();
+ await settle();
+ const sent = c.calls.find(call => call.path === '/api/choice');
+ assert.equal(JSON.parse(sent.options.body).target, 2);
+ assert.equal(JSON.parse(sent.options.body).action, 'attack');
+});
+
 test('an older poll cannot erase an acknowledged choice or rewind a newer phase',async()=>{
  for(const nextPhase of [false,true]){
   const c=client();await settle();c.defer();const poll=vm.runInContext('poll()',c.context);await settle();const oldReply=structuredClone(c.player);await c.choose();
@@ -96,7 +135,7 @@ test('an older poll cannot erase an acknowledged choice or rewind a newer phase'
   assert.equal(vm.runInContext('player.submitted?.[0]',c.context),'pass');
   assert.equal(vm.runInContext('game.revision',c.context),nextPhase?2:1);
   assert.match(c.nodes.notice.textContent,/已确认/);
-  if(nextPhase)assert.match(c.nodes.party.textContent,/自由讨论/);else assert.match(c.nodes.party.textContent,/已提交：放弃本次行动/);
+  if(nextPhase)assert.match(c.nodes.party.textContent,/自由讨论/);else assert.match(c.nodes.party.textContent,/已提交 · 放弃本次行动/);
  }
 });
 

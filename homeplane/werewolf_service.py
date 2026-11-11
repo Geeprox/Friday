@@ -711,6 +711,8 @@ def phone_app(owner, origin):
     async def asset(name: str):
         if name == 'friday-icon.png':
             return FileResponse(STATIC / 'brand/friday.png')
+        if name == 'werewolf-scene.png':
+            return FileResponse(STATIC / 'games-art/werewolf.png')
         if name not in {"werewolf-party.js", "werewolf-party.css"}:
             raise HTTPException(404)
         return FileResponse(STATIC / name)
