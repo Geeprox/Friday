@@ -45,7 +45,7 @@ from homeplane.embodied.static_page import static_asset, static_page
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.camera_intent import CameraIntentStore
-from homeplane.embodied.frame_sampling import offer_frame
+from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
@@ -305,7 +305,8 @@ async def secondary_observation(observation, process):
             and not (PRIVATE/'voice-input-paused').exists())
     await service.observe(observation['people'],observation['faces'],observation['registration'],
         observation['now'],process,active,item.get('owner'),gestures_enabled=False,
-        sound_review=safety.sound_requested(camera_id),session_id=observation['session'])
+        sound_review=safety.sound_requested(camera_id),session_id=observation['session'],
+        captured_mono=observation['captured_mono'])
 
 
 async def secondary_audio(camera_id, packet):
@@ -789,7 +790,7 @@ async def run_source(my_generation):
                     if state['status']=='shutter_closed':return
                     raise RuntimeError('camera_owner_unavailable')
                 stage = "waiting_frame"
-                item = await asyncio.wait_for(queue.get(), 85)
+                item = await asyncio.wait_for(queue.get(), CAPTURE_RECEIVE_TIMEOUT)
                 if item["type"] != "frame":
                     if state['status'] == 'shutter_closed':return
                     state.update(
@@ -997,6 +998,7 @@ async def run_source(my_generation):
                     event['_game_window'] = game_window
                     event['_party_window'] = party_window[:2]
                 voice_now = time.monotonic()
+                voice_captured_mono = voice_now - (time.time() - item['received_at'])
                 home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,home.attention.candidate() is not None,
                     people=len(people), session=identities.session,
                     speaking=bool(home.speaking and home.last_audio is not None and 0 <= voice_now-home.last_audio <= .6),
@@ -1013,6 +1015,7 @@ async def run_source(my_generation):
                     gestures_enabled=False,
                     sound_review=safety.sound_requested(SELECTED['id']),
                     session_id=identities.session,
+                    captured_mono=voice_captured_mono,
                 )
                 if state.get('status')=='shutter_closed':return
                 if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):

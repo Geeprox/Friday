@@ -10,7 +10,7 @@ from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage, captur
 from .camera_director import CameraDirector
 from .camera_intent import CameraIntentStore
 from .camera_audio import AudioIngress
-from .frame_sampling import offer_frame
+from .frame_sampling import CAPTURE_IDLE_TIMEOUT, CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.runtime_log import RuntimeLog
 from homeplane.people.live import close_identity
 
@@ -460,7 +460,10 @@ class PreviewPool:
                 if item['privacy_closed'] or not item['source_active']:break
                 if motion_task and motion_task.done():
                     await motion_task
-                packet = await asyncio.wait_for(queue.get(), 75 if not item["frames"] else 40)
+                wait_timeout = CAPTURE_RECEIVE_TIMEOUT
+                if not self.continuous:
+                    wait_timeout = CAPTURE_IDLE_TIMEOUT if not item['frames'] else 40
+                packet = await asyncio.wait_for(queue.get(), wait_timeout)
                 if not item['source_active']:break
                 if time.monotonic()-checked_power>=5:
                     checked_power=time.monotonic()

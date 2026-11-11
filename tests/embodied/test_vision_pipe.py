@@ -14,7 +14,7 @@ import pytest
 from homeplane.embodied.vision_pipe import PIPE_LIMIT, request_vision
 from homeplane.embodied import camera_recognition, previews, ptz_control
 from homeplane.embodied.camera_audio import AudioIngress
-from homeplane.embodied.frame_sampling import offer_frame
+from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.people.live import close_identity
 from tests.embodied.test_camera_audio import actual
@@ -145,6 +145,7 @@ async def test_original_primary_owner_retires_and_reaps_a_failed_exchange(tmp_pa
         SESSION='synthetic', camera_lease=None, camera_planner=None, Tracks=lambda: object(), PetTracks=PetTracks,
         processed_times=deque(), captured_times=deque(), PYTHON='SYNTHETIC-NOT-EXECUTED',
         VISION='SYNTHETIC-NOT-EXECUTED', MODELS=tmp_path, offer_frame=offer_frame,
+        CAPTURE_RECEIVE_TIMEOUT=CAPTURE_RECEIVE_TIMEOUT,
         AudioIngress=AudioIngress, close_identity=close_identity, camera_is_open=AsyncMock(return_value=True),
         capture_environment=lambda: {},
         room=None,close_rooms=AsyncMock(),

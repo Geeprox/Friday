@@ -261,6 +261,102 @@ async def test_continuous_owner_reconnects_after_cleanup_failure(tmp_path, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(('silence', 'open_after_gap', 'outcome'), [
+    (65, True, 'live'), (65, False, 'shutter_closed'), (90, True, 'unavailable'),
+])
+async def test_background_owner_waits_for_native_stream_recovery(tmp_path, monkeypatch, silence, open_after_gap, outcome):
+    """推进合成时钟，核对旧画面失效、原进程恢复和父进程兜底超时。"""
+    now = 1000.0
+    shutter_open = True
+    native_packets, receive_waits, observed = asyncio.Queue(), asyncio.Queue(), asyncio.Queue()
+
+    async def wait_for(awaitable, timeout):
+        if timeout < 40:
+            return await asyncio.wait_for(awaitable, timeout)
+        entered = now
+        receive_waits.put_nowait(entered)
+        packet = await awaitable
+        if now - entered >= timeout:
+            raise asyncio.TimeoutError
+        return packet
+
+    capture = SimpleNamespace(returncode=None, stdout=SimpleNamespace(readline=native_packets.get),
+                              stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()), wait=AsyncMock())
+    capture.terminate = capture.kill = lambda: setattr(capture, 'returncode', 0)
+    spawn = AsyncMock(return_value=capture)
+    lease = SimpleNamespace(snapshot={'before': {'camera_power': True}}, acquire=AsyncMock(),
+                            release=AsyncMock(return_value=True))
+    read_shutter = AsyncMock(side_effect=lambda _: shutter_open)
+
+    async def recognize(packet, *, source_current):
+        assert source_current()
+        return dict(camera=CAMERA['id'], session='synthetic-stream', people=[], hands=[],
+                    now=now, captured_mono=packet['received_at'])
+
+    async def observation(value, process):
+        observed.put_nowait((value['captured_mono'], process))
+
+    recognition = SimpleNamespace(timing={}, observe=recognize, start=AsyncMock(), close=AsyncMock())
+    monkeypatch.setattr(previews, 'asyncio', SimpleNamespace(**(vars(asyncio) | {
+        'wait_for': wait_for, 'create_subprocess_exec': spawn})))
+    monkeypatch.setattr(previews, 'time', SimpleNamespace(time=lambda: now, monotonic=lambda: now))
+    monkeypatch.setattr(previews, 'DATA', tmp_path)
+    monkeypatch.setattr(previews, 'camera_is_open', read_shutter)
+    monkeypatch.setattr(previews, 'camera_storage', lambda _: tmp_path)
+    monkeypatch.setattr(previews, 'capture_environment', lambda: {})
+    monkeypatch.setattr(ptz_control, 'Transport', lambda _: SimpleNamespace(close=AsyncMock()))
+    monkeypatch.setattr(ptz_control, 'CameraLease', lambda *_args, **_kwargs: lease)
+    monkeypatch.setattr(camera_recognition, 'CameraRecognition', lambda *_: recognition)
+    wall = CameraWall([CAMERA], clock=lambda: now)
+    cleared = Mock()
+    pool = previews.PreviewPool(continuous=True, recognize=True, wall=wall,
+                                on_observation=observation, on_clear=cleared)
+    camera_id = CAMERA['id']
+    item = dict(state='connecting', mode='hold', mode_revision='synthetic-hold', received_at=0, frames=0,
+                expires=now + 90, shutter_changed=False)
+    pool.sessions[camera_id] = item
+
+    def frame():
+        jpeg = base64.b64encode(b'\xff\xd8SYNTHETIC-NOT-CAMERA-PIXELS\xff\xd9').decode()
+        return json.dumps(dict(type='frame', jpeg=jpeg, preview=jpeg, received_at=now, preview_at=now,
+                               width=640, height=360)).encode()
+
+    owner = asyncio.create_task(pool._run(CAMERA, item))
+    try:
+        assert await asyncio.wait_for(receive_waits.get(), 2) == now
+        native_packets.put_nowait(frame())
+        assert await asyncio.wait_for(observed.get(), 2) == (now, capture)
+        assert await asyncio.wait_for(receive_waits.get(), 2) == now
+        assert pool.status(camera_id)['state'] == 'live' and wall.frame(camera_id)
+        shutter_reads = read_shutter.await_count
+        shutter_open = open_after_gap
+        now += silence
+        assert pool.status(camera_id)['state'] == 'stale'
+        assert pool.frame(camera_id) is None and wall.frame(camera_id) is None
+        assert pool.source_current(camera_id, capture)
+        native_packets.put_nowait(frame())
+        if outcome == 'live':
+            assert await asyncio.wait_for(observed.get(), 2) == (now, capture)
+            assert item['frames'] == 2 and pool.frame(camera_id) and wall.frame(camera_id)
+            assert read_shutter.await_count > shutter_reads
+            cleared.assert_not_called()
+        else:
+            await asyncio.wait_for(owner, 2)
+            assert observed.empty() and item['frames'] == 1
+            assert pool.frame(camera_id) is None and wall.frame(camera_id) is None
+            assert not pool.source_current(camera_id, capture)
+            assert capture.returncode == 0
+            cleared.assert_called_once_with(camera_id)
+        assert pool.status(camera_id)['state'] == outcome
+        spawn.assert_awaited_once()
+        assert all(json.loads(call.args[0]).get('action') != 'motor_step' for call in capture.stdin.write.call_args_list)
+    finally:
+        owner.cancel()
+        await asyncio.gather(owner, return_exceptions=True)
+    lease.release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('phase',[None,'vision','registration','layout','identity','room_unavailable'])
 async def test_original_secondary_recognizer_stops_at_the_first_retired_stage(monkeypatch,phase):
     from tests.embodied.test_room_process import room_port
@@ -341,7 +437,7 @@ async def test_actual_worker_callback_cannot_rearm_or_dispatch_after_source_reti
     service.enable = AsyncMock(side_effect=enable)
     callback = actual('homeplane/embodied/worker.py', 'secondary_observation', scope)
     await callback(dict(camera=CAMERA['id'], session='synthetic-session', people=[], hands=[], faces=[],
-        registration={'status': 'locked'}, now=10, captured_mono=10, scene_visible=True), process)
+        registration={'status': 'locked'}, now=10, captured_mono=9.8, scene_visible=True), process)
     if phase == 'before':
         scope['practice'].observe.assert_not_called()
         scope['safety'].offer.assert_not_called()
@@ -351,6 +447,7 @@ async def test_actual_worker_callback_cannot_rearm_or_dispatch_after_source_reti
     if phase in {'before', 'safety', 'dispatch'}:service.enable.assert_not_awaited()
     if phase is None:
         service.observe.assert_awaited_once()
+        assert service.observe.await_args.kwargs['captured_mono'] == 9.8
         assert service.armed is True
     else:
         service.observe.assert_not_awaited()

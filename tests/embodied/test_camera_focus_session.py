@@ -53,7 +53,8 @@ async def frame(camera, origin, session, *, active=True, registration="locked", 
             body=[ast.Expr(value=calls[0])], decorator_list=[])
         scope.update(people=list(people), detection={"faces": []},
                      layout={"registration": {"status": registration}}, now=now, capture=None,
-                     SELECTED={"id": h.camera_id}, identities=SimpleNamespace(session=session))
+                     SELECTED={"id": h.camera_id}, identities=SimpleNamespace(session=session),
+                     voice_captured_mono=now)
         code = ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[]))
         exec(compile(code, str(WORKER), "exec"), scope)
         await scope["receive"]()

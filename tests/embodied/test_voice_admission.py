@@ -167,6 +167,83 @@ async def test_microphone_handoff_keeps_the_completed_utterances_own_lease(voice
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["transcribe", "delegate"])
+@pytest.mark.parametrize(("elapsed", "expired"), [(0.8, False), (2.0, True)])
+async def test_resumed_video_cannot_reauthorize_a_pre_gap_utterance(voice, monkeypatch, phase, elapsed, expired):
+    """同一采集会话短暂停顿可继续，画面过期后只允许新指令。"""
+    started = now = 1000.0
+    home = voice.home
+    home.enabled = True
+    voice.attending, voice.owner = False, None
+    if phase == "delegate":
+        voice.text = "Friday，把玄关灯处理一下"
+    monkeypatch.setattr(home_service, "time", SimpleNamespace(monotonic=lambda: now, time=time.time))
+    monkeypatch.setattr(home, "ensure_voice", lambda: None)
+    monkeypatch.setattr(home, "refresh_voice", lambda: None)
+    session = home.camera_session
+
+    async def observe():
+        await home.observe([], [], {"status": "locked"}, now, None, True, session_id=session)
+
+    await observe()
+    epoch = home.epoch
+    request = home.request
+    resumed = False
+
+    async def paused_request(kind, **kwargs):
+        nonlocal now, resumed
+        result = await request(kind, **kwargs)
+        if kind == phase and not resumed:
+            now += elapsed
+            assert home.current(started, epoch) == (not expired)
+            await observe()
+            resumed = True
+        return result
+
+    home.request = paused_request
+    await home.transcribe(b"SYNTHETIC-admitted-utterance", None, started)
+    assert resumed and home.camera_session == session
+    if expired:
+        voice.device.assert_not_awaited()
+        assert not voice.audio.calls and not home.current(started, epoch)
+        await home.transcribe(b"SYNTHETIC-after-resume", None, now)
+    voice.device.assert_awaited_once()
+    assert len(voice.audio.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_voice_continuity_uses_frame_receipt_time_and_rebuilds_gaze(voice, monkeypatch):
+    now = 1000.0
+    home = voice.home
+    home.enabled = True
+    monkeypatch.setattr(home_service, "time", SimpleNamespace(monotonic=lambda: now, time=time.time))
+    monkeypatch.setattr(home, "ensure_voice", lambda: None)
+    monkeypatch.setattr(home, "refresh_voice", lambda: None)
+    session = home.camera_session
+    people = [{"id": 7, "joints": {"nose": {"x": .5, "y": .3}}}]
+    faces = [dict(box=dict(x=.4, y=.2, w=.2, h=.2), sample_age_ms=0,
+                  facing_candidate=True, eyes_clear=True, gaze_candidate=True)]
+
+    async def observe():
+        await home.observe(people, faces, {"status": "locked"}, now, None, True,
+                           session_id=session, captured_mono=now - .2)
+
+    await observe()
+    now += .5
+    await observe()
+    assert home.attention.candidate() == 7
+    captured, epoch = now, home.epoch
+    now += 1.4
+    assert not home.current(captured, epoch)
+    await observe()
+    assert home.epoch != epoch and home.attention.candidate() is None
+    assert not home.current(captured, epoch)
+    now += .5
+    await observe()
+    assert home.attention.candidate() == 7 and home.current(now, home.epoch)
+
+
+@pytest.mark.asyncio
 async def test_worker_admission_flag_cannot_replace_actual_addressing(voice):
     voice.text, voice.attending, voice.owner = "打开玄关灯", False, None
     voice.worker_admission = dict(admitted=True, wake_word=True)

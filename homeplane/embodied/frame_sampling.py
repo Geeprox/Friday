@@ -5,6 +5,10 @@ import time
 
 import cv2
 
+CAPTURE_IDLE_TIMEOUT = 75
+# 父进程留出采集进程判定超时并通知读端的余量。
+CAPTURE_RECEIVE_TIMEOUT = CAPTURE_IDLE_TIMEOUT + 10
+
 
 def offer_frame(queue, packet, *, now=None):
     """Keep one whole, recent face packet until consumed; never mix frames.

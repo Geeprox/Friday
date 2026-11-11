@@ -14,6 +14,7 @@ from homeplane.embodied.party_camera import PartyCamera
 
 from tests.embodied.test_camera_audio import actual, CAMERA
 from homeplane.embodied.camera_wall import CameraWall
+from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT
 from homeplane.embodied.motion_games import MotionGames
 
 
@@ -167,6 +168,7 @@ def consume_terminal(scope):
     loop.body=loop.body[:end+1]
     wrapper=ast.parse('async def consume():\n pass').body[0]
     wrapper.body=[loop]
+    scope['CAPTURE_RECEIVE_TIMEOUT'] = CAPTURE_RECEIVE_TIMEOUT
     exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper],type_ignores=[])),
                  '<original run_source terminal branch>','exec'),scope)
     return scope['consume']
@@ -368,10 +370,12 @@ def primary_frame_scope(tmp_path, fault_stage=None):
 @pytest.mark.parametrize('fault_stage',[None,'layout','identity','visibility','enable','home','dispatch'])
 async def test_source_loss_during_processing_cannot_resurrect_frames_or_continue_old_actions(tmp_path,fault_stage):
     scope, published = primary_frame_scope(tmp_path, fault_stage)
+    scope['item']['received_at'] = 999.8
     await frame_continuation(scope)()
     if fault_stage is None:
         assert scope['state']['status']=='live' and scope['last_jpeg']==b'private-old-jpeg'
         assert published==['live']
+        assert scope['home'].observe.await_args.kwargs['captured_mono'] == pytest.approx(9.8)
     else:
         assert scope['state']['status']=='unavailable' and published==['unavailable']
         assert scope['last_jpeg']==scope['last_preview']==b'' and scope['last_frame']==0

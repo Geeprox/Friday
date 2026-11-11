@@ -16,7 +16,7 @@ from miot.camera import MIoTCamera
 from miot.types import MIoTCameraInfo, MIoTCameraStatus
 
 from homeplane.embodied.local_motor import LocalMotor, check_motor_deadline
-from homeplane.embodied.frame_sampling import LatestFrameEncoder
+from homeplane.embodied.frame_sampling import CAPTURE_IDLE_TIMEOUT, LatestFrameEncoder
 from homeplane.embodied.capture_decoder import install_decoder
 from homeplane.embodied.camera_provenance import bind_capture_packet
 from homeplane.embodied.camera_audio import PCMFramer
@@ -219,9 +219,8 @@ async def main():
             now = time.monotonic()
             if sampler_task.done():
                 await sampler_task
-            # Freshness pauses consumers immediately. Keep the SDK session long
-            # enough for its local reconnect; don't discard it after only 8s.
-            if (not last and now - started > 75) or (last and now - last > 75):
+            # 等待 SDK 原有的本地重连，新鲜度由各消费端独立判断。
+            if now - (last or started) > CAPTURE_IDLE_TIMEOUT:
                 emit({"type": "error", "reason": "source_unavailable"})
                 break
     except Exception as error:
