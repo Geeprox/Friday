@@ -74,6 +74,10 @@
   padding-inline: 12px;
   white-space: nowrap;
 }
+.experience .camera-follow-actions > button[aria-disabled=true]:not(:disabled) {
+  opacity: .65;
+  cursor: default;
+}
 .experience .camera-follow-actions > button[aria-pressed=true] {
   background: var(--accent-soft);
   border-color: var(--accent);

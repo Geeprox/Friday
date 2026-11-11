@@ -33,17 +33,23 @@ def failed_director():
 
 def test_failure_recovery_uses_new_direction_and_never_replays_old_target():
     director = failed_director()
-    assert director.choose(view(68, x=.05), 68) is None
-    assert director.choose(view(69, x=.05), 69) is None
-    assert director.choose(view(69.2, x=.05), 69.2) == 'left'
+
+    def registered_view(at, x):
+        frame = view(at, x=x)
+        frame['people'][0]['identity'] = dict(state='matched', person_id='synthetic-target')
+        return frame
+
+    assert director.choose(registered_view(68, .05), 68) is None
+    assert director.choose(registered_view(69, .05), 69) is None
+    assert director.choose(registered_view(69.2, .05), 69.2) == 'left'
     # Reserving the probe before its outcome prevents an unknown result from
     # being retried on every subsequent frame.
-    assert director.choose(view(70, x=.05), 70) is None
+    assert director.choose(registered_view(70, .05), 70) is None
     assert director.failed_moves == 3
     director.sent(70, 'left')
     assert director.failed_moves == 0
-    assert director.choose(view(74, x=.78), 74) is None
-    assert director.choose(view(74.2, x=.78), 74.2) == 'right'
+    assert director.choose(registered_view(74, .78), 74) is None
+    assert director.choose(registered_view(74.2, .78), 74.2) == 'right'
 
 
 def test_recovery_still_requires_current_video_and_honors_hold():

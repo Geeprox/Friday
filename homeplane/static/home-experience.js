@@ -156,6 +156,10 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const surveying=()=>cameraControl?.mode==='survey'&&cameraControl.phase!=='survey_finished';
   const setStatus=value=>{if(status.textContent!==value)status.textContent=value;};
   const release=token=>{if(token)void api(endpoint+'/preview/stop',{token}).catch(()=>{});};
+  const modeAvailability=(button,available)=>{
+   button.disabled=!available;
+   button.setAttribute('aria-disabled',String(!available||modePending));
+  };
 
   function clearFrame(){
    image.hidden=true;
@@ -186,16 +190,20 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    powerStatus.textContent=power?.enabled===true?'镜头已开启':power?.enabled===false?'镜头已关闭':pending?'正在读取…':'镜头状态待确认';
    const frameCurrent=live();
    const canStart=frameCurrent&&followReport?.recognition_enabled!==false;
-   for(const [mode,b]of followButtons){
+   for(const [mode,b,label]of followButtons){
     const unsupported=mode==='pets'&&followReport?.pet_tracking?.supported!==true;
-    b.disabled=modePending||!canStart||unsupported;
+    const active=viewing&&cameraControl?.mode===mode;
+    const retry=active&&cameraControl?.phase==='target_lost';
+    const title=retry?'重新'+label:label;
+    if(b.textContent!==title)b.textContent=title;
+    modeAvailability(b,canStart&&!unsupported);
     b.title=!frameCurrent?'等待实时画面':followReport?.recognition_enabled===false?'当前镜头未开启识别':unsupported?'当前识别服务暂不支持宠物跟随':'';
-    b.setAttribute('aria-pressed',String(viewing&&cameraControl?.mode===mode));
+    b.setAttribute('aria-pressed',String(active&&!retry));
    }
    const running=viewing&&surveying();
    survey.textContent=running?'停止巡视':'巡视一轮';
    survey.setAttribute('data-running',String(running));
-   survey.disabled=modePending||!(running||canStart);
+   modeAvailability(survey,running||canStart);
    for(const b of directions)b.disabled=directionPending||!frameCurrent||!(followReport?.primary||followReport?.manual_control);
   }
   async function readPower(){
@@ -264,7 +272,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     if(!current(epoch))return;
     if(result.mode!==mode)throw Error('camera_mode_unconfirmed');
     modeVersion++;
-    const reason={auto:'跟随人物',pets:'跟随宠物',survey:'准备巡视',hold:'巡视已停止'}[mode];
+    const reason={auto:'等待人物',pets:'等待宠物',survey:'准备巡视',hold:'巡视已停止'}[mode];
     previousIntent=result.intent_revision&&prior&&result.intent_revision!==prior?prior:null;
     cameraControl={mode,reason,intent_revision:result.intent_revision};
     setStatus(reason);
@@ -275,7 +283,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   }
   for(const [mode,label]of [['auto','跟随人物'],['pets','跟随宠物']]){
    const b=btn(label,()=>changeMode(mode),{'aria-pressed':'false'});
-   followButtons.push([mode,b]);followControls.append(b);
+   followButtons.push([mode,b,label]);followControls.append(b);
   }
   const survey=btn('巡视一轮',()=>changeMode(surveying()?'hold':'survey'));
   followControls.append(survey);

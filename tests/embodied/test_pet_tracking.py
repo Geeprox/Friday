@@ -11,6 +11,7 @@ import pytest
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.stable_tracks import StableTracks
+from tests.embodied.test_camera_follow_appearance import appearance_sample
 
 
 @pytest.mark.asyncio
@@ -98,7 +99,7 @@ def test_real_pet_tracks_reach_bounded_director_and_pending_check_without_a_pers
     tracks=PetTracks();d=CameraDirector();d.apply_mode('pets','choice-one')
     for at in (0,.1,.2):
         animals=observed(tracks,[animal()],at)
-        s=packet(at,animals);direction=d.choose(s,at)
+        s=packet(at,animals,**appearance_sample(at,[(pet,7) for pet in animals]));direction=d.choose(s,at)
     assert direction=='right' and not s['people']
     assert d.decision_current(s,.2,'right') and d.public()['reason']=='跟随宠物'
     for change in (dict(animals_current=False),dict(animals_intent='old-choice'),
@@ -107,8 +108,9 @@ def test_real_pet_tracks_reach_bounded_director_and_pending_check_without_a_pers
         assert not d.decision_current(changed,.3,'right')
     d.sent(.2)
     assert d.choose(s,2.3) is None, 'A pre-movement packet cannot justify another motor impulse'
-    for at in (2.4,2.5,4.3):
-        s=packet(at,observed(tracks,[animal()],at));direction=d.choose(s,at)
+    for at in (2.4,2.5,2.6,4.3):
+        animals=observed(tracks,[animal()],at)
+        s=packet(at,animals,**appearance_sample(at,[(pet,7) for pet in animals]));direction=d.choose(s,at)
     assert direction=='right'
     d.apply_mode('hold','manual-choice')
     assert not d.decision_current(s,4.3,'right') and d.choose(s,4.4) is None
@@ -138,7 +140,7 @@ def test_rebuilt_pet_tracks_cannot_silently_select_a_different_animal_after_moti
         animals = observed(tracks, [animal(x=.04), animal(x=.78)], at)
         direction = director.choose(packet(at, animals), at)
     assert len(animals) == 2 and original not in {pet['id'] for pet in animals}
-    assert direction is None and director.phase == 'target_ambiguous'
+    assert direction is None and director.phase == 'target_reacquiring'
 
 
 def test_unavailable_pet_detection_prevents_patrol_and_cover_recovery_too():

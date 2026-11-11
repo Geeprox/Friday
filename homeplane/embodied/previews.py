@@ -363,6 +363,7 @@ class PreviewPool:
                     animals_intent=observation.get('animals_intent') if observation else None,
                     people=observation['people'] if observation else [],
                     scene_visible=observation.get('scene_visible',False) if observation else False,
+                    _follow_jpeg=observation.get('safety_jpeg') if observation else None,
                     _patrol_view=observation.get('_patrol_view') if observation else None)
             async def send_motion(direction, observed=None, expected_epoch=None):
                 if direction not in {'left','right','up','down'}:raise ValueError('invalid_motor_direction')
