@@ -47,16 +47,17 @@ class Journey:
         self.engine = Engine()
         self.runtime = SafetyRuntime(self.store,sound_engine=self.engine,speaker=SimpleNamespace(say=AsyncMock()))
         self.runtime.sound.clock = lambda:self.clock
-        self.runtime.sound.wall = lambda:1000+self.clock
         self.framer = PCMFramer(CAMERA,'a'*32)
         self.gate = AudioIngress(CAMERA,'a'*32)
 
-    async def tick(self, index, *, wrong_source=False, stable=True):
+    async def tick(self, index, *, wrong_source=False, stable=True, audio=True, jpeg=b'SYNTHETIC-FRAME'):
         self.clock = index*.2
         await self.runtime.observe(CAMERA['id'],'visual-session',[],self.clock,self.clock,
-            stable=stable,jpeg=b'SYNTHETIC-FRAME',source_context=CONTEXT,source_name='示例镜头')
-        frame=dict(type='frame',received_at=1000+self.clock,capture_session='a'*32,camera_source_context=CONTEXT)
+            stable=stable,jpeg=jpeg,source_context=CONTEXT,source_name='示例镜头')
+        frame=dict(type='frame',received_at=1000+self.clock,capture_session=self.gate.session,camera_source_context=CONTEXT)
         assert self.gate.observe_frame(frame,wall=1000+self.clock,mono=self.clock)
+        if not audio:
+            return
         packet=self.framer.push(bytes(6400),received=1000+self.clock,decoded=1000+self.clock,
                                 wall=1000+self.clock,mono=self.clock)[0]
         if wrong_source:packet['camera_source_context']='b'*64
@@ -243,6 +244,114 @@ async def test_ineligible_camera_audio_never_reaches_classifier(tmp_path,monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('interruption', ['audio_stops', 'audio_gap', 'classifier_stalled'])
+async def test_already_qualified_cry_is_saved_if_optional_refinement_cannot_finish(tmp_path, monkeypatch, interruption):
+    j = Journey(tmp_path, monkeypatch)
+    infant = {'kind': 'crying', 'confidence': .96, 'infant_cry': True}
+    third_started = asyncio.Event()
+
+    async def classify(_):
+        if j.engine.analyze.await_count == 3:
+            third_started.set()
+            await asyncio.Event().wait()
+        return infant
+
+    j.engine.analyze.side_effect = classify
+    try:
+        for index in range(20):
+            await j.tick(index, jpeg=f'FRAME:{index}'.encode())
+        assert j.engine.analyze.await_count == 2 and not j.store.events()
+        if interruption == 'audio_gap':
+            j.runtime.observe_audio(CAMERA['id'], j.gate.reject('audio_stale'))
+        for index in range(20, 46):
+            await j.tick(index, audio=interruption == 'classifier_stalled', jpeg=f'FRAME:{index}'.encode())
+            await j.runtime.sound.maintain()
+        await j.runtime.drain()
+        if interruption == 'classifier_stalled':
+            assert third_started.is_set() and j.runtime.sound.task is None
+        events = j.store.events()
+        assert len(events) == 1
+        saved = events[0]
+        assert saved['captured_at'] == pytest.approx(1003.8)
+        assert saved['sound_kind'] == 'crying' and saved['sound_evidence']['corroborating_windows'] == 2
+        assert 'pattern' not in saved['sound_evidence']
+        indexes = [int(j.store.frame(saved['id'], f['ordinal']).split(b':')[1]) for f in saved['frames']]
+        assert len(indexes) == 2 and 0 <= indexes[0] < 10 <= indexes[1] < 20
+    finally:
+        await j.runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['within_deadline', 'after_deadline', 'no_matching_frames'])
+async def test_delayed_cry_uses_only_evidence_from_analyzed_windows(tmp_path, monkeypatch, case):
+    j = Journey(tmp_path, monkeypatch)
+    third_started, release = asyncio.Event(), asyncio.Event()
+
+    async def classify(_):
+        if j.engine.analyze.await_count == 3:
+            third_started.set()
+            await release.wait()
+        return {'kind': 'crying', 'confidence': .96, 'infant_cry': True}
+
+    j.engine.analyze.side_effect = classify
+    try:
+        for index in range(41 if case == 'after_deadline' else 38):
+            jpeg = b'' if case == 'no_matching_frames' and index < 30 else f'FRAME:{index}'.encode()
+            await j.tick(index, jpeg=jpeg)
+        assert third_started.is_set() and not j.store.events()
+        release.set()
+        await j.runtime.sound.task
+        await j.runtime.drain()
+        saved, = j.store.events()
+        expected_windows = 2 if case == 'after_deadline' else 3
+        assert saved['sound_evidence']['corroborating_windows'] == expected_windows
+        assert saved['sound_evidence'].get('pattern') == (None if expected_windows == 2 else 'sustained_infant_cry')
+        assert saved['captured_at'] == pytest.approx(1003.8 if expected_windows == 2 else 1005.8)
+        indexes = [int(j.store.frame(saved['id'], f['ordinal']).split(b':')[1]) for f in saved['frames']]
+        if case == 'no_matching_frames':
+            assert not indexes
+        else:
+            assert len(indexes) == expected_windows
+            assert all(index//10 == window for window, index in enumerate(indexes))
+    finally:
+        release.set()
+        await j.runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revoke', ['capture_replaced', 'camera_paused', 'input_paused', 'policy_changed'])
+async def test_an_audio_gap_cannot_carry_a_qualified_pair_across_revocation(tmp_path, monkeypatch, revoke):
+    j = Journey(tmp_path, monkeypatch)
+    j.engine.analyze.return_value = {'kind': 'crying', 'confidence': .96, 'infant_cry': True}
+    try:
+        for index in range(20):
+            await j.tick(index)
+        assert j.runtime.review_pending(CAMERA['id'], 'visual-session')
+        j.runtime.observe_audio(CAMERA['id'], j.gate.reject('audio_stale'))
+        if revoke == 'capture_replaced':
+            j.framer = PCMFramer(CAMERA, 'b'*32)
+            j.gate = AudioIngress(CAMERA, 'b'*32)
+            await j.tick(20)
+        elif revoke == 'camera_paused':
+            j.runtime.observe_audio(CAMERA['id'], j.gate.reject('camera_paused'))
+        elif revoke == 'input_paused':
+            (tmp_path/'voice-input-paused').touch()
+        else:
+            policy = j.store.policy()
+            j.store.configure(policy.model_copy(update={'sound_review': False}))
+            await j.runtime.sync_policy()
+        assert not j.runtime.review_pending(CAMERA['id'], 'visual-session')
+        for index in range(21, 46):
+            await j.tick(index, audio=False)
+            await j.runtime.sound.maintain()
+        await j.runtime.drain()
+        assert not j.store.events()
+        assert not j.runtime.sound.qualified_cries
+    finally:
+        await j.runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_replayed_packets_break_corroboration_and_current_input_recovers(tmp_path,monkeypatch):
     j=Journey(tmp_path,monkeypatch)
     try:
@@ -373,13 +482,13 @@ async def test_two_camera_latest_windows_are_served_fairly_without_concurrent_mo
     now=[0.];policy=SafetyPolicy(enabled=True,sound_review=True)
     engine=Engine();delivered=[]
     r=SoundReviewer(policy=lambda:policy,current=lambda *_:True,deliver=lambda *args:delivered.append(args),
-                    engine=engine,clock=lambda:now[0],wall=lambda:1000+now[0])
+                    engine=engine,clock=lambda:now[0])
     try:
         for i in range(24):
             now[0]=i*.2
             for camera in ('a','b'):
                 p=dict(capture_session='session',audio_epoch=0,audio_sequence=i+1,sample_start=i*3200,
-                       pcm=base64.b64encode(bytes(6400)).decode())
+                       received_at=1000+now[0],pcm=base64.b64encode(bytes(6400)).decode())
                 r.offer(camera,'visual',CONTEXT,0,AdmittedAudio(p,i==0,{},now[0]))
             await settle()
         assert {args[0] for args in delivered}=={'a','b'}

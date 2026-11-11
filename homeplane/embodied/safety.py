@@ -574,7 +574,7 @@ class SafetyRuntime:
         self.visual = TemporalReviewer(policy=self._cached_policy, deliver=self._visual_event, engine=visual_engine)
         from .sound_review import SoundReviewer
         self.sound = SoundReviewer(policy=self._cached_policy, current=self._sound_current,
-                                   deliver=self._sound_event, engine=sound_engine)
+                                   deliver=self._sound_event, keyframe=self._sound_keyframe, engine=sound_engine)
 
     def _cached_policy(self):
         if self.closed or not 0 <= time.monotonic() - self.policy_read_at <= self.POLICY_TTL:
@@ -675,12 +675,24 @@ class SafetyRuntime:
                 and ring.get('source_context') == context and context is not None
                 and 0 <= time.monotonic()-self.last_seen.get(camera, -100) <= 1.5)
 
-    def sound_requested(self, camera):
-        ring = self.frames.get(camera, {})
+    def _sound_source(self, camera):
+        ring = self.frames.get(camera)
         policy = self._cached_policy()
-        return bool(policy.enabled and policy.sound_review
-                    and self._sound_current(camera, ring.get('session'), ring.get('source_context'))
-                    and self.sound.readiness()['available'])
+        if (ring is not None and policy.enabled and policy.sound_review
+                and self._sound_current(camera, ring['session'], ring['source_context'])):
+            return ring
+        return None
+
+    def sound_requested(self, camera):
+        return self._sound_source(camera) is not None and self.sound.readiness()['available']
+
+    def _sound_keyframe(self, camera, session, context, start, end):
+        if not self._sound_current(camera, session, context):
+            return None
+        midpoint = (start + end) / 2
+        matches = ((captured, jpeg) for captured, _, jpeg in self.frames[camera]['items']
+                   if start <= captured <= end)
+        return min(matches, key=lambda frame: abs(frame[0] - midpoint), default=None)
 
     def _current_review_source(self, camera, session):
         token = self.source_tokens.get(camera)
@@ -723,10 +735,18 @@ class SafetyRuntime:
 
     def observe_audio(self, camera, admission):
         from .camera_audio import AdmittedAudio
-        ring = self.frames.get(camera, {})
-        if (not self.sound_requested(camera) or not isinstance(admission, AdmittedAudio)
-                or admission.packet is None
-                or admission.packet.get('camera_source_context') != ring.get('source_context')):
+        ring = self._sound_source(camera)
+        if ring is None or not isinstance(admission, AdmittedAudio):
+            self.sound.clear(camera)
+            return
+        if admission.packet is None:
+            # 无效音频会中断连续性。来源失效或隐私撤销也要清除已印证的证据。
+            audio_only = admission.diagnostics.get('reason') in {
+                'audio_stale', 'sequence_replayed', 'sequence_invalid', 'format_invalid',
+            }
+            self.sound.clear(camera, keep_qualified=audio_only)
+            return
+        if admission.packet.get('camera_source_context') != ring['source_context']:
             self.sound.clear(camera)
             return
         self.sound.offer(camera, ring['session'], ring['source_context'], self.policy_cache.revision, admission)
@@ -750,7 +770,7 @@ class SafetyRuntime:
             basis='three_local_infant_cry_windows' if sustained else 'two_disjoint_local_audio_windows',
             sound_evidence=evidence,
             raw_audio_stored=False, directional_audio=False),
-            [f for f in ring['items'] if 0 <= time.time()-f[0] <= 8],
+            result.get('keyframes', ()),
             captured=result['captured_mono'], revision=result['policy_revision'], max_age=6)
 
     def _submit_review(self, event, frames, *, captured, revision, max_age, require_complete=False):
@@ -899,9 +919,9 @@ class SafetyRuntime:
         if (
             jpeg
             and len(jpeg) <= self.store.MAX_FRAME
-            and (not ring["items"] or stamp - ring["items"][-1][0] >= 0.5)
+            and (not ring["items"] or stamp - ring["items"][-1][1] >= 0.5)
         ):
-            ring["items"].append((stamp, jpeg))
+            ring["items"].append((captured, stamp, jpeg))
             pending = self.post_frames.get(camera, [])
             self.post_frames[camera] = [p for p in pending if captured <= p["until"]]
             self.recording.frame(camera, captured, stamp, jpeg)
@@ -929,7 +949,8 @@ class SafetyRuntime:
             job = self.recording.submit(camera=camera, session=session, context=source_context,
                 token=token, captured=captured, revision=policy.revision, event=event,
                 person={'identity': identity},
-                frames=[f for f in ring['items'] if 0 <= time.time() - f[0] <= 8], announce=policy.announce)
+                frames=[(stamp, frame) for _, stamp, frame in ring['items'] if 0 <= time.time() - stamp <= 8],
+                announce=policy.announce)
             if job is not None:
                 self.post_frames.setdefault(camera, []).append(
                     dict(id=job.identifier, until=captured + self.recording.POST_WINDOW))
