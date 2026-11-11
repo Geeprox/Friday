@@ -188,7 +188,8 @@ async def test_secondary_new_session_restores_choice_before_any_motor_dispatch(t
     await pool.control(CAMERA['id'], direction='left')
     assert item['control_epoch'] == 5 and not item['manual_tasks']
     for requested, restored in (('hold', 'hold'), ('auto', 'auto'), ('pets', 'pets'), ('survey', 'hold')):
-        await pool.control(CAMERA['id'], mode=requested)
+        accepted = await pool.control(CAMERA['id'], mode=requested)
+        assert accepted == {'mode': requested, 'intent_revision': item['mode_revision']}
         replacement = previews.PreviewPool(recognize=True, intent_factory=factory)
         await replacement.start(CAMERA['id'])
         await asyncio.sleep(0)
@@ -261,7 +262,8 @@ async def test_primary_public_and_legacy_manual_paths_save_hold_before_send(tmp_
 async def test_primary_mode_resume_and_survey_restart_preference(tmp_path):
     scope = primary_scope(tmp_path)
     for mode in ('hold', 'auto', 'pets', 'survey'):
-        assert await scope['camera_control'](request({'mode': mode})) == {'mode': mode}
+        accepted = await scope['camera_control'](request({'mode': mode}))
+        assert accepted == {'mode': mode, 'intent_revision': scope['camera_planner'].intent_revision}
         assert scope['camera_planner'].mode == mode
         assert scope['camera_intents'].load().mode == ('hold' if mode == 'survey' else mode)
     scope['motor_step'].assert_not_awaited()

@@ -22,9 +22,9 @@ def patrol_view(at, *, x=0.0, y=0.0, basis='synthetic-room'):
     return (basis, ((1, 0, x), (0, 1, y), (0, 0, 1)), at)
 
 
-def sample(at, *, visible=True, people=(), session='first', x=0.0):
+def sample(at, *, visible=True, people=(), session='first', x=0.0, y=0.0, basis='synthetic-room'):
     return dict(status='live', _local_received=at, scene_visible=visible,
-                people=list(people), session_id=session, _patrol_view=patrol_view(at, x=x))
+                people=list(people), session_id=session, _patrol_view=patrol_view(at, x=x, y=y, basis=basis))
 
 
 def person(track=1, x=.75, identity=None, *, y=.2, h=.6):
@@ -298,17 +298,18 @@ def test_fall_has_a_short_independent_window_and_respects_camera_ownership():
     assert director.choose(sample(41), 41, fall_pending=True) is None and director.phase == 'held'
 
 
-def test_requested_survey_is_finite_and_repeated_intent_does_not_restart_it():
+def test_two_level_survey_is_finite_and_repeated_intent_does_not_restart_it():
     d=CameraDirector();d.apply_mode('survey',7)
     attempts=[]
-    x = 0.0
+    x = y = 0.0
     for at in range(300):
-        if direction:=d.choose(sample(at,x=x),at):
+        if direction:=d.choose(sample(at,x=x,y=y),at):
             attempts.append(direction);d.sent(at)
-            x += .05 if direction == 'right' else -.05
-    assert len(attempts)==12 and d.phase=='survey_finished'
-    assert d.public()['survey_confirmed_moves'] == 12
-    assert d.scan_direction == 'left'
+            x += .05 * ((direction == 'right') - (direction == 'left'))
+            y += .05 * ((direction == 'down') - (direction == 'up'))
+    assert attempts == ['right', 'right', 'down', 'left', 'left', 'left', 'left', 'up', 'right', 'right']
+    assert d.phase=='survey_finished' and d.public()['survey_result'] == 'complete'
+    assert d.public()['survey_confirmed_moves'] == len(attempts)
     assert d.public()['physical_motion_verified'] is False
     d.apply_mode('survey',7)
     assert d.choose(sample(301,x=x),301) is None
@@ -320,6 +321,57 @@ def test_requested_survey_is_finite_and_repeated_intent_does_not_restart_it():
     d.apply_mode('hold',9)
     assert d.choose(sample(320,visible=False),320) is None
     assert d.phase=='held'
+
+
+def start_low_pass(director):
+    director.apply_mode('survey', 'synthetic-route')
+    clear(director)
+    for index, at in enumerate((16, 28)):
+        assert director.choose(sample(at, x=.05*index), at) == 'right'
+        director.sent(at)
+        for offset in (2.5, 3):
+            assert director.choose(sample(at+offset, x=.05*(index+1)), at+offset) is None
+    assert director.choose(sample(40, x=.1), 40) == 'down'
+
+
+def test_unconfirmed_downward_survey_does_not_continue_an_unknown_route():
+    director = CameraDirector()
+    start_low_pass(director)
+    director.sent(40)
+    for at in (42.5, 43, 46, 48, 55, 90):
+        assert director.choose(sample(at, x=.15), at) is None
+    assert director.public()['survey_result'] == 'interrupted'
+    assert director.survey_confirmed_moves == 2 and director.survey_attempts == 3
+    assert director.public()['patrol_view_state'] == 'unconfirmed'
+
+
+@pytest.mark.parametrize('change', ['session', 'registration', 'game'])
+def test_survey_cannot_continue_after_its_live_view_is_replaced(change):
+    director = CameraDirector()
+    start_low_pass(director)
+    director.sent(40)
+    for at in (42.5, 43):
+        assert director.choose(sample(at, x=.1, y=.05), at) is None
+    assert director.survey_confirmed_moves == 3
+    if change == 'game':
+        assert director.choose(dict(sample(52, x=.1, y=.05), game={'mode':'ski'}), 52) is None
+    for at in (55, 85, 120):
+        current = sample(at, x=.1, y=.05, session='new' if change == 'session' else 'first',
+                         basis='new-reference' if change == 'registration' else 'synthetic-room')
+        assert director.choose(current, at) is None
+    assert director.public()['survey_result'] == 'interrupted' and director.survey_confirmed_moves == 3
+
+
+def test_secondary_reconnect_reports_partial_survey_and_waits_for_new_intent():
+    director = CameraDirector()
+    director.apply_mode('survey', 'old')
+    director.restore_survey_progress(4, 3)
+    for at in (0, 16, 30):
+        assert director.choose(sample(at), at) is None
+    assert director.public()['survey_result'] == 'interrupted' and director.survey_confirmed_moves == 3
+    director.apply_mode('survey', 'new')
+    assert director.public()['survey_result'] is None
+    assert director.survey_attempts == director.survey_confirmed_moves == 0
 
 
 def test_patrol_motor_ack_does_not_count_an_unchanged_view():
@@ -358,7 +410,7 @@ def test_unrelated_or_unstable_samples_do_not_confirm_patrol(change):
     elif change == 'stale':
         now = 21
     assert director.choose(second, now) is None
-    assert director.public()['patrol_view_state'] == 'checking'
+    assert director.public()['patrol_view_state'] == ('unconfirmed' if change == 'new_basis' else 'checking')
     assert director.choose(sample(25, x=.05), 25) is None
     assert director.public()['patrol_view_state'] == 'unconfirmed'
     assert director.survey_confirmed_moves == 0

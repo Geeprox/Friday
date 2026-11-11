@@ -1818,7 +1818,7 @@ async def camera_control(request: Request):
         camera_planner.visited.clear()
         camera_planner.last_person = time.monotonic() - 8
         camera_planner.last_move = time.monotonic() - 12
-    return {"mode": mode}
+    return {"mode": mode, "intent_revision": camera_planner.intent_revision}
 
 
 def set_primary_camera_mode(mode):

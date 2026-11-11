@@ -171,7 +171,7 @@ class PreviewPool:
             item['manual_tasks'].add(task)
             try:return await item['control'](direction,expected_epoch=item['control_epoch'])
             finally:item['manual_tasks'].discard(task)
-        return {'mode':item['mode']}
+        return {'mode':item['mode'], 'intent_revision':item['mode_revision']}
 
     async def _monitor(self, selected, item):
         while self.sessions.get(selected['id']) is item:
@@ -344,8 +344,7 @@ class PreviewPool:
             receiver = asyncio.create_task(receive())
             director = CameraDirector()
             director.apply_mode(item['mode'], item.get('mode_revision', 0))
-            director.survey_attempts = item.get('survey_attempts', 0)
-            director.survey_confirmed_moves = item.get('survey_confirmed_moves', 0)
+            director.restore_survey_progress(item.get('survey_attempts', 0), item.get('survey_confirmed_moves', 0))
             motion_lock = asyncio.Lock()
             def privacy_closed():
                 item.update(state='shutter_closed',privacy_closed=True)

@@ -143,6 +143,24 @@ async def test_real_room_child_confirms_patrol_with_two_fresh_translated_views(t
         assert director.survey_confirmed_moves == 0
         assert await observe(19, new_view) is None
         assert director.survey_confirmed_moves == 1 and director.position == (1, 0)
+        dx, dy = -32, 0
+        for step, (direction, shift_x, shift_y) in enumerate([
+            ('right', -32, 0), ('down', 0, -18),
+            ('left', 32, 0), ('left', 32, 0), ('left', 32, 0), ('left', 32, 0),
+            ('up', 0, 18), ('right', -32, 0), ('right', -32, 0),
+        ], 1):
+            at = 16 + 12.5 * step
+            assert await observe(at, new_view) == direction
+            session.expect_motion(now + at + .1, 2)
+            director.sent(now + at + .2)
+            dx, dy = dx + shift_x, dy + shift_y
+            moved = cv2.warpAffine(pixels, np.float32([[1, 0, dx], [0, 1, dy]]), (640, 360))
+            new_view = cv2.imencode('.jpg', moved)[1].tobytes()
+            assert await observe(at + 2.5, new_view) is None
+            assert director.survey_confirmed_moves == step
+            assert await observe(at + 3, new_view) is None
+            assert director.survey_confirmed_moves == step + 1
+        assert director.public()['survey_result'] == 'complete' and director.position == (0, 0)
         assert director.public()["physical_motion_verified"] is False
         assert not list(tmp_path.iterdir())
     finally:

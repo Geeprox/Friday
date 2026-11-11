@@ -46,6 +46,9 @@ class CameraDirector:
     FALL_INTERVAL_SECONDS = 20
     PATROL_CONFIRM_SECONDS = 8
     TILT_DIRECTIONS = ('up', 'down')
+    SURVEY_ATTEMPT_LIMIT = 12
+    SURVEY_ROUTE = ('right', 'right', 'down', 'left', 'left', 'left', 'left', 'up', 'right', 'right')
+    PATROL_AXES = {'right': (0, 1), 'left': (0, -1), 'down': (1, 1), 'up': (1, -1)}
 
     def __init__(self):
         self.phase = 'waiting_video'
@@ -81,6 +84,8 @@ class CameraDirector:
         self.intent = None
         self.survey_attempts = 0
         self.survey_confirmed_moves = 0
+        self.survey_reference = None
+        self.survey_interrupted = False
         self.patrol_confirmation = None
         self.patrol_view_state = 'idle'
         self.game_hold = False
@@ -135,9 +140,37 @@ class CameraDirector:
             self.mode = mode
             self.survey_attempts = 0
             self.survey_confirmed_moves = 0
+            self.survey_reference = (self.source_session, None) if mode == 'survey' and self.source_session else None
+            self.survey_interrupted = False
             self.patrol_view_state = 'idle'
+            if mode == 'survey':
+                self.position = (0, 0)
+                self.blocked_positions.clear()
+                self.phase = 'checking_view'
             if mode == 'hold':
                 self.hold()
+
+    def restore_survey_progress(self, attempts, confirmed):
+        """副镜头重连时保留计数，新采集进程不能接着旧视野移动。"""
+        self.survey_attempts, self.survey_confirmed_moves = attempts, confirmed
+        self._interrupt_survey()
+
+    def _interrupt_survey(self):
+        if self.mode == 'survey' and self.survey_confirmed_moves < len(self.SURVEY_ROUTE):
+            self.survey_interrupted = True
+
+    def _survey_source_current(self, sample):
+        session, view = sample.get('session_id'), sample.get('_patrol_view')
+        basis = view[0] if view is not None else None
+        if self.survey_reference is not None:
+            previous_session, previous_basis = self.survey_reference
+            if session != previous_session or (previous_basis is not None and basis is not None and basis != previous_basis):
+                return False
+            if previous_basis is not None:
+                return True
+        if session:
+            self.survey_reference = (session, basis)
+        return True
 
     def _aim(self, direction, sample, now):
         if self.mode == 'survey':
@@ -270,6 +303,7 @@ class CameraDirector:
     def _discard_patrol(self, *, uncertain_dispatch=False):
         if self.patrol_confirmation is None and not uncertain_dispatch:
             return
+        self._interrupt_survey()
         self.patrol_confirmation = None
         self.patrol_view_state = 'unconfirmed'
         # 转过多少未知，相对角度及其遮挡记录已失去基准。
@@ -301,9 +335,12 @@ class CameraDirector:
         if stamp < self.last_move + 2:
             return True
         view = sample.get('_patrol_view')
+        if self.mode == 'survey' and view is not None and view[0] != pending['view'][0]:
+            self._discard_patrol()
+            return False
         shift = _view_shift(pending['view'], view) if sample.get('scene_visible') is True else None
-        sign = 1 if pending['direction'] == 'right' else -1
-        if shift is None or sign * shift[0] < .025 or abs(shift[0]) < 1.5 * abs(shift[1]):
+        axis, sign = self.PATROL_AXES[pending['direction']]
+        if shift is None or sign * shift[axis] < .025 or abs(shift[axis]) < 1.5 * abs(shift[1-axis]):
             pending['previous'] = None
             return True
         previous = pending['previous']
@@ -318,12 +355,13 @@ class CameraDirector:
                 self.failed_moves = 0
                 self.retry_at = 0.0
                 self.position = self._next_position(pending['direction'])
-                self.scan_steps += 1
-                if self.scan_steps >= 12:
-                    self.scan_direction = 'left' if self.scan_direction == 'right' else 'right'
-                    self.scan_steps = 0
                 if self.mode == 'survey':
                     self.survey_confirmed_moves += 1
+                else:
+                    self.scan_steps += 1
+                    if self.scan_steps >= 12:
+                        self.scan_direction = 'left' if self.scan_direction == 'right' else 'right'
+                        self.scan_steps = 0
                 self.visible_samples = 1
                 return False
         pending['previous'] = (stamp, view[2], shift)
@@ -368,6 +406,8 @@ class CameraDirector:
             # including waiting, pause and results. Perception still consumes
             # frames; neither clipped players nor an obscured view may pan it.
             self.game_hold = True
+            if self.survey_reference is not None:
+                self._interrupt_survey()
             self._discard_patrol()
             self.pending_direction = self.pending_decision = None
             self.tilt_observation = None
@@ -392,7 +432,8 @@ class CameraDirector:
             self.phase = 'checking_view'
         if self._confirm_patrol(sample, now):
             return None
-        if self.mode == 'survey' and self.survey_attempts >= 12:
+        if self.mode == 'survey' and (self.survey_interrupted or self.survey_attempts >= self.SURVEY_ATTEMPT_LIMIT
+                                      or self.survey_confirmed_moves >= len(self.SURVEY_ROUTE)):
             self.phase = 'survey_finished'
             return None
         if self.failed_moves >= 3 and now < self.retry_at:
@@ -410,6 +451,10 @@ class CameraDirector:
             return None
         if now-self.last_move < 2:
             self.phase = 'settling'
+            return None
+        if self.mode == 'survey' and not self._survey_source_current(sample):
+            self._interrupt_survey()
+            self.phase = 'survey_finished'
             return None
         if self.mode == 'pets':
             if not self._pets_current(sample):
@@ -439,6 +484,10 @@ class CameraDirector:
             if self.obscured_since is None:self.obscured_since = now
             self.phase = 'view_obscured'
             if self.obscured_samples < 3 or now-self.obscured_since < 1:
+                return None
+            if self.mode == 'survey' and self.survey_confirmed_moves:
+                self._interrupt_survey()
+                self.phase = 'survey_finished'
                 return None
             self.blocked_positions.add(self.position)
             if len(self.blocked_positions)>64:self.blocked_positions.pop()
@@ -541,6 +590,9 @@ class CameraDirector:
             self.phase = 'patrol_waiting_view'
             return None
         self.phase = 'patrolling'
+        if self.mode == 'survey':
+            direction = self.SURVEY_ROUTE[self.survey_confirmed_moves]
+            return self._aim(direction, sample, now)
         if self._next_position(self.scan_direction) in self.blocked_positions:
             self.scan_direction='left' if self.scan_direction=='right' else 'right'
         if self._next_position(self.scan_direction) in self.blocked_positions:
@@ -559,6 +611,8 @@ class CameraDirector:
                 stamp=now, deadline=now + self.PATROL_CONFIRM_SECONDS, previous=None)
             self.patrol_view_state = 'checking'
         else:
+            if self.survey_confirmed_moves:
+                self._interrupt_survey()
             self._discard_patrol()
             self.failed_moves = 0
             self.retry_at = 0.0
@@ -586,6 +640,8 @@ class CameraDirector:
 
     def failed(self, now):
         pending = self.pending_decision
+        if self.survey_confirmed_moves:
+            self._interrupt_survey()
         self._discard_patrol(uncertain_dispatch=pending is not None and pending['phase'] == 'patrolling')
         self.last_move = now
         self.failed_moves += 1
@@ -610,13 +666,20 @@ class CameraDirector:
                   'survey_finished':'本轮巡视已结束', 'pet_unavailable':'宠物识别暂不可用',
                   'game_held':'游戏中，镜头保持稳定', 'review_held':'停留观察'}[self.phase]
         if self.phase == 'following' and self.mode == 'pets':reason = '跟随宠物'
+        survey_result = None
+        if self.phase == 'survey_finished':
+            survey_result = 'complete' if self.survey_confirmed_moves >= len(self.SURVEY_ROUTE) else 'interrupted'
+            reason = '本轮巡视完成' if survey_result == 'complete' else '本轮巡视未完成'
+        elif self.phase == 'patrolling' and self.mode == 'survey':
+            reason = {'down': '巡视低处', 'up': '抬回视野'}.get(self.pending_direction, reason)
         return dict(owner='friday', phase=self.phase, reason=reason, native_tracking=False,
                     intent_revision=self.intent[1] if self.intent else None,
                     native_patrol=False, view_usable=self.clear and self.phase in {
                         'following','target_ambiguous','patrolling','observing','game_held','pet_unavailable',
                         'review_held','patrol_waiting_view'},
                     uncover_steps=self.uncover_steps, recovery_steps=self.recovery_steps,
-                    survey_attempts=self.survey_attempts, survey_command_limit=12,
-                    survey_confirmed_moves=self.survey_confirmed_moves, patrol_view_state=self.patrol_view_state,
+                    survey_attempts=self.survey_attempts, survey_command_limit=self.SURVEY_ATTEMPT_LIMIT,
+                    survey_confirmed_moves=self.survey_confirmed_moves, survey_result=survey_result,
+                    patrol_view_state=self.patrol_view_state,
                     avoided_angles=len(self.blocked_positions), target_locked=self.phase == 'following',
                     physical_motion_verified=False)

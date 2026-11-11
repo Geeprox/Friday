@@ -150,16 +150,68 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const refresh=btn('刷新状态',()=>readPower());
   const cameraControls=h('div',null,{class:'camera-directions'}),directions=[];
   for(const[direction,label]of [['left','向左'],['up','向上'],['down','向下'],['right','向右']]){const b=btn(label,async()=>{const epoch=previewEpoch;b.disabled=true;try{await api(`/api/embodied/cameras/${d.id}/control`,{direction});if(epoch===previewEpoch)status.textContent='调整指令已发送';}catch(_){if(epoch===previewEpoch)status.textContent='云台尚未就绪，请等待画面恢复后重试。';}finally{b.disabled=!viewing;}});b.disabled=true;directions.push(b);cameraControls.append(b);}
-  const followControls=h('div',null,{class:'product-actions camera-follow-actions',role:'group','aria-label':'跟随对象'}),followButtons=[];
-  let followPending=false,followReport=null;
-  function syncFollow(){const live=viewing&&(followReport?.frame_available||followReport?.state==='live'||followReport?.status==='live');for(const [mode,b]of followButtons){const unsupported=mode==='pets'&&followReport?.pet_tracking?.supported!==true;b.disabled=followPending||!live||followReport.recognition_enabled===false||unsupported;b.title=!viewing?'查看画面后选择跟随对象':!live?'等待实时画面恢复':followReport?.recognition_enabled===false?'当前镜头未开启识别':unsupported?'当前识别服务暂不支持宠物跟随':'';b.setAttribute('aria-pressed',String(viewing&&followReport?.camera_control?.mode===mode));}}
-  for(const [mode,label]of [['auto','跟随人物'],['pets','跟随宠物']]){const b=btn(label,async()=>{const epoch=previewEpoch;followPending=true;syncFollow();try{const result=await api(`/api/embodied/cameras/${d.id}/control`,{mode});if(!alive||!frame.isConnected||epoch!==previewEpoch)return;if(result.mode!==mode)throw Error('follow_not_confirmed');status.textContent='已选择'+label;await poll();}catch(_){if(epoch===previewEpoch)status.textContent='跟随暂不可用，请等待画面恢复后重试。';}finally{followPending=false;syncFollow();}});b.disabled=true;b.setAttribute('aria-pressed','false');followButtons.push([mode,b]);followControls.append(b);}
+  const followControls=h('div',null,{class:'product-actions camera-follow-actions',role:'group','aria-label':'镜头模式'}),followButtons=[];
+  let modePending=false,followReport=null,cameraControl=null,previousIntent=null,modeVersion=0,pollSequence=0,appliedPoll=0;
+  const surveying=()=>cameraControl?.mode==='survey'&&cameraControl.phase!=='survey_finished';
+  const survey=btn('巡视一轮',()=>changeMode(surveying()?'hold':'survey'));
+  function syncFollow(){
+   const live=viewing&&(followReport?.frame_available||followReport?.state==='live'||followReport?.status==='live');
+   const canStart=live&&followReport?.recognition_enabled!==false;
+   for(const [mode,b]of followButtons){
+    const unsupported=mode==='pets'&&followReport?.pet_tracking?.supported!==true;
+    b.disabled=modePending||!canStart||unsupported;
+    b.title=!viewing?'查看画面后选择跟随对象':!live?'等待实时画面恢复':followReport?.recognition_enabled===false?'当前镜头未开启识别':unsupported?'当前识别服务暂不支持宠物跟随':'';
+    b.setAttribute('aria-pressed',String(viewing&&cameraControl?.mode===mode));
+   }
+   const running=viewing&&surveying();
+   survey.textContent=running?'停止巡视':'巡视一轮';
+   survey.disabled=modePending||!(running||canStart);
+  }
+  async function changeMode(mode){
+   if(modePending||!viewing)return;
+   const epoch=previewEpoch,prior=cameraControl?.intent_revision;
+   modeVersion++;modePending=true;syncFollow();
+   try{
+    const result=await api(`/api/embodied/cameras/${d.id}/control`,{mode});
+    if(!alive||!frame.isConnected||epoch!==previewEpoch)return;
+    if(result.mode!==mode)throw Error('camera_mode_unconfirmed');
+    modeVersion++;
+    const reason={auto:'跟随人物',pets:'跟随宠物',survey:'准备巡视',hold:'巡视已停止'}[mode];
+    previousIntent=result.intent_revision&&prior&&result.intent_revision!==prior?prior:null;
+    cameraControl={mode,reason,intent_revision:result.intent_revision};
+    status.textContent=reason;
+    await poll();
+   }catch(_){
+    if(epoch===previewEpoch)status.textContent=mode==='survey'?'巡视状态暂未确认。':mode==='hold'?'暂时无法确认已停止巡视。':'跟随暂不可用，请等待画面恢复后重试。';
+   }finally{modePending=false;syncFollow();}
+  }
+  for(const [mode,label]of [['auto','跟随人物'],['pets','跟随宠物']]){
+   const b=btn(label,()=>changeMode(mode));b.disabled=true;b.setAttribute('aria-pressed','false');
+   followButtons.push([mode,b]);followControls.append(b);
+  }
+  survey.disabled=true;followControls.append(survey);
   function drawPower(){watch.textContent=power?.enabled?'查看实时画面':'打开镜头并查看';watch.disabled=pending||!power||viewing;close.hidden=power?.enabled!==true;close.disabled=pending;stop.disabled=!viewing;refresh.disabled=pending;placeholder.lastElementChild.textContent=power?.enabled===false?'镜头已关闭':power?.enabled===true?'点击查看实时画面':'镜头状态暂不可用';if(!viewing)directions.forEach(b=>b.disabled=true);syncFollow();}
   async function readPower(){if(pending)return;pending=true;refresh.disabled=true;try{const result=await api(`/api/embodied/cameras/${d.id}/power`);if(!alive||!frame.isConnected)return;power=result;status.textContent=result.enabled?'镜头已打开':'镜头已关闭';}catch(_){power=null;status.textContent='无法读取镜头状态，请刷新状态或检查网络。';}finally{pending=false;drawPower();}}
-  async function poll(){if(!alive||!frame.isConnected){stopPreview();return;}if(!viewing)return;const epoch=previewEpoch;try{const report=await api(`/api/embodied/cameras/${d.id}/preview`);if(!alive||!frame.isConnected||!viewing||epoch!==previewEpoch)return;followReport=report;const live=report.frame_available||report.state==='live'||report.status==='live';directions.forEach(b=>b.disabled=!live||!(report.primary||report.manual_control));syncFollow();
-   if(live){image.src=`/api/embodied/cameras/${d.id}/frame?t=${Date.now()}`;image.hidden=false;placeholder.hidden=true;status.textContent=report.recognition_enabled===false?'实时画面 · 后台识别设置保持原样':report.camera_control?.reason||'实时画面';}
-   else{const reason=report.reason||report.state||report.status;image.hidden=true;placeholder.hidden=false;if(['privacy_closed','privacy_shutter_closed','shutter_closed'].includes(reason)){stopPreview();viewing=false;power=null;void readPower();}else status.textContent='正在连接画面，请稍候…';}
-  }catch(_){if(epoch!==previewEpoch||!viewing)return;followReport=null;syncFollow();directions.forEach(b=>b.disabled=true);image.hidden=true;placeholder.hidden=false;status.textContent='画面连接中断，正在重连…';}}
+  async function poll(){
+   if(!alive||!frame.isConnected){stopPreview();return;}if(!viewing)return;
+   const epoch=previewEpoch,version=modeVersion,sequence=++pollSequence;
+   const current=()=>alive&&frame.isConnected&&viewing&&epoch===previewEpoch&&version===modeVersion&&sequence>=appliedPoll;
+   try{
+    const report=await api(`/api/embodied/cameras/${d.id}/preview`);
+    if(!current())return;
+    appliedPoll=sequence;followReport=report;
+    if(report.recognition_enabled===false){cameraControl=null;previousIntent=null;}
+    else if(report.camera_control&&report.camera_control.intent_revision!==previousIntent){cameraControl=report.camera_control;previousIntent=null;}
+    const live=report.frame_available||report.state==='live'||report.status==='live';
+    directions.forEach(b=>b.disabled=!live||!(report.primary||report.manual_control));syncFollow();
+    if(live){image.src=`/api/embodied/cameras/${d.id}/frame?t=${Date.now()}`;image.hidden=false;placeholder.hidden=true;status.textContent=report.recognition_enabled===false?'实时画面 · 后台识别设置保持原样':cameraControl?.reason||'实时画面';}
+    else{
+     const reason=report.reason||report.state||report.status;image.hidden=true;placeholder.hidden=false;
+     if(['privacy_closed','privacy_shutter_closed','shutter_closed'].includes(reason)){stopPreview();viewing=false;power=null;void readPower();}
+     else status.textContent=cameraControl?.survey_result||modePending&&cameraControl?.mode==='hold'?cameraControl.reason:'正在连接画面，请稍候…';
+    }
+   }catch(_){if(!current())return;appliedPoll=sequence;followReport=null;syncFollow();directions.forEach(b=>b.disabled=true);image.hidden=true;placeholder.hidden=false;status.textContent='画面连接中断，正在重连…';}
+  }
   image.addEventListener('error',()=>{image.hidden=true;placeholder.hidden=false;});
   commands.append(add(h('div',null,{class:'product-actions camera-view-actions'}),watch,close,stop,refresh),followControls,cameraControls);
   commands.append(add(h('div',null,{class:'product-actions'}),btn('回看录像',()=>go('Activity')),btn('人物识别',()=>go('People'))));
