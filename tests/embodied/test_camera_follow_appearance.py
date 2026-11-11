@@ -56,9 +56,9 @@ def test_target_features_require_one_correspondence_in_the_same_calibrated_view(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner', ['primary', 'secondary'])
-@pytest.mark.parametrize('mode', ['auto', 'pets'])
+@pytest.mark.parametrize('mode', ['auto', 'pets', 'person_target', 'pet_target'])
 async def test_original_camera_loop_aims_twice_at_the_same_subject_despite_track_renumbering(owner, mode):
-    pets = mode == 'pets'
+    pets = mode in {'pets', 'pet_target'}
     original = subject('dog:1' if pets else 1, .72, pets=pets)
     impostor = subject('dog:2' if pets else 2, .05, pets=pets)
     reacquired = subject('dog:3' if pets else 3, .60, pets=pets)
@@ -67,6 +67,10 @@ async def test_original_camera_loop_aims_twice_at_the_same_subject_despite_track
                  (2.7, [(impostor, 8)], .14), (3, [(impostor, 8)], .14), (3.4, [(impostor, 8)], .14),
                  (4.2, [(reacquired, 7)], .14), (4.5, [(reacquired, 7)], .14), (4.8, [(walking, 7)], .14)])
     director = CameraDirector()
+    if mode in {'person_target', 'pet_target'}:
+        director.apply_mode(mode, 'intent')
+        director.select_target(dict(status='live', tracking_current=True, scene_visible=True,
+            session_id='one-camera', _local_received=-.3, **appearance_sample(-.3, [(original, 7)])), original, -.3)
     state, moves, phases = {}, [], []
     item = dict(source_active=True, privacy_closed=False, control_epoch=1, mode=mode, mode_revision='intent')
     scope = {}

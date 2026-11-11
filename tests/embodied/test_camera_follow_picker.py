@@ -187,3 +187,66 @@ async def test_public_api_relays_the_pick_to_the_camera_owner(tmp_path, monkeypa
         assert (await ui.post(path, json=dict(action='stop', revision=view['intent_revision']))).json()['mode'] == 'hold'
         service.capture_enabled = False
         assert (await ui.get(path)).status_code == 409
+
+
+def test_explicit_follow_requires_two_new_observations_containing_the_selected_subject(tmp_path):
+    camera = Camera(tmp_path / 'intent')
+    camera.frame()
+    camera.prepare()
+    view = camera.picker.snapshot()
+    camera.picker.command(FollowChoose(action='choose', snapshot=view['snapshot'], choice=2))
+    assert camera.director.choose(camera.frame(.3, people=[camera.left]), camera.now) is None
+    assert camera.director.choose(camera.frame(.3), camera.now) is None
+    assert camera.director.choose(camera.frame(.3), camera.now) == 'right'
+
+
+@pytest.mark.parametrize('interruption', ['missing', 'tracking', 'time_gap'])
+def test_stationary_follow_ignores_reused_track_and_recovers_only_the_original_appearance(tmp_path, interruption):
+    camera = Camera(tmp_path / 'intent')
+    director = camera.director
+    original = subject(2, .42)
+    impostor = subject(2, .72)
+    restored = subject(9, .72)
+
+    def frame(delta, *rows, **overrides):
+        return camera.frame(delta, people=[person for person, _ in rows], _follow_jpeg=picture(rows), **overrides)
+
+    frame(0, (original, 7))
+    camera.prepare()
+    view = camera.picker.snapshot()
+    camera.picker.command(FollowChoose(action='choose', snapshot=view['snapshot'], choice=1))
+    for _ in range(2):
+        assert director.choose(frame(.3, (original, 7)), camera.now) is None
+    assert director.public()['phase'] == 'following'
+    if interruption == 'missing':
+        assert director.choose(frame(.3), camera.now) is None
+    elif interruption == 'tracking':
+        assert director.choose(frame(.3, (impostor, 8), tracking_current=False), camera.now) is None
+    gap = 1.8 if interruption == 'time_gap' else .3
+    assert director.choose(frame(gap, (impostor, 8)), camera.now) is None
+    assert director.choose(frame(.3, (impostor, 8)), camera.now) is None
+    assert director.choose(frame(.3, (restored, 7)), camera.now) is None
+    assert director.choose(camera.state, camera.now + .1) is None
+    assert director.choose(frame(.3, (restored, 7)), camera.now) == 'right'
+    assert director.target == 9 and director.decision_current(camera.state, camera.now, 'right')
+
+
+def test_explicit_follow_reconfirms_a_known_person_before_dispatching_on_a_new_track(tmp_path):
+    camera = Camera(tmp_path / 'intent')
+    director = camera.director
+    identity = dict(state='matched', person_id='synthetic-person')
+    target = dict(camera.right, identity=identity)
+    camera.frame(people=[target])
+    camera.prepare()
+    view = camera.picker.snapshot()
+    camera.picker.command(FollowChoose(action='choose', snapshot=view['snapshot'], choice=1))
+    assert director.choose(camera.frame(.3, people=[target]), camera.now) is None
+    assert director.choose(camera.frame(.3, people=[target]), camera.now) == 'right'
+    replacement = dict(target, id=6)
+    assert not director.decision_current(camera.frame(.3, people=[replacement]), camera.now, 'right')
+    assert director.choose(camera.state, camera.now) is None
+    assert director.pending_decision is None
+    assert director.choose(camera.frame(.3, people=[replacement, dict(replacement, id=7)]), camera.now) is None
+    assert director.choose(camera.frame(.3, people=[replacement]), camera.now) is None
+    assert director.choose(camera.frame(.3, people=[replacement]), camera.now) == 'right'
+    assert director.target == 6 and director.decision_current(camera.state, camera.now, 'right')

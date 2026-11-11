@@ -48,6 +48,7 @@ class CameraDirector:
     FALL_INTERVAL_SECONDS = 20
     PATROL_CONFIRM_SECONDS = 8
     FOLLOW_REACQUIRE_SECONDS = 8
+    FOLLOW_REFERENCE_INTERVAL = 2
     TILT_DIRECTIONS = ('up', 'down')
     SURVEY_ATTEMPT_LIMIT = 12
     SURVEY_ROUTE = ('right', 'right', 'down', 'left', 'left', 'left', 'left', 'up', 'right', 'right')
@@ -61,6 +62,8 @@ class CameraDirector:
         self.target_session = None
         self.source_session = None
         self.target_seen = -100.0
+        self.selection_sample = None
+        self.selection_reference = None
         self.uncover_steps = 0
         self.visible_samples = 0
         self.clear = False
@@ -135,6 +138,7 @@ class CameraDirector:
         if intent != self.intent:
             self._discard_patrol()
             self._clear_reframe()
+            self.selection_sample = self.selection_reference = None
             self.review_windows.clear()
             self.sound_search_cue = None
             self.sound_intent_since = None
@@ -206,7 +210,10 @@ class CameraDirector:
                 # Room 子进程复用本模块的视野检查，跟随依赖在实际需要时加载。
                 from .camera_follow_appearance import remember_follow_target
 
-                self.pending_decision['appearance'] = remember_follow_target(sample, subjects[0])
+                reference = self.selection_reference
+                self.pending_decision['appearance'] = (
+                    reference[1] if reference and reference[0] == sample['_local_received']
+                    else remember_follow_target(sample, subjects[0]))
         if self.phase in {'patrolling', 'sound_search'}:
             self.pending_decision['view'] = sample['_patrol_view']
             if self.phase == 'sound_search':
@@ -244,7 +251,62 @@ class CameraDirector:
         self.target_seen = now
         self.visible_samples = 0
         self.last_sample = sample['_local_received']
+        self.selection_sample = None
+        self.selection_reference = None
+        self._remember_selection(sample, subject)
         self.phase = 'target_reacquiring'
+
+    @staticmethod
+    def _qualified_target(target):
+        from .stable_tracks import valid_box
+
+        box = target.get('box') if target else None
+        return valid_box(box) and box['confidence'] >= .65
+
+    def _remember_selection(self, sample, target):
+        stamp = sample['_local_received']
+        if self.target_identity is not None:
+            self.selection_reference = None
+        elif self.selection_reference is None or stamp - self.selection_reference[0] >= self.FOLLOW_REFERENCE_INTERVAL:
+            from .camera_follow_appearance import remember_follow_target
+
+            self.selection_reference = (stamp, remember_follow_target(sample, target))
+
+    def _interrupt_selection(self, now):
+        if self.reframe_started is None:
+            self.reframe_started = self.target_seen
+            reference = self.selection_reference
+            if reference and now - reference[0] <= self.FOLLOW_REACQUIRE_SECONDS:
+                self.reframe_appearance = reference[1]
+        self.selection_reference = self.selection_sample = self.reframe_candidate = None
+        self.pending_direction = self.pending_decision = None
+
+    def _selected_follow(self, sample, subjects, now):
+        """只依据连续观测或重新确认过的原目标跟随。"""
+        stamp = sample['_local_received']
+        matches = [subject for subject in subjects if subject['id'] == self.target]
+        target = matches[0] if len(matches) == 1 else None
+        if self.reframe_started is None and (
+                not self._qualified_target(target) or self.target_identity
+                and self.identity(target) not in (None, self.target_identity)):
+            self._interrupt_selection(now)
+        if self.reframe_started is not None:
+            target = self._reframe_target(sample, subjects)
+            if target is None:
+                checking = subjects and now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS
+                self.phase = 'target_reacquiring' if checking else 'target_lost'
+                return None
+            self.target = target['id']
+            self._clear_reframe()
+        elif self.selection_sample is None or stamp - self.selection_sample > 1.5:
+            self.selection_sample = stamp
+            self.phase = 'target_reacquiring'
+            return None
+        self.selection_sample = stamp
+        self.target_seen = now
+        self.target_identity = self.target_identity or self.identity(target)
+        self._remember_selection(sample, target)
+        return target
 
     def _clear_reframe(self):
         self.reframe_started = self.reframe_appearance = self.reframe_candidate = None
@@ -254,18 +316,24 @@ class CameraDirector:
             self.reframe_started = now
             self.reframe_appearance = pending.get('appearance')
             self.reframe_candidate = None
+            self.selection_sample = self.selection_reference = None
 
     def _reframe_target(self, sample, subjects):
+        explicit = self.mode in TARGET_MODES
         if self.target_identity:
             matches = [subject for subject in subjects if self.identity(subject) == self.target_identity]
-            return matches[0] if len(matches) == 1 else None
-        if self.reframe_appearance is None:
-            return None
-        from .camera_follow_appearance import find_follow_target
+            match = matches[0] if len(matches) == 1 else None
+            if not explicit:
+                return match
+        elif self.reframe_appearance is not None:
+            from .camera_follow_appearance import find_follow_target
 
-        match = find_follow_target(self.reframe_appearance, sample, subjects)
+            match = find_follow_target(self.reframe_appearance, sample, subjects)
+        else:
+            match = None
         previous, self.reframe_candidate = self.reframe_candidate, None
-        if match is None or sum(row['id'] == match['id'] for row in subjects) != 1:
+        if (match is None or explicit and not self._qualified_target(match)
+                or sum(row['id'] == match['id'] for row in subjects) != 1):
             return None
         stamp = sample['_local_received']
         self.reframe_candidate = (match['id'], stamp)
@@ -324,7 +392,9 @@ class CameraDirector:
             return False
         if self.mode in PET_MODES and not self._pets_current(sample):
             return False
-        if self.mode in TARGET_MODES and (pending['phase'] != 'following' or self.target_session != sample.get('session_id')):
+        explicit = self.mode in TARGET_MODES
+        if explicit and (pending['phase'] != 'following' or self.target_session != sample.get('session_id')
+                         or sample.get('tracking_current') is not True or self.reframe_started is not None):
             return False
         if pending['phase'] in {'uncovering', 'recovering_view'}:
             return sample.get('scene_visible') is False
@@ -350,11 +420,13 @@ class CameraDirector:
                 (pending['session'], pending['target'], direction, pending['game_window']), pending['stamp']):
             return False
         matches = [p for p in people if p['id'] == pending['target']]
-        if not matches and pending['identity'] and not tilt:
+        if not matches and pending['identity'] and not tilt and not explicit:
             matches = [p for p in people if self.identity(p) == pending['identity']]
         if len(matches) != 1:
             return False
         target = matches[0]
+        if explicit and not self._qualified_target(target):
+            return False
         if pending['identity'] and self.identity(target) and self.identity(target) != pending['identity']:
             return False
         return self._follow_direction(target) == direction
@@ -367,6 +439,7 @@ class CameraDirector:
         # Manual positioning changes the relative origin. Do not reuse old angles.
         self._discard_patrol()
         self._clear_reframe()
+        self.selection_sample = self.selection_reference = None
         self.sound_search_cue = None
         self.position = (0,0)
         self.blocked_positions.clear()
@@ -556,6 +629,7 @@ class CameraDirector:
             self.tilt_recovery = None
             self.target = self.target_identity = self.target_session = None
             self._clear_reframe()
+            self.selection_sample = self.selection_reference = None
             self.last_focus = None
             self.visible_samples = self.obscured_samples = 0
             self.clear_since = self.obscured_since = None
@@ -571,6 +645,7 @@ class CameraDirector:
         if explicit and (self.target_session is None or self.target_session != sample.get('session_id')):
             self.phase = 'target_selecting' if self.target_session is None else 'target_lost'
             self._clear_reframe()
+            self.selection_sample = self.selection_reference = None
             return None
         if self.reframe_started is not None and now - self.reframe_started > self.FOLLOW_REACQUIRE_SECONDS:
             self.reframe_appearance = self.reframe_candidate = None
@@ -596,7 +671,10 @@ class CameraDirector:
             self.tilt_observation = None
             self.phase = 'motor_unavailable'
             return None
-        if not self._fresh(sample, now) or sample['_local_received'] <= self.last_move:
+        if (not self._fresh(sample, now) or sample['_local_received'] <= self.last_move
+                or explicit and sample.get('tracking_current') is not True):
+            if explicit:
+                self._interrupt_selection(now)
             self.visible_samples = 0
             self.clear_since = None
             self.tilt_observation = None
@@ -611,6 +689,8 @@ class CameraDirector:
             return None
         if self.mode in PET_MODES:
             if not self._pets_current(sample):
+                if explicit:
+                    self._interrupt_selection(now)
                 self.phase = 'pet_unavailable'
                 self.tilt_observation = None
                 return None
@@ -629,6 +709,8 @@ class CameraDirector:
         stamp = sample.get('_local_received')
         if self.last_sample is not None and stamp <= self.last_sample:
             return None
+        if explicit and self.last_sample is not None and stamp - self.last_sample > 1.5:
+            self._interrupt_selection(now)
         self.last_sample = stamp
         previous_tilt, self.tilt_observation = self.tilt_observation, None
         visible = sample.get('scene_visible') is True
@@ -641,6 +723,7 @@ class CameraDirector:
             self.phase = 'view_obscured'
             self.reframe_candidate = None
             if explicit:
+                self._interrupt_selection(now)
                 return None
             if self.obscured_samples < 3 or now-self.obscured_since < 1:
                 return None
@@ -673,8 +756,11 @@ class CameraDirector:
             return self._aim(direction, sample, now)
         self.obscured_samples = 0
         self.obscured_since = None
+        people = self._subjects(sample)
+        target = self._selected_follow(sample, people, now) if explicit else None
         if self.visible_samples < 2:
-            self.phase='checking_view'
+            if not explicit:
+                self.phase = 'checking_view'
             return None
         self.tilt_recovery = None
         self.clear = True
@@ -692,56 +778,58 @@ class CameraDirector:
                 self.phase = 'observing'
                 return None
             return self._patrol(sample, now)
-        people = self._subjects(sample)
-        if self.mode == 'auto' and self.reframe_started is None:
-            direction = self._sound_search(sample, now, sound_cue, may_search=not (
-                people or occupied_elsewhere or review_pending or fall_pending))
-            if direction or self.sound_search_cue is not None:
-                return direction
-        ids = {p['id'] for p in people}
-        self.target_session = session
-        focus = self._current_focus(sample, now, focus)
-        if self.mode == 'auto' and focus and focus.get('track') in ids:
-            key = (session, focus['at'], focus['track'])
-            if key != self.last_focus:
-                self.target = focus['track']; self.last_focus = key
-                self.target_identity = None
-                self._clear_reframe()
-        if not explicit and self.target is None and len(people) == 1:
-            self.target = people[0]['id']
-        target = next((p for p in people if p['id'] == self.target), None)
-        if (target and self.target_identity and self.identity(target)
-                and self.identity(target) != self.target_identity):
-            target = None
-        if self.reframe_started is not None:
-            target = self._reframe_target(sample, people)
-            if target is not None:
+        if not explicit:
+            if self.mode == 'auto' and self.reframe_started is None:
+                direction = self._sound_search(sample, now, sound_cue, may_search=not (
+                    people or occupied_elsewhere or review_pending or fall_pending))
+                if direction or self.sound_search_cue is not None:
+                    return direction
+            ids = {p['id'] for p in people}
+            self.target_session = session
+            focus = self._current_focus(sample, now, focus)
+            if self.mode == 'auto' and focus and focus.get('track') in ids:
+                key = (session, focus['at'], focus['track'])
+                if key != self.last_focus:
+                    self.target = focus['track']; self.last_focus = key
+                    self.target_identity = None
+                    self._clear_reframe()
+            if self.target is None and len(people) == 1:
+                self.target = people[0]['id']
+            target = next((p for p in people if p['id'] == self.target), None)
+            if (target and self.target_identity and self.identity(target)
+                    and self.identity(target) != self.target_identity):
+                target = None
+            if self.reframe_started is not None:
+                target = self._reframe_target(sample, people)
+                if target is not None:
+                    self.target = target['id']
+                    self._clear_reframe()
+                elif people or now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS:
+                    if people:
+                        self.last_person = now
+                    self.phase = ('target_reacquiring' if now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS
+                                  else 'target_lost')
+                    return None
+                else:
+                    self._clear_reframe()
+            elif target is None and self.target_identity:
+                matches = [p for p in people if self.identity(p) == self.target_identity]
+                if len(matches) == 1:
+                    target = matches[0]
+                    self.target = target['id']
+            elif target is None and len(people) == 1:
+                # 静止视野只有一个目标时，沿用自动跟随的原选择方式。
+                target = people[0]
                 self.target = target['id']
-                self._clear_reframe()
-            elif explicit or people or now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS:
-                if people:
-                    self.last_person = now
-                self.phase = ('target_reacquiring' if now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS
-                              else 'target_lost')
-                return None
-            else:
-                self._clear_reframe()
-        elif target is None and self.target_identity:
-            matches = [p for p in people if self.identity(p) == self.target_identity]
-            if len(matches) == 1:
-                target = matches[0]
-                self.target = target['id']
-        elif not explicit and target is None and len(people) == 1:
-            # 静止视野只有一个目标时，沿用自动跟随的原选择方式。
-            target = people[0]
-            self.target = target['id']
         if people:
             self.last_person = now
             if target is None:
-                self.phase = 'target_lost' if explicit else 'target_ambiguous'
+                if not explicit:
+                    self.phase = 'target_ambiguous'
                 return None
-            self.target_seen = now
-            self.target_identity = self.target_identity or self.identity(target)
+            if not explicit:
+                self.target_seen = now
+                self.target_identity = self.target_identity or self.identity(target)
             self.phase = 'following'
             # Allow fresh post-pan face evidence to accumulate before another
             # impulse discards it. A matched identity may release this wait;
@@ -760,7 +848,6 @@ class CameraDirector:
                     return None
             return self._aim(direction, sample, now) if direction else None
         if explicit:
-            self.phase = 'target_lost'
             return None
         if self.last_person is None:
             self.last_person = now
