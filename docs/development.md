@@ -15,6 +15,8 @@ uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connectio
 完整回归包含 KTV 的真实 PNG 二维码生成，因此须选择已锁定的 `ktv` extra；
 `qrcode` 本身不包含 `PyPNGImage` 所需的 PyPNG。无需为运行测试启动 KTV、登录、扬声器或电视。
 
+体感游戏的 Node 回归通过 `FRIDAY_TEST_PYTHON` 显式选择同一锁定测试环境的 Python；没有设置时才兼容本地 `.venv/bin/python`。独立源码导出与 CI 应设置该变量，不必在导出目录复制环境或建立兼容软链。这只调整测试入口，不改变用户操作或产品画面。
+
 照片处理的 Pillow 与 HEIF 解码器由主依赖锁定；[照片处理说明](PHOTO-EDITING.md)
 记录真实编解码、子进程预算和取消责任。依赖解析使用 `uv lock`，不以精确同步已有
 运行环境代替锁文件更新；当前安装版和旧环境继续单独保留。

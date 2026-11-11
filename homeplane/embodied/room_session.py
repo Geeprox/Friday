@@ -45,6 +45,7 @@ class RoomSession:
         self.command_until = 0
         self.reset_pending = False
         self.registration = None
+        self.patrol_view = None
         self.reg_info = {"status": "checking"}
         self.scene_visible = False
         self.draft = None
@@ -62,6 +63,7 @@ class RoomSession:
         self.epoch += 1
         self.command_until = now + seconds
         self.registration = None
+        self.patrol_view = None
         self.reg_info = {"status": "moving"}
         self.draft = None
 
@@ -116,6 +118,7 @@ class RoomSession:
         self.ready = False
         self.reason = reason
         self.registration = None
+        self.patrol_view = None
         self.reg_info = {"status": "unavailable"}
         self.scene_visible = False
         self.draft = None
@@ -223,6 +226,11 @@ class RoomSession:
 
         self.registration = (
             np.asarray(result["matrix"], dtype=float) if result["matrix"] is not None else None
+        )
+        # 同一子进程的参考画面才能用于比较两个视角。快照只在当前进程内使用。
+        self.patrol_view = (
+            (self.nonce, tuple(tuple(row) for row in result["matrix"]), now)
+            if self.registration is not None else None
         )
         self.reg_info = dict(result["info"])
         self.command_until = result["command_until"]

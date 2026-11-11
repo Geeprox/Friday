@@ -55,14 +55,17 @@ def test_closed_primary_view_is_not_overwritten_by_last_frames_age(tmp_path):
     source=Path('homeplane/embodied/worker.py').read_text()
     function=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='view')
     state={'status':'shutter_closed','received_at':time.time()-100,'processed_frames':2,
+           '_patrol_view':('private-reference', ((1,0,0),(0,1,0),(0,0,1)), 1),
            'camera_control':{'view_usable':True,'target_locked':True}}
-    context=dict(state=state,games=MotionGames(),recorder=SimpleNamespace(public=lambda:{}),
+    from homeplane.embodied.party_camera import PartyCamera
+    context=dict(state=state,games=MotionGames(),party_camera=PartyCamera(),recorder=SimpleNamespace(public=lambda:{}),
         safety=SimpleNamespace(recording_status=lambda:{'state':'off'}),
         home=SimpleNamespace(public=lambda:{}),secondary_homes={},fleet=SimpleNamespace(public=lambda _:{}),time=time,
         PRIVATE=tmp_path,last_frame=1,SELECTED={'id':'main'},camera_planner=None,
         configuration=lambda:{'cameras':[{'id':'main'}]})
     exec(compile(ast.Module(body=[function],type_ignores=[]),'<actual view>','exec'),context)
     result=context['view']()
+    assert '_patrol_view' not in result
     assert result['status']=='shutter_closed' and result['camera_sessions'][0]['state']=='shutter_closed'
     assert not result['camera_control']['view_usable'] and not result['camera_control']['target_locked']
     assert state['camera_control']['view_usable'], 'Public status must not mutate the director snapshot'

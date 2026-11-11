@@ -36,6 +36,9 @@ STAGES = (
     QuestStage("jack", "开合步", "打开再合拢，走出花径",
                "迈开双脚并举手，再收脚放手，重复 4 次。", "exercise.jack", "溪畔步道", reps=4,
                scene="stream", landmark="flowers"),
+    QuestStage("balance", "单腿站立", "单腿站稳，踏过溪石",
+               "轻抬一脚，站稳 1 秒后落地，左右交替，共 4 次。", "exercise.balance", "溪畔步道", reps=4,
+               scene="stream", landmark="crossing"),
     QuestStage("side_bend", "站姿侧倾", "轻轻侧倾，越过枝叶",
                "双脚站稳，向一侧轻倾再回正，左右交替，共 4 次。", "exercise.side_bend", "山顶营地", reps=4,
                scene="camp", landmark="boughs"),
@@ -48,6 +51,9 @@ STAGES = (
     QuestStage("arm_open", "胸前开合", "双臂开合，迎接山顶微风",
                "双手在胸前靠拢，平举打开，再合回胸前，重复 4 次。", "exercise.arm_open", "山顶营地", reps=4,
                scene="camp", landmark="breeze"),
+    QuestStage("cross_knee", "交叉触膝", "交叉触膝，铺好营地踏板",
+               "抬膝，用对侧手靠近膝盖，再放下换侧，共 4 次。", "exercise.cross_knee", "山顶营地", reps=4,
+               scene="camp", landmark="landing"),
 )
 
 TRANSITION_SECONDS = 3.0

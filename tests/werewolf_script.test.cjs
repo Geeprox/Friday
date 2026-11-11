@@ -30,12 +30,12 @@ const all=node=>[node,...node.children.flatMap(all)];
 for(const [index,packet]of packets.entries())test('original public outcome reaches host and TV: '+index,()=>{
  const document={createElement:tag=>new Element(tag),body:new Element('body')};
  const report={active:true,game:packet,camera_hints:[]},root=new Element('main'),roomLabel=new Element('p');
- const scope=vm.createContext({document,current:report,report,root,roomLabel,viewKey:''});
+ const scope=vm.createContext({document,current:report,report,root,roomLabel,displayView:null});
  vm.runInContext(host.split('\n').find(line=>line.startsWith('const node=')),scope);
  vm.runInContext(display.split('\n').find(line=>line.startsWith('const h=')),scope);
+ vm.runInContext(display.split('\n').find(line=>line.startsWith('const nightPhases ')),scope);
  vm.runInContext(extract(host,'function board(game)','\n function live()'),scope);
- vm.runInContext(extract(display,'function phaseHeader(g)','\nfunction seatButton('),scope);
- vm.runInContext(extract(display,'function updateTimer(g)','\nasync function poll()'),scope);
+ vm.runInContext(extract(display,'function createDisplay()','\nasync function poll()'),scope);
  const board=scope.board(packet),hostLine=all(board).find(n=>n.className==='ww-host-line');
  assert.equal(hostLine.textContent,packet.host_script.text);
  scope.renderDisplay(report);

@@ -2,23 +2,48 @@
 const $=id=>document.getElementById(id),key=new URLSearchParams(location.search).get('k')||sessionStorage.getItem('friday-view-key')||'',url=p=>p+'?k='+encodeURIComponent(key),canvas=$('world'),c=canvas.getContext('2d');$('back').href=url('/');let selected='quest',meta=null,received=null,active=false,firstPacket=true,lastBackendMode=null,lastBackendRound=null,debugFrame=null,debugMeta=null,decoding=false;const dc=$('debugVideo').getContext('2d');
 let gameSocket=null,streamOpen=false,streamGeneration=0,reconnectTimer=null,stageClosed=false,commandPending=null,lastConnectionFresh=null,lastAcceptedAt=null,socketAttemptAt=0,debugReceived=null,decodeOwner=0;
 let teachingWaitSince=null;
-function validGameState(g){return !!g&&typeof g.control_context==='string'&&/^[a-f0-9]{32}$/.test(g.control_context)&&Number.isSafeInteger(g.control_revision)&&g.control_revision>=0&&Number.isSafeInteger(g.round_id)&&g.round_id>0&&['quest','ski','tennis','hiit','home'].includes(g.selected_mode)&&['off','quest','ski','tennis','hiit','home'].includes(g.mode)&&(g.difficulty===undefined||['easy','standard','challenge'].includes(g.difficulty))&&(g.presentation===undefined||g.presentation&&typeof g.presentation.required==='boolean'&&typeof g.presentation.ready==='boolean'&&(!g.presentation.required||/^[a-f0-9]{32}$/.test(g.presentation.context)&&/^[a-f0-9]{32}$/.test(g.presentation.window)));}
+function validGameState(g){return !!g&&typeof g.control_context==='string'&&/^[a-f0-9]{32}$/.test(g.control_context)&&Number.isSafeInteger(g.control_revision)&&g.control_revision>=0&&Number.isSafeInteger(g.round_id)&&g.round_id>0&&['quest','ski','tennis','hiit','home'].includes(g.selected_mode)&&['off','quest','ski','tennis','hiit','home'].includes(g.mode)&&(g.difficulty===undefined||['easy','standard','challenge'].includes(g.difficulty))&&(g.tennis_variant==null||g.selected_mode==='tennis'&&['match','practice'].includes(g.tennis_variant))&&(g.presentation===undefined||g.presentation&&typeof g.presentation.required==='boolean'&&typeof g.presentation.ready==='boolean'&&(!g.presentation.required||/^[a-f0-9]{32}$/.test(g.presentation.context)&&/^[a-f0-9]{32}$/.test(g.presentation.window)));}
 function gameViewCurrent(at=performance.now()){return !stageClosed&&streamOpen&&received!==null&&at-received>=0&&at-received<=1500&&validGameState(meta?.game);}
 function presentedGame(){const g=meta?.game||{};return gameViewCurrent()||g.mode==='off'||g.status==='complete'?g:{...g,status:'paused',gesture_control:{}};}
 function syncGameDifficulty(disabled){const setting=$('difficultySetting'),control=$('difficultySelect'),note=$('difficultyNote');if(!setting||!control)return;const g=meta?.game,options=Array.isArray(g?.difficulty_options)?g.difficulty_options.filter(d=>['easy','standard','challenge'].includes(d?.id)&&typeof d.label==='string'&&d.label.length<=12):[],current=options.find(d=>d.id===g?.difficulty),supported=!!current&&selected!=='home';setting.hidden=!supported;control.disabled=disabled||!supported||g.mode!=='off'&&g.status!=='complete';if(!supported)return;const signature=JSON.stringify(options.map(d=>[d.id,d.label]));if(control.dataset.options!==signature){control.replaceChildren();for(const option of options){const item=document.createElement('option');item.value=option.id;item.textContent=option.label;control.append(item);}control.dataset.options=signature;}control.value=current.id;if(note)note.textContent=g.mode!=='off'&&g.status!=='complete'?'结束本局后可更改':current.description?.[selected]||'';}
-function gameSceneReady(){const scene=selected==='home'||(selected==='ski'?winterReady():scenery.ready(selected));if(!scene)return false;if(meta?.game?.presentation?.required===true&&['quest','hiit'].includes(selected)){const diagram=document.querySelector('#gameTutorial canvas');return ['ready','static'].includes(diagram?.dataset.motion);}return true;}
+function gameTeachingKey(g){return selected==='quest'?questPresentation(g).teaching:selected==='hiit'?({squat:'exercise.squat',jack:'exercise.jack',high_knee:'exercise.high_knee',lunge:'exercise.side_lunge',side_step:'exercise.side_step',side_bend:'exercise.side_bend',reach_up:'exercise.reach_up',arm_open:'exercise.arm_open',balance:'exercise.balance',cross_knee:'exercise.cross_knee'}[g.hiit?.action||'squat']):null;}
+function gameSceneReady(){const scene=selected==='home'||(selected==='ski'?winterReady():scenery.ready(selected));if(!scene)return false;const g=meta?.game;if(g?.presentation?.required===true&&g.status!=='complete'&&['quest','hiit'].includes(selected)){const key=gameTeachingKey(g),diagram=document.querySelector('#gameTutorial canvas');return Boolean(key&&$('gameTutorial')?.dataset.teachingKey===key&&['ready','static'].includes(diagram?.dataset.motion));}return true;}
 function gameDisplayReady(){return gameSceneReady()&&(meta?.game?.presentation?.required!==true||presentationClient.ready());}
-function syncGameControls(){const current=gameViewCurrent(),disabled=!current||!!commandPending;for(const n of document.querySelectorAll('[data-mode],[data-click="startGame()"],[data-click="stopGame()"],[data-click="pauseGame()"]'))n.disabled=disabled||((n.getAttribute?.('data-click')==='startGame()'||n.id==='pauseToggle'&&(meta?.game?.manually_paused||meta?.game?.source_recovery?.required))&&!gameDisplayReady())||(n.id==='pauseToggle'&&meta?.game?.source_recovery?.required===true&&meta.game.source_recovery.ready!==true);document.querySelector('.actions')?.setAttribute('aria-busy',String(!!commandPending));syncGameDifficulty(disabled);const record=$('recordToggle');if(record)record.disabled=disabled||typeof meta?.recording?.armed!=='boolean';const label=!current?(meta?'正在重新连接':'正在连接游戏'):commandPending?commandPending.label:meta?.status==='live'?'已连接 · '+(meta.people?.length||0)+' 位玩家':'等待摄像头';if($('connection').textContent!==label)$('connection').textContent=label;}
+function resumeInputReady(g=meta?.game){return g?.mode===selected&&g.manually_paused===true&&(g.source_recovery?.required!==true||g.source_recovery.ready===true);}
+function syncGameControls(){const current=gameViewCurrent(),disabled=!current||!!commandPending;for(const n of document.querySelectorAll('[data-mode],[data-click="startGame()"],[data-click="stopGame()"],[data-click="pauseGame()"],[data-click="resumeGame()"],[data-click="toggleSkiChooser()"],[data-click="chooseSkiTrail()"],[data-click="chooseTennisVariant()"]')){const call=n.getAttribute('data-click');n.disabled=disabled||(call==='startGame()'&&!gameDisplayReady())||(call==='resumeGame()'&&(!resumeInputReady()||!gameDisplayReady()));}document.querySelector('.actions')?.setAttribute('aria-busy',String(!!commandPending));syncGameDifficulty(disabled);const record=$('recordToggle');if(record)record.disabled=disabled||typeof meta?.recording?.armed!=='boolean';const label=!current?(meta?'正在重新连接':'正在连接游戏'):commandPending?commandPending.label:meta?.status==='live'?'已连接 · '+(meta.people?.length||0)+' 位玩家':'等待摄像头';if($('connection').textContent!==label)$('connection').textContent=label;}
 if(new URLSearchParams(location.search).get('embed')==='1')document.body?.classList?.add?.('embedded');
-function showOverlay(markup){const overlay=$('overlay');if(overlay.innerHTML!==markup)overlay.innerHTML=markup;}
+let renderedOverlay=null;
+function showOverlay(markup){
+ if(renderedOverlay===markup)return;
+ renderedOverlay=markup;
+ const overlay=$('overlay');overlay.innerHTML=markup;overlay.querySelector('h2')?.setAttribute('tabindex','-1');
+}
+function restoreStageFocus(previous){
+ if(!previous)return;
+ const focused=document.activeElement;
+ if(focused&&focused!==previous&&focused!==document.body)return;
+ const available=node=>node?.isConnected&&!node.disabled&&!node.hidden&&!node.closest?.('[hidden]');
+ if(available(previous)){if(focused!==previous)previous.focus({preventScroll:true});return;}
+ const overlay=$('overlay'),pause=$('pauseToggle');
+ const next=overlay.querySelector(':is([data-ski-trail],[data-tennis-variant])[aria-pressed="true"]:not([disabled])')||
+  overlay.querySelector('button:not([disabled])')||(available(pause)?pause:null)||overlay.querySelector('h2')||document.querySelector('[data-mode="'+selected+'"]');
+ next?.focus?.({preventScroll:true});
+}
 function updateSourceMode(packet){
  const label=$('sourceMode');
  if(packet?.simulated===true){label.hidden=false;document.body.dataset.simulated='true';}
  else if(packet?.simulated===false){label.hidden=true;delete document.body.dataset.simulated;}
 }
 function completedGame(g){
- if(selected==='ski'){const s=g.ski||{};return['三段雪道已完成',Math.max(0,s.points||0)+' 分 · '+(s.gate_count?'穿门 '+(s.gates_passed||0)+' / '+s.gate_count:'避开 '+(s.passed||0)+' 处障碍')+' · '+(s.stars||1)+' / 3 星','再滑一程'];}
- if(selected==='tennis'){const t=g.tennis||{};return[Number.isInteger(t.winner)?(t.winner+1)+' 号玩家获胜':'本局已结束',(t.score||[0,0]).join(' : ')+' · 最长连续回合 '+(t.best_rally||0),'再比一局'];}
+ if(selected==='ski'){
+  const s=g.ski||{},trail=skiTrails(g).find(item=>item.id===g.ski_trail);
+  return[trail?escapeSkiLabel(trail.name)+' · 成绩':'三段雪道已完成',Math.max(0,s.points||0)+' 分 · '+(s.gate_count?'穿门 '+(s.gates_passed||0)+' / '+s.gate_count:'避开 '+(s.passed||0)+' 处障碍')+' · '+(s.stars||1)+' / 3 星','再滑一程'];
+ }
+ if(selected==='tennis'){
+  const t=g.tennis||{};
+  if(g.tennis_variant==='practice')return['练习完成','最长连击 '+(t.best_rally||0)+' 球','再练一轮'];
+  return[Number.isInteger(t.winner)?(t.winner+1)+' 号玩家获胜':'本局已结束',(t.score||[0,0]).join(' : ')+' · 最长连续回合 '+(t.best_rally||0),'再比一局'];
+ }
  return[selected==='hiit'?'本轮训练已完成':'山径已通关',selected==='hiit'?'完成 '+(g.hiit?.total_reps||0)+' 次动作':'走完 '+(g.quest?.total_levels||g.quest?.targets?.length||3)+' 站山径 · 完成 '+(g.quest?.total_reps??g.quest?.reps??0)+' 次动作','再挑战一次'];
 }
 const legacyQuestStages=[
@@ -47,7 +72,24 @@ function updateQuestHUD(g){
  if(announcement.dataset.notice!==notice){announcement.dataset.notice=notice;announcement.textContent=view.announcement;}
  return view;
 }
-function gamePhaseMessage(g){const r=g.source_recovery;if(r?.required===true&&r.phase==='display')return'本局进度已保留，等待游戏画面恢复。';if(r?.required===true){if(meta?.status!=='live'||r.phase==='camera')return'本局进度已保留，等待画面恢复。';if(r.ready===true)return'本局进度已保留，选择“继续本局”。';return r.phase==='players'?(selected==='tennis'?'请让两位玩家回到原来的站位，双脚完整入镜。':'请让一位玩家完整入镜。'):'自然站定片刻，重新确认站位。';}if(g.manually_paused)return'休息一下，准备好后继续。';if(g.resume_seconds>0)return'准备继续本局';if(g.status==='calibrating')return'自然站定片刻，再开始动作。';if(g.status==='waiting')return selected==='tennis'?'两位玩家一起入镜，让双脚完整可见。':'站到镜头前，让双脚完整可见。';if(g.status==='paused')return g.reason?.includes('双脚')?'让双脚完整入镜，游戏会自动继续。':'镜头正在调整，稍候继续。';return'正在连接游戏画面。';}
+function gamePhaseMessage(g){
+ const r=g.source_recovery,doubles=selected==='tennis'&&g.tennis_variant!=='practice';
+ if(r?.required===true&&r.phase==='display')return'本局进度已保留，等待游戏画面恢复。';
+ if(r?.required===true){
+  if(meta?.status!=='live'||r.phase==='camera')return'本局进度已保留，等待画面恢复。';
+  if(r.ready===true)return'本局进度已保留。';
+  return r.phase==='players'?(doubles?'请让两位玩家回到原来的站位，双脚完整入镜。':'请让一位玩家完整入镜。'):'自然站定片刻，重新确认站位。';
+ }
+ if(g.manually_paused)return'';
+ if(g.resume_seconds>0)return'准备继续本局';
+ if(g.status==='calibrating')return'自然站定片刻，再开始动作。';
+ if(g.status==='waiting')return doubles?'两位玩家一起入镜，让双脚完整可见。':'站到镜头前，让双脚完整可见。';
+ if(g.status==='paused'){
+  if(g.reason==='请让手和双脚入镜')return'让手和双脚入镜，游戏会自动继续。';
+  return g.reason?.includes('双脚')?'让双脚完整入镜，游戏会自动继续。':'镜头正在调整，稍候继续。';
+ }
+ return'正在连接游戏画面。';
+}
 const artRoot=new URL('.',document.currentScript?.src||new URL('/assets/games.js',location.href)),winterProps=new Image(),winterScene=new Image();
 let artError=false;
 function sceneRefreshed(){if(!meta)return;if(meta.game?.mode!==selected)selectMode(selected);updateHUD();}
@@ -60,55 +102,109 @@ async function toggleGameSound(){const value=gameSound.status();if(value.enabled
 function winterReady(){return winterProps.complete&&winterProps.naturalWidth>0&&winterScene.complete&&winterScene.naturalWidth>0;}
 function reloadTeaching(){location.reload();}
 function reloadScene(){if(selected!=='ski'){scenery.reload(selected);return;}artError=false;for(const[image,name]of [[winterProps,'winter-props.png'],[winterScene,'winter-scene.png']]){image.onload=sceneRefreshed;image.onerror=()=>{artError=true;if(meta)updateHUD();};image.src=new URL(name+(image.src?'?retry='+Date.now():''),artRoot).href;}}
-async function pauseGame(){if(meta?.game?.manually_paused&&!gameDisplayReady())return false;return commandGame({mode:selected,action:meta?.game?.manually_paused?'resume':'pause'},'暂时无法暂停或继续，请重试。');}
+async function pauseGame(){if(meta?.game?.manually_paused)return false;return commandGame({mode:selected,action:'pause'},'暂时无法暂停，请重试。');}
+async function resumeGame(){if(!resumeInputReady()||!gameDisplayReady())return false;return commandGame({mode:selected,action:'resume'},'暂时无法继续本局，请重试。');}
 function togglePlayerView(){const panel=$('playerView');panel.hidden=!panel.hidden;const control=$('previewToggle');control.setAttribute('aria-pressed',String(!panel.hidden));control.textContent=panel.hidden?'查看我的动作':'收起动作画面';}
 if(key){sessionStorage.setItem('friday-view-key',key);history.replaceState(null,'',location.pathname+(new URLSearchParams(location.search).get('embed')==='1'?'?embed=1':''));}
 
-const descriptions={home:['镜头联动 / 05','双臂开合，控制梦幻帘','OK 绑定操作者 · 双手在胸前合拢后向两侧打开 · 眼部注视确认后可直接说 · 看不清眼睛时先说 Friday'],quest:['山径训练 / 01','山径冒险','沿着山径，跟随示范完成动作，抵达山顶营地。'],ski:['山地滑行 / 02','林间滑雪','左右移动躲树 · 双臂同向或交替摆动前进 · 停止摆臂会减速'],hiit:['循环训练 / 04','运动训练','跟随示范完成八项动作 · 关间休息 5 秒'],tennis:['客厅球场 / 03','双人网球','两位玩家分别站定 · 横移接球 · 快速挥动手臂触发击球']};
+const descriptions={home:['镜头联动 / 05','双臂开合，控制梦幻帘','OK 绑定操作者 · 双手在胸前合拢后向两侧打开 · 眼部注视确认后可直接说 · 看不清眼睛时先说 Friday'],quest:['山径训练 / 01','山径冒险','沿着山径，跟随示范完成动作，抵达山顶营地。'],ski:['山地滑行 / 02','林间滑雪','左右移动躲树 · 双臂同向或交替摆动前进 · 停止摆臂会减速'],hiit:['循环训练 / 04','运动训练','跟随示范完成十项动作。'],tennis:['客厅球场 / 03','双人网球','两位玩家分别站定 · 横移接球 · 快速挥动手臂触发击球']};
 async function commandGame(body,failure){
  if(commandPending)return false;
  if(!gameViewCurrent()){$('gameNotice').textContent='正在连接游戏，请稍后重试。';return false;}
- const before=meta.game,lease={generation:streamGeneration,context:before.control_context,revision:before.control_revision,controller:new AbortController(),focus:document.activeElement?.closest?.('button,select'),label:body.difficulty?'正在设置难度':({select:'正在切换游戏',start:'正在开始本局',pause:'正在暂停',resume:'正在继续'})[body.action]||'正在结束本局'};
- commandPending=lease;gameSound.quiet();$('gameNotice').textContent='';syncGameControls();
+ const before=meta.game,lease={generation:streamGeneration,context:before.control_context,revision:before.control_revision,controller:new AbortController(),focus:document.activeElement?.closest?.('button,select'),label:body.tennis_variant?'正在切换玩法':body.ski_trail?'正在准备雪道':body.difficulty?'正在设置难度':({select:'正在切换游戏',start:'正在开始本局',pause:'正在暂停',resume:'正在继续'})[body.action]||'正在结束本局'};
+ const notice=(body.action==='resume'&&$('resumeNotice'))||$('gameNotice');
+ const reportNotice=message=>{(notice.isConnected===false?$('gameNotice'):notice).textContent=message;};
+ commandPending=lease;gameSound.quiet();$('gameNotice').textContent='';notice.textContent='';syncGameControls();
  const timeout=setTimeout(()=>lease.controller.abort(),5000);
  const current=()=>!stageClosed&&streamGeneration===lease.generation&&meta?.game?.control_context===lease.context;
  try{
   const r=await fetch(url('/api/game'),{method:'POST',headers:{'Content-Type':'application/json'},signal:lease.controller.signal,body:JSON.stringify({...body,expected_context:lease.context,expected_revision:lease.revision})});
   if(!current())return false;
-  if(!r.ok){if(r.status===409){let info={};try{if(typeof r.json==='function')info=await r.json();}catch{}if(!current())return false;$('gameNotice').textContent=info?.detail==='game_input_not_ready'?'请先回到镜头前站定，再继续。':info?.detail==='game_presentation_not_ready'?'游戏画面正在准备，请稍候。':'本局状态已变化，请稍后重试。';return false;}throw Error('request_failed');}
+  if(!r.ok){if(r.status===409){let info={};try{if(typeof r.json==='function')info=await r.json();}catch{}if(!current())return false;reportNotice(info?.detail==='game_input_not_ready'?'请先回到镜头前站定，再继续。':info?.detail==='game_presentation_not_ready'?'游戏画面正在准备，请稍候。':'本局状态已变化，请稍后重试。');return false;}throw Error('request_failed');}
   const result=await r.json();if(!current())return false;
   const matches=(body.mode==='off'?result.mode==='off':body.action==='select'?result.mode==='off'&&result.selected_mode===body.mode:result.mode===body.mode&&result.selected_mode===body.mode)
-   &&(body.action!=='pause'||result.manually_paused===true)&&(body.action!=='resume'||result.manually_paused===false)&&(body.difficulty===undefined||result.difficulty===body.difficulty);
-  if(!validGameState(result)||result.control_context!==lease.context||result.control_revision<=lease.revision||!matches)throw Error('game_reply_invalid');
+   &&(body.action!=='pause'||result.manually_paused===true)&&(body.action!=='resume'||result.manually_paused===false)
+   &&(body.difficulty===undefined||result.difficulty===body.difficulty);
+  const expectedTrail=body.ski_trail||(body.action==='start'&&body.mode==='ski'?before.ski_trail:null);
+  const expectedVariant=body.tennis_variant||(body.mode==='tennis'?before.tennis_variant:null);
+  if(!validGameState(result)||result.control_context!==lease.context||result.control_revision<=lease.revision||
+     !matches||expectedTrail&&result.ski_trail!==expectedTrail||expectedVariant&&result.tennis_variant!==expectedVariant)throw Error('game_reply_invalid');
   if(meta.game.control_revision>result.control_revision)return false;
   // A same-revision stream packet can already contain newer motion/score state.
   if(meta.game.control_revision<result.control_revision)meta={...meta,game:result};
   selectMode(meta.game.selected_mode);updateHUD();return true;
- }catch{if(current())$('gameNotice').textContent=failure;return false;}
+ }catch{if(current())reportNotice(failure);return false;}
  finally{clearTimeout(timeout);if(commandPending===lease){commandPending=null;syncGameControls();
-  if(lease.focus&&current()&&gameViewCurrent()){let target=lease.focus;if(!target.isConnected||target.disabled||target.hidden)target=!$('pauseToggle').hidden?$('pauseToggle'):$('overlay').querySelector('button')||document.querySelector('[data-mode="'+selected+'"]');target?.focus?.({preventScroll:true});}
+  if(lease.focus&&current()&&gameViewCurrent())restoreStageFocus(lease.focus);
  }}
 }
 async function chooseMode(mode){return commandGame({action:'select',mode},'暂时无法切换游戏，请重试。');}
-function selectMode(mode){selected=mode;if(mode==='ski'){if(!winterProps.src)reloadScene();}else if(mode!=='home')scenery.prepare(mode);document.body.dataset.mode=mode;active=meta?.game?.mode===mode&&meta?.game?.mode!=='off';for(const b of document.querySelectorAll('[data-mode]'))b.setAttribute('aria-pressed',String(b.dataset.mode===mode));const d=[...descriptions[mode]];if(mode==='ski'&&meta?.game?.ski?.gate_count)d[2]='摆动双臂前进，左右穿过 '+meta.game.ski.gate_count+' 道木门，避开树木。';$('chapter').textContent=d[0];$('mission').textContent=d[1];$('instruction').textContent=d[2];if(!active)showOverlay('<h2>'+d[1]+'</h2><p>'+d[2]+'</p><button class="primary" data-click="startGame()">开始本局</button>');}
+function modeDescription(mode,g){const d=[...descriptions[mode]];if(mode==='ski'&&g?.ski?.gate_count)d[2]='摆动双臂前进，左右穿过 '+g.ski.gate_count+' 道木门，避开树木。';return d;}
+function selectMode(mode){selected=mode;if(mode==='ski'){if(!winterProps.src)reloadScene();}else if(mode!=='home')scenery.prepare(mode);document.body.dataset.mode=mode;active=meta?.game?.mode===mode&&meta?.game?.mode!=='off';for(const b of document.querySelectorAll('[data-mode]'))b.setAttribute('aria-pressed',String(b.dataset.mode===mode));const d=modeDescription(mode,meta?.game);$('chapter').textContent=d[0];$('mission').textContent=d[1];$('instruction').textContent=d[2];}
 async function startGame(){if(!gameDisplayReady()){$('gameNotice').textContent='游戏画面正在准备，请稍候。';return false;}return commandGame({mode:selected,action:'start'},'暂时无法开始本局，请重试。');}
+async function chooseTennisVariant(variant){
+ const g=meta?.game;
+ if(!g||selected!=='tennis'||g.mode!=='off'&&g.status!=='complete'||!['match','practice'].includes(variant)||
+    variant===(g.tennis_variant||'match'))return false;
+ return commandGame({mode:'tennis',action:'select',tennis_variant:variant},'暂时无法切换玩法，请重试。');
+}
 async function changeDifficulty(){const g=meta?.game,value=$('difficultySelect')?.value;if(!g||g.mode!=='off'&&g.status!=='complete'||!g.difficulty_options?.some(d=>d.id===value)){syncGameControls();return false;}const changed=await commandGame({mode:selected,action:'select',difficulty:value},'暂时无法更改难度，请重试。');syncGameControls();return changed;}
 async function curtainCommand(action){await fetch(url('/api/home/curtain'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})})}
 async function stopGame(){return commandGame({mode:'off'},'暂时无法结束本局，请重试。');}
 let gamePackets=0,gameWindow=performance.now(),gameReport=0;function reportViewer(){if(location.hostname==='127.0.0.1')return;const now=performance.now();if(now-gameReport<4000)return;gameReport=now;fetch(url('/api/viewer'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:'0.5.0',mode:'games',frames:gamePackets,fps:Math.round(gamePackets*10000/Math.max(1,now-gameWindow))/10,server_frame_age_ms:meta?.frame_age_ms,event:'metadata_received'})}).catch(()=>{})}
 function tennisPresentation(g){
  const t=g.tennis||{},guide=t.guide||{},receiver=(guide.receiver===1?2:1),event=t.event;
- let title='双人网球',instruction='两位玩家入镜，站定后开始。';
- if(g.status==='complete'){title='双人网球';instruction='';}
- else if(g.status==='playing'&&guide.active){
-  if(t.phase==='point'){title=event?.kind==='point'?(event.player+1)+' 号得分':'这一球结束';instruction='下一球：'+receiver+' 号接球 · '+Math.max(1,Math.ceil(t.ready_seconds||0));}
-  else if(t.phase==='ready'){title=receiver+' 号准备接球';instruction=Math.max(1,Math.ceil(t.ready_seconds||0))+' 秒后开始，先看光圈位置。';}
-  else{title=receiver+' 号接球';instruction=({left:'向左移动到光圈处。',right:'向右移动到光圈处。',wait:'站位就绪，等光圈收拢再挥拍。',swing:'现在挥拍！'})[guide.cue]||'看准来球，准备挥拍。';}
+ const cues={left:'向左移动到光圈处。',right:'向右移动到光圈处。',wait:'站位就绪，等挥拍提示。',swing:'现在挥拍！'};
+ if(g.tennis_variant==='practice'){
+  const {results,balls}=tennisPracticeStats(t);
+  const live=g.status==='playing',returning=live&&t.phase==='rally'&&t.ball?.toward===1;
+  const attempt=Math.min(balls,results.length+(returning?0:1));
+  const title=live&&attempt>0?['定点回球','左右回球','快速回球'][Math.floor((attempt-1)/3)]:'单人练习';
+  const instruction=!live?'':guide.active?cues[guide.cue]||'看准来球，准备挥拍。':returning?'':'准备接球。';
+  const fresh=live&&event?.age>=0&&event.age<1.4;
+  const feedback=fresh&&event.kind==='hit'?(event.quality==='perfect'?'漂亮回击':'回球成功'):
+   fresh&&event.kind==='miss'?(event.next_focus==='position'?'下一球先站进光圈':'下一球看提示再挥拍'):'';
+  return {title,instruction,event:feedback,eventKey:feedback?g.control_context+':'+g.round_id+':'+event.sequence:'',
+   rules:'先站进光圈，看到提示再挥拍。'};
  }
- const hit=event?.kind==='hit'&&event.age>=0&&event.age<1.4&&g.status==='playing';
- const focus=g.status==='playing'&&t.phase==='point'&&event?.kind==='point'?({position:'先站进光圈，再挥拍',timing:'等光圈收拢，再挥拍'})[event.next_focus]:null;
- return{title,instruction,event:hit?(event.player+1)+' 号 · '+(event.quality==='perfect'?'漂亮回击':'回球成功'):focus?receiver+' 号 · '+focus:'',
-  eventKey:hit||focus?g.control_context+':'+g.round_id+':'+event.sequence:'',rules:'先得 '+(t.target||7)+' 分并领先 2 分获胜，'+(t.cap||15)+' 分封顶。'};
+ const serve=[0,1].includes(t.serve?.player)?t.serve:null;
+ const live=g.status==='playing',seconds=Math.max(1,Math.ceil(t.ready_seconds||0));
+ let title='双人网球',instruction='';
+ if(live&&serve){
+  const server=serve.player+1;
+  if(t.phase==='point'){title=event?.kind==='point'?(event.player+1)+' 号得分':'这一球结束';instruction=server+' 号准备发球 · '+seconds+' 秒';}
+  else if(t.phase==='ready'){title=server+' 号准备发球';instruction=seconds+' 秒后就绪';}
+  else{title=server+' 号发球';instruction=serve.ready?'现在挥拍！':'双脚入镜，发球手先停稳';}
+ }else if(live&&guide.active){
+  title=receiver+' 号接球';
+  instruction=cues[guide.cue]||'看准来球，准备挥拍。';
+ }
+ const shot=live&&['serve','hit'].includes(event?.kind)&&event.age>=0&&event.age<1.4;
+ const focus=live&&t.phase==='point'&&event?.kind==='point'?({position:'先站进光圈，再挥拍',timing:'看到挥拍提示再出手'})[event.next_focus]:null;
+ const feedback=shot?(event.player+1)+' 号 · '+(event.kind==='serve'?'发球成功':event.quality==='perfect'?'漂亮回击':'回球成功'):
+  focus?(2-event.player)+' 号 · '+focus:'';
+ return{title,instruction,event:feedback,
+  eventKey:feedback?g.control_context+':'+g.round_id+':'+event.sequence:'',rules:'先得 '+(t.target||7)+' 分并领先 2 分获胜，'+(t.cap||15)+' 分封顶。'};
+}
+function tennisPracticeStats(t){
+ const balls=t.practice?.balls===9?9:0,raw=t.practice?.results;
+ const results=Array.isArray(raw)&&raw.length<=balls&&raw.every(result=>typeof result==='boolean')?raw:[];
+ return {balls,results,hits:results.filter(Boolean).length};
+}
+function tennisPracticeScore(t,g,scoreboard){
+ const {balls,results,hits}=tennisPracticeStats(t);
+ const current=g.status==='playing'&&t.guide?.active===true?results.length:-1;
+ const signature=['practice',balls,current,...results].join('/');
+ if(scoreboard.dataset.tennis===signature)return;
+ scoreboard.dataset.tennis=signature;
+ if(!balls){scoreboard.textContent='';return;}
+ const markers=Array.from({length:balls},(_,i)=>{
+  const result=results[i],state=result===true?'hit':result===false?'miss':i===current?'current':'next';
+  const status={hit:'命中',miss:'未命中',current:'接球中',next:'待接球'}[state];
+  return '<li data-state="'+state+'"><span class="sr-only">第 '+(i+1)+' 球，'+status+'</span></li>';
+ }).join('');
+ scoreboard.innerHTML='<div class="tennis-drill-count"><small>命中</small><b>'+hits+'<span> / '+balls+'</span></b></div>'+
+  '<ol class="tennis-drill-balls" aria-label="回球进度">'+markers+'</ol>';
 }
 function skiPresentation(g){
  const s=g.ski||{},route=s.gate_count>0,event=s.event;
@@ -118,16 +214,23 @@ function skiPresentation(g){
  return{instruction,event:message,detail:route?'穿门 '+(s.gates_passed||0)+' / '+s.gate_count:'得分 · 避开 '+(s.passed||0)+' 处'};
 }
 function updateTennisHUD(g){
- const chosen=selected==='tennis',event=$('tennisEvent'),rules=$('tennisRules');
- event.hidden=!chosen;rules.hidden=!chosen;$('score').classList.toggle('tennis-score',chosen);
+ const chosen=selected==='tennis',event=$('tennisEvent'),rules=$('tennisRules'),scoreboard=$('score');
+ event.hidden=!chosen;rules.hidden=!chosen;scoreboard.classList.toggle('tennis-score',chosen);
  $('progress').parentElement.hidden=chosen;
- if(!chosen)return;
- const view=tennisPresentation(g),t=g.tennis||{score:[0,0],rally:0};
+ if(!chosen){delete scoreboard.dataset.tennis;return;}
+ const view=tennisPresentation(g),t=g.tennis||{},scores=t.score||[0,0];
  for(const[id,text]of[['mission',view.title],['instruction',view.instruction],['tennisRules',view.rules]])if($(id).textContent!==text)$(id).textContent=text;
  if(view.eventKey&&event.dataset.event!==view.eventKey){event.textContent=view.event;event.dataset.event=view.eventKey;}
  if(!view.eventKey&&g.tennis?.event==null){event.textContent='';event.dataset.event='';}
  event.hidden=!view.event;
- $('score').innerHTML='<div class="tennis-scoreline">'+t.score.map((score,i)=>'<span class="tennis-player" data-player="'+i+'"><small>'+(i+1)+' 号</small><b>'+score+'</b></span>').join('<span class="tennis-score-separator" aria-hidden="true">:</span>')+'</div><small>回合 '+t.rally+' · 最长 '+(t.best_rally||0)+'</small>';
+ if(g.tennis_variant==='practice'){tennisPracticeScore(t,g,scoreboard);return;}
+ const receiver=g.status==='playing'&&t.guide?.active?t.guide.receiver:null;
+ const server=g.status==='playing'?t.serve?.player:null;
+ const signature=[...scores,t.rally||0,t.best_rally||0,receiver,server].join('/');
+ if(scoreboard.dataset.tennis!==signature){
+  scoreboard.dataset.tennis=signature;
+  scoreboard.innerHTML='<div class="tennis-scoreline">'+scores.map((score,i)=>'<span class="tennis-player" data-player="'+i+'"'+(server===i?' data-serving="true"':receiver===i?' data-receiving="true"':'')+'><small>'+(i+1)+' 号</small><b>'+score+'</b></span>').join('<span class="tennis-score-separator" aria-hidden="true">:</span>')+'</div><small>回合 '+(t.rally||0)+' · 最长 '+(t.best_rally||0)+'</small>';
+ }
 }
 function streamLost(ws){
  if(stageClosed||gameSocket!==ws)return;
@@ -170,34 +273,129 @@ function connect(){
 }
 function reconnectGame(){if(stageClosed)return;clearTimeout(reconnectTimer);reconnectTimer=null;const old=gameSocket;gameSocket=null;streamOpen=false;commandPending?.controller.abort();commandPending=null;if(old){old.onclose=null;try{old.close();}catch{}}connect();}
 function watchGameConnection(now){const fresh=gameViewCurrent(now);if(fresh!==lastConnectionFresh){lastConnectionFresh=fresh;updateHUD();}if(gameSocket&&!fresh&&now-(received??socketAttemptAt)>5000)reconnectGame();}
-function updateHUD(){if(meta?.game?.presentation?.required===true)presentationClient.tick();updateSourceMode(meta);const current=gameViewCurrent(),g=presentedGame(),playing=g.mode===selected&&g.mode!=='off';active=current&&playing&&g.status!=='complete';$('camera').textContent=({locked:'镜头已就绪',moving:'镜头正在调整，游戏暂停',settling:'镜头稳定中'})[meta?.room?.registration?.status]||'等待镜头就绪';$('camera').hidden=!current||meta?.room?.registration?.status==='locked';
+let skiChooserRound=null;
+function skiRound(g){return g.control_context+':'+g.round_id;}
+function skiTrails(g){
+ return Array.isArray(g?.ski_trails)?g.ski_trails.filter(trail=>typeof trail?.id==='string'&&/^[a-z][a-z-]{1,23}$/.test(trail.id)&&
+  typeof trail.name==='string'&&trail.name.length<=16&&Number.isSafeInteger(trail.distance)&&trail.distance>0&&
+  Number.isSafeInteger(trail.gate_count)&&trail.gate_count>0):[];
+}
+function escapeSkiLabel(text){return text.replace(/[&<>]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[char]));}
+function skiTrailPicker(g){
+ const trails=skiTrails(g);
+ if(!trails.length)return'';
+ return '<div class="ski-trail-picker" role="group" aria-label="雪道">'+trails.map(trail=>
+  '<button type="button" data-click="chooseSkiTrail()" data-ski-trail="'+trail.id+'" aria-pressed="'+(trail.id===g.ski_trail)+
+  '"><strong>'+escapeSkiLabel(trail.name)+'</strong><span>'+trail.distance+' 米 · '+trail.gate_count+' 门</span></button>').join('')+'</div>';
+}
+function toggleSkiChooser(){
+ const g=meta?.game;
+ if(commandPending||!gameViewCurrent()||selected!=='ski'||g.status!=='complete'||skiTrails(g).length<2)return;
+ skiChooserRound=skiChooserRound===skiRound(g)?null:skiRound(g);
+ updateHUD();
+}
+async function chooseSkiTrail(id){
+ const g=meta?.game;
+ if(!gameViewCurrent()||selected!=='ski'||!skiTrails(g).some(trail=>trail.id===id))return false;
+ if(g.mode==='off'?g.ski_trail===id:g.status!=='complete'||skiChooserRound!==skiRound(g))return false;
+ return commandGame({mode:'ski',action:'select',ski_trail:id},'暂时无法更换雪道，请重试。');
+}
+function skiResult(ski){
+ const sections=ski?.section_results;
+ if(!Array.isArray(sections)||sections.length<1||sections.length!==ski.course_count||
+    !Number.isSafeInteger(ski.points)||ski.points<0||![1,2,3].includes(ski.stars)||
+    !sections.every(row=>typeof row?.name==='string'&&Number.isSafeInteger(row.gates_passed)&&
+     Number.isSafeInteger(row.gate_count)&&row.gates_passed>=0&&row.gate_count>=row.gates_passed))return'';
+ const rows=sections.map(row=>'<div><dt>'+(sections.length===1?'穿门':escapeSkiLabel(row.name))+'</dt><dd>'+row.gates_passed+' / '+row.gate_count+'</dd></div>');
+ let time='';
+ if(Number.isFinite(ski.time_seconds)&&ski.time_seconds>0){
+  const tenths=Math.round(ski.time_seconds*10),minutes=Math.floor(tenths/600),seconds=(tenths%600)/10;
+  time=' · '+(minutes?minutes+' 分 ':'')+seconds.toFixed(1)+' 秒';
+ }
+ return '<p class="ski-result-summary"><strong>'+ski.points+' 分</strong> · '+ski.stars+' 星'+time+'</p>'+
+  '<dl class="ski-splits" aria-label="各段穿门成绩">'+rows.join('')+'</dl>';
+}
+function tennisLineupMarkup(states){
+ const labels=new Map([['missing','请回到画面'],['feet','露出双脚'],['calibrating','站定片刻'],['ready','已就位']]);
+ const rows=states.map((state,i)=>'<div data-player="'+i+'"><dt>'+(i+1)+' 号玩家</dt><dd>'+labels.get(state)+'</dd></div>');
+ return '<dl class="tennis-lineup" aria-label="双人站位">'+rows.join('')+'</dl>';
+}
+function tennisVariantButton(id,pressed){
+ const label=id==='practice'?'单人练习':'双人对打';
+ return '<button type="button" data-click="chooseTennisVariant()" data-tennis-variant="'+id+'"'+
+  (pressed===undefined?'':' aria-pressed="'+pressed+'"')+'>'+label+'</button>';
+}
+function tennisLobby(g){
+ const practice=g.tennis_variant==='practice';
+ const variants='<div class="tennis-variants" role="group" aria-label="网球玩法">'+
+  tennisVariantButton('practice',practice)+tennisVariantButton('match',!practice)+'</div>';
+ const detail=practice?'陪练发 9 球，跟着落点提示挥拍。':'两位玩家并排站好，双脚入镜。左侧先发球。';
+ return '<h2>准备开球</h2>'+variants+'<p>'+detail+'</p><button class="primary" data-click="startGame()">开始本局</button>';
+}
+function stageOverlayMarkup(g,current,playing){
+ const bodyGame=selected==='quest'||selected==='hiit',finished=playing&&g.status==='complete';
+ const teachingPending=current&&!finished&&bodyGame&&g.presentation?.required===true&&scenery.ready(selected)&&!gameSceneReady();
+ if(!teachingPending)teachingWaitSince=null;
+ if(!current)return'<h2>'+(meta?'连接已中断':'正在连接游戏')+'</h2><p>连接恢复后会同步本局状态。</p><button data-click="reconnectGame()">重新连接</button>';
+ if(!finished&&['quest','hiit','tennis'].includes(selected)&&!scenery.ready(selected))return scenery.failed(selected)?'<h2>游戏画面暂不可用</h2><button data-click="reloadScene()">重新载入画面</button>':'<h2>正在准备游戏画面</h2>';
+ if(!finished&&selected==='ski'&&!winterReady())return artError?'<h2>雪道画面暂不可用</h2><button data-click="reloadScene()">重新载入画面</button>':'<h2>正在准备雪道</h2>';
+ if(teachingPending){teachingWaitSince??=performance.now();return performance.now()-teachingWaitSince>5000?'<h2>动作示范暂不可用</h2><button data-click="reloadTeaching()">重新载入动作示范</button>':'<h2>正在准备动作示范</h2>';}
+ const control=g.gesture_control||{};
+ if(control.progress>0&&!control.latched)return'<h2>'+(control.gesture==='yeah'?'保持 Yeah，切换游戏':'保持 OK，开始本局')+'</h2><p>'+Math.round(control.progress*100)+'%</p>';
+ if(selected==='home'||playing&&g.status==='playing')return'';
+ if(!playing){
+  if(selected==='tennis')return tennisLobby(g);
+  const trailPicker=selected==='ski'?skiTrailPicker(g):'';
+  if(trailPicker)return '<h2>选择雪道</h2>'+trailPicker+'<button class="primary" data-click="startGame()">开始本局</button>';
+  const [,title,detail]=modeDescription(selected,g);
+  return '<h2>'+title+'</h2><p>'+detail+'</p><button class="primary" data-click="startGame()">开始本局</button>';
+ }
+ if(finished){
+  const [title,detail,action]=completedGame(g),result=selected==='ski'?skiResult(g.ski):'';
+  if(selected==='tennis')return '<h2>'+title+'</h2><p>'+detail+'</p><div class="tennis-result-actions">'+
+   '<button class="primary" data-click="startGame()">'+action+'</button>'+
+   tennisVariantButton(g.tennis_variant==='practice'?'match':'practice')+'</div>';
+  if(selected==='ski'&&skiTrails(g).length>1){
+   if(skiChooserRound===skiRound(g))return '<h2>更换雪道</h2>'+skiTrailPicker(g)+'<button data-click="toggleSkiChooser()">返回成绩</button>';
+   return '<h2>'+title+'</h2>'+(result||'<p>'+detail+'</p>')+'<div class="ski-result-actions"><button class="primary" data-click="startGame()">'+action+'</button><button data-click="toggleSkiChooser()">换雪道</button></div>';
+  }
+  return'<h2>'+title+'</h2>'+(result||'<p>'+detail+'</p>')+'<button class="primary" data-click="startGame()">'+action+'</button>';
+ }
+ if(g.status==='waiting'&&g.presentation?.required===true&&!g.presentation.ready&&(g.quest?.phase==='transition'||g.hiit?.phase==='rest'))return'<h2>正在准备下一站</h2>';
+ const recovery=g.source_recovery?.required===true,countdown=g.resume_seconds>0&&!g.manually_paused;
+ const lineup=g.tennis?.lineup;
+ if(selected==='tennis'&&!recovery&&!g.manually_paused&&!countdown&&Array.isArray(lineup)&&lineup.length===2&&
+    lineup.every(state=>['ready','calibrating','feet','missing'].includes(state))){
+  const title=lineup.includes('missing')?'等待玩家回到画面':'确认双人站位';
+  return '<h2>'+title+'</h2>'+tennisLineupMarkup(lineup);
+ }
+ const title=recovery?(g.source_recovery.phase==='display'?'正在准备游戏画面':meta?.status!=='live'||g.source_recovery.phase==='camera'?'正在恢复画面':g.source_recovery.ready===true?'玩家已就绪':g.source_recovery.phase==='players'?'请回到镜头前':'站定片刻'):({'waiting':'等待玩家','calibrating':'站定片刻',paused:'游戏已暂停'}[g.status]||'正在准备');
+ const heading=countdown?'<h2 class="game-countdown" aria-label="'+Math.ceil(g.resume_seconds)+' 秒后继续">'+Math.ceil(g.resume_seconds)+'</h2>':'<h2>'+title+'</h2>';
+ const detail=gamePhaseMessage(g),resume=resumeInputReady(g);
+ return heading+(detail?'<p'+(recovery?' class="game-recovery-message"':'')+'>'+detail+'</p>':'')+(resume?'<button class="primary" data-click="resumeGame()">继续本局</button><p id="resumeNotice" class="resume-notice" role="status"></p>':'');
+}
+function updateHUD(){const overlay=$('overlay'),pause=$('pauseToggle'),previousFocus=document.activeElement,followStageFocus=previousFocus&&(previousFocus===pause||overlay.contains(previousFocus));updateSourceMode(meta);const current=gameViewCurrent(),g=presentedGame(),playing=g.mode===selected&&g.mode!=='off';active=current&&playing&&g.status!=='complete';$('camera').textContent=({locked:'镜头已就绪',moving:'镜头正在调整，游戏暂停',settling:'镜头稳定中'})[meta?.room?.registration?.status]||'等待镜头就绪';$('camera').hidden=!current||meta?.room?.registration?.status==='locked';
 const liveProgress=$('liveProgress');liveProgress.hidden=!playing||g.status==='complete'||!['quest','hiit'].includes(selected);
-if(!playing&&selected!=='home'&&!$('overlay').querySelector('button'))selectMode(selected);
-if(playing){const result=completedGame(g),recovery=g.source_recovery?.required===true,countdown=g.resume_seconds>0&&!g.manually_paused;const title=recovery?(g.source_recovery.phase==='display'?'正在准备游戏画面':meta?.status!=='live'||g.source_recovery.phase==='camera'?'正在恢复画面':g.source_recovery.ready===true?'玩家已就绪':g.source_recovery.phase==='players'?'请回到镜头前':'站定片刻'):({'waiting':'等待玩家','calibrating':'站定片刻',paused:'游戏已暂停'}[g.status]||'正在准备');showOverlay(g.status==='playing'?'':g.status==='complete'?'<h2>'+result[0]+'</h2><p>'+result[1]+'</p><button class="primary" data-click="startGame()">'+result[2]+'</button>':(countdown?'<h2 class="game-countdown" aria-label="'+Math.ceil(g.resume_seconds)+' 秒后继续">'+Math.ceil(g.resume_seconds)+'</h2>':'<h2>'+title+'</h2>')+'<p'+(recovery?' class="game-recovery-message"':'')+'>'+gamePhaseMessage(g)+'</p>');}
-if(selected==='home')$('overlay').innerHTML='';
-const control=g.gesture_control||{};if(control.progress>0&&!control.latched){$('overlay').innerHTML='<h2>'+((control.gesture==='yeah')?'保持 Yeah，切换游戏':'保持 OK，开始本局')+'</h2><p>'+Math.round(control.progress*100)+'%</p>'}
-const players=g.players||[];$('input').textContent=players.length?players.map((p,i)=>(i+1)+' 号玩家 · '+(p.lateral<-.12?'左侧':p.lateral>.12?'右侧':'居中')).join('　 /　 '):'让双脚与双手完整入镜';
+const players=g.players||[],input=$('input');input.hidden=selected==='tennis';input.textContent=selected==='tennis'?'':players.length?players.map((p,i)=>(i+1)+' 号玩家 · '+(p.lateral<-.12?'左侧':p.lateral>.12?'右侧':'居中')).join('　 /　 '):'让双脚与双手完整入镜';
 const feedbackText=selected==='home'?(meta?.home?.reason||''):selected==='hiit'?(g.hiit?.feedback||''):selected==='quest'?(g.quest?.feedback||''):selected==='ski'?skiPresentation(g).event:'';if($('feedback').textContent!==feedbackText)$('feedback').textContent=feedbackText;
 if(selected==='quest')updateQuestHUD(g);
 $('questTrail').hidden=selected!=='quest';$('questAnnouncement').hidden=selected!=='quest'||!playing;
-if(selected==='ski'){const s=g.ski||{},view=skiPresentation(g);$('mission').textContent=(s.course_name||'林间初雪')+' · 第 '+((s.course||0)+1)+' / '+(s.course_count||3)+' 段';$('instruction').textContent=view.instruction;$('score').innerHTML=(s.points||0)+'<small>'+view.detail+'</small>';$('progress').style.width=(Math.max(0,Math.min(1,s.progress||0))*100)+'%'}
-if(selected==='hiit'){const h=g.hiit||{level:0,name:'深蹲',reps:0,required_reps:3,phase:'work',total_levels:6};$('mission').textContent=h.phase==='rest'?'休息一下':h.phase==='complete'?'本轮训练已完成':h.name;$('instruction').textContent=h.phase==='rest'?'下一关：'+h.name:h.instruction||descriptions.hiit[2];liveProgress.textContent=h.phase==='rest'?Math.ceil(h.rest_seconds||0)+' 秒后继续':'已完成 '+h.reps+' / '+h.required_reps+' 次';$('score').innerHTML=Math.min(h.total_levels,h.level)+' / '+h.total_levels+'<small>动作关卡 · 共 '+(h.total_reps||0)+' 次</small>';$('progress').style.width=(h.phase==='complete'?100:h.phase==='rest'?(1-(h.rest_seconds||0)/5)*100:h.reps/h.required_reps*100)+'%'}
+if(selected==='ski'){const s=g.ski||{},view=skiPresentation(g),trail=skiTrails(g).find(item=>item.id===g.ski_trail);$('mission').textContent=!playing||g.status==='complete'?trail?.name||s.course_name||'林间滑雪':(s.course_name||'林间初雪')+(s.course_count>1?' · 第 '+((s.course||0)+1)+' / '+s.course_count+' 段':'');$('instruction').textContent=view.instruction;$('score').innerHTML=(s.points||0)+'<small>'+view.detail+'</small>';$('progress').style.width=(Math.max(0,Math.min(1,s.progress||0))*100)+'%'}
+if(selected==='hiit'){const h=g.hiit||{level:0,name:'深蹲',reps:0,required_reps:3,phase:'work',total_levels:10};$('mission').textContent=h.phase==='rest'?'休息一下':h.phase==='complete'?'本轮训练已完成':h.name;$('instruction').textContent=h.phase==='rest'?'下一关：'+h.name:h.instruction||descriptions.hiit[2];liveProgress.textContent=h.phase==='rest'?Math.ceil(h.rest_seconds||0)+' 秒后继续':'已完成 '+h.reps+' / '+h.required_reps+' 次';$('score').innerHTML=Math.min(h.total_levels,h.level)+' / '+h.total_levels+'<small>动作关卡 · 共 '+(h.total_reps||0)+' 次</small>';$('progress').style.width=(h.phase==='complete'?100:h.phase==='rest'?(1-(h.rest_seconds||0)/5)*100:h.reps/h.required_reps*100)+'%'}
 if(selected==='home'){const h=meta?.home||{},d=h.curtain||{},owner=h.owner_track;$('mission').textContent=d.status==='moving'?'已发出窗帘指令':'双臂开合，控制梦幻帘';$('score').innerHTML=(d.position==null?'—':d.position+'%')+'<small>梦幻帘 · '+({ready:'已读回',moving:'等待位置更新',connecting:'连接中',unconfirmed:'位置更新延迟',unavailable:'暂不可用',checking:'检查中',fault:'设备故障'}[d.status]||'等待设备')+'</small>';$('input').textContent=owner==null?'看向镜头，或 OK 选择操作者':'操作者 #'+owner+' · 双臂向两侧打开 → 开帘 / 合拢 → 关帘';$('instruction').textContent=descriptions.home[2];$('progress').style.width=((h.window_gesture?.progress||0)*100)+'%'}
 updateTennisHUD(g);
-const pause=$('pauseToggle');if(pause){pause.hidden=!playing||g.status==='complete'||selected==='home';pause.textContent=g.source_recovery?.required===true?'继续本局':g.manually_paused?'继续':'暂停';}
+if(pause)pause.hidden=!playing||g.status==='complete'||g.manually_paused===true||g.source_recovery?.required===true||selected==='home';
 if($('stopToggle'))$('stopToggle').hidden=!playing;
-const feedback=document.querySelector('.player-feedback');if(feedback)feedback.hidden=!current||g.status==='complete'||g.manually_paused||g.resume_seconds>0||(selected!=='home'&&(!playing||g.status!=='playing'));
+const feedback=document.querySelector('.player-feedback');if(feedback)feedback.hidden=!current||g.status==='complete'||g.manually_paused||g.resume_seconds>0||(selected==='tennis'?$('camera').hidden&&$('tennisEvent').hidden:selected!=='home'&&(!playing||g.status!=='playing'));
 if(g.manually_paused||g.source_recovery?.required===true||g.resume_seconds>0)$('instruction').textContent='';
 $('feedback').hidden=!$('feedback').textContent||$('feedback').textContent===$('instruction').textContent;
 if($('gestureHint')){$('gestureHint').hidden=!current||!g.game_input_enabled||selected==='home'||g.manually_paused||g.resume_seconds>0||g.status==='playing';$('gestureHint').textContent=(g.status==='complete'?'OK 重玩':'OK 开始')+' · 剪刀手切换游戏 · 触发后放下手';}
 const progress=Number.parseFloat($('progress').style.width);$('progress').parentElement?.setAttribute('aria-valuenow',String(Number.isFinite(progress)?Math.max(0,Math.min(100,progress)):0));
-const tutorialKey=selected==='quest'?questPresentation(g).teaching:selected==='hiit'?({squat:'exercise.squat',jack:'exercise.jack',high_knee:'exercise.high_knee',lunge:'exercise.side_lunge',side_step:'exercise.side_step',side_bend:'exercise.side_bend',reach_up:'exercise.reach_up',arm_open:'exercise.arm_open'}[g.hiit?.action||'squat']):null;
-document.dispatchEvent(new CustomEvent('friday:game-teaching',{detail:{key:tutorialKey,mode:selected,visible:current&&playing&&g.status==='playing'&&scenery.ready(selected),paused:!current||g.manually_paused===true||g.hiit?.phase==='rest'}}));
-syncGameControls();
-if(['quest','hiit','tennis'].includes(selected)&&!scenery.ready(selected)&&g.status!=='complete')showOverlay(scenery.failed(selected)?'<h2>游戏画面暂不可用</h2><button data-click="reloadScene()">重新载入画面</button>':'<h2>正在准备游戏画面</h2>');
-if(selected==='ski'&&!winterReady()&&g.status!=='complete')showOverlay(artError?'<h2>雪道画面暂不可用</h2><button data-click="reloadScene()">重新载入画面</button>':'<h2>正在准备雪道</h2>');
-if(current&&g.presentation?.required===true&&['quest','hiit'].includes(selected)&&scenery.ready(selected)&&!gameSceneReady()&&g.status!=='complete'){teachingWaitSince??=performance.now();showOverlay(performance.now()-teachingWaitSince>5000?'<h2>动作示范暂不可用</h2><button data-click="reloadTeaching()">重新载入动作示范</button>':'<h2>正在准备动作示范</h2>');}else teachingWaitSince=null;
-if(!current)showOverlay('<h2>'+(meta?'连接已中断':'正在连接游戏')+'</h2><p>连接恢复后会同步本局状态。</p><button data-click="reconnectGame()">重新连接</button>');syncGameControls();gameSound.tick();}
+document.dispatchEvent(new CustomEvent('friday:game-teaching',{detail:{key:gameTeachingKey(g),mode:selected,visible:current&&playing&&g.status==='playing'&&scenery.ready(selected),paused:!current||g.manually_paused===true||g.hiit?.phase==='rest'}}));
+if(g.presentation?.required===true)presentationClient.tick();
+showOverlay(stageOverlayMarkup(g,current,playing));syncGameControls();
+if(followStageFocus&&!commandPending)restoreStageFocus(previousFocus);
+gameSound.tick();}
 function polygon(points,fill,stroke){c.beginPath();points.forEach((p,i)=>i?c.lineTo(...p):c.moveTo(...p));c.closePath();c.fillStyle=fill;c.fill();if(stroke){c.strokeStyle=stroke;c.lineWidth=1;c.stroke()}}
 function line(a,b,color,width=2){c.beginPath();c.moveTo(...a);c.lineTo(...b);c.strokeStyle=color;c.lineWidth=width;c.lineCap='round';c.stroke()}
 function world(at){const g=presentedGame();if(selected==='ski')skiScenery.draw(g,at);else scenery.adventure(g,at);}
@@ -217,8 +415,14 @@ function placeTeaching(r,portrait){
  const figure=$('gameTutorial');if(!figure||!['quest','hiit'].includes(selected))return;
  const floor=scenery.teachingAnchor(selected),scale=Math.min(r.width/(portrait?960:1600),r.height/900);
  const x=canvas.offsetLeft+(r.width-1600*scale)/2+floor.x*scale,y=canvas.offsetTop+(r.height-900*scale)/2+floor.y*scale;
- const stamp=selected+':'+x.toFixed(2)+':'+y.toFixed(2);
- if(stamp!==teachingPlacement){teachingPlacement=stamp;figure.style.setProperty('--teaching-x',x.toFixed(2)+'px');figure.style.setProperty('--teaching-y',y.toFixed(2)+'px');}
+ const fit=portrait?Math.max(0,y-canvas.offsetTop-8)*8/9:420;
+ const stamp=[selected,x.toFixed(2),y.toFixed(2),fit.toFixed(2)].join(':');
+ if(stamp!==teachingPlacement){
+  teachingPlacement=stamp;
+  figure.style.setProperty('--teaching-x',x.toFixed(2)+'px');
+  figure.style.setProperty('--teaching-y',y.toFixed(2)+'px');
+  figure.style.setProperty('--teaching-fit',fit.toFixed(2)+'px');
+ }
 }
 function scheduleStage(){if(stageFrame==null&&!document.hidden&&!stageClosed)stageFrame=requestAnimationFrame(draw);}
 function draw(now=performance.now()){if(meta?.game?.presentation?.required===true)presentationClient.tick();gameSound.tick();stageFrame=null;if(document.hidden||stageClosed)return;watchGameConnection(now);if(now-lastScenePaint<1000/(active?30:10)){scheduleStage();return;}lastScenePaint=now;const r=canvas.getBoundingClientRect(),ratio=Math.min(2,devicePixelRatio||1);if(canvas.width!==Math.round(r.width*ratio)||canvas.height!==Math.round(r.height*ratio)){canvas.width=Math.round(r.width*ratio);canvas.height=Math.round(r.height*ratio)}c.setTransform(1,0,0,1,0,0);c.fillStyle='#eef0e8';c.fillRect(0,0,canvas.width,canvas.height);const portrait=matchMedia('(max-width:760px) and (orientation:portrait)').matches;scenery.setPortrait(portrait);placeTeaching(r,portrait);const scale=Math.min(canvas.width/(portrait?960:1600),canvas.height/900);c.setTransform(scale,0,0,scale,(canvas.width-1600*scale)/2,(canvas.height-900*scale)/2);const paintAt=gameViewCurrent(now)?now:(lastAcceptedAt??now);selected==='home'?homeWorld():selected==='tennis'?tennis(paintAt):selected==='hiit'?hiitWorld(paintAt):world(paintAt);drawDebug();if(typeof drawRecordPage==='function')drawRecordPage(performance.now());scheduleStage();}
@@ -261,14 +465,20 @@ case 'document.documentElement.requestFullscreen?.()': document.documentElement.
 case 'startGame()': startGame(); break;
 case 'stopGame()': stopGame(); break;
 case 'pauseGame()': pauseGame(); break;
+case 'resumeGame()': resumeGame(); break;
 case 'changeDifficulty()': changeDifficulty(); break;
+case 'chooseTennisVariant()': chooseTennisVariant(node.dataset.tennisVariant); break;
+case 'toggleSkiChooser()': toggleSkiChooser(); break;
+case 'chooseSkiTrail()': chooseSkiTrail(node.dataset.skiTrail); break;
 case 'reconnectGame()': reconnectGame(); break;
 case 'togglePlayerView()': togglePlayerView(); break;
 case 'reloadScene()': reloadScene(); break;
 case 'reloadTeaching()': reloadTeaching(); break;
 case 'toggleRecording()': toggleRecording(); break;
 case 'toggleGameSound()': toggleGameSound(); break;}}
-for(const kind of ['click','change','input'])document.addEventListener(kind,e=>{const node=e.target.closest('[data-'+kind+']');if(node)delegatedCall(node,node.getAttribute('data-'+kind));});
+const stageOptions=document.querySelector('.stage-options');
+for(const kind of ['click','change','input'])document.addEventListener(kind,e=>{if(kind==='click'&&stageOptions?.open&&!stageOptions.contains(e.target))stageOptions.open=false;const node=e.target.closest('[data-'+kind+']');if(node)delegatedCall(node,node.getAttribute('data-'+kind));});
+stageOptions?.addEventListener('keydown',e=>{if(e.key==='Escape'&&stageOptions.open){e.preventDefault();stageOptions.open=false;stageOptions.querySelector('summary')?.focus();}});
 
 // Start after all recorder and renderer state has been initialized.
 connect();draw();

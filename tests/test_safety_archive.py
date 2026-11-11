@@ -168,9 +168,10 @@ async def test_recorded_sound_review_reaches_original_http_lookup_and_archive_re
         await runtime.sync_policy()
         await runtime.observe(CAMERA['id'], 'synthetic-session', [], 100.0, 100.0,
                               stable=True, source_context=SOURCE, source_name=CAMERA['name'])
-        assert await runtime._sound_event(CAMERA['id'], 'synthetic-session', SOURCE, dict(
-            kind='crying', confidence=.94, captured_at=CAPTURED, corroborating_windows=2,
+        assert runtime._sound_event(CAMERA['id'], 'synthetic-session', SOURCE, dict(
+            kind='crying', confidence=.94, captured_at=CAPTURED, captured_mono=100.0, corroborating_windows=2,
             audio_seconds=4, age_basis='local_sdk_receive', policy_revision=runtime.policy_cache.revision))
+        await runtime.drain()
         saved = runtime.store.events()[0]
         assert saved['kind'] == 'sound_review' and saved['raw_audio_stored'] is False
         assert saved['directional_audio'] is False and saved['camera_source_context'] == SOURCE

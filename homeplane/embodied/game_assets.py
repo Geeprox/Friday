@@ -34,6 +34,8 @@ _BODY_TARGETS = (
     'exercise-side_lunge.png',
     'exercise-side_step.png',
     'exercise-side_bend.png',
+    'exercise-balance.png',
+    'exercise-cross_knee.png',
 )
 _FILES.update({'motion-art/body/targets/'+name:_SHARED/'motion-art/body/targets'/name for name in _BODY_TARGETS})
 

@@ -19,6 +19,7 @@ from homeplane.runtime_log import observe
 from .catalog import get_app
 from .game_difficulty import game_difficulty
 from .paths import DATA, PRIVATE, PROJECT, PYTHON, VISION, camera, configuration
+from .ski_route import get_ski_trail
 
 
 class EmbodiedService:
@@ -139,6 +140,17 @@ class EmbodiedService:
         return (self._game_lifecycle, id(self.process),
                 getattr(self.process, 'returncode', None), self.selected,
                 self.capture_enabled, self.closed, self.recovery_pending)
+
+    async def party_camera(self,payload):
+        """Only an existing worker may hold its camera; never start capture here."""
+        source=self._game_source()
+        if (self.process is None or self.process.returncode is not None
+                or payload.get('action')!='end'and(self.closed or not self.capture_enabled
+                    or self.recovery_pending or payload.get('camera')!=self.selected)):
+            raise ValueError('party_camera_unavailable')
+        result=await self.request('/api/party-camera',payload,timeout=1)
+        if source!=self._game_source():raise ValueError('party_camera_source_changed')
+        return result
 
     async def party_frame(self):
         """Read an already running source, with no preview lease or capture start."""
@@ -278,12 +290,19 @@ class EmbodiedService:
         ]
 
     @observe("embodied.start")
-    async def start(self, camera_id=None, app_id=None, *, open_privacy=False, expected_intent=None, difficulty=None):
+    async def start(self, camera_id=None, app_id=None, *, open_privacy=False, expected_intent=None,
+                    difficulty=None, ski_trail=None):
         async with self.lock:
             if difficulty is not None:
                 game_difficulty(difficulty)
                 if not app_id or get_app(app_id).mode not in {'quest','ski','tennis','hiit'}:
                     raise ValueError('invalid_game_difficulty')
+            if ski_trail is not None:
+                get_ski_trail(ski_trail)
+                if not app_id or get_app(app_id).mode != 'ski':
+                    raise ValueError('invalid_ski_trail')
+            options = {key: value for key, value in (('difficulty', difficulty), ('ski_trail', ski_trail))
+                       if value is not None}
             if app_id and app_id != 'home' and time.monotonic() < self.practice_deadline:
                 raise ValueError('practice_active')
             if not self.capture_enabled:
@@ -358,11 +377,9 @@ class EmbodiedService:
                         raise ValueError('game_state_changed')
                 else:
                     game = snapshot['game']
-                command = {"action": "select", "mode": app.mode}
-                if difficulty is not None:
-                    command['difficulty'] = difficulty
-                selected_game = await self._send_game_command(command, game)
-                if difficulty is not None and (not isinstance(selected_game, dict) or selected_game.get('difficulty') != difficulty):
+                selected_game = await self._send_game_command({"action": "select", "mode": app.mode, **options}, game)
+                if options and (not isinstance(selected_game, dict)
+                                or any(selected_game.get(key) != value for key, value in options.items())):
                     raise ValueError('game_state_changed')
             if not self.capture_enabled:
                 raise ValueError('camera_capture_paused')
@@ -534,6 +551,17 @@ class EmbodiedService:
         if not self.capture_enabled or not self.process or self.process.returncode is not None:
             raise ValueError('camera_not_running')
         return await self.request(f'/api/previews/{camera_id}/control',dict(direction=direction) if direction else dict(mode=mode))
+
+    async def camera_follow_target(self, camera_id, command=None):
+        camera(camera_id)
+        source = self._game_source()
+        if (self.closed or not self.capture_enabled or self.recovery_pending or self.manual_previews.has(camera_id)
+                or self.process is None or self.process.returncode is not None):
+            raise ValueError('follow_target_unavailable')
+        result = await self.request(f'/api/previews/{camera_id}/follow-target', command)
+        if source != self._game_source() or self.manual_previews.has(camera_id):
+            raise ValueError('follow_target_unavailable')
+        return result
 
     async def camera_power(self,camera_id,*,enabled=None,revision=None,event_id=None):
         camera(camera_id)

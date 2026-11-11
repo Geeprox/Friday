@@ -8,9 +8,10 @@ import time
 
 from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage, capture_environment
 from .camera_director import CameraDirector
-from .camera_intent import CameraIntentStore
+from .camera_follow_picker import CameraFollowPicker
+from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES, CameraIntentStore
 from .camera_audio import AudioIngress
-from .frame_sampling import offer_frame
+from .frame_sampling import CAPTURE_IDLE_TIMEOUT, CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.runtime_log import RuntimeLog
 from homeplane.people.live import close_identity
 
@@ -44,12 +45,16 @@ async def camera_is_open(selected, *, client_factory=None, parameter_factory=Non
 
 
 class PreviewPool:
-    def __init__(self, identity_store=None, continuous=False, *, recognize=False, control_camera=False, on_observation=None, on_audio=None, on_clear=None, focus=None, occupied_elsewhere=None, review_pending=None, wall=None, intent_factory=None):
+    def __init__(self, identity_store=None, continuous=False, *, recognize=False, control_camera=False,
+                 on_observation=None, on_audio=None, on_clear=None, focus=None, occupied_elsewhere=None,
+                 review_pending=None, fall_pending=None, sound_cue=None, wall=None, intent_factory=None):
         self.wall = wall
         self.sessions = {}
         self.focus = focus or (lambda camera: None)
         self.occupied_elsewhere = occupied_elsewhere or (lambda camera: False)
         self.review_pending = review_pending or (lambda camera, session: False)
+        self.fall_pending = fall_pending or (lambda camera, session: False)
+        self.sound_cue = sound_cue or (lambda camera, session, active: None)
         self.runtime_log = RuntimeLog(DATA / "logs" / "camera-motion")
         self.lock = asyncio.Lock()
         self.identity_store = identity_store
@@ -99,7 +104,8 @@ class PreviewPool:
             if item.get('camera_control',{}).get('intent_revision') != item.get('mode_revision'):
                 held = item.get('mode') == 'hold'
                 control.update(phase='held' if held else 'waiting_video',
-                    reason='停留当前视角' if held else '等待画面',view_usable=False,target_locked=False)
+                    reason='停留当前视角' if held else '等待画面',view_usable=False,target_locked=False,
+                    intent_revision=item.get('mode_revision'))
         if control and (not fresh or item['state']!='live'):
             control = dict(control,view_usable=False,target_locked=False)
         return dict(
@@ -108,6 +114,7 @@ class PreviewPool:
             frames=item["frames"],
             received_at=item["received_at"],
             shutter_changed=item['shutter_changed'],
+            follow_target_available=bool(item.get('follow_picker') and fresh and item['state'] == 'live'),
             audio_enabled=bool(self.recognize and self.on_audio),
             recognition='running' if self.recognize and fresh and item['state']=='live' else 'waiting',
             people=item.get('people',0) if fresh else 0,
@@ -136,6 +143,12 @@ class PreviewPool:
                     and process is not None and process.returncode is None
                     and not item.get('privacy_closed') and item['state'] in {'connecting', 'live'})
 
+    def follow_picker(self, camera_id):
+        item = self.sessions.get(camera_id)
+        if not item or not item.get('follow_picker') or not self.source_current(camera_id, item.get('process')):
+            raise ValueError('follow_target_unavailable')
+        return item['follow_picker']
+
     async def control(self, camera_id, *, direction=None, mode=None):
         item = self.sessions.get(camera_id)
         if not item or not item.get('control'):
@@ -148,30 +161,49 @@ class PreviewPool:
             raise ValueError('recognition_required')
         if direction is not None and direction not in {'left','right','up','down'}:
             raise ValueError('invalid_motor_direction')
+        self._set_mode(camera_id, item, mode or 'hold')
+        if direction:
+            task = asyncio.current_task()
+            item['manual_tasks'].add(task)
+            try:return await item['control'](direction,expected_epoch=item['control_epoch'])
+            finally:item['manual_tasks'].discard(task)
+        return {'mode':item['mode'], 'intent_revision':item['mode_revision']}
+
+    def _set_mode(self, camera_id, item, mode):
         # Manual aiming suspends the automatic director before any network wait.
         # A pending automatic decision must not fight this newer user intent.
         item['control_epoch'] += 1
         item['mode'] = 'hold'
         item['mode_revision'] = secrets.token_hex(16)
         item['survey_attempts'] = 0
+        item['survey_confirmed_moves'] = 0
         try:
-            intent = self.intent_factory(camera(camera_id)).save(mode or 'hold')
+            intent = self.intent_factory(camera(camera_id)).save(mode)
         except (OSError, ValueError, RuntimeError):
             item['intent_status'] = 'unavailable'
             raise RuntimeError('camera_intent_unavailable') from None
         item.update(mode=intent.mode, mode_revision=intent.revision, intent_status=intent.status)
         item['animals'] = 0
         if item.get('pet_tracking'):item['pet_tracking'] = dict(item['pet_tracking'],current=False)
-        if direction:
-            task = asyncio.current_task()
-            item['manual_tasks'].add(task)
-            try:return await item['control'](direction,expected_epoch=item['control_epoch'])
-            finally:item['manual_tasks'].discard(task)
-        return {'mode':item['mode']}
 
     async def _monitor(self, selected, item):
-        while True:
-            await self._run(selected, item)
+        while self.sessions.get(selected['id']) is item:
+            process = item.get('process')
+            if process is not None and process.returncode is None:
+                # 旧采集进程尚未确认退出，继续等待这一进程的退出状态。
+                await asyncio.sleep(5)
+                continue
+            try:
+                await self._run(selected, item)
+            except Exception as error:
+                # 清理异常可能覆盖取消信号。主动停止优先于后台重试。
+                if asyncio.current_task().cancelling():
+                    raise asyncio.CancelledError from None
+                if not self.continuous:
+                    raise
+                if item['state'] != 'shutter_closed':
+                    item['state'] = 'unavailable'
+                item.update(error_class=type(error).__name__, error_stage='cleanup')
             if not self.continuous:
                 return
             await asyncio.sleep(15 if item["state"] == "shutter_closed" else 5)
@@ -188,7 +220,7 @@ class PreviewPool:
         retired = False
         item["privacy_closed"] = False
         mode = item.get('mode')
-        item.update(mode=mode if mode in {'auto','pets','hold','survey'} else 'auto' if self.recognize else 'hold',
+        item.update(mode=mode if mode in CAMERA_MODES else 'auto' if self.recognize else 'hold',
                     control_epoch=item.get('control_epoch', 0)+1, control=None, manual_tasks=set(),
                     source_active=False, state='connecting')
         latest = None
@@ -201,6 +233,9 @@ class PreviewPool:
                 return
             retired = True
             latest = None
+            item.pop('follow_picker', None)
+            if item.get('mode') in TARGET_MODES:
+                item.update(mode='hold', mode_revision=secrets.token_hex(16))
             previous_state = item['state']
             item.update(source_active=False, frame=None, received_at=0, people=0, hands=0, animals=0,
                         control=None, control_epoch=item['control_epoch']+1)
@@ -325,7 +360,7 @@ class PreviewPool:
             receiver = asyncio.create_task(receive())
             director = CameraDirector()
             director.apply_mode(item['mode'], item.get('mode_revision', 0))
-            director.survey_attempts = item.get('survey_attempts', 0)
+            director.restore_survey_progress(item.get('survey_attempts', 0), item.get('survey_confirmed_moves', 0))
             motion_lock = asyncio.Lock()
             def privacy_closed():
                 item.update(state='shutter_closed',privacy_closed=True)
@@ -342,7 +377,17 @@ class PreviewPool:
                     animals_current=observation.get('animals_current',False) if observation else False,
                     animals_intent=observation.get('animals_intent') if observation else None,
                     people=observation['people'] if observation else [],
-                    scene_visible=observation.get('scene_visible',False) if observation else False)
+                    scene_visible=observation.get('scene_visible',False) if observation else False,
+                    _follow_jpeg=observation.get('safety_jpeg') if observation else None,
+                    _patrol_view=observation.get('_patrol_view') if observation else None)
+            def follow_sample():
+                sample = current_sample()
+                last_motor_sent = item.get('last_motor_sent', -100)
+                return dict(sample, _follow_motion=last_motor_sent,
+                            _follow_stable=not motion_lock.locked() and sample['_local_received'] > last_motor_sent)
+            if lease is not None and self.recognize:
+                item['follow_picker'] = CameraFollowPicker(director, follow_sample,
+                    lambda: (item['mode'], item['mode_revision']), lambda mode: self._set_mode(selected['id'], item, mode))
             async def send_motion(direction, observed=None, expected_epoch=None):
                 if direction not in {'left','right','up','down'}:raise ValueError('invalid_motor_direction')
                 if item['privacy_closed']:raise RuntimeError('privacy_shutter_closed')
@@ -375,7 +420,10 @@ class PreviewPool:
                                 or not director.decision_current(current, now, direction,
                                     focus=self.focus(selected['id']),
                                     occupied_elsewhere=self.occupied_elsewhere(selected['id']),
-                                    review_pending=self.review_pending(selected['id'], current.get('session_id')))):
+                                    review_pending=self.review_pending(selected['id'], current.get('session_id')),
+                                    fall_pending=self.fall_pending(selected['id'], current.get('session_id')),
+                                    sound_cue=self.sound_cue(selected['id'], current.get('session_id'),
+                                                           director.sound_search_cue))):
                             raise RuntimeError('stale_input')
                         if now >= expires:raise RuntimeError('motor_request_expired')
                         item['last_motor_sent'] = now
@@ -390,7 +438,7 @@ class PreviewPool:
                             raise RuntimeError('motor_request_expired')
                         if result.get('error_class') or result.get('native_code')!=0:
                             raise RuntimeError('local_motor_rejected')
-                        director.sent(time.monotonic(), direction)
+                        director.sent(time.monotonic(), direction, automatic=observed is not None)
                         self.runtime_log.record('embodied.command','result',correlation=correlation,
                             elapsed_ms=round((time.monotonic()-began)*1000))
                         return result
@@ -428,8 +476,12 @@ class PreviewPool:
                     director.apply_mode(item['mode'], item.get('mode_revision', 0))
                     direction = director.choose(sample, now, focus=self.focus(selected['id']),
                         occupied_elsewhere=self.occupied_elsewhere(selected['id']),
-                        review_pending=self.review_pending(selected['id'], sample.get('session_id'))) if item['mode']!='hold' else None
+                        review_pending=self.review_pending(selected['id'], sample.get('session_id')),
+                        fall_pending=self.fall_pending(selected['id'], sample.get('session_id')),
+                        sound_cue=self.sound_cue(selected['id'], sample.get('session_id'),
+                                                director.sound_search_cue)) if item['mode']!='hold' else None
                     item['survey_attempts'] = director.survey_attempts
+                    item['survey_confirmed_moves'] = director.survey_confirmed_moves
                     if item['mode']=='hold':director.hold()
                     item['camera_control'] = dict(director.public(),mode=item['mode'],
                                                  intent_status=item.get('intent_status', 'default'))
@@ -445,7 +497,10 @@ class PreviewPool:
                 if item['privacy_closed'] or not item['source_active']:break
                 if motion_task and motion_task.done():
                     await motion_task
-                packet = await asyncio.wait_for(queue.get(), 75 if not item["frames"] else 40)
+                wait_timeout = CAPTURE_RECEIVE_TIMEOUT
+                if not self.continuous:
+                    wait_timeout = CAPTURE_IDLE_TIMEOUT if not item['frames'] else 40
+                packet = await asyncio.wait_for(queue.get(), wait_timeout)
                 if not item['source_active']:break
                 if time.monotonic()-checked_power>=5:
                     checked_power=time.monotonic()
@@ -454,7 +509,7 @@ class PreviewPool:
                 if packet.get("type") == "frame":
                     if recognizer is not None:
                         stage='recognition'
-                        recognizer.animals_enabled = item['mode'] == 'pets'
+                        recognizer.animals_enabled = item['mode'] in PET_MODES
                         recognizer.animals_intent = item.get('mode_revision')
                         observation = await recognizer.observe(packet,
                             source_current=lambda: self.source_current(selected['id'], process))

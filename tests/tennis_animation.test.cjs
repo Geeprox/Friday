@@ -25,6 +25,20 @@ test('source guide prepares only its positioned receiver; reduced motion skips a
  const swung=packet(1,.1);still.receive(swung,1020);assert.equal(pose(still.paint(swung,1020)),5);
  assert.equal(pose(still.paint(swung,1140)),0,'bounded impact confirmation remains, without a moving sequence');
 });
+test('the source-confirmed serve animates only the server when both players swing',()=>{
+ for(const reduced of [false,true]){
+  const s=scene(reduced),ready=packet(),launched=packet(1);
+  Object.assign(ready.tennis,{phase:'serve',serve:{player:0,ready:true},guide:{active:false}});
+  Object.assign(launched.tennis,{event:{kind:'serve',player:0},guide:{active:true,receiver:1,seconds:2},flight:1});
+  launched.players[1].swings=1;
+  s.receive(ready,1000);
+  assert.equal(pose(s.paint(ready,1000)),reduced?0:3);
+  s.receive(launched,1050);
+  const contact=s.paint(launched,1050);
+  assert.equal(pose(contact),5);
+  assert.equal(pose(contact,1),0);
+ }
+});
 test('joining a live game, stale counts, joint gaps and a new context cannot replay a past swing',()=>{
  const s=scene(),first=packet(30);s.receive(first,1000);assert.equal(pose(s.paint(first,1000)),0);
  const missed=packet(31);missed.players[0].observation='brief_joint_gap';s.receive(missed,1020);assert.equal(pose(s.paint(missed,1020)),0);

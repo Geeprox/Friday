@@ -29,19 +29,46 @@ test('pause, new return, replay and reduced motion never tween through an old ba
  assert.deepEqual(ball(still.paint(second,1100)),ball(direct.paint(second,1100)));
 });
 
-test('preparation and point states show a landing cue and no flying ball',()=>{
+test('preparation and point states hide the flight and the receiving marker',()=>{
  const s=scene();
- for(const phase of ['ready','point','complete']){
-  const current=game(.5,.5,phase);current.tennis.ready_seconds=1.5;
-  current.tennis.guide={active:phase!=='complete',receiver:0,target_x:.25,reach:.2,seconds:.8,cue:'prepare'};
+ for(const current of [originalPacket('ready'),originalPacket('point'),game(.5,.5,'complete')]){
   s.receive(current,1000);
   const drawn=s.paint(current,1000);
   assert.equal(ball(drawn),undefined);
-  if(phase!=='complete'){
-   const ring=drawn.find(c=>c[0]==='ellipse');
-   assert(Math.abs(ring[1]-(800+(.25-.5)*(1120-.1*580)))<1e-7,'marker uses the source intercept');
-   assert(drawn.some(c=>c[0]==='text'&&c[1]==='2'),'source countdown, not a local timer');
-  }
+  assert(!drawn.some(c=>c[0]==='text'&&c[1].endsWith('落点')));
+ }
+});
+
+test('the stationary service marker tracks the designated server and survives reduced motion',()=>{
+ const parked=originalPacket('serve');
+ for(const server of [0,1]){
+  const current=structuredClone(parked),s=scene(true);
+  current.tennis.serve.player=server;
+  current.tennis.ball.z=server===0?.12:.88;
+  s.setPortrait(true);
+  const drawn=s.paint(current,1000),label=`${server+1} 号 · 发球`;
+  const callout=drawn.find(c=>c[0]==='text'&&c[1]===label);
+  assert(callout);
+  const ring=drawn.find(c=>c[0]==='ellipse');
+  assert.equal(ring[2],840-current.tennis.ball.z*460);
+  assert((callout[2]-ring[1])*(server===0?-1:1)>ring[3],'发球提示放在球拍外侧');
+  assert.deepEqual(ball(s.paint(current,5000)),ball(drawn),'等待期间球保持在发球位置');
+  assert(!s.paint({...current,status:'paused'},5050).some(c=>c[0]==='text'&&c[1]===label));
+ }
+});
+
+test('both landing circles use the source strip and the swing cue stays in front of the actors',()=>{
+ for(const portrait of [false,true])for(const receiver of [0,1]){
+  const s=scene(true),current=game(.5,.5),window=.14,target=.62;
+  s.setPortrait(portrait);
+  current.tennis.guide={active:true,receiver,target_x:target,reach:.2,seconds:.1,window,cue:'swing'};
+  const draws=s.paint(current,1000),ring=draws.find(row=>row[0]==='ellipse');
+  assert.equal(ring[2],840-(receiver?1-window:window)*460);
+  const [kind,label,x]=draws.at(-1);
+  assert.equal(kind,'text');assert.equal(label,`${receiver+1} 号 · 挥拍`);
+  assert(Math.abs(x-ring[1])>ring[3],'cue sits beside the landing circle');
+  assert(draws.findIndex(row=>row[0]==='ball')<draws.length-1);
+  assert(!s.paint({...current,status:'paused'},1050).some(row=>row[0]==='text'&&row[1]===label));
  }
 });
 
@@ -49,11 +76,18 @@ const code=fs.readFileSync('homeplane/embodied/static/games.js','utf8');
 const context=vm.createContext({});
 vm.runInContext(code.slice(code.indexOf('function tennisPresentation('),code.indexOf('function updateTennisHUD(')),context);
 function originalPacket(stage){
- return JSON.parse(execFileSync(path.join(process.cwd(),'.venv/bin/python'),['-B','-c',`
+ return JSON.parse(execFileSync(process.env.FRIDAY_TEST_PYTHON||path.join(process.cwd(),'.venv/bin/python'),['-B','-c',`
 import json
 from homeplane.embodied.motion_games import MotionGames
 game=MotionGames();game.reset('tennis')
 players=[dict(lateral=0,last_swing=10,swing_direction=1,observation='fresh'),dict(lateral=0,last_swing=-100,swing_direction=-1,observation='fresh')]
+if '${stage}' in {'serve','launched'}:
+ game.round_pause=0
+ for player in players:player.update(observed_wrists=2,foot_observation='fresh',arm_speed=0,last_swing=-100)
+ for i in range(7):game.tennis(players,.05,10+i*.05)
+ if '${stage}'=='launched':
+  players[0]['last_swing']=10.4
+  game.tennis(players,.05,10.4)
 if '${stage}'=='hit':
  game.round_pause=0;game.ball.update(x=.5,z=.06,toward=0);game.tennis(players,.01,10)
 if '${stage}' in {'point','position','unobserved'}:
@@ -62,13 +96,17 @@ if '${stage}' in {'point','position','unobserved'}:
 print(json.dumps(game.publish(players,'playing','')))
 `],{encoding:'utf8'}));
 }
-test('original rule packet reaches the hit acknowledgement and point/ready prompts',()=>{
+test('original rule packets connect serve, receiving and change of service to the HUD',()=>{
  const ready=context.tennisPresentation(originalPacket('ready'));
- assert.equal(ready.title,'1 号准备接球');assert(ready.instruction.startsWith('2 秒'));
+ assert.equal(ready.title,'1 号准备发球');assert(ready.instruction.startsWith('2 秒'));
+ const serve=context.tennisPresentation(originalPacket('serve'));
+ assert.equal(serve.title,'1 号发球');assert.equal(serve.instruction,'现在挥拍！');
+ const launched=context.tennisPresentation(originalPacket('launched'));
+ assert.equal(launched.title,'2 号接球');assert.equal(launched.event,'1 号 · 发球成功');
  const hit=context.tennisPresentation(originalPacket('hit'));
  assert.equal(hit.title,'2 号接球');assert.equal(hit.event,'1 号 · 漂亮回击');
  const point=context.tennisPresentation(originalPacket('point'));
- assert.equal(point.title,'2 号得分');assert(point.instruction.startsWith('下一球：1 号接球'));assert.equal(point.event,'1 号 · 等光圈收拢，再挥拍');
+ assert.equal(point.title,'2 号得分');assert.equal(point.instruction,'2 号准备发球 · 2 秒');assert.equal(point.event,'1 号 · 看到挥拍提示再出手');
 });
 test('point coaching uses known source evidence and stays quiet when input was not observed',()=>{
  const packet=originalPacket('position');assert.equal(packet.tennis.event.next_focus,'position');
@@ -88,11 +126,42 @@ test('the original HUD exposes coaching once, hides it during pause and clears i
  const packet=originalPacket('position');hud.updateTennisHUD(packet);
  const feedback=node('tennisEvent');assert.equal(feedback.hidden,false);assert.equal(feedback.textContent,'1 号 · 先站进光圈，再挥拍');
  const writes=feedback.writes;hud.updateTennisHUD(packet);assert.equal(feedback.writes,writes,'polling cannot repeat the same announcement');
+ const scoreboard=node('score');assert.match(scoreboard.innerHTML,/data-player="1" data-serving="true"/);
  const replacement=originalPacket('point');assert.notEqual(replacement.control_context,packet.control_context);
  assert.equal(replacement.round_id,packet.round_id);assert.equal(replacement.tennis.event.sequence,packet.tennis.event.sequence);
- hud.updateTennisHUD(replacement);assert.equal(feedback.textContent,'1 号 · 等光圈收拢，再挥拍','a new source must not retain the old source\'s coaching');
+ hud.updateTennisHUD(replacement);assert.equal(feedback.textContent,'1 号 · 看到挥拍提示再出手','a new source must not retain the old source\'s coaching');
  hud.updateTennisHUD({...replacement,status:'paused'});assert.equal(feedback.hidden,true);
+ assert.doesNotMatch(scoreboard.innerHTML,/data-(receiving|serving)/);
  hud.updateTennisHUD(originalPacket('ready'));assert.equal(feedback.hidden,true);assert.equal(feedback.textContent,'');assert.equal(feedback.dataset.event,'');
+});
+
+test('the stage presents fixed player numbers and does not compete with a recovery prompt',()=>{
+ const {makeClient,part,game:stageGame}=require('./game_stage_harness.cjs');
+ const {c}=makeClient({selected:'tennis',teachingWaitSince:null});
+ vm.runInContext('function modeDescription(){return ["", "双人网球", ""]}',c);
+ vm.runInContext(part('function gamePhaseMessage(', '\nconst artRoot'),c);
+ const initial=stageGame({mode:'off',selected_mode:'tennis'});
+ const intro=c.stageOverlayMarkup(initial,true,false);
+ assert.match(intro,/双人对打.*两位玩家并排站好，双脚入镜。左侧先发球。/);
+ assert.match(intro,/data-click="startGame\(\)"/);
+ const practice=c.stageOverlayMarkup({...initial,tennis_variant:'practice'},true,false);
+ assert.match(practice,/data-tennis-variant="practice" aria-pressed="true">单人练习/);
+ assert.match(practice,/陪练发 9 球/);
+ const waiting={...initial,mode:'tennis',status:'waiting',tennis:{lineup:['missing','ready']}};
+ const waitingUI=c.stageOverlayMarkup(waiting,true,true);
+ assert.match(waitingUI,/1 号玩家<\/dt><dd>请回到画面.*2 号玩家<\/dt><dd>已就位/);
+ assert.doesNotMatch(c.stageOverlayMarkup({...waiting,source_recovery:{required:true,phase:'camera'}},true,true),/tennis-lineup/);
+});
+test('practice shows one player and labels each confirmed outcome without using match points',()=>{
+ const current=game(.5,.5);current.tennis_variant='practice';
+ Object.assign(current.tennis,{practice:{balls:9,results:[true,false,true],feed_x:.26},
+  guide:{active:true,receiver:0,target_x:.26,reach:.2,seconds:.1,window:.1,cue:'swing'}});
+ const score={dataset:{}};context.tennisPracticeScore(current.tennis,current,score);
+ assert.match(score.innerHTML,/命中<\/small><b>2<span> \/ 9/);
+ assert.match(score.innerHTML,/第 1 球，命中.*第 2 球，未命中.*第 4 球，接球中/);
+ assert.equal(context.tennisPresentation(current).title,'左右回球');
+ const names=scene(true).paint(current,1000).filter(item=>item[0]==='text').map(item=>item[1]);
+ assert.deepEqual(names,['陪练','你','挥拍']);
 });
 test('old hit events and unknown completion never fabricate a new result',()=>{
  const packet=originalPacket('hit');packet.tennis.event.age=2;

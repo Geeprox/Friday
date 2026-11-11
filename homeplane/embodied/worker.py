@@ -43,8 +43,10 @@ from homeplane.embodied.calibration_save import CalibrationSaver
 from homeplane.embodied.calibration_frames import CalibrationFrames
 from homeplane.embodied.static_page import static_asset, static_page
 from homeplane.embodied.camera_director import CameraDirector
-from homeplane.embodied.camera_intent import CameraIntentStore
-from homeplane.embodied.frame_sampling import offer_frame
+from homeplane.embodied.party_camera import PartyCamera
+from homeplane.embodied.camera_intent import CAMERA_MODES, PET_MODES, CameraIntentStore
+from homeplane.embodied.camera_follow_picker import FollowCommand
+from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
@@ -105,6 +107,7 @@ motor_sequence = 0
 motion_generation = 0
 motor_last_sent = -100.0
 games = MotionGames(require_presentation=True)
+party_camera = PartyCamera()
 recorder = PageRecording(DATA / "recordings")
 record_lock = asyncio.Lock()
 home = HomeService(SELECTED['id'])
@@ -136,11 +139,15 @@ async def dispatch_interactions(events):
         game_window = event.get('_game_window')
         if event['camera'] == SELECTED['id'] and game_window is None:
             game_window = (games.control_context, games.control_revision)
-        async def dispatch(e=event, expected_game=game_window):
+        party_window=event.get('_party_window',party_camera.window(time.monotonic())[:2])if event['camera']==SELECTED['id']else None
+        async def dispatch(e=event, expected_game=game_window, expected_party=party_window):
             if e['camera'] == SELECTED['id'] and (
                     games.mode not in {'off', 'home'}
                     or expected_game != (games.control_context, games.control_revision)):
                 return
+            if e['camera']==SELECTED['id']:
+                party=party_camera.window(time.monotonic())
+                if party[2]or party[:2]!=expected_party:return
             service = home if e['camera'] == SELECTED['id'] else secondary_homes.get(e['camera'])
             if not (interaction_enabled and service and service.armed and interaction_source_current(e)
                     and fleet.current(e,time.monotonic())) or practice.suppresses(e['camera']):return
@@ -187,7 +194,7 @@ def invalidate_calibration():
     if camera_planner:
         camera_planner.views.clear()
     games.suspend_source()
-    state.update(room=None, people=[], hands=[], animals=[], animals_current=False,
+    state.update(room=None, people=[], hands=[], animals=[], animals_current=False, _patrol_view=None,
                  tracking_current=False, scene={'objects': []})
 
 
@@ -205,7 +212,7 @@ def close_primary_view():
     motion_generation += 1
     calibration_frames.clear()
     state.update(status='shutter_closed',reason='privacy_shutter_closed',people=[],hands=[],frame=None,
-                 animals=[],animals_current=False,scene={'objects': []})
+                 animals=[],animals_current=False,scene={'objects': []},_patrol_view=None)
     pet_tracks.clear()
     wall.clear(SELECTED['id'], primary_wall_epoch)
     clear_camera(SELECTED['id'])
@@ -226,7 +233,7 @@ async def primary_capture_closed(my_generation, wall_epoch, reason, error_class=
     motion_generation += 1
     latest, last_frame, last_jpeg, last_preview, last_preview_at = None, 0, b'', b'', 0.0
     state.update(frame=None, people=[], hands=[], animals=[], animals_current=False, room=None,
-                 scene={'objects': []})
+                 scene={'objects': []}, _patrol_view=None)
     if state.get('status') != 'shutter_closed':
         state.update(status='unavailable', reason=reason, error_class=error_class, error_stage=stage)
     home.armed = False
@@ -299,7 +306,8 @@ async def secondary_observation(observation, process):
             and not (PRIVATE/'voice-input-paused').exists())
     await service.observe(observation['people'],observation['faces'],observation['registration'],
         observation['now'],process,active,item.get('owner'),gestures_enabled=False,
-        sound_review=safety.sound_requested(camera_id),session_id=observation['session'])
+        sound_review=safety.sound_requested(camera_id),session_id=observation['session'],
+        captured_mono=observation['captured_mono'])
 
 
 async def secondary_audio(camera_id, packet):
@@ -312,7 +320,8 @@ async def secondary_audio(camera_id, packet):
 
 previews = PreviewPool(identity_store=identity_store, continuous=True, recognize=True, wall=wall,
     on_observation=secondary_observation,on_audio=secondary_audio,on_clear=clear_camera,
-    review_pending=safety.review_pending,
+    review_pending=safety.review_pending, fall_pending=safety.fall_pending,
+    sound_cue=safety.sound_search_cue,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
     occupied_elsewhere=lambda cid: (cid!=SELECTED['id'] and bool(view().get('people')))
         or any(other!=cid and previews.status(other)['state']=='live' and item.get('people',0)
@@ -382,6 +391,7 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             motion_generation += 1
             calibration_frames.clear()
             motor_last_sent = now
+            state['_patrol_view'] = None
             state['scene'] = {'objects': []}
             identities.discard()
             fleet.clear(SELECTED['id'])
@@ -432,6 +442,10 @@ async def camera_search():
         if os.environ.get("FRIDAY_CAMERA_HOLD")=="1":planner.mode="hold"
         camera_planner = planner
         director = CameraDirector()
+        from homeplane.embodied.camera_follow_picker import CameraFollowPicker
+
+        planner.follow_picker = CameraFollowPicker(director, lambda: primary_follow_sample(),
+            lambda: (planner.mode, planner.intent_revision), lambda mode: set_primary_camera_mode(mode))
         checked = 0.0
         while True:
             now = time.monotonic()
@@ -441,24 +455,34 @@ async def camera_search():
                     close_primary_view()
                     return
             now = time.monotonic()
-            sample = dict(state, _local_received=last_frame, game=games.public)
+            sample = dict(state, _local_received=last_frame, game=games.public,
+                party_camera=party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
+                    frame_mono=last_frame,now=now))
             elsewhere = any(item.get('people',0) and previews.status(cid)['state']=='live'
                             for cid,item in previews.sessions.items())
             director.apply_mode(planner.mode, planner.intent_revision)
             direction = director.choose(sample, now, focus=getattr(home,'camera_focus',None),
                                         occupied_elsewhere=elsewhere,
-                                        review_pending=safety.review_pending(SELECTED['id'], sample.get('session_id'))) if planner.mode!='hold' else None
+                                        review_pending=safety.review_pending(SELECTED['id'], sample.get('session_id')),
+                                        fall_pending=safety.fall_pending(SELECTED['id'], sample.get('session_id')),
+                                        sound_cue=safety.sound_search_cue(SELECTED['id'], sample.get('session_id'),
+                                                                         director.sound_search_cue)) if planner.mode!='hold' else None
             if planner.mode == 'hold':director.hold()
             state['camera_control'] = dict(planner.public(lease.presets), **director.public())
             if direction is not None:
                 try:
                     def decision_current():
-                        current = dict(state, _local_received=last_frame, game=games.public)
+                        current = dict(state, _local_received=last_frame, game=games.public,
+                            party_camera=party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
+                                frame_mono=last_frame,now=time.monotonic()))
                         occupied = any(item.get('people',0) and previews.status(cid)['state']=='live'
                                        for cid,item in previews.sessions.items())
                         return director.decision_current(current, time.monotonic(), direction,
                             focus=getattr(home,'camera_focus',None), occupied_elsewhere=occupied,
-                            review_pending=safety.review_pending(SELECTED['id'], current.get('session_id')))
+                            review_pending=safety.review_pending(SELECTED['id'], current.get('session_id')),
+                            fall_pending=safety.fall_pending(SELECTED['id'], current.get('session_id')),
+                            sound_cue=safety.sound_search_cue(SELECTED['id'], current.get('session_id'),
+                                                             director.sound_search_cue))
                     await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
                                      decision_current=decision_current)
                     director.sent(time.monotonic())
@@ -510,6 +534,9 @@ async def notify():
 
 def view():
     result = dict(state)
+    result.pop('_patrol_view', None)
+    result['party_camera'] = party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
+        frame_mono=last_frame,now=time.monotonic())
     result["game"] = games.viewer_state()
     result["recording"] = recorder.public()
     result['safety_recording'] = safety.recording_status()
@@ -546,7 +573,7 @@ def view():
             result['game'].update(status='paused', reason='实时画面已过期')
         if result['game']['source_recovery']['required']:
             result['game']['source_recovery'] = dict(result['game']['source_recovery'],ready=False,phase='camera')
-    pet_current = (result['status'] == 'live' and camera_planner and camera_planner.mode == 'pets'
+    pet_current = (result['status'] == 'live' and camera_planner and camera_planner.mode in PET_MODES
                    and result.get('animals_intent') == camera_planner.intent_revision
                    and result.get('animals_current') is True)
     if not pet_current:
@@ -604,6 +631,7 @@ async def run_source(my_generation):
         hands=[],
         animals=[],animals_current=False,animals_intent=None,pet_tracking=pet_tracks.public(),
         room=None,
+        _patrol_view=None,
         game={"mode": games.mode, "status": "paused", "reason": "实时画面已过期", "players": []},
     )
     camera_task = None
@@ -777,7 +805,7 @@ async def run_source(my_generation):
                     if state['status']=='shutter_closed':return
                     raise RuntimeError('camera_owner_unavailable')
                 stage = "waiting_frame"
-                item = await asyncio.wait_for(queue.get(), 85)
+                item = await asyncio.wait_for(queue.get(), CAPTURE_RECEIVE_TIMEOUT)
                 if item["type"] != "frame":
                     if state['status'] == 'shutter_closed':return
                     state.update(
@@ -823,7 +851,7 @@ async def run_source(my_generation):
                     if o["class"] == "person" and o["confidence"] >= 0.5
                 ]
                 pet_owner = camera_planner
-                pet_revision = pet_owner.intent_revision if pet_owner and pet_owner.mode == 'pets' else None
+                pet_revision = pet_owner.intent_revision if pet_owner and pet_owner.mode in PET_MODES else None
                 stage = "vision_request"
                 detection = await request_vision(vision, {
                     "jpeg": item["jpeg"],
@@ -863,7 +891,7 @@ async def run_source(my_generation):
                     people = tracks.update(detection, now, transform=frame_room.registration,
                         camera_moving=not registered or now < frame_room.command_until or frame_room.reg_info.get('status') in {'moving','settling'})
                     pet_active = (pet_revision is not None and camera_planner is pet_owner
-                        and pet_owner.mode == 'pets' and pet_owner.intent_revision == pet_revision)
+                        and pet_owner.mode in PET_MODES and pet_owner.intent_revision == pet_revision)
                     animals = pet_tracks.update(detection, now, intent=pet_revision if pet_active else None,
                         transform=frame_room.registration,
                         camera_moving=not registered or now < frame_room.command_until or frame_room.reg_info.get('status') in {'moving','settling'})
@@ -973,16 +1001,19 @@ async def run_source(my_generation):
                     continue
                 last_selection = games.selected_mode
                 game_window = (games.control_context, games.control_revision)
-                gesture_active = interaction_enabled and games.mode in {'off', 'home'}
+                party_window=party_camera.window(time.monotonic())
+                gesture_active = interaction_enabled and games.mode in {'off', 'home'}and not party_window[2]
                 practice.observe(SELECTED['id'], identities.session, people, hands,
                     layout['registration'], now, now-(time.time()-item['received_at']))
                 interaction_events=fleet.update(SELECTED['id'],identities.session,people,hands,
-                    layout['registration'],gesture_active,now,game_window=game_window,
-                    game_active=games.mode not in {'off','home'},
+                    layout['registration'],gesture_active,now,game_window=(game_window,party_window[:2]),
+                    game_active=games.mode not in {'off','home'}or party_window[2],
                     captured_mono=time.monotonic()-(time.time()-item['received_at']))
                 for event in interaction_events:
                     event['_game_window'] = game_window
+                    event['_party_window'] = party_window[:2]
                 voice_now = time.monotonic()
+                voice_captured_mono = voice_now - (time.time() - item['received_at'])
                 home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,home.attention.candidate() is not None,
                     people=len(people), session=identities.session,
                     speaking=bool(home.speaking and home.last_audio is not None and 0 <= voice_now-home.last_audio <= .6),
@@ -999,6 +1030,7 @@ async def run_source(my_generation):
                     gestures_enabled=False,
                     sound_review=safety.sound_requested(SELECTED['id']),
                     session_id=identities.session,
+                    captured_mono=voice_captured_mono,
                 )
                 if state.get('status')=='shutter_closed':return
                 if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
@@ -1030,6 +1062,7 @@ async def run_source(my_generation):
                     animals=animals,animals_current=pet_tracks.current,
                     animals_intent=pet_revision if pet_active else None,pet_tracking=pet_tracks.public(),
                     scene_visible=scene_visible,
+                    _patrol_view=getattr(frame_room, 'patrol_view', None) if registered else None,
                     reason=None,
                     frame=item["jpeg"],
                     width=item["width"],
@@ -1143,6 +1176,7 @@ async def stop():
         people=[],
         hands=[],
         room=None,
+        _patrol_view=None,
         game={"mode": games.mode, "status": "paused", "reason": "实时画面已过期", "players": []},
     )
     await notify()
@@ -1352,7 +1386,8 @@ async def voice_control(request: Request):
     else:
         marker.unlink(missing_ok=True)
     if is_input:
-        if paused:await safety.sound.invalidate()
+        if paused:
+            await safety.pause_sound()
         armed=home.armed
         for service in [*secondary_homes.values(),home]:await service.close()
         if armed:await home.enable()
@@ -1381,6 +1416,7 @@ async def preview_status(camera_id: str, request: Request):
             "primary": True,
             "camera_control": report.get('camera_control'),
             "pet_tracking": report.get('pet_tracking'),
+            "follow_target_available": report['status'] == 'live' and (report.get('camera_control') or {}).get('owner') == 'friday',
         }
     return previews.status(camera_id)
 
@@ -1397,6 +1433,56 @@ async def preview_frame(camera_id: str, request: Request):
     if not frame:
         raise HTTPException(409, detail="camera_frame_unavailable")
     return Response(frame, media_type="image/jpeg")
+
+
+def primary_follow_sample():
+    if capture is None or capture.returncode is not None:
+        return {}
+    now = time.monotonic()
+    return dict(state, _local_received=last_frame, game=games.public,
+                _follow_motion=motion_generation, _follow_stable=not motor_waiters and last_frame > motor_last_sent,
+                party_camera=party_camera.status(camera=SELECTED['id'], session=state.get('session_id'),
+                                                 frame_mono=last_frame, now=now))
+
+
+def follow_picker(camera_id, request):
+    if request.client.host not in {'127.0.0.1', '::1'}:
+        raise HTTPException(403)
+    origin = request.headers.get('origin')
+    if origin and origin != 'http://' + request.headers.get('host', ''):
+        raise HTTPException(403)
+    if camera_id != SELECTED['id']:
+        return previews.follow_picker(camera_id)
+    if (camera_planner is None or camera_lease is None or not camera_lease.snapshot
+            or camera_lease.snapshot.get('status') != 'owned'):
+        raise ValueError('follow_target_unavailable')
+    return camera_planner.follow_picker
+
+
+@app.get('/api/previews/{camera_id}/follow-target')
+async def follow_target_view(camera_id: str, request: Request):
+    try:
+        result = follow_picker(camera_id, request).snapshot()
+    except ValueError:
+        raise HTTPException(409, detail='follow_target_unavailable') from None
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/api/previews/{camera_id}/follow-target')
+async def follow_target_command(camera_id: str, command: FollowCommand, request: Request):
+    try:
+        return follow_picker(camera_id, request).command(command)
+    except (ValueError, RuntimeError, OSError):
+        raise HTTPException(409, detail='follow_target_unavailable') from None
+
+
+@app.post('/api/party-camera')
+async def party_camera_control(request: Request):
+    try:
+        return party_camera.command(await request.json(),dict(view(),_local_received=last_frame),
+            time.monotonic(),motor_busy=bool(motor_waiters),motor_last_sent=motor_last_sent)
+    except ValueError as error:
+        raise HTTPException(409,detail=str(error))from None
 
 
 @app.get('/api/practice/capabilities')
@@ -1546,11 +1632,16 @@ async def game_control(request: Request):
     action = data.get('action')
     if action is not None and (not isinstance(action, str) or action not in {'select','start','pause','resume'}):
         raise HTTPException(400, detail='invalid_game_action')
-    if set(data)-{'mode','action','difficulty','expected_context','expected_revision'}:
+    if set(data)-{'mode','action','difficulty','ski_trail','tennis_variant','expected_context','expected_revision'}:
         raise HTTPException(400, detail='invalid_game_request')
     if 'difficulty' in data and (type(data['difficulty']) is not str
             or action not in {'select','start'} or data.get('mode') not in {'quest','ski','tennis','hiit'}):
         raise HTTPException(400, detail='invalid_game_difficulty')
+    if 'ski_trail' in data and (type(data['ski_trail']) is not str or action != 'select' or data.get('mode') != 'ski'):
+        raise HTTPException(400, detail='invalid_ski_trail')
+    if 'tennis_variant' in data and (type(data['tennis_variant']) is not str or action != 'select'
+                                     or data.get('mode') != 'tennis'):
+        raise HTTPException(400, detail='invalid_tennis_variant')
     if not games.control_current(data.get('expected_context'),data.get('expected_revision')):
         raise HTTPException(409, detail='game_state_changed')
     if practice.active() and action != 'pause' and data.get("mode", "quest") not in {"off", "home"}:
@@ -1561,7 +1652,8 @@ async def game_control(request: Request):
                 raise ValueError('game_changed')
             games.set_paused(action == 'pause')
         elif action == "select":
-            games.select(data.get("mode", "quest"), **({'difficulty':data['difficulty']} if 'difficulty' in data else {}))
+            options = {key: data[key] for key in ('difficulty', 'ski_trail', 'tennis_variant') if key in data}
+            games.select(data.get("mode", "quest"), **options)
         else:
             games.require_game_view(data.get('mode', 'off'))
             games.reset(data.get("mode", "off"), **({'difficulty':data['difficulty']} if 'difficulty' in data else {}))
@@ -1781,11 +1873,11 @@ async def camera_control(request: Request):
         camera_planner.visited.clear()
         camera_planner.last_person = time.monotonic() - 8
         camera_planner.last_move = time.monotonic() - 12
-    return {"mode": mode}
+    return {"mode": mode, "intent_revision": camera_planner.intent_revision}
 
 
 def set_primary_camera_mode(mode):
-    if mode not in ('auto', 'pets', 'hold', 'survey'):
+    if mode not in CAMERA_MODES:
         raise ValueError('invalid_camera_mode')
     if not camera_planner:
         raise RuntimeError('camera_not_owned')

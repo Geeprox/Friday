@@ -15,7 +15,7 @@ function questWorld(g){
  const stages=Array.isArray(q.stages)&&q.stages.length?q.stages:legacy;
  const level=Math.max(0,Math.min(stages.length,Number.isSafeInteger(q.level)?q.level:0));
  const stage=stages[Math.min(level,stages.length-1)],scenes=['forest','stream','camp'];
- const landmarks=['gate','canopy','branches','stones','steps','flowers','boughs','trail','flags','breeze'];
+ const landmarks=['gate','canopy','branches','stones','steps','flowers','crossing','boughs','trail','flags','breeze','landing'];
  const requestedScene=stage?.scene??oldWorld[stage?.action]?.[0];
  const scene=scenes.includes(requestedScene)?requestedScene:'forest',values={};
  for(const[s,part]of stages.entries()){
@@ -56,11 +56,17 @@ function createGameScenery(c,{base,onChange=()=>{}}){
  function receiveTennis(g,at){
   const running=g.mode==='tennis'&&g.status==='playing';
   const continuous=running&&tennisPacketPlaying&&tennisPacketAt!==null&&at>tennisPacketAt&&at-tennisPacketAt<=250;
+  const served=tennisPhase==='serve'&&g.tennis?.phase==='rally';
+  const feed=g.tennis?.event;
+  if(continuous&&g.tennis?.practice&&['ready','point'].includes(tennisPhase)&&g.tennis.phase==='rally'&&
+     feed?.kind==='serve'&&feed.player===1&&feed.age>=0&&feed.age<=.25)tennisPending[1]=at;
   for(let i=0;i<2;i++){
    const player=g.players?.[i],count=player?.swings;
    if(!Number.isSafeInteger(count)||count<0)continue;
+   const currentSwing=served?g.tennis.event?.kind==='serve'&&g.tennis.event.player===i:
+    g.tennis?.phase==='rally'||g.tennis?.phase==='point'&&tennisPhase==='rally';
    if(continuous&&player.observation==='fresh'&&tennisCounts[i]!==null&&count===tennisCounts[i]+1
-     &&(g.tennis?.phase==='rally'||g.tennis?.phase==='point'&&tennisPhase==='rally'))tennisPending[i]=at;
+     &&currentSwing)tennisPending[i]=at;
    if(tennisCounts[i]!==null&&count<tennisCounts[i]){tennisPending[i]=null;tennisHitAt[i]=-10000;}
    tennisCounts[i]=count;
   }
@@ -158,6 +164,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    row('stones',0,[[470,810,170],[540,700,150],[470,600,130],[545,510,115]]);
    row('steps',1,[[1100,825,170],[1150,750,160],[1070,675,150],[1140,605,140],[1080,540,130],[1150,485,120]]);
    row('flowers',5,[[585,860,120],[1040,865,120],[565,460,100],[1040,455,100]]);
+   row('crossing',0,[[615,793,110],[985,793,110],[620,724,96],[980,724,96]]);
   }else if(world.scene==='camp'){
    row('boughs',2,[[470,825,235],[550,700,210],[470,590,185],[550,500,160]],{clear:true});
    row('trail',0,[[1130,820,175],[1060,710,155],[1140,600,135],[1070,510,115]]);
@@ -166,6 +173,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
     row('flags',4,[[470,237,80],[1130,237,80],[615,271,80],[985,271,80]],{top:true,marker:false});
    }
    row('breeze',6,[[460,850,85],[1140,850,85],[590,885,100],[1010,885,100]]);
+   row('landing',1,[[610,802,110],[990,802,110],[625,736,96],[975,736,96]]);
    if(world.done)questSlot('picnic',7,1120,690,170,true,{marker:false});
   }
  }
@@ -210,6 +218,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   const age=tennisClock-tennisHitAt[i],guide=g.tennis?.guide;
   // These are illustrations of an observed swing, never a hit/score decision.
   if(age>=0&&age<(reduced.matches?120:420))tennisPoses[i]=reduced.matches?5:5+Math.floor(age/60);
+  else if(!reduced.matches&&g.tennis?.serve?.ready&&g.tennis.serve.player===i)tennisPoses[i]=3;
   else if(!reduced.matches&&g.tennis?.phase==='rally'&&guide?.active&&guide.receiver===i&&guide.in_position
     &&g.players?.[i]?.observation==='fresh'&&Number.isFinite(guide.seconds)&&guide.seconds>=0&&guide.seconds<=.65)
    tennisPoses[i]=1+Math.min(3,Math.floor((.65-guide.seconds)/.65*4));
@@ -241,26 +250,35 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   for(const z of [.25,.75])line(project(.11,z),project(.89,z),'#fff6d9',3);
   line(project(.5,.25),project(.5,.75),'#fff6d9',3);c.restore();
   const guide=t.guide;
-  if(guide?.active&&Number.isFinite(guide.target_x)){
-   const z=guide.receiver===0?.1:.9,p=project(guide.target_x,z),left=project(guide.target_x-guide.reach,z),right=project(guide.target_x+guide.reach,z);
+  let cue;
+  if(running&&guide?.active&&Number.isFinite(guide.target_x)&&Number.isFinite(guide.reach)){
+   const window=guide.window>0&&guide.window<.5?guide.window:.1,z=guide.receiver===0?window:1-window;
+   const p=project(guide.target_x,z),left=project(guide.target_x-guide.reach,z),right=project(guide.target_x+guide.reach,z);
    const rx=Math.abs(right[0]-left[0])/2,ry=rx*.21,ink=guide.receiver===0?'#285e53':'#8b3c29';
-   c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle=guide.in_position?'#fff6d94d':'#fff6d91f';c.fill();c.strokeStyle=ink;c.lineWidth=4;c.stroke();
+   const swing=t.phase==='rally'&&guide.cue==='swing';
+   c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle=swing?'#fff6d9bd':guide.in_position?'#fff6d94d':'#fff6d91f';c.fill();c.strokeStyle=ink;c.lineWidth=swing?7:4;c.stroke();
    const approach=1+Math.max(0,Math.min(1,guide.seconds/.8))*.42;
-   if(!reduced.matches&&t.phase==='rally'){c.beginPath();c.ellipse(p[0],p[1],rx*approach,ry*approach,0,0,Math.PI*2);c.strokeStyle='#fff6d9';c.lineWidth=2;c.stroke();}
-   const labelFont=portrait?34:20;c.textAlign='center';c.font=`600 ${labelFont}px -apple-system, sans-serif`;
-   const label=t.phase==='ready'||t.phase==='point'?Math.max(1,Math.ceil(t.ready_seconds))+'':guide.cue==='swing'?'挥拍':(guide.receiver+1)+' 号落点';
-   const labelWidth=label.length*labelFont+20;c.fillStyle='#faf9f2';c.fillRect(p[0]-labelWidth/2,p[1]-ry-14-labelFont-5,labelWidth,labelFont+10);c.fillStyle=ink;
-   c.fillText(label,p[0],p[1]-ry-14);c.restore();
+   if(!reduced.matches&&t.phase==='rally'&&!swing){c.beginPath();c.ellipse(p[0],p[1],rx*approach,ry*approach,0,0,Math.PI*2);c.strokeStyle='#fff6d9';c.lineWidth=2;c.stroke();}
+   c.restore();
+   const number=(guide.receiver+1)+' 号';
+   const label=t.practice?(swing?'挥拍':'落点'):number+(swing?' · 挥拍':'落点');
+   cue={label,p,rx,ry,ink,swing};
+  }else if(running&&t.serve?.ready){
+   const p=project(t.ball.x,t.ball.z),rx=portrait?50:44,ry=rx*.25,ink=t.serve.player===0?'#285e53':'#8b3c29';
+   c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle='#fff6d9bd';c.fill();
+   c.strokeStyle=ink;c.lineWidth=5;c.stroke();c.restore();
+   cue={label:(t.serve.player+1)+' 号 · 发球',p,rx,ry,ink,swing:true,side:t.serve.player===0?-1:1};
   }
   const dt=Math.min(.1,Math.max(0,(at-lastAt)/1000));lastAt=at;
   function player(i){
-   const p=players[i],wanted=.5+Math.max(-1,Math.min(1,p?.lateral||0))*.39;
-   if(g.status==='playing'&&p&&Number.isFinite(p.lateral))positions[i]+=(wanted-positions[i])*(reduced.matches?1:1-Math.exp(-dt/.075));
+   const p=players[i],feed=i===1&&t.practice&&Number.isFinite(t.practice.feed_x)?t.practice.feed_x:null;
+   const wanted=feed??(.5+Math.max(-1,Math.min(1,p?.lateral||0))*.39);
+   if(g.status==='playing'&&(feed!==null||Number.isFinite(p?.lateral)))positions[i]+=(wanted-positions[i])*(reduced.matches?1:1-Math.exp(-dt/.075));
    const point=project(positions[i],i===0?.025:.98),size=portrait?(i===0?300:205):(i===0?245:160);
    tennisActor(i,tennisPose(i,g,at),point[0],point[1],size);
    c.save();c.textAlign='center';c.font=`600 ${portrait?34:20}px -apple-system, sans-serif`;
    const labelWidth=portrait?90:60;c.fillStyle='#faf9f2';c.fillRect(point[0]-labelWidth/2,point[1]+8,labelWidth,portrait?44:27);
-   c.fillStyle=i?'#8a4030':'#234f49';c.fillText((i+1)+' 号',point[0],point[1]+(portrait?42:29));
+   c.fillStyle=i?'#8a4030':'#234f49';c.fillText(t.practice?(i?'陪练':'你'):(i+1)+' 号',point[0],point[1]+(portrait?42:29));
    c.restore();
   }
   player(1);
@@ -272,12 +290,23 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   for(const p of [netLeft,netRight])line([p[0],p[1]+5],[p[0],p[1]-netHeight-7],'#2f6053',9);c.restore();
   player(0);
   if(!['ready','point','complete'].includes(t.phase)){
-   const ball=suspended&&shownBall?shownBall:ballFrame(g,at),p=project(ball.x,ball.z),lift=Math.sin(Math.max(0,Math.min(1,ball.z))*Math.PI)*90+18;
+   const ball=suspended&&t.phase==='rally'&&shownBall?shownBall:ballFrame(g,at),p=project(ball.x,ball.z),lift=Math.sin(Math.max(0,Math.min(1,ball.z))*Math.PI)*90+18;
    if(!suspended)shownBall={x:ball.x,z:ball.z};
    c.save();c.fillStyle='#59391d40';c.beginPath();c.ellipse(p[0],p[1],13,5,0,0,Math.PI*2);c.fill();c.restore();sprite(6,p[0],p[1]-lift+14,portrait?52:42);
   }
   if(!suspended&&t.event?.kind==='point'&&t.event.sequence!==lastTennisEvent){celebrateAt=motionAt;lastTennisEvent=t.event.sequence;}
   paperCelebration(motionAt);
+  if(cue){
+   const {label,p,rx,ry,ink,swing}=cue,font=portrait?36:24;
+   c.save();c.textAlign='center';c.textBaseline='middle';c.font=`650 ${font}px -apple-system, sans-serif`;
+   const halfWidth=c.measureText(label).width/2+font*.48,height=font*1.52;
+   const side=cue.side??(p[0]>800?-1:1),margin=portrait?340:24,offset=rx+halfWidth+12;
+   const minX=margin+halfWidth,maxX=1600-margin-halfWidth,preferred=p[0]+side*offset;
+   const beside=cue.side&&(preferred<minX||preferred>maxX)?p[0]-side*offset:preferred;
+   const x=Math.max(minX,Math.min(maxX,beside)),y=p[1]-ry;
+   c.beginPath();c.roundRect(x-halfWidth,y-height/2,halfWidth*2,height,font*.32);
+   c.fillStyle=swing?ink:'#faf9f2';c.fill();c.fillStyle=swing?'#fffaf2':ink;c.fillText(label,x,y+font*.05);c.restore();
+  }
  }
  return {prepare,ready,failed,reload,receive,adventure,training,tennis,
   teachingAnchor(mode){return mode==='hiit'?{x:800,y:535}:{x:800,y:790};},

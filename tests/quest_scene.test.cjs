@@ -2,7 +2,7 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const test=require('node:test'),{execFileSync}=require('node:child_process');
 const source=fs.readFileSync('homeplane/embodied/static/game-scenes.js','utf8');
-const stages=JSON.parse(execFileSync('.venv/bin/python',['-B','-c','import json;from homeplane.embodied.quest import STAGES;print(json.dumps([s.public() for s in STAGES]))'],{encoding:'utf8'}));
+const stages=JSON.parse(execFileSync(process.env.FRIDAY_TEST_PYTHON||'.venv/bin/python',['-B','-c','import json;from homeplane.embodied.quest import STAGES;print(json.dumps([s.public() for s in STAGES]))'],{encoding:'utf8'}));
 const contextId='a'.repeat(32);
 function game(level,extra={}){
  return{mode:'quest',status:level===stages.length?'complete':'playing',round_id:1,control_context:contextId,
@@ -50,7 +50,7 @@ if(process.argv.includes('--packets')){
   const count=action=>q.history.find(item=>item.action===action)?.reps||
    (q.stage?.action===action&&q.phase==='work'?q.reps:0);
   if(world.scene==='stream'){
-   assert.equal(sprites(draws,0).length,count('side_step'));
+   assert.equal(sprites(draws,0).length,count('side_step')+count('balance'));
    assert.equal(sprites(draws,1).length,count('high_knee'));
    assert.equal(sprites(draws,5).length,count('jack'));
   }
@@ -58,6 +58,7 @@ if(process.argv.includes('--packets')){
    assert.equal(sprites(draws,0).length,count('lunge'));
    assert.equal(sprites(draws,4).length,count('reach_up'));
    assert.equal(sprites(draws,6).length,count('arm_open'));
+   assert.equal(sprites(draws,1).length,count('cross_knee'));
    assert.equal(sprites(draws,7).length,q.phase==='complete'?1:0);
   }
   for(const draw of draws.filter(call=>call.sprite!==null)){
@@ -70,7 +71,7 @@ if(process.argv.includes('--packets')){
  console.log(JSON.stringify({original_rule_packets:checked,completed:packets.some(g=>g.quest.phase==='complete'),replayed:packets.at(-1).quest.level===0}));
 }else{
  test('each source chapter loads its own scene and only confirmed cycles build its objects',()=>{
-  for(const[index,name,sprite]of [[3,'quest-stream-scene.png',0],[4,'quest-stream-scene.png',1],[8,'quest-camp-scene.png',4],[9,'quest-camp-scene.png',6]]){
+  for(const[index,name,sprite]of [[3,'quest-stream-scene.png',0],[4,'quest-stream-scene.png',1],[9,'quest-camp-scene.png',4],[10,'quest-camp-scene.png',6],[11,'quest-camp-scene.png',1]]){
    const s=scene();let before=s.settle(game(index),1000);assert.equal(plate(before),name);assert.equal(sprites(before,sprite).length,0);
    const current=game(index,{reps:1});const after=s.settle(current,2000);assert.equal(sprites(after,sprite).length,1);
    assert.deepEqual(s.settle(current,3000),after,'repeated reads replayed a reward');
@@ -108,19 +109,19 @@ if(process.argv.includes('--packets')){
   assert.deepEqual(s.tick(next,40050),during);assert.equal(plate(s.settle(next,41000)),'quest-stream-scene.png');
  });
  test('new context/round clears old rewards and joining a completed route does not replay them',()=>{
-  const s=scene();s.settle(game(9,{reps:3}),1000);s.tick(game(10),2000);
+  const s=scene();s.settle(game(10,{reps:3}),1000);s.tick(game(11),2000);
   const fresh={...game(3),round_id:2};const first=s.tick(fresh,2050);
   assert.equal(sprites(first,4).length,0);assert.equal(sprites(first,6).length,0);assert.equal(sprites(first,7).length,0);
   assert.equal(plate(first),'quest-stream-scene.png');
-  const other={...game(8),round_id:2,control_context:'b'.repeat(32)};
+  const other={...game(9),round_id:2,control_context:'b'.repeat(32)};
   assert.equal(sprites(s.tick(other,2100),4).length,0);
-  const joined=scene(),done=game(10),direct=joined.tick(done,1000);
+  const joined=scene(),done=game(stages.length),direct=joined.tick(done,1000);
   assert.equal(sprites(direct,4).length,4);assert.equal(sprites(direct,6).length,4);assert.equal(sprites(direct,7).length,1);
   assert.deepEqual(joined.paint(done,1050),direct);
  });
  test('returning to a route advanced offscreen presents current rewards without replaying missed work',()=>{
   const s=scene();s.tick(game(3),1000);s.paint(game(3),1050);
-  const current=game(8,{reps:3}),now=s.tick(current,30000);
+  const current=game(9,{reps:3}),now=s.tick(current,30000);
   assert.equal(plate(now),'quest-camp-scene.png');assert.equal(sprites(now,4).length,3);
   assert.deepEqual(s.paint(current,30050),now);
  });
@@ -129,7 +130,7 @@ if(process.argv.includes('--packets')){
   const next=game(3,{reps:1}),instant=s.tick(next,1050);
   assert.equal(plate(instant),'quest-stream-scene.png');assert.equal(sprites(instant,0).length,1);
   assert.deepEqual(s.paint(next,1100),instant);
-  const done=game(10),result=s.tick(done,1150);
+  const done=game(stages.length),result=s.tick(done,1150);
   assert.equal(sprites(result,7).length,1);assert.deepEqual(s.paint(done,1200),result);
  });
  test('new chapter errors stay recoverable and retry covers the exact public art set',()=>{
@@ -150,7 +151,7 @@ if(process.argv.includes('--packets')){
  });
  test('an already-running ten-station backend retains its actual scene without the new art metadata',()=>{
   const s=scene(),g=game(8,{reps:2});
-  g.quest.stages=stages.map(({scene,landmark,...stage})=>stage);
+  g.quest.stages=stages.filter(stage=>!['balance','cross_knee'].includes(stage.action)).map(({scene,landmark,...stage})=>stage);
   const draws=s.settle(g,1000);assert.equal(plate(draws),'quest-camp-scene.png');
   assert.equal(sprites(draws,4).length,2);assert.equal(sprites(draws,0).length,4);
  });

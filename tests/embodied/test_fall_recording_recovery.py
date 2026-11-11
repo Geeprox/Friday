@@ -10,7 +10,11 @@ import pytest
 import pytest_asyncio
 
 from homeplane.embodied import safety
+from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
+from tests.embodied.test_review_motion import source_function
 from tests.test_embodied_safety import person
 
 
@@ -43,6 +47,120 @@ async def before_fall(monitor):
         await monitor.runtime.observation_task
     monitor.clock[0] += .25
     await monitor.runtime.sync_policy()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(monitor, owner):
+    runtime, camera, session = monitor.runtime, monitor.camera, 'synthetic-source'
+    state = {}
+    item = dict(privacy_closed=False, source_active=True, control_epoch=1, mode='auto', mode_revision='intent')
+    director = CameraDirector()
+    index = -1
+    moving_until = 0
+    moves = []
+
+    async def advance(_=0):
+        nonlocal index
+        if runtime.observation_task is not None:
+            await runtime.observation_task
+        index += 1
+        if index > 32:
+            raise asyncio.CancelledError
+        if index == 28:
+            # 给写入队列处理完最后一批关键帧的机会，再推进合成时钟。
+            await runtime.recording.drain()
+        monitor.clock[0] = now = 100 + index * .25
+        if index % 4 == 0:
+            await runtime.sync_policy()
+        stable = now >= moving_until
+        actor = person(index >= 7)
+        if index >= 7:
+            actor['box']['x'] += .24
+            for joint in actor['joints'].values():
+                joint['x'] += .24
+        else:
+            actor['box']['y'] = .14
+        people = [actor] if stable else []
+        runtime.offer(camera, session, people, now, now, stable=stable,
+                      source_context=monitor.context, jpeg=b'SYNTHETIC-FALL-FRAME')
+        # 镜头循环可能先于留档消费者检查这一帧。
+        state.update(status='live', session_id=session, people=people, tracking_current=stable,
+                     scene_visible=stable, _local_received=now)
+        scope['last_frame'] = now
+
+    async def motor(direction, *_args, decision_current=None, **_kwargs):
+        nonlocal moving_until
+        if decision_current is not None and not decision_current():
+            raise RuntimeError('stale_input')
+        moves.append(monitor.clock[0])
+        moving_until = monitor.clock[0] + 2
+        runtime.clear(camera)
+        if owner == 'secondary':
+            director.sent(monitor.clock[0], direction)
+
+    scope = dict(time=SimpleNamespace(monotonic=lambda: monitor.clock[0]),
+                 asyncio=SimpleNamespace(sleep=advance, CancelledError=asyncio.CancelledError),
+                 CameraDirector=lambda: director, camera_is_open=AsyncMock(return_value=True))
+    if owner == 'primary':
+        lease = SimpleNamespace(acquire=AsyncMock(), release=AsyncMock(return_value=True),
+                                presets=[], active=None, event=lambda *_args, **_kwargs: None)
+        planner = SimpleNamespace(public=lambda _: {}, mode='auto', intent_revision='intent',
+                                  intent_status='configured')
+        scope.update(Transport=lambda: SimpleNamespace(close=AsyncMock()),
+            CameraLease=lambda *_args, **_kwargs: lease, SearchPlanner=lambda *_args: planner,
+            camera_intents=SimpleNamespace(load=lambda: SimpleNamespace(mode='auto', revision='intent',
+                                                                         status='configured')),
+            os=SimpleNamespace(environ={}), SELECTED={'id': camera}, state=state, games=MotionGames(),
+            party_camera=PartyCamera(), previews=SimpleNamespace(sessions={}),
+            home=SimpleNamespace(camera_focus=None), safety=runtime, motor_step=motor,
+            reap=AsyncMock(), capture=None)
+        loop = source_function('homeplane/embodied/worker.py', 'camera_search', scope)
+    else:
+        scope.update(item=item, selected={'id': camera}, director=director,
+            self=SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
+                                 review_pending=runtime.review_pending,
+                                 fall_pending=lambda *args: runtime.fall_pending(*args),
+                                 sound_cue=runtime.sound_search_cue),
+            current_sample=lambda: dict(state), privacy_closed=lambda: None, send_motion=motor)
+        loop = source_function('homeplane/embodied/previews.py', 'direct', scope)
+
+    await advance()
+    with pytest.raises(asyncio.CancelledError):
+        await loop()
+    await runtime.drain()
+    events = monitor.store.events()
+    assert len(events) == 1 and events[0]['kind'] == 'fall', (owner, moves)
+    assert len(events[0]['frames']) >= 12, (owner, moves)
+    assert moves and min(moves) > 106.75, '确认及后续画面收齐后，镜头才恢复自动跟随'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('retirement', ['source', 'shutter', 'stale', 'policy'])
+async def test_queued_fall_candidate_cannot_hold_a_retired_view(monitor, retirement):
+    runtime, camera, session = monitor.runtime, monitor.camera, 'same-session'
+    for index in range(7):
+        monitor.clock[0] = 100 + index * .25
+        assert await frame(monitor, down=False, sync=True)
+        await runtime.observation_task
+    monitor.clock[0] += .25
+    assert await frame(monitor)
+    assert runtime.fall_pending(camera, session)
+    assert not runtime.fall_pending(camera, 'another-session')
+    assert not runtime.fall_pending('another-camera', session)
+    assert not runtime.recording.has_camera(camera)
+    if retirement == 'source':
+        assert await frame(monitor, context='b'*64)
+    elif retirement == 'shutter':
+        runtime.clear(camera)
+    elif retirement == 'stale':
+        monitor.clock[0] += 1.6
+    else:
+        monitor.store.configure(SafetyPolicy(revision=monitor.store.policy().revision))
+        await runtime.sync_policy()
+    assert not runtime.fall_pending(camera, session)
+    await runtime.drain()
+    assert not monitor.store.events()
 
 
 @pytest.mark.asyncio
@@ -105,6 +223,8 @@ async def test_safety_observation_continues_and_pending_incident_survives_expire
             monitor.clock[0] += .25
             await frame(monitor)
             await asyncio.sleep(0)
+        assert not monitor.runtime._cached_policy().enabled
+        assert monitor.runtime.fall_pending(monitor.camera, 'same-session')
         release.set()
         assert await asyncio.to_thread(failed.wait, 1)
         await asyncio.sleep(.01)
@@ -162,6 +282,46 @@ def test_retried_post_frame_is_not_duplicate_evidence(tmp_path):
     for _ in range(3):
         store.append_frame(event['id'], 1800000000, b'frame', deduplicate=True)
     assert len(store.events()[0]['frames']) == 1
+
+
+@pytest.mark.asyncio
+async def test_review_quota_reserves_space_and_falls_precede_waiting_reviews():
+    from homeplane.embodied.safety_recording import SafetyRecorder
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    writes = []
+
+    async def persist(job):
+        writes.append(job.event['kind'])
+        if job.event['kind'] == 'sound_review':
+            entered.set()
+            await release.wait()
+        job.saved = job.event
+        recorder.recorded(job)
+
+    recorder = SafetyRecorder(persist=persist, reconcile=AsyncMock(), current=lambda job: True, clock=lambda: 100.)
+    recorder.MAX_REVIEW_PENDING, recorder.MAX_REVIEW_BYTES = 2, 4
+
+    def submit(kind, frames):
+        feature = None if kind == 'fall' else kind
+        return recorder.submit(camera='camera', session='session', context='source', token=object(),
+                               captured=100., revision=1, event={'kind': kind}, frames=frames, feature=feature)
+
+    try:
+        first = submit('sound_review', [(1, b'123')])
+        await asyncio.wait_for(entered.wait(), 1)
+        waiting = submit('visual_review', [(2, b'12'), (3, b'3')])
+        assert waiting.initial == ((3, b'3'),)
+        assert submit('visual_review', [(4, b'1')]) is None
+        assert submit('fall', [(4, b'12345')]).initial == ((4, b'12345'),)
+        assert recorder.status()['retained_bytes'] == 9
+        release.set()
+        await asyncio.wait_for(recorder.drain(), 1)
+        assert writes == ['sound_review', 'fall', 'visual_review']
+        assert first.receipt.saved_at == waiting.receipt.saved_at == 100.
+    finally:
+        release.set()
+        await recorder.close()
 
 
 @pytest.mark.asyncio
@@ -439,6 +599,59 @@ async def test_real_sqlite_writer_wait_does_not_age_out_a_qualified_incident(mon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('revoke', [False, True], ids=['write-lock', 'policy-revoked'])
+async def test_policy_refresh_while_writer_is_busy_preserves_only_authorized_fall(monitor, revoke):
+    runtime, store = monitor.runtime, monitor.store
+    await runtime.sync_policy()
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_writer():
+        with store.connect() as db:
+            # 撤销分支由另一个连接提交新策略，写入线程仍被占用。
+            if not revoke:
+                db.execute('BEGIN IMMEDIATE')
+            entered.set()
+            assert release.wait(5), '测试事件写入闸门未释放'
+
+    writer = asyncio.create_task(runtime.io.call(hold_writer))
+    camera, context = 'secondary', 'c' * 64
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        async with asyncio.timeout(3):
+            for index in range(25):
+                monitor.clock[0] = 100 + index * .25
+                assert await frame(monitor, camera=camera, context=context, down=index >= 7, sync=index % 2 == 0)
+                await runtime.observation_task
+        assert not writer.done()
+        assert runtime.recording_status()['policy_current']
+        job, = runtime.recording.jobs.values()
+        assert job.captured == 103.75 and job.initial and job.following
+        if revoke:
+            updated = await asyncio.to_thread(store.configure, SafetyPolicy(revision=job.revision))
+            async with asyncio.timeout(2):
+                await runtime.sync_policy()
+            assert not writer.done() and runtime.policy_revision == updated.revision
+            assert job.token.is_set() and not runtime.recording.jobs
+            monitor.clock[0] += .25
+            assert not await frame(monitor, camera=camera, context=context)
+        release.set()
+        await writer
+        await runtime.drain()
+        records = store.events()
+        if revoke:
+            assert records == []
+        else:
+            saved, = records
+            assert saved['id'] == job.identifier and saved['captured_at'] == 1800000000 + job.captured
+            assert saved['kind'] == 'fall' and saved['camera'] == camera and saved['camera_source_context'] == context
+            assert len(saved['frames']) == len(job.initial) + len(job.following)
+        runtime.speaker.say.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.gather(writer, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_recording_health_recovers_without_probing_native_models(monitor, monkeypatch):
     from unittest.mock import Mock
 
@@ -446,14 +659,17 @@ async def test_recording_health_recovers_without_probing_native_models(monitor, 
     monkeypatch.setattr(monitor.runtime.sound, 'status', Mock(side_effect=AssertionError('no sound model probe')))
     await monitor.runtime.sync_policy()
     assert monitor.runtime.recording_status()['state'] == 'ready'
-    original = monitor.store.policy
-    monkeypatch.setattr(monitor.store, 'policy', lambda: (_ for _ in ()).throw(OSError('synthetic unreadable store')))
-    with pytest.raises(OSError):
-        await monitor.runtime.sync_policy()
-    assert monitor.runtime.recording_status()['state'] == 'recovering'
-    monitor.clock[0] += monitor.runtime.recording.RETRY_WINDOW
-    assert monitor.runtime.recording_status()['state'] == 'unavailable'
-    monkeypatch.setattr(monitor.store, 'policy', original)
+    lock = sqlite3.connect(monitor.store.path)
+    try:
+        lock.execute('BEGIN EXCLUSIVE')
+        with pytest.raises(sqlite3.OperationalError):
+            await monitor.runtime.sync_policy()
+        assert monitor.runtime.recording_status()['state'] == 'recovering'
+        assert not await frame(monitor, down=False)
+        monitor.clock[0] += monitor.runtime.recording.RETRY_WINDOW
+        assert monitor.runtime.recording_status()['state'] == 'unavailable'
+    finally:
+        lock.close()
     await monitor.runtime.sync_policy()
     assert monitor.runtime.recording_status()['state'] == 'ready'
 
@@ -472,7 +688,8 @@ async def verify_public_recording_health(monitor, monkeypatch):
     from tests.embodied.test_camera_audio import actual
 
     camera = 'cam_1111111111'
-    scope = dict(state=dict(status='live', camera_id=camera, processed_frames=1),
+    from homeplane.embodied.party_camera import PartyCamera
+    scope = dict(state=dict(status='live', camera_id=camera, processed_frames=1),party_camera=PartyCamera(),
         games=MotionGames(clock=lambda: monitor.clock[0]),
         recorder=SimpleNamespace(public=lambda: {}), safety=monitor.runtime,
         home=SimpleNamespace(public=lambda: {}), secondary_homes={}, fleet=SimpleNamespace(public=lambda _: {}),

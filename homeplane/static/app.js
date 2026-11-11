@@ -104,11 +104,47 @@ async function api(path, options = {}) {
   return response.json();
 }
 let requestedTaskAttention=null;
+let requestedRecordingCamera=null;
 function taskAttentionId(value){return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)?value:null;}
 function safetyEventId(value){return typeof value==='string'&&/^[a-f0-9]{32}$/.test(value)?value:null;}
-function pageLocation(){const [path,query='']=location.hash.slice(1).split('?'),name=pages.find(name=>name.toLowerCase().replace(' ','-')===path);return{name,eventId:name==='Safety'?safetyEventId(new URLSearchParams(query).get('event')):null,attentionId:name==='Automations'?taskAttentionId(new URLSearchParams(query).get('attention')):null};}
+function recordingCameraId(value){return typeof value==='string'&&/^cam_[a-f0-9]{10}$/.test(value)?value:null;}
+function pageLocation(){
+  const [path,query='']=location.hash.slice(1).split('?');
+  const name=pages.find(name=>name.toLowerCase().replace(' ','-')===path);
+  const params=new URLSearchParams(query);
+  return {name,eventId:name==='Safety'?safetyEventId(params.get('event')):null,
+    attentionId:name==='Automations'?taskAttentionId(params.get('attention')):null,
+    recordingCamera:name==='Activity'?recordingCameraId(params.get('camera')):null};
+}
 function rememberSafetyEvent(id){if(page!=='Safety')return;requestedSafetyEvent=safetyEventId(id);history.replaceState(null,'','#safety'+(requestedSafetyEvent?'?event='+requestedSafetyEvent:''));}
-function go(name,{eventId=null,attentionId=null}={}) { const changed=page!==name;if(changed){archiveVersion++;archiveSetupVersion++;stopArchivePlayer();} page = name;requestedSafetyEvent=name==='Safety'?safetyEventId(eventId):null;requestedTaskAttention=name==='Automations'?taskAttentionId(attentionId):null;lastTrace = null; history.replaceState(null,'','#' + name.toLowerCase().replace(' ','-')+(requestedSafetyEvent?'?event='+requestedSafetyEvent:requestedTaskAttention?'?attention='+requestedTaskAttention:'')); render();if(page==='Safety'&&requestedSafetyEvent)experienceView?.selectEvent?.(requestedSafetyEvent);if(page==='Automations')experienceView?.selectTaskAttention?.(requestedTaskAttention); if(changed){const heading=$('page-title');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});globalThis.scrollTo?.({top:0,left:0,behavior:'instant'});} if (page === 'Settings') void refreshHaStatus(); }
+function go(name,{eventId=null,attentionId=null,recordingCamera=null}={}){
+  const changed=page!==name;
+  const camera=name==='Activity'?recordingCameraId(recordingCamera):null;
+  const recordingScopeChanged=name==='Activity'&&requestedRecordingCamera!==camera;
+  if(changed||recordingScopeChanged){archiveVersion++;archiveSetupVersion++;stopArchivePlayer();}
+  if(!changed&&recordingScopeChanged){
+    experienceView?.dispose();experienceView=null;experiencePage=null;
+  }
+  page=name;
+  requestedSafetyEvent=name==='Safety'?safetyEventId(eventId):null;
+  requestedTaskAttention=name==='Automations'?taskAttentionId(attentionId):null;
+  requestedRecordingCamera=camera;
+  lastTrace=null;
+  const query=new URLSearchParams();
+  if(requestedSafetyEvent)query.set('event',requestedSafetyEvent);
+  if(requestedTaskAttention)query.set('attention',requestedTaskAttention);
+  if(camera)query.set('camera',camera);
+  const suffix=query.toString();
+  history.replaceState(null,'','#'+name.toLowerCase().replace(' ','-')+(suffix?'?'+suffix:''));
+  render();
+  if(page==='Safety'&&requestedSafetyEvent)experienceView?.selectEvent?.(requestedSafetyEvent);
+  if(page==='Automations')experienceView?.selectTaskAttention?.(requestedTaskAttention);
+  if(changed||recordingScopeChanged){
+    const heading=$('page-title');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});
+    globalThis.scrollTo?.({top:0,left:0,behavior:'instant'});
+  }
+  if(page==='Settings')void refreshHaStatus();
+}
 function button(text, action, attrs = {}) { const b = el('button',text,{type:'button',...attrs}); b.addEventListener('click',action); return b; }
 function navigation() {
   const nav = $('navigation'), previousPage=nav.querySelector('[aria-current="page"]')?.getAttribute('data-page'), wasOpen=nav.querySelector('.navigation-secondary')?.open, wasCompact=nav.getAttribute('data-compact')==='true'; nav.replaceChildren();
@@ -346,7 +382,7 @@ function render() {
   if(document.body.dataset.consoleSurface!=='legacy'&&['Home','Devices','Cameras','Interaction','Activity','Automations','Settings'].includes(page)&&(snapshot||page==='Settings')){
     experiencePage=page;
     content.append(el('p',page==='Settings'?'正在读取连接设置…':'正在读取家庭状态…',{class:'loading-state',role:'status'}));
-    import('/static/home-experience.js').then(({mountExperience})=>{if(experienceCurrent!==experienceVersion||experiencePage!==page)return;content.replaceChildren();experienceView=mountExperience(content,{page,go,snapshot,attentionId:requestedTaskAttention,developerMode:$('developer-mode').checked,setDeveloperMode:checked=>{$('developer-mode').checked=checked;navigation();},legacyConnections:(slot,target)=>{if(target)selectedConnection=target;renderSettings(slot);},archiveSettings:async slot=>{settingsData=await api('/api/settings');if(page==='Settings'&&slot.isConnected){slot.replaceChildren();renderArchiveSettings(slot);slot.querySelector('#settings-archive').open=true;}},requestArchiveSettings,onArchiveSettingsOpened:()=>{requestArchiveSettings=false;},legacyRules:renderCoreRules,openEvidenceRecording:openEventRecording});}).catch(()=>{
+    import('/static/home-experience.js').then(({mountExperience})=>{if(experienceCurrent!==experienceVersion||experiencePage!==page)return;content.replaceChildren();experienceView=mountExperience(content,{page,go,snapshot,attentionId:requestedTaskAttention,recordingCamera:requestedRecordingCamera,onOpenArchiveSettings:()=>{requestArchiveSettings=true;go('Settings');},developerMode:$('developer-mode').checked,setDeveloperMode:checked=>{$('developer-mode').checked=checked;navigation();},legacyConnections:(slot,target)=>{if(target)selectedConnection=target;renderSettings(slot);},archiveSettings:async slot=>{settingsData=await api('/api/settings');if(page==='Settings'&&slot.isConnected){slot.replaceChildren();renderArchiveSettings(slot);slot.querySelector('#settings-archive').open=true;}},requestArchiveSettings,onArchiveSettingsOpened:()=>{requestArchiveSettings=false;},legacyRules:renderCoreRules,openEvidenceRecording:openEventRecording});}).catch(()=>{
       if(experienceCurrent!==experienceVersion||experiencePage!==page)return;
       experiencePage=null;
       // A missing optional view must not remove the basic Console's controls.
@@ -726,6 +762,10 @@ function renderEventList(content,limit) {
   if (page === 'Activity' && events.length > limit) content.append(button('加载更多',() => {activityLimit += 30;render();},{class:'room-more'}));
 }
 function renderActivity(content) {
+  if(requestedRecordingCamera){
+    content.append(note('暂时无法读取这台镜头的录像。',true),button('查看全部录像',()=>go('Activity')));
+    return;
+  }
   const block = el('section',null,{class:'surface',id:'activity-events'});renderEventList(block,activityLimit);if (lastTrace) renderTrace(block,lastTrace);content.append(block);
   renderArchiveLookup(content);
 }
@@ -2660,8 +2700,8 @@ async function refreshPassive() {
 $('brand-home')?.addEventListener('click',event => {event.preventDefault();go('Home');});
 $('refresh').addEventListener('click',refresh);
 $('developer-mode').addEventListener('change',()=>{if(page==='Developer'&&!$('developer-mode').checked)page='Home';navigation();render();});
-const initial=pageLocation();if(initial.name){page=initial.name;requestedSafetyEvent=initial.eventId;requestedTaskAttention=initial.attentionId;}
-globalThis.addEventListener?.('hashchange',()=>{const next=pageLocation();if(next.name&&(next.name!==page||next.eventId!==requestedSafetyEvent||next.attentionId!==requestedTaskAttention))go(next.name,{eventId:next.eventId,attentionId:next.attentionId});});
+const initial=pageLocation();if(initial.name){page=initial.name;requestedSafetyEvent=initial.eventId;requestedTaskAttention=initial.attentionId;requestedRecordingCamera=initial.recordingCamera;}
+globalThis.addEventListener?.('hashchange',()=>{const next=pageLocation();if(next.name&&(next.name!==page||next.eventId!==requestedSafetyEvent||next.attentionId!==requestedTaskAttention||next.recordingCamera!==requestedRecordingCamera))go(next.name,next);});
 render(); refresh();
 // OAuth return and browser restoration must refresh authorization independently of HA polling.
 globalThis.addEventListener?.('pageshow', () => { if (page === 'Settings') void refreshHaStatus(); });

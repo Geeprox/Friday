@@ -135,7 +135,8 @@ class CameraRecognition:
                          faces=detection.get('faces', []), registration=registration, now=now,
                          captured_mono=time.monotonic()-(time.time()-packet['received_at']),
                          safety_jpeg=picture, aspect=packet['width'] / max(1, packet['height']),
-                         scene_visible=scene_visible)
+                         scene_visible=scene_visible,
+                         _patrol_view=getattr(self.room, 'patrol_view', None) if registered else None)
         return self.last
 
     def identity_status(self):

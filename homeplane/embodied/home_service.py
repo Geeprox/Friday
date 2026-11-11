@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 import numpy as np
 
 from homeplane.embodied import bridge
+from homeplane.embodied.camera_audio import MAX_AGE as CAMERA_INPUT_MAX_AGE
+from homeplane.embodied.camera_audio import offer_voice_window
 from homeplane.embodied.household import basic_command
 from homeplane.embodied.intent import address, parse_plan, utterance_focus
 from homeplane.embodied.local_intent import household_plan
@@ -195,21 +197,27 @@ class HomeService:
 
     async def observe(
         self, people, faces, registration, now, capture, selected, preferred=None, gestures_enabled=False,
-        sound_review=False, session_id=None,
+        sound_review=False, session_id=None, captured_mono=None,
     ):
         session = session_id if type(session_id) is str and 0 < len(session_id) <= 128 else None
         selected = bool(selected and self.enabled and self.armed and session is not None)
-        if selected != self.selected or session != self.camera_session:
+        continuous = 0 <= time.monotonic() - self.last_video < CAMERA_INPUT_MAX_AGE
+        source_changed = session != self.camera_session or not continuous
+        if selected != self.selected or source_changed:
             self.epoch += 1
             self.reset_audio()
             self.pending_audio = None
             self.camera_focus = None
+        if source_changed:
+            # 恢复后的首帧不能延续断流前的注视时长。
+            self.attention.update([], [], now)
+            self.gate_sent = -100.0
         self.camera_session = session
         self.selected = selected
+        self.last_video = now if captured_mono is None else captured_mono
         if selected:
             self.ensure_voice()
         self.refresh_voice()
-        self.last_video = now
         good = registration.get("status") not in {"moving", "settling", "lost", "stale"}
         self.attention.update(people if good else [], faces if good else [], now)
         ids = {p["id"] for p in people}
@@ -234,14 +242,8 @@ class HomeService:
                 selected and self.audio_allowed and self.voice_status() in ("ready", "transcribing")
                 and now > self.reply_until)
             )
-            capture.stdin.write(
-                (
-                    json.dumps({"action": "voice_window", "enabled": gate,
-                        "attention": bool(people and registration.get('status') not in {'moving','settling'}
-                            and 0 <= time.monotonic()-now <= 1.5)}) + "\n"
-                ).encode()
-            )
-            await capture.stdin.drain()
+            offer_voice_window(capture.stdin, now=time.monotonic(), captured=self.last_video, enabled=gate,
+                attention=bool(people and registration.get('status') not in {'moving', 'settling'}))
 
     def reset_audio(self):
         """Discard a partial segment; completed admitted requests have their own lease."""
@@ -268,7 +270,7 @@ class HomeService:
             not self.selected or not self.audio_allowed or VOICE_INPUT_PAUSED.exists()
             or self.voice_status() not in ("ready", "transcribing")
             or now < self.reply_until
-            or now - self.last_video > 1.5
+            or not 0 <= now - self.last_video < CAMERA_INPUT_MAX_AGE
         ):
             self.reset_audio()
             return
@@ -342,12 +344,13 @@ class HomeService:
                 self.state["reason"] = "等待清晰的语音指令"
 
     def current(self, captured, epoch):
+        now = time.monotonic()
         return bool(
             self.selected
             and self.armed
             and epoch == self.epoch
-            and time.monotonic() - captured < 45
-            and time.monotonic() - self.last_video < 1.5
+            and 0 <= now - captured < 45
+            and 0 <= now - self.last_video < CAMERA_INPUT_MAX_AGE
         )
 
     def _voice_guard(self, text, captured, epoch, attending, policy, owner=None, *, cue_only=False):

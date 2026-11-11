@@ -20,8 +20,9 @@ from .review_child import ReviewChild
 from .temporal_model import host_budget
 
 SOUND = DATA / 'bin/friday-sound'
+INFANT_CRY_LABEL = 'baby_crying'
 IDENTIFIERS = {
-    'crying': ('baby_crying', 'crying', 'sobbing'),
+    'crying': (INFANT_CRY_LABEL, 'crying', 'sobbing'),
     'scream': ('screaming',),
     'glass_break': ('glass_breaking',),
     'alarm': ('smoke_detector', 'fire_alarm'),
@@ -85,9 +86,16 @@ def sound_result(reply, supported):
         if not ranked:raise ValueError('sound_labels_unavailable')
         confidence, kind = ranked[0]
         rival = max(competing, ranked[1][0] if len(ranked) > 1 else 0)
-        candidates.append((kind, confidence) if confidence >= .85 and confidence-rival >= .15 else None)
+        infant_score = scores.get(INFANT_CRY_LABEL, 0)
+        cry_rival = max((scores.get(name, 0) for name in IDENTIFIERS['crying'][1:]), default=0)
+        infant_cry = (kind == 'crying' and infant_score >= .85
+                      and infant_score - max(rival, cry_rival) >= .15)
+        candidates.append((kind, confidence, infant_cry) if confidence >= .85 and confidence-rival >= .15 else None)
     if any(x is None for x in candidates) or len({x[0] for x in candidates}) != 1:return None
-    return dict(kind=candidates[0][0], confidence=min(x[1] for x in candidates))
+    result = dict(kind=candidates[0][0], confidence=min(x[1] for x in candidates))
+    if all(x[2] for x in candidates):
+        result['infant_cry'] = True
+    return result
 
 
 class AppleSoundProcess:
@@ -109,7 +117,9 @@ class AppleSoundProcess:
 
     def readiness(self):
         return dict(sound_readiness(self.binary), labels_verified=bool(self.supported),
-                    supported_types=list(self.supported))
+                    supported_types=list(self.supported),
+                    infant_cry_supported=(INFANT_CRY_LABEL in self.supported.get('crying', ())
+                                          if self.supported else None))
 
     async def _start(self):
         if self.child and self.child.closed:

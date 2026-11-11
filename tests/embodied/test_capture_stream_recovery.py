@@ -10,9 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeplane.embodied.party_camera import PartyCamera
 
 from tests.embodied.test_camera_audio import actual, CAMERA
 from homeplane.embodied.camera_wall import CameraWall
+from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT
 from homeplane.embodied.motion_games import MotionGames
 
 
@@ -166,6 +168,7 @@ def consume_terminal(scope):
     loop.body=loop.body[:end+1]
     wrapper=ast.parse('async def consume():\n pass').body[0]
     wrapper.body=[loop]
+    scope['CAPTURE_RECEIVE_TIMEOUT'] = CAPTURE_RECEIVE_TIMEOUT
     exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper],type_ignores=[])),
                  '<original run_source terminal branch>','exec'),scope)
     return scope['consume']
@@ -197,7 +200,7 @@ def test_live_status_view_cannot_publish_old_game_players_while_source_is_down(t
     game=MotionGames();game.reset('ski');game.publish([{'id':1}],'playing','')
     scope=dict(
         state=dict(status=source_status,processed_frames=5,people=[],hands=[],room=None),
-        games=game,
+        games=game,party_camera=PartyCamera(),
         home=home,recorder=SimpleNamespace(public=lambda:{}),secondary_homes={},
         safety=SimpleNamespace(recording_status=lambda:{'state':'off'}),
         fleet=SimpleNamespace(public=lambda _:{}),time=SimpleNamespace(monotonic=lambda:10,time=lambda:1000),
@@ -321,7 +324,7 @@ def primary_frame_scope(tmp_path, fault_stage=None):
         captured_times=deque(),processed_times=deque(),rate=lambda _:0,PRIVATE=tmp_path,
         interaction_enabled=True,room_lock=asyncio.Lock(),capture=object(),notify=notify,
         registry=SimpleNamespace(observe=Mock(return_value=[])),
-        practice=SimpleNamespace(suppresses=lambda _:False,observe=Mock()),games=MotionGames())
+        practice=SimpleNamespace(suppresses=lambda _:False,observe=Mock()),games=MotionGames(),party_camera=PartyCamera())
     scope['state']['processed_frames']=0
     scope['identities'].reason='ready';scope['identities'].session='synthetic-session'
     scope['games'].reset('ski')
@@ -367,10 +370,12 @@ def primary_frame_scope(tmp_path, fault_stage=None):
 @pytest.mark.parametrize('fault_stage',[None,'layout','identity','visibility','enable','home','dispatch'])
 async def test_source_loss_during_processing_cannot_resurrect_frames_or_continue_old_actions(tmp_path,fault_stage):
     scope, published = primary_frame_scope(tmp_path, fault_stage)
+    scope['item']['received_at'] = 999.8
     await frame_continuation(scope)()
     if fault_stage is None:
         assert scope['state']['status']=='live' and scope['last_jpeg']==b'private-old-jpeg'
         assert published==['live']
+        assert scope['home'].observe.await_args.kwargs['captured_mono'] == pytest.approx(9.8)
     else:
         assert scope['state']['status']=='unavailable' and published==['unavailable']
         assert scope['last_jpeg']==scope['last_preview']==b'' and scope['last_frame']==0

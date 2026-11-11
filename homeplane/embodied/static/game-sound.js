@@ -17,7 +17,7 @@ function gameSoundCue(before,after){
  }
  const event=after.event;
  if(!event||after.sequence!==before.sequence+1||!Number.isFinite(event.age)||event.age<0||event.age>.35)return null;
- if(after.mode==='tennis'&&[0,1].includes(event.player))return event.kind==='hit'?'racket':event.kind==='point'?'point':null;
+ if(after.mode==='tennis'&&[0,1].includes(event.player))return ({serve:'racket',hit:'racket',point:'point',miss:'miss'})[event.kind]||null;
  if(after.mode==='ski'){
   if(event.kind==='gate'&&before.passed!==null&&after.passed===before.passed+1)return'gate';
   if(event.kind==='miss'&&before.missed!==null&&after.missed===before.missed+1)return'miss';

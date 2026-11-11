@@ -1,7 +1,10 @@
-import copy, unittest
-from homeplane.embodied.hiit import HIITCircuit, signals, PLAN
-from homeplane.embodied.motion_games import MotionGames, BodyMotion
-from test_motion_games import human, LOCK
+import unittest
+
+import pytest
+
+from homeplane.embodied.hiit import PLAN, HIITCircuit, signals
+from homeplane.embodied.motion_games import BodyMotion, MotionGames
+from tests.embodied.test_motion_games import LOCK, human
 
 
 class CircuitTests(unittest.TestCase):
@@ -58,7 +61,7 @@ class CircuitTests(unittest.TestCase):
         self.feed(c, "neutral")
         self.assertEqual(c.reps, 2)
 
-    def test_completed_eight_stage_circuit_has_bounded_history(self):
+    def test_completed_ten_stage_circuit_has_bounded_history(self):
         c = HIITCircuit()
         for level, (key, _, target, _) in enumerate(PLAN):
             self.assertEqual(c.level, level)
@@ -73,11 +76,11 @@ class CircuitTests(unittest.TestCase):
                     else ("left" if i % 2 == 0 else "right")
                 )
                 neutral = 0.0 if key == "squat" else "closed" if key in {"jack", "arm_open"} else "neutral"
-                self.feed(c, value)
+                self.feed(c, value, 22 if key == 'balance' else 4)
                 self.feed(c, neutral)
         self.assertTrue(c.complete)
-        self.assertEqual(c.total_reps, 33)
-        self.assertEqual(len(c.history), 8)
+        self.assertEqual(c.total_reps, 41)
+        self.assertEqual(len(c.history), 10)
 
     def test_new_side_moves_need_other_side_and_cannot_bridge_occlusion(self):
         for level in (4, 5):
@@ -158,3 +161,63 @@ class SignalTests(unittest.TestCase):
         self.assertEqual(s["high_knee"], "left")
         p["joints"].pop("rightAnkle")
         self.assertFalse(signals(p["joints"], {"overhead": 0}, 0.0, 0.35, 180)["visible"])
+
+
+def new_action_pose(action, side='left', *, wrong_hand=False):
+    person = human()
+    joints = person['joints']
+    opposite = 'right' if side == 'left' else 'left'
+    if action == 'balance':
+        joints[side+'Knee']['y'] = .67
+        joints[side+'Ankle']['y'] = .82
+    else:
+        joints[side+'Knee']['y'] = .57
+        joints[side+'Ankle']['y'] = .75
+        wrist = side if wrong_hand else opposite
+        joints[wrist+'Wrist'].update(x=joints[side+'Knee']['x'], y=.58)
+    return person
+
+
+@pytest.mark.parametrize('mode', ['quest', 'hiit'])
+@pytest.mark.parametrize('action', ['balance', 'cross_knee'])
+def test_new_actions_use_live_joints_dwell_alternation_and_neutral_return(mode, action):
+    game = MotionGames()
+    game.reset(mode, difficulty='easy')
+    if mode == 'quest':
+        game.level = next(i for i, row in enumerate(game.quest_stages) if row.action == action)
+    else:
+        game.circuit.level = next(i for i, row in enumerate(game.circuit.plan) if row[0] == action)
+    start_level = game.level if mode == 'quest' else game.circuit.level
+    tick = 0
+
+    def feed(person, frames):
+        nonlocal tick
+        for _ in range(frames):
+            tick += 1
+            state = game.update([person], LOCK, tick*.05)
+        return state[mode]
+
+    feed(human(), 28)
+    if action == 'balance':
+        feed(new_action_pose(action), 9)
+    else:
+        feed(new_action_pose(action, wrong_hand=True), 9)
+    assert feed(human(), 5)['reps'] == 0
+
+    active_frames = 25 if action == 'balance' else 6
+    feed(new_action_pose(action), active_frames)
+    assert feed(human(), 5)['reps'] == 1
+    feed(new_action_pose(action), active_frames)
+    assert feed(human(), 5)['reps'] == 1
+    other = new_action_pose(action, 'right')
+    feed(other, active_frames)
+    tick += 1
+    assert game.update([], LOCK, tick*.05)['status'] == 'waiting'
+    assert feed(human(), 5)['reps'] == 1
+    feed(other, active_frames)
+    game.set_paused(True)
+    game.set_paused(False)
+    assert feed(human(), 28)['reps'] == 1
+    assert feed(other, active_frames)['level'] == start_level
+    result = feed(human(), 5)
+    assert result['level'] == start_level + 1 and result['history'][-1]['action'] == action

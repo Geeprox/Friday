@@ -81,6 +81,10 @@ SYNTHETIC_MEDIA = {
         '2505a47e2a477d3aae76a73063646d1205374fd8f4be6bb1d1d4de424ba759bb',
     'homeplane/static/motion-art/body/targets/exercise-side_bend.png':
         'afff12657b4e11f510a8037b645a3806f89ab31ef3f34c73d17f0b072b39e0ea',
+    'homeplane/static/motion-art/body/targets/exercise-balance.png':
+        'c1ee438bd4f1b9f16daac38a0e4e9a7c2ffa101efc482c709051815a0e1d9278',
+    'homeplane/static/motion-art/body/targets/exercise-cross_knee.png':
+        '38005bc9a21ce52217a5987f955dfe418d5cbe4162d0fd6c3cd288e710f82802',
     # Original game environment art; exact prompts/provenance in adjacent JSON.
     'homeplane/embodied/static/game-art/winter-props.png':
         '73bba0b51c57e6470ea71bb87761a3d9b264a7f63844ea6468fb4f26fc6aebb0',

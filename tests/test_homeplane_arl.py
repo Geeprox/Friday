@@ -143,17 +143,23 @@ async def test_explicit_connection_does_not_bootstrap_a_separate_runtime(setup):
 
 
 @pytest.mark.asyncio
-async def test_missing_runtime_is_passive_and_private_errors_sanitized(tmp_path):
-    sdk = SDK()
-    runtime = ARLRuntime(lambda: tmp_path / "missing", client_factory=sdk.factory,
-                         settings_client_factory=sdk.settings_factory)
-    assert (await runtime.status())["ready"] is False
-    assert not sdk.calls and not (tmp_path / "missing").exists()
-    runtime.home = lambda: tmp_path
-    sdk.error = "private token / text"
-    assert (await runtime.status())["status"] == "runtime_error"
-    sdk.error = "user_disabled"
-    assert (await runtime.status(start=True))["status"] == "user_disabled"
+async def test_missing_runtime_is_passive_and_private_errors_sanitized(tmp_path, setup):
+    runtime, sdk = setup
+    runtime.home = lambda: tmp_path / "missing"
+    try:
+        passive = await runtime.status()
+        assert passive["ready"] is False and passive["application"]["state"] == "not_started"
+        assert runtime.application.session is None
+        assert not sdk.calls and not (tmp_path / "missing").exists()
+        runtime.home = lambda: tmp_path
+        sdk.error = "private token / text"
+        assert (await runtime.status())["status"] == "runtime_error"
+        sdk.error = "user_disabled"
+        assert (await runtime.status(start=True))["status"] == "user_disabled"
+        assert runtime.application.started
+    finally:
+        await runtime.close()
+    assert runtime.application.status()["state"] == "closed"
 
 
 @pytest.mark.asyncio

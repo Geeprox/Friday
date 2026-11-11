@@ -30,6 +30,7 @@ from .werewolf import GameError, WerewolfGame
 from .werewolf_camera import observation as camera_observation, hints as camera_advice, picture as camera_picture
 
 STATIC = Path(__file__).parent / "static"
+CHOICE_EVENT_ID = r"^[a-zA-Z0-9_-]{12,64}$"
 
 
 def local_party_addresses():
@@ -69,12 +70,19 @@ class Choice(BaseModel):
     action: str = Field(pattern=r"^(attack|check|guard|save|poison|vote|shoot|pass)$")
     target: int | None = Field(default=None, ge=1, le=12)
     revision: int = Field(ge=0)
-    event_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{12,64}$")
+    event_id: str = Field(pattern=CHOICE_EVENT_ID)
+    expected_choice_version: int | None = Field(default=None, ge=0)
 
 
 class Ready(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     ready: bool
+    lobby_revision: int | None = Field(default=None, ge=0)
+
+
+class ConfirmIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    revision: int = Field(ge=0)
 
 
 class Lobby(BaseModel):
@@ -152,12 +160,15 @@ class WerewolfService:
         self.join_retries = {}
         self.join_key = None
         self.retries = OrderedDict()
+        self.choice_versions = {}
+        self.light_bindings = {}
         self.host_retries = OrderedDict()
         self.gateway = self.pump = self.effect_task = None
         self.effect_tasks = set()
         self.origin = None
         self.created = None
         self.camera_enabled = False
+        self.camera_context = None
         self.bindings = {}
         self.camera_hints = []
         self.camera_candidates = []
@@ -165,6 +176,8 @@ class WerewolfService:
         self.camera_process = None
         self.camera_until = None
         self.camera_view_busy = False
+        self.camera_sequence = 0
+        self.camera_hold = None
         self.last_effect_revision = None
 
     @staticmethod
@@ -178,6 +191,13 @@ class WerewolfService:
         if seat is None or self.game is None or seat not in self.game.players:
             raise GameError("player_access_required")
         return seat
+
+    def _private(self, seat, receipt_id=None):
+        result = dict(self.game.private(seat), session=self.session,
+                      choice_version=self.choice_versions.get(seat, 0))
+        if receipt_id and re.fullmatch(CHOICE_EVENT_ID, receipt_id):
+            result['choice_receipt'] = dict(event_id=receipt_id, recorded=(seat, receipt_id) in self.retries)
+        return result
 
     def public_access(self, token):
         return bool(self.public_token and isinstance(token, str) and secrets.compare_digest(self.public_token, token))
@@ -203,6 +223,7 @@ class WerewolfService:
             report.update(effects=self.effects.status(), join_code=self.join_code,
                           phone_url=self.origin + "/phone#code=" + self.join_code if self.origin else None,
                           display_url=self.origin + "/display#token=" + self.public_token if self.origin else None,
+                          speaker_seats=self.game.eligible_speakers(),
                           camera_enabled=self.camera_enabled, camera_available=camera_available,
                           camera_candidates=list(self.camera_candidates) if camera_available else [],
                           camera_bindings=[dict(seat=s, camera=v[0], session=v[1], track=v[2]) for s, v in self.bindings.items()])
@@ -217,8 +238,7 @@ class WerewolfService:
             if address is not None and address not in addresses:
                 raise GameError("phone_address_unavailable")
             session = secrets.token_hex(16)
-            if lights:
-                await self.effects.lights.select(session, list(lights))
+            self.light_bindings = await self.effects.lights.select(session, list(lights)) if lights else {}
             gateway = self.gateway_factory() if address else None
             self.game, self.session = game, session
             self.join_retries.clear()
@@ -232,6 +252,7 @@ class WerewolfService:
             self.effects.last_scene = None
             self.effects.voice_state = 'off'
             self.camera_enabled = camera
+            self.camera_context = session
             try:
                 if gateway:
                     self.origin = await gateway.open(address, self)
@@ -244,6 +265,8 @@ class WerewolfService:
                     await self.effects.lights.restore()
                 self.game = None
                 self.session = None
+                self.light_bindings = {}
+                self.camera_context = None
                 self.join_retries.clear()
                 self.join_key = None
                 raise
@@ -266,7 +289,7 @@ class WerewolfService:
                     if self.join_retries[key] != fingerprint:
                         raise GameError('event_conflict')
                     seat = self._player(token)  # Removed players stay revoked.
-                    return dict(token=token, session=self.session, player=self.game.private(seat))
+                    return dict(token=token, session=self.session, player=self._private(seat))
                 # Never evict a revoked receipt and accidentally revive its old
                 # intent. Only a new room retires this bounded in-memory table.
                 if len(self.join_retries) >= 128:
@@ -277,7 +300,7 @@ class WerewolfService:
             self.credentials[self._digest(token)] = payload.seat
             if key is not None:
                 self.join_retries[key] = fingerprint
-            return dict(token=token, session=self.session, player=self.game.private(payload.seat))
+            return dict(token=token, session=self.session, player=self._private(payload.seat))
 
     async def lobby(self, code):
         async with self.lock:
@@ -287,16 +310,25 @@ class WerewolfService:
                 raise GameError("join_closed")
             return dict(self.game.public(), session=self.session)
 
-    async def private(self, token):
+    async def private(self, token, receipt_id=None):
         async with self.lock:
             seat = self._player(token)
-            return self.game.private(seat)
+            return self._private(seat, receipt_id)
 
-    async def ready(self, token, value):
+    async def ready(self, token, value, lobby_revision=None):
         async with self.lock:
             seat = self._player(token)
+            expected = 0 if lobby_revision is None else lobby_revision
+            if self.game.phase == 'lobby' and expected != self.game.lobby_revision:
+                raise GameError('phase_changed')
             self.game.ready(seat, value)
-            return self.game.private(seat)
+            return self._private(seat)
+
+    async def confirm_identity(self, token, revision):
+        async with self.lock:
+            seat = self._player(token)
+            self.game.confirm_identity(seat, revision)
+            return self._private(seat)
 
     async def choose(self, token, choice: Choice):
         async with self.lock:
@@ -307,12 +339,18 @@ class WerewolfService:
             if key in self.retries:
                 if self.retries[key] != digest:
                     raise GameError("event_conflict")
-                return self.game.private(seat)
+                return self._private(seat, choice.event_id)
+            if choice.revision != self.game.revision:
+                raise GameError("phase_changed")
+            version = self.choice_versions.get(seat, 0)
+            if choice.expected_choice_version is not None and choice.expected_choice_version != version:
+                raise GameError("choice_changed")
             self.game.act(seat, choice.action, choice.target, choice.revision)
+            self.choice_versions[seat] = version + 1
             self.retries[key] = digest
             if len(self.retries) > 2048:
                 self.retries.popitem(last=False)
-            return self.game.private(seat)
+            return self._private(seat, choice.event_id)
 
     def _host_admission(self, proof, action, seat=None):
         if proof is None:
@@ -349,8 +387,14 @@ class WerewolfService:
                 raise GameError("game_not_found")
             if action == "start":
                 self.game.start()
+            elif action == "reseat":
+                self.game.reseat()
+            elif action == "rematch":
+                await self._rematch()
             elif action == "advance":
                 self.game.advance()
+            elif action == "speaker":
+                self.game.set_speaker(seat)
             elif action in {"pause", "resume"}:
                 self.game.pause(action == "pause")
             elif action == "end":
@@ -364,29 +408,50 @@ class WerewolfService:
             self._remember_host(admission)
             result = self.host()
         self._schedule_effects()
+        if self.game is not None and self.game.phase=='finished':
+            await self._release_camera()
         return result
+
+    async def _rematch(self):
+        previous = self.game
+        if previous.phase != 'finished':
+            raise GameError('rematch_unavailable')
+        game = self.game_factory(previous.count, clock=self.clock)
+        game.carry_seats(previous)
+        await self._release_camera()
+        if self.light_bindings:
+            # 恢复原灯具后重新读取基线，重绑过的设备须由主持人重新选择。
+            try:
+                await self.effects.lights.restore()
+                await self.effects.lights.select(secrets.token_hex(16), list(self.light_bindings), bindings=self.light_bindings)
+            except httpx.HTTPError as exc:
+                raise GameError('scene_light_unavailable') from exc
+        self.game = game
+        self.retries.clear()
+        self.choice_versions.clear()
+        self.camera_generation += 1
+        self.camera_context = secrets.token_hex(16)
+        self._clear_camera()
+        self.effects.last_scene = None
 
     def _schedule_effects(self):
         if self.game is None or self.game.revision == self.last_effect_revision:
             return
-        # State progression never queues stale narration. A send already issued
-        # is not retried; cancellation retains the light recovery journal.
-        previous = tuple(task for task in self.effect_tasks if not task.done())
-        for task in previous:
-            if not task.cancelling():
+        # 撤销旧阶段。播报与灯光各自等待同一路旧任务完成清理。
+        for task in tuple(self.effect_tasks):
+            if not task.done() and not task.cancelling():
                 task.cancel()
         session, revision = self.session, self.game.revision
         self.last_effect_revision = revision
         public = self.game.public()
         current = lambda: self.session == session and self.game is not None and self.game.revision == revision
         async def apply():
-            if previous:
-                await asyncio.shield(asyncio.gather(*previous, return_exceptions=True))
             if current():
                 try:
                     await self.effects.apply(public, current)
                 except (ValueError, OSError, TimeoutError):
-                    self.effects.voice_state = 'unavailable'
+                    if current():
+                        self.effects.voice_state = 'unavailable'
         self.effect_task = asyncio.create_task(apply(), name="friday-werewolf-effects")
         self.effect_tasks.add(self.effect_task)
         def finished(task):
@@ -404,8 +469,11 @@ class WerewolfService:
             else:
                 self.game.tick()
         self._schedule_effects()
-        if self.camera_enabled:
+        if self.camera_enabled and self.game is not None and self.game.phase!='finished':
             await self._camera()
+        else:
+            self._clear_camera()
+            await self._release_camera()
 
     async def _run(self):
         while self.game is not None:
@@ -421,6 +489,43 @@ class WerewolfService:
         self.camera_process = None
         self.camera_until = None
 
+    async def _hold_camera(self,report,game,session,process):
+        capability=report.get('party_camera')if isinstance(report,dict)else None
+        owner=self.embodied
+        if (not isinstance(capability,dict)or type(capability.get('protocol'))is not int or capability['protocol']!=1
+                or not isinstance(capability.get('scope'),str)
+                or not re.fullmatch(r'[a-f0-9]{32}',capability['scope'])
+                or type(capability.get('frame_mono'))not in{int,float}
+                or self.game is not game or self.session!=session or not self.camera_enabled
+                or game.phase=='finished'or getattr(owner,'process',None)is not process
+                or not callable(getattr(owner,'party_camera',None))):
+            return False
+        self.camera_sequence+=1
+        sequence=self.camera_sequence
+        context = self.camera_context or session
+        # Record before sending: a lost acknowledgement still owes this room an end.
+        self.camera_hold=(owner,process,context,capability['scope'])
+        result=await owner.party_camera(dict(action='renew',context=context,
+            sequence=sequence,expected_scope=capability['scope'],not_after=self.clock()+1,
+            camera=report['camera_id'],session=report['session_id'],frame_mono=capability['frame_mono']))
+        return (isinstance(result,dict)and result.get('scope')==capability['scope']
+                and result.get('context')==context and type(result.get('sequence'))is int and result['sequence']==sequence
+                and result.get('active')is True)
+
+    async def _release_camera(self):
+        entry,self.camera_hold=self.camera_hold,None
+        if entry is None:return
+        owner,process,context,scope=entry
+        self.camera_sequence+=1
+        if getattr(owner,'process',None)is not process or process.returncode is not None:return
+        try:
+            async with asyncio.timeout(1):
+                await owner.party_camera(dict(action='end',context=context,
+                    sequence=self.camera_sequence,expected_scope=scope,not_after=self.clock()+1))
+        except(ValueError,OSError,TimeoutError,httpx.HTTPError):
+            # The worker's three-second lease bounds an unconfirmed release.
+            pass
+
     def _camera_current(self):
         process = getattr(self.embodied, 'process', None)
         return (self.camera_enabled and self.game is not None and self.session is not None
@@ -431,7 +536,7 @@ class WerewolfService:
         self.camera_generation += 1
         generation = self.camera_generation
         self._clear_camera()
-        if self.embodied is None or not self.game or not self.camera_enabled:
+        if self.embodied is None or not self.game or not self.camera_enabled or self.game.phase=='finished':
             return
         owner, game, session = self.embodied, self.game, self.session
         process = getattr(owner, "process", None)
@@ -449,6 +554,15 @@ class WerewolfService:
             return
         sample = camera_observation(report)
         if sample is None:
+            return
+        try:
+            async with asyncio.timeout(1):
+                held=await self._hold_camera(report,game,session,process)
+        except(ValueError,OSError,TimeoutError,httpx.HTTPError):
+            return
+        if (not held or generation!=self.camera_generation or self.game is not game or self.session!=session
+                or not self.camera_enabled or self.embodied is not owner
+                or getattr(owner,'process',None)is not process or process.returncode is not None):
             return
         now = self.clock()
         elapsed = now - began
@@ -481,6 +595,14 @@ class WerewolfService:
             sample = camera_picture(report)
             elapsed = self.clock() - began
             if sample is None or not 0 <= elapsed < 1:
+                return dict(available=False)
+            async with asyncio.timeout(1):
+                held=await self._hold_camera(report,game,session,process)
+            elapsed=self.clock()-began
+            if (not held or self.game is not game or self.session!=session or not self.camera_enabled
+                    or game.phase!='lobby'or self.embodied is not owner
+                    or getattr(owner,'process',None)is not process or process.returncode is not None
+                    or not 0<=elapsed<1):
                 return dict(available=False)
             remaining = 1 - sample.pop('age_ms') / 1000 - elapsed
             if remaining <= 0:
@@ -538,17 +660,17 @@ class WerewolfService:
             self.camera_generation += 1
             self._clear_camera()
             self.camera_enabled = False
+            self.camera_context = None
             try:
+                await self._release_camera()
                 if self.pump:
                     self.pump.cancel()
                     await asyncio.gather(self.pump, return_exceptions=True)
                     self.pump = None
-                if self.effect_tasks:
-                    for task in tuple(self.effect_tasks):
-                        if not task.done() and not task.cancelling():
-                            task.cancel()
-                    await asyncio.shield(asyncio.gather(*self.effect_tasks, return_exceptions=True))
-                    self.effect_task = None
+                for task in tuple(self.effect_tasks):
+                    if not task.done() and not task.cancelling():
+                        task.cancel()
+                # 灯光恢复由 SceneLights 串行，扬声器清理在下方单独回收。
                 if getattr(self.effects, "lights_active", False):
                     try:
                         await self.effects.lights.restore()
@@ -567,8 +689,10 @@ class WerewolfService:
                     self.pump = self.effect_task = None
                     self.origin = None
                     self.effects.lights_active = False
+                    self.light_bindings = {}
                     self.effects.narration = False
                     self.retries.clear()
+                    self.choice_versions.clear()
                     self.bindings.clear()
                     self.camera_hints = []
                     self.camera_candidates = []
@@ -612,7 +736,7 @@ def phone_app(owner, origin):
             # Authenticated players sharing a hotspot/proxy must not consume
             # one another's ordinary polling budget. Invalid/random tokens
             # retain the address budget; they cannot mint unlimited buckets.
-            if request.url.path in {'/api/player', '/api/ready', '/api/choice'}:
+            if request.url.path in {'/api/player', '/api/ready', '/api/identity', '/api/choice'}:
                 try:
                     owner._player(supplied)
                 except GameError:
@@ -655,6 +779,8 @@ def phone_app(owner, origin):
     async def asset(name: str):
         if name == 'friday-icon.png':
             return FileResponse(STATIC / 'brand/friday.png')
+        if name == 'werewolf-scene.png':
+            return FileResponse(STATIC / 'games-art/werewolf.png')
         if name not in {"werewolf-party.js", "werewolf-party.css"}:
             raise HTTPException(404)
         return FileResponse(STATIC / name)
@@ -675,11 +801,15 @@ def phone_app(owner, origin):
 
     @app.get("/api/player")
     async def player(request: Request):
-        return await owner.private(token(request))
+        return await owner.private(token(request), request.headers.get('x-friday-choice'))
 
     @app.post("/api/ready")
     async def ready(payload: Ready, request: Request):
-        return await owner.ready(token(request), payload.ready)
+        return await owner.ready(token(request), payload.ready, payload.lobby_revision)
+
+    @app.post("/api/identity")
+    async def confirm_identity(payload: ConfirmIdentity, request: Request):
+        return await owner.confirm_identity(token(request), payload.revision)
 
     @app.post("/api/choice")
     async def choice(payload: Choice, request: Request):

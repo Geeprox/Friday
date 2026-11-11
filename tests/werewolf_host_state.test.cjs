@@ -70,6 +70,23 @@ test('an older poll cannot undo an acknowledged host pause even if fetch ignores
  assert(!c.button('暂停对局'));c.mounted.dispose();
 });
 
+test('the host can start the first night only after reading all identity acknowledgements',async()=>{
+ const initial=report({revision:4});
+ Object.assign(initial.game,{phase:'identity',phase_name:'查看身份',round:0,seconds_left:null,identities_confirmed:5});
+ const c=client({initial});await settle();
+ const start=c.button('开始首夜');assert(start.disabled);assert(c.button('返回入座'));
+ assert.match(c.root.textContent,/5 \/ 6 人已确认/);
+ c.setNext({...initial,game:{...initial.game,identities_confirmed:6}});
+ await c.tick();assert.equal(c.button('开始首夜'),start);assert(!start.disabled);
+ assert.match(c.root.textContent,/准备入夜.*等候首夜/);
+ c.setNext(report({revision:5}));
+ c.button('开始首夜').onclick();await settle();
+ const body=JSON.parse(c.requests.find(r=>r.path.endsWith('/control')).options.body);
+ assert.equal(body.action,'advance');assert.equal(body.revision,4);
+ assert.match(c.root.textContent,/狼人行动/);
+ c.mounted.dispose();
+});
+
 function cameraLobby(){
  const first=report();first.game.phase='lobby';first.game.phase_name='等待大家入座';
  first.game.players=[{seat:1,name:'合成玩家1',alive:true,ready:false},{seat:2,name:'合成玩家2',alive:true,ready:false}];

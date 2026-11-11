@@ -27,6 +27,12 @@ APPROVED HAND REFERENCE (2026-11-04): User approved the Godot XR Tools CC0 hand 
 
 Werewolf phone join recovery: persist only the exact pending join intent in current-tab session storage before sending it. A lost response or reload resumes that room and seat with the same random recovery identifier; it does not reserve another seat. The brief recovery state uses the existing neutral join layout and two clear actions, “重试入座” and “更换房间”, with no modal or infrastructure copy. An explicit different invitation supersedes the pending intent. Acknowledgment must match the requested room and seat before storing the personal credential and clearing recovery state. Removed players and closed/replaced rooms remain revoked. Recovery neither exposes roles automatically nor provides public/name-based credential lookup. Actual phone rendering and LAN acceptance remain open.
 
+狼人杀在入座和首夜之间设置认牌环节。手机沿用浅色纸面，按住显示自己的身份，松开收起后才启用「我已看完」。公屏和主持端原地更新确认人数，全员确认后主持端才能点击「开始首夜」。等待期间没有计时，返回入座前提示会重新发牌。画面同步时暂收身份牌，恢复后只显示当次发牌的私有状态。
+
+狼人杀在自由发言和平票发言时提供一个点名选择器。举手标在现有座位和选项内，镜头提示刷新时保留选中的座位和键盘焦点。确认后主持端突出该座位，电视显示「发言中」，被点名的手机显示「轮到你发言」。窄屏将选择器和确认动作排在同一行。电视断线和对局暂停时暂收发言提示，恢复后按当前对局读回。
+
+狼人杀结算页的「再开一局」回到原房间的准备页。保留座位，已坐满时收起扫码区。有空位时重新显示邀请。手机保留自己的座位并提示重新准备，公屏保留同一链接并更新准备人数。上一局的票型和身份揭晓在新局开始时收起。
+
 Werewolf camera alignment: keep the native seat fields inline. “显示画面” reads an already running source beside those fields and overlays the numbers from that same decoded image. This is an explicit local host view, never a capture-start command or a phone/TV feed. Image and choices retire together on expiry, hiding or leaving the lobby; delayed replies cannot revive a retired view. Keep the existing paper/graphite controls, accessible numbered alternative and source-bound binding/readback. No camera, identity or physical accuracy claim follows from synthetic rendering.
 
 Seat correction stays inside the same native chooser: show which seat owns an unavailable number, disable that choice, and offer “取消当前对应” only when that seat has a saved mapping. Releasing it keeps the player and ready state. Waiting for a fresh camera must read “等待画面恢复”; a current picture without the bound person may say “原位置暂不可见”, without declaring that the camera or person moved. Do not replace fields or repeatedly rewrite unchanged native options during picture refresh. A correction changes the existing room version and cannot be undone by an old clear request.
@@ -35,7 +41,19 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
 ## Scope and evidence
 
-Synthetic preview only. No live camera/microphone/model/TV/device activation. Desired gaze/wake confidence semantics and configurable wake words are captured as product truth; correcting the full speech execution chain and a Rust migration are separate functional changes, not claimed by this UI refactor. Host resource sampling is passive and bounded, with null values when unavailable. Background service and safety/event summaries read existing owners and never start them. Do not present planned crying/rough-care detection as a functioning capability.
+摄像头详情以画面为主体。同一个按钮查看和结束预览，「回看录像」在旁边打开当前镜头的录像。实时查看时显示镜头模式和方向键，物理开关单独放在底部。巡视中同一按钮变为「停止巡视」，画面暂时断开时仍可操作。下探、完成和中断复用画面下方的状态行。窄屏先显示画面和回看，再显示模式和方向键。
+
+云台转动后，画面下方显示「正在确认原目标」或「未找到原目标」。无法确认时，原来的模式按钮改为「重新跟随人物」或「重新跟随宠物」，焦点留在同一按钮。重新跟随先显示等待，画面确认后才显示跟随状态。
+
+「选择跟随目标」进入画面内点选。人物和宠物切换在画面上方，点画框或对应编号都可选。桌面将编号放在画面旁，窄屏放在画面下。画面过期时在同处刷新。确认后回到实时画面，画面下方读回跟随状态。目标丢失时可直接重新选择，或用「停止跟随」留在当前视角。
+
+Synthetic preview only. No live camera/microphone/model/TV/device activation. Desired gaze/wake confidence semantics and configurable wake words are captured as product truth; correcting the full speech execution chain and a Rust migration are separate functional changes, not claimed by this UI refactor. Host resource sampling is passive and bounded, with null values when unavailable. Background service and safety/event summaries read existing owners and never start them.
+
+持续婴儿哭声复核使用现有提醒列表、首页入口和详情。符合三段同源证据时显示“疑似持续婴儿哭声”，保留镜头名、时间、关键帧和查看附近录像入口。普通哭声沿用原名称。设置页以本机已知标签和声音复核开关显示可用状态。照护行为仍显示原能力状态。
+
+「趴卧复核镜头」使用本机画面复核内的一项选择。默认关闭，保留用户选定的镜头和暂停状态。镜头来源变化时，请使用者重新选定。首页和提醒详情共用「疑似趴卧」标题，显示镜头、时间和两段画面各一张关键帧，其余画面按需查看。窄屏使用同一套选择与返回动线。
+
+快速搬动的短窗口在首页和提醒列表共用「快速搬动」标题。详情先呈现完整四帧，用相对时间区分动作前、中和后段，回看、确认与误报操作接在画面之后。
 
 Generated reports and screenshots remain under ignored .artifacts/design-20261103/. The synthetic preview's room geometry and devices never ship as defaults.
 

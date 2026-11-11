@@ -49,7 +49,8 @@ async def test_profile_change_after_read_invalidates_the_old_launch_without_retr
     bridge.game.reset("ski", difficulty="challenge")
     before = copy.deepcopy(bridge.game.public)
     result = await bridge.client.post(
-        "/api/embodied/start", json=dict(camera=CAMERA, app="ski", difficulty="easy", expected_intent=intent)
+        "/api/embodied/start", json=dict(
+            camera=CAMERA, app="ski", difficulty="easy", ski_trail="first-snow", expected_intent=intent)
     )
     assert result.status_code == 409 and bridge.game.public == before
     assert not any(path in {"/api/game", "/api/start"} for path, _ in bridge.calls)
@@ -65,9 +66,17 @@ async def test_profile_change_after_read_invalidates_the_old_launch_without_retr
         {"mode": "home", "action": "select", "difficulty": "easy"},
         {"mode": "ski", "action": "select", "difficulty": None},
         {"mode": "ski", "action": "start", "difficulty": "expert"},
+        {"mode": "ski", "action": "start", "ski_trail": "first-snow"},
+        {"mode": "ski", "action": "select", "ski_trail": "missing"},
+        {"mode": "ski", "action": "select", "ski_trail": ["first-snow"]},
+        {"mode": "tennis", "action": "select", "ski_trail": "first-snow"},
+        {"mode": "tennis", "action": "start", "tennis_variant": "practice"},
+        {"mode": "ski", "action": "select", "tennis_variant": "practice"},
+        {"mode": "tennis", "action": "select", "tennis_variant": "unknown"},
+        {"mode": "tennis", "action": "select", "tennis_variant": ["practice"]},
     ],
 )
-async def test_worker_rejects_difficulty_on_non_selection_commands_without_effects(data):
+async def test_worker_rejects_invalid_game_options_without_effects(data):
     game = MotionGames()
     game.reset("ski", difficulty="challenge")
     before = copy.deepcopy(game.public)
@@ -80,23 +89,50 @@ async def test_worker_rejects_difficulty_on_non_selection_commands_without_effec
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("difficulty", ["easy", "challenge"])
+async def test_worker_selects_tennis_practice_before_start_and_rejects_mid_round_switch():
+    game = MotionGames()
+    game.select('tennis')
+    control, start, home = game_handler(game)
+    solo = dict(mode='tennis', action='select', tennis_variant='practice')
+    selected = await control(request(solo, game=game))
+    assert selected['mode'] == 'off' and selected['tennis_variant'] == 'practice'
+    start.assert_not_awaited()
+    active = await control(request(dict(mode='tennis', action='start'), game=game))
+    assert active['mode'] == 'tennis' and active['source_recovery']['required_players'] == 1
+    assert active['tennis_variant'] == 'practice'
+    start.assert_awaited_once()
+    with pytest.raises(HTTPException) as error:
+        await control(request(dict(solo, tennis_variant='match'), game=game))
+    assert error.value.status_code == 400 and game.public == active
+    home.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("difficulty,trail", [("easy", "first-snow"), ("challenge", "pine-slalom")])
 async def test_actual_asgi_launch_receipts_drive_library_choice_readback_and_continue(
-    bridge, tmp_path, difficulty
+    bridge, tmp_path, difficulty, trail
 ):
     catalogue = (await bridge.client.get("/api/games")).json()
     command = dict(
-        camera=CAMERA, app="ski", expected_intent=catalogue["service"]["game_intent"], difficulty=difficulty
+        camera=CAMERA, app="ski", expected_intent=catalogue["service"]["game_intent"],
+        difficulty=difficulty, ski_trail=trail,
     )
     result = await bridge.client.post("/api/embodied/start", json=command)
     assert result.status_code == 200
+    acknowledged = result.json()["game"]
+    route = next(item for item in catalogue["ski_trails"] if item["id"] == trail)
+    assert acknowledged["ski_trail"] == trail
+    assert [row[:2] for row in acknowledged["ski"]["route"]] == route["path"]
+    assert [path for path, _ in bridge.calls if path in {"/api/game", "/api/start"}] == ["/api/game", "/api/start"]
+    assert next(body for path, body in bridge.calls if path == "/api/game")["ski_trail"] == trail
     opened = await bridge.client.get("/api/games/ski/open")
     assert opened.status_code == 200
     alternate = "challenge" if difficulty == "easy" else "easy"
     peer = await bridge.client.post(
         "/api/embodied/start",
         json=dict(
-            camera=CAMERA, app="ski", difficulty=alternate, expected_intent=result.json()["game_intent"]
+            camera=CAMERA, app="ski", difficulty=alternate, ski_trail="summit",
+            expected_intent=result.json()["game_intent"],
         ),
     )
     assert peer.status_code == 200
@@ -121,6 +157,32 @@ async def test_actual_asgi_launch_receipts_drive_library_choice_readback_and_con
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert all(json.loads(run.stdout).values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("app,trail,code", [("tennis", "first-snow", 409), ("ski", "unknown", 422)])
+async def test_invalid_library_trail_cannot_change_worker(bridge, app, trail, code):
+    before = copy.deepcopy(bridge.game.public)
+    result = await bridge.client.post("/api/embodied/start", json=dict(
+        camera=CAMERA, app=app, ski_trail=trail, expected_intent=await displayed(bridge)))
+    assert result.status_code == code
+    assert bridge.game.public == before
+    assert not any(path in {"/api/game", "/api/start"} for path, _ in bridge.calls)
+
+
+@pytest.mark.asyncio
+async def test_library_does_not_enable_capture_if_worker_acknowledges_another_trail(bridge, monkeypatch):
+    original = bridge.owner._send_game_command
+
+    async def mismatched(command, game):
+        selected = await original(command, game)
+        return dict(selected, ski_trail="summit")
+
+    monkeypatch.setattr(bridge.owner, "_send_game_command", mismatched)
+    result = await bridge.client.post("/api/embodied/start", json=dict(
+        camera=CAMERA, app="ski", ski_trail="first-snow", expected_intent=await displayed(bridge)))
+    assert result.status_code == 409 and result.json()["detail"] == "game_state_changed"
+    assert not any(path == "/api/start" for path, _ in bridge.calls)
 
 
 @pytest.mark.asyncio

@@ -8,9 +8,10 @@ test('same-phase effects refresh without rebuilding seats or clearing a confirma
  const nodes={'[data-voice-state]':voice,'[data-light-recovery]':recovery,'[data-restore-lights]':restore,'[data-timer]':timer};
  const original={active:true,session:'synthetic',game:{revision:4,phase:'wolves',paused:false,seconds_left:20,players:[]},camera_hints:[],camera_candidates:[],effects:{narration:true,voice:'requested',lights:{recovery_pending:false}}};
  const next=structuredClone(original);next.effects.voice='unconfirmed';next.effects.lights.recovery_pending=true;
- const scope=vm.createContext({current:original,alive:true,busy:false,context:{},generation:0,readRequest:null,syncFailed:false,syncNotice:'对局服务暂时无法连接，正在重试。',AbortController,confirmation:'close',content:{querySelector:selector=>nodes[selector]},api:async()=>next,render:()=>assert.fail('a status change must not rebuild the board or dismiss confirmation')});
- scope.revision=[original.session,original.game.revision,JSON.stringify(original.game.players),JSON.stringify(original.camera_hints),JSON.stringify(original.camera_candidates),JSON.stringify(original.camera_bindings),original.camera_available].join('|');
+ const scope=vm.createContext({current:original,alive:true,busy:false,context:{},generation:0,readRequest:null,syncFailed:false,syncNotice:'对局服务暂时无法连接，正在重试。',AbortController,confirmation:'close',notice:{},content:{querySelector:selector=>nodes[selector],querySelectorAll:()=>[]},api:async()=>next,render:()=>assert.fail('a status change must not rebuild the board or dismiss confirmation')});
  vm.runInContext(extract('function updateEffects()', '\n function render()'),scope);
+ vm.runInContext(extract('function updateSpeakerControls()', '\n function live()'),scope);
+ scope.revision=scope.renderKey();
  vm.runInContext(extract('async function refresh(', '\n content.append('),scope);
  await scope.refresh();
  assert.equal(voice.textContent,'播报暂不可用，屏幕主持继续');assert.equal(recovery.hidden,false);assert.equal(restore.hidden,true);

@@ -15,8 +15,8 @@ class GameApp:
 
 
 APPS = (
-    GameApp("ski", "林间滑雪", "双臂摆动前进，横移躲避障碍", (1, 1), "ski"),
-    GameApp("tennis", "双人网球", "左右接球，挥拍回击", (2, 2), "tennis"),
+    GameApp("ski", "林间滑雪", "摆臂滑行，左右移动穿过木门", (1, 1), "ski"),
+    GameApp("tennis", "体感网球", "独自练回球，或和家人对打", (1, 2), "tennis"),
     GameApp("quest", "山径冒险", "十站山径，平举、举手、浅蹲、侧迈、抬膝、开合步、侧倾、侧弓步、上伸与胸前开合", (1, 1), "quest"),
     GameApp("hiit", "运动闯关", "深蹲、开合步、抬膝、侧弓步、侧迈、侧倾、上伸与胸前开合", (1, 1), "hiit"),
     GameApp("werewolf", "狼人杀", "手机私下行动，Friday 主持，和家人一起推理", (6, 12), None, "party"),

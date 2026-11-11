@@ -14,7 +14,7 @@ import pytest
 from homeplane.embodied.vision_pipe import PIPE_LIMIT, request_vision
 from homeplane.embodied import camera_recognition, previews, ptz_control
 from homeplane.embodied.camera_audio import AudioIngress
-from homeplane.embodied.frame_sampling import offer_frame
+from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.people.live import close_identity
 from tests.embodied.test_camera_audio import actual
@@ -51,23 +51,48 @@ async def test_healthy_request_and_its_independent_peer_continue_while_a_write_i
 
 
 @pytest.mark.asyncio
-async def test_read_does_not_get_a_second_full_budget_after_backpressure():
+async def test_read_does_not_get_a_second_full_budget_after_backpressure(monkeypatch):
     transport = pipe()
-    entered = asyncio.Event()
+    writing, written, reading = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    loop = asyncio.get_running_loop()
+    now = 100.0
 
     async def write():
-        await asyncio.sleep(.2)
+        writing.set()
+        await written.wait()
 
     async def read():
-        entered.set()
+        reading.set()
         await asyncio.Event().wait()
+
+    async def flush_callbacks():
+        for _ in range(6):
+            await asyncio.sleep(0)
 
     transport.stdin.drain.side_effect = write
     transport.stdout.readline.side_effect = read
-    start = asyncio.get_running_loop().time()
-    with pytest.raises(TimeoutError):
-        await request_vision(transport, {'jpeg': 'SYNTHETIC'}, timeout=.3)
-    assert entered.is_set() and asyncio.get_running_loop().time()-start < .42
+    with monkeypatch.context() as patch:
+        patch.setattr(loop, 'time', lambda: now)
+        task = asyncio.create_task(request_vision(transport, {'jpeg': 'SYNTHETIC'}, timeout=3))
+        try:
+            await flush_callbacks()
+            assert writing.is_set() and not reading.is_set()
+            now = 102.0
+            written.set()
+            await flush_callbacks()
+            assert reading.is_set() and not task.done()
+            now = 102.9
+            await flush_callbacks()
+            assert not task.done()
+            now = 103.01
+            await flush_callbacks()
+            assert task.done(), '读取必须沿用写入前开始的总期限'
+            with pytest.raises(TimeoutError):
+                await task
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -145,6 +170,7 @@ async def test_original_primary_owner_retires_and_reaps_a_failed_exchange(tmp_pa
         SESSION='synthetic', camera_lease=None, camera_planner=None, Tracks=lambda: object(), PetTracks=PetTracks,
         processed_times=deque(), captured_times=deque(), PYTHON='SYNTHETIC-NOT-EXECUTED',
         VISION='SYNTHETIC-NOT-EXECUTED', MODELS=tmp_path, offer_frame=offer_frame,
+        CAPTURE_RECEIVE_TIMEOUT=CAPTURE_RECEIVE_TIMEOUT,
         AudioIngress=AudioIngress, close_identity=close_identity, camera_is_open=AsyncMock(return_value=True),
         capture_environment=lambda: {},
         room=None,close_rooms=AsyncMock(),

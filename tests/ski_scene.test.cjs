@@ -2,7 +2,7 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const fingerprint=value=>require('node:crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function scene(){
  const calls=[],texture={save(){},restore(){},translate(){},scale(){},drawImage(){}},pattern={setTransform(m){calls.push(['uv',...m.values]);}};
- const c={save(){},restore(){},beginPath(){},closePath(){},moveTo(...p){calls.push(['move',...p]);},lineTo(...p){calls.push(['line',...p]);},stroke(){},fill(){},fillRect(...p){calls.push(['snow',...p]);},drawImage(im,...p){calls.push([im.id,...p]);},createPattern(){return pattern;}};
+ const c={save(){},restore(){},beginPath(){},closePath(){},moveTo(...p){calls.push(['move',...p]);},lineTo(...p){calls.push(['line',...p]);},quadraticCurveTo(...p){calls.push(['curve',...p]);},stroke(){},fill(){calls.push(['fill',this.fillStyle]);},fillRect(...p){calls.push(['snow',...p]);},drawImage(im,...p){calls.push([im.id,...p]);},createPattern(){return pattern;}};
  const context=vm.createContext({document:{createElement(){return{getContext:()=>texture};}},DOMMatrix:class{constructor(values){this.values=values;}}});
  vm.runInContext(fs.readFileSync('homeplane/embodied/static/ski-scene.js','utf8'),context);
  const api=context.createSkiScenery(c,{scene:{id:'background',src:'snow.png',complete:true,naturalWidth:1600,naturalHeight:900},props:{id:'tree',complete:true,naturalWidth:1600,naturalHeight:800}});
@@ -55,4 +55,32 @@ test('illustrated gates share observed ground motion and their opening follows r
  assert.equal(fingerprint(s.paint(next,5000)),fingerprint(s.paint(next,6000)),'wall time cannot move a gate');
  const narrow=game(0);narrow.ski.gates=[{x:0,z:24,width:.34}];const n=gate(scene().paint(narrow,1000));
  assert(Math.abs(n[8]/a[8]-(.34+.1)/(.48+.1))<1e-9,'drawn opening tracks each section clearance');
+});
+test('a preview and the moving snow grooves go through the authored gate at its true width',()=>{
+ const route=[[0,0,0],[6,-.48,.43],[14,.48,.34],[180,0,0]],s=scene();
+ const first=game(0,'off');first.mode='off';first.ski.route=route;
+ const gate=draws=>draws.find(c=>c[0]==='tree'&&c[1]===1200&&c[2]===400);
+ const path=(draws,color)=>{
+  const end=draws.findIndex(c=>c[0]==='fill'&&c[1]===color);
+  assert(end>0);return draws.slice(draws.findLastIndex((c,i)=>i<end&&c[0]==='move'),end);
+ };
+ const measure=(g,at)=>{
+  const draws=s.paint(g,at),z=(6-g.ski.distance)*3,scale=350/(z+1.8),y=335+scale*2.45;
+  const x=800-.48*1.9*scale,arch=gate(draws);
+  assert(arch);assert(Math.abs(arch[5]+arch[7]/2-x)<1e-8);
+  const tracks=path(draws,'rgba(255,248,240,.24)').filter(p=>Math.abs(p[2]-y)<1e-8);
+  assert.equal(tracks.length,2);assert(Math.abs((tracks[0][1]+tracks[1][1])/2-x)<1e-8);
+  const crossing=path(draws,'rgba(100,77,56,.38)');
+  assert(Math.abs(crossing[0][1]-(x-.43*1.9*scale))<1e-8);
+  assert(Math.abs(crossing[1][1]-(x+.43*1.9*scale))<1e-8);
+  return arch[8];
+ };
+ const before=measure(first,1000),next=game(3);next.ski.route=route;
+ assert(measure(next,2000)>before);
+ assert.notDeepEqual(path(s.paint(first,1000),'rgba(88,108,119,.23)'),
+  path(s.paint(next,2000),'rgba(88,108,119,.23)'),'snow marks advance even on the straight approach');
+ const finish=game(175);finish.ski.route=route;
+ const end=s.paint(finish,3000);
+ assert(end.some(c=>c[0]==='tree'&&c[1]===800&&c[2]===400),'the finish lodge approaches before completion');
+ assert(!gate(end),'the finish line cannot be mistaken for another scoring gate');
 });

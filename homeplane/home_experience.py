@@ -10,7 +10,7 @@ import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
@@ -516,12 +516,20 @@ def create_router(core, lock, settings, embodied, archive, runtime, *, file_sour
             raise HTTPException(409,detail='household_mode_unavailable') from None
 
     @router.get('/recordings')
-    async def recordings(folder:str|None=None,date:str|None=None):
+    async def recordings(folder:str|None=None,date:str|None=None,
+                         camera:str|None=Query(default=None,pattern=r'^cam_[a-f0-9]{10}$')):
+        if folder is not None and camera is not None:
+            raise HTTPException(422, detail='invalid_recording_camera_filter')
         try:
-            result=await owner.recordings.browse(folder,date)
+            result=await owner.recordings.browse(folder,date,camera=camera)
             return dict(**result,names=owner.preferences['recording_names'])
         except (ValueError,OSError,TimeoutError)as exc:
-            code='recordings_mount_required'if isinstance(exc,ValueError)and str(exc)in {'archive_mount_required','archive_not_configured'}else 'recordings_temporarily_unavailable'
+            code='recordings_temporarily_unavailable'
+            if isinstance(exc,ValueError):
+                if str(exc) in {'archive_mount_required','archive_not_configured'}:
+                    code='recordings_mount_required'
+                elif str(exc) in {'recording_camera_mapping_required','recording_camera_folder_unavailable'}:
+                    code=str(exc)
             return dict(connected=False,files=[],folders=[],code=code,names=owner.preferences['recording_names'])
 
     @router.get('/recordings/privacy')
