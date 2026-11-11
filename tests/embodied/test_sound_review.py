@@ -404,10 +404,13 @@ async def test_original_capture_lease_can_review_sound_with_voice_off_but_respec
     if paused:marker.touch()
     h=voice_service(module);h.selected=h.enabled=h.armed=False;h.voice_provider=None;h.gate_sent=-1
     h.attention=SimpleNamespace(update=Mock(),candidate=lambda *_:None);h.gesture=SimpleNamespace(reset=Mock())
-    process=SimpleNamespace(stdin=SimpleNamespace(write=Mock(),drain=AsyncMock()))
+    process=SimpleNamespace(stdin=SimpleNamespace(write=Mock(),drain=AsyncMock(),
+        is_closing=lambda:False,transport=SimpleNamespace(get_write_buffer_size=lambda:0)))
     await h.observe([],[],{'status':'locked'},0,process,False,sound_review=True)
     packet=json.loads(process.stdin.write.call_args.args[0])
     assert packet['action']=='voice_window' and packet['enabled']==(not paused)
+    assert packet['expires_mono']==pytest.approx(1.3)
+    process.stdin.drain.assert_not_awaited()
     assert h.selected is False
 
 

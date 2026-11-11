@@ -11,6 +11,7 @@ import numpy as np
 
 from homeplane.embodied import bridge
 from homeplane.embodied.camera_audio import MAX_AGE as CAMERA_INPUT_MAX_AGE
+from homeplane.embodied.camera_audio import offer_voice_window
 from homeplane.embodied.household import basic_command
 from homeplane.embodied.intent import address, parse_plan, utterance_focus
 from homeplane.embodied.local_intent import household_plan
@@ -210,6 +211,7 @@ class HomeService:
         if source_changed:
             # 恢复后的首帧不能延续断流前的注视时长。
             self.attention.update([], [], now)
+            self.gate_sent = -100.0
         self.camera_session = session
         self.selected = selected
         self.last_video = now if captured_mono is None else captured_mono
@@ -240,14 +242,8 @@ class HomeService:
                 selected and self.audio_allowed and self.voice_status() in ("ready", "transcribing")
                 and now > self.reply_until)
             )
-            capture.stdin.write(
-                (
-                    json.dumps({"action": "voice_window", "enabled": gate,
-                        "attention": bool(people and registration.get('status') not in {'moving','settling'}
-                            and 0 <= time.monotonic()-now <= 1.5)}) + "\n"
-                ).encode()
-            )
-            await capture.stdin.drain()
+            offer_voice_window(capture.stdin, now=time.monotonic(), captured=self.last_video, enabled=gate,
+                attention=bool(people and registration.get('status') not in {'moving', 'settling'}))
 
     def reset_audio(self):
         """Discard a partial segment; completed admitted requests have their own lease."""

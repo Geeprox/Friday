@@ -73,7 +73,8 @@ async def test_latest_mailboxes_keep_actual_secondary_callback_live_and_revoke_o
 
     def held_create(*args, **kwargs):
         entered.set()
-        release.wait(1)
+        if not release.wait(5):
+            raise AssertionError('测试写入闸门未释放')
         return create(*args, **kwargs)
 
     monkeypatch.setattr(runtime.store, 'create', held_create)
@@ -89,15 +90,18 @@ async def test_latest_mailboxes_keep_actual_secondary_callback_live_and_revoke_o
     try:
         assert offer(runtime, trigger=True)
         assert await asyncio.to_thread(entered.wait, 1)
-        started = time.perf_counter()
-        for index in range(100):
-            now = time.monotonic()
-            people = [dict(id=index)]
-            await callback(dict(camera=camera, session='secondary', people=people, hands=[], faces=[],
-                                registration={'status': 'locked'}, now=now, captured_mono=now,
-                                scene_visible=True, camera_source_context='c' * 64), object())
-            people[0]['id'] = 'changed-after-admission'
-        assert time.perf_counter() - started < .15
+        started = time.thread_time()
+        async with asyncio.timeout(2):
+            for index in range(100):
+                now = time.monotonic()
+                people = [dict(id=index)]
+                await callback(dict(camera=camera, session='secondary', people=people, hands=[], faces=[],
+                                    registration={'status': 'locked'}, now=now, captured_mono=now,
+                                    scene_visible=True, camera_source_context='c' * 64), object())
+                people[0]['id'] = 'changed-after-admission'
+        # 独立验证回调的 CPU 预算与存储等待隔离，避免把宿主调度计为回调计算。
+        assert time.thread_time() - started < .15
+        assert runtime.io.active is not None and not runtime.io.active.done()
         assert home.observe.await_count == scope['wall'].observe.call_count == 100
         assert runtime.pending[camera][0][2][0]['id'] == 99
         for index in range(10):

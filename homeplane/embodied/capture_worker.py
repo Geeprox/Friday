@@ -19,7 +19,7 @@ from homeplane.embodied.local_motor import LocalMotor, check_motor_deadline
 from homeplane.embodied.frame_sampling import CAPTURE_IDLE_TIMEOUT, LatestFrameEncoder
 from homeplane.embodied.capture_decoder import install_decoder
 from homeplane.embodied.camera_provenance import bind_capture_packet
-from homeplane.embodied.camera_audio import PCMFramer
+from homeplane.embodied.camera_audio import PCMFramer, voice_window_deadlines
 from homeplane.embodied.paths import PRIVATE
 from homeplane.embodied.paths import camera as registered_camera
 
@@ -141,7 +141,7 @@ async def main():
         if not audio_observed:
             emit({"type": "diagnostic", "stage": "first_decoded_audio"})
             audio_observed = True
-        if channel != 0 or time.monotonic() > audio_until:
+        if channel != 0 or time.monotonic() >= audio_until:
             audio_framer.reset()
             return
         for packet in audio_framer.push(pcm.astype('<i2', copy=False).tobytes(),
@@ -190,10 +190,11 @@ async def main():
                         video_until=time.monotonic()+1.5 if command.get('enabled') is True else 0.0
                         continue
                     if command.get("action") == "voice_window":
-                        audio_until = time.monotonic() + 1.3 if command.get("enabled") is True else 0.0
-                        attention_until = time.monotonic() + 1.3 if command.get("attention") is True else 0.0
-                        if not command.get("enabled"):
+                        now = time.monotonic()
+                        next_audio, attention_until = voice_window_deadlines(command, now)
+                        if not next_audio or audio_until <= now:
                             audio_framer.reset()
+                        audio_until = next_audio
                         continue
                     if command.get("action") != "motor_step":
                         continue
