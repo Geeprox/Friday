@@ -147,6 +147,25 @@ async def test_original_owners_complete_a_two_level_survey(tmp_path, monkeypatch
     finally:
         await home.runtime.close()
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+async def test_original_owners_run_a_scheduled_survey_without_a_viewer(tmp_path, monkeypatch, owner):
+    home = Home(tmp_path, monkeypatch)
+    home.store.configure(home.store.policy().model_copy(update={'visual_review': False}))
+    patrol = Patrol(home, owner, mode='patrol', duration=156, activity='other_camera')
+    patrol.people = [person(1, .42)]
+    patrol.director.SCHEDULE_INTERVAL = 20
+    try:
+        await patrol.run()
+        assert tuple(direction for _, direction in patrol.moves) == patrol.director.SURVEY_ROUTE
+        assert patrol.moves[0][0] >= patrol.director.SCHEDULE_INTERVAL
+        report = patrol.exit_state if owner == 'primary' else patrol.item['camera_control']
+        assert report['mode'] == 'patrol' and report['survey_result'] == 'complete'
+        assert report['survey_confirmed_moves'] == 10 and not report['scheduled_survey_active']
+        assert report['physical_motion_verified'] is False
+    finally:
+        await home.runtime.close()
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner',['primary','secondary'])

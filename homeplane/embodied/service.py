@@ -558,7 +558,7 @@ class EmbodiedService:
     async def camera_control(self,camera_id,*,direction=None,mode=None,survey_revision=None):
         camera(camera_id)
         if self.manual_previews.has(camera_id):
-            if survey_revision is not None or mode in {'auto','pets','survey'}:raise ValueError('recognition_required')
+            if survey_revision is not None or mode in {'auto','pets','survey','patrol'}:raise ValueError('recognition_required')
             return await self.manual_previews.command('control',camera_id,direction=direction,mode=mode)
         if not self.capture_enabled or not self.process or self.process.returncode is not None:
             raise ValueError('camera_not_running')

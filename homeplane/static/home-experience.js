@@ -168,6 +168,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const live=()=>viewing&&hasLiveFrame();
   const surveyControl=()=>cameraControl?.mode==='survey'?cameraControl:null;
   const surveying=()=>!!surveyControl()&&!cameraControl.survey_result&&cameraControl.phase!=='survey_finished';
+  const patrolControl=()=>cameraControl?.mode==='patrol'?cameraControl:null;
   const selectingMode=()=>['person_target','pet_target'].includes(cameraControl?.mode);
   const setStatus=value=>{if(status.textContent!==value)status.textContent=value;};
   const release=token=>{if(token)void api(endpoint+'/preview/stop',{token}).catch(()=>{});};
@@ -254,17 +255,21 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     b.title=recovering?'感知恢复中':!frameCurrent?'等待实时画面':followReport?.recognition_enabled===false?'当前镜头未开启识别':unsupported?'当前识别服务暂不支持宠物跟随':'';
     b.setAttribute('aria-pressed',String(active&&!retry));
    }
-   const report=surveyControl(),running=surveying();
+   const patrol=patrolControl(),report=surveyControl()||patrol,running=surveying();
+   const sweeping=running||patrol?.scheduled_survey_active===true;
+   const canSurvey=canStart&&cameraControl?.owner==='friday'&&cameraControl.phase!=='game_held';
    const total=report?.survey_total_steps,confirmed=report?.survey_confirmed_moves;
-   const hasProgress=Number.isSafeInteger(total)&&total>0&&Number.isSafeInteger(confirmed)&&confirmed>=0&&confirmed<=total;
-   const surveyHadFocus=globalThis.document?.activeElement===survey;
+   const hasProgress=(!patrol||sweeping||!!patrol.survey_result)&&Number.isSafeInteger(total)&&total>0
+    &&Number.isSafeInteger(confirmed)&&confirmed>=0&&confirmed<=total;
    surveyRow.hidden=!!picker||(!report&&(!viewing||followReport?.recognition_enabled===false));
    surveyReadback.hidden=!report;
    const interrupted=report?.survey_interruption==='sound'?'本轮因异响结束':'本轮巡视未完成';
    let surveyText=({complete:'本轮巡视完成',interrupted}[report?.survey_result])||report?.reason||'';
-   if(running&&statusReadFailed)surveyText='巡视状态待更新';
-   else if(running&&recovering)surveyText='等待感知恢复';
-   else if(running&&followReport&&!hasLiveFrame())surveyText='等待画面恢复';
+   if(patrol&&!sweeping)surveyText=patrol.survey_result?surveyText+' · 每 30 分钟':'已开启 · 每 30 分钟';
+   if(report&&statusReadFailed)surveyText='巡视状态待更新';
+   else if((sweeping||patrol)&&recovering)surveyText='等待感知恢复';
+   else if((sweeping||patrol)&&followReport&&!hasLiveFrame())surveyText='等待画面恢复';
+   else if(patrol&&sweeping&&patrol.phase!=='review_held'&&patrol.survey_interruption!=='sound')surveyText='定时巡视中';
    if(surveyStatus.textContent!==surveyText)surveyStatus.textContent=surveyText;
    surveyTrack.hidden=!hasProgress;
    if(hasProgress){
@@ -273,11 +278,16 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     surveyCount.textContent=confirmed+' / '+total;
     surveyProgress.setAttribute('aria-valuetext',confirmed+' / '+total+' 个视角已确认');
    }
-   survey.hidden=!viewing&&!running;
+   survey.hidden=!!patrol||!viewing&&!running;
    survey.textContent=running?'停止巡视':'巡视一轮';
-   modeAvailability(survey,running?!!report.intent_revision:canStart&&cameraControl?.owner==='friday'&&cameraControl.phase!=='game_held');
-   if(surveyHadFocus&&(surveyRow.hidden||survey.hidden))watch.focus({preventScroll:true});
+   modeAvailability(survey,!patrol&&(running?!!report.intent_revision:canSurvey));
+   scheduledSurvey.hidden=!patrol&&(!viewing||running);
+   scheduledSurvey.textContent=patrol?'停止定时巡视':'每 30 分钟巡视';
+   modeAvailability(scheduledSurvey,patrol?!!patrol.intent_revision:canSurvey&&!running);
+   if((focused===survey&&(surveyRow.hidden||survey.hidden))
+      ||(focused===scheduledSurvey&&(surveyRow.hidden||scheduledSurvey.hidden)))watch.focus({preventScroll:true});
    if(recovering&&(focused===targetToggle||focused===survey&&survey.disabled
+      ||focused===scheduledSurvey&&scheduledSurvey.disabled
       ||followButtons.some(([,control])=>control===focused)))watch.focus({preventScroll:true});
    for(const b of directions)b.disabled=directionPending||!!picker||!frameCurrent||!(followReport?.primary||followReport?.manual_control);
   }
@@ -491,7 +501,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     if(!current(epoch))return;
     if(result.mode!==mode)throw Error('camera_mode_unconfirmed');
     modeVersion++;
-    const reason={auto:'等待人物',pets:'等待宠物',survey:'准备巡视',hold:'巡视已停止'}[mode];
+    const reason={auto:'等待人物',pets:'等待宠物',survey:'准备巡视',patrol:'定时巡视已开启',hold:'巡视已停止'}[mode];
     previousIntent=result.intent_revision&&prior&&result.intent_revision!==prior?prior:null;
     cameraControl={mode,reason,intent_revision:result.intent_revision};
     statusReadFailed=false;
@@ -500,7 +510,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    }catch(_){
     if(current(epoch)&&surveyRevision)await poll();
     if(current(epoch)&&(!surveyRevision||cameraControl?.intent_revision===surveyRevision)){
-     setStatus(mode==='survey'?'巡视状态待确认':mode==='hold'?'停止状态待确认':'暂时无法切换跟随');
+     setStatus(mode==='survey'||mode==='patrol'?'巡视状态待确认':mode==='hold'?'停止状态待确认':'暂时无法切换跟随');
     }
    }finally{modePending=false;if(owns())syncControls();}
   }
@@ -512,7 +522,11 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const survey=btn('巡视一轮',()=>surveying()
    ? changeMode('hold',surveyControl().intent_revision)
    : changeMode('survey'));
-  const surveyRow=add(h('div',null,{class:'camera-survey'}),surveyReadback,survey);
+  const scheduledSurvey=btn('每 30 分钟巡视',()=>patrolControl()
+   ? changeMode('hold',patrolControl().intent_revision)
+   : changeMode('patrol'));
+  const surveyActions=add(h('div',null,{class:'camera-survey-actions',role:'group','aria-label':'巡视操作'}),survey,scheduledSurvey);
+  const surveyRow=add(h('div',null,{class:'camera-survey'}),surveyReadback,surveyActions);
   for(const [direction,label]of [['up','向上'],['left','向左'],['right','向右'],['down','向下']]){
    const control=btn(null,async()=>{
     if(!owns()||directionPending||!live()||picker)return;
@@ -553,7 +567,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
      if(picker?.revision&&(!selectingMode()||cameraControl?.intent_revision!==picker.revision||!report.follow_target_available))leavePicker();
      if(picker)void readTargetPhoto(picker);
      else setStatus(recovering?'实时画面 · 感知恢复中':
-      report.recognition_enabled===false||surveyControl()?'实时画面':cameraControl?.reason||'实时画面');
+      report.recognition_enabled===false||surveyControl()||patrolControl()?.scheduled_survey_active
+       ?'实时画面':cameraControl?.reason||'实时画面');
     }else{
      leavePicker();
      clearFrame();

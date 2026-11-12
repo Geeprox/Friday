@@ -55,6 +55,8 @@ class CameraDirector:
     TILT_DIRECTIONS = ('up', 'down')
     SURVEY_ATTEMPT_LIMIT = 12
     SURVEY_ROUTE = ('right', 'right', 'down', 'left', 'left', 'left', 'left', 'up', 'right', 'right')
+    SCHEDULE_INTERVAL = 30 * 60
+    SCHEDULE_SWEEP_LIMIT = 4 * 60
     PATROL_AXES = {'right': (0, 1), 'left': (0, -1), 'down': (1, 1), 'up': (1, -1)}
 
     def __init__(self):
@@ -100,6 +102,9 @@ class CameraDirector:
         self.survey_reference = None
         self.survey_interrupted = False
         self.survey_interruption = None
+        self.scheduled_source = None
+        self.scheduled_at = None
+        self.scheduled_result = None
         self.patrol_confirmation = None
         self.patrol_view_state = 'idle'
         self.game_hold = False
@@ -146,6 +151,8 @@ class CameraDirector:
             raise ValueError('invalid_camera_mode')
         intent = (mode, revision)
         if intent != self.intent:
+            # 定时巡视等待期间沿用普通跟随，只有当轮有效时进入两层巡视。
+            mode = 'auto' if mode == 'patrol' else mode
             self._discard_patrol()
             self._clear_reframe()
             self._clear_selection_reference()
@@ -167,20 +174,61 @@ class CameraDirector:
                 self.pending_direction = None
             self.intent = intent
             self.mode = mode
-            self.survey_attempts = 0
-            self.survey_confirmed_moves = 0
-            self.survey_reference = (self.source_session, None) if mode == 'survey' and self.source_session else None
-            self.survey_interrupted = False
-            self.survey_interruption = None
-            self.patrol_view_state = 'idle'
-            if mode == 'survey':
-                self.position = (0, 0)
-                self.blocked_positions.clear()
-                self.phase = 'checking_view'
+            self.scheduled_source = self.scheduled_at = self.scheduled_result = None
+            self._reset_survey()
             if mode == 'hold':
                 self.hold()
             elif mode in TARGET_MODES:
                 self.phase = 'target_selecting'
+
+    def _reset_survey(self):
+        self.survey_attempts = self.survey_confirmed_moves = 0
+        self.survey_reference = (self.source_session, None) if self.mode == 'survey' and self.source_session else None
+        self.survey_interrupted = False
+        self.survey_interruption = None
+        self.patrol_view_state = 'idle'
+        if self.mode == 'survey':
+            self.position = (0, 0)
+            self.blocked_positions.clear()
+            self.phase = 'checking_view'
+
+    def _update_scheduled_survey(self, sample, now, *, game, review_pending, fall_pending, sound_cue):
+        if self.intent is None or self.intent[0] != 'patrol':
+            return
+        session = sample.get('session_id')
+        if self.mode == 'survey':
+            wake = (not (review_pending or fall_pending) and isinstance(sound_cue, WakeCameraCue)
+                    and self._sound_start_available(sample, now, sound_cue))
+            expired = now >= self.scheduled_at and self.sound_search_cue is None
+            source_changed = session is not None and session != self.scheduled_source
+            if game or wake or expired or source_changed or self._survey_done():
+                self._discard_patrol()
+                self.pending_direction = self.pending_decision = None
+                self.scheduled_result = ('complete' if self.survey_confirmed_moves == len(self.SURVEY_ROUTE)
+                                         else 'interrupted')
+                self.scheduled_at = now + self.SCHEDULE_INTERVAL
+                self.mode = 'auto'
+                self.phase = 'checking_view'
+            return
+        if game or not self.target_frame_current(sample, now) or sample.get('_patrol_view') is None:
+            return
+        if session != self.scheduled_source:
+            self.scheduled_source = session
+            self.scheduled_at = now + self.SCHEDULE_INTERVAL
+        if (now < self.scheduled_at or review_pending or fall_pending or sound_cue is not None
+                or self.sound_search_cue is not None or self.patrol_confirmation is not None
+                or now - self.last_move < 2 or now < self.retry_at):
+            return
+        self.mode = 'survey'
+        self.scheduled_at = now + self.SCHEDULE_SWEEP_LIMIT
+        self.scheduled_result = None
+        self.pending_direction = self.pending_decision = None
+        self.target = self.target_identity = self.target_session = self.last_focus = None
+        self.target_seen = -100.0
+        self._clear_reframe()
+        self.visible_samples = 0
+        self.clear_since = None
+        self._reset_survey()
 
     def restore_survey_progress(self, attempts, confirmed, interruption=None):
         """副镜头重连时保留计数，新采集进程不能接着旧视野移动。"""
@@ -445,6 +493,9 @@ class CameraDirector:
             return False
         if self._review_holds(sample, now, review_pending, fall_pending):
             return False
+        if (self.intent and self.intent[0] == 'patrol' and self.mode == 'survey'
+                and pending['phase'] == 'patrolling' and now >= self.scheduled_at):
+            return False
         if pending.get('sound_cue') is not None and (
                 self.mode not in {'auto', 'survey'} or sound_cue is not pending['sound_cue']
                 or sound_cue is not self.sound_search_cue or review_pending or fall_pending):
@@ -678,7 +729,9 @@ class CameraDirector:
         return (sample.get('session_id'), view[0], self._camera_window(sample)) if view is not None else None
 
     def _wake_frame_current(self, sample, now, cue):
-        return (self.mode == 'auto' and sample.get('session_id') == cue.session
+        accepts_wake = (self.mode == 'auto'
+                        or (self.mode == 'survey' and self.intent is not None and self.intent[0] == 'patrol'))
+        return (accepts_wake and sample.get('session_id') == cue.session
                 and sample.get('_wake_source') == cue.source
                 and self.target_frame_current(sample, now))
 
@@ -689,7 +742,8 @@ class CameraDirector:
                 and self.sound_intent_since is not None
                 and cue.captured > last_captured and cue.captured >= self.sound_intent_since
                 and (not wake or self._wake_frame_current(sample, now, cue))
-                and (self.mode != 'survey' or (not self._survey_done() and self.target_frame_current(sample, now))))
+                and (wake or self.mode != 'survey'
+                     or (not self._survey_done() and self.target_frame_current(sample, now))))
 
     def _begin_sound_search(self, sample, cue):
         wake = isinstance(cue, WakeCameraCue)
@@ -774,7 +828,10 @@ class CameraDirector:
             self.phase = 'held'
             self.tilt_observation = None
             return None
-        if self._game_holds(sample):
+        game = self._game_holds(sample)
+        self._update_scheduled_survey(sample, now, game=game, review_pending=review_pending,
+                                      fall_pending=fall_pending, sound_cue=sound_cue)
+        if game:
             # Keep the selected camera stable for the whole admitted game,
             # including waiting, pause and results. Perception still consumes
             # frames; neither clipped players nor an obscured view may pan it.
@@ -1093,7 +1150,7 @@ class CameraDirector:
     def failed(self, now):
         pending = self.pending_decision
         self._watch_target_after_move(pending, now)
-        if self.survey_confirmed_moves:
+        if self.survey_confirmed_moves or self.intent and self.intent[0] == 'patrol':
             self._interrupt_survey()
         self._end_sound_search(now)
         self._discard_patrol(uncertain_dispatch=pending is not None and pending['phase'] in {'patrolling', 'sound_search'})
@@ -1148,10 +1205,12 @@ class CameraDirector:
                     uncover_steps=self.uncover_steps, recovery_steps=self.recovery_steps,
                     survey_attempts=self.survey_attempts, survey_command_limit=self.SURVEY_ATTEMPT_LIMIT,
                     survey_confirmed_moves=self.survey_confirmed_moves, survey_total_steps=len(self.SURVEY_ROUTE),
-                    survey_result=None, survey_interruption=self.survey_interruption,
+                    survey_result=self.scheduled_result, survey_interruption=self.survey_interruption,
                     patrol_view_state=self.patrol_view_state,
                     avoided_angles=len(self.blocked_positions), target_locked=self.phase == 'following',
                     physical_motion_verified=False)
+        if self.intent and self.intent[0] == 'patrol':
+            report['scheduled_survey_active'] = self.mode == 'survey'
         if self.phase == 'survey_finished':
             return finish_camera_survey(report)
         if self.mode == 'survey' and self.game_hold:

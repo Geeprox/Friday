@@ -94,6 +94,24 @@ test('the camera panel starts a survey and can stop it while the picture is unav
  assert.deepEqual(modes,['survey','hold']);
 });
 
+test('定时巡视等待保存回读，停止查看和画面中断后仍可停止',async()=>{
+ const c=panel();await settle();
+ assert.equal(c.button('每 30 分钟巡视').hidden,true);
+ await c.click('查看实时画面');
+ await c.click('每 30 分钟巡视');
+ assert.equal(c.survey(),'已开启 · 每 30 分钟');
+ assert.equal(c.button('巡视一轮').hidden,true);
+ c.setState('connecting');
+ await c.click('停止查看');
+ assert.equal(c.image().hidden,true);
+ assert.equal(c.survey(),'等待画面恢复');
+ await c.click('停止定时巡视');
+ assert.equal(c.surveyVisible(),false);
+ const operations=c.requests.filter(r=>r.path.endsWith('/control')).map(r=>r.body);
+ assert.deepEqual(operations.map(op=>op.mode),['patrol','hold']);
+ assert.equal(operations[1].survey_revision,'1');
+});
+
 for(const outcome of ['complete','interrupted'])test(`a ${outcome} survey returns the same control to ready`,async()=>{
  const c=panel();await settle();await c.click('查看实时画面');await c.click('巡视一轮');
  c.finishSurvey(outcome);await c.tick();assert.equal(c.button('巡视一轮').disabled,false);

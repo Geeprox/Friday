@@ -107,12 +107,13 @@ class PreviewPool:
         recognizing = self.recognize and 0 <= age <= 1.5 and item['state'] == 'live'
         recovering = item.get('recognition_recovering') and item['state'] == 'connecting'
         control = item.get('camera_control')
-        if control:
+        if control or item.get('mode') == 'patrol':
+            control = control or {}
             control = camera_intent_readback(control, mode=item.get('mode', control.get('mode')),
                                              revision=item.get('mode_revision'),
                                              status=item.get('intent_status', 'default'))
         if control and (not fresh or item['state']!='live'):
-            control = dict(control,view_usable=False,target_locked=False)
+            control = dict(control,view_usable=False,target_locked=False,scheduled_survey_active=False)
         return dict(
             state=item["state"] if fresh or item["state"] != "live" else "stale",
             camera=camera_id,
@@ -172,15 +173,15 @@ class PreviewPool:
         if survey_revision is not None:
             if direction is not None or mode != 'hold':
                 raise ValueError('invalid_camera_control')
-            if item.get('mode') != 'survey' or item.get('mode_revision') != survey_revision:
+            if item.get('mode') not in {'survey', 'patrol'} or item.get('mode_revision') != survey_revision:
                 raise RuntimeError('camera_intent_changed')
         elif not item.get('control'):
             raise RuntimeError('camera_not_owned')
         if bool(direction) == bool(mode):
             raise ValueError('invalid_camera_control')
-        if mode is not None and mode not in {'auto','pets','hold','survey'}:
+        if mode is not None and mode not in {'auto','pets','hold','survey','patrol'}:
             raise ValueError('invalid_camera_mode')
-        if mode == 'pets' and not self.recognize:
+        if mode in {'pets', 'patrol'} and not self.recognize:
             raise ValueError('recognition_required')
         if direction is not None and direction not in {'left','right','up','down'}:
             raise ValueError('invalid_motor_direction')
@@ -408,8 +409,9 @@ class PreviewPool:
             previous_control = item.get('camera_control') or {}
             interruption = (previous_control.get('survey_interruption')
                             if previous_control.get('intent_revision') == item.get('mode_revision') else None)
-            director.restore_survey_progress(item.get('survey_attempts', 0), item.get('survey_confirmed_moves', 0),
-                                             interruption)
+            if item['mode'] == 'survey':
+                director.restore_survey_progress(item.get('survey_attempts', 0), item.get('survey_confirmed_moves', 0),
+                                                 interruption)
             motion_lock = asyncio.Lock()
             def privacy_closed():
                 item.update(state='shutter_closed',privacy_closed=True)
@@ -537,7 +539,7 @@ class PreviewPool:
                     if (proof := director.take_sound_view()) and self.sound_view is not None:
                         def source_current(session=sample['session_id'], expected_epoch=epoch):
                             return (self.source_current(selected['id'], process)
-                                    and recognizer.session == session and item['mode'] in {'auto', 'survey'}
+                                    and recognizer.session == session and item['mode'] in {'auto', 'survey', 'patrol'}
                                     and item['control_epoch'] == expected_epoch)
 
                         self.sound_view(selected['id'], proof, sample['_follow_jpeg'], source_current=source_current)

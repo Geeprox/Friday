@@ -501,7 +501,7 @@ async def camera_search():
                     return (owner is not None and owner is capture and owner.returncode is None
                             and source_generation == generation and state.get('status') == 'live'
                             and state.get('session_id') == session and camera_planner is planner
-                            and planner.mode in {'auto', 'survey'} and planner.intent_revision == revision)
+                            and planner.mode in {'auto', 'survey', 'patrol'} and planner.intent_revision == revision)
 
                 safety.offer_sound_search_frame(SELECTED['id'], proof, last_jpeg, source_current=source_current)
             state['camera_control'] = dict(planner.public(lease.presets), **director.public())
@@ -602,7 +602,8 @@ def view():
             game=dict(result['game'], status="paused", reason="实时画面已过期", players=[]),
         )
     if result['status'] != 'live' and result.get('camera_control'):
-        result['camera_control'] = dict(result['camera_control'], view_usable=False, target_locked=False)
+        result['camera_control'] = dict(result['camera_control'], view_usable=False, target_locked=False,
+                                        scheduled_survey_active=False)
     if result['status'] != 'live':
         result['game'] = dict(result['game'], players=[])
         if result['game'].get('mode') != 'off' and result['game'].get('status') != 'complete':
@@ -1490,6 +1491,12 @@ async def preview_status(camera_id: str, request: Request):
     if camera_id == SELECTED["id"]:
         report = view()
         session = report['camera_sessions'][0]
+        control = report.get('camera_control')
+        if camera_planner is None:
+            intent = camera_intents.load()
+            if intent.mode == 'patrol' or control and control.get('mode') == 'patrol':
+                control = camera_intent_readback(control or {}, mode=intent.mode,
+                                                 revision=intent.revision, status=intent.status)
         return {
             "state": report["status"],
             "camera": camera_id,
@@ -1497,7 +1504,7 @@ async def preview_status(camera_id: str, request: Request):
             "primary": True,
             "recognition": session['recognition'],
             "frame_available": session['recognition'] == 'recovering' and bool(primary_recovery_frame()),
-            "camera_control": report.get('camera_control'),
+            "camera_control": control,
             "pet_tracking": report.get('pet_tracking'),
             "follow_target_available": report['status'] == 'live' and (report.get('camera_control') or {}).get('owner') == 'friday',
         }
@@ -1965,11 +1972,19 @@ async def camera_control(request: Request):
     if not isinstance(data, dict):raise HTTPException(400)
     mode = data.get("mode")
     survey_revision = data.get('survey_revision')
-    if mode not in ("auto", "pets", "hold", "survey") or survey_revision is not None and mode != 'hold':
+    if mode not in ("auto", "pets", "hold", "survey", "patrol") or survey_revision is not None and mode != 'hold':
         raise HTTPException(400)
     if not camera_planner:
+        if survey_revision is not None:
+            intent = camera_intents.load()
+            if intent.mode == 'patrol' and intent.revision == survey_revision:
+                try:
+                    stopped = camera_intents.save('hold')
+                except (OSError, ValueError, RuntimeError):
+                    raise HTTPException(409, detail='camera_control_unavailable') from None
+                return {'mode': stopped.mode, 'intent_revision': stopped.revision}
         raise HTTPException(409, detail="camera_not_owned")
-    if survey_revision is not None and (camera_planner.mode != 'survey'
+    if survey_revision is not None and (camera_planner.mode not in {'survey', 'patrol'}
                                        or camera_planner.intent_revision != survey_revision):
         raise HTTPException(409, detail='camera_intent_changed')
     try:

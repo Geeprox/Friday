@@ -131,10 +131,15 @@
   border-block-start: 1px solid var(--line);
 }
 .camera-survey[hidden],
-.camera-survey > button[hidden],
+.camera-survey-actions > button[hidden],
 .camera-survey-readback[hidden],
 .camera-survey-progress[hidden] {
   display: none;
+}
+.camera-survey-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .camera-survey-readback {
   flex: 1 1 8rem;

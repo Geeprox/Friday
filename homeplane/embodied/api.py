@@ -45,7 +45,7 @@ class MiHomeConnection(BaseModel):
 class CameraControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
     direction: str | None = Field(default=None,pattern="^(left|right|up|down)$")
-    mode: str | None = Field(default=None,pattern="^(hold|auto|pets|survey)$")
+    mode: str | None = Field(default=None,pattern="^(hold|auto|pets|survey|patrol)$")
     survey_revision: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
 
 
