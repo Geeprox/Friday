@@ -146,7 +146,9 @@ test('a failed conflict readback keeps controls disabled until a later current r
 test('preparation survives returning to the store and entering it never restarts',async()=>{
  const h=library();await h.settle();h.button('体感闯关').onclick();await h.button('重新开始').onclick();await h.settle();
  h.button('返回详情').onclick();await h.settle();h.button('全部游戏').onclick();await h.settle();
- assert(h.root.textContent.includes('体感闯关 · 准备中'));
+ const row=h.all().find(node=>node.className.includes('game-running-banner'));
+ assert.equal(row.querySelector('strong').textContent,'山径冒险');
+ assert.equal(row.querySelector('p').textContent,'准备中');
  const before=h.requests.filter(r=>r.options.method==='POST').length;
  h.button('进入游戏').onclick();await h.settle();
  assert(h.all().some(n=>n.tagName==='iframe'));

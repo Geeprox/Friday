@@ -11,8 +11,10 @@ const tennisVariants=[
  ['solo','单人挑战','1 人 · 抢七'],
  ['match','双人对打','2 人 · 抢七']
 ];
-const isCircuit=app=>['quest','hiit'].includes(app.id);
+const circuitModes=[['quest','山径冒险'],['hiit','运动训练']];
+const isCircuit=app=>circuitModes.some(([id])=>id===app.id);
 const displayName=app=>isCircuit(app)?'体感闯关':app.name;
+const modeTitle=app=>circuitModes.find(([id])=>id===app.id)?.[1]||app.name;
 const ktvEntry={id:'ktv',name:'家庭 KTV',description:'搜歌、排歌单，和家人一起唱。',searchText:'唱歌 点歌 K歌 卡拉OK 曲库',kind:'party',players_label:'一起唱'};
 const storeEntries=apps=>[...apps.filter(a=>a.id!=='ktv'),ktvEntry].filter(a=>a.id!=='hiit'||!apps.some(b=>b.id==='quest')).map(a=>a.id==='quest'?{...a,name:'体感闯关',description:'沿山径完成动作，也可选择运动训练。',searchText:'山径冒险 动作闯关 运动闯关 深蹲 抬膝 上伸 胸前开合 单腿站立 交叉触膝 交替侧抬腿 头顶合掌'}:a);
 const category=app=>app.id==='ktv'?'音乐聚会':app.kind==='party'?'聚会游戏':isCircuit(app)?'轻运动':'体感游戏';
@@ -116,16 +118,80 @@ export function mountGames(root,{go=()=>{}}={}){
  function clean(){ktv?.dispose();ktv=null;practice?.dispose();practice=null;party?.dispose();party=null;diagrams.forEach(d=>d.dispose());diagrams=[];ui={};frame=null;stageApp=null;wrap.dataset.playing='false';}
  function cover(app,cls='game-cover'){const src=art(app.id);if(src){const image=h('img',null,cls);image.src=src;image.alt=app.name+'封面插画';image.width=1672;image.height=941;image.decoding='async';return image;}const fallback=h('div',null,'game-tool-cover'),icon=h('span',null,'icon icon-users');icon.setAttribute('aria-hidden','true');fallback.append(icon,h('span',app.name));return fallback;}
  function select(app){if(busy)return;selection=app;lastError='';generation++;draw();screen.scrollIntoView?.({block:'start',behavior:'instant'});const title=screen.querySelector('h2');title?.setAttribute('tabindex','-1');title?.focus?.({preventScroll:true});}
- function returnToStore(app){const id=isCircuit(app)&&report.apps.some(a=>a.id==='quest')?'quest':app.id;selection=null;generation++;draw();const target=[...screen.querySelectorAll('.game-cover-button')].find(n=>n.dataset.game===id)||screen.querySelector('.games-feature-image')||screen.querySelector('input');target?.focus();}
+ function focusStoreGame(id){
+  const gameId=id==='hiit'&&report.apps.some(app=>app.id==='quest')?'quest':id;
+  const target=[...screen.querySelectorAll('.game-cover-button')].find(node=>node.dataset.game===gameId)
+    ||screen.querySelector('.games-feature-image')||screen.querySelector('input');
+  target?.focus();
+ }
+ function returnToStore(app){selection=null;generation++;draw();focusStoreGame(app.id);}
  function preparingGame(){const g=report?.service?.game;return g?.mode==='off'&&g.game_input_enabled===true;}
  function currentGame(){const g=report?.service?.game,mode=preparingGame()?g.selected_mode:g?.mode;return report?.apps.find(a=>a.mode===mode&&a.kind==='game');}
- function serviceStatus(){status.hidden=selection?.id==='ktv';if(!report)return;const s=report.service;status.textContent=lastError&&!ui.notice?lastError:!controlsCurrent()?(readNotice||'正在更新游戏状态'):!s.configured?'接入摄像头后，即可用身体动作玩游戏':s.capture_enabled===false?'摄像头已暂停':!gameIntent()?'游戏状态暂时不可用':s.owned?'体感服务已启动':'选择游戏后启动体感识别';status.dataset.state=lastError&&!ui.notice?'changed':controlsCurrent()&&gameIntent()&&s.owned?'ready':'waiting';}
+ function serviceStatus(){
+  if(!report)return;
+  const service=report.service,error=lastError&&!ui.notice;
+  const message=error?lastError:!controlsCurrent()?(readNotice||'正在更新游戏状态'):
+    !service.configured?'接入摄像头后，即可用身体动作玩游戏':
+    service.capture_enabled===false?'摄像头已暂停':!gameIntent()?'游戏状态暂时不可用':'';
+  status.hidden=selection?.id==='ktv'||!message;
+  if(status.textContent!==message)status.textContent=message;
+  status.dataset.state=error?'changed':'waiting';
+ }
+ function roundVariant(app){
+  const game=report.service.game;
+  if(app.id==='ski')return skiTrails(app).find(trail=>trail.id===game.ski_trail)?.name;
+  if(app.id==='tennis')return tennisVariants.find(([id])=>id===game.tennis_variant)?.[1];
+  if(app.id==='quest')return currentQuestRoute(app)?.name;
+ }
+ function roundStatus(){
+  if(!controlsCurrent())return '正在更新';
+  const game=report.service.game;
+  if(preparingGame())return '准备中';
+  return {complete:'已完成',paused:'已暂停',waiting:'等待玩家',calibrating:'准备中',playing:'进行中'}[game.status]
+    ||'等待游戏状态';
+ }
+ function makeRoundSummary(resume,stop,artwork){
+  const element=h('div',null,'game-round-summary'),copy=h('div',null,'game-round-copy');
+  const title=h('strong'),state=h('p'),actions=h('div',null,'game-round-actions');
+  element.setAttribute('role','group');
+  element.setAttribute('aria-label','当前游戏');
+  state.setAttribute('role','status');
+  copy.append(title,state);
+  actions.append(resume,stop);
+  if(artwork)element.append(artwork);
+  element.append(copy,actions);
+  return {element,title,state,resume,stop};
+ }
  function updateRunning(){
   if(!ui.running)return;const live=report.service.owned?currentGame():null,id=live?.id||'';
-  if(ui.running.dataset.game!==id){ui.running.dataset.game=id;ui.running.replaceChildren();ui.runningButtons=[];ui.runningLabel=null;ui.runningResume=null;if(live){const banner=h('div',null,'game-running-banner'),label=h('strong'),resume=button('继续游戏',()=>{select(live);void perform(openStage);}),stop=button('结束游戏',()=>perform(stopGame));banner.append(label,resume,stop);ui.running.append(banner);ui.runningButtons=[resume,stop];ui.runningLabel=label;ui.runningResume=resume;}}
-  if(ui.runningLabel)ui.runningLabel.textContent=displayName(live)+(!controlsCurrent()?' · 正在更新':preparingGame()?' · 准备中':' · 进行中');
-  if(ui.runningResume)ui.runningResume.textContent=preparingGame()?'进入游戏':'继续游戏';
-  for(const control of ui.runningButtons||[])control.disabled=busy||!controlsCurrent()||!gameIntent();
+  if(ui.running.dataset.game!==id){
+   const previous=ui.running.dataset.game,restoreFocus=ui.running.contains(document.activeElement);
+   ui.running.dataset.game=id;
+   ui.running.replaceChildren();
+   ui.runningRound=null;
+   if(live){
+    const resume=button('继续游戏',()=>{
+     select(live);
+     return perform(openStage,ui.roundNotice);
+    },'primary');
+    const stop=button('结束游戏',()=>perform(stopGame));
+    const artwork=cover(live,'game-round-art');artwork.alt='';
+    const summary=makeRoundSummary(resume,stop,artwork);
+    summary.element.className+=' game-running-banner';
+    summary.title.textContent=modeTitle(live);
+    ui.running.append(summary.element);
+    ui.runningRound=summary;
+   }
+   if(restoreFocus&&previous)focusStoreGame(previous);
+  }
+  const summary=ui.runningRound;
+  if(!summary)return;
+  const completed=report.service.game.status==='complete';
+  const state=[roundVariant(live),roundStatus()].filter(Boolean).join(' · ');
+  if(summary.state.textContent!==state)summary.state.textContent=state;
+  summary.resume.textContent=completed?'查看成绩':preparingGame()?'进入游戏':'继续游戏';
+  summary.stop.textContent=completed?'退出游戏':'结束游戏';
+  summary.resume.disabled=summary.stop.disabled=busy||!controlsCurrent()||!gameIntent();
  }
  function draw(){if(!alive||!report)return;clean();screen.replaceChildren();serviceStatus();if(selection)drawDetail();else drawStore();}
  function drawStore(){
@@ -141,8 +207,17 @@ export function mountGames(root,{go=()=>{}}={}){
   if(selection.id==='ktv'){void openKtv();return;}
   const app=selection.id==='quest'&&selection.name==='体感闯关'?report.apps.find(a=>a.id==='quest')||selection:selection,back=button('全部游戏',()=>returnToStore(app),'game-back');const arrow=h('span',null,'icon icon-arrow-right');arrow.setAttribute('aria-hidden','true');back.prepend(arrow);screen.append(back);
   if(app.id==='werewolf'){party=mountWerewolf(screen,{go});return;}
-  const top=h('div',null,'game-detail-layout'),visual=h('div',null,'game-detail-art');top.dataset.game=app.id;visual.append(cover(app));const info=h('section',null,'game-detail-info');info.append(h('h2',displayName(app)));if(app.id!=='tennis')info.append(h('p',players(app)+' · '+category(app),'game-meta'),h('p',app.description,'game-description'));if(isCircuit(app)){const modes=h('div',null,'game-mode-picker');modes.setAttribute('aria-label','闯关玩法');for(const[id,label]of [['quest','山径冒险'],['hiit','运动训练']]){const next=report.apps.find(a=>a.id===id);if(!next)continue;const b=button(label,()=>select(next));b.setAttribute('aria-pressed',String(app.id===id));modes.append(b);}info.append(modes);}
+  const top=h('div',null,'game-detail-layout'),visual=h('div',null,'game-detail-art');top.dataset.game=app.id;visual.append(cover(app));const info=h('section',null,'game-detail-info');info.append(h('h2',displayName(app)));if(app.id!=='tennis')info.append(h('p',players(app)+' · '+category(app),'game-meta'),h('p',app.description,'game-description'));if(isCircuit(app)){const modes=h('div',null,'game-mode-picker');modes.setAttribute('aria-label','闯关玩法');for(const[id,label]of circuitModes){const next=report.apps.find(a=>a.id===id);if(!next)continue;const b=button(label,()=>select(next));b.setAttribute('aria-pressed',String(app.id===id));modes.append(b);}info.append(modes);}
   if(app.status==='prototype')info.append(h('p','开发预览 · 座位追踪与指认工具','game-preview-label'));
+  const roundNotice=h('p',null,'game-notice');
+  roundNotice.setAttribute('role','status');
+  const resume=button('继续游戏',()=>perform(openStage,roundNotice));
+  const stop=button('结束游戏',()=>perform(stopGame,roundNotice));
+  const round=makeRoundSummary(resume,stop);
+  round.element.className+=' game-detail-round';
+  round.element.hidden=true;
+  round.element.append(roundNotice);
+  info.append(round.element);
   const trailPicker=skiTrailPicker(app),tennisPicker=app.id==='tennis'?tennisVariantPicker():null,questPicker=questRoutePicker(app);
   if(trailPicker)info.append(trailPicker);
   if(tennisPicker)info.append(tennisPicker);
@@ -150,7 +225,7 @@ export function mountGames(root,{go=()=>{}}={}){
   let difficulty=null,difficultyNote=null;
   const options=gameDifficulties(app);
   if(options.length){const field=h('div',null,'game-difficulty'),label=h('label','难度');label.setAttribute('for','game-difficulty');difficulty=h('select');difficulty.id='game-difficulty';difficulty.setAttribute('aria-describedby','game-difficulty-note');for(const option of options){const item=h('option',option.label);item.value=option.id;difficulty.append(item);}difficulty.value=chosenDifficulty(app)?.id||'standard';difficultyNote=h('p',null,'game-difficulty-note');difficultyNote.id='game-difficulty-note';difficulty.onchange=()=>{if(busy){difficulty.value=chosenDifficulty(app)?.id||'standard';return;}if(options.some(d=>d.id===difficulty.value))difficultySelections.set(app.id,difficulty.value);update();};field.append(label,difficulty,difficultyNote);info.append(field);}
-  const readiness=h('p',null,'game-readiness');info.append(readiness);const notice=h('p',lastError,'game-notice');notice.setAttribute('role','status');const actions=h('div',null,'game-actions'),start=button(app.kind==='seating'?'打开聚会工具':'开始游戏',()=>perform(intent=>startGame(app,intent)),'primary'),resume=button('继续游戏',()=>perform(openStage)),stop=button('结束游戏',()=>perform(stopGame));actions.append(start,resume,stop);info.append(actions,notice);top.append(visual,info);screen.append(top);
+  const readiness=h('p',null,'game-readiness');info.append(readiness);const notice=h('p',lastError,'game-notice');notice.setAttribute('role','status');const actions=h('div',null,'game-actions'),start=button(app.kind==='seating'?'打开聚会工具':'开始游戏',()=>perform(intent=>startGame(app,intent)),'primary');actions.append(start);info.append(actions,notice);top.append(visual,info);screen.append(top);
   const stage=h('div',null,'game-stage-slot');stage.hidden=true;screen.append(stage);
   const teaching=h('section',null,'game-how-to'),tennisTip=tennisPicker?h('p'):null;
   if(questPicker){
@@ -167,7 +242,7 @@ export function mountGames(root,{go=()=>{}}={}){
   teaching.append(tutorial,practiceSlot);screen.append(teaching);
   if(app.kind==='seating')teaching.append(h('p','此工具提供座位追踪和指认，不含狼人杀角色或裁判规则。','game-meta'));
   const tv=h('p',null,'game-tv-status');screen.append(tv);
-  ui={start,resume,stop,readiness,notice,stage,tv,difficulty,difficultyNote,trailPicker,tennisPicker,tennisTip,questPicker,tutorial,practiceSlot};
+  ui={start,resume,stop,round,roundNotice,readiness,notice,stage,tv,difficulty,difficultyNote,trailPicker,tennisPicker,tennisTip,questPicker,tutorial,practiceSlot};
   update();
  }
  function updateTeaching(app,route){
@@ -215,16 +290,48 @@ export function mountGames(root,{go=()=>{}}={}){
   }catch{if(alive&&stamp===generation){screen.replaceChildren(h('h2','家庭 KTV'),h('p','页面暂时无法载入，请重试。','games-empty'),button('重新载入',()=>{screen.replaceChildren();void openKtv();}),button('返回游戏库',()=>{selection=null;generation++;draw();}));}}
  }
  function closeStage(){generation++;wrap.dataset.playing='false';ui.stageEnded=false;ui.stage?.replaceChildren();if(ui.stage)ui.stage.hidden=true;frame=null;stageApp=null;ui.playTitle=null;if(!busy){stateFresh=false;retireRead();update();void refresh(true);}const heading=screen.querySelector('h2');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});}
- async function openStage(intent){const round=generation,app=selection;if(!app)return;const result=await api('/api/games/'+encodeURIComponent(app.id)+'/open',undefined,undefined,{'X-Friday-Game-Intent':intent});if(!alive||round!==generation||selection?.id!==app.id)return;const url=new URL(result.url);if(url.hostname!=='127.0.0.1'||url.protocol!=='http:'||url.username||url.password)throw Error('invalid_stage');url.searchParams.set('embed','1');frame=h('iframe',null,'game-stage');frame.src=url.href;frame.title=app.name+'实时画面';frame.setAttribute('allow','fullscreen');frame.setAttribute('referrerpolicy','no-referrer');const heading=h('div',null,'game-stage-heading'),back=button('返回详情',closeStage),title=h('h2',displayName(app));heading.append(back,title);ui.playTitle=title;ui.stageEnded=false;ui.stage.hidden=false;ui.stage.replaceChildren(heading,frame);stageApp=app.id;wrap.dataset.playing='true';ui.stage.scrollIntoView?.({block:'start',behavior:'instant'});back.focus?.({preventScroll:true});}
+ async function openStage(intent){const round=generation,app=selection;if(!app)return;const result=await api('/api/games/'+encodeURIComponent(app.id)+'/open',undefined,undefined,{'X-Friday-Game-Intent':intent});if(!alive||round!==generation||selection?.id!==app.id)return;const url=new URL(result.url);if(url.hostname!=='127.0.0.1'||url.protocol!=='http:'||url.username||url.password)throw Error('invalid_stage');url.searchParams.set('embed','1');frame=h('iframe',null,'game-stage');frame.src=url.href;frame.title=modeTitle(app)+'实时画面';frame.setAttribute('allow','fullscreen');frame.setAttribute('referrerpolicy','no-referrer');const heading=h('div',null,'game-stage-heading'),back=button('返回详情',closeStage),title=h('h2',modeTitle(app));heading.append(back,title);ui.playTitle=title;ui.stageEnded=false;ui.stage.hidden=false;ui.stage.replaceChildren(heading,frame);stageApp=app.id;wrap.dataset.playing='true';ui.stage.scrollIntoView?.({block:'start',behavior:'instant'});back.focus?.({preventScroll:true});}
  function showStoppedStage(){
   const restoreFocus=ui.stage.contains(document.activeElement),panel=h('section',null,'game-stage-ended'),title=h('h2','游戏已停止'),back=button('返回游戏详情',closeStage,'primary');
   title.id='game-stage-ended-title';panel.setAttribute('aria-labelledby',title.id);panel.append(title,back);
   ui.stage.replaceChildren(panel);ui.playTitle=null;ui.stageEnded=true;frame=null;
   if(restoreFocus)back.focus?.({preventScroll:true});
  }
- async function stopGame(intent){const result=await api('/api/embodied/game/stop',{expected_intent:intent});if(result.mode!=='off')throw Error('invalid_game_response');if(alive){closeStage();if(ui.notice)ui.notice.textContent='本局已结束';}}
- async function perform(fn){if(busy||!alive)return;const intent=gameIntent();if(!controlsCurrent()||!intent){stateFresh=false;update();await refresh(true);return;}busy=true;stateFresh=false;lastError='';if(ui.notice)ui.notice.textContent='';retireRead();update();try{await fn(intent);if(alive)await refresh(true);}catch(e){if(alive){const changed=e.message==='game_state_changed';lastError=changed?'游戏状态已变化，请确认后再操作。':e.message==='camera_missing'?'还没有接入摄像头，请先完成设置。':'暂时无法完成，请重试。';if(changed)await refresh(true);if(ui.notice)ui.notice.textContent=lastError;}}finally{busy=false;if(alive)update();}}
- function updateSkiTrails(same){
+ async function stopGame(intent){
+  const id=ui.running?.dataset.game,completed=report.service.game?.status==='complete';
+  const result=await api('/api/embodied/game/stop',{expected_intent:intent});
+  if(result.mode!=='off')throw Error('invalid_game_response');
+  if(!alive)return;
+  if(ui.stage){
+   closeStage();
+   ui.notice.textContent=completed?'已退出游戏':'本局已结束';
+  }else if(id&&(!document.activeElement||document.activeElement===document.body||ui.running.contains(document.activeElement))){
+   focusStoreGame(id);
+  }
+ }
+ async function perform(fn,notice=ui.notice){
+  if(busy||!alive)return;
+  const intent=gameIntent();
+  if(!controlsCurrent()||!intent){stateFresh=false;update();await refresh(true);return;}
+  busy=true;stateFresh=false;lastError='';
+  if(ui.notice)ui.notice.textContent='';
+  if(ui.roundNotice)ui.roundNotice.textContent='';
+  retireRead();update();
+  try{
+   await fn(intent);
+   if(alive)await refresh(true);
+  }catch(error){
+   if(alive){
+    const changed=['game_state_changed','embodied_not_running'].includes(error.message);
+    lastError=changed?'游戏状态已变化，请确认后再操作。':
+      error.message==='camera_missing'?'还没有接入摄像头，请先完成设置。':'暂时无法完成，请重试。';
+    if(changed)await refresh(true);
+    const target=notice&&notice===ui.roundNotice&&ui.round.element.hidden?ui.notice:notice;
+    if(target)target.textContent=lastError;
+   }
+  }finally{busy=false;if(alive)update();}
+ }
+ function updateSkiTrails(same,completed){
   if(!ui.trailPicker)return;
   const trail=chosenSkiTrail(selection);
   for(const control of ui.trailPicker.querySelectorAll('button')){
@@ -232,6 +339,7 @@ export function mountGames(root,{go=()=>{}}={}){
    control.disabled=busy;
   }
   const live=same&&skiTrails(selection).find(item=>item.id===report.service.game?.ski_trail);
+  if(completed&&trail){ui.start.textContent=(live?.id===trail.id?'重滑':'滑')+trail.name;return;}
   if(!live)return;
   ui.resume.textContent+=' · '+live.name;
   if(trail?.id!==live.id)ui.start.textContent='换道并开始';
@@ -288,31 +396,40 @@ export function mountGames(root,{go=()=>{}}={}){
   if(!report)return;
   updateRunning();
   if(!ui.start)return;
-  const s=report.service,live=currentGame(),same=s.owned&&live?.id===selection?.id;
+  const s=report.service,live=s.owned?currentGame():null,same=live?.id===selection?.id;
+  const completed=same&&s.game?.status==='complete';
   const questRoute=chosenQuestRoute(selection);
   const configured=Boolean(s.configured&&cameras.length),disabled=busy||!controlsCurrent()||!gameIntent();
   ui.start.disabled=disabled||!configured||s.capture_enabled===false;
   ui.resume.hidden=!same;
   ui.resume.disabled=disabled;
-  ui.resume.textContent=preparingGame()?'进入游戏':'继续游戏';
+  ui.resume.textContent=completed?'查看本局成绩':preparingGame()?'进入游戏':'继续游戏';
   if(ui.difficulty){
    ui.difficulty.disabled=disabled;
    ui.difficulty.value=chosenDifficulty(selection)?.id||'standard';
    ui.difficultyNote.textContent=chosenDifficulty(selection)?.description?.[selection.id]||'';
    ui.difficultyNote.hidden=Boolean(questRoute&&!questRoute.teaching.some(key=>key.startsWith('pose.')));
    const current=gameDifficulties(selection).find(d=>d.id===s.game?.difficulty);
-   if(same&&current&&!ui.trailPicker&&!ui.tennisPicker&&!ui.questPicker)ui.resume.textContent+=' · '+current.label;
+   if(same&&!completed&&current&&!ui.trailPicker&&!ui.tennisPicker&&!ui.questPicker)ui.resume.textContent+=' · '+current.label;
   }
-  ui.start.textContent=same?'重新开始':'开始游戏';
-  ui.start.className=same?'':'primary';
+  ui.start.textContent=completed?(selection.id==='hiit'?'再练一轮':selection.id==='ski'?'再滑一局':'再玩一局'):same?'重新开始':'开始游戏';
+  ui.start.className=same&&!completed?'':'primary';
   ui.start.hidden=false;
-  ui.resume.className='primary';
-  updateSkiTrails(same);
-  updateTennisVariants(same,s.game?.status==='complete');
+  ui.resume.className=completed?'':'primary';
+  updateSkiTrails(same,completed);
+  updateTennisVariants(same,completed);
   updateQuestRoutes(questRoute,same,s.game);
   updateTeaching(selection,questRoute);
-  if(frame&&ui.playTitle&&live){ui.playTitle.textContent=displayName(live);frame.title=live.name+'实时画面';}
-  ui.stop.hidden=!s.owned||!live;
+  if(frame&&ui.playTitle&&live){ui.playTitle.textContent=modeTitle(live);frame.title=modeTitle(live)+'实时画面';}
+  ui.round.element.hidden=!live;
+  if(live){
+   const variant=roundVariant(live),status=roundStatus();
+   ui.round.title.textContent=same?(completed&&variant?variant:'本局'):modeTitle(live);
+   const state=!same&&variant?variant+' · '+status:status;
+   if(ui.round.state.textContent!==state)ui.round.state.textContent=state;
+  }
+  ui.stop.hidden=!live;
+  ui.stop.textContent=s.game?.status==='complete'?'退出游戏':'结束游戏';
   ui.stop.disabled=disabled;
   const camera=cameras.find(c=>c.id===s.camera);
   ui.readiness.textContent=!configured?'还没有接入可用于体感识别的摄像头':s.capture_enabled===false

@@ -76,3 +76,41 @@ test('the library keeps a late handoff off screen when another viewer changes th
  assert.equal(h.requests.filter(item=>item.options.method==='POST').length,0);
  h.owner.dispose();
 });
+
+for(const [mode,replay] of [['ski','再滑一局'],['hiit','再练一轮'],['quest','再玩一局'],['tennis','再开双人对打']]){
+ test('已完成的 '+mode+' 可以查看原局成绩，明确重玩后才会准备新局',async()=>{
+  const h=library({mode,status:'complete'});await h.settle();
+  const row=h.all().find(node=>node.className.includes('game-running-banner'));
+  assert(row.querySelector('p').textContent.endsWith('已完成'));
+  const round=h.service.game.round_id;
+  await h.button('查看成绩').onclick();await h.settle();
+  assert(h.all().some(node=>node.tagName==='iframe'));
+  assert.equal(h.service.game.round_id,round);
+  assert.equal(h.requests.filter(item=>item.options.method==='POST').length,0);
+
+  h.button('返回详情').onclick();await h.settle();
+  const result=h.button('查看本局成绩'),restart=h.button(replay);
+  assert(result&&!result.disabled&&!result.hidden);
+  assert.equal(restart.className,'primary');
+  assert.equal(result.className,'');
+  await restart.onclick();await h.settle();
+  assert(h.all().some(node=>node.tagName==='iframe'));
+  assert.equal(h.service.game.round_id,round+1);
+  assert.deepEqual(h.requests.filter(item=>item.options.method==='POST').map(item=>item.path),['/api/embodied/start']);
+  h.owner.dispose();
+ });
+}
+
+test('本局完成后原焦点可查看成绩，退出后焦点回到原游戏封面',async()=>{
+ const h=library({mode:'ski'});await h.settle();
+ const focused=h.button('继续游戏');focused.focus();
+ h.service.game.status='complete';h.tick();await h.settle();
+ assert.equal(h.button('查看成绩'),focused);
+ assert.equal(h.focused(),focused);
+ const exit=h.button('退出游戏');exit.focus();
+ await exit.onclick();await h.settle();
+ assert(!h.button('查看成绩'));
+ assert.equal(h.focused().dataset.game,'ski');
+ assert.deepEqual(h.requests.filter(item=>item.options.method==='POST').map(item=>item.path),['/api/embodied/game/stop']);
+ h.owner.dispose();
+});

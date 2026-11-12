@@ -19,10 +19,10 @@ class Element{
  focus(){Element.active=this;}
 }
 const settle=()=>new Promise(setImmediate),clone=value=>JSON.parse(JSON.stringify(value));
-function library({mode='quest',owned=true,firstError=false}={}){
+function library({mode='quest',owned=true,firstError=false,status='playing'}={}){
  Element.active=null;
  let tick,at=100000,beforeOpen;const requests=[],deferred=[];
- const root=new Element('main'),service={configured:true,owned,capture_enabled:true,camera:'cam_1111111111',game:{mode,selected_mode:mode,game_input_enabled:mode!=='off',control_context:'a'.repeat(32),control_revision:1,round_id:1}};
+ const root=new Element('main'),service={configured:true,owned,capture_enabled:true,camera:'cam_1111111111',game:{mode,status,selected_mode:mode,game_input_enabled:mode!=='off',control_context:'a'.repeat(32),control_revision:1,round_id:1}};
  if(mode==='tennis')service.game.tennis_variant='match';
  let intentAvailable=true;
  Object.defineProperty(service,'game_intent',{enumerable:true,get:()=>intentAvailable?crypto.createHash('sha256').update(JSON.stringify(service.game)).digest('hex'):null});
@@ -39,6 +39,7 @@ function library({mode='quest',owned=true,firstError=false}={}){
     const data=JSON.parse(options.body);
     if(data.expected_intent!==service.game_intent)return response({detail:'game_state_changed'},409);
     service.game.control_revision++;service.game.round_id++;
+    service.game.status='off';
     if(path==='/api/embodied/start'){service.owned=true;service.game.mode='off';service.game.selected_mode=data.app;service.game.game_input_enabled=true;if(data.app==='tennis')service.game.tennis_variant=data.tennis_variant;}
     else if(path==='/api/embodied/game/stop'){service.game.mode='off';service.game.game_input_enabled=false;}
     else throw Error('unexpected write '+path);
