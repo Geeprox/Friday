@@ -797,12 +797,28 @@ class MotionGames:
                     source_recovery=self.recovery_public(),
                     presentation=self.presentation.public(self.presentation_scope()) if self.presentation and self.selected_mode != 'home' else dict(required=False, ready=True))
 
+    def television_state(self):
+        """电视舞台只接收绘制和操作当前体感局所需的信息。"""
+        if not self.game_input_enabled or self.selected_mode not in MOTION_GAME_MODES:
+            return None
+        game = self.viewer_state()
+        fields = ('mode', 'round_id', 'control_context', 'control_revision', 'selected_mode', 'status',
+                  'difficulty', 'ski_trail', 'ski_trails', 'tennis_variant', 'quest_route', 'quest_routes', 'gesture_control',
+                  'framing', 'manually_paused', 'source_recovery', 'resume_seconds', 'presentation',
+                  'game_input_enabled', 'reason', 'elapsed', 'active_seconds', self.selected_mode)
+        view = {field: game[field] for field in fields}
+        view['players'] = [
+            {field: player[field] for field in ('lateral', 'swings', 'observation') if field in player}
+            for player in game['players']
+        ]
+        return view
+
     def require_game_view(self, mode):
         if self.presentation and mode in MOTION_GAME_MODES:
             if mode != self.selected_mode or not self.presentation.ready(self.presentation_scope()):
                 raise ValueError('game_presentation_not_ready')
 
-    def observe_presentation(self, data):
+    def observe_presentation(self, data, *, host=None):
         from .game_presentation import GameViewReport
         report = GameViewReport.model_validate(data)
         if not self.presentation or (report.expected_context, report.expected_round, report.mode) != self.presentation_scope()[:3]:
@@ -810,7 +826,7 @@ class MotionGames:
         self.presentation.synchronize(self.presentation_scope())
         if report.expected_view != self.presentation.context:
             raise ValueError('game_view_changed')
-        return self.presentation.observe(self.presentation_scope(), report)
+        return self.presentation.observe(self.presentation_scope(), report, host=host)
 
     def _hold_for_presentation(self):
         if not self.presentation or self.selected_mode == 'home' or not self.game_input_enabled or self.complete:

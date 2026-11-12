@@ -255,7 +255,7 @@ export function mountGames(root,{go=()=>{}}={}){
   const tutorial=h('div',null,'motion-mini-list'),practiceSlot=h('div');
   teaching.append(tutorial,practiceSlot);screen.append(teaching);
   if(app.kind==='seating')teaching.append(h('p','此工具提供座位追踪和指认，不含狼人杀角色或裁判规则。','game-meta'));
-  const tv=h('p',null,'game-tv-status');screen.append(tv);
+  const tv=h('p',null,'game-tv-status');tv.setAttribute('role','status');screen.append(tv);
   ui={start,resume,stop,round,roundNotice,readiness,notice,stage,tv,difficulty,difficultyNote,trailPicker,tennisPicker,tennisTip,questPicker,tutorial,practiceSlot};
   update();
  }
@@ -500,8 +500,10 @@ export function mountGames(root,{go=()=>{}}={}){
   ui.readiness.textContent=!configured?'还没有接入可用于体感识别的摄像头':s.capture_enabled===false
    ?'摄像头已暂停':camera?camera.room+' · '+camera.name:'开始后使用已配置的游戏镜头';
   if(!configured&&!ui.recovery){ui.recovery=button('设置摄像头',()=>go('Settings'));ui.readiness.after(ui.recovery);}
-  const tv=s.tv_viewer,fresh=tv&&Date.now()/1000-tv.reported_at<12;
-  ui.tv.textContent=fresh?'电视已连接，正在同步游戏画面':'大屏同玩：在电视上打开 Friday';
+  const tvReady=Boolean(controlsCurrent()&&s.owned&&s.game?.selected_mode===selection.mode&&
+   s.game.presentation?.television_ready===true);
+  const tvMessage=tvReady?'电视游戏画面已就绪':'在电视的 Friday 打开「家庭游戏」即可同屏游玩';
+  if(ui.tv.textContent!==tvMessage)ui.tv.textContent=tvMessage;
   if(ui.stage?.open&&!ui.stageEnded&&!busy&&controlsCurrent()&&!s.owned)showStoppedStage();
  }
  async function refresh(replace=false){

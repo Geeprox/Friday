@@ -1,1 +1,5 @@
-<resources><string name="app_name">Friday</string></resources>
+<resources>
+    <string name="app_name">Friday</string>
+    <string name="games">家庭游戏</string>
+    <string name="game_display_error">游戏画面无法打开，请重试</string>
+</resources>

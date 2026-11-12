@@ -342,6 +342,30 @@ body[data-quest-result=true] :is(.mission,.instruction,.live-progress,.bar,.ques
 
 body.embedded #stageFullscreen{display:none}
 
+/* 电视用同一舞台。可见操作使用更大的遥控焦点和文字。 */
+body.television{display:grid;height:100vh;height:100svh;grid-template-rows:auto minmax(0,1fr) auto}
+.television .workspace{height:100%;min-height:0}
+.television :is(#stopToggle,#difficultySetting,#tennisRules,#previewToggle,#recordToggle,#recordState,.stage-options [data-click="startGame()"]){display:none}
+.television .overlay :is(h2,p),.television .mission-block{text-align:start}
+.television .mission{font-size:clamp(22px,2.1vw,38px)}
+.television .instruction{font-size:clamp(16px,1.35vw,26px)}
+.television .score{font-size:clamp(32px,2.6vw,50px)}
+.television .score small{font-size:clamp(14px,1.05vw,20px)}
+.television .overlay{width:min(90%,35rem);padding:clamp(20px,2.3vw,44px)}
+.television .overlay h2{font-size:clamp(25px,2.2vw,42px)}
+.television .overlay p{font-size:clamp(17px,1.4vw,25px)}
+.television .overlay>button{display:block;margin-inline-start:0}
+.television :is(button,summary){font-size:clamp(16px,1.25vw,24px);min-height:48px}
+.television :is(button,summary):focus{outline:3px solid var(--ink);outline-offset:5px}
+.television .stage-options>div{width:max-content;min-width:170px}
+.television .television-lobby{position:absolute;inset:0;display:grid;align-content:center;justify-items:center;gap:20px;padding:24px;text-align:center;background:var(--paper)}
+.television-lobby h2{margin:0;font-size:clamp(34px,3.2vw,58px);line-height:1.2;font-weight:650}
+.television-lobby p{margin:0;color:var(--muted);font-size:clamp(18px,1.5vw,27px);line-height:1.5}
+.television-lobby h2:focus,.television .overlay h2:focus,.television #world:focus{outline:none}
+.television footer{font-size:clamp(13px,.95vw,18px)}
+.television-preparing .hud{visibility:hidden}
+.television-idle .workspace>:not(.television-lobby),.television-idle footer{visibility:hidden}
+
 .overlay:has(.player-framing){
  width:min(520px,calc(100% - 32px));
  padding:clamp(14px,2.25vw,28px);

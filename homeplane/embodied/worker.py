@@ -4,6 +4,7 @@ import asyncio
 import base64
 import collections
 import copy
+import hmac
 import json
 import os
 import secrets
@@ -637,6 +638,32 @@ def view():
 
 def authorized(client, key):
     return bool(client and client.host in ALLOWED_IPS and secrets.compare_digest(key or "", KEY))
+
+
+def television_host(client):
+    return bool(client and client.host in ALLOWED_IPS and client.host in configuration().get('tv_viewer_hosts', []))
+
+
+def television_key(host):
+    """将电视舞台凭据绑定已登记的电视地址。"""
+    return hmac.digest(KEY.encode(), f'friday-motion-tv-v1:{host}'.encode(), 'sha256').hex()
+
+
+def television_access(request):
+    key = request.query_params.get('k', '')
+    return (len(key) == 64 and key.isascii() and television_host(request.client)
+            and secrets.compare_digest(key, television_key(request.client.host)))
+
+
+def television_packet():
+    game = games.television_state()
+    mode = {'simulated': True} if state.get('simulated') is True else {}
+    if game is None:
+        return dict(television_idle=True, **mode)
+    status = state['status']
+    if status == 'live' and not (last_frame and 0 <= time.monotonic()-last_frame <= 1.5):
+        status = 'unavailable'
+    return dict(game=game, status=status, **mode)
 
 
 async def reap(process):
@@ -1332,17 +1359,18 @@ async def identity_register(request: Request):
 
 @app.middleware("http")
 async def privacy(request, call_next):
+    path = request.url.path
     audio_access = (
-        request.url.path.startswith("/audio/")
+        path.startswith("/audio/")
         and request.client.host in configuration().get("speaker_hosts", [])
         and secrets.compare_digest(request.query_params.get("k", ""), KEY)
     )
-    if (
-        request.url.path not in {"/health", "/", "/games"}
-        and not request.url.path.startswith("/assets/")
-        and not audio_access
-        and not authorized(request.client, request.query_params.get("k"))
-    ):
+    tv_route = path in {'/api/game/tv', '/api/game/tv/presentation'} or (
+        path == '/games' and request.query_params.get('tv') == '1')
+    public = path in {'/health', '/', '/games'} or path.startswith('/assets/')
+    permitted = (television_access(request) if tv_route else
+                 public or audio_access or authorized(request.client, request.query_params.get('k')))
+    if not permitted:
         return JSONResponse({"error": "viewer_access_required"}, status_code=403)
     limit = (
         8 * 1024 * 1024
@@ -1627,13 +1655,15 @@ async def practice_stop(request: Request):
 
 
 @app.get('/api/wall')
-async def camera_wall_status():
+async def camera_wall_status(request: Request):
     primary = view()
     states = {c['id']: previews.status(c['id']) for c in configuration()['cameras'] if c['id'] != SELECTED['id']}
     states[SELECTED['id']] = dict(state=primary['status'],
         recognition='running' if primary['status']=='live' else 'waiting',
         people=len(primary.get('people', [])), hands=len(primary.get('hands', [])))
-    result=wall.view(states)
+    result=dict(wall.view(states))
+    if television_host(request.client):
+        result['game_display_key'] = television_key(request.client.host)
     names=identity_store.labels()
     for camera in result['cameras']:
         observation=camera.get('overlay')
@@ -1707,28 +1737,45 @@ async def game_page():
     return HTMLResponse(static_page(HERE / 'static/games.html'),headers={'Cache-Control':'no-cache'})
 
 
-@app.post('/api/game/presentation')
-async def game_presentation(request: Request):
+async def game_presentation(request: Request, *, display_host=None):
     origin = request.headers.get('origin')
     if origin and origin != 'http://' + request.headers.get('host', ''):
         raise HTTPException(403)
     try:
+        if display_host is not None:
+            if not games.game_input_enabled:
+                raise ValueError('game_view_changed')
+            return games.observe_presentation(await request.json(), host=display_host)
         return games.observe_presentation(await request.json())
     except (TypeError, ValueError):
         raise HTTPException(409, detail='game_view_changed') from None
 
 
-@app.post("/api/game")
-async def game_control(request: Request):
+@app.post('/api/game/presentation')
+async def local_game_presentation(request: Request):
+    return await game_presentation(request)
+
+
+@app.post('/api/game/tv/presentation')
+async def television_presentation(request: Request):
+    return await game_presentation(request, display_host=request.client.host)
+
+
+async def game_control(request: Request, *, display_host=None):
     origin = request.headers.get("origin")
     if origin and origin != "http://" + request.headers.get("host", ""):
         raise HTTPException(403)
     data = await request.json()
+    television = display_host is not None
     if not isinstance(data, dict):
         raise HTTPException(400, detail='invalid_game_request')
     action = data.get('action')
     if action is not None and (not isinstance(action, str) or action not in {'select','prepare','start','pause','resume'}):
         raise HTTPException(400, detail='invalid_game_action')
+    if television and (not games.game_input_enabled or data.get('mode') != games.selected_mode
+                       or action not in ('start', 'pause', 'resume')
+                       or set(data) != {'action', 'mode', 'expected_context', 'expected_revision'}):
+        raise HTTPException(409, detail='game_state_changed')
     if set(data)-{'mode','action','difficulty','ski_trail','ski_warmup','tennis_variant','quest_route',
                   'expected_context','expected_revision'}:
         raise HTTPException(400, detail='invalid_game_request')
@@ -1758,6 +1805,9 @@ async def game_control(request: Request):
         if action in {'pause', 'resume'}:
             if data.get('mode') != games.mode:
                 raise ValueError('game_changed')
+            if television and action == 'resume' and not games.presentation.ready(
+                    games.presentation_scope(), host=display_host):
+                raise ValueError('game_presentation_not_ready')
             games.set_paused(action == 'pause')
         elif action in {'select', 'prepare'}:
             options = {key: data[key] for key in ('difficulty', 'ski_trail', 'tennis_variant', 'quest_route') if key in data}
@@ -1766,11 +1816,14 @@ async def game_control(request: Request):
             games.select(data.get("mode", "quest"), **options)
         else:
             games.require_game_view(data.get('mode', 'off'))
+            if television and (games.mode != 'off' and not games.complete and games.ski_warmup is None
+                               or not games.presentation.ready(games.presentation_scope(), host=display_host)):
+                raise ValueError('game_presentation_not_ready')
             if data.get('ski_warmup') and games.mode != 'off' and not games.complete:
                 raise ValueError('game_changed')
             options = {key: data[key] for key in ('difficulty', 'ski_warmup') if key in data}
             games.reset(data.get("mode", "off"), **options)
-        if data.get("action") == "start" and games.mode != "off":
+        if not television and data.get("action") == "start" and games.mode != "off":
             await start()
         if action not in {'pause','resume'} and games.selected_mode == "home" and data.get("mode") != "off":
             await home.enable()
@@ -1779,7 +1832,17 @@ async def game_control(request: Request):
         if str(error) in {'game_input_not_ready','game_presentation_not_ready'}:
             raise HTTPException(409, detail=str(error))
         raise HTTPException(400)
-    return games.public
+    return games.television_state() if television else games.public
+
+
+@app.post('/api/game')
+async def local_game_control(request: Request):
+    return await game_control(request)
+
+
+@app.post('/api/game/tv')
+async def television_game_control(request: Request):
+    return await game_control(request, display_host=request.client.host)
 
 
 @app.post("/api/home/curtain")
@@ -2054,7 +2117,9 @@ async def control(action: str, request: Request):
 
 @app.websocket("/ws")
 async def websocket(ws: WebSocket):
-    if not authorized(ws.client, ws.query_params.get("k")):
+    display = ws.query_params.get('view')
+    television = display == 'television'
+    if not (television_access(ws) if television else authorized(ws.client, ws.query_params.get('k'))):
         await ws.close(code=1008)
         return
     origin = ws.headers.get("origin")
@@ -2065,6 +2130,7 @@ async def websocket(ws: WebSocket):
     try:
         previous = -1
         preview_sent = 0.0
+        tv_checked = time.monotonic()
         while True:
             if previous == state["processed_frames"]:
                 async with changed:
@@ -2072,12 +2138,22 @@ async def websocket(ws: WebSocket):
                         await asyncio.wait_for(changed.wait(), 1)
                     except asyncio.TimeoutError:
                         pass
-            meta = view()
-            meta.pop("frame", None)
-            meta["sent_at"] = time.time()
-            previous = meta["processed_frames"]
-            jpeg = last_jpeg if meta["status"] == "live" else b""
-            if ws.query_params.get("view") == "game":
+            if television:
+                now = time.monotonic()
+                if now - tv_checked >= 1:
+                    if not television_access(ws):
+                        await ws.close(code=1008)
+                        return
+                    tv_checked = now
+                meta = television_packet()
+                jpeg = b''
+            else:
+                meta = view()
+                meta.pop('frame', None)
+                meta['sent_at'] = time.time()
+                jpeg = last_jpeg if meta['status'] == 'live' else b''
+            previous = state['processed_frames']
+            if display == "game":
                 jpeg = (
                     last_preview
                     if meta["status"] == "live"

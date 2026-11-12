@@ -2,6 +2,8 @@
 
 Mode: Experience. The game world leads; readable controls support play.
 
+电视沿用同一场景、计分与动作教学。等待选游戏时只显示 Friday 图标、标题和电脑端下一步。载入后大屏保留本局提示、比分、开局、暂停和继续；遥控器焦点使用清楚的外描边。返回键回到电视的全屋视野。电视同步状态取当前舞台的可见就绪回执，摄像头墙的遥测单独处理。
+
 光线保卫队延续游戏库的原创纸毡插画，使用固定草地、绒球角色和清楚的上半身 L 动作图。校准用独立光点，未识别 L 时不画准星。锁定环随本局实际蓄力增长；命中用光线、绒球退场和文字一起确认。放下双臂后出现下一目标。减少动态效果时保留静态命中标记，背景、相机和 HUD 都不抖动。
 
 Target: `homeplane/embodied/static/games.html`, `games.css`, `games.js`; pure rules in `motion_games.py` and `hiit.py`.

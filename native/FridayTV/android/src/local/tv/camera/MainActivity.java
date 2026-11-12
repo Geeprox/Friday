@@ -25,6 +25,10 @@ public final class MainActivity extends Activity {
  private volatile int generation;
  private volatile long serverOffset;
  private WallView screen;
+ private FrameLayout root;
+ private android.widget.Button gameEntry;
+ private GameScreen gameScreen;
+ private String gameDisplayKey;
  private Thread statusThread,reportThread;
  private final java.util.concurrent.atomic.AtomicBoolean statusPending=new java.util.concurrent.atomic.AtomicBoolean();
  private int selected;
@@ -61,9 +65,58 @@ public final class MainActivity extends Activity {
   void clearPicture(){Bitmap old=picture;picture=null;if(old!=null)old.recycle();}
   synchronized void stop(){closed=true;clearPicture();cancel(connection);cancel(stillConnection);if(thread!=null)thread.interrupt();if(previewThread!=null)previewThread.interrupt();if(thread==null||!thread.isAlive()){Surface s=surface;surface=null;if(s!=null)s.release();}}
  }
- @Override public void onCreate(Bundle b){super.onCreate(b);getWindow().getDecorView().setSystemUiVisibility(5894);getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);debug=getPreferences(0).getBoolean("debug",false);screen=new WallView();setContentView(screen);}
+ @Override public void onCreate(Bundle b){
+  super.onCreate(b);getWindow().getDecorView().setSystemUiVisibility(5894);
+  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+  debug=getPreferences(0).getBoolean("debug",false);screen=new WallView();screen.setId(View.generateViewId());
+  root=new FrameLayout(this);root.addView(screen,new FrameLayout.LayoutParams(-1,-1));
+  gameEntry=new android.widget.Button(this);
+  gameEntry.setText(R.string.games);gameEntry.setId(View.generateViewId());gameEntry.setVisibility(View.GONE);
+  gameEntry.setOnClickListener(v->openGame());
+  screen.setNextFocusUpId(gameEntry.getId());
+  gameEntry.setNextFocusDownId(screen.getId());
+  FrameLayout.LayoutParams placement=new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.CENTER_HORIZONTAL);
+  placement.topMargin=Math.round(getResources().getDisplayMetrics().density*16);
+  root.addView(gameEntry,placement);setContentView(root);screen.requestFocus();
+ }
  @Override protected void onResume(){super.onResume();start();}
- @Override protected void onPause(){generation++;for(Tile t:tiles.values())t.stop();for(HttpURLConnection c:connections)cancel(c);if(statusThread!=null)statusThread.interrupt();if(reportThread!=null)reportThread.interrupt();tiles.clear();tileSnapshot=new Tile[0];screen.removeAllViews();super.onPause();}
+ @Override protected void onPause(){closeGame(false);stopWall();super.onPause();}
+ @Override public void onBackPressed(){
+  if(gameScreen!=null){closeGame(true);return;}
+  if(focused!=null){focus(null);screen.describeSelection();return;}
+  super.onBackPressed();
+ }
+ private void stopWall(){
+  generation++;
+  for(Tile t:tiles.values())t.stop();
+  for(HttpURLConnection c:connections)cancel(c);
+  if(statusThread!=null)statusThread.interrupt();
+  if(reportThread!=null)reportThread.interrupt();
+  tiles.clear();tileSnapshot=new Tile[0];focused=null;statusAt=0;
+  gameDisplayKey=null;gameEntry.setVisibility(View.GONE);screen.removeAllViews();
+ }
+ private void openGame(){
+  String token=gameDisplayKey;
+  if(gameScreen!=null||token==null||SystemClock.elapsedRealtime()-statusAt>2500)return;
+  final GameScreen stage;
+  try{stage=new GameScreen(this,base,token,view->{
+   if(gameScreen==null||gameScreen.view!=view)return;
+   closeGame(true);
+   android.widget.Toast.makeText(this,R.string.game_display_error,android.widget.Toast.LENGTH_SHORT).show();
+  });}catch(RuntimeException unavailable){
+   android.widget.Toast.makeText(this,R.string.game_display_error,android.widget.Toast.LENGTH_SHORT).show();
+   return;
+  }
+  stopWall();screen.setVisibility(View.GONE);gameScreen=stage;
+  root.addView(stage.view,new FrameLayout.LayoutParams(-1,-1));stage.view.requestFocus();
+ }
+ private void closeGame(boolean returnToWall){
+  GameScreen stage=gameScreen;
+  if(stage==null)return;
+  gameScreen=null;root.removeView(stage.view);stage.close();
+  screen.setVisibility(View.VISIBLE);
+  if(returnToWall){screen.requestFocus();start();}
+ }
  private void cancel(HttpURLConnection c){if(c==null)return;synchronized(connections){
   if(!connections.contains(c)||cancellations.containsKey(c))return;
   Runnable task=()->{try{c.disconnect();}catch(Exception ignored){}finally{cancellations.remove(c);}};
@@ -79,6 +132,10 @@ public final class MainActivity extends Activity {
  private JSONObject status()throws Exception {HttpURLConnection c=connect("/api/wall");try{if(c.getResponseCode()!=200)throw new IOException("status");try(InputStream in=c.getInputStream()){return new JSONObject(new String(bytes(in,512000),"UTF-8"));}}finally{c.disconnect();forget(c);}}
  private void reconcile(JSONObject value,int mine)throws Exception {
   JSONArray rows=value.getJSONArray("cameras");if(value.optInt("version")!=1||rows.length()>8)throw new IOException("status");
+  String displayKey=value.optString("game_display_key","");
+  gameDisplayKey=displayKey.matches("[a-f0-9]{64}")?displayKey:null;
+  if(gameDisplayKey==null&&gameEntry.hasFocus())screen.requestFocus();
+  gameEntry.setVisibility(gameDisplayKey==null?View.GONE:View.VISIBLE);
   HashSet<String> present=new HashSet<>();
   for(int i=0;i<rows.length();i++){JSONObject r=rows.getJSONObject(i);String id=r.getString("id");if(!id.matches("cam_[a-f0-9]{10}"))throw new IOException("camera");present.add(id);Tile t=tiles.get(id);if(t==null){t=new Tile(id);tiles.put(id,t);}t.name=r.optString("name");t.room=r.optString("room");t.overlay=r.optJSONObject("overlay");t.toast=r.optJSONObject("toast");}
   Iterator<Map.Entry<String,Tile>> it=tiles.entrySet().iterator();while(it.hasNext()){Tile t=it.next().getValue();if(!present.contains(t.id)){t.stop();screen.removeView(t.texture);it.remove();}}
@@ -218,7 +275,31 @@ public final class MainActivity extends Activity {
  }
  private void selectStep(int step){selected=Math.max(0,Math.min(Math.max(0,tiles.size()-1),selected+step));screen.describeSelection();screen.invalidate();}
  private void toggleSelected(){if(!tiles.isEmpty()){selected=Math.min(selected,tiles.size()-1);focus(focused==null?new ArrayList<>(tiles.keySet()).get(selected):null);screen.describeSelection();}}
- @Override public boolean onKeyDown(int code,KeyEvent e){if(code==KeyEvent.KEYCODE_MENU){debug=!debug;getPreferences(0).edit().putBoolean("debug",debug).apply();screen.invalidate();return true;}if(code==KeyEvent.KEYCODE_DPAD_LEFT||code==KeyEvent.KEYCODE_DPAD_UP){selectStep(-1);return true;}if(code==KeyEvent.KEYCODE_DPAD_RIGHT||code==KeyEvent.KEYCODE_DPAD_DOWN){selectStep(1);return true;}if(code==KeyEvent.KEYCODE_DPAD_CENTER||code==KeyEvent.KEYCODE_ENTER){toggleSelected();return true;}if(code==KeyEvent.KEYCODE_BACK&&focused!=null){focus(null);screen.describeSelection();return true;}return super.onKeyDown(code,e);}
+ @Override public boolean dispatchKeyEvent(KeyEvent event){
+  int code=event.getKeyCode();
+  if(gameScreen!=null){
+   if(code!=KeyEvent.KEYCODE_BACK)return super.dispatchKeyEvent(event);
+   if(event.getAction()==KeyEvent.ACTION_UP&&!event.isCanceled())closeGame(true);
+   return true;
+  }
+  if((gameEntry.hasFocus()&&code==KeyEvent.KEYCODE_DPAD_DOWN)
+     ||(screen.hasFocus()&&gameEntry.isShown()&&code==KeyEvent.KEYCODE_DPAD_UP)){
+   if(event.getAction()==KeyEvent.ACTION_DOWN){if(gameEntry.hasFocus())screen.requestFocus();else gameEntry.requestFocus();}
+   return true;
+  }
+  if(!gameEntry.hasFocus()&&event.getAction()==KeyEvent.ACTION_DOWN){
+   switch(code){
+    case KeyEvent.KEYCODE_MENU:
+     debug=!debug;getPreferences(0).edit().putBoolean("debug",debug).apply();screen.invalidate();return true;
+    case KeyEvent.KEYCODE_DPAD_LEFT:case KeyEvent.KEYCODE_DPAD_UP:selectStep(-1);return true;
+    case KeyEvent.KEYCODE_DPAD_RIGHT:case KeyEvent.KEYCODE_DPAD_DOWN:selectStep(1);return true;
+    case KeyEvent.KEYCODE_DPAD_CENTER:case KeyEvent.KEYCODE_ENTER:
+     if(event.getRepeatCount()==0)toggleSelected();
+     return true;
+   }
+  }
+  return super.dispatchKeyEvent(event);
+ }
 
  private final class WallView extends FrameLayout {
   final Paint p=new Paint(3);final Bitmap icon;
