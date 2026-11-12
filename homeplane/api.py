@@ -327,6 +327,7 @@ def create_app(
             core_rule_runtime.start()
             await app.state.home_experience.start()
             await infrastructure.start()
+            embodied.safety_output.start_retention()
             if query_adoption:
                 query_adoption.bind_loop()
             yield

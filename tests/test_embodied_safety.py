@@ -212,7 +212,8 @@ def test_store_restart_review_retention_and_disk_budget(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         store.frame(first["id"], 0)
     assert SafetyStore(store.path).events()[1]["review"] == "false_alarm"
-    monkeypatch.setattr(store, "MAX_BYTES", 1)
+    monkeypatch.setattr(SafetyStore, "MAX_BYTES", 1)
+    SafetyStore(store.path).prune_expired()
     assert all(not e["frames"] for e in store.events())
     assert store.path.stat().st_mode & 0o077 == 0
     with store.connect() as db:

@@ -331,6 +331,163 @@ async def test_runtime_close_revokes_inputs_before_waiting_for_actual_storage_co
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('busy', ['sqlite', 'sqlite_and_console_write_queue'])
+async def test_saved_alert_and_frame_remain_readable_during_evidence_write(tmp_path, monkeypatch, busy):
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
+    camera, source = 'cam_1111111111', 'a' * 64
+    binding = dict(id='SYNTHETIC-recording', name='示例录像', capture_camera_id=camera, simulated=False,
+                   source_binding_current=True, capture_binding_current=True, capture_source_context=source,
+                   timing_reviewed=True, completion_convention='closed_files_operator_reviewed',
+                   clock_uncertainty_seconds=0)
+    archive = SimpleNamespace(context=lambda: dict(configured=True, simulated=False, fingerprint='b' * 64,
+                                                    cameras=[binding]))
+    router = APIRouter()
+    runtime = safety_api.install(router, SimpleNamespace(process=None), archive=archive)
+    app = FastAPI()
+    app.include_router(router)
+    captured = time.time() - 1
+    pixels = b'SYNTHETIC-JPEG'
+    event = runtime.store.create(dict(kind='fall', simulated=False, camera=camera,
+        camera_source_context=source, captured_at=captured), [(captured, pixels)])
+    url = '/api/embodied/safety/events'
+    frame = f'{url}/{event["id"]}/frames/0'
+    reference = f'{url}/{event["id"]}/recordings?ordinal=0'
+    running, release = threading.Event(), threading.Event()
+
+    def queued():
+        running.set()
+        assert release.wait(5)
+
+    job = None
+    try:
+        with closing(sqlite3.connect(runtime.store.path)) as writer:
+            writer.execute('BEGIN IMMEDIATE')
+            writer.execute('UPDATE safety_events SET at=0 WHERE id=?', (event['id'],))
+            if busy == 'sqlite_and_console_write_queue':
+                runtime.io.acquire_timeout = .15
+                job = asyncio.create_task(runtime.io.call(queued))
+                assert await asyncio.to_thread(running.wait, 1)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
+                listing, jpeg, playback = await asyncio.gather(*(client.get(path) for path in (url, frame, reference)))
+                assert [response.status_code for response in (listing, jpeg, playback)] == [200, 200, 200]
+                [saved] = listing.json()['events']
+                assert saved['id'] == event['id'] and saved['frames'] == [
+                    dict(ordinal=0, at=captured, recording_anchor=True)]
+                assert jpeg.content == pixels and jpeg.headers['cache-control'] == 'no-store'
+                found = playback.json()
+                assert found['event_id'] == event['id'] and found['frame_ordinal'] == 0
+                assert found['recordings'][0]['request']['camera_id'] == binding['id']
+                assert not found['source_scan_attempted'] and not found['media_read_attempted']
+                if job is not None:
+                    assert not job.done()
+                writer.commit()
+                listing, jpeg, playback = await asyncio.gather(*(client.get(path) for path in (url, frame, reference)))
+                assert listing.json() == {'events': []}
+                assert jpeg.status_code == playback.status_code == 404
+    finally:
+        release.set()
+        if job is not None:
+            await job
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_history_does_not_create_or_upgrade_database_and_rejects_a_link(tmp_path, monkeypatch):
+    root = tmp_path / 'private'
+    monkeypatch.setattr(safety_api, 'PRIVATE', root)
+    router = APIRouter()
+    runtime = safety_api.install(router, SimpleNamespace(process=None))
+    app = FastAPI()
+    app.include_router(router)
+    events = '/api/embodied/safety/events'
+    frame, reference = f'{events}/{"c" * 32}/frames/0', f'{events}/{"c" * 32}/recordings'
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
+            assert (await client.get(events)).json() == {'events': []}
+            assert (await client.get(frame)).status_code == (await client.get(reference)).status_code == 404
+            assert not root.exists()
+            root.mkdir()
+            legacy = root / 'legacy.sqlite'
+            with closing(sqlite3.connect(legacy)) as db, db:
+                db.execute('CREATE TABLE safety_events (id TEXT PRIMARY KEY, at REAL NOT NULL, value TEXT NOT NULL)')
+                db.execute('INSERT INTO safety_events VALUES (?,?,?)',
+                           ('c' * 32, time.time(), '{"kind":"fall","simulated":true}'))
+            before = legacy.read_bytes()
+            legacy.rename(runtime.store.path)
+            assert (await client.get(events)).json() == {'events': [dict(kind='fall', simulated=True, frames=[])]}
+            assert (await client.get(frame)).status_code == 404
+            assert (await client.get(reference)).json()['code'] == 'event_recording_not_applicable'
+            assert runtime.store.path.read_bytes() == before
+            runtime.store.path.rename(legacy)
+            runtime.store.path.symlink_to(legacy)
+            for path in (events, frame, reference):
+                denied = await client.get(path)
+                assert denied.status_code == 503 and denied.json() == {'detail': 'safety_storage_unavailable'}
+            assert legacy.read_bytes() == before
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_console_shutdown_waits_for_its_owned_evidence_read(tmp_path, monkeypatch):
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
+    router = APIRouter()
+    runtime = safety_api.install(router, SimpleNamespace(process=None))
+    app = FastAPI()
+    app.include_router(router)
+    entered, release = threading.Event(), threading.Event()
+    original = runtime.store.events
+
+    def wait_for_read():
+        entered.set()
+        assert release.wait(5)
+        return original()
+
+    monkeypatch.setattr(runtime.store, 'events', wait_for_read)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
+        request = asyncio.create_task(client.get('/api/embodied/safety/events'))
+        closing = None
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            closing = asyncio.create_task(runtime.close())
+            await asyncio.sleep(0)
+            assert runtime.closed and not closing.done()
+            threads = tuple(runtime.evidence_io.executor._threads)
+        finally:
+            release.set()
+            await asyncio.gather(request, closing if closing is not None else runtime.close())
+        assert not runtime.evidence_io.pending and all(not thread.is_alive() for thread in threads)
+
+
+def test_console_prunes_old_evidence_without_a_camera_worker(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from homeplane.api import create_app
+
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path / 'private')
+    app = create_app(db_path=tmp_path / 'traces.sqlite', settings_path=tmp_path / 'settings.json')
+    service = app.state.embodied
+    store = service.safety_output.store
+    store.create(dict(kind='fall'), [(1, b'SYNTHETIC-EXPIRED')])
+    with store.connect() as db:
+        db.execute('UPDATE safety_events SET at=0')
+    pruned = threading.Event()
+    prune = store.prune_expired
+
+    def maintain():
+        prune()
+        pruned.set()
+
+    monkeypatch.setattr(store, 'prune_expired', maintain)
+    with TestClient(app):
+        assert service.process is None
+        assert pruned.wait(2)
+        with closing(sqlite3.connect(store.path)) as db:
+            assert db.execute('SELECT COUNT(*) FROM safety_events').fetchone() == (0,)
+            assert db.execute('SELECT COUNT(*) FROM safety_frames').fetchone() == (0,)
+    assert service.safety_output.retention_task is None
+
+
+@pytest.mark.asyncio
 async def test_api_storage_fault_is_actionable_without_exposing_private_exception(tmp_path, monkeypatch):
     monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
     router = APIRouter()

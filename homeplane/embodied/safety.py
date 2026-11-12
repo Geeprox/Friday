@@ -31,6 +31,10 @@ class SafetyAdmissionChanged(ValueError):
     pass
 
 
+class SafetyRecordMissing(ValueError):
+    pass
+
+
 def _sound_view_slot(step):
     return step == 'follow' or type(step) is int and 1 <= step <= 3
 
@@ -135,21 +139,36 @@ class SafetyStore:
             self._prune_if_due(db)
             return self._read_policy(db)
 
-    def read_policy(self):
-        """读同一事务中的策略字段，兼容尚未建立新设置表的数据库。"""
+    @contextmanager
+    def _read_snapshot(self):
+        """只读已提交的数据。缺少数据库时返回空快照，不创建文件或目录。"""
         try:
             metadata = self.path.lstat()
         except FileNotFoundError:
-            return SafetyPolicy()
+            yield None
+            return
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError('safety_private_path_required')
         uri = self.path.absolute().as_uri() + '?mode=ro'
         with closing(sqlite3.connect(uri, uri=True, timeout=.25)) as db:
             db.execute('BEGIN')
+            yield db
+
+    @staticmethod
+    def _tables(db, names):
+        if db is None:
+            return set()
+        parameters = ','.join('?' for _ in names)
+        return {name for name, in db.execute(
+            f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({parameters})", names)}
+
+    def read_policy(self):
+        """读同一事务中的策略字段，兼容尚未建立新设置表的数据库。"""
+        with self._read_snapshot() as db:
+            if db is None:
+                return SafetyPolicy()
             names = tuple(table for table, _ in self.POLICY_FIELDS)
-            tables = {name for name, in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?)", names)}
-            return self._read_policy(db, tables=tables)
+            return self._read_policy(db, tables=self._tables(db, names))
 
     def prune_expired(self):
         if self.path.exists():
@@ -314,16 +333,24 @@ class SafetyStore:
 
     def recording_target(self, event_id, ordinal=None):
         """从同一条记录读取事件及指定关键帧的时间。"""
-        with self.connect() as db:
-            row = db.execute(
-                """SELECT e.value, f.at FROM safety_events e
-                   LEFT JOIN safety_frames f ON f.event=e.id AND f.ordinal=?
-                   WHERE e.id=? AND e.at>=?""",
-                (ordinal, event_id, time.time()-self.RETENTION),
-            ).fetchone()
-        if row is None:
-            raise ValueError('safety_event_unavailable')
-        return json.loads(row[0]), row[1]
+        cutoff = time.time() - self.RETENTION
+        with self._read_snapshot() as db:
+            tables = self._tables(db, ('safety_events', 'safety_frames'))
+            if 'safety_events' not in tables:
+                raise SafetyRecordMissing('safety_event_unavailable')
+            if ordinal is not None and 'safety_frames' in tables:
+                row = db.execute(
+                    """SELECT e.value, f.at FROM safety_events e
+                       LEFT JOIN safety_frames f ON f.event=e.id AND f.ordinal=?
+                       WHERE e.id=? AND e.at>=?""",
+                    (ordinal, event_id, cutoff),
+                ).fetchone()
+            else:
+                row = db.execute("SELECT value, NULL FROM safety_events WHERE id=? AND at>=?",
+                                 (event_id, cutoff)).fetchone()
+            if row is None:
+                raise SafetyRecordMissing('safety_event_unavailable')
+            return json.loads(row[0]), row[1]
 
     def recording_receipt(self, event_id):
         """Read only this incident's metadata; no keyframe pixels or NAS access."""
@@ -436,34 +463,37 @@ class SafetyStore:
         return True
 
     def events(self):
-        with self.connect() as db:
-            self._prune(db)
+        cutoff = time.time() - self.RETENTION
+        with self._read_snapshot() as db:
+            tables = self._tables(db, ('safety_events', 'safety_frames'))
+            if 'safety_events' not in tables:
+                return []
             rows = db.execute(
-                "SELECT value FROM safety_events ORDER BY at DESC LIMIT ?", (self.MAX_EVENTS,)
-            ).fetchall()
-            return [
-                dict(
-                    json.loads(row[0]),
-                    frames=[
-                        dict(ordinal=n, at=stamp)
-                        for n, stamp in db.execute(
-                            "SELECT ordinal,at FROM safety_frames WHERE event=? ORDER BY ordinal",
-                            (json.loads(row[0])["id"],),
-                        )
-                    ],
-                )
-                for row in rows
-            ]
+                "SELECT id,value FROM safety_events WHERE at>=? ORDER BY at DESC LIMIT ?",
+                (cutoff, self.MAX_EVENTS),
+            )
+            events = {key: dict(json.loads(value), frames=[]) for key, value in rows}
+            if events and 'safety_frames' in tables:
+                placeholders = ','.join('?' for _ in events)
+                for key, ordinal, stamp in db.execute(
+                    f"SELECT event,ordinal,at FROM safety_frames WHERE event IN ({placeholders}) ORDER BY event,ordinal",
+                    tuple(events),
+                ):
+                    events[key]['frames'].append(dict(ordinal=ordinal, at=stamp))
+            return list(events.values())
 
     def frame(self, event_id, ordinal):
-        with self.connect() as db:
-            self._prune(db)
-            row = db.execute(
-                "SELECT jpeg FROM safety_frames WHERE event=? AND ordinal=?", (event_id, ordinal)
-            ).fetchone()
-        if not row:
-            raise ValueError("safety_frame_unavailable")
-        return row[0]
+        with self._read_snapshot() as db:
+            tables = ('safety_events', 'safety_frames')
+            if self._tables(db, tables) == set(tables):
+                row = db.execute(
+                    """SELECT f.jpeg FROM safety_frames f JOIN safety_events e ON e.id=f.event
+                       WHERE f.event=? AND f.ordinal=? AND e.at>=?""",
+                    (event_id, ordinal, time.time() - self.RETENTION),
+                ).fetchone()
+                if row is not None:
+                    return row[0]
+        raise SafetyRecordMissing('safety_frame_unavailable')
 
 
 class FallDetector:
@@ -764,6 +794,7 @@ class SafetyRuntime:
         self.store, self.labels, self.speaker = store, labels, speaker
         self.io = SafetyIO()
         self.policy_io = SafetyIO(max_pending=1, thread_name_prefix='friday-safety-policy-read')
+        self.evidence_io = SafetyIO(max_pending=32, thread_name_prefix='friday-safety-evidence-read')
         self.closed = False
         self.close_task = None
         self.detector = FallDetector()
@@ -1218,7 +1249,11 @@ class SafetyRuntime:
                 await sync_safely()
                 await asyncio.sleep(interval)
         self.policy_task = asyncio.create_task(watch(), name='friday-safety-policy')
-        self.retention_task = asyncio.create_task(self._maintain_retention(), name='friday-safety-retention')
+        self.start_retention()
+
+    def start_retention(self):
+        if self.retention_task is None and not self.closed:
+            self.retention_task = asyncio.create_task(self._maintain_retention(), name='friday-safety-retention')
 
     async def _maintain_retention(self):
         while True:
@@ -1646,7 +1681,8 @@ class SafetyRuntime:
                 task.cancel()
             failures.extend(await asyncio.gather(*outputs, return_exceptions=True))
         finally:
-            failures.extend(await asyncio.gather(self.io.close(), self.policy_io.close(), return_exceptions=True))
+            failures.extend(await asyncio.gather(self.io.close(), self.evidence_io.close(), self.policy_io.close(),
+                                                 return_exceptions=True))
         if any(isinstance(result, Exception) for result in failures):
             self.error = 'safety_cleanup_unavailable'
             raise RuntimeError(self.error)

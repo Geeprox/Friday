@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .camera_provenance import configured_camera_sources
 from .paths import PRIVATE
-from .safety import CAPABILITIES, PostureSource, SafetyControls, SafetyRuntime, SafetyStore
+from .safety import CAPABILITIES, PostureSource, SafetyControls, SafetyRecordMissing, SafetyRuntime, SafetyStore
 from .safety_storage import SafetyStorageBusy
 
 
@@ -70,6 +70,14 @@ def install(router, service, *, archive=None, infrastructure=None):
     async def stored(operation, *args, **kwargs):
         return await protected(runtime.io.call(operation, *args, **kwargs))
 
+    async def evidence(operation, *args):
+        try:
+            return await protected(runtime.evidence_io.call(operation, *args))
+        except SafetyRecordMissing as error:
+            raise HTTPException(404, detail=str(error)) from None
+        except (ValueError, TypeError, KeyError):
+            raise HTTPException(503, detail='safety_storage_unavailable') from None
+
     async def refresh_policy():
         try:
             await runtime.sync_policy()
@@ -92,7 +100,7 @@ def install(router, service, *, archive=None, infrastructure=None):
                 worker = dict(status="unavailable", cameras=[])
         sound_review = worker.get('sound_review') or runtime.sound.status()
         visual_review = worker.get('visual_review') or runtime.visual.status()
-        sources = await stored(configured_camera_sources)
+        sources = await evidence(configured_camera_sources)
         crying_available = (sound_review.get('available') is True and 'infant_cry_supported' in sound_review
                             and sound_review['infant_cry_supported'] is not False)
         capabilities = [dict(row, status='unavailable') if row['id'] == 'crying' and not crying_available else row
@@ -161,25 +169,19 @@ def install(router, service, *, archive=None, infrastructure=None):
 
     @router.get("/api/embodied/safety/events")
     async def events():
-        return dict(events=await stored(recordings.events))
+        return dict(events=await evidence(recordings.events))
 
     @router.get('/api/embodied/safety/events/{event_id}/recordings')
     async def event_recordings(event_id: str, ordinal: int | None = Query(None, ge=0, lt=SafetyStore.MAX_FRAMES)):
-        try:
-            return await stored(recordings.references, event_id, ordinal)
-        except ValueError:
-            raise HTTPException(404, detail='safety_event_unavailable') from None
+        return await evidence(recordings.references, event_id, ordinal)
 
     @router.get("/api/embodied/safety/events/{event_id}/frames/{ordinal}")
     async def frame(event_id: str, ordinal: int):
-        try:
-            return Response(
-                await stored(store.frame, event_id, ordinal),
-                media_type="image/jpeg",
-                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-            )
-        except ValueError:
-            raise HTTPException(404, detail="safety_frame_unavailable") from None
+        return Response(
+            await evidence(store.frame, event_id, ordinal),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     @router.post("/api/embodied/safety/events/{event_id}/review")
     async def review(event_id: str, request: Review):
