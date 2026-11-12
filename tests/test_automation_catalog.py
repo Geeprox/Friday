@@ -65,13 +65,15 @@ def test_mode_links_must_reference_observed_entries():
 async def test_route_retains_catalog_when_native_source_unavailable_and_never_executes(tmp_path):
     async def failed_inventory():raise TimeoutError()
     manager=SimpleNamespace(records=lambda:[SimpleNamespace(rule=SimpleNamespace(id='owned:one',intent='Owned rule'),enabled=True)])
-    app=FastAPI();app.include_router(create_router(tmp_path/'catalog.json',manager,failed_inventory))
+    catalog=AutomationCatalog(tmp_path/'catalog.json')
+    app=FastAPI();app.include_router(create_router(catalog,manager,failed_inventory))
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test')as c:
         first=await c.get('/api/home/automations/catalog');assert first.json()['entries']==[]
         saved=await c.post('/api/home/automations/catalog',json={'expected_revision':0,'bundle':bundle().model_dump(mode='json')})
         assert saved.status_code==200, saved.text
         view=(await c.get('/api/home/automations/catalog')).json()
         assert view['entries'][0]['name'].startswith('PRIVATE')
+        assert view['entry_digests']=={entry.key:entry.observation_digest() for entry in catalog.read().entries}
         assert view['owned'][0]['key']=='owned:one'
         assert view['geek_connection']['status']=='unavailable'
         assert view['external_rules_intercepted'] is False and view['external_writes_supported'] is False

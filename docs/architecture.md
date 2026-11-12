@@ -17,6 +17,24 @@ are derived from the current user; it does not embed an author's repository path
 login session or signing identity. NAS and People content stay local. Optional
 ARL provides the model-runtime boundary and is not a prerequisite for simulation.
 
+## 重建其他平台的自动化
+
+自动化目录在读取时为每条盘点记录生成摘要。重建页将原记录与当前家庭设备选择放在一起。新规则使用当前注册设备和能力标识，数值条件使用读数能力绑定的单位。
+`CoreRules` 在创建计划、试算和保存时重新核对所选记录。其他目录项变化时仍可继续；所选记录变动时要求重新打开。
+保存事务记录来源标识、摘要及名称，并将 Friday 新规则置为暂停。若保存回执丢失，界面按计划编号读回同一次结果。
+
+```mermaid
+flowchart LR
+  A[选择其他平台的规则] --> B[对照原记录重建设备和条件]
+  B --> C[核对来源与设备并试算]
+  C --> D[核对触发、条件及动作]
+  D --> E[保存暂停的 Friday 规则]
+  E --> F[用户暂停原规则后启用 Friday 规则]
+  F --> G[运行时接收新事件并重新检查条件]
+```
+
+外部目录保存观察结果。外部平台中的规则由用户在其应用中管理。Friday 仅启用自己的记录，执行沿用现有家庭模式、权限、读数质量和设备回读检查。
+
 ## 手势响应记录
 
 `InteractionEngine` 生成事件时记录 `triggered_at`（Unix 秒）、`binding`、`revision`、

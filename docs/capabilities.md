@@ -6,6 +6,7 @@
 | 首页运行状态 | 「家庭感知」读取全屋镜头的当前识别状态。首页显示感知中的镜头数、最慢画面处理耗时和需要查看的镜头入口。返回前台或手动刷新立即更新，后台暂停定时读取。过期读数撤下，退出页面取消未完成请求 | 原状态接口和桌面、窄屏浏览器旅程使用合成输入验证。原生窗口、实际镜头可用性和识别延迟仍待实测 |
 | 首页复核状态 | 已选用的画面复核和声音复核各显示一行。按当前来源的近期结果显示等待、延迟、资源不足、恢复或运行。点击对应行打开「家中提醒」的监测设置并定位该项 | 使用合成画面、声音和浏览器验证状态变化、链接与键盘焦点。实际模型、设备和安装版待验收 |
 | Home Assistant | Registry discovery, OAuth, readback and scoped device operations | Your instance, permissions and physical effects |
+| 外部自动化重建 | 在同一页对照盘点记录并选择当前家庭的触发设备、条件及动作。核对后先保存为暂停。启用外部自动化的重建版本时，用户确认已在原应用暂停原规则 | 合成目录和模拟 HA 验证保存、丢失回执后读回、来源变更拒绝，以及新事件按数值条件触发。实际家庭读数、原平台停用和设备效果待验收 |
 | Mi Home layout | BakeData/floormap validation, preview, revisioned import, 3D rendering | Your export, accessible files and device positions |
 | Cameras | Optional Miloco media/SDK adapters, worker lifetime, bounded frame pipelines | Supported SDK/platform/device and actual video/audio |
 | 镜头感知恢复 | 原生识别子进程故障时只恢复识别，保持仍有效的采集连接。实时预览继续读取新画面，自动动作及异常判定等待有效识别。镜头关闭后撤下画面 | 主副镜头的原采集循环以合成读写超时、异常回复和恢复帧验证。真实设备的恢复时长与识别准确率仍待实测 |

@@ -214,7 +214,9 @@ def create_app(
     core.actions = ActionController(core, authority_path or settings.path.parent / "action-authority.json")
     rules = RuleManager(core)
     rule_runtime = RuleRuntime(rules)
-    core_rules = CoreRules(core, rules)
+    from .automation_catalog import AutomationCatalog, create_router as automation_catalog_router
+    automation_catalog = AutomationCatalog(settings.path.with_name('automation-catalog.json'))
+    core_rules = CoreRules(core, rules, catalog=automation_catalog)
     core_rule_runtime = CoreRuleRuntime(core_rules)
     from .household_mode import HouseholdMode
     household_mode = HouseholdMode(core,core_rule_runtime)
@@ -387,8 +389,7 @@ def create_app(
     from .event_evidence import create_router as event_evidence_router
     app.include_router(event_evidence_router(core, lock, queries, archive,
         core_rules=core_rules, context_revision=lambda: settings.revision))
-    from .automation_catalog import create_router as automation_catalog_router
-    app.include_router(automation_catalog_router(settings.path.with_name('automation-catalog.json'), core_rules, lambda: geek_session.inventory()))
+    app.include_router(automation_catalog_router(automation_catalog, core_rules, lambda: geek_session.inventory()))
     app.state.core = core
     app.state.settings = settings
     app.state.nas_connection = nas
@@ -510,6 +511,8 @@ def create_app(
             if str(exc)
             in {
                 "source_conflict",
+                "catalog_source_changed",
+                "schedule_time_unavailable",
                 "unsupported_scenario",
                 "not_found",
                 "action_capacity_exceeded",
@@ -535,7 +538,7 @@ def create_app(
         return JSONResponse(
             {"code": code},
             status_code=409
-            if code == "source_conflict"
+            if code in {"source_conflict", "catalog_source_changed"}
             else 404
             if code == "not_found"
             else 403

@@ -40,8 +40,14 @@ function fixture({zone='America/New_York',existing=true,rule={},capabilities=nul
   if(path==='/api/embodied/scenes')return{scenes:[]};
   if(path==='/api/rules/core/context')return{fingerprint:'b'.repeat(64),household_timezone:zone};
   if(path==='/api/rules/core/plans'){planned=JSON.parse(JSON.stringify(request));return planReceipt||{id:'plan',status:'validated'};}
-  if(path==='/api/rules/core/plans/trial')return trialReceipt||{id:'plan',status:'awaiting_approval',approval_digest:'c'.repeat(64),...(trialTrigger?{new:{rule:{...planned.rule,trigger:trialTrigger}}}:{})};
-  if(path==='/api/rules/core/plans/apply'){applied++;return{status:'verified'};}
+  if(path==='/api/rules/core/plans/trial')return trialReceipt||{
+   id:'plan',status:'awaiting_approval',approval_digest:'c'.repeat(64),start_paused:Boolean(planned.start_paused),
+   new:{id:'new-record',enabled:false,rule:{...planned.rule,trigger:trialTrigger||planned.rule.trigger}},
+  };
+  if(path==='/api/rules/core/plans/apply'){
+   applied++;
+   return{id:'plan',status:'verified',approval_digest:'c'.repeat(64),new:{id:'new-record',enabled:!planned.start_paused}};
+  }
   if(path.startsWith('/api/home/automations/records/attention/')&&path.endsWith('/acknowledge'))return acknowledge?acknowledge(path,request):{status:'acknowledged',id:path.split('/').at(-2),device_actions:false};
   throw Error('Unreviewed synthetic API path '+path);
  };
@@ -49,6 +55,7 @@ function fixture({zone='America/New_York',existing=true,rule={},capabilities=nul
  const context=vm.createContext({document:{body,createElement:t=>new Element(t),get activeElement(){return focused;},
   addEventListener:documentEvents.addEventListener.bind(documentEvents),removeEventListener:documentEvents.removeEventListener.bind(documentEvents),dispatchEvent:documentEvents.dispatchEvent.bind(documentEvents)},
   Intl,Date,JSON,structuredClone,crypto:{randomUUID:()=> 'SYNTHETIC-uuid-'+(++sequence)},
+  catalogSourceName:source=>({mijia:'米家',geek:'极客版'})[source],
   mountAutomationCatalog(){},mountAutomationMode(root,options){const sink=options.onStatus;statusSink=sink;if(modeReport)sink?.(modeReport);return{dispose(){if(statusSink===sink)statusSink=null;}};}});
  const source=fs.readFileSync('homeplane/static/automations.js','utf8').replace(/^import .*;$/gm,'').replace(/export /g,'');
  context.mountTaskAttention=vm.runInContext('(function(){'+fs.readFileSync('homeplane/static/task-attention.js','utf8').replace(/export /g,'')+';return mountTaskAttention;})()',context);

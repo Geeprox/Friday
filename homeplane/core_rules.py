@@ -12,9 +12,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, Field, StrictBool, model_validator
 
 from .action_contracts import CoreRuleEffect
+from .automation_catalog import CatalogOrigin, CatalogSelection
 from .contracts import Contract, Event
 from .ha import HAReadOnlyAdapter
 from .rule_compiler import compile_rule, digest, evaluate_rule
@@ -41,8 +42,13 @@ class CoreRuleRecord(Contract):
     source_scope: str
     authority_revision: str
     fingerprint: str
+    catalog_origin: CatalogOrigin | None = None
     source: Literal["project:home_core"] = "project:home_core"
     simulated: Literal[False] = False
+
+    def with_enabled(self, enabled):
+        return core_record(self.id, self.rule, enabled, self.source_scope, self.authority_revision,
+                           catalog_origin=self.catalog_origin)
 
 
 class CoreRuleProposal(Contract):
@@ -52,6 +58,8 @@ class CoreRuleProposal(Contract):
     expires_at: AwareDatetime
     record_id: str | None = Field(default=None, min_length=1, max_length=128)
     expected_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    catalog_selection: CatalogSelection | None = None
+    start_paused: StrictBool = False
 
     @model_validator(mode="after")
     def owned_scope(self):
@@ -59,6 +67,8 @@ class CoreRuleProposal(Contract):
             raise ValueError("explicit_real_home_core_scope_required")
         if bool(self.record_id) != bool(self.expected_fingerprint):
             raise ValueError("complete_source_choice_required")
+        if self.record_id and self.catalog_selection:
+            raise ValueError("catalog_rebuild_requires_new_rule")
         return self
 
 
@@ -73,6 +83,7 @@ class CoreRulePlan(Contract):
     compilation: RuleCompilation
     approval_digest: str
     status: Literal["validated", "awaiting_approval", "verified", "rolled_back", "failed", "expired"]
+    start_paused: bool = False
     code: str
     trial: RuleEvaluation | None = None
     real_write_attempted: Literal[False] = False
@@ -102,7 +113,7 @@ class CoreRuleRun(Contract):
     physically_confirmed: Literal[False] = False
 
 
-def core_record(identifier, rule, enabled, scope, authority):
+def core_record(identifier, rule, enabled, scope, authority, *, catalog_origin=None):
     body = dict(
         id=identifier,
         rule=rule.model_dump(mode="json"),
@@ -110,12 +121,15 @@ def core_record(identifier, rule, enabled, scope, authority):
         source_scope=scope,
         authority_revision=authority,
     )
+    if catalog_origin is not None:
+        body["catalog_origin"] = catalog_origin.model_dump(mode="json")
     return CoreRuleRecord(**body, fingerprint=digest(body))
 
 
 class CoreRules:
-    def __init__(self, core, owner):
+    def __init__(self, core, owner, *, catalog=None):
         self.core, self.store, self.owner = core, core.store, owner
+        self.catalog = catalog
         self.boot_id, self.lock = str(uuid4()), asyncio.Lock()
         self.deadlines = {}
         self.generation = 0
@@ -230,6 +244,11 @@ class CoreRules:
         if not self.available():
             raise ValueError("core_rule_source_or_authority_unavailable")
 
+    def _catalog_origin(self, selection):
+        if self.catalog is None:
+            raise ValueError("catalog_source_changed")
+        return self.catalog.origin(selection)
+
     def _compilation(self, rule, snapshot):
         compilation = compile_rule(rule, snapshot)
         if (
@@ -341,6 +360,10 @@ class CoreRules:
             self._allowed()
             compilation = self._compilation(request.rule, snapshot)
             self._acyclic(request.rule, old)
+            origin = old.catalog_origin if old else None
+            if request.catalog_selection:
+                origin = self._catalog_origin(request.catalog_selection)
+            start_paused = request.start_paused or request.catalog_selection is not None
             _, authority = self.core.actions.authority()
             identifier = str(uuid4())
             new = core_record(
@@ -349,6 +372,7 @@ class CoreRules:
                 False,
                 self.scope(request.rule, snapshot),
                 authority,
+                catalog_origin=origin,
             )
             plan = CoreRulePlan(
                 id=identifier,
@@ -365,9 +389,11 @@ class CoreRules:
                         new.model_dump(mode="json"),
                         compilation.model_dump(mode="json"),
                         request.expected_context,
+                        start_paused,
                     ]
                 ),
                 status="validated",
+                start_paused=start_paused,
                 code="awaiting_non_actuating_trial",
             )
             with self.store.connection:
@@ -401,6 +427,9 @@ class CoreRules:
         ):
             raise ValueError("conflicting_owned_version")
         self._acyclic(plan.new.rule, plan.old)
+        if plan.old is None and plan.new.catalog_origin:
+            if self._catalog_origin(plan.new.catalog_origin) != plan.new.catalog_origin:
+                raise ValueError("catalog_source_changed")
         return snapshot
 
     async def trial(self, identifier):
@@ -465,25 +494,21 @@ class CoreRules:
                 raise ValueError('core_rule_commit_cancelled')
             if self.store.connection.execute("SELECT count(*) FROM core_owned_rules").fetchone()[0] >= 64:
                 raise ValueError("core_rule_capacity")
-            enabled = core_record(
-                plan.new.id, plan.new.rule, True, plan.new.source_scope, plan.new.authority_revision
-            )
+            saved = plan.new.with_enabled(not plan.start_paused)
             with self.store.connection:
                 if plan.old:
                     if self.read(plan.old.id) != plan.old:
                         raise ValueError("source_conflict")
-                    paused = core_record(
-                        plan.old.id, plan.old.rule, False, plan.old.source_scope, plan.old.authority_revision
-                    )
+                    paused = plan.old.with_enabled(False)
                     self.store.connection.execute(
                         "UPDATE core_owned_rules SET body=? WHERE id=?", (paused.model_dump_json(), paused.id)
                     )
                 self.store.connection.execute(
-                    "INSERT INTO core_owned_rules VALUES (?,?)", (enabled.id, enabled.model_dump_json())
+                    "INSERT INTO core_owned_rules VALUES (?,?)", (saved.id, saved.model_dump_json())
                 )
                 plan = plan.model_copy(
                     update={
-                        "new": enabled,
+                        "new": saved,
                         "status": "verified",
                         "code": "atomic_core_configuration_verified_not_physical",
                     }
@@ -503,17 +528,13 @@ class CoreRules:
                 raise ValueError("source_edited_no_automatic_overwrite")
             if plan.old:
                 old = self.read(plan.old.id)
-                expected = core_record(
-                    plan.old.id, plan.old.rule, False, plan.old.source_scope, plan.old.authority_revision
-                )
+                expected = plan.old.with_enabled(False)
                 if old != expected:
                     raise ValueError("source_edited_no_automatic_overwrite")
             if commit_guard is not None and commit_guard() is not True:
                 raise ValueError('core_rule_commit_cancelled')
             with self.store.connection:
-                disabled = core_record(
-                    plan.new.id, plan.new.rule, False, plan.new.source_scope, plan.new.authority_revision
-                )
+                disabled = plan.new.with_enabled(False)
                 self.store.connection.execute(
                     "UPDATE core_owned_rules SET body=? WHERE id=?", (disabled.model_dump_json(), disabled.id)
                 )

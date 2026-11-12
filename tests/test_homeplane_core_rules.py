@@ -16,6 +16,8 @@ from pydantic import ValidationError
 
 from homeplane.action_contracts import CoreRuleEffect, DevicePlanRequest
 from homeplane.api import create_app
+from homeplane.automation_actions import AutomationActions, RecordEdit
+from homeplane.automation_catalog import AutomationCatalog, Bundle, CatalogSelection, Entry, Import
 from homeplane.core_rules import CoreRuleApproval, CoreRuleProposal, CoreRuleRuntime, CoreRules
 from homeplane.ha_control import HADeviceWriter
 from homeplane.ha_stream import HAStream
@@ -242,6 +244,65 @@ async def test_atomic_switch_retains_old_body_and_rollback_does_not_compensate_d
     assert result.status == "rolled_back" and manager.read(old.id) == old
     assert not manager.read(second.new.id).enabled and len(calls) == 1
     await cleanup(core, owner, runtime)
+
+
+@pytest.mark.asyncio
+async def test_external_rule_review_checks_selected_entry_and_saves_paused(tmp_path):
+    core, _, calls, _, _, _, owner, manager, runtime = await fixture(tmp_path)
+    try:
+        catalog = manager.catalog = AutomationCatalog(tmp_path / "catalog.json")
+        entry = Entry(key="observed:door", name="合成门磁规则", kind="automation",
+                      source="mijia", observed_at=datetime.now(UTC), evidence="ui_details",
+                      triggers=["开门"], actions=["点灯"], enabled=True)
+
+        def observe(*entries):
+            catalog.replace(Import(expected_revision=catalog.read().revision, bundle=Bundle(entries=list(entries))))
+
+        def selected(source):
+            return CatalogSelection(key=source.key, entry_digest=source.observation_digest())
+
+        observe(entry)
+        request = await proposal(core, manager)
+        plan = await manager.plan(request.model_copy(update={"catalog_selection": selected(entry)}))
+        other = entry.model_copy(update={"key": "observed:other", "name": "合成备用规则"})
+        observe(entry, other)
+        trial = await manager.trial(plan.id)
+        assert trial.status == "awaiting_approval" and trial.start_paused
+        assert not calls and not manager.records()
+
+        changed = entry.model_copy(update={"actions": ["关灯"]})
+        observe(changed, other)
+        with pytest.raises(ValueError, match="catalog_source_changed"):
+            await manager.apply(CoreRuleApproval(plan_id=trial.id, approval_digest=trial.approval_digest))
+        assert not calls and not manager.records()
+
+        observe(entry, other)
+        verified = await enable(manager, request.model_copy(update={
+            "idempotency_key": str(uuid4()), "catalog_selection": selected(entry),
+        }))
+        record = manager.read(verified.new.id)
+        assert record == verified.new and record.enabled is False
+        assert record.catalog_origin.entry_digest == selected(entry).entry_digest
+        assert record.catalog_origin.source == "mijia"
+        await runtime.set_mode("awake")
+        await runtime.ingest(core.adapter, event(core))
+        assert not calls
+
+        edited = await proposal(core, manager, old=record)
+        revision = await enable(manager, edited.model_copy(update={"start_paused": True}))
+        assert revision.new.catalog_origin == record.catalog_origin and not revision.new.enabled
+        actions = AutomationActions(manager, runtime, asyncio.Lock())
+        activated = await actions.set_enabled(revision.new.id, RecordEdit(
+            enabled=True, expected_fingerprint=revision.new.fingerprint,
+            expected_context=manager.context()["fingerprint"],
+        ))
+        assert activated.enabled and activated.catalog_origin == record.catalog_origin
+        assert not calls and catalog.read().entries == [entry, other]
+        await runtime.set_mode("awake")
+        await runtime.ingest(core.adapter, event(core))
+        assert [call.url.path for call in calls] == ["/api/services/light/turn_on"]
+    finally:
+        await cleanup(core, owner, runtime)
 
 
 @pytest.mark.asyncio
