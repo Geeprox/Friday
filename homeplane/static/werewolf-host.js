@@ -295,6 +295,27 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   ui.toggle.dataset.unavailable=String(syncFailed&&!ui.alignment);
   if(ui.alignment){ui.alignment.view.recheck();updateAlignment(ui.alignment);}
  }
+ function updateLobbyInvitation(){
+  const ui=lobbyUI,game=current.game;
+  const available=game.players.length<game.player_count;
+  ui.join.hidden=!available;
+  if(!available){
+   ui.qr?.remove();
+   ui.qr=null;
+   return;
+  }
+  if(!ui.phoneLink||(ui.qr&&(!ui.qr.hidden||ui.qrRevision===game.revision)))return;
+  ui.qr?.remove();
+  const qr=node('img');
+  qr.alt='手机扫码加入本局';
+  qr.width=180;
+  qr.height=180;
+  qr.onerror=()=>{qr.hidden=true;};
+  ui.qr=qr;
+  ui.qrRevision=game.revision;
+  ui.join.insertBefore(qr,ui.phoneLink);
+  qr.src='/api/games/werewolf/join-qr?session='+encodeURIComponent(current.session);
+ }
  function updateLobby(){
   const g=current.game;
   for(const item of lobbyUI.scene.querySelectorAll('[data-seat]')){
@@ -307,7 +328,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    if(!player&&remove)remove.remove();
   }
   const ready=g.players.filter(p=>p.ready).length;
-  lobbyUI.join.hidden=g.players.length===g.player_count;
+  updateLobbyInvitation();
   lobbyUI.ready.textContent=ready===g.player_count?'大家都准备好了':ready+' / '+g.player_count+' 人已准备';
   if(lobbyUI.alignment)updateAlignment(lobbyUI.alignment);
  }
@@ -370,18 +391,18 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   const layout=node('div',null,'ww-live-layout');layout.dataset.playing=String(g.phase!=='lobby');layout.dataset.aligning=String(current.camera_enabled&&g.phase==='lobby');const scene=board(g);layout.append(scene);if(g.phase==='lobby')lobbyUI={session:current.session,count:g.player_count,cameraEnabled:Boolean(current.camera_enabled),scene,ready:null,alignment:null};const aside=node('aside',null,'ww-room-tools');
   if(g.phase==='lobby'){
    const join=node('div',null,'ww-join');
-   join.hidden=g.players.length===g.player_count;lobbyUI.join=join;
+   lobbyUI.join=join;
    join.append(node('h3','用手机入座'));
    if(current.phone_url){
-    const qr=node('img');qr.src='/api/games/werewolf/join-qr?session='+encodeURIComponent(current.session);
-    qr.alt='手机扫码加入本局';qr.width=180;qr.height=180;qr.onerror=()=>{qr.hidden=true;};join.append(qr);
     const link=node('a','打开手机入口');link.href=current.phone_url;link.target='_blank';link.rel='noopener noreferrer';
+    lobbyUI.phoneLink=link;
     join.append(link,button('复制加入地址',async()=>{
      try{await navigator.clipboard.writeText(current.phone_url);notice.textContent='加入地址已复制。';}
      catch{notice.textContent=current.phone_url;}
     },'ww-text-button'));
    }
    join.append(node('p','房间号'),node('strong',current.join_code,'ww-room-code'));aside.append(join);
+   updateLobbyInvitation();
   }
   const controls=node('div',null,'ww-host-controls');
   if(g.phase==='lobby'){

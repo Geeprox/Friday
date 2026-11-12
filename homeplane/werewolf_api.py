@@ -85,14 +85,15 @@ def create_router(core, lock, embodied, directory, *, owner=None):
 
     @router.get("/join-qr")
     async def join_qr(session: str):
-        phone = owner.phone_url()
-        if session != owner.session or phone is None:
-            raise HTTPException(404)
+        headers = {"Cache-Control": "no-store"}
+        phone = owner.invitation_url(session)
+        if phone is None:
+            raise HTTPException(404, detail="invitation_unavailable", headers=headers)
         try:
             image = join_qr_svg(phone)
         except ImportError:
-            raise HTTPException(409, detail="qr_unavailable") from None
-        return Response(image, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+            raise HTTPException(409, detail="qr_unavailable", headers=headers) from None
+        return Response(image, media_type="image/svg+xml", headers=headers)
 
     @router.get("/host")
     async def host():

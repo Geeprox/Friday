@@ -94,6 +94,40 @@ function cameraLobby(){
  return first;
 }
 
+test('主持端二维码随空位恢复，旧图片失败不影响本次邀请',async()=>{
+ const full=cameraLobby();
+ full.phone_url='http://example.test:18750/phone#code=123456';
+ full.join_code='123456';
+ full.game.players=Array.from({length:6},(_,i)=>({seat:i+1,name:'合成玩家'+(i+1),alive:true,ready:false}));
+ const c=client({initial:full});await settle();
+ const invitation=c.root.querySelector('.ww-join');
+ assert(invitation.hidden);
+ assert(!invitation.querySelector('img'));
+
+ const vacant=structuredClone(full);vacant.game.players.pop();vacant.game.revision++;
+ c.setNext(vacant);await c.tick();
+ assert.equal(invitation.hidden,false);
+ const original=invitation.querySelector('img');
+ assert.match(original.src,/join-qr\?session=SYNTHETIC-party/);
+ original.onerror();
+ assert.equal(original.hidden,true);
+ assert.match(invitation.textContent,/123456/);
+ assert.equal(invitation.querySelector('a').href,full.phone_url);
+
+ vacant.game.revision++;
+ c.setNext(vacant);await c.tick();
+ const recovered=invitation.querySelector('img');
+ assert.notEqual(recovered,original);
+ assert(!recovered.hidden);
+ original.onerror();
+ assert(!recovered.hidden);
+
+ full.game.revision=vacant.game.revision+1;
+ c.setNext(full);await c.tick();
+ assert(invitation.hidden&&!invitation.querySelector('img'));
+ c.mounted.dispose();
+});
+
 test('occupied numbers stay visible but cannot submit a second seat for the same person',async()=>{
  const first=cameraLobby();first.camera_bindings=[{seat:1,...first.camera_candidates[0]}];
  const c=client({initial:first});await settle();const fields=c.root.querySelectorAll('select');

@@ -238,15 +238,22 @@ class WerewolfService:
     def phone_url(self):
         return self.origin + '/phone#code=' + self.join_code if self.origin and self.join_code else None
 
+    def invitation_url(self, session):
+        game = self.game
+        if (not session or session != self.session or game is None
+                or game.phase != 'lobby' or len(game.players) >= game.count):
+            return None
+        return self.phone_url()
+
     def display_invitation(self):
-        game, url = self.game, self.phone_url()
-        if not url or not self.session or not game or game.phase != 'lobby' or len(game.players) >= game.count:
+        url = self.invitation_url(self.session)
+        if url is None:
             return None
         try:
             svg = base64.b64encode(join_qr_svg(url)).decode('ascii')
         except ImportError:
             svg = None
-        return dict(session=self.session, lobby_revision=game.lobby_revision, room_code=self.join_code, qr_svg=svg)
+        return dict(session=self.session, lobby_revision=self.game.lobby_revision, room_code=self.join_code, qr_svg=svg)
 
     def public(self):
         if self.game is None or self.session is None:
