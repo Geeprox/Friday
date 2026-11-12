@@ -685,24 +685,30 @@ async def test_next_prompt_waits_for_the_same_speaker_cleanup():
 @pytest.mark.asyncio
 async def test_cancelled_room_close_still_revokes_and_closes_phone_gateway():
     service=await owner()
-    entered=asyncio.Event();cleaning=asyncio.Event();never=asyncio.Event()
+    entered, cleaning, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
     gateway=service.gateway;before=gateway.closed
     try:
         service.pump.cancel();await asyncio.gather(service.pump,return_exceptions=True)
         async def pump():
             try:
-                entered.set();await never.wait()
+                entered.set()
+                await asyncio.Event().wait()
             finally:
-                cleaning.set();await never.wait()
+                cleaning.set()
+                await released.wait()
         service.pump=asyncio.create_task(pump())
         await asyncio.wait_for(entered.wait(),1)
         closing=asyncio.create_task(service.close_game())
         await asyncio.wait_for(cleaning.wait(),1)
         closing.cancel()
         with pytest.raises(asyncio.CancelledError):await closing
+        assert service.host() == {'active': False}
+        released.set()
+        await service.close()
         assert gateway.closed==before+1 and service.gateway is None and service.game is None
         assert service.pump is None and not service.credentials and service.public_token is None
     finally:
+        released.set()
         await service.close()
 
 

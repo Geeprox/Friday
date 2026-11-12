@@ -131,17 +131,24 @@ async def test_changed_payload_cannot_reuse_an_acknowledged_host_event(tmp_path)
 @pytest.mark.asyncio
 async def test_cancelled_close_keeps_a_tombstone_before_gateway_cleanup_finishes(tmp_path):
     async with host(tmp_path) as (service, client):
-        entered = asyncio.Event()
+        entered, released = asyncio.Event(), asyncio.Event()
         async def closing():
             entered.set()
-            await asyncio.Event().wait()
+            await released.wait()
         service.gateway = SimpleNamespace(close=closing)
         body = command(service, "close")
         task = asyncio.create_task(service.close_game(proof=Control(**body)))
-        await asyncio.wait_for(entered.wait(), 1)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert service.host() == {"active": False}
+            assert (await client.post("/api/games/werewolf/control", json=body)).json() == {"active": False}
+        finally:
+            released.set()
+            await asyncio.gather(task, return_exceptions=True)
+            await service.close()
         assert service.game is None and not service.credentials
         await populate(service)
         after = service.host()

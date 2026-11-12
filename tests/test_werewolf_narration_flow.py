@@ -57,6 +57,58 @@ async def until(predicate):
 
 
 @pytest.mark.asyncio
+async def test_cancelled_close_request_still_restores_lights_while_camera_releases(tmp_path):
+    async with party(tmp_path) as table:
+        service = table.service
+        await begin_play(service)
+        await service.effect_task
+        lamp = next(row for row in table.rows if row['entity_id'] == 'light.simulated')
+        assert lamp['state'] == 'on' and lamp['attributes']['brightness'] == 46
+        entered, released = asyncio.Event(), asyncio.Event()
+
+        async def release_camera(command):
+            assert command['action'] == 'end'
+            assert command['context'] == body['session']
+            entered.set()
+            await released.wait()
+
+        process = SimpleNamespace(returncode=None)
+        service.embodied = SimpleNamespace(process=process, party_camera=release_camera)
+        service.camera_hold = (service.embodied, process, service.session, 'a' * 32)
+        app = FastAPI()
+        app.include_router(create_router(None, None, None, tmp_path, owner=service))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test',
+                                     headers={'Origin': 'http://test'}) as client:
+            body = dict(action='close', session=service.session, revision=service.game.revision,
+                        event_id='SYNTHETIC-close-while-camera-releases')
+            request = asyncio.create_task(client.post('/api/games/werewolf/control', json=body))
+            replacement = None
+            try:
+                await asyncio.wait_for(entered.wait(), 1)
+                request.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await request
+                assert (await client.get('/api/games/werewolf/host')).json() == {'active': False}
+                await until(lambda: lamp['state'] == 'off' and not table.lights.records)
+                assert len(table.writes) == 2
+                replacement = asyncio.create_task(client.post('/api/games/werewolf/create', json={'players': 6}))
+                await until(service.lock.locked)
+                assert not replacement.done()
+                released.set()
+                new_room = await asyncio.wait_for(replacement, 1)
+                assert new_room.status_code == 200 and new_room.json()['session'] != body['session']
+                assert lamp['state'] == 'off' and len(table.writes) == 2
+            finally:
+                released.set()
+                await asyncio.gather(request, return_exceptions=True)
+                if replacement is not None:
+                    await asyncio.gather(replacement, return_exceptions=True)
+                await service.close()
+            assert not table.lights.status()['recovery_pending']
+            assert len(table.writes) == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('blocked', ['quiet', 'unconfigured', 'status_error', 'busy', 'muted'])
 async def test_current_prompt_recovers_without_advancing_or_replaying_lights(tmp_path, blocked):
     now = [100.]

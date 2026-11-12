@@ -282,17 +282,23 @@ class SceneLights:
 
 
 class HostEffects:
+    PRE_SEND_RETRIES = 2
+
     def __init__(self, lights: SceneLights, *, speak=None, speech_status=None):
         self.lights = lights
         self.speak = speak
         self.speech_status = speech_status
-        self.narration = False
+        self.reset_narration(False)
         self.lights_active = False
-        self.voice_state = "off"
-        self.last_announcement = 0
         self.last_scene = None
         self._lighting_lock = asyncio.Lock()
         self._narration_lock = asyncio.Lock()
+
+    def reset_narration(self, enabled):
+        self.narration = enabled
+        self.voice_state = "off"
+        self.last_announcement = 0
+        self._unsent_cue, self._unsent_retries = None, 0
 
     async def apply(self, public, current):
         # 两路输出各自串行，上一阶段的灯光与播报只阻塞自己的后续操作。
@@ -370,6 +376,16 @@ class HostEffects:
                 self.last_announcement = previous
                 self.voice_state = "quiet" if result == "muted" else "unavailable"
                 return True
+            if result == "unavailable" and receipt.get("dispatch_attempted") is False:
+                # 无截止时间的入座和身份提示也要限制连接重试次数。
+                if self._unsent_cue != latest["id"]:
+                    self._unsent_cue = latest["id"]
+                    self._unsent_retries = 0
+                if self._unsent_retries < self.PRE_SEND_RETRIES:
+                    self._unsent_retries += 1
+                    self.last_announcement = previous
+                    self.voice_state = "unavailable"
+                    return True
             self.voice_state = ("requested" if result in ("accepted", "playing", "sent")
                                 else "quiet" if result == "paused"
                                 else "unconfirmed" if result == "unconfirmed" else "unavailable")

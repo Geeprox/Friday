@@ -227,6 +227,7 @@ class WerewolfService:
         self.light_bindings = {}
         self.host_retries = OrderedDict()
         self.gateway = self.pump = self.effect_task = None
+        self.close_task = None
         self.effect_tasks = set()
         self.effect_runs: dict[str, _EffectRun] = {}
         self.origin = None
@@ -391,6 +392,8 @@ class WerewolfService:
 
     async def create(self, count, *, address=None, lights=(), narration=False, camera=False, discussion_mode="free"):
         async with self.lock:
+            if self.close_task is not None:
+                await asyncio.shield(asyncio.gather(self.close_task, return_exceptions=True))
             if self.game:
                 raise GameError("game_already_exists")
             game = self.game_factory(count, clock=self.clock, discussion_mode=discussion_mode)
@@ -406,11 +409,9 @@ class WerewolfService:
             self.created = self.clock()
             self.join_code = str(secrets.randbelow(900_000) + 100_000)
             self.public_token = secrets.token_hex(32)
-            self.effects.narration = narration
+            self.effects.reset_narration(narration)
             self.effects.lights_active = bool(lights)
-            self.effects.last_announcement = 0
             self.effects.last_scene = None
-            self.effects.voice_state = 'off'
             self.camera_enabled = camera
             self.camera_context = session
             self.camera_binding_revision = 0
@@ -790,7 +791,7 @@ class WerewolfService:
     async def step(self, *, wait_for_camera=True):
         await self.refresh_network()
         async with self.lock:
-            if self.game is None:
+            if self.game is None or self.session is None:
                 return
             if self.clock() - self.created > 6 * 3600 and self.game.phase != "finished":
                 self.game.end()
@@ -802,7 +803,7 @@ class WerewolfService:
                 await self._camera()
             elif self.camera_task is None or self.camera_task.done():
                 self.camera_task = asyncio.create_task(self._camera(), name='friday-werewolf-camera')
-                self.camera_task.add_done_callback(self._camera_finished)
+                self.camera_task.add_done_callback(self._observe_task_result)
         else:
             if self.camera_task is not None and not self.camera_task.done():
                 self.camera_task.cancel()
@@ -811,20 +812,23 @@ class WerewolfService:
 
     async def _run(self):
         try:
-            while self.game is not None:
+            while self.session is not None:
                 if self.clock() - self.created > 6 * 3600:
-                    asyncio.create_task(self.close_game(), name="friday-werewolf-expire")
+                    expired = asyncio.create_task(self.close_game(expected_session=self.session),
+                                                  name="friday-werewolf-expire")
+                    expired.add_done_callback(self._observe_task_result)
                     return
                 await self.step(wait_for_camera=False)
                 await asyncio.sleep(.5)
         finally:
             task = self.camera_task
             if task is not None and not task.done():
-                task.cancel()
+                if not task.cancelling():
+                    task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
 
     @staticmethod
-    def _camera_finished(task):
+    def _observe_task_result(task):
         if not task.cancelled():
             task.exception()
 
@@ -1043,65 +1047,68 @@ class WerewolfService:
             self._remember_host(admission)
             return self.host()
 
-    async def close_game(self, *, proof=None):
+    async def close_game(self, *, proof=None, expected_session=None):
         async with self.lock:
+            if expected_session is not None and expected_session != self.session:
+                return self.host()
             admission, replay = self._host_admission(proof, "close")
             if replay:
                 return self.host()
-            # Keep a bounded tombstone across rooms, including an interrupted
-            # close. Retrying this exact command must never close a new room.
-            self._remember_host(admission)
-            # Revoke both phone/public access before waiting for any output.
-            self.session = self.join_code = self.public_token = None
-            self.display_pairings.clear()
-            self.credentials.clear()
-            self.join_retries.clear()
-            self.seat_recoveries.clear()
-            self.join_key = None
-            self.camera_generation += 1
-            self._clear_camera()
-            self.camera_enabled = False
-            self.camera_context = None
-            if self.camera_task is not None and not self.camera_task.done():
-                self.camera_task.cancel()
+            if self.close_task is None:
+                # 先记录已受理的关闭请求，再撤销手机和公屏访问。
+                self._remember_host(admission)
+                self.session = self.join_code = self.public_token = None
+                self.display_pairings.clear()
+                self.credentials.clear()
+                self.join_retries.clear()
+                self.seat_recoveries.clear()
+                self.join_key = None
+                self.camera_generation += 1
+                self._clear_camera()
+                self.camera_enabled = False
+                self.camera_context = None
+                self.close_task = asyncio.create_task(self._finish_close(), name="friday-werewolf-close")
+                self.close_task.add_done_callback(self._observe_task_result)
+            closing = self.close_task
+        return await asyncio.shield(closing)
+
+    async def _restore_closing_lights(self):
+        if self.effects.lights_active:
             try:
-                await self._release_camera()
-                if self.pump:
-                    self.pump.cancel()
-                    await asyncio.gather(self.pump, return_exceptions=True)
-                    self.pump = None
-                for task in tuple(self.effect_tasks):
-                    if not task.done() and not task.cancelling():
-                        task.cancel()
-                # 灯光恢复由 SceneLights 串行，扬声器清理在下方单独回收。
-                if getattr(self.effects, "lights_active", False):
-                    try:
-                        await self.effects.lights.restore()
-                    except (ValueError, OSError, TimeoutError):
-                        self.effects.lights.recovery = True
+                await self.effects.lights.restore()
+            except (ValueError, OSError, TimeoutError, httpx.HTTPError):
+                self.effects.lights.recovery = True
+
+    async def _finish_close(self):
+        tasks = set(self.effect_tasks) | {task for task in (self.pump, self.camera_task) if task is not None}
+        for task in tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        # 房间负责收场。灯光仍等待原场景的写入回读，镜头和扬声器各自释放。
+        try:
+            camera, lights, *_ = await asyncio.gather(
+                self._release_camera(), self._restore_closing_lights(), *tasks, return_exceptions=True)
+            for outcome in (camera, lights):
+                if isinstance(outcome, Exception):
+                    raise outcome
+        finally:
+            try:
+                if self.gateway is not None:
+                    await self.gateway.close()
             finally:
-                try:
-                    tasks=set(self.effect_tasks)|{task for task in (self.pump,self.camera_task) if task is not None}
-                    for task in tasks:
-                        if not task.done() and not task.cancelling():task.cancel()
-                    await asyncio.shield(asyncio.gather(*tasks,return_exceptions=True))
-                    if self.gateway:
-                        await self.gateway.close()
-                finally:
-                    self.game = self.gateway = None
-                    self.pump = self.effect_task = self.camera_task = None
-                    self.origin = None
-                    self.effects.lights_active = False
-                    self.light_bindings = {}
-                    self.effects.narration = False
-                    self.retries.clear()
-                    self.choice_versions.clear()
-                    self.bindings.clear()
-                    self.camera_hints = []
-                    self.camera_candidates = []
-                    self.last_effect_revision = None
-                    self.effect_runs.clear()
-            return self.host()
+                self.game = self.gateway = None
+                self.pump = self.effect_task = self.camera_task = None
+                self.origin = None
+                self.effects.lights_active = False
+                self.light_bindings = {}
+                self.effects.narration = False
+                self.retries.clear()
+                self.choice_versions.clear()
+                self.bindings.clear()
+                self.last_effect_revision = None
+                self.effect_runs.clear()
+                self.close_task = None
+        return self.host()
 
     async def close(self):
         await self.close_game()
