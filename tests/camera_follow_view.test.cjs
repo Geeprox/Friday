@@ -14,11 +14,11 @@ function panel({supported=true,recognition=true,powerEnabled=true,initialMode='a
  const h=(tag,text,attrs={})=>{const n=new Element(tag);n.textContent=text||'';for(const[k,v]of Object.entries(attrs)){n.setAttribute(k,v);if(k==='class')n.className=v;if(k==='hidden')n.hidden=true;}return n;};
  const add=(n,...children)=>{n.append(...children);return n;};
  const slot=new Element('section'),requests=[],pending={},routes=[];let mode=initialMode,phase=mode==='survey'?'patrolling':'following',tick,deferRead=false,deferControl=false,deferPower=false;
- let state='live',revision=0,result=null,confirmed=mode==='survey'?4:0,oldReport=null,failRead=false;
+ let state='live',revision=0,result=null,confirmed=mode==='survey'?4:0,oldReport=null,failRead=false,interruption=null;
  const report=()=>({state,primary:true,recognition_enabled:recognition,camera_control:{owner:'friday',mode,phase,
-  intent_revision:String(revision),survey_result:result,survey_confirmed_moves:confirmed,survey_total_steps:10,
-  reason:mode==='pets'?'跟随宠物':mode==='hold'?'停留当前视角':mode==='survey'?(result==='complete'?'本轮巡视完成':result?'本轮巡视未完成':'巡视低处'):'跟随人物'},pet_tracking:{supported}});
- function apply(next){mode=next;revision++;phase=next==='survey'?'patrolling':next==='hold'?'held':'following';result=null;confirmed=0;return{mode,intent_revision:String(revision)};}
+  intent_revision:String(revision),survey_result:result,survey_confirmed_moves:confirmed,survey_total_steps:10,survey_interruption:interruption,
+  reason:phase==='sound_search'?'异响后环视':mode==='pets'?'跟随宠物':mode==='hold'?'停留当前视角':mode==='survey'?(result==='complete'?'本轮巡视完成':result?'本轮巡视未完成':'巡视低处'):'跟随人物'},pet_tracking:{supported}});
+ function apply(next){mode=next;revision++;phase=next==='survey'?'patrolling':next==='hold'?'held':'following';result=null;interruption=null;confirmed=0;return{mode,intent_revision:String(revision)};}
  const context=vm.createContext({console,alive:true,previewStop:null,slot,
   device:{id:'cam_1111111111',room:'合成房间',name:'合成镜头'},h,add,ico:()=>h('i'),go:(...args)=>routes.push(args),Date,
   crypto:{randomUUID:()=> 'synthetic-event'},
@@ -44,6 +44,7 @@ function panel({supported=true,recognition=true,powerEnabled=true,initialMode='a
   image:()=>all(slot).find(n=>n.tagName==='img'),tick:()=>tick(),deferRead:()=>deferRead=true,deferControl:()=>deferControl=true,
   delayModeRead:()=>oldReport=report(),failRead:()=>failRead=true,setState:value=>state=value,
   finishSurvey:outcome=>{phase='survey_finished';result=outcome;confirmed=outcome==='complete'?10:4;},
+  soundSearch:()=>{phase='sound_search';interruption='sound';},
   async click(label){const b=button(label);assert(b&&!b.disabled,'Enabled button: '+label);await b.onclick();await settle();}};
 }
 
@@ -116,6 +117,18 @@ test('详情可以在未打开预览时读到巡视进度并停止该轮',async(
  assert.equal(writes[0].body.mode,'hold');
  assert.equal(c.surveyVisible(),false);
  assert.equal(c.status(),'巡视已停止');
+});
+
+test('异响环视保持原巡视进度和停止入口，结束后显示原因',async()=>{
+ const c=panel({initialMode:'survey'});await settle();
+ c.soundSearch();await c.tick();
+ assert.equal(c.survey(),'异响后环视');
+ assert.equal(c.progress().value,4);
+ assert.equal(c.button('停止巡视').disabled,false);
+ c.finishSurvey('interrupted');await c.tick();
+ assert.equal(c.survey(),'本轮因异响结束');
+ assert.equal(c.progress().value,4);
+ assert.equal(c.button('停止巡视'),undefined);
 });
 
 test('manual-only preview cannot start a recognition survey',async()=>{

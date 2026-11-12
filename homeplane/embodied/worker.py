@@ -489,7 +489,7 @@ async def camera_search():
                     return (owner is not None and owner is capture and owner.returncode is None
                             and source_generation == generation and state.get('status') == 'live'
                             and state.get('session_id') == session and camera_planner is planner
-                            and planner.mode == 'auto' and planner.intent_revision == revision)
+                            and planner.mode in {'auto', 'survey'} and planner.intent_revision == revision)
 
                 safety.offer_sound_search_frame(SELECTED['id'], proof, last_jpeg, source_current=source_current)
             state['camera_control'] = dict(planner.public(lease.presets), **director.public())

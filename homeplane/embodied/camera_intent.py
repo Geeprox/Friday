@@ -28,7 +28,7 @@ def camera_intent_readback(snapshot, *, mode, revision, status):
         report.update(intent_revision=revision, phase='held' if held else 'waiting_video',
                       reason={'hold': '停留当前视角', 'survey': '准备巡视'}.get(mode, '等待画面'),
                       view_usable=False, target_locked=False, survey_attempts=0,
-                      survey_confirmed_moves=0, survey_total_steps=None, survey_result=None,
+                      survey_confirmed_moves=0, survey_total_steps=None, survey_result=None, survey_interruption=None,
                       patrol_view_state='idle')
     return report
 
@@ -37,9 +37,14 @@ def finish_camera_survey(report):
     """只用已确认的视角数结束本轮；转向请求本身不计入进度。"""
     total = report.get('survey_total_steps')
     complete = type(total) is int and total > 0 and report.get('survey_confirmed_moves') == total
+    reason = '本轮巡视未完成'
+    if complete:
+        reason = '本轮巡视完成'
+    elif report.get('survey_interruption') == 'sound':
+        reason = '本轮因异响结束'
     return dict(report, phase='survey_finished', view_usable=False, target_locked=False,
                 survey_result='complete' if complete else 'interrupted',
-                reason='本轮巡视完成' if complete else '本轮巡视未完成')
+                reason=reason)
 
 
 @dataclass(frozen=True)

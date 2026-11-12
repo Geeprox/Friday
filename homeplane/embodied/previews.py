@@ -405,7 +405,11 @@ class PreviewPool:
             receiver = asyncio.create_task(receive())
             director = CameraDirector()
             director.apply_mode(item['mode'], item.get('mode_revision', 0))
-            director.restore_survey_progress(item.get('survey_attempts', 0), item.get('survey_confirmed_moves', 0))
+            previous_control = item.get('camera_control') or {}
+            interruption = (previous_control.get('survey_interruption')
+                            if previous_control.get('intent_revision') == item.get('mode_revision') else None)
+            director.restore_survey_progress(item.get('survey_attempts', 0), item.get('survey_confirmed_moves', 0),
+                                             interruption)
             motion_lock = asyncio.Lock()
             def privacy_closed():
                 item.update(state='shutter_closed',privacy_closed=True)
@@ -531,7 +535,7 @@ class PreviewPool:
                     if (proof := director.take_sound_view()) and self.sound_view is not None:
                         def source_current(session=sample['session_id'], expected_epoch=epoch):
                             return (self.source_current(selected['id'], process)
-                                    and recognizer.session == session and item['mode'] == 'auto'
+                                    and recognizer.session == session and item['mode'] in {'auto', 'survey'}
                                     and item['control_epoch'] == expected_epoch)
 
                         self.sound_view(selected['id'], proof, sample['_follow_jpeg'], source_current=source_current)

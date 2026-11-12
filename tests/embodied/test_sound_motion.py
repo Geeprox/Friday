@@ -9,6 +9,7 @@ import pytest
 
 from homeplane.embodied.camera_audio import AudioIngress, PCMFramer
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_intent import camera_intent_readback, finish_camera_survey
 from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
@@ -38,16 +39,17 @@ class EpisodeEngine(SlowEngine):
 class SoundPatrol:
     def __init__(self, tmp_path, monkeypatch, owner, *, episode=(14.2, 18.2), infant=False,
                  people=None, motor_shifts_view=True, enable_search=True, occupied_elsewhere=False,
-                 follow_shifts_view=True, run_until=40):
+                 follow_shifts_view=True, run_until=40, mode="auto"):
         self.j = Journey(tmp_path, monkeypatch)
         if enable_search:
             self.j.store.configure_sound_search(self.j.store.policy().revision, True)
         self.engine = EpisodeEngine(lambda: self.j.clock, infant=infant)
         self.j.runtime.sound.engine = self.engine
-        self.owner, self.episode = owner, episode
+        self.owner, self.episode, self.mode = owner, episode, mode
         self.index = 0
         self.moving_until = 0
         self.view_offset = 0.
+        self.view_height = 0.
         self.moves, self.phases = [], []
         self.sound_moves, self.follow_moves = [], []
         self.sound_sent_at = []
@@ -63,7 +65,7 @@ class SoundPatrol:
         self.process = SimpleNamespace(returncode=None)
         self.director = CameraDirector()
         self.item = dict(privacy_closed=False, source_active=True, control_epoch=1,
-                         mode="auto", mode_revision="intent")
+                         mode=mode, mode_revision="intent")
         self.scope = dict(time=SimpleNamespace(monotonic=lambda: self.j.clock),
                           asyncio=SimpleNamespace(sleep=self.advance, CancelledError=asyncio.CancelledError),
                           CameraDirector=lambda: self.director, camera_is_open=AsyncMock(return_value=True))
@@ -107,7 +109,8 @@ class SoundPatrol:
         self.state.update(status="live", _local_received=self.j.clock, session_id=self.session,
                           tracking_current=True, scene_visible=stable, people=people,
                           _follow_jpeg=jpeg,
-                          _patrol_view=patrol_view(self.j.clock, x=self.view_offset) if stable else None)
+                          _patrol_view=patrol_view(self.j.clock, x=self.view_offset,
+                                                  y=self.view_height) if stable else None)
         self.scope["last_frame"] = self.j.clock
         self.scope["last_jpeg"] = jpeg
         self.phases.append((self.j.clock, (self.state if self.owner == "primary" else self.item)
@@ -133,7 +136,8 @@ class SoundPatrol:
         self.moves.append((self.j.clock, direction))
         self.moving_until = self.j.clock + 1
         if self.motor_shifts_view and (self.director.phase != 'following' or self.follow_shifts_view):
-            self.view_offset += .05 if direction == 'right' else -.05
+            self.view_offset += .05 * ((direction == 'right') - (direction == 'left'))
+            self.view_height += .05 * ((direction == 'down') - (direction == 'up'))
         self.j.runtime.clear_view(CAMERA["id"])
         if self.owner == "secondary":
             self.director.sent(self.j.clock, direction)
@@ -143,7 +147,7 @@ class SoundPatrol:
         if self.owner == "primary":
             lease = SimpleNamespace(acquire=AsyncMock(), release=AsyncMock(return_value=True),
                                     presets=[], active=None, event=lambda *_, **__: None)
-            planner = SimpleNamespace(public=lambda _: {}, mode="auto", intent_revision="intent",
+            planner = SimpleNamespace(public=lambda _: {"mode": self.mode}, mode=self.mode, intent_revision="intent",
                                       intent_status="configured")
             other = {"cam_2222222222": {"people": 1}} if self.occupied_elsewhere else {}
 
@@ -153,13 +157,14 @@ class SoundPatrol:
             self.scope.update(Transport=lambda: SimpleNamespace(close=AsyncMock()),
                 CameraLease=lambda *a, **k: lease, SearchPlanner=lambda *a: planner,
                 camera_intents=SimpleNamespace(load=lambda: SimpleNamespace(
-                    mode="auto", revision="intent", status="configured")),
+                    mode=self.mode, revision="intent", status="configured")),
                 os=SimpleNamespace(environ={}), SELECTED={"id": CAMERA["id"]}, state=self.state,
                 games=MotionGames(), party_camera=PartyCamera(),
                 previews=SimpleNamespace(sessions=other, status=lambda _: {"state": "live"}),
                 home=SimpleNamespace(camera_focus=None), safety=self.j.runtime,
                 motor_step=self.motor, camera_lease=None, camera_planner=None,
-                reap=reap, capture=self.process, generation=1)
+                reap=reap, capture=self.process, generation=1,
+                camera_intent_readback=camera_intent_readback, finish_camera_survey=finish_camera_survey)
             loop = source_function("homeplane/embodied/worker.py", "camera_search", self.scope)
         else:
             self.scope.update(item=self.item, selected={"id": CAMERA["id"]}, director=self.director,
@@ -219,6 +224,67 @@ async def test_short_sound_near_a_patrol_deadline_keeps_both_original_loops_stab
         patrol.j.runtime.speaker.say.assert_not_awaited()
     finally:
         await patrol.j.runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["primary", "secondary"])
+async def test_saved_sound_interrupts_survey_and_retains_follow_views(tmp_path, monkeypatch, owner):
+    def people(patrol):
+        if patrol.sound_moves:
+            return [sound_person(42, .43 if patrol.follow_moves else .76, "SYNTHETIC-new")]
+        return []
+
+    patrol = SoundPatrol(tmp_path, monkeypatch, owner, mode="survey", episode=(18.2, 22.2),
+                         people=people, occupied_elsewhere=True, run_until=78)
+    try:
+        await patrol.run()
+        event, = patrol.j.store.events()
+        assert event["kind"] == "sound_review"
+        assert patrol.sound_moves == ["right"], (patrol.moves, patrol.engine.qualified)
+        route_moves = [at for at, _ in patrol.moves if at < patrol.sound_sent_at[0]]
+        assert all(at < event["captured_at"] - 1000 for at in route_moves)
+        assert patrol.follow_moves == [("right", 42)]
+        assert len(patrol.moves) == len(route_moves) + 2
+        patrol.assert_saved_views(event)
+        assert event["sound_follow_view"] and event["track"] is None and not event["directional_audio"]
+        report = patrol.exit_control if owner == "primary" else patrol.item["camera_control"]
+        assert report["survey_result"] == "interrupted" and report["survey_interruption"] == "sound"
+        assert report["survey_confirmed_moves"] == report["survey_attempts"] == len(route_moves)
+        patrol.j.runtime.speaker.say.assert_not_awaited()
+    finally:
+        await patrol.j.runtime.close()
+
+
+def test_unsent_survey_step_yields_to_sound_and_retains_confirmed_progress():
+    director = CameraDirector()
+    director.apply_mode("survey", "SYNTHETIC-survey")
+
+    def frame(at, *, x=0, people=()):
+        return dict(sample(at, people=people, x=x), tracking_current=True)
+
+    assert director.choose(frame(.1), .1) is None
+    assert director.choose(frame(.3), .3) is None
+    assert director.choose(frame(15.4), 15.4) == "right"
+    director.sent(15.4)
+    for at in (17.6, 18.2, 18.6):
+        assert director.choose(frame(at, x=.05), at) is None
+    assert director.survey_confirmed_moves == 1
+
+    pending = frame(27.5, x=.05)
+    assert director.choose(pending, 27.5) == "right"
+    cue = SimpleNamespace(captured=22.0)
+    current = frame(27.7, x=.05)
+    assert not director.decision_current(current, 27.7, "right", sound_cue=cue)
+    assert director.choose(current, 27.7, sound_cue=cue) == "right"
+    assert director.phase == "sound_search"
+    occupied = frame(27.8, x=.05, people=(sound_person(42, .5, "SYNTHETIC-visible"),))
+    assert not director.decision_current(occupied, 27.8, "right", sound_cue=cue)
+    assert not director.decision_current(current, 27.7, "right", sound_cue=None)
+    assert director.choose(frame(27.9, x=.05), 27.9) is None
+    report = director.public()
+    assert report["survey_confirmed_moves"] == 1
+    assert report["survey_result"] == "interrupted" and report["survey_interruption"] == "sound"
+    assert director.choose(frame(30.0, x=.05), 30.0, sound_cue=cue) is None
 
 
 @pytest.mark.asyncio

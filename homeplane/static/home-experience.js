@@ -260,7 +260,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    const surveyHadFocus=globalThis.document?.activeElement===survey;
    surveyRow.hidden=!!picker||(!report&&(!viewing||followReport?.recognition_enabled===false));
    surveyReadback.hidden=!report;
-   let surveyText=({complete:'本轮巡视完成',interrupted:'本轮巡视未完成'}[report?.survey_result])||report?.reason||'';
+   const interrupted=report?.survey_interruption==='sound'?'本轮因异响结束':'本轮巡视未完成';
+   let surveyText=({complete:'本轮巡视完成',interrupted}[report?.survey_result])||report?.reason||'';
    if(running&&statusReadFailed)surveyText='巡视状态待更新';
    else if(running&&recovering)surveyText='等待感知恢复';
    else if(running&&followReport&&!hasLiveFrame())surveyText='等待画面恢复';
