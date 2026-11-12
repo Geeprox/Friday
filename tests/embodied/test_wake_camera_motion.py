@@ -16,7 +16,7 @@ from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.intent import address
 from homeplane.embodied.party_camera import PartyCamera
 from tests.embodied.test_camera_audio import CAMERA, audio, video, voice_service
-from tests.embodied.test_camera_director import person, sample
+from tests.embodied.test_camera_director import patrol_view, person, sample
 from tests.embodied.test_motor_recovery import extract, primary_scope
 from tests.embodied.test_review_motion import source_function
 
@@ -178,6 +178,91 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(
     assert not director.public()['physical_motion_verified']
     assert not home.attention.latest
     assert cue('cam_3333333333', state, None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner, word', [('primary', 'Friday'), ('secondary', '小福')])
+async def test_wake_tries_the_other_side_when_the_first_motor_step_keeps_the_same_view(
+        tmp_path, monkeypatch, owner, word):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, word, voiced_frames=2)
+    cue, safety = cue_source(home, clock, owner)
+    director = CameraDirector()
+    director.apply_mode('auto', 'original')
+    party = PartyCamera()
+    state = {}
+    send, sent = dispatch_for(owner, state, clock, director, home, cue, safety, party)
+
+    def observe(at, *, offset=0, registered_at=None, people=()):
+        clock.at = at
+        state.update(current_frame(at, source, offset=offset, people=people))
+        if registered_at is not None:
+            state['_patrol_view'] = patrol_view(registered_at, x=offset)
+        if owner == 'primary':
+            state['party_camera'] = party.status(camera=CAMERA['id'], session=SESSION, frame_mono=at, now=at)
+        wake = cue(CAMERA['id'], state, director.sound_search_cue)
+        direction = director.choose(state, at, sound_cue=wake)
+        assert director.take_sound_view() is None
+        return direction
+
+    assert observe(1.0) is None
+    assert observe(1.2) == 'right'
+    await send('right')
+    assert observe(3.4, registered_at=1.1) is None
+    assert observe(3.8) is None
+    assert observe(4.2, registered_at=3.8) is None
+    assert observe(4.6) == 'left'
+    assert director.position == (0, 0)
+    assert director.public()['patrol_view_state'] == 'unconfirmed'
+    await send('left')
+    assert [(row['action'], row['direction']) for row in sent] == [
+        ('motor_step', 'right'), ('motor_step', 'left'),
+    ]
+
+    caller = subject(7, .43)
+    assert observe(6.8, offset=-.05, people=[caller]) is None
+    assert observe(7.2, offset=-.05, people=[caller]) is None
+    assert observe(7.6, offset=-.05, people=[caller]) is None
+    assert director.position == (-1, 0)
+    assert director.target == caller['id'] and director.public()['target_locked']
+    assert not director.public()['physical_motion_verified']
+
+
+@pytest.mark.parametrize('change', ['source', 'replaced_wake', 'opposite_motion', 'small_motion', 'obscured'])
+def test_wake_does_not_reverse_when_the_original_clear_view_cannot_be_verified(change):
+    source = ('a' * 32, 'synthetic-source')
+    cue = WakeCameraCue(.5, SESSION, source, 7)
+    director = CameraDirector()
+    assert director.choose(current_frame(.1, source), .1) is None
+    assert director.choose(current_frame(.6, source), .6, sound_cue=cue) == 'right'
+    director.sent(.6)
+    replacement = WakeCameraCue(3, SESSION, source, 7)
+    for at in (2.8, 3.2, 3.6, 4.0):
+        frame = current_frame(at, source, offset={'opposite_motion': -.05, 'small_motion': .018}.get(change, 0))
+        if change == 'obscured':
+            frame['scene_visible'] = False
+        if change == 'source':
+            frame['_wake_source'] = ('b' * 32, source[1])
+        assert director.choose(frame, at, sound_cue=replacement if change == 'replaced_wake' else cue) is None
+        assert director.public()['patrol_view_state'] == 'checking'
+
+
+def test_wake_stops_after_two_confirmed_unchanged_views():
+    source = ('a' * 32, 'synthetic-source')
+    cue = WakeCameraCue(.5, SESSION, source, 7)
+    director = CameraDirector()
+    assert director.choose(current_frame(.1, source), .1) is None
+    for first, direction in ((.6, 'right'), (3.2, 'left')):
+        frame = current_frame(first, source)
+        assert director.choose(frame, first, sound_cue=cue) == direction
+        assert director.decision_current(frame, first, direction, sound_cue=cue)
+        director.sent(first)
+        assert director.choose(current_frame(first + 2.2, source), first + 2.2, sound_cue=cue) is None
+    assert director.choose(current_frame(5.8, source), 5.8, sound_cue=cue) is None
+    assert director.patrol_confirmation is None
+    assert director.sound_search_cue is None
+    assert director.position == (0, 0)
 
 
 @pytest.mark.asyncio

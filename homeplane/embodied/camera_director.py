@@ -629,6 +629,14 @@ class CameraDirector:
                 return shift
         return None
 
+    def _unchanged_wake_view(self, sample, now, pending, cue, view):
+        if (not pending['sound_search'] or not isinstance(cue, WakeCameraCue)
+                or cue is not self.sound_search_cue or view is None or not self._wake_frame_current(sample, now, cue)
+                or not self.last_move + 2 <= view[2] <= now):
+            return None
+        shift = _view_shift(pending['view'], view)
+        return shift if shift is not None and math.hypot(*shift) <= .012 else None
+
     def _confirm_patrol(self, sample, now, sound_cue=None):
         pending = self.patrol_confirmation
         if pending is None:
@@ -658,17 +666,27 @@ class CameraDirector:
             return False
         shift = (self._directional_shift(pending['view'], view, pending['direction'])
                  if sample.get('scene_visible') is True else None)
+        unchanged = shift is None
+        if unchanged:
+            shift = self._unchanged_wake_view(sample, now, pending, sound_cue, view)
         if shift is None:
             pending['previous'] = None
             return True
         previous = pending['previous']
-        if previous is not None:
-            previous_stamp, previous_view_at, previous_shift = previous
+        if previous is not None and previous[3] == unchanged:
+            previous_stamp, previous_view_at, previous_shift, _ = previous
             # 配准最多每 0.3 秒计算一次。两次采样必须跨过复用窗口。
             if view[2] - previous_view_at < .35:
                 return True
             if stamp - previous_stamp <= 3.5 and math.dist(shift, previous_shift) <= .025:
                 self.patrol_confirmation = None
+                self.visible_samples = 1
+                if unchanged:
+                    # 首步后仍在起始视角时，只需向另一侧试一步。
+                    self.sound_step += 1
+                    self.sound_route = self.sound_route[:max(2, self.sound_step)]
+                    self.patrol_view_state = 'unconfirmed'
+                    return False
                 self.patrol_view_state = 'confirmed'
                 self.failed_moves = 0
                 self.retry_at = 0.0
@@ -686,9 +704,8 @@ class CameraDirector:
                     if self.scan_steps >= 12:
                         self.scan_direction = 'left' if self.scan_direction == 'right' else 'right'
                         self.scan_steps = 0
-                self.visible_samples = 1
                 return False
-        pending['previous'] = (stamp, view[2], shift)
+        pending['previous'] = (stamp, view[2], shift, unchanged)
         return True
 
     def _review_holds(self, sample, now, review_pending, fall_pending, *, reserve=False):
