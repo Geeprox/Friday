@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Friday · 我的家</title><link rel="stylesheet" href="/homeplane/static/style.css"><link rel="stylesheet" href="/homeplane/static/icons.css"><link rel="stylesheet" href="/homeplane/static/home-conversation.css"><script defer src="/homeplane/static/copy-layout.js"></script>
+  <link rel="stylesheet" href="/homeplane/static/games-library.css"><link rel="stylesheet" href="/homeplane/static/home-experience.css"><link rel="stylesheet" href="/homeplane/static/interface.css"><link rel="stylesheet" href="/homeplane/static/connection-setup.css"><link rel="stylesheet" href="/homeplane/static/motion-guide.css"></head>
+<body>
+<a class="skip" href="#workspace">跳到内容</a>
+<aside class="sidebar"><a class="brand" id="brand-home" href="#home">Friday</a><div class="household"><span class="icon icon-home" aria-hidden="true"></span><span>我的家</span></div><nav aria-label="主导航" id="navigation"></nav><div class="sidebar-bottom"><nav id="utility-navigation" aria-label="设置"></nav><details class="developer-options"><summary>开发工具</summary><label class="toggle"><input type="checkbox" id="developer-mode"> 显示调试</label></details></div></aside>
+<div class="shell"><header class="topbar"><span id="mode" class="badge">示例家庭 · 模拟数据</span><span id="snapshot-time" class="muted"></span><button id="refresh" type="button"><span class="icon icon-refresh" aria-hidden="true"></span>刷新</button></header><main id="workspace" tabindex="-1"><div id="notification" role="status" aria-live="polite"></div><div class="page-header"><div><h1 id="page-title">互动控制</h1><p id="page-subtitle" class="muted">合成手势响应示例；未连接摄像头或真实设备。</p></div></div><section class="experience" id="content" aria-label="家庭状态"><p>正在读取家庭状态…</p></section></main></div>
+<script type="module">
+import {mountInteractions} from '/homeplane/static/interactions.js';
+const fixture=await (await fetch('/fixtures/homeplane/interaction-history.json')).json();
+const root=document.getElementById('content');root.replaceChildren();
+const camera=fixture.devices[0].id;
+const routes={
+ '/api/home/interactions':{config:fixture.config,gestures:fixture.gestures},
+ '/api/embodied/devices':{devices:fixture.targets},
+ '/api/embodied/status':{camera_sessions:[{camera,state:'live'}],interactions:{events:fixture.events}},
+ '/api/embodied/infrastructure':{policy:{enabled:true,recognition:true,interaction:true}},
+ '/api/embodied/voice-preferences':{revision:0,wake_word:'Friday'}
+};
+window.fetch=async(path,options={})=>{
+ if(options.method||!Object.hasOwn(routes,path))throw Error('合成预览仅允许读取固定示例');
+ return {ok:true,json:async()=>structuredClone(routes[path])};
+};
+mountInteractions(root,{data:{devices:fixture.devices},go(){},toast(){}});
+const timer=setInterval(()=>{
+ const tab=[...root.querySelectorAll('button')].find(n=>n.textContent==='手势与动作');
+ if(!tab)return;clearInterval(timer);tab.click();
+ root.querySelector('.interaction-recent').open=true;document.title='Friday · 手势响应合成示例';
+},10);
+</script></body></html>

@@ -151,6 +151,8 @@ async def dispatch_interactions(events):
             outcome='设备状态已更新' if receipt.get('reached_target') else '指令已发送' if receipt.get('acknowledged') else '未执行'
             wall.notice(e['camera'],action+' · '+outcome)
             fleet.receipts.append(dict(camera=e['camera'],target=e['target'],action=e['action'],
+                binding=e['binding'],revision=e['revision'],gesture=e.get('gesture'),scope=e.get('scope'),
+                triggered_at=e.get('triggered_at'),
                 status=receipt.get('status','unavailable'),acknowledged=bool(receipt.get('acknowledged')),
                 reached_target=bool(receipt.get('reached_target')),at=time.time()))
         home.spawn(dispatch())

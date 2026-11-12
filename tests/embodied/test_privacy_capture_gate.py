@@ -137,9 +137,11 @@ async def test_secondary_gesture_dispatch_does_not_require_primary_camera_armed(
         fleet=SimpleNamespace(current=lambda *_:True,receipts=[]),previews=pool)
     exec(compile(ast.Module(body=[source_guard,node],type_ignores=[]),'<production dispatch>','exec'),scope)
     event=dict(camera='secondary',session='synthetic-secondary',action='on',event_id='synthetic',target='lamp',
-               binding='a'*32,revision=1,observed_mono=time.monotonic())
+               binding='a'*32,revision=1,gesture='hand.open_palm',scope='home',
+               triggered_at=time.time(),observed_mono=time.monotonic())
     await scope['dispatch_interactions']([event]);await asyncio.gather(*tasks)
     if practice_active:
         command.assert_not_awaited()
+        assert not scope['fleet'].receipts
     else:
         command.assert_awaited_once()

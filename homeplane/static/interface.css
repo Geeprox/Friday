@@ -270,6 +270,14 @@ body :is(.caption,.muted,.meta,.tile-room,.tile-state,.device-time,.model-hint) 
 .interaction-binding p, .binding-unavailable { font-size: .8125rem; color: var(--muted); }
 .interaction-more, .interaction-recent { margin-block: 20px; border-block-start: 1px solid var(--line); }
 .interaction-more > summary, .interaction-recent > summary { min-height: 44px; padding-block: 10px; font-size: .875rem; }
+.experience .interaction-history-scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--home-line); border-radius: 10px; }
+.experience .interaction-history-scroll:focus-visible { outline: 2px solid #405844; outline-offset: 3px; }
+.experience .interaction-history-table { width: 100%; min-width: 650px; border-collapse: collapse; text-align: left; color: var(--home-ink); font-size: .8125rem; line-height: 1.6; }
+.experience .interaction-history-table caption { padding: 12px 16px; text-align: left; color: var(--home-muted); }
+.experience .interaction-history-table :is(th,td) { padding: 12px 16px; border-top: 1px solid var(--home-line); vertical-align: top; }
+.experience .interaction-history-table th { background: #f5f7f2; font-weight: 600; }
+.experience .interaction-history-table :is(th:first-child,td:first-child,th:last-child,td:last-child) { white-space: nowrap; }
+.experience .interaction-history-table small { display: block; margin-top: 4px; color: var(--home-muted); font-size: .75rem; }
 .voice-interaction { max-width: 760px; display: grid; gap: 16px; }
 .voice-interaction > h3 { margin-block: 20px 0; }
 .voice-camera-ready { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; background: var(--accent-soft); border-radius: var(--radius); }
