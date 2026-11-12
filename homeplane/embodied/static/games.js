@@ -38,7 +38,7 @@ function syncGameControls(){
  syncGameDifficulty(disabled);
  const record=$('recordToggle');if(record)record.disabled=disabled||typeof meta?.recording?.armed!=='boolean';
  const label=!current?(meta?'正在重新连接':'正在连接游戏'):commandPending?commandPending.label:
-  meta?.status==='live'?'已连接 · '+(meta.people?.length||0)+' 位玩家':'等待摄像头';
+  meta?.status==='live'?'镜头已连接':'等待摄像头';
  if($('connection').textContent!==label)$('connection').textContent=label;
 }
 if(new URLSearchParams(location.search).get('embed')==='1')document.body?.classList?.add?.('embedded');
@@ -138,6 +138,27 @@ function gamePhaseMessage(g){
   return g.reason?.includes('双脚')?'让双脚完整入镜，游戏会自动继续。':'镜头正在调整，稍候继续。';
  }
  return'正在连接游戏画面。';
+}
+function framingCopy(g){
+ if(!['waiting','calibrating','paused'].includes(g.status)||selected==='beam')return null;
+ const played=g.elapsed>0,doubles=selected==='tennis'&&!['practice','solo'].includes(g.tennis_variant);
+ const entry=played?'回到镜头前':'走到镜头前';
+ const titles={
+  players:doubles?'两位玩家一起入镜':entry,
+  body:'让全身入镜',
+  feet:'让双脚入镜',
+  hands:selected==='tennis'?'让挥拍手入镜':'让双手入镜',
+  still:'站定片刻',
+  space:'画面里留两位玩家',
+  camera:'等待镜头稳定'
+ };
+ if(!Object.hasOwn(titles,g.framing))return null;
+ const details={
+  feet:played?'画面清楚后自动继续。':'选好站位，站定片刻。',
+  still:'自然站立，双脚保持入镜。',
+  camera:played?'本局进度已保留。':''
+ };
+ return {title:titles[g.framing],detail:details[g.framing]||''};
 }
 const artRoot=new URL('.',document.currentScript?.src||new URL('/assets/games.js',location.href)),winterProps=new Image(),winterScene=new Image();
 let artError=false;
@@ -372,8 +393,9 @@ function updateSkiWarmup(g,visible){
  const {step,fraction}=warmup,ready=step==='ready';
  const [stepTitle,stepInstruction]=skiWarmupSteps[step];
  const observing=g.status==='playing';
- const title=observing||ready?stepTitle:'准备试滑';
- const instruction=observing?stepInstruction:g.status==='calibrating'?'自然站定片刻。':
+ const framing=framingCopy(g);
+ const title=observing?stepTitle:framing?.title||(ready?stepTitle:'准备试滑');
+ const instruction=observing?stepInstruction:framing?framing.detail:g.status==='calibrating'?'自然站定片刻。':
   meta?.room?.registration?.status==='locked'?'双手和双脚完整入镜。':'等待镜头就绪。';
  for(const [id,label] of [['skiWarmupTitle',title],['skiWarmupInstruction',instruction],
   ['skiWarmupContinue',ready?'开始滑行':'直接开滑']]){
@@ -521,11 +543,14 @@ function stageOverlayMarkup(g,current,playing){
  if(g.status==='waiting'&&g.presentation?.required===true&&!g.presentation.ready&&(g.quest?.phase==='transition'||g.hiit?.phase==='rest'))return'<h2>正在准备下一站</h2>';
  const recovery=g.source_recovery?.required===true,countdown=g.resume_seconds>0&&!g.manually_paused;
  const lineup=g.tennis?.lineup;
- if(selected==='tennis'&&!recovery&&!g.manually_paused&&!countdown&&Array.isArray(lineup)&&lineup.length===2&&
+ if(selected==='tennis'&&!recovery&&!g.manually_paused&&!countdown&&g.framing!=='body'&&Array.isArray(lineup)&&lineup.length===2&&
     lineup.every(state=>['ready','calibrating','feet','hands','missing'].includes(state))){
   const title=lineup.includes('missing')?'等待玩家回到画面':lineup.includes('hands')?'暂停等候':'确认双人站位';
   return '<h2>'+title+'</h2>'+tennisLineupMarkup(lineup);
  }
+ const framing=!recovery&&!g.manually_paused&&!countdown&&framingCopy(g);
+ if(framing)return '<div class="player-framing" data-cue="'+g.framing+'"><span class="framing-mark" aria-hidden="true"></span>'+
+  '<div><h2>'+framing.title+'</h2>'+(framing.detail?'<p>'+framing.detail+'</p>':'')+'</div></div>';
  const r=g.source_recovery;
  const title=recovery?(r.phase==='display'?'正在准备游戏画面':meta?.status!=='live'||r.phase==='camera'?'正在恢复画面':
   r.ready===true?(r.accepts_ok?'站位已确认':'玩家已就绪'):r.accepts_ok?'重新确认站位':r.phase==='players'?'请回到镜头前':'站定片刻'):
