@@ -957,7 +957,7 @@ class SafetyRuntime:
         def current():
             policy = self._cached_policy()
             return (policy.enabled and policy.sound_review and policy.sound_search and policy.revision == cue.revision
-                    and self.sound.search_generation == cue.generation and self._sound_input_open()
+                    and self.sound.owns_search_cue(cue) and self._sound_input_open()
                     and 0 <= time.monotonic() - captured <= self.SOUND_VIEW_SAVE_AGE and source_current())
 
         if not current():
@@ -1035,18 +1035,30 @@ class SafetyRuntime:
 
     def observe_audio(self, camera, admission):
         from .camera_audio import AdmittedAudio
-        ring = self._sound_source(camera)
-        if ring is None or not isinstance(admission, AdmittedAudio):
+        if not isinstance(admission, AdmittedAudio):
             self.sound.clear(camera)
             return
-        if admission.packet is None:
-            # 无效音频会中断连续性。来源失效或隐私撤销也要清除已印证的证据。
-            audio_only = admission.diagnostics.get('reason') in {
+        ring = self._sound_source(camera)
+        capture = self._capture_source(camera)
+        packet = admission.packet
+        if packet is None:
+            # 采样间断结束本次分析，已经交给留档的同源回执仍可使用。
+            reason = admission.diagnostics.get('reason')
+            audio_only = reason in {
                 'audio_stale', 'sequence_replayed', 'sequence_invalid', 'format_invalid',
             }
-            self.sound.clear(camera, keep_qualified=audio_only)
+            keep_search = ((audio_only or reason == 'video_stale') and (ring is not None or capture is not None)
+                           and self._sound_input_open())
+            self.sound.clear(camera, keep_qualified=audio_only and ring is not None, keep_search=keep_search)
             return
-        if admission.packet.get('camera_source_context') != ring['source_context']:
+        source = packet.get('camera_source_context')
+        same_capture = capture is not None and (packet.get('capture_session'), source) == (
+            capture.session, capture.context)
+        if ring is None:
+            # 转向期间只有采集进程仍可证明来源，等待新视角的识别画面。
+            self.sound.clear(camera, keep_search=same_capture and self._sound_input_open())
+            return
+        if source != ring['source_context'] or ring['capture'] is not None and not same_capture:
             self.sound.clear(camera)
             return
         self.sound.offer(camera, ring['session'], ring['source_context'], self.policy_cache.revision, admission)
@@ -1165,7 +1177,7 @@ class SafetyRuntime:
                 self.retention_failed = False
                 await asyncio.sleep(self.store.PRUNE_INTERVAL)
 
-    def _clear_view(self, camera):
+    def _clear_view(self, camera, *, keep_sound_search=False):
         token = self.source_tokens.pop(camera, None)
         if token is not None:
             token.set()
@@ -1173,7 +1185,7 @@ class SafetyRuntime:
         self.sources.pop(camera, None)
         self.source_epochs[camera] = self.source_epochs.get(camera, 0) + 1
         self.visual.clear(camera)
-        self.sound.clear(camera)
+        self.sound.clear(camera, keep_search=keep_sound_search)
         self.detector.clear(camera)
         self.frames.pop(camera, None)
         self.post_frames.pop(camera, None)
@@ -1184,7 +1196,7 @@ class SafetyRuntime:
         if self._capture_source(camera) is None:
             self.clear(camera)
             return
-        self._clear_view(camera)
+        self._clear_view(camera, keep_sound_search=True)
         self.recording.maintain()
         self.recording.wake()
 

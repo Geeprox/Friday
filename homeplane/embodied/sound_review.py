@@ -76,11 +76,13 @@ class SoundSearchCue:
     camera: str
     session: str
     context: str
+    capture: str
     revision: int
     generation: int
     captured: float
     captured_at: float
     receipt: ReviewReceipt
+    source_token: object = field(repr=False)
 
 
 class SoundReviewer:
@@ -108,8 +110,9 @@ class SoundReviewer:
     def readiness(self):
         return self.engine.readiness()
 
-    def clear(self, camera, *, keep_qualified=False):
-        self.search_cues.pop(camera, None)
+    def clear(self, camera, *, keep_qualified=False, keep_search=False):
+        if not keep_search:
+            self.search_cues.pop(camera, None)
         state = self.windows.pop(camera, None)
         if state is not None:
             state.packets.clear()
@@ -141,10 +144,10 @@ class SoundReviewer:
             self.clear(camera)
             state = None
         if not 0 <= now-admission.received_mono <= MAX_AGE or not self.readiness()['available']:
-            self.clear(camera, keep_qualified=True)
+            self.clear(camera, keep_qualified=True, keep_search=True)
             return
         if state and (admission.reset or state.epoch != epoch):
-            self.clear(camera, keep_qualified=True)
+            self.clear(camera, keep_qualified=True, keep_search=True)
             state = None
         if state is None:
             tracked = self.windows.keys() | self.qualified_cries.keys()
@@ -156,7 +159,7 @@ class SoundReviewer:
                                                         submitted=self.served.get(camera, -math.inf))
         if (state.packets and (p['audio_sequence'] != state.packets[-1].sequence+1
                 or p['sample_start'] != state.packets[-1].sample_start+PCM_BYTES//2)):
-            self.clear(camera, keep_qualified=True)
+            self.clear(camera, keep_qualified=True, keep_search=True)
             return
         state.seen = admission.received_mono
         state.packets.append(SoundPacket(admission.received_mono, p['received_at'], p['audio_sequence'],
@@ -219,7 +222,8 @@ class SoundReviewer:
         active = (self.active_camera == camera and self.task is not None
                   and not self.task.done() and not self.task.cancelling())
         if state.candidate is None:
-            return active
+            # 正在分析的普通声音给已留档的同源异响让路。已有阳性证据仍可请求复核。
+            return active and self.search_cue(camera, session) is None
         candidate = state.candidate
         if (not 0 <= self.clock()-candidate.captured <= 12
                 or self._suppressed(camera, state, candidate.kind, infant=candidate.infant_cry)):
@@ -236,10 +240,16 @@ class SoundReviewer:
         return (not self.closed and p.enabled and p.sound_review and p.revision == state.revision
                 and self.current(camera, state.session, state.context))
 
+    def owns_search_cue(self, cue):
+        """同一采集来源可以换视角，也可以有更新的异响回执。"""
+        latest = self.search_cues.get(cue.camera)
+        return (not self.closed and latest is not None and latest.source_token is cue.source_token
+                and cue.generation == self.search_generation)
+
     def search_cue(self, camera, session, active=None):
-        """转向会清空采样。已开始的环视仅在原来源恢复后继续复查同一回执。"""
+        """只有原采集来源重新提供新鲜画面后，才能使用保留的回执。"""
         cue = active if active is not None else self.search_cues.get(camera)
-        if cue is None or cue.camera != camera or cue.session != session or cue.generation != self.search_generation:
+        if cue is None or cue.camera != camera or cue.session != session or not self.owns_search_cue(cue):
             return None
         now = self.clock()
         max_age = SOUND_SEARCH_MAX_AGE if active is not None else SOUND_SEARCH_START_AGE
@@ -295,9 +305,13 @@ class SoundReviewer:
         if (isinstance(delivered, ReviewReceipt) and self.policy().sound_search
                 and search_generation == self.search_generation
                 and self._source_current(camera, state)):
-            self.search_cues.pop(camera, None)
-            self.search_cues[camera] = SoundSearchCue(camera, state.session, state.context, state.revision,
-                                                     self.search_generation, latest.captured, latest.captured_at, delivered)
+            previous = self.search_cues.get(camera)
+            same_source = previous and (previous.session, previous.context, previous.capture, previous.revision) == (
+                state.session, state.context, state.capture, state.revision)
+            token = previous.source_token if same_source else object()
+            self.search_cues[camera] = SoundSearchCue(camera, state.session, state.context, state.capture,
+                                                     state.revision, self.search_generation, latest.captured,
+                                                     latest.captured_at, delivered, token)
             if len(self.search_cues) > 8:
                 self.search_cues.pop(next(iter(self.search_cues)))
 
@@ -373,7 +387,7 @@ class SoundReviewer:
             if not self._source_current(camera, state):
                 self.clear(camera)
             elif not 0 <= self.clock()-state.seen <= MAX_AGE:
-                self.clear(camera, keep_qualified=True)
+                self.clear(camera, keep_qualified=True, keep_search=True)
         for camera, qualified in list(self.qualified_cries.items()):
             if self.qualified_cries.get(camera) is not qualified:
                 continue

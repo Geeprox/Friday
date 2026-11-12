@@ -624,18 +624,17 @@ class CameraDirector:
 
     def _sound_search(self, sample, now, cue, *, may_search):
         scope = self._sound_scope(sample)
-        if (self.sound_search_cue is None and cue is not None and scope is not None
+        if (may_search and self.sound_search_cue is None and cue is not None and scope is not None
                 and cue.captured > self.last_sound_captured and cue.captured >= self.sound_intent_since):
             self.last_sound_captured = cue.captured
-            if may_search:
-                first = self.scan_direction
-                other = 'left' if first == 'right' else 'right'
-                if self._next_position(first) in self.blocked_positions:
-                    first, other = other, first
-                self.sound_search_cue = cue
-                self.sound_view = scope
-                self.sound_route = (first, other, other)
-                self.sound_step = 0
+            first = self.scan_direction
+            other = 'left' if first == 'right' else 'right'
+            if self._next_position(first) in self.blocked_positions:
+                first, other = other, first
+            self.sound_search_cue = cue
+            self.sound_view = scope
+            self.sound_route = (first, other, other)
+            self.sound_step = 0
         if self.sound_search_cue is None:
             return None
         if not may_search or self.sound_step >= len(self.sound_route):
