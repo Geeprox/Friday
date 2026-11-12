@@ -537,9 +537,12 @@ function stageOverlayMarkup(g,current,playing){
   (resume?'<button class="primary" data-click="resumeGame()">继续本局</button>'+gestureHint+'<p id="resumeNotice" class="resume-notice" role="status"></p>':'');
 }
 function updateBeamHUD(g,playing){
- if(selected!=='beam'){delete document.body.dataset.beamLobby;return;}
+ if(selected!=='beam'){
+  delete document.body.dataset.beamLobby;delete document.body.dataset.beamResult;return;
+ }
  document.body.dataset.beamLobby=String(!playing);
  const view=beamView(g),hit=beamStage.impact(performance.now()),measuring=view.phase==='calibrate';
+ document.body.dataset.beamResult=String(g.status==='complete'&&!hit);
  const steps=['在胸前摆出 L','保持 L，向左偏一点','保持 L，向右偏一点','保持 L，稍稍抬高','保持 L，稍稍放低'];
  const title=hit?'命中！':measuring?steps[view.step]||steps[0]:view.phase==='release'?'放下双臂':
   view.phase==='lock'?'稳住，光线在蓄力':view.phase==='aim'?'瞄向绒球':

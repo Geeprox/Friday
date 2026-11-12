@@ -6,10 +6,10 @@
     .up-lower { transform: rotate(-153deg); animation-name: up-lower; }
     .across-upper { transform: rotate(13deg); animation-name: across-upper; }
     .across-lower { transform: rotate(77deg); animation-name: across-lower; }
-    @keyframes up-upper { 0%, 12%, 96%, 100% { transform: rotate(13deg); } 44%, 74% { transform: rotate(-27deg); } }
-    @keyframes up-lower { 0%, 12%, 96%, 100% { transform: rotate(-5deg); } 44%, 74% { transform: rotate(-153deg); } }
-    @keyframes across-upper { 0%, 12%, 96%, 100% { transform: rotate(-13deg); } 44%, 74% { transform: rotate(13deg); } }
-    @keyframes across-lower { 0%, 12%, 96%, 100% { transform: rotate(5deg); } 44%, 74% { transform: rotate(77deg); } }
+    @keyframes up-upper { 24%, 38% { transform: rotate(13deg); } 0%, 8%, 64%, 100% { transform: rotate(-27deg); } }
+    @keyframes up-lower { 24%, 38% { transform: rotate(-5deg); } 0%, 8%, 64%, 100% { transform: rotate(-153deg); } }
+    @keyframes across-upper { 24%, 38% { transform: rotate(-13deg); } 0%, 8%, 64%, 100% { transform: rotate(13deg); } }
+    @keyframes across-lower { 24%, 38% { transform: rotate(5deg); } 0%, 8%, 64%, 100% { transform: rotate(77deg); } }
     @media (prefers-reduced-motion: reduce) { .arm { animation: none; } }
   </style>
   <g stroke="#334a3d" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">

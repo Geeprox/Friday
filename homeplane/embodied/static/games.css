@@ -350,7 +350,7 @@ body[data-mode=beam] .bar{background:#d7decf}
 body[data-mode=beam] .bar i{background:#446c53}
 body[data-mode=beam] .score{background:#faf8ee;color:#263e34;min-width:104px;white-space:nowrap;font-variant-numeric:tabular-nums;text-align:end}
 body[data-mode=beam] .score small{color:#42594b;font-size:13px}
-body[data-beam-lobby=true] .hud{visibility:hidden}
+body:is([data-beam-lobby=true],[data-beam-result=true]) .hud{visibility:hidden}
 body[data-mode=beam] .overlay{width:min(408px,calc(100% - 32px))}
 body[data-mode=beam] .overlay:has(.beam-lobby-pose){padding-block:21px 24px}
 .beam-lobby-pose{display:block;width:136px;height:110px;object-fit:contain;margin:2px auto 6px}
@@ -359,14 +359,15 @@ body[data-mode=beam] .player-feedback:has(#camera[hidden]){background:transparen
 body[data-mode=beam] #feedback{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 
 @media(max-width:760px) and (orientation:portrait){
- body[data-mode=beam] .workspace{background:var(--paper);grid-template-rows:auto clamp(204px,43svh,310px) auto auto}
+ body[data-mode=beam]{min-height:100svh;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
+ body[data-mode=beam] .workspace{height:100%;background:var(--paper);grid-template-rows:auto minmax(196px,1fr) auto auto}
  body[data-mode=beam] #world{height:100%;min-height:0}
  body[data-mode=beam] .hud{padding:2px 0;align-items:center}
  body[data-mode=beam] .mission-block,body[data-mode=beam] .score{background:transparent}
  body[data-mode=beam] .score{min-width:56px}
  body[data-mode=beam] .score small{font-size:11px}
  body[data-mode=beam] .instruction{min-height:3.1em}
- body[data-beam-lobby=true] .hud{display:none}
+ body:is([data-beam-lobby=true],[data-beam-result=true]) .hud{display:none}
  body[data-mode=beam] .overlay{max-height:calc(100% - 12px);overflow:auto;padding:15px}
  body[data-mode=beam] .overlay:has(.beam-lobby-pose){padding-block:12px 15px}
  .beam-lobby-pose{width:92px;height:74px}
