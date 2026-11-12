@@ -89,6 +89,55 @@ async def test_actual_qualified_audio_creates_one_reviewable_event_without_audio
 
 
 @pytest.mark.asyncio
+async def test_recent_cry_keeps_an_independent_sustained_infant_cry_reviewable(tmp_path, monkeypatch):
+    j = Journey(tmp_path, monkeypatch)
+    j.store.configure_sound_search(j.store.policy().revision, True)
+    ordinary = {'kind': 'crying', 'confidence': .95}
+    infant = {'kind': 'crying', 'confidence': .96, 'infant_cry': True}
+
+    async def classify(_):
+        return infant if 2 <= j.engine.analyze.await_count <= 8 else ordinary
+
+    j.engine.analyze.side_effect = classify
+    try:
+        for index in range(20):
+            await j.tick(index, jpeg=f'FRAME:{index}'.encode())
+        await j.runtime.drain()
+        first, = j.store.events()
+        assert first['sound_kind'] == 'crying' and 'pattern' not in first['sound_evidence']
+        j.store.update(first['id'], review='false_alarm')
+        for index in range(20, 40):
+            await j.tick(index, jpeg=f'FRAME:{index}'.encode())
+        await j.runtime.drain()
+        assert len(j.store.events()) == 1
+        pending = j.runtime.review_pending(CAMERA['id'], 'visual-session')
+        for index in range(40, 52):
+            await j.tick(index, jpeg=f'FRAME:{index}'.encode())
+        await j.runtime.drain()
+        events = j.store.events()
+        assert len(events) == 2, '普通哭声的去重覆盖了三段后续同源证据'
+        assert pending
+        later, earlier = events
+        assert earlier['id'] == first['id'] and earlier['review'] == 'false_alarm'
+        assert later['id'] != earlier['id'] and later['review'] == 'unreviewed'
+        assert later['sound_evidence'] == dict(confidence=.96, corroborating_windows=3, audio_seconds=6,
+                                              age_basis='local_sdk_receive', pattern='sustained_infant_cry')
+        frame_indexes = [int(j.store.frame(later['id'], frame['ordinal']).split(b':')[1])
+                         for frame in later['frames']]
+        assert [index // 10 for index in frame_indexes] == [2, 3, 4]
+        assert 0 < later['captured_at'] - earlier['captured_at'] < 60
+        cue = j.runtime.sound_search_cue(CAMERA['id'], 'visual-session')
+        assert cue is not None and cue.receipt.event_id == later['id']
+        for index in range(52, 103):
+            await j.tick(index)
+        await j.runtime.drain()
+        assert {event['id'] for event in j.store.events()} == {earlier['id'], later['id']}
+        j.runtime.speaker.say.assert_not_awaited()
+    finally:
+        await j.runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('ending', ['quiet', 'gap', 'busy', 'model_error', 'retired'])
 async def test_two_infant_windows_require_a_continuous_third_before_sustained_review(tmp_path, monkeypatch, ending):
     j = Journey(tmp_path, monkeypatch)

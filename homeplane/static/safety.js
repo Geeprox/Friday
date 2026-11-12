@@ -240,27 +240,29 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    selected=event.id;detail.hidden=false;frameButtons.clear();
    const heading=el('h2',eventTitle(event),{tabindex:'-1'});
    const rapid=isRapidMovementReview(event),review=reviewNames[event.review]||'待查看';
+   const sustained=event.kind==='sound_review'&&event.sound_kind==='crying'&&event.sound_evidence?.pattern==='sustained_infant_cry';
    const source=event.camera?(event.camera_name||'摄像头记录')+' · '+new Date(eventTime(event)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'';
    const searchOrdinals=new Set(event.kind==='sound_review'&&Array.isArray(event.sound_search_views)?
     event.sound_search_views.map(view=>view?.ordinal):[]);
    const searchFrames=event.frames.filter(frame=>searchOrdinals.has(frame.ordinal)).sort((a,b)=>a.at-b.at);
    const eventFrames=event.frames.filter(frame=>!searchOrdinals.has(frame.ordinal));
+   const compact=rapid||sustained||searchFrames.length>0;
    detailBody.replaceChildren(heading);
-   if(rapid||searchFrames.length)detailBody.append(el('p',[source,review].filter(Boolean).join(' · '),{class:'caption'}));
+   if(compact)detailBody.append(el('p',[source,review].filter(Boolean).join(' · '),{class:'caption'}));
    else detailBody.append(el('p',event.message),el('p',review));
-   if(searchFrames.length&&event.sound_evidence?.pattern==='sustained_infant_cry')detailBody.append(el('p',event.message));
+   if(sustained)detailBody.append(el('p',event.message));
    for(const[id,row]of eventRows)row.setAttribute('aria-current',String(id===event.id));
    if(event.kind==='fall'||isOutputTest(event))detailBody.append(el('p',audioNames[event.announcement.status]||'播报状态未知',{role:'status'}));
    if(event.observation&&!rapid)detailBody.append(el('h3','模型观察 · 待你核对'),el('p',event.observation));
-   if(source&&!rapid&&!searchFrames.length)detailBody.append(el('p',source,{class:'caption'}));
+   if(source&&!compact)detailBody.append(el('p',source,{class:'caption'}));
    const actions=el('div',null,{class:'safety-actions'});
    let restoreFocus;
    if(!event.simulated&&event.camera){const recording=button('查看附近录像',()=>void openRecordings(event));recording.className='primary';actions.append(recording);if(focusedRecording)restoreFocus=recording;}
    for(const[value,label]of [['acknowledged',event.review==='acknowledged'?'已查看':'我已查看'],['false_alarm','标记误报']]){const action=button(label,async()=>{try{await api('/events/'+event.id+'/review',{review:value});await refreshHistory(true);}catch{if(alive){historyStatus.hidden=false;historyStatus.textContent='标记未保存，请重试。';}}});action.setAttribute('data-review',value);action.setAttribute('aria-pressed',String(event.review===value));if(value===focusedReview)restoreFocus=action;actions.append(action);}
    if(!rapid)detailBody.append(actions);
-   if(searchFrames.length){
-     if(eventFrames.length)detailBody.append(soundFrameGroup('异响时的画面',event,eventFrames));
-     detailBody.append(soundFrameGroup('环视画面',event,searchFrames,true));
+   if(searchFrames.length||sustained&&eventFrames.length){
+     if(eventFrames.length)detailBody.append(soundFrameGroup(sustained?'哭声时的画面':'异响时的画面',event,eventFrames.sort((a,b)=>a.at-b.at)));
+     if(searchFrames.length)detailBody.append(soundFrameGroup('环视画面',event,searchFrames,true));
    }else if(eventFrames.length){
      detailBody.append(el('h3','关键帧'));
      if(event.visual_kind==='prone_posture'&&event.frames.length===8){

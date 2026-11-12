@@ -20,6 +20,7 @@ INFANT_CRY_DEADLINE = INFANT_CRY_INTERVAL + MAX_AGE
 REVIEW_MAX_AGE = 6
 SOUND_SEARCH_START_AGE = 8
 SOUND_SEARCH_MAX_AGE = 20
+MAX_RECORDING_RECEIPTS = 40
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class SoundWindow:
     packets: deque[SoundPacket] = field(default_factory=lambda: deque(maxlen=10))
     seen: float = -math.inf
     submitted: float = -math.inf
+    recorded_sample_end: int = 0
     candidate: SoundEvidence | None = None
     followup: bool = False
 
@@ -153,12 +155,12 @@ class SoundReviewer:
         state.seen = admission.received_mono
         state.packets.append(SoundPacket(admission.received_mono, p['received_at'], p['audio_sequence'],
                                          p['sample_start'], base64.b64decode(p['pcm'], validate=True)))
-        if (len(state.packets) < 10 or now-state.submitted < 2 or now < self.retry_after
+        if (not self._window_ready(state, now) or now < self.retry_after
                 or self.task or self.cleanup_task and not self.cleanup_task.done()):
             return
         # 每个阳性候选可优先取得一次复核。连续两段婴儿哭声可再取一段，随后让给其他镜头。
         eligible = [(s.submitted, index, cid) for index, (cid, s) in enumerate(self.windows.items())
-                    if len(s.packets) == 10 and 0 <= now-s.seen <= MAX_AGE and now-s.submitted >= 2]
+                    if self._window_ready(s, now)]
         priority = [item for item in eligible if self._followup_ready(item[2], self.windows[item[2]])]
         if eligible and min(priority or eligible)[2] != camera:
             return
@@ -176,6 +178,11 @@ class SoundReviewer:
         self.active_refinement = qualified if followup and qualified and qualified.source is state else None
         self.task = asyncio.create_task(self._review(camera, state, packets, allow_followup=not followup))
         self.task.add_done_callback(self._finished)
+
+    @staticmethod
+    def _window_ready(state, now):
+        return (len(state.packets) == 10 and 0 <= now-state.seen <= MAX_AGE and now-state.submitted >= 2
+                and state.packets[0].sample_start >= state.recorded_sample_end)
 
     def _followup_ready(self, camera, state):
         previous = state.candidate
@@ -208,9 +215,8 @@ class SoundReviewer:
         if state.candidate is None:
             return active
         candidate = state.candidate
-        receipt = self.recorded.get((camera, candidate.kind))
         if (not 0 <= self.clock()-candidate.captured <= 12
-                or receipt is not None and receipt.suppresses(self.clock())):
+                or self._suppressed(camera, state, candidate.kind, infant=candidate.infant_cry)):
             return False
         return bool(state.followup or active)
 
@@ -241,13 +247,22 @@ class SoundReviewer:
         return (self.windows.get(camera) is state and 0 <= now-state.seen <= MAX_AGE
                 and 0 <= now-packets[-1].received_mono <= REVIEW_MAX_AGE and self._source_current(camera, state))
 
+    def _suppressed(self, camera, state, kind, *, infant=False):
+        now = self.clock()
+        if kind == 'crying':
+            sustained = self.recorded.get((camera, state.context, kind, True))
+            if sustained is not None and sustained.suppresses(now):
+                return True
+            if infant:
+                return False
+        ordinary = self.recorded.get((camera, state.context, kind, False))
+        return ordinary is not None and ordinary.suppresses(now)
+
     async def _deliver(self, camera, state, evidence):
         latest = evidence[-1]
-        key = (camera, latest.kind)
-        receipt = self.recorded.get(key)
-        now = self.clock()
-        if (not 0 <= now-latest.captured <= REVIEW_MAX_AGE or not self._source_current(camera, state)
-                or receipt is not None and receipt.suppresses(now)):
+        sustained = len(evidence) == 3
+        if (not 0 <= self.clock()-latest.captured <= REVIEW_MAX_AGE or not self._source_current(camera, state)
+                or self._suppressed(camera, state, latest.kind, infant=sustained)):
             return
         frames = [window.keyframe for window in evidence if window.keyframe is not None]
         result = dict(kind=latest.kind, confidence=min(window.confidence for window in evidence),
@@ -255,7 +270,7 @@ class SoundReviewer:
                       corroborating_windows=len(evidence), audio_seconds=2*len(evidence),
                       age_basis='local_sdk_receive', policy_revision=state.revision,
                       keyframes=[(latest.captured_at + (stamp-latest.captured), jpeg) for stamp, jpeg in frames])
-        if len(evidence) == 3:
+        if sustained:
             result['pattern'] = 'sustained_infant_cry'
         search_generation = self.search_generation
         delivered = self.deliver(camera, state.session, state.context, result)
@@ -263,10 +278,13 @@ class SoundReviewer:
             delivered = await delivered
         if delivered is False:
             return
+        # 已提交的分析段归属原记录。下一条提醒从这些采样之后开始取证。
+        state.recorded_sample_end = max(state.recorded_sample_end, latest.sample_end)
+        key = (camera, state.context, latest.kind, sustained)
         self.recorded.pop(key, None)
         self.recorded[key] = (delivered if isinstance(delivered, ReviewReceipt)
                               else ReviewReceipt(pending=False, saved_at=self.clock()))
-        if len(self.recorded) > 32:
+        if len(self.recorded) > MAX_RECORDING_RECEIPTS:
             self.recorded.pop(next(iter(self.recorded)))
         if (isinstance(delivered, ReviewReceipt) and self.policy().sound_search
                 and search_generation == self.search_generation
@@ -286,7 +304,8 @@ class SoundReviewer:
                         if self.keyframe is not None else None)
             result = await self.engine.analyze(b''.join(p.pcm for p in packets))
             self.last_used = self.clock()
-            if not self._current(camera, state, packets):
+            if (not self._current(camera, state, packets)
+                    or first.sample_start < state.recorded_sample_end):
                 return
             self.completed += 1
             self.error = None
@@ -298,7 +317,7 @@ class SoundReviewer:
                 candidate = SoundEvidence(result['kind'], last.sample_start+PCM_BYTES//2, last.received_mono,
                                           last.received_at, result['confidence'],
                                           result['kind'] == 'crying' and result.get('infant_cry') is True, keyframe)
-                if previous and previous.kind == candidate.kind:
+                if previous and previous.sample_end > state.recorded_sample_end and previous.kind == candidate.kind:
                     gap = first.sample_start - previous.sample_end
                     interval = candidate.captured - previous.captured
                     corroborates = gap >= 0 and 0 < interval <= REVIEW_MAX_AGE
@@ -320,16 +339,15 @@ class SoundReviewer:
                     corroborates = continuous_infant = False
             if candidate is None:
                 return
-            receipt = self.recorded.get((camera, candidate.kind))
-            if receipt is not None and receipt.suppresses(self.clock()):
+            if self._suppressed(camera, state, candidate.kind, infant=candidate.infant_cry):
                 return
-            if not corroborates:
-                state.followup = allow_followup
-            elif continuous_infant:
+            if continuous_infant:
                 self.qualified_cries[camera] = QualifiedCry(state, (previous, candidate))
                 state.followup = True
-            else:
+            elif corroborates and not self._suppressed(camera, state, candidate.kind):
                 await self._deliver(camera, state, (previous, candidate))
+            else:
+                state.followup = allow_followup
         except asyncio.CancelledError:
             await self.engine.close()
             raise

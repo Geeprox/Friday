@@ -59,7 +59,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
 Synthetic preview only. No live camera/microphone/model/TV/device activation. Desired gaze/wake confidence semantics and configurable wake words are captured as product truth; correcting the full speech execution chain and a Rust migration are separate functional changes, not claimed by this UI refactor. Host resource sampling is passive and bounded, with null values when unavailable. Background service and safety/event summaries read existing owners and never start them.
 
-持续婴儿哭声复核使用现有提醒列表、首页入口和详情。符合三段同源证据时显示“疑似持续婴儿哭声”，保留镜头名、时间、关键帧和查看附近录像入口。普通哭声沿用原名称。设置页以本机已知标签和声音复核开关显示可用状态。照护行为仍显示原能力状态。
+持续婴儿哭声复核使用现有提醒列表、首页入口和详情。符合三段同源证据时显示“疑似持续婴儿哭声”，镜头、时间与查看状态放在同一行。声音对应画面按时间放在一组，桌面三帧并排，窄屏最多两列。附近录像沿同一提醒打开。普通哭声沿用原名称。设置页以本机已知标签和声音复核开关显示可用状态。照护行为仍显示原能力状态。
 
 异响提醒沿同一详情显示「异响时的画面」和「环视画面」，各组按实际采集时间排列。环视缩略图同时显示时间和「回看」，点击后在证据下方打开所选时段。切换视角撤销旧录像，定期刷新保留当前视角和键盘焦点。窄屏每行最多两张画面。监测状态失败的提示与已存提醒独立显示。
 
