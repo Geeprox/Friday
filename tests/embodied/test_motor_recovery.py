@@ -142,6 +142,7 @@ def primary_scope():
                  SELECTED=dict(id='synthetic'), motor_sequence=0, motion_generation=0,
                  motor_last_sent=-100, motor_waiters={}, room_lock=asyncio.Lock(),calibration_frames=CalibrationFrames(),
                  room=SimpleNamespace(expect_motion=noop), identities=SimpleNamespace(discard=noop),
+                 safety=SimpleNamespace(clear_view=noop),
                  fleet=SimpleNamespace(clear=noop),
                  home=SimpleNamespace(selected=True, epoch=0, vad=[], pending_audio=None,
                                       runtime_log=SimpleNamespace(record=noop)))
@@ -210,7 +211,7 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
                  motion_lock=asyncio.Lock(), selected=dict(id='synthetic'),
                  process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=sent.append, drain=AsyncMock())),
                  waiters={}, recognizer=None, privacy_closed=noop,
-                 self=SimpleNamespace(on_clear=None, focus=lambda _: None, occupied_elsewhere=lambda _: False,
+                 self=SimpleNamespace(on_motion=None, focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                       review_pending=lambda *_:scope.get('review_pending',False),
                                       fall_pending=lambda *_:scope.get('fall_pending',False),
                                       sound_cue=lambda *_:None,
@@ -254,7 +255,7 @@ async def test_primary_search_original_guard_rechecks_the_current_target(change)
     scope['state'].update(current(at))
     scope.update(director=director, direction='right', games=SimpleNamespace(public={}),
                  previews=SimpleNamespace(sessions={}),
-                 safety=SimpleNamespace(review_pending=lambda *_:False,fall_pending=lambda *_:False,
+                 safety=SimpleNamespace(clear_view=lambda _:None, review_pending=lambda *_:False,fall_pending=lambda *_:False,
                                         sound_search_cue=lambda *_:None))
     extract('homeplane/embodied/worker.py', {'decision_current'}, scope)
     class Wait:

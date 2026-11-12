@@ -16,6 +16,7 @@ import pytest
 from homeplane.embodied.party_camera import PartyCamera
 
 from homeplane.embodied import camera_recognition, previews, ptz_control
+from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.camera_intent import TARGET_MODES
 from homeplane.embodied.motion_games import MotionGames
@@ -32,7 +33,9 @@ CAMERA = dict(id='cam_1111111111', name='Synthetic', room='Synthetic')
 async def test_capture_fault_revokes_live_inputs_before_blocked_inference_returns(tmp_path, monkeypatch, fault):
     reads = asyncio.Queue()
     accepted, entered, release, delivered = (asyncio.Event() for _ in range(4))
-    observed, cleared, restored = [], [], []
+    observed, cleared, restored, capture_frames = [], [], [], []
+    camera = dict(CAMERA, device={'did': 'synthetic-camera'})
+    context = camera_source_context(camera)
     jpeg = b'\xff\xd8SYNTHETIC-NOT-CAMERA-PIXELS\xff\xd9'
     wall = CameraWall([CAMERA])
 
@@ -100,28 +103,38 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         accepted.set()
 
     pool = previews.PreviewPool(continuous=False, recognize=True, wall=wall,
-                               on_observation=observation, on_clear=cleared.append)
+                               on_observation=observation, on_clear=cleared.append,
+                               on_capture_frame=lambda *args: capture_frames.append(args))
     item = dict(state='connecting', recognizer=None, process=None, shutter_changed=False,
                 expires=time.monotonic()+60, frames=0, frame=None, received_at=0)
     pool.sessions[CAMERA['id']] = item
 
-    def frame():
+    def frame(session):
         at = time.time()
         return json.dumps(dict(type='frame', jpeg=base64.b64encode(jpeg).decode(),
             preview=base64.b64encode(jpeg).decode(), preview_at=at, received_at=at,
+            capture_session=session, camera_source_context=context,
             width=640, height=360)).encode()
 
-    task = asyncio.create_task(pool._run(CAMERA, item))
+    task = asyncio.create_task(pool._run(camera, item))
     try:
-        reads.put_nowait(frame())
+        async with asyncio.timeout(.5):
+            while not process.stdin.write.called:
+                await asyncio.sleep(0)
+        capture = json.loads(process.stdin.write.call_args_list[0].args[0])
+        assert not capture['audio']
+        reads.put_nowait(frame(capture['capture_session']))
         await asyncio.wait_for(accepted.wait(), .5)
         await asyncio.sleep(0)
         assert item['state'] == 'live' and item['frames'] == 1
         status = pool.status(CAMERA['id'])
         assert status['recognition'] == 'running' and 0 <= status['latency_ms'] < 500
-        reads.put_nowait(frame())
+        reads.put_nowait(frame(capture['capture_session']))
         await asyncio.wait_for(entered.wait(), .5)
         assert not task.done() and wall.frame(CAMERA['id'])
+        assert len(capture_frames) == 2
+        assert all(row[:3] == (CAMERA['id'], capture['capture_session'], context) for row in capture_frames)
+        assert 0 <= time.monotonic() - capture_frames[1][3] < .5
         reads.put_nowait(fault)
         await asyncio.wait_for(delivered.wait(), .5)
         await asyncio.sleep(0)
@@ -439,6 +452,7 @@ async def test_actual_worker_callback_cannot_rearm_or_dispatch_after_source_reti
         fleet=SimpleNamespace(update=Mock(return_value=[]), clear=Mock(), cameras={}, voice=Mock(return_value=False)),
         wall=SimpleNamespace(observe=Mock()), secondary_homes={CAMERA['id']: service},
         SELECTED={'id': 'synthetic-primary'}, home=object(), PRIVATE=tmp_path, interaction_enabled=True)
+    actual('homeplane/embodied/worker.py', 'clear_interactions', scope)
     clear = actual('homeplane/embodied/worker.py', 'clear_camera', scope)
     actual('homeplane/embodied/worker.py', 'secondary_frame_current', scope)
 

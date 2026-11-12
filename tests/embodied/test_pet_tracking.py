@@ -214,6 +214,7 @@ async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once
         camera_lease=SimpleNamespace(snapshot={'status':'owned'}),room_lock=asyncio.Lock(),
         SELECTED=selected,camera_is_open=AsyncMock(return_value=True),close_primary_view=noop,
         identities=SimpleNamespace(discard=noop),fleet=SimpleNamespace(clear=noop),
+        safety=SimpleNamespace(clear_view=noop),
         home=SimpleNamespace(selected=True,epoch=0,vad=[],pending_audio=None,runtime_log=SimpleNamespace(record=noop)),
         room=SimpleNamespace(expect_motion=noop))
     def send(raw):

@@ -48,7 +48,8 @@ async def camera_is_open(selected, *, client_factory=None, parameter_factory=Non
 
 class PreviewPool:
     def __init__(self, identity_store=None, continuous=False, *, recognize=False, control_camera=False,
-                 on_observation=None, on_audio=None, on_clear=None, focus=None, occupied_elsewhere=None,
+                 on_observation=None, on_audio=None, on_clear=None, on_motion=None, on_capture_frame=None,
+                 focus=None, occupied_elsewhere=None,
                  review_pending=None, fall_pending=None, sound_cue=None, sound_view=None, wall=None, intent_factory=None):
         self.wall = wall
         self.sessions = {}
@@ -65,6 +66,8 @@ class PreviewPool:
         self.recognize = recognize
         self.control_camera=control_camera
         self.on_observation, self.on_audio, self.on_clear = on_observation, on_audio, on_clear
+        self.on_motion = on_motion or on_clear
+        self.on_capture_frame = on_capture_frame
         self.intent_factory = intent_factory or (lambda selected: CameraIntentStore(
             camera_storage(selected['id']), selected))
 
@@ -319,7 +322,8 @@ class PreviewPool:
                 from homeplane.people.identity_session import IdentitySession
                 pipeline = IdentitySession(self.identity_store, selected["id"], secrets.token_hex(12), MODELS)
             capture_session = secrets.token_hex(16)
-            audio_ingress = AudioIngress(selected,capture_session) if self.recognize and self.on_audio else None
+            audio_ingress = AudioIngress(selected, capture_session) if (
+                self.recognize and (self.on_audio or self.on_capture_frame)) else None
             process = await asyncio.create_subprocess_exec(
                 str(PYTHON),
                 "-B",
@@ -337,7 +341,7 @@ class PreviewPool:
             process.stdin.write(
                 (
                     json.dumps(dict(source="miloco", camera=selected["id"], motor=lease is not None,
-                        audio=bool(audio_ingress), identity=False,capture_session=capture_session)) + "\n"
+                        audio=bool(audio_ingress and self.on_audio), identity=False,capture_session=capture_session)) + "\n"
                 ).encode()
             )
             await process.stdin.drain()
@@ -378,6 +382,9 @@ class PreviewPool:
                         if packet.get('type')=='frame':
                             if audio_ingress:
                                 audio_ingress.observe_frame(packet,wall=time.time(),mono=time.monotonic())
+                                if self.on_capture_frame and self.source_current(selected['id'], process):
+                                    self.on_capture_frame(selected['id'], audio_ingress.session, audio_ingress.context,
+                                                          audio_ingress.frame_at)
                             if self.wall and time.monotonic()-last_video_lease>.7:
                                 last_video_lease=time.monotonic()
                                 process.stdin.write((json.dumps(dict(action='video_window',enabled=self.wall.video[selected['id']].subscribers>0))+'\n').encode())
@@ -466,7 +473,7 @@ class PreviewPool:
                         if now >= expires:raise RuntimeError('motor_request_expired')
                         item['last_motor_sent'] = now
                         if recognizer is not None:recognizer.mark_motion(now)
-                        if self.on_clear:self.on_clear(selected['id'])
+                        if self.on_motion:self.on_motion(selected['id'])
                         process.stdin.write((json.dumps(dict(action='motor_step',direction=direction,
                             request_id=request_id,expires_mono=expires))+'\n').encode())
                         sent = True
@@ -554,6 +561,7 @@ class PreviewPool:
                 if packet.get("type") == "frame":
                     if recognizer is not None:
                         stage='recognition'
+                        motor_sent = item.get('last_motor_sent')
                         recognizer.animals_enabled = item['mode'] in PET_MODES
                         recognizer.animals_intent = item.get('mode_revision')
                         observation = await recognizer.observe(packet,
@@ -564,7 +572,8 @@ class PreviewPool:
                         item['timing'] = recognizer.timing
                         if observation is None or not 0 <= time.time()-packet['received_at'] <= 1.5:
                             item['dropped_frames'] = item.get('dropped_frames',0)+1
-                            if self.on_clear and not item['recognition_recovering']:
+                            if (self.on_clear and not item['recognition_recovering']
+                                    and motor_sent == item.get('last_motor_sent')):
                                 self.on_clear(selected['id'])
                             continue
                         latest = observation

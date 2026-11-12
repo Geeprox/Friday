@@ -33,6 +33,7 @@ class IncidentRecording:
     revision: int
     event: dict
     initial: tuple
+    capture_source: object | None = None
     person: dict | None = None
     announce: bool = False
     feature: str | None = None
@@ -89,14 +90,14 @@ class SafetyRecorder:
     def has_camera(self, camera):
         return any(job.camera == camera for job in self.jobs.values())
 
-    def pending_review(self, camera, session, revision):
-        return any(job.camera == camera and job.session == session and job.revision == revision
+    def pending_review(self, camera, token, revision):
+        return any(job.camera == camera and job.token is token and job.revision == revision
                    and job.receipt is not None and job.receipt.pending and not job.expired
                    and self.current(job) for job in self.jobs.values())
 
-    def pending_fall(self, camera, session, revision):
+    def pending_fall(self, camera, token, revision):
         now = self.clock()
-        return any(job.camera == camera and job.session == session and job.revision == revision
+        return any(job.camera == camera and job.token is token and job.revision == revision
                    and job.feature is None and not job.expired and self.current(job)
                    and (now <= job.captured + self.POST_WINDOW or job.saved is None
                         or job.appended < len(job.following)) for job in self.jobs.values())
@@ -115,7 +116,7 @@ class SafetyRecorder:
                 self._drop(job)
 
     def submit(self, *, camera, session, context, token, captured, revision, event, frames,
-               person=None, announce=False, feature=None, require_complete=False):
+               capture_source=None, person=None, announce=False, feature=None, require_complete=False):
         self.maintain()
         owned = list(self.jobs.values())
         if self.active is not None and self.active.identifier not in self.jobs:
@@ -143,17 +144,18 @@ class SafetyRecorder:
             else:
                 self.skipped_frames += 1
         job = IncidentRecording(camera, session, context, token, captured, revision,
-                                dict(event), tuple(reversed(chosen)), person=person, announce=announce,
+                                dict(event), tuple(reversed(chosen)), capture_source=capture_source,
+                                person=person, announce=announce,
                                 feature=feature, receipt=ReviewReceipt() if feature is not None else None)
         self.jobs[job.identifier] = job
         self.bytes += self.size(job)
         self.wake()
         return job
 
-    def frame(self, camera, captured, jpeg):
+    def frame(self, camera, token, captured, jpeg):
         self.maintain()
         for job in self.jobs.values():
-            if (job.feature is not None or job.camera != camera
+            if (job.feature is not None or job.camera != camera or job.token is not token
                     or not job.captured < captured <= job.captured + self.POST_WINDOW
                     or len(job.following) >= 6):
                 continue

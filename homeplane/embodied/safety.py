@@ -17,6 +17,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -277,6 +278,8 @@ class SafetyStore:
                         "INSERT INTO safety_frames VALUES (?,?,?,?)", (event["id"], ordinal, stamp, jpeg)
                     )
             self._prune(db)
+            if guard is not None and not guard():
+                raise SafetyAdmissionChanged('safety_source_changed')
         return event
 
     def update(self, event_id, **fields):
@@ -349,6 +352,8 @@ class SafetyStore:
             if count < self.MAX_FRAMES:
                 db.execute("INSERT INTO safety_frames VALUES (?,?,?,?)", (event_id, count, stamp, jpeg))
             self._prune(db)
+            if guard is not None and not guard():
+                raise SafetyAdmissionChanged('safety_source_changed')
 
     def append_sound_search_frame(self, event_id, source, step, stamp, jpeg, *, policy_revision, guard):
         """将已核实的环视画面追加到同一事件，重复写入不增加关键帧。"""
@@ -711,6 +716,13 @@ def _snapshot_people(people):
     return snapshot
 
 
+@dataclass(eq=False)
+class _CaptureSource:
+    session: str
+    context: str
+    seen: float
+
+
 class SafetyRuntime:
     MAX_CAMERAS = 8
     MAX_PEOPLE = 32
@@ -733,6 +745,7 @@ class SafetyRuntime:
         self.source_epochs = {}
         self.source_tokens = {}
         self.sources = {}
+        self.capture_sources = {}
         self.pending = OrderedDict()
         self.observation_task = None
         self.coalesced = self.skipped = 0
@@ -768,6 +781,37 @@ class SafetyRuntime:
     def _context(value):
         return value if isinstance(value, str) and re.fullmatch(r'[a-f0-9]{64}', value) else None
 
+    def capture_frame(self, camera, session, context, captured):
+        """接收采集进程已核对来源的视频帧时戳。"""
+        if self.closed:
+            return
+        now = time.monotonic()
+        source = self.capture_sources.get(camera)
+        if (not isinstance(session, str) or not re.fullmatch(r'[a-f0-9]{32}', session)
+                or self._context(context) is None or type(captured) not in (int, float)
+                or not 0 <= now - captured <= 1.5):
+            if source is not None:
+                self.clear(camera)
+            return
+        if source is not None:
+            if (source.session == session and source.context == context
+                    and 0 <= now - source.seen <= 1.5):
+                source.seen = max(source.seen, captured)
+                return
+            self.clear(camera)
+        if len(self.capture_sources) >= self.MAX_CAMERAS:
+            for previous in tuple(self.capture_sources):
+                if self._capture_source(previous) is None:
+                    self.clear(previous)
+        if len(self.capture_sources) < self.MAX_CAMERAS:
+            self.capture_sources[camera] = _CaptureSource(session, context, captured)
+
+    def _capture_source(self, camera):
+        source = self.capture_sources.get(camera)
+        if source is not None and 0 <= time.monotonic() - source.seen <= 1.5:
+            return source
+        return None
+
     def _source_token(self, camera):
         token = self.source_tokens.get(camera)
         if token is None:
@@ -789,25 +833,37 @@ class SafetyRuntime:
         return current
 
     def offer(self, camera, session, people, now, captured, *, stable, jpeg=b'', aspect=16 / 9,
-              source_context=None, source_name=None):
+              source_context=None, source_name=None, capture_session=None):
         """Perception never waits for storage; retain only each camera's latest frame."""
         if self.closed:
             return False
-        if (not stable or not isinstance(people, list)
+        if (not isinstance(people, list)
                 or len(people) > self.MAX_PEOPLE or type(captured) not in (int, float)
                 or not math.isfinite(captured) or not 0 <= time.monotonic() - captured <= 1.5):
             self.clear(camera)
             return False
+        source_context = self._context(source_context)
+        capture = None
+        if capture_session is not None:
+            capture = self._capture_source(camera)
+            if capture is None or (capture.session, capture.context) != (capture_session, source_context):
+                return False
+        if not stable:
+            if capture is None:
+                self.clear(camera)
+            else:
+                self.clear_view(camera)
+            return False
         if camera not in self.sources and len(self.sources) >= self.MAX_CAMERAS:
             self.skipped += 1
             return False
-        source_context = self._context(source_context)
         source = (session, source_context)
-        if camera in self.sources and self.sources[camera] != source:
-            self.clear(camera)
         previous_seen = self.last_seen.get(camera)
-        if previous_seen is not None and not 0 < captured - previous_seen <= 1.5:
+        if (camera in self.sources and self.sources[camera] != source
+                or previous_seen is not None and not 0 < captured - previous_seen <= 1.5):
             self.clear(camera)
+            if capture is not None:
+                return False
         self.sources[camera] = source
         token = self._source_token(camera)
         self.last_seen[camera] = captured
@@ -833,7 +889,7 @@ class SafetyRuntime:
             (camera, session, _snapshot_people(people), now, captured),
             dict(stable=stable, jpeg=jpeg if isinstance(jpeg, bytes) and len(jpeg) <= self.store.MAX_FRAME else b'',
                  aspect=aspect, source_context=source_context, source_name=source_name, _admission=token,
-                 _coalesced=coalesced),
+                 _coalesced=coalesced, _capture=capture),
         )
         if self.observation_task is None:
             self.observation_task = asyncio.create_task(self._consume(), name='friday-safety-observations')
@@ -948,7 +1004,8 @@ class SafetyRuntime:
         if not self._current_review_source(camera, session):
             return False
         # 策略暂时读不到时，已准入的留档仍可短暂停留，新的候选需要有效策略。
-        if self.policy_cache.enabled and self.recording.pending_fall(camera, session, self.policy_cache.revision):
+        if self.policy_cache.enabled and self.recording.pending_fall(
+                camera, self.source_tokens.get(camera), self.policy_cache.revision):
             return True
         if not self._cached_policy().enabled:
             return False
@@ -974,7 +1031,7 @@ class SafetyRuntime:
         return bool(current and (
             policy.visual_review and self.visual.stability_pending(camera, session, policy.revision)
             or policy.sound_review and self.sound.stability_pending(camera, session, policy.revision)
-            or self.recording.pending_review(camera, session, policy.revision)))
+            or self.recording.pending_review(camera, self.source_tokens.get(camera), policy.revision)))
 
     def observe_audio(self, camera, admission):
         from .camera_audio import AdmittedAudio
@@ -1025,7 +1082,7 @@ class SafetyRuntime:
             return False
         job = self.recording.submit(camera=camera, session=session, context=context, token=self.source_tokens[camera],
             captured=captured, revision=revision, event=event, frames=frames, feature=feature,
-            require_complete=require_complete)
+            capture_source=self.frames[camera].get('capture'), require_complete=require_complete)
         return job.receipt if job is not None else False
 
     async def pause_sound(self):
@@ -1056,7 +1113,7 @@ class SafetyRuntime:
             previous = self.policy_revision
             self.policy_revision = policy.revision
             if previous is not None:
-                for camera in set(self.source_tokens) | set(self.pending) | set(self.frames):
+                for camera in set(self.source_tokens) | set(self.capture_sources):
                     self.clear(camera)
                 for task, revision in tuple(self.output_revisions.items()):
                     if revision is not None and revision != policy.revision:
@@ -1108,7 +1165,7 @@ class SafetyRuntime:
                 self.retention_failed = False
                 await asyncio.sleep(self.store.PRUNE_INTERVAL)
 
-    def clear(self, camera):
+    def _clear_view(self, camera):
         token = self.source_tokens.pop(camera, None)
         if token is not None:
             token.set()
@@ -1121,10 +1178,23 @@ class SafetyRuntime:
         self.frames.pop(camera, None)
         self.post_frames.pop(camera, None)
         self.last_seen.pop(camera, None)
+
+    def clear_view(self, camera):
+        """视角失效时清除观测，已确认事件依原采集会话完成留档。"""
+        if self._capture_source(camera) is None:
+            self.clear(camera)
+            return
+        self._clear_view(camera)
+        self.recording.maintain()
+        self.recording.wake()
+
+    def clear(self, camera):
+        self.capture_sources.pop(camera, None)
+        self._clear_view(camera)
         self.recording.clear(camera)
 
     async def observe(self, camera, session, people, now, captured, *, stable, jpeg=b"", aspect=16 / 9,
-                      source_context=None, source_name=None, _admission=None, _coalesced=False):
+                      source_context=None, source_name=None, _admission=None, _coalesced=False, _capture=None):
         if self.closed:
             return
         source_context = self._context(source_context)
@@ -1144,7 +1214,7 @@ class SafetyRuntime:
             await self._observe(
                 camera, session, people, now, captured, stable=stable, jpeg=jpeg, aspect=aspect,
                 source_context=source_context, source_name=source_name, token=token,
-                refresh_policy=_admission is None, coalesced=_coalesced,
+                refresh_policy=_admission is None, coalesced=_coalesced, capture=_capture,
             )
             if not token.is_set():
                 self.error = None
@@ -1157,7 +1227,7 @@ class SafetyRuntime:
             self.error = "safety_storage_unavailable"
 
     async def _observe(self, camera, session, people, now, captured, *, stable, jpeg, aspect,
-                       source_context=None, source_name=None, token, refresh_policy=True, coalesced=False):
+                       source_context=None, source_name=None, token, refresh_policy=True, coalesced=False, capture=None):
         if refresh_policy:
             await self.sync_policy()
         if token.is_set() or self.source_tokens.get(camera) is not token:
@@ -1176,8 +1246,10 @@ class SafetyRuntime:
                               rapid_people=people if source_context is not None else None, aspect=aspect)
         else:
             self.visual.clear(camera)
-        ring = self.frames.setdefault(camera, dict(session=session, source_context=source_context,
+        ring = self.frames.setdefault(camera, dict(session=session, source_context=source_context, capture=capture,
                                                   items=deque(maxlen=16)))
+        if ring['capture'] is not capture:
+            ring['capture'] = None
         ring['source_name'] = source_name
         stamp = time.time() - (time.monotonic() - captured)
         guard = self._guard(camera, session, source_context, captured)
@@ -1189,7 +1261,7 @@ class SafetyRuntime:
             ring["items"].append((captured, jpeg))
             pending = self.post_frames.get(camera, [])
             self.post_frames[camera] = [p for p in pending if captured <= p["until"]]
-            self.recording.frame(camera, captured, jpeg)
+            self.recording.frame(camera, token, captured, jpeg)
         events = self.detector.observe(
             camera, session, people, now, captured, stable=stable, aspect=aspect,
             evaluated_mono=time.monotonic(), coalesced=coalesced,
@@ -1213,7 +1285,7 @@ class SafetyRuntime:
                 event['person_id'] = None
             job = self.recording.submit(camera=camera, session=session, context=source_context,
                 token=token, captured=captured, revision=policy.revision, event=event,
-                person={'identity': identity},
+                capture_source=ring['capture'], person={'identity': identity},
                 frames=[(stamp - (captured - frame_at), frame) for frame_at, frame in ring['items']
                         if 0 <= captured - frame_at <= self.recording.PRE_WINDOW],
                 announce=policy.announce)
@@ -1222,13 +1294,16 @@ class SafetyRuntime:
                     dict(id=job.identifier, until=captured + self.recording.POST_WINDOW))
 
     def _recording_current(self, job):
-        return (not self.closed and not job.token.is_set()
-                and (job.receipt is None or job.receipt.pending)
-                and (job.feature != 'sound_review' or self._sound_input_open())
-                and self.source_tokens.get(job.camera) is job.token
+        if (self.closed or self.recording.jobs.get(job.identifier) is not job
+                or job.receipt is not None and not job.receipt.pending
+                or job.feature == 'sound_review' and not self._sound_input_open()
+                or not 0 <= time.monotonic() - job.captured <= self.recording.RETRY_WINDOW):
+            return False
+        if job.capture_source is not None:
+            return self._capture_source(job.camera) is job.capture_source
+        return (not job.token.is_set() and self.source_tokens.get(job.camera) is job.token
                 and self.sources.get(job.camera) == (job.session, job.context)
-                and 0 <= time.monotonic() - self.last_seen.get(job.camera, -math.inf) <= 1.5
-                and 0 <= time.monotonic() - job.captured <= self.recording.RETRY_WINDOW)
+                and 0 <= time.monotonic() - self.last_seen.get(job.camera, -math.inf) <= 1.5)
 
     async def _persist_recording(self, job):
         if job.saved is None:
@@ -1247,7 +1322,7 @@ class SafetyRuntime:
             return
         if not job.output_considered:
             job.output_considered = True
-            if (job.announce and 0 <= time.monotonic() - job.captured <= 1.5
+            if (job.announce and not job.token.is_set() and 0 <= time.monotonic() - job.captured <= 1.5
                     and self.detector.confirmed_down(job.camera, job.session, job.event.get('track'))):
                 await self.schedule(job.saved, revision=job.revision)
         while job.appended < len(job.following) and self._recording_current(job):
@@ -1450,7 +1525,7 @@ class SafetyRuntime:
     async def close(self):
         if self.close_task is None:
             self.closed = True
-            for camera in set(self.source_tokens) | set(self.pending) | set(self.frames):
+            for camera in set(self.source_tokens) | set(self.capture_sources):
                 self.clear(camera)
             self.close_task = asyncio.create_task(self._close(), name='friday-safety-close')
         cancelled = False

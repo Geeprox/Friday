@@ -1,6 +1,8 @@
 """Original fall geometry and private recorder; synthetic people/frames only."""
 
 import asyncio
+import json
+import secrets
 import sqlite3
 import threading
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
+from tests.embodied.test_motor_recovery import primary_scope
 from tests.embodied.test_review_motion import source_function
 from tests.test_embodied_safety import person
 
@@ -33,22 +36,204 @@ async def monitor(tmp_path, monkeypatch):
 
 
 async def frame(monitor, *, down=True, camera=None, context=None, session='same-session', sync=False,
-                jpeg=b'EXPLICIT-SYNTHETIC-JPEG'):
+                jpeg=b'EXPLICIT-SYNTHETIC-JPEG', capture_session=None, stable=True):
     runtime = monitor.runtime
     if sync:
         await runtime.sync_policy()
     now = monitor.clock[0]
-    return runtime.offer(camera or monitor.camera, session, [person(down)], now, now, stable=True,
-                         jpeg=jpeg, source_context=context or monitor.context)
+    if capture_session is not None:
+        runtime.capture_frame(camera or monitor.camera, capture_session, context or monitor.context, now)
+    return runtime.offer(camera or monitor.camera, session, [person(down)], now, now, stable=stable,
+                         jpeg=jpeg, source_context=context or monitor.context, capture_session=capture_session)
 
 
-async def before_fall(monitor):
+async def before_fall(monitor, **source):
     for i in range(15):
         monitor.clock[0] = 100+i*.25
-        await frame(monitor, down=i>=7, sync=True)
+        await frame(monitor, down=i>=7, sync=True, **source)
         await monitor.runtime.observation_task
     monitor.clock[0] += .25
     await monitor.runtime.sync_policy()
+
+
+def hold_recording_write(store, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    create = store.create
+
+    def held_create(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return create(*args, **kwargs)
+
+    monkeypatch.setattr(store, 'create', held_create)
+    return entered, release
+
+
+async def manual_turn(monitor, owner):
+    runtime, camera = monitor.runtime, monitor.camera
+    if owner == 'primary':
+        scope, sent = primary_scope()
+        scope.update(safety=runtime, time=safety.time, SELECTED={'id': camera})
+        await scope['motor_step']('left')
+    else:
+        sent, waiters = [], {}
+
+        def write(raw):
+            command = json.loads(raw)
+            sent.append(command)
+            waiters[command['request_id']].set_result({'native_code': 0})
+
+        scope = dict(asyncio=asyncio, time=safety.time, secrets=secrets, json=json, waiters=waiters,
+                     motion_lock=asyncio.Lock(), selected={'id': camera}, recognizer=None, director=CameraDirector(),
+                     camera_is_open=AsyncMock(return_value=True), current_sample=dict,
+                     item=dict(privacy_closed=False, source_active=True, control_epoch=1),
+                     process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock())),
+                     self=SimpleNamespace(on_clear=runtime.clear, on_motion=runtime.clear_view,
+                                          runtime_log=SimpleNamespace(record=lambda *_args, **_kwargs: None)))
+        await source_function('homeplane/embodied/previews.py', 'send_motion', scope)('left')
+    assert len(sent) == 1 and sent[0]['direction'] == 'left'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('owner', 'fence'), [
+    ('primary', None), ('secondary', None), ('primary', 'capture_replaced'),
+    ('primary', 'shutter'), ('primary', 'frame_gap'), ('primary', 'monitoring_off'),
+])
+async def test_already_confirmed_fall_finishes_saving_after_real_motor_dispatch(monitor, monkeypatch, owner, fence):
+    runtime, store, camera = monitor.runtime, monitor.store, monitor.camera
+    capture_session = 'e' * 32
+    await before_fall(monitor, capture_session=capture_session)
+    entered, release = hold_recording_write(store, monkeypatch)
+    monitor.clock[0] += .25
+    await frame(monitor, capture_session=capture_session, jpeg=b'ORIGINAL-VIEW')
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        original, = runtime.recording.jobs.values()
+        monitor.clock[0] += .5
+        assert await frame(monitor, capture_session=capture_session, jpeg=b'SAME-VIEW-AFTER')
+        await runtime.observation_task
+        await manual_turn(monitor, owner)
+        for _ in range(5):
+            monitor.clock[0] += .35
+            assert not await frame(monitor, capture_session=capture_session, stable=False, jpeg=b'TURNING')
+        monitor.clock[0] += .5
+        assert await frame(monitor, capture_session=capture_session, down=False, sync=True, jpeg=b'NEW-VIEW')
+        await runtime.observation_task
+        assert not runtime.fall_pending(camera, 'same-session')
+        if fence == 'capture_replaced':
+            runtime.capture_frame(camera, 'f' * 32, monitor.context, monitor.clock[0])
+        elif fence == 'shutter':
+            runtime.clear(camera)
+        elif fence == 'frame_gap':
+            monitor.clock[0] += 1.6
+        elif fence == 'monitoring_off':
+            store.configure(store.policy().model_copy(update={'enabled': False}))
+        release.set()
+        await runtime.drain()
+        if fence is not None:
+            assert store.events() == []
+        else:
+            event, = store.events()
+            assert event['id'] == original.identifier
+            assert event['captured_at'] == original.event['captured_at']
+            assert {store.frame(event['id'], row['ordinal']) for row in event['frames']} == {
+                b'EXPLICIT-SYNTHETIC-JPEG', b'ORIGINAL-VIEW', b'SAME-VIEW-AFTER',
+            }
+        runtime.speaker.say.assert_not_awaited()
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pause_input', [False, True])
+async def test_corroborated_sound_saves_after_a_turn_only_with_audio_input_authorized(monitor, monkeypatch, pause_input):
+    runtime, store, camera = monitor.runtime, monitor.store, monitor.camera
+    input_open = True
+    monkeypatch.setattr(runtime, '_sound_input_open', lambda: input_open)
+    policy = store.configure(store.policy().model_copy(update={'sound_review': True}))
+    await frame(monitor, down=False, sync=True, capture_session='e' * 32)
+    await runtime.observation_task
+    at = monitor.clock[0]
+    entered, release = hold_recording_write(store, monkeypatch)
+    receipt = runtime._sound_event(camera, 'same-session', monitor.context, dict(
+        kind='glass_break', confidence=.9, corroborating_windows=2, audio_seconds=4,
+        age_basis='local_sdk_receive', keyframes=[(safety.time.time(), b'SYNTHETIC-SOUND-EVIDENCE')],
+        captured_at=safety.time.time(), captured_mono=at, policy_revision=policy.revision,
+    ))
+    assert receipt
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        await manual_turn(monitor, 'secondary')
+        if pause_input:
+            input_open = False
+            await runtime.pause_sound()
+            input_open = True
+        release.set()
+        await runtime.drain()
+        assert not receipt.pending
+        if pause_input:
+            assert store.events() == [] and receipt.event_id is None
+        else:
+            event, = store.events()
+            assert event['id'] == receipt.event_id and event['sound_kind'] == 'glass_break'
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_disabling_interactions_leaves_the_camera_monitoring_and_its_queued_fall(monitor, monkeypatch):
+    runtime, store, camera = monitor.runtime, monitor.store, monitor.camera
+    await before_fall(monitor)
+    entered, release = hold_recording_write(store, monkeypatch)
+    await frame(monitor)
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        token = runtime.source_tokens[camera]
+        home = SimpleNamespace(armed=True, selected=True, epoch=0, vad=[1], pending_audio=b'SYNTHETIC')
+        scope = dict(safety=runtime, home=home, SELECTED={'id': camera}, Request=object,
+                     interaction_enabled=True, secondary_homes={},
+                     fleet=SimpleNamespace(cameras={camera: {}}, clear=lambda _: None))
+        path = 'homeplane/embodied/worker.py'
+        source_function(path, 'clear_interactions', scope)
+        set_interactions = source_function(path, 'interaction_policy', scope)
+        assert await set_interactions(SimpleNamespace(json=AsyncMock(return_value={'enabled': False}))) == {
+            'enabled': False,
+        }
+        assert not home.armed and not home.selected and home.pending_audio is None
+        assert runtime.source_tokens.get(camera) is token and not token.is_set()
+        release.set()
+        await runtime.drain()
+        assert len(store.events()) == 1
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
+async def test_closing_the_camera_during_the_sqlite_transaction_rolls_back_event_and_frames(monitor, monkeypatch):
+    runtime, store = monitor.runtime, monitor.store
+    await before_fall(monitor, capture_session='e' * 32)
+    entered, release = threading.Event(), threading.Event()
+    prune = store._prune
+
+    def held_prune(db):
+        prune(db)
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(store, '_prune', held_prune)
+    await frame(monitor, capture_session='e' * 32)
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        original, = runtime.recording.jobs.values()
+        await manual_turn(monitor, 'primary')
+        runtime.clear(monitor.camera)
+        release.set()
+        await runtime.drain()
+        assert store.recording_receipt(original.identifier) is None
+        with store.connect() as db:
+            assert db.execute('SELECT count(*) FROM safety_frames').fetchone() == (0,)
+    finally:
+        release.set()
 
 
 @pytest.mark.asyncio
@@ -638,7 +823,7 @@ async def test_recording_queue_and_private_frame_memory_are_bounded():
         await entered.wait()
         assert len(recorder.jobs) == 3 and recorder.bytes <= 32
         for i in range(12):
-            recorder.frame('same', 100+i*.25, b'12345678')
+            recorder.frame('same', None, 100+i*.25, b'12345678')
         assert recorder.bytes <= 32 and all(len(job.following) <= 6 for job in recorder.jobs.values())
         assert recorder.status()['dropped'] == 1 and recorder.status()['skipped_frames'] > 0
     finally:

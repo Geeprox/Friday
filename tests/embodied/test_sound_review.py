@@ -621,13 +621,15 @@ async def test_original_camera_pipe_delivers_sound_without_an_active_voice_owner
             # Background sound review does not need a HomeService/voice owner.
             callback=actual('homeplane/embodied/worker.py','secondary_audio',dict(
                 safety=j.runtime,secondary_homes={},time=time,deliver_audio=deliver_audio))
-            scope=dict(process=process,self=SimpleNamespace(on_audio=callback,wall=None),
+            scope=dict(process=process,self=SimpleNamespace(on_audio=callback,on_capture_frame=j.runtime.capture_frame,
+                source_current=lambda *_:True,wall=None),
                 selected=CAMERA,audio_ingress=j.gate,item={'privacy_closed':False},waiters={},
                 queue=asyncio.Queue(maxsize=1),last_video_lease=0,wall_epoch=1,time=time,json=json,
                 offer_frame=lambda *_:None,retire_source=Mock())
             await actual('homeplane/embodied/previews.py','receive',scope)()
         await settle()
         assert j.engine.analyze.await_count>=2 and len(j.store.events())==1
+        assert j.runtime.capture_sources[CAMERA['id']].session == 'a'*32
         home.transcribe.assert_not_awaited()
     finally:await j.runtime.close()
 

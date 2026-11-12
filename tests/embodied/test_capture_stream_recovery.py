@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeplane.embodied.camera_audio import AudioIngress
+from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.party_camera import PartyCamera
 
 from tests.embodied.test_camera_audio import actual, CAMERA
@@ -104,10 +106,11 @@ def closed_scope():
         state=dict(status='live',frame='private pixels',people=[{'id':1}],hands=[{}],
                    animals=[{}],animals_current=True,room={'private':'position'}),
         home=SimpleNamespace(armed=True,selected=True,epoch=2,vad=[b'private audio'],pending_audio=object()),
-        secondary_homes={},safety=SimpleNamespace(clear=Mock()),fleet=SimpleNamespace(clear=Mock()),
+        secondary_homes={},safety=SimpleNamespace(clear=Mock(), capture_frame=Mock()),fleet=SimpleNamespace(clear=Mock()),
         pet_tracks=SimpleNamespace(clear=Mock()),wall=wall,identities=SimpleNamespace(discard=Mock()),
         motor_waiters={3:pending,4:acknowledged},notify=AsyncMock(),games=MotionGames(),
     )
+    actual('homeplane/embodied/worker.py','clear_interactions',scope)
     scope['clear_camera']=actual('homeplane/embodied/worker.py','clear_camera',scope)
     close=actual('homeplane/embodied/worker.py','primary_capture_closed',scope)
     return scope,close,epoch,pending,acknowledged
@@ -222,6 +225,7 @@ async def test_capture_loss_while_waiting_for_room_lock_cannot_send_a_manual_or_
     scope.update(generation=1,primary_wall_epoch=1,primary_retired_scope=None,pet_tracks=SimpleNamespace(clear=Mock()),
                  wall=SimpleNamespace(clear=Mock()),safety=SimpleNamespace(clear=Mock()),
                  secondary_homes={},notify=AsyncMock(),games=MotionGames())
+    actual('homeplane/embodied/worker.py','clear_interactions',scope)
     scope['clear_camera']=actual('homeplane/embodied/worker.py','clear_camera',scope)
     close=actual('homeplane/embodied/worker.py','primary_capture_closed',scope)
     class RoomWait:
@@ -245,6 +249,7 @@ async def test_original_supervisor_retries_after_fault_and_a_replacement_receive
         scope.update(owner)
         scope.update(my_generation=my_generation,wall_epoch=epoch,primary_wall_epoch=epoch,
                      camera_task=None)
+        actual('homeplane/embodied/worker.py','clear_interactions',scope)
         scope['clear_camera']=actual('homeplane/embodied/worker.py','clear_camera',scope)
         scope['primary_capture_closed']=actual('homeplane/embodied/worker.py','primary_capture_closed',scope)
         if len(attempts)==1:
@@ -255,7 +260,8 @@ async def test_original_supervisor_retries_after_fault_and_a_replacement_receive
             assert acknowledged.result()=={'native_code':0}
             return
         queue.get_nowait()  # Empty the upstream fixture's initial old frame.
-        frame=dict(type='frame',received_at=1000,capture_session='b'*32,jpeg='SYNTHETIC')
+        frame=dict(type='frame',received_at=1000,capture_session='b'*32,jpeg='SYNTHETIC',
+                   camera_source_context=camera_source_context(CAMERA))
         packets=iter([json.dumps(dict(type='motor_result',request_id=3,native_code=0)).encode(),
                       json.dumps(frame).encode()])
         stopped=asyncio.Event()
@@ -263,7 +269,7 @@ async def test_original_supervisor_retries_after_fault_and_a_replacement_receive
             try:return next(packets)
             except StopIteration:await stopped.wait()
         scope['capture'].stdout.readline=read
-        scope['audio_ingress']=SimpleNamespace(observe_frame=Mock())
+        scope['audio_ingress']=AudioIngress(CAMERA, frame['capture_session'])
         scope['state']['status']='connecting'
         scope['wall_epoch']=scope['wall'].begin(CAMERA['id'])
         scope['primary_wall_epoch']=scope['wall_epoch']
@@ -271,6 +277,9 @@ async def test_original_supervisor_retries_after_fault_and_a_replacement_receive
         try:
             recovered.append(await asyncio.wait_for(queue.get(),.2))
             assert not receiver.done()
+            scope['safety'].capture_frame.assert_called_once_with(
+                CAMERA['id'], frame['capture_session'], frame['camera_source_context'], 10,
+            )
             assert isinstance(pending.exception(),RuntimeError),'An old ACK cannot replace the retired outcome'
             supervisor['generation']=2
             scope['generation']=2
@@ -282,6 +291,7 @@ async def test_original_supervisor_retries_after_fault_and_a_replacement_receive
     await actual('homeplane/embodied/worker.py','supervised_source',supervisor)(1)
     assert attempts==[1,1] and delays==[2]
     assert recovered==[dict(type='frame',received_at=1000,capture_session='b'*32,jpeg='SYNTHETIC',
+                            camera_source_context=camera_source_context(CAMERA),
                             _motion_generation=4)]
 
 

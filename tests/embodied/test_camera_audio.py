@@ -220,7 +220,7 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
             dict(type='motor_result',request_id=7,native_code=0)]
     scope=dict(process=SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(
         side_effect=[json.dumps(p).encode() for p in stream]+[b'']))),
-        self=SimpleNamespace(on_audio=callback,wall=None),selected=CAMERA,audio_ingress=g,
+        self=SimpleNamespace(on_audio=callback,on_capture_frame=None,wall=None),selected=CAMERA,audio_ingress=g,
         item={'privacy_closed':closed},waiters={7:future},queue=queue,last_video_lease=0,
         wall_epoch=1,time=time,json=json,offer_frame=lambda _,p:offered.append(p),retire_source=Mock())
     await actual('homeplane/embodied/previews.py','receive',scope)()
@@ -319,7 +319,7 @@ async def test_local_audio_model_failure_does_not_stop_primary_frames_or_motor_r
         json.dumps(audio(framer=framer)).encode(),json.dumps(frame).encode(),
         json.dumps(dict(type='motor_result',request_id=7,native_code=0)).encode(),b'']))),
         state={'status':'live'},audio_ingress=g,home=s,deliver_audio=deliver_audio,generation=1,my_generation=1,
-        safety=SimpleNamespace(observe_audio=Mock()),
+        safety=SimpleNamespace(observe_audio=Mock(),capture_frame=Mock()),
         SELECTED=CAMERA,fleet=SimpleNamespace(voice_current=lambda *_:True),time=time,json=json,
         offer_frame=lambda _,item:offered.append(item),queue=object(),last_video_lease=0,
         captured_times=deque(),wall=SimpleNamespace(offer=Mock()),wall_epoch=1,motor_waiters={7:future},

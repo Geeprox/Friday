@@ -214,10 +214,11 @@ def test_original_worker_source_retirement_clears_the_focus(camera):
     h = camera.home
     h.camera_focus = hint()
     tree = ast.parse(WORKER.read_text())
-    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "clear_camera")
+    functions = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+                 and n.name in {"clear_camera", "clear_interactions"}]
     scope = dict(home=h, SELECTED={"id": h.camera_id}, secondary_homes={},
                  safety=SimpleNamespace(clear=Mock()), fleet=SimpleNamespace(clear=Mock()))
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(WORKER), "exec"), scope)
+    exec(compile(ast.Module(body=functions, type_ignores=[]), str(WORKER), "exec"), scope)
     scope["clear_camera"](h.camera_id)
     assert not h.selected and h.camera_session is None and h.camera_focus is None
 

@@ -138,6 +138,7 @@ class CameraRecognition:
                          animals_intent=animal_intent, pet_tracking=self.pet_tracks.public(),
                          tracking_current=self.tracks.input_valid,
                          room_service=self.room.status(),
+                         capture_session=packet.get('capture_session'),
                          camera_source_context=packet.get('camera_source_context'),
                          camera_source_name=packet.get('camera_source_name'),
                          faces=detection.get('faces', []), registration=registration, now=now,
