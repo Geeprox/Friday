@@ -231,7 +231,8 @@ async def test_secondary_camera_rechecks_the_live_tilt_before_writing_to_its_wor
         waiters[command['request_id']].set_result({'native_code': 0})
 
     scope = dict(director=director, latest=latest, item=item, selected={'id': 'synthetic-camera'},
-        motion_lock=asyncio.Lock(), waiters=waiters, camera_is_open=camera_is_open, recognizer=None,
+        motion_lock=asyncio.Lock(), room_lock=asyncio.Lock(), waiters=waiters,
+        camera_is_open=camera_is_open, recognizer=None,
         process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock())),
         self=SimpleNamespace(focus=Mock(return_value=None), occupied_elsewhere=Mock(return_value=False),
                              review_pending=Mock(return_value=False), fall_pending=Mock(return_value=False),

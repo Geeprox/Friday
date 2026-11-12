@@ -81,7 +81,7 @@ def cue_source(h, clock, owner):
     return source_function(WORKER, 'camera_motion_cue', scope), quiet
 
 
-def dispatch_for(owner, state, clock, director, h, cue, safety, party):
+def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, recognizer=None, room_lock=None):
     """执行主、副镜头原来的发送函数，原生端只以管道回执替身回应。"""
     if owner == 'primary':
         scope, sent = primary_scope()
@@ -113,7 +113,7 @@ def dispatch_for(owner, state, clock, director, h, cue, safety, party):
                      process=SimpleNamespace(returncode=None,
                          stdin=SimpleNamespace(write=write, drain=AsyncMock())),
                      camera_is_open=AsyncMock(return_value=True), motion_lock=asyncio.Lock(),
-                     recognizer=None, privacy_closed=Mock())
+                     recognizer=recognizer, room_lock=room_lock or asyncio.Lock(), privacy_closed=Mock())
         extract(PREVIEWS, {'current_sample', 'send_motion'}, scope)
 
         async def send(direction):
@@ -223,6 +223,110 @@ async def test_wake_centers_an_off_center_person_once(
     assert observe(5.1, offset=shift, hear=True) is None
     assert director.public()['target_locked'] and director.target == 9
     assert not director.public()['physical_motion_verified']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('busy_action', ['register', 'layout'])
+@pytest.mark.parametrize('known_face', [False, True])
+async def test_secondary_wake_keeps_the_pre_turn_reference_while_a_frame_is_in_flight(
+        tmp_path, monkeypatch, busy_action, known_face):
+    import cv2
+    import numpy as np
+
+    from homeplane.embodied import camera_recognition
+    from tests.embodied.test_camera_follow_appearance import picture
+
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
+    cue, safety = cue_source(home, clock, 'secondary')
+    director = CameraDirector()
+    director.apply_mode('auto', 'original')
+    body = subject(7, .605)
+    before = picture([(body, 7)], textured_background=True)
+    pixels = cv2.imdecode(np.frombuffer(before, np.uint8), cv2.IMREAD_GRAYSCALE)
+    after = cv2.imencode('.jpg', cv2.warpAffine(
+        pixels, np.float32([[1, 0, -104], [0, 1, 0]]), (800, 480)))[1].tobytes()
+    box = dict(body['box'])
+    monkeypatch.setattr(camera_recognition, 'time', clock)
+    monkeypatch.setattr(camera_recognition, 'camera_storage', lambda _: tmp_path)
+    monkeypatch.setattr(camera_recognition, 'VisionProcess', lambda _: SimpleNamespace(
+        detect=AsyncMock(side_effect=lambda *_a, **_kw: dict(boxes=[dict(box)], poses=[])), close=AsyncMock()))
+
+    def identity(_jpeg, people, _faces, *, moving, **_):
+        if moving or not known_face:
+            return []
+        return [dict(body['identity'], track=str(person['id'])) for person in people]
+
+    monkeypatch.setattr(camera_recognition, 'IdentitySession', lambda *_: SimpleNamespace(
+        discard=Mock(), process=identity, close=lambda: True))
+    recognizer = camera_recognition.CameraRecognition(CAMERA['id'], Mock())
+    recognizer.session = SESSION
+    room_lock = asyncio.Lock()
+    state = {}
+    send, sent = dispatch_for('secondary', state, clock, director, home, cue, safety, PartyCamera(),
+                              recognizer=recognizer, room_lock=room_lock)
+
+    async def observe(at, jpeg):
+        clock.at = at
+        return await recognizer.observe(dict(jpeg=base64.b64encode(jpeg).decode(),
+            received_at=clock.time(), width=800, height=480, capture_session=source[0],
+            camera_source_context=source[1]), room_lock=room_lock)
+
+    async def choose(at, jpeg):
+        observation = await observe(at, jpeg)
+        state.update(current_frame(at, source, people=observation['people']),
+                     _patrol_view=observation['_patrol_view'], scene_visible=observation['scene_visible'],
+                     tracking_current=observation['tracking_current'], safety_jpeg=observation['safety_jpeg'],
+                     _follow_jpeg=observation['safety_jpeg'])
+        return director.choose(state, at, sound_cue=cue(CAMERA['id'], state, director.sound_search_cue)
+                               if at >= home.wake_camera.captured else None)
+
+    release = asyncio.Event()
+    jobs = []
+    try:
+        for at in (.8, 1.1, 1.4, 1.8):
+            assert await choose(at, before) is None
+        assert await choose(2.2, before) == 'right'
+        appearance = director.pending_decision.get('appearance')
+        if not known_face:
+            assert appearance is not None
+        room = recognizer.room
+        original_process, basis = room.owner.process, room.patrol_view[0]
+        entered = asyncio.Event()
+        exchange = room._exchange
+
+        async def held_exchange(action, value, frame):
+            if action == busy_action and not entered.is_set():
+                entered.set()
+                await release.wait()
+            return await exchange(action, value, frame)
+
+        monkeypatch.setattr(room, '_exchange', held_exchange)
+        jobs.append(asyncio.create_task(observe(2.25, before)))
+        await asyncio.wait_for(entered.wait(), 1)
+        jobs.append(asyncio.create_task(send('right')))
+        await asyncio.sleep(0)
+        assert not jobs[-1].done()
+        release.set()
+        await asyncio.gather(*jobs)
+        assert [row['direction'] for row in sent] == ['right']
+        assert room.ready and room.owner.process is original_process, '转向使后台配准进程丢失原视野'
+        assert room.patrol_view is None and not director.public()['target_locked']
+
+        box['x'] -= .13
+        phases = []
+        for at in (2.7, 3.1, 3.5, 3.9, 4.3, 4.7, 5.1, 5.5, 5.9, 6.3, 6.7):
+            assert await choose(at, after) is None
+            phases.append((at, director.phase, len(state['people']), director.reframe_candidate))
+        assert room.patrol_view[0] == basis
+        assert director.public()['target_locked'], phases
+        assert director.public()['reason'] == '已唤醒，镜头跟随中'
+        assert not director.public()['physical_motion_verified']
+    finally:
+        release.set()
+        await asyncio.gather(*jobs, return_exceptions=True)
+        await recognizer.close()
 
 
 @pytest.mark.asyncio

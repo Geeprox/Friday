@@ -321,7 +321,7 @@ async def test_background_owner_waits_for_native_stream_recovery(tmp_path, monke
                             release=AsyncMock(return_value=True))
     read_shutter = AsyncMock(side_effect=lambda _: shutter_open)
 
-    async def recognize(packet, *, source_current, on_vision_failure):
+    async def recognize(packet, *, source_current, on_vision_failure, room_lock):
         assert source_current()
         return dict(camera=CAMERA['id'], session='synthetic-stream', people=[], hands=[],
                     now=now, captured_mono=packet['received_at'])

@@ -7,6 +7,7 @@ frames are recorded, and no home floor-plan coordinates are invented here.
 import base64
 import secrets
 import time
+from contextlib import nullcontext
 
 from .paths import MODELS, VISION, camera_storage
 from .room_session import RoomSession
@@ -42,7 +43,7 @@ class CameraRecognition:
         self.last = None
         if self.room is not None:self.room.expect_motion(now, 2)
 
-    async def observe(self, packet, *, source_current=None, on_vision_failure=None):
+    async def observe(self, packet, *, source_current=None, on_vision_failure=None, room_lock=None):
         motion_generation = self.motion_generation
         def current():
             return (motion_generation == self.motion_generation
@@ -77,27 +78,32 @@ class CameraRecognition:
         now = time.monotonic()
         vision_done = now
         picture = base64.b64decode(packet['jpeg'])
-        if self.room is None:
-            self.room = RoomSession(camera_storage(self.camera))
-        if now < self.motion_until:
-            self.room.expect_motion(now, self.motion_until-now)
-        masks = [{'box': b} for b in detection.get('boxes', [])]
-        masks.extend({'box': row['box']} for row in PetTracks.read_rows(detection) or [])
-        registered = await self.room.register(picture, masks, now, current=current,
-            active=lambda: motion_generation == self.motion_generation
-                and (source_current is None or source_current()))
-        if not current():
-            self.identities.discard()
-            self.last = None
-            return None
-        moving = (not registered or now < self.motion_until or now < self.room.command_until
-                  or self.room.reg_info.get('status') in {'moving','settling'})
-        people = self.tracks.update(detection, now, transform=self.room.registration, camera_moving=moving)
-        animals = self.pet_tracks.update(detection, now, intent=animal_intent,
-                                        transform=self.room.registration, camera_moving=moving)
-        hands = detection.get('hands', [])
-        layout = (await self.room.update(picture, people, hands, now,
-                                        packet['width'], packet['height'], [], current=current)) if registered else None
+        async with room_lock or nullcontext():
+            if not current():
+                self.identities.discard()
+                self.last = None
+                return None
+            if self.room is None:
+                self.room = RoomSession(camera_storage(self.camera))
+            if now < self.motion_until:
+                self.room.expect_motion(now, self.motion_until-now)
+            masks = [{'box': b} for b in detection.get('boxes', [])]
+            masks.extend({'box': row['box']} for row in PetTracks.read_rows(detection) or [])
+            registered = await self.room.register(picture, masks, now, current=current,
+                active=lambda: motion_generation == self.motion_generation
+                    and (source_current is None or source_current()))
+            if not current():
+                self.identities.discard()
+                self.last = None
+                return None
+            moving = (not registered or now < self.motion_until or now < self.room.command_until
+                      or self.room.reg_info.get('status') in {'moving','settling'})
+            people = self.tracks.update(detection, now, transform=self.room.registration, camera_moving=moving)
+            animals = self.pet_tracks.update(detection, now, intent=animal_intent,
+                                            transform=self.room.registration, camera_moving=moving)
+            hands = detection.get('hands', [])
+            layout = (await self.room.update(picture, people, hands, now,
+                                            packet['width'], packet['height'], [], current=current)) if registered else None
         if layout is None:
             self.tracks.invalidate();self.pet_tracks.clear();self.identities.discard()
             people,hands,animals=[],[],[]

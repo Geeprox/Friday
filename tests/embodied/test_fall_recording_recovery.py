@@ -84,7 +84,8 @@ async def manual_turn(monitor, owner):
             waiters[command['request_id']].set_result({'native_code': 0})
 
         scope = dict(asyncio=asyncio, time=safety.time, secrets=secrets, json=json, waiters=waiters,
-                     motion_lock=asyncio.Lock(), selected={'id': camera}, recognizer=None, director=CameraDirector(),
+                     motion_lock=asyncio.Lock(), room_lock=asyncio.Lock(), selected={'id': camera},
+                     recognizer=None, director=CameraDirector(),
                      camera_is_open=AsyncMock(return_value=True), current_sample=dict,
                      item=dict(privacy_closed=False, source_active=True, control_epoch=1),
                      process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock())),

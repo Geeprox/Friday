@@ -415,6 +415,7 @@ class PreviewPool:
                 director.restore_survey_progress(item.get('survey_attempts', 0), item.get('survey_confirmed_moves', 0),
                                                  interruption)
             motion_lock = asyncio.Lock()
+            room_lock = asyncio.Lock()
             def privacy_closed():
                 item.update(state='shutter_closed',privacy_closed=True)
                 retire_source('privacy_shutter_closed')
@@ -462,31 +463,33 @@ class PreviewPool:
                         if not await camera_is_open(selected):
                             privacy_closed()
                             raise RuntimeError('privacy_shutter_closed')
-                        if item['privacy_closed']:raise RuntimeError('privacy_shutter_closed')
-                        if not item.get('source_active'):raise RuntimeError('capture_source_changed')
-                        if process.returncode is not None:raise RuntimeError('camera_not_owned')
-                        if expected_epoch is not None and expected_epoch != item['control_epoch']:
-                            raise RuntimeError('camera_intent_changed')
-                        now = time.monotonic()
-                        current = current_sample()
-                        if observed is not None and (not 0 <= now-observed <= 1.5
-                                or current['tracking_current'] is not True
-                                or current['_local_received'] <= item.get('last_motor_sent', -100)
-                                or not director.decision_current(current, now, direction,
-                                    focus=self.focus(selected['id']),
-                                    occupied_elsewhere=self.occupied_elsewhere(selected['id']),
-                                    review_pending=self.review_pending(selected['id'], current.get('session_id')),
-                                    fall_pending=self.fall_pending(selected['id'], current.get('session_id')),
-                                    sound_cue=self.sound_cue(selected['id'], current,
-                                                           director.sound_search_cue))):
-                            raise RuntimeError('stale_input')
-                        if now >= expires:raise RuntimeError('motor_request_expired')
-                        item['last_motor_sent'] = now
-                        if recognizer is not None:recognizer.mark_motion(now)
-                        if self.on_motion:self.on_motion(selected['id'])
-                        process.stdin.write((json.dumps(dict(action='motor_step',direction=direction,
-                            request_id=request_id,expires_mono=expires))+'\n').encode())
-                        sent = True
+                        # 等当前配准或布局完成，再清除这一视角。转向前后需要同一背景基准。
+                        async with room_lock:
+                            if item['privacy_closed']:raise RuntimeError('privacy_shutter_closed')
+                            if not item.get('source_active'):raise RuntimeError('capture_source_changed')
+                            if process.returncode is not None:raise RuntimeError('camera_not_owned')
+                            if expected_epoch is not None and expected_epoch != item['control_epoch']:
+                                raise RuntimeError('camera_intent_changed')
+                            now = time.monotonic()
+                            current = current_sample()
+                            if observed is not None and (not 0 <= now-observed <= 1.5
+                                    or current['tracking_current'] is not True
+                                    or current['_local_received'] <= item.get('last_motor_sent', -100)
+                                    or not director.decision_current(current, now, direction,
+                                        focus=self.focus(selected['id']),
+                                        occupied_elsewhere=self.occupied_elsewhere(selected['id']),
+                                        review_pending=self.review_pending(selected['id'], current.get('session_id')),
+                                        fall_pending=self.fall_pending(selected['id'], current.get('session_id')),
+                                        sound_cue=self.sound_cue(selected['id'], current,
+                                                               director.sound_search_cue))):
+                                raise RuntimeError('stale_input')
+                            if now >= expires:raise RuntimeError('motor_request_expired')
+                            item['last_motor_sent'] = now
+                            if recognizer is not None:recognizer.mark_motion(now)
+                            if self.on_motion:self.on_motion(selected['id'])
+                            process.stdin.write((json.dumps(dict(action='motor_step',direction=direction,
+                                request_id=request_id,expires_mono=expires))+'\n').encode())
+                            sent = True
                         await process.stdin.drain()
                         result = await asyncio.wait_for(future,3)
                         if result.get('error_code') == 'motor_request_expired':
@@ -576,7 +579,7 @@ class PreviewPool:
                         recognizer.animals_intent = item.get('mode_revision')
                         observation = await recognizer.observe(packet,
                             source_current=lambda: self.source_current(selected['id'], process),
-                            on_vision_failure=recognition_failed)
+                            on_vision_failure=recognition_failed, room_lock=room_lock)
                         if item['privacy_closed'] or not item['source_active']:break
                         # Inference finishing after a stale input cannot trigger.
                         item['timing'] = recognizer.timing
