@@ -39,6 +39,17 @@ function questPlacements(places,count){
  for(let i=0;i<Math.max(left.length,right.length);i++){if(left[i])result.push(left[i]);if(right[i])result.push(right[i]);}
  return result;
 }
+function tennisBallHeight(arc,ball){
+ if(!arc)return null;
+ if(arc.bounce_z===null)return arc.launch_height;
+ const first=(ball.z-arc.launch_z)/(arc.bounce_z-arc.launch_z);
+ if(first<=1){
+  const t=Math.max(0,first);
+  return (1-t)*(arc.launch_height+4*arc.loft*t);
+ }
+ const depth=Math.min(1,Math.abs(ball.z-ball.toward)/Math.abs(arc.bounce_z-ball.toward));
+ return arc.rebound_height*(1-depth**2);
+}
 function createGameScenery(c,{base,onChange=()=>{}}){
  const images=new Map(),errors=new Set(),positions=[.5,.5];
  const tennisArt=['tennis-near-v1.png','tennis-far-v1.png'];
@@ -270,9 +281,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    const approach=1+Math.max(0,Math.min(1,guide.seconds/.8))*.42;
    if(!reduced.matches&&t.phase==='rally'&&!swing){c.beginPath();c.ellipse(p[0],p[1],rx*approach,ry*approach,0,0,Math.PI*2);c.strokeStyle='#fff6d9';c.lineWidth=2;c.stroke();}
    c.restore();
-   const number=(guide.receiver+1)+' 号';
-   const label=t.practice||t.opponent?(swing?'挥拍':'落点'):number+(swing?' · 挥拍':'落点');
-   cue={label,p,rx,ry,ink,swing};
+   if(swing)cue={label:'挥拍',p,rx,ry,ink,swing};
   }else if(running&&t.serve?.ready){
    const p=project(t.ball.x,t.ball.z),rx=portrait?50:44,ry=rx*.25,ink=t.serve.player===0?'#285e53':'#8b3c29';
    c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle='#fff6d9bd';c.fill();
@@ -303,9 +312,15 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   for(const p of [netLeft,netRight])line([p[0],p[1]+5],[p[0],p[1]-netHeight-7],'#2f6053',9);c.restore();
   player(0);
   if(!['ready','point','complete'].includes(t.phase)){
-   const ball=suspended&&t.phase==='rally'&&shownBall?shownBall:ballFrame(g,at),p=project(ball.x,ball.z),lift=Math.sin(Math.max(0,Math.min(1,ball.z))*Math.PI)*90+18;
-   if(!suspended)shownBall={x:ball.x,z:ball.z};
-   c.save();c.fillStyle='#59391d40';c.beginPath();c.ellipse(p[0],p[1],13,5,0,0,Math.PI*2);c.fill();c.restore();sprite(6,p[0],p[1]-lift+14,portrait?52:42);
+   let ball=ballFrame(g,at),height=tennisBallHeight(t.arc,ball);
+   if(suspended&&t.phase==='rally'&&shownBall)({ball,height}=shownBall);
+   else if(!suspended)shownBall={ball,height};
+   const p=project(ball.x,ball.z),size=(portrait?57:47)-ball.z*13;
+   const lift=height===null?Math.sin(Math.max(0,Math.min(1,ball.z))*Math.PI)*90+18:height*(162-54*ball.z);
+   const shadow=size*.23*(1-Math.min(1,lift/160)*.35);
+   c.save();c.fillStyle='#59391d';c.globalAlpha=.42-Math.min(.25,lift/500);
+   c.beginPath();c.ellipse(p[0],p[1],shadow,shadow*.35,0,0,Math.PI*2);c.fill();c.restore();
+   sprite(6,p[0],p[1]-lift+size*.25,size);
   }
   if(!suspended&&t.event?.kind==='point'&&t.event.sequence!==lastTennisEvent){celebrateAt=motionAt;lastTennisEvent=t.event.sequence;}
   paperCelebration(motionAt);
@@ -316,7 +331,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    const side=cue.side??(p[0]>800?-1:1),margin=portrait?340:24,offset=rx+halfWidth+12;
    const minX=margin+halfWidth,maxX=1600-margin-halfWidth,preferred=p[0]+side*offset;
    const beside=cue.side&&(preferred<minX||preferred>maxX)?p[0]-side*offset:preferred;
-   const x=Math.max(minX,Math.min(maxX,beside)),y=p[1]-ry;
+   const x=Math.max(minX,Math.min(maxX,beside)),y=cue.side?p[1]-ry:p[1]+ry*.65;
    c.beginPath();c.roundRect(x-halfWidth,y-height/2,halfWidth*2,height,font*.32);
    c.fillStyle=swing?ink:'#faf9f2';c.fill();c.fillStyle=swing?'#fffaf2':ink;c.fillText(label,x,y+font*.05);c.restore();
   }

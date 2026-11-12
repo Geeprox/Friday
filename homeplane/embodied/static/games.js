@@ -401,7 +401,7 @@ function skiResult(ski){
   '<dl class="ski-splits" aria-label="各段穿门成绩">'+rows.join('')+'</dl>';
 }
 function tennisLineupMarkup(states){
- const labels=new Map([['missing','请回到画面'],['feet','露出双脚'],['calibrating','站定片刻'],['ready','已就位']]);
+ const labels=new Map([['missing','请回到画面'],['feet','露出双脚'],['hands','让挥拍手入镜'],['calibrating','站定片刻'],['ready','已就位']]);
  const rows=states.map((state,i)=>'<div data-player="'+i+'"><dt>'+(i+1)+' 号玩家</dt><dd>'+labels.get(state)+'</dd></div>');
  return '<dl class="tennis-lineup" aria-label="双人站位">'+rows.join('')+'</dl>';
 }
@@ -499,8 +499,8 @@ function stageOverlayMarkup(g,current,playing){
  const recovery=g.source_recovery?.required===true,countdown=g.resume_seconds>0&&!g.manually_paused;
  const lineup=g.tennis?.lineup;
  if(selected==='tennis'&&!recovery&&!g.manually_paused&&!countdown&&Array.isArray(lineup)&&lineup.length===2&&
-    lineup.every(state=>['ready','calibrating','feet','missing'].includes(state))){
-  const title=lineup.includes('missing')?'等待玩家回到画面':'确认双人站位';
+    lineup.every(state=>['ready','calibrating','feet','hands','missing'].includes(state))){
+  const title=lineup.includes('missing')?'等待玩家回到画面':lineup.includes('hands')?'暂停等候':'确认双人站位';
   return '<h2>'+title+'</h2>'+tennisLineupMarkup(lineup);
  }
  const r=g.source_recovery;

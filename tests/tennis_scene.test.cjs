@@ -35,7 +35,7 @@ test('preparation and point states hide the flight and the receiving marker',()=
   s.receive(current,1000);
   const drawn=s.paint(current,1000);
   assert.equal(ball(drawn),undefined);
-  assert(!drawn.some(c=>c[0]==='text'&&c[1].endsWith('落点')));
+  assert(!drawn.some(c=>c[0]==='text'&&c[1]==='挥拍'));
  }
 });
 
@@ -57,6 +57,29 @@ test('the stationary service marker tracks the designated server and survives re
  }
 });
 
+test('the ball touches its shadow once between two observed frames and lifts again',()=>{
+ const packet=originalPacket('launched'),s=scene(),z=packet.tennis.arc.bounce_z;
+ const observed=depth=>{
+  const sample=structuredClone(packet);
+  sample.tennis.ball.z=depth;
+  return sample;
+ };
+ const before=observed(z-.028),after=observed(z+.028);
+ s.receive(before,1000);s.receive(after,1100);
+ const lift=at=>{
+  const drawn=s.paint(after,at),shadow=drawn.filter(item=>item[0]==='ellipse').at(-1);
+  const depth=(840-shadow[2])/460;
+  return shadow[2]+(47-depth*13)*.25-ball(drawn)[2];
+ };
+ assert(lift(1100)>12);
+ assert(Math.abs(lift(1150))<1e-8);
+ assert(lift(1200)>9);
+ const displayed=ball(s.paint(after,1175));
+ const unseenReturn={...originalPacket('hit'),round_id:packet.round_id,control_context:packet.control_context,status:'paused'};
+ s.receive(unseenReturn,1190);
+ assert.deepEqual(ball(s.paint(unseenReturn,1250)),displayed);
+});
+
 test('both landing circles use the source strip and the swing cue stays in front of the actors',()=>{
  for(const portrait of [false,true])for(const receiver of [0,1]){
   const s=scene(true),current=game(.5,.5),window=.14,target=.62;
@@ -65,7 +88,7 @@ test('both landing circles use the source strip and the swing cue stays in front
   const draws=s.paint(current,1000),ring=draws.find(row=>row[0]==='ellipse');
   assert.equal(ring[2],840-(receiver?1-window:window)*460);
   const [kind,label,x]=draws.at(-1);
-  assert.equal(kind,'text');assert.equal(label,`${receiver+1} 号 · 挥拍`);
+  assert.equal(kind,'text');assert.equal(label,'挥拍');
   assert(Math.abs(x-ring[1])>ring[3],'cue sits beside the landing circle');
   assert(draws.findIndex(row=>row[0]==='ball')<draws.length-1);
   assert(!s.paint({...current,status:'paused'},1050).some(row=>row[0]==='text'&&row[1]===label));
@@ -150,6 +173,8 @@ test('the stage presents fixed player numbers and does not compete with a recove
  const waiting={...initial,mode:'tennis',status:'waiting',tennis:{lineup:['missing','ready']}};
  const waitingUI=c.stageOverlayMarkup(waiting,true,true);
  assert.match(waitingUI,/1 号玩家<\/dt><dd>请回到画面.*2 号玩家<\/dt><dd>已就位/);
+ const hands={...waiting,status:'paused',tennis:{lineup:['ready','hands']}};
+ assert.match(c.stageOverlayMarkup(hands,true,true),/1 号玩家<\/dt><dd>已就位.*2 号玩家<\/dt><dd>让挥拍手入镜/);
  assert.doesNotMatch(c.stageOverlayMarkup({...waiting,source_recovery:{required:true,phase:'camera'}},true,true),/tennis-lineup/);
 });
 test('practice shows one player and labels each confirmed outcome without using match points',()=>{

@@ -28,6 +28,36 @@ def pose_players(swing_track=None):
     return people
 
 
+@pytest.mark.parametrize("receiver", [0, 1])
+@pytest.mark.parametrize("missing", ["wrists", "feet"])
+def test_match_waits_for_the_receiver_to_be_visible_then_uses_a_new_swing(receiver, missing):
+    game = rally()
+    for step in range(1, 70):
+        game.update(pose_players(), LOCK, step * .05)
+    receiver_track = game.slots[receiver]
+    game.ball.update(x=.5, z=.07 if receiver == 0 else .93, target_x=.5, toward=receiver)
+    ball = dict(game.ball)
+    for step in range(70, 77):
+        people = pose_players()
+        player = next(p for p in people if p["id"] == receiver_track)
+        if missing == "wrists":
+            del player["joints"]["leftWrist"], player["joints"]["rightWrist"]
+        else:
+            player.pop("motion_anchor")
+        state = game.update(people, LOCK, step * .05)
+        assert state["status"] == "paused"
+        assert state["tennis"]["ball"] == ball
+        assert state["tennis"]["score"] == [0, 0]
+        assert state["tennis"]["lineup"][receiver] == ("hands" if missing == "wrists" else "feet")
+
+    resumed = game.update(pose_players(swing_track=receiver_track), LOCK, 77 * .05)
+    assert resumed["status"] == "playing"
+    assert resumed["tennis"]["ball"] == ball
+    assert resumed["tennis"]["rally"] == 0
+    returned = game.update(pose_players(), LOCK, 78 * .05)["tennis"]
+    assert returned["rally"] == 1 and returned["score"] == [0, 0]
+
+
 def test_first_ball_waits_for_the_designated_players_fresh_swing():
     game = MotionGames()
     game.reset('tennis')

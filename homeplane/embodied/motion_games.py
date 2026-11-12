@@ -22,6 +22,9 @@ TENNIS_REACH = .20
 TENNIS_WINDOW = .10
 TENNIS_CURVE = .4
 TENNIS_CUE_LEAD = .20
+TENNIS_BOUNCE_DEPTH = .26
+TENNIS_SERVE_HEIGHT = .50
+TENNIS_REBOUND_HEIGHT = .50
 TENNIS_PREPARATION = 2.0
 TENNIS_SERVE_SETTLE = .25
 TENNIS_PRACTICE_LANES = (.5, .5, .5, .26, .74, .26, .74, .5, .26)
@@ -87,6 +90,14 @@ def tennis_contact(ball, px, swing, dt, now, window):
             return None
     z = ball['z']+(-1 if ball['toward'] == 0 else 1)*speed*first
     return first, x, z
+
+
+def tennis_visibility_gap(player):
+    if player['observation'] != 'fresh':
+        return 'missing'
+    if player['foot_observation'] != 'fresh':
+        return 'feet'
+    return 'hands' if not player['observed_wrists'] else None
 
 
 class TennisOpponent:
@@ -174,14 +185,17 @@ class BodyMotion:
         self.knee_origin = None
         self.torso_at_anchor = None
 
-    def invalidate_motion(self, *, keep_stance=False):
+    def invalidate_swing(self):
         self.samples.clear()
+        self.last_swing = -10.0
+
+    def invalidate_motion(self, *, keep_stance=False):
+        self.invalidate_swing()
         self.phase = None
         self.pump_extreme = None
         self.pump_direction = 0
         self.arm_effort = 0.0
         self.arm_speed = 0.0
-        self.last_swing = -10.0
         self.last_pump = -10.0
         if not keep_stance:
             self.leg_samples.clear()
@@ -547,6 +561,7 @@ class MotionGames:
         self.tennis_event = None
         self.tennis_event_sequence = 0
         self.tennis_flight = 0
+        self.tennis_arc = None
         self.tennis_used_swings = [-100.0, -100.0]
         self.tennis_server = 0
         self._clear_tennis_serve()
@@ -937,11 +952,16 @@ class MotionGames:
             return self.publish(selected, "paused", "请让双脚完整入镜")
         if any(not p["calibrated"] for p in selected):
             return self.publish(selected, "calibrating", "站定约 1 秒，记录左右移动原点")
-        if warmup or self.mode == 'tennis' and self.tennis_variant != 'match':
+        if warmup:
             player = selected[0]
             if (player['observation'] != 'fresh' or player['foot_observation'] != 'fresh'
-                    or player['observed_wrists'] < (2 if warmup else 1)):
+                    or player['observed_wrists'] < 2):
                 return self.publish(selected, 'paused', '请让手和双脚入镜')
+        elif self.mode == 'tennis':
+            receiver = self.ball['toward'] if self.tennis_variant == 'match' else 0
+            if receiver is not None and (gap := tennis_visibility_gap(selected[receiver])):
+                reason = '请让双脚完整入镜' if gap == 'feet' else '请让手和双脚入镜'
+                return self.publish(selected, 'paused', reason)
         if self.resume_seconds > 0:
             self.resume_seconds = max(0.0, self.resume_seconds-dt)
             if self.resume_seconds < 1e-6:
@@ -953,6 +973,9 @@ class MotionGames:
         if warmup:
             warmup.observe(selected[0])
             return self.publish(selected, 'playing', '试滑')
+        if self.mode == 'tennis' and self.status in {'paused', 'waiting'}:
+            # 恢复首帧重新建立时间基准，冻结期间不推进球。
+            dt = 0.0
         self.elapsed += dt
         if self.mode == "quest":
             self.quest(selected[0], dt)
@@ -1198,9 +1221,15 @@ class MotionGames:
         self._clear_tennis_serve()
         self.tennis_event_sequence += 1
         self.tennis_event = dict(sequence=self.tennis_event_sequence, kind='serve', player=server, elapsed=self.elapsed)
-        self.tennis_flight += 1
         self.hit_flash = now
         self.ball.update(toward=1-server, target_x=clamp(target, .12, .88))
+        self._start_tennis_flight()
+
+    def _start_tennis_flight(self, launch_height=TENNIS_SERVE_HEIGHT):
+        self.tennis_flight += 1
+        self.tennis_arc = dict(launch_z=self.ball['z'], launch_height=launch_height,
+                               bounce_z=TENNIS_BOUNCE_DEPTH if self.ball['toward'] == 0 else 1-TENNIS_BOUNCE_DEPTH,
+                               loft=.62, rebound_height=TENNIS_REBOUND_HEIGHT)
 
     def _feed_tennis_practice(self, now):
         index = len(self.tennis_practice_results)
@@ -1210,7 +1239,7 @@ class MotionGames:
         self.ball.update(x=lane, z=.88, target_x=lane, toward=0, speed=speed)
         self.tennis_event_sequence += 1
         self.tennis_event = dict(sequence=self.tennis_event_sequence, kind='serve', player=1, elapsed=self.elapsed)
-        self.tennis_flight += 1
+        self._start_tennis_flight()
         self.hit_flash = now
 
     def tennis(self, players, dt, now):
@@ -1252,10 +1281,10 @@ class MotionGames:
             self.tennis_event_sequence += 1
             self.tennis_event = dict(sequence=self.tennis_event_sequence, kind='hit', player=receiver,
                                      quality=quality, elapsed=self.elapsed)
-            self.tennis_flight += 1
-            b['x'] = hit_x
-            b["toward"] = 1 - receiver
-            b["z"] = 0.12 if receiver == 0 else 0.88
+            # 击球区在弹地点之后，出球从真实触球的深度和弹起高度继续。
+            depth = clamp(abs(hit_z-receiver)/TENNIS_BOUNCE_DEPTH, 0., 1.)
+            b.update(x=hit_x, z=hit_z, toward=1-receiver)
+            self._start_tennis_flight(TENNIS_REBOUND_HEIGHT*(1-depth**2))
             if opponent_receiving:
                 aim = self.tennis_opponent.aim(self.tennis_flight, self.difficulty.id, .5+players[0]['lateral']*.4)
                 b['target_x'] = clamp(aim, max(.12, px-.27), min(.88, px+.27))
@@ -1276,6 +1305,7 @@ class MotionGames:
         b["z"] += direction * b["speed"] * dt
         b['x'] = b['target_x'] + (b['x']-b['target_x'])*math.exp(-TENNIS_CURVE*dt)
         if b["z"] < 0 or b["z"] > 1:
+            self.tennis_arc = None
             if practice and receiver == 1:
                 # The successful return finishes its flight before the next feed.
                 self.tennis_flight += 1
@@ -1343,7 +1373,7 @@ class MotionGames:
                 and not self.manually_paused
                 and (status in {'waiting', 'calibrating'} or (status == 'paused' and players))):
             by_id = {player['id']: player for player in players}
-            for track in self.slots:
+            for index, track in enumerate(self.slots):
                 player = by_id.get(track)
                 state = 'missing'
                 if player is not None:
@@ -1351,6 +1381,8 @@ class MotionGames:
                         state = 'feet'
                     else:
                         state = 'ready' if player['calibrated'] else 'calibrating'
+                        if status == 'paused' and phase == 'rally' and index == receiver:
+                            state = tennis_visibility_gap(player) or state
                 lineup.append(state)
         event = dict(self.tennis_event, age=round(max(0, self.elapsed-self.tennis_event['elapsed']), 3)) if self.tennis_event else None
         drill = None
@@ -1359,7 +1391,8 @@ class MotionGames:
             index = min(total - 1, len(self.tennis_practice_results) - (receiver == 1))
             drill = dict(balls=total, results=list(self.tennis_practice_results),
                          feed_x=TENNIS_PRACTICE_LANES[index])
-        return dict(ball=dict(self.ball), score=list(self.score), rally=self.rally, best_rally=self.best_rally,
+        arc = dict(self.tennis_arc) if self.tennis_arc else dict(launch_height=TENNIS_SERVE_HEIGHT, bounce_z=None)
+        return dict(ball=dict(self.ball), arc=arc, score=list(self.score), rally=self.rally, best_rally=self.best_rally,
                     winner=self.tennis_winner, target=TENNIS_TARGET, cap=TENNIS_CAP,
                     phase=phase, ready_seconds=round(self.round_pause, 3), guide=guide,
                     event=event, flight=self.tennis_flight, lineup=lineup, serve=serve, practice=drill,
@@ -1372,6 +1405,11 @@ class MotionGames:
             self.circuit.invalidate_motion(keep_completed_side=True)
         if self.mode == 'tennis' and status != 'playing':
             self._clear_tennis_serve()
+            receiver = self.ball['toward']
+            if receiver is not None and receiver < len(self.slots):
+                reader = self.readers.get(self.slots[receiver])
+                if reader:
+                    reader.invalidate_swing()
         if self.ski_warmup and status != 'playing':
             self.ski_warmup.clear_hold()
         self.status = status
