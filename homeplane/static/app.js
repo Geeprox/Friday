@@ -778,9 +778,9 @@ function renderActivity(content) {
 const archiveLabels={ready:'可准备隐私预览',pending:'等待落盘或完成核对',missing:'该区间没有已知片段',expired:'索引中的原片已不存在',unavailable:'暂不能定位原片'};
 const archiveReasons={archive_camera_mapping_required:'请先对应NAS录像目录与摄像头',archive_recording_clock_unreviewed:'需要核对摄像头录像时钟。',archive_file_still_changing:'文件仍在变化，暂不能用于区间引用。',archive_completion_unreviewed:'录像写入完成的规则尚未核对。',archive_media_time_or_container_unvalidated:'媒体格式或时长与文件名区间尚未匹配。',archive_index_coverage_incomplete:'目录记录不完整，请刷新并检查对应关系。当前索引只覆盖部分目录或文件名；请刷新索引并检查映射。',archive_coverage_or_clock_boundary_uncertain:'片段之间存在空缺或时钟边界不确定。',archive_overlapping_segments_ambiguous:'该区间存在重叠片段，需要核对来源。',archive_within_declared_arrival_delay:'仍在你设置的归档等待时间内。',archive_source_segment_expired:'已知原片已从可读目录中消失。'};
 function localArchiveDate(value){const d=new Date(value);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,23);}
-function showArchiveResolution(output,report,{adjacent=false}={}){
-  const title=adjacent?'未找到所选时刻的录像':archiveLabels[report.status]??'需要核对';
-  const message=adjacent?'可以查看相邻片段。':archiveReasons[report.reason]??
+function showArchiveResolution(output,report){
+  const title=archiveLabels[report.status]??'需要核对';
+  const message=archiveReasons[report.reason]??
     (report.status==='ready'?(report.simulated?'已定位合成录像片段，未读取真实原片。':'录像引用和时间已核对；播放前会在本机生成保护预览。'):'请核对归档来源和当前索引。');
   output.replaceChildren();add(output,badge(report.simulated?'simulated · 合成录像引用':'NAS · 录像只读引用'),el('h3',title),el('p',message));
   for(const segment of report.segments??[]){
@@ -791,6 +791,34 @@ function showArchiveResolution(output,report,{adjacent=false}={}){
   output.append(el('p','附近录像只作画面参考，不能证明触发原因。保护预览默认静音。',{class:'meta'}));
   if(archivePlayerView&&archivePlayerView.plan.context_fingerprint===report.context_fingerprint)output.append(archivePlayerView.root);
 }
+const safetyReplayClock=new Intl.DateTimeFormat('zh-CN',{
+  timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',
+});
+function safetyReplayTimeRange(start,end){
+  return `${safetyReplayClock.format(start)} – ${safetyReplayClock.format(end)}`;
+}
+function safetyReplayNotice(output,message,retry){
+  const status=el('p',message,{role:'status'});
+  const notice=add(el('div',null,{class:'safety-replay-notice'}),status);
+  if(retry)notice.append(button('重试回看',retry,{class:'secondary'}));
+  output.replaceChildren(notice);
+}
+function showSafetyArchiveResolution(output,report,ready,ambiguous,options){
+  const message=ambiguous?'所选时刻有重叠的录像。'
+    :report.status==='pending'&&!ready.length?'录像还在保存。'
+    :'未找到所选时刻的录像。';
+  safetyReplayNotice(output,message,options.retry);
+  if(ambiguous||!ready.length)return;
+  const choices=add(el('section',null,{class:'safety-replay-neighbors'}),el('h3','相邻片段'));
+  for(const segment of ready){
+    const label=safetyReplayTimeRange(...archivePlaybackInterval(report,segment));
+    choices.append(button(label,()=>{
+      output.replaceChildren();
+      return openArchivePlayer(output,report,segment,options);
+    },{class:'secondary','aria-label':'查看相邻录像 '+label}));
+  }
+  output.append(choices);
+}
 function cancelArchivePlayback(plan){if(/^[a-f0-9]{64}$/.test(plan?.plan_id??''))void api('/api/archive/playback/cancel',{method:'POST',body:JSON.stringify({plan_id:plan.plan_id})}).catch(()=>{});}
 function stopArchivePlayer(message=''){
   archivePrepareController?.abort();archivePrepareController=null;
@@ -798,57 +826,102 @@ function stopArchivePlayer(message=''){
   if(archiveContextTimer!==null&&typeof clearInterval==='function')clearInterval(archiveContextTimer);archiveContextTimer=null;
   archivePlayerVersion++;const view=archivePlayerView;archivePlayerView=null;if(!view)return;
   view.video.pause?.();view.video.removeAttribute?.('src');view.video.load?.();view.video.setAttribute('hidden','');cancelArchivePlayback(view.plan);
-  if(message)settingsMessage(view.status,message,true);
+  if(message){
+    if(view.failure)view.failure(message);
+    else settingsMessage(view.status,message,true);
+  }
 }
 function archivePlaybackInterval(report,segment){
   const uncertainty=(segment.clock_uncertainty_seconds??0)*1000;
   return [
-    Math.max(Date.parse(report.time_range.start),Date.parse(segment.time_range.start)+uncertainty),
-    Math.min(Date.parse(report.time_range.end),Date.parse(segment.time_range.end)-uncertainty),
+    Math.ceil(Math.max(Date.parse(report.time_range.start),Date.parse(segment.time_range.start)+uncertainty)),
+    Math.floor(Math.min(Date.parse(report.time_range.end),Date.parse(segment.time_range.end)-uncertainty)),
   ];
 }
-async function openEventRecording(output,details){
+function safetyReplayOffset(plan,report,segment,start,end,anchor){
+  const sourceStart=Date.parse(plan.source_time_range?.start);
+  // 原片起点和时钟误差可能带亚毫秒，保留向区间内收窄的余量。
+  if(plan.camera_id!==report.camera_id||plan.media_ref!==segment.media_ref
+      ||plan.stream_url!=='/api/archive/media/'+plan.plan_id
+      ||sourceStart!==Date.parse(segment.time_range.start)
+      ||Date.parse(plan.source_time_range?.end)!==Date.parse(segment.time_range.end)
+      ||Date.parse(plan.time_range?.start)!==start||Date.parse(plan.time_range?.end)!==end
+      ||Math.abs(plan.start_offset_seconds-(start-sourceStart)/1000)>.001
+      ||Math.abs(plan.end_offset_seconds-(end-sourceStart)/1000)>.001)return null;
+  const initial=anchor===null?plan.start_offset_seconds:(anchor-sourceStart)/1000;
+  return plan.start_offset_seconds<=initial&&initial<plan.end_offset_seconds?initial:null;
+}
+async function openEventRecording(output,details,options={}){
   stopArchivePlayer();const version=++archiveVersion,ownerPage=page;output.replaceChildren();
   if(!details)return;
   if(!['Activity','Safety'].includes(ownerPage))return;
-  const request=details.request;
+  const request=details.request,compact=ownerPage==='Safety';
+  const anchor=compact?Date.parse(details.anchor_at):null;
   const allowed=['schema_version','camera_id','expected_context','time_range'];
   if(!request||Object.keys(request).some(key=>!allowed.includes(key))
     ||(request.schema_version!==undefined&&request.schema_version!==1)
     ||!/^[a-f0-9]{64}$/.test(request.expected_context??'')||typeof request.camera_id!=='string'
     ||!request.time_range||Object.keys(request.time_range).some(key=>!['schema_version','start','end'].includes(key))
     ||(request.time_range.schema_version!==undefined&&request.time_range.schema_version!==1)
-    ||!Number.isFinite(Date.parse(request.time_range.start))||!Number.isFinite(Date.parse(request.time_range.end))){
-    output.append(el('p','这条录像引用暂不可核对，请刷新事件后重试。',{role:'status'}));return;
+    ||!Number.isFinite(Date.parse(request.time_range.start))||!Number.isFinite(Date.parse(request.time_range.end))
+    ||(compact&&!(Date.parse(request.time_range.start)<=anchor&&anchor<Date.parse(request.time_range.end)))){
+    if(compact)safetyReplayNotice(output,'暂时无法定位这张画面。',options.retry);
+    else output.append(el('p','这条录像引用暂不可核对，请刷新事件后重试。',{role:'status'}));
+    return;
   }
-  output.append(el('p','正在定位事件附近的录像…',{role:'status','aria-live':'polite'}));
+  output.append(el('p','正在查找录像…',{role:'status'}));
   if(ownerPage==='Activity')output.scrollIntoView?.({block:'nearest'});
   try{
     const report=await api('/api/archive/resolve',{method:'POST',body:JSON.stringify(request)}),context=await api('/api/archive/context');
     if(version!==archiveVersion||page!==ownerPage||!output.isConnected)return;
-    if(report.context_fingerprint!==request.expected_context||context.fingerprint!==report.context_fingerprint||context.simulated!==report.simulated)throw Error('source_changed');
+    if(report.camera_id!==request.camera_id||report.context_fingerprint!==request.expected_context||context.fingerprint!==report.context_fingerprint||context.simulated!==report.simulated)throw Error('source_changed');
     const ready=(report.segments??[]).filter(segment=>segment.status==='ready');
-    const anchor=ownerPage==='Safety'?Date.parse(details.anchor_at):NaN;
-    const covering=Number.isFinite(anchor)?ready.filter(segment=>{
-      const [start,end]=archivePlaybackInterval(report,segment);
-      return start<=anchor&&anchor<end;
-    }):ready;
-    if(ownerPage==='Safety'&&covering.length===1){output.replaceChildren();await openArchivePlayer(output,report,covering[0]);return;}
-    const adjacent=ready.length>0&&covering.length===0;
-    showArchiveResolution(output,report,{adjacent});
+    if(compact){
+      if(Date.parse(report.time_range?.start)!==Date.parse(request.time_range.start)
+          ||Date.parse(report.time_range?.end)!==Date.parse(request.time_range.end))throw Error('interval_changed');
+      const playable=ready.filter(segment=>{
+        const [start,end]=archivePlaybackInterval(report,segment);
+        return Number.isFinite(segment.clock_uncertainty_seconds)&&segment.clock_uncertainty_seconds>=0&&start<end;
+      });
+      const covering=playable.filter(segment=>{
+        const [start,end]=archivePlaybackInterval(report,segment);
+        return start<=anchor&&anchor<end;
+      });
+      const ambiguous=covering.length>1||report.reason==='archive_overlapping_segments_ambiguous';
+      if(!ambiguous&&covering.length===1){
+        output.replaceChildren();await openArchivePlayer(output,report,covering[0],{...options,anchor});return;
+      }
+      showSafetyArchiveResolution(output,report,playable,ambiguous,options);
+      output.scrollIntoView?.({block:'nearest'});
+      return;
+    }
+    showArchiveResolution(output,report);
     output.scrollIntoView?.({block:'nearest'});
-    if(ready.length===1&&!adjacent)await openArchivePlayer(output,report,ready[0]);
-  }catch(_){if(version===archiveVersion&&page===ownerPage&&output.isConnected)output.replaceChildren(el('p','事件录像暂不可定位，请核对 NAS 连接、时间和摄像头对应关系后重试。',{role:'status'}));}
+    if(ready.length===1)await openArchivePlayer(output,report,ready[0]);
+  }catch(_){
+    if(version!==archiveVersion||page!==ownerPage||!output.isConnected)return;
+    if(compact)safetyReplayNotice(output,'暂时无法读取录像。',options.retry);
+    else output.replaceChildren(el('p','事件录像暂不可定位，请核对 NAS 连接、时间和摄像头对应关系后重试。',{role:'status'}));
+  }
 }
-async function openArchivePlayer(output,report,segment){
+async function openArchivePlayer(output,report,segment,{anchor=null,close,retry}={}){
   stopArchivePlayer();const version=++archivePlayerVersion,queryVersion=archiveVersion,ownerPage=page;
   if(!['Activity','Safety'].includes(ownerPage))return;
   const [start,end]=archivePlaybackInterval(report,segment);
   if(!(end>start))return;
-  const status=el('div','正在生成隐私预览…',{role:'status','aria-live':'polite'});output.append(status);
+  const compact=ownerPage==='Safety';
+  const status=el('div','正在准备录像…',{class:compact?'safety-replay-notice':'',role:'status'});output.append(status);
   if(typeof AbortController==='function')archivePrepareController=new AbortController();
   const signal=archivePrepareController?.signal;
-  status.append(button('取消',()=>{stopArchivePlayer();status.textContent='已取消准备。';},{class:'secondary'}));
+  status.append(button('取消',()=>{if(close)close();else{stopArchivePlayer();status.textContent='已取消准备。';}},{class:'secondary'}));
+  const preparationFailed=message=>{
+    if(compact){
+      const focused=status.contains?.(document.activeElement);
+      safetyReplayNotice(output,message,retry);
+      if(focused)(output.querySelector?.('button')||output).focus?.({preventScroll:true});
+    }
+    else settingsMessage(status,message,true);
+  };
   let preparedPlan=null,adopted=false;
   try{
     preparedPlan=await api('/api/archive/playback',{method:'POST',signal,body:JSON.stringify({expected_context:report.context_fingerprint,camera_id:report.camera_id,media_ref:segment.media_ref,time_range:{start:new Date(start).toISOString(),end:new Date(end).toISOString()}})});
@@ -856,15 +929,25 @@ async function openArchivePlayer(output,report,segment){
     if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!==ownerPage)return;
     const fresh=await api('/api/archive/context',{signal});
     if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!==ownerPage)return;
-    if(fresh.fingerprint!==plan.context_fingerprint||fresh.simulated!==plan.simulated){settingsMessage(status,'录像来源已变化，请重新选择。',true);return;}
-    if(plan.privacy_protected!==true||plan.privacy_preview_generated!==true||plan.original_modified!==false||!['local_person_mosaic','local_full_frame_mosaic'].includes(plan.privacy_mode)){status.textContent='隐私预览未就绪';return;}
+    if(fresh.fingerprint!==plan.context_fingerprint||fresh.simulated!==plan.simulated
+        ||report.context_fingerprint!==plan.context_fingerprint||report.simulated!==plan.simulated){
+      preparationFailed('录像来源已变化，请重试。');return;
+    }
+    if(plan.privacy_protected!==true||plan.privacy_preview_generated!==true||plan.original_modified!==false||!['local_person_mosaic','local_full_frame_mosaic'].includes(plan.privacy_mode)){preparationFailed('保护预览暂时不可用。');return;}
     if(!/^\/api\/archive\/media\/[a-f0-9]{64}$/.test(plan.stream_url)||!Number.isFinite(plan.start_offset_seconds)||!Number.isFinite(plan.end_offset_seconds)||plan.end_offset_seconds<=plan.start_offset_seconds)throw Error('unqualified media');
+    const initial=compact?safetyReplayOffset(plan,report,segment,start,end,anchor):plan.start_offset_seconds;
+    if(initial===null){preparationFailed('暂时无法定位所选时刻。');return;}
     const expires=Date.parse(plan.expires_at)-Date.now();
-    if(!Number.isFinite(expires)||expires<=0||expires>301000){settingsMessage(status,'预览已过期，请重新选择。',true);return;}
-    const compact=ownerPage==='Safety';
-    const root=el('section',null,{class:compact?'archive-player safety-event-player':'archive-player',id:'archive-player'}),video=el('video',null,{controls:'',playsinline:'',preload:'metadata','aria-label':plan.simulated?'simulated 测试录像':copyName('Friday-1228')}),receipt=el('p','等待媒体定位…',{id:'archive-seek-evidence',class:'meta'});
+    if(!Number.isFinite(expires)||expires<=0||expires>301000){preparationFailed('预览已过期，请重试。');return;}
+    const videoLabel=plan.simulated?'示例录像':compact?'隐私保护录像':copyName('Friday-1228');
+    const root=el('section',null,{class:compact?'archive-player safety-event-player':'archive-player',id:'archive-player'}),video=el('video',null,{controls:'',playsinline:'',preload:'metadata','aria-label':videoLabel}),receipt=el('p','等待媒体定位…',{id:'archive-seek-evidence',class:'meta'});
     video.muted=true;
-    const view={root,video,plan,status:receipt,ownerPage};archivePlayerView=view;
+    const failure=compact?message=>{
+      const focused=root.contains?.(document.activeElement);
+      safetyReplayNotice(output,message,retry);
+      if(focused)(output.querySelector?.('button')||output).focus?.({preventScroll:true});
+    }:null;
+    const view={root,video,plan,status:receipt,ownerPage,failure};archivePlayerView=view;
     const active=()=>archivePlayerView===view&&page===ownerPage&&version===archivePlayerVersion;
     if(typeof setTimeout==='function')archiveExpiryTimer=setTimeout(()=>{if(active())stopArchivePlayer('预览已过期，请重新选择。');},expires);
     archiveContextTimer=setInterval(async()=>{
@@ -878,8 +961,24 @@ async function openArchivePlayer(output,report,segment){
       video.setAttribute('data-muted',video.muted);
     };
     for(const event of ['loadeddata','seeked','play','pause','timeupdate'])video.addEventListener(event,stateEvidence);
-    let wanted=plan.start_offset_seconds,seekSequence=0,frameCallback=null,frameReceipt=null,ended=false;
-    const failed=()=>{if(active())stopArchivePlayer('片段解码或读取失败，请重新查找原片。暂不能解码或继续读取该片段，请重新查询原片。');};
+    let wanted=initial,seekSequence=0,frameCallback=null,frameReceipt=null,ended=false,metadataReady=false,repositioned=false;
+    const failed=()=>{if(active())stopArchivePlayer('录像暂时无法播放。');};
+    const positioning=compact?el('p','正在定位录像…',{class:'safety-replay-position',role:'status'}):null;
+    const returnToAnchor=anchor===null?null:button('回到所选时刻',()=>{
+      if(!active())return;
+      video.pause();ended=false;video.currentTime=initial;
+    },{class:'secondary'});
+    if(returnToAnchor)returnToAnchor.disabled=true;
+    const revealMedia=()=>{
+      if(!positioning||positioning.hidden||!metadataReady||video.seeking||video.readyState<2)return;
+      if(Math.abs(video.currentTime-initial)>.05){
+        // 有的播放器会在首帧就绪时撤销元数据阶段的定位。只用已解码的媒体再试一次。
+        if(repositioned){failed();return;}
+        repositioned=true;video.currentTime=initial;return;
+      }
+      positioning.hidden=true;video.controls=true;video.removeAttribute('aria-hidden');
+      if(returnToAnchor)returnToAnchor.disabled=false;
+    };
     const showPosition=()=>{
       if(frameReceipt){
         receipt.textContent=`录像帧位置与时钟误差。呈现帧 ${frameReceipt.mediaTime.toFixed(3)} 秒 · 媒体定位误差 ${frameReceipt.error.toFixed(3)} 秒 · 录像时钟 ±${plan.clock_uncertainty_seconds} 秒`;
@@ -893,13 +992,20 @@ async function openArchivePlayer(output,report,segment){
     const observeFrame=()=>{
       if(!video.requestVideoFrameCallback||frameCallback!==null)return;
       const sequence=seekSequence,target=wanted;
-      frameCallback=video.requestVideoFrameCallback((_,metadata)=>{
+      const callback=video.requestVideoFrameCallback((_,metadata)=>{
+        if(frameCallback!==callback)return;
         frameCallback=null;
         if(!active()||sequence!==seekSequence||video.seeking||!Number.isFinite(metadata.mediaTime))return;
         frameReceipt={mediaTime:metadata.mediaTime,target,error:Math.abs(metadata.mediaTime-target)};showPosition();
       });
+      frameCallback=callback;
     };
-    video.addEventListener('loadedmetadata',()=>{if(!active())return;if(!Number.isFinite(video.duration)||Math.abs(video.duration-plan.duration_seconds)>2){failed();return;}video.currentTime=wanted;observeFrame();});
+    video.addEventListener('loadedmetadata',()=>{
+      if(!active())return;
+      if(!Number.isFinite(video.duration)||Math.abs(video.duration-plan.duration_seconds)>2||video.duration<initial){failed();return;}
+      metadataReady=true;video.currentTime=wanted;revealMedia();observeFrame();
+    });
+    if(compact)video.addEventListener('loadeddata',()=>{if(active())revealMedia();});
     video.addEventListener('seeking',()=>{
       if(!active())return;
       const clamped=Math.max(plan.start_offset_seconds,Math.min(video.currentTime,plan.end_offset_seconds));wanted=clamped;seekSequence++;frameReceipt=null;if(clamped<plan.end_offset_seconds-.002)ended=false;
@@ -909,19 +1015,30 @@ async function openArchivePlayer(output,report,segment){
       observeFrame();
     });
     video.addEventListener('seeked',()=>{
-      if(!active())return;showPosition();if(!frameReceipt)observeFrame();
+      if(!active())return;revealMedia();showPosition();if(!frameReceipt)observeFrame();
     });
     video.addEventListener('timeupdate',()=>{if(active()&&video.currentTime>=plan.end_offset_seconds){ended=true;video.pause();video.currentTime=Math.max(plan.start_offset_seconds,plan.end_offset_seconds-.001);receipt.append(el('span',' · 所选区间结束'));}});
-    video.addEventListener('play',()=>{if(!active())return;if(Date.parse(plan.expires_at)<=Date.now()){stopArchivePlayer('播放资格已过期，请重新查询。');return;}if(ended){ended=false;video.currentTime=plan.start_offset_seconds;}});
+    video.addEventListener('play',()=>{if(!active())return;if(Date.parse(plan.expires_at)<=Date.now()){stopArchivePlayer('预览已过期，请重试。');return;}if(ended){ended=false;video.currentTime=initial;}});
     video.addEventListener('error',failed);
     const protection=plan.privacy_mode==='local_full_frame_mosaic'?'整帧遮挡保护':'人物遮挡保护';
-    const stop=button('停止回放',()=>stopArchivePlayer('已停止回放。'),{id:'archive-player-stop',class:'secondary'});
+    const stop=button('停止回放',close||(()=>stopArchivePlayer('已停止回放。')),{id:'archive-player-stop',class:'secondary'});
     if(compact){
-      add(root,el('h3','附近录像'),video,el('p',`${plan.simulated?'simulated · 合成录像 · ':''}${protection} · 默认静音`,{class:'caption'}),stop,
-        add(el('details',null,{class:'safety-playback-info'}),el('summary','播放信息'),receipt,el('p',`${time(plan.time_range.start)} — ${time(plan.time_range.end)} · 有效期至 ${time(plan.expires_at)}`,{class:'meta'})));
+      video.controls=false;video.setAttribute('aria-hidden','true');
+      const heading=add(el('header',null,{class:'safety-replay-heading'}),el('h3',anchor===null?'相邻录像':'录像回看'));
+      if(anchor!==null)heading.append(el('time',safetyReplayClock.format(anchor),{
+        datetime:new Date(anchor).toISOString(),'aria-label':'所选时刻 '+safetyReplayClock.format(anchor),
+      }));
+      const actions=el('div',null,{class:'safety-replay-actions'});
+      if(returnToAnchor)actions.append(returnToAnchor);
+      actions.append(stop);
+      add(root,heading,add(el('div',null,{class:'safety-replay-stage'}),video,positioning),
+        add(el('div',null,{class:'safety-replay-toolbar'}),
+          el('p',`${plan.simulated?'示例录像 · ':''}${protection}`,{class:'caption'}),actions),
+        add(el('details',null,{class:'safety-playback-info'}),el('summary','播放信息'),receipt,
+          el('p',`片段范围 ${safetyReplayTimeRange(start,end)}`,{class:'meta'})));
     }else add(root,badge(plan.simulated?'simulated · 合成录像隐私预览':'本机隐私预览'),el('h3','所选片段'),video,receipt,el('p',`${protection} · 默认静音 · 播放资格至 ${time(plan.expires_at)} · 64 MiB 读取上限`,{class:'meta'}),stop);
     status.remove?.();output.append(root);video.setAttribute('src',plan.stream_url);adopted=true;root.scrollIntoView?.({block:'nearest'});
-  }catch(_){if(version===archivePlayerVersion&&page===ownerPage)settingsMessage(status,'保护预览暂不能播放，请重新选择片段并检查本机播放依赖、连接和时钟。',true);}
+  }catch(_){if(version===archivePlayerVersion&&page===ownerPage)preparationFailed('保护预览暂时不可用。');}
   finally{if(preparedPlan&&!adopted)cancelArchivePlayback(preparedPlan);if(version===archivePlayerVersion)archivePrepareController=null;}
 }
 function renderArchiveLookup(content){
