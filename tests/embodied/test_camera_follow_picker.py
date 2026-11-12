@@ -80,6 +80,9 @@ def test_only_the_selected_subject_can_move_the_camera(tmp_path):
     assert director.choose(camera.frame(.3), camera.now, focus=focus) is None
     assert director.choose(camera.frame(.3), camera.now, focus=focus) == 'right'
     assert director.target == 2 and director.decision_current(camera.state, camera.now, 'right', focus=focus)
+    revised = dict(camera.right, tracking={'follow_revision': 1, 'overlapping': False})
+    latest = dict(camera.state, people=[camera.left, revised], _local_received=camera.now+.1)
+    assert not director.decision_current(latest, camera.now+.1, 'right', focus=focus)
     director.sent(camera.now, 'right')
     for delta in (2.5, .3, .3, 12., 14.):
         assert director.choose(camera.frame(delta, people=[camera.left]), camera.now) is None
@@ -108,7 +111,8 @@ def test_pet_pick_waits_for_the_current_inference_revision(tmp_path):
     assert camera.director.target == 'cat:1'
 
 
-@pytest.mark.parametrize('changed', ['stale', 'expired', 'session', 'revision', 'moved', 'game', 'duplicate', 'gone', 'identity'])
+@pytest.mark.parametrize('changed', ['stale', 'expired', 'session', 'revision', 'moved', 'game',
+                                    'duplicate', 'gone', 'identity', 'continuity', 'overlap'])
 def test_old_choices_cannot_grant_motion(tmp_path, changed):
     camera = Camera(tmp_path / 'intent')
     camera.right['identity'] = {'state': 'tracked', 'person_id': 'synthetic-one'}
@@ -128,6 +132,8 @@ def test_old_choices_cannot_grant_motion(tmp_path, changed):
         camera.state['people'].remove(camera.right)
     elif changed == 'identity':
         camera.right['identity']['person_id'] = 'synthetic-other'
+    elif changed in {'continuity', 'overlap'}:
+        camera.right['tracking'] = {'follow_revision': 1, 'overlapping': changed == 'overlap'}
     else:
         camera.state.update({'session': {'session_id': 'new-capture'}, 'moved': {'_follow_motion': 5},
                              'game': {'party_camera': {'active': True, 'scope': 'synthetic'}}}[changed])
@@ -200,7 +206,7 @@ def test_explicit_follow_requires_two_new_observations_containing_the_selected_s
     assert camera.director.choose(camera.frame(.3), camera.now) == 'right'
 
 
-@pytest.mark.parametrize('interruption', ['missing', 'tracking', 'time_gap'])
+@pytest.mark.parametrize('interruption', ['missing', 'tracking', 'time_gap', 'crossed_between_ticks'])
 def test_stationary_follow_ignores_reused_track_and_recovers_only_the_original_appearance(tmp_path, interruption):
     camera = Camera(tmp_path / 'intent')
     director = camera.director
@@ -222,11 +228,16 @@ def test_stationary_follow_ignores_reused_track_and_recovers_only_the_original_a
         assert director.choose(frame(.3), camera.now) is None
     elif interruption == 'tracking':
         assert director.choose(frame(.3, (impostor, 8), tracking_current=False), camera.now) is None
+    elif interruption == 'crossed_between_ticks':
+        impostor['tracking'] = {'follow_revision': 1, 'overlapping': False}
     gap = 1.8 if interruption == 'time_gap' else .3
     assert director.choose(frame(gap, (impostor, 8)), camera.now) is None
     assert director.choose(frame(.3, (impostor, 8)), camera.now) is None
     assert director.choose(frame(.3, (restored, 7)), camera.now) is None
     assert director.choose(camera.state, camera.now + .1) is None
+    if interruption == 'crossed_between_ticks':
+        restored['tracking'] = {'follow_revision': 1, 'overlapping': False}
+        assert director.choose(frame(.3, (restored, 7)), camera.now) is None
     assert director.choose(frame(.3, (restored, 7)), camera.now) == 'right'
     assert director.target == 9 and director.decision_current(camera.state, camera.now, 'right')
 
@@ -276,3 +287,24 @@ def test_explicit_follow_reconfirms_a_known_person_before_dispatching_on_a_new_t
     assert director.choose(camera.frame(.3, people=[replacement]), camera.now) is None
     assert director.choose(camera.frame(.3, people=[replacement]), camera.now) == 'right'
     assert director.target == 6 and director.decision_current(camera.state, camera.now, 'right')
+
+def test_body_continuity_cannot_reuse_face_evidence_that_predates_crossing(tmp_path):
+    camera = Camera(tmp_path / 'intent')
+    director = camera.director
+    identity = dict(state='matched', person_id='synthetic-person', face_observed_monotonic=camera.now)
+    target = dict(camera.right, identity=identity)
+    camera.frame(people=[target])
+    camera.prepare()
+    view = camera.picker.snapshot()
+    camera.picker.command(FollowChoose(action='choose', snapshot=view['snapshot'], choice=1))
+    assert director.choose(camera.frame(.3, people=[target]), camera.now) is None
+    assert director.choose(camera.frame(.3, people=[target]), camera.now) == 'right'
+    resumed = dict(target, tracking={'follow_revision': 1, 'overlapping': False,
+                                    'follow_changed_at': camera.now+.2})
+    resumed['identity'] = dict(identity, state='tracked')
+    for _ in range(3):
+        assert director.choose(camera.frame(.3, people=[resumed]), camera.now) is None
+        assert director.pending_decision is None
+    resumed['identity'] = dict(identity, face_observed_monotonic=camera.now+.1)
+    assert director.choose(camera.frame(.3, people=[resumed]), camera.now) is None
+    assert director.choose(camera.frame(.3, people=[resumed]), camera.now) == 'right'

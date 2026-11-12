@@ -11,6 +11,7 @@ from homeplane.embodied.pose_rules import classify
 IDENTITY = np.eye(3)
 TRACK_GAP_SECONDS = 3.0
 POSE_GAP_SECONDS = .75
+FOLLOW_GAP_SECONDS = 1.5
 
 
 def valid_point(point):
@@ -25,6 +26,12 @@ def valid_box(box):
             and .4 <= box['confidence'] <= 1 and box['x'] >= 0 and box['y'] >= 0
             and box['w'] > 0 and box['h'] > 0 and box['x']+box['w'] <= 1.000001
             and box['y']+box['h'] <= 1.000001)
+
+def _overlapping(a, b):
+    width = min(a['x']+a['w'], b['x']+b['w']) - max(a['x'], b['x'])
+    height = min(a['y']+a['h'], b['y']+b['h']) - max(a['y'], b['y'])
+    # 以较小框为准，保留成人经过婴儿或宠物前方这类大小差异明显的情况。
+    return width > 0 and height > 0 and width*height >= .30*min(a['w']*a['h'], b['w']*b['h'])
 
 
 def assign_poses(detection, boxes):
@@ -94,7 +101,7 @@ class StableTracks:
         self.last_update = None
         self.input_valid = False
 
-    def update(self, detection, now, transform=IDENTITY, *, camera_moving=False):
+    def update(self, detection, now, transform=IDENTITY, *, camera_moving=False, occluders=()):
         self.input_valid = False
         if (not isinstance(detection,dict) or not isinstance(detection.get('boxes',[]),list)
                 or not isinstance(detection.get('poses',[]),list)):
@@ -160,6 +167,16 @@ class StableTracks:
             box = boxes[index]
             joints = poses.get(index,{})
             prev = self.items.get(track_id)
+            # 使用当帧检测框，包括尚未被追踪器确认为新轨迹的框。
+            overlapping = (any(i != index and _overlapping(box, other) for i, other in enumerate(boxes))
+                           or any(_overlapping(box, other) for other in occluders))
+            follow_revision = 0
+            follow_changed_at = now if overlapping else None
+            if prev:
+                broken = (prev['last'] != self.last_update or now-prev['last'] > FOLLOW_GAP_SECONDS
+                          or overlapping and not prev['overlapping'])
+                follow_revision = prev['follow_revision'] + int(broken)
+                follow_changed_at = now if broken or overlapping else prev['follow_changed_at']
             if prev and now-prev['last'] > POSE_GAP_SECONDS:
                 prev = None
             labels = classify(joints)
@@ -184,6 +201,9 @@ class StableTracks:
                 "candidate": tuple(labels),
                 "anchor": anchor,
                 "first": first,
+                "overlapping": overlapping,
+                "follow_revision": follow_revision,
+                "follow_changed_at": follow_changed_at,
             }
             people.append(
                 {
@@ -192,7 +212,9 @@ class StableTracks:
                     "joints": joints,
                     "actions": labels if streak >= 3 else ["pose_unknown"],
                     "motion": motion,
-                    "tracking": {"backend": "ByteTrack", "space": space, "session_id": True},
+                    "tracking": {"backend": "ByteTrack", "space": space, "session_id": True,
+                                 "overlapping": overlapping, "follow_revision": follow_revision,
+                                 "follow_changed_at": follow_changed_at},
                 }
             )
         self.items = {k: v for k, v in self.items.items() if now - v["last"] <= TRACK_GAP_SECONDS}

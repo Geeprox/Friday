@@ -64,6 +64,18 @@ def test_original_bytetrack_namespaces_species_and_never_exports_human_authority
     assert p.public()==dict(status='ready',supported=True,current=True,species=['cat','dog'],identity=False)
     assert observed(p,[],.3)==[], 'Lost tracker state must not be returned as a visible pet'
 
+def test_cat_track_marks_a_crossing_dog_before_it_has_a_confirmed_track():
+    tracker = PetTracks()
+    observed(tracker, [animal()], 0)
+    cat = observed(tracker, [animal()], .1)[0]
+    crossing = observed(tracker, [animal(), animal('dog', .76)], .2)
+    obstructed = next(row for row in crossing if row['id'] == cat['id'])
+    assert obstructed['tracking']['overlapping']
+    assert obstructed['tracking']['follow_revision'] != cat['tracking']['follow_revision']
+    clear = observed(tracker, [animal()], .3)[0]
+    assert clear['id'] == cat['id'] and not clear['tracking']['overlapping']
+    assert clear['tracking']['follow_revision'] == obstructed['tracking']['follow_revision']
+
 
 @pytest.mark.parametrize('invalid',[
     {},dict(animals_supported=False),dict(animals_status='unavailable'),dict(animals=None),
@@ -112,6 +124,11 @@ def test_real_pet_tracks_reach_bounded_director_and_pending_check_without_a_pers
     for at in (2.4,2.5,2.6,4.3):
         animals=observed(tracks,[animal()],at)
         s=packet(at,animals,**appearance_sample(at,[(pet,7) for pet in animals]));direction=d.choose(s,at)
+    assert direction is None
+    for at in (4.4, 4.5):
+        animals = observed(tracks, [animal()], at)
+        s = packet(at, animals, **appearance_sample(at, [(pet, 7) for pet in animals]))
+        direction = d.choose(s, at)
     assert direction=='right'
     d.apply_mode('hold','manual-choice')
     assert not d.decision_current(s,4.3,'right') and d.choose(s,4.4) is None

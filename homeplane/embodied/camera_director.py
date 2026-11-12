@@ -64,6 +64,7 @@ class CameraDirector:
         self.last_move = -100.0
         self.last_person = None
         self.target = None
+        self.target_follow_key = None
         self.target_session = None
         self.source_session = None
         self.target_seen = -100.0
@@ -163,6 +164,7 @@ class CameraDirector:
             self.tilt_recovery = None
             if self.intent or self.mode != mode:
                 self.target = None
+                self.target_follow_key = None
                 self.target_identity = None
                 self.target_session = None
                 self.last_focus = None
@@ -224,6 +226,7 @@ class CameraDirector:
         self.scheduled_result = None
         self.pending_direction = self.pending_decision = None
         self.target = self.target_identity = self.target_session = self.last_focus = None
+        self.target_follow_key = None
         self.target_seen = -100.0
         self._clear_reframe()
         self.visible_samples = 0
@@ -271,6 +274,7 @@ class CameraDirector:
             session=sample.get('session_id'), stamp=sample['_local_received'],
             target=self.target, identity=self.target_identity, game_window=self._camera_window(sample))
         if self.phase == 'following':
+            self.pending_decision['target_follow_key'] = self.target_follow_key
             subjects = [subject for subject in self._subjects(sample) if subject['id'] == self.target]
             if len(subjects) == 1 and self.sound_following:
                 self.pending_decision.update(sound_cue=self.sound_search_cue, sound_box=dict(subjects[0]['box']),
@@ -319,9 +323,11 @@ class CameraDirector:
                                     and sample.get('_follow_stable', True))))
 
     def select_target(self, sample, subject, now):
-        if self.mode not in TARGET_MODES or not self.target_frame_current(sample, now):
+        key = self.follow_key(subject)
+        if self.mode not in TARGET_MODES or not self.target_frame_current(sample, now) or key is None:
             raise ValueError('follow_target_changed')
         self.target = subject['id']
+        self.target_follow_key = key
         self.target_identity = self.identity(subject)
         self.target_session = self.source_session = sample['session_id']
         self.target_seen = now
@@ -330,6 +336,14 @@ class CameraDirector:
         self._clear_selection_reference()
         self._remember_selection(sample, subject)
         self.phase = 'target_reacquiring'
+
+    @staticmethod
+    def follow_key(subject):
+        """用于核对同一采集会话中的连续观测。"""
+        tracking = subject.get('tracking') or {}
+        if tracking.get('overlapping'):
+            return None
+        return subject['id'], tracking.get('follow_revision', 0)
 
     @staticmethod
     def _qualified_target(target):
@@ -373,7 +387,8 @@ class CameraDirector:
         matches = [subject for subject in subjects if subject['id'] == self.target]
         target = matches[0] if len(matches) == 1 else None
         if self.reframe_started is None and (
-                not self._qualified_target(target) or self.target_identity
+                not self._qualified_target(target) or self.follow_key(target) != self.target_follow_key
+                or self.target_identity
                 and self.identity(target) not in (None, self.target_identity)):
             self._interrupt_selection(now)
         if self.reframe_started is not None:
@@ -390,6 +405,7 @@ class CameraDirector:
             return None
         self.selection_sample = stamp
         self.target_seen = now
+        self.target_follow_key = self.follow_key(target)
         self.target_identity = self.target_identity or self.identity(target)
         self._remember_selection(sample, target)
         return target
@@ -411,7 +427,7 @@ class CameraDirector:
             matches = [subject for subject in subjects if self.identity(subject) == self.target_identity]
             match = matches[0] if len(matches) == 1 else None
             if not strict:
-                return match
+                return match if match is not None and self.follow_key(match) is not None else None
         elif self.reframe_appearance is not None:
             from .camera_follow_appearance import find_follow_target
 
@@ -419,12 +435,13 @@ class CameraDirector:
         else:
             match = None
         previous, self.reframe_candidate = self.reframe_candidate, None
-        if (match is None or strict and not self._qualified_target(match)
+        key = self.follow_key(match) if match is not None else None
+        if (key is None or strict and not self._qualified_target(match)
                 or sum(row['id'] == match['id'] for row in subjects) != 1):
             return None
         stamp = sample['_local_received']
-        candidate = (match['id'], stamp)
-        same_target = previous is not None and previous[0] == match['id'] and 0 < stamp - previous[1] <= 1.5
+        candidate = (key, stamp)
+        same_target = previous is not None and previous[0] == key and 0 < stamp - previous[1] <= 1.5
         if self.sound_follow_motion is None:
             self.reframe_candidate = candidate
             return match if same_target else None
@@ -547,11 +564,12 @@ class CameraDirector:
                 (pending['session'], pending['target'], direction, pending['game_window']), pending['stamp']):
             return False
         matches = [p for p in people if p['id'] == pending['target']]
-        if not matches and pending['identity'] and not (tilt or explicit or sound_follow):
-            matches = [p for p in people if self.identity(p) == pending['identity']]
         if len(matches) != 1:
             return False
         target = matches[0]
+        key = self.follow_key(target)
+        if key is None or key != pending['target_follow_key']:
+            return False
         if (explicit or sound_follow) and not self._qualified_target(target):
             return False
         if sound_follow:
@@ -785,7 +803,7 @@ class CameraDirector:
         previous, self.sound_candidate = self.sound_candidate, None
         target = people[0] if len(people) == 1 else None
         if (self._sound_scope(sample) != self.sound_view or not self.target_frame_current(sample, now)
-                or not self._qualified_target(target)):
+                or not self._qualified_target(target) or (key := self.follow_key(target)) is None):
             if self.sound_following:
                 self._interrupt_selection(now)
             self.phase = 'target_ambiguous'
@@ -794,19 +812,20 @@ class CameraDirector:
             return self._selected_follow(sample, people, now)
         stamp = sample['_local_received']
         identity = self.identity(target)
-        self.sound_candidate = (target['id'], stamp, identity, dict(target['box']), sample['_patrol_view'])
+        self.sound_candidate = (key, stamp, identity, dict(target['box']), sample['_patrol_view'])
         self.phase = 'target_ambiguous'
         if previous is None:
             return None
-        track, observed, previous_identity, box, view = previous
+        previous_key, observed, previous_identity, box, view = previous
         shift = _view_shift(view, sample['_patrol_view'])
-        if (track != target['id'] or not 0 < stamp - observed <= 1.5
+        if (previous_key != key or not 0 < stamp - observed <= 1.5
                 or previous_identity and identity and previous_identity != identity
                 or not iou(box, target['box']) or shift is None or math.hypot(*shift) > .012):
             return None
         self.sound_following = True
         self.sound_candidate = None
         self.target = target['id']
+        self.target_follow_key = key
         self.target_identity = identity or previous_identity
         self.target_session = sample['session_id']
         self.target_seen = now
@@ -819,7 +838,16 @@ class CameraDirector:
     @staticmethod
     def identity(person):
         identity = person.get('identity') or {}
-        return identity.get('person_id') if identity.get('state') in {'matched', 'tracked'} else None
+        tracking = person.get('tracking') or {}
+        if identity.get('state') not in {'matched', 'tracked'} or tracking.get('overlapping'):
+            return None
+        changed_at = tracking.get('follow_changed_at')
+        face_at = identity.get('face_observed_monotonic')
+        # 同一编号沿用的身份可能来自遮挡前的旧人脸，不能作为重新锁定的依据。
+        if changed_at is not None and (
+                type(face_at) not in (int, float) or not math.isfinite(face_at) or face_at <= changed_at):
+            return None
+        return identity.get('person_id')
 
     def choose(self, sample, now, *, focus=None, occupied_elsewhere=False, review_pending=False, fall_pending=False,
                sound_cue=None):
@@ -844,6 +872,7 @@ class CameraDirector:
             self.tilt_observation = None
             self.tilt_recovery = None
             self.target = self.target_identity = self.target_session = None
+            self.target_follow_key = None
             self._clear_reframe()
             self._clear_selection_reference()
             self.last_focus = None
@@ -920,6 +949,7 @@ class CameraDirector:
             self._end_sound_search(now)
             self.source_session = session
             self.target = self.target_identity = self.last_focus = None
+            self.target_follow_key = None
             self._clear_reframe()
             self.last_sample = None
             self.visible_samples = self.obscured_samples = 0
@@ -1034,6 +1064,8 @@ class CameraDirector:
                 if key != self.last_focus:
                     self.target = focus['track']; self.last_focus = key
                     self.target_identity = None
+                    if self.target_follow_key is not None and self.target_follow_key[0] != self.target:
+                        self.target_follow_key = None
                     self._clear_reframe()
             if self.target is None and len(people) == 1:
                 self.target = people[0]['id']
@@ -1045,6 +1077,7 @@ class CameraDirector:
                 target = self._reframe_target(sample, people)
                 if target is not None:
                     self.target = target['id']
+                    self.target_follow_key = self.follow_key(target)
                     self._clear_reframe()
                 elif people or now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS:
                     if people:
@@ -1070,6 +1103,16 @@ class CameraDirector:
                     self.phase = 'target_ambiguous'
                 return None
             if not explicit:
+                key = self.follow_key(target)
+                previous = self.target_follow_key
+                if key is None or previous is not None and previous[0] == target['id'] and key != previous:
+                    # 自动模式重新从清楚的视野选取目标，仍有人重叠时不沿用旧编号。
+                    self.target = self.target_identity = self.target_follow_key = None
+                    self.pending_direction = self.pending_decision = None
+                    self.visible_samples = 0
+                    self.phase = 'target_ambiguous'
+                    return None
+                self.target_follow_key = key
                 self.target_seen = now
                 self.target_identity = self.target_identity or self.identity(target)
             self.phase = 'following'
@@ -1096,6 +1139,7 @@ class CameraDirector:
         if now-self.target_seen > 8:
             self.target = None
             self.target_identity = None
+            self.target_follow_key = None
         if occupied_elsewhere or now-self.last_person < 15 or now-self.last_move < 12:
             self.phase = 'observing'
             return None

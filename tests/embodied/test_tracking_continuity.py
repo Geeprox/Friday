@@ -69,6 +69,39 @@ def test_overlap_keeps_body_boxes_but_does_not_guess_whose_pose_has_more_joints(
     assert len(people)==2
     assert all(not p['joints'] and p['actions']==['pose_unknown'] for p in people)
 
+def test_follow_tracks_remember_an_overlap_and_a_missed_observation_between_decisions():
+    tracker = StableTracks()
+    original = warm(tracker)[0]
+    overlap = tracker.update(dict(boxes=[box(), box(.2)], poses=[]), .2)
+    crossed = next(row for row in overlap if row['id'] == original['id'])
+    assert crossed['tracking']['overlapping']
+    assert crossed['tracking']['follow_revision'] != original['tracking']['follow_revision']
+    assert crossed['tracking']['follow_changed_at'] == .2
+    separated = tracker.update(frame(), .25)[0]
+    assert separated['id'] == original['id'] and not separated['tracking']['overlapping']
+    assert separated['tracking']['follow_revision'] == crossed['tracking']['follow_revision']
+    assert separated['tracking']['follow_changed_at'] == .2
+    assert tracker.update(dict(boxes=[], poses=[]), .3) == []
+    returned = tracker.update(frame(), .35)[0]
+    assert returned['id'] == original['id']
+    assert returned['tracking']['follow_revision'] != separated['tracking']['follow_revision']
+    assert returned['tracking']['follow_changed_at'] == .35
+
+def test_low_person_box_without_joints_still_reaches_tilt_after_two_observations():
+    from homeplane.embodied.camera_director import CameraDirector
+
+    tracker, director = StableTracks(), CameraDirector()
+    low = dict(x=.4, y=.8, w=.2, h=.16, confidence=.95)
+    decisions = []
+    for at in (0., .1, .2):
+        people = tracker.update(dict(boxes=[low], poses=[]), at)
+        assert all(not row['joints'] for row in people)
+        sample = dict(status='live', _local_received=at, scene_visible=True, people=people,
+                      session_id='synthetic-view', tracking_current=tracker.input_valid)
+        decisions.append(director.choose(sample, at))
+    assert decisions == [None, None, 'down']
+    assert director.decision_current(sample, .2, 'down')
+
 
 def test_separate_people_keep_their_own_pose_and_track_when_detector_order_reverses():
     tracker=StableTracks()

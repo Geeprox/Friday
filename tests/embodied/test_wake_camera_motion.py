@@ -197,6 +197,20 @@ async def test_wake_target_selection_does_not_guess_between_people(tmp_path, mon
         direction = director.choose(frame, at, sound_cue=home.wake_motion_cue(frame, at))
     assert direction == 'right'
 
+@pytest.mark.asyncio
+async def test_wake_requires_two_clear_observations_of_one_continuous_track(tmp_path, monkeypatch):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
+    director = CameraDirector()
+    assert director.choose(current_frame(1, source), 1) is None
+    for at, revision, overlapping in ((1.8, 0, True), (2.2, 1, False), (2.6, 2, False), (3.0, 2, False)):
+        target = dict(subject(2, .78), tracking={'follow_revision': revision, 'overlapping': overlapping})
+        frame = current_frame(at, source, people=[target])
+        cue = home.wake_motion_cue(frame, at)
+        direction = director.choose(frame, at, sound_cue=cue)
+        assert direction == ('right' if at == 3.0 else None)
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['source', 'pause', 'speaking', 'policy', 'fall', 'game', 'hold', 'survey'])
