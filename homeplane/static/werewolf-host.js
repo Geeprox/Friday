@@ -3,12 +3,13 @@ import {makeWerewolfRecap} from './werewolf-recap.js';
 
 const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
 const button=(text,fn,cls)=>{const n=node('button',text,cls);n.type='button';n.onclick=fn;return n;};
-const errors={players_not_ready:'等大家准备好后再发身份。',identities_pending:'等大家确认身份后，再开始首夜。',phone_address_unavailable:'局域网连接发生变化，请重新选择。',game_already_exists:'已有一个房间，请先结束当前房间。',scene_recovery_required:'请先恢复上局灯光。',scene_light_brightness_unavailable:'这盏灯暂时无法读回亮度，请取消选择后重试。',scene_light_binding_changed:'氛围灯连接已变化，请重新创建房间并选择灯具。',scene_light_unavailable:'暂时读不到氛围灯，请检查连接后重试。',rematch_unavailable:'本局结束后可以再开一局。',phase_changed:'对局已经更新，请重新操作。',speaker_unavailable:'当前无法安排发言，请查看对局进度。',camera_binding_changed:'座位对应已经更新，请重新选择。',room_changed:'房间已经更新，请在当前对局重试。',event_conflict:'这次操作已更新，请重新选择。',camera_track_unavailable:'画面中的位置已经变化，请重新选择。',game_unavailable:'暂时无法完成，请重试。'};
+const errors={players_not_ready:'等大家准备好后再发身份。',identities_pending:'等大家确认身份后，再开始首夜。',phone_address_unavailable:'局域网连接发生变化，请重新选择。',phone_network_changed:'连接状态已更新，请核对当前房间。',party_link_unavailable:'手机与电视已断开，请先恢复连接。',game_already_exists:'已有一个房间，请先结束当前房间。',scene_recovery_required:'请先恢复上局灯光。',scene_light_brightness_unavailable:'这盏灯暂时无法读回亮度，请取消选择后重试。',scene_light_binding_changed:'氛围灯连接已变化，请重新创建房间并选择灯具。',scene_light_unavailable:'暂时读不到氛围灯，请检查连接后重试。',rematch_unavailable:'本局结束后可以再开一局。',phase_changed:'对局已经更新，请重新操作。',speaker_unavailable:'当前无法安排发言，请查看对局进度。',camera_binding_changed:'座位对应已经更新，请重新选择。',room_changed:'房间已经更新，请在当前对局重试。',event_conflict:'这次操作已更新，请重新选择。',camera_track_unavailable:'画面中的位置已经变化，请重新选择。',game_unavailable:'暂时无法完成，请重试。'};
 
 export function mountWerewolf(root,{go=()=>{}}={}){
  let alive=true,busy=false,context=null,current=null,revision='',lastNotice='',confirmation=null;
  let generation=0,readRequest=null,commandRequest=null,syncFailed=false,lobbyUI=null,roundCamera=null,seatRecovery=null,displayPair=null;
  const syncNotice='对局服务暂时无法连接，正在重试。';
+ const networkInterrupted=()=>current?.network?.state==='interrupted';
  const abort=new AbortController(),wrap=node('section',null,'werewolf-host'),notice=node('p',null,'ww-notice'),content=node('div');notice.setAttribute('role','status');wrap.append(notice,content);root.append(wrap);
  async function api(path,body,signal){const signals=[abort.signal,AbortSignal.timeout(10000)];if(signal)signals.push(signal);const r=await fetch('/api/games/werewolf/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any(signals)});const data=await r.json();if(!r.ok)throw Error(data.detail||'game_unavailable');return data;}
  async function perform(fn){
@@ -18,16 +19,19 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   const owns=()=>alive&&commandRequest===request&&generation===request.generation;
   const commandApi=(path,body)=>{
    const mapping=path==='camera-bind'||path==='camera-unbind';
-   if(path==='control'||mapping){
+   if(path==='control'||path==='reconnect'||mapping){
     request.event??=crypto.randomUUID();
     body={...body,[mapping?'game_session':'session']:request.session,revision:request.revision,event_id:request.event};
     if(mapping&&Number.isSafeInteger(request.bindingRevision))body.binding_revision=request.bindingRevision;
+    if(path==='reconnect')request.reconnect=true;
    }
    return api(path,body,request.controller.signal);
   };
   busy=true;syncFailed=false;lastNotice='';notice.textContent='';content.setAttribute('aria-busy','true');updateControls();
   try{
    const data=await fn(commandApi);if(!owns())return;
+   if(request.reconnect)lastNotice=data.game.players.length?
+    '连接已恢复。请让玩家找回原座位，需要时重新连接电视。':'连接已恢复，可以重新扫码入座。';
    current=data;render();
    // An acknowledged close stays visible even if refreshing setup choices fails.
    if(!data.active){const nextContext=await commandApi('context');if(!owns())return;context=nextContext;current=nextContext.current;render();}
@@ -48,7 +52,9 @@ export function mountWerewolf(root,{go=()=>{}}={}){
  function restoreControlFocus(request){
   if(current?.session!==request.session||document.activeElement!==document.body)return;
   const previous=request.focused;
-  if(previous?.tagName==='SELECT'&&content.contains(previous)){
+  if(request.reconnect&&!networkInterrupted()){
+   (content.querySelector('[data-seat-recovery]:not(:disabled)')||content.querySelector('.ww-phase-heading h3'))?.focus({preventScroll:true});
+  }else if(previous?.tagName==='SELECT'&&content.contains(previous)){
    previous.focus({preventScroll:true});
   }else if(previous?.dataset.speakerCommand){
    const action=content.querySelector('[data-speaker-command]');
@@ -100,7 +106,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   const show=button('生成二维码',issue,'primary');
   actions.append(done,show);dialog.append(heading,field,result,status,actions);wrap.append(dialog);
   const session=current.session,lobbyRevision=current.game.lobby_revision;
-  const recovery={session,lobbyRevision,dialog};
+  const recovery={session,lobbyRevision,dialog,phoneUrl:current.phone_url};
   seatRecovery=recovery;
   let request=null,expiry=null;
   function clear(){
@@ -192,7 +198,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   const actions=node('div',null,'ww-seat-recovery-actions');
   const dismiss=button('取消',()=>dialog.close()),submit=node('button','确认连接','primary');
   submit.type='submit';actions.append(dismiss,submit);
-  const pair={session,dialog,input,status,dismiss,submit,code:null,request:null,connected:false};
+  const pair={session,dialog,input,status,dismiss,submit,code:null,request:null,connected:false,entry:current.display_entry};
   displayPair=pair;
   form.append(addressLabel,codeLabel,status,actions);dialog.append(title,form);wrap.append(dialog);
   dialog.addEventListener('close',()=>{
@@ -237,7 +243,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   if(indicator)indicator.hidden=syncFailed||!codes.length;
   if(!displayPair)return;
   const pair=displayPair;
-  if(current?.session!==pair.session){pair.dialog.close();return;}
+  if(current?.session!==pair.session||current.display_entry!==pair.entry){pair.dialog.close();return;}
   if(pair.connected)return;
   if(!syncFailed&&pair.code&&codes.includes(pair.code)){
    pair.connected=true;pair.input.readOnly=true;pair.submit.hidden=true;
@@ -466,7 +472,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
  }
  function updateLobbyInvitation(){
   const ui=lobbyUI,game=current.game;
-  const available=game.players.length<game.player_count;
+  const available=!networkInterrupted()&&game.players.length<game.player_count;
   ui.join.hidden=!available;
   if(!available){
    ui.qr?.remove();
@@ -564,13 +570,14 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   title.append(node('h2','狼人杀'));
   if(!finished)title.append(node('span',g.player_count+' 人 · Friday 主持'));
   content.append(title);
+  if(networkInterrupted())content.append(networkRecovery());
   const layout=node('div',null,'ww-live-layout');
   layout.dataset.playing=String(g.phase!=='lobby');
   layout.dataset.aligning=String(current.camera_enabled&&g.phase==='lobby');
   layout.dataset.finished=String(finished);
   const scene=finished?makeWerewolfRecap(g,{art:'/static/games-art/werewolf.png',heading:'h3'}):board(g);
   layout.append(scene);
-  if(g.phase==='lobby')lobbyUI={session:current.session,count:g.player_count,cameraEnabled:Boolean(current.camera_enabled),scene,ready:null,alignment:null};
+  if(g.phase==='lobby')lobbyUI={session:current.session,count:g.player_count,cameraEnabled:Boolean(current.camera_enabled),networkRevision:current.network?.revision,scene,ready:null,alignment:null};
   const aside=node('aside',null,'ww-room-tools');
   if(g.phase==='lobby'){
    const join=node('div',null,'ww-join');
@@ -612,12 +619,13 @@ export function mountWerewolf(root,{go=()=>{}}={}){
     const next=button(tied?'平票发言':'下一环节',()=>perform(api=>api('control',{action:'advance'})),'primary');
     next.dataset.turnCommand='true';controls.append(next);
    }
-   controls.append(button(g.paused?'继续对局':'暂停对局',()=>perform(api=>api('control',{action:g.paused?'resume':'pause'}))));
+   const pause=button(g.paused?'继续对局':'暂停对局',()=>perform(api=>api('control',{action:g.paused?'resume':'pause'})));
+   pause.dataset.networkRequired=String(g.paused);controls.append(pause);
    if(!g.paused&&!g.speaking_turn&&g.phase!=='vote_reveal')controls.append(button(confirmation==='advance'?'确认进入下一环节':'提前结束本环节',()=>confirmControl('advance'),'ww-text-button'));
   }
   if(finished){
    const rematch=button('再开一局',()=>perform(api=>api('control',{action:'rematch'})),'primary');
-   rematch.dataset.rematch='true';
+   rematch.dataset.rematch='true';rematch.dataset.networkRequired='true';
    controls.append(rematch);
   }
   if(current.phone_url){
@@ -643,6 +651,44 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   }
   if(current.camera_enabled&&g.phase==='lobby'){lobbyUI.alignment=cameraAlignment();layout.append(lobbyUI.alignment.section);}
  }
+ function networkRecovery(){
+  const form=node('form',null,'ww-network-recovery'),copy=node('div',null,'ww-network-copy');
+  const title=node('h3','手机与电视已断开'),status=node('p');
+  title.id='ww-network-title';status.id='ww-network-summary';
+  status.setAttribute('role','status');status.dataset.networkStatus='true';
+  form.setAttribute('aria-labelledby',title.id);
+  form.setAttribute('aria-describedby',status.id);
+  copy.append(title,status);
+  const actions=node('div',null,'ww-network-actions'),field=node('label','局域网','ww-field'),select=node('select');
+  field.dataset.networkField='true';field.append(select);
+  const submit=node('button','恢复连接','primary');submit.type='submit';submit.dataset.networkSubmit='true';
+  actions.append(field,submit);form.append(copy,actions);
+  form.onsubmit=event=>{
+   event.preventDefault();
+   if(!submit.disabled&&networkInterrupted())void perform(api=>api('reconnect',{
+    address:select.value,network_revision:current.network.revision}));
+  };
+  return form;
+ }
+ function updateNetworkRecovery(){
+  const form=content.querySelector('.ww-network-recovery');
+  if(!form)return;
+  const select=form.querySelector('select'),addresses=current.network?.addresses||[];
+  const key=JSON.stringify(addresses);
+  if(select.dataset.networkOptions!==key){
+   const previous=select.value;
+   select.replaceChildren(...addresses.map(address=>{const option=node('option',address);option.value=address;return option;}));
+   select.value=addresses.includes(previous)?previous:(addresses[0]||'');
+   select.dataset.networkOptions=key;
+  }
+  form.querySelector('[data-network-field]').hidden=addresses.length<2;
+  const submit=form.querySelector('[data-network-submit]');
+  submit.hidden=!addresses.length;submit.disabled=busy||syncFailed||!addresses.length;
+  const status=form.querySelector('[data-network-status]');
+  const text=!addresses.length?'请让 Friday 连回局域网。':
+   current.game.paused?'本局已暂停，恢复连接后可从这里继续。':'恢复连接后，玩家可以回到原座位。';
+  if(status.textContent!==text)status.textContent=text;
+ }
  function updateEffects(){
   const effects=current?.effects||{},voice=content.querySelector('[data-voice-state]');
   const text=effects.voice==='quiet'?'语音主持已静音':['unavailable','unconfirmed'].includes(effects.voice)?'播报暂不可用，屏幕主持继续':effects.narration?'Friday 语音主持已开启':'使用屏幕主持';
@@ -653,11 +699,11 @@ export function mountWerewolf(root,{go=()=>{}}={}){
  }
  function renderKey(){
   if(!current?.active)return 'setup';
-  return [current.session,current.game.revision,JSON.stringify(current.game.players),roundCameraKey()].join('|');
+  return [current.session,current.game.revision,current.network?.revision,JSON.stringify(current.game.players),roundCameraKey()].join('|');
  }
  function render(){
   if(!alive)return;
-  if(seatRecovery&&(current?.session!==seatRecovery.session||current.game.lobby_revision!==seatRecovery.lobbyRevision)){
+  if(seatRecovery&&(current?.session!==seatRecovery.session||current.phone_url!==seatRecovery.phoneUrl||current.game.lobby_revision!==seatRecovery.lobbyRevision)){
    seatRecovery.dialog.close();
   }
   revision=renderKey();
@@ -667,7 +713,8 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    closeRoundPanel(roundCamera);roundCamera=null;
   }
   if(current?.active&&current.game.phase==='lobby'&&lobbyUI?.session===current.session&&
-     lobbyUI.count===current.game.player_count&&lobbyUI.cameraEnabled===Boolean(current.camera_enabled)){
+     lobbyUI.count===current.game.player_count&&lobbyUI.cameraEnabled===Boolean(current.camera_enabled)&&
+     lobbyUI.networkRevision===current.network?.revision){
    updateLobby();
   }else{
    lobbyUI?.alignment?.view.dispose();lobbyUI=null;
@@ -694,12 +741,12 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   const confirmed=g.identities_confirmed??0,text=confirmed+' / '+g.player_count+' 人已确认';
   const ready=confirmed===g.player_count;
   if(progress&&progress.textContent!==text)progress.textContent=text;
-  if(start)start.disabled=busy||!ready;
+  if(start)start.disabled=busy||!ready||networkInterrupted();
   const phaseTitle=ready?'准备入夜':g.phase_name,publicPrompt=ready?'请把手机放低，等候首夜。':g.host_script?.text||g.announcements?.at(-1)?.text||'';
   if(title&&title.textContent!==phaseTitle)title.textContent=phaseTitle;
   if(prompt&&prompt.textContent!==publicPrompt)prompt.textContent=publicPrompt;
  }
- function updateControls(){for(const b of content.querySelectorAll('button')){if(b.dataset.start==='true'){b.disabled=busy||current.game.players.filter(p=>p.ready).length!==current.game.player_count;}else if(b.dataset.seatRecovery){b.hidden=!current.game.players.length;b.disabled=busy||syncFailed;}else if(b.dataset.displayPair)b.disabled=busy||syncFailed;else if(!b.dataset.startNight&&!b.dataset.speakerCommand)b.disabled=busy||b.dataset.unavailable==='true';}for(const select of content.querySelectorAll('select'))if(!select.dataset.speakerPicker)select.disabled=busy||Boolean(select.dataset.cameraPicker&&syncFailed);updateIdentityProgress();updateSpeakerControls();updateDisplayConnection();}
+ function updateControls(){for(const b of content.querySelectorAll('button')){if(b.dataset.start==='true'){b.disabled=busy||networkInterrupted()||current.game.players.filter(p=>p.ready).length!==current.game.player_count;}else if(b.dataset.seatRecovery){b.hidden=!current.game.players.length;b.disabled=busy||syncFailed;}else if(b.dataset.displayPair)b.disabled=busy||syncFailed;else if(!b.dataset.startNight&&!b.dataset.speakerCommand)b.disabled=busy||b.dataset.unavailable==='true'||(b.dataset.networkRequired==='true'&&networkInterrupted());}for(const select of content.querySelectorAll('select'))if(!select.dataset.speakerPicker)select.disabled=busy||Boolean(select.dataset.cameraPicker&&syncFailed);updateIdentityProgress();updateSpeakerControls();updateDisplayConnection();updateNetworkRecovery();}
  async function refresh(first=false){
   if(!alive||busy||readRequest)return;
   const request={generation:++generation,controller:new AbortController()};readRequest=request;

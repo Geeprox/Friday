@@ -40,6 +40,8 @@ SEAT_RECOVERY_SECONDS = 120
 DISPLAY_PAIR_SECONDS = 120
 DISPLAY_PAIR_LIMIT = 16
 DISPLAY_FRESH_SECONDS = 6
+NETWORK_CHECK_SECONDS = 3
+NETWORK_REQUIRED_ACTIONS = {'start', 'advance', 'speaker', 'resume', 'rematch'}
 
 
 def join_qr_svg(url):
@@ -51,20 +53,20 @@ def join_qr_svg(url):
 
 
 def local_party_addresses():
-    """Passive interface inventory; no discovery packets, socket connects or DNS."""
+    """被动枚举本机接口。读取失败返回 None，空列表表示当前没有可用地址。"""
     command = ["/sbin/ifconfig"] if sys.platform == "darwin" else ["ip", "-j", "address", "show"]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=2, check=True)
         if len(result.stdout) > 128_000:
-            return []
+            return None
         if sys.platform == "darwin":
             addresses = re.findall(r"\binet (\d+\.\d+\.\d+\.\d+)\b", result.stdout)
         else:
             addresses = [a["local"] for i in json.loads(result.stdout) for a in i.get("addr_info", []) if a.get("family") == "inet"]
         return sorted({v for v in addresses if (a := ipaddress.ip_address(v)).is_private
                        and not (a.is_loopback or a.is_link_local or a.is_unspecified or a.is_multicast)})[:8]
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-        return []
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return None
 
 
 class Join(BaseModel):
@@ -123,6 +125,10 @@ class PhoneGateway:
     def __init__(self):
         self.server = self.task = self.sock = None
         self.origin = None
+
+    @property
+    def running(self):
+        return bool(self.server and self.server.started and self.task and not self.task.done())
 
     async def open(self, address, owner):
         import uvicorn
@@ -224,6 +230,11 @@ class WerewolfService:
         self.effect_tasks = set()
         self.effect_runs: dict[str, _EffectRun] = {}
         self.origin = None
+        self.network_address = None
+        self.network_addresses = []
+        self.network_interrupted = False
+        self.network_revision = 0
+        self.network_check_at = 0
         self.created = None
         self.camera_enabled = False
         self.camera_context = None
@@ -281,6 +292,7 @@ class WerewolfService:
         async with self.lock:
             if self.session is None or self.game is None or self.origin != origin:
                 raise GameError('display_room_closed')
+            self._require_listener(origin)
             if not isinstance(token, str) or not re.fullmatch(r'[a-f0-9]{64}', token):
                 raise GameError('display_pairing_access_required')
             digest = self._digest(token)
@@ -305,7 +317,7 @@ class WerewolfService:
 
     async def approve_display(self, session, code):
         async with self.lock:
-            if self.session != session or self.game is None or self.origin is None:
+            if self.session != session or self.game is None or not self.phone_url():
                 raise GameError('room_changed')
             now = self.clock()
             self._expire_display_pairings(now)
@@ -316,7 +328,9 @@ class WerewolfService:
             return dict(session=session)
 
     def phone_url(self):
-        return self.origin + '/phone#code=' + self.join_code if self.origin and self.join_code else None
+        if self.origin and self.join_code and not self.network_interrupted:
+            return self.origin + '/phone#code=' + self.join_code
+        return None
 
     def invitation_url(self, session):
         game = self.game
@@ -354,12 +368,13 @@ class WerewolfService:
         if report["active"]:
             binding_open = self._camera_binding_window() is not None
             camera_available = binding_open and self._camera_current()
+            phone_url = self.phone_url()
             report.update(effects=self.effects.status(), join_code=self.join_code,
-                          phone_url=self.phone_url(),
-                          display_entry=self.origin + '/display' if self.origin else None,
-                          display_url=self.origin + "/display#token=" + self.public_token if self.origin else None,
+                          phone_url=phone_url,
+                          display_entry=self.origin + '/display' if phone_url else None,
+                          display_url=self.origin + "/display#token=" + self.public_token if phone_url else None,
                           connected_display_codes=[row.code for row in self.display_pairings.values()
-                                                   if row.approved and row.seen is not None
+                                                   if phone_url and row.approved and row.seen is not None
                                                    and 0 <= self.clock() - row.seen <= DISPLAY_FRESH_SECONDS],
                           speaker_seats=[] if self.game.speaker_order else self.game.eligible_speakers(),
                           camera_enabled=self.camera_enabled, camera_available=camera_available,
@@ -369,6 +384,9 @@ class WerewolfService:
                               if camera_available else None,
                           camera_candidates=list(self.camera_candidates) if camera_available else [],
                           camera_bindings=[dict(seat=s, camera=v[0], session=v[1], track=v[2]) for s, v in self.bindings.items()])
+            if self.gateway is not None:
+                report['network'] = dict(state='interrupted' if self.network_interrupted else 'ready',
+                    revision=self.network_revision, addresses=list(self.network_addresses) if self.network_interrupted else [])
         return report
 
     async def create(self, count, *, address=None, lights=(), narration=False, camera=False, discussion_mode="free"):
@@ -376,7 +394,7 @@ class WerewolfService:
             if self.game:
                 raise GameError("game_already_exists")
             game = self.game_factory(count, clock=self.clock, discussion_mode=discussion_mode)
-            addresses = await asyncio.to_thread(self.addresses) if address else []
+            addresses = (await asyncio.to_thread(self.addresses) or []) if address else []
             if address is not None and address not in addresses:
                 raise GameError("phone_address_unavailable")
             session = secrets.token_hex(16)
@@ -396,10 +414,15 @@ class WerewolfService:
             self.camera_enabled = camera
             self.camera_context = session
             self.camera_binding_revision = 0
+            self.network_address = address
+            self.network_addresses = addresses
+            self.network_interrupted = False
+            self.network_revision = 0
             try:
                 if gateway:
                     self.origin = await gateway.open(address, self)
-                self.gateway = gateway
+                    self.gateway = gateway
+                self.network_check_at = self.clock() + NETWORK_CHECK_SECONDS
                 self.pump = asyncio.create_task(self._run(), name="friday-werewolf")
             except BaseException:
                 if gateway:
@@ -415,8 +438,73 @@ class WerewolfService:
                 raise
             return self.host()
 
-    async def join(self, payload: Join):
+    async def refresh_network(self):
+        gateway, game = self.gateway, self.game
+        now = self.clock()
+        if gateway is None or game is None:
+            return
+        # 环节到时先核对原入口，避免断线期间自动推进到下一环节。
+        due = game.deadline is not None and now >= game.deadline
+        if not due and now < self.network_check_at and (gateway.running or self.network_interrupted):
+            return
+        self.network_check_at = now + NETWORK_CHECK_SECONDS
+        try:
+            addresses = await asyncio.to_thread(self.addresses)
+        except (ValueError, OSError, TimeoutError):
+            addresses = None
         async with self.lock:
+            if self.gateway is not gateway or self.game is None:
+                return
+            if addresses is not None:
+                self.network_addresses = addresses
+            interrupted = not gateway.running or self.network_address not in self.network_addresses
+            if self.network_interrupted != interrupted:
+                self.network_interrupted = interrupted
+                self.network_revision += 1
+                if interrupted and self.game.phase not in {'lobby', 'identity', 'finished'}:
+                    self.game.pause(True)
+
+    async def reconnect(self, proof):
+        addresses = await asyncio.to_thread(self.addresses)
+        async with self.lock:
+            admission, replay = self._host_admission(proof, 'reconnect')
+            if replay:
+                return self.host()
+            if (self.gateway is None or not self.network_interrupted
+                    or proof.network_revision != self.network_revision):
+                raise GameError('phone_network_changed')
+            if not addresses or proof.address not in addresses:
+                raise GameError('phone_address_unavailable')
+            replacement = self.gateway_factory()
+            origin = await replacement.open(proof.address, self)
+            previous = self.gateway
+            self.gateway, self.origin = replacement, origin
+            self.network_address, self.network_addresses = proof.address, addresses
+            self.network_interrupted = False
+            self.network_revision += 1
+            self.network_check_at = self.clock() + NETWORK_CHECK_SECONDS
+            # 新地址有自己的公屏配对和座位恢复链接。游戏、座位与选择留在原房间。
+            self.display_pairings.clear()
+            self.seat_recoveries.clear()
+            self.public_token = secrets.token_hex(32)
+            self._remember_host(admission)
+            report = self.host()
+        try:
+            await previous.close()
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                raise
+        except (OSError, RuntimeError):
+            pass
+        return report
+
+    def _require_listener(self, origin):
+        if origin is not None and self.session is not None and (self.origin != origin or self.network_interrupted):
+            raise GameError('party_link_unavailable')
+
+    async def join(self, payload: Join, *, origin=None):
+        async with self.lock:
+            self._require_listener(origin)
             if self.game is None or not secrets.compare_digest(self.join_code or "", payload.code):
                 raise GameError("room_not_found")
             if payload.session is not None and payload.session != self.session:
@@ -445,8 +533,9 @@ class WerewolfService:
                 self.join_retries[key] = fingerprint
             return dict(token=token, session=self.session, player=self._private(payload.seat))
 
-    async def lobby(self, code):
+    async def lobby(self, code, *, origin=None):
         async with self.lock:
+            self._require_listener(origin)
             if self.game is None or not secrets.compare_digest(self.join_code or "", code):
                 raise GameError("room_not_found")
             if self.game.phase != "lobby":
@@ -457,7 +546,7 @@ class WerewolfService:
         async with self.lock:
             seat = proof.seat
             admission, replay = self._host_admission(proof, 'recover-seat', seat)
-            if (self.session != proof.session or self.game is None or not self.origin
+            if (self.session != proof.session or self.game is None or not self.phone_url()
                     or seat not in self.game.players):
                 raise GameError('seat_recovery_unavailable')
             now = self.clock()
@@ -476,7 +565,7 @@ class WerewolfService:
     async def claim_seat_recovery(self, payload: SeatClaim, origin: str):
         async with self.lock:
             recovery = self.seat_recoveries.get(payload.seat)
-            if (self.origin != origin or self.game is None or self.join_key is None
+            if (self.origin != origin or self.network_interrupted or self.game is None or self.join_key is None
                     or payload.seat not in self.game.players or recovery is None
                     or recovery.expires_at <= self.clock()
                     or not secrets.compare_digest(recovery.ticket, payload.ticket)):
@@ -496,13 +585,15 @@ class WerewolfService:
             seat = self._player(token)
             return dict(token=token, session=self.session, player=self._private(seat))
 
-    async def private(self, token, receipt_id=None):
+    async def private(self, token, receipt_id=None, *, origin=None):
         async with self.lock:
+            self._require_listener(origin)
             seat = self._player(token)
             return self._private(seat, receipt_id)
 
-    async def ready(self, token, value, lobby_revision=None):
+    async def ready(self, token, value, lobby_revision=None, *, origin=None):
         async with self.lock:
+            self._require_listener(origin)
             seat = self._player(token)
             expected = 0 if lobby_revision is None else lobby_revision
             if self.game.phase == 'lobby' and expected != self.game.lobby_revision:
@@ -510,14 +601,16 @@ class WerewolfService:
             self.game.ready(seat, value)
             return self._private(seat)
 
-    async def confirm_identity(self, token, revision):
+    async def confirm_identity(self, token, revision, *, origin=None):
         async with self.lock:
+            self._require_listener(origin)
             seat = self._player(token)
             self.game.confirm_identity(seat, revision)
             return self._private(seat)
 
-    async def finish_speaking(self, token, revision):
+    async def finish_speaking(self, token, revision, *, origin=None):
         async with self.lock:
+            self._require_listener(origin)
             seat = self._player(token)
             self.game.tick()
             self.game.finish_speaking(seat, revision)
@@ -525,8 +618,9 @@ class WerewolfService:
         self._schedule_effects()
         return result
 
-    async def choose(self, token, choice: Choice):
+    async def choose(self, token, choice: Choice, *, origin=None):
         async with self.lock:
+            self._require_listener(origin)
             seat = self._player(token)
             self.game.tick()
             key = (seat, choice.event_id)
@@ -583,6 +677,8 @@ class WerewolfService:
                 return self.host()
             if self.game is None:
                 raise GameError("game_not_found")
+            if self.network_interrupted and action in NETWORK_REQUIRED_ACTIONS:
+                raise GameError('party_link_unavailable')
             if action == "start":
                 self.game.start()
             elif action == "reseat":
@@ -692,6 +788,7 @@ class WerewolfService:
         run.task.add_done_callback(finished)
 
     async def step(self, *, wait_for_camera=True):
+        await self.refresh_network()
         async with self.lock:
             if self.game is None:
                 return
@@ -1121,7 +1218,7 @@ def phone_app(owner, origin):
 
     @app.post("/api/join")
     async def join(payload: Join):
-        return await owner.join(payload)
+        return await owner.join(payload, origin=origin)
 
     @app.post("/api/recover-seat")
     async def recover_seat(payload: SeatClaim):
@@ -1129,26 +1226,26 @@ def phone_app(owner, origin):
 
     @app.post("/api/lobby")
     async def lobby(payload: Lobby):
-        return await owner.lobby(payload.code)
+        return await owner.lobby(payload.code, origin=origin)
 
     @app.get("/api/player")
     async def player(request: Request):
-        return await owner.private(token(request), request.headers.get('x-friday-choice'))
+        return await owner.private(token(request), request.headers.get('x-friday-choice'), origin=origin)
 
     @app.post("/api/ready")
     async def ready(payload: Ready, request: Request):
-        return await owner.ready(token(request), payload.ready, payload.lobby_revision)
+        return await owner.ready(token(request), payload.ready, payload.lobby_revision, origin=origin)
 
     @app.post("/api/identity")
     async def confirm_identity(payload: ConfirmIdentity, request: Request):
-        return await owner.confirm_identity(token(request), payload.revision)
+        return await owner.confirm_identity(token(request), payload.revision, origin=origin)
 
     @app.post("/api/speaker-done")
     async def finish_speaking(payload: FinishSpeaking, request: Request):
-        return await owner.finish_speaking(token(request), payload.revision)
+        return await owner.finish_speaking(token(request), payload.revision, origin=origin)
 
     @app.post("/api/choice")
     async def choice(payload: Choice, request: Request):
-        return await owner.choose(token(request), payload)
+        return await owner.choose(token(request), payload, origin=origin)
 
     return app

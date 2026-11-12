@@ -36,6 +36,12 @@ class Control(HostProof):
     action: Literal["start", "advance", "pause", "resume", "end", "remove", "reseat", "close", "speaker", "rematch"]
 
 
+class Reconnect(HostProof):
+    action: Literal['reconnect'] = 'reconnect'
+    address: str = Field(min_length=1, max_length=45)
+    network_revision: int = Field(ge=0)
+
+
 class SeatRecovery(HostProof):
     seat: int = Field(ge=1, le=12)
     action: Literal['recover-seat'] = 'recover-seat'
@@ -92,7 +98,7 @@ def create_router(core, lock, embodied, directory, *, owner=None):
     async def context():
         from .embodied.audio_output import report
         addresses, lights = await asyncio.gather(asyncio.to_thread(owner.addresses), owner.effects.lights.choices())
-        return dict(addresses=addresses, lights=lights, speech=report(),
+        return dict(addresses=addresses or [], lights=lights, speech=report(),
                     recovery=owner.effects.lights.status(), current=owner.host(),
                     rules=list(RULES), speaker_seconds=SPEAKER_SECONDS,
                     qr_available=importlib.util.find_spec("qrcode") is not None)
@@ -124,6 +130,10 @@ def create_router(core, lock, embodied, directory, *, owner=None):
         if payload.action == "close":
             return await guarded(owner.close_game(proof=payload))
         return await guarded(owner.control(payload.action, seat=payload.seat, proof=payload))
+
+    @router.post('/reconnect')
+    async def reconnect(payload: Reconnect):
+        return JSONResponse(await guarded(owner.reconnect(payload)), headers={'Cache-Control': 'no-store'})
 
     @router.post('/display-pairing')
     async def display_pairing(payload: DisplayApproval):

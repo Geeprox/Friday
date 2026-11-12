@@ -17,6 +17,7 @@ test('same-phase effects refresh without rebuilding seats or clearing a confirma
  vm.runInContext(extract('function roundCameraKey()', '\n function closeRoundPanel('),scope);
  vm.runInContext(extract('function updateRoundCamera()', '\n function updateLobby()'),scope);
  vm.runInContext(extract('function updateSpeakerControls()', '\n function live()'),scope);
+ vm.runInContext(extract('function updateNetworkRecovery()', '\n function updateEffects()'),scope);
  scope.revision=scope.renderKey();
  vm.runInContext(extract('function updateIdentityProgress()', '\n content.append('),scope);
  await scope.refresh();

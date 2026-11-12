@@ -41,6 +41,7 @@ class SilentLights:
 
 class NoNetwork:
     opened = closed = 0
+    running = True
     async def open(self, address, owner):
         type(self).opened += 1
         return "http://192.168.50.20:12345"
