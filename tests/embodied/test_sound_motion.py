@@ -62,6 +62,10 @@ class SoundPatrol:
                           CameraDirector=lambda: self.director, camera_is_open=AsyncMock(return_value=True))
 
     async def advance(self, _=0):
+        # 等已接纳的画面写入 SQLite，再推进合成时钟。
+        pending_views = tuple(self.j.runtime.sound_view_tasks.values())
+        if pending_views:
+            await asyncio.gather(*pending_views)
         self.index += 1
         self.j.clock = self.index * .2
         if self.j.clock > 40:
