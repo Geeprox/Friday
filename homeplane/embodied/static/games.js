@@ -577,7 +577,9 @@ function draw(now=performance.now()){
  c.setTransform(1,0,0,1,0,0);c.fillStyle='#eef0e8';c.fillRect(0,0,canvas.width,canvas.height);
  const portrait=matchMedia('(max-width:760px) and (orientation:portrait)').matches;
  scenery.setPortrait(portrait);placeTeaching(r,portrait);
- const scale=Math.min(canvas.width/(portrait?960:1600),canvas.height/900);
+ const portraitQuestResult=portrait&&document.body.dataset.questResult==='true';
+ const scale=portraitQuestResult?Math.max(canvas.width/1600,canvas.height/900):
+  Math.min(canvas.width/(portrait?960:1600),canvas.height/900);
  c.setTransform(scale,0,0,scale,(canvas.width-1600*scale)/2,(canvas.height-900*scale)/2);
  const paintAt=gameViewCurrent(now)?now:(lastAcceptedAt??now);
  selected==='home'?homeWorld():selected==='tennis'?tennis(paintAt):selected==='hiit'?hiitWorld(paintAt):world(paintAt);

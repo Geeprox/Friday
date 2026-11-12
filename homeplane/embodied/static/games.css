@@ -316,8 +316,15 @@ body[data-quest-result=true] :is(.mission-block,.score){background:transparent;b
 body[data-quest-result=true] :is(.mission,.instruction,.live-progress,.bar,.quest-trail,.score){visibility:hidden}
 @media(max-width:760px) and (orientation:portrait){
  body[data-mode=quest][data-quest-result=true] .workspace{
-  grid-template-rows:0 minmax(0,1fr) 0 44px;
+  grid-template-rows:minmax(96px,1fr) auto 44px;gap:12px;
  }
+ body[data-quest-result=true] .hud{display:none}
+ body[data-quest-result=true] #world{grid-row:1}
+ body[data-quest-result=true] .overlay{
+  grid-row:2;align-self:stretch;width:100%;max-height:none;
+  padding:0;border:0;border-radius:0;overflow:visible;background:transparent;text-align:start;
+ }
+ body[data-quest-result=true] .actions{grid-row:3}
 }
 @media(orientation:landscape) and (max-height:440px){
  .overlay:has(:is(.quest-route-options,.quest-result-actions)){padding:10px 12px}
