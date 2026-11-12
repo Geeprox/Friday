@@ -303,6 +303,7 @@ body[data-ski-warmup] #pauseToggle:hover{background:#efefe8}
  padding:18px 20px;max-height:calc(100% - 16px);overflow:auto;
 }
 .overlay:has(:is(.quest-route-options,.quest-result-actions)) h2{margin-bottom:12px;text-wrap:balance}
+.overlay p.resume-gesture-hint{margin:10px 0 0;color:var(--muted);font-size:13px;line-height:1.45}
 .quest-route-options,.quest-result-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .quest-route-options{margin-bottom:12px}
 .overlay .quest-route-options button{display:grid;gap:2px;text-align:start;padding:7px 10px;line-height:1.3}

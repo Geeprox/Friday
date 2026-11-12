@@ -16,6 +16,8 @@ Display readiness: the current worker couples progression to at least one visibl
 
 暂停/恢复与焦点（2026-11-11 局部合成验收）：唯一的“继续本局”与当前暂停或恢复提示就近呈现，底部暂停按钮在此期间隐藏，结束和更多入口保留。暂停、继续各自发送明确动作；继续仍受新鲜状态、玩家与本页显示就绪约束，失败说明跟随继续按钮。相同提示不随实时更新重建控件；原舞台焦点在暂停后移至可用的继续按钮，准备期间落在可见标题，恢复后回到暂停。低高度横屏体感布局把提示放在右侧场景格，保留左侧目标与进度；更多菜单保留高度内滚动、Escape 返回摘要及外部点击收起。
 
+同一镜头更换玩家追踪编号时，原暂停区提示回到站位，比分或关卡进度留在原 HUD。读到当前玩家就绪后显示「继续本局」，按钮下提示先放手再保持 OK。手势保持进度单独更新，键盘入口留在原位。原追踪编号短暂离开后返回时，继续使用原站位与回合。
+
 相邻动作显示接续（同轮局部合成验收）：同一 worker context、round 与 quest/hiit mode 的相邻动作只能沿用上一有效画面尚余的可见期限，仍受原有 2.5 秒上限约束，不继承 readiness，不推进动作或关间倒计时。新动作必须等挂载示范的 teachingKey 与当前规则动作一致后才可申报就绪。首个受理的当前动作回执无论 visible 为何都会撤销继承资格；hidden/closed 或超时后没有其他有效画面时仍须明确恢复，旧迟到 positive 继续由 sequence/closed 检查拒绝。另一当前 ready view 可维持本局，不因其他页面的 hidden 被撤回。以上仅记录暂停/恢复与换关接续，当前合成路线到 7/10 后显式结束，完整通关、真实识别与 Web/WKWebView/电视实机验收边界继续保留。
 
 Library launch and service-stop return: a first explicit launch can open the stage before the next catalogue read finishes. Its old stopped catalogue cannot remove the new frame. Only a fresh, settled read can retire a stopped service's embedded stage; a failed read keeps the existing view and back control. A confirmed stop replaces the frame with a quiet, labelled “游戏已停止” section and one primary “返回游戏详情” action. Restore focus if it was inside the retired stage. Returning restores the same game's heading and refreshes controls without a new start command; a stopped service's retained mode is not an active round. These transitions have original API/service/rule receipt and inert DOM coverage; the revised section still requires current rendered Web/WKWebView review.

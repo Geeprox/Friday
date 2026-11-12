@@ -156,3 +156,17 @@ test('recovery guidance distinguishes camera loss, player confirmation and a del
  g=game({status:'calibrating',resume_seconds:3});assert.equal(c.gamePhaseMessage(g),'准备继续本局');
  g.manually_paused=true;assert.equal(c.gamePhaseMessage(g),'');
 });
+test('重新确认站位保留一处继续入口，OK 保持进度不会盖住入口',()=>{
+ const h=makeClient(),c=h.c;vm.runInContext(part('function gamePhaseMessage(', '\nconst artRoot'),c);
+ c.selected='tennis';c.meta.status='live';
+ const g=game({mode:'tennis',selected_mode:'tennis',status:'paused',manually_paused:true,tennis_variant:'match',
+  source_recovery:{required:true,phase:'calibrating',ready:false,accepts_ok:true}});
+ const waiting=c.stageOverlayMarkup(g,true,true);
+ assert.match(waiting,/重新确认站位.*两位玩家回到原站位/);
+ assert.doesNotMatch(waiting,/继续本局/);
+ Object.assign(g.source_recovery,{ready:true,phase:'ready'});
+ const ready=c.stageOverlayMarkup(g,true,true);
+ assert.match(ready,/站位已确认.*比分与球路已保留.*继续本局/);
+ g.gesture_control={gesture:'ok',progress:.45,latched:false};
+ assert.equal(c.stageOverlayMarkup(g,true,true),ready);
+});

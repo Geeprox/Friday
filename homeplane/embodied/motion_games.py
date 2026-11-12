@@ -30,6 +30,7 @@ TENNIS_PRACTICE_BREAK = 1.15
 TENNIS_OPPONENT_SERVE_WAIT = .65
 TENNIS_OPPONENT_FOLLOW_THROUGH = .34
 TENNIS_OPPONENT_LANES = (-1., .65, -.55, 1., -.8, .8)
+PLAYER_RETURN_GRACE = 1.5
 
 
 @dataclass(frozen=True)
@@ -494,6 +495,8 @@ class MotionGames:
         self.status = "waiting"
         self.manually_paused = False
         self.source_resume_required = False
+        self.recovery_previous_slots = ()
+        self.recovery_pending_slots = ()
         self.recovery_phase = 'none'
         self.recovery_ready = False
         self.recovery_ready_count = 0
@@ -616,15 +619,14 @@ class MotionGames:
         self.tennis_used_swings = [-100.0, -100.0]
         self.tennis_event = None
         self.hit_flash = -10.0
-        self.gesture_key = self.gesture_since = self.gesture_last = self.gesture_release = None
-        self.gesture_progress = 0.0
+        self._require_gesture_release()
         self.gesture_event = None
-        self.gesture_latched = True
         self.circuit.invalidate_motion(keep_completed_side=True)
         self._invalidate_quest_motion()
         self.recovery_ready = False
         self.recovery_ready_count = 0
         self.recovery_tracks = ()
+        self.recovery_pending_slots = ()
         self.recovery_frame_at = None
         self.resume_seconds = 0.0
 
@@ -635,6 +637,7 @@ class MotionGames:
             return self.public
         self.control_revision += 1
         self._drop_source_inputs()
+        self.recovery_previous_slots = ()
         self.source_resume_required = self.mode != 'off' and not self.complete
         if self.source_resume_required:
             self.manually_paused = True
@@ -644,6 +647,7 @@ class MotionGames:
 
     def begin_source(self):
         """A new camera session cannot erase a round or inherit its old stance."""
+        self.recovery_previous_slots = ()
         if self.mode not in {'off','home'} and not self.complete and (self.readers or self.slots or self.elapsed):
             self.suspend_source()
         else:
@@ -662,9 +666,10 @@ class MotionGames:
         return dict(required=self.source_resume_required, ready=bool(ready and not self.presentation_blocked),
                     phase='display' if self.presentation_recovery and self.presentation_blocked else self.recovery_phase if ready or self.recovery_phase != 'ready' else 'players',
                     required_players=self.required_players,
-                    ready_players=self.recovery_ready_count if ready else 0)
+                    ready_players=self.recovery_ready_count if ready else 0,
+                    accepts_ok=bool(self.recovery_previous_slots))
 
-    def _recover_source(self, people, registration, now, captured_at):
+    def _recover_source(self, people, registration, now, captured_at, hands=()):
         required = self.required_players
         if (registration.get('status') != 'locked' or type(captured_at) not in (int,float)
                 or not 0 <= now-captured_at <= 1.5):
@@ -686,12 +691,20 @@ class MotionGames:
         self.recovery_ready = len(ready) == required
         self.recovery_frame_at = captured_at
         self.recovery_phase = 'ready' if self.recovery_ready else 'calibrating'
-        if self.recovery_ready:
-            self.slots = [p['id'] for p in sorted(ready,key=lambda p:p['reference_x'],reverse=True)]
-            self.preferred_track = self.slots[0]
+        positions = [p['id'] for p in sorted(ready, key=lambda p: p['reference_x'], reverse=True)] if self.recovery_ready else []
+        if self.recovery_previous_slots:
+            # 同一镜头里仍有效的编号保留原座次。新编号只在确认后接手。
+            replacements = iter(track for track in positions if track not in self.recovery_previous_slots)
+            self.recovery_pending_slots = tuple(
+                track if track in positions else next(replacements) for track in self.recovery_previous_slots
+            ) if positions else ()
+            if not self.recovery_public()['ready']:
+                self._require_gesture_release()
+            elif self._held_gesture(people, hands, registration, now, ('ok',), self.recovery_pending_slots):
+                return self.set_paused(False)
         else:
-            self.slots = []
-            self.preferred_track = None
+            self.slots = positions
+            self.preferred_track = self.slots[0] if self.slots else None
         return self.publish(observed, 'paused', '玩家已就绪' if self.recovery_ready else '请自然站定片刻')
 
     def set_paused(self, value):
@@ -705,6 +718,11 @@ class MotionGames:
         self.manually_paused = value
         if recovered:
             self.source_resume_required = False
+            if self.recovery_pending_slots:
+                self.slots = list(self.recovery_pending_slots)
+                self.preferred_track = self.slots[0]
+            self.recovery_previous_slots = ()
+            self.recovery_pending_slots = ()
             self.presentation_recovery = False
             self.recovery_phase = 'none'
             self.recovery_ready = False
@@ -775,16 +793,19 @@ class MotionGames:
         self.publish([], 'paused' if self.source_resume_required else 'off' if self.mode == 'off' else 'waiting', '等待游戏画面')
         return True
 
-    def gesture_control(self, people, hands, registration, now):
-        if not self.game_input_enabled or self.manually_paused:
-            return
+    def _require_gesture_release(self):
+        self.gesture_key = self.gesture_since = self.gesture_last = self.gesture_release = None
+        self.gesture_progress = 0.0
+        self.gesture_latched = True
+
+    def _held_gesture(self, people, hands, registration, now, allowed, tracks):
         visible = {p["id"] for p in people if len(p.get("joints", {})) >= 8}
         candidates = {
             (h.get("person_id"), h.get("gesture"))
             for h in hands
             if h.get("person_id") in visible
-            and h.get("gesture") in ("ok", "yeah")
-            and (self.preferred_track is None or h.get("person_id") == self.preferred_track)
+            and h.get("gesture") in allowed
+            and (tracks is None or h.get("person_id") in tracks)
         }
         candidate = (
             next(iter(candidates))
@@ -792,13 +813,15 @@ class MotionGames:
             else None
         )
         if self.gesture_last is not None and now - self.gesture_last > 0.25:
-            self.gesture_since = None
-            self.gesture_key = None
+            self._require_gesture_release()
         self.gesture_last = now
         self.gesture_progress = 0.0
         if candidate is None:
             self.gesture_since = None
             self.gesture_key = None
+            if candidates or registration.get('status') != 'locked':
+                self.gesture_release = None
+                return
             self.gesture_release = now if self.gesture_release is None else self.gesture_release
             if now - self.gesture_release >= 0.5:
                 self.gesture_latched = False
@@ -814,17 +837,29 @@ class MotionGames:
             return
         self.gesture_latched = True
         self.gesture_fired = now
+        return candidate
+
+    def gesture_control(self, people, hands, registration, now):
+        if not self.game_input_enabled or self.manually_paused:
+            return
+        tracks = (self.preferred_track,) if self.preferred_track is not None else None
+        allowed = ('ok', 'yeah')
+        if self.mode not in ('off', 'home') and not self.complete and self.slots:
+            if not set(self.slots).issubset(p['id'] for p in people):
+                self._require_gesture_release()
+                return
+            tracks = tracks or self.slots
+            allowed = ('yeah',)
+        candidate = self._held_gesture(people, hands, registration, now, allowed, tracks)
+        if candidate is None:
+            return
         if candidate[1] == "yeah":
             modes = ("quest", "ski", "tennis", "hiit")
             current = modes.index(self.selected_mode) if self.selected_mode in modes else -1
             self.select(modes[(current + 1) % len(modes)])
             self.preferred_track = candidate[0]
             self.gesture_event = "switched"
-        elif (
-            self.mode in ("off", "home")
-            or self.status == "waiting"
-            or self.complete
-        ):
+        else:
             self.reset(self.selected_mode)
             self.preferred_track = candidate[0]
             self.gesture_event = "started"
@@ -835,7 +870,7 @@ class MotionGames:
         dt = clamp(now - self.previous, 0, 0.12) if self.previous is not None else 0.0
         self.previous = now
         if self.source_resume_required:
-            return self._recover_source(people, registration, now, now if captured_at is None else captured_at)
+            return self._recover_source(people, registration, now, now if captured_at is None else captured_at, hands)
         if not self.ski_warmup and not self.manually_paused and self.resume_seconds <= 0:
             self.gesture_control(people, hands, registration, now)
         if self._hold_for_presentation():
@@ -860,6 +895,8 @@ class MotionGames:
         for p in people:
             key = p["id"]
             reader = self.readers.setdefault(key, BodyMotion())
+            if self.slots and self.missing_since is not None:
+                reader.invalidate_motion(keep_stance=True)
             result = reader.update(p, now)
             if result:
                 observed.append(result)
@@ -885,12 +922,17 @@ class MotionGames:
         selected = [by_id[k] for k in self.slots if k in by_id]
         if len(selected) != required:
             self.missing_since = now if self.missing_since is None else self.missing_since
-            # Stable tracking owns reassociation. A different sole bystander must never
-            # inherit the active player slot; an explicit OK can choose a new player.
-        else:
-            self.missing_since = None
-        if len(selected) != required:
+            captured = now if captured_at is None else captured_at
+            if (self.slots and now - self.missing_since >= PLAYER_RETURN_GRACE
+                    and len(people) == required and len({p['id'] for p in eligible}) == required
+                    and type(captured) in (int, float) and 0 <= now-captured <= 1.5):
+                # 原编号短暂消失时继续等候。新编号就位后，原局停住等用户确认。
+                previous_slots = tuple(self.slots)
+                self.suspend_source()
+                self.recovery_previous_slots = previous_slots
+                return self._recover_source(people, registration, now, captured, hands)
             return self.publish(selected, "waiting", f"需要 {required} 位可见玩家；当前 {len(selected)} 位")
+        self.missing_since = None
         if any(not p["located"] for p in selected):
             return self.publish(selected, "paused", "请让双脚完整入镜")
         if any(not p["calibrated"] for p in selected):
