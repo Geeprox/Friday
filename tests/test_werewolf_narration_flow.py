@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 import httpx
 
+from homeplane.ha_control import HADeviceWriter
 from homeplane.werewolf_api import create_router
 from homeplane.werewolf_effects import HostEffects, SceneLights
 from homeplane.werewolf_service import Join, WerewolfService
@@ -36,11 +37,13 @@ async def party(tmp_path):
         service.pump.cancel()
         await asyncio.gather(service.pump, return_exceptions=True)
         service.pump = None
+        tokens = {}
         for seat in range(1, 7):
             joined = await service.join(Join(code=service.join_code, seat=seat, name=f'合成玩家{seat}'))
+            tokens[seat] = joined['token']
             await service.ready(joined['token'], True)
         yield SimpleNamespace(core=core, rows=rows, writes=writes, lights=lights,
-                              effects=effects, service=service, spoken=spoken, target=target)
+                              effects=effects, service=service, spoken=spoken, target=target, tokens=tokens)
     finally:
         await service.close()
         await close(core)
@@ -63,6 +66,33 @@ async def test_paused_before_first_output_can_narrate_the_current_phase_on_resum
         await table.service.control('resume')
         await table.service.effect_task
         assert table.spoken == [table.service.game.public()['host_script']['text']]
+
+
+@pytest.mark.asyncio
+async def test_lobby_readiness_does_not_interrupt_unchanged_public_prompt(tmp_path, monkeypatch):
+    async with party(tmp_path) as table:
+        speaking, release = asyncio.Event(), asyncio.Event()
+        speak = table.effects.speak
+        attempts = []
+
+        async def slow_prompt(text, *, current):
+            attempts.append(text)
+            speaking.set()
+            await release.wait()
+            return await speak(text, current=current)
+
+        monkeypatch.setattr(table.effects, 'speak', slow_prompt)
+        try:
+            await table.service.step()
+            await asyncio.wait_for(speaking.wait(), 1)
+            await table.service.ready(table.tokens[1], False)
+            await table.service.step()
+            release.set()
+            await asyncio.wait_for(table.service.effect_task, 1)
+            prompt = table.service.game.public()['host_script']['text']
+            assert attempts == table.spoken == [prompt]
+        finally:
+            release.set()
 
 
 @pytest.mark.asyncio
@@ -125,7 +155,9 @@ async def test_next_phase_narrates_before_previous_light_cleanup_finishes(tmp_pa
                 first = table.service.game.public()['host_script']['text']
                 await until(lambda: table.spoken == [first])
 
-                await table.service.control('advance')
+                while table.service.game.phase in {'wolves', 'seer', 'witch'}:
+                    await table.service.control('advance')
+                assert table.service.game.phase == 'dawn'
                 second = table.service.game.public()['host_script']['text']
                 assert second != first
                 await asyncio.wait_for(cleaning.wait(), .5)
@@ -135,10 +167,61 @@ async def test_next_phase_narrates_before_previous_light_cleanup_finishes(tmp_pa
 
                 release.set()
                 await asyncio.wait_for(table.service.effect_task, .5)
-                assert [json.loads(write.content)['brightness'] for write in table.writes] == [46]
+                assert [json.loads(write.content)['brightness'] for write in table.writes] == [179]
             finally:
                 release.set()
                 await asyncio.gather(*table.service.effect_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('advance_to', ['seer', 'dawn'])
+async def test_phase_change_keeps_claimed_light_write_until_readback(tmp_path, monkeypatch, advance_to):
+    async with party(tmp_path) as table:
+        sent, release = asyncio.Event(), asyncio.Event()
+        send = HADeviceWriter.send
+        scene = table.lights.scene
+        scenes = []
+
+        async def observed_scene(night, revision, current):
+            scenes.append(night)
+            await scene(night, revision, current)
+
+        async def delay_night_receipt(writer, desired):
+            outcome = await send(writer, desired)
+            if desired.get('brightness') == 46:
+                sent.set()
+                await release.wait()
+            return outcome
+
+        monkeypatch.setattr(HADeviceWriter, 'send', delay_night_receipt)
+        monkeypatch.setattr(table.lights, 'scene', observed_scene)
+        try:
+            await begin_play(table.service)
+            assert table.service.game.phase == 'wolves'
+            await asyncio.wait_for(sent.wait(), 1)
+            while table.service.game.phase != advance_to:
+                await table.service.control('advance')
+            script = table.service.game.public()['host_script']['text']
+            await until(lambda: script in table.spoken)
+            assert len(table.writes) == 1 and not table.service.effect_task.done()
+            release.set()
+            await asyncio.wait_for(table.service.effect_task, 1)
+
+            while table.service.game.phase in {'wolves', 'seer', 'witch'}:
+                await table.service.control('advance')
+                await asyncio.wait_for(table.service.effect_task, 1)
+            assert table.service.game.phase == 'dawn'
+            assert scenes == [True, False]
+            writes = [json.loads(call.content)['brightness'] for call in table.writes]
+            assert writes == [46, 179], table.lights.status()
+            assert not table.lights.status()['recovery_pending']
+            await table.service.control('end')
+            await asyncio.wait_for(table.service.effect_task, 1)
+            assert not table.lights.journal.exists()
+            row = next(row for row in table.rows if row['entity_id'] == 'light.simulated')
+            assert row['state'] == 'off'
+        finally:
+            release.set()
 
 
 @pytest.mark.asyncio

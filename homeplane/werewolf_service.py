@@ -10,6 +10,7 @@ import asyncio
 import base64
 from contextlib import contextmanager
 from collections import OrderedDict, deque
+from dataclasses import dataclass
 import hashlib
 import hmac
 import ipaddress
@@ -29,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .werewolf import GameError, WerewolfGame
 from .werewolf_camera import observation as camera_observation, hints as camera_advice, picture as camera_picture
+from .werewolf_effects import lighting_scene
 
 STATIC = Path(__file__).parent / "static"
 CHOICE_EVENT_ID = r"^[a-zA-Z0-9_-]{12,64}$"
@@ -157,6 +159,12 @@ class PhoneGateway:
             self.origin = None
 
 
+@dataclass
+class _EffectRun:
+    scope: tuple[str, WerewolfGame, str | int]
+    task: asyncio.Task | None = None
+
+
 class WerewolfService:
     def __init__(self, effects, *, embodied=None, gateway_factory=PhoneGateway,
                  addresses=local_party_addresses, clock=time.monotonic, game_factory=WerewolfGame):
@@ -179,6 +187,7 @@ class WerewolfService:
         self.host_retries = OrderedDict()
         self.gateway = self.pump = self.effect_task = None
         self.effect_tasks = set()
+        self.effect_runs: dict[str, _EffectRun] = {}
         self.origin = None
         self.created = None
         self.camera_enabled = False
@@ -486,30 +495,47 @@ class WerewolfService:
         self.effects.last_scene = None
 
     def _schedule_effects(self):
-        if self.game is None or self.game.revision == self.last_effect_revision:
+        if self.game is None or self.session is None or self.game.revision == self.last_effect_revision:
             return
-        # 撤销旧阶段。播报与灯光各自等待同一路旧任务完成清理。
-        for task in tuple(self.effect_tasks):
-            if not task.done() and not task.cancelling():
-                task.cancel()
-        session, revision = self.session, self.game.revision
-        self.last_effect_revision = revision
+        self.last_effect_revision = self.game.revision
         public = self.game.public()
-        current = lambda: self.session == session and self.game is not None and self.game.revision == revision
+        self._schedule_effect('lighting', public, self.effects.lighting,
+                              lambda game: lighting_scene(game.phase, game.paused) if self.effects.lights_active else None)
+        self._schedule_effect('narration', public, self.effects.narrate,
+                              lambda game: game.host_script['id'] if self.effects.narration and not game.paused else None)
+        self.effect_task = asyncio.gather(*tuple(self.effect_tasks), return_exceptions=True)
+
+    def _schedule_effect(self, channel, public, output, cue_of):
+        session, game = self.session, self.game
+        cue = cue_of(game)
+        previous = self.effect_runs.get(channel)
+        scope = (session, game, cue)
+        if previous is not None and previous.scope == scope:
+            return
+        if previous is not None and not previous.task.done() and not previous.task.cancelling():
+            previous.task.cancel()
+        if cue is None:
+            self.effect_runs.pop(channel, None)
+            return
+        run = self.effect_runs[channel] = _EffectRun(scope)
+
+        def current():
+            # 暂停后恢复到相同场景时，已撤销的旧输出仍不能取得发送资格。
+            return (self.session == session and self.game is game
+                    and self.effect_runs.get(channel) is run and cue_of(game) == cue)
+
         async def apply():
             if current():
-                try:
-                    await self.effects.apply(public, current)
-                except (ValueError, OSError, TimeoutError):
-                    if current():
-                        self.effects.voice_state = 'unavailable'
-        self.effect_task = asyncio.create_task(apply(), name="friday-werewolf-effects")
-        self.effect_tasks.add(self.effect_task)
+                await output(public, current)
+
+        run.task = asyncio.create_task(apply(), name='friday-werewolf-' + channel)
+        self.effect_tasks.add(run.task)
+
         def finished(task):
             self.effect_tasks.discard(task)
             if not task.cancelled():
                 task.exception()
-        self.effect_task.add_done_callback(finished)
+        run.task.add_done_callback(finished)
 
     async def step(self, *, wait_for_camera=True):
         async with self.lock:
@@ -802,7 +828,7 @@ class WerewolfService:
                         self.effects.lights.recovery = True
             finally:
                 try:
-                    tasks=set(self.effect_tasks)|{task for task in (self.pump,self.effect_task,self.camera_task) if task is not None}
+                    tasks=set(self.effect_tasks)|{task for task in (self.pump,self.camera_task) if task is not None}
                     for task in tasks:
                         if not task.done() and not task.cancelling():task.cancel()
                     await asyncio.shield(asyncio.gather(*tasks,return_exceptions=True))
@@ -821,6 +847,7 @@ class WerewolfService:
                     self.camera_hints = []
                     self.camera_candidates = []
                     self.last_effect_revision = None
+                    self.effect_runs.clear()
             return self.host()
 
     async def close(self):

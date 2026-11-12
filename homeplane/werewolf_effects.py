@@ -18,6 +18,14 @@ from .action_contracts import DevicePlanRequest
 from .ha_control import HADeviceWriter
 
 
+def lighting_scene(phase, paused):
+    if phase == 'finished':
+        return 'restore'
+    if paused or phase in {'lobby', 'identity'}:
+        return None
+    return 'night' if phase in {'guard', 'wolves', 'seer', 'witch'} else 'day'
+
+
 class SceneLights:
     @staticmethod
     def _state(value):
@@ -163,9 +171,25 @@ class SceneLights:
             previous = dict(record['expected'])
             record.update(expected=desired, previous=previous, status="sending", attempt=attempt,
                           action_id=trace.action_id)
+            cancelled = None
             try:
                 self._save()
-                trace = await self.core.actions.execute(trace.action_id, dispatch_guard=current)
+                owner = asyncio.current_task()
+                action = asyncio.create_task(self.core.actions.execute(
+                    trace.action_id, dispatch_guard=lambda: not owner.cancelling() and current() is True))
+                try:
+                    trace = await asyncio.shield(action)
+                except asyncio.CancelledError as interruption:
+                    # 发送占用已写入时，让原动作在既有时限内回读，再处理新场景或恢复。
+                    # 仍未取得发送占用的动作可以立刻撤回。
+                    outcome = None
+                    try:
+                        outcome = self.core.store.light_action(trace.action_id)
+                    finally:
+                        if outcome is None or outcome.status == 'planned':
+                            action.cancel()
+                        trace = await action
+                    cancelled = interruption
             except BaseException:
                 outcome = self.core.store.light_action(trace.action_id)
                 unsent = outcome is not None and (outcome.status in {'planned','rejected','expired'}
@@ -180,6 +204,8 @@ class SceneLights:
             if trace.status in {'rejected', 'expired'} or trace.status=='failed' and trace.code=='rejected_by_ha':
                 record['expected'] = previous
             self._save()
+            if cancelled is not None:
+                raise cancelled
             return dict(target=target, status=trace.status, physical_effect_verified=False)
 
     async def scene(self, night, revision, current):
@@ -188,6 +214,8 @@ class SceneLights:
 
     async def _scene(self, night, revision, current):
         for target, record in list(self.records.items()):
+            if current() is not True:
+                break
             if record.get("released") or record.get("status") in {
                     'sending','suspended','unknown_outcome','failed','rejected','expired'}:
                 continue
@@ -268,8 +296,8 @@ class HostEffects:
 
     async def apply(self, public, current):
         # 两路输出各自串行，上一阶段的灯光与播报只阻塞自己的后续操作。
-        tasks = [asyncio.create_task(self._lighting(public, current)),
-                 asyncio.create_task(self._narrate(public, current))]
+        tasks = [asyncio.create_task(self.lighting(public, current)),
+                 asyncio.create_task(self.narrate(public, current))]
         try:
             await asyncio.gather(*tasks)
         finally:
@@ -278,7 +306,7 @@ class HostEffects:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _lighting(self, public, current):
+    async def lighting(self, public, current):
         async with self._lighting_lock:
             try:
                 await self._scene(public, current)
@@ -286,36 +314,36 @@ class HostEffects:
                 self.lights.recovery = True
 
     async def _scene(self, public, current):
-        if not current():
+        if not current() or not self.lights_active:
             return
-        if public["phase"] in {"finished", "lobby", "identity"}:
-            if public["phase"] == "finished" and self.lights_active:
-                await self.lights.restore(current=current)
-        elif not public["paused"]:
-            night = public["phase"] in {"guard", "wolves", "seer", "witch"}
-            if self.lights_active and self.last_scene != night and current():
-                self.last_scene = None
-                await self.lights.scene(night, public["revision"], current)
-                if current():
-                    self.last_scene = night
+        scene = lighting_scene(public['phase'], public['paused'])
+        if scene == 'restore':
+            await self.lights.restore(current=current)
+            return
+        night = scene == 'night'
+        if scene is not None and self.last_scene != night:
+            self.last_scene = None
+            await self.lights.scene(night, public['revision'], current)
+            if current():
+                self.last_scene = night
 
-    async def _narrate(self, public, current):
+    async def narrate(self, public, current):
         async with self._narration_lock:
             latest = public.get('host_script') or public["announcements"][-1]
             if not self.narration or latest["id"] <= self.last_announcement:
                 return
             if not current() or public["paused"]:
                 return
-            status = self.speech_status() if self.speech_status else {}
-            if status.get("quiet") is not False or status.get("configured") is not True:
-                self.voice_state = "quiet" if status.get("quiet") else "unavailable"
-                return
-            if self.speak is None or not current():
-                return
-            # 暂停前未尝试的提示可以在恢复时播报，已尝试或结果不确定的提示不重播。
-            self.last_announcement = latest["id"]
-            self.voice_state = "speaking"
             try:
+                status = self.speech_status() if self.speech_status else {}
+                if status.get("quiet") is not False or status.get("configured") is not True:
+                    self.voice_state = "quiet" if status.get("quiet") else "unavailable"
+                    return
+                if self.speak is None or not current():
+                    return
+                # 暂停前未尝试的提示可以在恢复时播报，已尝试或结果不确定的提示不重播。
+                self.last_announcement = latest["id"]
+                self.voice_state = "speaking"
                 async with asyncio.timeout(25):
                     receipt = await self.speak(latest["text"], current=current)
                 self.voice_state = ("requested" if receipt.get("status") in {"accepted", "playing", "sent"}
@@ -324,7 +352,7 @@ class HostEffects:
             except asyncio.CancelledError:
                 self.voice_state = 'unconfirmed'
                 raise
-            except (ValueError, OSError, TimeoutError, KeyError):
+            except (ValueError, OSError, TimeoutError, KeyError, httpx.HTTPError):
                 self.voice_state = "unavailable"
 
     def status(self):
