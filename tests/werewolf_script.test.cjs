@@ -30,7 +30,7 @@ const all=node=>[node,...node.children.flatMap(all)];
 for(const [index,packet]of packets.entries())test('original public outcome reaches host and TV: '+index,()=>{
  const document={createElement:tag=>new Element(tag),body:new Element('body')};
  const report={active:true,game:packet,camera_hints:[]},root=new Element('main'),roomLabel=new Element('p');
- const scope=vm.createContext({document,current:report,report,root,roomLabel,displayView:null});
+ const scope=vm.createContext({document,current:report,report,root,roomLabel,displayView:null,recapView:null});
  vm.runInContext(host.split('\n').find(line=>line.startsWith('const node=')),scope);
  vm.runInContext(display.split('\n').find(line=>line.startsWith('const h=')),scope);
  vm.runInContext(display.split('\n').find(line=>line.startsWith('const nightPhases ')),scope);

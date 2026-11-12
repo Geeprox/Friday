@@ -82,6 +82,7 @@ async def check_rematch(service, host, tv, phones, lights, lamp, spoken, writes)
     assert lobby['phase_name']=='重新准备'
     assert lobby['host_script']['id']>previous['host_script']['id']
     assert not lobby['vote_result'] and lobby['winner'] is None and lobby['round']==0
+    assert 'recap' not in lobby
     assert all(player['alive'] and not player['ready'] and 'role' not in player for player in lobby['players'])
     assert [(p['seat'],p['name']) for p in lobby['players']]==[(p['seat'],p['name']) for p in previous['players']]
     await service.effect_task
@@ -252,6 +253,7 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
                 assert confirmed.json()['public']['players'] == deal['players']
             assert not writes
             assert (await first_night(f'SYNTHETIC-first-night-{count}')).status_code == 200
+            published = []
             for step in range(100):
                 await asyncio.gather(service.effect_task,return_exceptions=False)
                 public=(await tv.get('/api/public')).json()['game']
@@ -264,10 +266,12 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
                 script.update(a['text']for a in public['announcements'])
                 script.add(public['host_script']['text'])
                 if public['phase']=='finished':break
+                assert 'recap' not in public
                 assert all('role'not in p and 'role_name'not in p for p in public['players'])
                 private={seat:(await phone.get('/api/player')).json()for seat,phone in phones.items()}
                 if public['phase'] == 'vote_reveal':
                     assert public['vote_result']['votes']
+                    published.append((public['round'], public['vote_result']))
                     assert all(p['public'] == public and not p['actions'] for p in private.values())
                     assert spoken[-1] == public['host_script']['text']
                     assert next(row for row in rows if row['entity_id']=='light.simulated')['attributes']['brightness'] == 179
@@ -298,6 +302,12 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
             else:raise AssertionError('match did not complete within its phase budget')
             assert public['winner']=='village' and public['phase']=='finished'
             assert all('role'in p for p in public['players'])
+            assert [(round_['round'], event['result']) for round_ in public['recap']
+                    for event in round_['events'] if event['kind'] == 'ballot'] == published
+            assert [round_['round'] for round_ in public['recap']] == list(range(1, public['round'] + 1))
+            assert (await host.get('/api/games/werewolf/host')).json()['game'] == public
+            for phone in phones.values():
+                assert (await phone.get('/api/player')).json()['public'] == public
             assert spoken and set(spoken)<=script
             assert spoken[-1]==public['host_script']['text']
             assert spoken[-2].endswith('号被放逐。') and spoken[-1] == '好人阵营获胜。'

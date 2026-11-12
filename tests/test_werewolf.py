@@ -51,6 +51,67 @@ def until(g, phase):
     raise AssertionError((g.phase, phase))
 
 
+def test_finished_recap_replays_each_published_outcome_in_order():
+    g, _ = game(7)
+    act(g, 1, "attack", 5)
+    act(g, 2, "attack", 5)
+    until(g, "seer")
+    act(g, 3, "check", 2)
+    until(g, "hunter")
+    act(g, 5, "shoot", 6)
+    until(g, "vote")
+    for seat, target in [(1, 2), (2, 1), (3, 1), (4, 2)]:
+        act(g, seat, "vote", target)
+    until(g, "vote_reveal")
+    first = g.public()["vote_result"]
+    assert first["tied"] == [1, 2] and "recap" not in g.public()
+    until(g, "runoff")
+    for seat in (3, 4, 7):
+        act(g, seat, "vote", 1)
+    until(g, "vote_reveal")
+    runoff = g.public()["vote_result"]
+    assert runoff["eliminated"] == 1
+    until(g, "wolves")
+    act(g, 2, "attack", 3)
+    until(g, "witch")
+    act(g, 4, "save", 3)
+    until(g, "vote")
+    for seat in (3, 4, 7):
+        act(g, seat, "vote", 2)
+    until(g, "vote_reveal")
+    final = g.public()["vote_result"]
+    assert final["eliminated"] == 2 and "recap" not in g.private(3)["public"]
+    g.advance()
+    complete = g.public()
+    assert complete["winner"] == "village" and complete["end_reason"] == "all_wolves_out"
+    assert complete["recap"] == [
+        dict(round=1, events=[
+            dict(kind="dawn", seats=[5]), dict(kind="hunter", seat=6),
+            dict(kind="ballot", result=first), dict(kind="ballot", result=runoff),
+        ]),
+        dict(round=2, events=[dict(kind="dawn", seats=[]), dict(kind="ballot", result=final)]),
+    ]
+    assert g.private(3)["public"] == complete
+    g.end()
+    assert g.public() == complete
+    complete["recap"][0]["events"].clear()
+    assert len(g.public()["recap"][0]["events"]) == 4
+
+
+def test_recap_of_ended_game_does_not_reveal_an_unresolved_night_or_ballot():
+    g, _ = game(6)
+    act(g, 1, "attack", 3)
+    g.end()
+    assert g.public()["recap"] == []
+    assert g.winner is None and g.end_reason == "host_ended"
+    g, _ = game(6)
+    until(g, "vote")
+    act(g, 3, "vote", 1)
+    g.end()
+    assert g.public()["recap"] == [dict(round=1, events=[dict(kind="dawn", seats=[])])]
+    assert g.public()["vote_result"] is None
+
+
 def test_ordered_discussion_only_gives_runoff_candidates_turns_and_rotates_next_day():
     g, clock = game(6, discussion_mode="turns")
     until(g, "discussion")

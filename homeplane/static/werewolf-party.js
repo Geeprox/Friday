@@ -1,3 +1,5 @@
+import {makeWerewolfRecap} from './werewolf-recap.js';
+
 const root=document.getElementById('party'),notice=document.getElementById('notice'),roomLabel=document.getElementById('roomLabel');
 const display=location.pathname==='/display',fragment=new URLSearchParams(location.hash.slice(1));
 const roomCode=params=>{const value=params.get('code')||'';return /^[0-9]{6}$/.test(value)?value:'';};
@@ -12,7 +14,7 @@ let credential='',code=invitationCode,alive=true,busy=false,readRequest=null,com
 let viewedIdentity=null,identityConfirmation=null;
 let joinPending=null,joinName='';
 let choiceStamp=null,choiceNoticeRevision=null,syncing=false;
-let displayView=null,lastDisplay=null;
+let displayView=null,lastDisplay=null,recapView=null;
 let displayPair=null;
 let viewUpdatedAt=0;
 try{credential=display?(fragment.get('token')||sessionStorage.getItem(storeKey)||''):(sessionStorage.getItem(storeKey)||'');if(credential)sessionStorage.setItem(storeKey,credential);}catch{}
@@ -206,7 +208,7 @@ function closedSession(){
  invitationCode='';
  forgetJoin();joinName='';
  if (!display) forgetChoice();
- retireRequests();hideRole();credential='';code='';player=null;game=null;roleNode=null;viewedIdentity=null;identityConfirmation=null;viewKey='';displayView=null;lastDisplay=null;selectedSeat=null;selectedAction=null;selectedTarget=null;choiceNoticeRevision=null;syncing=false;nextPollAt=0;pollNotice='';notice.textContent='';document.body.dataset.night='false';roomLabel.textContent='狼人杀';
+ retireRequests();hideRole();credential='';code='';player=null;game=null;roleNode=null;viewedIdentity=null;identityConfirmation=null;viewKey='';displayView=null;lastDisplay=null;recapView=null;selectedSeat=null;selectedAction=null;selectedTarget=null;choiceNoticeRevision=null;syncing=false;nextPollAt=0;pollNotice='';notice.textContent='';document.body.dataset.night='false';roomLabel.textContent='狼人杀';
  try{sessionStorage.removeItem(storeKey);}catch{}
  if(display)root.replaceChildren(h('h1','公共画面已关闭'),
   button('重新连接',()=>startDisplayPair(true),'primary'));
@@ -412,6 +414,14 @@ function actionPanel() {
 }
 function renderPlayer(force=false){
  if(!player||!alive)return;const g=player.public;game=g;const key=[g.revision,JSON.stringify(g.players),JSON.stringify(player.actions),JSON.stringify(player.submitted),JSON.stringify(player.checks),JSON.stringify(player.team_choices),player.identity_confirmed].join('|');if(!force&&key===viewKey){updateTimer(g);return;}
+ if(g.phase==='finished'){
+  viewKey=key;
+  hideRole();roleNode=null;identityConfirmation=null;
+  document.body.dataset.night='false';roomLabel.textContent=player.seat+' 号 · '+player.name;
+  renderFinished(g,player.session,syncing,player.seat);
+  return;
+ }
+ recapView=null;
  const phaseChanged = !viewKey.startsWith(g.revision + '|');
  const focusChoice = phaseChanged ? null : document.activeElement?.dataset?.choiceFocus;
  if (phaseChanged) {
@@ -425,7 +435,7 @@ function renderPlayer(force=false){
   const status=h('p','连接恢复后会自动更新。','party-sync');
   status.setAttribute('role','status');
   root.append(status);
-  if (player.role && g.phase!=='finished' && g.phase!=='identity') root.append(identity());
+  if (player.role && g.phase!=='identity') root.append(identity());
   return;
  }
  if(g.phase==='lobby'){
@@ -436,7 +446,6 @@ function renderPlayer(force=false){
   root.append(waiting);return;
  }
  if(g.phase==='identity'){root.append(identity());return;}
- if(g.phase==='finished'){const result=h('section',null,'result');result.append(h('h2',g.winner==='village'?'好人阵营获胜':g.winner==='wolves'?'狼人阵营获胜':'本局已结束'));const list=h('ul');for(const p of g.players)list.append(h('li',p.seat+' 号 · '+p.name+'　'+p.role_name));result.append(list,h('p','留在这个页面，等待主持人开启下一局。'));root.append(result);return;}
  if(g.phase==='vote_reveal'&&g.vote_result){
   const result=h('section',null,'phone-ballot');
   result.append(h('h2',ballotHeadline(g.vote_result)));
@@ -683,23 +692,42 @@ async function updateInvitation(view, report, waiting) {
  }
 }
 
+function renderFinished(game, session, waiting, seat) {
+ const key = [session, game.revision, seat].join(':');
+ if (recapView?.key !== key) {
+  retireInvitation(displayView);
+  displayView = null;
+  const status = h('h2', '正在同步对局', 'ww-recap-sync');
+  status.setAttribute('aria-live', 'polite');
+  status.hidden = !waiting;
+  const recap = makeWerewolfRecap(game, {art:'/assets/werewolf-scene.png'});
+  root.replaceChildren(status, recap);
+  recapView = {key, status};
+ } else recapView.status.hidden = !waiting;
+}
+
 function renderDisplay(report, waiting=false) {
  if (!report.active) {
   retireInvitation(displayView);
-  displayView = null;
+  displayView = recapView = null;
   document.body.dataset.night = 'false';
   roomLabel.textContent = '狼人杀';
   root.replaceChildren(h('h1','房间已关闭'), h('p','请从 Friday 打开新的公共画面。'));
   return;
  }
  const g = report.game;
+ if(g.phase==='finished'){
+  document.body.dataset.night='false';roomLabel.textContent='狼人杀';
+  renderFinished(g,report.session,waiting);
+  return;
+ }
+ recapView=null;
  displayView ??= createDisplay();
  const view = displayView;
  const night = nightPhases.has(g.phase);
  const lobby = g.phase === 'lobby';
  const dealing = g.phase === 'identity';
  const readyForNight = dealing && g.identities_confirmed === g.player_count;
- const finished = g.phase === 'finished';
  const result = !waiting && g.phase === 'vote_reveal' ? g.vote_result : null;
  document.body.dataset.night = String(night);
  roomLabel.textContent = g.round ? '狼人杀 · 第 ' + g.round + ' 轮' : '狼人杀 · ' + g.player_count + ' 人局';
@@ -733,14 +761,14 @@ function renderDisplay(report, waiting=false) {
  else view.clock.setAttribute('aria-label', g.paused ? '本局已暂停' : '剩余 ' + seconds + ' 秒');
 
  const hints = waiting ? [] : report.camera_hints || [];
- const summary=finished||dealing&&waiting?'':dealing?(g.identities_confirmed??0)+' / '+g.player_count+' 已确认':
+ const summary=dealing&&waiting?'':dealing?(g.identities_confirmed??0)+' / '+g.player_count+' 已确认':
   lobby?g.players.filter(p=>p.ready).length+' / '+g.player_count+' 已准备':
    turn?'发言 '+turn.position+' / '+turn.total:g.players.filter(p=>p.alive).length+' / '+g.player_count+' 在场';
  if(view.seatSummary.textContent!==summary)view.seatSummary.textContent=summary;
- const rosterKey = JSON.stringify([lobby, finished, night, g.player_count, g.players, g.roles, hints, speaker, upcoming]);
+ const rosterKey = JSON.stringify([lobby, night, g.player_count, g.players, g.roles, hints, speaker, upcoming]);
  if (view.rosterKey !== rosterKey) {
   view.rosterKey = rosterKey;
-  view.seatTitle.textContent = finished ? '身份揭晓' : '座位';
+  view.seatTitle.textContent = '座位';
   const players = new Map(g.players.map(p => [p.seat, p]));
   const advice = new Map(hints.map(hint => [hint.seat, hint]));
   const seats = [];
@@ -755,10 +783,9 @@ function renderDisplay(report, waiting=false) {
    if (p) name.title = p.name;
    label.append(name);
    const status = [];
-   if (finished && p?.role_name) status.push(p.role_name);
    if (p?.alive === false) status.push('出局');
    else if (lobby && p) status.push(p.ready ? '已准备' : '未准备');
-   else if (p && !night && !finished) {
+   else if (p && !night) {
     if (seat === speaker) status.push('发言中');
     else if (seat === upcoming) status.push('下一位');
     else if (hint?.hand_raised) status.push('举手');

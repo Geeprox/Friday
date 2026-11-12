@@ -1092,7 +1092,7 @@ def phone_app(owner, origin):
             return FileResponse(STATIC / 'brand/friday.png')
         if name == 'werewolf-scene.png':
             return FileResponse(STATIC / 'games-art/werewolf.png')
-        if name not in {"werewolf-party.js", "werewolf-party.css"}:
+        if name not in {"werewolf-party.js", "werewolf-party.css", "werewolf-recap.js", "werewolf-recap.css"}:
             raise HTTPException(404)
         return FileResponse(STATIC / name)
 

@@ -1,5 +1,6 @@
 const fs=require('node:fs'),vm=require('node:vm'),test=require('node:test'),assert=require('node:assert/strict');
-const source=fs.readFileSync('homeplane/static/werewolf-camera-view.js','utf8').replace('export function mountSeatCamera','function mountSeatCamera')+'\n'+fs.readFileSync('homeplane/static/werewolf-host.js','utf8').replace("import {mountSeatCamera} from './werewolf-camera-view.js';",'').replace('export function mountWerewolf','function mountWerewolf');
+const {readClient}=require('./werewolf_client_fixture.cjs');
+const source=fs.readFileSync('homeplane/static/werewolf-camera-view.js','utf8').replace('export function mountSeatCamera','function mountSeatCamera')+'\n'+readClient('host').replace("import {mountSeatCamera} from './werewolf-camera-view.js';",'').replace('export function mountWerewolf','function mountWerewolf');
 const settle=()=>new Promise(setImmediate),all=node=>[node,...node.children.flatMap(all)];
 const reply=data=>({ok:true,json:async()=>structuredClone(data)});
 function report({paused=false,revision=1,active=true}={}){

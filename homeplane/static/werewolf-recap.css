@@ -1,0 +1,263 @@
+.ww-recap {
+  --recap-ink: #34312f;
+  --recap-muted: #6a6257;
+  --recap-accent: #73552b;
+  --recap-paper: #fcf8f0;
+  --recap-line: #d8d0c3;
+  min-width: 0;
+  color: var(--recap-ink);
+  container-type: inline-size;
+}
+
+.ww-recap-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(86px, 38%);
+  align-items: center;
+  overflow: hidden;
+  min-height: 148px;
+  min-height: clamp(148px, 24cqw, 254px);
+  border: 1px solid var(--recap-line);
+  border-radius: 14px;
+  background: var(--recap-paper);
+}
+
+.ww-recap-summary {
+  padding: 22px 16px;
+  padding: clamp(20px, 4cqw, 52px) clamp(12px, 3.6cqw, 48px);
+}
+
+.ww-recap .ww-recap-title {
+  margin: 0;
+  color: inherit;
+  font-size: clamp(24px, 4vw, 58px);
+  font-size: clamp(24px, 5cqw, 58px);
+  line-height: 1.13;
+  letter-spacing: -.034em;
+  font-weight: 680;
+  text-wrap: balance;
+}
+
+.ww-recap .ww-recap-reason {
+  margin: 10px 0 0;
+  color: var(--recap-muted);
+  font-size: 15px;
+  font-size: clamp(14px, 1.7cqw, 23px);
+  line-height: 1.42;
+}
+
+.ww-recap .ww-recap-meta {
+  margin: 14px 0 0;
+  color: var(--recap-accent);
+  font-size: 13px;
+  font-size: clamp(12px, 1.4cqw, 18px);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+.ww-recap-art {
+  position: absolute;
+  inset: 0 0 0 auto;
+  display: block;
+  width: max(86px, 38%);
+  height: 100%;
+  object-fit: cover;
+  object-position: 60% 29%;
+}
+
+.ww-recap-body {
+  display: grid;
+  gap: clamp(24px, 3.2cqw, 52px);
+  margin-top: clamp(22px, 3.6cqw, 46px);
+}
+
+.ww-recap-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  margin-bottom: 8px;
+}
+
+.ww-recap-section-heading :is(h2, h4) {
+  margin: 0;
+  color: inherit;
+  font-size: 19px;
+  font-size: clamp(18px, 1.85cqw, 27px);
+  font-weight: 660;
+  line-height: 1.26;
+  letter-spacing: -.02em;
+}
+
+.ww-recap-section-heading > span,
+.ww-recap-round-nav {
+  color: var(--recap-ink);
+  font-size: 14px;
+  font-size: clamp(14px, 1.3cqw, 18px);
+  font-variant-numeric: tabular-nums;
+}
+
+.ww-recap-round-nav {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.ww-recap-round-nav > span {
+  min-width: 5ch;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.ww-recap-round-nav > button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid var(--recap-line);
+  border-radius: 9px;
+  background: var(--recap-paper);
+  color: var(--recap-ink);
+  cursor: pointer;
+}
+
+.ww-recap-round-nav > button::before {
+  width: 7px;
+  height: 7px;
+  transform: translateX(-1px) rotate(45deg);
+  border-right: 1px solid currentColor;
+  border-top: 1px solid currentColor;
+  content: '';
+}
+
+.ww-recap-round-nav > button:first-child::before {
+  transform: translateX(1px) rotate(-135deg);
+}
+
+.ww-recap-round-nav > button[aria-disabled=true] {
+  cursor: default;
+  background: transparent;
+  color: #aa9e8d;
+}
+
+.ww-recap-round-nav > button:not([aria-disabled=true]):hover {
+  background: #f1e9da;
+}
+
+.ww-recap-round-nav > button:focus-visible,
+.ww-recap-ballot > summary:focus-visible {
+  outline: 2px solid var(--recap-accent);
+  outline-offset: 3px;
+}
+
+.ww-recap-roles,
+.ww-recap-round,
+.ww-recap-votes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ww-recap-roles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: clamp(10px, 2.5cqw, 34px);
+}
+
+.ww-recap-roles li {
+  display: grid;
+  grid-template-columns: 2ch minmax(0, 1fr);
+  align-content: start;
+  gap: 8px;
+  min-height: 56px;
+  padding: 10px 0;
+  border-top: 1px solid var(--recap-line);
+  font-size: 15px;
+  font-size: clamp(14px, 1.55cqw, 23px);
+  line-height: 1.25;
+}
+
+.ww-recap-seat {
+  color: var(--recap-accent);
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+}
+
+.ww-recap-roles strong {
+  display: block;
+  font-weight: 620;
+  overflow-wrap: anywhere;
+}
+
+.ww-recap-roles small {
+  display: block;
+  margin-top: 4px;
+  color: var(--recap-muted);
+  font-size: 13px;
+  font-size: clamp(12px, 1.25cqw, 17px);
+}
+
+.ww-recap-event {
+  display: grid;
+  grid-template-columns: minmax(5em, .34fr) minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 12px;
+  border-top: 1px solid var(--recap-line);
+  padding-block: 11px;
+  font-size: 15px;
+  font-size: clamp(14px, 1.58cqw, 23px);
+  line-height: 1.4;
+}
+
+.ww-recap-event-name {
+  color: var(--recap-muted);
+  font-size: .9em;
+}
+
+.ww-recap-event > strong {
+  font-weight: 640;
+  overflow-wrap: anywhere;
+}
+
+.ww-recap-ballot {
+  grid-column: 2;
+  margin-bottom: -6px;
+  font-size: .88em;
+}
+
+.ww-recap-ballot > summary {
+  width: fit-content;
+  min-height: 44px;
+  padding-block: 11px;
+  color: var(--recap-accent);
+  cursor: pointer;
+  text-underline-offset: 3px;
+}
+
+.ww-recap-ballot > summary:hover {
+  text-decoration: underline;
+}
+
+.ww-recap-votes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 6px 12px;
+  padding: 0 0 10px;
+  color: var(--recap-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ww-recap-sync {
+  color: var(--recap-muted, #6a6257);
+  font-size: 15px;
+  margin: 0 0 14px;
+}
+
+@container (min-width: 612px) {
+  .ww-recap-body:has(.ww-recap-identities):has(.ww-recap-rounds) {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.03fr);
+  }
+}

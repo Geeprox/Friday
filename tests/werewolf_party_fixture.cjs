@@ -1,5 +1,6 @@
 // Execute the shipped phone client with synthetic DOM/HTTP, never a real browser or LAN.
-const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const vm=require('node:vm'),assert=require('node:assert/strict');
+const {readClient}=require('./werewolf_client_fixture.cjs');
 class Element{
  constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.dataset={};this._text='';this.classList={toggle(){},remove(){},add(){}};}
  set textContent(value){this._text=String(value);this.children=[];}
@@ -26,7 +27,7 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
   window:{addEventListener:(name,fn)=>events[name]=fn},setInterval:fn=>{tick=fn;},
   fetch:async(path,options)=>{requests.push({path,options});const status=replies.shift()||200;return{ok:status===200,status,headers:{get:()=> '5'},json:async()=>status===200?player:{detail:'party_rate_limited'}};}
  });
- vm.runInContext(fs.readFileSync('homeplane/static/werewolf-party.js','utf8'),context);
+ vm.runInContext(readClient('party'),context);
  await settle();assert.equal(requests.length,1);assert.equal(nodes.notice.textContent,'正在同步对局…');
  await tick();await settle();assert.equal(requests.length,1,'Rate-limited polling honors Retry-After');
  clock=4999;await tick();await settle();assert.equal(requests.length,1);

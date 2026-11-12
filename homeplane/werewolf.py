@@ -7,6 +7,7 @@ claimed by its phone credential, never by a face or a tracked skeleton.
 from __future__ import annotations
 
 from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass
 import random
 import time
@@ -100,6 +101,7 @@ class WerewolfGame:
         self.wolf_target = None
         self.witch_choice = ("pass", None)
         self.vote_result = None
+        self.round_history: list[dict] = []
         self.runoff_candidates: list[int] = []
         self.speaker_seat: int | None = None
         self.speaker_order: tuple[int, ...] = ()
@@ -112,6 +114,11 @@ class WerewolfGame:
     def _announce(self, text):
         self.host_script = {"id": self.announcement_base + len(self.announcements) + 1, "text": text}
         self.announcements.append(dict(self.host_script))
+
+    def _record_public_outcome(self, event):
+        if not self.round_history or self.round_history[-1]["round"] != self.round:
+            self.round_history.append(dict(round=self.round, events=[]))
+        self.round_history[-1]["events"].append(event)
 
     def carry_seats(self, previous):
         """新局只继承座位和昵称，阶段与播报编号继续递增。"""
@@ -321,7 +328,9 @@ class WerewolfGame:
             if target == self.pending_hunter:
                 self.pending_hunter = None
             self._kill(target, "poison")
-        seats = "、".join(f"{s} 号" for s in sorted(self.recent_deaths))
+        out = sorted(self.recent_deaths)
+        self._record_public_outcome(dict(kind="dawn", seats=out))
+        seats = "、".join(f"{s} 号" for s in out)
         self._phase("dawn", f"天亮了。昨夜{seats + '出局' if seats else '平安无事'}。")
 
     def _check_win(self):
@@ -390,6 +399,7 @@ class WerewolfGame:
         self.vote_result = dict(ballot=ballot, eliminated=out, votes=[dict(seat=s, target=t) for s, t in votes.items()],
                                 counts=[dict(seat=s, count=n) for s, n in sorted(counts.items())],
                                 tied=leaders if len(leaders) > 1 else [])
+        self._record_public_outcome(dict(kind="ballot", result=deepcopy(self.vote_result)))
         if len(leaders) > 1 and ballot == "vote":
             self.runoff_candidates = leaders
             named = "、".join(f"{s} 号" for s in leaders) if len(leaders) <= 3 else f"{len(leaders)} 位玩家"
@@ -436,6 +446,7 @@ class WerewolfGame:
             self.pending_hunter = None
             if action == "shoot":
                 self._kill(target, "shot")
+                self._record_public_outcome(dict(kind="hunter", seat=target))
                 self._announce(f"猎人带走了 {target} 号。")
             self._interrupt_or_continue(self.after_hunter or "night")
         else:
@@ -466,6 +477,8 @@ class WerewolfGame:
         self.revision += 1
 
     def end(self):
+        if self.phase == "finished":
+            return
         self.winner = None
         self.end_reason = "host_ended"
         self._phase("finished", "主持端结束了本局。")
@@ -497,6 +510,7 @@ class WerewolfGame:
                     **({"speaking_turn": speaking_turn} if speaking_turn else {}),
                     **({"lobby_revision": self.lobby_revision} if self.phase == "lobby" else {}),
                     **({"identities_confirmed": len(self.identities_confirmed)} if self.phase == "identity" else {}),
+                    **({"recap": deepcopy(self.round_history)} if self.phase == "finished" else {}),
                     winner=self.winner, end_reason=self.end_reason, rules=rules)
 
     def private(self, seat):

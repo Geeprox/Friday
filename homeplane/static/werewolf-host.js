@@ -1,4 +1,5 @@
 import {mountSeatCamera} from './werewolf-camera-view.js';
+import {makeWerewolfRecap} from './werewolf-recap.js';
 
 const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
 const button=(text,fn,cls)=>{const n=node('button',text,cls);n.type='button';n.onclick=fn;return n;};
@@ -54,8 +55,10 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    const next=action&&!action.disabled?action:content.querySelector('[data-speaker-picker]');
    next?.focus({preventScroll:true});
   }else if(previous?.dataset.turnCommand){
-   const next=content.querySelector('[data-turn-command]:not(:disabled)')||content.querySelector('.ww-phase-heading h3');
+   const next=content.querySelector('[data-turn-command]:not(:disabled)')||content.querySelector('.ww-phase-heading h3')||content.querySelector('.ww-recap-title');
    next?.focus({preventScroll:true});
+  }else if(previous?.dataset.rematch){
+   content.querySelector('.ww-phase-heading h3')?.focus({preventScroll:true});
   }else if(previous?.dataset.cameraApply){
    content.querySelector('[data-camera-person]')?.focus({preventScroll:true});
   }
@@ -299,9 +302,8 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    item.dataset.speaking=String(speaking);
    const state=!p||identity?'':lobby?p.ready?'已准备':'未准备':!p.alive?'已出局':speaking?'发言中':turn?.next_seat===seat?'下一位':discussing?'':'在场';
    item.append(node('span',String(seat),'ww-seat-number'),node('strong',p?.name||'等待入座'),node('span',state,'ww-seat-state'));
-   if(game.phase==='finished'&&p?.role_name)item.append(node('span',p.role_name,'ww-seat-role'));
    if(lobby&&p)item.append(button('移除',()=>perform(api=>api('control',{action:'remove',seat})),'ww-remove'));
-   if(!lobby&&!identity&&game.phase!=='finished'){
+   if(!lobby&&!identity){
     const signal=node('span',null,'ww-seat-signal');
     signal.hidden=true;
     item.append(signal);
@@ -556,8 +558,20 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    if(option.textContent!==text)option.textContent=text;
   }
  }
- function live(){const g=current.game;const title=node('div',null,'ww-live-title');title.append(node('h2','狼人杀'),node('span',g.player_count+' 人 · Friday 主持'));content.append(title);
-  const layout=node('div',null,'ww-live-layout');layout.dataset.playing=String(g.phase!=='lobby');layout.dataset.aligning=String(current.camera_enabled&&g.phase==='lobby');const scene=board(g);layout.append(scene);if(g.phase==='lobby')lobbyUI={session:current.session,count:g.player_count,cameraEnabled:Boolean(current.camera_enabled),scene,ready:null,alignment:null};const aside=node('aside',null,'ww-room-tools');
+ function live(){
+  const g=current.game,finished=g.phase==='finished';
+  const title=node('div',null,'ww-live-title');
+  title.append(node('h2','狼人杀'));
+  if(!finished)title.append(node('span',g.player_count+' 人 · Friday 主持'));
+  content.append(title);
+  const layout=node('div',null,'ww-live-layout');
+  layout.dataset.playing=String(g.phase!=='lobby');
+  layout.dataset.aligning=String(current.camera_enabled&&g.phase==='lobby');
+  layout.dataset.finished=String(finished);
+  const scene=finished?makeWerewolfRecap(g,{art:'/static/games-art/werewolf.png',heading:'h3'}):board(g);
+  layout.append(scene);
+  if(g.phase==='lobby')lobbyUI={session:current.session,count:g.player_count,cameraEnabled:Boolean(current.camera_enabled),scene,ready:null,alignment:null};
+  const aside=node('aside',null,'ww-room-tools');
   if(g.phase==='lobby'){
    const join=node('div',null,'ww-join');
    lobbyUI.join=join;
@@ -587,7 +601,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    start.dataset.startNight='true';
    const reseat=button(confirmation==='reseat'?'确认返回入座':'返回入座',()=>confirmControl('reseat'),'ww-text-button');
    reseat.dataset.reseat='true';controls.append(progress,start,reseat);
-  }else if(g.phase!=='finished'){
+  }else if(!finished){
    if(current.speaker_seats?.length)controls.append(speakerControls(g,current.speaker_seats));
    if(g.speaking_turn&&!g.paused){
     const next=button(g.speaking_turn.next_seat?'下一位':'开始投票',()=>perform(api=>api('control',{action:'advance'})),'primary');
@@ -601,7 +615,11 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    controls.append(button(g.paused?'继续对局':'暂停对局',()=>perform(api=>api('control',{action:g.paused?'resume':'pause'}))));
    if(!g.paused&&!g.speaking_turn&&g.phase!=='vote_reveal')controls.append(button(confirmation==='advance'?'确认进入下一环节':'提前结束本环节',()=>confirmControl('advance'),'ww-text-button'));
   }
-  if(g.phase==='finished')controls.append(button('再开一局',()=>perform(api=>api('control',{action:'rematch'})),'primary'));
+  if(finished){
+   const rematch=button('再开一局',()=>perform(api=>api('control',{action:'rematch'})),'primary');
+   rematch.dataset.rematch='true';
+   controls.append(rematch);
+  }
   if(current.phone_url){
    const recover=button('找回座位',openSeatRecovery,'ww-text-button');
    recover.dataset.seatRecovery='true';controls.append(recover);
@@ -612,7 +630,17 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   mountRoundCamera(aside,layout);
   if(tv&&g.phase!=='lobby')aside.append(tv);
   const effects=node('div',null,'ww-effects'),voice=node('p',null,'ww-field-help');voice.dataset.voiceState='true';effects.append(voice);const recovery=node('div',null,'ww-recovery');recovery.dataset.lightRecovery='true';recovery.append(node('p','灯光有待恢复。'));const restore=button('恢复灯光',()=>perform(async api=>{await api('restore-lights',{});return api('host');}));restore.dataset.restoreLights='true';recovery.append(restore);effects.append(recovery);aside.append(effects);layout.append(aside);content.append(layout);
-  if(g.vote_result&&g.phase!=='vote_reveal'){const votes=node('section',null,'ww-vote-results');votes.append(node('h3','最近一次投票'));const line=node('div');for(const vote of g.vote_result.votes)line.append(node('span',vote.seat+' 号 → '+(vote.target?vote.target+' 号':'弃票')));votes.append(line);content.append(votes);}const roleLine=node('p',g.roles.map(r=>r.name+' × '+r.count).join('　'),'ww-role-line');content.append(roleLine,rules(g));
+  if(!finished){
+   if(g.vote_result&&g.phase!=='vote_reveal'){
+    const votes=node('section',null,'ww-vote-results');
+    votes.append(node('h3','最近一次投票'));
+    const line=node('div');
+    for(const vote of g.vote_result.votes)line.append(node('span',vote.seat+' 号 → '+(vote.target?vote.target+' 号':'弃票')));
+    votes.append(line);
+    content.append(votes);
+   }
+   content.append(node('p',g.roles.map(r=>r.name+' × '+r.count).join('　'),'ww-role-line'),rules(g));
+  }
   if(current.camera_enabled&&g.phase==='lobby'){lobbyUI.alignment=cameraAlignment();layout.append(lobbyUI.alignment.section);}
  }
  function updateEffects(){
@@ -651,7 +679,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
     next?.focus({preventScroll:true});
    }else if(focused){
     const candidate=focus?.dataset.turnCommand?
-     content.querySelector('[data-turn-command]')||content.querySelector('.ww-phase-heading h3'):
+     content.querySelector('[data-turn-command]')||content.querySelector('.ww-phase-heading h3')||content.querySelector('.ww-recap-title'):
      [...content.querySelectorAll('button')].find(b=>b.textContent===focused);
     candidate?.focus({preventScroll:true});
    }

@@ -1,5 +1,6 @@
-const fs=require('node:fs'),vm=require('node:vm'),test=require('node:test'),assert=require('node:assert/strict');
-const source=fs.readFileSync('homeplane/static/werewolf-party.js','utf8');
+const vm=require('node:vm'),test=require('node:test'),assert=require('node:assert/strict');
+const {readClient}=require('./werewolf_client_fixture.cjs');
+const source=readClient('party');
 const all=node=>[node,...node.children.flatMap(all)],settle=()=>new Promise(setImmediate);
 
 function client({publicDisplay=false,phase='wolves',joined=true,lobby=null,privateFields={},
@@ -168,8 +169,32 @@ test('public stage keeps the prompt above seats and refreshes the clock without 
  c.game.paused = false;
  c.game.phase = 'finished';
  c.game.phase_name = '对局结束';
+ c.game.revision++;
+ c.game.winner = 'village';
+ c.game.end_reason = 'all_wolves_out';
+ c.game.recap = [
+  {round:1,events:[{kind:'dawn',seats:[4]}]},
+  {round:2,events:[{kind:'dawn',seats:[]}]},
+ ];
  await vm.runInContext('poll()', c.context);
+ assert.match(c.nodes.party.textContent, /好人阵营获胜.*全部狼人出局/);
  assert.match(c.nodes.party.textContent, /身份揭晓.*守卫/);
+ const recap = c.nodes.party.children.find(node=>node.className==='ww-recap');
+ const previous = all(recap).find(node=>node.attrs['aria-label']==='上一轮');
+ assert.match(recap.textContent,/第 2 轮/);
+ previous.onclick();
+ assert.match(recap.textContent,/4 号出局/);
+ assert.equal(previous.attrs['aria-disabled'],'true');
+ vm.runInContext('holdView()', c.context);
+ assert.equal(c.nodes.party.children[0].hidden,false);
+ await vm.runInContext('poll()', c.context);
+ assert.equal(c.nodes.party.children[0].hidden,true);
+ assert.equal(c.nodes.party.children[1],recap);
+ assert.match(recap.textContent,/第 1 轮/);
+ c.game.phase='lobby';c.game.revision++;c.game.players.forEach(player=>delete player.role_name);
+ delete c.game.recap;
+ await vm.runInContext('poll()', c.context);
+ assert(!c.nodes.party.children.includes(recap));
 });
 
 test('phone offers the sole target action first and sends it only after selecting a seat and confirming', async () => {
