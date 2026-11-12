@@ -1,6 +1,6 @@
 # 参与 Friday 开发
 
-先阅读 [AGENTS.md](AGENTS.md) 和[开发说明](docs/development.md)，按[跨仓库开发规范](https://github.com/lijunfeng722/project-index/blob/main/docs/development.md)使用中文提交说明、解释性注释和协作规范正文。
+先阅读 [AGENTS.md](AGENTS.md) 和[开发说明](docs/development.md)，按[跨仓库开发规范](https://github.com/lijunfeng722/friday-project-index/blob/main/docs/development.md)使用中文提交说明、解释性注释和协作规范正文。
 
 ## 实现与验证
 

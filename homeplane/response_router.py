@@ -91,6 +91,9 @@ class ResponseRouter:
             "duplicate": "重复反馈未再次播放。",
         }.get(output.status, "本地输出调用完成，可听见状态仍未核验。")
         caption = report.caption + (" " if report.caption else "") + degrade
+        if (report.input_kind=='console_text' and feedback.get('room_id') is None
+                and not output.configured and not output.attempted):
+            caption = report.caption
         if len(caption) > 2048:
             caption = report.caption  # Keep the original caption; degradation stays in feedback/output.
         limits = list(report.limitations)

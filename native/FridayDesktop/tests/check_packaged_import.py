@@ -4,7 +4,6 @@ Import the backend module definitions without constructing service/app/ARL or
 calling config/credentials. Audit denies network, child processes and private
 runtime data access. No server, ASGI lifespan, real model or account is started.
 """
-from pathlib import Path
 import ast
 import hashlib
 import importlib.abc
@@ -12,6 +11,7 @@ import importlib.util
 import json
 import socket
 import sys
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 if len(sys.argv) != 3:
@@ -19,8 +19,10 @@ if len(sys.argv) != 3:
 APP = Path(sys.argv[1]).resolve()
 OUTPUT = Path(sys.argv[2]).resolve()
 ARTIFACTS = REPO / '.artifacts'
-assert APP.is_relative_to(ARTIFACTS.resolve()) and APP.name == 'Friday.app'
-assert OUTPUT.is_relative_to(ARTIFACTS.resolve()) and not OUTPUT.exists()
+CACHE = Path.home() / 'Library/Caches/CodexBuilds.noindex' / (
+    REPO.name + '-' + hashlib.sha256(str(REPO.resolve()).encode()).hexdigest()[:12])
+assert any(APP.is_relative_to(root.resolve()) for root in (ARTIFACTS, CACHE)) and APP.name == 'Friday.app'
+assert any(OUTPUT.is_relative_to(root.resolve()) for root in (ARTIFACTS, CACHE)) and not OUTPUT.exists()
 PRODUCT = APP / 'Contents/Resources/product'
 BACKEND = APP / 'Contents/Resources/backend/desktop_backend.py'
 assert (PRODUCT / 'runtime/bin/python3').is_file()
@@ -30,6 +32,18 @@ sys.path[:0] = [str(PRODUCT / 'vendor'), str(PRODUCT / 'app')]
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def qr_runtime_check():
+    """A default game dependency must work before this runtime is signed in."""
+    import qrcode
+    import qrcode.image.svg
+
+    image = qrcode.make('FRIDAY-PACKAGE-QR-PROBE',
+                        image_factory=qrcode.image.svg.SvgPathFillImage, border=3)
+    encoded = image.to_string()
+    assert isinstance(encoded, bytes) and b'<svg' in encoded and b'<path' in encoded
+    return {'svg_generated': True, 'bytes': len(encoded), 'input': 'fixed_synthetic_probe'}
 
 
 def audit(event, args):
@@ -71,8 +85,10 @@ tree = ast.parse(BACKEND.read_text())
 assert any(isinstance(n, ast.If) and '__main__' in ast.dump(n.test) for n in tree.body)
 assert not any(isinstance(n, (ast.Assign, ast.AnnAssign)) and 'DesktopService(' in ast.get_source_segment(BACKEND.read_text(), n) for n in tree.body)
 
-import homeplane.runtime_log as log
-from starlette.responses import JSONResponse
+# Application imports must remain below the audit and import-denial gates.
+from starlette.responses import JSONResponse  # noqa: E402
+
+import homeplane.runtime_log as log  # noqa: E402
 
 assert Path(log.__file__).resolve() == (PRODUCT / 'app/homeplane/runtime_log.py').resolve()
 checks = []
@@ -83,12 +99,13 @@ for code in ['control_cancelled_after_send', 'flow_operation_invalidated', 'rule
     checks.append({'generated_allowlisted_response_code': code, 'projection': ['refused', code]})
 assert log.fixed_code('generated-private-body-must-not-be-code') == 'unclassified'
 assert log.result_projection(JSONResponse({'code': 'generated-private-body-must-not-be-code'}, status_code=503)) == ('unavailable', 'unclassified')
+qr_check = qr_runtime_check()
 modules = {}
 for name, module in list(sys.modules.items()):
     path = getattr(module, '__file__', None)
     if not path:
         continue
-    if name == spec.name or name.split('.')[0] in {'homeplane', 'friday', 'fastapi', 'starlette', 'httpx', 'pydantic'}:
+    if name == spec.name or name.split('.')[0] in {'homeplane', 'friday', 'fastapi', 'starlette', 'httpx', 'pydantic', 'qrcode'}:
         path = Path(path).resolve()
         if name == spec.name or name.split('.')[0] in {'homeplane', 'friday'}:
             assert path.is_relative_to(APP.resolve()), 'External project source fallback: ' + name
@@ -98,6 +115,7 @@ result = {'phase': 'LOCAL_DEVELOPMENT_APP_SOURCE_IMPORT_BINDING_PASS',
           'passed': True, 'python_executable': sys.executable, 'python_prefix': sys.prefix,
           'python_version': sys.version.split()[0], 'backend_imported_only': True,
           'module_count': len(modules), 'modules': modules, 'generated_pure_projection_checks': checks,
+          'game_qr_dependency': qr_check,
           'external_project_source_fallback': False, 'external_python_environment': True,
           'service_app_ARL_or_ASGI_lifespan_constructed_or_started': 0,
           'private_config_credential_model_nativeSDK_childprocess_network_reads_or_calls': 0,

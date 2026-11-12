@@ -1,35 +1,143 @@
-
-:root{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:#253c34;background:#edf1e9}*{box-sizing:border-box}body{margin:0;overflow:hidden}header{height:84px;display:flex;align-items:center;justify-content:space-between;padding:0 3vw;border-bottom:1px solid #d4ddd0}h1{font-size:24px;letter-spacing:-.8px;font-weight:600;margin:0}header small{display:block;font-size:11px;color:#78877c;letter-spacing:2px;margin-top:5px}nav{display:flex;gap:6px;flex-shrink:0}nav button{padding:10px 11px;white-space:nowrap}button,a{font:inherit;color:inherit}button{border:1px solid #c9d4c6;background:transparent;border-radius:5px;padding:10px 16px;font-size:13px;cursor:pointer}button:hover{background:#e0e8dc}button[aria-pressed=true],.primary{background:#3e6550;color:white;border-color:#3e6550}button:focus-visible,a:focus-visible{outline:3px solid #709e7a;outline-offset:3px}.connection{font-size:12px;color:#78877c}.workspace{height:calc(100vh - 138px);height:calc(100svh - 138px);position:relative;min-height:0;overflow:hidden}canvas{display:block;width:100%;height:100%}.hud{position:absolute;top:26px;left:3vw;right:3vw;display:flex;justify-content:space-between;pointer-events:none}.eyebrow{font-size:11px;letter-spacing:2px;color:#738777}.mission{font-size:26px;margin:8px 0;font-weight:500}.instruction{font-size:13px;line-height:1.8;color:#75877b}.score{font-size:28px;font-variant-numeric:tabular-nums;font-weight:500;text-align:right}.score small{font-size:11px;font-weight:400;letter-spacing:2px;display:block;margin-top:5px}.overlay{position:absolute;left:50%;top:45%;transform:translate(-50%,-50%);text-align:center;max-width:540px;padding:22px 35px;background:#edf3e9e8;border-radius:10px}.overlay h2{font-size:27px;font-weight:500;letter-spacing:-.6px;margin:0 0 12px}.overlay p{font-size:14px;line-height:1.8;color:#728075;margin:0 0 19px}.overlay:empty{display:none}.bottom{position:absolute;left:3vw;right:3vw;bottom:24px;display:flex;align-items:flex-end;justify-content:space-between;gap:25px}.input{font-size:12px;color:#4e6d58;line-height:1.9;max-width:650px}.bottom>div:first-child{margin-left:calc(min(215px,19vw) + 14px)}.bar{width:230px;height:4px;background:#d2dfcf;margin:12px 0}.bar i{display:block;height:100%;background:#4e795b;width:0;transition:width .1s}.live{font-size:11px;color:#6c806e}.actions{display:flex;gap:7px;flex-shrink:0}.actions button{white-space:nowrap;padding:10px 11px}.bottom>div:first-child{min-width:0}.input{max-width:460px}footer{height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 3vw;font-size:11px;color:#7b897b;border-top:1px solid #d4ddd0}a{text-decoration:none}a:hover{text-decoration:underline}@media(max-width:800px){header{height:112px;align-items:flex-start;padding-top:18px;flex-wrap:wrap}header small{display:none}nav{width:100%;padding-bottom:12px}nav button{padding:7px 14px}.workspace{height:calc(100vh - 158px);height:calc(100svh - 158px)}.connection{position:absolute;right:20px;top:20px}.mission{font-size:20px}.score{font-size:22px}.hud{top:20px}.bottom{align-items:flex-start;flex-direction:column;gap:12px}.input{font-size:11px}.overlay{width:80%;padding:20px}.overlay h2{font-size:22px}footer{height:46px}.actions button{padding:8px 10px}.instruction{max-width:220px}}
-.debug{position:absolute;left:22px;bottom:22px;width:min(215px,19vw);background:#f2f5edee;border:1px solid #cad6c6;border-radius:7px;overflow:hidden;box-shadow:0 3px 18px #283f301a;pointer-events:none}.debug canvas{width:100%;height:auto;aspect-ratio:16/9;background:#14251a}.debug .metrics{padding:8px 11px;font-size:10px;line-height:1.5;color:#526b58;font-variant-numeric:tabular-nums}.debug header{height:auto;display:block;padding:7px 11px;font-size:11px;border:0}.debug .metrics b{font-weight:500;color:#34563f}@media(max-width:800px){.debug{width:160px;bottom:100px}.bottom>div:first-child{margin-left:0}.debug .metrics{font-size:10px;padding:5px 8px}}
-.curtainActions{display:none;gap:7px}body[data-mode=home] .curtainActions{display:flex}body[data-mode=home] .actions{gap:5px}body[data-mode=home] .actions button{padding:10px 8px}.curtainActions button{background:#e0e8dc}
-
-/* Shared Friday stage, also served directly to the television. */
-:root{background:#f3f5ef;color:#283e32}button{border-radius:9px}header small{letter-spacing:.4px}header nav{gap:4px}.debug{border-radius:10px;background:#f5f7f0ed}.debug .metrics{display:none}.overlay{border:1px solid #e1e7dc;border-radius:16px;background:#f5f7efed}.embedded>header{display:none}.embedded .workspace{height:calc(100svh - 38px)}.embedded footer{height:38px}.embedded footer a{display:none}.embedded .mission{font-size:22px}.embedded .bottom{bottom:15px}.embedded .actions{flex-wrap:wrap;justify-content:flex-end}.embedded .hud{top:20px}.embedded .actions button{padding:8px 10px}@media(max-width:850px){.embedded .workspace{height:calc(100svh - 38px)}.embedded .debug{width:145px;bottom:100px}.embedded .hud{left:20px;right:20px}.embedded .instruction{max-width:65vw}.embedded .bottom{left:20px;right:20px}.embedded footer{font-size:10px}.embedded footer>span:nth-child(2){display:none}.embedded .mission{font-size:19px}}
-
-/* Readable controls on a television, desktop or narrow viewer. */
-:root{-webkit-font-smoothing:antialiased}
-button:focus-visible,a:focus-visible{outline:2px solid #365a43;outline-offset:3px}
-header small,.connection,.instruction,.overlay p,footer,.live{color:#596356;line-height:1.55;font-size:.8125rem}
-.mission,.overlay h2{line-height:1.35;text-wrap:balance}
-button{min-height:40px;font-size:.875rem}
-.overlay{max-width:calc(100% - 32px);overflow-wrap:anywhere}
-.score{font-variant-numeric:tabular-nums}
-@media(max-width:56.25rem){body{overflow:auto}body>header{height:auto;min-height:84px;padding:16px;gap:16px;flex-wrap:wrap}
-header nav{flex-wrap:wrap;max-width:100%}header nav button{min-height:40px;font-size:.8125rem}
-.connection{position:static;width:100%;font-size:.8125rem}
-.workspace,.embedded .workspace{height:max(720px,calc(100dvh - 180px));min-height:720px}
-.hud,.embedded .hud{left:16px;right:16px;gap:16px}.hud>div:first-child{min-width:0;flex:1}.instruction,.embedded .instruction{max-width:100%}
-.mission,.embedded .mission{font-size:1.25rem}.score{font-size:1.75rem;min-width:60px}
-.bottom,.embedded .bottom{left:16px;right:16px;bottom:16px;display:flex;flex-direction:column;gap:12px}
-.bottom>div:first-child{margin-left:0}.actions,.embedded .actions{width:100%;flex-wrap:wrap;justify-content:flex-start}
-.actions button{min-height:44px}.debug{width:112px;bottom:240px;left:16px}
-.overlay{width:calc(100% - 32px);max-width:420px;padding:20px;top:40%}.overlay h2{font-size:1.25rem}
-footer,.embedded footer{height:auto;min-height:46px;flex-wrap:wrap;padding:12px 16px;gap:10px;font-size:.8125rem}
-.embedded footer>span:nth-child(2){display:block}}
+:root{color-scheme:light;--ink:#2d2e30;--muted:#686962;--paper:#f7f6f1;--line:#d7d7cf;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;color:var(--ink);background:var(--paper);-webkit-font-smoothing:antialiased;scrollbar-color:#93948b var(--paper);scrollbar-width:thin}
+*{box-sizing:border-box}body{margin:0}button,a,summary{-webkit-tap-highlight-color:transparent}button,summary{font:inherit;cursor:pointer}button{min-height:42px;padding:10px 15px;border:1px solid #cfd0c8;border-radius:10px;background:#fafaf6;color:var(--ink);font-size:13px;font-weight:550}button:hover{background:#efefe8}button:disabled{opacity:.45;cursor:default}button.primary{background:var(--ink);border-color:var(--ink);color:white}:where(button,a,summary):focus-visible{outline:2px solid var(--ink);outline-offset:4px}::selection{background:#343538;color:white}[hidden]{display:none!important}
+/* Hidden embedded chrome must not change the explicit body grid rows. */
+body>.stage-header{grid-row:1}body>.workspace{grid-row:2}body>footer{grid-row:3}
+.stage-header{height:64px;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:0 28px;border-bottom:1px solid var(--line);background:var(--paper)}.stage-brand{display:flex;align-items:center;gap:10px;flex:none}.stage-brand h1{font-size:17px;letter-spacing:-.025em;margin:0}.stage-header nav{display:flex;gap:4px}.stage-header nav button{background:transparent;border-color:transparent;font-weight:450}.stage-header nav button[aria-pressed=true]{background:var(--ink);color:white}.connection{font-size:12px;color:var(--muted);white-space:nowrap}
+.workspace{height:calc(100svh - 96px - var(--source-overhead,0px));min-height:540px;position:relative;overflow:hidden;background:#e9eee7}#world{display:block;width:100%;height:100%}.hud{position:absolute;inset:26px 28px auto;display:flex;align-items:flex-start;justify-content:space-between;gap:24px;pointer-events:none}.mission-block,.score{background:#faf9f2ef;border:1px solid #e1e0d7;border-radius:12px;padding:16px 18px}.mission-block{max-width:480px}.mission{font-size:22px;line-height:1.3;letter-spacing:-.025em;font-weight:650;margin:0;text-wrap:balance}.instruction{font-size:13px;line-height:1.6;color:var(--muted);margin:7px 0 0}.bar{height:4px;background:#d6dacd;width:180px;max-width:100%;border-radius:2px;overflow:hidden;margin-top:12px}.bar i{height:100%;width:0;display:block;background:#3d6550}.score{min-width:108px;text-align:right;font-size:30px;line-height:1.1;font-weight:600;font-variant-numeric:tabular-nums}.score small{display:block;font-size:11px;line-height:1.6;color:var(--muted);font-weight:450;max-width:170px;margin-top:7px}
+.overlay{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);width:min(380px,calc(100% - 40px));padding:28px;border:1px solid var(--line);border-radius:16px;background:var(--paper);text-align:center}.overlay:empty{display:none}.overlay h2{font-size:24px;line-height:1.35;letter-spacing:-.025em;margin:0 0 10px;text-wrap:balance}.overlay p{font-size:14px;color:var(--muted);line-height:1.7;margin:0 0 20px}.overlay p:last-child{margin-bottom:0}.overlay button{min-width:130px}.overlay h2.game-countdown{font-size:72px;line-height:1.15;font-variant-numeric:tabular-nums}.overlay p.game-recovery-message{font-size:16px;line-height:1.6}
+.bottom{position:absolute;left:28px;right:28px;bottom:22px;display:flex;align-items:flex-end;justify-content:space-between;gap:20px}.player-feedback{max-width:440px;background:#faf9f2eb;border:1px solid #e1e0d7;border-radius:12px;padding:12px 16px}.player-feedback p{margin:0;font-size:13px;line-height:1.6}.player-feedback .live{font-size:12px;color:var(--muted)}#feedback:empty{display:none}.actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.actions>button:first-of-type{background:var(--ink);border-color:var(--ink);color:white}#gameNotice{font-size:12px;max-width:200px;background:var(--paper);padding:8px;border-radius:8px}#gameNotice:empty{display:none}.stage-options{position:relative}.stage-options summary{list-style:none;min-height:42px;display:flex;align-items:center;border:1px solid #cfd0c8;border-radius:10px;background:#fafaf6;padding:10px 15px;font-size:13px}.stage-options summary::-webkit-details-marker{display:none}.stage-options[open]>summary{background:#e9e9e2}.stage-options>div{position:absolute;right:0;bottom:52px;width:205px;padding:8px;background:var(--paper);border:1px solid var(--line);border-radius:12px;display:grid;gap:2px;z-index:5}.stage-options button{text-align:left;background:transparent;border-color:transparent;white-space:normal}.curtainActions{display:none}body[data-mode=home] .curtainActions{display:grid;gap:4px}
+.debug{position:absolute;left:28px;bottom:132px;width:240px;padding:0;background:var(--paper);border:1px solid var(--line);border-radius:12px;overflow:hidden}.debug header{height:auto;padding:8px 12px;font-size:12px}.debug canvas{display:block;width:100%;height:auto;aspect-ratio:16/9}.metrics{display:none}footer{height:32px;padding:0 28px;display:flex;align-items:center;justify-content:space-between;gap:20px;font-size:11px;color:var(--muted);border-top:1px solid var(--line);background:var(--paper)}footer>span:empty{display:none}footer a{color:inherit;text-underline-offset:.2em}.embedded>.stage-header{display:none}.embedded .workspace{height:calc(100svh - 32px - var(--source-overhead,0px));min-height:500px}.embedded .hud{inset:18px 20px auto}.embedded .bottom{left:20px;right:20px;bottom:18px}.embedded .mission{font-size:20px}
+@media(max-width:760px){.stage-header{height:auto;min-height:104px;padding:14px 16px;gap:10px;flex-wrap:wrap}.stage-brand h1{font-size:16px}.stage-header nav{order:3;flex-basis:100%;overflow-x:auto}.stage-header nav button{white-space:nowrap;flex:none;font-size:12px}.workspace{height:calc(100svh - 136px - var(--source-overhead,0px));min-height:560px}.hud,.embedded .hud{inset:16px 16px auto;gap:12px}.mission-block{padding:12px;max-width:70%}.mission,.embedded .mission{font-size:17px}.instruction{font-size:12px}.score{font-size:24px;min-width:72px;padding:12px}.score small{font-size:10px}.bar{width:150px}.bottom,.embedded .bottom{left:16px;right:16px;bottom:16px;gap:10px;flex-direction:column;align-items:stretch}.player-feedback{max-width:none;padding:10px 12px}.player-feedback p{font-size:12px}.actions{gap:6px}.actions button,.stage-options summary{min-height:44px;padding:10px 13px}.debug{left:16px;bottom:200px;width:180px}.overlay{padding:24px;top:48%}.overlay h2{font-size:21px}footer{padding:0 16px;font-size:10px;gap:10px}.embedded .workspace{min-height:560px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
-@media(hover:none){button:hover{background:transparent}button.primary:hover{background:#42684c}}
-@media(forced-colors:active){:focus-visible{outline-color:Highlight}}
+@media(forced-colors:active){:where(button,a,summary):focus-visible{outline-color:Highlight}.bar i{background:Highlight}}
+.stage-difficulty{display:grid;gap:6px;padding:8px 7px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.stage-difficulty label{font-size:13px;font-weight:600}
+.stage-difficulty select{min-width:0;width:100%;min-height:44px;padding:8px 10px;font:inherit;font-size:16px;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:8px;caret-color:var(--ink)}
+.stage-difficulty select:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.stage-difficulty select:disabled{opacity:.6}
+.stage-difficulty p{font-size:12px;line-height:1.5;margin:0 0 4px;color:var(--muted);overflow-wrap:anywhere}
+.game-tutorial{position:absolute;left:var(--teaching-x,50%);top:var(--teaching-y,70%);transform:translate(-50%,-94.9%);width:min(34%,420px);margin:0;padding:0;pointer-events:none}.game-tutorial canvas{display:block;width:100%;height:auto;aspect-ratio:8/9}.game-tutorial p{position:absolute;left:50%;top:calc(100% + 8px);transform:translateX(-50%);width:max-content;margin:0;padding:2px 7px;background:var(--paper);border-radius:6px;font-size:12px;line-height:20px;text-align:center;color:var(--ink)}
+/* Portrait screens give the scene and teaching their own space. */
+@media(max-width:760px) and (orientation:portrait){
+ .stage-header{min-height:90px;padding:8px 12px;gap:6px}
+ .stage-header nav{gap:2px}.stage-header nav button{min-height:40px;padding:8px 10px}
+ .connection{font-size:11px}
+ .workspace,.embedded .workspace{--stage-overhead:430px;display:grid;grid-template-columns:116px minmax(0,1fr);grid-template-rows:auto auto minmax(42px,auto) 44px;gap:10px 14px;height:auto;min-height:0;padding:12px;background:var(--paper)}
+ .embedded .workspace{--stage-overhead:300px}
+ :is(body[data-mode=quest],body[data-mode=hiit]){height:100svh;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .workspace{height:100%;min-height:0;grid-template-rows:auto minmax(0,1fr) 48px 44px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .mission-block{min-width:0}
+ .hud,.embedded .hud{position:static;grid-column:1/-1;grid-row:1;gap:12px;align-items:flex-start}
+ .mission-block{padding:0;max-width:none;flex:1;background:transparent;border:0;border-radius:0}
+ .mission,.embedded .mission{font-size:17px;line-height:1.45;text-wrap:wrap}
+ .instruction{margin-top:5px;font-size:12px;line-height:1.55}
+ .bar{margin-top:9px;width:100%;height:3px}
+ .score{padding:0;min-width:58px;font-size:23px;background:transparent;border:0;border-radius:0}
+ .score small{font-size:10px;max-width:85px;margin-top:5px}
+ #world{grid-column:1/-1;grid-row:2;width:100%;height:clamp(260px,calc(100svh - var(--stage-overhead)),380px);border-radius:10px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) #world{height:100%;min-height:0}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .instruction,
+ :is(body[data-mode=quest],body[data-mode=hiit]) .instruction:empty{display:block;min-height:3.1em}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .instruction:empty{visibility:hidden}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .score{min-width:max-content;white-space:nowrap;flex:none}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .score small{max-width:104px;white-space:normal}
+ .game-tutorial{width:min(68%,250px)}
+ .game-tutorial p{font-size:12px}
+ .bottom,.embedded .bottom{display:contents}
+ .player-feedback{grid-column:1/-1;grid-row:3;align-self:center;padding:0;border:0;background:transparent;border-radius:0;max-width:none}
+ .player-feedback p{font-size:13px;line-height:1.6}
+ .player-feedback .live{font-size:11px}
+ .workspace:has(.game-tutorial[hidden]) .player-feedback{grid-column:1/-1;align-self:center}
+ .actions{grid-column:1/-1;grid-row:4;gap:8px;align-self:end;justify-self:end}
+ .overlay{grid-column:1/-1;grid-row:2;position:relative;left:auto;top:auto;transform:none;align-self:center;justify-self:center;z-index:2;width:calc(100% - 16px);padding:22px}
+ .overlay h2{font-size:21px}
+ .debug{left:16px;bottom:92px;width:180px;z-index:3}
+ footer{padding-inline:16px}
+}
+.actions{margin-inline-start:auto}
+.actions #gameNotice{flex:0 0 100%;max-width:none;text-align:end;overflow-wrap:anywhere}
+@media(max-width:760px) and (orientation:portrait){
+ .workspace,.embedded .workspace{grid-template-rows:auto auto minmax(42px,auto) minmax(44px,auto)}
+ .actions{width:100%;max-width:100%}
+}
+.live-progress{display:block;width:fit-content;font-size:15px;line-height:1.4;font-weight:650;font-variant-numeric:tabular-nums;color:var(--ink);background:var(--paper);padding:4px 7px;border-radius:6px;margin:8px 0 0}
+.score.tennis-score{min-width:150px}.tennis-scoreline{display:flex;justify-content:space-between;align-items:center;gap:14px}.tennis-player{display:grid;justify-items:center;gap:5px;color:#285e53}.tennis-player[data-player="1"]{color:#8b3c29}.tennis-player small{font-size:12px;font-weight:550;color:inherit;margin:0;line-height:1.2}.tennis-player b{font:inherit;font-weight:650}.tennis-score-separator{font-size:22px;color:var(--muted);align-self:end}.tennis-rules{padding:8px 10px;margin:0;font-size:12px;line-height:1.6;color:var(--ink)}.player-feedback .tennis-event{font-weight:650;margin-top:3px}
+.instruction:empty{display:none}
+.quest-trail{display:flex;align-items:center;gap:8px;list-style:none;margin:12px 0 0;padding:0;counter-reset:none}
+.quest-trail li{position:relative;display:grid;place-items:center;flex:none;width:24px;height:24px;border:1px solid var(--line);border-radius:50%;font-size:11px;line-height:1;font-variant-numeric:tabular-nums;color:var(--muted);background:var(--paper)}
+.quest-trail li[data-chapter-start=true]{margin-inline-start:8px}
+.quest-trail li[data-state=current]{border:2px solid var(--ink);color:var(--ink);font-weight:650;outline:2px solid var(--paper);outline-offset:-4px}
+.quest-trail li[data-state=complete]{border-color:var(--ink);background:var(--ink);color:transparent}
+.quest-trail li[data-state=complete]::after{content:'';position:absolute;width:5px;height:9px;border:solid var(--paper);border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+@media(max-width:760px){.quest-trail{gap:4px;margin-top:10px}.quest-trail li{width:22px;height:22px;font-size:10px}.quest-trail li[data-chapter-start=true]{margin-inline-start:6px}}
+@media(forced-colors:active){.quest-trail li[data-state=current]{border-color:Highlight}.quest-trail li[data-state=complete]{background:CanvasText}.quest-trail li[data-state=complete]::after{border-color:Canvas}}
+@media(max-width:760px){.score.tennis-score{min-width:96px}.tennis-scoreline{gap:10px}.tennis-player small{font-size:11px}.overlay button{min-height:44px}}
+/* Preserve the reading and control positions when a body round finishes. */
+:is(body[data-mode=quest],body[data-mode=hiit]) .live-progress[hidden]{display:block!important;visibility:hidden;min-height:calc(1.4em + 8px)}
 
-.eyebrow{color:#596356;font-size:.8125rem}
-.hud,.bottom{background:#f3f5eff5;border:1px solid #dce0d8;border-radius:12px;padding:14px}
-footer a{display:inline-flex;align-items:center;min-height:32px;text-decoration:underline;text-underline-offset:.2em}
+body[data-simulated=true]{--source-overhead:24px;padding-block-start:24px}
+.source-mode{position:fixed;inset:0 0 auto;z-index:10;height:24px;margin:0;padding:4px 16px;background:var(--paper);border-block-end:1px solid var(--line);color:var(--ink);font-size:11px;line-height:15px;pointer-events:none}
+@media(max-width:760px) and (orientation:portrait){
+ :is(body[data-mode=ski],body[data-mode=tennis]) .instruction:empty{display:block;min-height:1.55em;visibility:hidden}
+ :is(body[data-mode=ski],body[data-mode=tennis]) .workspace{grid-template-rows:auto auto minmax(48px,auto) minmax(44px,auto)}
+}
+/* Let the scene yield space to real captions and controls on short phones. */
+@media(max-width:760px) and (orientation:portrait){
+ :is(body[data-mode=ski],body[data-mode=tennis]){height:100svh;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
+ :is(body[data-mode=ski],body[data-mode=tennis]) .workspace{height:100%;min-height:0;grid-template-rows:auto minmax(120px,380px) minmax(48px,auto) minmax(44px,auto);align-content:start}
+ :is(body[data-mode=ski],body[data-mode=tennis]) #world{height:100%;min-height:0}
+}
+@media(max-width:360px) and (orientation:portrait){
+ :is(body[data-mode=ski],body[data-mode=tennis]) .instruction,
+ :is(body[data-mode=ski],body[data-mode=tennis]) .instruction:empty{min-height:3.1em}
+}
+/* A landscape phone keeps the score, scene and controls in one viewport. */
+@media(orientation:landscape) and (max-height:600px){
+ body[data-mode]{--compact-header:52px;height:100svh;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
+ body.embedded{--compact-header:0px}
+ .stage-header{height:52px;min-height:52px;padding:3px 12px;gap:12px;flex-wrap:nowrap}
+ .stage-header nav{flex:1;justify-content:center;min-width:0;overflow-x:auto;order:0;flex-basis:auto}
+ .stage-header nav button{min-height:44px;padding:8px 10px;white-space:nowrap;flex:none}
+ .workspace,.embedded .workspace{height:100%;min-height:0}
+ .hud,.embedded .hud{inset:10px 12px auto;gap:12px}
+ .mission-block{max-width:55%;padding:10px 12px}
+ .mission,.embedded .mission{font-size:17px}
+ .instruction{font-size:12px;margin-top:5px}
+ .score{min-width:90px;padding:10px 12px;font-size:24px}
+ .score.tennis-score{min-width:120px}
+ .bottom,.embedded .bottom{left:12px;right:12px;bottom:10px;gap:12px;flex-direction:row;align-items:flex-end}
+ .player-feedback{max-width:45%;padding:7px 10px}
+ .player-feedback p{font-size:12px}
+ .player-feedback .live{font-size:11px}
+ .actions{gap:6px;flex-wrap:nowrap}
+ .actions button,.stage-options summary{min-height:44px;padding:8px 12px}
+ .stage-options>div{max-height:min(240px,calc(100svh - var(--compact-header) - 90px - var(--source-overhead,0px)));overflow-y:auto;overscroll-behavior:contain}
+ .overlay{top:50%;max-height:calc(100% - 20px);overflow-y:auto;padding:16px}
+ .overlay h2{font-size:21px;margin-bottom:8px}
+ .overlay p{font-size:13px;margin-bottom:14px}
+ .game-tutorial{width:min(24%,180px)}
+ .debug{left:12px;bottom:74px;width:150px}
+ footer{height:24px;padding:0 12px;font-size:10px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr) 44px;gap:8px;padding:8px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) #world{grid-column:2;grid-row:1;min-height:0;height:100%;border-radius:10px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .hud,
+ :is(body[data-mode=quest],body[data-mode=hiit]) .bottom{display:contents}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .mission-block{grid-column:1;grid-row:1;max-width:none;min-height:0;height:100%;padding:8px;overflow-y:auto;pointer-events:auto}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .mission{font-size:14px;line-height:1.35;padding-inline-end:52px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .instruction{font-size:11px;line-height:1.5;margin-top:4px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .score{grid-column:1;grid-row:1;z-index:1;justify-self:end;align-self:start;min-width:0;padding:8px;font-size:17px;background:transparent;border:0}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .score small{position:absolute;width:1px;height:1px;margin:0;overflow:hidden;clip-path:inset(50%)}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .live-progress{font-size:12px;line-height:1.3;padding:2px 4px;margin-top:5px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .bar{height:3px;margin-top:6px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .quest-trail{gap:5px;margin-top:6px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .quest-trail li{width:16px;height:16px;font-size:9px}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .game-tutorial{grid-column:2;grid-row:1;position:relative;left:auto;top:auto;transform:none;align-self:stretch;justify-self:stretch;width:100%;height:100%;min-height:0}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .game-tutorial canvas{width:100%;height:100%;aspect-ratio:auto;object-fit:contain}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .game-tutorial p{width:1px;height:1px;padding:0;margin:0;overflow:hidden;clip-path:inset(50%)}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .player-feedback{grid-column:1;grid-row:2;align-self:center;max-width:none;max-height:44px;overflow-y:auto;padding:0;border:0;background:transparent}
+ :is(body[data-mode=quest],body[data-mode=hiit]) .actions{grid-column:2;grid-row:2;align-self:end;justify-self:end;min-width:0}
+}
+@media(max-width:760px) and (orientation:landscape) and (max-height:600px){
+ .stage-brand h1,.connection{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+}

@@ -115,6 +115,12 @@ const open=()=>all(content).find(n=>n.attrs['data-archive-playback-ref']).handle
  await env.openEventRecording(content,{request:actualLookup});
  assert(all(content).some(n=>n.tag==='video'),'an actual versioned ArchiveResolveRequest opens protected event playback');
  vm.runInContext('stopArchivePlayer()',env);
+ vm.runInContext("page='Safety'",env);
+ await env.openEventRecording(content,{request:actualLookup});
+ assert(all(content).some(n=>n.tag==='video'),'safety event details reuse the same protected player');
+ const safetyVideo=all(content).find(n=>n.tag==='video');
+ vm.runInContext("page='Home';stopArchivePlayer()",env);await settle();
+ assert(safetyVideo.pauseCount>0&&!safetyVideo.attrs.src,'leaving safety stops and revokes playback');
  assert(calls.every(([p])=>p.startsWith('/api/archive/')),'viewing and stopping only touches readonly archive');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """

@@ -24,16 +24,19 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
    '/api/embodied/devices':{devices:fixture.targets},
    '/api/embodied/status':{interactions:{events},camera_sessions:[{camera:fixture.devices[0].id,state:'live'}]},
    '/api/embodied/infrastructure':{policy:{enabled:true,recognition:true,interaction:true}},
-   '/api/embodied/cameras/cam_1111111111/power':{enabled:false}
+   '/api/embodied/voice-preferences':{revision:0,wake_word:'Friday'}
   };
   assert.ok(Object.hasOwn(routes,path),path);return {ok:true,json:async()=>routes[path]};
  };
+ const diagram=()=>{const n=new Element('svg');n.dispose=()=>{};return n;};
  const context=vm.createContext({document:{createElement:tag=>new Element(tag),get activeElement(){return all(root).includes(focused)?focused:null;}},fetch,Date,
   sessionStorage:{getItem:()=>null,setItem(){}},setInterval:fn=>{poll=fn;return 1;},clearInterval(){},
+  mountMotionLibrary:()=>({dispose(){}}),createMotionDiagram:diagram,MOTION_GUIDES:{},
   root,options:{data:{devices:fixture.devices},go(){},toast(){}}});
- vm.runInContext(fs.readFileSync('homeplane/static/interactions.js','utf8').replace('export function mountInteractions','function mountInteractions'),context);
+ vm.runInContext(fs.readFileSync('homeplane/static/interactions.js','utf8').replace(/^import.*$/gm,'').replace('export function mountInteractions','function mountInteractions'),context);
  let mounted=vm.runInContext('mountInteractions(root,options)',context);await settle();
- all(root).find(n=>n.tagName==='button'&&n.textContent==='手势控制').onclick();
+ const openGestures=()=>all(root).find(n=>n.tagName==='button'&&n.textContent==='手势与动作').onclick();
+ openGestures();
  const history=()=>root.querySelector('[data-interaction-history]'),table=()=>all(history()).find(n=>n.tagName==='table'),rows=()=>table().children.find(n=>n.tagName==='tbody').children;
  assert.match(history().textContent,/做出已设置的手势/);assert.equal(table(),undefined);
  events=structuredClone(fixture.events);poll();await settle();
@@ -77,7 +80,7 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
  }
  fixture.targets[0].name='<img src=x onerror=alert(1)>';events=[fixture.events[0]];
  mounted.dispose();root.replaceChildren();mounted=vm.runInContext('mountInteractions(root,options)',context);await settle();
- all(root).find(n=>n.tagName==='button'&&n.textContent==='手势控制').onclick();
+ openGestures();
  assert.match(rows()[0].textContent,/<img src=x onerror=alert\(1\)>/);assert.equal(all(table()).filter(n=>n.tagName==='img').length,0);
  events=[];poll();await settle();assert.equal(table(),undefined);assert.match(history().textContent,/做出已设置的手势/);
  assert.deepEqual(writes,[]);mounted.dispose();console.log('手势历史表格的排序、快照、兼容与安全文本检查通过');

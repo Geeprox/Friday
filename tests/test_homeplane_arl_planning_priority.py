@@ -14,7 +14,9 @@ from uuid import uuid4
 
 import httpx
 import pytest
-pytest.importorskip('arl', reason='Optional shared ARL SDK')
+from tests.arl_fixtures import require_priority_host_sdk
+
+require_priority_host_sdk()
 from arl import PROTOCOL
 from arl.client import Client
 from arl.codex_server import CodexTextAdapter

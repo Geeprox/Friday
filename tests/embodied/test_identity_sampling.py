@@ -13,6 +13,52 @@ from homeplane.people.live import FaceIdentityPipeline
 from homeplane.recognition.artifacts import SFACE_SHA256
 from homeplane.recognition.contracts import Embedding
 
+
+@pytest.mark.asyncio
+async def test_original_secondary_body_pipeline_continues_while_identity_startup_is_blocked(tmp_path, monkeypatch):
+    import base64
+    import json
+    import threading
+    import time
+    from unittest.mock import AsyncMock
+    from homeplane.embodied import camera_recognition
+    from homeplane.people.identity_session import IdentitySession
+    from homeplane.people.live import IdentityStore
+    from tests.test_identity_session import Peer, JPEG
+    from tests.embodied.test_tracking_continuity import frame
+    private=tmp_path/'private';private.mkdir(mode=0o700)
+    store=IdentityStore(private/'identities.sqlite')
+    gate=threading.Event();peer=Peer(init_gate=gate)
+    monkeypatch.setattr(camera_recognition,'IdentitySession',
+        lambda *args:IdentitySession(*args,_peer_factory=lambda:peer))
+    recognizer=camera_recognition.CameraRecognition('synthetic-camera',store)
+    from tests.embodied.test_room_process import room_port
+    recognizer.room=room_port(registration=np.eye(3))
+    process=SimpleNamespace(returncode=None,
+        stdin=SimpleNamespace(write=Mock(),drain=AsyncMock()),
+        stdout=SimpleNamespace(readline=AsyncMock(return_value=json.dumps(frame()).encode())))
+    def terminate():process.returncode=0
+    process.terminate=process.kill=terminate;process.wait=AsyncMock(return_value=0)
+    recognizer.vision=process
+    try:
+        observed=[]
+        for _ in range(6):
+            began=time.monotonic()
+            result=await recognizer.observe(dict(received_at=time.time(),jpeg=base64.b64encode(JPEG).decode(),
+                width=640,height=360),source_current=lambda:True)
+            assert time.monotonic()-began<.2
+            observed.append(result)
+            await asyncio.sleep(.02)
+        assert peer.initializing.is_set() and not gate.is_set()
+        assert all(item is not None and item['tracking_current'] for item in observed)
+        assert observed[-1]['people'] and observed[-1]['people'][0]['joints']
+        assert observed[-1]['people'][0]['identity']['state']=='unknown'
+        assert recognizer.identities.public()==[]
+        assert await recognizer.close()
+        assert peer.aborted and peer.closed and process.returncode==0
+    finally:
+        gate.set();await recognizer.close();store.close()
+
 BODY = dict(id=1, box=dict(x=0., y=0., w=1., h=1.))
 ROW = (150., 140., 80., 90., 170., 165., 210., 165., 190., 185., 175., 210., 205., 210., .99)
 

@@ -1,0 +1,29 @@
+{
+  "reference": "native/FridayDesktop/Resources/AppIcon/Friday.iconset/icon_512x512@2x.png",
+  "reference_sha256": "8419a9d63c622f26286f669f414c46141fcb93b03872e005d38eb2ded5330c9c",
+  "description": "Generated KTV variant of the Friday silver folded F on charcoal, with microphone; TV banner and adaptive icon.",
+  "generated": true,
+  "contains_household_media": false,
+  "assets": {
+    "native/KTVTV/android/res/mipmap-hdpi/banner_friday_ktv.png": "8ed971843fb3bb4ad17627c62d6a5b742e49b33b6b598255c33b1d25928bb10e",
+    "native/KTVTV/android/res/mipmap-hdpi/ic_friday_ktv.png": "d51d3446233c7dcb109a88ddd8a7bba44b2fc1fc167776dc4596acd6881eb736",
+    "native/KTVTV/android/res/mipmap-hdpi/ic_friday_ktv_background.png": "3c0ca00a1894f1b82708155c63db46392cf34d5519a7be92cae79d287f51588d",
+    "native/KTVTV/android/res/mipmap-hdpi/ic_friday_ktv_foreground.png": "a4499032e171c1828353b852d2f27245d595ea0708dafe9e47b5a62a2458ed6c",
+    "native/KTVTV/android/res/mipmap-mdpi/banner_friday_ktv.png": "89dd3411f17124481a59b914f4948f76c36ee072094bc59725457cec077749ce",
+    "native/KTVTV/android/res/mipmap-mdpi/ic_friday_ktv.png": "2a1a12aaed3556dc5686476f3c26adc5d7a5cba23713392108ef917a230f1d1b",
+    "native/KTVTV/android/res/mipmap-mdpi/ic_friday_ktv_background.png": "cc42cda658b3d714869d06ac73d0a5db1965efe2e9dfa73cc0eba33bc86eb949",
+    "native/KTVTV/android/res/mipmap-mdpi/ic_friday_ktv_foreground.png": "473111f1f97e3487754dacc3633d33743202751739a3240324347f9e7329db07",
+    "native/KTVTV/android/res/mipmap-xhdpi/banner_friday_ktv.png": "9d1dd706449c680a73425541f0df65f65f5a17d70bec7a859600ca066578816c",
+    "native/KTVTV/android/res/mipmap-xhdpi/ic_friday_ktv.png": "d0717ba52994ed40672e8aea817cc7b8698aa9def0de24f57c8f33fe0b13fd1f",
+    "native/KTVTV/android/res/mipmap-xhdpi/ic_friday_ktv_background.png": "0e78db8bb5b5b462c68a8cc1c1fdd1fa27b5f06dd3e0494e79d74ee40303ecdc",
+    "native/KTVTV/android/res/mipmap-xhdpi/ic_friday_ktv_foreground.png": "c83bcab603f80d60289641f139f9148402d687901df08d175b91882304576740",
+    "native/KTVTV/android/res/mipmap-xxhdpi/banner_friday_ktv.png": "8487953ee759afde5e64fa256178921c173b7a25117004e40ee593660aeb9e42",
+    "native/KTVTV/android/res/mipmap-xxhdpi/ic_friday_ktv.png": "e16a495bb297f79ecdc5fe9777627fba0dd57dd64d18f400b6819f5a471c8e92",
+    "native/KTVTV/android/res/mipmap-xxhdpi/ic_friday_ktv_background.png": "9a7fed6edbb23f5119e4fa0175eeb39f43a0f1600e78f402c3d4fe96930a1887",
+    "native/KTVTV/android/res/mipmap-xxhdpi/ic_friday_ktv_foreground.png": "0a8c4b1a61c9a8f3c88909ecc508acf502178971f73f0bb5d24bbb7a2e4cdb19",
+    "native/KTVTV/android/res/mipmap-xxxhdpi/banner_friday_ktv.png": "511b124c9ecde4676c9cbe62254a74cc762eef53396b6f7a2c874356570030f8",
+    "native/KTVTV/android/res/mipmap-xxxhdpi/ic_friday_ktv.png": "0d5bc19ccd37256c23fe7fef8041fedca3533d3cf84fe7c2d64b7d0653ccec04",
+    "native/KTVTV/android/res/mipmap-xxxhdpi/ic_friday_ktv_background.png": "15dc377d42fbb5870f91045065cc0e63d8e0a092396a3fbc1b6dfb252a11d696",
+    "native/KTVTV/android/res/mipmap-xxxhdpi/ic_friday_ktv_foreground.png": "3920b5a84145ab73a0bdb91aca4d84534b00966973e17af6a427d2fb8aba9471"
+  }
+}

@@ -11,6 +11,7 @@
       "enum": [
         "loopback_console",
         "registered_peer",
+        "qualified_ambient",
         "unverified"
       ],
       "title": "Boundary",

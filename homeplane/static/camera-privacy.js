@@ -5,7 +5,9 @@ export function mountCameraPrivacy(root){
  let disposed=false,busy=false,refreshing=false,policy=null;
  const panel=node('section',null,{class:'preference-row camera-privacy','aria-label':'摄像头隐私'}),copy=node('div');
  const state=node('p','正在读取感知状态…',{class:'muted',role:'status','aria-live':'polite'});
- copy.append(node('h2','后台摄像头感知'),state,node('p','暂停后停止后台画面、声音和人物动作识别，重启后仍保持暂停。手动查看时，只连接你选择的镜头，不恢复后台识别。',{class:'muted'}),node('p','自动重连不会打开已关闭的镜头。你可以在单台摄像头中主动打开或关闭镜头。退出接管时恢复原有巡航与跟踪设置。',{class:'caption'}));
+ const details=node('details',null,{class:'camera-policy-details'});
+ details.append(node('summary','感知与镜头开关说明'),node('p','暂停后停止后台画面、声音和人物动作识别，重启后仍保持暂停。手动查看时，只连接你选择的镜头，不恢复后台识别。',{class:'muted'}),node('p','自动重连不会打开已关闭的镜头。你可以在单台摄像头中主动打开或关闭镜头。退出接管时恢复原有巡航与跟踪设置。',{class:'caption'}));
+ copy.append(node('h2','后台摄像头感知'),state,details);
  const toggle=node('button','正在读取…',{type:'button'});toggle.disabled=true;panel.append(copy,toggle);root.append(panel);
  function draw(report){
   policy=report.policy;const running=policy.enabled&&policy.recognition;

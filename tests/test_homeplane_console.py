@@ -12,6 +12,32 @@ import pytest
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node unavailable for Console DOM smoke")
+@pytest.mark.parametrize(
+    "node_args",
+    [
+        ["--test", "tests/home_experience_lifecycle.test.cjs", "tests/camera_follow_view.test.cjs"],
+        ["tests/spatial_controls_fixture.cjs"],
+        ["--test", "tests/home_status.test.mjs", "tests/home_status_lifecycle.test.cjs"],
+        ["tests/safety_console_fixture.cjs"],
+        ["--test", "tests/safety_flow.test.cjs"],
+        ["--test", "tests/calibration_editor.test.cjs"],
+        ["--test", "tests/recognition_practice_lifecycle.test.cjs"],
+        ["--test", "tests/werewolf_host_state.test.cjs", "tests/werewolf_host_effects.test.cjs",
+         "tests/werewolf_session.test.cjs", "tests/werewolf_script.test.cjs"],
+    ],
+)
+def test_home_experience_state_lifecycle(node_args):
+    result = subprocess.run(
+        ["node", *node_args],
+        cwd=Path(__file__).parents[1],
+        text=True,
+        capture_output=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node unavailable for Console DOM smoke")
 def test_core_rule_review_window_rollback_and_late_preview():
     script = r"""
 const fs=require('fs'),vm=require('vm'),assert=require('assert/strict'),nodes=new Map();
@@ -375,7 +401,9 @@ function descendants(node) { return [node,...node.children.flatMap(descendants)]
  navigate('Home'); navigate('Devices');
  assert.match(content.textContent,/连接恢复后可预览调整/);
  assert(!descendants(content).some(n=>n.attrs.id==='action-form'));
- navigate('Ask Home'); assert.match(content.textContent,/选择房间，查看设备状态/);
+ navigate('Ask Home'); assert.match(content.textContent,/按条件查询/);
+ const structuredQuery=descendants(content).find(n=>n.tag==='details'&&n.attrs.class==='surface hc-structured-query');
+ assert(structuredQuery&&!structuredQuery.open,'Structured filtering is secondary to the consumer conversation');
  const actionBeforeQuery=request;disconnected=false;
  await elements.get('home-query-form').handlers.submit({preventDefault(){}});
  assert.equal(homeQueries,1);assert.equal(request,actionBeforeQuery,'read query cannot issue an action');
@@ -611,7 +639,7 @@ function descendants(node) { return [node,...node.children.flatMap(descendants)]
  assert.match(get('settings-arl-result').textContent,/ARL 尚未运行/);
  assert(!calls.some(c=>c.path==='/api/settings/arl/connect'),'opening Settings never starts shared runtime');
  await click('settings-arl-connect'); assert.match(get('settings-arl-result').textContent,/ARL 健康通信正常/);
- assert.match(get('settings-arl-result').textContent,/身份与模型能力尚未验证/);
+ assert.match(get('settings-arl-result').textContent,/Friday 尚未完成应用握手/);
  assert(!get('settings-arl-result').textContent.includes('智能服务已就绪'));
  assert.match(get('settings-arl-result').textContent,/codex_app_server · 尚未启用/);
  arlConnectReport={...arlConnectReport,metadata_freshness:'last_known',metadata_refresh_pending:false};

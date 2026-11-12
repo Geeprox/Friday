@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Literal, Protocol, TypeVa
 from .home_flow_contracts import FlowAbort, FlowRequest, FlowResponse, TrustedFlowContext
 
 if TYPE_CHECKING:
+    from .core_rules import CoreRules
     from .action_contracts import LightExecutionTrace
     from .actions import ActionController
     from .archive_contracts import ArchivePlaybackPlan, ArchivePlaybackRequest, ArchiveResolveRequest
@@ -104,7 +105,7 @@ class ActionPorts:
 @dataclass(frozen=True)
 class RulePorts:
     text: RuleTextChanges
-    manager: RuleManager
+    manager: RuleManager | CoreRules
 
 
 @dataclass(frozen=True)
@@ -178,6 +179,7 @@ class ModePorts:
     status: ModeStatus | None = None
     pause_and_invalidate: PauseAndInvalidate | None = None
     fixed_ttl_seconds: int | None = None
+    durable_intent: bool = False
 
 
 class FlowHandler(Protocol):

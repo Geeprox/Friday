@@ -109,7 +109,7 @@ def request(version, **changes):
 
 @pytest.fixture
 def client(tmp_path):
-    with TestClient(create_app(db_path=tmp_path / "traces.sqlite")) as client:
+    with TestClient(create_app(db_path=tmp_path / "traces.sqlite", settings_path=tmp_path / 'settings.json')) as client:
         yield client
 
 

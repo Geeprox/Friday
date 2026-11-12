@@ -2,6 +2,8 @@
 
 import asyncio
 import sqlite3
+import math
+import time
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, Response
@@ -42,6 +44,33 @@ class CandidateGroup(BaseModel):
     separate:bool=False
 
 
+def qualify_presence(rows, recognition, *, now=None):
+    """Recent history is current presence only with a fresh live source row."""
+    now = time.monotonic() if now is None else now
+    views = recognition.get('sessions', [recognition]) if isinstance(recognition, dict) else []
+    active, duplicate = {}, set()
+    if not isinstance(views, list):views = []
+    for view in views:
+        if not isinstance(view, dict) or view.get('state') != 'live':continue
+        camera, session, tracks = view.get('camera'), view.get('session'), view.get('tracks')
+        if not isinstance(camera, str) or not isinstance(session, str) or not isinstance(tracks, list):continue
+        for row in tracks:
+            if not isinstance(row, dict) or row.get('state') not in {'matched', 'tracked'}:continue
+            observed = row.get('observed_monotonic')
+            if (type(observed) not in (int, float) or not math.isfinite(observed)
+                    or not 0 <= now-observed <= 1 or not isinstance(row.get('track'), str)
+                    or not isinstance(row.get('person_id'), str)):
+                continue
+            key = (camera, session, row['track'])
+            if key in active:duplicate.add(key)
+            active[key] = row['person_id']
+    for row in rows:
+        key = (row['camera'], row['session'], row['track'])
+        if not row['present'] or key not in active or key in duplicate or active.get(key) != row['person_id']:
+            row.update(present=False, facing=None)
+    return rows
+
+
 def create_router(catalog, service):
     router = APIRouter(prefix="/api/people/live")
     gate = asyncio.Lock()
@@ -50,7 +79,7 @@ def create_router(catalog, service):
         from homeplane.embodied.paths import PRIVATE
         return IdentityStore(PRIVATE / "identities.sqlite")
 
-    def metadata():
+    def stored_metadata():
         db = store()
         try:
             profiles, presence = db.registered(), db.presence()
@@ -60,6 +89,10 @@ def create_router(catalog, service):
             group_undo=db.group_undo_available()
         finally:
             db.close()
+        return profiles, presence, portraits, candidates, candidate_groups, group_undo
+
+    def metadata(stored=None):
+        profiles, presence, portraits, candidates, candidate_groups, group_undo = stored_metadata() if stored is None else stored
         page = catalog.page()
         people = {p.person_id: p for p in page.people}
         for row in presence:
@@ -78,6 +111,17 @@ def create_router(catalog, service):
                     for p in page.people if p.name and not p.merged_into],
                     observations=presence, candidates=candidates,candidate_groups=candidate_groups,group_undo_available=group_undo,cameras=service.cameras(), policy=POLICY,
                     experimental=True, security_authentication=False, action_authorized=False)
+
+    async def live_metadata():
+        result = metadata(await asyncio.to_thread(stored_metadata))
+        try:
+            source = getattr(service, 'identity_status', None)
+            if source is None:raise ValueError('identity_not_running')
+            result['recognition'] = await asyncio.wait_for(source(), 1)
+        except (ValueError, OSError, TimeoutError):
+            result['recognition'] = dict(state='stopped', tracks=[])
+        result['observations'] = qualify_presence(result['observations'], result['recognition'])
+        return result
 
     @router.get('/{person_id}/portrait')
     async def portrait(person_id: str):
@@ -105,7 +149,7 @@ def create_router(catalog, service):
             try:
                 db.name_candidate(catalog,request.candidate,request.name,request.expected_revision,request.person_id,
                                   members=request.members,group_revision=request.group_revision)
-                return JSONResponse(metadata(),headers={'Cache-Control':'no-store'})
+                return JSONResponse(await live_metadata(),headers={'Cache-Control':'no-store'})
             except PeopleError as error:
                 raise HTTPException(409,detail={'code':error.code}) from None
             except (ValueError,sqlite3.Error):
@@ -118,7 +162,7 @@ def create_router(catalog, service):
             db=store()
             try:
                 db.edit_candidate_group(request.members,separate=request.separate)
-                return JSONResponse(metadata(),headers={'Cache-Control':'no-store'})
+                return JSONResponse(await live_metadata(),headers={'Cache-Control':'no-store'})
             except (ValueError,sqlite3.Error):
                 raise HTTPException(409,detail={'code':'identity_candidate_unavailable'}) from None
             finally:db.close()
@@ -129,19 +173,14 @@ def create_router(catalog, service):
             db=store()
             try:
                 db.undo_candidate_group()
-                return JSONResponse(metadata(),headers={'Cache-Control':'no-store'})
+                return JSONResponse(await live_metadata(),headers={'Cache-Control':'no-store'})
             except (ValueError,sqlite3.Error):
                 raise HTTPException(409,detail={'code':'identity_candidate_undo_unavailable'}) from None
             finally:db.close()
 
     @router.get("")
     async def status():
-        result = metadata()
-        try:
-            result["recognition"] = await service.identity_status()
-        except (ValueError, OSError):
-            result["recognition"] = dict(state="stopped", tracks=[])
-        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+        return JSONResponse(await live_metadata(), headers={"Cache-Control": "no-store"})
 
     @router.post("/register")
     async def register(request: Register):
@@ -155,7 +194,7 @@ def create_router(catalog, service):
                     raise ValueError("identity_samples_required")
                 pid = catalog.register_profile(request.name, request.expected_revision, request.person_id)
                 result = await service.identity_enroll(request.camera, request.session, request.track, pid)
-                return JSONResponse(dict(metadata(), enrollment=result), headers={"Cache-Control": "no-store"})
+                return JSONResponse(dict(await live_metadata(), enrollment=result), headers={"Cache-Control": "no-store"})
             except (PeopleError, ValueError, OSError) as error:
                 code = error.code if isinstance(error, PeopleError) else str(error)
                 if code not in {"identity_samples_required", "identity_session_changed", "identity_samples_inconsistent"}:
@@ -169,6 +208,6 @@ def create_router(catalog, service):
             db.forget(request.person_id)
         finally:
             db.close()
-        return JSONResponse(metadata(), headers={"Cache-Control": "no-store"})
+        return JSONResponse(await live_metadata(), headers={"Cache-Control": "no-store"})
 
     return router

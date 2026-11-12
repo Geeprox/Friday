@@ -1,0 +1,361 @@
+{
+  "$defs": {
+    "FamilyMediaOriginalRef": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Source Ref",
+          "type": "string"
+        },
+        "object_ref": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Object Ref",
+          "type": "string"
+        },
+        "config_generation": {
+          "minimum": 0,
+          "title": "Config Generation",
+          "type": "integer"
+        },
+        "connection_epoch": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Connection Epoch",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[A-Za-z0-9_.:-]{1,160}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "revision_basis": {
+          "const": "metadata",
+          "default": "metadata",
+          "title": "Revision Basis",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_ref",
+        "object_ref",
+        "config_generation",
+        "connection_epoch",
+        "revision"
+      ],
+      "title": "FamilyMediaOriginalRef",
+      "type": "object"
+    },
+    "FamilyMediaPhotoOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "context_fingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Context Fingerprint",
+          "type": "string"
+        },
+        "item_id": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Item Id",
+          "type": "string"
+        },
+        "original_ref": {
+          "$ref": "#/$defs/FamilyMediaOriginalRef"
+        },
+        "recipe_id": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recipe Id"
+        },
+        "purpose": {
+          "enum": [
+            "preview",
+            "export"
+          ],
+          "title": "Purpose",
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/PhotoWorkResult"
+        },
+        "content_url": {
+          "pattern": "^/api/family-media/photos/content/[a-f0-9]{64}$",
+          "title": "Content Url",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "rendered_derivative": {
+          "const": true,
+          "default": true,
+          "title": "Rendered Derivative",
+          "type": "boolean"
+        },
+        "original_mutated": {
+          "const": false,
+          "default": false,
+          "title": "Original Mutated",
+          "type": "boolean"
+        },
+        "saved_to_file": {
+          "const": false,
+          "default": false,
+          "title": "Saved To File",
+          "type": "boolean"
+        },
+        "simulated": {
+          "title": "Simulated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "context_fingerprint",
+        "item_id",
+        "original_ref",
+        "recipe_id",
+        "purpose",
+        "result",
+        "content_url",
+        "created_at",
+        "expires_at",
+        "simulated"
+      ],
+      "title": "FamilyMediaPhotoOutput",
+      "type": "object"
+    },
+    "PhotoWorkResult": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "original_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Original Sha256",
+          "type": "string"
+        },
+        "output_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Output Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 33554432,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "source_format": {
+          "enum": [
+            "JPEG",
+            "PNG",
+            "WEBP",
+            "HEIF",
+            "GIF",
+            "TIFF",
+            "AVIF"
+          ],
+          "title": "Source Format",
+          "type": "string"
+        },
+        "source_width": {
+          "maximum": 50000000,
+          "minimum": 1,
+          "title": "Source Width",
+          "type": "integer"
+        },
+        "source_height": {
+          "maximum": 50000000,
+          "minimum": 1,
+          "title": "Source Height",
+          "type": "integer"
+        },
+        "source_image_count": {
+          "default": 1,
+          "maximum": 128,
+          "minimum": 1,
+          "title": "Source Image Count",
+          "type": "integer"
+        },
+        "source_image_index": {
+          "default": 0,
+          "exclusiveMaximum": 128,
+          "minimum": 0,
+          "title": "Source Image Index",
+          "type": "integer"
+        },
+        "width": {
+          "maximum": 50000000,
+          "minimum": 1,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "maximum": 50000000,
+          "minimum": 1,
+          "title": "Height",
+          "type": "integer"
+        },
+        "output_format": {
+          "enum": [
+            "JPEG",
+            "PNG"
+          ],
+          "title": "Output Format",
+          "type": "string"
+        },
+        "content_type": {
+          "enum": [
+            "image/jpeg",
+            "image/png"
+          ],
+          "title": "Content Type",
+          "type": "string"
+        },
+        "color_space": {
+          "const": "sRGB",
+          "default": "sRGB",
+          "title": "Color Space",
+          "type": "string"
+        },
+        "color_basis": {
+          "enum": [
+            "embedded_icc",
+            "nclx_srgb",
+            "nclx_bt709",
+            "assumed_srgb"
+          ],
+          "title": "Color Basis",
+          "type": "string"
+        },
+        "metadata_stripped": {
+          "const": true,
+          "default": true,
+          "title": "Metadata Stripped",
+          "type": "boolean"
+        },
+        "original_mutated": {
+          "const": false,
+          "default": false,
+          "title": "Original Mutated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "original_sha256",
+        "output_sha256",
+        "size_bytes",
+        "source_format",
+        "source_width",
+        "source_height",
+        "width",
+        "height",
+        "output_format",
+        "content_type",
+        "color_basis"
+      ],
+      "title": "PhotoWorkResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "job_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "processing",
+        "ready",
+        "failed",
+        "cancelled",
+        "expired"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FamilyMediaPhotoOutput"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure"
+    },
+    "simulated": {
+      "title": "Simulated",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "job_id",
+    "status",
+    "created_at",
+    "expires_at",
+    "simulated"
+  ],
+  "title": "FamilyMediaPhotoJob",
+  "type": "object"
+}

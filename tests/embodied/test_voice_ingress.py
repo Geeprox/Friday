@@ -20,7 +20,7 @@ class QuietModeTests(unittest.IsolatedAsyncioTestCase):
             with patch("homeplane.embodied.home_service.VOICE_INPUT_PAUSED", marker):
                 await h.enable()
             self.assertTrue(h.enabled and h.armed)
-            self.assertIsNone(h.worker)
+            self.assertIsNone(h.voice_process.child)
             self.assertEqual(h.state["voice"], "paused")
             await h.close()
 
@@ -67,6 +67,9 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
         h = HomeService()
         h.selected = h.armed = True
         h.state["voice"] = "ready"
+        # These VAD/queue tests use a ready speech port. Process ownership and
+        # failed-reader recovery run through the real owner in their own suite.
+        h.voice_status = lambda: 'ready'
         h.last_video = time.monotonic()
         h.voice_owner = 7
         h.activity = SimpleNamespace(measure=lambda raw: (True, 1.0, 0.02))
@@ -162,7 +165,6 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
     async def test_queued_utterance_is_consumed_after_current_decode(self):
         h = self.service()
         h.transcribe = HomeService.transcribe.__get__(h)
-        h.worker = SimpleNamespace(returncode=None)
         h.request = AsyncMock(
             return_value={"text": "", "address": {"admitted": False, "reason": "no_speech"}}
         )

@@ -43,6 +43,11 @@ async def analyze(pipeline, *args, **kwargs):
         raise
 
 
+async def close_identity(pipeline):
+    """A camera never waits on identity cleanup while holding its event loop."""
+    return await asyncio.to_thread(pipeline.close)
+
+
 def similarity(a, b):
     return sum(x * y for x, y in zip(a, b, strict=True)) / (math.hypot(*a) * math.hypot(*b))
 

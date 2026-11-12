@@ -2,12 +2,15 @@
 
 import asyncio
 import json
+import re
 import threading
 import time
 import urllib.parse
 import urllib.request
 
-from homeplane.embodied.paths import PRIVATE
+from homeplane.embodied.paths import PRIVATE, configuration
+from homeplane.embodied.speech_http import AsyncHA
+from homeplane.embodied.speech_lifecycle import SpeechExpired, output_lock, run_output
 
 VOICE_PAUSED = PRIVATE / "voice-paused"
 
@@ -15,6 +18,7 @@ VOICE_PAUSED = PRIVATE / "voice-paused"
 class HA:
     def __init__(self):
         self.lock = threading.Lock()
+        self.asynchronous = AsyncHA(lambda: PRIVATE)
 
     def request(self, path, data=None):
         with self.lock:
@@ -50,46 +54,92 @@ class HA:
             with opener.open(req, timeout=20) as response:
                 return json.load(response)
 
+    async def arequest(self, path, data=None, *, guard):
+        return await self.asynchronous.request(path, data, guard=guard)
+
 
 class Speaker:
     def __init__(self):
         self.ha = HA()
-        self.state = {
-            "device": "已选择的播报设备",
-            "transport": "HA notify play_text",
-            "status": "ready_to_test",
-            "physical_audio_verified": False,
-        }
+        self.state = dict(status="idle", physical_audio_verified=False)
 
-    async def say(self, text):
+    async def say(self, text, *, current=None, revalidate=None):
         if not isinstance(text, str) or not 1 <= len(text) <= 1200:
             raise ValueError("invalid_reply")
         if VOICE_PAUSED.exists():
-            self.state.update(status="paused")
+            self.state = dict(status="paused", physical_audio_verified=False)
             return dict(self.state)
-        from homeplane.embodied.paths import configuration
-
-        if configuration().get("speech_output") == "homepod":
-            from homeplane.embodied.airplay import play
-            self.state = await play(self.ha, text)
-            return dict(self.state)
-        if configuration().get("speech_output") in {"media_player", "jbl"}:
-            from homeplane.embodied.synthesis import play_media_player
-
-            self.state = await play_media_player(self.ha, text)
-            return dict(self.state)
-        self.state.update(status="requesting")
         try:
-            await asyncio.to_thread(
-                self.ha.request,
-                "services/notify/send_message",
-                {
-                    "entity_id": configuration()["speaker_notify"],
-                    "message": json.dumps([text], ensure_ascii=False),
-                },
+            config = configuration()
+            keys = ("speech_output", "speaker_entity", "speaker_notify", "viewer_host", "viewer_port")
+            selection = {k: config.get(k) for k in keys}
+            homepod = None
+            if config.get("speech_output") == "homepod":
+                from .airplay import _target
+
+                homepod = _target()["identifier"]
+
+            def valid():
+                if VOICE_PAUSED.exists() or current is not None and current() is not True:
+                    return False
+                now = configuration()
+                if {k: now.get(k) for k in keys} != selection:
+                    return False
+                if homepod is not None:
+                    from .airplay import _target
+
+                    if _target()["identifier"] != homepod:
+                        return False
+                return True
+
+            async def perform(guard):
+                try:
+                    await guard.checkpoint()
+                    if config.get("speech_output") == "homepod":
+                        from .airplay import play
+
+                        return await play(self.ha, text, guard=guard)
+                    if config.get("speech_output") in {"media_player", "jbl"}:
+                        from .synthesis import play_media_player
+
+                        return await play_media_player(self.ha, text, config=config, guard=guard)
+                    entity = config.get("speaker_notify")
+                    if not isinstance(entity, str) or not re.fullmatch(r"notify\.[a-z0-9_]+", entity):
+                        raise ValueError("speech_output_unavailable")
+                    await self.ha.arequest(
+                        "services/notify/send_message",
+                        {
+                            "entity_id": entity,
+                            "message": json.dumps([text], ensure_ascii=False),
+                        },
+                        guard=guard,
+                    )
+                    return dict(status="accepted", requested_at=time.time(), physical_audio_verified=False)
+                except SpeechExpired:
+                    return guard.receipt()
+                except Exception as error:
+                    return dict(
+                        status="unconfirmed" if guard.dispatched else "unavailable",
+                        error_class=type(error).__name__,
+                        physical_audio_verified=False,
+                    )
+
+            async def exclusive(guard):
+                with output_lock(PRIVATE) as acquired:
+                    if not acquired:
+                        return dict(status="busy", physical_audio_verified=False)
+                    return await perform(guard)
+
+            self.state = {**await run_output(exclusive, valid, revalidate=revalidate), "physical_audio_verified": False}
+            if self.state["status"] == "expired" and VOICE_PAUSED.exists():
+                self.state["status"] = "paused"
+        except asyncio.CancelledError:
+            self.state = dict(status="unconfirmed", physical_audio_verified=False)
+            raise
+        except SpeechExpired:
+            self.state = dict(status="expired", physical_audio_verified=False)
+        except Exception as error:
+            self.state = dict(
+                status="unavailable", error_class=type(error).__name__, physical_audio_verified=False
             )
-            self.state.update(status="accepted", requested_at=time.time())
-            return dict(self.state)
-        except Exception as e:
-            self.state.update(status="unavailable", error_class=type(e).__name__)
-            return dict(self.state)
+        return dict(self.state)

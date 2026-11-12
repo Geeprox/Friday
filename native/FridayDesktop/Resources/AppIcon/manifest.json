@@ -79,7 +79,8 @@
       "sha256": "8419a9d63c622f26286f669f414c46141fcb93b03872e005d38eb2ded5330c9c"
     },
     "Friday.icns": {
-      "sha256": "6a08c4fffa651a717a90e7d253c75577ab1b52d27cbf6aa5629854741fdc0bd1"
+      "sha256": "e0188487e7ed144babac5d8be13aa30cdb8b8edf48a615e9ff791f90b82dc466"
     }
-  }
+  },
+  "ARL_icon_profile": "icp6 duplicates the original ic12 64px PNG pixels; ancillary PNG metadata removed; original slots retained"
 }

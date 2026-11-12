@@ -2,6 +2,7 @@
 
 import asyncio
 import secrets
+import sqlite3
 from contextlib import nullcontext
 from datetime import timedelta
 from typing import Literal
@@ -95,9 +96,42 @@ class StewardExtractionQueue:
         return value
 
     def recover(self):
-        for entry in self.records():
-            if entry.status == "claimed" and entry.lease_expires_at <= self.owner.clock():
+        expired = [entry for entry in self.records()
+                   if entry.status == "claimed" and entry.lease_expires_at <= self.owner.clock()]
+        if not expired:
+            return
+        connection = self.owner.connection
+        owns_transaction = not connection.in_transaction
+        timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+        try:
+            # Status polling must not stall the shared event loop waiting for
+            # another writer. Retry metadata recovery on the next request.
+            connection.execute("PRAGMA busy_timeout=0")
+            self._recover(expired, owns_transaction)
+        except sqlite3.OperationalError as error:
+            code = (getattr(error, "sqlite_errorcode", 0) or 0) & 255
+            if not owns_transaction or code not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise
+        finally:
+            connection.execute(f"PRAGMA busy_timeout={int(timeout)}")
+
+    def _recover(self, expired, owns_transaction):
+        connection = self.owner.connection
+        retired = []
+        with connection if owns_transaction else nullcontext():
+            if owns_transaction:
+                connection.execute("BEGIN IMMEDIATE")
+            for candidate in expired:
+                # Another owner may have completed or reclaimed this job after
+                # the initial read. Recheck under the same writer transaction.
+                entry = self.owner._load("queue", candidate.job_id, StewardQueueEntry)
+                if entry.status != "claimed" or entry.lease_expires_at > self.owner.clock():
+                    continue
                 job = self.owner._load("jobs", entry.job_id, StewardJob)
+                if job.status == "running":
+                    self.owner._save_job(job.model_copy(update={
+                        "status": "paused", "reason": "interrupted_resume_available",
+                    }))
                 status = job.status if job.status in {"done", "needs_ocr"} else "paused"
                 self._replace(
                     entry,
@@ -106,6 +140,12 @@ class StewardExtractionQueue:
                     lease_token=None,
                     lease_expires_at=None,
                 )
+                retired.append(entry.job_id)
+        if owns_transaction:
+            for job_id in retired:
+                task = self.active_tasks.get(job_id)
+                if task and not task.done() and not task.cancelling():
+                    task.cancel()
 
     async def _settings(self, job, context):
         return await self.owner.settings.query(
@@ -200,7 +240,7 @@ class StewardExtractionQueue:
             and entry.lease_expires_at > self.owner.clock()
         )
 
-    def _claim(self, entry):
+    def _claim(self, entry, *, reason="fixture_step_running"):
         """The one-worker gate and ticket CAS share one SQLite transaction across owners."""
         with self.owner.connection:
             self.owner.connection.execute("BEGIN IMMEDIATE")
@@ -210,7 +250,7 @@ class StewardExtractionQueue:
                 entry.model_copy(
                     update={
                         "status": "claimed",
-                        "reason": "fixture_step_running",
+                        "reason": reason,
                         "lease_token": secrets.token_hex(16),
                         "lease_expires_at": self.owner.clock() + timedelta(seconds=entry.budget.seconds + 1),
                         "revision": entry.revision + 1,

@@ -1,0 +1,20 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="local.friday.ktv.audio" android:versionCode="5" android:versionName="0.5">
+    <uses-sdk android:minSdkVersion="34" android:targetSdkVersion="35" />
+    <permission android:name="local.friday.ktv.audio.CONTROL" android:protectionLevel="signature" />
+    <uses-permission android:name="local.friday.ktv.audio.CONTROL" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <queries><package android:name="local.friday.ktv" /></queries>
+    <application android:label="Friday KTV 音频" android:allowBackup="false" android:usesCleartextTraffic="false" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity android:name=".PermissionActivity" android:exported="true" android:permission="local.friday.ktv.audio.CONTROL" android:screenOrientation="landscape" />
+        <service android:name=".GuardService" android:exported="true" android:permission="local.friday.ktv.audio.CONTROL" android:stopWithTask="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User-controlled microphone monitoring with independent owner-death cleanup" />
+        </service>
+    </application>
+</manifest>

@@ -1,0 +1,4 @@
+# TEMPLATE ONLY. Replace each placeholder locally after identifying the packages.
+# Parent directory: root or audioserver UID 1041, mode 0700; file: same owner, 0600.
+owner_uid=GUARD_APPLICATION_UID
+reader_uid=MAIN_APPLICATION_UID

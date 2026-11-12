@@ -17,14 +17,15 @@ class Element{
 (async()=>{
  const appearance=await import('data:text/javascript;base64,'+fs.readFileSync('homeplane/static/house-appearance.js').toString('base64'));
  const body=new Element('body'),root=new Element('main');body.append(root);
- const doc={body,activeElement:null,createElement:t=>new Element(t),getElementById:id=>body.querySelectorAll('*').find(n=>n.getAttribute('id')===id)};
+ const doc={body,activeElement:null,createElement:t=>new Element(t),getElementById:id=>body.querySelectorAll('*').find(n=>n.getAttribute('id')===id),dispatchEvent(){}};
  const channel=(id,name)=>({id,name,kind:'light',available:true,value:'off',state_version:'version-1',attributes:{},capabilities:[{name:'light.set'}],presentation:{emits_light:true,lighting_role:'main',fixture:'main_light'}});
  const lamp={id:'lamp-owner',name:'客厅主灯',room:'客厅',kind:'light',controls:[channel('lamp','客厅主灯')],readings:[]};
  const panel={id:'panel-owner',name:'两路灯',room:'客厅',kind:'light',controls:[channel('left','左灯'),channel('right','右灯')],readings:[]};
  const overview={devices:[lamp,panel],rooms:['客厅'],presentation:{revision:0,climate_style:'auto',overrides:{}},preferences:{}};
  const layout={rooms:[{id:'room',name:'客厅',polygon:[[0,0],[1,0],[1,1],[0,1]]}],devices:[]};
  const writes=[];let hooks,latest=null;
- const context=vm.createContext({document:doc,console,Map,Set,Promise,structuredClone,crypto:require('node:crypto'),setInterval:()=>0,clearInterval:()=>{},setTimeout:()=>0,clearTimeout:()=>{},...appearance,
+ const context=vm.createContext({document:doc,console,Map,Set,Promise,structuredClone,AbortController,CustomEvent:class{constructor(type,options){this.type=type;Object.assign(this,options);}},crypto:require('node:crypto'),setInterval:()=>0,clearInterval:()=>{},setTimeout:()=>0,clearTimeout:()=>{},...appearance,
+  mountHomeStatus:()=>({update(){},refresh(){},dispose(){}}),
   mountHouse:(container,opts)=>{hooks=opts;return{focus(){},updateDevices(ds){latest=ds;},setBusy(){},dispose(){},place(){}};},
   fetch:async(url,options)=>({ok:true,json:async()=>{
    if(url==='/api/home/overview')return structuredClone(overview);
@@ -36,6 +37,8 @@ class Element{
    }
    throw Error('unexpected path '+url);
   }})});
+ const controlsSource=fs.readFileSync('homeplane/static/device-controls.js','utf8').replace(/export function /g,'function ');
+ context.mainDeviceControls=vm.runInContext('(function(){'+controlsSource+';return mainDeviceControls;})()',context);
  const source=fs.readFileSync('homeplane/static/home-experience.js','utf8').replace(/^import .*;$/gm,'').replace('export function mountExperience','function mountExperience');
  vm.runInContext(source,context);context.root=root;
  const owner=vm.runInContext("mountExperience(root,{page:'Home',go(){},snapshot:{}})",context);

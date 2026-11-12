@@ -1,0 +1,12 @@
+{
+  "asset": "quest-camp-scene.png",
+  "origin": "Built-in image_gen; original generated sibling game artwork",
+  "prompt": "Use case: stylized-concept / environment variant edit.\nAsset type: full-bleed 16:9 production background plate for the SUMMIT CAMP CHAPTER of Friday's original family motion adventure. Make a separate new sibling scene from the supplied existing garden plate. Preserve its handcrafted dimensional paper foliage, matte tactile clay, soft contact shadows, stationary mild downward camera and horizon near the upper third.\nChange the distant landscape into a peaceful alpine meadow clearing at late-afternoon golden light. Layered distant mountain peaks and low green ridges, sparse rounded pines at far edges, a tiny refined cream canvas camping tent far back near the left edge, wildflowers and smooth pale stones bordering the distant clearing. No exposed cliff or dizzy steep drop. Keep the LOWER 60 percent a broad flat dry warm ochre/clay clearing, uniformly lit, empty at the center and bottom for separate game objects and a complete body tutorial figure. Distant mountains and tent remain background details. The player's center must be unobstructed.\nMatch the exact original paper-and-clay style, organic modeled detail, matte material quality, natural warm cream light and restrained pine/teal greens. Comfortable fixed camera, no dramatic perspective or motion. Original imaginary landscape only, no real household material.\nConstraints: no people, animals, banners, flags, equipment in the central clearing, text, logo, watermark, border or UI. Do not draw a score, game controls or tutorial figure. No flat geometric illustration. Landscape 16:9, crisp enough for 1600x900 rendering.",
+  "sha256": "e74e788f21f6cf86073f8b3ca4e9ae8bae722d832c0ec1c80877ccec1fc9692d",
+  "created_at": "2026-11-08T12:01:52.583000+00:00",
+  "input_asset": "summer-scene.png",
+  "input_sha256": "37b327817aa118f18ab82064f9d4fb3ec53853261880a07d5ae4dfb9f240bafb",
+  "generated_file": "exec-0adbe499-afd9-4e2c-8718-db8d6834bca8.png",
+  "pixel_edits": "None; provider PNG copied byte-for-byte. Renderer uses measured source rectangles for sprites.",
+  "input_media": "Only existing original synthetic Friday game artwork. No household media or identifiable person."
+}

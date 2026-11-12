@@ -9,7 +9,7 @@ import pytest
 
 @pytest.mark.parametrize("scenario", [
     "first_run", "sftp", "lost_response", "conflict_and_disconnect",
-    "navigation_draft_and_late_read", "unknown_and_validation", "truth_and_polling", "catalog_completeness",
+    "navigation_draft_and_late_read", "unknown_and_validation", "truth_and_polling", "catalog_completeness", "local_credentials",
 ])
 def test_synthetic_nas_console_consumer(scenario):
     node = shutil.which("node")

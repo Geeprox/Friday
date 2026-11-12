@@ -15,7 +15,7 @@ const status=(generation=0,state='not_configured',enabled=false)=>({config_gener
 const view=(cfg=null,st=status())=>({config:cfg,status:st,credential_reference_saved:Boolean(cfg),credential_availability:'not_checked'});
 const response=(body,code=200)=>({ok:code<400,status:code,json:async()=>clone(body)});
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-async function harness(initial=view()){
+async function harness(initial=view(),localCredentials=false){
   const nodes=new Map(),calls=[],timers=new Map();let saved=clone(initial),fault=null,hold=null,pending=null,nextTimer=0;
   class Element{
     constructor(tag){this.tag=tag;this.children=[];this.handlers={};this.attrs={};this._text='';this.value='';this.alive=true;this.hidden=false;this.checked=false;this.disabled=false;}
@@ -23,6 +23,7 @@ async function harness(initial=view()){
     get textContent(){return this._text+this.children.map(child=>child.textContent).join(' ');}
     set innerHTML(_){throw Error('Household text cannot become HTML');}
     get isConnected(){return this.alive&&(this.parent?this.parent.isConnected:true);}
+    get parentElement(){return this.parent;}
     setAttribute(key,value){this.attrs[key]=String(value);if(key==='id')nodes.set(String(value),this);if(key==='value')this.value=String(value);if(key==='hidden')this.hidden=true;if(key==='required')this.required=true;}
     append(...children){for(const child of children){if(child.parent)child.parent.children=child.parent.children.filter(item=>item!==child);child.parent=this;this.children.push(child);}if(this.tag==='select'&&!this.value)this.value=this.children[0]?.value??'';}
     replaceChildren(...children){this._text='';this.children=[];this.append(...children);}
@@ -30,7 +31,12 @@ async function harness(initial=view()){
   }
   const fetch=async(path,options={})=>{
     const method=options.method??'GET',body=options.body?JSON.parse(options.body):null;calls.push({path,method,body});
-    assert(path.startsWith('/api/settings/nas/connection'),'no media, Finder, credential, device or model routes');
+    if(path==='/api/settings/nas/credential'){
+      assert(localCredentials&&method==='POST');
+      assert.equal(body.expected_generation,saved.status.config_generation);
+      return response({saved:true,secret_values_returned:false,connection_attempted:false});
+    }
+    assert(path.startsWith('/api/settings/nas/connection'),'no media, Finder, device or model routes');
     if(method==='GET'){
       assert.equal(path,'/api/settings/nas/connection/config');
       if(fault==='read'){fault=null;throw Error('SYNTHETIC private error <script>BAD</script>');}
@@ -53,6 +59,7 @@ async function harness(initial=view()){
   const body=new Element('body');
   const copyDOM=require('./copy_layout_dom.cjs').install(Element,document,body);
   const context=vm.createContext({...copyDOM,document,fetch,console,Date,JSON,Promise,AbortController,
+    settingsData:{credentials:{nas:localCredentials?'local_endpoint_bound_private_store':'opaque_reference_only'}},
     setTimeout:(fn,delay)=>{const id=++nextTimer;timers.set(id,{fn,delay});return id;},clearTimeout:id=>timers.delete(id)});
   const helpers=source.slice(source.indexOf('const $ ='),source.indexOf('const qualityNames'));
   const field=source.slice(source.indexOf('function settingsField('),source.indexOf('function settingsSection('));
@@ -73,7 +80,18 @@ async function harness(initial=view()){
     hold:value=>hold=value,resolve:()=>{assert(pending);const run=pending;pending=null;run();},root:()=>root};
 }
 async function run(){
-  if(scenario==='catalog_completeness'){
+  if(scenario==='local_credentials'){
+    const h=await harness(view(config,status(1,'disabled')),true);
+    assert.equal(h.get('credential').parentElement.hidden,true);
+    const form=h.nodes.get('nas-login-form'),name=h.nodes.get('nas-login-name'),password=h.nodes.get('nas-login-password');
+    name.value='SYNTHETIC-user';password.value='SYNTHETIC-password';
+    await form.handlers.submit({preventDefault(){}});
+    assert.equal(h.writes().length,1);assert.equal(h.writes()[0].path,'/api/settings/nas/credential');
+    assert.equal(h.saved().status.enabled,false,'Saving login does not connect');
+    assert.equal(password.value,'');assert.equal(name.value,'');
+    h.render();await tick();assert.equal(h.nodes.get('nas-login-password').value,'','Secrets never become a navigation draft');
+    assert(!h.text().includes('SYNTHETIC-password'));
+  }else if(scenario==='catalog_completeness'){
     class Element{constructor(tag,text){this.text=text??'';this.children=[];this.isConnected=true;}append(...children){this.children.push(...children);}replaceChildren(...children){this.children=children;}get textContent(){return this.text+' '+this.children.map(n=>n.textContent).join(' ');}}
     let catalog={source_ref:'SYNTHETIC-family',source_online:true,completion_convention:'unreviewed',checkpoint:null};const calls=[];
     const context=vm.createContext({Date,Promise,el:(tag,text)=>new Element(tag,text),api:async path=>{calls.push(path);return path.includes('family-media')?clone(catalog):path.includes('/query/')?{consumer_adoption:{configured:false}}:{state:'online'};}});
@@ -167,7 +185,7 @@ async function run(){
     assert.match(h.text(),/登录引用已保存/);assert.match(h.text(),/认证：尚未确认/);assert(!h.get('connect').disabled);
     await h.click('connect');assert.equal(h.writes().length,2);assert(h.get('connect').disabled);
     await h.click('connect');assert.equal(h.writes().length,2,'no programmatic duplicate connect');
-    assert.match(h.text(),/连接认证读取仍待确认/);assert.match(h.text(),/认证：尚未确认/);
+    assert.match(h.text(),/正在连接 NAS/);assert.match(h.text(),/认证：尚未确认/);
     await h.click('disconnect');assert.equal(h.writes().length,3);assert.equal(h.saved().config.enabled,false);
     assert.match(h.text(),/已断开并停用读取/);assert(h.get('disconnect').disabled);
     assert(!h.calls.some(call=>/probe|mount|scan|read|keychain|password|models|actions/.test(call.path)));
@@ -181,7 +199,7 @@ async function run(){
     const sent=h.writes()[0].body.config;assert.equal(sent.root,'/');assert.equal(sent.share,null);
     assert.equal(sent.sftp_root_confined,true);assert.equal(sent.enabled,false);assert.equal(sent.port,2222);
     assert.equal(sent.operation_timeout_seconds,3,'preserve source-owned advanced config');
-    assert.match(h.text(),/不会修改 NAS 的账号或目录权限/);assert.match(h.text(),/认证：尚未确认/);
+    assert.match(h.text(),/请先在 NAS 中设置账号的目录权限/);assert.match(h.text(),/认证：尚未确认/);
   }else if(scenario==='lost_response'){
     const h=await harness(view(config,status(1,'disabled')));h.edit('host','changed.synthetic.invalid');h.fault('lost');
     await h.submit();assert.match(h.text(),/请求结果尚未确认/);assert(h.get('save').disabled);

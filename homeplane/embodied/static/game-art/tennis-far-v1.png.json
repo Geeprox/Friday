@@ -1,0 +1,26 @@
+{
+  "generator": "Built-in image_gen",
+  "source": "Original generated continuation of the existing Friday paper/clay game characters",
+  "generated_at": "2026-11-08T20:24:42.658651+00:00",
+  "reference_file": "homeplane/embodied/static/game-art/summer-props.png",
+  "reference_sha256": "61194860c731159938e91730954b0279cdc0c0958a1d3b9f1f5d7bb38d53172c",
+  "prompt": "Use case: identity-preserve. Asset: transparent game animation sprite atlas. The supplied image is the existing Friday game-art reference, not the output layout. Preserve its handmade warm matte clay and paper texture, softly sculpted forms, upper-left soft light, natural anatomy, and exact character identity, outfit, colors, proportions, hairstyle and racket. Produce ONE CHARACTER ONLY, in twelve consecutive poses of a natural RIGHT-HANDED TENNIS FOREHAND. This is a production animation spritesheet, not twelve independent illustrations. Layout exactly 4 equal columns and 3 equal rows, row-major chronological order, on a 4:3 transparent canvas. Each character fully inside its own cell with generous transparent padding; all twelve cells have an identical fixed camera, scale, hip anchor, and floor baseline. No cell borders, no labels, no numbers, no background, no court, no text or watermark. Never crop shoes, head or racket. Exactly one racket and exactly two arms and hands in each cell, anatomically consistent five-finger hands gripping the same handle. The wrist and racket move along one coherent forehand arc. Real motion across poses: shoulder/hip unit turn, bent-knee load, elbow and wrist travel, contact in front of body, weight transfer, follow-through, recovery; do not simply rotate or translate the whole ready silhouette. Maintain a warm friendly animated family-game character, not a blank mannequin, bare body, photoreal person or polygon character. Keep clothing complete in every pose. Poses 0 through 11: 0 ready stance racket in front; 1 early shoulder turn with racket beginning to move right; 2 loaded unit turn racket back at right hip/shoulder; 3 deepest backswing with relaxed bent right elbow and left hand supporting balance; 4 accelerate forward right hand approaching in front of body; 5 contact out in front with right arm extended toward court and racket face forward; 6 extension through the contact; 7 follow-through across body toward left shoulder; 8 decelerate upper body still turned; 9 bring racket down in recovery; 10 almost back to ready; 11 same ready stance as pose0. Camera and planted foot positions stay coherent throughout; recover to the exact original silhouette by frame11. No balls, no speed lines, no glow. Transparent pixels must be real alpha, with soft clean alpha edges. Render enough resolution for each cell to remain crisp at 245px game size. Character selection: ONLY the friendly bearded man in the second cell of the bottom row of the reference atlas. Brown hair and beard, muted coral polo shirt with cream collar and edging, cream sports shorts, coral trainers, teal/cream racket. Keep the original front three-quarter camera view looking toward the viewer, the near end of the court; his face and beard stay identical in all twelve poses. He strikes into the lower part of the image. Do not include the woman or any props from other cells.",
+  "file": "tennis-far-v1.png",
+  "sha256": "a4bdd64dcc50ceeea527b68b3c6ddc8f8ecf1f6c5cd296086e581f4f2c18ba67",
+  "pixels": [
+    1448,
+    1086
+  ],
+  "layout": {
+    "columns": 4,
+    "rows": 3,
+    "frames": 12,
+    "order": "row-major",
+    "contact_frame": 5,
+    "foot_anchor_y_pixels": 340,
+    "cell_pixels": 362
+  },
+  "rendering": "Original generated RGBA pixels retained byte-for-byte; runtime crops cels, no repaint, no upscaling export",
+  "motion_claim": "Generated cel poses; not a skeletal, motion-captured or upstream open-source clip",
+  "acceptance": "Atlas inspected; input/pause/source bridge and live rendered acceptance recorded separately"
+}

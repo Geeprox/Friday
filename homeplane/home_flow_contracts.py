@@ -39,12 +39,13 @@ class FlowRequest(Contract):
     operation_id: OpaqueID
     idempotency_key: OpaqueID
     kind: Literal["turn", "approve", "cancel", "status", "playback", "reconcile", "rollback"] = "turn"
-    lane: Literal["auto", "control", "rules", "why", "mode"] = "auto"
+    lane: Literal["auto", "control", "rules", "why", "mode", "query", "tasks"] = "auto"
     text: str = Field(default="", max_length=1024, strict=True)
     room_id: OpaqueID | None = None
     device_id: OpaqueID | None = None
     camera_id: OpaqueID | None = None
     candidate_id: OpaqueID | None = None
+    proposal_ref: Digest | None = None
     evidence_ref: OpaqueID | None = None
     expected_context: Digest | None = None
     plan_id: OpaqueID | None = None
@@ -62,6 +63,10 @@ class FlowRequest(Contract):
 
     @model_validator(mode="after")
     def bounded_turn(self):
+        if self.proposal_ref is not None and (self.kind != 'turn' or self.lane != 'tasks' or self.text
+                or any(v is not None for v in (self.candidate_id,self.plan_id,self.device_id,self.room_id,
+                                              self.camera_id,self.evidence_ref,self.expected_context))):
+            raise ValueError('exact_task_proposal_required')
         if len(self.text.encode("utf-8")) > 4096 or any(
             ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in self.text
         ):

@@ -1,0 +1,96 @@
+{
+  "coordinate_convention": {
+    "source_up": "+Y",
+    "source_forward": "+Z",
+    "source_anatomical_L": "+X (appears at viewer right from front)",
+    "mirror": "Whole source pose reflected in display X, not a separate upstream motion. Caller owns business/camera left-right binding."
+  },
+  "core": {
+    "horizontal": {
+      "clip": "t-raise",
+      "targetTime": 1.4,
+      "cameraYaw": 20
+    },
+    "overhead": {
+      "clip": "upward-salute-gentle",
+      "targetTime": 2.2,
+      "cameraYaw": 20
+    },
+    "squat": {
+      "clip": "sit-back-squat",
+      "targetTime": 1.6333333253860474,
+      "cameraYaw": 20,
+      "sourceHipsYaw": -70,
+      "note": "Source hips yaw plus orthographic camera produces side view; feet explicitly adapted to flat contact"
+    },
+    "high_knee": {
+      "clip": "high-knee-march",
+      "targetTime": 0.5666666626930237,
+      "cameraYaw": 20,
+      "note": "Original alternation, R-knee target hold, return through L-knee pose then neutral"
+    }
+  },
+  "core_target_phase_hold": [
+    0.43,
+    0.67
+  ],
+  "phase_equality_evidence": {
+    "phases": [
+      0.5,
+      0.57,
+      0.65
+    ],
+    "png_sha256": "cb90b7558cf68eb8bd449ffd93d86af8890d0968dfcbf6e77f6e6ebe10d3c42a",
+    "all_four_identical": true,
+    "retained_one_copy": "../evidence/body-target-hold.png"
+  },
+  "additional_visual_candidates": {
+    "body.arms_open": {
+      "clip": "open-close-swings",
+      "sourceTime": [
+        0,
+        1.2333333492279053
+      ],
+      "appearance": "Both arms spread horizontally; actual source-time sheet row 1",
+      "status": "candidate only; source begins open; use full source close/open process or core horizontal for a neutral-to-open sequence"
+    },
+    "body.arms_close": {
+      "clip": "open-close-swings",
+      "sourceTime": 0.6,
+      "appearance": "Both arms forward and crossed, verified in source-time sheet row 1",
+      "status": "candidate only; compatibility with detection threshold belongs to parent"
+    },
+    "single_arm_L_up": {
+      "clip": "overhead-reach",
+      "sourceTime": 0,
+      "neutralTimes": [
+        0.9,
+        2.7
+      ],
+      "appearance": "Source rig L arm up (viewer right); original mild 6-degree opposite side stretch"
+    },
+    "single_arm_R_up": {
+      "clip": "overhead-reach",
+      "sourceTime": 1.8,
+      "appearance": "Source rig R arm up (viewer left); mirror is also available as display derivative"
+    },
+    "lean_viewer_left": {
+      "clip": "hands-on-hips-side-bend",
+      "sourceTime": 1.1,
+      "neutralTimes": [
+        0,
+        2.2
+      ],
+      "appearance": "Hands on hips, torso about22 degrees toward viewer left"
+    },
+    "lean_viewer_right": {
+      "clip": "hands-on-hips-side-bend",
+      "sourceTime": 3.3,
+      "appearance": "Hands on hips, torso about22 degrees toward viewer right"
+    },
+    "exercise.side_lunge": null
+  },
+  "excluded": {
+    "inner-thigh-stretch": "Wide-stance adductor stretch; not mapped as side lunge"
+  }
+}

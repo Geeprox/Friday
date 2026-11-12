@@ -1,0 +1,26 @@
+{
+  "file": "hand-thumb_up.png",
+  "png_sha256": "d09b29a0967b2590669e80779888bf03211078551136b583746aed9af030a124",
+  "bytes": 12897,
+  "pixels": [
+    432,
+    480
+  ],
+  "phase": 0.57,
+  "source_pose": "Thumb",
+  "source_endpoint_sha256": "95f9a60b00d0841e26df0991c6241696ffc9d31e5062fd0b56fb2dd1ff3ead11",
+  "roll_degrees": -90,
+  "transparent_background_preserved": true,
+  "render_defaults_unchanged": {
+    "outlineWidth": 0.0016,
+    "yaw": 35,
+    "side": 1
+  },
+  "model_sha256": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+  "poses_json_sha256": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+  "adapter_sha256": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf",
+  "static_target_not_animation": true,
+  "license": "CC0 source hand mesh and original pose endpoint; rendering adapter/Godot code/Three MIT notices retained",
+  "origin_embedded": true,
+  "origin": "Rendered target from user-approved Godot XR Tools CC0 hand. Source https://github.com/GodotVR/godot-xr-tools/tree/6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60/addons/godot-xr-tools/hands; DigitalN8m4r3 (Miodrag Sejic), 2022-11-07. Pose Thumb, roll -90 degrees; model SHA256 9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5, source poses 00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2, adapter 311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf. Exact runtime target at phase0.57, yaw35, outline0.0016, transparent background. Static fallback, not an animation or camera evidence. Godot/Three MIT notices retained."
+}

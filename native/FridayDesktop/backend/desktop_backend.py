@@ -56,15 +56,24 @@ READ_ONLY_PREPARATION_PATHS = frozenset({
     '/api/home/evidence/query', '/api/home/evidence/detail',
     '/api/home/recordings/stop',
     '/api/files/query', '/api/files/settings/query',
+    '/api/family-media/photos/open', '/api/family-media/photos/render',
+    '/api/family-media/recipes/preview', '/api/family-media/recipes/review',
     '/api/diagnostics/export',
 })
 # RuleIR permits 12 KiB; retain a bounded envelope for this existing preview.
 READ_ONLY_REQUEST_BYTES = {'/api/rules/core/plans': 16384}
+KTV_OWNER_WRITE_PATHS = frozenset('/api/games/ktv/' + operation for operation in (
+    'manage/preview', 'manage/delete', 'manage/policy', 'scheduler',
+    'source/login', 'source/poll', 'source/settings',
+    *('manage/room/' + operation for operation in (
+        'theme', 'controls', 'command', 'order', 'queue-remove', 'songs', 'retry', 'preferences')),
+))
 PEOPLE_WRITE_PATHS = frozenset('/api/people/' + name for name in (
     'name', 'merge', 'split', 'correct', 'undo', 'voice-review', 'live/register', 'live/forget', 'live/name-candidate',
     'live/candidate-group','live/candidate-group/undo'))
 HELD_GET_PATHS = frozenset({'/api/settings/ha/discover', '/api/settings/miloco/models'})
-HELD_GET_PREFIXES = ('/api/archive/media/', '/api/home/recordings/media/', '/api/family-media/originals/')
+HELD_GET_PREFIXES = ('/api/archive/media/', '/api/home/recordings/media/', '/api/family-media/originals/',
+                     '/api/family-media/photos/content/')
 
 
 CONNECTION_PHASES = frozenset({'configuration', 'saved_login', 'home_read', 'workspace', 'startup'})
@@ -305,7 +314,8 @@ def arl_runtime():
         location = config().arl_home
     except (OSError, ValueError, KeyError, TypeError):
         location = None
-    return ARLRuntime(lambda: Path(location) if location else USER_SUPPORT / 'ARL')
+    return ARLRuntime(lambda: Path(location) if location else USER_SUPPORT / 'ARL',
+                      state_directory=lambda: STATE)
 
 
 def prepare_private_workspace():
@@ -383,7 +393,12 @@ def arl_connection_state(report):
         return 'unknown'
     status = report.get('status')
     if status == 'ready' and report.get('ready') is True and freshness == 'current':
-        return 'connected'
+        application = report.get('application') or {}
+        if application.get('connected') is True and application.get('state') == 'connected':
+            return 'connected'
+        if application.get('state') == 'upgrade_required':
+            return 'upgrade_required'
+        return 'registering' if application.get('state') == 'registering' else 'handshake_required'
     return {'disconnected': 'disconnected', 'not_running': 'not_running',
             'sdk_missing': 'sdk_missing', 'user_disabled': 'disabled',
             'unsafe_home': 'unsafe_configuration', 'starting': 'starting'}.get(status, 'unknown')
@@ -392,6 +407,7 @@ def arl_connection_state(report):
 async def arl_status(runtime=None):
     runtime = runtime or arl_runtime()
     report = await runtime.status(start=False, timeout=3)
+    application = report.get('application') or {}
     return {'status': report['status'], 'sdkVersion': report.get('sdk_version'),
             'ready': report.get('ready') is True, 'inferenceAttempted': False,
             'metadataFreshness': report.get('metadata_freshness', 'unknown'),
@@ -399,6 +415,12 @@ async def arl_status(runtime=None):
             'refreshCode': report.get('metadata_refresh_code', 'none'),
             'refreshSource': report.get('metadata_refresh_source', 'sdk'),
             'connectionState': arl_connection_state(report),
+            'applicationSession': {
+                'appID': application.get('app_id'), 'connected': application.get('connected') is True,
+                'state': application.get('state', 'not_started'), 'error': application.get('error'),
+                'modelServiceAccepted': application.get('model_service_accepted') is True,
+                'identityBasis': application.get('identity_basis'),
+            },
             'taskReadiness': 'unverified', 'identityVerified': False,
             'modelCapabilityVerified': False}
 
@@ -908,6 +930,8 @@ class DesktopService:
         from homeplane import api
         from homeplane.file_steward.contracts import StewardPageRequest
         from homeplane.file_steward.settings_contracts import StewardSettingsRequest
+        from homeplane.family_media.photo_requests import FamilyMediaPhotoOpen, FamilyMediaPhotoRender
+        from homeplane.family_media.contracts import FamilyMediaRecipeRequest, FamilyMediaRecipeReview
         schemas = {
             '/api/query': api.HomeQuery,
             '/api/actions/plan': api.LightPlanRequest | api.DevicePlanRequest,
@@ -923,6 +947,10 @@ class DesktopService:
             '/api/archive/playback': api.ArchivePlaybackRequest,
             '/api/files/query': StewardPageRequest,
             '/api/files/settings/query': StewardSettingsRequest,
+            '/api/family-media/photos/open': FamilyMediaPhotoOpen,
+            '/api/family-media/photos/render': FamilyMediaPhotoRender,
+            '/api/family-media/recipes/preview': FamilyMediaRecipeRequest,
+            '/api/family-media/recipes/review': FamilyMediaRecipeReview,
             '/api/diagnostics/export': api.DiagnosticsExportRequest,
         }
         if scope['path'] in {'/api/home/evidence/query', '/api/home/evidence/detail'}:
@@ -978,11 +1006,14 @@ class DesktopService:
             return False
         archive = re.fullmatch(r'/api/archive/media/([a-f0-9]{64})', path)
         recording = re.fullmatch(r'/api/home/recordings/media/([a-f0-9]{48})', path)
+        photo = re.fullmatch(r'/api/family-media/photos/content/([a-f0-9]{64})', path)
         try:
             if archive:
                 return self.inner.state.archive_player.protected_preview(archive[1]) is True
             if recording:
                 return self.inner.state.home_experience.recordings.protected_preview(recording[1]) is True
+            if photo:
+                return self.inner.state.family_media.photos.owns_result(photo[1]) is True
         except (AttributeError, OSError, ValueError, TypeError):
             pass
         return False
@@ -993,6 +1024,8 @@ class DesktopService:
             while True:
                 event = await receive()
                 if event['type'] == 'lifespan.startup':
+                    if callable(getattr(self.arl_runtime, 'start_application', None)):
+                        await self.arl_runtime.start_application()
                     self.arl = await arl_status(self.arl_runtime)
                     self.arl_task = asyncio.create_task(self.refresh_arl())
                     if self.persistent:
@@ -1009,12 +1042,19 @@ class DesktopService:
                         except asyncio.CancelledError:
                             pass
                     await self.close()
+                    if callable(getattr(self.arl_runtime, 'close', None)):
+                        await self.arl_runtime.close()
                     await send({'type': 'lifespan.shutdown.complete'})
                     return
         path = scope.get('path', '')
         if scope['type'] == 'http':
             headers = dict(scope.get('headers', []))
             origin = headers.get(b'origin')
+            photo_path = (path.startswith('/api/family-media/photos/')
+                          or path in {'/api/family-media/recipes/preview', '/api/family-media/recipes/review'})
+            if photo_path and (scope.get('client') or ('',))[0] not in {'127.0.0.1', '::1'}:
+                await JSONResponse({'code': 'invalid_local_client'}, status_code=403)(scope, receive, send)
+                return
             if headers.get(b'host') != b'127.0.0.1:8740' or origin not in {None, ORIGIN.encode()}:
                 await JSONResponse({'code': 'invalid_local_origin'}, status_code=403)(scope, receive, send)
                 return
@@ -1026,6 +1066,17 @@ class DesktopService:
                     await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
                     return
                 await self.metadata(scope, receive, send)
+                return
+            if scope['method'] == 'POST' and path in KTV_OWNER_WRITE_PATHS:
+                if origin != ORIGIN.encode():
+                    await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
+                    return
+                if self.inner is None:
+                    await JSONResponse({'code': 'home_not_connected'}, status_code=503)(scope, receive, send)
+                    return
+                # The fixed owner adapter still enforces loopback, Host and the
+                # inner app's genuine read-only mode; this is no general proxy.
+                await self.inner(scope, receive, send)
                 return
             if scope['method']=='POST' and self.inner is not None and (
                 path.startswith('/api/embodied/') or path in PEOPLE_WRITE_PATHS
@@ -1070,6 +1121,16 @@ class DesktopService:
                     await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
                     return
                 await self.read_only_preparation(scope, receive, send)
+                return
+            if scope['method'] == 'DELETE' and re.fullmatch(r'/api/family-media/photos/jobs/[a-f0-9]{64}', path):
+                if origin != ORIGIN.encode():
+                    await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
+                    return
+                if self.inner is None:
+                    await JSONResponse({'code': 'home_not_connected'}, status_code=503)(scope, receive, send)
+                    return
+                # 仅撤销本机照片任务；不开放 NAS 写入或原件删除。
+                await self.inner(scope, receive, send)
                 return
             if scope['method'] not in {'GET', 'HEAD'}:
                 await JSONResponse({'code': 'desktop_read_only', 'device_writes': 'disabled'}, status_code=409)(scope, receive, send)

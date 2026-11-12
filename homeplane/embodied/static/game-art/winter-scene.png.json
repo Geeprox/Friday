@@ -1,0 +1,11 @@
+{
+  "asset": "winter-scene.png",
+  "origin": "Built-in image_gen; original generated game artwork",
+  "prompt": "Edit target: the referenced winter game background. Retain the existing wide 16:9 composition, original tactile paper-and-clay Alpine mountains, warm upper-left morning light, cream snow, powder-blue sky, clouds and distant atmospheric tree line. This is the distant background plate for a skiing game whose complete foreground snow surface, snow tracks and near trees will be separately rendered and moved by the game. Remove ALL ski tracks, grooves, footprints and distinct markings from the entire foreground; replace them with softly lit, nearly unmarked, clean cream-white snow with only very subtle fine matte paper texture. Remove the large/medium close pine trees on the left and right edges; keep only tiny truly distant tree groups near the horizon. Keep the mountains and horizon steady around 36 percent from top. Make the whole lower 55 percent a very broad quiet empty snowfield; no strong ridges, no dark bands, no converging fixed tracks. Nothing on the foreground plane that looks like an anchored object. Preserve the refined sunny winter atmosphere and art style of this same family game collection. No people, skis, poles, animals, building, banner, finish arch, text, digits, logo, UI or border. Opaque background. The near snow texture will be projected in code, so make the bottom-center snow area especially calm and clean. Do not change to a photograph, flat vector, sharp geometric road or camera motion effect.",
+  "sha256": "00cc2c43e17c27d2267b8a10a36c4b306fd8ae8a021ad3ef497909a09675c1a7",
+  "created_at": "2026-11-03T20:22:02.203245+00:00",
+  "role": "opaque distant background; snow texture is sampled and projected on a moving world plane",
+  "input_media": "No household material or real identifiable person was provided.",
+  "updated_at": "2026-11-04T13:38:43.448565+00:00",
+  "edit_source_sha256": "b3dceb22a3da5ffd1b3d0b98738939ceafc303bec0bd8f4412b8ca6c0ff3f3d3"
+}

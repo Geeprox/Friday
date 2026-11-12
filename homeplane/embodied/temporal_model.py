@@ -19,6 +19,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .paths import MODELS, PRIVATE, PROJECT
+from .review_child import ReviewChild
 
 MODEL_ID = "mlx-community/Qwen3.5-2B-4bit"
 REVISION = "674aaa7240b91e8012fcad5d791b7dfe5ba90207"
@@ -28,6 +29,11 @@ MODEL = MODELS / "qwen3.5-2b-4bit"
 GIB = 1024**3
 MEMORY_LIMIT = 3584 * 1024**2
 EVENTS = ("none", "unclear", "possible_fall", "face_obscured", "rapid_movement")
+START_TIMEOUT = 12
+
+
+class VisualSourceChanged(RuntimeError):
+    """The trusted input owner revoked its window before image submission."""
 
 
 class VisualResult(BaseModel):
@@ -126,49 +132,57 @@ class MlxWindowProcess:
 
     def __init__(self, model=MODEL, private=PRIVATE, *, budget=host_budget):
         self.model, self.private, self.budget = Path(model), Path(private), budget
-        self.process = self.lease = self.idle_task = None
+        self.child = self.idle_task = None
         self.lock = asyncio.Lock()
         self.last_used = 0
         self.peak_mlx_bytes = 0
 
+    @property
+    def process(self):
+        return self.child.process if self.child else None
+
+    @property
+    def lease(self):
+        return self.child.lease if self.child else None
+
     async def _start(self):
+        if self.child and self.child.closed:
+            if self.child.slot:
+                raise ValueError("model_busy")
+            self.child = None
         if self.process is not None and self.process.returncode is None:
             return
+        if self.child:
+            await self.close()
+            if self.child:
+                raise ValueError("model_busy")
         ready = model_readiness(self.model)
         if not ready["available"]:
             raise ValueError(ready["reason"])
-        import fcntl
-
-        self.private.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(self.private / "temporal-model.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            os.close(fd)
-            raise ValueError("model_busy") from None
-        self.lease = fd
         environment = dict(
             os.environ,
             HF_HUB_OFFLINE="1",
             TRANSFORMERS_OFFLINE="1",
             OMP_NUM_THREADS="2",
             VECLIB_MAXIMUM_THREADS="2",
+            FRIDAY_REVIEW_OWNER_PID=str(os.getpid()),
+        )
+        self.child = ReviewChild(
+            (sys.executable, "-u", "-m", "homeplane.embodied.temporal_worker", "--model", str(self.model)),
+            self.private, "temporal-model.lock", busy="model_busy", unavailable="local_runtime_missing",
+            cwd=PROJECT, env=environment, limit=8192,
         )
         try:
-            self.process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-u",
-                "-m",
-                "homeplane.embodied.temporal_worker",
-                "--model",
-                str(self.model),
-                cwd=PROJECT,
-                env=environment,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                limit=8192,
-            )
+            async with asyncio.timeout(START_TIMEOUT):
+                await self.child.start()
+                data = await self.process.stdout.readline()
+                if not data or len(data) > 128 or not data.endswith(b'\n'):
+                    raise ValueError('model_not_ready')
+                ready = json.loads(data)
+                if (type(ready) is not dict or set(ready) != {'version', 'ready'}
+                        or type(ready['version']) is not int or ready['version'] != 1
+                        or ready['ready'] is not True):
+                    raise ValueError('model_not_ready')
             self.last_used = time.monotonic()
             self.idle_task = asyncio.create_task(self._idle())
         except BaseException:
@@ -187,6 +201,14 @@ class MlxWindowProcess:
             pass
 
     async def analyze(self, frames):
+        return await self.analyze_latest(lambda: frames)
+
+    async def analyze_latest(self, window):
+        """Select one owner-validated window after host checks and child readiness.
+
+        The synchronous callback stays in this process, never in JSON or the
+        model worker. Startup cannot consume the evidence's freshness budget.
+        """
         async with self.lock:
             try:
                 if self.process is not None and self.process.returncode is not None:
@@ -195,6 +217,7 @@ class MlxWindowProcess:
                 if reason:
                     raise ValueError(reason)
                 await self._start()
+                frames = window()
                 request = dict(
                     frames=[
                         dict(t=round(stamp - frames[0][0], 3), jpeg=base64.b64encode(jpeg).decode())
@@ -218,10 +241,16 @@ class MlxWindowProcess:
                 self.peak_mlx_bytes = reply.peak_mlx_bytes
                 return reply.result
             except asyncio.CancelledError:
-                await self.close()
+                if not self.child or not self.child.closed:
+                    await self.close()
+                raise
+            except VisualSourceChanged:
+                if not self.child or not self.child.closed:
+                    await self.close()
                 raise
             except (OSError, ValueError, asyncio.TimeoutError) as error:
-                await self.close()
+                if not self.child or not self.child.closed:
+                    await self.close()
                 code = str(error)
                 raise ValueError(
                     code
@@ -243,25 +272,10 @@ class MlxWindowProcess:
         idle, self.idle_task = self.idle_task, None
         if idle and idle is not asyncio.current_task():
             idle.cancel()
-        process, self.process = self.process, None
-        lease, self.lease = self.lease, None
-        try:
-            if process and process.returncode is None:
-                try:
-                    process.terminate()
-                    await asyncio.wait_for(process.wait(), 2)
-                except (ProcessLookupError, asyncio.TimeoutError):
-                    pass
-        finally:
-            try:
-                if process and process.returncode is None:
-                    try:
-                        process.kill()
-                        await process.wait()
-                    except ProcessLookupError:
-                        pass
-            finally:
-                if lease is not None:
-                    os.close(lease)
+        child = self.child
+        if child:
+            await child.close()
+            if self.child is child and not child.slot:
+                self.child = None
         if idle and idle is not asyncio.current_task():
             await asyncio.gather(idle, return_exceptions=True)

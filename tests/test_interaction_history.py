@@ -39,6 +39,7 @@ def test_event_captures_wall_time_and_rule_before_configuration_changes(monkeypa
 @pytest.mark.asyncio
 async def test_delayed_receipt_keeps_trigger_time_and_rule_metadata(monkeypatch):
     from homeplane.embodied import bridge
+    from homeplane.embodied.practice import RecognitionPractice
 
     waiting, release = asyncio.Event(), asyncio.Event()
 
@@ -48,16 +49,21 @@ async def test_delayed_receipt_keeps_trigger_time_and_rule_metadata(monkeypatch)
         return {'status': 'reported_match', 'acknowledged': True, 'reached_target': True}
 
     monkeypatch.setattr(bridge, 'command', AsyncMock(side_effect=command))
-    node = next(n for n in ast.parse((ROOT / 'homeplane/embodied/worker.py').read_text()).body
-                if isinstance(n, ast.AsyncFunctionDef) and n.name == 'dispatch_interactions')
+    nodes = ast.parse((ROOT / 'homeplane/embodied/worker.py').read_text()).body
+    source_guard = next(n for n in nodes if isinstance(n, ast.FunctionDef) and n.name == 'interaction_source_current')
+    dispatch = next(n for n in nodes if isinstance(n, ast.AsyncFunctionDef) and n.name == 'dispatch_interactions')
     fleet, tasks = InteractionFleet(), []
     monkeypatch.setattr(fleet, 'current', lambda *_: True)
     scope = dict(time=SimpleNamespace(time=lambda: 1794024035, monotonic=lambda: 20),
                  interaction_enabled=True, SELECTED={'id': 'synthetic-camera'},
+                 state={'status': 'live'}, identities=SimpleNamespace(session='synthetic-session'),
+                 games=SimpleNamespace(mode='off', control_context='synthetic-game', control_revision=0),
+                 practice=RecognitionPractice(),
                  home=SimpleNamespace(armed=True, spawn=lambda coro: tasks.append(asyncio.create_task(coro))),
                  secondary_homes={}, fleet=fleet, wall=SimpleNamespace(notice=lambda *_: None))
-    exec(compile(ast.Module(body=[node], type_ignores=[]), '<合成手势分发>', 'exec'), scope)
-    event = dict(camera='synthetic-camera', target='lamp', action='on', event_id='synthetic-history',
+    exec(compile(ast.Module(body=[source_guard, dispatch], type_ignores=[]), '<合成手势分发>', 'exec'), scope)
+    event = dict(camera='synthetic-camera', session='synthetic-session', track=7,
+                 target='lamp', action='on', event_id='synthetic-history',
                  binding='a' * 32, revision=3, gesture='hand.open_palm', scope='home',
                  triggered_at=1794024000.25, observed_mono=20)
     try:

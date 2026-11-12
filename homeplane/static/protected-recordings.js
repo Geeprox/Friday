@@ -36,7 +36,7 @@ export function mountRecordings(root,{api,isAlive=()=>true,go=()=>{},openEvidenc
   const shell=element('div',null,{class:'protected-recordings'}),evidenceRoot=element('div');
   const evidencePlayer=element('section',null,{'aria-label':'事件录像',class:'evidence-playback'});
   const recordingsRoot=element('section',null,{'aria-label':'录像列表',class:'recording-section'});
-  const eventDetails=append(element('details',null,{class:'recording-events'}),element('summary','查看家庭事件'),evidenceRoot);
+  const eventDetails=append(element('details',null,{class:'recording-events'}),element('summary','相关家庭事件'),evidenceRoot);
   append(shell,recordingsRoot,eventDetails,evidencePlayer);root.append(shell);
 
   function release(value){if(/^[a-f0-9]{48}$/.test(value?.token??''))return api('/api/home/recordings/stop',{token:value.token}).catch(()=>{});return Promise.resolve();}
@@ -54,9 +54,12 @@ export function mountRecordings(root,{api,isAlive=()=>true,go=()=>{},openEvidenc
   const stamp=value=>typeof value==='string'&&value.length===14
     ?`${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6,8)} ${value.slice(8,10)}:${value.slice(10,12)}:${value.slice(12,14)}`:'时间未知';
 
+  function recordingState(icon,title,description,...actions){
+    return append(element('section',null,{class:'recording-state',role:'status'}),element('span',null,{class:'icon icon-'+icon,'aria-hidden':'true'}),element('h2',title),element('p',description),append(element('div',null,{class:'recording-state-actions'}),...actions.filter(Boolean)));
+  }
   async function load(){
     stop();const version=++listingGeneration;
-    recordingsRoot.replaceChildren(element('h2','录像'),element('p','正在读取录像列表…',{role:'status'}));
+    recordingsRoot.replaceChildren(element('p','正在读取录像…',{class:'recording-loading',role:'status'}));
     const query=new URLSearchParams();if(folderValue)query.set('folder',folderValue);if(dateValue)query.set('date',dateValue.replaceAll('-',''));
     try{
       const listing=await api('/api/home/recordings?'+query);
@@ -70,20 +73,26 @@ export function mountRecordings(root,{api,isAlive=()=>true,go=()=>{},openEvidenc
       date.addEventListener('change',()=>{dateValue=date.value;void load();});
       append(header,folder,date,button('最新录像',()=>{dateValue='';void load();}),button('刷新录像',()=>void load()));
       const list=element('div',null,{class:'recording-list'}),player=element('section',null,{class:'recording-player','aria-label':'隐私录像播放器'});
-      const empty=()=>player.replaceChildren(element('h3','选择一段录像'),element('p','播放前在本机生成保护预览，原始录像保留。',{class:'muted'}));
-      empty();recordingsRoot.replaceChildren(element('h2','录像'),header,append(element('div',null,{class:'recording-layout'}),list,player));
+      const empty=()=>{recordingsRoot.querySelector?.('.recording-layout')?.setAttribute('data-playback','idle');player.replaceChildren(append(element('div',null,{class:'recording-player-idle'}),element('span',null,{class:'icon icon-video','aria-hidden':'true'}),element('h3','选择一段录像'),element('p','从录像列表选择片段，开始回看。')));};
+      empty();
+      const layout=append(element('div',null,{class:'recording-layout','data-playback':'idle'}),list,player);
+      recordingsRoot.replaceChildren();
       if(!listing.connected){
-        player.replaceChildren(element('h3','录像暂时无法读取'),element('p',listing.code==='recordings_mount_required'?'自动恢复 NAS 连接未完成，请检查网络或已保存的登录。':'NAS 暂时无法读取，请稍后重试。'),button('重试连接',()=>void load()),button('登录与存储设置',()=>go('Settings')));return;
+        recordingsRoot.append(recordingState('server','录像存储未连接','连接恢复后，录像会显示在这里。',button('重新连接',()=>void load(),{class:'primary'}),button('存储设置',()=>go('Settings'))));return;
       }
-      if(!listing.files?.length)list.append(element('p','这一天没有片段，可换个日期或查看最新录像。',{class:'product-empty'}));
+      const count=element('span',(listing.files?.length||0)+' 段录像',{class:'recording-count'});header.append(count);recordingsRoot.append(header);
+      if(!listing.files?.length){
+        const filtered=Boolean(folderValue||dateValue);recordingsRoot.append(recordingState('video',filtered?'没有找到录像':'还没有可回看的录像',filtered?'换个日期或摄像头看看。':'摄像头保存录像后，会按时间显示在这里。',filtered?button('查看全部录像',()=>{folderValue='';dateValue='';void load();},{class:'primary'}):button('查看摄像头',()=>go('Cameras'),{class:'primary'})));return;
+      }
+      recordingsRoot.append(layout);
       const timeLabel=seconds=>`${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;
       for(const item of listing.files??[]){
         async function begin(offset=0,event){
           const muted=video?.muted??true;
           clearEvidence();stop();const playbackVersion=generation;
           const active=()=>current()&&version===listingGeneration&&playbackVersion===generation;
-          row.disabled=true;request=new AbortController();const signal=request.signal;
-          player.replaceChildren(element('h3','正在准备录像'),element('p','完成这一段画面保护后即开始播放。',{role:'status','aria-live':'polite'}),button('取消',()=>{stop();empty();}));
+          layout.setAttribute('data-playback','active');row.disabled=true;request=new AbortController();const signal=request.signal;
+          player.replaceChildren(element('h3','正在准备录像'),element('p','完成这一段画面保护后即开始播放。',{role:'status','aria-live':'polite'}),button('取消',()=>{stop();empty();}));if(event?.isTrusted)player.scrollIntoView?.({block:'nearest'});
           async function fetchWindow(start,abortSignal){
             const value=await api('/api/home/recordings/play',{id:item.id,offset_seconds:start},{signal:abortSignal});
             if(!protectedRecordingPlan(value)||Math.abs(value.media_start_seconds-start)>.001){release(value);throw Error('archive_privacy_unavailable');}
@@ -155,12 +164,16 @@ export function mountRecordings(root,{api,isAlive=()=>true,go=()=>{},openEvidenc
           }finally{row.disabled=false;}
         }
         const row=button('',event=>void begin(0,event),{class:'recording-row','data-recording-id':item.id});
-        append(row,element('span','',{class:'icon icon-video','aria-hidden':'true'}),append(element('div'),element('strong',stamp(item.recorded_start)),element('span',(listing.names?.[item.folder]||`摄像头 ${Number(item.folder.split('_')[1])+1}`)+' · '+Math.round(item.size/1024/1024)+' MB')));list.append(row);
+        const day=stamp(item.recorded_start).slice(0,10),previous=list.lastElementChild?.getAttribute?.('data-day');
+        if(previous!==day)list.append(element('h3',day,{class:'recording-day','data-day':day}));
+        row.setAttribute('data-day',day);
+        const startLabel=stamp(item.recorded_start).slice(11,16),endLabel=stamp(item.recorded_end).slice(11,16);
+        append(row,element('span',null,{class:'icon icon-video','aria-hidden':'true'}),append(element('div'),element('strong',startLabel+' – '+endLabel),element('span',listing.names?.[item.folder]||`摄像头 ${Number(item.folder.split('_')[1])+1}`)),element('span',Math.round(item.size/1024/1024)+' MB',{class:'recording-size'}));list.append(row);
       }
-      if(listing.files?.length)queueMicrotask(()=>{if(current()&&version===listingGeneration)list.firstElementChild?.click?.();});
+
       const details=append(element('details'),element('summary','隐私保护详情'),element('p','本机逐帧生成保护预览；检测器未配置或无法判断时加强至整帧遮挡。自动识别仍可能漏检。原片单段上限 10 分钟、256 MiB；按播放位置逐段准备，每段最多 30 秒、64 MiB，五分钟后清除。'));
       recordingsRoot.append(element('p',listing.partial?'目录条目较多，当前列表不完整。可选择具体摄像头和日期缩小范围。':'时间来自录像文件名，尚不代表摄像头时钟已校准。',{class:'caption'}),details);
-    }catch(_){if(current()&&version===listingGeneration)recordingsRoot.replaceChildren(element('h2','录像'),element('p','录像列表暂不可读取，请重试。',{role:'status'}),button('重试',()=>void load()));}
+    }catch(_){if(current()&&version===listingGeneration)recordingsRoot.replaceChildren(recordingState('alert-circle','暂时无法读取录像','请检查存储连接后重试。',button('重新读取',()=>void load(),{class:'primary'}),button('存储设置',()=>go('Settings'))));}
   }
   contextTimer=setInterval(async()=>{
     if(!current()||!plan||!listingContext)return;

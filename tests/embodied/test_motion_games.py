@@ -1,5 +1,5 @@
 import copy, unittest, math, statistics
-from homeplane.embodied.motion_games import BodyMotion, MotionGames
+from homeplane.embodied.motion_games import BodyMotion, MotionGames, SKI_COURSES
 from homeplane.embodied.ptz_control import LocalFollower
 
 
@@ -162,6 +162,81 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(v["status"], "paused")
 
 
+class CompletedGameTests(unittest.TestCase):
+    def test_ski_route_has_distinct_sections_and_a_stable_finish(self):
+        game = MotionGames()
+        game.reset('ski')
+        seen = set()
+        for i in range(6000):
+            game.ski({'arm_effort':1, 'lateral':0}, .04, i*.04)
+            seen.add(game.ski_course()[0])
+            if game.complete:
+                break
+        self.assertEqual(seen, {0,1,2})
+        self.assertTrue(game.complete)
+        self.assertEqual(game.distance, sum(c['length'] for c in SKI_COURSES))
+        self.assertEqual(game.speed, 0)
+        self.assertEqual(game.obstacles, [])
+        elapsed = game.elapsed
+        result = game.update([], {'status':'moving'}, 1000)
+        self.assertEqual(result['status'], 'complete', 'Walking away must not replace the result with waiting')
+        self.assertEqual(result['ski']['progress'], 1)
+        self.assertIn(result['ski']['stars'], {1,2,3})
+        self.assertEqual(game.elapsed, elapsed)
+        game.reset('ski')
+        self.assertFalse(game.complete)
+        self.assertEqual(game.distance, 0)
+        self.assertEqual(game.publish([], 'waiting', '')['ski']['stars'], None)
+
+    def test_ski_course_change_is_distance_based_and_progress_is_bounded(self):
+        game = MotionGames()
+        game.reset('ski')
+        game.distance = SKI_COURSES[0]['length']-.001
+        game.speed = 1
+        game.ski({'arm_effort':.5, 'lateral':0}, .04, 2)
+        state = game.publish([], 'playing', '')['ski']
+        self.assertEqual(state['course'], 1)
+        self.assertEqual(state['course_name'], SKI_COURSES[1]['name'])
+        self.assertTrue(0 <= state['course_progress'] <= 1)
+        self.assertTrue(0 < state['progress'] < 1)
+
+    def test_tennis_win_by_two_and_cap_stop_without_more_points(self):
+        players = [{'lateral':0, 'last_swing':-100, 'swing_direction':1} for _ in range(2)]
+        for score, winner in [([6,5],0), ([6,6],None), ([7,6],0), ([14,14],0)]:
+            game = MotionGames()
+            game.reset('tennis')
+            game.round_pause = 0  # Exercise scoring after the preparation countdown.
+            game.score = score[:]
+            game.ball.update(z=1.01, toward=1)
+            game.tennis(players, .01, 10)
+            self.assertEqual(game.tennis_winner, winner)
+            if winner is not None:
+                final = game.score[:]
+                game.tennis(players, 10, 20)
+                self.assertEqual(game.score, final)
+                result = game.update([], {'status':'moving'}, 30)
+                self.assertEqual(result['status'], 'complete')
+                self.assertEqual(result['tennis']['winner'], winner)
+                game.reset('tennis')
+                self.assertEqual(game.score, [0,0])
+                self.assertIsNone(game.tennis_winner)
+
+    def test_tennis_best_rally_survives_a_missed_ball(self):
+        game = MotionGames()
+        game.reset('tennis')
+        game.round_pause = 0
+        players = [{'lateral':0, 'last_swing':-100, 'swing_direction':1} for _ in range(2)]
+        game.rally = game.best_rally = 4
+        game.ball.update(z=.05, toward=0)
+        players[0]['last_swing'] = 10
+        game.tennis(players, .01, 10)
+        self.assertEqual(game.best_rally, 5)
+        game.ball.update(z=1.01, toward=1)
+        game.tennis(players, .01, 11)
+        self.assertEqual(game.rally, 0)
+        self.assertEqual(game.best_rally, 5)
+
+
 class FollowTests(unittest.TestCase):
     def state(self, x=0.8):
         return {
@@ -216,6 +291,7 @@ class GestureControlTests(unittest.TestCase):
 
     def test_yeah_cycles_once_until_released(self):
         g = MotionGames()
+        g.select('quest')
         self.feed(g, "yeah", 0, 4)
         self.assertEqual(g.selected_mode, "ski")
         self.assertEqual(g.mode, "off")
@@ -225,6 +301,7 @@ class GestureControlTests(unittest.TestCase):
 
     def test_unassociated_or_moving_camera_cannot_start(self):
         g = MotionGames()
+        g.select('quest')
         self.feed(g, "ok", 0, 2, owner=None)
         self.assertEqual(g.mode, "off")
         self.feed(g, "ok", 3, 2, reg={"status": "moving"})
@@ -232,6 +309,7 @@ class GestureControlTests(unittest.TestCase):
 
     def test_short_or_conflicting_gesture_never_switches(self):
         g = MotionGames()
+        g.select('quest')
         self.feed(g, "yeah", 0, 0.6)
         self.feed(g, None, 0.65, 0.6)
         self.feed(g, "yeah", 1.3, 0.6)

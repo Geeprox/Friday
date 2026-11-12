@@ -11,6 +11,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
@@ -19,17 +21,24 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
-      - run: uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connection --extra privacy-playback
+      - run: uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connection --extra privacy-playback --extra ktv
       - run: npm --prefix workers/geek ci --ignore-scripts
+      - name: 准备固定公开 ARL SDK 源码输入
+        run: uv run --no-sync python scripts/prepare_arl_sdk.py --output "$RUNNER_TEMP/friday-arl-sdk"
       - name: Install media tools on Linux
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes ffmpeg
+          sudo apt-get install --yes ffmpeg lsof
       - name: Install media tools on macOS
         if: runner.os == 'macOS'
         run: brew install ffmpeg
-      - run: uv run --no-sync python -m pytest -q --basetemp=/tmp/friday-tests
+      - name: 运行公开 SDK 与消费者回归
+        run: |
+          export FRIDAY_TEST_ARL_SDK_INPUT="$RUNNER_TEMP/friday-arl-sdk"
+          export FRIDAY_TEST_ARL_SDK_PYTHON="$GITHUB_WORKSPACE/.venv/bin/python"
+          export PYTHONPATH="$FRIDAY_TEST_ARL_SDK_INPUT"
+          uv run --no-sync python scripts/run_ci_regression.py --receipt "$RUNNER_TEMP/friday-regression.json" -- -q -W error::pytest.PytestUnhandledThreadExceptionWarning
       - run: node --test tests/audio.test.mjs
       - run: node --test workers/geek/crypto.test.mjs
       - run: uv run --no-sync python native/FridayDesktop/tests/check_build_entry.py
@@ -40,7 +49,13 @@ jobs:
       - run: python3 scripts/audit_publication.py
       - run: python3 scripts/setup-dependencies.py plan
       - if: runner.os == 'macOS'
-        run: uv run --no-sync python native/FridayDesktop/script/build_desktop.py --build-only
+        run: uv run --no-sync python native/FridayDesktop/script/build_desktop.py --build-only --arl-sdk-input "$RUNNER_TEMP/friday-arl-sdk"
+      - name: 回读固定 SDK 输入完整性
+        if: always()
+        run: uv run --no-sync python scripts/prepare_arl_sdk.py --output "$RUNNER_TEMP/friday-arl-sdk" --verify-only
+      - name: 清理本轮固定 SDK 输入并保留小型来源回执
+        if: always()
+        run: uv run --no-sync python scripts/prepare_arl_sdk.py --output "$RUNNER_TEMP/friday-arl-sdk" --clean
   secrets:
     runs-on: ubuntu-latest
     steps:

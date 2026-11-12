@@ -40,3 +40,22 @@
 .icon-downlight{mask-image:url("/static/icons/downlight.svg");-webkit-mask-image:url("/static/icons/downlight.svg")}
 
 .icon-spotlight{mask-image:url("/static/icons/spotlight.svg");-webkit-mask-image:url("/static/icons/spotlight.svg")}
+
+.icon-power{mask-image:url("/static/icons/power.svg");-webkit-mask-image:url("/static/icons/power.svg")}
+
+.icon-player-pause{mask-image:url("/static/icons/player-pause.svg");-webkit-mask-image:url("/static/icons/player-pause.svg")}
+
+.icon-arrows-horizontal{mask-image:url("/static/icons/arrows-horizontal.svg");-webkit-mask-image:url("/static/icons/arrows-horizontal.svg")}
+
+.icon-arrows-in{mask-image:url("/static/icons/arrows-in.svg");-webkit-mask-image:url("/static/icons/arrows-in.svg")}
+
+.icon-rotate-clockwise{mask-image:url("/static/icons/rotate-clockwise.svg");-webkit-mask-image:url("/static/icons/rotate-clockwise.svg")}
+
+.icon-rotate-counterclockwise{mask-image:url("/static/icons/rotate-counterclockwise.svg");-webkit-mask-image:url("/static/icons/rotate-counterclockwise.svg")}
+
+.icon-microphone{mask-image:url("/static/icons/microphone.svg");-webkit-mask-image:url("/static/icons/microphone.svg")}
+.icon-scan{mask-image:url("/static/icons/scan.svg");-webkit-mask-image:url("/static/icons/scan.svg")}
+.icon-hand{mask-image:url("/static/icons/hand.svg");-webkit-mask-image:url("/static/icons/hand.svg")}
+.icon-users{mask-image:url("/static/icons/users.svg");-webkit-mask-image:url("/static/icons/users.svg")}
+.icon-volume{mask-image:url("/static/icons/volume.svg");-webkit-mask-image:url("/static/icons/volume.svg")}
+.icon-gamepad{mask-image:url("/static/icons/gamepad.svg");-webkit-mask-image:url("/static/icons/gamepad.svg")}

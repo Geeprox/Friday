@@ -13,7 +13,7 @@ class Element{
  const context=vm.createContext({document:{createElement:t=>new Element(t)},URL,Date,setInterval:fn=>{tick=fn;return 1;},clearInterval(){cleared=true;},fetch:async(path,options)=>{
   assert.equal(options,undefined,'Viewing recognition must never start/stop the camera or game');reads.push(path);
   if(path==='/api/embodied/status')return{ok:true,json:async()=>service};
-  if(path==='/api/games/werewolf/open')return{ok:true,json:async()=>{if(delay)await new Promise(r=>finish=r);return{url:'http://127.0.0.1:8860/?k=SYNTHETIC'};}};
+  if(path==='/api/embodied/recognition/open')return{ok:true,json:async()=>{if(delay)await new Promise(r=>finish=r);return{url:'http://127.0.0.1:8860/?k=SYNTHETIC'};}};
   throw Error(path);
  }});
  vm.runInContext(fs.readFileSync('homeplane/static/recognition-debug.js','utf8').replaceAll('export function','function'),context);

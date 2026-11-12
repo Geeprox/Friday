@@ -1,7 +1,7 @@
 // Geometry and stable identities come from the import. Friday owns the visual
 // proportions, materials and device styles; missing fixture positions stay unset.
 import * as T from './vendor/three.module.js';
-import {modelPoint,sourcePoint,placedDevice,roomLighting,roomQuickControls,arrangeRoomControls,directPower} from './house-appearance.js';
+import {modelPoint,sourcePoint,placedDevice,roomLighting,roomQuickControls,arrangeRoomControls,directPower,roomDeviceSummary} from './house-appearance.js';
 import {createDeviceModel} from './device-models.js';
 export const defaultRooms=[];
 const WALL_HEIGHT=2.15,WALL_THICKNESS=.105,INITIAL_ANGLE=-.72;
@@ -40,7 +40,7 @@ function floorMaterial(rings){
   shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>',`#include <color_fragment>
    float fridayGlow=fridayLight();
    diffuseColor.rgb=mix(diffuseColor.rgb,fridayTint,fridayGlow*.90);
-   diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.48,.60,.49),fridaySelected*.12);
+   diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.56,.58,.55),fridaySelected*.12);
   `).replace('#include <emissivemap_fragment>','#include <emissivemap_fragment>\ntotalEmissiveRadiance+=fridayTint*fridayGlow*.28;');
  };
  material.customProgramCacheKey=()=> 'friday-room-light-v1';
@@ -59,7 +59,10 @@ export function mountHouse(container,{rooms,devices,placements=[],selectedRoom,o
   let wire=null;
   if(isRoom){
    n.classList.add('model-room-anchor');
-   const title=document.createElement('button');title.type='button';title.className='model-room-name';title.textContent=text;title.onclick=action;
+   const title=document.createElement('button');title.type='button';title.className='model-room-name';title.onclick=action;
+   const name=document.createElement('strong');name.textContent=text;
+   const summary=document.createElement('span');summary.className='model-room-summary';
+   const chevron=document.createElement('span');chevron.className='icon icon-chevron-right';chevron.setAttribute('aria-hidden','true');title.append(name,summary,chevron);
    const actions=document.createElement('div');actions.className='model-room-actions';n.append(title,actions);n.dataset.room=text;
    wire=document.createElementNS('http://www.w3.org/2000/svg','line');links.append(wire);
   }else{n.type='button';n.textContent=text;n.onclick=action;}
@@ -81,7 +84,7 @@ export function mountHouse(container,{rooms,devices,placements=[],selectedRoom,o
     if(entry.control){b.setAttribute('role','switch');b.setAttribute('aria-checked',String(entry.on));b.dataset.quickControl=entry.control;b.dataset.offline=String(!entry.available);b.disabled=writeBusy||!entry.available;}
     b.onclick=()=>onQuick?.(entry);actions.append(b);
    }
-   const more=document.createElement('button');more.type='button';more.className='model-room-more';more.dataset.quickKey='room:'+info.room.id;more.textContent='设备 ›';more.setAttribute('aria-label',info.room.name+'全部设备');more.onclick=()=>onRoomDevices?.(info.room.name);actions.append(more);
+   const more=document.createElement('button');more.type='button';more.className='model-room-more';more.dataset.quickKey='room:'+info.room.id;const moreIcon=document.createElement('span');moreIcon.className='icon icon-chevron-right';moreIcon.setAttribute('aria-hidden','true');more.append(moreIcon);more.setAttribute('aria-label',info.room.name+'全部设备');more.onclick=()=>onRoomDevices?.(info.room.name);actions.append(more);
   }
   if(focusKey&&container.contains(active)===false)for(const b of container.querySelectorAll('[data-quick-key]'))if(b.dataset.quickKey===focusKey){b.focus({preventScroll:true});break;}
  }
@@ -119,7 +122,7 @@ export function mountHouse(container,{rooms,devices,placements=[],selectedRoom,o
   return {id:d.id,node,caption,deviceModel};
  }
  for(const placement of placements){const d=placedDevice(devices,placement.id);if(d)markers.push(fixture(d,world(placement.position)));}
- const bounds=new T.Box3().setFromPoints(all),fullTarget=bounds.getCenter(new T.Vector3()),extent=bounds.getSize(new T.Vector3());let target=fullTarget.clone(),viewSize=Math.max(extent.z*1.2,extent.x*.95,12),fullSize=viewSize;
+ const bounds=new T.Box3().setFromPoints(all),fullTarget=bounds.getCenter(new T.Vector3()),extent=bounds.getSize(new T.Vector3());let target=fullTarget.clone(),viewSize=Math.max(extent.z*1.36,extent.x*1.1,13.5),fullSize=viewSize;
  const ground=new T.Mesh(new T.PlaneGeometry(150,150),new T.ShadowMaterial({opacity:.07}));ground.rotation.x=-Math.PI/2;ground.position.y=-.01;ground.receiveShadow=true;scene.add(ground);
  function paint(){if(!alive)return;const w=container.clientWidth,h=container.clientHeight;if(!w||!h)return;const aspect=w/h,half=viewSize/zoom/2;camera.left=-half*aspect;camera.right=half*aspect;camera.top=half;camera.bottom=-half;camera.position.set(target.x+Math.sin(angle)*24,elevation*24,target.z+Math.cos(angle)*24);camera.lookAt(target);camera.updateProjectionMatrix();
   const facing=new T.Vector3(Math.sin(angle),0,Math.cos(angle));
@@ -132,7 +135,7 @@ export function mountHouse(container,{rooms,devices,placements=[],selectedRoom,o
    if(!node.hidden&&room)projected.push({node,wire,anchorX:x,anchorY:y,w:node.offsetWidth||132,h:node.offsetHeight||64});
    else{node.style.left=x+'px';node.style.top=y+'px';}
   });
-  for(const p of arrangeRoomControls(projected,w,h,w<600?112:70)){p.node.style.left=p.x+'px';p.node.style.top=p.y+'px';p.wire.setAttribute('x1',p.anchorX);p.wire.setAttribute('y1',p.anchorY);p.wire.setAttribute('x2',p.x);p.wire.setAttribute('y2',p.y);}
+  for(const p of arrangeRoomControls(projected,w,h,w<600?64:70)){p.node.style.left=p.x+'px';p.node.style.top=p.y+'px';p.wire.setAttribute('x1',p.anchorX);p.wire.setAttribute('y1',p.anchorY);p.wire.setAttribute('x2',p.x);p.wire.setAttribute('y2',p.y);}
 
  }
  function lighting(next,animated=true){
@@ -140,7 +143,9 @@ export function mountHouse(container,{rooms,devices,placements=[],selectedRoom,o
   for(const info of roomInfo.values()){
    const state=roomLighting(next,info.room.name),energy=new T.Vector4(state.main,state.strip,state.downlight,state.spotlight),tint=new T.Color(0xffc56e).lerp(new T.Color(0xe7efff),T.MathUtils.clamp((state.kelvin-2700)/4300,0,1));
    info.label.classList.toggle('lit',state.lights.length>0);
-   info.label.querySelector('.model-room-name').setAttribute('aria-label',info.room.name+(state.lights.length?'，灯光已开启':'，灯光已关闭'));
+   const summary=roomDeviceSummary(next,info.room.name);info.label.querySelector('.model-room-summary').textContent=summary.text;
+   info.label.querySelector('.model-room-name').setAttribute('aria-label','查看'+info.room.name+'设备，'+summary.label);
+   info.label.dataset.hasOffline=String(summary.unavailable>0);
    for(const f of info.floors){
     changes.push({u:f.uniforms,from:f.uniforms.fridayEnergy.value.clone(),energy,accent:state.accent,fromAccent:f.uniforms.fridayAccent.value,tint,fromTint:f.uniforms.fridayTint.value.clone()});
     f.uniforms.fridayPoints.value.forEach(p=>p.w=0);let i=0;

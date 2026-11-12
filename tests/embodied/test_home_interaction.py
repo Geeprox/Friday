@@ -7,6 +7,21 @@ from homeplane.embodied.smart_home import WindowGesture, Attention, Curtain, CUR
 from homeplane.embodied.intent import address, parse_plan, utterance_focus
 from homeplane.embodied.stable_tracks import StableTracks
 from test_motion_games import human
+from homeplane.embodied.home_service import voice_command_outcome
+
+
+@pytest.mark.parametrize('receipt,expected',[
+    ({'status':'reported_match','reached_target':True},'readback'),
+    ({'status':'already_at_target','reached_target':True},'readback'),
+    ({'status':'observed_at_target','reached_target':True},'readback'),
+    ({'status':'accepted','acknowledged':True,'reached_target':True},'accepted'),
+    ({'status':'reported_match','reached_target':False,'acknowledged':True},'accepted'),
+    ({'status':'partial','acknowledged':True},'partial'),
+    ({'status':'unknown_outcome','acknowledged':True},'unknown_outcome'),
+    ({'status':'error','reached_target':False},'failed'),
+])
+def test_voice_result_requires_known_readback_evidence(receipt,expected):
+    assert voice_command_outcome(receipt)==expected
 
 
 class IntentTests(unittest.TestCase):

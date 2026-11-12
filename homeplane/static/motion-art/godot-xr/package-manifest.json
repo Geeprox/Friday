@@ -1,0 +1,16 @@
+{
+  "source_repository": "https://github.com/GodotVR/godot-xr-tools",
+  "source_commit": "6c6189bdfcdf855052ef1aeb9f3e0ec4c7a7eb60",
+  "hand_model_license": "CC0-1.0",
+  "pose_repository_license": "MIT; source notices retained",
+  "files": {
+    "GODOT-XR-TOOLS-LICENSE-MIT.txt": "3c7b052e959551657929dc088dc7930cfffdabbe1ce327879c875aa3c1f38b7c",
+    "provenance.json": "7d53ed0adac8da904210c14b0eef688731c5f72b928f8710bd4845f980db36e8",
+    "Hand-License-CC0.md": "cbe5dc22b073664e9f4412904c40de66dbc6742c9e7b8c2a8b82ecde54034c10",
+    "hand.gltf": "9dcf3edda0e0b3a596a676bed5f9569ee6fc16a6ff978e7fcf334e78667b95a5",
+    "poses.json": "00787e35d1640467cf5c55672bba0cb3e8d5e3e5ed99d533b6782d25aa345db2",
+    "THREE-LICENSE-MIT.txt": "bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601",
+    "variants.json": "9613bfc39391c49169263a326df10918586c9e2598c9cc63926cf7f34246811e",
+    "hand-renderer.js": "311bb997a1d90c790a27aac1c912aebb9cb94413877290b15f0b57a4ee5221cf"
+  }
+}

@@ -7,10 +7,10 @@ if(key){sessionStorage.setItem('friday-view-key',key);history.replaceState(null,
 const bodyEdges=[['nose','neck'],['neck','leftShoulder'],['neck','rightShoulder'],['leftShoulder','rightShoulder'],['leftShoulder','leftElbow'],['leftElbow','leftWrist'],['rightShoulder','rightElbow'],['rightElbow','rightWrist'],['leftShoulder','leftHip'],['rightShoulder','rightHip'],['leftHip','root'],['root','rightHip'],['leftHip','leftKnee'],['leftKnee','leftAnkle'],['rightHip','rightKnee'],['rightKnee','rightAnkle']];
 const gestureNames={ok:'OK',yeah:'Yeah',open_palm:'手掌',pointing:'食指指认',hand_visible:'手部可见'};
 const fingers=[['wrist','thumbCMC','thumbMP','thumbIP','thumbTip'],['wrist','indexMCP','indexPIP','indexDIP','indexTip'],['wrist','middleMCP','middlePIP','middleDIP','middleTip'],['wrist','ringMCP','ringPIP','ringDIP','ringTip'],['wrist','littleMCP','littlePIP','littleDIP','littleTip']],handEdges=fingers.flatMap(a=>a.slice(1).map((b,i)=>[a[i],b]));
-let latest=null,pending=null,drawing=false,shown=null,frozen=null,draft=null,editing=false,lastLive=0,editCameraMode=null;
+let latest=null,pending=null,drawing=false,shown=null,frozen=null,draft=null,editing=false,lastLive=0,editCameraMode=null,editRequest=null,saving=false;
 function skeleton(c,j,edges,x,y,sx,sy,ox=0,oy=0,line=3){if(!j)return;c.lineCap='round';c.strokeStyle='#96e7ad';c.lineWidth=line;for(const [a,b]of edges){const p=j[a],q=j[b];if(!p||!q)continue;c.beginPath();c.moveTo(x+(p.x-ox)*sx,y+(p.y-oy)*sy);c.lineTo(x+(q.x-ox)*sx,y+(q.y-oy)*sy);c.stroke()}c.fillStyle='#f4fff5';for(const p of Object.values(j)){c.beginPath();c.arc(x+(p.x-ox)*sx,y+(p.y-oy)*sy,line*.8,0,7);c.fill()}}
 function mark(c,x,y,label,color='#568564',r=13){c.fillStyle=color;c.beginPath();c.arc(x,y,r,0,7);c.fill();c.font='500 15px sans-serif';c.textAlign='center';c.fillStyle='#fff';c.fillText(label,x,y+5);c.textAlign='left'}
-function drawMap(s){mc.clearRect(0,0,600,850);const r=s?.room||{},layout=editing?draft:r;mc.strokeStyle='#b6c3ae';mc.lineWidth=3;mc.beginPath();for(const [i,p]of (layout?.outline||[[.05,.04],[.95,.04],[.95,.97],[.05,.97]]).entries()){if(i)mc.lineTo(p[0]*600,p[1]*850);else mc.moveTo(p[0]*600,p[1]*850)}mc.closePath();mc.stroke();mc.font='18px sans-serif';mc.textAlign='center';for(const f of layout?.furniture||[]){const [x,y,w,h]=f.rect;mc.fillStyle='#dce1d5';mc.fillRect(x*600,y*850,w*600,h*850);mc.fillStyle='#86917c';mc.fillText(f.name+'·示意',(x+w/2)*600,(y+h/2)*850+6)}mc.textAlign='left';for(const seat of layout?.seats||[]){if(seat.located===false)continue;const t=r.pointing?.find(p=>p.target===seat.id&&!p.ambiguous);mark(mc,seat.map[0]*600,seat.map[1]*850,String(seat.id),t?(t.confirmed?'#396f4c':'#80a18a'):'#a8b39e',t?22:18)}
+function drawMap(s){mc.clearRect(0,0,600,850);const r=s?.room||{},layout=editing?draft:r;mc.strokeStyle='#b6c3ae';mc.lineWidth=3;mc.beginPath();for(const [i,p]of (layout?.outline||[[.05,.04],[.95,.04],[.95,.97],[.05,.97]]).entries()){if(i)mc.lineTo(p[0]*600,p[1]*850);else mc.moveTo(p[0]*600,p[1]*850)}mc.closePath();mc.stroke();mc.font='18px sans-serif';mc.textAlign='center';for(const f of layout?.furniture||[]){const [x,y,w,h]=f.rect;mc.fillStyle='#dce1d5';mc.fillRect(x*600,y*850,w*600,h*850);mc.fillStyle='#86917c';mc.fillText(f.name+'·示意',(x+w/2)*600,(y+h/2)*850+6)}mc.textAlign='left';for(const seat of (editing&&draft.dynamic_seats!==false?r.seats:layout?.seats)||[]){if(seat.located===false)continue;const t=r.pointing?.find(p=>p.target===seat.id&&!p.ambiguous);mark(mc,seat.map[0]*600,seat.map[1]*850,String(seat.id),t?(t.confirmed?'#396f4c':'#80a18a'):'#a8b39e',t?22:18)}
 for(const o of r.observed_furniture||[]){if(!o.ground_edge)continue;const [a,b]=o.ground_edge;mc.strokeStyle='#598261';mc.lineWidth=3;mc.beginPath();mc.moveTo(a[0]*600,a[1]*850);mc.lineTo(b[0]*600,b[1]*850);mc.stroke();mc.fillStyle='#598261';mc.font='15px sans-serif';mc.fillText(o.name+'·观测',(a[0]+b[0])*300,(a[1]+b[1])*425-12)}
 for(const p of s?.people||[]){if(!p.position)continue;const x=p.position.x*600,y=p.position.y*850;mc.strokeStyle='#426d4e';mc.lineWidth=2;mc.beginPath();mc.arc(x,y,19,0,7);mc.stroke();if(p.position.method==='visible_ankle')mark(mc,x,y,'', '#426d4e',7);else{mc.setLineDash([4,5]);mc.beginPath();mc.arc(x,y,34,0,7);mc.stroke();mc.setLineDash([]);}mc.font='16px sans-serif';mc.fillStyle='#426d4e';mc.fillText(p.seat?p.seat+'号':'#'+p.id,x+19,y+5);for(const t of r.pointing||[]){if(t.person_id!==p.id||t.ambiguous)continue;const seat=r.seats.find(z=>z.id===t.target);if(!seat)continue;mc.setLineDash([6,7]);mc.beginPath();mc.moveTo(x,y);mc.lineTo(seat.map[0]*600,seat.map[1]*850);mc.stroke();mc.setLineDash([])}}
 if(editing){for(const [i,a]of draft.anchors.entries())mark(mc,a.map[0]*600,a.map[1]*850,'A'+(i+1),'#627c6b',17)}else if(s?.people?.length&&!s.people.some(p=>p.position)){mc.fillStyle='#87917f';mc.font='16px sans-serif';mc.fillText('暂无可靠地面落点',50,805)}}
@@ -21,19 +21,57 @@ $('empty').style.display='none';$('status').textContent=editing?'标定画面已
 async function draw(){if(drawing||!pending||editing)return;drawing=true;const item=pending;pending=null;try{const img=await createImageBitmap(new Blob([item.jpeg],{type:'image/jpeg'}));if(!editing){render(item,img);latest=item}img.close()}catch{}drawing=false;if(pending)draw()}
 function connect(){const ws=new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/ws?k=${encodeURIComponent(key)}`);ws.binaryType='arraybuffer';ws.onmessage=e=>{const b=e.data,d=new DataView(b),n=d.getUint32(0),j=d.getUint32(4),meta=JSON.parse(new TextDecoder().decode(new Uint8Array(b,8,n)));if(meta.status!=='live'||!j){if(!editing){$('empty').style.display='grid';$('empty').textContent=meta.status==='stopped'?'检测已停止':'等待实时画面';$('status').textContent='视频未接通';drawMap(null);drawHands(null)}return}pending={meta,jpeg:b.slice(8+n,8+n+j)};draw()};ws.onclose=()=>setTimeout(connect,1500)}
 async function control(a){await fetch(url('/api/'+a),{method:'POST'})}
-async function cameraMode(mode){const r=await fetch(url('/api/camera'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});if(!r.ok)$('cameraStatus').textContent='镜头控制未就绪'}
-function options(){const s=$('object');s.replaceChildren();for(const [kind,items]of [['anchor',draft.anchors],...(draft.dynamic_seats!==false?[]:[['seat',draft.seats]])])for(const [i,a]of items.entries()){const o=document.createElement('option');o.value=kind+':'+i;o.textContent=kind==='anchor'?'地面 A'+(i+1)+' · '+a.name:'座位 '+a.id;s.append(o)}updateCoordinateFields()}
+async function cameraMode(mode){try{const r=await fetch(url('/api/camera'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode}),signal:AbortSignal.timeout(5000)});if(r.ok)return true}catch{}$('cameraStatus').textContent='镜头控制未就绪';return false}
+function options(){const s=$('object');s.replaceChildren();for(const [kind,items]of [['anchor',draft.anchors],...(draft.dynamic_seats!==false?[]:[['seat',draft.seats]])])for(const [i,a]of items.entries()){const o=document.createElement('option');o.value=kind+':'+i;o.textContent=kind==='anchor'?'锚点 A'+(i+1)+(a.name&&a.name!=='A'+(i+1)?' · '+a.name:''):'座位 '+a.id;s.append(o)}updateCoordinateFields()}
 function updateCoordinateFields(){if(!draft)return;const[type,index]=$('object').value.split(':'),obj=(type==='anchor'?draft.anchors:draft.seats)[Number(index)];if(!obj)return;for(const kind of ['image','map'])for(const[axis,i]of [['X',0],['Y',1]])$(kind+axis).value=Number(obj[kind][i]).toFixed(3)}
 function selectObject(){updateCoordinateFields();redrawFrozen()}
 function coordinateInput(){if(!editing||!draft)return false;const[type,index]=$('object').value.split(':'),obj=(type==='anchor'?draft.anchors:draft.seats)[Number(index)];if(!obj)return false;const updates=[];for(const kind of ['image','map'])for(const[axis,i]of [['X',0],['Y',1]]){const input=$(kind+axis),value=Number(input.value);if(!input.value.trim()||!Number.isFinite(value)||value<0||value>1){input.setAttribute('aria-invalid','true');$('editerror').textContent='坐标应在 0 到 1 之间，修改后再保存。';return false;}input.removeAttribute('aria-invalid');updates.push([kind,i,value]);}for(const[kind,i,value]of updates)obj[kind][i]=value;$('editerror').textContent='';redrawFrozen();return true;}
 
-async function edit(){if(!latest)return;$('edit').disabled=true;editCameraMode=latest.meta.camera_control?.mode||null;if(editCameraMode)await cameraMode('hold');const until=Date.now()+6000;while(latest?.meta?.room?.registration?.status!=='locked'&&Date.now()<until)await new Promise(r=>setTimeout(r,100));if(latest?.meta?.room?.registration?.status!=='locked'){$('status').textContent='背景尚未对齐，稍后再校准';$('edit').disabled=false;if(editCameraMode)await cameraMode(editCameraMode);editCameraMode=null;return}draft=await(await fetch(url('/api/calibration'))).json();editing=true;frozen=latest;$('cameraMode').disabled=true;document.body.classList.add('calibrating');$('editor').style.display='block';$('edit').disabled=true;$('seatCount').value=draft.seats.length;$('autoSeats').checked=draft.dynamic_seats!==false;$('seatCount').disabled=draft.dynamic_seats!==false;options();redrawFrozen()}
-async function redrawFrozen(){if(!frozen)return;const img=await createImageBitmap(new Blob([frozen.jpeg],{type:'image/jpeg'}));render(frozen,img);img.close()}
-function cancel(){editing=false;frozen=null;draft=null;document.body.classList.remove('calibrating');$('editor').style.display='none';$('edit').disabled=false;$('cameraMode').disabled=false;if(editCameraMode)cameraMode(editCameraMode);editCameraMode=null;draw()}
+async function editorFailure(response,fallback){let message=fallback;try{const value=await response.json();if(typeof value.detail==='string'&&value.detail.length<=80)message=value.detail}catch{}return Object.assign(new Error(message),{userMessage:message})}
+async function edit(){
+ if(!latest||editing||editRequest||saving)return;
+ const request={controller:new AbortController()};editRequest=request;
+ $('editopenerror').textContent='';$('edit').disabled=true;editCameraMode=latest.meta.camera_control?.mode||null;
+ const timer=setTimeout(()=>request.controller.abort(),6500);
+ try{
+  if(editCameraMode){if(!await cameraMode('hold'))throw Object.assign(new Error(),{userMessage:'镜头尚未准备好，请稍后再试'});$('cameraMode').value='hold';}
+  if(editRequest!==request)return;
+  const response=await fetch(url('/api/calibration'),{signal:request.controller.signal});
+  if(!response.ok)throw await editorFailure(response,'暂时无法打开校准，请稍后重试');
+  const value=await response.json(),reference=value._reference;
+  if(editRequest!==request)return;
+  if(!reference||typeof reference.jpeg!=='string'||!reference.meta||!Array.isArray(value.anchors)||!Array.isArray(value.seats)||!value._source?.frame)throw new Error();
+  const bytes=Uint8Array.from(atob(reference.jpeg),c=>c.charCodeAt(0));
+  delete value._reference;draft=value;const meta={...reference.meta};delete meta.camera_control;frozen={jpeg:bytes.buffer,meta};editing=true;
+  $('cameraMode').disabled=true;$('mapTitle').textContent='位置图';document.body.classList.add('calibrating');$('editor').style.display='grid';
+  $('seatCount').value=draft.seats.length;$('autoSeats').checked=draft.dynamic_seats!==false;$('seatCount').disabled=draft.dynamic_seats!==false;
+  $('editerror').textContent='';options();await redrawFrozen();
+  if(editRequest===request)editRequest=null;
+ }catch(error){
+  if(editRequest!==request)return;
+  const message=error.userMessage||(request.controller.signal.aborted?'连接超时，请重试':'暂时无法打开校准，请稍后重试');
+  cancel();$('editopenerror').textContent=message;
+ }finally{clearTimeout(timer)}
+}
+async function redrawFrozen(){const item=frozen;if(!item)return;const img=await createImageBitmap(new Blob([item.jpeg],{type:'image/jpeg'}));try{if(editing&&frozen===item)render(item,img)}finally{img.close()}}
+function cancel(){if(saving)return;$('mapTitle').textContent='玩家位置';editRequest?.controller.abort();editRequest=null;editing=false;frozen=null;draft=null;document.body.classList.remove('calibrating');$('editor').style.display='none';$('edit').disabled=false;$('cameraMode').disabled=false;const prior=editCameraMode;editCameraMode=null;if(prior)cameraMode(prior);draw();$('edit').focus()}
 function toggleAutoSeats(){draft.dynamic_seats=$('autoSeats').checked;$('seatCount').disabled=draft.dynamic_seats;options();redrawFrozen()}
 function resizeSeats(){const n=Math.max(2,Math.min(12,Number($('seatCount').value)||6));draft.seats=Array.from({length:n},(_,i)=>draft.seats[i]||{id:i+1,image:[.77+.10*Math.cos(i/n*2*Math.PI),.42+.08*Math.sin(i/n*2*Math.PI)],map:[.5+.28*Math.cos(i/n*2*Math.PI),.30+.18*Math.sin(i/n*2*Math.PI)]});options();redrawFrozen()}
 for(const [canvas,kind]of [[v,'image'],[map,'map']])canvas.addEventListener('click',e=>{if(!editing)return;const [type,index]=$('object').value.split(':'),obj=(type==='anchor'?draft.anchors:draft.seats)[Number(index)],r=canvas.getBoundingClientRect();obj[kind]=[Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))];updateCoordinateFields();redrawFrozen()});
-async function save(){if(!coordinateInput()){$('editor').querySelector('[aria-invalid="true"]')?.focus();return;}try{draft.mode='relative_calibrated';let binary='';for(const b of new Uint8Array(frozen.jpeg))binary+=String.fromCharCode(b);const res=await fetch(url('/api/calibration'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:draft,reference_jpeg:btoa(binary)})});if(!res.ok)throw Error((await res.json()).detail||'保存失败');cancel()}catch(e){$('editerror').textContent=e.message}}
+async function save(){
+ if(saving||!editing||!frozen)return;
+ if(!coordinateInput()){$('editor').querySelector('[aria-invalid="true"]')?.focus();return;}
+ const button=$('editor').querySelector('[data-click="save()"]'),cancelButton=$('editor').querySelector('[data-click="cancel()"]');
+ const label=button?.textContent;saving=true;if(button){button.disabled=true;button.textContent='保存中…'}if(cancelButton)cancelButton.disabled=true;
+ try{
+  draft.mode='relative_calibrated';let binary='';for(const b of new Uint8Array(frozen.jpeg))binary+=String.fromCharCode(b);
+  const res=await fetch(url('/api/calibration'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:draft,reference_jpeg:btoa(binary)}),signal:AbortSignal.timeout(12000)});
+  if(!res.ok)throw await editorFailure(res,'暂时无法保存，请稍后重试');
+  const result=await res.json();if(result.saved!==true)throw new Error();
+  saving=false;latest=null;pending=null;cancel();$('empty').style.display='grid';$('empty').textContent='正在更新空间';
+ }catch(error){$('editerror').textContent=error.userMessage||'暂时无法确认保存结果，请重新打开校准查看'}
+ finally{saving=false;if(button){button.disabled=false;button.textContent=label}if(cancelButton)cancelButton.disabled=false}
+}
 setInterval(()=>{if(!editing&&lastLive&&Date.now()-lastLive>1500){$('empty').style.display='grid';$('empty').textContent='画面已过期';drawMap(null);drawHands(null);$('target').textContent='等待实时画面';$('hold').style.width='0%'}},500);drawHands(null);drawMap(null);connect();
 
 function delegatedCall(node,call){switch(call){case 'cameraMode(this.value)': cameraMode(node.value); break;

@@ -20,7 +20,7 @@ export function mountRecognitionDebug(root,{go}={}){
  const open=button('查看识别',async()=>{
   if(opened)return;const current=++sequence;open.disabled=true;state.textContent='正在加载';
   try{
-   const value=await read('/api/games/werewolf/open');
+   const value=await read('/api/embodied/recognition/open');
    if(disposed||current!==sequence)return;
    const url=new URL(value.url);
    if(url.protocol!=='http:'||url.hostname!=='127.0.0.1')throw Error('invalid_viewer');

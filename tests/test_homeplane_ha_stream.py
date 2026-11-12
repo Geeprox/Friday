@@ -312,19 +312,24 @@ async def test_cached_ui_reads_cannot_extend_latch_validity(connected):
 
 @pytest.mark.asyncio
 async def test_source_switch_lifespan_stops_worker_and_no_event_dispatch(tmp_path):
+    from tests.arl_fixtures import isolated_runtime
     from fastapi.testclient import TestClient
 
     from homeplane.api import create_app
     server = Server()
     ha = server.adapter()
     # TestClient owns a separate loop; its lifecycle starts/stops the worker itself.
-    app = create_app(ha, db_path=tmp_path / "events.sqlite", settings_path=tmp_path / "settings.json")
+    runtime, counts = isolated_runtime(tmp_path / 'synthetic-arl')
+    app = create_app(ha, db_path=tmp_path / "events.sqlite", settings_path=tmp_path / "settings.json",
+                     arl_runtime=runtime)
     with TestClient(app, base_url="http://127.0.0.1:8740") as client:
         assert client.get("/api/snapshot").json()["mode"] == "ha-read-only"
         assert ha._stream.ready
         result = client.post("/api/settings/source/simulator", headers={"origin": "http://127.0.0.1:8740"})
         assert result.status_code == 200 and ha._closed and ha._stream.task is None
     assert all(s.closed for s in server.sessions)
+    assert counts == dict(created=0, started=0, closed=0)
+    await runtime.close()
 
 
 @pytest.mark.asyncio

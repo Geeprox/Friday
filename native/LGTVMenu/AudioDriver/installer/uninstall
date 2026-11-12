@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+[ "$3" = / ] || exit 1
+driver=/Library/Audio/Plug-Ins/HAL/LGTVAudio.driver
+if [ -e "$driver" ]; then
+    [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$driver/Contents/Info.plist")" = local.friday.LGTVAudio ] || exit 1
+    "$(dirname "$0")/Recovery" BuiltInSpeakerDevice </dev/null || true
+    /bin/rm -rf -- "$driver"
+    /usr/bin/killall coreaudiod || true
+fi
+# Other HAL components and the user's saved TV pairing are left intact.
+exit 0

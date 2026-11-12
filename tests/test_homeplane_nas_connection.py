@@ -147,6 +147,22 @@ async def test_path_free_reader_generation_and_reference_only_persistence(tmp_pa
         await manager.close()
 
 
+@pytest.mark.parametrize("extension", ["HEIF", "heic", "avif", "tif", "tiff", "webp"])
+async def test_photo_decoder_formats_are_discoverable_without_exposing_paths(tmp_path, extension):
+    transport = FakeTransport()
+    transport.record["path"] = "SIMULATED/photo." + extension
+    manager, _ = await setup_manager(tmp_path, factory=lambda: transport)
+    try:
+        await wait_for(manager)
+        page = await manager.list_page(SOURCE)
+        entry = page.entries[0]
+        assert entry.media_kind == "image" and entry.closed is None
+        assert "SIMULATED/photo" not in page.model_dump_json()
+        assert await manager.stat(SOURCE, entry.object_ref, entry.revision) == entry
+    finally:
+        await manager.close()
+
+
 @pytest.mark.parametrize("code", ["nas_auth_failed", "nas_access_denied", "nas_host_key_mismatch",
                                   "nas_dependency_missing"])
 async def test_auth_or_security_failure_pauses_durably_without_retry(tmp_path, code):

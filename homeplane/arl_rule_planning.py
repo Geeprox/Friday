@@ -29,6 +29,20 @@ from .simulator import Simulator
 MODEL = "gpt-6.1-sol"  # Exact upstream source candidate; not account availability.
 
 
+def valid_usage_observation(value):
+    """Optional native counts are observations, never a price, quota or grant."""
+    if type(value) is not dict or set(value) != {"tokens", "cost"} or value["cost"] is not None:
+        return False
+    tokens = value["tokens"]
+    return tokens is None or (
+        type(tokens) is dict
+        and set(tokens) == {
+            "inputTokens", "outputTokens", "reasoningOutputTokens", "cachedInputTokens", "totalTokens"
+        }
+        and all(type(count) is int and count >= 0 for count in tokens.values())
+    )
+
+
 class RuleAnalysisRequest(Contract):
     text: str = Field(min_length=1, max_length=1024)
     expected_context: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -537,11 +551,11 @@ class ARLRuleChanges:
                     or receipt.get("action_authority") is not False
                     or receipt.get("simulated") is not False
                     or receipt.get("expires_at_ms") != reviewed.request["expires_at_ms"]
+                    or not valid_usage_observation(receipt.get("usage"))
                     or len(json.dumps(receipt, ensure_ascii=False, allow_nan=False).encode()) > 8192
                     or receipt.get("prompt_sha256")
                     != hashlib.sha256(render(reviewed.request).encode()).hexdigest()
                     or receipt.get("captured_at_ms") != reviewed.request["captured_at_ms"]
-                    or receipt.get("usage") != {"tokens": None, "cost": None}
                     or receipt.get("token_hard_cap_supported") is not False
                     or any(
                         type(receipt.get(k)) is not str
@@ -551,6 +565,11 @@ class ARLRuleChanges:
                     )
                 ):
                     raise ARLError("analysis_receipt_mismatch")
+                usage = receipt["usage"]
+                usage_observation = {
+                    "tokens": None if usage["tokens"] is None else dict(usage["tokens"]),
+                    "cost": None,
+                }
                 candidate = checked_proposal(receipt["proposal"], reviewed.request)
                 inference = True
                 snapshot = await self.text.manager.core.snapshot()
@@ -584,6 +603,7 @@ class ARLRuleChanges:
                         "expires_at_ms",
                     )
                 }
+                evidence.update(usage=usage_observation, token_hard_cap_supported=False)
                 extra = {
                     "planner_call_attempted": True,
                     "model_inference_attempted": True,

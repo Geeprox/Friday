@@ -197,7 +197,28 @@ while let line = readLine() {
             }
             let faceAge=Date().timeIntervalSince(lastFaceAt)*1000
             let faces=faceAge<400 ? lastFaces.map { f -> [String:Any] in var row=f;row["sample_age_ms"]=faceAge;return row } : []
+            // Separate opt-in animal rectangles. Failure must not disable human
+            // perception, and an animal never enters body/hand/identity output.
+            let animalStarted=Date()
+            var animals=[[String:Any]](), animalStatus="disabled"
+            if obj["animals_enabled"] as? Bool == true {
+                do {
+                    let request=VNRecognizeAnimalsRequest()
+                    try VNImageRequestHandler(cgImage:full,orientation:.up).perform([request])
+                    for observation in (request.results ?? []).prefix(10) {
+                        guard let label=observation.labels.first, label.confidence>=0.75 else {continue}
+                        let species=label.identifier.lowercased()
+                        guard species=="cat" || species=="dog" else {continue}
+                        let b=observation.boundingBox
+                        animals.append(["species":species,"box":["x":b.minX,"y":1-b.maxY,
+                            "w":b.width,"h":b.height,"confidence":Double(label.confidence)]])
+                    }
+                    animalStatus="ready"
+                } catch {animalStatus="unavailable"}
+            }
             let result: [String: Any] = ["boxes":unique,"poses":poses,"hands":hands,"faces":faces,
+                "animals":animals,"animals_supported":true,"animals_status":animalStatus,
+                "animal_ms":Date().timeIntervalSince(animalStarted)*1000,
                 "body_ms":bodyMilliseconds,"hand_ms":handMilliseconds,"hands_sampled":sampleHands,
                 "inference_ms":Date().timeIntervalSince(started)*1000]
             let out = try JSONSerialization.data(withJSONObject: result,options:[.sortedKeys])

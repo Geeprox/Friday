@@ -1,5 +1,6 @@
 """Restricted project AST. These types do not describe a vendor Graph protocol."""
 
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -40,6 +41,67 @@ class EventTrigger(Contract):
     entity: Identifier
     capability: Identifier
     value: Scalar
+
+
+class ScheduleTrigger(Contract):
+    type: Literal['schedule'] = 'schedule'
+    at: str = Field(strict=True, pattern=r'^(?:[01]\d|2[0-3]):[0-5]\d$')
+    weekdays: list[Annotated[int, Field(strict=True, ge=1, le=7)]] = Field(
+        default_factory=lambda: list(range(1, 8)), min_length=1, max_length=7,
+        json_schema_extra={'uniqueItems': True})
+    timezone: str = Field(strict=True, min_length=1, max_length=64)
+
+    @field_validator('weekdays')
+    @classmethod
+    def distinct_weekdays(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError('duplicate_schedule_weekday')
+        return sorted(value)
+
+    @field_validator('timezone')
+    @classmethod
+    def known_timezone(cls, value):
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError('unsupported_timezone') from exc
+        return value
+
+
+class OnceTrigger(Contract):
+    type: Literal['once'] = 'once'
+    at: str = Field(strict=True, min_length=16, max_length=64,
+                    pattern=r'^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?$')
+    timezone: str = Field(strict=True, min_length=1, max_length=64)
+
+    @model_validator(mode='before')
+    @classmethod
+    def canonical_instant(cls, value):
+        if not isinstance(value, dict):
+            return value
+        stamp, zone_name = value.get('at'), value.get('timezone')
+        if not isinstance(stamp, str) or not 16 <= len(stamp) <= 64 or 'T' not in stamp:
+            raise ValueError('once_time_invalid')
+        if not isinstance(zone_name, str) or not 1 <= len(zone_name) <= 64:
+            raise ValueError('unsupported_timezone')
+        try:
+            zone = ZoneInfo(zone_name)
+            at = datetime.fromisoformat(stamp)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError('once_time_invalid') from exc
+        if at.utcoffset() is None:
+            candidates = [
+                candidate for fold in (0, 1)
+                if (candidate := at.replace(tzinfo=zone, fold=fold).astimezone(UTC))
+                .astimezone(zone).replace(tzinfo=None) == at
+            ]
+            if not candidates:
+                raise ValueError('once_local_time_missing')
+            at = min(candidates)
+        return {**value, 'at': at.astimezone(UTC).isoformat()}
+
+
+CLOCK_TRIGGERS = (ScheduleTrigger, OnceTrigger)
 
 
 class NumericCondition(Contract):
@@ -181,7 +243,7 @@ class RuleIR(Contract):
     revision: int = Field(ge=1, strict=True)
     intent: str = Field(min_length=1, max_length=512)
     ownership: Literal["managed"] = "managed"
-    trigger: Annotated[TransitionTrigger | EventTrigger, Field(discriminator="type")]
+    trigger: Annotated[TransitionTrigger | EventTrigger | ScheduleTrigger | OnceTrigger, Field(discriminator="type")]
     conditions: list[Condition] = Field(default_factory=list, max_length=8)
     on_unknown: Literal["suppress_and_record"] = "suppress_and_record"
     actions: list[Instruction] = Field(min_length=1, max_length=16)

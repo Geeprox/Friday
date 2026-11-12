@@ -90,8 +90,20 @@ class SDK:
 
 @pytest.fixture
 def setup(tmp_path):
+    from types import SimpleNamespace
+    class Session:
+        def __init__(self, home):
+            self.client = SimpleNamespace(home=home, app_session='synthetic-session',
+                ping_app_session=lambda:dict(connected=self.connected, session_id='synthetic-session'))
+            self.connected, self.error, self.accepted = False, None, []
+        def start(self):
+            self.connected = True
+            self.accepted = ['codex.text.plan.v1']
+        def close(self):
+            self.connected = False
     sdk = SDK()
-    runtime = ARLRuntime(lambda: tmp_path, client_factory=sdk.factory, settings_client_factory=sdk.settings_factory)
+    runtime = ARLRuntime(lambda: tmp_path, client_factory=sdk.factory, settings_client_factory=sdk.settings_factory,
+                         application_factory=Session)
     return runtime, sdk
 
 
@@ -112,7 +124,7 @@ async def test_passive_status_and_explicit_bootstrap(setup):
 
 
 @pytest.mark.asyncio
-async def test_explicit_bootstrap_only_when_public_socket_is_absent(setup):
+async def test_explicit_connection_does_not_bootstrap_a_separate_runtime(setup):
     runtime, sdk = setup
     original = sdk.rpc
     def rpc(method, params=None):
@@ -124,9 +136,10 @@ async def test_explicit_bootstrap_only_when_public_socket_is_absent(setup):
     assert (await runtime.status())["status"] == "disconnected"
     assert not any(m == "connect" for m, _ in sdk.calls)
     sdk.calls.clear()
-    assert (await runtime.status(start=True))["ready"]
-    assert [m for m, _ in sdk.calls] == ["overview", "connect", "overview"]
-    assert sdk.factory_calls[-1][1] is True
+    report = await runtime.status(start=True)
+    assert report['status'] == 'disconnected' and not report['ready']
+    assert [m for m, _ in sdk.calls] == ["overview"]
+    assert all(start is False for _, start in sdk.factory_calls)
 
 
 @pytest.mark.asyncio
@@ -186,23 +199,62 @@ async def test_no_paid_inference_or_resubmit_after_lost_receipt(setup):
 @pytest.mark.asyncio
 async def test_deadline_and_cancellation_cancel_late_receipt_without_backlog(setup):
     runtime, sdk = setup
-    sdk.delay = .12
-    with pytest.raises(ARLError, match="deadline_exceeded"):
-        await runtime.run_job("runtime.ping", {}, deadline=time.monotonic()+.03)
-    with pytest.raises(ARLError, match="runtime_busy"):
-        await runtime.smoke()
-    await asyncio.sleep(.14)
-    assert any(method == "cancel" for method, _ in sdk.calls)
-    assert not runtime._busy.locked()
-    sdk.calls.clear()
-    sdk.start.clear()
-    task = asyncio.create_task(runtime.smoke())
-    await asyncio.to_thread(sdk.start.wait, 1)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    await asyncio.sleep(.14)
-    assert any(method == "cancel" for method, _ in sdk.calls) and not runtime._busy.locked()
+    original_rpc = sdk.rpc
+    loop = asyncio.get_running_loop()
+    for reason in ("deadline", "cancellation"):
+        sdk.calls.clear()
+        submitted, cancelled = asyncio.Event(), asyncio.Event()
+        release_receipt, release_cancel = threading.Event(), threading.Event()
+
+        def rpc(method, params=None):
+            result = original_rpc(method, params)
+            if method == "submit":
+                # 真实提交已产生回执，但运行时尚未收到；不靠线程池等待者的调度速度。
+                loop.call_soon_threadsafe(submitted.set)
+                assert release_receipt.wait(5), "合成提交回执未释放"
+            elif method == "cancel":
+                loop.call_soon_threadsafe(cancelled.set)
+                assert release_cancel.wait(5), "合成取消调用未释放"
+            return result
+
+        sdk.rpc = rpc
+        operation = (runtime.run_job("runtime.ping", {}, deadline=time.monotonic()+.5)
+                     if reason == "deadline" else runtime.smoke())
+        task = asyncio.create_task(operation)
+        try:
+            await asyncio.wait_for(submitted.wait(), 2)
+            if reason == "deadline":
+                with pytest.raises(ARLError, match="deadline_exceeded"):
+                    await task
+            else:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            assert runtime._busy.locked()
+            with pytest.raises(ARLError, match="runtime_busy"):
+                await runtime.smoke()
+            assert sum(method == "submit" for method, _ in sdk.calls) == 1
+            release_receipt.set()
+            await asyncio.wait_for(cancelled.wait(), 2)
+            # 取消调用尚未返回时也不能放开单工作线程或积压下一次提交。
+            assert runtime._busy.locked()
+            with pytest.raises(ARLError, match="runtime_busy"):
+                await runtime.smoke()
+            assert sum(method == "submit" for method, _ in sdk.calls) == 1
+        finally:
+            release_receipt.set()
+            release_cancel.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            # 在真实工作线程释放锁之后检查结果；超时只作为失败上界。
+            acquired = await asyncio.to_thread(runtime._busy.acquire, timeout=2)
+            if acquired:
+                runtime._busy.release()
+            sdk.rpc = original_rpc
+            assert acquired, "原工作线程未结束"
+        assert sum(method == "cancel" for method, _ in sdk.calls) == 1
+        assert not runtime._busy.locked()
 
 
 @pytest.mark.asyncio
@@ -256,17 +308,21 @@ async def test_legacy_wrappers_reuse_arl_and_never_spawn_or_shortcut():
             self.calls.append((args, kwargs))
             if self.error:raise ARLError(self.error)
             return {"simulated": False, "decision": {"label": "simple", "confidence": .99}}
+        async def complete_scenario(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            if self.error: raise ARLError(self.error)
+            return {'simulated':False,'text':'{}'}
     runtime = Runtime()
     result = await ARLRouteDecision(Settings(), runtime).classify("simulated")
     assert result["confidence"] == 0 and result["shadow"] and runtime.calls[0][0][0] == "laya_mlx"
     runtime.calls.clear()
-    with pytest.raises(ARLError, match="explicit_model_required"):
+    with pytest.raises(ARLError, match="model_request_id_required"):
         await ARLPlanner(Settings(), runtime).plan({}, {})
     assert not runtime.calls
     runtime.error = 'invalid_arguments'
     with pytest.raises(ARLError, match="arl_planner_context_contract_insufficient"):
-        await ARLPlanner(Settings(codex_model="simulated-version"), runtime).plan({}, {})
-    assert len(runtime.calls) == 1 and runtime.calls[0][0][0] == 'codex_app_server'
+        await ARLPlanner(Settings(arl_model_tasks_enabled=True, codex_model="simulated-version"), runtime).plan({'model_request_id':'synthetic-request'}, {})
+    assert len(runtime.calls) == 1 and runtime.calls[0][0][0] == 'home_planning'
 
 
 @pytest.mark.asyncio
@@ -294,7 +350,7 @@ async def test_media_never_bypasses_missing_arl_capabilities():
 
 def test_sdk_bootstrap_never_inherits_known_household_or_development_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME_HA_TOKEN", "SIMULATED-private-never-forward")
-    with pytest.raises(ARLError, match="runtime_launch_environment_not_isolated"):
+    with pytest.raises(ARLError, match="runtime_managed_by_arl"):
         sdk_client(tmp_path, start=True)
 
 

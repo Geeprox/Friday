@@ -7,6 +7,7 @@ import ipaddress
 import json
 
 from .paths import PRIVATE, configuration
+from .speech_lifecycle import SpeechGuard, SpeechExpired
 
 _play_lock = asyncio.Lock()
 
@@ -162,13 +163,19 @@ async def probe():
                     status='unavailable', error_class=type(error).__name__)
 
 
-async def _stream(device, audio):
-    task = asyncio.create_task(device.stream.stream_file(str(audio)))
+async def _stream(device, audio, *, guard=None):
+    guard = guard or SpeechGuard(lambda: not (PRIVATE / 'voice-paused').exists())
+    async def send():
+        await guard.checkpoint()
+        guard.dispatch()
+        await device.stream.stream_file(str(audio))
+    task = asyncio.create_task(send())
     deadline = asyncio.get_running_loop().time() + 90
     try:
         while not task.done():
             if (PRIVATE / 'voice-paused').exists():
                 return False
+            guard.check()
             if asyncio.get_running_loop().time() >= deadline:
                 raise asyncio.TimeoutError()
             await asyncio.wait({task}, timeout=.1)
@@ -180,12 +187,17 @@ async def _stream(device, audio):
         await asyncio.gather(task, return_exceptions=True)
 
 
-async def play(ha, text):
+async def play(ha, text, *, guard=None):
     """Stream only Friday's WAV; preserve other Mac audio and receiver volume."""
     if (PRIVATE / 'voice-paused').exists():
         return dict(status='paused')
     if not isinstance(text, str) or not 1 <= len(text) <= 1200:
         raise ValueError('invalid_reply')
+    guard = guard or SpeechGuard(lambda: not (PRIVATE / 'voice-paused').exists())
+    try:
+        guard.check()
+    except SpeechExpired:
+        return guard.receipt()
     current = status()
     if not current['configured'] or not current['dependency_available']:
         return dict(status='unavailable', reason='homepod_setup_required')
@@ -195,21 +207,30 @@ async def play(ha, text):
     audio = None
     async with _play_lock:
         try:
+            target = _target()['identifier']
+            prior = guard.current
+            guard.current = lambda: prior() is True and _target()['identifier'] == target
+            guard.check()
             async with _receiver() as device:
+                guard.check()
                 if await _availability(device) == 'busy':
                     return dict(status='busy')
-                audio, _ = await synthesize(text, file_format='wav')
+                guard.check()
+                audio, _ = await synthesize(text, file_format='wav', guard=guard)
                 if (PRIVATE / 'voice-paused').exists():
                     return dict(status='paused')
                 # Synthesis takes time; inspect the receiver again before send.
                 if await _availability(device) == 'busy':
                     return dict(status='busy')
-                completed = await _stream(device, audio)
+                guard.check()
+                completed = await _stream(device, audio, guard=guard)
                 return dict(status='accepted' if completed else 'paused', backend_completed=completed,
                             physical_audio_confirmed=False, transport='AirPlay / pyatv',
                             independent_connection=True, system_audio_redirected=False)
         except asyncio.CancelledError:
             raise
+        except SpeechExpired:
+            return guard.receipt()
         except Exception as error:
             return dict(status='unavailable', reason=str(error) if isinstance(error, Unavailable) else 'homepod_connection_unavailable',
                         error_class=type(error).__name__, physical_audio_confirmed=False)

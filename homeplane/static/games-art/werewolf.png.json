@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "asset": "werewolf",
+  "game_name": "狼人杀",
+  "kind": "original_illustrative_game_cover",
+  "use_case": "stylized-concept",
+  "generator": "OpenAI built-in image_gen",
+  "generated_on": "2026-11-04",
+  "source_generated_image": "exec-b2228d85-97d6-4cdb-93e7-bf20351dd3ee.png",
+  "transparent_background": false,
+  "prompt": "Use case: stylized-concept\nAsset type: original wide landscape game-store cover illustration, 16:9, full bleed, opaque, no UI.\nPrimary request: a warm, friendly social-deduction party scene for a werewolf game cover, visually belonging to the same sophisticated miniature paper-and-clay illustration series as the companion skiing, tennis, mountain-trail and exercise covers.\nScene: a small moonlit village courtyard with a few layered cut-paper cottages and softly glowing amber windows, rounded pine-teal trees, pale paper-blue evening sky and a modest cream moon. A round wooden game table is the clear foreground focus.\nSubjects: exactly four friendly fictional adult friends seated around the table, with visible expressive faces and relaxed conversational poses. One makes a gentle open-hand reasoning gesture; another thoughtfully considers the discussion. A few simple identity cards lie face down, their backs plain and unlettered. Near the front of the tabletop is one small hand-carved wooden wolf-head token with rounded features, a closed mouth and a friendly silhouette. The wolf token signals the party theme; it is a game piece, never a living monster.\nStyle/medium: sophisticated handmade 3D paper-and-clay illustration, crisply layered cut-paper shapes, softly rounded low-poly forms, matte materials, delicate visible paper fibers only at close range. Match the companion covers' friendly rounded character proportions, brown sculpted hair, simple oval eyes, warm small smiles, clean silhouettes and carefully finished tactile materials. A polished consumer game illustration, not a screenshot.\nComposition/framing: wide cinematic landscape, slightly elevated three-quarter camera. The friends and tabletop form one readable central scene, with essential faces, cards and wolf token inside the central 80 percent. Quiet village layers provide depth without competing with the group. Artwork fills the rectangular frame with no card border.\nLighting/mood: soft warm lantern light on faces and tabletop balanced with gentle powder-blue moonlight; clearly illuminated, sociable, thoughtful and inviting, with broad soft contact shadows.\nColor palette: paper cream, warm ochre and amber, deep pine teal, powder blue, muted coral and small graphite accents, restrained and consistent with the companion covers.\nConstraints: no text, letters, numbers, card writing, logos, watermarks, badges, scores, claims, phones, cameras, screens, controllers, device UI, split panels or surrounding mockup. No horror, blood, violence, fangs, frightening creatures or photoreal people. Do not depict or reuse any real household, family photograph or identifiable person.",
+  "provenance": "Original generated illustration. No real household data, family photograph, identifiable person or game screenshot was used.",
+  "presentation": "Illustrative social-deduction party cover art; not a screenshot or a claim about implemented game rules or visual fidelity.",
+  "style_reference_method": "Existing ski, tennis, quest and hiit covers and their exact prompt sidecars were inspected, then described in this prompt. No reference pixels were supplied to the generator.",
+  "style_reference_images": [
+    "homeplane/static/games-art/ski.png",
+    "homeplane/static/games-art/tennis.png",
+    "homeplane/static/games-art/quest.png",
+    "homeplane/static/games-art/hiit.png"
+  ],
+  "approval_status": "needs_parent_review",
+  "width": 1672,
+  "height": 941,
+  "bytes": 2808060,
+  "sha256": "65c686067b13e7ec6b8d9475c31da9ddeca5253cae95160a41404d49ae827c24",
+  "prompt_embedded": true,
+  "validation": "PNG CRC valid; embedded prompt exactly matches this sidecar; visual inspection completed against all four companion covers.",
+  "style_reference_sha256": {
+    "homeplane/static/games-art/ski.png": "c0b1187185e8aed146aaae4119e4dc7fa85bc708ddf6258d0946e5cb0e27254d",
+    "homeplane/static/games-art/tennis.png": "2ed81d8cb7d8077b0da4ad33a87b50e37107a16bd962b978ca7e68418c21cd7f",
+    "homeplane/static/games-art/quest.png": "efc7d75832055e8b4a95a2b30ab962b11af6e97cdb0974d6ead7ecb448bdf7a0",
+    "homeplane/static/games-art/hiit.png": "9dd54083dd5cf4cc6ba4fb72634b9a7b4e0a7c2adca2590f2749a37190530d10"
+  }
+}

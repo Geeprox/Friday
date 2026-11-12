@@ -165,17 +165,22 @@ class SettingsService:
         return self.path.with_name("nas-connection.json")
 
     async def resolve_nas_credential(self, credential_ref: str):
-        """Resolve an opaque NAS ref through an explicitly supplied private owner.
+        """Resolve a NAS ref through its local bound store or supplied private owner.
 
         This seam never searches files or reuses HA/Geek/camera credentials. The
         private provider must separately support this exact NAS read-only purpose.
         Its ephemeral result is consumed only by the existing NAS manager.
         """
-        if (self._nas_credential_resolver is None or not isinstance(credential_ref, str)
+        if (not isinstance(credential_ref, str)
                 or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", credential_ref) is None):
             return None
         from .nas_connection.contracts import NASCredentials
         try:
+            if self._nas_credential_resolver is None:
+                from .nas_connection.state import StateStore
+                config,_,_=StateStore(self.nas_connection_state_path).load()
+                if config is None or config.credential_ref!=credential_ref:return None
+                return self._local_nas_credentials.resolve(config,purpose='friday.nas.read-only.v1')
             value = await self._nas_credential_resolver(
                 credential_ref, purpose="friday.nas.read-only.v1"
             )
@@ -189,6 +194,17 @@ class SettingsService:
             # The manager receives only unresolved-credential evidence, never that text.
             return None
 
+    def save_nas_credential(self, username, password, *, expected_generation):
+        from .nas_connection.contracts import NASCredentials
+        from .nas_connection.state import StateStore
+        if self._nas_credential_resolver is not None:
+            raise ValueError('nas_external_credential_owner')
+        config,generation,_=StateStore(self.nas_connection_state_path).load()
+        if config is None or generation!=expected_generation:
+            raise ValueError('nas_source_changed')
+        self._local_nas_credentials.save(config,NASCredentials(username,password))
+        return {'saved':True,'secret_values_returned':False,'connection_attempted':False}
+
     def __init__(self, path: Path | str = "data/homeplane/settings.json", *,
                  token_path: Path | str = "data/miloco/config.json", transport=None,
                  nas_credential_resolver=None):
@@ -196,6 +212,8 @@ class SettingsService:
             raise ValueError("nas_private_resolver_required")
         self._nas_credential_resolver = nas_credential_resolver
         self.path = Path(path)
+        from .nas_connection.credentials import LocalNASCredentials
+        self._local_nas_credentials=LocalNASCredentials(self.path.parent/'credentials/nas')
         self.token_path = Path(token_path)
         self.transport = transport
         self.config = SettingsConfig()
@@ -228,7 +246,7 @@ class SettingsService:
             "ha": "managed_separately", "geek": "managed_separately",
             "camera": "local_service_token_reference", "secret_values_returned": False,
             "nas": "opaque_reference_only" if self._nas_credential_resolver is not None
-                   else "private_resolver_not_configured",
+                   else "local_endpoint_bound_private_store",
         }).model_dump()
 
     def _persist(self):

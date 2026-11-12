@@ -134,6 +134,10 @@ def rig(tmp_path):
     domains['media_player'].update({'turn_off':{},'media_pause':{}})
 
     def handle(request):
+        if request.url.path == "/api/config":
+            # A household can omit timezone metadata. This is a metadata read,
+            # not an entity lookup or device request.
+            return httpx.Response(200, json={})
         if request.url.path == "/api/states":
             return httpx.Response(200, json=rows)
         if request.url.path == "/api/services":

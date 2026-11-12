@@ -7,10 +7,14 @@ function prepare(context) {
   context.TextEncoder ??= TextEncoder;
   context.TextDecoder ??= TextDecoder;
   context.URL ??= URL;
+  context.URLSearchParams ??= URLSearchParams;
   let document = context.document;
   if (!document?.createElement) {
     if (typeof context.el !== 'function') return;
-    document = context.document = {createElement: context.el, querySelectorAll: () => [], documentElement: {}};
+    document = context.document ??= {};
+    document.createElement = context.el;
+    document.querySelectorAll ??= () => [];
+    document.documentElement ??= {};
     context.MutationObserver = class {observe() {}};
     context.queueMicrotask = queueMicrotask;
     original(fs.readFileSync(path.join(__dirname, '../homeplane/static/copy-layout.js'), 'utf8'), context);

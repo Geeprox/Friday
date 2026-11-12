@@ -382,12 +382,25 @@
             "fan.set",
             "fan.percentage",
             "climate.mode",
+            "climate.power",
             "climate.temperature",
+            "climate.fan_mode",
+            "light.color_temperature",
             "cover.position",
+            "cover.tilt",
             "cover.state",
             "lock.set",
             "number.value",
-            "select.option"
+            "select.option",
+            "media_player.power",
+            "media_player.volume",
+            "media_player.mute",
+            "media_player.playback",
+            "humidifier.power",
+            "humidifier.humidity",
+            "humidifier.mode",
+            "water_heater.power",
+            "water_heater.mode"
           ],
           "title": "Operation",
           "type": "string"
@@ -734,6 +747,42 @@
         "value"
       ],
       "title": "NumericCondition",
+      "type": "object"
+    },
+    "OnceTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "once",
+          "default": "once",
+          "title": "Type",
+          "type": "string"
+        },
+        "at": {
+          "maxLength": 64,
+          "minLength": 16,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d{1,6})?)?(?:Z|[+-]\\d{2}:\\d{2})?$",
+          "title": "At",
+          "type": "string"
+        },
+        "timezone": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "timezone"
+      ],
+      "title": "OnceTrigger",
       "type": "object"
     },
     "RuleAnalysisContext": {
@@ -1222,6 +1271,8 @@
           "discriminator": {
             "mapping": {
               "event": "#/$defs/EventTrigger",
+              "once": "#/$defs/OnceTrigger",
+              "schedule": "#/$defs/ScheduleTrigger",
               "state_transition": "#/$defs/TransitionTrigger"
             },
             "propertyName": "type"
@@ -1232,6 +1283,12 @@
             },
             {
               "$ref": "#/$defs/EventTrigger"
+            },
+            {
+              "$ref": "#/$defs/ScheduleTrigger"
+            },
+            {
+              "$ref": "#/$defs/OnceTrigger"
             }
           ],
           "title": "Trigger"
@@ -1426,6 +1483,52 @@
         "retained_actions"
       ],
       "title": "RuleTextChoice",
+      "type": "object"
+    },
+    "ScheduleTrigger": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "schedule",
+          "default": "schedule",
+          "title": "Type",
+          "type": "string"
+        },
+        "at": {
+          "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+          "title": "At",
+          "type": "string"
+        },
+        "weekdays": {
+          "items": {
+            "maximum": 7,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maxItems": 7,
+          "minItems": 1,
+          "title": "Weekdays",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "timezone": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "timezone"
+      ],
+      "title": "ScheduleTrigger",
       "type": "object"
     },
     "TimeCondition": {

@@ -19,21 +19,14 @@ struct ConnectionView: View {
     var body: some View {
         GeometryReader { geometry in
         ScrollView {
-        VStack(spacing: 18) {
+        VStack(alignment: .leading, spacing: 20) {
             Image(systemName: needsAuthorization ? "key.fill" : service.status?.failure == nil ? "house" : "exclamationmark.triangle")
-                .font(.system(size: 36))
+                .font(.system(size: 28))
                 .foregroundStyle(service.status?.failure == nil ? Color.secondary : Color.orange)
                 .accessibilityHidden(true)
-            Text(presentation.title).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
+            Text(presentation.title).font(.title2.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)
-            if let description = presentation.titleDetail {
-                Text(description).font(.caption).foregroundStyle(.secondary)
-            }
-            Text(presentation.detail).foregroundStyle(.primary).multilineTextAlignment(.center).frame(maxWidth: 560)
-            if needsAuthorization {
-                Text("在 Home Assistant 中重新登录并确认授权，返回 Friday 后重新读取家庭状态。")
-                    .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 520)
-            }
+            Text(presentation.detail).foregroundStyle(.primary).multilineTextAlignment(.leading).frame(maxWidth: 560)
             if let report = service.status {
                 if needsAuthorization {
                     Button("重新授权") { service.openHomeAuthorization() }
@@ -41,16 +34,14 @@ struct ConnectionView: View {
                         .disabled(!service.statusReadAvailable || !report.configurationAvailable || service.connecting)
                     if service.awaitingAuthorization {
                         Text("授权页面已打开，在浏览器中完成登录后返回这里。")
-                            .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            .foregroundStyle(.secondary).multilineTextAlignment(.leading)
                         Button("检查授权") { connect(report) }
                             .disabled(!service.statusReadAvailable || service.connecting || network.checking)
-                        Text("完成授权后重新读取家庭状态").font(.caption).foregroundStyle(.secondary)
                     }
                 } else if !report.credentialAvailable && report.configurationAvailable {
                     Button("登录网关") { service.openHomeAuthorization() }
                         .buttonStyle(.borderedProminent).controlSize(.large).keyboardShortcut(.defaultAction)
                         .disabled(!service.statusReadAvailable || service.connecting)
-                    Text("在 Home Assistant 中登录").font(.caption).foregroundStyle(.secondary)
                 } else {
                     Button(network.checking ? "等待网络权限…" : service.status?.failure == nil ? "连接家庭" : "重新读取") {
                         connect(report)
@@ -64,8 +55,6 @@ struct ConnectionView: View {
             }
             if service.connecting { ProgressView("正在读取家庭状态…") }
             if let message = network.message { Text(message).foregroundStyle(.secondary).frame(maxWidth: 560) }
-            Text("连接恢复后，即可查看家庭状态和控制设备。")
-                .font(.callout).foregroundStyle(.secondary)
             if service.status?.failure != nil {
                 Button("查看记录") { service.openLogs() }
             }
@@ -80,7 +69,8 @@ struct ConnectionView: View {
                     Text("此页仅管理连接，不会开启摄像头、音频或设备控制。")
                 }.font(.callout).foregroundStyle(.secondary).padding(.top, 8)
             }.frame(maxWidth: 560)
-        }.padding(32).frame(maxWidth: .infinity, minHeight: geometry.size.height)
+        }.frame(maxWidth: 520, alignment: .leading).padding(40)
+            .frame(maxWidth: .infinity, minHeight: geometry.size.height)
         }
         }
     }

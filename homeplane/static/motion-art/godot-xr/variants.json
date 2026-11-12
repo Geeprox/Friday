@@ -1,0 +1,53 @@
+{
+  "hand.ok": {
+    "source_pose": "OK",
+    "roll_degrees": 0,
+    "status": "user-approved baseline"
+  },
+  "hand.yeah": {
+    "source_pose": "Peace",
+    "roll_degrees": 0,
+    "status": "user-approved baseline"
+  },
+  "hand.point": {
+    "source_pose": "Sign_1",
+    "roll_degrees": 0,
+    "status": "user-approved baseline; exact official pose_point_right choice"
+  },
+  "hand.open_palm": {
+    "source_pose": "Sign_5",
+    "start_pose": "Default_pose",
+    "roll_degrees": 0,
+    "status": "user-approved baseline"
+  },
+  "hand.fist": {
+    "source_pose": "Grip",
+    "roll_degrees": 0,
+    "status": "original source endpoint"
+  },
+  "hand.thumb_up": {
+    "source_pose": "Thumb",
+    "roll_degrees": -90,
+    "status": "original thumb endpoint; whole-hand display orientation adjusted"
+  },
+  "hand.thumb_down": {
+    "source_pose": "Thumb",
+    "roll_degrees": 90,
+    "status": "explicit derivative: same Thumb endpoint with whole-hand display rotation 180 degrees from thumb_up; NOT an independent official pose"
+  },
+  "hand.shaka": {
+    "source_pose": "Surfer",
+    "roll_degrees": 0,
+    "status": "original source endpoint: thumb and little finger extended"
+  },
+  "hand.horns": {
+    "source_pose": "Horns",
+    "roll_degrees": 0,
+    "status": "original source endpoint: index/little extended, thumb folded"
+  },
+  "source.Metal": {
+    "source_pose": "Metal",
+    "roll_degrees": 0,
+    "status": "original alternate rock endpoint with thumb extended"
+  }
+}

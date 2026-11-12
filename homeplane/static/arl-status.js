@@ -4,11 +4,15 @@ export function arlPresentation(report) {
   const status = value.status;
   const freshness = value.metadataFreshness;
   const pending = value.refreshPending === true;
+  const application = value.applicationSession || {};
+  const runtimeConnected = status === 'ready' && value.ready === true && freshness === 'current' && !pending;
   let state = 'unknown';
   if (pending) state = 'refreshing';
   else if (freshness === 'last_known') state = 'stale';
   else if (freshness === 'current' || freshness === 'unavailable') {
-    if (status === 'ready' && value.ready === true && freshness === 'current') state = 'connected';
+    if (runtimeConnected) state = application.connected === true && application.state === 'connected' ? 'connected'
+      : application.state === 'upgrade_required' ? 'upgrade_required'
+      : application.state === 'registering' ? 'registering' : 'handshake_required';
     else if (status === 'disconnected') state = 'disconnected';
     else if (status === 'not_running') state = 'not_running';
     else if (status === 'sdk_missing') state = 'sdk_missing';
@@ -18,7 +22,10 @@ export function arlPresentation(report) {
   }
   const task = '身份与模型能力尚未验证';
   const rows = {
-    connected: ['通信正常', `ARL 健康通信正常；${task}。`, '在本次任务预览中核对模型能力与授权。'],
+    connected: ['已注册', 'Friday 已完成 ARL 应用握手；模型能力尚未实测，家庭操作权限单独校验。', '在本次任务预览中核对模型能力与授权。'],
+    upgrade_required: ['等待更新', 'ARL 健康通信正常；当前 SDK 或服务尚不支持应用握手。', '更新 ARL 和配套 SDK 后，Friday 会重新握手。'],
+    registering: ['正在注册', 'ARL 健康通信正常；Friday 正在注册应用会话。', '等待注册确认；若 ARL 重启，会自动重新握手。'],
+    handshake_required: ['尚未注册', 'ARL 健康通信正常；Friday 尚未完成应用握手。', '启动 Friday 的家庭服务，完成应用注册后再提交模型任务。'],
     disconnected: ['连接失败', 'ARL 连接检查失败，健康通信暂不可用。', '检查本机 ARL 服务后重新读取。'],
     not_running: ['尚未运行', 'ARL 尚未运行。', '在本机启动已配置的 ARL 后重新读取。'],
     sdk_missing: ['需要安装', '本机尚未安装 ARL SDK。', '按部署指南安装 ARL SDK 后重新读取。'],
@@ -48,6 +55,8 @@ export function arlPresentation(report) {
   }
   return {
     state, connected: state === 'connected', label: row[0], description: row[1], recovery: row[2],
+    runtimeConnected, applicationRegistered: state === 'connected',
+    modelServiceAccepted: state === 'connected' && application.modelServiceAccepted === true,
     taskReadiness: 'unverified', identityVerified: false, modelCapabilityVerified: false,
   };
 }
@@ -62,5 +71,9 @@ export function arlRuntimePresentation(report) {
     ready: value.ready,
     metadataFreshness: value.metadata_freshness,
     refreshPending: value.metadata_refresh_pending,
+    applicationSession: {
+      connected: value.application?.connected, state: value.application?.state,
+      modelServiceAccepted: value.application?.model_service_accepted,
+    },
   });
 }

@@ -1,4 +1,4 @@
-"""Finite local orchestration over the primary catalog. No transport or filesystem executor."""
+"""Finite local orchestration over the primary catalog; original-file writes stay held."""
 
 import asyncio
 import inspect
@@ -75,6 +75,7 @@ class FileSteward:
         fixture_paths=None,
         fixture_inventories=(),
         session_status=None,
+        local_text_enabled=False,
     ):
         self.connection, self.catalog = connection, catalog
         self.session_status = session_status
@@ -119,6 +120,12 @@ class FileSteward:
 
         self.settings = StewardSettings(self)
         self.queue = StewardExtractionQueue(self)
+        self.local_extraction = None
+        if local_text_enabled:
+            from .local_text import LocalTextExtraction
+
+            self.local_extraction = LocalTextExtraction(self)
+            self.providers[self.local_extraction.spec.key] = self.local_extraction.spec
         with connection:
             # Process interruption retains committed units/cursor and charged budget.
             for job in self.jobs():
@@ -220,13 +227,17 @@ class FileSteward:
         )
         if inspect.isawaitable(status):
             status = await status
+        self.queue.recover()
         return {
             "catalog": context,
             "session": session_projection(status, context),
             "executor_enabled": False,
+            "content_extraction_enabled": self.local_extraction is not None,
             "providers": [
-                {"key": p.key, "label": p.label, "enabled": False, "qualification": p.qualification}
-                for p in PROVIDERS.values()
+                {"key": p.key, "label": p.label,
+                 "enabled": bool(self.local_extraction and p.key == self.local_extraction.spec.key),
+                 "qualification": p.qualification}
+                for p in self.providers.values() if p.environment != "fixture"
             ],
             "policy_presets": PRESETS,
             "policies": self.policies(),
@@ -456,7 +467,12 @@ class FileSteward:
         result = []
         with self.connection:
             for item in items:
-                key = digest([item.original_hash, spec.key, spec.version])
+                identity = [item.original_hash, spec.key, spec.version]
+                # A selected content read is tied to this original and source epoch,
+                # even when another directory contains an identical byte sequence.
+                if self.local_extraction and spec.key == self.local_extraction.spec.key:
+                    identity.append(fingerprint(item))
+                key = digest(identity)
                 try:
                     job = self._load("jobs", key, StewardJob)
                 except StewardError:
@@ -496,6 +512,16 @@ class FileSteward:
         adapter = self.fixture_provider
         if not adapter or not self.catalog.simulated or adapter.spec.environment != "fixture":
             raise StewardError("steward_executor_disabled")
+        return await self._run_provider_step(
+            adapter, job_id, expected_context, budget,
+            commit_guard=commit_guard, approval_view=approval_view,
+        )
+
+    async def _run_provider_step(
+        self, adapter, job_id, expected_context, budget=None, *, commit_guard=None, approval_view=None,
+        content_guard=None,
+    ):
+        """Internal finite commit owner; public requests cannot inject an adapter."""
         if self.lock.locked():
             raise StewardError("steward_busy")
         budget = budget or StewardBudget()
@@ -529,6 +555,8 @@ class FileSteward:
                 self.connection.execute("BEGIN IMMEDIATE")
                 if commit_guard and not commit_guard():
                     raise StewardError("steward_queue_interrupted")
+                if content_guard and not content_guard():
+                    raise StewardError("content_grant_required")
                 if not self.settings.approval_current(approval, job.item_id):
                     raise StewardError("steward_settings_changed")
                 if self._policy_epoch() != policy_epoch:
@@ -614,7 +642,7 @@ class FileSteward:
                 session = (await self.context())["session"]
                 if session["reason"] == "authentication_required":
                     raise StewardError("authentication_required")
-                if session.get("handoff_service"):
+                if session.get("handoff_service") and not (content_guard and content_guard()):
                     raise StewardError("content_grant_required")
                 current = (await self._items(expected_context, [job.item_id], ready=True))[0]
                 if fingerprint(current) != job.source_fingerprint:
@@ -623,6 +651,8 @@ class FileSteward:
                     self.connection.execute("BEGIN IMMEDIATE")
                     if commit_guard and not commit_guard():
                         raise StewardError("steward_queue_interrupted")
+                    if content_guard and not content_guard():
+                        raise StewardError("content_grant_required")
                     if self._load("jobs", job_id, StewardJob) != running:
                         raise StewardError("steward_queue_interrupted")
                     if not self.settings.approval_current(approval, job.item_id):
