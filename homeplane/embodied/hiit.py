@@ -218,6 +218,7 @@ class HIITCircuit:
         self.stable = None
         self.stable_for = 0.0
         self.gap = 0.0
+        self.tap_origin = None
         self.feedback = "站直半秒，记录个人站姿"
         self.history = []
 
@@ -232,6 +233,18 @@ class HIITCircuit:
             self.last_side = None
         self.stable_for = self.gap = 0.0
         self.ready = not self.require_neutral
+        self.tap_origin = None
+
+    def _tap_keeps_stance(self, joints, value):
+        """记录起步站位，避免点地后横移到新站位也计次。"""
+        feet = tuple(joints[side + "Ankle"]["x"] for side in ("left", "right"))
+        if value == "neutral" and self.pending is None:
+            self.tap_origin = feet
+        if self.tap_origin is None:
+            return False
+        drift = [abs(current - start) for current, start in zip(feet, self.tap_origin)]
+        shoulder_width = abs(joints["leftShoulder"]["x"] - joints["rightShoulder"]["x"])
+        return (max(drift) if value == "neutral" else min(drift)) <= .30 * shoulder_width
 
     def update(self, p, dt):
         if self.complete:
@@ -301,6 +314,10 @@ class HIITCircuit:
         if self.stable_for + 1e-6 < dwell:
             if self.ready and dwell > .09:
                 self.feedback = '稳住，稍后再落脚'
+            return
+        if key == "side_tap" and (self.ready or value == "neutral") and not self._tap_keeps_stance(p["joints"], value):
+            self.invalidate_motion(keep_completed_side=True)
+            self.feedback = "站稳，再向亮起的一侧点地"
             return
         if not self.ready:
             self.ready = value == "neutral"

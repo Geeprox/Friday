@@ -290,6 +290,20 @@ def test_creek_stones_require_one_foot_in_the_cued_direction_then_return():
     assert q["stage"]["action"] == "high_knee" and q["history"] == [{"action": "side_tap", "reps": 4, "hold": 0}]
 
 
+def test_stepping_into_a_different_stance_does_not_earn_a_creek_stone():
+    j = Journey()
+    j.game.reset("off")
+    j.game.select("quest", quest_route="stream")
+    j.game.reset("quest")
+    j.feed(count=40)
+    assert j.feed("side_tap")["quest"]["step"]["phase"] == "return"
+    q = j.feed("side_step")["quest"]
+    assert q["reps"] == 0 and q["step"]["side"] == "left"
+    j.feed()
+    assert j.feed("side_tap")["quest"]["step"]["phase"] == "return"
+    assert j.feed()["quest"]["reps"] == 1
+
+
 @pytest.mark.parametrize("side", ["left", "right"])
 def test_side_tap_rehearsal_recognizes_one_completed_step(side):
     now = 0.0
