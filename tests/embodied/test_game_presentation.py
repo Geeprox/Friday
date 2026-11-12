@@ -129,7 +129,8 @@ def test_original_idle_view_refreshes_the_display_window_without_claiming_camera
     from types import SimpleNamespace
     game,now=engine();game.select('ski');cached=game.public['presentation']['window']
     camera={'id':'SYNTHETIC-camera'};home=SimpleNamespace(public=lambda:{})
-    scope=dict(games=game,state={'status':'starting','processed_frames':0},recorder=home,home=home,
+    from homeplane.embodied.party_camera import PartyCamera
+    scope=dict(games=game,party_camera=PartyCamera(),state={'status':'starting','processed_frames':0},recorder=home,home=home,
                safety=SimpleNamespace(recording_status=lambda:{}),SELECTED=camera,secondary_homes={},
                fleet=SimpleNamespace(public=lambda at:{}),PRIVATE=tmp_path,camera_planner=None,last_frame=None,
                time=SimpleNamespace(monotonic=lambda:now[0],time=lambda:100+now[0]),configuration=lambda:{'cameras':[camera]})
@@ -150,6 +151,11 @@ def test_loading_the_next_tutorial_keeps_the_original_player_and_hiding_still_re
         game.update([human(1,arms='horizontal')],LOCK,now[0])
         if game.level>0 and game.quest_transition>0:break
     assert game.level>0 and game.quest_transition>0 and game.slots==[1]
+    previous=game.quest_transition
+    # 浏览器尚未来得及确认新站点，worker 已经处理下一帧。
+    now[0]+=.05;game.update([human(2)],LOCK,now[0]);assert not game.source_resume_required
+    assert game.quest_transition==previous and game.slots==[1]
+    with pytest.raises(ValueError,match='game_presentation_not_ready'):game.require_game_view('quest')
     sequence=0;game.observe_presentation(view(game,sequence=sequence,ready=False));sequence+=1
     game.update([human(2)],LOCK,now[0]);assert not game.source_resume_required and game.slots==[1]
     game.observe_presentation(view(game,sequence=sequence));sequence+=1
@@ -161,6 +167,39 @@ def test_loading_the_next_tutorial_keeps_the_original_player_and_hiding_still_re
     game.update([human(2)],LOCK,now[0])
     game.observe_presentation(view(game,sequence=sequence,visible=False,ready=False))
     game.update([human(2)],LOCK,now[0]);assert game.source_resume_required
+
+
+def test_missing_next_step_report_does_not_extend_the_previous_screen_deadline():
+    from tests.embodied.test_motion_games import human,LOCK
+    game,now=engine();game.reset('quest');game.elapsed=4;game.slots=[1]
+    game.observe_presentation(view(game))
+    now[0]=2;game.level=1;game.quest_transition=3
+    game.update([human(2)],LOCK,now[0]);assert not game.source_resume_required
+    assert game.slots==[1] and game.quest_transition==3
+    now[0]=2.6;game.update([human(2)],LOCK,now[0])
+    assert game.source_resume_required and game.quest_transition==3 and game.elapsed==4
+
+
+def test_hidden_first_next_step_report_revokes_inherited_visibility():
+    from tests.embodied.test_motion_games import human,LOCK
+    game,now=engine();game.reset('quest');game.elapsed=4;game.slots=[1]
+    game.observe_presentation(view(game));game.level=1;game.quest_transition=3
+    pending=view(game,view_id='2'*32)
+    game.observe_presentation({**pending,'sequence':1,'visible':False,'ready':False})
+    with pytest.raises(ValueError):game.observe_presentation(pending)
+    game.update([human(1)],LOCK,now[0])
+    assert game.source_resume_required and game.quest_transition==3 and game.elapsed==4
+
+
+def test_hidden_first_next_step_report_cannot_retire_another_current_ready_view():
+    from tests.embodied.test_motion_games import human,LOCK
+    game,now=engine();game.reset('quest');game.elapsed=4;game.slots=[1]
+    game.observe_presentation(view(game));game.level=1;game.quest_transition=3
+    game.observe_presentation(view(game,view_id='2'*32))
+    game.observe_presentation(view(game,view_id='3'*32,sequence=1,visible=False,ready=False))
+    game.update([human(1)],LOCK,now[0])
+    assert not game.source_resume_required and game.slots==[1]
+    assert game.presentation.ready(game.presentation_scope())
 
 
 def test_a_previous_exercise_view_cannot_mark_the_next_instruction_ready():

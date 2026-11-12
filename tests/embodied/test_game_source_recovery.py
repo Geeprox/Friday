@@ -139,6 +139,80 @@ def recover(game,clock,*,count=None,steps=22):
     return result
 
 
+@pytest.mark.parametrize('mode', ['quest', 'ski', 'tennis', 'hiit'])
+def test_same_camera_can_reconfirm_replaced_tracks_without_restarting(mode):
+    game = partial_game(mode)
+    clock = [100.0]
+    game.clock = lambda: clock[0]
+    roster = [human(1, .3), human(2, .7)] if mode == 'tennis' else [human(1, .3)]
+
+    def feed(people, steps=1):
+        for _ in range(steps):
+            clock[0] += .05
+            result = game.update(people, LOCK, clock[0], captured_at=clock[0])
+        return result
+
+    feed(roster, 24)
+    assert game.slots and game.status == 'playing'
+    if mode == 'tennis':
+        from tests.embodied.test_tennis_match import pose_players
+
+        assert feed(pose_players(swing_track=2))['tennis']['ball']['toward'] == 1
+        for _ in range(120):
+            feed(roster)
+            if game.score == [1, 0] and game.tennis_serve_ready:
+                break
+        assert game.score == [1, 0]
+        assert feed(pose_players(swing_track=1))['tennis']['ball']['toward'] == 0
+    before = progress(game)
+    original_control = game.control_context, game.control_revision
+    feed(roster[:-1], 40)
+    assert progress(game) == before and not game.source_resume_required
+    # 保留原网球 2 号。新编号来到更右的位置时也只接替原来的 1 号。
+    returned = [human(1, .72), human(502, .28)] if mode == 'tennis' else [human(501, .3)]
+    recovery = feed(returned)['source_recovery']
+    assert recovery['required'] and not recovery['ready']
+    assert not game.control_current(*original_control)
+    with pytest.raises(ValueError, match='game_input_not_ready'):
+        game.set_paused(False)
+    result = feed(returned, 24)
+    assert result['source_recovery']['ready'] and progress(game) == before
+    assert game.slots == []
+    game.set_paused(False)
+    assert game.slots == ([502, 1] if mode == 'tennis' else [501])
+    while game.resume_seconds > 0:
+        feed(returned)
+        assert progress(game) == before
+    assert game.status == 'playing' and game.round_id == before['round']
+    feed(returned, 2)
+    assert game.elapsed > before['elapsed']
+    if mode == 'tennis':
+        assert game.score == before['score'] and game.ball != before['ball']
+
+
+@pytest.mark.parametrize('gesture', ['ok', 'yeah'])
+def test_waiting_for_an_existing_roster_cannot_restart_or_switch_by_gesture(gesture):
+    game = partial_game('tennis')
+    before = progress(game)
+    for index in range(32):
+        now = 100 + index*.05
+        game.update([human(1, .3)], LOCK, now, [{'person_id': 1, 'gesture': gesture}], captured_at=now)
+    assert game.status == 'waiting'
+    assert progress(game) == before and game.selected_mode == 'tennis'
+    assert not game.source_resume_required
+
+
+def test_original_tracks_continue_without_confirmation_after_brief_absence():
+    game = partial_game('tennis')
+    before = progress(game)
+    original = game.slots[:]
+    game.update([human(1, .3)], LOCK, 100.0, captured_at=100.0)
+    assert progress(game) == before
+    result = game.update([human(1, .3), human(2, .7)], LOCK, 100.2, captured_at=100.2)
+    assert result['status'] == 'playing' and not result['source_recovery']['required']
+    assert game.slots == original and game.round_id == before['round']
+
+
 @pytest.mark.parametrize('mode',['quest','ski','tennis','hiit'])
 def test_source_recovery_preserves_earned_work_until_explicit_ready_resume(mode):
     game=partial_game(mode);clock=[100.0];game.clock=lambda:clock[0];before=progress(game)

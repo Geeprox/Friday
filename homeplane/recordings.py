@@ -28,19 +28,30 @@ FOLDER = re.compile(r"XiaomiCamera_[0-9]{2}_[A-Fa-f0-9]{12}")
 FILE = re.compile(r"[0-9]{2}_([0-9]{14})_([0-9]{14})\.(?:mp4|mov)", re.I)
 
 
-def listing(root, selected=None, date=None, limit=80):
+def listing(root, selected=None, date=None, limit=80, *, only_selected=False):
     candidates, folders, visited = [], [], 0
     fd = root_handle(root)
     try:
-        with os.scandir(fd) as entries:
-            names = [e.name for e in entries if FOLDER.fullmatch(e.name) and e.is_dir(follow_symlinks=False)][
-                :8
-            ]
+        if only_selected:
+            if not isinstance(selected, str) or not FOLDER.fullmatch(selected):
+                raise ValueError("invalid_recording_folder")
+            names = [selected]
+        else:
+            with os.scandir(fd) as entries:
+                names = [e.name for e in entries if FOLDER.fullmatch(e.name) and e.is_dir(follow_symlinks=False)][
+                    :8
+                ]
         for folder in sorted(names):
-            folders.append(folder)
             if selected and selected != folder:
+                folders.append(folder)
                 continue
-            sub = open_beneath(fd, folder, directory=True)
+            try:
+                sub = open_beneath(fd, folder, directory=True)
+            except FileNotFoundError:
+                if only_selected:
+                    continue
+                raise
+            folders.append(folder)
             try:
                 with os.scandir(sub) as entries:
                     for e in entries:
@@ -101,7 +112,23 @@ class Recordings:
         self.closed = False
         self.maintenance = None
 
-    async def browse(self, folder=None, date=None):
+    def _capture_folder(self, camera, context):
+        matches = [
+            row for row in context["cameras"]
+            if row.get("capture_camera_id") == camera
+            and row.get("source_binding_current") is True
+            and row.get("capture_binding_current") is True
+        ]
+        capture = next((row for row in context["capture_cameras"] if row["id"] == camera), None)
+        if len(matches) != 1 or capture is None:
+            raise ValueError("recording_camera_mapping_required")
+        profile = next((row for row in self.archive.profiles() if row["id"] == matches[0]["id"]), {})
+        folder = profile.get("relative_directory")
+        if not isinstance(folder, str) or not FOLDER.fullmatch(folder):
+            raise ValueError("recording_camera_mapping_required")
+        return folder, capture
+
+    async def browse(self, folder=None, date=None, *, camera=None):
         if self.closed:
             raise ValueError("archive_playback_expired")
         if folder is not None and not FOLDER.fullmatch(folder):
@@ -109,7 +136,11 @@ class Recordings:
         if date is not None and not re.fullmatch(r"[0-9]{8}", date):
             raise ValueError("invalid_recording_date")
         async with self.lock:
-            context = self.archive.context()["fingerprint"]
+            state = self.archive.context()
+            context = state["fingerprint"]
+            capture = None
+            if camera is not None:
+                folder, capture = self._capture_folder(camera, state)
             root = await self.archive._root()
             self.archive._check(context)
             proc = await asyncio.create_subprocess_exec(
@@ -120,7 +151,9 @@ class Recordings:
             )
             try:
                 out, _ = await asyncio.wait_for(
-                    proc.communicate(json.dumps(dict(root=root, folder=folder, date=date)).encode()), 25
+                    proc.communicate(json.dumps(dict(
+                        root=root, folder=folder, date=date, only_selected=capture is not None
+                    )).encode()), 25
                 )
                 if len(out) > 256000 or proc.returncode:
                     raise ValueError("recordings_unavailable")
@@ -128,6 +161,11 @@ class Recordings:
                 self.archive._check(context)
                 if self.closed:
                     raise ValueError("archive_playback_expired")
+                if capture is not None:
+                    if folder not in result["folders"]:
+                        raise ValueError("recording_camera_folder_unavailable")
+                    result["folders"] = [folder]
+                    result["camera"] = capture
                 self.files.clear()
                 for row in result["files"]:
                     ref = secrets.token_hex(16)
@@ -321,6 +359,7 @@ class Recordings:
 if __name__ == "__main__":
     try:
         request = json.loads(sys.stdin.read(4096))
-        print(json.dumps(listing(request["root"], request.get("folder"), request.get("date"))))
+        print(json.dumps(listing(request["root"], request.get("folder"), request.get("date"),
+                                 only_selected=request.get("only_selected") is True)))
     except (OSError, ValueError, KeyError, TypeError):
         sys.exit(1)

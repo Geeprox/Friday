@@ -6,6 +6,7 @@ starts this coordinator on a configured real household. Mi Home owns shutter int
 
 import asyncio
 import json
+import math
 import os
 import time
 
@@ -54,6 +55,9 @@ class HouseholdInfrastructure:
         self.closed = False
         self.retry_at = 0
         self.failures = 0
+        self.wakeup = asyncio.Event()
+        self.reconciling = False
+        self.last_manual_retry = None
         self.service.capture_enabled = self.policy.enabled and self.policy.recognition
         self.service.recovery_enabled = bool(self.admitted())
 
@@ -63,6 +67,7 @@ class HouseholdInfrastructure:
 
     async def _run(self):
         while not self.closed:
+            self.wakeup.clear()
             try:
                 await self.reconcile()
             except asyncio.CancelledError:
@@ -72,25 +77,51 @@ class HouseholdInfrastructure:
                 self.failure = "service_unavailable"
                 self.failures += 1
                 self.retry_at = time.monotonic() + min(60, 2 ** min(self.failures, 6))
-            await asyncio.sleep(self.interval)
+            delay = self.interval
+            if self.failure and self.retry_at > time.monotonic():
+                delay = min(delay, self.retry_at-time.monotonic())
+            try:
+                await asyncio.wait_for(self.wakeup.wait(), max(0, delay))
+            except asyncio.TimeoutError:
+                pass
 
     @observe("infrastructure.reconcile")
     async def reconcile(self):
         async with self.lock:
-            if self.closed or not self.admitted():
-                return
-            if not self.policy.enabled or not self.policy.recognition:
-                await self.service.stop()
-                return
-            if time.monotonic() < self.retry_at or not self.service.configured():
-                return
-            if self.prepare is not None:
-                await self.prepare()
-            await self.service.ensure_background(interaction=self.policy.interaction,
-                open_privacy=False)
-            if self.people is not None:
-                await self.service.sync_people(self.people.page().people)
-            self.failure, self.failures, self.retry_at = None, 0, 0
+            self.reconciling = True
+            try:
+                if self.closed or not self.admitted():
+                    return
+                if not self.policy.enabled or not self.policy.recognition:
+                    await self.service.stop()
+                    return
+                if time.monotonic() < self.retry_at or not self.service.configured():
+                    return
+                if self.prepare is not None:
+                    await self.prepare()
+                await self.service.ensure_background(interaction=self.policy.interaction,
+                    open_privacy=False)
+                if self.people is not None:
+                    await self.service.sync_people(self.people.page().people)
+                self.failure, self.failures, self.retry_at = None, 0, 0
+            finally:
+                self.reconciling = False
+
+    async def retry(self, *, expected_revision):
+        # Nudge only the existing admitted owner; this endpoint never starts one
+        # or changes persistent capture, shutter or interaction intent.
+        async with asyncio.timeout(2):
+            async with self.lock:
+                if expected_revision != self.policy.revision:
+                    raise ValueError('source_conflict')
+                recovery = self.report()['recovery']
+                if not recovery['automatic']:
+                    raise ValueError('recovery_not_available')
+                if recovery['can_retry']:
+                    self.last_manual_retry = time.monotonic()
+                    self.retry_at = 0
+                    self.wakeup.set()
+                return self.report()
 
     @observe("infrastructure.configure")
     async def configure(self, requested):
@@ -125,13 +156,21 @@ class HouseholdInfrastructure:
             except (OSError, ValueError, TimeoutError, httpx.HTTPError):
                 self.failure = "service_unavailable"
         # Reconciliation owns recovery even if the immediate attempt fails.
+        self.wakeup.set()
         return self.report()
 
     def report(self):
+        live = bool(not self.closed and self.task and not self.task.done() and self.admitted())
+        automatic = live and self.policy.enabled and self.policy.recognition and self.service.capture_enabled
+        now = time.monotonic()
+        manual_ready = self.last_manual_retry is None or now-self.last_manual_retry >= 30
+        recovery = dict(automatic=bool(automatic),in_progress=bool(automatic and self.reconciling),
+                        retry_after_seconds=max(0,math.ceil(self.retry_at-now)) if automatic and self.failure else 0,
+                        can_retry=bool(automatic and self.failure=='service_unavailable' and manual_ready and not self.reconciling))
         return dict(policy=self.policy.model_dump(), state="unavailable" if self.failure else
                     "paused" if not self.policy.enabled or not self.policy.recognition else
-                    "supervising" if self.task and not self.task.done() and self.admitted() else "waiting",
-                    failure=self.failure, owner="household_service", requires_open_window=False)
+                    "supervising" if live else "waiting",
+                    failure=self.failure, owner="household_service", requires_open_window=False,recovery=recovery)
 
     async def close(self):
         self.closed = True

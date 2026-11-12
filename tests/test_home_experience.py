@@ -72,6 +72,27 @@ async def test_overview_reports_latched_values_and_normalized_rooms(tmp_path):
         assert any(c['available']for d in result['devices']for c in d['controls'])
     finally:core.actions.close();await core.adapter.close();core.store.close()
 
+
+@pytest.mark.asyncio
+async def test_camera_overview_distinguishes_recognition_recovery_from_disconnection(tmp_path,monkeypatch):
+    from homeplane.embodied import paths
+
+    core,*_=rig(tmp_path)
+    camera=dict(id='cam_1111111111',name='示例镜头',room='示例房间',model='synthetic')
+    monkeypatch.setattr(paths,'configuration',
+                        lambda:{'cameras':[dict(camera,device={'did':'synthetic'})]})
+    status=dict(capture_enabled=True,camera_sessions=[
+        dict(camera=camera['id'],state='connecting',recognition='recovering',frame_available=True)])
+    embodied=SimpleNamespace(configured=lambda:False,cameras=lambda:[camera],status=AsyncMock(return_value=status))
+    owner=HomeExperience(core,SimpleNamespace(path=tmp_path/'settings.json'),embodied,None,Runtime())
+    try:
+        overview=await owner.overview()
+        assert next(d for d in overview['devices'] if d['id']==camera['id'])['camera_state']=='recovering'
+        status['capture_enabled']=False
+        overview=await owner.overview()
+        assert next(d for d in overview['devices'] if d['id']==camera['id'])['camera_state']=='paused'
+    finally:core.actions.close();await core.adapter.close();core.store.close()
+
 @pytest.mark.asyncio
 async def test_invalid_recording_cannot_be_published_as_protected_preview(tmp_path):
     root=tmp_path/'nas';folder=root/'XiaomiCamera_00_123456ABCDEF';folder.mkdir(parents=True)

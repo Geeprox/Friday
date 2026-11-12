@@ -78,16 +78,28 @@ class MotionTests(unittest.TestCase):
     def test_lost_player_is_not_replaced_by_sole_bystander(self):
         g = MotionGames()
         g.reset("ski")
+        g.clock = lambda: now
         for i in range(25):
-            g.update([human(1)], LOCK, i * 0.05)
-        for i in range(25, 75):
-            v = g.update([human(4)], LOCK, i * 0.05)
-        self.assertEqual(g.slots, [1])
-        self.assertEqual(v["status"], "waiting")
-        for i in range(75, 125):
-            v = g.update([human(4)], LOCK, i * 0.05, [{"person_id": 4, "gesture": "ok"}])
+            now = i*.05
+            g.update([human(1)], LOCK, now)
+        progress = g.round_id, g.elapsed
+        held = [{"person_id": 4, "gesture": "ok"}]
+        for i in range(25, 92):
+            now = i*.05
+            v = g.update([human(4)], LOCK, now, held)
+        self.assertEqual(g.slots, [])
+        self.assertTrue(v["source_recovery"]["ready"])
+        self.assertEqual(v["status"], "paused")
+        self.assertEqual((g.round_id, g.elapsed), progress)
+        for i in range(92, 106):
+            now = i*.05
+            g.update([human(4)], LOCK, now)
+        for i in range(106, 132):
+            now = i*.05
+            v = g.update([human(4)], LOCK, now, held)
         self.assertEqual(g.slots, [4])
-        self.assertEqual(v["status"], "playing")
+        self.assertGreater(v["resume_seconds"], 0)
+        self.assertEqual((g.round_id, g.elapsed), progress)
 
     def test_alternating_arms_drive_and_stopping_slows(self):
         g = MotionGames()

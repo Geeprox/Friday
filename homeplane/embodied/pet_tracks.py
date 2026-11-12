@@ -10,12 +10,16 @@ from .stable_tracks import StableTracks, valid_box
 class PetTracks:
     def __init__(self):
         self.trackers = {}
+        self.generation = 0
         self.intent = None
         self.current = False
         self.supported = False
         self.status = 'disabled'
 
     def clear(self):
+        if self.trackers:
+            # 追踪器重建会复用局部编号，旧画面上的宠物不能与新编号自动关联。
+            self.generation += 1
         self.trackers.clear()
         self.intent = None
         self.current = False
@@ -59,7 +63,7 @@ class PetTracks:
                      for row in rows if row['species'] == species]
             tracks = tracker.update(dict(boxes=boxes, poses=[]), now, transform=transform,
                                     camera_moving=camera_moving)
-            result.extend(dict(id=species+':'+str(track['id']), species=species,
+            result.extend(dict(id=f"{species}:{self.generation}:{track['id']}", species=species,
                                box=dict(track['box']), motion=track['motion'],
                                tracking=dict(track['tracking'])) for track in tracks)
         self.current = all(tracker.input_valid for tracker in self.trackers.values())

@@ -104,11 +104,53 @@ async function api(path, options = {}) {
   return response.json();
 }
 let requestedTaskAttention=null;
+let requestedRecordingCamera=null;
+let requestedSafetyReview=null;
 function taskAttentionId(value){return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)?value:null;}
 function safetyEventId(value){return typeof value==='string'&&/^[a-f0-9]{32}$/.test(value)?value:null;}
-function pageLocation(){const [path,query='']=location.hash.slice(1).split('?'),name=pages.find(name=>name.toLowerCase().replace(' ','-')===path);return{name,eventId:name==='Safety'?safetyEventId(new URLSearchParams(query).get('event')):null,attentionId:name==='Automations'?taskAttentionId(new URLSearchParams(query).get('attention')):null};}
-function rememberSafetyEvent(id){if(page!=='Safety')return;requestedSafetyEvent=safetyEventId(id);history.replaceState(null,'','#safety'+(requestedSafetyEvent?'?event='+requestedSafetyEvent:''));}
-function go(name,{eventId=null,attentionId=null}={}) { const changed=page!==name;if(changed){archiveVersion++;archiveSetupVersion++;stopArchivePlayer();} page = name;requestedSafetyEvent=name==='Safety'?safetyEventId(eventId):null;requestedTaskAttention=name==='Automations'?taskAttentionId(attentionId):null;lastTrace = null; history.replaceState(null,'','#' + name.toLowerCase().replace(' ','-')+(requestedSafetyEvent?'?event='+requestedSafetyEvent:requestedTaskAttention?'?attention='+requestedTaskAttention:'')); render();if(page==='Safety'&&requestedSafetyEvent)experienceView?.selectEvent?.(requestedSafetyEvent);if(page==='Automations')experienceView?.selectTaskAttention?.(requestedTaskAttention); if(changed){const heading=$('page-title');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});globalThis.scrollTo?.({top:0,left:0,behavior:'instant'});} if (page === 'Settings') void refreshHaStatus(); }
+function safetyReviewKind(value){return ['visual','sound'].includes(value)?value:null;}
+function recordingCameraId(value){return typeof value==='string'&&/^cam_[a-f0-9]{10}$/.test(value)?value:null;}
+function pageLocation(){
+  const [path,query='']=location.hash.slice(1).split('?');
+  const name=pages.find(name=>name.toLowerCase().replace(' ','-')===path);
+  const params=new URLSearchParams(query);
+  const eventId=name==='Safety'?safetyEventId(params.get('event')):null;
+  return {name,eventId,review:name==='Safety'&&!eventId?safetyReviewKind(params.get('review')):null,
+    attentionId:name==='Automations'?taskAttentionId(params.get('attention')):null,
+    recordingCamera:name==='Activity'?recordingCameraId(params.get('camera')):null};
+}
+function rememberSafetyEvent(id){if(page!=='Safety')return;requestedSafetyReview=null;requestedSafetyEvent=safetyEventId(id);history.replaceState(null,'','#safety'+(requestedSafetyEvent?'?event='+requestedSafetyEvent:''));}
+function go(name,{eventId=null,review=null,attentionId=null,recordingCamera=null}={}){
+  const changed=page!==name;
+  const camera=name==='Activity'?recordingCameraId(recordingCamera):null;
+  const recordingScopeChanged=name==='Activity'&&requestedRecordingCamera!==camera;
+  if(changed||recordingScopeChanged){archiveVersion++;archiveSetupVersion++;stopArchivePlayer();}
+  if(!changed&&recordingScopeChanged){
+    experienceView?.dispose();experienceView=null;experiencePage=null;
+  }
+  page=name;
+  requestedSafetyEvent=name==='Safety'?safetyEventId(eventId):null;
+  requestedSafetyReview=name==='Safety'&&!requestedSafetyEvent?safetyReviewKind(review):null;
+  requestedTaskAttention=name==='Automations'?taskAttentionId(attentionId):null;
+  requestedRecordingCamera=camera;
+  lastTrace=null;
+  const query=new URLSearchParams();
+  if(requestedSafetyEvent)query.set('event',requestedSafetyEvent);
+  if(requestedSafetyReview)query.set('review',requestedSafetyReview);
+  if(requestedTaskAttention)query.set('attention',requestedTaskAttention);
+  if(camera)query.set('camera',camera);
+  const suffix=query.toString();
+  history.replaceState(null,'','#'+name.toLowerCase().replace(' ','-')+(suffix?'?'+suffix:''));
+  render();
+  if(page==='Safety'&&requestedSafetyEvent)experienceView?.selectEvent?.(requestedSafetyEvent);
+  if(page==='Safety'&&requestedSafetyReview)experienceView?.focusReview?.(requestedSafetyReview);
+  if(page==='Automations')experienceView?.selectTaskAttention?.(requestedTaskAttention);
+  if(changed||recordingScopeChanged){
+    const heading=$('page-title');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});
+    globalThis.scrollTo?.({top:0,left:0,behavior:'instant'});
+  }
+  if(page==='Settings')void refreshHaStatus();
+}
 function button(text, action, attrs = {}) { const b = el('button',text,{type:'button',...attrs}); b.addEventListener('click',action); return b; }
 function navigation() {
   const nav = $('navigation'), previousPage=nav.querySelector('[aria-current="page"]')?.getAttribute('data-page'), wasOpen=nav.querySelector('.navigation-secondary')?.open, wasCompact=nav.getAttribute('data-compact')==='true'; nav.replaceChildren();
@@ -319,7 +361,7 @@ function render() {
   renderSourceStatus();
   if(page==='Safety'){
     experiencePage=page;
-    import('/static/safety.js').then(({mountSafety})=>{if(experienceCurrent===experienceVersion&&experiencePage===page)experienceView=mountSafety(content,{go,initialEventId:requestedSafetyEvent,onEventSelected:rememberSafetyEvent,onOpenRecording:openEventRecording,onArchiveSettings:()=>{requestArchiveSettings=true;go('Settings');}});}).catch(()=>{if(page==='Safety')content.append(note('预警页面暂不可用，请刷新。',true));});return;
+    import('/static/safety.js').then(({mountSafety})=>{if(experienceCurrent===experienceVersion&&experiencePage===page)experienceView=mountSafety(content,{go,initialEventId:requestedSafetyEvent,initialReview:requestedSafetyReview,onEventSelected:rememberSafetyEvent,onOpenRecording:openEventRecording,onArchiveSettings:()=>{requestArchiveSettings=true;go('Settings');}});}).catch(()=>{if(page==='Safety')content.append(note('预警页面暂不可用，请刷新。',true));});return;
   }
   if(page==='Games'){
     const version=gamesViewVersion;
@@ -346,7 +388,7 @@ function render() {
   if(document.body.dataset.consoleSurface!=='legacy'&&['Home','Devices','Cameras','Interaction','Activity','Automations','Settings'].includes(page)&&(snapshot||page==='Settings')){
     experiencePage=page;
     content.append(el('p',page==='Settings'?'正在读取连接设置…':'正在读取家庭状态…',{class:'loading-state',role:'status'}));
-    import('/static/home-experience.js').then(({mountExperience})=>{if(experienceCurrent!==experienceVersion||experiencePage!==page)return;content.replaceChildren();experienceView=mountExperience(content,{page,go,snapshot,attentionId:requestedTaskAttention,developerMode:$('developer-mode').checked,setDeveloperMode:checked=>{$('developer-mode').checked=checked;navigation();},legacyConnections:(slot,target)=>{if(target)selectedConnection=target;renderSettings(slot);},archiveSettings:async slot=>{settingsData=await api('/api/settings');if(page==='Settings'&&slot.isConnected){slot.replaceChildren();renderArchiveSettings(slot);slot.querySelector('#settings-archive').open=true;}},requestArchiveSettings,onArchiveSettingsOpened:()=>{requestArchiveSettings=false;},legacyRules:renderCoreRules,openEvidenceRecording:openEventRecording});}).catch(()=>{
+    import('/static/home-experience.js').then(({mountExperience})=>{if(experienceCurrent!==experienceVersion||experiencePage!==page)return;content.replaceChildren();experienceView=mountExperience(content,{page,go,snapshot,attentionId:requestedTaskAttention,recordingCamera:requestedRecordingCamera,onOpenArchiveSettings:()=>{requestArchiveSettings=true;go('Settings');},developerMode:$('developer-mode').checked,setDeveloperMode:checked=>{$('developer-mode').checked=checked;navigation();},legacyConnections:(slot,target)=>{if(target)selectedConnection=target;renderSettings(slot);},archiveSettings:async slot=>{settingsData=await api('/api/settings');if(page==='Settings'&&slot.isConnected){slot.replaceChildren();renderArchiveSettings(slot);slot.querySelector('#settings-archive').open=true;}},requestArchiveSettings,onArchiveSettingsOpened:()=>{requestArchiveSettings=false;},legacyRules:renderCoreRules,openEvidenceRecording:openEventRecording});}).catch(()=>{
       if(experienceCurrent!==experienceVersion||experiencePage!==page)return;
       experiencePage=null;
       // A missing optional view must not remove the basic Console's controls.
@@ -726,14 +768,21 @@ function renderEventList(content,limit) {
   if (page === 'Activity' && events.length > limit) content.append(button('加载更多',() => {activityLimit += 30;render();},{class:'room-more'}));
 }
 function renderActivity(content) {
+  if(requestedRecordingCamera){
+    content.append(note('暂时无法读取这台镜头的录像。',true),button('查看全部录像',()=>go('Activity')));
+    return;
+  }
   const block = el('section',null,{class:'surface',id:'activity-events'});renderEventList(block,activityLimit);if (lastTrace) renderTrace(block,lastTrace);content.append(block);
   renderArchiveLookup(content);
 }
 const archiveLabels={ready:'可准备隐私预览',pending:'等待落盘或完成核对',missing:'该区间没有已知片段',expired:'索引中的原片已不存在',unavailable:'暂不能定位原片'};
 const archiveReasons={archive_camera_mapping_required:'请先对应NAS录像目录与摄像头',archive_recording_clock_unreviewed:'需要核对摄像头录像时钟。',archive_file_still_changing:'文件仍在变化，暂不能用于区间引用。',archive_completion_unreviewed:'录像写入完成的规则尚未核对。',archive_media_time_or_container_unvalidated:'媒体格式或时长与文件名区间尚未匹配。',archive_index_coverage_incomplete:'目录记录不完整，请刷新并检查对应关系。当前索引只覆盖部分目录或文件名；请刷新索引并检查映射。',archive_coverage_or_clock_boundary_uncertain:'片段之间存在空缺或时钟边界不确定。',archive_overlapping_segments_ambiguous:'该区间存在重叠片段，需要核对来源。',archive_within_declared_arrival_delay:'仍在你设置的归档等待时间内。',archive_source_segment_expired:'已知原片已从可读目录中消失。'};
 function localArchiveDate(value){const d=new Date(value);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,23);}
-function showArchiveResolution(output,report){
-  output.replaceChildren();add(output,badge(report.simulated?'simulated · 合成录像引用':'NAS · 录像只读引用'),el('h3',archiveLabels[report.status]??'需要核对'),el('p',archiveReasons[report.reason]??(report.status==='ready'?(report.simulated?'已定位合成录像片段，未读取真实原片。':'录像引用和时间已核对；播放前会在本机生成保护预览。'):'请核对归档来源和当前索引。')));
+function showArchiveResolution(output,report,{adjacent=false}={}){
+  const title=adjacent?'未找到所选时刻的录像':archiveLabels[report.status]??'需要核对';
+  const message=adjacent?'可以查看相邻片段。':archiveReasons[report.reason]??
+    (report.status==='ready'?(report.simulated?'已定位合成录像片段，未读取真实原片。':'录像引用和时间已核对；播放前会在本机生成保护预览。'):'请核对归档来源和当前索引。');
+  output.replaceChildren();add(output,badge(report.simulated?'simulated · 合成录像引用':'NAS · 录像只读引用'),el('h3',title),el('p',message));
   for(const segment of report.segments??[]){
     const row=el('article',null,{class:'automation-row'});add(row,el('p',`${time(segment.time_range.start)} — ${time(segment.time_range.end)}`),badge(archiveLabels[segment.status]??'需要核对'),el('p',`时钟误差 ${segment.clock_uncertainty_seconds===null?'未知':'±'+segment.clock_uncertainty_seconds+' 秒'} · ${segment.audio_track===true?'含音轨':segment.audio_track===false?'未发现音轨':'音轨未确认'}`,{class:'meta'}),detail('片段依据',segment));output.append(row);
     if(segment.status==='ready')row.append(button('打开片段',()=>openArchivePlayer(output,report,segment),{class:'secondary','data-archive-playback-ref':segment.media_ref}));
@@ -750,6 +799,13 @@ function stopArchivePlayer(message=''){
   archivePlayerVersion++;const view=archivePlayerView;archivePlayerView=null;if(!view)return;
   view.video.pause?.();view.video.removeAttribute?.('src');view.video.load?.();view.video.setAttribute('hidden','');cancelArchivePlayback(view.plan);
   if(message)settingsMessage(view.status,message,true);
+}
+function archivePlaybackInterval(report,segment){
+  const uncertainty=(segment.clock_uncertainty_seconds??0)*1000;
+  return [
+    Math.max(Date.parse(report.time_range.start),Date.parse(segment.time_range.start)+uncertainty),
+    Math.min(Date.parse(report.time_range.end),Date.parse(segment.time_range.end)-uncertainty),
+  ];
 }
 async function openEventRecording(output,details){
   stopArchivePlayer();const version=++archiveVersion,ownerPage=page;output.replaceChildren();
@@ -772,16 +828,22 @@ async function openEventRecording(output,details){
     if(version!==archiveVersion||page!==ownerPage||!output.isConnected)return;
     if(report.context_fingerprint!==request.expected_context||context.fingerprint!==report.context_fingerprint||context.simulated!==report.simulated)throw Error('source_changed');
     const ready=(report.segments??[]).filter(segment=>segment.status==='ready');
-    if(ownerPage==='Safety'&&ready.length===1){output.replaceChildren();await openArchivePlayer(output,report,ready[0]);return;}
-    showArchiveResolution(output,report);
+    const anchor=ownerPage==='Safety'?Date.parse(details.anchor_at):NaN;
+    const covering=Number.isFinite(anchor)?ready.filter(segment=>{
+      const [start,end]=archivePlaybackInterval(report,segment);
+      return start<=anchor&&anchor<end;
+    }):ready;
+    if(ownerPage==='Safety'&&covering.length===1){output.replaceChildren();await openArchivePlayer(output,report,covering[0]);return;}
+    const adjacent=ready.length>0&&covering.length===0;
+    showArchiveResolution(output,report,{adjacent});
     output.scrollIntoView?.({block:'nearest'});
-    if(ready.length===1)await openArchivePlayer(output,report,ready[0]);
+    if(ready.length===1&&!adjacent)await openArchivePlayer(output,report,ready[0]);
   }catch(_){if(version===archiveVersion&&page===ownerPage&&output.isConnected)output.replaceChildren(el('p','事件录像暂不可定位，请核对 NAS 连接、时间和摄像头对应关系后重试。',{role:'status'}));}
 }
 async function openArchivePlayer(output,report,segment){
   stopArchivePlayer();const version=++archivePlayerVersion,queryVersion=archiveVersion,ownerPage=page;
   if(!['Activity','Safety'].includes(ownerPage))return;
-  const start=Math.max(Date.parse(report.time_range.start),Date.parse(segment.time_range.start)+(segment.clock_uncertainty_seconds??0)*1000),end=Math.min(Date.parse(report.time_range.end),Date.parse(segment.time_range.end)-(segment.clock_uncertainty_seconds??0)*1000);
+  const [start,end]=archivePlaybackInterval(report,segment);
   if(!(end>start))return;
   const status=el('div','正在生成隐私预览…',{role:'status','aria-live':'polite'});output.append(status);
   if(typeof AbortController==='function')archivePrepareController=new AbortController();
@@ -793,16 +855,17 @@ async function openArchivePlayer(output,report,segment){
     const plan=preparedPlan;
     if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!==ownerPage)return;
     const fresh=await api('/api/archive/context',{signal});
-    if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!==ownerPage||fresh.fingerprint!==plan.context_fingerprint||fresh.simulated!==plan.simulated){cancelArchivePlayback(plan);return;}
-    if(plan.privacy_protected!==true||plan.privacy_preview_generated!==true||plan.original_modified!==false||!['local_person_mosaic','local_full_frame_mosaic'].includes(plan.privacy_mode)){cancelArchivePlayback(plan);status.textContent='隐私预览未就绪';return;}
-    if(!/^\/api\/archive\/media\/[a-f0-9]{64}$/.test(plan.stream_url)||!Number.isFinite(plan.start_offset_seconds)||!Number.isFinite(plan.end_offset_seconds)||plan.end_offset_seconds<=plan.start_offset_seconds){cancelArchivePlayback(plan);throw Error('unqualified media');}
+    if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!==ownerPage)return;
+    if(fresh.fingerprint!==plan.context_fingerprint||fresh.simulated!==plan.simulated){settingsMessage(status,'录像来源已变化，请重新选择。',true);return;}
+    if(plan.privacy_protected!==true||plan.privacy_preview_generated!==true||plan.original_modified!==false||!['local_person_mosaic','local_full_frame_mosaic'].includes(plan.privacy_mode)){status.textContent='隐私预览未就绪';return;}
+    if(!/^\/api\/archive\/media\/[a-f0-9]{64}$/.test(plan.stream_url)||!Number.isFinite(plan.start_offset_seconds)||!Number.isFinite(plan.end_offset_seconds)||plan.end_offset_seconds<=plan.start_offset_seconds)throw Error('unqualified media');
+    const expires=Date.parse(plan.expires_at)-Date.now();
+    if(!Number.isFinite(expires)||expires<=0||expires>301000){settingsMessage(status,'预览已过期，请重新选择。',true);return;}
     const compact=ownerPage==='Safety';
     const root=el('section',null,{class:compact?'archive-player safety-event-player':'archive-player',id:'archive-player'}),video=el('video',null,{controls:'',playsinline:'',preload:'metadata','aria-label':plan.simulated?'simulated 测试录像':copyName('Friday-1228')}),receipt=el('p','等待媒体定位…',{id:'archive-seek-evidence',class:'meta'});
     video.muted=true;
     const view={root,video,plan,status:receipt,ownerPage};archivePlayerView=view;
     const active=()=>archivePlayerView===view&&page===ownerPage&&version===archivePlayerVersion;
-    const expires=Date.parse(plan.expires_at)-Date.now();
-    if(!Number.isFinite(expires)||expires<=0||expires>301000){stopArchivePlayer('预览已过期，请重新选择。');return;}
     if(typeof setTimeout==='function')archiveExpiryTimer=setTimeout(()=>{if(active())stopArchivePlayer('预览已过期，请重新选择。');},expires);
     archiveContextTimer=setInterval(async()=>{
       if(!active())return;
@@ -2660,8 +2723,8 @@ async function refreshPassive() {
 $('brand-home')?.addEventListener('click',event => {event.preventDefault();go('Home');});
 $('refresh').addEventListener('click',refresh);
 $('developer-mode').addEventListener('change',()=>{if(page==='Developer'&&!$('developer-mode').checked)page='Home';navigation();render();});
-const initial=pageLocation();if(initial.name){page=initial.name;requestedSafetyEvent=initial.eventId;requestedTaskAttention=initial.attentionId;}
-globalThis.addEventListener?.('hashchange',()=>{const next=pageLocation();if(next.name&&(next.name!==page||next.eventId!==requestedSafetyEvent||next.attentionId!==requestedTaskAttention))go(next.name,{eventId:next.eventId,attentionId:next.attentionId});});
+const initial=pageLocation();if(initial.name){page=initial.name;requestedSafetyEvent=initial.eventId;requestedSafetyReview=initial.review;requestedTaskAttention=initial.attentionId;requestedRecordingCamera=initial.recordingCamera;}
+globalThis.addEventListener?.('hashchange',()=>{const next=pageLocation();if(next.name&&(next.name!==page||next.eventId!==requestedSafetyEvent||next.review!==requestedSafetyReview||next.attentionId!==requestedTaskAttention||next.recordingCamera!==requestedRecordingCamera))go(next.name,next);});
 render(); refresh();
 // OAuth return and browser restoration must refresh authorization independently of HA polling.
 globalThis.addEventListener?.('pageshow', () => { if (page === 'Settings') void refreshHaStatus(); });

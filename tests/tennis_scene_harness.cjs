@@ -21,6 +21,7 @@ function scene(reduced=false,{pending=[]}={}){
   };
   if(key==='ellipse')return(...args)=>calls.push(['ellipse',...args]);
   if(key==='fillText')return(...args)=>calls.push(['text',...args]);
+  if(key==='measureText')return label=>({width:[...label].length*parseFloat(target.font.split(' ')[1])*.7});
   return()=>{};
  }});
  class Image{

@@ -2,24 +2,54 @@
 
 import collections
 import math
-import random
 import secrets
 import time
+from dataclasses import dataclass
 
+from homeplane.embodied.catalog import TENNIS_VARIANTS
 from homeplane.embodied.game_difficulty import difficulty_options, game_difficulty
 from homeplane.embodied.hiit import PLAN as HIIT_PLAN, HIITCircuit, signals
 from homeplane.embodied.pose_rules import angle
-from homeplane.embodied.quest import STAGES as QUEST_STAGES, TRANSITION_SECONDS
+from homeplane.embodied.quest import DEFAULT_QUEST_ROUTE, TRANSITION_SECONDS, get_quest_route, quest_route_options
 from homeplane.embodied.ski_route import (
-    SKI_COURSES, SKI_GATES, SKI_LENGTH, SKI_ROUTE, SKI_TREE_REACH,
-    SKI_VISIBLE_AHEAD, SKI_WORLD_TRAVEL, advance, crossing_time,
+    DEFAULT_SKI_TRAIL, SKI_TREE_REACH, SKI_VISIBLE_AHEAD, SKI_WORLD_TRAVEL,
+    SkiWarmup, advance, crossing_time, get_ski_trail, ski_trail_options,
 )
+from homeplane.embodied.ski_route import SKI_COURSES as SKI_COURSES
 TENNIS_TARGET = 7
 TENNIS_CAP = 15
 TENNIS_REACH = .20
 TENNIS_WINDOW = .10
 TENNIS_CURVE = .4
 TENNIS_CUE_LEAD = .20
+TENNIS_BOUNCE_DEPTH = .26
+TENNIS_SERVE_HEIGHT = .50
+TENNIS_REBOUND_HEIGHT = .50
+TENNIS_PREPARATION = 2.0
+TENNIS_SERVE_SETTLE = .25
+TENNIS_PRACTICE_LANES = (.5, .5, .5, .26, .74, .26, .74, .5, .26)
+TENNIS_PRACTICE_SPEEDS = (.85, 1., 1.3)
+TENNIS_PRACTICE_BREAK = 1.15
+TENNIS_OPPONENT_SERVE_WAIT = .65
+TENNIS_OPPONENT_FOLLOW_THROUGH = .34
+TENNIS_OPPONENT_LANES = (-1., .65, -.55, 1., -.8, .8)
+PLAYER_RETURN_GRACE = 1.5
+
+
+@dataclass(frozen=True)
+class TennisOpponentLevel:
+    reaction: float
+    speed: float
+    placement_error: float
+    settle: float
+    shot_width: float
+
+
+TENNIS_OPPONENT_LEVELS = {
+    'easy': TennisOpponentLevel(.92, .17, .17, .26, .16),
+    'standard': TennisOpponentLevel(.64, .23, .14, .23, .24),
+    'challenge': TennisOpponentLevel(.41, .30, .11, .18, .31),
+}
 
 
 def clamp(x, a=-1.0, b=1.0):
@@ -62,6 +92,62 @@ def tennis_contact(ball, px, swing, dt, now, window):
     return first, x, z
 
 
+def tennis_visibility_gap(player):
+    if player['observation'] != 'fresh':
+        return 'missing'
+    if player['foot_observation'] != 'fresh':
+        return 'feet'
+    return 'hands' if not player['observed_wrists'] else None
+
+
+class TennisOpponent:
+    """以本局时间移动的球场对手，击球仍由共用判定受理。"""
+
+    def __init__(self):
+        self.x = .5
+        self.flight = None
+        self.seen = 0.
+        self.settled = 0.
+        self.recovering = 0.
+
+    def move(self, ball, flight, rally, dt, difficulty):
+        level = TENNIS_OPPONENT_LEVELS[difficulty]
+        if ball['toward'] != 1:
+            self.flight, self.seen, self.settled = None, 0., 0.
+            distance = level.speed*max(0., dt-self.recovering)
+            self.recovering = max(0., self.recovering-dt)
+            self.x += clamp(.5-self.x, -distance, distance)
+            return None
+        if self.flight != flight:
+            self.flight, self.seen, self.settled = flight, 0., 0.
+        # 多拍相持后，对手需要更长时间恢复站位。
+        effort = min(16, max(0, rally-6))
+        wait = max(0., level.reaction+.026*effort-self.seen)
+        self.seen += dt
+        if wait >= dt or ball['speed'] <= 0:
+            return None
+        arrival = max(0., (1-ball['z'])/ball['speed'])
+        landing = ball['target_x']+(ball['x']-ball['target_x'])*math.exp(-TENNIS_CURVE*arrival)
+        lane = TENNIS_OPPONENT_LANES[flight % len(TENNIS_OPPONENT_LANES)]
+        destination = clamp(landing+level.placement_error*lane, .12, .88)
+        # 先移动到接球点附近，再站定挥拍。高速变线时也可能来不及。
+        approach = max(0., abs(destination-self.x)-.045)/level.speed
+        distance = level.speed*(dt-wait)
+        self.x += clamp(destination-self.x, -distance, distance)
+        if approach > 0:
+            self.settled = 0.
+        planted_at = wait+approach
+        swing_at = planted_at+max(0., level.settle+.011*effort-self.settled)
+        self.settled += max(0., dt-planted_at)
+        return swing_at if swing_at < dt else None
+
+    def aim(self, flight, difficulty, human_x=None):
+        lane = TENNIS_OPPONENT_LANES[flight % len(TENNIS_OPPONENT_LANES)]
+        if human_x is not None and abs(human_x-.5) > .09:
+            lane = 1. if human_x < .5 else -1.
+        return .5 + TENNIS_OPPONENT_LEVELS[difficulty].shot_width*lane
+
+
 def point(j, k):
     p = j.get(k)
     return p if p and p.get("confidence", 0) >= 0.4 else None
@@ -99,14 +185,17 @@ class BodyMotion:
         self.knee_origin = None
         self.torso_at_anchor = None
 
-    def invalidate_motion(self, *, keep_stance=False):
+    def invalidate_swing(self):
         self.samples.clear()
+        self.last_swing = -10.0
+
+    def invalidate_motion(self, *, keep_stance=False):
+        self.invalidate_swing()
         self.phase = None
         self.pump_extreme = None
         self.pump_direction = 0
         self.arm_effort = 0.0
         self.arm_speed = 0.0
-        self.last_swing = -10.0
         self.last_pump = -10.0
         if not keep_stance:
             self.leg_samples.clear()
@@ -355,6 +444,8 @@ class BodyMotion:
             "exercise_signals": signals(j, quality, depth, self.leg_origin, self.knee_origin),
         }
         exercise = result['exercise_signals']
+        if not fresh_ankles:
+            exercise['side_raise'] = exercise['overhead_clap'] = None
         if (fresh_ankles and self.origin is not None and exercise['visible']
                 and .5 <= exercise['leg_spread'] <= 2.2 and exercise['leg_bend'] < 18):
             exercise['side_step'] = ('left' if self.lateral < -.35 else
@@ -370,6 +461,9 @@ class MotionGames:
         from .game_presentation import GamePresentation
         self.presentation = GamePresentation(clock) if require_presentation else None
         self.difficulty = game_difficulty('standard')
+        self.ski_trail = DEFAULT_SKI_TRAIL
+        self.quest_route = DEFAULT_QUEST_ROUTE
+        self.tennis_variant = 'match'
         self.control_context = secrets.token_hex(16)
         self.control_revision = 0
         self.mode = "off"
@@ -387,12 +481,18 @@ class MotionGames:
         self.previous = None
         self.reset("off")
 
-    def reset(self, mode, *, difficulty=None):
+    def reset(self, mode, *, difficulty=None, ski_warmup=False, quest_route=None):
         if mode not in ("off", "quest", "ski", "tennis", "hiit", "home"):
             raise ValueError("invalid_game")
+        if type(ski_warmup) is not bool or ski_warmup and mode != 'ski':
+            raise ValueError('invalid_ski_warmup')
+        if quest_route is not None and mode not in {'off', 'quest'}:
+            raise ValueError('invalid_quest_route')
         chosen = game_difficulty(difficulty) if difficulty is not None else self.difficulty
-        stages, plan = chosen.quest_plan(QUEST_STAGES), chosen.training_plan(HIIT_PLAN)
+        route = get_quest_route(quest_route) if quest_route is not None else self.quest_route
+        stages, plan = chosen.quest_plan(route.stages), chosen.training_plan(HIIT_PLAN)
         self.difficulty, self.quest_stages = chosen, stages
+        self.quest_route = route
         if mode != "off":
             self.selected_mode = mode
         self.mode = mode
@@ -409,6 +509,8 @@ class MotionGames:
         self.status = "waiting"
         self.manually_paused = False
         self.source_resume_required = False
+        self.recovery_previous_slots = ()
+        self.recovery_pending_slots = ()
         self.recovery_phase = 'none'
         self.recovery_ready = False
         self.recovery_ready_count = 0
@@ -418,7 +520,6 @@ class MotionGames:
         self.presentation_blocked = False
         self.presentation_recovery = False
         self.reason = "等待玩家"
-        self.rng = random.Random(7)
         self.level = 0
         self.hold = 0.0
         self.squat_down = False
@@ -435,6 +536,11 @@ class MotionGames:
         self.up_since = None
         self.speed = 0.0
         self.distance = 0.0
+        self.ski_warmup = SkiWarmup() if ski_warmup else None
+        if ski_warmup:
+            self.gesture_key = self.gesture_since = self.gesture_release = None
+            self.gesture_progress = 0.0
+            self.gesture_latched = True
         self.obstacles = []
         self.ski_gates = []
         self.ski_cursor = 0
@@ -450,13 +556,18 @@ class MotionGames:
         self.rally = 0
         self.best_rally = 0
         self.tennis_winner = None
+        self.tennis_practice_results = []
+        self.tennis_opponent = TennisOpponent()
         self.tennis_event = None
         self.tennis_event_sequence = 0
         self.tennis_flight = 0
+        self.tennis_arc = None
         self.tennis_used_swings = [-100.0, -100.0]
-        self.ball = {"x": 0.5, "z": 0.5, "target_x": 0.5, "toward": 0, "speed": chosen.tennis_speed}
+        self.tennis_server = 0
+        self._clear_tennis_serve()
+        self.ball = {"x": 0.5, "z": 0.12, "target_x": 0.5, "toward": None, "speed": chosen.tennis_speed}
         self.hit_flash = -10.0
-        self.round_pause = 2.0 if mode == 'tennis' else 0.0
+        self.round_pause = TENNIS_PREPARATION if mode == 'tennis' else 0.0
         self.circuit = HIITCircuit(plan=plan, require_neutral=True)
         self.publish([], "off" if mode == "off" else "waiting", "OK 保持 1 秒开始 · Yeah 保持 1 秒切换")
 
@@ -464,24 +575,46 @@ class MotionGames:
     def complete(self):
         return ((self.mode == 'quest' and self.level >= len(self.quest_stages))
                 or (self.mode == 'hiit' and self.circuit.complete)
-                or (self.mode == 'ski' and self.distance >= SKI_LENGTH)
-                or (self.mode == 'tennis' and self.tennis_winner is not None))
+                or (self.mode == 'ski' and self.distance >= self.ski_trail.length)
+                or (self.mode == 'tennis' and self._tennis_complete()))
+
+    def _tennis_complete(self):
+        return (self.tennis_winner is not None or
+                len(self.tennis_practice_results) == len(TENNIS_PRACTICE_LANES) and self.ball['toward'] is None)
+
+    @property
+    def required_players(self):
+        return 2 if self.mode == 'tennis' and self.tennis_variant == 'match' else 1
 
     def ski_course(self):
         distance = self.distance
-        for index, course in enumerate(SKI_COURSES):
+        sections = self.ski_trail.sections
+        for index, course in enumerate(sections):
             if distance < course['length']:
                 return index, course, distance
             distance -= course['length']
-        return len(SKI_COURSES)-1, SKI_COURSES[-1], SKI_COURSES[-1]['length']
+        return len(sections)-1, sections[-1], sections[-1]['length']
 
-    def select(self, mode, *, difficulty=None):
+    def select(self, mode, *, difficulty=None, ski_trail=None, tennis_variant=None, quest_route=None, replace_round=False):
         if mode not in ("quest", "ski", "tennis", "hiit", "home"):
             raise ValueError("invalid_game")
         if mode == 'home' and difficulty is not None:
             raise ValueError('invalid_game_difficulty')
-        self.reset("off", difficulty=difficulty)
+        if ski_trail is not None and mode != 'ski':
+            raise ValueError('invalid_ski_trail')
+        if tennis_variant is not None and (mode != 'tennis' or tennis_variant not in TENNIS_VARIANTS):
+            raise ValueError('invalid_tennis_variant')
+        if quest_route is not None and mode != 'quest':
+            raise ValueError('invalid_quest_route')
+        if ((tennis_variant is not None or quest_route is not None)
+                and not replace_round and self.mode != 'off' and not self.complete):
+            raise ValueError('game_changed')
+        trail = self.ski_trail if ski_trail is None else get_ski_trail(ski_trail)
+        self.reset("off", difficulty=difficulty, quest_route=quest_route)
         self.selected_mode = mode
+        self.ski_trail = trail
+        if tennis_variant is not None:
+            self.tennis_variant = tennis_variant
         self.game_input_enabled = mode != 'home'
         return self.publish([], "off", "OK 保持 1 秒开始 · Yeah 保持 1 秒切换")
 
@@ -496,18 +629,19 @@ class MotionGames:
         self.pose_gap = 0.0
         self.hold = 0.0
         self.speed = 0.0
+        if self.ski_warmup:
+            self.ski_warmup = SkiWarmup()
         self.tennis_used_swings = [-100.0, -100.0]
         self.tennis_event = None
         self.hit_flash = -10.0
-        self.gesture_key = self.gesture_since = self.gesture_last = self.gesture_release = None
-        self.gesture_progress = 0.0
+        self._require_gesture_release()
         self.gesture_event = None
-        self.gesture_latched = True
         self.circuit.invalidate_motion(keep_completed_side=True)
         self._invalidate_quest_motion()
         self.recovery_ready = False
         self.recovery_ready_count = 0
         self.recovery_tracks = ()
+        self.recovery_pending_slots = ()
         self.recovery_frame_at = None
         self.resume_seconds = 0.0
 
@@ -518,6 +652,7 @@ class MotionGames:
             return self.public
         self.control_revision += 1
         self._drop_source_inputs()
+        self.recovery_previous_slots = ()
         self.source_resume_required = self.mode != 'off' and not self.complete
         if self.source_resume_required:
             self.manually_paused = True
@@ -527,6 +662,7 @@ class MotionGames:
 
     def begin_source(self):
         """A new camera session cannot erase a round or inherit its old stance."""
+        self.recovery_previous_slots = ()
         if self.mode not in {'off','home'} and not self.complete and (self.readers or self.slots or self.elapsed):
             self.suspend_source()
         else:
@@ -544,11 +680,12 @@ class MotionGames:
                  and 0 <= self.clock()-self.recovery_frame_at <= 1.5)
         return dict(required=self.source_resume_required, ready=bool(ready and not self.presentation_blocked),
                     phase='display' if self.presentation_recovery and self.presentation_blocked else self.recovery_phase if ready or self.recovery_phase != 'ready' else 'players',
-                    required_players=2 if self.mode == 'tennis' else 1,
-                    ready_players=self.recovery_ready_count if ready else 0)
+                    required_players=self.required_players,
+                    ready_players=self.recovery_ready_count if ready else 0,
+                    accepts_ok=bool(self.recovery_previous_slots))
 
-    def _recover_source(self, people, registration, now, captured_at):
-        required = 2 if self.mode == 'tennis' else 1
+    def _recover_source(self, people, registration, now, captured_at, hands=()):
+        required = self.required_players
         if (registration.get('status') != 'locked' or type(captured_at) not in (int,float)
                 or not 0 <= now-captured_at <= 1.5):
             self._drop_source_inputs()
@@ -569,12 +706,20 @@ class MotionGames:
         self.recovery_ready = len(ready) == required
         self.recovery_frame_at = captured_at
         self.recovery_phase = 'ready' if self.recovery_ready else 'calibrating'
-        if self.recovery_ready:
-            self.slots = [p['id'] for p in sorted(ready,key=lambda p:p['reference_x'],reverse=True)]
-            self.preferred_track = self.slots[0]
+        positions = [p['id'] for p in sorted(ready, key=lambda p: p['reference_x'], reverse=True)] if self.recovery_ready else []
+        if self.recovery_previous_slots:
+            # 同一镜头里仍有效的编号保留原座次。新编号只在确认后接手。
+            replacements = iter(track for track in positions if track not in self.recovery_previous_slots)
+            self.recovery_pending_slots = tuple(
+                track if track in positions else next(replacements) for track in self.recovery_previous_slots
+            ) if positions else ()
+            if not self.recovery_public()['ready']:
+                self._require_gesture_release()
+            elif self._held_gesture(people, hands, registration, now, ('ok',), self.recovery_pending_slots):
+                return self.set_paused(False)
         else:
-            self.slots = []
-            self.preferred_track = None
+            self.slots = positions
+            self.preferred_track = self.slots[0] if self.slots else None
         return self.publish(observed, 'paused', '玩家已就绪' if self.recovery_ready else '请自然站定片刻')
 
     def set_paused(self, value):
@@ -588,6 +733,11 @@ class MotionGames:
         self.manually_paused = value
         if recovered:
             self.source_resume_required = False
+            if self.recovery_pending_slots:
+                self.slots = list(self.recovery_pending_slots)
+                self.preferred_track = self.slots[0]
+            self.recovery_previous_slots = ()
+            self.recovery_pending_slots = ()
             self.presentation_recovery = False
             self.recovery_phase = 'none'
             self.recovery_ready = False
@@ -596,7 +746,7 @@ class MotionGames:
         self.previous = None
         self.squat_down = False
         self.down_since = self.up_since = None
-        self.circuit.invalidate_motion(keep_completed_side=recovered or self.source_resume_required)
+        self.circuit.invalidate_motion(keep_completed_side=True)
         self._invalidate_quest_motion()
         for reader in self.readers.values():
             reader.invalidate_motion(keep_stance=recovered)
@@ -643,7 +793,7 @@ class MotionGames:
                 self.previous = None
             return False
         between_stages = self.quest_transition > 0 or self.mode == 'hiit' and self.circuit.public()['phase'] == 'rest'
-        loading_transition = between_stages and self.presentation.visible(self.presentation_scope())
+        loading_transition = between_stages and self.presentation.transition_visible(self.presentation_scope())
         if self.elapsed > 0 and not self.source_resume_required and not loading_transition:
             self.suspend_source()
             self.presentation_recovery = True
@@ -658,16 +808,19 @@ class MotionGames:
         self.publish([], 'paused' if self.source_resume_required else 'off' if self.mode == 'off' else 'waiting', '等待游戏画面')
         return True
 
-    def gesture_control(self, people, hands, registration, now):
-        if not self.game_input_enabled or self.manually_paused:
-            return
+    def _require_gesture_release(self):
+        self.gesture_key = self.gesture_since = self.gesture_last = self.gesture_release = None
+        self.gesture_progress = 0.0
+        self.gesture_latched = True
+
+    def _held_gesture(self, people, hands, registration, now, allowed, tracks):
         visible = {p["id"] for p in people if len(p.get("joints", {})) >= 8}
         candidates = {
             (h.get("person_id"), h.get("gesture"))
             for h in hands
             if h.get("person_id") in visible
-            and h.get("gesture") in ("ok", "yeah")
-            and (self.preferred_track is None or h.get("person_id") == self.preferred_track)
+            and h.get("gesture") in allowed
+            and (tracks is None or h.get("person_id") in tracks)
         }
         candidate = (
             next(iter(candidates))
@@ -675,13 +828,15 @@ class MotionGames:
             else None
         )
         if self.gesture_last is not None and now - self.gesture_last > 0.25:
-            self.gesture_since = None
-            self.gesture_key = None
+            self._require_gesture_release()
         self.gesture_last = now
         self.gesture_progress = 0.0
         if candidate is None:
             self.gesture_since = None
             self.gesture_key = None
+            if candidates or registration.get('status') != 'locked':
+                self.gesture_release = None
+                return
             self.gesture_release = now if self.gesture_release is None else self.gesture_release
             if now - self.gesture_release >= 0.5:
                 self.gesture_latched = False
@@ -697,17 +852,29 @@ class MotionGames:
             return
         self.gesture_latched = True
         self.gesture_fired = now
+        return candidate
+
+    def gesture_control(self, people, hands, registration, now):
+        if not self.game_input_enabled or self.manually_paused:
+            return
+        tracks = (self.preferred_track,) if self.preferred_track is not None else None
+        allowed = ('ok', 'yeah')
+        if self.mode not in ('off', 'home') and not self.complete and self.slots:
+            if not set(self.slots).issubset(p['id'] for p in people):
+                self._require_gesture_release()
+                return
+            tracks = tracks or self.slots
+            allowed = ('yeah',)
+        candidate = self._held_gesture(people, hands, registration, now, allowed, tracks)
+        if candidate is None:
+            return
         if candidate[1] == "yeah":
             modes = ("quest", "ski", "tennis", "hiit")
             current = modes.index(self.selected_mode) if self.selected_mode in modes else -1
             self.select(modes[(current + 1) % len(modes)])
             self.preferred_track = candidate[0]
             self.gesture_event = "switched"
-        elif (
-            self.mode in ("off", "home")
-            or self.status == "waiting"
-            or self.complete
-        ):
+        else:
             self.reset(self.selected_mode)
             self.preferred_track = candidate[0]
             self.gesture_event = "started"
@@ -718,8 +885,8 @@ class MotionGames:
         dt = clamp(now - self.previous, 0, 0.12) if self.previous is not None else 0.0
         self.previous = now
         if self.source_resume_required:
-            return self._recover_source(people, registration, now, now if captured_at is None else captured_at)
-        if not self.manually_paused and self.resume_seconds <= 0:
+            return self._recover_source(people, registration, now, now if captured_at is None else captured_at, hands)
+        if not self.ski_warmup and not self.manually_paused and self.resume_seconds <= 0:
             self.gesture_control(people, hands, registration, now)
         if self._hold_for_presentation():
             return self.public
@@ -731,15 +898,20 @@ class MotionGames:
             return self.publish([], 'complete', '本局已完成')
         if self.manually_paused:
             return self.publish([], 'paused', '休息一下，准备好后继续')
-        required = 2 if self.mode == "tennis" else 1
+        required = self.required_players
         if registration.get("status") != "locked":
             for reader in self.readers.values():
                 reader.invalidate_motion()
             return self.publish([], "paused", "镜头转动或背景未对齐")
+        warmup = self.ski_warmup
+        if warmup and not warmup.accept_frame(now if captured_at is None else captured_at, now):
+            return self.publish([], 'paused', '等待最新画面')
         observed = []
         for p in people:
             key = p["id"]
             reader = self.readers.setdefault(key, BodyMotion())
+            if self.slots and self.missing_since is not None:
+                reader.invalidate_motion(keep_stance=True)
             result = reader.update(p, now)
             if result:
                 observed.append(result)
@@ -765,16 +937,31 @@ class MotionGames:
         selected = [by_id[k] for k in self.slots if k in by_id]
         if len(selected) != required:
             self.missing_since = now if self.missing_since is None else self.missing_since
-            # Stable tracking owns reassociation. A different sole bystander must never
-            # inherit the active player slot; an explicit OK can choose a new player.
-        else:
-            self.missing_since = None
-        if len(selected) != required:
+            captured = now if captured_at is None else captured_at
+            if (self.slots and now - self.missing_since >= PLAYER_RETURN_GRACE
+                    and len(people) == required and len({p['id'] for p in eligible}) == required
+                    and type(captured) in (int, float) and 0 <= now-captured <= 1.5):
+                # 原编号短暂消失时继续等候。新编号就位后，原局停住等用户确认。
+                previous_slots = tuple(self.slots)
+                self.suspend_source()
+                self.recovery_previous_slots = previous_slots
+                return self._recover_source(people, registration, now, captured, hands)
             return self.publish(selected, "waiting", f"需要 {required} 位可见玩家；当前 {len(selected)} 位")
+        self.missing_since = None
         if any(not p["located"] for p in selected):
             return self.publish(selected, "paused", "请让双脚完整入镜")
         if any(not p["calibrated"] for p in selected):
             return self.publish(selected, "calibrating", "站定约 1 秒，记录左右移动原点")
+        if warmup:
+            player = selected[0]
+            if (player['observation'] != 'fresh' or player['foot_observation'] != 'fresh'
+                    or player['observed_wrists'] < 2):
+                return self.publish(selected, 'paused', '请让手和双脚入镜')
+        elif self.mode == 'tennis':
+            receiver = self.ball['toward'] if self.tennis_variant == 'match' else 0
+            if receiver is not None and (gap := tennis_visibility_gap(selected[receiver])):
+                reason = '请让双脚完整入镜' if gap == 'feet' else '请让手和双脚入镜'
+                return self.publish(selected, 'paused', reason)
         if self.resume_seconds > 0:
             self.resume_seconds = max(0.0, self.resume_seconds-dt)
             if self.resume_seconds < 1e-6:
@@ -783,6 +970,12 @@ class MotionGames:
                 for reader in self.readers.values():
                     reader.invalidate_motion(keep_stance=True)
             return self.publish(selected, 'calibrating' if self.resume_seconds > 0 else 'playing', '准备继续本局')
+        if warmup:
+            warmup.observe(selected[0])
+            return self.publish(selected, 'playing', '试滑')
+        if self.mode == 'tennis' and self.status in {'paused', 'waiting'}:
+            # 恢复首帧重新建立时间基准，冻结期间不推进球。
+            dt = 0.0
         self.elapsed += dt
         if self.mode == "quest":
             self.quest(selected[0], dt)
@@ -850,7 +1043,7 @@ class MotionGames:
         self.reps = 0
         self.quest_counter = self.quest_counter_level = None
         self.quest_transition = TRANSITION_SECONDS if self.level < len(self.quest_stages) else 0.0
-        self.pose_feedback = "准备下一站" if self.quest_transition else "山径已通关"
+        self.pose_feedback = "准备下一站" if self.quest_transition else ""
 
     def quest_public(self, players):
         complete = self.level >= len(self.quest_stages)
@@ -879,14 +1072,15 @@ class MotionGames:
         if effort > 0.03:
             self.active += dt
         remaining = dt
-        while remaining > 1e-10 and self.distance < SKI_LENGTH:
+        trail = self.ski_trail
+        while remaining > 1e-10 and self.distance < trail.length:
             _, course, local = self.ski_course()
             # Only tests/recovery migrations may begin partway through a route.
             # Never award work for features already behind the observed position.
-            while self.ski_cursor < len(SKI_ROUTE) and SKI_ROUTE[self.ski_cursor].at < self.distance - 1e-8:
+            while self.ski_cursor < len(trail.features) and trail.features[self.ski_cursor].at < self.distance - 1e-8:
                 self.ski_cursor += 1
-            feature = SKI_ROUTE[self.ski_cursor] if self.ski_cursor < len(SKI_ROUTE) else None
-            boundary = min(self.distance + course['length'] - local, feature.at if feature else SKI_LENGTH)
+            feature = trail.features[self.ski_cursor] if self.ski_cursor < len(trail.features) else None
+            boundary = min(self.distance + course['length'] - local, feature.at if feature else trail.length)
             target = effort * course['speed'] * self.difficulty.ski_speed
             speed, travel = advance(self.speed, target, remaining)
             if travel < boundary - self.distance - 1e-10:
@@ -902,7 +1096,7 @@ class MotionGames:
                     self.ski_cursor += 1
         self.ski_elapsed += dt - remaining
         self.obstacles, self.ski_gates = [], []
-        for feature in SKI_ROUTE:
+        for feature in trail.features:
             z = (feature.at - self.distance) * SKI_WORLD_TRAVEL
             if -.3 < z <= SKI_VISIBLE_AHEAD:
                 result = self.ski_results.get(feature.id)
@@ -911,7 +1105,7 @@ class MotionGames:
                     self.obstacles.append(item)
                 else:
                     self.ski_gates.append(dict(item, width=feature.width * self.difficulty.ski_gate, result=result))
-        if self.distance >= SKI_LENGTH:
+        if self.distance >= trail.length:
             self.speed = 0.0
             self.obstacles = self.ski_gates = []
 
@@ -942,50 +1136,143 @@ class MotionGames:
                               elapsed=at, combo=self.ski_combo, points=points)
 
     def ski_public(self, players, status):
+        trail = self.ski_trail
         course_index, course, course_distance = self.ski_course()
-        gate = next((f for f in SKI_GATES if f.at >= self.distance and f.id not in self.ski_results), None)
-        active = self.mode == 'ski' and status == 'playing' and bool(players) and gate is not None
+        gate = next((f for f in trail.gates if f.at >= self.distance and f.id not in self.ski_results), None)
+        active = self.mode == 'ski' and not self.ski_warmup and status == 'playing' and bool(players) and gate is not None
         lateral = players[0].get('lateral', 0) if players else 0
         delta = gate.x - lateral if gate else 0
         gate_width = gate.width * self.difficulty.ski_gate if gate else 0
         cue = ('left' if delta < -gate_width + .08 else
                'right' if delta > gate_width - .08 else 'center') if gate else 'finish'
         event = dict(self.ski_event, age=round(max(0, self.ski_elapsed - self.ski_event['elapsed']), 3)) if self.ski_event else None
-        stars = (3 if self.gates_passed >= len(SKI_GATES) - 2 and self.collisions <= 1 else
-                 2 if self.gates_passed >= len(SKI_GATES) * 2 / 3 and self.collisions <= 4 else 1)
+        gate_count = len(trail.gates)
+        stars = (3 if self.gates_passed >= math.ceil(gate_count * 8 / 9) and self.collisions <= 1 else
+                 2 if self.gates_passed >= math.ceil(gate_count * 2 / 3)
+                 and self.collisions <= max(1, gate_count * 2 // 9) else 1)
+        skiing = self.mode == 'ski' or self.selected_mode == 'ski'
+        complete = self.mode == 'ski' and self.complete
         return dict(
             schema_version=2, speed=round(self.speed, 3), distance=round(self.distance, 2),
+            warmup=self.ski_warmup.public() if self.ski_warmup else None,
             obstacles=[dict(o) for o in self.obstacles], gates=[dict(g) for g in self.ski_gates],
             collisions=self.collisions, passed=self.passed, course=course_index,
-            course_name=course['name'], course_count=len(SKI_COURSES),
+            course_name=course['name'], course_count=len(trail.sections),
             course_progress=round(min(1, course_distance / course['length']), 3),
-            total_distance=SKI_LENGTH, progress=round(min(1, self.distance / SKI_LENGTH), 3),
-            gate_count=len(SKI_GATES), gates_passed=self.gates_passed, gates_missed=self.gates_missed,
+            total_distance=trail.length, progress=round(min(1, self.distance / trail.length), 3),
+            gate_count=gate_count, gates_passed=self.gates_passed, gates_missed=self.gates_missed,
             combo=self.ski_combo, best_combo=self.ski_best_combo,
             points=max(0, self.passed * 100 - self.collisions * 25 + self.ski_gate_points),
-            stars=stars if self.mode == 'ski' and self.complete else None,
+            stars=stars if complete else None, time_seconds=round(self.ski_elapsed, 2) if complete else None,
+            route=[(at, x, width * self.difficulty.ski_gate) for at, x, width in trail.path] if skiing else None,
+            trees=[(feature.at, feature.x) for feature in trail.features if feature.kind == 'tree'] if skiing else None,
+            section_results=[
+                dict(name=section['name'], gate_count=len(section['gates']),
+                     gates_passed=sum(self.ski_results.get(feature.id) == 'gate'
+                                      for feature in trail.gates if feature.course == index))
+                for index, section in enumerate(trail.sections)
+            ] if complete else None,
             guide=dict(active=active, cue=cue,
                        next_gate=dict(id=gate.id, x=gate.x, width=gate_width,
                                       distance=round(gate.at - self.distance, 3)) if gate else None),
             event=event)
 
-    def tennis(self, players, dt, now):
-        if self.tennis_winner is not None:
+    def _clear_tennis_serve(self):
+        self.tennis_serve_since = None
+        self.tennis_serve_ready = False
+
+    def _tennis_serve(self, players, now):
+        server = self.tennis_server
+        if server == 1 and self.tennis_variant == 'solo':
+            self.ball.update(x=clamp(self.tennis_opponent.x+.07, .12, .88), z=.88)
+            self.tennis_serve_ready = True
+            if self.tennis_serve_since is None:
+                self.tennis_serve_since = self.elapsed
+            elif self.elapsed-self.tennis_serve_since >= TENNIS_OPPONENT_SERVE_WAIT:
+                self.tennis_opponent.recovering = TENNIS_OPPONENT_FOLLOW_THROUGH
+                self._launch_tennis_serve(server, self.tennis_opponent.aim(self.tennis_flight, self.difficulty.id), now)
             return
+        player = players[server]
+        ready = (player.get('observed_wrists', 0) > 0 and all(
+            p.get('observation') == 'fresh' and p.get('foot_observation') == 'fresh' for p in players))
+        if not ready:
+            self._clear_tennis_serve()
+            return
+        position = .5 + player['lateral']*.4
+        self.ball.update(x=clamp(position + (-.07 if server == 0 else .07), .12, .88),
+                         z=.12 if server == 0 else .88)
+        if not self.tennis_serve_ready:
+            # 手停稳后再亮提示，避免把准备或恢复时的回手当作发球。
+            if player['arm_speed'] > .32:
+                self.tennis_serve_since = None
+            elif self.tennis_serve_since is None:
+                self.tennis_serve_since = now
+            else:
+                self.tennis_serve_ready = now-self.tennis_serve_since >= TENNIS_SERVE_SETTLE
+            return
+        swing = player.get('last_swing')
+        # 发球只消费就绪之后、当前帧观察到的挥拍。
+        if type(swing) not in (int, float) or swing != now or swing <= self.tennis_serve_since:
+            return
+        self.tennis_used_swings[server] = swing
+        self._launch_tennis_serve(server, position+player['swing_direction']*.27, now)
+
+    def _launch_tennis_serve(self, server, target, now):
+        self._clear_tennis_serve()
+        self.tennis_event_sequence += 1
+        self.tennis_event = dict(sequence=self.tennis_event_sequence, kind='serve', player=server, elapsed=self.elapsed)
+        self.hit_flash = now
+        self.ball.update(toward=1-server, target_x=clamp(target, .12, .88))
+        self._start_tennis_flight()
+
+    def _start_tennis_flight(self, launch_height=TENNIS_SERVE_HEIGHT):
+        self.tennis_flight += 1
+        self.tennis_arc = dict(launch_z=self.ball['z'], launch_height=launch_height,
+                               bounce_z=TENNIS_BOUNCE_DEPTH if self.ball['toward'] == 0 else 1-TENNIS_BOUNCE_DEPTH,
+                               loft=.62, rebound_height=TENNIS_REBOUND_HEIGHT)
+
+    def _feed_tennis_practice(self, now):
+        index = len(self.tennis_practice_results)
+        lane = TENNIS_PRACTICE_LANES[index]
+        speed = min(self.difficulty.tennis_max_speed,
+                    self.difficulty.tennis_speed * TENNIS_PRACTICE_SPEEDS[index // 3])
+        self.ball.update(x=lane, z=.88, target_x=lane, toward=0, speed=speed)
+        self.tennis_event_sequence += 1
+        self.tennis_event = dict(sequence=self.tennis_event_sequence, kind='serve', player=1, elapsed=self.elapsed)
+        self._start_tennis_flight()
+        self.hit_flash = now
+
+    def tennis(self, players, dt, now):
+        if self._tennis_complete():
+            return
+        practice = self.tennis_variant == 'practice'
+        b = self.ball
+        solo = self.tennis_variant == 'solo'
+        reaction = self.tennis_opponent.move(b, self.tennis_flight, self.rally, dt, self.difficulty.id) if solo else None
         if self.round_pause > 0:
             self.round_pause = max(0, self.round_pause-dt)
+            if self.round_pause > 0 or b['toward'] is not None:
+                return
+        if b['toward'] is None:
+            if practice:
+                self._feed_tennis_practice(now)
+            else:
+                self._tennis_serve(players, now)
             return
-        b = self.ball
         start_x, start_z = b['x'], b['z']
         direction = -1 if b["toward"] == 0 else 1
         receiver = b["toward"]
-        p = players[receiver]
-        px = 0.5 + p["lateral"] * 0.4
+        opponent_receiving = solo and receiver == 1
+        p = None if receiver == 1 and (solo or practice) else players[receiver]
+        px = self.tennis_opponent.x if opponent_receiving else .5 + p['lateral'] * .4 if p else .5
         window = TENNIS_WINDOW * self.difficulty.tennis_window
-        swing = p.get('last_swing')
+        swing = p.get('last_swing') if p else None
         fresh_swing = (type(swing) in (int, float) and math.isfinite(swing)
                        and 0 <= now-swing < .35 and swing > self.tennis_used_swings[receiver]
                        and p.get('observation', 'fresh') == 'fresh')
+        if opponent_receiving and reaction is not None:
+            swing = now-dt+reaction
+            fresh_swing = True
         contact = tennis_contact(b, px, swing, dt, now, window) if fresh_swing else None
         if contact and now-dt+contact[0]-self.hit_flash > .4:
             at, hit_x, hit_z = contact
@@ -994,28 +1281,41 @@ class MotionGames:
             self.tennis_event_sequence += 1
             self.tennis_event = dict(sequence=self.tennis_event_sequence, kind='hit', player=receiver,
                                      quality=quality, elapsed=self.elapsed)
-            self.tennis_flight += 1
-            b['x'] = hit_x
-            b["toward"] = 1 - receiver
-            b["z"] = 0.12 if receiver == 0 else 0.88
-            b["target_x"] = clamp(px + p["swing_direction"] * 0.27, 0.12, 0.88)
+            # 击球区在弹地点之后，出球从真实触球的深度和弹起高度继续。
+            depth = clamp(abs(hit_z-receiver)/TENNIS_BOUNCE_DEPTH, 0., 1.)
+            b.update(x=hit_x, z=hit_z, toward=1-receiver)
+            self._start_tennis_flight(TENNIS_REBOUND_HEIGHT*(1-depth**2))
+            if opponent_receiving:
+                aim = self.tennis_opponent.aim(self.tennis_flight, self.difficulty.id, .5+players[0]['lateral']*.4)
+                b['target_x'] = clamp(aim, max(.12, px-.27), min(.88, px+.27))
+                self.tennis_opponent.recovering = TENNIS_OPPONENT_FOLLOW_THROUGH
+            else:
+                b['target_x'] = clamp(px+p['swing_direction']*.27, .12, .88)
             b["speed"] = min(self.difficulty.tennis_max_speed, b["speed"] + 0.015)
             remaining = max(0., dt-at)
             b['z'] += (1 if receiver == 0 else -1)*b['speed']*remaining
             b['x'] = b['target_x']+(b['x']-b['target_x'])*math.exp(-TENNIS_CURVE*remaining)
             self.rally += 1
             self.best_rally = max(self.best_rally, self.rally)
+            if practice:
+                self.tennis_practice_results.append(True)
             self.hit_flash = now-dt+at
             self.active += 0.3
             return
         b["z"] += direction * b["speed"] * dt
         b['x'] = b['target_x'] + (b['x']-b['target_x'])*math.exp(-TENNIS_CURVE*dt)
         if b["z"] < 0 or b["z"] > 1:
-            self.score[1 - receiver] += 1
+            self.tennis_arc = None
+            if practice and receiver == 1:
+                # The successful return finishes its flight before the next feed.
+                self.tennis_flight += 1
+                b.update(x=.5, z=.88, target_x=.5, toward=None, speed=0.)
+                self.round_pause = TENNIS_PRACTICE_BREAK
+                return
             self.tennis_event_sequence += 1
-            self.tennis_event = dict(sequence=self.tennis_event_sequence, kind='point', player=1-receiver,
-                                     elapsed=self.elapsed)
-            if p.get('observation', 'fresh') == 'fresh':
+            self.tennis_event = dict(sequence=self.tennis_event_sequence, kind='miss' if practice else 'point',
+                                     player=receiver if practice else 1-receiver, elapsed=self.elapsed)
+            if p and p.get('observation', 'fresh') == 'fresh':
                 distance = start_z if receiver == 0 else 1-start_z
                 arrival = max(0., min(dt, distance/max(.01, b['speed'])))
                 baseline_x = b['target_x']+(start_x-b['target_x'])*math.exp(-TENNIS_CURVE*arrival)
@@ -1024,44 +1324,94 @@ class MotionGames:
                 self.tennis_event['next_focus'] = 'position' if abs(baseline_x-px) >= TENNIS_REACH else 'timing'
             self.tennis_flight += 1
             self.rally = 0
+            if practice:
+                self.tennis_practice_results.append(False)
+                b.update(x=.5, z=.88, target_x=.5, toward=None, speed=0.)
+                self.round_pause = TENNIS_PRACTICE_BREAK
+                return
+            self.score[1 - receiver] += 1
             leading = max(self.score)
             if leading >= TENNIS_TARGET and (abs(self.score[0]-self.score[1]) >= 2 or leading >= TENNIS_CAP):
                 self.tennis_winner = self.score.index(leading)
                 b['speed'] = 0
                 return
-            b.update(x=0.5, z=0.5, target_x=self.rng.uniform(0.15, 0.85), toward=receiver, speed=self.difficulty.tennis_speed)
-            self.round_pause = 2.0
+            # 首分结束后换发，此后每两分轮换。
+            self.tennis_server = ((sum(self.score)+1)//2) % 2
+            self._clear_tennis_serve()
+            b.update(x=.5, z=.12 if self.tennis_server == 0 else .88, target_x=.5,
+                     toward=None, speed=self.difficulty.tennis_speed)
+            self.round_pause = TENNIS_PREPARATION
 
     def tennis_public(self, players, status):
-        """Guidance uses the exact flight equation and reach used by tennis()."""
-        phase = ('complete' if self.tennis_winner is not None else
-                 'point' if self.round_pause > 0 and self.tennis_event and self.tennis_event['kind']=='point' else
-                 'ready' if self.round_pause > 0 else 'rally')
+        """站位沿用本局玩家编号，落点提示与击球判定使用同一轨迹和窗口。"""
+        practice = self.selected_mode == 'tennis' and self.tennis_variant == 'practice'
+        solo = self.selected_mode == 'tennis' and self.tennis_variant == 'solo'
         receiver = self.ball['toward']
-        active = self.mode == 'tennis' and status == 'playing' and len(players) == 2 and self.tennis_winner is None
-        guide = dict(active=active, receiver=receiver, target_x=None, seconds=None,
-                     in_position=False, cue=None, reach=TENNIS_REACH)
-        if active:
+        phase = ('complete' if self._tennis_complete() else
+                 'point' if self.round_pause > 0 and self.tennis_event and self.tennis_event['kind'] in {'point','miss'} else
+                 'ready' if self.round_pause > 0 or (practice and receiver is None) else
+                 'serve' if receiver is None else 'rally')
+        active = self.mode == 'tennis' and status == 'playing' and len(players) == self.required_players
+        serve = (dict(player=self.tennis_server, ready=active and phase == 'serve' and self.tennis_serve_ready)
+                 if self.mode == 'tennis' and not practice and receiver is None else None)
+        window = TENNIS_WINDOW * self.difficulty.tennis_window
+        guide = dict(active=active and phase == 'rally' and (receiver == 0 or not (practice or solo)),
+                     receiver=receiver, target_x=None, seconds=None,
+                     in_position=False, cue=None, reach=TENNIS_REACH, window=window)
+        if guide['active']:
             z = self.ball['z']
-            window = TENNIS_WINDOW * self.difficulty.tennis_window
             seconds = max(0, (z-window if receiver == 0 else 1-window-z)
                           / max(.01, self.ball['speed']))
             target = self.ball['target_x'] + (self.ball['x']-self.ball['target_x'])*math.exp(-TENNIS_CURVE*seconds)
             delta = target-(.5+players[receiver]['lateral']*.4)
             positioned = abs(delta) < TENNIS_REACH
-            cue = ('prepare' if phase in {'ready','point'} else
-                   ('right' if delta > 0 else 'left') if not positioned else
+            cue = (('right' if delta > 0 else 'left') if not positioned else
                    'swing' if seconds <= TENNIS_CUE_LEAD else 'wait')
             guide.update(target_x=target, seconds=seconds, in_position=positioned, cue=cue)
+        lineup = []
+        if (self.mode == 'tennis' and len(self.slots) == 2 and self.previous is not None and not self.source_resume_required
+                and not self.manually_paused
+                and (status in {'waiting', 'calibrating'} or (status == 'paused' and players))):
+            by_id = {player['id']: player for player in players}
+            for index, track in enumerate(self.slots):
+                player = by_id.get(track)
+                state = 'missing'
+                if player is not None:
+                    if not player['located']:
+                        state = 'feet'
+                    else:
+                        state = 'ready' if player['calibrated'] else 'calibrating'
+                        if status == 'paused' and phase == 'rally' and index == receiver:
+                            state = tennis_visibility_gap(player) or state
+                lineup.append(state)
         event = dict(self.tennis_event, age=round(max(0, self.elapsed-self.tennis_event['elapsed']), 3)) if self.tennis_event else None
-        return dict(ball=dict(self.ball), score=list(self.score), rally=self.rally, best_rally=self.best_rally,
+        drill = None
+        if practice:
+            total = len(TENNIS_PRACTICE_LANES)
+            index = min(total - 1, len(self.tennis_practice_results) - (receiver == 1))
+            drill = dict(balls=total, results=list(self.tennis_practice_results),
+                         feed_x=TENNIS_PRACTICE_LANES[index])
+        arc = dict(self.tennis_arc) if self.tennis_arc else dict(launch_height=TENNIS_SERVE_HEIGHT, bounce_z=None)
+        return dict(ball=dict(self.ball), arc=arc, score=list(self.score), rally=self.rally, best_rally=self.best_rally,
                     winner=self.tennis_winner, target=TENNIS_TARGET, cap=TENNIS_CAP,
                     phase=phase, ready_seconds=round(self.round_pause, 3), guide=guide,
-                    event=event, flight=self.tennis_flight)
+                    event=event, flight=self.tennis_flight, lineup=lineup, serve=serve, practice=drill,
+                    opponent=dict(x=round(self.tennis_opponent.x, 4)) if solo else None)
 
     def publish(self, players, status, reason):
         if self.mode == 'quest' and status not in {'playing', 'complete'}:
             self._invalidate_quest_motion()
+        if self.mode == 'hiit' and status not in {'playing', 'complete'}:
+            self.circuit.invalidate_motion(keep_completed_side=True)
+        if self.mode == 'tennis' and status != 'playing':
+            self._clear_tennis_serve()
+            receiver = self.ball['toward']
+            if receiver is not None and receiver < len(self.slots):
+                reader = self.readers.get(self.slots[receiver])
+                if reader:
+                    reader.invalidate_swing()
+        if self.ski_warmup and status != 'playing':
+            self.ski_warmup.clear_hold()
         self.status = status
         self.reason = reason
         self.public = {
@@ -1072,6 +1422,11 @@ class MotionGames:
             "selected_mode": self.selected_mode,
             "difficulty": self.difficulty.id,
             "difficulty_options": difficulty_options(),
+            "ski_trail": self.ski_trail.id if self.selected_mode == 'ski' else None,
+            "ski_trails": ski_trail_options() if self.selected_mode == 'ski' else [],
+            "tennis_variant": self.tennis_variant if self.selected_mode == 'tennis' else None,
+            "quest_route": self.quest_route.id if self.selected_mode == 'quest' else None,
+            "quest_routes": quest_route_options() if self.selected_mode == 'quest' else [],
             "owner_track": self.preferred_track,
             "input_mirrored": True,
             "version": "0.13.0",

@@ -11,14 +11,14 @@ class SafetyStorageBusy(RuntimeError):
 
 
 class SafetyIO:
-    def __init__(self, *, max_pending=16, acquire_timeout=2.5):
+    def __init__(self, *, max_pending=16, acquire_timeout=2.5, thread_name_prefix='friday-safety-store'):
         self.max_pending = max_pending
         self.acquire_timeout = acquire_timeout
         self.pending = 0
         self.closed = False
         self.active = None
         self.lock = asyncio.Lock()
-        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='friday-safety-store')
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=thread_name_prefix)
 
     async def call(self, operation, *args, **kwargs):
         if self.closed or self.pending >= self.max_pending:

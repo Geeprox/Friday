@@ -183,6 +183,8 @@ class RecognitionPractice:
                     item['circuit'].update(p, dt)
                     matched = item['circuit'].total_reps > 0
                 immediate = not gesture.startswith('pose.')
+            elif item['circuit'] is not None:
+                item['circuit'].invalidate_motion(keep_completed_side=True)
         lease.update(phase='seen', camera=camera, progress=0.0)
         item.update(phase='seen', progress=0.0)
         if not matched:

@@ -7,7 +7,7 @@ _FILES={name:_HERE/'static'/name for name in
         ('index.js','index.css','games.js','games.css','game-scenes.js','ski-scene.js','game-teaching.js','game-presentation.js','game-sound.js')}
 _FILES.update({name:_HERE/'static/game-art'/name for name in
                ('winter-props.png','winter-scene.png','summer-props.png','summer-scene.png',
-                'quest-stream-scene.png','quest-camp-scene.png','quest-props.png',
+                'quest-stream-scene.png','quest-camp-scene.png','quest-props.png','quest-lantern.webp',
                 'tennis-near-v1.png','tennis-far-v1.png')})
 _FILES.update({'friday-icon.png':_SHARED/'brand/friday.png',
                'body-motions.js':_SHARED/'body-motions.js'})
@@ -34,6 +34,10 @@ _BODY_TARGETS = (
     'exercise-side_lunge.png',
     'exercise-side_step.png',
     'exercise-side_bend.png',
+    'exercise-balance.png',
+    'exercise-cross_knee.png',
+    'exercise-side_raise.png',
+    'exercise-overhead_clap.png',
 )
 _FILES.update({'motion-art/body/targets/'+name:_SHARED/'motion-art/body/targets'/name for name in _BODY_TARGETS})
 

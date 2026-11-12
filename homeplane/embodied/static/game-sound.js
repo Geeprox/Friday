@@ -5,10 +5,12 @@ function gameSoundFrame(g){
  return{key:g.control_context+':'+g.round_id+':'+g.mode,mode:g.mode,status:g.status,elapsed:Number.isFinite(g.elapsed)&&g.elapsed>=0?g.elapsed:null,
   held:g.manually_paused===true||g.source_recovery?.required===true||g.resume_seconds>0||!['playing','complete'].includes(g.status),
   level:count(value.level),reps:count(value.total_reps),passed:count(value.gates_passed),missed:count(value.gates_missed),collisions:count(value.collisions),
+  warmupStep:['left','right','arms','ready'].indexOf(value.warmup?.step),
   sequence:count(event?.sequence)||0,event:event&&typeof event==='object'?{...event}:null};
 }
 function gameSoundCue(before,after){
  if(!before||!after||before.key!==after.key||before.held||after.held||before.status!=='playing'||before.elapsed!==null&&after.elapsed!==null&&after.elapsed<before.elapsed)return null;
+ if(after.mode==='ski'&&after.warmupStep>=0)return before.warmupStep>=0&&after.warmupStep===before.warmupStep+1?'stage':null;
  if(after.status==='complete')return'finish';
  if(after.mode==='quest'||after.mode==='hiit'){
   if(before.level!==null&&after.level===before.level+1)return'stage';
@@ -17,7 +19,7 @@ function gameSoundCue(before,after){
  }
  const event=after.event;
  if(!event||after.sequence!==before.sequence+1||!Number.isFinite(event.age)||event.age<0||event.age>.35)return null;
- if(after.mode==='tennis'&&[0,1].includes(event.player))return event.kind==='hit'?'racket':event.kind==='point'?'point':null;
+ if(after.mode==='tennis'&&[0,1].includes(event.player))return ({serve:'racket',hit:'racket',point:'point',miss:'miss'})[event.kind]||null;
  if(after.mode==='ski'){
   if(event.kind==='gate'&&before.passed!==null&&after.passed===before.passed+1)return'gate';
   if(event.kind==='miss'&&before.missed!==null&&after.missed===before.missed+1)return'miss';

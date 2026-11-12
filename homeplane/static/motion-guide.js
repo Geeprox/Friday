@@ -32,6 +32,10 @@ const moves = [
  ['exercise.side_bend','站姿侧倾','双脚站稳，上身向一侧轻倾，再回到正中，左右交替。','game','往返一次'],
  ['exercise.reach_up','交替上伸','一只手向上伸展，再放回身侧，左右交替。','game','放回计一次'],
  ['exercise.arm_open','胸前开合','双手在胸前靠拢，平举打开，再合回胸前。','game','往返一次'],
+ ['exercise.balance','单腿站立','轻抬一脚，站稳 1 秒后落地，左右换脚。','game','站稳再落脚'],
+ ['exercise.cross_knee','交叉触膝','抬膝，用对侧手靠近膝盖，再放下换侧。','game','放回计一次'],
+ ['exercise.side_raise','交替侧抬腿','一只脚向侧面轻抬，停一下再落地，左右交替。','game','落脚计一次'],
+ ['exercise.overhead_clap','头顶合掌','举起并打开双臂，在头顶合掌，再打开双臂。','game','再次打开计一次'],
 ];
 export const MOTION_GUIDES=Object.fromEntries(moves.map(([id,name,instruction,group,timing])=>[id,{id,name,instruction,group,timing}]));
 export function createMotionDiagram(key,{label=true}={}){

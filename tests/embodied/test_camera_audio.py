@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
-from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, deliver_audio
+from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, deliver_audio, voice_window_deadlines
 from homeplane.embodied.camera_provenance import camera_source_context
 
 
@@ -40,6 +40,80 @@ async def test_capture_does_not_relabel_audio_left_before_a_gap_as_current():
     clock[0]=14
     await decode('synthetic-camera',np.ones(1200,dtype=np.int16),1,0,1014000,1014000)
     assert not output,'A partial old buffer must be discarded at the gap, not given the newer timestamp'
+
+
+@pytest.mark.asyncio
+async def test_video_observation_survives_pipe_pressure_and_capture_cannot_reopen_expired_audio(tmp_path, monkeypatch):
+    from homeplane.embodied import home_service as module
+
+    clock = [10.0]
+    monotonic = SimpleNamespace(monotonic=lambda: clock[0])
+    monkeypatch.setattr(module, 'time', monotonic)
+    paused = tmp_path / 'paused'
+    monkeypatch.setattr(module, 'VOICE_INPUT_PAUSED', paused)
+    service = voice_service(module)
+    service.enabled = service.armed = False
+    service.attention = SimpleNamespace(update=Mock(), candidate=lambda *_: None)
+    buffered = [32]
+    writer = SimpleNamespace(write=Mock(), drain=AsyncMock(), is_closing=lambda: False,
+                             transport=SimpleNamespace(get_write_buffer_size=lambda: buffered[0]))
+    process = SimpleNamespace(stdin=writer)
+
+    async def observe(captured):
+        await service.observe([dict(id=1)], [], {'status': 'locked'}, clock[0], process, False,
+                              sound_review=True, session_id='camera-session', captured_mono=captured)
+
+    for tick in (10.0, 10.5, 11.0):
+        clock[0] = tick
+        await observe(tick)
+    writer.write.assert_not_called()
+    assert service.last_video == 11 and service.visible_tracks == {1}
+
+    buffered[0] = 0
+    clock[0] = 11.5
+    await observe(11.1)
+    clock[0] = 12.0
+    writer.write.side_effect = BrokenPipeError
+    await observe(12.0)
+    writer.write.side_effect = None
+    clock[0] = 12.5
+    await observe(12.5)
+    paused.touch()
+    clock[0] = 13.0
+    await observe(13.0)
+    assert writer.write.call_count == 4 and service.last_video == 13.0
+    writer.drain.assert_not_awaited()
+    expired, _, fresh, muted = [call.args[0] for call in writer.write.call_args_list]
+    assert json.loads(expired)['expires_mono'] == pytest.approx(12.6)
+
+    arrivals = iter([(12.7, expired), (12.85, fresh), (13.0, muted)])
+    deadlines = []
+
+    async def readline():
+        deadlines.append((scope['audio_until'], scope['attention_until']))
+        row = next(arrivals, None)
+        if row is None:
+            return b''
+        clock[0], packet = row
+        return packet
+
+    framer = PCMFramer(CAMERA, 'a' * 32)
+    assert framer.push(bytes(3200), received=1012.5, decoded=1012.5, wall=1012.5, mono=12.5) == []
+    epoch = framer.epoch
+    scope = dict(reader=SimpleNamespace(readline=readline), json=json, audio_until=12.6, attention_until=12.6,
+                 time=monotonic, audio_framer=framer, voice_window_deadlines=voice_window_deadlines, emit=Mock())
+    await actual('homeplane/embodied/capture_worker.py', 'controls', scope)()
+    assert deadlines[1] == (0.0, 0.0)
+    assert deadlines[2] == pytest.approx((13.8, 13.8))
+    assert deadlines[3] == pytest.approx((0.0, 14.3))
+    assert not framer.pending and framer.epoch > epoch
+    scope['emit'].assert_not_called()
+
+
+@pytest.mark.parametrize('deadline', [None, True, float('nan'), 10, 11.31])
+def test_capture_rejects_invalid_or_stale_voice_window_deadlines(deadline):
+    command = dict(enabled=True, attention=True, expires_mono=deadline)
+    assert voice_window_deadlines(command, 10) == (0.0, 0.0)
 
 
 @pytest.mark.asyncio
@@ -146,7 +220,7 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
             dict(type='motor_result',request_id=7,native_code=0)]
     scope=dict(process=SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(
         side_effect=[json.dumps(p).encode() for p in stream]+[b'']))),
-        self=SimpleNamespace(on_audio=callback,wall=None),selected=CAMERA,audio_ingress=g,
+        self=SimpleNamespace(on_audio=callback,on_capture_frame=None,wall=None),selected=CAMERA,audio_ingress=g,
         item={'privacy_closed':closed},waiters={7:future},queue=queue,last_video_lease=0,
         wall_epoch=1,time=time,json=json,offer_frame=lambda _,p:offered.append(p),retire_source=Mock())
     await actual('homeplane/embodied/previews.py','receive',scope)()
@@ -245,7 +319,7 @@ async def test_local_audio_model_failure_does_not_stop_primary_frames_or_motor_r
         json.dumps(audio(framer=framer)).encode(),json.dumps(frame).encode(),
         json.dumps(dict(type='motor_result',request_id=7,native_code=0)).encode(),b'']))),
         state={'status':'live'},audio_ingress=g,home=s,deliver_audio=deliver_audio,generation=1,my_generation=1,
-        safety=SimpleNamespace(observe_audio=Mock()),
+        safety=SimpleNamespace(observe_audio=Mock(),capture_frame=Mock()),
         SELECTED=CAMERA,fleet=SimpleNamespace(voice_current=lambda *_:True),time=time,json=json,
         offer_frame=lambda _,item:offered.append(item),queue=object(),last_video_lease=0,
         captured_times=deque(),wall=SimpleNamespace(offer=Mock()),wall_epoch=1,motor_waiters={7:future},

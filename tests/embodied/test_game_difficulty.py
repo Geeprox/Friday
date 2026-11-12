@@ -28,7 +28,7 @@ def test_body_route_difficulty_changes_actual_goals_and_matching_instructions():
         game = MotionGames()
         game.reset("quest", difficulty=difficulty)
         stages = game.public["quest"]["stages"]
-        assert len(stages) == 10
+        assert len(stages) == 14
         assert all(f"{s['hold']:g} 秒" in s["instruction"] for s in stages if s["hold"])
         assert all(f"{s['reps']} 次" in s["instruction"] for s in stages if s["reps"])
         for _ in range(100):
@@ -48,12 +48,12 @@ def test_training_uses_real_difficulty_plan_and_preserves_alternating_pairs():
     for difficulty in ("easy", "standard", "challenge"):
         game = MotionGames()
         game.reset("hiit", difficulty=difficulty)
-        assert len(game.circuit.plan) == 8
+        assert len(game.circuit.plan) == 12
         assert game.public["hiit"]["required_reps"] == game.circuit.plan[0][2]
         assert all(
             item[2] % 2 == 0
             for item in game.circuit.plan
-            if item[0] in {"lunge", "high_knee", "side_step", "side_bend", "reach_up"}
+            if item[0] in {"lunge", "high_knee", "side_step", "side_bend", "reach_up", "balance", "cross_knee", "side_raise"}
         )
         totals.append(sum(item[2] for item in game.circuit.plan))
     assert totals[0] < totals[1] < totals[2]

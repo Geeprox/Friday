@@ -387,7 +387,7 @@ body .files-root { --files-muted: var(--muted); --files-line: var(--line); --fil
   .product-inspector { width: 100%; padding: 20px; }
   .experience .camera-device-layout:has(.product-inspector:not([hidden])) { grid-template-columns: minmax(0,1fr); }
   .experience .camera-device-layout .product-device-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .camera-device-layout .product-inspector { grid-row: 1; }
+  .camera-device-layout .product-inspector { grid-row: 1; scroll-margin-block-start: 7rem; }
   .experience .house-scene { min-height: 380px; height: 380px; }
   .experience .house-scene.with-spatial-panel { height: 760px; }
   .experience .with-spatial-panel .house-canvas { width: 100%; height: 360px; bottom: auto; }
@@ -452,6 +452,52 @@ body .files-root { --files-muted: var(--muted); --files-line: var(--line); --fil
 .runtime-services dt { color: var(--ink); }
 .runtime-services dd { margin: 0; color: var(--muted); }
 .runtime-services [data-state='warning'] dd { color: var(--warn); }
+.runtime-services > .runtime-perception {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto;
+  gap: 2px 12px;
+}
+.runtime-perception > dd:first-of-type { text-align: end; font-variant-numeric: tabular-nums; }
+.runtime-perception[data-state='degraded'] > dd:first-of-type { color: var(--warn); }
+.runtime-camera-detail { grid-column: 1/-1; }
+.experience .runtime-camera-open {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: start;
+}
+.experience .runtime-camera-open:hover { background: var(--accent-soft); }
+.runtime-camera-open .icon { width: 15px; height: 15px; flex: none; color: var(--muted); }
+.runtime-camera-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: .8125rem; }
+.runtime-camera-open small { flex: none; color: var(--muted); font-size: .75rem; }
+.runtime-services > .runtime-review { margin-block: 0; }
+.experience .runtime-review-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: end;
+  gap: 5px;
+  min-height: 36px;
+  padding: 4px 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: end;
+}
+.experience .runtime-review-open:hover { background: var(--accent-soft); }
+.runtime-review-open .icon { width: 13px; height: 13px; flex: none; }
+.runtime-review[data-state='degraded'] dd { color: var(--warn); }
+@media (max-width: 640px) {
+  .runtime-services > .runtime-review { grid-column: 1/-1; }
+  .experience .runtime-review-open { min-height: 44px; }
+}
 .runtime-resources { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding-block: 20px; border-block: 1px solid var(--line); }
 .runtime-resource > div { display: grid; gap: 6px; }
 .runtime-resource span { font-size: .75rem; color: var(--muted); }
@@ -459,8 +505,8 @@ body .files-root { --files-muted: var(--muted); --files-line: var(--line); --fil
 .runtime-resource meter { display: block; width: 100%; height: 4px; margin-block-start: 10px; accent-color: #6b7067; }
 .runtime-resource meter::-webkit-meter-bar { border: 0; background: #dfdfd9; border-radius: 2px; }
 .runtime-resource meter::-webkit-meter-optimum-value { background: #777c72; border-radius: 2px; }
-.runtime-latency, .runtime-performance-note { grid-column: 1/-1; font-size: .75rem; color: var(--muted); margin: 0; }
-.runtime-performance-note { color: var(--warn); }
+.runtime-latency { grid-column: 1/-1; font-size: .75rem; color: var(--muted); margin: 0; font-variant-numeric: tabular-nums; }
+.runtime-latency[data-state='degraded'] { color: var(--warn); }
 .home-attention { margin-block-start: 26px; }
 .attention-count { font-size: .75rem; color: var(--warn); font-variant-numeric: tabular-nums; }
 .home-attention-empty { padding-block: 16px; color: var(--muted); font-size: .8125rem; }
@@ -540,6 +586,7 @@ body .files-root { --files-muted: var(--muted); --files-line: var(--line); --fil
  .home-brief { grid-template-columns: minmax(0,1fr); gap: 28px; }
  .runtime-services { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 20px; }
  .runtime-services > div { gap: 8px; margin-block: 5px; }
+ .runtime-services > .runtime-perception { grid-column: 1/-1; }
  .home-plan-empty { min-height: 340px; }
  .device-browser { display: block; }
  .device-room-list { position: static; flex-direction: row; overflow-x: auto; margin-block-end: 20px; padding-block-end: 4px; }
@@ -627,11 +674,6 @@ body .files-root { --files-muted: var(--muted); --files-line: var(--line); --fil
  .experience .home-space .model-room-name{max-width:148px;min-width:104px;padding:7px 9px}
  .model-room-summary{font-size:11px}
  .home-space-footer{padding-block:8px;font-size:12px}
- body:has(.games-library[data-playing=true]) .sidebar,body:has(.games-library[data-playing=true]) .page-header{display:none}
- body:has(.games-library[data-playing=true]) .topbar{min-height:30px;padding-block:2px}
- body:has(.games-library[data-playing=true]) main#workspace{padding:12px}
- body:has(.games-library[data-playing=true]) .game-stage-heading{margin-bottom:8px;min-height:40px}
- body:has(.games-library[data-playing=true]) .game-stage{height:calc(100svh - 122px);min-height:min(590px,calc(100svh - 122px))}
 }
 
 .automation-task-attention{margin-block:8px 24px}.automation-task-attention[hidden]{display:none}.automation-task-attention>h3{font-size:16px;margin:0 0 8px}.automation-task-issue{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:16px 0;border-top:1px solid var(--line)}.automation-task-issue>div:first-child{min-width:0}.automation-task-issue h4{font-size:14px;margin:0 0 6px;overflow-wrap:anywhere}.automation-task-issue p{margin:4px 0}.automation-task-issue .product-actions{flex-shrink:0}.automation-task-issue[data-focused="true"] h4{outline:1px solid var(--ink);outline-offset:5px}.automation-task-issue [role="status"]:empty{display:none}@media(max-width:760px){.automation-task-issue{align-items:flex-start;flex-direction:column;gap:12px}.automation-task-issue .product-actions{flex-wrap:wrap}}

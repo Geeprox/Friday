@@ -33,12 +33,14 @@ async def test_first_launch_and_stopped_exit_with_original_asgi_receipts(bridge,
     catalogue = (await bridge.client.get("/api/games")).json()
     assert not catalogue["service"]["owned"] and "game" not in catalogue["service"]
     command = dict(
-        camera=CAMERA, app="ski", difficulty="standard", expected_intent=catalogue["service"]["game_intent"]
+        camera=CAMERA, app="ski", difficulty="standard", ski_trail="pine-slalom",
+        expected_intent=catalogue["service"]["game_intent"],
     )
     result = await bridge.client.post("/api/embodied/start", json=command)
     assert result.status_code == 200, result.text
     started = result.json()
     assert started["owned"] and started["game"]["selected_mode"] == "ski"
+    assert started["game"]["ski_trail"] == "pine-slalom"
     opened = await bridge.client.get("/api/games/ski/open")
     assert opened.status_code == 200
     owner._spawn_guarded_worker.assert_awaited_once()

@@ -71,3 +71,18 @@ test('peer end with the same selected game replaces a completed overlay once', (
   assert.deepEqual(selections, ['quest']);
   assert.equal(context.lastBackendRound, 'off');
 });
+
+test('游戏库准备的单人挑战通过球场的原二进制流入口', () => {
+  const owner=makeClient(),context=owner.c;
+  context.connect();
+  const socket=owner.sockets[0];socket.onopen();
+  socket.onmessage({data:packet(game({mode:'off',selected_mode:'tennis',status:'off',
+    tennis_variant:'solo',round_id:2,control_revision:2}))});
+  assert.equal(context.gameViewCurrent(),true);
+  assert.equal(context.meta.game.tennis_variant,'solo');
+  assert.equal(context.selected,'tennis');
+  assert.equal(socket.closed,undefined);
+  socket.onmessage({data:packet({...context.meta.game,tennis_variant:['solo'],control_revision:3})});
+  assert.equal(socket.closed,true);
+  assert.equal(context.meta.game.control_revision,2);
+});

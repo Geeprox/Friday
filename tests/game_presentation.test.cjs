@@ -49,6 +49,17 @@ test('a new exercise presentation retires the old instruction inside the same ro
  f.owner.close();for(const call of f.calls)call.resolve();await settle();assert.equal(f.timers.size,0);
 });
 
+test('a ready canvas from the previous exercise cannot admit the next one',()=>{
+ const h=makeClient(),c=h.c,root=h.node('gameTutorial'),canvas=h.node('diagram');
+ c.meta.game=game({presentation:{required:true},quest:{level:1}});
+ c.document.querySelector=selector=>selector==='#gameTutorial canvas'?canvas:null;
+ root.dataset.teachingKey='pose.horizontal';canvas.dataset.motion='ready';
+ assert.equal(c.gameSceneReady(),false);
+ root.dataset.teachingKey='pose.overhead';canvas.dataset.motion='loading';
+ assert.equal(c.gameSceneReady(),false);
+ canvas.dataset.motion='ready';assert.equal(c.gameSceneReady(),true);
+});
+
 test('a required but incomplete display context cannot be treated as ready',async()=>{
  const f=fixture();f.setAssets(true);f.owner.tick();await settle();assert.equal(f.owner.ready(),true);
  f.g.presentation.context='invalid';assert.equal(f.owner.ready(),false);f.owner.tick();await settle();assert.equal(f.calls.at(-1).body.visible,false);

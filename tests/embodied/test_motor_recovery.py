@@ -14,11 +14,12 @@ import pytest
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.local_motor import LocalMotor
 from homeplane.embodied.local_motor import check_motor_deadline
+from tests.embodied.test_camera_director import patrol_view
 
 
 def view(at, *, x=.78, visible=True, tracking=True, session='source', people=None):
     return dict(status='live', _local_received=at, session_id=session,
-                scene_visible=visible, tracking_current=tracking,
+                scene_visible=visible, tracking_current=tracking, _patrol_view=patrol_view(at),
                 people=people if people is not None else [dict(id=1,
                     box=dict(x=x, y=.1, w=.12, h=.7), identity={})])
 
@@ -32,17 +33,23 @@ def failed_director():
 
 def test_failure_recovery_uses_new_direction_and_never_replays_old_target():
     director = failed_director()
-    assert director.choose(view(68, x=.05), 68) is None
-    assert director.choose(view(69, x=.05), 69) is None
-    assert director.choose(view(69.2, x=.05), 69.2) == 'left'
+
+    def registered_view(at, x):
+        frame = view(at, x=x)
+        frame['people'][0]['identity'] = dict(state='matched', person_id='synthetic-target')
+        return frame
+
+    assert director.choose(registered_view(68, .05), 68) is None
+    assert director.choose(registered_view(69, .05), 69) is None
+    assert director.choose(registered_view(69.2, .05), 69.2) == 'left'
     # Reserving the probe before its outcome prevents an unknown result from
     # being retried on every subsequent frame.
-    assert director.choose(view(70, x=.05), 70) is None
+    assert director.choose(registered_view(70, .05), 70) is None
     assert director.failed_moves == 3
     director.sent(70, 'left')
     assert director.failed_moves == 0
-    assert director.choose(view(74, x=.78), 74) is None
-    assert director.choose(view(74.2, x=.78), 74.2) == 'right'
+    assert director.choose(registered_view(74, .78), 74) is None
+    assert director.choose(registered_view(74.2, .78), 74.2) == 'right'
 
 
 def test_recovery_still_requires_current_video_and_honors_hold():
@@ -67,9 +74,9 @@ def test_a_late_pre_move_frame_cannot_start_the_next_impulse():
 
 
 @pytest.mark.parametrize('change', ['center', 'direction', 'lost', 'ambiguous', 'invalid', 'session', 'game', 'focus', 'hold'])
-def test_decision_is_rechecked_without_charging_another_survey_step(change):
+def test_follow_decision_is_rechecked_after_the_view_or_intent_changes(change):
     director = CameraDirector()
-    director.apply_mode('survey', 1)
+    director.apply_mode('auto', 1)
     director.choose(view(1), 1)
     assert director.choose(view(1.1), 1.1) == 'right'
     current = view(1.2)
@@ -88,7 +95,7 @@ def test_decision_is_rechecked_without_charging_another_survey_step(change):
         kwargs['focus'] = dict(track=2, at=1.2, session_id=current['session_id'])
     if change == 'hold': director.apply_mode('hold', 2)
     assert not director.decision_current(current, 1.2, 'right', **kwargs)
-    if change != 'hold': assert director.survey_attempts == 1
+    assert director.survey_attempts == 0
 
 
 def test_current_follow_and_empty_room_guards_accept_only_their_original_purpose():
@@ -100,8 +107,19 @@ def test_current_follow_and_empty_room_guards_accept_only_their_original_purpose
     director.choose(view(20, people=[]), 20)
     assert director.choose(view(20.2, people=[]), 20.2) == 'right'
     assert director.decision_current(view(20.3, people=[]), 20.3, 'right')
+    for anchor in (None, patrol_view(20.3, x=.04), patrol_view(20.3, basis='replacement')):
+        current = dict(view(20.3, people=[]), _patrol_view=anchor)
+        assert not director.decision_current(current, 20.3, 'right')
     assert not director.decision_current(view(20.3), 20.3, 'right')
     assert not director.decision_current(view(20.3, people=[]), 20.3, 'right', occupied_elsewhere=True)
+
+
+def test_auto_patrol_requires_a_live_reference_before_pulsing():
+    director = CameraDirector()
+    for at in (0, .5, 16, 17):
+        assert director.choose(dict(view(at, people=[]), _patrol_view=None), at) is None
+    assert director.phase == 'patrol_waiting_view'
+    assert director.choose(view(18, people=[]), 18) == 'right'
 
 
 def extract(path, names, scope):
@@ -124,6 +142,7 @@ def primary_scope():
                  SELECTED=dict(id='synthetic'), motor_sequence=0, motion_generation=0,
                  motor_last_sent=-100, motor_waiters={}, room_lock=asyncio.Lock(),calibration_frames=CalibrationFrames(),
                  room=SimpleNamespace(expect_motion=noop), identities=SimpleNamespace(discard=noop),
+                 safety=SimpleNamespace(clear_view=noop),
                  fleet=SimpleNamespace(clear=noop),
                  home=SimpleNamespace(selected=True, epoch=0, vad=[], pending_audio=None,
                                       runtime_log=SimpleNamespace(record=noop)))
@@ -179,7 +198,7 @@ async def test_primary_reserves_motion_before_first_await_and_bounds_child_comma
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['direction', 'tracking', 'post_move', 'epoch', 'privacy', 'source', 'review'])
+@pytest.mark.parametrize('change', ['direction', 'tracking', 'post_move', 'epoch', 'privacy', 'source', 'review', 'fall'])
 async def test_secondary_checks_latest_observation_after_privacy_read(change):
     director = CameraDirector()
     now = time.monotonic()
@@ -192,8 +211,10 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
                  motion_lock=asyncio.Lock(), selected=dict(id='synthetic'),
                  process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=sent.append, drain=AsyncMock())),
                  waiters={}, recognizer=None, privacy_closed=noop,
-                 self=SimpleNamespace(on_clear=None, focus=lambda _: None, occupied_elsewhere=lambda _: False,
+                 self=SimpleNamespace(on_motion=None, focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                       review_pending=lambda *_:scope.get('review_pending',False),
+                                      fall_pending=lambda *_:scope.get('fall_pending',False),
+                                      sound_cue=lambda *_:None,
                                       runtime_log=SimpleNamespace(record=noop)),
                  latest=dict(now=now, captured_mono=now, session='source', tracking_current=True,
                              people=view(now)['people'], scene_visible=True))
@@ -206,6 +227,8 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
         if change == 'privacy': scope['item']['privacy_closed'] = True
         if change == 'source': scope['item']['source_active'] = False
         if change == 'review': scope['review_pending'] = True
+        if change == 'fall':
+            scope['fall_pending'] = True
         return True
     scope['camera_is_open'] = read_power
     extract('homeplane/embodied/previews.py', {'current_sample', 'send_motion'}, scope)
@@ -217,27 +240,41 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change',['target','review'])
+@pytest.mark.parametrize('change',[None,'target','review','fall'])
 async def test_primary_search_original_guard_rechecks_the_current_target(change):
+    from homeplane.embodied.party_camera import PartyCamera
     scope, sent = primary_scope()
     at = scope['last_frame']
+    holder=PartyCamera();scope['party_camera']=holder
+    def current(stamp):
+        return dict(view(stamp),party_camera=holder.status(camera=scope['SELECTED']['id'],
+            session=view(stamp)['session_id'],frame_mono=stamp,now=stamp))
     director = CameraDirector()
-    director.choose(view(at-.1), at-.1)
-    assert director.choose(view(at), at) == 'right'
-    scope['state'].update(view(at))
+    director.choose(current(at-.1), at-.1)
+    assert director.choose(current(at), at) == 'right'
+    scope['state'].update(current(at))
     scope.update(director=director, direction='right', games=SimpleNamespace(public={}),
-                 previews=SimpleNamespace(sessions={}),safety=SimpleNamespace(review_pending=lambda *_:False))
+                 previews=SimpleNamespace(sessions={}),
+                 safety=SimpleNamespace(clear_view=lambda _:None, review_pending=lambda *_:False,fall_pending=lambda *_:False,
+                                        sound_search_cue=lambda *_:None))
     extract('homeplane/embodied/worker.py', {'decision_current'}, scope)
     class Wait:
         async def __aenter__(self):
             await asyncio.sleep(0)
             if change=='target':scope['state']['people'] = view(at, x=.05)['people']
-            else:scope['safety'].review_pending=lambda *_:True
+            elif change=='review':scope['safety'].review_pending=lambda *_:True
+            elif change == 'fall':
+                scope['safety'].fall_pending = lambda *_: True
         async def __aexit__(self, *_): pass
     scope['room_lock'] = Wait()
-    with pytest.raises(RuntimeError, match='stale_input'):
-        await scope['motor_step']('right', at, expected_intent='original', decision_current=scope['decision_current'])
-    assert not sent and not scope['motor_waiters']
+    if change is None:
+        await scope['motor_step']('right',at,expected_intent='original',decision_current=scope['decision_current'])
+        assert len(sent)==1
+    else:
+        with pytest.raises(RuntimeError, match='stale_input'):
+            await scope['motor_step']('right', at, expected_intent='original', decision_current=scope['decision_current'])
+        assert not sent
+    assert not scope['motor_waiters']
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,47 @@
+{
+  "type": "native-rendered-3d-clothed-instructional-target",
+  "business_key": "exercise.balance",
+  "file": "targets/exercise-balance.png",
+  "key": "balance",
+  "phase": 0.57,
+  "yaw": 0,
+  "outlineWidth": 0.01,
+  "pixels": [
+    480,
+    540
+  ],
+  "clip": "balance-single-leg-stand",
+  "source_segment_seconds": [
+    0,
+    1.2,
+    4.4
+  ],
+  "motion_origin": "Desk Break original MIT clip, retargeted",
+  "motion_license": "MIT / Shlomy Reshef",
+  "mesh_license": "MakeHuman base and official garments CC0 1.0",
+  "png_sha256": "c1ee438bd4f1b9f16daac38a0e4e9a7c2ffa101efc482c709051815a0e1d9278",
+  "model_sha256": "05272ba5e73fe0e3a0cef9f2aa639d8c43289f4a7708df251f3201872b6327ba",
+  "renderer_sha256": "e94324ffe4ddcd267171acec3c71934d063785b9e7623177f01f4dd16d484c4c",
+  "static_target_not_animation": true,
+  "bytes": 19996,
+  "transparentBackground": true,
+  "materials": {
+    "shirt": "#e6e7e2",
+    "trousers": "#c9ccc5",
+    "sneakers": "#ffffff",
+    "exposedBody": "#ffffff"
+  },
+  "origin": "Rendered from the clothed MakeHuman CC0 1.0 rig and Desk Break MIT clip balance-single-leg-stand (8d475aa476b2c0e9ec6d09d8558faf17161e19ef); baked source segment [0, 1.2, 4.4] s, displayed source time adjustments {'release': 3.4}; phase 0.57, front view. Model SHA256 05272ba5e73fe0e3a0cef9f2aa639d8c43289f4a7708df251f3201872b6327ba; renderer SHA256 e94324ffe4ddcd267171acec3c71934d063785b9e7623177f01f4dd16d484c4c.",
+  "origin_embedded": true,
+  "impeccable_origin_embedded": true,
+  "notices": [
+    "../MAKEHUMAN-LICENSE.ASSETS.md",
+    "../DESK-BREAK-LICENSE-MIT.txt",
+    "../FRIDAY-LICENSE-MIT.txt",
+    "../THREE-LICENSE-MIT.txt",
+    "../CLOTHING-LICENSES.md"
+  ],
+  "displayed_source_times": {
+    "release": 3.4
+  }
+}

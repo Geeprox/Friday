@@ -10,7 +10,9 @@ import pytest
 
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_intent import CAMERA_MODES
 from homeplane.embodied.stable_tracks import StableTracks
+from tests.embodied.test_camera_follow_appearance import appearance_sample
 
 
 @pytest.mark.asyncio
@@ -32,8 +34,8 @@ async def test_existing_api_routes_pet_choice_only_to_registered_camera():
         assert control.await_count==1
 
 
-def animal(species='cat', x=.78):
-    return dict(species=species, box=dict(x=x,y=.3,w=.15,h=.25,confidence=.9))
+def animal(species='cat', x=.78, *, y=.3, h=.25):
+    return dict(species=species, box=dict(x=x,y=y,w=.15,h=h,confidence=.9))
 
 
 def detection(*animals):
@@ -98,7 +100,7 @@ def test_real_pet_tracks_reach_bounded_director_and_pending_check_without_a_pers
     tracks=PetTracks();d=CameraDirector();d.apply_mode('pets','choice-one')
     for at in (0,.1,.2):
         animals=observed(tracks,[animal()],at)
-        s=packet(at,animals);direction=d.choose(s,at)
+        s=packet(at,animals,**appearance_sample(at,[(pet,7) for pet in animals]));direction=d.choose(s,at)
     assert direction=='right' and not s['people']
     assert d.decision_current(s,.2,'right') and d.public()['reason']=='跟随宠物'
     for change in (dict(animals_current=False),dict(animals_intent='old-choice'),
@@ -107,8 +109,9 @@ def test_real_pet_tracks_reach_bounded_director_and_pending_check_without_a_pers
         assert not d.decision_current(changed,.3,'right')
     d.sent(.2)
     assert d.choose(s,2.3) is None, 'A pre-movement packet cannot justify another motor impulse'
-    for at in (2.4,2.5,4.3):
-        s=packet(at,observed(tracks,[animal()],at));direction=d.choose(s,at)
+    for at in (2.4,2.5,2.6,4.3):
+        animals=observed(tracks,[animal()],at)
+        s=packet(at,animals,**appearance_sample(at,[(pet,7) for pet in animals]));direction=d.choose(s,at)
     assert direction=='right'
     d.apply_mode('hold','manual-choice')
     assert not d.decision_current(s,4.3,'right') and d.choose(s,4.4) is None
@@ -121,6 +124,24 @@ def test_pets_do_not_borrow_human_focus_or_choose_between_multiple_animals():
     assert d.phase=='target_ambiguous' and d.target is None
     d.apply_mode('auto','human-choice')
     assert d.choose(packet(.3,animals),.3) is None and d.target is None
+
+
+def test_rebuilt_pet_tracks_cannot_silently_select_a_different_animal_after_motion():
+    tracks = PetTracks()
+    director = CameraDirector()
+    director.apply_mode('pets', 'choice-one')
+    for at in (0, .1, .2):
+        animals = observed(tracks, [animal()], at)
+        direction = director.choose(packet(at, animals), at)
+    assert direction == 'right'
+    original = animals[0]['id']
+    director.sent(.2)
+    tracks.clear()
+    for at in (4.3, 4.4, 4.5):
+        animals = observed(tracks, [animal(x=.04), animal(x=.78)], at)
+        direction = director.choose(packet(at, animals), at)
+    assert len(animals) == 2 and original not in {pet['id'] for pet in animals}
+    assert direction is None and director.phase == 'target_reacquiring'
 
 
 def test_unavailable_pet_detection_prevents_patrol_and_cover_recovery_too():
@@ -147,7 +168,8 @@ async def test_original_secondary_native_pipe_keeps_pets_out_of_human_pipelines(
     c.camera='cam_1111111111';c.session='synthetic-session';c.tracks=StableTracks();c.pet_tracks=PetTracks()
     c.animals_enabled=False;c.animals_intent='choice-one';c.motion_generation=0;c.motion_until=0
     c.identities=SimpleNamespace(discard=Mock())
-    c.vision=SimpleNamespace(stdin=SimpleNamespace(write=sent.append,drain=AsyncMock()),
+    c.vision=module.VisionProcess('synthetic-vision')
+    c.vision.process=SimpleNamespace(stdin=SimpleNamespace(write=sent.append,drain=AsyncMock()),
                             stdout=SimpleNamespace(readline=AsyncMock(return_value=detection_bytes)))
     from tests.embodied.test_room_process import room_port
     c.room=room_port()
@@ -172,7 +194,10 @@ async def test_original_secondary_native_pipe_keeps_pets_out_of_human_pipelines(
 
 
 @pytest.mark.asyncio
-async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once(tmp_path):
+@pytest.mark.parametrize(('target', 'expected_direction'), [
+    (animal(), 'right'), (animal(x=.43, y=.78, h=.20), 'down'), (animal(x=.43, y=.02, h=.2), 'up'),
+])
+async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once(tmp_path, target, expected_direction):
     from homeplane.embodied.calibration_frames import CalibrationFrames
     import ast
     import asyncio
@@ -182,12 +207,14 @@ async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once
     selected=dict(id='cam_1111111111',device={'did':'synthetic-camera'})
     store=CameraIntentStore(tmp_path/'camera',selected)
     clock=[0.0];sent=[];noop=lambda *_,**__:None
-    scope=dict(asyncio=asyncio,secrets=secrets,json=json,time=SimpleNamespace(monotonic=lambda:clock[0],time=lambda:1000+clock[0]),
+    scope=dict(asyncio=asyncio,secrets=secrets,json=json,CAMERA_MODES=CAMERA_MODES,
+        time=SimpleNamespace(monotonic=lambda:clock[0],time=lambda:1000+clock[0]),
         camera_intents=store,camera_planner=SimpleNamespace(mode='auto',intent_revision='old',intent_status='default'),
         motor_sequence=0,motor_waiters={},motor_last_sent=-100,motion_generation=0,calibration_frames=CalibrationFrames(),
         camera_lease=SimpleNamespace(snapshot={'status':'owned'}),room_lock=asyncio.Lock(),
         SELECTED=selected,camera_is_open=AsyncMock(return_value=True),close_primary_view=noop,
         identities=SimpleNamespace(discard=noop),fleet=SimpleNamespace(clear=noop),
+        safety=SimpleNamespace(clear_view=noop),
         home=SimpleNamespace(selected=True,epoch=0,vad=[],pending_audio=None,runtime_log=SimpleNamespace(record=noop)),
         room=SimpleNamespace(expect_motion=noop))
     def send(raw):
@@ -204,16 +231,19 @@ async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once
     restored=CameraIntentStore(tmp_path/'camera',selected).load()
     assert restored.mode=='pets'
     d=CameraDirector();d.apply_mode(restored.mode,restored.revision);tracks=PetTracks()
-    for at in (0,.1,.2):
+    for at in (0, .1, .2, .3):
         clock[0]=at
-        animals=tracks.update(detection(animal()),at,intent=restored.revision)
+        animals=tracks.update(detection(target),at,intent=restored.revision)
         s=packet(at,animals);s['animals_intent']=restored.revision
         direction=d.choose(s,at)
-    assert direction=='right'
-    scope.update(state=s,last_frame=.2)
-    reply=await scope['motor_step'](direction,.2,expected_intent=restored.revision,
+        if direction:
+            break
+    assert direction == expected_direction
+    scope.update(state=s, last_frame=at)
+    reply=await scope['motor_step'](direction,at,expected_intent=restored.revision,
         decision_current=lambda:d.decision_current(scope['state'],clock[0],direction))
-    assert reply['native_code']==0 and len(sent)==1 and sent[0]['direction']=='right'
-    assert sent[0]['action']=='motor_step' and sent[0]['expires_mono']==pytest.approx(1.7)
-    d.sent(.2);clock[0]=2.3
+    assert reply['native_code']==0 and len(sent)==1 and sent[0]['direction']==expected_direction
+    assert sent[0]['action']=='motor_step' and sent[0]['expires_mono']==pytest.approx(at+1.5)
+    d.sent(at)
+    clock[0] = at + 2.1
     assert d.choose(s,clock[0]) is None and len(sent)==1 and not scope['motor_waiters']

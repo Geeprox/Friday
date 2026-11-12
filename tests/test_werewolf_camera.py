@@ -10,11 +10,12 @@ import pytest
 from homeplane.werewolf_effects import HostEffects
 from homeplane.werewolf_service import Join, WerewolfService
 from tests.test_werewolf import Clock, FixedRoles
-from tests.test_werewolf_service import NoNetwork, SilentLights
+from tests.test_werewolf_service import NoNetwork, SilentLights, begin_play
 
 
 def observation():
     return dict(status='live',scene_visible=True,tracking_current=True,frame_age_ms=20,
+        party_camera=dict(protocol=1,scope='a'*32,revision=0,active=False,frame_mono=0.),
         camera_id='cam_1234567890',session_id='SYNTHETIC',
         people=[dict(id=track,box=dict(x=.1+index*.45,y=.1,w=.3,h=.8,confidence=.95),
             joints=dict(nose=dict(x=.25+index*.45,y=.4,confidence=.95),
@@ -31,6 +32,9 @@ class Embodied:
 
     async def request(self,*args,**kwargs):
         return copy.deepcopy(self.report)
+
+    async def party_camera(self,payload):
+        return dict(context=payload['context'],scope='a'*32,sequence=payload['sequence'],active=payload['action']=='renew')
 
 
 @asynccontextmanager
@@ -50,7 +54,7 @@ async def party(*,start=True):
         await service.bind(1,'cam_1234567890','SYNTHETIC',7)
         await service.bind(2,'cam_1234567890','SYNTHETIC',8)
         if start:
-            await service.control('start')
+            await begin_play(service)
             while service.game.phase!='discussion':await service.control('advance')
         await service._camera()
         yield service,embodied,clock

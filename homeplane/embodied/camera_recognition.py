@@ -4,7 +4,6 @@ Uses the same body, hand, attention and face pipeline as the game camera. No
 frames are recorded, and no home floor-plan coordinates are invented here.
 """
 
-import asyncio
 import base64
 import secrets
 import time
@@ -14,7 +13,7 @@ from .room_session import RoomSession
 from .room_protocol import unavailable_layout
 from .stable_tracks import StableTracks
 from .pet_tracks import PetTracks
-from .vision_pipe import request_vision
+from .vision_pipe import VisionProcess
 from homeplane.people.live import analyze, close_identity
 from homeplane.people.identity_session import IdentitySession
 
@@ -29,7 +28,7 @@ class CameraRecognition:
         self.animals_enabled = False
         self.animals_intent = None
         self.room = None
-        self.vision = None
+        self.vision = VisionProcess(VISION)
         self.last = None
         self.timing = {}
         self.motion_generation = 0
@@ -43,11 +42,7 @@ class CameraRecognition:
         self.last = None
         if self.room is not None:self.room.expect_motion(now, 2)
 
-    async def start(self):
-        self.vision = await asyncio.create_subprocess_exec(str(VISION), stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=6_000_000)
-
-    async def observe(self, packet, *, source_current=None):
+    async def observe(self, packet, *, source_current=None, on_vision_failure=None):
         motion_generation = self.motion_generation
         def current():
             return (motion_generation == self.motion_generation
@@ -60,8 +55,21 @@ class CameraRecognition:
             return None
         began = time.monotonic()
         animal_intent = self.animals_intent if self.animals_enabled else None
-        detection = await request_vision(self.vision, dict(jpeg=packet['jpeg'], face_jpeg=packet.get('face_jpeg'),
-            hand_interval_ms=100, attention_enabled=True, animals_enabled=animal_intent is not None))
+        def vision_failed(error):
+            self.identities.discard()
+            self.session = self.identities.session = secrets.token_hex(12)
+            self.tracks.invalidate()
+            self.pet_tracks.clear()
+            self.last = None
+            self.timing = {}
+            if on_vision_failure is not None and (source_current is None or source_current()):
+                on_vision_failure(error)
+
+        detection = await self.vision.detect(dict(jpeg=packet['jpeg'], face_jpeg=packet.get('face_jpeg'),
+            hand_interval_ms=100, attention_enabled=True, animals_enabled=animal_intent is not None),
+            on_failure=vision_failed)
+        if detection is None:
+            return None
         if not current():
             self.identities.discard()
             self.last = None
@@ -130,12 +138,14 @@ class CameraRecognition:
                          animals_intent=animal_intent, pet_tracking=self.pet_tracks.public(),
                          tracking_current=self.tracks.input_valid,
                          room_service=self.room.status(),
+                         capture_session=packet.get('capture_session'),
                          camera_source_context=packet.get('camera_source_context'),
                          camera_source_name=packet.get('camera_source_name'),
                          faces=detection.get('faces', []), registration=registration, now=now,
                          captured_mono=time.monotonic()-(time.time()-packet['received_at']),
                          safety_jpeg=picture, aspect=packet['width'] / max(1, packet['height']),
-                         scene_visible=scene_visible)
+                         scene_visible=scene_visible,
+                         _patrol_view=getattr(self.room, 'patrol_view', None) if registered else None)
         return self.last
 
     def identity_status(self):
@@ -149,13 +159,5 @@ class CameraRecognition:
             try:
                 if self.room is not None:await self.room.close()
             finally:
-                if self.vision and self.vision.returncode is None:
-                    try:self.vision.terminate()
-                    except ProcessLookupError:pass
-                    try:
-                        await asyncio.wait_for(self.vision.wait(), 3)
-                    except asyncio.TimeoutError:
-                        try:self.vision.kill()
-                        except ProcessLookupError:pass
-                        await self.vision.wait()
+                await self.vision.close()
         return identity_closed

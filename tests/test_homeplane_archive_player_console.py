@@ -60,10 +60,11 @@ const fixture={mode:'simulator',generated_at:new Date().toISOString(),entities:[
 const range={start:'2026-10-01T00:00:30.300Z',end:'2026-10-01T00:00:40Z'},source={start:'2026-10-01T00:00:00Z',end:'2026-10-01T00:01:00Z'};
 let context={fingerprint:'a'.repeat(64),simulated:true,cameras:[{id:'SIMULATED-camera',name:'SIMULATED camera',example_ranges:{ready:range,pending:range,expired:range}}]};
 const segment={media_ref:'b'.repeat(64),time_range:source,status:'ready',audio_track:false,clock_uncertainty_seconds:0};
-const report=()=>({context_fingerprint:context.fingerprint,simulated:true,camera_id:'SIMULATED-camera',time_range:range,status:'ready',segments:[segment],gaps:[]});
+let segments=[segment];
+const report=()=>({context_fingerprint:context.fingerprint,simulated:true,camera_id:'SIMULATED-camera',time_range:range,status:'ready',segments,gaps:[]});
 const actualPlan=JSON.parse(process.argv[1]);
-const plan=()=>({...actualPlan,plan_id:'c'.repeat(64),context_fingerprint:context.fingerprint,simulated:true,stream_url:'/api/archive/media/'+'c'.repeat(64),start_offset_seconds:30.3,end_offset_seconds:40,duration_seconds:60,clock_uncertainty_seconds:0,previous_keyframe_seconds:30,expires_at:new Date(Date.now()+300000).toISOString()});
-let calls=[],pending=null,late=false,foreign=false,tick=null,contextFailure=false,contextWaiting=false,waitingContext=null,unprotected=false;
+const plan=()=>({...actualPlan,plan_id:'c'.repeat(64),context_fingerprint:context.fingerprint,simulated:true,stream_url:'/api/archive/media/'+'c'.repeat(64),start_offset_seconds:30.3,end_offset_seconds:40,duration_seconds:60,clock_uncertainty_seconds:0,previous_keyframe_seconds:30,expires_at:new Date(Date.now()+(expired?-1000:300000)).toISOString()});
+let calls=[],pending=null,late=false,foreign=false,tick=null,contextFailure=false,contextWaiting=false,waitingContext=null,unprotected=false,expired=false;
 const response=v=>({ok:true,json:async()=>v});
 const fetch=async(path,options={})=>{
  if(path==='/api/archive/context'){
@@ -116,7 +117,21 @@ const open=()=>all(content).find(n=>n.attrs['data-archive-playback-ref']).handle
  assert(all(content).some(n=>n.tag==='video'),'an actual versioned ArchiveResolveRequest opens protected event playback');
  vm.runInContext('stopArchivePlayer()',env);
  vm.runInContext("page='Safety'",env);
- await env.openEventRecording(content,{request:actualLookup});
+ const edge={...segment,media_ref:'d'.repeat(64),clock_uncertainty_seconds:.5,
+  time_range:{start:source.start,end:'2026-10-01T00:00:31.400Z'}};
+ const anchor_at='2026-10-01T00:00:31.100Z';
+ segments=[edge];
+ const prepareCount=calls.filter(([path])=>path==='/api/archive/playback').length;
+ await env.openEventRecording(content,{request:actualLookup,anchor_at});
+ assert(!all(content).some(n=>n.tag==='video'),'a neighboring file cannot silently substitute for the selected time');
+ assert.match(content.textContent,/未找到所选时刻的录像/);
+ assert.equal(calls.filter(([path])=>path==='/api/archive/playback').length,prepareCount);
+ segments=[segment];expired=true;
+ await env.openEventRecording(content,{request:actualLookup,anchor_at});
+ assert(!all(content).some(n=>n.tag==='video'));assert.match(content.textContent,/预览已过期/);
+ expired=false;
+ segments=[edge,segment];
+ await env.openEventRecording(content,{request:actualLookup,anchor_at});
  assert(all(content).some(n=>n.tag==='video'),'safety event details reuse the same protected player');
  const safetyVideo=all(content).find(n=>n.tag==='video');
  vm.runInContext("page='Home';stopArchivePlayer()",env);await settle();

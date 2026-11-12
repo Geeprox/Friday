@@ -1,6 +1,7 @@
 """ASGI-only phone/TV/host acceptance; no LAN listener or household I/O."""
 
 import asyncio
+import base64
 import json
 from types import SimpleNamespace
 
@@ -10,10 +11,11 @@ import pytest
 
 from homeplane.werewolf_api import create_router
 from homeplane.werewolf_effects import HostEffects, SceneLights
-from homeplane.werewolf_service import Choice, Join, WerewolfService, phone_app
+from homeplane.werewolf_service import Choice, Join, WerewolfService, join_qr_svg, phone_app
 from homeplane.werewolf_service import PhoneGateway
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_device_controls import rig
+from tests.test_werewolf import Clock, confirm_deal
 
 
 class SilentLights:
@@ -53,6 +55,138 @@ async def owner():
     return service
 
 
+async def begin_play(service):
+    await service.control("start")
+    confirm_deal(service.game)
+    await service.control("advance")
+
+
+@pytest.mark.asyncio
+async def test_tv_pairing_requires_current_host_approval_and_a_public_board_read(tmp_path):
+    clock = Clock()
+    service = WerewolfService(HostEffects(SilentLights()), gateway_factory=NoNetwork,
+                              addresses=lambda: ['192.168.50.20'], clock=clock)
+    await service.create(6, address='192.168.50.20')
+    room, origin = service.session, service.origin
+    path = '/api/games/werewolf/display-pairing'
+    host_app = FastAPI()
+    host_app.include_router(create_router(None, None, None, tmp_path, owner=service))
+    tv = {'Authorization': 'Bearer ' + 'a' * 64}
+    other = {'Authorization': 'Bearer ' + 'b' * 64}
+    try:
+        async with (
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=host_app), base_url='http://host.invalid',
+                              headers={'Origin': 'http://host.invalid'}) as host,
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=phone_app(service, origin)), base_url=origin) as lan,
+        ):
+            assert service.host()['display_entry'] == origin + '/display'
+            issued = await lan.post('/api/display-pairing', headers=tv)
+            assert issued.status_code == 200 and issued.headers['cache-control'] == 'no-store'
+            code = issued.json()['code']
+            assert len(code) == 6 and code != service.join_code
+            assert issued.json()['state'] == 'waiting'
+            assert (await lan.post('/api/display-pairing', headers=tv)).json() == issued.json()
+            assert (await lan.get('/api/display-pairing', headers=other)).status_code == 409
+            assert (await lan.get('/api/public', headers=tv)).status_code == 403
+            assert (await lan.get('/api/invitation', headers=tv)).status_code == 403
+            assert (await lan.post(path, json={'session': room, 'code': code})).status_code == 404
+            assert (await host.post(path, json={'session': '0' * 32, 'code': code})).status_code == 409
+            assert (await host.post(path, json={'session': room, 'code': service.join_code})).status_code == 409
+            assert (await host.post(path, headers={'Origin': 'http://foreign.invalid'},
+                                    json={'session': room, 'code': code})).status_code == 403
+            approval = await host.post(path, json={'session': room, 'code': code})
+            assert approval.json() == {'session': room}
+            assert approval.headers['cache-control'] == 'no-store'
+            assert (await host.post(path, json={'session': room, 'code': code})).json() == approval.json()
+            assert (await lan.get('/api/display-pairing', headers=tv)).json() == {'state': 'approved'}
+            assert (await host.get('/api/games/werewolf/host')).json()['connected_display_codes'] == []
+            assert (await lan.get('/api/public', headers=other)).status_code == 403
+            snapshot = await lan.get('/api/public', headers=tv)
+            assert snapshot.json()['game']['phase'] == 'lobby'
+            assert 'display_url' not in snapshot.json() and 'connected_display_codes' not in snapshot.json()
+            assert (await host.get('/api/games/werewolf/host')).json()['connected_display_codes'] == [code]
+            assert (await lan.get('/api/invitation', headers=tv)).json()['room_code'] == service.join_code
+            assert (await lan.get('/api/player', headers=tv)).status_code == 403
+            clock.now += 8
+            assert service.host()['connected_display_codes'] == []
+            assert (await lan.get('/api/public', headers=tv)).status_code == 200
+            assert service.host()['connected_display_codes'] == [code]
+            expired = (await lan.post('/api/display-pairing', headers=other)).json()['code']
+            clock.now += 121
+            assert (await host.post(path, json={'session': room, 'code': expired})).status_code == 409
+            assert (await lan.get('/api/display-pairing', headers=other)).status_code == 409
+            assert (await lan.get('/api/public', headers=tv)).status_code == 200
+            await service.close_game()
+            assert (await lan.get('/api/public', headers=tv)).status_code == 403
+            assert (await lan.post('/api/display-pairing', headers=tv)).status_code == 409
+            await service.create(6, address='192.168.50.20')
+            assert (await host.post(path, json={'session': room, 'code': code})).status_code == 409
+            assert (await lan.get('/api/public', headers=tv)).status_code == 403
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_tv_invitation_follows_vacant_seats_and_room_access():
+    service = await owner()
+    session = service.session
+    display_token = service.public_token
+    display = {'Authorization': 'Bearer '+display_token}
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=phone_app(service, service.origin)),
+                                     base_url=service.origin) as client:
+            assert (await client.get('/api/invitation')).status_code == 403
+            assert (await client.get('/api/invitation', params={'token': display_token})).status_code == 403
+            ticket = await client.get('/api/invitation', headers=display)
+            assert ticket.status_code == 200 and ticket.headers['cache-control'] == 'no-store'
+            result = ticket.json()
+            assert set(result) == {'session', 'lobby_revision', 'room_code', 'qr_svg'}
+            assert result['session'] == session and result['lobby_revision'] == 0
+            assert result['room_code'] == service.join_code
+            assert base64.b64decode(result['qr_svg'], validate=True) == join_qr_svg(service.host()['phone_url'])
+            assert 'room_code' not in (await client.get('/api/public', headers=display)).json()
+            for seat in range(1, 7):
+                entered = await client.post('/api/join', json=dict(code=result['room_code'], session=session,
+                                            seat=seat, name=f'合成玩家{seat}'))
+                assert entered.status_code == 200 and entered.json()['player']['seat'] == seat
+                phone = {'Authorization': 'Bearer '+entered.json()['token']}
+                assert (await client.get('/api/invitation', headers=phone)).status_code == 403
+                assert (await client.post('/api/ready', headers=phone, json={'ready': True})).status_code == 200
+            assert (await client.get('/api/invitation', headers=display)).status_code == 404
+            await service.control('start')
+            assert (await client.get('/api/invitation', headers=display)).status_code == 404
+            await service.control('end')
+            await service.control('rematch')
+            assert (await client.get('/api/invitation', headers=display)).status_code == 404
+            await service.control('remove', seat=6)
+            reopened = await client.get('/api/invitation', headers=display)
+            assert reopened.status_code == 200 and reopened.json()['session'] == session
+            assert reopened.json()['lobby_revision'] > result['lobby_revision']
+            await service.close_game()
+            assert (await client.get('/api/invitation', headers=display)).status_code == 403
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_tv_keeps_manual_room_entry_when_qr_dependency_is_missing(monkeypatch):
+    from homeplane import werewolf_service
+
+    def unavailable(_):
+        raise ImportError('合成：二维码模块不可用')
+
+    monkeypatch.setattr(werewolf_service, 'join_qr_svg', unavailable)
+    service = await owner()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=phone_app(service, service.origin)),
+                                     base_url=service.origin) as client:
+            response = await client.get('/api/invitation', headers={'Authorization': 'Bearer '+service.public_token})
+            assert response.status_code == 200
+            assert response.json()['qr_svg'] is None and response.json()['room_code'] == service.join_code
+    finally:
+        await service.close()
+
+
 @pytest.mark.asyncio
 async def test_phone_private_cards_public_tv_and_no_host_or_household_routes():
     service = await owner()
@@ -73,6 +207,11 @@ async def test_phone_private_cards_public_tv_and_no_host_or_household_routes():
             assert all("role" not in p for p in public.json()["game"]["players"])
             assert "join_code" not in public.json() and "camera_candidates" not in public.json()
             assert "receipts" not in public.json()["effects"]["lights"]
+            art = await client.get("/assets/werewolf-scene.png")
+            assert art.status_code == 200 and art.headers["content-type"] == "image/png"
+            assert art.content.startswith(b"\x89PNG\r\n\x1a\n")
+            assert "frame-ancestors 'none'" in (await client.get("/display")).headers["content-security-policy"]
+            assert (await client.get("/assets/werewolf-host.js")).status_code == 404
             for token in tokens:
                 response = await client.get("/api/player", headers={"Authorization": "Bearer " + token})
                 assert response.status_code == 200 and response.json()["role"]
@@ -82,7 +221,7 @@ async def test_phone_private_cards_public_tv_and_no_host_or_household_routes():
             assert (await client.get("/api/player", headers={"Authorization": "Bearer " + service.public_token})).status_code == 403
             assert (await client.get("/api/player?token=" + tokens[0])).status_code == 403
             assert (await client.get("/api/player", headers={"Authorization": "Bearer " + "a" * 64})).status_code == 403
-            for path in ("/api/games/werewolf/control", "/api/embodied/start", "/api/actions/execute"):
+            for path in ("/api/games/werewolf/control", "/api/embodied/start", "/api/actions/execute", "/api/party-camera"):
                 assert (await client.post(path, json={"action": "end"})).status_code == 404
             assert (await client.get("/api/public", headers={"Host": "evil.example"})).status_code == 403
             assert (await client.post("/api/ready", json={"ready": True}, headers={"Origin": "https://evil.example"})).status_code == 403
@@ -104,7 +243,7 @@ async def test_lobby_tokens_revoked_and_choice_retries_are_idempotent():
             joined = await service.join(Join(code=service.join_code, seat=seat, name=str(seat)))
             credentials[seat] = joined["token"]
             await service.ready(joined["token"], True)
-        await service.control("start")
+        await begin_play(service)
         wolf = next(s for s, p in service.game.players.items() if p.role == "wolf")
         choice = Choice(action="attack", target=6, revision=service.game.revision, event_id="retry_event_0001")
         first = await service.choose(credentials[wolf], choice)
@@ -119,6 +258,52 @@ async def test_lobby_tokens_revoked_and_choice_retries_are_idempotent():
         assert service.public() == {"active": False} and not service.public_access(public_token)
         with pytest.raises(ValueError, match="access_required"):
             await service.private(credentials[wolf])
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_phone_recovers_its_receipt_after_advancing_without_reapplying_a_choice():
+    service = await owner()
+    try:
+        tokens = {}
+        for seat in range(1, 7):
+            joined = await service.join(Join(code=service.join_code, seat=seat, name=f"合成玩家{seat}"))
+            tokens[seat] = {"Authorization": "Bearer " + joined["token"]}
+            await service.ready(joined["token"], True)
+        await begin_play(service)
+        wolf = next(seat for seat, player in service.game.players.items() if player.role == "wolf")
+        other = next(seat for seat in tokens if seat != wolf)
+        app = phone_app(service, service.origin)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=service.origin) as client:
+            initial = (await client.get("/api/player", headers=tokens[wolf])).json()
+            assert initial["session"] == service.session and initial["choice_version"] == 0
+            first = dict(action="pass", target=None, revision=initial["public"]["revision"],
+                         event_id="first_choice_0001", expected_choice_version=0)
+            current = dict(first, action="attack", target=other, event_id="latest_choice_002", expected_choice_version=1)
+            assert (await client.post("/api/choice", headers=tokens[wolf], json=first)).status_code == 200
+            latest = (await client.post("/api/choice", headers=tokens[wolf], json=current)).json()
+            assert latest["submitted"] == ["attack", other] and latest["choice_version"] == 2
+
+            late = dict(first, event_id="delayed_choice_03")
+            rejected = await client.post("/api/choice", headers=tokens[wolf], json=late)
+            assert rejected.status_code == 409 and rejected.json()["detail"] == "choice_changed"
+            replay = (await client.post("/api/choice", headers=tokens[wolf], json=first)).json()
+            assert replay["choice_receipt"] == {"event_id": first["event_id"], "recorded": True}
+            assert replay["submitted"] == ["attack", other] and replay["choice_version"] == 2
+
+            await service.control("advance")
+            probe = {"X-Friday-Choice": current["event_id"]}
+            recovered = (await client.get("/api/player", headers={**tokens[wolf], **probe})).json()
+            assert recovered["public"]["revision"] != initial["public"]["revision"] and recovered["submitted"] is None
+            assert recovered["choice_receipt"] == {"event_id": current["event_id"], "recorded": True}
+            unrelated = (await client.get("/api/player", headers={**tokens[other], **probe})).json()
+            assert unrelated["choice_receipt"]["recorded"] is False
+            malformed = (await client.get("/api/player", headers={**tokens[wolf], "X-Friday-Choice": "!"})).json()
+            assert "choice_receipt" not in malformed
+            public = await client.get("/api/public", headers={**probe, "Authorization": "Bearer " + service.public_token})
+            assert public.status_code == 200
+            assert current["event_id"] not in public.text and "choice_version" not in public.text
     finally:
         await service.close()
 
@@ -215,8 +400,11 @@ async def test_camera_hints_require_explicit_binding_and_cannot_cast_votes():
                           joints=dict(nose=dict(x=.3,y=.4,confidence=.9),leftWrist=dict(x=.2,y=.1,confidence=.9)))])
         async def request(self, *_args, **_kwargs):
             return self.report
+        async def party_camera(self,payload):
+            return dict(context=payload['context'],scope='a'*32,sequence=payload['sequence'],active=payload['action']=='renew')
     service = await owner()
     service.embodied = Embodied()
+    service.embodied.report['party_camera']=dict(protocol=1,scope='a'*32,revision=0,active=False,frame_mono=0.)
     service.camera_enabled = True
     try:
         await service.join(Join(code=service.join_code, seat=1, name="玩家"))
@@ -361,7 +549,7 @@ async def test_service_pause_resume_cannot_release_uncertain_night_scene(tmp_pat
             joined = await service.join(Join(code=service.join_code, seat=seat, name=f'合成玩家{seat}'))
             await service.ready(joined['token'], True)
         fault['send']='cancel'
-        await service.control('start')
+        await begin_play(service)
         await asyncio.gather(service.effect_task, return_exceptions=True)
         await service.control('pause')
         await asyncio.gather(service.effect_task, return_exceptions=True)
@@ -450,31 +638,47 @@ async def test_proven_unsent_scene_can_recompute_for_the_next_phase(tmp_path, mo
 
 
 @pytest.mark.asyncio
-async def test_next_effect_waits_for_the_old_effect_cleanup():
-    service=await owner()
-    events=[];entered=asyncio.Event();release=asyncio.Event();never=asyncio.Event()
-    try:
-        service.pump.cancel();await asyncio.gather(service.pump,return_exceptions=True);service.pump=None
-        for seat in range(1,7):
-            joined=await service.join(Join(code=service.join_code,seat=seat,name=f'合成{seat}'))
-            await service.ready(joined['token'],True)
-        async def apply(public,current):
-            if public['paused']:
-                events.append('paused');return
+async def test_next_prompt_waits_for_the_same_speaker_cleanup():
+    service = await owner()
+    events = []
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def speak(text, *, current):
+        assert current()
+        events.append(text)
+        if not entered.is_set():
+            entered.set()
             try:
-                entered.set();await never.wait()
+                await asyncio.Event().wait()
             finally:
-                events.append('cleaning');await release.wait();events.append('cleaned')
-        service.effects.apply=apply
-        await service.control('start')
-        await asyncio.wait_for(entered.wait(),1)
-        await service.control('pause')
-        await asyncio.sleep(0);await asyncio.sleep(0)
-        assert 'cleaning' in events and 'paused' not in events
-        release.set();await service.effect_task
-        assert events.index('cleaned')<events.index('paused')
+                cleaning.set()
+                await release.wait()
+                events.append('cleaned')
+        return {'status': 'accepted'}
+
+    try:
+        service.pump.cancel()
+        await asyncio.gather(service.pump, return_exceptions=True)
+        service.pump = None
+        for seat in range(1, 7):
+            joined = await service.join(Join(code=service.join_code, seat=seat, name=f'合成{seat}'))
+            await service.ready(joined['token'], True)
+        service.effects.narration = True
+        service.effects.speak = speak
+        service.effects.speech_status = lambda: dict(quiet=False, configured=True)
+        await begin_play(service)
+        first = service.game.public()['host_script']['text']
+        await asyncio.wait_for(entered.wait(), 1)
+        await service.control('advance')
+        second = service.game.public()['host_script']['text']
+        await asyncio.wait_for(cleaning.wait(), 1)
+        assert events == [first] and not service.effect_task.done()
+        release.set()
+        await asyncio.wait_for(service.effect_task, 1)
+        assert events == [first, 'cleaned', second]
     finally:
-        release.set();await service.close()
+        release.set()
+        await service.close()
 
 
 @pytest.mark.asyncio

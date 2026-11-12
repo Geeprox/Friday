@@ -1,0 +1,16 @@
+{
+  "asset": "quest-lantern.webp",
+  "origin": "Built-in ImageGen, original synthetic game sprite",
+  "prompt": "Edit the provided synthetic Friday paper/clay adventure sprite sheet into a NEW production asset with one single object, replacing the entire sheet. The original is only the style and surface-quality reference; keep none of its eight objects. Use case: one stylized-concept game sprite, transparent PNG, an entire small illuminated trail lantern on a low rounded wooden foot, intended to appear at a trail campsite. Cozy compact lantern: broad handcrafted parchment-paper amber panels that read as lit by their naturally lighter center, four restrained dark sage/bronze ribs, rounded unvarnished clay cap and small closed loop handle, broad soft contact shadow under the foot. Same refined matte miniature paper-and-clay material, fine layered edges, slightly elevated front three-quarter miniature game camera, soft upper-left golden afternoon light and visual weight as the supplied pinwheel and picnic basket. Clean silhouette at a rendered height of 70–110 px; lit area inside the lantern itself, no outer light spill/halo. Square canvas with one centered prop, whole silhouette and handle visible, generous true alpha outside the silhouette. No background or scene, no floor plane, no frames, no other objects, no labels, lettering, watermark, symbols, logo, people, body, hands or devices. This is a single independent game sprite, not an atlas.",
+  "reference_asset": "quest-props.png",
+  "reference_sha256": "9ae5941d6cc82ef6e726d494cfd786a8abad0e3949670e762e7021cdc088c17a",
+  "generated_png_sha256": "61ab23cb8b68e4f17eae3705e38bd562834fab0ffa2c829b204871aec38b6998",
+  "sha256": "08069e55ec432673bcf9c6e53e3f008162c1a6baa87626525ed2c2777d8f6137",
+  "pixels": [
+    320,
+    320
+  ],
+  "alpha": true,
+  "conversion": "cwebp -resize 320 320 -q 91 -alpha_q 100 -m 6",
+  "input_media": "Only existing synthetic Friday game artwork."
+}

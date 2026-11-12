@@ -203,7 +203,8 @@ async def test_original_secondary_first_room_loading_does_not_block_or_publish_a
     identities=SimpleNamespace(discard=Mock(),process=Mock(return_value=[]),close=Mock())
     monkeypatch.setattr(camera_recognition,'IdentitySession',lambda *_:identities)
     monkeypatch.setattr(camera_recognition,'camera_storage',lambda _:tmp_path)
-    monkeypatch.setattr(camera_recognition,'request_vision',AsyncMock(return_value=frame()))
+    monkeypatch.setattr(camera_recognition,'VisionProcess',lambda _:SimpleNamespace(
+        detect=AsyncMock(return_value=frame()),close=AsyncMock()))
     monkeypatch.setattr(camera_recognition,'RoomSession',lambda folder:fake(folder,'open' if retired else 'ok',startup_timeout=20))
     recognizer=camera_recognition.CameraRecognition('synthetic_camera',Mock())
     packet=dict(jpeg=base64.b64encode(jpeg).decode(),width=640,height=360,received_at=time.time())

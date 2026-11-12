@@ -1,0 +1,50 @@
+{
+  "type": "native-rendered-3d-clothed-instructional-target",
+  "business_key": "exercise.overhead_clap",
+  "file": "targets/exercise-overhead_clap.png",
+  "key": "dance-overhead-clap",
+  "phase": 0.57,
+  "yaw": 0,
+  "outlineWidth": 0.01,
+  "pixels": [
+    480,
+    540
+  ],
+  "clip": "dance-overhead-clap",
+  "source_segment_seconds": [
+    0,
+    0.58,
+    0.65
+  ],
+  "displayed_source_times": {
+    "times": [
+      0,
+      0.5
+    ]
+  },
+  "motion_origin": "Desk Break original MIT clip, retargeted",
+  "motion_license": "MIT / Shlomy Reshef",
+  "mesh_license": "MakeHuman base and official garments CC0 1.0",
+  "png_sha256": "810ace5e89e85db9a3a9865f292102626a6f8c561308c30f1ae2f33030cba5c0",
+  "model_sha256": "ca3aad40450568c9bf0781ec73c2bd3e625913f30b351808273446ef47f99997",
+  "renderer_sha256": "4cdd424aba27e31f19f43c9929dd38cd91c151bb3c45ab03cbe2cd974e3ae736",
+  "static_target_not_animation": true,
+  "bytes": 19198,
+  "transparentBackground": true,
+  "materials": {
+    "shirt": "#e6e7e2",
+    "trousers": "#c9ccc5",
+    "sneakers": "#ffffff",
+    "exposedBody": "#ffffff"
+  },
+  "origin": "Rendered from the clothed MakeHuman CC0 1.0 rig and Desk Break MIT clip dance-overhead-clap (8d475aa476b2c0e9ec6d09d8558faf17161e19ef); baked source interval [0, 0.58, 0.65], display parameters {'times': [0, 0.5]}, front view. Model SHA256 ca3aad40450568c9bf0781ec73c2bd3e625913f30b351808273446ef47f99997; renderer SHA256 4cdd424aba27e31f19f43c9929dd38cd91c151bb3c45ab03cbe2cd974e3ae736.",
+  "origin_embedded": true,
+  "impeccable_origin_embedded": true,
+  "notices": [
+    "MAKEHUMAN-LICENSE.ASSETS.md",
+    "DESK-BREAK-LICENSE-MIT.txt",
+    "FRIDAY-LICENSE-MIT.txt",
+    "THREE-LICENSE-MIT.txt",
+    "CLOTHING-LICENSES.md"
+  ]
+}

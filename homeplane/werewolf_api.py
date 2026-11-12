@@ -9,9 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from .werewolf import GameError, RULES
+from .werewolf import GameError, RULES, SPEAKER_SECONDS
 from .werewolf_effects import HostEffects, SceneLights
-from .werewolf_service import WerewolfService
+from .werewolf_service import WerewolfService, join_qr_svg
 
 
 class Create(BaseModel):
@@ -21,15 +21,30 @@ class Create(BaseModel):
     lights: list[str] = Field(default_factory=list, max_length=12)
     narration: bool = False
     camera: bool = False
+    discussion_mode: Literal["free", "turns"] = "free"
 
 
-class Control(BaseModel):
+class HostProof(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    action: Literal["start", "advance", "pause", "resume", "end", "remove", "close"]
     seat: int | None = Field(default=None, ge=1, le=12)
     session: str = Field(min_length=1, max_length=128)
     revision: int = Field(ge=0)
     event_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{12,64}$")
+
+
+class Control(HostProof):
+    action: Literal["start", "advance", "pause", "resume", "end", "remove", "reseat", "close", "speaker", "rematch"]
+
+
+class SeatRecovery(HostProof):
+    seat: int = Field(ge=1, le=12)
+    action: Literal['recover-seat'] = 'recover-seat'
+
+
+class DisplayApproval(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    session: str = Field(pattern=r'^[a-f0-9]{32}$')
+    code: str = Field(pattern=r'^[0-9]{6}$', repr=False)
 
 
 class Binding(BaseModel):
@@ -40,12 +55,15 @@ class Binding(BaseModel):
     track: int = Field(ge=0)
     game_session: str = Field(min_length=1, max_length=128)
     revision: int = Field(ge=0)
+    binding_revision: int | None = Field(default=None, ge=0)
     event_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{12,64}$")
 
 
 class CameraView(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     session: str = Field(min_length=1, max_length=128)
+    phase: Literal['lobby', 'discussion', 'runoff_discussion'] | None = None
+    round: int | None = Field(default=None, ge=0)
 
 
 def create_router(core, lock, embodied, directory, *, owner=None):
@@ -76,20 +94,20 @@ def create_router(core, lock, embodied, directory, *, owner=None):
         addresses, lights = await asyncio.gather(asyncio.to_thread(owner.addresses), owner.effects.lights.choices())
         return dict(addresses=addresses, lights=lights, speech=report(),
                     recovery=owner.effects.lights.status(), current=owner.host(),
-                    rules=list(RULES), qr_available=importlib.util.find_spec("qrcode") is not None)
+                    rules=list(RULES), speaker_seconds=SPEAKER_SECONDS,
+                    qr_available=importlib.util.find_spec("qrcode") is not None)
 
     @router.get("/join-qr")
     async def join_qr(session: str):
-        if session != owner.session or not owner.origin or not owner.join_code:
-            raise HTTPException(404)
+        headers = {"Cache-Control": "no-store"}
+        phone = owner.invitation_url(session)
+        if phone is None:
+            raise HTTPException(404, detail="invitation_unavailable", headers=headers)
         try:
-            import qrcode
-            import qrcode.image.svg
+            image = join_qr_svg(phone)
         except ImportError:
-            raise HTTPException(409, detail="qr_unavailable") from None
-        image = qrcode.make(owner.origin + "/phone#code=" + owner.join_code,
-                            image_factory=qrcode.image.svg.SvgPathFillImage, border=3)
-        return Response(image.to_string(), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+            raise HTTPException(409, detail="qr_unavailable", headers=headers) from None
+        return Response(image, media_type="image/svg+xml", headers=headers)
 
     @router.get("/host")
     async def host():
@@ -98,13 +116,32 @@ def create_router(core, lock, embodied, directory, *, owner=None):
     @router.post("/create")
     async def create(payload: Create):
         return await guarded(owner.create(payload.players, address=payload.address,
-                                           lights=payload.lights, narration=payload.narration, camera=payload.camera))
+                                           lights=payload.lights, narration=payload.narration, camera=payload.camera,
+                                           discussion_mode=payload.discussion_mode))
 
     @router.post("/control")
     async def control(payload: Control):
         if payload.action == "close":
             return await guarded(owner.close_game(proof=payload))
         return await guarded(owner.control(payload.action, seat=payload.seat, proof=payload))
+
+    @router.post('/display-pairing')
+    async def display_pairing(payload: DisplayApproval):
+        result = await guarded(owner.approve_display(payload.session, payload.code))
+        return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+    @router.post('/seat-recovery')
+    async def seat_recovery(payload: SeatRecovery):
+        result = await guarded(owner.issue_seat_recovery(payload))
+        try:
+            import qrcode
+        except ImportError:
+            matrix = None
+        else:
+            qr = qrcode.QRCode()
+            qr.add_data(result['url'])
+            matrix = [''.join('1' if cell else '0' for cell in row) for row in qr.get_matrix()]
+        return JSONResponse(dict(result, qr=matrix), headers={'Cache-Control': 'no-store'})
 
     @router.post("/camera-bind")
     async def bind(payload: Binding):
@@ -116,7 +153,8 @@ def create_router(core, lock, embodied, directory, *, owner=None):
 
     @router.post("/camera-view")
     async def camera_view(payload: CameraView):
-        return JSONResponse(await guarded(owner.camera_view(payload.session)), headers={"Cache-Control": "no-store"})
+        return JSONResponse(await guarded(owner.camera_view(payload.session, payload.phase, payload.round)),
+                            headers={"Cache-Control": "no-store"})
 
     @router.post("/restore-lights")
     async def restore_lights():
