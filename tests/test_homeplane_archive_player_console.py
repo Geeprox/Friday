@@ -63,8 +63,8 @@ const segment={media_ref:'b'.repeat(64),time_range:source,status:'ready',audio_t
 let segments=[segment];
 const report=()=>({context_fingerprint:context.fingerprint,simulated:true,camera_id:'SIMULATED-camera',time_range:range,status:'ready',segments,gaps:[]});
 const actualPlan=JSON.parse(process.argv[1]);
-const plan=()=>({...actualPlan,plan_id:'c'.repeat(64),context_fingerprint:context.fingerprint,simulated:true,stream_url:'/api/archive/media/'+'c'.repeat(64),start_offset_seconds:30.3,end_offset_seconds:40,duration_seconds:60,clock_uncertainty_seconds:0,previous_keyframe_seconds:30,expires_at:new Date(Date.now()+300000).toISOString()});
-let calls=[],pending=null,late=false,foreign=false,tick=null,contextFailure=false,contextWaiting=false,waitingContext=null,unprotected=false;
+const plan=()=>({...actualPlan,plan_id:'c'.repeat(64),context_fingerprint:context.fingerprint,simulated:true,stream_url:'/api/archive/media/'+'c'.repeat(64),start_offset_seconds:30.3,end_offset_seconds:40,duration_seconds:60,clock_uncertainty_seconds:0,previous_keyframe_seconds:30,expires_at:new Date(Date.now()+(expired?-1000:300000)).toISOString()});
+let calls=[],pending=null,late=false,foreign=false,tick=null,contextFailure=false,contextWaiting=false,waitingContext=null,unprotected=false,expired=false;
 const response=v=>({ok:true,json:async()=>v});
 const fetch=async(path,options={})=>{
  if(path==='/api/archive/context'){
@@ -126,6 +126,10 @@ const open=()=>all(content).find(n=>n.attrs['data-archive-playback-ref']).handle
  assert(!all(content).some(n=>n.tag==='video'),'a neighboring file cannot silently substitute for the selected time');
  assert.match(content.textContent,/未找到所选时刻的录像/);
  assert.equal(calls.filter(([path])=>path==='/api/archive/playback').length,prepareCount);
+ segments=[segment];expired=true;
+ await env.openEventRecording(content,{request:actualLookup,anchor_at});
+ assert(!all(content).some(n=>n.tag==='video'));assert.match(content.textContent,/预览已过期/);
+ expired=false;
  segments=[edge,segment];
  await env.openEventRecording(content,{request:actualLookup,anchor_at});
  assert(all(content).some(n=>n.tag==='video'),'safety event details reuse the same protected player');

@@ -855,16 +855,17 @@ async function openArchivePlayer(output,report,segment){
     const plan=preparedPlan;
     if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!==ownerPage)return;
     const fresh=await api('/api/archive/context',{signal});
-    if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!==ownerPage||fresh.fingerprint!==plan.context_fingerprint||fresh.simulated!==plan.simulated){cancelArchivePlayback(plan);return;}
-    if(plan.privacy_protected!==true||plan.privacy_preview_generated!==true||plan.original_modified!==false||!['local_person_mosaic','local_full_frame_mosaic'].includes(plan.privacy_mode)){cancelArchivePlayback(plan);status.textContent='隐私预览未就绪';return;}
-    if(!/^\/api\/archive\/media\/[a-f0-9]{64}$/.test(plan.stream_url)||!Number.isFinite(plan.start_offset_seconds)||!Number.isFinite(plan.end_offset_seconds)||plan.end_offset_seconds<=plan.start_offset_seconds){cancelArchivePlayback(plan);throw Error('unqualified media');}
+    if(version!==archivePlayerVersion||queryVersion!==archiveVersion||page!==ownerPage)return;
+    if(fresh.fingerprint!==plan.context_fingerprint||fresh.simulated!==plan.simulated){settingsMessage(status,'录像来源已变化，请重新选择。',true);return;}
+    if(plan.privacy_protected!==true||plan.privacy_preview_generated!==true||plan.original_modified!==false||!['local_person_mosaic','local_full_frame_mosaic'].includes(plan.privacy_mode)){status.textContent='隐私预览未就绪';return;}
+    if(!/^\/api\/archive\/media\/[a-f0-9]{64}$/.test(plan.stream_url)||!Number.isFinite(plan.start_offset_seconds)||!Number.isFinite(plan.end_offset_seconds)||plan.end_offset_seconds<=plan.start_offset_seconds)throw Error('unqualified media');
+    const expires=Date.parse(plan.expires_at)-Date.now();
+    if(!Number.isFinite(expires)||expires<=0||expires>301000){settingsMessage(status,'预览已过期，请重新选择。',true);return;}
     const compact=ownerPage==='Safety';
     const root=el('section',null,{class:compact?'archive-player safety-event-player':'archive-player',id:'archive-player'}),video=el('video',null,{controls:'',playsinline:'',preload:'metadata','aria-label':plan.simulated?'simulated 测试录像':copyName('Friday-1228')}),receipt=el('p','等待媒体定位…',{id:'archive-seek-evidence',class:'meta'});
     video.muted=true;
     const view={root,video,plan,status:receipt,ownerPage};archivePlayerView=view;
     const active=()=>archivePlayerView===view&&page===ownerPage&&version===archivePlayerVersion;
-    const expires=Date.parse(plan.expires_at)-Date.now();
-    if(!Number.isFinite(expires)||expires<=0||expires>301000){stopArchivePlayer('预览已过期，请重新选择。');return;}
     if(typeof setTimeout==='function')archiveExpiryTimer=setTimeout(()=>{if(active())stopArchivePlayer('预览已过期，请重新选择。');},expires);
     archiveContextTimer=setInterval(async()=>{
       if(!active())return;

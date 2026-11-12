@@ -178,8 +178,7 @@ test('趴卧提醒分开两次观察，并按所选画面的采集时间回看',
  const notice=all(f.root).find(n=>n.attrs.class==='home-attention-item'&&n.textContent.includes('疑似趴卧'));
  assert(notice);notice.onclick();assert.equal(f.navigations[0][1].eventId,prone.id);home.dispose();
  const view=f.mount({initialEventId:prone.id});await settle();
- assert(f.by('h2','疑似趴卧'));assert(f.by('h3','关键帧'));
- assert(f.by('h4','首次观察')&&f.by('h4','再次观察'));
+ assert(f.by('h2','疑似趴卧'));assert(f.by('h3','首次观察')&&f.by('h3','再次观察'));
  const frames=all(f.root).filter(n=>n.attrs.class==='safety-frames');
  const firstPair=frames.slice(0,2).flatMap(group=>all(group).filter(n=>n.tagName==='img').map(n=>n.attrs.src));
  assert.deepEqual(firstPair,[0,4].map(index=>'/api/embodied/safety/events/'+prone.id+'/frames/'+index));
