@@ -181,6 +181,74 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('owner, direction, x, shift', [
+    ('primary', 'right', .605, .04),
+    ('secondary', 'left', .245, -.04),
+])
+async def test_wake_centers_an_off_center_person_once(
+        tmp_path, monkeypatch, owner, direction, x, shift):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
+    cue, safety = cue_source(home, clock, owner)
+    director = CameraDirector()
+    director.apply_mode('auto', 'original')
+    party = PartyCamera()
+    state = {}
+    send, sent = dispatch_for(owner, state, clock, director, home, cue, safety, party)
+
+    def observe(at, *, offset=0, hear=False):
+        clock.at = at
+        target = subject(7 if offset == 0 else 9, x - offset)
+        target['identity'] = subject(7, x)['identity']
+        state.update(current_frame(at, source, offset=offset, people=[target]))
+        if owner == 'primary':
+            state['party_camera'] = party.status(camera=CAMERA['id'], session=SESSION, frame_mono=at, now=at)
+        wake = cue(CAMERA['id'], state, director.sound_search_cue) if hear else None
+        return director.choose(state, at, sound_cue=wake)
+
+    assert observe(1.0) is None
+    assert observe(1.4) is None  # 普通跟随不为这个偏移转动。
+    assert observe(1.8, hear=True) is None
+    assert observe(2.2, hear=True) == direction
+    assert not director.public()['target_locked']
+    await send(direction)
+    assert [(row['action'], row['direction']) for row in sent] == [('motor_step', direction)]
+    assert not director.public()['target_locked']
+
+    # 偏移仍超过首次对准的阈值。确认转过后恢复普通跟随，不再补一小步。
+    for at in (4.3, 4.7):
+        assert observe(at, offset=shift, hear=True) is None
+        assert not director.public()['target_locked']
+    assert observe(5.1, offset=shift, hear=True) is None
+    assert director.public()['target_locked'] and director.target == 9
+    assert not director.public()['physical_motion_verified']
+
+
+@pytest.mark.asyncio
+async def test_wake_adjustment_is_cancelled_if_person_centers_before_dispatch(tmp_path, monkeypatch):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
+    director = CameraDirector()
+    for at in (1.0, 1.4, 1.8, 2.2):
+        clock.at = at
+        frame = current_frame(at, source, people=[subject(7, .605)])
+        wake = home.wake_motion_cue(frame, at) if at >= 1.8 else None
+        assert director.choose(frame, at, sound_cue=wake) == ('right' if at == 2.2 else None)
+    assert director.decision_current(frame, 2.2, 'right', sound_cue=wake)
+
+    clock.at = 2.4
+    centered = current_frame(2.4, source, people=[subject(7, .52)])
+    assert not director.decision_current(centered, 2.4, 'right', sound_cue=wake)
+    assert director.choose(centered, 2.4, sound_cue=wake) is None
+    assert director.public()['target_locked']
+    assert director.public()['reason'] == '已唤醒，镜头跟随中'
+    assert director.choose(current_frame(2.8, source, people=[subject(7, .605)]),
+                           2.8, sound_cue=wake) is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('owner, word', [('primary', 'Friday'), ('secondary', '小福')])
 async def test_wake_tries_the_other_side_when_the_first_motor_step_keeps_the_same_view(
         tmp_path, monkeypatch, owner, word):

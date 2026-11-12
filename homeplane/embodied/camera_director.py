@@ -52,6 +52,7 @@ class CameraDirector:
     PATROL_CONFIRM_SECONDS = 8
     FOLLOW_REACQUIRE_SECONDS = 8
     FOLLOW_REFERENCE_INTERVAL = 2
+    WAKE_PAN_THRESHOLD = .12
     TILT_DIRECTIONS = ('up', 'down')
     SURVEY_ATTEMPT_LIMIT = 12
     SURVEY_ROUTE = ('right', 'right', 'down', 'left', 'left', 'left', 'left', 'up', 'right', 'right')
@@ -118,6 +119,7 @@ class CameraDirector:
         self.sound_candidate = None
         self.sound_following = False
         self.sound_follow_motion = None
+        self.wake_first_aim = False
         self.sound_intent_since = None
         self.last_sound_captured = -math.inf
         self.last_wake_captured = -math.inf
@@ -461,7 +463,7 @@ class CameraDirector:
         self.reframe_candidate = (*candidate, view[2], shift)
         return None
 
-    def _follow_direction(self, target):
+    def _follow_direction(self, target, *, wake_aim=False):
         box = target.get('box')
         if not isinstance(box, dict):
             return None
@@ -473,7 +475,8 @@ class CameraDirector:
         if not width or not height or min(right, bottom) < -.000001:
             return None
         horizontal_error = left + width / 2 - .5
-        horizontal = ('right' if horizontal_error > 0 else 'left') if abs(horizontal_error) > .20 else None
+        threshold = self.WAKE_PAN_THRESHOLD if wake_aim else .20
+        horizontal = ('right' if horizontal_error > 0 else 'left') if abs(horizontal_error) > threshold else None
         vertical_error = top + height / 2 - .5
         vertical_margin = min(top, bottom)
         # 目标贴近上下边缘且明显偏向一侧才俯仰。两轴都偏离时，先保住更近的边缘。
@@ -578,7 +581,7 @@ class CameraDirector:
                 return False
         if pending['identity'] and self.identity(target) and self.identity(target) != pending['identity']:
             return False
-        return self._follow_direction(target) == direction
+        return self._follow_direction(target, wake_aim=sound_follow and self.wake_first_aim) == direction
 
     def _next_position(self, direction):
         x,y = self.position
@@ -753,6 +756,7 @@ class CameraDirector:
         self.sound_search_cue = self.sound_candidate = None
         self.sound_following = False
         self.sound_follow_motion = None
+        self.wake_first_aim = False
 
     def _end_sound_search(self, now):
         if self.sound_search_cue is not None:
@@ -794,6 +798,7 @@ class CameraDirector:
         if not wake and self._next_position(first) in self.blocked_positions:
             return
         self.sound_search_cue = cue
+        self.wake_first_aim = wake
         self.sound_view = self._sound_scope(sample)
         self.sound_route = (first, other, other)
         self.sound_step = 0
@@ -1138,7 +1143,12 @@ class CameraDirector:
             # an unrecognizable target never stalls following indefinitely.
             if not self.identity(target) and now-self.last_move < 4:
                 return None
-            direction = self._follow_direction(target)
+            wake_follow = self.sound_following and isinstance(self.sound_search_cue, WakeCameraCue)
+            direction = self._follow_direction(target, wake_aim=wake_follow and self.wake_first_aim)
+            if wake_follow and direction is None:
+                self.wake_first_aim = False
+                if self.pending_decision and self.pending_decision.get('sound_cue') is self.sound_search_cue:
+                    self.pending_direction = self.pending_decision = None
             if direction in self.TILT_DIRECTIONS:
                 if not isinstance(session, str) or not session or sum(p['id'] == target['id'] for p in people) != 1:
                     return None
@@ -1172,6 +1182,8 @@ class CameraDirector:
         if automatic and direction == self.pending_direction:
             self._watch_target_after_move(pending, now)
             if pending and 'sound_box' in pending:
+                # 首次对准只允许一步更灵敏的调整，之后按普通跟随避免来回摆动。
+                self.wake_first_aim = False
                 self.sound_follow_motion = (pending['sound_cue'], pending['view'], direction)
         patrol = automatic and direction == self.pending_direction and pending and pending['phase'] in {'patrolling', 'sound_search'}
         if patrol:
@@ -1243,13 +1255,20 @@ class CameraDirector:
         if self.mode in TARGET_MODES:
             reason = {'following': '跟随所选宠物' if self.mode == 'pet_target' else '跟随所选人物',
                       'target_lost': '未找到所选目标', 'target_reacquiring': '正在确认所选目标'}.get(self.phase, reason)
+        wake_aiming = False
         if isinstance(self.sound_search_cue, WakeCameraCue):
             reason = {'sound_search': '已唤醒，镜头正在找人', 'confirming_view': '已唤醒，镜头正在找人',
                       'checking_view': '已唤醒，正在确认画面', 'patrol_waiting_view': '已唤醒，正在确认画面',
                       'following': '已唤醒，镜头跟随中', 'target_reacquiring': '已唤醒，正在重新对准',
                       'target_ambiguous': '已唤醒，正在确认目标'}.get(self.phase, reason)
-            if self.phase == 'following' and self.pending_direction is not None:
-                reason = '已唤醒，镜头正在转向'
+            if self.phase == 'following':
+                pending_turn = (self.pending_decision is not None
+                                and self.pending_decision.get('sound_cue') is self.sound_search_cue)
+                wake_aiming = pending_turn or self.sound_follow_motion is not None
+                if pending_turn:
+                    reason = '已唤醒，镜头正在转向'
+                elif wake_aiming:
+                    reason = '已唤醒，正在重新对准'
         elif self.sound_search_cue is not None and self.phase in {'confirming_view', 'checking_view', 'patrol_waiting_view'}:
             reason = '异响后环视'
         if self.mode == 'survey' and self.sound_following and self.phase == 'following':
@@ -1268,7 +1287,7 @@ class CameraDirector:
                     survey_confirmed_moves=self.survey_confirmed_moves, survey_total_steps=len(self.SURVEY_ROUTE),
                     survey_result=self.scheduled_result, survey_interruption=self.survey_interruption,
                     patrol_view_state=self.patrol_view_state,
-                    avoided_angles=len(self.blocked_positions), target_locked=self.phase == 'following',
+                    avoided_angles=len(self.blocked_positions), target_locked=self.phase == 'following' and not wake_aiming,
                     physical_motion_verified=False)
         if self.intent and self.intent[0] == 'patrol':
             report['scheduled_survey_active'] = self.mode == 'survey'
