@@ -239,8 +239,17 @@ async def test_both_saved_visual_windows_resolve_using_the_selected_keyframe(set
         await runtime.observe(CAMERA['id'], 'synthetic-session', [], 100., 100., stable=True,
                               source_context=SOURCE, source_name=CAMERA['name'])
         frames = [(stamp, b'synthetic-frame') for stamp in (70, 71, 72, 73, 97, 98, 99, 100)]
+        review = SimpleNamespace(event='face_obscured', observation='示例线索')
+        # 队列此时只剩一段画面的空间，不能留下只有后半段的复核记录。
+        with monkeypatch.context() as quota:
+            quota.setattr(runtime.recording, 'MAX_REVIEW_BYTES', 4*len(frames[0][1]))
+            assert runtime._visual_event(CAMERA['id'], 'synthetic-session', frames, review, captured_at) is False
+            await runtime.drain()
+            assert runtime.store.events() == []
+            assert runtime.recording_status()['state'] == 'unavailable'
+            assert runtime.recording_status()['dropped'] == 1
         assert runtime._visual_event(CAMERA['id'], 'synthetic-session', frames,
-                                     SimpleNamespace(event='face_obscured', observation='示例线索'), captured_at)
+                                     review, captured_at)
         await runtime.drain()
         entry = runtime.store.events()[0]
         runtime.store.append_frame(entry['id'], captured_at-200, b'synthetic-invalid-time')
@@ -272,6 +281,50 @@ async def test_both_saved_visual_windows_resolve_using_the_selected_keyframe(set
             assert resolved.time_range == request.time_range
             assert any(segment.status=='ready' and segment.camera_id==request.camera_id for segment in resolved.segments)
             assert not resolved.media_copied and not resolved.device_write_attempted
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_fall_confirmation_between_samples_has_its_own_archive_anchor(setup, tmp_path, monkeypatch):
+    """触发帧落在常规抽样之间时，仍能从原提醒读到它及对应录像。"""
+    from homeplane.embodied import safety, safety_api
+
+    index, _, _, _, _, archive_clock, _ = setup
+    catalog(index)
+    await mapped(index)
+    mono = [100.0]
+    monkeypatch.setattr(safety, 'time', SimpleNamespace(
+        monotonic=lambda: mono[0], time=lambda: CAPTURED + (mono[0] - 103.75)))
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path / 'private')
+    router = APIRouter()
+    runtime = safety_api.install(router, SimpleNamespace(process=None), archive=index)
+    app = FastAPI()
+    app.include_router(router)
+    try:
+        runtime.store.configure(SafetyPolicy(enabled=True))
+        for frame in range(16):
+            mono[0] = 100 + frame * .25
+            await runtime.observe(CAMERA['id'], 'synthetic-session', [person(frame >= 7)],
+                                  mono[0], mono[0], stable=True, jpeg=bytes([frame]), source_context=SOURCE)
+        await runtime.drain()
+        base = '/api/embodied/safety/events'
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            incident, = (await client.get(base)).json()['events']
+            assert incident['captured_at'] == CAPTURED
+            frame, = [f for f in incident['frames'] if f['at'] == incident['captured_at']]
+            assert frame['recording_anchor'] is True
+            url = f"{base}/{incident['id']}"
+            assert (await client.get(url+'/frames/'+str(frame['ordinal']))).content == bytes([15])
+            result = (await client.get(url+'/recordings', params={'ordinal':frame['ordinal']})).json()
+            ref, = result['recordings']
+            assert datetime.fromisoformat(ref['anchor_at']).timestamp() == CAPTURED
+            request = ArchiveResolveRequest.model_validate(ref['request'])
+        archive_clock[0] = archive_clock[0].replace(second=3)
+        resolved = await index.resolve(request)
+        assert resolved.time_range == request.time_range
+        assert any(segment.status == 'ready' and segment.camera_id == request.camera_id
+                   for segment in resolved.segments)
     finally:
         await runtime.close()
 

@@ -1292,11 +1292,8 @@ class SafetyRuntime:
         ring['source_name'] = source_name
         stamp = time.time() - (time.monotonic() - captured)
         guard = self._guard(camera, session, source_context, captured)
-        if (
-            jpeg
-            and len(jpeg) <= self.store.MAX_FRAME
-            and (not ring["items"] or captured - ring["items"][-1][0] >= 0.5)
-        ):
+        valid_jpeg = isinstance(jpeg, bytes) and 0 < len(jpeg) <= self.store.MAX_FRAME
+        if valid_jpeg and (not ring["items"] or captured - ring["items"][-1][0] >= 0.5):
             ring["items"].append((captured, jpeg))
             pending = self.post_frames.get(camera, [])
             self.post_frames[camera] = [p for p in pending if captured <= p["until"]]
@@ -1305,8 +1302,13 @@ class SafetyRuntime:
             camera, session, people, now, captured, stable=stable, aspect=aspect,
             evaluated_mono=time.monotonic(), coalesced=coalesced,
         )
-        if not guard():
+        if not events or not guard():
             return
+        frames = [(stamp - (captured - frame_at), frame) for frame_at, frame in ring['items']
+                  if 0 <= captured - frame_at <= self.recording.PRE_WINDOW]
+        # 确认帧可能落在两次抽样之间。留档优先保留这一帧作为回看锚点。
+        if valid_jpeg and (not frames or frames[-1][0] != stamp):
+            frames.append((stamp, jpeg))
         for event in events:
             event['camera_source_context'] = source_context
             event['camera_name'] = source_name
@@ -1325,8 +1327,7 @@ class SafetyRuntime:
             job = self.recording.submit(camera=camera, session=session, context=source_context,
                 token=token, captured=captured, revision=policy.revision, event=event,
                 capture_source=ring['capture'], person={'identity': identity},
-                frames=[(stamp - (captured - frame_at), frame) for frame_at, frame in ring['items']
-                        if 0 <= captured - frame_at <= self.recording.PRE_WINDOW],
+                frames=frames,
                 announce=policy.announce)
             if job is not None:
                 self.post_frames.setdefault(camera, []).append(
@@ -1377,6 +1378,14 @@ class SafetyRuntime:
         return receipt
 
     def _visual_event(self, camera, session, frames, result, captured_at, *, rapid=False):
+        if len(frames) != (4 if rapid else 8):
+            return False
+        previous = -math.inf
+        for frame_at, jpeg in frames:
+            if (type(frame_at) not in (int, float) or not math.isfinite(frame_at) or frame_at <= previous
+                    or not isinstance(jpeg, bytes) or not 0 < len(jpeg) <= self.store.MAX_FRAME):
+                return False
+            previous = frame_at
         messages = {
             "possible_fall": "画面中疑似出现跌落动作，请查看关键帧。",
             "face_obscured": "画面中疑似出现面部遮挡，请查看关键帧。",
@@ -1388,9 +1397,9 @@ class SafetyRuntime:
         source_context = ring.get('source_context') if ring.get('session') == session else None
         policy = self._cached_policy()
         posture = result.event == 'prone_posture'
-        if posture and (len(frames) != 8 or not policy.admits_posture(camera, source_context)):
+        if posture and not policy.admits_posture(camera, source_context):
             return False
-        if rapid and (result.event != 'rapid_movement' or len(frames) != 4 or source_context is None):
+        if rapid and (result.event != 'rapid_movement' or source_context is None):
             return False
         message, basis, detector = messages[result.event], 'two_disjoint_local_windows', 'qwen3.5-2b-window/1'
         if posture:
@@ -1410,7 +1419,7 @@ class SafetyRuntime:
                 detector=detector,
             ),
             [(captured_at - (frames[-1][0] - stamp), jpeg) for stamp, jpeg in frames],
-            captured=frames[-1][0], revision=policy.revision, max_age=12, require_complete=rapid,
+            captured=frames[-1][0], revision=policy.revision, max_age=12, require_complete=True,
         )
 
     async def schedule(self, event, revision=None):
