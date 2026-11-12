@@ -30,7 +30,7 @@ class WindowState:
     candidate: tuple | None = None
     followup: bool = False
     recorded: dict = field(default_factory=dict)
-    posture_track: int | None = None
+    posture_track: tuple[int, int] | None = None
     posture_since: float = math.inf
     rapid: RapidReviewWindow = field(default_factory=RapidReviewWindow)
 

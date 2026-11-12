@@ -22,7 +22,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .pose_rules import iou
+from .pose_rules import body_track_revision, iou
 from .safety_storage import SafetyIO, SafetyStorageBusy
 
 
@@ -571,7 +571,8 @@ class FallDetector:
             return False
         for person in people[:self.MAX_TRACKS]:
             track = state["tracks"].get(self._track_key(person))
-            if track is None or track["fired"] or not 0 < captured - track["last"] <= self.MAX_FRAME_GAP:
+            if (track is None or track["fired"] or body_track_revision(person) != track["revision"]
+                    or not 0 < captured - track["last"] <= self.MAX_FRAME_GAP):
                 continue
             if not self._identity_matches(track, self.current_identity(person, evaluated)):
                 continue
@@ -580,10 +581,11 @@ class FallDetector:
                 return True
         return False
 
-    def confirmed_down(self, camera, session, track):
+    def confirmed_down(self, camera, session, track, started):
         state = self.cameras.get(camera)
         current = state["tracks"].get(str(track)) if state and state["session"] == session else None
-        return bool(current and current["fired"] and current["down"] and not current["down"]["partial"])
+        return bool(current and current["fired"] and current["down"] and not current["down"]["partial"]
+                    and current["anchor"] is not None and current["anchor"]["at"] == started)
 
     def observe(self, camera, session, people, now, captured, *, stable, aspect=16 / 9, evaluated_mono=None,
                 coalesced=False):
@@ -610,16 +612,16 @@ class FallDetector:
             if track is None:
                 continue
             present.add(track)
-            geometry = self.geometry(person, aspect)
-            if geometry is None:
+            revision = body_track_revision(person)
+            if revision is None or (geometry := self.geometry(person, aspect)) is None:
                 state["tracks"].pop(track, None)
                 continue
             person_id = self.current_identity(person, evaluated_mono)
             old = state["tracks"].get(track)
-            if (old is None or not 0 < captured - old["last"] <= self.MAX_FRAME_GAP
+            if (old is None or revision != old["revision"] or not 0 < captured - old["last"] <= self.MAX_FRAME_GAP
                     or not self._identity_matches(old, person_id)):
                 old = dict(last=captured, upright_since=None, anchor=None, down=None, fired=False,
-                           person_id=person_id)
+                           person_id=person_id, revision=revision)
                 state["tracks"][track] = old
             elif person_id is not None:
                 old["person_id"] = person_id
@@ -682,7 +684,8 @@ def _posture_track(people):
         return None
     person = people[0]
     track, box = person.get('id'), person.get('box')
-    if type(track) is not int or track < 1 or not isinstance(box, dict):
+    revision = body_track_revision(person)
+    if type(track) is not int or track < 1 or not isinstance(box, dict) or revision is None:
         return None
     values = [box.get(key) for key in ('x', 'y', 'w', 'h', 'confidence')]
     if not all(type(value) in (int, float) and math.isfinite(value) for value in values):
@@ -690,7 +693,7 @@ def _posture_track(people):
     x, y, w, h, confidence = values
     if (.65 <= confidence <= 1 and min(w, h) >= .06 and max(w, h) >= .16
             and .01 <= x <= x+w <= .99 and .01 <= y <= y+h <= .99):
-        return track
+        return track, revision
     return None
 
 
@@ -706,7 +709,7 @@ def _scalar_fields(row, fields):
 
 
 def _snapshot_people(people):
-    """给异步检测队列保留独立的人体坐标和身份时戳。"""
+    """给异步检测队列保留独立的人体坐标、追踪版本和身份时戳。"""
     # 跌倒检测最多读取十人。单人趴卧和双人快速搬动仍能区分人数是否超限。
     snapshot = []
     for person in people[:FallDetector.MAX_TRACKS]:
@@ -715,6 +718,11 @@ def _snapshot_people(people):
             continue
         row = _scalar_fields(person, ('id', 'motion'))
         row['box'] = _scalar_fields(person.get('box'), ('x', 'y', 'w', 'h', 'confidence'))
+        if 'tracking' in person:
+            tracking = person['tracking']
+            revision = body_track_revision(person, allow_overlap=True)
+            row['tracking'] = (dict(overlapping=tracking.get('overlapping', False), follow_revision=revision)
+                               if revision is not None else None)
         row['identity'] = _scalar_fields(person.get('identity'), (
             'state', 'person_id', 'observed_monotonic', 'face_observed_monotonic'))
         row['joints'] = {}
@@ -1363,7 +1371,8 @@ class SafetyRuntime:
         if not job.output_considered:
             job.output_considered = True
             if (job.announce and not job.token.is_set() and 0 <= time.monotonic() - job.captured <= 1.5
-                    and self.detector.confirmed_down(job.camera, job.session, job.event.get('track'))):
+                    and self.detector.confirmed_down(
+                        job.camera, job.session, job.event.get('track'), job.event.get('started_mono'))):
                 await self.schedule(job.saved, revision=job.revision)
         while job.appended < len(job.following) and self._recording_current(job):
             stamp, jpeg = job.following[job.appended]

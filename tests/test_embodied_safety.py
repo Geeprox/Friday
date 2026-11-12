@@ -110,6 +110,23 @@ def test_camera_and_track_cannot_borrow_upright_baseline_or_stale_identity():
             assert out[0]["person_id"] is None
 
 
+def test_continuity_loss_only_clears_the_affected_fall_candidate():
+    detector = FallDetector()
+    events = []
+    for index in range(20):
+        now = 100 + index * .25
+        affected, continuous = person(index >= 7), person(index >= 7)
+        affected['tracking'] = dict(overlapping=index == 9, follow_revision=int(index >= 9))
+        continuous['id'] = 8
+        for origin, actor in ((0, affected), (.5, continuous)):
+            actor['box']['x'] = origin + .48 * actor['box']['x']
+            actor['box']['w'] *= .48
+            for joint in actor['joints'].values():
+                joint['x'] = origin + .48 * joint['x']
+        events.extend(detector.observe('camera-a', 'session-a', [affected, continuous], now, now, stable=True))
+    assert [event['track'] for event in events] == ['8']
+
+
 def test_short_horizontal_pose_and_slow_descent_do_not_trigger():
     for mode in ("brief", "slow"):
         d = FallDetector()

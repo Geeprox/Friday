@@ -6,6 +6,8 @@ import socket
 import struct
 import time
 
+from homeplane.embodied.pose_rules import body_track_revision
+
 PACKET_LIMIT = 8 * 1024 * 1024
 REPLY_LIMIT = 128 * 1024
 UNAVAILABLE_REASONS = frozenset(
@@ -30,11 +32,8 @@ def body_track_revisions(people):
         return None
     current = {}
     for person in people:
-        tracking = person.get('tracking', {})
-        if not isinstance(tracking, dict) or tracking.get('overlapping', False) is not False:
-            continue
-        revision = tracking.get('follow_revision', 0)
-        if type(revision) is int and revision >= 0:
+        revision = body_track_revision(person)
+        if revision is not None:
             current[str(person['id'])] = revision
     return current
 

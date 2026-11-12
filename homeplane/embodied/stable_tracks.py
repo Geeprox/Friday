@@ -35,11 +35,7 @@ def _overlapping(a, b):
 
 
 def assign_poses(detection, boxes):
-    """Only a supported pose whose root belongs to one box may supply actions.
-
-    More joints do not resolve two overlapping people. Multiple qualifying
-    poses in one box also stay ambiguous; no detector-order choice is made.
-    """
+    """只分配归属唯一的骨架，同时保留归属不明确的检测框。"""
     assignments = {i:[] for i in range(len(boxes))}
     ambiguous = set()
     for pose in detection.get('poses',[])[:10]:
@@ -57,7 +53,9 @@ def assign_poses(detection, boxes):
             assignments[candidates[0]].append(joints)
         else:
             ambiguous.update(candidates)
-    return {i:values[0] for i,values in assignments.items() if len(values)==1 and i not in ambiguous}
+    ambiguous.update(i for i, values in assignments.items() if len(values) > 1)
+    confirmed = {i: values[0] for i, values in assignments.items() if values and i not in ambiguous}
+    return confirmed, ambiguous
 
 
 def warp_box(box, transform):
@@ -157,7 +155,7 @@ class StableTracks:
             data={"source_index": np.arange(len(boxes))},
         )
         tracked = self.tracker.update(ds, timestamp=now)
-        poses = assign_poses(detection,boxes)
+        poses, ambiguous_pose_boxes = assign_poses(detection, boxes)
         people = []
         for n, track_id in enumerate(tracked.tracker_id if tracked.tracker_id is not None else []):
             if int(track_id) < 0:
@@ -173,8 +171,10 @@ class StableTracks:
             follow_revision = 0
             follow_changed_at = now if overlapping else None
             if prev:
+                # 骨架归属断续也要留痕，后续消费者可能跳过这一帧。
+                pose_interrupted = prev['pose_assigned'] and not joints and (overlapping or index in ambiguous_pose_boxes)
                 broken = (prev['last'] != self.last_update or now-prev['last'] > FOLLOW_GAP_SECONDS
-                          or overlapping and not prev['overlapping'])
+                          or overlapping and not prev['overlapping'] or pose_interrupted)
                 follow_revision = prev['follow_revision'] + int(broken)
                 follow_changed_at = now if broken or overlapping else prev['follow_changed_at']
             if prev and now-prev['last'] > POSE_GAP_SECONDS:
@@ -202,6 +202,7 @@ class StableTracks:
                 "anchor": anchor,
                 "first": first,
                 "overlapping": overlapping,
+                "pose_assigned": bool(joints),
                 "follow_revision": follow_revision,
                 "follow_changed_at": follow_changed_at,
             }

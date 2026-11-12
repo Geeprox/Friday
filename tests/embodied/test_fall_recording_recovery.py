@@ -311,13 +311,19 @@ async def test_fall_frames_keep_one_time_anchor_when_system_clock_moves(monitor,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['position', 'identity'])
+@pytest.mark.parametrize('change', ['position', 'identity', 'revision', 'overlap', 'coalesced_overlap'])
 async def test_different_people_cannot_complete_a_fall_under_one_track_number(monitor, change):
     runtime, camera, session = monitor.runtime, monitor.camera, 'same-session'
 
-    async def offer(index, actor):
+    async def offer(index, actor, *, hidden_overlap=False):
         monitor.clock[0] = now = 100 + index * .25
         await runtime.sync_policy()
+        if hidden_overlap:
+            intermediate = person(True)
+            intermediate['tracking'] = dict(overlapping=True, follow_revision=1)
+            at = now - .125
+            assert runtime.offer(camera, session, [intermediate], at, at, stable=True,
+                                 source_context=monitor.context)
         assert runtime.offer(camera, session, [actor], now, now, stable=True,
                              jpeg=b'SYNTHETIC-FALL-FRAME', source_context=monitor.context)
 
@@ -327,12 +333,15 @@ async def test_different_people_cannot_complete_a_fall_under_one_track_number(mo
         if change == 'identity':
             actor['identity'] = dict(state='tracked', observed_monotonic=now, face_observed_monotonic=now,
                                      person_id='synthetic-a' if index < 9 else 'synthetic-b')
-        elif index >= 9:
+        elif change == 'position' and index >= 9:
             # 两段倒卧来自同一追踪编号下互不相交的画面位置。
             actor['box']['y'] += .21
             for joint in actor['joints'].values():
                 joint['y'] += .21
-        await offer(index, actor)
+        elif change in {'revision', 'overlap', 'coalesced_overlap'}:
+            actor['tracking'] = dict(overlapping=change == 'overlap' and index == 9,
+                                     follow_revision=int(index >= 9))
+        await offer(index, actor, hidden_overlap=change == 'coalesced_overlap' and index == 9)
         if index == 9:
             pending_after_change = runtime.fall_pending(camera, session)
         await runtime.observation_task
@@ -344,6 +353,8 @@ async def test_different_people_cannot_complete_a_fall_under_one_track_number(mo
     # 同一来源重新出现站立和下降，倒卧过程中短暂翻身后仍能重新计时。
     for index in range(20, 40):
         actor = person(index >= 27)
+        if change in {'revision', 'overlap', 'coalesced_overlap'}:
+            actor['tracking'] = dict(overlapping=False, follow_revision=1)
         if index >= 27:
             shift = (index-27) * .004
             actor['box']['y'] += shift
@@ -509,7 +520,8 @@ async def test_coalescing_keeps_the_fall_candidate_but_does_not_add_an_unobserve
 
 
 @pytest.mark.asyncio
-async def test_a_partial_pose_during_save_does_not_authorize_a_new_announcement(monitor, monkeypatch):
+@pytest.mark.parametrize('change', ['partial_pose', 'revision'])
+async def test_fall_saves_original_event_without_announcing_from_changed_observation(monitor, monkeypatch, change):
     await before_fall(monitor)
     entered, release = threading.Event(), threading.Event()
     create = monitor.store.create
@@ -521,20 +533,27 @@ async def test_a_partial_pose_during_save_does_not_authorize_a_new_announcement(
 
     monkeypatch.setattr(monitor.store, 'create', delayed_save)
     runtime, session = monitor.runtime, 'same-session'
+    schedule = AsyncMock(wraps=runtime.schedule)
+    monkeypatch.setattr(runtime, 'schedule', schedule)
     try:
         assert await frame(monitor)
         assert await asyncio.to_thread(entered.wait, 1)
         monitor.clock[0] += .25
         at = monitor.clock[0]
         actor = person(True)
-        actor['joints'].pop('leftShoulder')
+        if change == 'partial_pose':
+            actor['joints'].pop('leftShoulder')
+        else:
+            actor['tracking'] = dict(overlapping=False, follow_revision=1)
         assert runtime.offer(monitor.camera, session, [actor], at, at, stable=True,
                              source_context=monitor.context)
         await runtime.observation_task
     finally:
         release.set()
     await runtime.drain()
-    assert len(monitor.store.events()) == 1
+    event, = monitor.store.events()
+    assert event['captured_at'] == 1800000103.75 and event['frames']
+    schedule.assert_not_awaited()
     runtime.speaker.say.assert_not_awaited()
 
 
