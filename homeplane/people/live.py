@@ -28,6 +28,8 @@ from homeplane.recognition.artifacts import SFACE_SHA256
 from homeplane.recognition.contracts import Embedding
 from homeplane.runtime_log import observe
 
+from .identity_wire import body_track_revisions
+
 REF = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 POLICY = "sface-household-experimental-v1"
 THRESHOLD, MARGIN = 0.65, 0.08
@@ -486,6 +488,7 @@ class FaceIdentityPipeline:
         self.candidate_submitted = {}
         self._published = ()
         self._face_tracks, self._next_face = {}, 0
+        self._body_tracks, self._body_observed = None, -math.inf
         self._gate = threading.RLock()
         self._diagnostics={key:0 for key in ('frames','moving','no_body','waiting_highres','rate_limited',
             'detected_faces','ambiguous_body','quality_rejected','embeddings','unknown','ambiguous_identity',
@@ -533,9 +536,11 @@ class FaceIdentityPipeline:
         self.portraits.clear()
         self.votes.clear()
         self.results.clear()
+        self.candidate_submitted.clear()
         self._published = ()
         self.last = -100.0
         self._face_tracks.clear()
+        self._body_tracks, self._body_observed = None, -math.inf
 
     @serialized
     def close(self):
@@ -585,6 +590,26 @@ class FaceIdentityPipeline:
             crop=np.ascontiguousarray(crop)
             yield crop,(left,top,(right-left)/crop.shape[1],(bottom-top)/crop.shape[0]),owner
 
+    def _retire_tracks(self, tracks):
+        if not tracks:
+            return
+        for cache in (self.samples, self.portraits, self.votes, self.results, self.candidate_submitted):
+            for track in tracks:
+                cache.pop(track, None)
+        self._published = tuple(row for row in self._published if row['track'] not in tracks)
+        self.store.clear_tracks(self.camera, self.session, tracks)
+
+    def _update_body_tracks(self, tracks):
+        previous = self._body_tracks or {}
+        self._body_tracks = tracks
+        if tracks is None:
+            retired = set(previous)
+        else:
+            known = previous.keys() | self.results.keys() | self.samples.keys()
+            retired = {track for track in known if track not in tracks
+                       or track in previous and previous[track] != tracks[track]}
+        self._retire_tracks(retired)
+
     @serialized
     def process(self, jpeg, people=None, faces=(), *, moving=False, sample=True, captured_at=None):
         now = self.clock()
@@ -598,29 +623,33 @@ class FaceIdentityPipeline:
             self.portraits.clear()
             self.votes.clear()
             self.results.clear()
+            self.candidate_submitted.clear()
             self._published = ()
             self._face_tracks.clear()
+            self._body_tracks, self._body_observed = None, -math.inf
             self.store.clear_camera(self.camera, self.session)
             return []
+        # 即使是低分辨率帧，也要先撤销遮挡或断续的轨迹，再决定是否取样。
+        observed = now if captured_at is None else captured_at
+        tracks = body_track_revisions(people)
+        if (type(observed) not in (int, float) or not math.isfinite(observed)
+                or not 0 <= now-observed <= 1 or observed < self._body_observed
+                or observed == self._body_observed and tracks != self._body_tracks):
+            self._count('source_rejected')
+            return []
+        self._body_observed = observed
+        self._update_body_tracks(tracks)
         if not sample:
             self._count('waiting_highres')
-            # 4K face frames have a lower cadence than body frames. A small
-            # preview between them must not erase a valid high-res sample or
-            # advance its clock. Departed body tracks are still revoked now.
-            ids={str(p['id']) for p in people or ()}
-            self.samples={k:v for k,v in self.samples.items() if k in ids}
-            self.portraits={k:v for k,v in self.portraits.items() if k in ids}
-            self.votes={k:v for k,v in self.votes.items() if k in ids}
-            self.results={k:v for k,v in self.results.items() if k in ids}
-            self._published=tuple(r for r in self._published if r['track'] in ids)
             return self.public()
         # Sampling and voting follow original camera arrivals, not variable
         # queue completion times. Never count a replay as an independent face.
-        observed = now if captured_at is None else captured_at
-        if (type(observed) not in (int, float) or not math.isfinite(observed)
-                or not 0 <= now-observed <= 1 or observed <= self.last):
+        if observed <= self.last:
             self._count('source_rejected')
             return self.public()
+        if people is not None and not tracks:
+            self._count('ambiguous_body', len(people))
+            return []
         now = observed
         if now - self.last < 0.5:
             self._count('rate_limited')
@@ -641,7 +670,10 @@ class FaceIdentityPipeline:
         current, used, next_faces = {}, set(), {}
         staged=[];ambiguous_tracks=set();region_owners=set()
         for face_image, transform, owner in self._face_views(image, people):
-            if owner is not None:region_owners.add(owner)
+            if owner is not None:
+                region_owners.add(owner)
+                if owner not in tracks:
+                    continue
             detections=self.provider.detect(face_image)
             self._count('detected_faces',len(detections.rows))
             mapped=[]
@@ -665,10 +697,7 @@ class FaceIdentityPipeline:
             return []
         if ambiguous_tracks:
             self._count('ambiguous_body',len(ambiguous_tracks))
-            for track in ambiguous_tracks:
-                self.samples.pop(track,None);self.votes.pop(track,None);self.results.pop(track,None)
-                self.portraits.pop(track,None)
-            self.store.clear_tracks(self.camera,self.session,ambiguous_tracks)
+            self._retire_tracks(ambiguous_tracks)
         for face_image,detections,mapped,owner in staged:
             if people is not None and (len(mapped)!=1 or owner in ambiguous_tracks):continue
             for slot,row,box in mapped:
@@ -762,7 +791,7 @@ class FaceIdentityPipeline:
         for body in people or ():
             track = str(body["id"])
             old = self.results.get(track)
-            if (track not in ambiguous_tracks and track not in current and old and old.get("person_id")
+            if (track in tracks and track not in ambiguous_tracks and track not in current and old and old.get("person_id")
                     and now - old["observed_monotonic"] <= 1
                     and now - old["face_observed_monotonic"] <= 5
                     and old["person_id"] in self.store.registered()):

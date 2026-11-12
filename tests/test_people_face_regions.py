@@ -94,6 +94,54 @@ def test_gap_still_revokes_departed_body_and_motion():
     p.store.clear_camera.assert_called_once()
 
 
+@pytest.mark.parametrize('sample', [False, True])
+def test_body_track_change_retires_only_its_face_votes_and_cached_name(sample):
+    p = pipeline([])
+    original = [body(1), dict(body(2), box=dict(x=.65, y=.25, w=.2, h=.5))]
+    assert p.process(b'', original, sample=False) == []
+    current = {
+        str(index): dict(track=str(index), state='matched', person_id=f'person_{index}',
+                        observed_monotonic=100., face_observed_monotonic=100.,
+                        box=original[index-1]['box'])
+        for index in (1, 2)
+    }
+    p.samples = {key: [(100., object())] for key in current}
+    p.portraits = {key: (100., b'synthetic') for key in current}
+    p.votes = {key: (row['person_id'], 3, 100.) for key, row in current.items()}
+    p.results = dict(current)
+    p._published = tuple(current.values())
+    p.store.registered.return_value = {'person_1': {}, 'person_2': {}}
+    p.clock = lambda: 100.6
+    jpeg = cv2.imencode('.jpg', np.full((720, 1280, 3), 128, np.uint8))[1].tobytes()
+    new_body = dict(original[0], tracking=dict(follow_revision=1, overlapping=False))
+    rows = p.process(jpeg, [new_body, original[1]], sample=sample)
+    assert [row['track'] for row in rows] == ['2']
+    assert set(p.samples) == set(p.votes) == set(p.portraits) == {'2'}
+    p.store.clear_tracks.assert_called_once_with('camera', 'session', {'1'})
+
+
+def test_reappearing_person_rebuilds_face_confirmation_from_new_samples():
+    p = pipeline([ROW])
+    p.store.match.return_value = ('person_1', 'candidate')
+    clock = [100.]
+    p.clock = lambda: clock[0]
+    image = np.random.default_rng(4).integers(0, 256, (720, 1280, 3), np.uint8)
+    jpeg = cv2.imencode('.jpg', image)[1].tobytes()
+    target = body(1)
+    for at, expected in ((100., 'candidate'), (100.5, 'candidate'), (101., 'matched')):
+        clock[0] = at
+        assert p.process(jpeg, [target])[0]['state'] == expected
+    clock[0] = 101.1
+    blocked = dict(target, tracking=dict(follow_revision=1, overlapping=True))
+    assert p.process(b'', [blocked], sample=False) == []
+    clear = dict(target, tracking=dict(follow_revision=1, overlapping=False))
+    for at, expected in ((101.5, 'candidate'), (102., 'candidate'), (102.5, 'matched')):
+        clock[0] = at
+        row = p.process(jpeg, [clear])[0]
+        assert row['state'] == expected
+        assert row['enroll_ready'] is (expected == 'matched')
+
+
 def test_duplicate_body_ids_and_no_body_never_create_regions():
     image=np.zeros((100,200,3),np.uint8)
     assert list(FaceIdentityPipeline._face_views(image,[body(1),body(1)]))==[]

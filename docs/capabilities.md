@@ -10,6 +10,7 @@
 | Mi Home layout | BakeData/floormap validation, preview, revisioned import, 3D rendering | Your export, accessible files and device positions |
 | Cameras | Optional Miloco media/SDK adapters, worker lifetime, bounded frame pipelines | Supported SDK/platform/device and actual video/audio |
 | 镜头感知恢复 | 原生识别子进程故障时只恢复识别，保持仍有效的采集连接。实时预览继续读取新画面，自动动作及异常判定等待有效识别。镜头关闭后撤下画面 | 主副镜头的原采集循环以合成读写超时、异常回复和恢复帧验证。真实设备的恢复时长与识别准确率仍待实测 |
+| 人物识别 | 检测框重叠或轨迹断续后，撤下相关姓名和在场标记，等待新的人脸证据。其他轨迹的身份按各自画面更新。迟到结果和待发送的登记都要核对当前轨迹 | 合成人体帧、本机身份会话与在场投影覆盖撤销、迟到回执和重新确认。真实摄像头与人脸识别率待实测 |
 | 镜头回看 | 从镜头详情打开该镜头的录像，按已保存且当前有效的录像目录对应读取列表。日期筛选保留镜头范围。选择片段后进入保护播放 | 使用合成目录、原录像 API 和保护播放路径验证。真实目录配置、录像读回和原生播放仍待验收 |
 | Camera spatial mapping | Empty unconfigured layout, explicit manual projection and preserved legacy editing candidates. Actual image anchors support body games and current player pointing without floor coordinates; owned subprocesses isolate native registration/layout/visibility waits, and immutable editor snapshots bind draft to reference pixels. Spatial failure keeps video while suspending spatial input; damaged optional calibration falls back without overwriting files | Manual point/reference correctness, actual background registration and household geometry still require acceptance. Unit-canvas editing handles are not an observed floor plan; synthetic rules do not prove physical location accuracy |
 | Camera following | 人物和宠物均可按画面上下边缘调整构图。检测框重叠或漏检后，即使跟踪编号相同也会撤下旧点选与转向。指定跟随要用两帧重新确认原目标。发送时核对当前框、来源、轨迹和方向 | 两个原摄像头控制循环与合成目标覆盖断续、方向、重新确认和过期拒绝。真实云台移动、低处目标识别率和家庭可用性仍待验收 |

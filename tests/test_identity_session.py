@@ -20,8 +20,8 @@ from homeplane.people.live import IdentityStore
 JPEG = b"\xff\xd8SYNTHETIC-NOT-CAMERA-PIXELS\xff\xd9"
 
 
-def body(track=1):
-    return dict(id=track, box=dict(x=0.1, y=0.1, w=0.4, h=0.8))
+def body(track=1, **extra):
+    return dict(id=track, box=dict(x=0.1, y=0.1, w=0.4, h=0.8), **extra)
 
 
 def row(track, at):
@@ -214,6 +214,56 @@ def test_recent_result_requires_current_visible_track_and_current_input(store):
         assert session.close()
 
 
+def test_preview_only_overlap_retires_a_cached_identity_and_late_reply_selectively(store):
+    from homeplane.people.live_api import qualify_presence
+
+    peer = Peer()
+    gate = threading.Event()
+    clock = [100.0]
+    session = IdentitySession(
+        store, "camera", "source", ".", clock=lambda: clock[0], _peer_factory=lambda: peer
+    )
+    original = [body(1), body(2)]
+    try:
+        session.process(JPEG, original, captured_at=clock[0])
+        wait_until(lambda: len(session.public()) == 2)
+        for track in ('1', '2'):
+            store.observe("camera", "source", track, "synthetic_person", "matched", True)
+        peer.processing.clear()
+        peer.frame_gate = gate
+        clock[0] += .6
+        old_capture = clock[0]
+        session.process(JPEG, original, captured_at=old_capture)
+        assert peer.processing.wait(.5)
+
+        clock[0] += .1
+        overlapping = body(1, tracking=dict(follow_revision=1, overlapping=True))
+        visible = session.process(JPEG, [overlapping, body(2)], sample=False, captured_at=clock[0])
+        assert [item["track"] for item in visible] == ["2"]
+        projection = qualify_presence(store.presence(),
+            dict(camera="camera", session="source", state="live", tracks=visible), now=clock[0])
+        assert {item["track"] for item in projection if item["present"]} == {"2"}
+
+        clock[0] += .1
+        new_body = body(1, tracking=dict(follow_revision=1, overlapping=False))
+        assert [item["track"] for item in session.process(
+            JPEG, [new_body, body(2)], sample=False, captured_at=clock[0])] == ["2"]
+        assert session.process(JPEG, original, sample=False, captured_at=old_capture) == []
+        assert [item["track"] for item in session.public()] == ["2"]
+        gate.set()
+        wait_until(lambda: session.diagnostics()["transport"]["processed"] == 2)
+        assert [item["track"] for item in session.public()] == ["2"]
+        assert not peer.aborted
+
+        clock[0] += .6
+        session.process(JPEG, [new_body, body(2)], captured_at=clock[0])
+        wait_until(lambda: len(session.public()) == 2)
+        assert {item["observed_monotonic"] for item in session.public()} == {clock[0]}
+    finally:
+        gate.set()
+        assert session.close()
+
+
 def test_idle_models_release_their_slot_and_only_restart_on_fresh_input(store):
     peers = [Peer(), Peer()]
     factory = Mock(side_effect=peers)
@@ -312,7 +362,8 @@ def test_blocked_database_retraction_is_reported_and_retried_without_retaining_a
 
 
 @pytest.mark.asyncio
-async def test_pending_enrollment_is_revoked_with_its_source(store):
+@pytest.mark.parametrize("change", ["source", "body_track"])
+async def test_pending_enrollment_is_revoked_with_its_source(store, change):
     peer = Peer()
     clock = [100.0]
     session = IdentitySession(
@@ -329,7 +380,13 @@ async def test_pending_enrollment_is_revoked_with_its_source(store):
         assert await asyncio.to_thread(peer.processing.wait, 0.5)
         pending = asyncio.create_task(asyncio.to_thread(session.enroll, "1", "synthetic_person"))
         await asyncio.to_thread(wait_until, lambda: bool(session._controls))
-        session.discard()
+        if change == "source":
+            session.discard()
+        else:
+            clock[0] += .1
+            replacement = body(tracking=dict(follow_revision=1, overlapping=False))
+            session.process(JPEG, [replacement], sample=False, captured_at=clock[0])
+            gate.set()
         with pytest.raises(ValueError, match="identity_session_changed"):
             await pending
         assert not any(a == "enroll" for a, _ in peer.calls)

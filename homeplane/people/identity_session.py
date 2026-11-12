@@ -20,12 +20,19 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 
-from .identity_wire import REPLY_LIMIT, UNAVAILABLE_REASONS, abort_socket, receive_packet, send_packet
+from .identity_wire import (
+    REPLY_LIMIT, UNAVAILABLE_REASONS, abort_socket, body_track_revisions, receive_packet, send_packet,
+)
 
 REF = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 JPEG_LIMIT = 4 * 1024 * 1024
 PROCESS_SLOTS = threading.BoundedSemaphore(8)
 IDLE_SECONDS = 30
+
+def _same_track(track, captured, current):
+    if captured is None or current is None:
+        return captured is current
+    return track in current and captured.get(track) == current[track]
 
 
 class IdentityPeer:
@@ -151,7 +158,7 @@ class IdentitySession:
         self._clear = set()
         self._published = ()
         self._published_epoch = -1
-        self._visible = set()
+        self._visible = {}
         self._last_offered = -math.inf
         self._last_input = -math.inf
         self._retry_at = 0
@@ -221,14 +228,21 @@ class IdentitySession:
         ):
             self.discard()
             return []
+        visible = body_track_revisions(people)
         with self._condition:
             if self._closed:
                 if not self._allow_reopen or self._thread and self._thread.is_alive():
                     return []
                 self._closed = self._allow_reopen = False
+            if observed < self._last_input or observed == self._last_input and visible != self._visible:
+                return []
             self._last_input = observed
-            self._visible = {str(p["id"]) for p in people} if people is not None else None
-            if sample and observed - self._last_offered >= 0.5:
+            if visible != self._visible:
+                self._published = tuple(
+                    row for row in self._published if _same_track(row["track"], self._visible, visible)
+                )
+                self._visible = visible
+            if sample and (visible is None or visible) and observed - self._last_offered >= 0.5:
                 self._last_offered = observed
                 if self._latest is not None:
                     self._counts["replaced"] += 1
@@ -280,7 +294,7 @@ class IdentitySession:
             self._epoch += 1
             self._latest = None
             self._published = ()
-            self._visible = set()
+            self._visible = {}
             self._last_offered = self._last_input = -math.inf
             if self._peer_session:
                 self._clear.add(self._peer_session)
@@ -306,9 +320,8 @@ class IdentitySession:
                 or not any(r["track"] == str(track) and r.get("enroll_ready") for r in self.public())
             ):
                 raise ValueError("identity_samples_required")
-            self._controls.append(
-                (self._epoch, self.clock() + 1, dict(track=str(track), person=person), future)
-            )
+            value = dict(track=str(track), person=person, visible=self._visible)
+            self._controls.append((self._epoch, self.clock() + 1, value, future))
             self._wake()
         try:
             return future.result(timeout=1.5)
@@ -324,7 +337,7 @@ class IdentitySession:
             self._epoch += 1
             self._latest = None
             self._published = ()
-            self._visible = set()
+            self._visible = {}
             self._last_offered = self._last_input = -math.inf
             for _, _, _, future in self._controls:
                 if not future.done():
@@ -368,6 +381,11 @@ class IdentitySession:
             with self._condition:
                 if self._busy is peer:
                     self._busy = None
+
+    def _enrollment_current(self, version, expires, value, future):
+        with self._condition:
+            return (not self._closed and version == self._epoch and expires >= self.clock()
+                    and not future.done() and _same_track(value["track"], value["visible"], self._visible))
 
     def _ensure_peer(self, epoch, session):
         if self._peer is not None and (self._peer_session != session or self._peer.aborted):
@@ -506,13 +524,15 @@ class IdentitySession:
                             self._condition.wait(0.2)
                     if control is not None:
                         version, expires, value, future = control
-                        if version != self._epoch or expires < self.clock() or future.done():
+                        peer = (self._ensure_peer(version, self._session)
+                                if self._enrollment_current(*control) else None)
+                        if peer is None or not self._enrollment_current(*control):
                             if not future.done():
                                 future.set_exception(ValueError("identity_session_changed"))
                         else:
-                            peer = self._ensure_peer(version, self._session)
                             result = self._request(
-                                peer, "enroll", dict(value, expires=expires), 1, epoch=version
+                                peer, "enroll", dict(track=value["track"], person=value["person"], expires=expires),
+                                1, epoch=version
                             )
                             if (
                                 set(result) != {"status", "person_id", "samples", "policy"}
@@ -553,10 +573,16 @@ class IdentitySession:
                         epoch=version,
                     )
                     rows = self._rows(result)
+                    captured_tracks = body_track_revisions(people)
                     self._model_used_at = self.clock()
                     with self._condition:
                         if not self._closed and version == self._epoch and self._session == session:
-                            self._published, self._published_epoch = tuple(rows), version
+                            # 回执可能晚于新画面，旧人体轨迹不再接收这个身份。
+                            self._published = tuple(
+                                row for row in rows
+                                if _same_track(row["track"], captured_tracks, self._visible)
+                            )
+                            self._published_epoch = version
                             self._diagnostics = dict(result.get("diagnostics", {}))
                             self.reason = result.get("reason", "identity_request_unavailable")
                             self._counts["processed"] += 1
