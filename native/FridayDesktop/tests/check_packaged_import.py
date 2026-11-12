@@ -89,6 +89,7 @@ assert not any(isinstance(n, (ast.Assign, ast.AnnAssign)) and 'DesktopService(' 
 from starlette.responses import JSONResponse  # noqa: E402
 
 import homeplane.runtime_log as log  # noqa: E402
+from homeplane.embodied.sound_model import AppleSoundProcess  # noqa: E402
 
 assert Path(log.__file__).resolve() == (PRODUCT / 'app/homeplane/runtime_log.py').resolve()
 checks = []
@@ -100,6 +101,11 @@ for code in ['control_cancelled_after_send', 'flow_operation_invalidated', 'rule
 assert log.fixed_code('generated-private-body-must-not-be-code') == 'unclassified'
 assert log.result_projection(JSONResponse({'code': 'generated-private-body-must-not-be-code'}, status_code=503)) == ('unavailable', 'unclassified')
 qr_check = qr_runtime_check()
+sound = AppleSoundProcess()
+sound_helper = APP / 'Contents/Helpers/friday-sound'
+sound_status = sound.readiness()
+assert sound.binary == sound_helper and sound_status['available']
+assert sound.process is None and not sound_status['labels_verified']
 modules = {}
 for name, module in list(sys.modules.items()):
     path = getattr(module, '__file__', None)
@@ -116,6 +122,7 @@ result = {'phase': 'LOCAL_DEVELOPMENT_APP_SOURCE_IMPORT_BINDING_PASS',
           'python_version': sys.version.split()[0], 'backend_imported_only': True,
           'module_count': len(modules), 'modules': modules, 'generated_pure_projection_checks': checks,
           'game_qr_dependency': qr_check,
+          'sound_classifier': {'bundled': True, 'executable': True, 'process_started': False},
           'external_project_source_fallback': False, 'external_python_environment': True,
           'service_app_ARL_or_ASGI_lifespan_constructed_or_started': 0,
           'private_config_credential_model_nativeSDK_childprocess_network_reads_or_calls': 0,

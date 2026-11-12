@@ -15,6 +15,7 @@ from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.local_motor import LocalMotor
 from homeplane.embodied.local_motor import check_motor_deadline
 from tests.embodied.test_camera_director import patrol_view
+from tests.embodied.test_review_motion import recorded_sound_only
 
 
 def view(at, *, x=.78, visible=True, tracking=True, session='source', people=None):
@@ -257,6 +258,7 @@ async def test_primary_search_original_guard_rechecks_the_current_target(change)
                  previews=SimpleNamespace(sessions={}),
                  safety=SimpleNamespace(clear_view=lambda _:None, review_pending=lambda *_:False,fall_pending=lambda *_:False,
                                         sound_search_cue=lambda *_:None))
+    scope['camera_motion_cue'] = recorded_sound_only(scope['safety'])
     extract('homeplane/embodied/worker.py', {'decision_current'}, scope)
     class Wait:
         async def __aenter__(self):

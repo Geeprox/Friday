@@ -52,7 +52,8 @@ from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_fra
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
-from homeplane.embodied.camera_audio import AudioIngress, deliver_audio
+from homeplane.embodied.camera_audio import AudioIngress, WakeCameraCue, deliver_audio
+from homeplane.embodied.voice_routing import VoiceRouting
 from homeplane.embodied.vision_pipe import VisionProcess
 from homeplane.people.live import IdentityStore, analyze, close_identity
 from homeplane.people.identity_session import IdentitySession
@@ -111,13 +112,14 @@ games = MotionGames(require_presentation=True)
 party_camera = PartyCamera()
 recorder = PageRecording(DATA / "recordings")
 record_lock = asyncio.Lock()
-home = HomeService(SELECTED['id'])
+voice_routing = VoiceRouting(lambda: interaction_enabled and not (PRIVATE / 'voice-input-paused').exists())
+home = HomeService(SELECTED['id'], voice_routing=voice_routing)
 from homeplane.embodied.interaction import InteractionEngine
 from homeplane.embodied.interaction_fleet import InteractionFleet
 from homeplane.embodied.practice import RecognitionPractice
 practice = RecognitionPractice()
 interaction = InteractionEngine(SELECTED["id"], SESSION)
-fleet = InteractionFleet()
+fleet = InteractionFleet(voice_revoked=voice_routing.discard)
 secondary_homes = {}
 identity_store = IdentityStore(PRIVATE / "identities.sqlite")
 from homeplane.embodied.safety import SafetyRuntime, SafetyStore
@@ -166,13 +168,15 @@ async def dispatch_interactions(events):
         home.spawn(dispatch())
 
 
-def clear_interactions(camera_id):
+def clear_interactions(camera_id, *, keep_wake=False):
     fleet.clear(camera_id)
     service=home if camera_id==SELECTED['id'] else secondary_homes.get(camera_id)
     if service:
         service.selected=False;service.epoch+=1;service.vad=[];service.pending_audio=None
         service.armed=False;service.audio_allowed=False;service.speaking=False;service.last_audio=None
         service.camera_session=None;service.camera_focus=None
+        if not keep_wake:
+            service.wake_camera = None
 
 
 def clear_camera(camera_id):
@@ -182,7 +186,16 @@ def clear_camera(camera_id):
 
 def clear_camera_view(camera_id):
     safety.clear_view(camera_id)
-    clear_interactions(camera_id)
+    clear_interactions(camera_id, keep_wake=True)
+
+
+def camera_motion_cue(camera_id, sample, active):
+    safety_active = None if isinstance(active, WakeCameraCue) else active
+    cue = safety.sound_search_cue(camera_id, sample.get('session_id'), safety_active)
+    if cue is not None or not interaction_enabled:
+        return cue
+    service = home if camera_id == SELECTED['id'] else secondary_homes.get(camera_id)
+    return service.wake_motion_cue(sample, time.monotonic()) if service else None
 
 
 def calibration_source():
@@ -304,16 +317,15 @@ async def secondary_observation(observation, process):
         observation['registration'],active,observation['now'],captured_mono=observation['captured_mono'])
     await dispatch_interactions(events)
     if not secondary_frame_current(observation, process):return
-    if camera_id not in secondary_homes:secondary_homes[camera_id]=HomeService(camera_id,voice_provider=home)
+    if camera_id not in secondary_homes:
+        secondary_homes[camera_id] = HomeService(camera_id, voice_provider=home, voice_routing=voice_routing)
     service=secondary_homes[camera_id]
     if active and not service.enabled:await service.enable()
     if not secondary_frame_current(observation, process):return
     service.armed=active
     item=fleet.cameras.get(camera_id,{})
     now = time.monotonic()
-    service.audio_allowed=fleet.voice(camera_id, now, service.attention.candidate() is not None,
-        people=len(observation['people']), session=observation['session'],
-        speaking=bool(service.speaking and service.last_audio is not None and 0 <= now-service.last_audio <= .6),
+    service.audio_allowed=fleet.voice(camera_id, now, session=observation['session'],
         enabled=active and service.armed and 0 <= now-observation['now'] <= 1.5
             and not (PRIVATE/'voice-input-paused').exists())
     await service.observe(observation['people'],observation['faces'],observation['registration'],
@@ -334,7 +346,7 @@ previews = PreviewPool(identity_store=identity_store, continuous=True, recognize
     on_observation=secondary_observation,on_audio=secondary_audio,on_clear=clear_camera,
     on_motion=clear_camera_view, on_capture_frame=safety.capture_frame,
     review_pending=safety.review_pending, fall_pending=safety.fall_pending,
-    sound_cue=safety.sound_search_cue, sound_view=safety.offer_sound_search_frame,
+    sound_cue=camera_motion_cue, sound_view=safety.offer_sound_search_frame,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
     occupied_elsewhere=lambda cid: (cid!=SELECTED['id'] and bool(view().get('people')))
         or any(other!=cid and previews.status(other)['state']=='live' and item.get('people',0)
@@ -480,8 +492,8 @@ async def camera_search():
                                         occupied_elsewhere=elsewhere,
                                         review_pending=safety.review_pending(SELECTED['id'], sample.get('session_id')),
                                         fall_pending=safety.fall_pending(SELECTED['id'], sample.get('session_id')),
-                                        sound_cue=safety.sound_search_cue(SELECTED['id'], sample.get('session_id'),
-                                                                         director.sound_search_cue)) if planner.mode!='hold' else None
+                                        sound_cue=camera_motion_cue(SELECTED['id'], sample,
+                                                                    director.sound_search_cue)) if planner.mode!='hold' else None
             if planner.mode == 'hold':director.hold()
             if proof := director.take_sound_view():
                 def source_current(owner=capture, source_generation=generation,
@@ -505,8 +517,7 @@ async def camera_search():
                             focus=getattr(home,'camera_focus',None), occupied_elsewhere=occupied,
                             review_pending=safety.review_pending(SELECTED['id'], current.get('session_id')),
                             fall_pending=safety.fall_pending(SELECTED['id'], current.get('session_id')),
-                            sound_cue=safety.sound_search_cue(SELECTED['id'], current.get('session_id'),
-                                                             director.sound_search_cue))
+                            sound_cue=camera_motion_cue(SELECTED['id'], current, director.sound_search_cue))
                     await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
                                      decision_current=decision_current)
                     director.sent(time.monotonic())
@@ -564,6 +575,7 @@ def view():
     now = time.monotonic()
     result = dict(state)
     result.pop('_patrol_view', None)
+    result.pop('_wake_source', None)
     result['party_camera'] = party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
         frame_mono=last_frame,now=now)
     result["game"] = games.viewer_state()
@@ -651,6 +663,7 @@ async def run_source(my_generation):
     home.epoch += 1
     home.vad = []
     home.pending_audio = None
+    home.wake_camera = None
     fleet.clear(SELECTED['id'])
     home.gesture.reset()
     tracks = Tracks()
@@ -1071,9 +1084,7 @@ async def run_source(my_generation):
                     event['_party_window'] = party_window[:2]
                 voice_now = time.monotonic()
                 voice_captured_mono = voice_now - (time.time() - item['received_at'])
-                home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,home.attention.candidate() is not None,
-                    people=len(people), session=identities.session,
-                    speaking=bool(home.speaking and home.last_audio is not None and 0 <= voice_now-home.last_audio <= .6),
+                home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,session=identities.session,
                     enabled=interaction_enabled and home.armed and 0 <= voice_now-now <= 1.5
                         and not (PRIVATE/'voice-input-paused').exists())
                 await home.observe(
@@ -1121,6 +1132,7 @@ async def run_source(my_generation):
                     animals_intent=pet_revision if pet_active else None,pet_tracking=pet_tracks.public(),
                     scene_visible=scene_visible,
                     _patrol_view=getattr(frame_room, 'patrol_view', None) if registered else None,
+                    _wake_source=(item.get('capture_session'), item.get('camera_source_context')),
                     reason=None,
                     frame=item["jpeg"],
                     width=item["width"],
@@ -1369,6 +1381,7 @@ async def interaction_policy(request: Request):
             service.epoch += 1
             service.vad = []
             service.pending_audio = None
+            service.wake_camera = None
     return dict(enabled=interaction_enabled)
 
 

@@ -78,11 +78,16 @@ def main():
                 with contextlib.redirect_stdout(sys.stderr):
                     text, quality = asr.transcribe(samples)
                 valid, quality_reason = transcript_quality(text, quality, wake_word=policy.wake_word)
+                wake_only = request.get("wake_only") is True
                 route = (
-                    address(text, request.get("attending") is True, wake_word=policy.wake_word)
+                    address(text, not wake_only and request.get("attending") is True, wake_word=policy.wake_word)
                     if valid
                     else {"admitted": False, "reason": quality_reason}
                 )
+                if valid and wake_only and route.get("reason") != "waiting_instruction":
+                    valid = False
+                    quality_reason = "wake_word_required"
+                    route = {"admitted": False, "reason": quality_reason}
                 semantic = None
                 if route["admitted"]:
                     if household_plan(text, request.get("attending") is True, wake_word=policy.wake_word) or basic_command(

@@ -20,6 +20,16 @@ MAX_GAP = .6
 VOICE_WINDOW_SECONDS = 1.3
 
 
+@dataclass(frozen=True)
+class WakeCameraCue:
+    """同一路摄像头的临时唤醒事件，只提供搜寻起点。"""
+
+    captured: float
+    session: str
+    source: tuple[str, str]
+    voice_revision: int
+
+
 def number(value):
     return type(value) in (int, float) and math.isfinite(value)
 

@@ -120,11 +120,11 @@ ARL 不属于基础依赖，缺少可信身份/任务契约时模型功能明确
 模型或获取授权。`python3 scripts/embodied/runtime.py --check` 列出缺失输入，
 `--build-native` 编译当前主机的 Vision worker 与摄像头 socket helper，不安装或启动它们。
 
-可选声音复核使用 macOS SoundAnalysis，不下载第三方声音模型。源码部署可通过
-`python3 scripts/embodied/runtime.py --build-sound` 显式编译到本机可选运行环境；编译
-不会开启摄像头、声音输入或运行分类器。随后在“家中提醒 → 监测设置”开启声音复核。
-首次处理已授权镜头的声音时，才核对系统分类器实际提供的类别。构建中间文件使用
-用户指定的 CodexBuilds.noindex 缓存；声音原始数据只在有界内存中处理。
+macOS 桌面 App 内置声音复核程序，通过系统 SoundAnalysis 识别声音。在「家中提醒 → 监测设置」
+开启声音复核后，首次处理已授权镜头的声音时才核对系统分类器提供的类别。
+直接从源码部署时，使用 `python3 scripts/embodied/runtime.py --build-sound` 编译本机程序。
+构建中间文件放在 CodexBuilds.noindex 缓存，构建过程不启动摄像头或声音分类器。
+声音原始数据只在有界内存中处理。
 
 可选的 [本机画面复核](local-video-review.md) 使用独立、按需加载的 MLX 子进程。
 默认关闭，不随基础部署下载模型或开启监测。

@@ -57,7 +57,7 @@ class PreviewPool:
         self.occupied_elsewhere = occupied_elsewhere or (lambda camera: False)
         self.review_pending = review_pending or (lambda camera, session: False)
         self.fall_pending = fall_pending or (lambda camera, session: False)
-        self.sound_cue = sound_cue or (lambda camera, session, active: None)
+        self.sound_cue = sound_cue or (lambda camera, sample, active: None)
         self.sound_view = sound_view
         self.runtime_log = RuntimeLog(DATA / "logs" / "camera-motion")
         self.lock = asyncio.Lock()
@@ -427,6 +427,8 @@ class PreviewPool:
                     animals_intent=observation.get('animals_intent') if observation else None,
                     people=observation['people'] if observation else [],
                     scene_visible=observation.get('scene_visible',False) if observation else False,
+                    _wake_source=(observation.get('capture_session'), observation.get('camera_source_context'))
+                        if observation else None,
                     _follow_jpeg=observation.get('safety_jpeg') if observation else None,
                     _patrol_view=observation.get('_patrol_view') if observation else None)
             def follow_sample():
@@ -471,7 +473,7 @@ class PreviewPool:
                                     occupied_elsewhere=self.occupied_elsewhere(selected['id']),
                                     review_pending=self.review_pending(selected['id'], current.get('session_id')),
                                     fall_pending=self.fall_pending(selected['id'], current.get('session_id')),
-                                    sound_cue=self.sound_cue(selected['id'], current.get('session_id'),
+                                    sound_cue=self.sound_cue(selected['id'], current,
                                                            director.sound_search_cue))):
                             raise RuntimeError('stale_input')
                         if now >= expires:raise RuntimeError('motor_request_expired')
@@ -527,7 +529,7 @@ class PreviewPool:
                         occupied_elsewhere=self.occupied_elsewhere(selected['id']),
                         review_pending=self.review_pending(selected['id'], sample.get('session_id')),
                         fall_pending=self.fall_pending(selected['id'], sample.get('session_id')),
-                        sound_cue=self.sound_cue(selected['id'], sample.get('session_id'),
+                        sound_cue=self.sound_cue(selected['id'], sample,
                                                 director.sound_search_cue)) if item['mode']!='hold' else None
                     item['survey_attempts'] = director.survey_attempts
                     item['survey_confirmed_moves'] = director.survey_confirmed_moves

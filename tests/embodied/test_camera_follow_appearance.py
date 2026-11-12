@@ -14,7 +14,7 @@ from homeplane.embodied.camera_follow_appearance import find_follow_target, foll
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from tests.embodied.test_camera_director import patrol_view
-from tests.embodied.test_review_motion import source_function
+from tests.embodied.test_review_motion import recorded_sound_only, source_function
 
 
 def subject(track, x, *, pets=False):
@@ -137,13 +137,14 @@ async def test_original_camera_loop_aims_twice_at_the_same_subject_despite_track
                          mode=mode, revision='intent', status='configured')), SELECTED=scope['selected'],
                      os=SimpleNamespace(environ={}), state=state, games=MotionGames(), party_camera=PartyCamera(),
                      previews=SimpleNamespace(sessions={}), home=SimpleNamespace(camera_focus=None),
-                     safety=quiet_safety, motor_step=motor, reap=AsyncMock(), capture=None)
+                     safety=quiet_safety, camera_motion_cue=recorded_sound_only(quiet_safety),
+                     motor_step=motor, reap=AsyncMock(), capture=None)
         loop = source_function('homeplane/embodied/worker.py', 'camera_search', scope)
     else:
         source_function('homeplane/embodied/previews.py', 'current_sample', scope)
         scope.update(self=SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
                      review_pending=quiet_safety.review_pending, fall_pending=quiet_safety.fall_pending,
-                     sound_cue=quiet_safety.sound_search_cue), send_motion=motor, privacy_closed=lambda: None)
+                     sound_cue=recorded_sound_only(quiet_safety)), send_motion=motor, privacy_closed=lambda: None)
         loop = source_function('homeplane/embodied/previews.py', 'direct', scope)
     with pytest.raises(asyncio.CancelledError):
         await loop()
