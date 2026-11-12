@@ -72,3 +72,30 @@
 .game-stage-ended{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;min-height:min(52svh,460px);padding:48px 24px;text-align:center;background:var(--surface);border-radius:12px}
 .game-stage-ended h2{margin:0;font-size:clamp(22px,3vw,28px);line-height:1.3;letter-spacing:-.025em}
 .game-stage-ended button{min-height:44px;font-size:16px}
+
+.game-detail-layout[data-game=quest]{align-items:start}
+.game-detail-layout[data-game=quest] .game-detail-info h2{font-size:clamp(24px,2.3vw,32px);line-height:1.25}
+.game-detail-layout[data-game=quest] .game-description{margin:12px 0 16px}
+.game-detail-layout[data-game=quest] .game-difficulty-note{min-height:0}
+.experience .game-mode-picker button{border-color:transparent;background:transparent}
+.experience .game-mode-picker button[aria-pressed=true]{background:var(--surface);border-color:var(--line)}
+.game-quest-routes{min-inline-size:0;margin:16px 0 0;padding:0;border:0}
+.game-quest-routes legend{padding:0;margin-bottom:8px;font-size:14px;font-weight:650}
+.game-quest-route-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.game-quest-route{
+ display:flex;align-items:center;gap:8px;min-height:58px;padding:7px 10px;
+ border:1px solid var(--line);border-radius:9px;background:var(--surface);cursor:pointer;
+}
+.game-quest-route:has(input:checked){border-color:var(--ink);background:var(--accent-soft)}
+.game-quest-route:has(input:focus-visible){outline:2px solid var(--ink);outline-offset:2px}
+.game-quest-route:has(input:focus-visible) input{outline:none}
+.game-quest-route:has(input:disabled){cursor:default;opacity:.62}
+.game-quest-route input{flex:none;width:16px;height:16px;margin:0;accent-color:var(--ink)}
+.game-quest-route strong,.game-quest-route small{display:block;line-height:1.45}
+.game-quest-route strong{font-size:14px;font-weight:650}
+.game-quest-route small{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.game-how-to .game-motion-instruction{margin:-6px 0 18px;font-size:14px;color:var(--muted)}
+@media(max-width:760px){
+ .game-detail-layout[data-game=quest]{gap:18px}
+ .game-detail-layout[data-game=quest] .game-cover{aspect-ratio:2.2}
+}

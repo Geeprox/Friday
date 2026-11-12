@@ -15,6 +15,7 @@ from .camera_follow_picker import FollowCommand
 from .game_difficulty import DifficultyId, difficulty_options
 from .household import DeviceCommands, basic_command
 from .paths import PRIVATE
+from .quest import QuestRouteId, quest_route_options
 from .ski_route import SkiTrailId, ski_trail_options
 
 
@@ -26,6 +27,7 @@ class Start(BaseModel):
     difficulty: DifficultyId | None = None
     ski_trail: SkiTrailId | None = None
     tennis_variant: TennisVariant | None = None
+    quest_route: QuestRouteId | None = None
     expected_intent: str = Field(pattern=r'^[a-f0-9]{64}$', strict=True)
 
 
@@ -185,7 +187,8 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     @router.get("/api/games")
     async def games():
         return dict(apps=catalog(), recognition=RECOGNIZERS, difficulties=difficulty_options(),
-                    ski_trails=ski_trail_options(preview=True), service=await service.status())
+                    ski_trails=ski_trail_options(preview=True), quest_routes=quest_route_options(teaching=True),
+                    service=await service.status())
 
     @router.get('/api/embodied/scenes')
     async def scenes():
@@ -324,7 +327,8 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
             if get_app(request.app).kind == 'party':
                 raise HTTPException(409, detail='party_host_required')
         try:
-            options = request.model_dump(include={'difficulty', 'ski_trail', 'tennis_variant'}, exclude_none=True)
+            options = request.model_dump(include={'difficulty', 'ski_trail', 'tennis_variant', 'quest_route'},
+                                         exclude_none=True)
             return await service.start(request.camera, request.app, open_privacy=request.open_privacy,
                                        expected_intent=request.expected_intent, **options)
         except (OSError, ValueError, httpx.HTTPError) as error:

@@ -72,7 +72,8 @@ async def bridge(monkeypatch, tmp_path):
     app.add_api_route('/api/games', handler(
         'homeplane/embodied/api.py', 'games', service=owner, catalog=api_module.catalog,
         RECOGNIZERS=api_module.RECOGNIZERS, difficulty_options=api_module.difficulty_options,
-        ski_trail_options=api_module.ski_trail_options), methods=['GET'])
+        ski_trail_options=api_module.ski_trail_options,
+        quest_route_options=api_module.quest_route_options), methods=['GET'])
     app.add_api_route('/api/embodied/start', handler('homeplane/embodied/api.py', 'start', **namespace), methods=['POST'])
     app.add_api_route('/api/embodied/game/stop', handler('homeplane/embodied/api.py', 'stop_game', **namespace), methods=['POST'])
     app.add_api_route('/api/games/{app_id}/open', handler('homeplane/embodied/api.py', 'open_app', service=owner, get_app=api_module.get_app, Request=Request), methods=['GET'])
@@ -171,6 +172,37 @@ async def test_current_start_selects_once_then_starts_original_source(bridge):
     writes = [(path, data) for path, data in bridge.calls if path != '/api/status']
     assert [path for path, _ in writes] == ['/api/game', '/api/start']
     assert writes[0][1]['expected_revision'] == bridge.game.control_revision - 1
+
+
+@pytest.mark.asyncio
+async def test_library_quest_route_selects_matching_rule_plan_and_retires_old_intent(bridge):
+    catalogue = (await bridge.client.get('/api/games')).json()
+    routes = {route['id']: route for route in catalogue['quest_routes']}
+    assert routes['stream']['stations'] == 4
+    assert routes['stream']['teaching'][0] == 'exercise.side_step'
+    intent = catalogue['service']['game_intent']
+    payload = dict(camera=CAMERA, app='quest', quest_route='stream', difficulty='easy', expected_intent=intent)
+    for invalid in (dict(payload, quest_route='unknown'), dict(payload, app='ski')):
+        rejected = await bridge.client.post('/api/embodied/start', json=invalid)
+        assert rejected.status_code in {409, 422}
+    assert not any(path in {'/api/game', '/api/start'} for path, _ in bridge.calls)
+
+    response = await bridge.client.post('/api/embodied/start', json=payload)
+    assert response.status_code == 200, response.text
+    selected = response.json()
+    assert selected['game']['quest_route'] == 'stream'
+    assert selected['game']['difficulty'] == 'easy'
+    assert selected['game']['quest']['targets'] == ['side_step', 'high_knee', 'jack', 'balance']
+    opened = await bridge.client.get('/api/games/quest/open',
+                                     headers={'X-Friday-Game-Intent': selected['game_intent']})
+    assert opened.status_code == 200
+    stale = await bridge.client.post('/api/embodied/start', json=dict(payload, quest_route='forest'))
+    assert stale.status_code == 409
+    writes = [(path, data) for path, data in bridge.calls if path in {'/api/game', '/api/start'}]
+    assert [path for path, _ in writes] == ['/api/game', '/api/start']
+    assert writes[0][1]['action'] == 'prepare'
+    assert bridge.game.public['quest_route'] == 'stream'
+    bridge.owner._stop.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -298,3 +298,30 @@ body[data-ski-warmup] #pauseToggle:hover{background:#efefe8}
  .ski-warmup-steps li[data-state=done] span::after{margin-inline-start:3px}
  body[data-ski-warmup] .actions{margin-inline-start:0}
 }
+
+.overlay:has(:is(.quest-route-options,.quest-result-actions)){
+ padding:18px 20px;max-height:calc(100% - 16px);overflow:auto;
+}
+.overlay:has(:is(.quest-route-options,.quest-result-actions)) h2{margin-bottom:12px;text-wrap:balance}
+.quest-route-options,.quest-result-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.quest-route-options{margin-bottom:12px}
+.overlay .quest-route-options button{display:grid;gap:2px;text-align:start;padding:7px 10px;line-height:1.3}
+.quest-route-options strong{font-size:14px;font-weight:650}
+.quest-route-options small{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.quest-route-options button[aria-pressed=true]{border-color:var(--ink);background:#e8e7e1}
+.overlay :is(.quest-route-options,.quest-result-actions) button{min-width:0;min-height:44px}
+.quest-result-actions .primary[data-quest-route]{grid-column:1/-1}
+.overlay .quest-result-stations{margin:0 0 16px;font-variant-numeric:tabular-nums}
+body[data-quest-result=true] :is(.mission-block,.score){background:transparent;border-color:transparent}
+body[data-quest-result=true] :is(.mission,.instruction,.live-progress,.bar,.quest-trail,.score){visibility:hidden}
+@media(max-width:760px) and (orientation:portrait){
+ body[data-mode=quest][data-quest-result=true] .workspace{
+  grid-template-rows:0 minmax(0,1fr) 0 44px;
+ }
+}
+@media(orientation:landscape) and (max-height:440px){
+ .overlay:has(:is(.quest-route-options,.quest-result-actions)){padding:10px 12px}
+ .overlay:has(:is(.quest-route-options,.quest-result-actions)) h2{margin-bottom:8px;font-size:18px}
+ .quest-route-options{margin-bottom:8px}
+ .overlay .quest-result-stations{margin-bottom:8px}
+}

@@ -10,7 +10,7 @@ from homeplane.embodied.catalog import TENNIS_VARIANTS
 from homeplane.embodied.game_difficulty import difficulty_options, game_difficulty
 from homeplane.embodied.hiit import PLAN as HIIT_PLAN, HIITCircuit, signals
 from homeplane.embodied.pose_rules import angle
-from homeplane.embodied.quest import STAGES as QUEST_STAGES, TRANSITION_SECONDS
+from homeplane.embodied.quest import DEFAULT_QUEST_ROUTE, TRANSITION_SECONDS, get_quest_route, quest_route_options
 from homeplane.embodied.ski_route import (
     DEFAULT_SKI_TRAIL, SKI_TREE_REACH, SKI_VISIBLE_AHEAD, SKI_WORLD_TRAVEL,
     SkiWarmup, advance, crossing_time, get_ski_trail, ski_trail_options,
@@ -447,6 +447,7 @@ class MotionGames:
         self.presentation = GamePresentation(clock) if require_presentation else None
         self.difficulty = game_difficulty('standard')
         self.ski_trail = DEFAULT_SKI_TRAIL
+        self.quest_route = DEFAULT_QUEST_ROUTE
         self.tennis_variant = 'match'
         self.control_context = secrets.token_hex(16)
         self.control_revision = 0
@@ -465,14 +466,18 @@ class MotionGames:
         self.previous = None
         self.reset("off")
 
-    def reset(self, mode, *, difficulty=None, ski_warmup=False):
+    def reset(self, mode, *, difficulty=None, ski_warmup=False, quest_route=None):
         if mode not in ("off", "quest", "ski", "tennis", "hiit", "home"):
             raise ValueError("invalid_game")
         if type(ski_warmup) is not bool or ski_warmup and mode != 'ski':
             raise ValueError('invalid_ski_warmup')
+        if quest_route is not None and mode not in {'off', 'quest'}:
+            raise ValueError('invalid_quest_route')
         chosen = game_difficulty(difficulty) if difficulty is not None else self.difficulty
-        stages, plan = chosen.quest_plan(QUEST_STAGES), chosen.training_plan(HIIT_PLAN)
+        route = get_quest_route(quest_route) if quest_route is not None else self.quest_route
+        stages, plan = chosen.quest_plan(route.stages), chosen.training_plan(HIIT_PLAN)
         self.difficulty, self.quest_stages = chosen, stages
+        self.quest_route = route
         if mode != "off":
             self.selected_mode = mode
         self.mode = mode
@@ -572,7 +577,7 @@ class MotionGames:
             distance -= course['length']
         return len(sections)-1, sections[-1], sections[-1]['length']
 
-    def select(self, mode, *, difficulty=None, ski_trail=None, tennis_variant=None, replace_round=False):
+    def select(self, mode, *, difficulty=None, ski_trail=None, tennis_variant=None, quest_route=None, replace_round=False):
         if mode not in ("quest", "ski", "tennis", "hiit", "home"):
             raise ValueError("invalid_game")
         if mode == 'home' and difficulty is not None:
@@ -581,10 +586,13 @@ class MotionGames:
             raise ValueError('invalid_ski_trail')
         if tennis_variant is not None and (mode != 'tennis' or tennis_variant not in TENNIS_VARIANTS):
             raise ValueError('invalid_tennis_variant')
-        if tennis_variant is not None and not replace_round and self.mode != 'off' and not self.complete:
+        if quest_route is not None and mode != 'quest':
+            raise ValueError('invalid_quest_route')
+        if ((tennis_variant is not None or quest_route is not None)
+                and not replace_round and self.mode != 'off' and not self.complete):
             raise ValueError('game_changed')
         trail = self.ski_trail if ski_trail is None else get_ski_trail(ski_trail)
-        self.reset("off", difficulty=difficulty)
+        self.reset("off", difficulty=difficulty, quest_route=quest_route)
         self.selected_mode = mode
         self.ski_trail = trail
         if tennis_variant is not None:
@@ -970,7 +978,7 @@ class MotionGames:
         self.reps = 0
         self.quest_counter = self.quest_counter_level = None
         self.quest_transition = TRANSITION_SECONDS if self.level < len(self.quest_stages) else 0.0
-        self.pose_feedback = "准备下一站" if self.quest_transition else "山径已通关"
+        self.pose_feedback = "准备下一站" if self.quest_transition else ""
 
     def quest_public(self, players):
         complete = self.level >= len(self.quest_stages)
@@ -1337,6 +1345,8 @@ class MotionGames:
             "ski_trail": self.ski_trail.id if self.selected_mode == 'ski' else None,
             "ski_trails": ski_trail_options() if self.selected_mode == 'ski' else [],
             "tennis_variant": self.tennis_variant if self.selected_mode == 'tennis' else None,
+            "quest_route": self.quest_route.id if self.selected_mode == 'quest' else None,
+            "quest_routes": quest_route_options() if self.selected_mode == 'quest' else [],
             "owner_track": self.preferred_track,
             "input_mirrored": True,
             "version": "0.13.0",

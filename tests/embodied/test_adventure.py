@@ -137,6 +137,39 @@ def test_fourteen_station_journey_completes_from_joints_and_replay_starts_clean(
     assert receipt["completed"] and receipt["replayed"]
 
 
+@pytest.mark.parametrize('route,expected', [
+    ('forest', ACTIONS[:3]), ('stream', ACTIONS[3:7]), ('camp', ACTIONS[7:]),
+])
+def test_each_chapter_ends_at_its_last_station_and_replays_from_its_first(route, expected):
+    journey = Journey()
+    game = journey.game
+    game.reset('off')
+    game.select('quest', quest_route=route, difficulty='standard')
+    assert game.public['quest']['targets'] == expected
+    game.reset('quest')
+    for level, action in enumerate(expected):
+        state = journey.feed(count=76)
+        station = state['quest']['stage']
+        assert state['quest_route'] == route and station['scene'] == route
+        assert station['action'] == action
+        if station['hold']:
+            journey.feed(action, math.ceil(station['hold'] / .05) + 4)
+        else:
+            neutral = NEUTRAL.get(action, 'neutral')
+            journey.feed(neutral)
+            for rep in range(station['reps']):
+                journey.feed(action, 26 if action == 'balance' else 16, side='left' if rep % 2 == 0 else 'right')
+                journey.feed(neutral)
+        assert game.level == level + 1
+    completed = game.public
+    assert completed['status'] == 'complete' and completed['quest']['progress'] == 1
+    assert [item['action'] for item in completed['quest']['history']] == expected
+    game.reset('quest')
+    assert game.public['quest_route'] == route
+    assert game.public['quest']['stage']['action'] == expected[0]
+    assert game.public['quest']['history'] == []
+
+
 @pytest.mark.parametrize('difficulty', ['easy', 'standard', 'challenge'])
 def test_full_training_difficulty_finishes_all_twelve_actions_from_joints(difficulty):
     journey = Journey()

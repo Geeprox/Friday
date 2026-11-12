@@ -1,6 +1,7 @@
-"""The local adventure route, shared by rules, teaching and the public HUD."""
+"""山径冒险的路线与站点，由游戏规则、教学和大屏共用。"""
 
 from dataclasses import asdict, dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -63,3 +64,38 @@ STAGES = (
 )
 
 TRANSITION_SECONDS = 3.0
+
+QuestRouteId = Literal["full", "forest", "stream", "camp"]
+
+
+@dataclass(frozen=True)
+class QuestRoute:
+    id: QuestRouteId
+    name: str
+    stages: tuple[QuestStage, ...]
+
+
+def _chapter(scene: QuestRouteId) -> QuestRoute:
+    stages = tuple(stage for stage in STAGES if stage.scene == scene)
+    return QuestRoute(scene, stages[0].chapter, stages)
+
+
+DEFAULT_QUEST_ROUTE = QuestRoute("full", "完整路线", STAGES)
+QUEST_ROUTES = (DEFAULT_QUEST_ROUTE, _chapter("forest"), _chapter("stream"), _chapter("camp"))
+
+
+def get_quest_route(route_id: QuestRouteId) -> QuestRoute:
+    for route in QUEST_ROUTES:
+        if route.id == route_id:
+            return route
+    raise ValueError("invalid_quest_route")
+
+
+def quest_route_options(*, teaching=False):
+    options = []
+    for route in QUEST_ROUTES:
+        option = dict(id=route.id, name=route.name, stations=len(route.stages))
+        if teaching:
+            option["teaching"] = [stage.teaching for stage in route.stages]
+        options.append(option)
+    return options

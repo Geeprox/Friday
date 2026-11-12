@@ -43,6 +43,22 @@ test('a tennis variant change binds the option and current revision without star
  assert.equal(await h.c.chooseTennisVariant('match'),false);
  assert.equal(requests.length,2);
 });
+test('a chapter changes only when the current scoped receipt confirms that chapter',async()=>{
+ const routes=[{id:'forest',name:'林间入口',stations:3},{id:'stream',name:'溪畔步道',stations:4}];
+ const old=game({status:'complete',quest_route:'forest',quest_routes:routes});
+ const requests=[];
+ const h=makeClient({meta:{game:old},fetch:async(_,options)=>{
+  const body=JSON.parse(options.body);requests.push(body);
+  return {ok:true,json:async()=>({...old,mode:'off',status:'off',control_revision:2,round_id:2,
+   quest_route:requests.length===1?'forest':'stream'})};
+ }});
+ assert.equal(await h.c.chooseQuestRoute('stream'),false);
+ assert.equal(h.c.meta.game,old);
+ assert.equal(await h.c.chooseQuestRoute('stream'),true);
+ assert.equal(h.c.meta.game.quest_route,'stream');
+ assert.deepEqual(requests,[1,2].map(()=>({mode:'quest',action:'select',quest_route:'stream',
+  expected_context:'a'.repeat(32),expected_revision:1})));
+});
 test('same-revision live score is newer than the HTTP transition snapshot',async()=>{
  let finish;const h=makeClient({fetch:()=>new Promise(r=>finish=r)}),pending=h.c.startGame();
  const live=game({round_id:2,control_revision:2,elapsed:2.3});h.c.meta={game:live};
