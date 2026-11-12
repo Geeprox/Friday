@@ -25,8 +25,9 @@ class Element{
 (async()=>{
  const root=new Element('main'),head=new Element('head'),all=n=>[n,...n.children.flatMap(all)];
  const find=(tag,text)=>all(root).find(n=>n.tagName===tag&&n.textContent===text),calls=[];
- let policy={enabled:false,announce:false,visual_review:false,sound_review:false,revision:0},soundSearch=false,events=[],interval,reference={code:'archive_capture_mapping_required',recordings:[]},opened=[],setups=0,sound={available:true,state:'idle',supported_types:['crying']};
  const fakeEvent={id:'a'.repeat(32),at:1800000000,kind:'fall',simulated:true,status:'test',message:'测试播报',review:'unreviewed',announcement:{status:'paused'},frames:[],camera:null};
+ let policy={enabled:false,announce:false,visual_review:false,sound_review:false,revision:0},soundSearch=false,events=[],interval,opened=[],setups=0,sound={available:true,state:'idle',supported_types:['crying']};
+ let reference={event_id:fakeEvent.id,code:'archive_capture_mapping_required',recordings:[]};
  const fetch=async(path,options)=>{const body=options.body&&JSON.parse(options.body);calls.push({path,body});
    let value;
    if(path.endsWith('/policy')){policy={...body,revision:policy.revision+1};if(!policy.sound_review)soundSearch=false;value=policy;}
@@ -75,7 +76,13 @@ class Element{
  events=[{...events[0],camera:'cam_1111111111'}];interval();await settle();find('button','').onclick();
  assert(!calls.some(c=>c.path.endsWith('/recordings')),'viewing an event never scans or opens NAS');
  find('button','查看附近录像').onclick();await settle();assert(find('button','录像设置'));find('button','录像设置').onclick();assert.equal(setups,1);assert.equal(opened.length,0);
- reference={code:'configured_camera_time_lookup',recordings:[{camera_name:'SYNTHETIC recording',request:{expected_context:'b'.repeat(64)}}]};
+ const recording={event_id:fakeEvent.id,camera_name:'SYNTHETIC recording',
+  anchor_at:new Date(fakeEvent.at*1000).toISOString(),
+  request:{expected_context:'b'.repeat(64),camera_id:'SYNTHETIC camera',
+   time_range:{start:new Date((fakeEvent.at-15)*1000).toISOString(),end:new Date((fakeEvent.at+15)*1000).toISOString()}}};
+ reference={event_id:'b'.repeat(32),code:'configured_camera_time_lookup',recordings:[recording]};
+ find('button','查看附近录像').onclick();await settle();assert(find('p','暂时无法读取录像。'));assert.equal(opened.length,0);
+ reference={...reference,event_id:fakeEvent.id};
  find('button','查看附近录像').onclick();await settle();assert.equal(opened.length,1);
  const player=all(root).find(n=>n.tagName==='video');assert(player);
  events=[{...events[0],review:'acknowledged'}];interval();await settle();assert.equal(all(root).find(n=>n.tagName==='video'),player,'history refresh preserves the selected event player');
