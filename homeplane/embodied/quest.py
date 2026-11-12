@@ -16,9 +16,15 @@ class QuestStage:
     reps: int = 0
     scene: str = "forest"
     landmark: str = ""
+    step_pattern: tuple[str, ...] = ()
 
     def public(self):
-        return asdict(self)
+        stage = asdict(self)
+        if self.step_pattern:
+            stage["step_pattern"] = list(self.step_pattern)
+        else:
+            stage.pop("step_pattern")
+        return stage
 
 
 STAGES = (
@@ -28,16 +34,16 @@ STAGES = (
                "双手举过头顶，保持 3 秒。", "pose.overhead", "林间入口", hold=3.0, landmark="canopy"),
     QuestStage("squat", "浅蹲起立", "浅蹲再站起，穿过矮枝",
                "浅蹲后站直，重复 3 次。", "exercise.squat", "林间入口", reps=3, landmark="branches"),
-    QuestStage("side_step", "左右侧迈", "左右侧迈，跨过溪石",
-               "向一侧迈步再回到中间，左右交替，共 4 次。", "exercise.side_step", "溪畔步道", reps=4,
-               scene="stream", landmark="stones"),
+    QuestStage("side_tap", "侧点步", "踏过溪石",
+               "向亮起的溪石点一步，再收脚，共 4 次。", "exercise.side_tap", "溪畔步道", reps=4,
+               scene="stream", landmark="stones", step_pattern=("left", "right", "right", "left")),
     QuestStage("high_knee", "交替抬膝", "交替抬膝，登上木阶",
                "抬起一侧膝盖再放下，左右交替，共 6 次。", "exercise.high_knee", "溪畔步道", reps=6,
                scene="stream", landmark="steps"),
     QuestStage("jack", "开合步", "打开再合拢，走出花径",
                "迈开双脚并举手，再收脚放手，重复 4 次。", "exercise.jack", "溪畔步道", reps=4,
                scene="stream", landmark="flowers"),
-    QuestStage("balance", "单腿站立", "单腿站稳，踏过溪石",
+    QuestStage("balance", "单腿站立", "单腿站稳，越过浅滩",
                "轻抬一脚，站稳 1 秒后落地，左右交替，共 4 次。", "exercise.balance", "溪畔步道", reps=4,
                scene="stream", landmark="crossing"),
     QuestStage("side_bend", "站姿侧倾", "轻轻侧倾，越过枝叶",

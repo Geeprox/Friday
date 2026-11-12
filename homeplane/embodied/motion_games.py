@@ -445,7 +445,10 @@ class BodyMotion:
         }
         exercise = result['exercise_signals']
         if not fresh_ankles:
-            exercise['side_raise'] = exercise['overhead_clap'] = None
+            exercise['side_raise'] = exercise['side_tap'] = exercise['overhead_clap'] = None
+        elif exercise['side_tap'] in ('left', 'right'):
+            foot = exercise['side_tap']
+            exercise['side_tap'] = 'left' if sign * (j[foot+'Ankle']['x'] - j[foot+'Hip']['x']) < 0 else 'right'
         if (fresh_ankles and self.origin is not None and exercise['visible']
                 and .5 <= exercise['leg_spread'] <= 2.2 and exercise['leg_bend'] < 18):
             exercise['side_step'] = ('left' if self.lateral < -.35 else
@@ -1021,7 +1024,8 @@ class MotionGames:
             if self.quest_counter_level != self.level:
                 self.quest_counter_level = self.level
                 self.quest_counter = HIITCircuit(
-                    plan=((stage.action, stage.name, stage.reps, stage.instruction),), require_neutral=True)
+                    plan=((stage.action, stage.name, stage.reps, stage.instruction),),
+                    require_neutral=True, step_pattern=stage.step_pattern)
             self.quest_counter.update(p, dt)
             self.reps = self.quest_counter.total_reps
             self.pose_feedback = self.quest_counter.feedback
@@ -1045,13 +1049,13 @@ class MotionGames:
         self.quest_transition = TRANSITION_SECONDS if self.level < len(self.quest_stages) else 0.0
         self.pose_feedback = "准备下一站" if self.quest_transition else ""
 
-    def quest_public(self, players):
+    def quest_public(self, players, status):
         complete = self.level >= len(self.quest_stages)
         stage = self.quest_stages[self.level] if not complete else None
         fraction = (self.hold / stage.hold if stage and stage.hold else
                     self.reps / stage.reps if stage and stage.reps else 0.0)
         fraction = min(1.0, max(0.0, fraction))
-        return dict(
+        state = dict(
             schema_version=1, level=self.level, total_levels=len(self.quest_stages),
             hold=round(self.hold, 2), reps=self.reps,
             targets=[s.action for s in self.quest_stages], stages=[s.public() for s in self.quest_stages],
@@ -1064,6 +1068,18 @@ class MotionGames:
             total_reps=sum(s["reps"] for s in self.quest_history) + self.reps,
             history=[dict(s) for s in self.quest_history], feedback=self.pose_feedback,
             depth=players[0].get("squat_depth") if players else None)
+        if stage and stage.step_pattern:
+            counter = self.quest_counter
+            if status != "playing" or self.quest_transition:
+                phase = "waiting"
+            elif players and players[0].get("exercise_signals", {}).get("side_tap") is None:
+                phase = "frame"
+            elif not counter or not counter.ready:
+                phase = "center"
+            else:
+                phase = "return" if counter.pending is not None else "step"
+            state["step"] = dict(side=stage.step_pattern[self.reps], phase=phase)
+        return state
 
     def ski(self, p, dt, now):
         if self.complete:
@@ -1447,7 +1463,7 @@ class MotionGames:
             "elapsed": round(self.elapsed, 2),
             "active_seconds": round(self.active, 2),
             "hiit": self.circuit.public(),
-            "quest": self.quest_public(players),
+            "quest": self.quest_public(players, status),
             "ski": self.ski_public(players, status),
             "tennis": self.tennis_public(players, status),
         }

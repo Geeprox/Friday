@@ -86,21 +86,30 @@ const legacyQuestStages=[
 function questPresentation(g){
  const q=g.quest||{},stages=Array.isArray(q.stages)&&q.stages.length?q.stages:legacyQuestStages,total=stages.length,level=Math.max(0,Math.min(total,q.level||0)),stage=stages[level],done=g.status==='complete'||level===total,preparing=!done&&q.phase==='transition';
  const fraction=stage?.hold?Math.min(1,(q.hold||0)/stage.hold):stage?.reps?Math.min(1,(q.reps||0)/stage.reps):0;
- const live=done?'':preparing?Math.ceil(q.transition_seconds||0)+' 秒后开始':stage?.hold?'已保持 '+Math.min(stage.hold,q.hold||0).toFixed(1)+' / '+stage.hold+' 秒':'已完成 '+(q.reps||0)+' / '+(stage?.reps||0)+' 次';
- return{title:done?'山径已通关':preparing?'下一站 · '+stage.name:stage.title,instruction:done?'':stage.instruction,live,level,total,stages,chapter:stage?.chapter||stages.at(-1)?.chapter||'',
+ const step=stage?.action==='side_tap'&&['left','right'].includes(q.step?.side)?q.step:null;
+ const live=done?'':preparing?Math.ceil(q.transition_seconds||0)+' 秒后开始':
+  step?(q.reps||0)+' / '+stage.reps+' 块溪石':
+  stage?.hold?'已保持 '+Math.min(stage.hold,q.hold||0).toFixed(1)+' / '+stage.hold+' 秒':'已完成 '+(q.reps||0)+' / '+(stage?.reps||0)+' 次';
+ const direction=step?.side==='left'?'左':'右';
+ const cue=g.status==='playing'&&!preparing&&step?({
+  step:direction+'脚向'+direction+'点地',return:'收脚，回到中间',center:'双脚收回，站稳',frame:'让双脚完整入镜'
+ }[step.phase]||''):'';
+ return{title:done?'山径已通关':preparing?'下一站 · '+stage.name:stage.title,instruction:done?'':cue||stage.instruction,live,level,total,stages,chapter:stage?.chapter||stages.at(-1)?.chapter||'',
   progress:done?1:(level+fraction)/total,teaching:done?null:stage.teaching,
-  announcement:done?total+' 站山径已完成':(preparing?'下一站：':'第 '+(level+1)+' 站：')+stage.name+'。'+stage.instruction};
+  cue,stepSide:step?.side??null,
+  announcement:done?total+' 站山径已完成':cue||(preparing?'下一站：':'第 '+(level+1)+' 站：')+stage.name+'。'+stage.instruction};
 }
 function updateQuestHUD(g){
  const view=questPresentation(g),trail=$('questTrail');
- $('mission').textContent=view.title;$('instruction').textContent=view.instruction;$('liveProgress').textContent=view.live;
+ const instruction=$('instruction');
+ $('mission').textContent=view.title;instruction.textContent=view.instruction;instruction.dataset.direction=String(Boolean(view.cue));$('liveProgress').textContent=view.live;
  $('score').innerHTML=view.level+' / '+view.total+'<small>完成站点</small>';$('progress').style.width=(view.progress*100)+'%';
  trail.setAttribute('aria-label',view.chapter?'山径路线，当前：'+view.chapter:'山径路线');
  const stamp=g.control_context+':'+g.round_id+':'+view.level+':'+view.stages.map(s=>[s.action,s.name,s.chapter].join('/')).join(',');
  if(trail.dataset.route!==stamp){
   trail.dataset.route=stamp;trail.replaceChildren(...view.stages.map((stage,i)=>{const li=document.createElement('li'),state=i<view.level?'complete':i===view.level?'current':'upcoming';li.dataset.state=state;li.dataset.chapterStart=String(i>0&&!!stage.chapter&&stage.chapter!==view.stages[i-1].chapter);li.textContent=String(i+1);li.setAttribute('aria-label',(stage.chapter?stage.chapter+'，':'')+'第 '+(i+1)+' 站：'+stage.name+'，'+({complete:'已完成',current:'当前站点',upcoming:'待完成'})[state]);if(state==='current')li.setAttribute('aria-current','step');return li;}));
  }
- const announcement=$('questAnnouncement'),notice=g.control_context+':'+g.round_id+':'+view.level+':'+(g.quest?.phase||'work');
+ const announcement=$('questAnnouncement'),notice=g.control_context+':'+g.round_id+':'+view.level+':'+(g.quest?.phase||'work')+':'+view.cue;
  if(announcement.dataset.notice!==notice){announcement.dataset.notice=notice;announcement.textContent=view.announcement;}
  return view;
 }
@@ -516,9 +525,9 @@ function stageOverlayMarkup(g,current,playing){
 function updateHUD(){const overlay=$('overlay'),pause=$('pauseToggle'),previousFocus=document.activeElement,followStageFocus=previousFocus&&(previousFocus===pause||overlay.contains(previousFocus)||$('skiWarmup').contains(previousFocus));updateSourceMode(meta);const current=gameViewCurrent(),g=presentedGame(),playing=g.mode===selected&&g.mode!=='off';active=current&&playing&&g.status!=='complete';$('camera').textContent=({locked:'镜头已就绪',moving:'镜头正在调整，游戏暂停',settling:'镜头稳定中'})[meta?.room?.registration?.status]||'等待镜头就绪';$('camera').hidden=!current||meta?.room?.registration?.status==='locked';
 document.body.dataset.questResult=String(current&&playing&&selected==='quest'&&g.status==='complete'&&questRoutes(g).length>0);
 const liveProgress=$('liveProgress');liveProgress.hidden=!playing||g.status==='complete'||!['quest','hiit'].includes(selected);
-const players=g.players||[],input=$('input');input.hidden=selected==='tennis';input.textContent=selected==='tennis'?'':players.length?players.map((p,i)=>(i+1)+' 号玩家 · '+(p.lateral<-.12?'左侧':p.lateral>.12?'右侧':'居中')).join('　 /　 '):'让双脚与双手完整入镜';
-const feedbackText=selected==='home'?(meta?.home?.reason||''):selected==='hiit'?(g.hiit?.feedback||''):selected==='quest'?(g.quest?.feedback||''):selected==='ski'?skiPresentation(g).event:'';if($('feedback').textContent!==feedbackText)$('feedback').textContent=feedbackText;
-if(selected==='quest')updateQuestHUD(g);
+const questView=selected==='quest'?updateQuestHUD(g):null,stepCue=Boolean(questView?.cue);
+const players=g.players||[],input=$('input');input.hidden=selected==='tennis'||stepCue;input.textContent=input.hidden?'':players.length?players.map((p,i)=>(i+1)+' 号玩家 · '+(p.lateral<-.12?'左侧':p.lateral>.12?'右侧':'居中')).join('　 /　 '):'让双脚与双手完整入镜';
+const feedbackText=selected==='home'?(meta?.home?.reason||''):selected==='hiit'?(g.hiit?.feedback||''):selected==='quest'&&!stepCue?(g.quest?.feedback||''):selected==='ski'?skiPresentation(g).event:'';if($('feedback').textContent!==feedbackText)$('feedback').textContent=feedbackText;
 $('questTrail').hidden=selected!=='quest';$('questAnnouncement').hidden=selected!=='quest'||!playing;
 if(selected==='ski'){const s=g.ski||{},view=skiPresentation(g),trail=skiTrails(g).find(item=>item.id===g.ski_trail);$('mission').textContent=!playing||g.status==='complete'?trail?.name||s.course_name||'林间滑雪':(s.course_name||'林间初雪')+(s.course_count>1?' · 第 '+((s.course||0)+1)+' / '+s.course_count+' 段':'');$('instruction').textContent=view.instruction;$('score').innerHTML=(s.points||0)+'<small>'+view.detail+'</small>';$('progress').style.width=(Math.max(0,Math.min(1,s.progress||0))*100)+'%'}
 if(selected==='hiit'){const h=g.hiit||{level:0,name:'深蹲',reps:0,required_reps:3,phase:'work',total_levels:12};$('mission').textContent=h.phase==='rest'?'休息一下':h.phase==='complete'?'本轮训练已完成':h.name;$('instruction').textContent=h.phase==='rest'?'下一关：'+h.name:h.instruction||descriptions.hiit[2];liveProgress.textContent=h.phase==='rest'?Math.ceil(h.rest_seconds||0)+' 秒后继续':'已完成 '+h.reps+' / '+h.required_reps+' 次';$('score').innerHTML=Math.min(h.total_levels,h.level)+' / '+h.total_levels+'<small>动作关卡 · 共 '+(h.total_reps||0)+' 次</small>';$('progress').style.width=(h.phase==='complete'?100:h.phase==='rest'?(1-(h.rest_seconds||0)/5)*100:h.reps/h.required_reps*100)+'%'}
@@ -528,7 +537,7 @@ if(pause)pause.hidden=!playing||g.status==='complete'||g.manually_paused===true|
 const stop=$('stopToggle'),warmup=selected==='ski'&&skiWarmup(g),warmupVisible=showSkiWarmup(g,current);
 if(stop){stop.hidden=!playing;const label=warmup?'结束试滑':'结束本局';if(stop.textContent!==label)stop.textContent=label;}
 updateSkiWarmup(g,warmupVisible);
-const feedback=document.querySelector('.player-feedback');if(feedback)feedback.hidden=!current||g.status==='complete'||g.manually_paused||g.resume_seconds>0||(selected==='tennis'?$('camera').hidden&&$('tennisEvent').hidden:selected!=='home'&&(!playing||g.status!=='playing'));
+const feedback=document.querySelector('.player-feedback');if(feedback)feedback.hidden=!current||g.status==='complete'||g.manually_paused||g.resume_seconds>0||(stepCue&&$('camera').hidden)||(selected==='tennis'?$('camera').hidden&&$('tennisEvent').hidden:selected!=='home'&&(!playing||g.status!=='playing'));
 if(g.manually_paused||g.source_recovery?.required===true||g.resume_seconds>0)$('instruction').textContent='';
 $('feedback').hidden=!$('feedback').textContent||$('feedback').textContent===$('instruction').textContent;
 const gestureHint=$('gestureHint');
@@ -538,7 +547,7 @@ if(gestureHint){
  gestureHint.textContent=(g.status==='complete'?'OK 重玩':'OK 开始')+' · 剪刀手切换游戏 · 触发后放下手';
 }
 const progress=Number.parseFloat($('progress').style.width);$('progress').parentElement?.setAttribute('aria-valuenow',String(Number.isFinite(progress)?Math.max(0,Math.min(100,progress)):0));
-document.dispatchEvent(new CustomEvent('friday:game-teaching',{detail:{key:gameTeachingKey(g),mode:selected,visible:selected==='ski'?warmupVisible:current&&playing&&g.status==='playing'&&scenery.ready(selected),paused:!current||g.manually_paused===true||g.hiit?.phase==='rest'||warmup?.step==='ready'}}));
+document.dispatchEvent(new CustomEvent('friday:game-teaching',{detail:{key:gameTeachingKey(g),mode:selected,stepSide:questView?.stepSide,visible:selected==='ski'?warmupVisible:current&&playing&&g.status==='playing'&&scenery.ready(selected),paused:!current||g.manually_paused===true||g.hiit?.phase==='rest'||warmup?.step==='ready'}}));
 if(g.presentation?.required===true)presentationClient.tick();
 showOverlay(stageOverlayMarkup(g,current,playing));syncGameControls();
 const resumeGestureHint=$('resumeGestureHint'),hold=g.gesture_control;
@@ -563,9 +572,9 @@ let debugDrawAt=0;function drawDebug(){if(performance.now()-debugDrawAt<100)retu
  const m=fresh?meta:null,ps=m?.game?.players||[];$('debugMetrics').textContent=m?`${m.people?.length||0} 人 / ${m.hands?.length||0} 手 · ${m.processed_fps||0} fps · 接收→结果 ${m.pipeline_ms||0} ms`+(ps.length?'\n'+ps.map((p,i)=>`${i+1}号 ${p.lateral<-.05?'左':p.lateral>.05?'右':'中'} ${Math.round(Math.abs(p.lateral)*100)}% · 动力 ${Math.round((p.arm_effort||0)*100)}% · 腕部 ${p.observed_wrists??0}/2 · ${({fresh:'双脚',torso_follow:'躯干接续',brief_hold:'短时保持',missing:'脚部丢失'})[p.foot_observation]||''} · 蹲 ${p.squat_depth==null?'未标定':Math.round(p.squat_depth*100)+'%'}`).join(' · '):' · '+(m.game?.reason||'等待玩家')):'实时画面已过期';
 }
 let lastScenePaint=-Infinity,stageFrame=null,teachingPlacement=null;
-function placeTeaching(r,portrait){
+function placeTeaching(r,portrait,sceneWidth){
  const figure=$('gameTutorial');if(!figure||!['quest','hiit'].includes(selected))return;
- const floor=scenery.teachingAnchor(selected),scale=Math.min(r.width/(portrait?960:1600),r.height/900);
+ const floor=scenery.teachingAnchor(selected),scale=Math.min(r.width/sceneWidth,r.height/900);
  const x=canvas.offsetLeft+(r.width-1600*scale)/2+floor.x*scale,y=canvas.offsetTop+(r.height-900*scale)/2+floor.y*scale;
  const fit=portrait?Math.max(0,y-canvas.offsetTop-8)*8/9:420;
  const stamp=[selected,x.toFixed(2),y.toFixed(2),fit.toFixed(2)].join(':');
@@ -592,10 +601,13 @@ function draw(now=performance.now()){
  }
  c.setTransform(1,0,0,1,0,0);c.fillStyle='#eef0e8';c.fillRect(0,0,canvas.width,canvas.height);
  const portrait=matchMedia('(max-width:760px) and (orientation:portrait)').matches;
- scenery.setPortrait(portrait);placeTeaching(r,portrait);
+ // 踏石目标集中在画面中央。竖屏可收紧取景，同时保留两侧溪石。
+ const creek=selected==='quest'&&$('gameTutorial').dataset.teachingKey==='exercise.side_tap';
+ const sceneWidth=portrait?(creek?720:960):1600;
+ scenery.setPortrait(portrait);placeTeaching(r,portrait,sceneWidth);
  const portraitQuestResult=portrait&&document.body.dataset.questResult==='true';
  const scale=portraitQuestResult?Math.max(canvas.width/1600,canvas.height/900):
-  Math.min(canvas.width/(portrait?960:1600),canvas.height/900);
+  Math.min(canvas.width/sceneWidth,canvas.height/900);
  c.setTransform(scale,0,0,scale,(canvas.width-1600*scale)/2,(canvas.height-900*scale)/2);
  const paintAt=gameViewCurrent(now)?now:(lastAcceptedAt??now);
  selected==='home'?homeWorld():selected==='tennis'?tennis(paintAt):selected==='hiit'?hiitWorld(paintAt):world(paintAt);

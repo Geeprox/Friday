@@ -56,13 +56,15 @@ Ski route: eighteen illustrated wooden crossing arches, six per section. Wide, s
 
 画面从当前可见位置续接下一次观测，最多用 120 毫秒抵达已知位置。雪面的纵向纹理按地面深度展开，浅压雪痕的疏密随透视变化。碰撞树取自规则的完整树位，两侧装饰树淡入淡出。减少动态效果时省去雪面细纹、压雪痕和装饰树，保留路线、滑痕、木门和碰撞树。暂停保持最后画面，短暂恢复从这里继续。长时间未看到画面时回到本局当前位置。
 
-山径冒险的 14 站由 `quest.py` 提供。双臂平举、双手上举、浅蹲起立、左右侧迈、交替抬膝、开合步、单腿站立、站姿侧倾、侧弓步、交替上伸、胸前开合、交叉触膝、交替侧抬腿、头顶合掌依次出现。关间留出 3 秒准备。已完成的站点打勾，当前站点描边。竖屏上路线占整行，站数与当前动作并排。暂停、画面缺失或镜头移动时保留已完成的计次，清除未完成的动作。
+山径冒险的 14 站由 `quest.py` 提供。双臂平举、双手上举、浅蹲起立、侧点步、交替抬膝、开合步、单腿站立、站姿侧倾、侧弓步、交替上伸、胸前开合、交叉触膝、交替侧抬腿、头顶合掌依次出现。关间留出 3 秒准备。已完成的站点打勾，当前站点描边。竖屏上路线占整行，站数与当前动作并排。暂停、画面缺失或镜头移动时保留已完成的计次，清除未完成的动作。
 
 游戏库和舞台可直接选择完整路线、林间入口、溪畔步道或山顶营地。游戏库随选择展示该段动作示范。开局后只显示该段的站点。完成时收起局内读数。桌面保留大屏舞台和居中的结算，手机竖屏让结算位于画面下方，保留完整的操作区。林间、溪畔结算的主要操作进入下一段的准备页，也可重玩或换路线。完成后打开路线选择时可返回原结算。
 
+「踏过溪石」沿用溪畔纸雕场景。左右溪石都在画面中，当前目标用深底浅色箭头标明。点中后提示收脚，标记移到示范脚下。标准路线的方向依次为左、右、右、左。每次收脚后下一块石头才亮起。动作示范复用已授权的侧点步原片，并随当前目标方向镜像。竖屏裁切保留两侧的石头与中间的穿衣示范。
+
 营地最后两站沿用穿衣角色、同源定格图和已有反馈区域。侧抬腿每次落脚种下一丛野花，头顶合掌后重新打开双臂点亮一盏纸雕灯。两组道具分布在示范两侧，按当前难度和实际次数放置。最后一次完成后在原结算显示 14 站，画面出现野餐篮。灯笼沿用现有素材就绪、重试和画布时钟。
 
-Adventure world and motion thesis: the single route plan also names each station's forest, stream or camp scene and its landmark. Original sibling paper/clay plates change the place without changing the fixed camera. The focal feedback is earned construction: completed side steps and balances place separate rows of creek stones, knee raises build wooden steps, jacks grow a flower path, reaches hang camp flags, open/close cycles place pinwheels, and cross-knee cycles place camp boards. Squats and side bends clear low branches; completed holds open and lift the forest foliage. A picnic basket appears only after the original route reports completion. Keep these objects beside the full clothed demonstration and inside the portrait crop. Do not turn elapsed time into progress, invent currency, replace source teaching or add another renderer/dependency.
+Adventure world and motion thesis: the single route plan also names each station's forest, stream or camp scene and its landmark. Original sibling paper/clay plates change the place without changing the fixed camera. Side taps complete a cued trail of creek stones, balances place a separate crossing, knee raises build wooden steps, jacks grow a flower path, reaches hang camp flags, open/close cycles place pinwheels, and cross-knee cycles place camp boards. Squats and side bends clear low branches; completed holds open and lift the forest foliage. A picnic basket appears only after the original route reports completion. Keep these objects beside the full clothed demonstration and inside the portrait crop. Do not turn elapsed time into progress, invent currency, replace source teaching or add another renderer/dependency.
 
 新增两段 Desk Break 原始动作重定向至现有穿衣角色。单腿站立与交叉触膝从站姿起步，做完一侧、回正，再示范另一侧。单腿站立的画面停留覆盖 1 秒规则，交叉触膝用正面角度展示对侧手。山径冒险、运动训练与“试一试”共用示范，静态模式使用实际目标姿势。
 

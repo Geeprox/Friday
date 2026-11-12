@@ -26,10 +26,16 @@ test('ski teaching uses only one side of the alternating step clip',()=>{
 
 test('new tutorials reuse licensed rig clips and exact existing static targets',()=>{
  const root='homeplane/static/motion-art/body',model=JSON.parse(fs.readFileSync(path.join(root,'body.gltf'))),targets=JSON.parse(fs.readFileSync(path.join(root,'targets.json'))).targets;
- for(const key of['exercise.reach_up','exercise.arm_open']){
-  const map=mapping(key);assert(model.animations.some(a=>a.name===map.key));
-  assert(targets[map.fallback]);assert(fs.statSync(path.join(root,targets[map.fallback].file)).isFile());
+ for(const key of['exercise.reach_up','exercise.arm_open','exercise.side_tap']){
+  const map=mapping(key),target=targets[map.fallback];
+  assert(target);assert(model.animations.some(a=>a.name===target.clip));
+  assert(fs.statSync(path.join(root,target.file)).isFile());
  }
+ const tap=mapping('exercise.side_tap');
+ assert(tap.fromStart&&tap.mirrorCycle);
+ assert.equal(scope.sourceTime(0,...tap.times),.6);
+ assert.equal(scope.sourceTime(.57,...tap.times),1.2);
+ assert.equal(scope.sourceTime(.99,...tap.times),.6);
 });
 
 test('camp tutorials use the same authored source poses in animation and reduced motion',()=>{

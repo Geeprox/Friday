@@ -23,6 +23,7 @@ function scene({reduced=false,autoLoad=true}={}){
    const sprite=args.length===8&&image.name==='quest-props.png'?Math.floor(args[0]/(1774/4))+4*Math.floor(args[1]/(887/2)):null;
    calls.push({asset:image.name,sprite,args:[...args],transform:[...transform],alpha:obj.globalAlpha});
   };
+  if(key==='arc'||key==='ellipse')return(...args)=>calls.push({mark:key,args,alpha:obj.globalAlpha});
   return()=>{};
  }});
  class Image{
@@ -50,7 +51,7 @@ if(process.argv.includes('--packets')){
   const count=action=>q.history.find(item=>item.action===action)?.reps||
    (q.stage?.action===action&&q.phase==='work'?q.reps:0);
   if(world.scene==='stream'){
-   assert.equal(sprites(draws,0).length,count('side_step')+count('balance'));
+   assert.equal(sprites(draws,0).length,count('side_tap')+count('balance')+Number(world.step?.phase==='step'));
    assert.equal(sprites(draws,1).length,count('high_knee'));
    assert.equal(sprites(draws,5).length,count('jack'));
   }
@@ -63,7 +64,7 @@ if(process.argv.includes('--packets')){
    assert.equal(draws.filter(call=>call.asset==='quest-lantern.webp'&&call.alpha>.99).length,count('overhead_clap'));
    assert.equal(sprites(draws,7).length,q.phase==='complete'?1:0);
   }
-  for(const draw of draws.filter(call=>call.sprite!==null||call.asset==='quest-lantern.webp')){
+  for(const draw of draws.filter(call=>Number.isInteger(call.sprite)||call.asset==='quest-lantern.webp')){
    const[,,,,x,y,w,h]=draw.args,[a,b,c,d,tx,ty]=draw.transform;
    const corners=[[x,y],[x+w,y],[x,y+h],[x+w,y+h]].map(([px,py])=>[a*px+c*py+tx,b*px+d*py+ty]);
    assert(corners.every(([px,py])=>px>=320&&px<=1280&&py>=0&&py<=900),JSON.stringify({difficulty:g.difficulty,level:q.level,sprite:draw.sprite,corners}));
@@ -80,6 +81,18 @@ if(process.argv.includes('--packets')){
    assert.equal(sprites(s.settle(game(index,{phase:'transition',reps:0}),4000),sprite).length,0);
   }
  });
+ test('a single creek target follows source direction, waits for return, and hides on pause',()=>{
+  const s=scene(),left=game(3,{step:{side:'left',phase:'step'}}),back=game(3,{step:{side:'left',phase:'return'}});
+  const marks=(g,at)=>s.settle(g,at).filter(call=>call.mark);
+  assert.deepEqual(marks(left,1000).map(mark=>[mark.mark,mark.args[0]]),[['arc',543]]);
+  assert.deepEqual(marks(back,2000).map(mark=>[mark.mark,mark.args[0]]),[['ellipse',800]]);
+  const right=game(3,{reps:1,step:{side:'right',phase:'step'}});
+  assert.deepEqual(marks(right,3000).map(mark=>[mark.mark,mark.args[0]]),[['arc',1057]]);
+  assert.deepEqual(marks({...right,status:'paused'},4000),[]);
+  const secondRight=game(3,{reps:2,step:{side:'right',phase:'step'}});
+  assert.deepEqual(marks(secondRight,5000).map(mark=>[mark.mark,mark.args[0]]),[['arc',1023]]);
+  assert.deepEqual(marks(game(3,{reps:2,step:{side:'left',phase:'step'}}),6000),[]);
+ });
  test('remaining branches clear one by one while completed flowers stay',()=>{
   const s=scene();const before=s.settle(game(2),1000),one=s.settle(game(2,{reps:1}),2000);
   assert.equal(sprites(before,2).length,3);assert.equal(sprites(before,5).length,0);
@@ -90,7 +103,7 @@ if(process.argv.includes('--packets')){
   for(let level=0;level<=stages.length;level++)for(const fraction of [0,.5,1]){
    const stage=stages[level],current=game(level,{reps:Math.floor((stage?.reps||0)*fraction),hold:(stage?.hold||0)*fraction});
    const draws=s.settle(current,at);at+=1000;
-   for(const draw of draws.filter(call=>call.sprite!==null)){
+   for(const draw of draws.filter(call=>Number.isInteger(call.sprite))){
     const[,,,,x,y,w,h]=draw.args,[a,b,c,d,tx,ty]=draw.transform;
     const corners=[[x,y],[x+w,y],[x,y+h],[x+w,y+h]].map(([px,py])=>[a*px+c*py+tx,b*px+d*py+ty]);
     assert(corners.every(([px,py])=>px>=320&&px<=1280&&py>=0&&py<=900),JSON.stringify({level,sprite:draw.sprite,corners}));

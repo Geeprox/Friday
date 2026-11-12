@@ -9,10 +9,11 @@ import pytest
 
 from homeplane.embodied.hiit import HIITCircuit
 from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.practice import RecognitionPractice
 from tests.embodied.test_hiit import new_action_pose
 from tests.embodied.test_motion_games import LOCK, human
 
-ACTIONS = ["horizontal", "overhead", "squat", "side_step", "high_knee", "jack", "balance",
+ACTIONS = ["horizontal", "overhead", "squat", "side_tap", "high_knee", "jack", "balance",
            "side_bend", "lunge", "reach_up", "arm_open", "cross_knee", "side_raise", "overhead_clap"]
 NEUTRAL = {"arm_open": "arms_closed", "overhead_clap": "arms_high_open"}
 
@@ -32,6 +33,14 @@ def actor(action="neutral", side="left"):
         p["motion_anchor"]["floor"][0] += dx
         for point in j.values():
             point["x"] += dx
+    elif action in {"side_tap", "tap_missing_ankle", "two_feet_out"}:
+        feet = ("left", "right") if action == "two_feet_out" else ("right" if side == "left" else "left",)
+        for foot in feet:
+            dx = .08 if foot == "right" else -.08
+            j[foot+"Knee"]["x"] += dx
+            j[foot+"Ankle"]["x"] += 2 * dx
+        if action == "tap_missing_ankle":
+            p["motion_anchor"] = {"method": "extrapolated", "floor": [.5, .5]}
     elif action == "high_knee":
         j[side + "Knee"]["y"] = .55
     elif action == "jack":
@@ -101,6 +110,12 @@ def test_fourteen_station_journey_completes_from_joints_and_replay_starts_clean(
         packets.append(copy.deepcopy(state))
         assert g.level == level and state["quest"]["phase"] == "work"
         stage = state["quest"]["stage"]
+        if action == "side_tap":
+            assert stage["step_pattern"] == {
+                "easy": ["left", "right"],
+                "standard": ["left", "right", "right", "left"],
+                "challenge": ["left", "right", "right", "left", "left", "right"],
+            }[difficulty]
         if stage["hold"]:
             frames = math.ceil(stage['hold'] / .05) + 4
             packets.append(copy.deepcopy(journey.feed(action, frames // 2)))
@@ -108,8 +123,9 @@ def test_fourteen_station_journey_completes_from_joints_and_replay_starts_clean(
         else:
             neutral = NEUTRAL.get(action, "neutral")
             journey.feed(neutral)
-            for rep in range(stage["reps"]):
-                journey.feed(action, 26 if action == "balance" else 16, side="left" if rep % 2 == 0 else "right")
+            sides = stage.get("step_pattern") or ["left" if rep % 2 == 0 else "right" for rep in range(stage["reps"])]
+            for side in sides:
+                journey.feed(action, 26 if action == "balance" else 16, side=side)
                 packets.append(copy.deepcopy(g.public))
                 journey.feed(neutral)
                 packets.append(copy.deepcopy(g.public))
@@ -157,8 +173,9 @@ def test_each_chapter_ends_at_its_last_station_and_replays_from_its_first(route,
         else:
             neutral = NEUTRAL.get(action, 'neutral')
             journey.feed(neutral)
-            for rep in range(station['reps']):
-                journey.feed(action, 26 if action == 'balance' else 16, side='left' if rep % 2 == 0 else 'right')
+            sides = station.get('step_pattern') or ['left' if rep % 2 == 0 else 'right' for rep in range(station['reps'])]
+            for side in sides:
+                journey.feed(action, 26 if action == 'balance' else 16, side=side)
                 journey.feed(neutral)
         assert game.level == level + 1
     completed = game.public
@@ -213,7 +230,7 @@ def test_new_rep_cannot_bridge_an_interruption(interruption):
     j = Journey()
     j.game.level = 3
     j.feed(count=30)
-    j.feed("side_step")
+    j.feed("side_tap")
     assert j.game.public["quest"]["reps"] == 0
     if interruption == "manual":
         j.game.set_paused(True)
@@ -233,15 +250,58 @@ def test_new_rep_cannot_bridge_an_interruption(interruption):
         j.feed(count=80)
     j.feed(count=50)
     assert j.game.public["quest"]["reps"] == 0
-    j.feed("side_step")
+    j.feed("side_tap")
     j.feed()
     assert j.game.public["quest"]["reps"] == 1
-    j.feed("side_step")
+    j.feed("side_tap")
     j.feed()
     assert j.game.public["quest"]["reps"] == 1
-    j.feed("side_step", side="right")
+    j.feed("side_tap", side="right")
     j.feed()
     assert j.game.public["quest"]["reps"] == 2
+
+
+def test_creek_stones_require_one_foot_in_the_cued_direction_then_return():
+    j = Journey()
+    j.game.reset("off")
+    j.game.select("quest", quest_route="stream")
+    j.game.reset("quest")
+    q = j.feed(count=40)["quest"]
+    assert q["step"] == {"side": "left", "phase": "step"}
+    for pose in ("side_step", "two_feet_out", "side_raise", "tap_missing_ankle"):
+        j.feed(pose, side="right")
+        assert j.feed()["quest"]["reps"] == 0
+    q = j.feed("side_tap", side="right")["quest"]
+    assert q["step"] == {"side": "left", "phase": "center"}
+    j.feed("side_tap", side="left")
+    assert j.feed()["quest"]["reps"] == 0
+    q = j.feed("side_tap", side="left")["quest"]
+    assert q["step"] == {"side": "left", "phase": "return"} and q["reps"] == 0
+    assert j.feed("tap_missing_ankle", 1)["quest"]["step"]["phase"] == "frame"
+    assert j.feed()["quest"]["reps"] == 0
+    for count, (side, next_side) in enumerate((("left", "right"), ("right", "right"), ("right", "left")), 1):
+        q = j.feed("side_tap", side=side)["quest"]
+        assert q["step"] == {"side": side, "phase": "return"}
+        assert q["reps"] == count - 1
+        q = j.feed()["quest"]
+        assert q["step"] == {"side": next_side, "phase": "step"} and q["reps"] == count
+    j.feed("side_tap", side="left")
+    q = j.feed()["quest"]
+    assert q["stage"]["action"] == "high_knee" and q["history"] == [{"action": "side_tap", "reps": 4, "hold": 0}]
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_side_tap_rehearsal_recognizes_one_completed_step(side):
+    now = 0.0
+    practice = RecognitionPractice(clock=lambda: now)
+    token = practice.begin("exercise.side_tap", ["synthetic"])["token"]
+    sequence = (("neutral", 32), ("side_step", 16), ("neutral", 16), ("side_tap", 16), ("neutral", 16))
+    for index, (pose, frames) in enumerate(sequence):
+        for _ in range(frames):
+            practice.observe("synthetic", "test-session", [actor(pose, side)], [], LOCK, now, now)
+            now += .05
+        assert (practice.status(token)["phase"] == "success") is (index == len(sequence) - 1)
+    assert practice.status(token)["event"]["gesture"] == "exercise.side_tap"
 
 
 def test_strict_cycle_requires_a_fresh_neutral_before_the_first_rep():

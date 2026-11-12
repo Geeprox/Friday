@@ -36,8 +36,23 @@ test('route progress never rewinds between a finished station and the next one',
 
 test('preparation previews the next action but cannot display earned reps',()=>{
  const{scope}=setup();const view=scope.questPresentation(game(3,{phase:'transition',transition_seconds:2.21}));
- assert.equal(view.title,'下一站 · 左右侧迈');assert.equal(view.live,'3 秒后开始');
- assert.equal(view.teaching,'exercise.side_step');assert.equal(view.progress,3/stages.length);
+ assert.equal(view.title,'下一站 · 侧点步');assert.equal(view.live,'3 秒后开始');
+ assert.equal(view.teaching,'exercise.side_tap');assert.equal(view.progress,3/stages.length);
+});
+
+test('creek instructions and screen-reader messages follow the recognized step and return',()=>{
+ const{scope,node}=setup();
+ let view=scope.updateQuestHUD(game(3,{step:{side:'left',phase:'step'}}));
+ assert.equal(view.stepSide,'left');assert.equal(node('instruction').textContent,'左脚向左点地');
+ assert.equal(node('questAnnouncement').textContent,'左脚向左点地');
+ scope.updateQuestHUD(game(3,{step:{side:'left',phase:'return'}}));
+ assert.equal(node('instruction').textContent,'收脚，回到中间');
+ assert.equal(node('questAnnouncement').textContent,'收脚，回到中间');
+ view=scope.updateQuestHUD(game(3,{reps:1,step:{side:'right',phase:'step'}}));
+ assert.equal(view.stepSide,'right');assert.equal(node('instruction').textContent,'右脚向右点地');
+ assert.equal(node('liveProgress').textContent,'1 / 4 块溪石');
+ const paused={...game(3,{reps:1,step:{side:'right',phase:'waiting'}}),status:'paused'};
+ assert.equal(scope.updateQuestHUD(paused).cue,'');
 });
 
 test('HUD gives each station a non-color state and announces only station or phase changes',()=>{

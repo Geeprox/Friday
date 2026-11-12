@@ -179,7 +179,7 @@ async def test_library_quest_route_selects_matching_rule_plan_and_retires_old_in
     catalogue = (await bridge.client.get('/api/games')).json()
     routes = {route['id']: route for route in catalogue['quest_routes']}
     assert routes['stream']['stations'] == 4
-    assert routes['stream']['teaching'][0] == 'exercise.side_step'
+    assert routes['stream']['teaching'][0] == 'exercise.side_tap'
     intent = catalogue['service']['game_intent']
     payload = dict(camera=CAMERA, app='quest', quest_route='stream', difficulty='easy', expected_intent=intent)
     for invalid in (dict(payload, quest_route='unknown'), dict(payload, app='ski')):
@@ -192,7 +192,7 @@ async def test_library_quest_route_selects_matching_rule_plan_and_retires_old_in
     selected = response.json()
     assert selected['game']['quest_route'] == 'stream'
     assert selected['game']['difficulty'] == 'easy'
-    assert selected['game']['quest']['targets'] == ['side_step', 'high_knee', 'jack', 'balance']
+    assert selected['game']['quest']['targets'] == ['side_tap', 'high_knee', 'jack', 'balance']
     opened = await bridge.client.get('/api/games/quest/open',
                                      headers={'X-Friday-Game-Intent': selected['game_intent']})
     assert opened.status_code == 200

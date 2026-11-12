@@ -29,6 +29,7 @@ const moves = [
  ['exercise.high_knee','交替抬膝','先自然站立，抬起一侧膝盖，再放回。','game','往返一次'],
  ['exercise.side_lunge','侧弓步','向一侧迈开并屈膝，再回到中间。','game','往返一次'],
  ['exercise.side_step','左右侧迈','自然站定后，向一侧迈步并回到中间，左右交替。','game','往返一次'],
+ ['exercise.side_tap','侧点步','一脚站稳，另一脚向侧面轻点地，再收回来。','game','收脚计一次'],
  ['exercise.side_bend','站姿侧倾','双脚站稳，上身向一侧轻倾，再回到正中，左右交替。','game','往返一次'],
  ['exercise.reach_up','交替上伸','一只手向上伸展，再放回身侧，左右交替。','game','放回计一次'],
  ['exercise.arm_open','胸前开合','双手在胸前靠拢，平举打开，再合回胸前。','game','往返一次'],

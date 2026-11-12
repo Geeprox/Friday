@@ -26,8 +26,12 @@ function questWorld(g){
   const observed=reps?Math.floor(Number(q.reps)||0):Number(q.hold)||0;
   const count=s<level?required:s===level&&q.phase!=='transition'?Math.max(0,Math.min(required,observed)):0;
   values[name]={count,required,ratio:required?count/required:0,complete:s<level,visible:s<=level};
+  if(name==='stones'&&Array.isArray(part.step_pattern)&&part.step_pattern.length===required&&
+    part.step_pattern.every(side=>side==='left'||side==='right'))values[name].pattern=part.step_pattern;
  }
- return{scene,level,done:level===stages.length,values};
+ const stones=values.stones,step=stage?.landmark==='stones'&&q.phase==='work'&&g.status==='playing'&&
+  stones?.pattern&&q.step&&stones.pattern[stones.count]===q.step.side?q.step:null;
+ return{scene,level,done:level===stages.length,values,step};
 }
 function questPlacements(places,count){
  count=Math.max(0,Math.min(32,Math.floor(count)));if(count===places.length)return places;
@@ -163,7 +167,32 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   }
   const p=settled(id);questSprite(index,x,y+(reduced.matches?0:6*(1-p)),width,{top,alpha:.4+.6*p});
  }
- function questWorldPaint(world){
+ function creekStones(part,step){
+  if(!part.visible)return;
+  const left=[[543,803,154],[577,693,131],[599,584,108]],right=left.map(([x,y,w])=>[1600-x,y,w]);
+  const leftCount=part.pattern.filter(side=>side==='left').length,rightCount=part.pattern.length-leftCount;
+  const places={left:questPlacements(left.slice(0,leftCount),leftCount),
+   right:questPlacements(right.slice(0,rightCount),rightCount)};
+  const cursor={left:0,right:0};
+  for(const [i,side]of part.pattern.entries()){
+   const [x,y,w]=places[side][cursor[side]++];
+   if(i<part.count){questSlot('stones:'+i,0,x,y,w,true);continue;}
+   const phase=i===part.count?step?.phase:null,active=phase==='step';
+   questSprite(0,x,y,w,{alpha:active?1:phase==='return'?.94:.48});
+   if(!active)continue;
+   const top=y-w*.39,direction=side==='left'?-1:1;
+   c.save();c.beginPath();c.arc(x,top,27,0,Math.PI*2);c.fillStyle='#3c3227';c.fill();
+   c.strokeStyle='#fff1ce';c.lineWidth=3;c.stroke();
+   c.beginPath();c.moveTo(x-11*direction,top);c.lineTo(x+11*direction,top);
+   c.moveTo(x+2*direction,top-9);c.lineTo(x+11*direction,top);c.lineTo(x+2*direction,top+9);
+   c.strokeStyle='#fff7e4';c.lineWidth=4;c.lineCap='round';c.lineJoin='round';c.stroke();c.restore();
+  }
+  if(step?.phase==='return'||step?.phase==='center'){
+   c.save();c.beginPath();c.ellipse(800,804,77,18,0,0,Math.PI*2);c.fillStyle='#3c322765';c.fill();
+   c.strokeStyle='#fff1ce';c.lineWidth=4;c.stroke();c.restore();
+  }
+ }
+ function questWorldPaint(world,showStep){
   background({forest:'summer-scene.png',stream:'quest-stream-scene.png',camp:'quest-camp-scene.png'}[world.scene]);
   const parts=world.values;
   function row(name,index,places,{clear=false,marker=true,top=false}={}){
@@ -180,10 +209,11 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    questSprite(3,1040+open*80,460-lift*65,300-open*40,{angle:open*.12});
    row('branches',2,[[490,815,250],[545,665,225],[475,535,195]],{clear:true});
   }else if(world.scene==='stream'){
-   row('stones',0,[[470,810,170],[540,700,150],[470,600,130],[545,510,115]]);
-   row('steps',1,[[1100,825,170],[1150,750,160],[1070,675,150],[1140,605,140],[1080,540,130],[1150,485,120]]);
-   row('flowers',5,[[585,860,120],[1040,865,120],[565,460,100],[1040,455,100]]);
-   row('crossing',0,[[615,793,110],[985,793,110],[620,724,96],[980,724,96]]);
+   if(parts.stones?.pattern)creekStones(parts.stones,showStep?world.step:null);
+   else row('stones',0,[[470,810,170],[540,700,150],[470,600,130],[545,510,115]]);
+   row('steps',1,[[1200,821,118],[1210,750,110],[1178,680,105],[1200,610,97],[1173,541,90],[1191,480,82]]);
+   row('flowers',5,[[407,855,113],[1072,463,99],[425,690,101],[940,488,90]]);
+   row('crossing',0,[[690,791,97],[910,791,97],[697,710,87],[903,710,87]]);
   }else if(world.scene==='camp'){
    row('boughs',2,[[470,825,235],[550,700,210],[470,590,185],[550,500,160]],{clear:true});
    row('trail',0,[[1130,820,175],[1060,710,155],[1140,600,135],[1070,510,115]]);
@@ -219,8 +249,9 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    questShown=next;
   }
   const p=reduced.matches?1:ease((questClock-chapterAt)/360);
-  if(questPrevious&&p<1){questWorldPaint(questPrevious);c.save();c.globalAlpha*=p;questWorldPaint(questShown);c.restore();}
-  else{questPrevious=null;questWorldPaint(questShown);}
+  const showStep=g.mode==='quest'&&g.status==='playing';
+  if(questPrevious&&p<1){questWorldPaint(questPrevious,false);c.save();c.globalAlpha*=p;questWorldPaint(questShown,showStep);c.restore();}
+  else{questPrevious=null;questWorldPaint(questShown,showStep);}
  }
  function training(g,at){
   background();sprite(1,130,700,370);sprite(0,1480,750,470);sprite(2,250,840,220);

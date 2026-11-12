@@ -5,7 +5,7 @@ import {mountKtv} from './ktv-console/app.js';
 const h=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
 const button=(text,fn,cls)=>{const b=h('button',text,cls);b.type='button';b.onclick=fn;return b;};
 const art=id=>['ski','tennis','quest','hiit','werewolf','ktv'].includes(id)?'/static/games-art/'+id+'.png':null;
-const moves={ski:['body.arm_effort','body.lateral'],tennis:['body.lateral','body.swing'],quest:['pose.horizontal','pose.overhead','exercise.squat','exercise.side_step','exercise.high_knee','exercise.jack','exercise.side_bend','exercise.side_lunge','exercise.reach_up','exercise.arm_open','exercise.balance','exercise.cross_knee','exercise.side_raise','exercise.overhead_clap'],hiit:['exercise.squat','exercise.jack','exercise.high_knee','exercise.side_lunge','exercise.side_step','exercise.side_bend','exercise.reach_up','exercise.arm_open','exercise.balance','exercise.cross_knee','exercise.side_raise','exercise.overhead_clap']};
+const moves={ski:['body.arm_effort','body.lateral'],tennis:['body.lateral','body.swing'],quest:['pose.horizontal','pose.overhead','exercise.squat','exercise.side_tap','exercise.side_step','exercise.high_knee','exercise.jack','exercise.side_bend','exercise.side_lunge','exercise.reach_up','exercise.arm_open','exercise.balance','exercise.cross_knee','exercise.side_raise','exercise.overhead_clap'],hiit:['exercise.squat','exercise.jack','exercise.high_knee','exercise.side_lunge','exercise.side_step','exercise.side_bend','exercise.reach_up','exercise.arm_open','exercise.balance','exercise.cross_knee','exercise.side_raise','exercise.overhead_clap']};
 const tennisVariants=[
  ['practice','单人练习','1 人 · 9 球'],
  ['solo','单人挑战','1 人 · 抢七'],

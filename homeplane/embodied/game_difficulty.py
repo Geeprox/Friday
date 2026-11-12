@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass, replace
+from itertools import cycle, islice
 from typing import Literal
 
 from .hiit import ALTERNATING_ACTIONS
@@ -40,6 +41,7 @@ class GameDifficulty:
                     stage,
                     hold=self.hold if stage.hold else 0.0,
                     reps=count,
+                    step_pattern=tuple(islice(cycle(stage.step_pattern), count)),
                     instruction=stage.instruction.replace(old, new),
                 )
             )
