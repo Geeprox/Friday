@@ -9,8 +9,8 @@ import cv2
 import numpy as np
 import pytest
 
-from homeplane.embodied.camera_director import CameraDirector
-from homeplane.embodied.camera_follow_appearance import find_follow_target, remember_follow_target
+from homeplane.embodied.camera_director import CameraDirector, visible_scene
+from homeplane.embodied.camera_follow_appearance import find_follow_target, follow_reference_in_view, remember_follow_target
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from tests.embodied.test_camera_director import patrol_view
@@ -24,12 +24,18 @@ def subject(track, x, *, pets=False):
     return row
 
 
-def picture(subjects):
+def picture(subjects, *, textured_background=False):
     image = np.full((480, 800), 141, np.uint8)
+    if textured_background:
+        texture = np.random.default_rng(137).integers(18, 238, (96, 160), dtype=np.uint8)
+        image = cv2.resize(texture, (800, 480), interpolation=cv2.INTER_NEAREST)
     for row, seed in subjects:
         box = row['box']
         left, top = round(box['x']*800), round(box['y']*480)
         width, height = round(box['w']*800), round(box['h']*480)
+        if seed is None:
+            image[top:top+height, left:left+width] = 141
+            continue
         texture = np.random.default_rng(seed).integers(18, 238, (54, 40), dtype=np.uint8)
         image[top:top+height, left:left+width] = cv2.resize(texture, (width, height), interpolation=cv2.INTER_NEAREST)
     return cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 87])[1].tobytes()
@@ -43,6 +49,10 @@ def test_target_features_require_one_correspondence_in_the_same_calibrated_view(
     original = subject(1, .72)
     anchor = remember_follow_target(appearance_sample(1, [(original, 7)]), original)
     assert anchor is not None
+    assert follow_reference_in_view(anchor, appearance_sample(2, []), original)
+    assert not follow_reference_in_view(anchor, appearance_sample(2, [], basis='new-room'), original)
+    assert not follow_reference_in_view(anchor, appearance_sample(2, []), subject(1, .05))
+    assert not follow_reference_in_view(anchor, appearance_sample(2, []), subject('dog:1', .72, pets=True))
     target, second = subject(4, .49), subject(5, .72)
     visible = appearance_sample(4, [(target, 7), (second, 8)], x=.14)
     assert find_follow_target(anchor, visible, [target, second]) is target
@@ -56,8 +66,11 @@ def test_target_features_require_one_correspondence_in_the_same_calibrated_view(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner', ['primary', 'secondary'])
-@pytest.mark.parametrize('mode', ['auto', 'pets', 'person_target', 'pet_target'])
-async def test_original_camera_loop_aims_twice_at_the_same_subject_despite_track_renumbering(owner, mode):
+@pytest.mark.parametrize(('mode', 'weak_frame'), [
+    ('auto', False), ('pets', False), ('person_target', False), ('pet_target', False),
+    ('person_target', True), ('pet_target', True),
+])
+async def test_original_camera_loop_aims_twice_at_the_same_subject_despite_track_renumbering(owner, mode, weak_frame):
     pets = mode in {'pets', 'pet_target'}
     original = subject('dog:1' if pets else 1, .72, pets=pets)
     impostor = subject('dog:2' if pets else 2, .05, pets=pets)
@@ -84,8 +97,13 @@ async def test_original_camera_loop_aims_twice_at_the_same_subject_despite_track
             raise asyncio.CancelledError
         clock, subjects, offset = entry
         visible = [row for row, _ in subjects]
-        jpeg = picture(subjects)
-        basis = patrol_view(clock, x=offset)
+        low_detail = weak_frame and clock == .3
+        if low_detail:
+            subjects = [(row, None) for row, _ in subjects]
+        jpeg = picture(subjects, textured_background=weak_frame)
+        if low_detail:
+            assert visible_scene(jpeg)
+        basis = patrol_view(clock, x=offset, basis='same-room')
         scene = dict(tracking_current=True, animals_current=pets, animals_intent='intent',
                      people=[] if pets else visible, animals=visible if pets else [], scene_visible=True,
                      _patrol_view=basis)

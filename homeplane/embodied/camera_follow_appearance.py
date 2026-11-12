@@ -90,6 +90,20 @@ def _near(before, after):
     return True
 
 
+def _near_in_view(anchor, matrix, subject):
+    box = subject.get('box')
+    if subject.get('species') != anchor.species or not valid_box(box) or box['confidence'] < .65:
+        return False
+    bounds = warp_box(box, matrix)
+    return bounds is not None and _near(anchor.bounds, bounds)
+
+
+def follow_reference_in_view(anchor, sample, subject):
+    """旧特征仅可用于同一背景基准内位置相容的当前目标框。"""
+    view = _view(sample)
+    return view is not None and view[0] == anchor.basis and _near_in_view(anchor, view[1], subject)
+
+
 def _corresponds(anchor, appearance, matcher):
     points, descriptors = appearance
     reverse = {match.queryIdx: match.trainIdx for pair in matcher.knnMatch(descriptors, anchor.descriptors, k=2)
@@ -117,14 +131,7 @@ def find_follow_target(anchor, sample, subjects):
     view = _view(sample)
     if view is None or view[0] != anchor.basis:
         return None
-    nearby = []
-    for subject in subjects:
-        box = subject.get('box')
-        if subject.get('species') != anchor.species or not valid_box(box) or box['confidence'] < .65:
-            continue
-        bounds = warp_box(box, view[1])
-        if bounds is not None and _near(anchor.bounds, bounds):
-            nearby.append(subject)
+    nearby = [subject for subject in subjects if _near_in_view(anchor, view[1], subject)]
     if not 1 <= len(nearby) <= 4:
         return None
     image = _decode(sample)

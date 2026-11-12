@@ -64,6 +64,7 @@ class CameraDirector:
         self.target_seen = -100.0
         self.selection_sample = None
         self.selection_reference = None
+        self.selection_reference_attempt = -math.inf
         self.uncover_steps = 0
         self.visible_samples = 0
         self.clear = False
@@ -139,7 +140,7 @@ class CameraDirector:
         if intent != self.intent:
             self._discard_patrol()
             self._clear_reframe()
-            self.selection_sample = self.selection_reference = None
+            self._clear_selection_reference()
             self.review_windows.clear()
             self.sound_search_cue = None
             self.sound_intent_since = None
@@ -209,12 +210,19 @@ class CameraDirector:
             subjects = [subject for subject in self._subjects(sample) if subject['id'] == self.target]
             if len(subjects) == 1:
                 # Room 子进程复用本模块的视野检查，跟随依赖在实际需要时加载。
-                from .camera_follow_appearance import remember_follow_target
+                from .camera_follow_appearance import follow_reference_in_view, remember_follow_target
 
                 reference = self.selection_reference
-                self.pending_decision['appearance'] = (
-                    reference[1] if reference and reference[0] == sample['_local_received']
-                    else remember_follow_target(sample, subjects[0]))
+                stamp = sample['_local_received']
+                verified = reference if reference and reference[0] == stamp else None
+                if verified is None and self.selection_reference_attempt != stamp:
+                    appearance = remember_follow_target(sample, subjects[0])
+                    if appearance is not None:
+                        verified = (stamp, appearance)
+                if (verified is None and reference and 0 <= now - reference[0] <= self.FOLLOW_REACQUIRE_SECONDS
+                        and follow_reference_in_view(reference[1], sample, subjects[0])):
+                    verified = reference
+                self.pending_decision['appearance'] = verified
         if self.phase in {'patrolling', 'sound_search'}:
             self.pending_decision['view'] = sample['_patrol_view']
             if self.phase == 'sound_search':
@@ -252,8 +260,7 @@ class CameraDirector:
         self.target_seen = now
         self.visible_samples = 0
         self.last_sample = sample['_local_received']
-        self.selection_sample = None
-        self.selection_reference = None
+        self._clear_selection_reference()
         self._remember_selection(sample, subject)
         self.phase = 'target_reacquiring'
 
@@ -264,22 +271,33 @@ class CameraDirector:
         box = target.get('box') if target else None
         return valid_box(box) and box['confidence'] >= .65
 
+    def _clear_selection_reference(self):
+        self.selection_sample = self.selection_reference = None
+        self.selection_reference_attempt = -math.inf
+
     def _remember_selection(self, sample, target):
         stamp = sample['_local_received']
         if self.target_identity is not None:
             self.selection_reference = None
-        elif self.selection_reference is None or stamp - self.selection_reference[0] >= self.FOLLOW_REFERENCE_INTERVAL:
-            from .camera_follow_appearance import remember_follow_target
+            return
+        if stamp - self.selection_reference_attempt < self.FOLLOW_REFERENCE_INTERVAL:
+            return
+        # 更新尝试不能延长上一份有效参考的期限。
+        self.selection_reference_attempt = stamp
+        from .camera_follow_appearance import remember_follow_target
 
-            self.selection_reference = (stamp, remember_follow_target(sample, target))
+        appearance = remember_follow_target(sample, target)
+        if appearance is not None:
+            self.selection_reference = (stamp, appearance)
 
     def _interrupt_selection(self, now):
         if self.reframe_started is None:
             self.reframe_started = self.target_seen
             reference = self.selection_reference
-            if reference and now - reference[0] <= self.FOLLOW_REACQUIRE_SECONDS:
-                self.reframe_appearance = reference[1]
-        self.selection_reference = self.selection_sample = self.reframe_candidate = None
+            if reference and 0 <= now - reference[0] <= self.FOLLOW_REACQUIRE_SECONDS:
+                self.reframe_appearance = reference
+        self._clear_selection_reference()
+        self.reframe_candidate = None
         self.pending_direction = self.pending_decision = None
 
     def _selected_follow(self, sample, subjects, now):
@@ -317,7 +335,7 @@ class CameraDirector:
             self.reframe_started = now
             self.reframe_appearance = pending.get('appearance')
             self.reframe_candidate = None
-            self.selection_sample = self.selection_reference = None
+            self._clear_selection_reference()
 
     def _reframe_target(self, sample, subjects):
         explicit = self.mode in TARGET_MODES
@@ -329,7 +347,7 @@ class CameraDirector:
         elif self.reframe_appearance is not None:
             from .camera_follow_appearance import find_follow_target
 
-            match = find_follow_target(self.reframe_appearance, sample, subjects)
+            match = find_follow_target(self.reframe_appearance[1], sample, subjects)
         else:
             match = None
         previous, self.reframe_candidate = self.reframe_candidate, None
@@ -441,7 +459,7 @@ class CameraDirector:
         # Manual positioning changes the relative origin. Do not reuse old angles.
         self._discard_patrol()
         self._clear_reframe()
-        self.selection_sample = self.selection_reference = None
+        self._clear_selection_reference()
         self.sound_search_cue = None
         self.position = (0,0)
         self.blocked_positions.clear()
@@ -638,7 +656,7 @@ class CameraDirector:
             self.tilt_recovery = None
             self.target = self.target_identity = self.target_session = None
             self._clear_reframe()
-            self.selection_sample = self.selection_reference = None
+            self._clear_selection_reference()
             self.last_focus = None
             self.visible_samples = self.obscured_samples = 0
             self.clear_since = self.obscured_since = None
@@ -654,9 +672,14 @@ class CameraDirector:
         if explicit and (self.target_session is None or self.target_session != sample.get('session_id')):
             self.phase = 'target_selecting' if self.target_session is None else 'target_lost'
             self._clear_reframe()
-            self.selection_sample = self.selection_reference = None
+            self._clear_selection_reference()
             return None
-        if self.reframe_started is not None and now - self.reframe_started > self.FOLLOW_REACQUIRE_SECONDS:
+        if (self.selection_reference is not None
+                and now - self.selection_reference[0] > self.FOLLOW_REACQUIRE_SECONDS):
+            self.selection_reference = None
+        if ((self.reframe_started is not None and now - self.reframe_started > self.FOLLOW_REACQUIRE_SECONDS)
+                or (self.reframe_appearance is not None
+                    and now - self.reframe_appearance[0] > self.FOLLOW_REACQUIRE_SECONDS)):
             self.reframe_appearance = self.reframe_candidate = None
         if self.sound_intent_since is None:
             self.sound_intent_since = now

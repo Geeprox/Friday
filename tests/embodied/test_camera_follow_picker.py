@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from homeplane.embodied import service as service_module
 from homeplane.embodied.api import create_router
-from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_director import CameraDirector, visible_scene
 from homeplane.embodied.camera_follow_picker import CameraFollowPicker, FollowChoose, FollowCommand, FollowPrepare, FollowStop
 from homeplane.embodied.camera_intent import CameraIntentStore
 from homeplane.embodied.previews import PreviewPool
@@ -229,6 +229,32 @@ def test_stationary_follow_ignores_reused_track_and_recovers_only_the_original_a
     assert director.choose(camera.state, camera.now + .1) is None
     assert director.choose(frame(.3, (restored, 7)), camera.now) == 'right'
     assert director.target == 9 and director.decision_current(camera.state, camera.now, 'right')
+
+
+@pytest.mark.parametrize('weak_frames', [7, 24, 29])
+def test_low_detail_frames_cannot_erase_or_renew_last_verified_reference(tmp_path, weak_frames):
+    camera = Camera(tmp_path / 'intent')
+    director = camera.director
+    original, other, recovered = subject(2, .42), subject(2, .72), subject(9, .72)
+    low_detail = picture([(original, None)], textured_background=True)
+    assert visible_scene(low_detail)
+
+    camera.frame(people=[original], _follow_jpeg=picture([(original, 7)]))
+    camera.prepare()
+    view = camera.picker.snapshot()
+    camera.picker.command(FollowChoose(action='choose', snapshot=view['snapshot'], choice=1))
+    for _ in range(weak_frames):
+        assert director.choose(camera.frame(.3, people=[original], _follow_jpeg=low_detail), camera.now) is None
+    assert director.public()['phase'] == 'following'
+    assert director.choose(camera.frame(.3, people=[]), camera.now) is None
+    for _ in range(2):
+        assert director.choose(camera.frame(.3, people=[other], _follow_jpeg=picture([(other, 8)])), camera.now) is None
+    assert director.choose(camera.frame(.3, people=[recovered], _follow_jpeg=picture([(recovered, 7)])), camera.now) is None
+    result = director.choose(camera.frame(.3, people=[recovered], _follow_jpeg=picture([(recovered, 7)])), camera.now)
+    if weak_frames == 7:
+        assert result == 'right' and director.target == 9
+    else:
+        assert result is None and director.target == 2
 
 
 def test_explicit_follow_reconfirms_a_known_person_before_dispatching_on_a_new_track(tmp_path):
