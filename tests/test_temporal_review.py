@@ -540,7 +540,7 @@ async def test_model_text_cannot_supply_identity_severity_or_actions(tmp_path):
     assert runtime._visual_event(
         "camera",
         "session",
-        [(now - 1, b"jpeg"), (now, b"jpeg")],
+        [(now - offset, b"jpeg") for offset in (9, 8, 7, 6, 3, 2, 1, 0)],
         VisualResult(event="face_obscured", observation="模型观察待复核"),
         1800000000,
     )
@@ -548,7 +548,7 @@ async def test_model_text_cannot_supply_identity_severity_or_actions(tmp_path):
     event = runtime.store.events()[0]
     assert event["kind"] == "visual_review" and event["severity"] == "review"
     assert event["person_id"] is None and event["announcement"]["status"] == "not_requested"
-    assert len(event["frames"]) == 2 and not runtime.tasks
+    assert len(event["frames"]) == 8 and not runtime.tasks
     await runtime.close()
 
 
