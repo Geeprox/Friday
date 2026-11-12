@@ -7,6 +7,7 @@ import cv2
 import math
 import numpy as np
 
+from .camera_audio import WakeCameraCue
 from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES, finish_camera_survey
 from .catalog import MOTION_GAME_MODES
 from .pose_rules import iou
@@ -113,6 +114,7 @@ class CameraDirector:
         self.sound_follow_motion = None
         self.sound_intent_since = None
         self.last_sound_captured = -math.inf
+        self.last_wake_captured = -math.inf
 
     @staticmethod
     def _game_active(game):
@@ -388,7 +390,8 @@ class CameraDirector:
             if view[2] - previous[2] < .35:
                 self.reframe_candidate = previous
                 return None
-            self.sound_confirmed_view = (cue, 'follow', stamp)
+            if not isinstance(cue, WakeCameraCue):
+                self.sound_confirmed_view = (cue, 'follow', stamp)
             return match
         self.reframe_candidate = (*candidate, view[2], shift)
         return None
@@ -446,6 +449,13 @@ class CameraDirector:
                 self.mode not in {'auto', 'survey'} or sound_cue is not pending['sound_cue']
                 or sound_cue is not self.sound_search_cue or review_pending or fall_pending):
             return False
+        if isinstance(sound_cue, WakeCameraCue):
+            if pending.get('sound_cue') is sound_cue:
+                if not self._wake_frame_current(sample, now, sound_cue):
+                    return False
+            elif (not (review_pending or fall_pending) and pending['phase'] in {'patrolling', 'following'}
+                  and self._sound_start_available(sample, now, sound_cue)):
+                return False
         if self.mode in PET_MODES and not self._pets_current(sample):
             return False
         explicit = self.mode in TARGET_MODES
@@ -596,7 +606,8 @@ class CameraDirector:
                 self.position = self._next_position(pending['direction'])
                 if pending.get('sound_search'):
                     self.sound_step += 1
-                    if (sound_cue is not None and sound_cue is self.sound_search_cue
+                    if (sound_cue is not None and not isinstance(sound_cue, WakeCameraCue)
+                            and sound_cue is self.sound_search_cue
                             and sample.get('tracking_current') is True):
                         self.sound_confirmed_view = (sound_cue, self.sound_step, stamp)
                 elif self.mode == 'survey':
@@ -666,27 +677,40 @@ class CameraDirector:
         view = sample.get('_patrol_view')
         return (sample.get('session_id'), view[0], self._camera_window(sample)) if view is not None else None
 
+    def _wake_frame_current(self, sample, now, cue):
+        return (self.mode == 'auto' and sample.get('session_id') == cue.session
+                and sample.get('_wake_source') == cue.source
+                and self.target_frame_current(sample, now))
+
     def _sound_start_available(self, sample, now, cue):
+        wake = isinstance(cue, WakeCameraCue)
+        last_captured = self.last_wake_captured if wake else self.last_sound_captured
         return (self.sound_search_cue is None and cue is not None and self._sound_scope(sample) is not None
                 and self.sound_intent_since is not None
-                and cue.captured > self.last_sound_captured and cue.captured >= self.sound_intent_since
+                and cue.captured > last_captured and cue.captured >= self.sound_intent_since
+                and (not wake or self._wake_frame_current(sample, now, cue))
                 and (self.mode != 'survey' or (not self._survey_done() and self.target_frame_current(sample, now))))
 
-    def _sound_search(self, sample, now, cue, *, may_search):
-        scope = self._sound_scope(sample)
-        if may_search and self._sound_start_available(sample, now, cue):
+    def _begin_sound_search(self, sample, cue):
+        wake = isinstance(cue, WakeCameraCue)
+        if wake:
+            self.last_wake_captured = cue.captured
+            self._clear_reframe()
+        else:
             self.last_sound_captured = cue.captured
-            first = self.scan_direction
-            other = 'left' if first == 'right' else 'right'
-            if self._next_position(first) in self.blocked_positions:
-                first, other = other, first
-            if self._next_position(first) in self.blocked_positions:
-                return None
-            self.sound_search_cue = cue
-            self.sound_view = scope
-            self.sound_route = (first, other, other)
-            self.sound_step = 0
-            self._interrupt_survey('sound')
+        first = self.scan_direction
+        other = 'left' if first == 'right' else 'right'
+        if self._next_position(first) in self.blocked_positions:
+            first, other = other, first
+        if not wake and self._next_position(first) in self.blocked_positions:
+            return
+        self.sound_search_cue = cue
+        self.sound_view = self._sound_scope(sample)
+        self.sound_route = (first, other, other)
+        self.sound_step = 0
+        self._interrupt_survey('sound')
+
+    def _sound_search(self, sample, now, *, may_search):
         if self.sound_search_cue is None:
             return None
         if not may_search or self.sound_step >= len(self.sound_route):
@@ -696,7 +720,7 @@ class CameraDirector:
         if self._next_position(direction) in self.blocked_positions:
             self._end_sound_search(now)
             return None
-        if scope is None:
+        if self._sound_scope(sample) is None:
             self.phase = 'patrol_waiting_view'
             return None
         self.phase = 'sound_search'
@@ -915,19 +939,26 @@ class CameraDirector:
             return None
         if self.mode in {'auto', 'survey'}:
             focus = self._current_focus(sample, now, focus)
+            wake = isinstance(sound_cue, WakeCameraCue)
+            safety_pending = review_pending or fall_pending
+            may_search = not people and not safety_pending
             if self.sound_search_cue is not None:
                 scope = self._sound_scope(sample)
                 if (sound_cue is not self.sound_search_cue or scope is not None and scope != self.sound_view
+                        or wake and safety_pending
                         or focus and (not self.sound_following or focus['track'] != self.target)):
                     self._end_sound_search(now)
-            if self.sound_search_cue is not None and self.sound_step and (people or self.sound_following):
+            if (not safety_pending and (wake or not people and self.reframe_started is None)
+                    and self._sound_start_available(sample, now, sound_cue)):
+                self._begin_sound_search(sample, sound_cue)
+            active = self.sound_search_cue
+            if active is not None and (self.sound_step or wake) and (people or self.sound_following):
                 target = self._sound_follow_target(sample, people, now)
                 if target is None:
                     return None
             elif self.reframe_started is None:
                 self.sound_candidate = None
-                direction = self._sound_search(sample, now, sound_cue, may_search=not (
-                    people or review_pending or fall_pending))
+                direction = self._sound_search(sample, now, may_search=may_search)
                 if direction or self.sound_search_cue is not None:
                     return direction
         if self.mode == 'survey' and not self.sound_following:
@@ -1016,6 +1047,7 @@ class CameraDirector:
     def sent(self, now, direction=None, *, automatic=True):
         self.last_move = now
         if not automatic:
+            self.last_wake_captured = max(self.last_wake_captured, now)
             self._end_sound_search(now)
         direction=direction or self.pending_direction
         pending = self.pending_decision
@@ -1093,7 +1125,14 @@ class CameraDirector:
         if self.mode in TARGET_MODES:
             reason = {'following': '跟随所选宠物' if self.mode == 'pet_target' else '跟随所选人物',
                       'target_lost': '未找到所选目标', 'target_reacquiring': '正在确认所选目标'}.get(self.phase, reason)
-        if self.sound_search_cue is not None and self.phase in {'confirming_view', 'checking_view', 'patrol_waiting_view'}:
+        if isinstance(self.sound_search_cue, WakeCameraCue):
+            reason = {'sound_search': '已唤醒，镜头正在找人', 'confirming_view': '已唤醒，镜头正在找人',
+                      'checking_view': '已唤醒，正在确认画面', 'patrol_waiting_view': '已唤醒，正在确认画面',
+                      'following': '已唤醒，镜头跟随中', 'target_reacquiring': '已唤醒，正在重新对准',
+                      'target_ambiguous': '已唤醒，正在确认目标'}.get(self.phase, reason)
+            if self.phase == 'following' and self.pending_direction is not None:
+                reason = '已唤醒，镜头正在转向'
+        elif self.sound_search_cue is not None and self.phase in {'confirming_view', 'checking_view', 'patrol_waiting_view'}:
             reason = '异响后环视'
         if self.mode == 'survey' and self.sound_following and self.phase == 'following':
             reason = '异响后跟随人物'

@@ -11,7 +11,7 @@ import numpy as np
 
 from homeplane.embodied import bridge
 from homeplane.embodied.camera_audio import MAX_AGE as CAMERA_INPUT_MAX_AGE
-from homeplane.embodied.camera_audio import offer_voice_window
+from homeplane.embodied.camera_audio import WakeCameraCue, offer_voice_window
 from homeplane.embodied.household import basic_command
 from homeplane.embodied.intent import address, parse_plan, utterance_focus
 from homeplane.embodied.local_intent import household_plan
@@ -28,6 +28,7 @@ from homeplane.task_composition import is_task_request
 VOICE_PYTHON = str(PYTHON)
 VOICE_PAUSED = PRIVATE / "voice-paused"
 VOICE_INPUT_PAUSED = PRIVATE / 'voice-input-paused'
+WAKE_CAMERA_SECONDS = 16.0
 
 
 def voice_command_outcome(receipt):
@@ -75,6 +76,7 @@ class HomeService:
         self.voice_busy = False
         self.last_video = -100.0
         self.camera_focus = None
+        self.wake_camera = None
         self.camera_session = None
         self.visible_tracks = set()
         self.activity = None  # Optional model loads only after admitted live audio.
@@ -335,11 +337,15 @@ class HomeService:
             self.duration = 0.0
             owner, attending = utterance_focus(self.utterance_attention)
             if len(pcm) >= 16000 and self.voiced_duration >= 0.45:
+                source = (item.get('capture_session'), item.get('camera_source_context'))
+                if not all(isinstance(value, str) and value for value in source):
+                    source = None
+                segment = (pcm, owner, now, attending, self.epoch, source)
                 if self.voice_busy:
-                    self.pending_audio = (pcm, owner, now, attending, self.epoch)
+                    self.pending_audio = segment
                 else:
                     self.voice_busy = True
-                    self.spawn(self.transcribe(pcm, owner, now, attending, self.epoch))
+                    self.spawn(self.transcribe(*segment))
             elif not self.voice_busy:
                 self.state["reason"] = "等待清晰的语音指令"
 
@@ -373,15 +379,39 @@ class HomeService:
 
         return current
 
-    def _wake_focus(self, text, captured, epoch, policy):
+    def _wake_focus(self, text, captured, epoch, policy, source=None):
         if (self.camera_session is None
                 or not self._voice_guard(text, captured, epoch, False, policy, cue_only=True)()):
             return
-        # This is a framing cue from one visible body, not speaker identity.
+        if source is not None:
+            self.camera_focus = None
+            self.wake_camera = WakeCameraCue(captured, self.camera_session, source, policy.revision)
+            return
+        # 没有采集凭据时只保留原有的单人构图提示。
         visible = self.visible_tracks
         target = next(iter(visible)) if len(visible) == 1 else None
         self.camera_focus = (dict(track=target, at=time.monotonic(), session_id=self.camera_session)
                              if target is not None else None)
+
+    def wake_motion_cue(self, sample, now):
+        cue = self.wake_camera
+        if cue is None:
+            return None
+        if (not 0 <= now - cue.captured < WAKE_CAMERA_SECONDS
+                or sample.get('session_id') != cue.session
+                or VOICE_INPUT_PAUSED.exists()):
+            self.wake_camera = None
+            return None
+        if (sample.get('status') != 'live' or sample.get('_wake_source') != cue.source
+                or self.speaking or self.voice_busy):
+            return None
+        try:
+            if self.voice_preferences().revision == cue.voice_revision:
+                return cue
+        except (OSError, ValueError):
+            pass
+        self.wake_camera = None
+        return None
 
     async def answer_question(self, text, event, captured, epoch, attending, policy, command, *, owner=None):
         current = self._voice_guard(text, captured, epoch, attending, policy, owner)
@@ -422,7 +452,7 @@ class HomeService:
         self.state.update(last_result=answer.model_dump(mode='json'),last_route='task',reason=answer.reply)
         await self.speaker.say(answer.reply,current=lambda:current() and answer.valid_until>datetime.now(UTC))
 
-    async def transcribe(self, pcm, owner, captured, attending=False, epoch=None):
+    async def transcribe(self, pcm, owner, captured, attending=False, epoch=None, source=None):
         epoch = self.epoch if epoch is None else epoch
         began = time.monotonic()
         result_kind, result_code = "ok", "none"
@@ -457,7 +487,7 @@ class HomeService:
                 if (route.get('reason') == 'waiting_instruction'
                         and address(result.get('text'), False, wake_word=policy.wake_word).get('reason')
                         == 'waiting_instruction'):
-                    self._wake_focus(result['text'], captured, epoch, policy)
+                    self._wake_focus(result['text'], captured, epoch, policy, source)
                 self.state["reason"] = (
                     f"未确认注视，请先说 {policy.wake_word}"
                     if route.get("reason") == "need_wake_word_without_attention"
@@ -480,7 +510,7 @@ class HomeService:
                 command.update(state="expired", updated_at=time.time())
                 self.state["reason"] = "指令已过期或操作者变化"
                 return
-            self._wake_focus(result['text'], captured, epoch, policy)
+            self._wake_focus(result['text'], captured, epoch, policy, source)
             decision_started = time.monotonic()
             laya = result.get("laya") or {}
             body = address(result['text'],attending,wake_word=policy.wake_word).get('body','')
@@ -640,6 +670,7 @@ class HomeService:
         self.epoch += 1
         self.camera_session = None
         self.camera_focus = None
+        self.wake_camera = None
         self.pending_audio = None
         if self.voice_process:
             self.voice_process.stop()
