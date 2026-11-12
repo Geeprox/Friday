@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from homeplane.werewolf import GameError, WerewolfGame, role_pack
+from homeplane.werewolf import GameError, SPEAKER_SECONDS, VOTE_REVEAL_SECONDS, WerewolfGame, role_pack
 
 
 class Clock:
@@ -18,13 +18,20 @@ class FixedRoles:
         pass
 
 
-def game(count=9):
+def confirm_deal(game):
+    for seat in game.players:
+        game.confirm_identity(seat, game.revision)
+
+
+def game(count=9, *, discussion_mode="free"):
     clock = Clock()
-    g = WerewolfGame(count, clock=clock, rng=FixedRoles())
+    g = WerewolfGame(count, clock=clock, rng=FixedRoles(), discussion_mode=discussion_mode)
     for seat in range(1, count + 1):
         g.join(seat, f"玩家 {seat}")
         g.ready(seat, True)
     g.start()
+    confirm_deal(g)
+    g.advance()
     return g, clock
 
 
@@ -42,6 +49,96 @@ def until(g, phase):
             return
         g.advance()
     raise AssertionError((g.phase, phase))
+
+
+def test_finished_recap_replays_each_published_outcome_in_order():
+    g, _ = game(7)
+    act(g, 1, "attack", 5)
+    act(g, 2, "attack", 5)
+    until(g, "seer")
+    act(g, 3, "check", 2)
+    until(g, "hunter")
+    act(g, 5, "shoot", 6)
+    until(g, "vote")
+    for seat, target in [(1, 2), (2, 1), (3, 1), (4, 2)]:
+        act(g, seat, "vote", target)
+    until(g, "vote_reveal")
+    first = g.public()["vote_result"]
+    assert first["tied"] == [1, 2] and "recap" not in g.public()
+    until(g, "runoff")
+    for seat in (3, 4, 7):
+        act(g, seat, "vote", 1)
+    until(g, "vote_reveal")
+    runoff = g.public()["vote_result"]
+    assert runoff["eliminated"] == 1
+    until(g, "wolves")
+    act(g, 2, "attack", 3)
+    until(g, "witch")
+    act(g, 4, "save", 3)
+    until(g, "vote")
+    for seat in (3, 4, 7):
+        act(g, seat, "vote", 2)
+    until(g, "vote_reveal")
+    final = g.public()["vote_result"]
+    assert final["eliminated"] == 2 and "recap" not in g.private(3)["public"]
+    g.advance()
+    complete = g.public()
+    assert complete["winner"] == "village" and complete["end_reason"] == "all_wolves_out"
+    assert complete["recap"] == [
+        dict(round=1, events=[
+            dict(kind="dawn", seats=[5]), dict(kind="hunter", seat=6),
+            dict(kind="ballot", result=first), dict(kind="ballot", result=runoff),
+        ]),
+        dict(round=2, events=[dict(kind="dawn", seats=[]), dict(kind="ballot", result=final)]),
+    ]
+    assert g.private(3)["public"] == complete
+    g.end()
+    assert g.public() == complete
+    complete["recap"][0]["events"].clear()
+    assert len(g.public()["recap"][0]["events"]) == 4
+
+
+def test_recap_of_ended_game_does_not_reveal_an_unresolved_night_or_ballot():
+    g, _ = game(6)
+    act(g, 1, "attack", 3)
+    g.end()
+    assert g.public()["recap"] == []
+    assert g.winner is None and g.end_reason == "host_ended"
+    g, _ = game(6)
+    until(g, "vote")
+    act(g, 3, "vote", 1)
+    g.end()
+    assert g.public()["recap"] == [dict(round=1, events=[dict(kind="dawn", seats=[])])]
+    assert g.public()["vote_result"] is None
+
+
+def test_ordered_discussion_only_gives_runoff_candidates_turns_and_rotates_next_day():
+    g, clock = game(6, discussion_mode="turns")
+    until(g, "discussion")
+    assert g.speaker_order == (1, 2, 3, 4, 5, 6)
+    assert g.public()["speaking_turn"] == dict(position=1, total=6, next_seat=2)
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(4)
+    until(g, "vote")
+    for seat, target in [(1, 2), (2, 3), (3, 2), (4, 3)]:
+        act(g, seat, "vote", target)
+    g.advance()
+    assert g.phase == 'vote_reveal' and g.public()['vote_result']['tied'] == [2, 3]
+    assert g.public()['seconds_left'] == VOTE_REVEAL_SECONDS and not g.eligible_speakers()
+    clock.now += VOTE_REVEAL_SECONDS
+    g.tick()
+    assert g.phase == "runoff_discussion" and g.speaker_order == (2, 3)
+    assert g.speaker_seat == 2 and g.public()["seconds_left"] == SPEAKER_SECONDS
+    g.finish_speaking(2, g.revision)
+    assert g.public()["speaking_turn"] == dict(position=2, total=2, next_seat=None)
+    clock.now += SPEAKER_SECONDS
+    g.tick()
+    assert g.phase == "runoff" and g.speaker_seat is None and "speaking_turn" not in g.public()
+    assert not g.actions(2) and not g.actions(3)
+    act(g, 1, "vote", 2)
+    g.advance()
+    until(g, "discussion")
+    assert g.round == 2 and g.speaker_order == (3, 4, 5, 6, 1)
 
 
 @pytest.mark.parametrize("count", range(6, 13))
@@ -70,12 +167,58 @@ def test_lobby_and_stale_command_guards():
     g.start()
     with pytest.raises(GameError, match="join_closed"):
         g.join(1, "intruder")
+    confirm_deal(g)
+    g.advance()
     with pytest.raises(GameError, match="phase_changed"):
         g.act(1, "pass", None, g.revision - 1)
     with pytest.raises(GameError, match="action_unavailable"):
         act(g, role(g, "villager"), "attack", 1)
     with pytest.raises(GameError, match="target_invalid"):
         act(g, role(g, "wolf"), "attack", True)
+
+
+def test_speaker_selection_respects_alive_seats_runoff_and_the_existing_timer():
+    g, clock = game(6)
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(4)
+    act(g, 1, "attack", 6)
+    until(g, "discussion")
+    assert g.eligible_speakers() == [1, 2, 3, 4, 5]
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(6)
+    deadline = g.deadline
+    g.set_speaker(4)
+    assert g.public()["speaker_seat"] == 4 and g.deadline == deadline
+    called = g.public()
+    g.set_speaker(4)
+    assert g.public() == called
+    g.pause(True)
+    assert g.eligible_speakers() == []
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(5)
+    g.pause(False)
+    assert g.public()["speaker_seat"] == 4 and g.deadline == deadline
+    clock.now = deadline
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(5)
+    g.tick()
+    assert g.phase == "vote" and g.public()["speaker_seat"] is None
+    act(g, 3, "vote", 4)
+    act(g, 5, "vote", 1)
+    g.advance()
+    assert not g.eligible_speakers()
+    g.advance()
+    assert g.phase == "runoff_discussion" and g.eligible_speakers() == [1, 4]
+    with pytest.raises(GameError, match="speaker_unavailable"):
+        g.set_speaker(2)
+    deadline = g.deadline
+    g.set_speaker(1)
+    g.set_speaker(None)
+    assert g.public()["speaker_seat"] is None and g.deadline == deadline
+    g.set_speaker(4)
+    g.advance()
+    assert g.phase == "runoff" and g.public()["speaker_seat"] is None
+    assert g.actions(4) == [] and g.targets(5, "vote") == [1, 4]
 
 
 def test_night_choices_and_seer_result_never_reach_public_or_other_phones():
@@ -130,7 +273,7 @@ def test_antidote_and_poison_are_single_resources_and_one_action_per_night():
     g.advance()
     assert g.players[victim].alive and not g.antidote
     until(g, "vote")
-    g.advance()  # No votes, next night.
+    until(g, "wolves")
     act(g, 1, "attack", victim)
     until(g, "witch")
     private = g.private(witch)
@@ -151,7 +294,7 @@ def test_guard_consecutive_target_and_double_protection():
     g.advance()
     assert not g.players[12].alive  # The published double-protection rule.
     until(g, "vote")
-    g.advance()
+    until(g, "guard")
     with pytest.raises(GameError, match="target_invalid"):
         act(g, guard, "guard", 12)
 
@@ -161,6 +304,7 @@ def test_guard_cannot_repeat_a_still_living_target():
     guard = role(g, "guard")
     act(g, guard, "guard", 11)
     until(g, "vote")
+    g.advance()
     g.advance()
     assert g.players[11].alive
     with pytest.raises(GameError, match="target_invalid"):
@@ -193,11 +337,18 @@ def test_second_tie_abstains_and_candidate_cannot_vote_in_runoff():
     act(g, 1, "vote", 7)
     act(g, 2, "vote", 8)
     g.advance()
+    assert g.public()['vote_result']['ballot'] == 'vote'
+    g.advance()
     assert g.phase == "runoff_discussion" and g.runoff_candidates == [7, 8]
     g.advance()
     assert not g.actions(7) and not g.actions(8)
     act(g, 1, "vote", 7)
     act(g, 2, "vote", 8)
+    g.advance()
+    result = g.public()['vote_result']
+    assert g.phase == 'vote_reveal' and result['ballot'] == 'runoff'
+    assert result['tied'] == [7, 8] and result['eliminated'] is None
+    assert {7, 8}.isdisjoint(row['seat'] for row in result['votes'])
     g.advance()
     assert g.round == 2 and all(p.alive for p in g.players.values())
 
@@ -209,6 +360,8 @@ def test_a_whole_village_victory_reveals_roles_only_at_the_end():
         for seat, p in g.players.items():
             if p.alive and seat != target:
                 act(g, seat, "vote", target)
+        g.advance()
+        assert g.phase == 'vote_reveal' and all('role' not in player for player in g.public()['players'])
         g.advance()
     assert g.phase == "finished" and g.winner == "village"
     assert all(p["role"] in role_pack(9) for p in g.public()["players"])
@@ -225,6 +378,7 @@ def test_a_whole_wolf_victory_with_automatic_phase_deadlines():
         if g.phase == "finished":
             break
         until(g, "vote")
+        g.advance()
         g.advance()
     assert g.phase == "finished" and g.winner == "wolves"
 
@@ -246,29 +400,48 @@ def test_pause_freezes_private_actions_and_resumes_exact_remaining_time():
 
 
 @pytest.mark.parametrize('target',[None,1,6])
-def test_public_host_script_keeps_vote_result_with_the_next_phase(target):
-    g,_=game();until(g,'vote')
+def test_public_host_script_announces_ballot_before_the_next_phase(target):
+    g, clock = game()
+    until(g, 'vote')
     if target is not None:
         for seat in g.players:
             if seat!=target:act(g,seat,'vote',target)
-    first=len(g.announcements);g.advance();public=g.public();script=public['host_script']
-    assert script['id']==public['announcements'][-1]['id']
-    assert script['text']==' '.join(a['text']for a in g.announcements[first:])
-    assert script['text'].startswith(f'{target} 号被放逐。'if target else'本轮无人被放逐。')
-    assert ('第 2 夜。'if target!=6 else'6 号猎人')in script['text']
-    assert all('role'not in p for p in public['players'])
+    assert g.public()['vote_result'] is None
+    clock.now = g.deadline
+    g.tick()
+    public = g.public()
+    script = public['host_script']
+    assert public['phase'] == 'vote_reveal' and public['round'] == 1
+    assert public['vote_result']['eliminated'] == target and public['seconds_left'] == VOTE_REVEAL_SECONDS
+    assert script == public['announcements'][-1]
+    assert script['text'] == (f'{target} 号被放逐。' if target else '本轮无人被放逐。')
+    assert all('role' not in p for p in public['players'])
+    assert all(not g.actions(seat) for seat in g.players)
+    g.pause(True)
+    clock.now += 40
+    g.tick()
+    assert g.phase == 'vote_reveal' and g.public()['seconds_left'] == VOTE_REVEAL_SECONDS
+    g.pause(False)
+    clock.now = g.deadline
+    g.tick()
+    follow = g.public()['host_script']
+    assert follow['id'] == script['id'] + 1
+    assert ('第 2 夜。' if target != 6 else '6 号猎人') in follow['text']
+    assert '放逐' not in follow['text']
 
 
 def test_hunter_result_and_victory_are_not_lost_from_the_current_public_script():
     g,_=game();hunter=role(g,'hunter');act(g,1,'attack',hunter);until(g,'hunter')
     act(g,hunter,'shoot',1);g.advance()
-    assert g.public()['host_script']['text']=='猎人带走了 1 号。 现在开始自由发言。请依次说明你的判断。'
+    assert g.public()['host_script']['text']=='猎人带走了 1 号。 现在开始自由发言。'
     for target in [2,3]:
         until(g,'vote')
         for seat,p in g.players.items():
             if p.alive and seat!=target:act(g,seat,'vote',target)
         g.advance()
-    assert g.public()['host_script']['text']=='3 号被放逐。 好人阵营获胜。'
+        assert g.public()['host_script']['text'] == f'{target} 号被放逐。'
+        g.advance()
+    assert g.public()['host_script']['text'] == '好人阵营获胜。'
 
 
 def test_private_night_choices_do_not_change_or_extend_the_public_host_script():

@@ -5,6 +5,7 @@ import ast
 import base64
 import copy
 import json
+import secrets
 import time
 from collections import deque
 from pathlib import Path
@@ -12,9 +13,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeplane.embodied.party_camera import PartyCamera
 
 from homeplane.embodied import camera_recognition, previews, ptz_control
+from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.camera_wall import CameraWall
+from homeplane.embodied.camera_intent import TARGET_MODES
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.people.live import close_identity
 from tests.embodied.test_camera_audio import actual
@@ -29,7 +33,9 @@ CAMERA = dict(id='cam_1111111111', name='Synthetic', room='Synthetic')
 async def test_capture_fault_revokes_live_inputs_before_blocked_inference_returns(tmp_path, monkeypatch, fault):
     reads = asyncio.Queue()
     accepted, entered, release, delivered = (asyncio.Event() for _ in range(4))
-    observed, cleared, restored = [], [], []
+    observed, cleared, restored, capture_frames = [], [], [], []
+    camera = dict(CAMERA, device={'did': 'synthetic-camera'})
+    context = camera_source_context(camera)
     jpeg = b'\xff\xd8SYNTHETIC-NOT-CAMERA-PIXELS\xff\xd9'
     wall = CameraWall([CAMERA])
 
@@ -97,26 +103,38 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         accepted.set()
 
     pool = previews.PreviewPool(continuous=False, recognize=True, wall=wall,
-                               on_observation=observation, on_clear=cleared.append)
+                               on_observation=observation, on_clear=cleared.append,
+                               on_capture_frame=lambda *args: capture_frames.append(args))
     item = dict(state='connecting', recognizer=None, process=None, shutter_changed=False,
                 expires=time.monotonic()+60, frames=0, frame=None, received_at=0)
     pool.sessions[CAMERA['id']] = item
 
-    def frame():
+    def frame(session):
         at = time.time()
         return json.dumps(dict(type='frame', jpeg=base64.b64encode(jpeg).decode(),
             preview=base64.b64encode(jpeg).decode(), preview_at=at, received_at=at,
+            capture_session=session, camera_source_context=context,
             width=640, height=360)).encode()
 
-    task = asyncio.create_task(pool._run(CAMERA, item))
+    task = asyncio.create_task(pool._run(camera, item))
     try:
-        reads.put_nowait(frame())
+        async with asyncio.timeout(.5):
+            while not process.stdin.write.called:
+                await asyncio.sleep(0)
+        capture = json.loads(process.stdin.write.call_args_list[0].args[0])
+        assert not capture['audio']
+        reads.put_nowait(frame(capture['capture_session']))
         await asyncio.wait_for(accepted.wait(), .5)
         await asyncio.sleep(0)
         assert item['state'] == 'live' and item['frames'] == 1
-        reads.put_nowait(frame())
+        status = pool.status(CAMERA['id'])
+        assert status['recognition'] == 'running' and 0 <= status['latency_ms'] < 500
+        reads.put_nowait(frame(capture['capture_session']))
         await asyncio.wait_for(entered.wait(), .5)
         assert not task.done() and wall.frame(CAMERA['id'])
+        assert len(capture_frames) == 2
+        assert all(row[:3] == (CAMERA['id'], capture['capture_session'], context) for row in capture_frames)
+        assert 0 <= time.monotonic() - capture_frames[1][3] < .5
         reads.put_nowait(fault)
         await asyncio.wait_for(delivered.wait(), .5)
         await asyncio.sleep(0)
@@ -125,7 +143,8 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         assert wall.frame(CAMERA['id']) is None
         assert cleared == [CAMERA['id']]
         assert item.get('control') is None
-        assert pool.status(CAMERA['id'])['recognition'] == 'waiting'
+        status = pool.status(CAMERA['id'])
+        assert status['recognition'] == 'waiting' and status['latency_ms'] is None
         assert 'private-' not in json.dumps(pool.status(CAMERA['id']))
         release.set()
         await asyncio.wait_for(task, .5)
@@ -138,6 +157,236 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(('age', 'state', 'recognition', 'latency'), [
+    (.5, 'live', 'running', 320),
+    (1.8, 'live', 'waiting', None),
+    (3, 'stale', 'waiting', None),
+    (-1, 'stale', 'waiting', None),
+])
+def test_secondary_status_never_reuses_latency_from_an_expired_frame(monkeypatch, age, state, recognition, latency):
+    monkeypatch.setattr(previews,'time',SimpleNamespace(time=lambda:100))
+    pool = previews.PreviewPool(recognize=True)
+    pool.sessions[CAMERA['id']] = dict(state='live',received_at=100-age,frames=4,
+                                      shutter_changed=False,latency_ms=320)
+    status = pool.status(CAMERA['id'])
+    assert (status['state'], status['recognition'], status['latency_ms']) == (state, recognition, latency)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault', ['recognizer_close', 'capture_reap', 'stop_during_cleanup'])
+async def test_continuous_owner_reconnects_after_cleanup_failure(tmp_path, monkeypatch, fault):
+    """用原生产重连循环验证清理故障、镜头关闭和主动停止。"""
+    retry_delays, resume, observed = asyncio.Queue(), asyncio.Queue(), asyncio.Queue()
+    reads = [asyncio.Queue(), asyncio.Queue()]
+    shutter_open = True
+    read_shutter = AsyncMock(side_effect=lambda _: shutter_open)
+
+    async def sleep(seconds):
+        if seconds in {5, 15}:
+            retry_delays.put_nowait(seconds)
+            await resume.get()
+        else:
+            await asyncio.sleep(seconds)
+
+    def capture(index):
+        process = SimpleNamespace(returncode=None, stdout=SimpleNamespace(readline=reads[index].get),
+                                  stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()), wait=AsyncMock())
+
+        def terminate():
+            if index == 0 and fault == 'capture_reap':
+                raise OSError('synthetic-reap-failure')
+            process.returncode = 0
+
+        process.terminate = process.kill = Mock(side_effect=terminate)
+        return process
+
+    processes = [capture(0), capture(1)]
+    spawn = AsyncMock(side_effect=processes)
+    leases, recognizers = [], []
+
+    def lease(*_, **__):
+        owner = SimpleNamespace(snapshot={'before': {'camera_power': True}},
+                                acquire=AsyncMock(), release=AsyncMock(return_value=True))
+        leases.append(owner)
+        return owner
+
+    def recognizer(*_):
+        index = len(recognizers)
+        session = f'synthetic-reconnect-{index}'
+        cleanup_error = (ProcessLookupError('synthetic-cleanup-failure')
+                         if index == 0 and fault != 'capture_reap' else None)
+
+        async def observe(*_, **__):
+            now = time.monotonic()
+            return dict(camera=CAMERA['id'], session=session, people=[], hands=[], now=now, captured_mono=now)
+
+        owner = SimpleNamespace(start=AsyncMock(), close=AsyncMock(side_effect=cleanup_error),
+                                observe=observe, timing={}, session=session)
+        recognizers.append(owner)
+        return owner
+
+    async def observation(value, process):
+        observed.put_nowait((value['session'], process))
+
+    monkeypatch.setattr(previews, 'asyncio', SimpleNamespace(**(vars(asyncio) | {
+        'sleep': sleep, 'create_subprocess_exec': spawn})))
+    monkeypatch.setattr(previews, 'DATA', tmp_path)
+    monkeypatch.setattr(previews, 'camera', lambda _: CAMERA)
+    monkeypatch.setattr(previews, 'camera_is_open', read_shutter)
+    monkeypatch.setattr(previews, 'camera_storage', lambda _: tmp_path)
+    monkeypatch.setattr(previews, 'capture_environment', lambda: {})
+    monkeypatch.setattr(ptz_control, 'Transport', lambda _: SimpleNamespace(close=AsyncMock()))
+    monkeypatch.setattr(ptz_control, 'CameraLease', lease)
+    monkeypatch.setattr(camera_recognition, 'CameraRecognition', recognizer)
+    intent = SimpleNamespace(mode='hold', revision='synthetic-hold', status='saved')
+    pool = previews.PreviewPool(continuous=True, recognize=True, on_observation=observation,
+                                intent_factory=lambda _: SimpleNamespace(load=lambda **__: intent))
+
+    def frame():
+        jpeg = base64.b64encode(b'\xff\xd8SYNTHETIC-NOT-CAMERA-PIXELS\xff\xd9').decode()
+        return json.dumps(dict(type='frame', jpeg=jpeg, received_at=time.time(), width=640, height=360)).encode()
+
+    camera_id = CAMERA['id']
+    await pool.start(camera_id)
+    item = pool.sessions[camera_id]
+    try:
+        reads[0].put_nowait(frame())
+        assert await asyncio.wait_for(observed.get(), 2) == ('synthetic-reconnect-0', processes[0])
+        assert pool.status(camera_id)['recognition'] == 'running'
+        if fault == 'stop_during_cleanup':
+            await asyncio.wait_for(pool.close(), 2)
+            assert item['task'].cancelled()
+            assert not pool.source_current(camera_id, processes[0])
+            assert retry_delays.empty() and spawn.await_count == 1
+            return
+
+        shutter_reads = read_shutter.await_count
+        shutter_open = False
+        reads[0].put_nowait(b'')
+        assert await asyncio.wait_for(retry_delays.get(), 2) == 5
+        assert pool.status(camera_id)['state'] == 'unavailable'
+        assert pool.status(camera_id)['error_stage'] == 'cleanup'
+        assert pool.frame(camera_id) is None and not pool.source_current(camera_id, processes[0])
+        leases[0].release.assert_awaited_once()
+        resume.put_nowait(None)
+        if fault == 'capture_reap':
+            assert await asyncio.wait_for(retry_delays.get(), 2) == 5
+            assert processes[0].returncode is None and read_shutter.await_count == shutter_reads
+            assert spawn.await_count == 1
+            processes[0].returncode = 0
+            resume.put_nowait(None)
+        assert await asyncio.wait_for(retry_delays.get(), 2) == 15
+        assert pool.status(camera_id)['state'] == 'shutter_closed'
+        assert spawn.await_count == len(leases) == 1
+        shutter_open = True
+        resume.put_nowait(None)
+        reads[1].put_nowait(frame())
+        assert await asyncio.wait_for(observed.get(), 2) == ('synthetic-reconnect-1', processes[1])
+        status = pool.status(camera_id)
+        assert status['recognition'] == 'running' and status['error_stage'] is None
+        assert item['mode'] == intent.mode and item['mode_revision'] == intent.revision
+        assert processes[0].returncode == 0 and pool.source_current(camera_id, processes[1])
+        assert spawn.await_count == len(leases) == 2
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('silence', 'open_after_gap', 'outcome'), [
+    (65, True, 'live'), (65, False, 'shutter_closed'), (90, True, 'unavailable'),
+])
+async def test_background_owner_waits_for_native_stream_recovery(tmp_path, monkeypatch, silence, open_after_gap, outcome):
+    """推进合成时钟，核对旧画面失效、原进程恢复和父进程兜底超时。"""
+    now = 1000.0
+    shutter_open = True
+    native_packets, receive_waits, observed = asyncio.Queue(), asyncio.Queue(), asyncio.Queue()
+
+    async def wait_for(awaitable, timeout):
+        if timeout < 40:
+            return await asyncio.wait_for(awaitable, timeout)
+        entered = now
+        receive_waits.put_nowait(entered)
+        packet = await awaitable
+        if now - entered >= timeout:
+            raise asyncio.TimeoutError
+        return packet
+
+    capture = SimpleNamespace(returncode=None, stdout=SimpleNamespace(readline=native_packets.get),
+                              stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()), wait=AsyncMock())
+    capture.terminate = capture.kill = lambda: setattr(capture, 'returncode', 0)
+    spawn = AsyncMock(return_value=capture)
+    lease = SimpleNamespace(snapshot={'before': {'camera_power': True}}, acquire=AsyncMock(),
+                            release=AsyncMock(return_value=True))
+    read_shutter = AsyncMock(side_effect=lambda _: shutter_open)
+
+    async def recognize(packet, *, source_current, on_vision_failure):
+        assert source_current()
+        return dict(camera=CAMERA['id'], session='synthetic-stream', people=[], hands=[],
+                    now=now, captured_mono=packet['received_at'])
+
+    async def observation(value, process):
+        observed.put_nowait((value['captured_mono'], process))
+
+    recognition = SimpleNamespace(timing={}, observe=recognize, start=AsyncMock(), close=AsyncMock())
+    monkeypatch.setattr(previews, 'asyncio', SimpleNamespace(**(vars(asyncio) | {
+        'wait_for': wait_for, 'create_subprocess_exec': spawn})))
+    monkeypatch.setattr(previews, 'time', SimpleNamespace(time=lambda: now, monotonic=lambda: now))
+    monkeypatch.setattr(previews, 'DATA', tmp_path)
+    monkeypatch.setattr(previews, 'camera_is_open', read_shutter)
+    monkeypatch.setattr(previews, 'camera_storage', lambda _: tmp_path)
+    monkeypatch.setattr(previews, 'capture_environment', lambda: {})
+    monkeypatch.setattr(ptz_control, 'Transport', lambda _: SimpleNamespace(close=AsyncMock()))
+    monkeypatch.setattr(ptz_control, 'CameraLease', lambda *_args, **_kwargs: lease)
+    monkeypatch.setattr(camera_recognition, 'CameraRecognition', lambda *_: recognition)
+    wall = CameraWall([CAMERA], clock=lambda: now)
+    cleared = Mock()
+    pool = previews.PreviewPool(continuous=True, recognize=True, wall=wall,
+                                on_observation=observation, on_clear=cleared)
+    camera_id = CAMERA['id']
+    item = dict(state='connecting', mode='hold', mode_revision='synthetic-hold', received_at=0, frames=0,
+                expires=now + 90, shutter_changed=False)
+    pool.sessions[camera_id] = item
+
+    def frame():
+        jpeg = base64.b64encode(b'\xff\xd8SYNTHETIC-NOT-CAMERA-PIXELS\xff\xd9').decode()
+        return json.dumps(dict(type='frame', jpeg=jpeg, preview=jpeg, received_at=now, preview_at=now,
+                               width=640, height=360)).encode()
+
+    owner = asyncio.create_task(pool._run(CAMERA, item))
+    try:
+        assert await asyncio.wait_for(receive_waits.get(), 2) == now
+        native_packets.put_nowait(frame())
+        assert await asyncio.wait_for(observed.get(), 2) == (now, capture)
+        assert await asyncio.wait_for(receive_waits.get(), 2) == now
+        assert pool.status(camera_id)['state'] == 'live' and wall.frame(camera_id)
+        shutter_reads = read_shutter.await_count
+        shutter_open = open_after_gap
+        now += silence
+        assert pool.status(camera_id)['state'] == 'stale'
+        assert pool.frame(camera_id) is None and wall.frame(camera_id) is None
+        assert pool.source_current(camera_id, capture)
+        native_packets.put_nowait(frame())
+        if outcome == 'live':
+            assert await asyncio.wait_for(observed.get(), 2) == (now, capture)
+            assert item['frames'] == 2 and pool.frame(camera_id) and wall.frame(camera_id)
+            assert read_shutter.await_count > shutter_reads
+            cleared.assert_not_called()
+        else:
+            await asyncio.wait_for(owner, 2)
+            assert observed.empty() and item['frames'] == 1
+            assert pool.frame(camera_id) is None and wall.frame(camera_id) is None
+            assert not pool.source_current(camera_id, capture)
+            assert capture.returncode == 0
+            cleared.assert_called_once_with(camera_id)
+        assert pool.status(camera_id)['state'] == outcome
+        spawn.assert_awaited_once()
+        assert all(json.loads(call.args[0]).get('action') != 'motor_step' for call in capture.stdin.write.call_args_list)
+    finally:
+        owner.cancel()
+        await asyncio.gather(owner, return_exceptions=True)
+    lease.release.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -171,7 +420,8 @@ async def test_original_secondary_recognizer_stops_at_the_first_retired_stage(mo
     async def identity(*_,**__):retire('identity');return []
     room.register.side_effect=register;room.update.side_effect=layout
     monkeypatch.setattr(camera_recognition,'analyze',AsyncMock(side_effect=identity))
-    recognizer.vision=SimpleNamespace(stdin=SimpleNamespace(write=Mock(),drain=AsyncMock()),stdout=SimpleNamespace(readline=read))
+    recognizer.vision=camera_recognition.VisionProcess('synthetic-vision')
+    recognizer.vision.process=SimpleNamespace(stdin=SimpleNamespace(write=Mock(),drain=AsyncMock()),stdout=SimpleNamespace(readline=read))
     result=await recognizer.observe(dict(received_at=time.time(),jpeg=base64.b64encode(b'SYNTHETIC').decode(),width=640,height=360),source_current=lambda:current[0])
     if phase in {None,'room_unavailable'}:
         assert result is recognizer.last
@@ -202,6 +452,7 @@ async def test_actual_worker_callback_cannot_rearm_or_dispatch_after_source_reti
         fleet=SimpleNamespace(update=Mock(return_value=[]), clear=Mock(), cameras={}, voice=Mock(return_value=False)),
         wall=SimpleNamespace(observe=Mock()), secondary_homes={CAMERA['id']: service},
         SELECTED={'id': 'synthetic-primary'}, home=object(), PRIVATE=tmp_path, interaction_enabled=True)
+    actual('homeplane/embodied/worker.py', 'clear_interactions', scope)
     clear = actual('homeplane/embodied/worker.py', 'clear_camera', scope)
     actual('homeplane/embodied/worker.py', 'secondary_frame_current', scope)
 
@@ -221,7 +472,7 @@ async def test_actual_worker_callback_cannot_rearm_or_dispatch_after_source_reti
     service.enable = AsyncMock(side_effect=enable)
     callback = actual('homeplane/embodied/worker.py', 'secondary_observation', scope)
     await callback(dict(camera=CAMERA['id'], session='synthetic-session', people=[], hands=[], faces=[],
-        registration={'status': 'locked'}, now=10, captured_mono=10, scene_visible=True), process)
+        registration={'status': 'locked'}, now=10, captured_mono=9.8, scene_visible=True), process)
     if phase == 'before':
         scope['practice'].observe.assert_not_called()
         scope['safety'].offer.assert_not_called()
@@ -231,6 +482,7 @@ async def test_actual_worker_callback_cannot_rearm_or_dispatch_after_source_reti
     if phase in {'before', 'safety', 'dispatch'}:service.enable.assert_not_awaited()
     if phase is None:
         service.observe.assert_awaited_once()
+        assert service.observe.await_args.kwargs['captured_mono'] == 9.8
         assert service.armed is True
     else:
         service.observe.assert_not_awaited()
@@ -247,7 +499,8 @@ async def test_original_retirement_fails_pending_motion_once_and_does_not_clear_
     old_epoch = wall.begin(CAMERA['id'])
     old_process, new_process = SimpleNamespace(returncode=None), SimpleNamespace(returncode=None)
     old = dict(source_active=True, process=old_process, state='live', control_epoch=2,
-               frame=b'private', received_at=1000, people=1, hands=1, animals=1)
+               frame=b'private', received_at=1000, people=1, hands=1, animals=1,
+               mode='person_target', mode_revision='old', follow_picker=object())
     new = dict(source_active=True, process=new_process, state='live', privacy_closed=False)
     cleared = Mock()
     pool = previews.PreviewPool.__new__(previews.PreviewPool)
@@ -261,12 +514,14 @@ async def test_original_retirement_fails_pending_motion_once_and_does_not_clear_
     acknowledged = asyncio.get_running_loop().create_future()
     acknowledged.set_result({'native_code': 0})
     scope = dict(latest={'private': 'old'}, retired=False, item=old, self=pool, selected=CAMERA,
+                 TARGET_MODES=TARGET_MODES, secrets=secrets,
                  wall_epoch=old_epoch, waiters={'pending': pending, 'ack': acknowledged})
     retire = actual('homeplane/embodied/previews.py', 'retire_source', scope)
     retire('source_closed');retire('capture_stream_unavailable')
     with pytest.raises(RuntimeError, match='^source_closed$'):await pending
     assert acknowledged.result() == {'native_code': 0}
     assert not old['source_active'] and old['frame'] is None and scope['latest'] is None
+    assert 'follow_picker' not in old and old['mode'] == 'hold' and old['mode_revision'] != 'old'
     assert old['control_epoch'] == 3
     if replacement:
         cleared.assert_not_called()
@@ -325,7 +580,8 @@ async def test_identity_cleanup_error_still_reaps_the_original_native_vision_chi
     process.terminate = Mock(side_effect=ProcessLookupError() if exit_race else None)
     async def wait():process.returncode = 0;return 0
     process.wait = AsyncMock(side_effect=wait)
-    recognizer.vision = process
+    recognizer.vision = camera_recognition.VisionProcess('synthetic-vision')
+    recognizer.vision.process = process
     recognizer.room = None
     with pytest.raises(RuntimeError, match='^synthetic-identity-close$'):
         await recognizer.close()
@@ -348,7 +604,7 @@ async def test_queued_original_gesture_rechecks_source_even_if_clear_callback_fa
     jobs = []
     scope = dict(SELECTED={'id': primary}, identities=SimpleNamespace(session='original-session'),
         state={'status': 'live'}, previews=pool, interaction_enabled=True,
-        games=MotionGames(),
+        games=MotionGames(),party_camera=PartyCamera(),
         home=SimpleNamespace(spawn=jobs.append, armed=True),
         secondary_homes={CAMERA['id']: SimpleNamespace(armed=True)},
         fleet=SimpleNamespace(current=Mock(return_value=True), receipts=deque()),

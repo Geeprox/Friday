@@ -24,9 +24,12 @@ const walk=n=>[n,...n.children.flatMap(walk)],settle=()=>new Promise(setImmediat
  vm.runInContext(fs.readFileSync('homeplane/static/games-library.js','utf8').replace(/^import.*$/gm,'').replace('export function mountGames','function mountGames'),context);
  const owner=vm.runInContext('mountGames(root)',context),nodes=()=>walk(root),button=text=>nodes().find(n=>n.tagName==='button'&&n.textContent===text);
  await settle();assert.equal(packet.catalogue.service.owned,false);button('林间滑雪').onclick();
+ const trail=id=>nodes().find(n=>n.dataset.skiTrail===id);
+ assert.equal(trail('summit').getAttribute('aria-pressed'),'true');
+ trail(packet.command.ski_trail).onclick();assert.equal(writes,0);
  await button('开始游戏').onclick();await settle();
  assert.equal(writes,1);assert(nodes().some(n=>n.tagName==='iframe'),'first launch must retain its frame');
- assert.equal(nodes().find(n=>n.className==='games-library').dataset.playing,'true');
+ assert.equal(nodes().find(n=>n.tagName==='dialog').open,true);
  catalogue=packet.stopped;tick();await settle();
  assert(!nodes().some(n=>n.tagName==='iframe'));const exit=button('返回游戏详情');assert(exit);assert.equal(Element.active,exit);
  exit.onclick();await settle();assert.equal(button('开始游戏').disabled,false);assert.equal(writes,1);

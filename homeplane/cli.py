@@ -121,7 +121,8 @@ def main():
         import uvicorn
 
         from .api import create_app
-        uvicorn.run(create_app(adapter, console_port=args.port), host="127.0.0.1", port=args.port, access_log=False, proxy_headers=False)
+        from .intelligence.settings import default_directory
+        uvicorn.run(create_app(adapter, console_port=args.port, intelligence_directory=default_directory()), host="127.0.0.1", port=args.port, access_log=False, proxy_headers=False)
         return
     if args.command == "doctor":
         from .arl import DEFAULT_HOME, ARLRuntime

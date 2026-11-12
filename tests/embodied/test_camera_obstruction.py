@@ -1,10 +1,12 @@
 import cv2
 import numpy as np
 from homeplane.embodied.camera_director import CameraDirector,visible_scene
+from tests.embodied.test_camera_director import patrol_view
 
 
 def view(at,visible):
-    return dict(status='live',_local_received=at,scene_visible=visible,people=[],session_id='one')
+    return dict(status='live',_local_received=at,scene_visible=visible,people=[],session_id='one',
+                _patrol_view=patrol_view(at))
 
 
 def test_detail_in_small_corner_cannot_hide_mostly_obscured_scene():
@@ -31,7 +33,7 @@ def test_clear_left_strip_does_not_qualify_mostly_blank_wall():
 
 def test_turn_out_of_bad_pan_then_avoid_that_angle_on_patrol():
     d=CameraDirector();d.choose(view(0,True),0);d.choose(view(.1,True),.1)
-    d.phase='patrolling';d.sent(1,'right')
+    d.sent(1,'right',automatic=False)
     for at in (3,3.5):assert d.choose(view(at,False),at) is None
     assert d.choose(view(4,False),4)=='left'
     d.sent(4)

@@ -82,6 +82,7 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
   const controls = element('div', null, {class: 'hc-controls'});
   const submit = element('button', '发送', {type: 'submit', class: 'primary', 'data-hc': 'send'});
   const fresh = button('新问题', () => {
+    voiceInput?.cancel();
     abandon();
     state.active = null;
     state.draftText = input.value;
@@ -91,6 +92,10 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
   }, {'data-hc': 'new', class: 'hc-secondary'});
   const stop = button('停止请求', () => void stopCurrent(), {'data-hc': 'stop', class: 'hc-secondary'});
   controls.append(submit, fresh, stop);
+  let voiceInput=null;
+  import('/static/intelligence-voice.js').then(({mountVoiceInput})=>{
+    if(!state.disposed)voiceInput=mountVoiceInput(controls,input);
+  }).catch(()=>{});
   const help = element('details', null, {class: 'hc-details'});
   help.append(element('summary', '详情'), element('p', '批准只作用于当前预览。Esc 停止，⌘ / Ctrl + Enter 发送。', {class: 'hc-meta'}), retention);
   form.append(label, input, controls, help);
@@ -809,6 +814,7 @@ export function mount(container, {sourceToken, client, initialDraft = '', recove
       abandon();
       ++state.generation;
       state.disposed = true;
+      voiceInput?.dispose();
       state.taskRead?.controller.abort();
       state.taskMutation?.controller.abort();
       clearInterval(timer);

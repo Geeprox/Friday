@@ -26,9 +26,19 @@ test('current gate, miss and collision use only adjacent original event and coun
   assert.equal(cue(f,before,{...after,ski:{...after.ski,[key]:0}}),null);
  }
 });
-test('tennis uses rule hit/point events, never a swing, score change or predicted contact',()=>{
+test('ski warmup sounds once on each freshly recognized step',()=>{
+ const f=fixture(),state=(step,extra={})=>g('ski',{ski:{warmup:{step}},...extra});
+ assert.equal(cue(f,state('left'),state('right')),'stage');
+ assert.equal(cue(f,state('arms'),state('ready')),'stage');
+ assert.equal(cue(f,state('right'),state('right')),null);
+ assert.equal(cue(f,state('left'),state('arms')),null);
+ assert.equal(cue(f,state('arms',{status:'paused'}),state('ready')),null);
+ assert.equal(cue(f,state('arms'),state('ready',{round_id:2})),null);
+ assert.equal(cue(f,state('ready'),g()),null);
+});
+test('tennis uses rule serve/hit/point events, never a swing, score change or predicted contact',()=>{
  const f=fixture(),before=g('tennis');
- for(const[kind,sound]of [['hit','racket'],['point','point']])assert.equal(cue(f,before,g('tennis',{tennis:{event:{sequence:1,kind,player:0,age:.1}}})),sound);
+ for(const[kind,sound]of [['serve','racket'],['hit','racket'],['point','point']])assert.equal(cue(f,before,g('tennis',{tennis:{event:{sequence:1,kind,player:0,age:.1}}})),sound);
  assert.equal(cue(f,before,g('tennis',{tennis:{score:[1,0],rally:1}})),null);
  assert.equal(cue(f,before,g('tennis',{tennis:{event:{sequence:1,kind:'hit',player:2,age:0}}})),null);
 });
@@ -89,11 +99,20 @@ test('an older elapsed packet cannot reset the baseline to replay a counted outc
  const f=fixture();await f.sound.enable();f.set(g('ski',{elapsed:2,ski:{gates_passed:1,event:{sequence:1,kind:'gate',age:0}}}));f.notes.length=0;
  f.set(g('ski',{elapsed:1}));f.set(g('ski',{elapsed:2,ski:{gates_passed:1,event:{sequence:1,kind:'gate',age:0}}}));assert.equal(f.notes.length,0);f.sound.close();
 });
+test('光线只在本局命中序号与得分同时增加时播放确认',()=>{
+ const {gameSoundCue,gameSoundFrame}=fixture().context;
+ const beam=(hits,event)=>gameSoundFrame(g('beam',{beam:{hits,event}}));
+ const first={kind:'hit',sequence:1,age:.05};
+ assert.equal(gameSoundCue(beam(0),beam(1,first)),'point');
+ assert.equal(gameSoundCue(beam(1,first),beam(1,first)),null);
+ assert.equal(gameSoundCue(beam(0),beam(0,first)),null);
+ assert.equal(gameSoundCue(null,beam(1,first)),null);
+});
 test('the actual game entry invokes the control and retires sound with its lifecycle',async()=>{
  const text=fs.readFileSync('homeplane/embodied/static/games.js','utf8'),nodes=new Map(),listeners={},docListeners={};
  const node=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',setAttribute(k,v){this[k]=v;}});return nodes.get(id);};
  let enabled=false,quiet=0,closed=0,reopened=0;
- const c=vm.createContext({$:node,gameSound:{status:()=>({enabled,pending:false,state:enabled?'on':'off'}),enable:async()=>{enabled=true;return true;},disable(){enabled=false;},quiet(){quiet++;},close(){closed++;},reopen(){reopened++;}},stageClosed:false,presentationClient:{release(){},close(){}},streamGeneration:0,reconnectTimer:null,commandPending:null,gameSocket:null,streamOpen:true,stageFrame:null,clearTimeout(){},cancelAnimationFrame(){},document:{hidden:true,addEventListener:(k,f)=>docListeners[k]=f},window:{addEventListener:(k,f)=>listeners[k]=f},updateHUD(){},scheduleStage(){},connect(){},performance:{now:()=>0}});
+ const c=vm.createContext({$:node,gameSound:{status:()=>({enabled,pending:false,state:enabled?'on':'off'}),enable:async()=>{enabled=true;return true;},disable(){enabled=false;},quiet(){quiet++;},close(){closed++;},reopen(){reopened++;}},stageClosed:false,beamStage:{forget(){}},presentationClient:{release(){},close(){}},streamGeneration:0,reconnectTimer:null,commandPending:null,gameSocket:null,streamOpen:true,stageFrame:null,clearTimeout(){},cancelAnimationFrame(){},document:{hidden:true,querySelector:()=>null,addEventListener:(k,f)=>docListeners[k]=f},window:{addEventListener:(k,f)=>listeners[k]=f},updateHUD(){},scheduleStage(){},connect(){},performance:{now:()=>0}});
  vm.runInContext(text.slice(text.indexOf('function updateGameSound('),text.indexOf('function winterReady(')),c);
  await c.toggleGameSound();assert(enabled);await c.toggleGameSound();assert(!enabled);c.updateGameSound({enabled:true,pending:false});assert.equal(node('soundToggle')['aria-pressed'],'true');
  const action=text.slice(text.indexOf('function delegatedCall('),text.indexOf("for(const kind of ['click'"));vm.runInContext(action,c);c.delegatedCall({},'toggleGameSound()');await new Promise(setImmediate);assert(enabled);

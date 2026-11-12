@@ -17,15 +17,17 @@ function makeClient(extra={}){
   location:{host:'127.0.0.1',protocol:'http:'},document:{hidden:false,createElement:tag=>({tagName:tag.toUpperCase()}),querySelectorAll:()=>[node('mode'),node('start')],querySelector:()=>node('actions')},
   $:node,url:p=>p,fetch:async()=>{throw Error('unexpected network');},
   selectMode:mode=>{c.selected=mode;calls.push(['selected',mode]);},updateHUD:()=>calls.push(['updated']),
-  skiScenery:{receive(){}},scenery:{receive(){},ready:()=>true},winterReady:()=>true,presentationClient:{tick(){},ready:()=>true,release(){},close(){}},gameSound:{quiet(){},close(){},tick(){}},reportViewer(){},
+  skiScenery:{receive(){}},scenery:{receive(){},ready:()=>true},winterReady:()=>true,beamStage:{forget(){},receive(){},ready:()=>true},presentationClient:{tick(){},ready:()=>true,release(){},close(){}},gameSound:{quiet(){},close(){},tick(){}},reportViewer(){},
   setTimeout:(fn,ms)=>{const id=++nextTimer;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),
   cancelAnimationFrame:id=>calls.push(['cancelled-frame',id]),
   WebSocket:function(url){this.url=url;this.close=()=>{this.closed=true;};sockets.push(this);},
   Image:function(){images.push(this);},FileReader:function(){this.result='data:synthetic-only';this.readAsDataURL=()=>{};readers.push(this);},
   ...extra});
- vm.runInContext(part('function validGameState(', '\nif(new URLSearchParams'),c);
+ vm.runInContext(part('const tennisModes=', '\nif(new URLSearchParams'),c);
+ vm.runInContext(part('let renderedOverlay=null;', '\nfunction updateSourceMode('),c);
+ vm.runInContext(part('const legacyQuestStages=', '\nfunction updateQuestHUD('),c);
  vm.runInContext(part('async function commandGame(', '\nfunction selectMode('),c);
- vm.runInContext(part('async function startGame()', '\nlet gamePackets'),c);
+ vm.runInContext(part('async function startGame(', '\nlet gamePackets'),c);
  vm.runInContext(part('async function pauseGame()', '\nfunction togglePlayerView('),c);
  vm.runInContext(part('function streamLost(', '\nfunction updateHUD('),c);
  vm.runInContext(part('function closeGameView()', "\nwindow.addEventListener('pagehide'"),c);

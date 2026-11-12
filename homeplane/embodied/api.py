@@ -5,15 +5,18 @@ import time
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from homeplane.runtime_log import observe
 
-from .catalog import RECOGNIZERS, catalog, get_app
+from .catalog import RECOGNIZERS, TennisVariant, catalog, get_app
+from .camera_follow_picker import FollowCommand
 from .game_difficulty import DifficultyId, difficulty_options
 from .household import DeviceCommands, basic_command
 from .paths import PRIVATE
+from .quest import QuestRouteId, quest_route_options
+from .ski_route import SkiTrailId, ski_trail_options
 
 
 class Start(BaseModel):
@@ -22,6 +25,9 @@ class Start(BaseModel):
     camera: str | None = Field(default=None, pattern=r"^cam_[a-f0-9]{10}$")
     app: str | None = Field(default=None, max_length=32)
     difficulty: DifficultyId | None = None
+    ski_trail: SkiTrailId | None = None
+    tennis_variant: TennisVariant | None = None
+    quest_route: QuestRouteId | None = None
     expected_intent: str = Field(pattern=r'^[a-f0-9]{64}$', strict=True)
 
 
@@ -40,6 +46,7 @@ class CameraControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
     direction: str | None = Field(default=None,pattern="^(left|right|up|down)$")
     mode: str | None = Field(default=None,pattern="^(hold|auto|pets|survey)$")
+    survey_revision: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
 
 
 class CameraPower(BaseModel):
@@ -134,7 +141,7 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     from .audio_output import install as install_speech_output
     install_speech_output(router)
     from .safety_api import install as install_safety
-    service.safety_output = install_safety(router, service, archive=archive)
+    service.safety_output = install_safety(router, service, archive=archive,infrastructure=infrastructure)
     devices = DeviceCommands(core, lock, service)
     if home_flow is not None:
         from .voice_questions import install as install_voice_questions
@@ -179,7 +186,9 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
 
     @router.get("/api/games")
     async def games():
-        return dict(apps=catalog(), recognition=RECOGNIZERS, difficulties=difficulty_options(), service=await service.status())
+        return dict(apps=catalog(), recognition=RECOGNIZERS, difficulties=difficulty_options(),
+                    ski_trails=ski_trail_options(preview=True), quest_routes=quest_route_options(teaching=True),
+                    service=await service.status())
 
     @router.get('/api/embodied/scenes')
     async def scenes():
@@ -227,10 +236,14 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     async def camera_control(camera_id: str, request: CameraControl):
         if camera_id not in {c['id'] for c in service.cameras()}:
             raise HTTPException(409,detail="camera_not_running")
-        if bool(request.direction)==bool(request.mode):raise HTTPException(422)
+        if (bool(request.direction)==bool(request.mode)
+                or request.survey_revision is not None and request.mode != 'hold'):
+            raise HTTPException(422)
         try:
-            return await service.camera_control(camera_id,direction=request.direction,mode=request.mode)
-        except (ValueError,OSError):raise HTTPException(409,detail="camera_control_unavailable")from None
+            options = {'survey_revision': request.survey_revision} if request.survey_revision is not None else {}
+            return await service.camera_control(camera_id, direction=request.direction, mode=request.mode, **options)
+        except (ValueError, OSError, httpx.HTTPError):
+            raise HTTPException(409,detail="camera_control_unavailable") from None
 
     @router.get('/api/embodied/connection')
     async def mijia_connection_status():
@@ -293,15 +306,31 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         except ValueError:
             raise HTTPException(409, detail="camera_frame_unavailable") from None
 
+    @router.get('/api/embodied/cameras/{camera_id}/follow-target')
+    async def follow_target_view(camera_id: str):
+        try:
+            report = await service.camera_follow_target(camera_id)
+        except (ValueError, OSError, httpx.HTTPError):
+            raise HTTPException(409, detail='follow_target_unavailable') from None
+        return JSONResponse(report, headers={'Cache-Control': 'no-store'})
+
+    @router.post('/api/embodied/cameras/{camera_id}/follow-target')
+    async def follow_target_command(camera_id: str, command: FollowCommand):
+        try:
+            return await service.camera_follow_target(camera_id, command.model_dump())
+        except (ValueError, OSError, httpx.HTTPError):
+            raise HTTPException(409, detail='follow_target_unavailable') from None
+
     @router.post("/api/embodied/start")
     async def start(request: Start):
         if request.app:
             if get_app(request.app).kind == 'party':
                 raise HTTPException(409, detail='party_host_required')
         try:
+            options = request.model_dump(include={'difficulty', 'ski_trail', 'tennis_variant', 'quest_route'},
+                                         exclude_none=True)
             return await service.start(request.camera, request.app, open_privacy=request.open_privacy,
-                                       expected_intent=request.expected_intent,
-                                       **({'difficulty':request.difficulty} if request.difficulty is not None else {}))
+                                       expected_intent=request.expected_intent, **options)
         except (OSError, ValueError, httpx.HTTPError) as error:
             detail = 'game_state_changed' if str(error) == 'game_state_changed' else 'embodied_start_unavailable'
             raise HTTPException(409, detail=detail) from None
@@ -325,12 +354,21 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         return await service.quiet(request.quiet)
 
     @router.get("/api/games/{app_id}/open")
-    async def open_app(app_id: str):
-        if get_app(app_id).kind == 'party':
+    async def open_app(app_id: str, request: Request):
+        app = get_app(app_id)
+        if app.kind == 'party':
             raise HTTPException(409, detail='party_host_required')
         report = await service.status()
         if not report["owned"]:
             raise HTTPException(409, detail="embodied_not_running")
+        intent = request.headers.get('x-friday-game-intent')
+        if intent is not None:
+            game = report.get('game') or {}
+            mode = game.get('mode')
+            if mode == 'off' and game.get('game_input_enabled') is True:
+                mode = game.get('selected_mode')
+            if intent != report.get('game_intent') or mode != app.mode:
+                raise HTTPException(409, detail='game_state_changed')
         return dict(url=service.viewer(app_id), tv_url=service.viewer(app_id, tv=True))
 
     @router.get('/api/embodied/recognition/open')

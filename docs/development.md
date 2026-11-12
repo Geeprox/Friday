@@ -1,5 +1,11 @@
 # 开发与验证
 
+可选 ARL/API 通道的数据流和用量语义见[智能通道](intelligence.md)。新增回归使用合成
+HTTP/WebSocket 与 PNG，正常测试不需要真实 API Key。`tests/test_intelligence_*` 覆盖
+并发预留、跨日、降级、设置和主动语音生命周期；`tests/test_ktv_background.py` 覆盖歌曲
+媒体票据与可选图片故障。纯 Java 状态测试需显式 `FRIDAY_TEST_JAVA_HOME`，缺少时跳过，
+不会触发系统 Java 安装器。浏览器检查使用独立示例服务，不能据此宣称真实付费调用或电视验收。
+
 先阅读 [AGENTS.md](../AGENTS.md)，核对当前任务的实现、验证与授权范围。公共约定在[元仓库开发规范](https://github.com/lijunfeng722/friday-project-index/blob/main/docs/development.md)统一维护，本仓库保留部署、隐私、设备发现与公开历史要求。
 
 ## 开发环境
@@ -14,6 +20,8 @@ uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connectio
 
 完整回归包含 KTV 的真实 PNG 二维码生成，因此须选择已锁定的 `ktv` extra；
 `qrcode` 本身不包含 `PyPNGImage` 所需的 PyPNG。无需为运行测试启动 KTV、登录、扬声器或电视。
+
+体感游戏的 Node 回归通过 `FRIDAY_TEST_PYTHON` 显式选择同一锁定测试环境的 Python；没有设置时才兼容本地 `.venv/bin/python`。独立源码导出与 CI 应设置该变量，不必在导出目录复制环境或建立兼容软链。这只调整测试入口，不改变用户操作或产品画面。
 
 照片处理的 Pillow 与 HEIF 解码器由主依赖锁定；[照片处理说明](PHOTO-EDITING.md)
 记录真实编解码、子进程预算和取消责任。依赖解析使用 `uv lock`，不以精确同步已有

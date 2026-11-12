@@ -1,0 +1,6 @@
+.ai-config{border-top:1px solid var(--border,#deddd9);margin-top:24px;padding-top:20px;max-width:760px}
+.ai-config h3{margin:0 0 12px}.ai-fields,.ai-config fieldset{display:grid;gap:16px}.ai-config fieldset{border:1px solid var(--border,#deddd9);border-radius:8px;padding:16px;margin:4px 0}
+.ai-field{display:grid;grid-template-columns:minmax(180px,1fr) minmax(120px,1fr);gap:6px 16px;align-items:center}.ai-field small{grid-column:1/-1;line-height:1.6;color:var(--muted,#65645f)}
+.ai-field input:not([type=checkbox]),.ai-field select{width:100%;min-width:0;box-sizing:border-box}.ai-field input[type=checkbox]{justify-self:start;width:18px;height:18px}
+.ai-actions{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0}.ai-config details{margin:16px 0}.ai-config details>.ai-field{margin-top:14px}.ai-config details>input{display:block;max-width:100%;margin:10px 0}.ai-config details>button{margin:4px 8px 4px 0}.ai-config p{line-height:1.7;overflow-wrap:anywhere}
+@media(max-width:600px){.ai-field{grid-template-columns:1fr}.ai-field small{grid-column:auto}.ai-actions button{flex:1 1 140px}}

@@ -2,8 +2,8 @@
   "status": "Integrated; parent reviewed actual cards, practice and game stage at desktop/phone, independent review and user acceptance pending; physical recognition untested",
   "created_at": "2026-11-04T17:14:41.361841+00:00",
   "replacement_for": "Source-bound real outfit materials and19 transparent fallbacks only; no production edits by producer",
-  "model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
-  "renderer_sha256": "a39c0ca3e6ed9218421ae4f74df86c2331f071bfb088a5606880e30d0c9266ce",
+  "model_sha256": "ca3aad40450568c9bf0781ec73c2bd3e625913f30b351808273446ef47f99997",
+  "renderer_sha256": "4cdd424aba27e31f19f43c9929dd38cd91c151bb3c45ab03cbe2cd974e3ae736",
   "base": {
     "model_sha256": "4b7f192011f43a21c833a5e00822d077bfaf56685b08da0060d57b3d32599969",
     "geometry_nodes_skin_and_original_seven_clips_unchanged": false,
@@ -26,7 +26,70 @@
       "step-jack",
       "side-step-taps"
     ],
-    "existing_seven_retained": true
+    "existing_seven_retained": true,
+    "quest_expansion": {
+      "previous_model_sha256": "cab3c41d259e9aeca1e4764b70b163513c8034ce56b43b3683744ba40a16da90",
+      "previous_binary_prefix_bytes": 2027224,
+      "previous_animations_retained": 13,
+      "source_segments_seconds": {
+        "balance": [
+          0,
+          1.2,
+          4.4
+        ],
+        "cross_knee": [
+          0,
+          0.65,
+          1.12
+        ]
+      },
+      "clips": {
+        "balance": "balance-single-leg-stand",
+        "cross_knee": "cross-knee-tap"
+      },
+      "cue": "Frontal view; alternate the mirrored side after each complete demonstration cycle.",
+      "displayed_source_times": {
+        "balance": {
+          "release": 3.4
+        },
+        "cross_knee": {
+          "start": 0.4,
+          "end": 0.8
+        }
+      }
+    },
+    "camp_coordination": {
+      "previous_model_sha256": "05272ba5e73fe0e3a0cef9f2aa639d8c43289f4a7708df251f3201872b6327ba",
+      "previous_animations_retained": 15,
+      "clips": {
+        "side_raise": {
+          "name": "balance-side-leg-raise-hold",
+          "source_interval_seconds": [
+            0,
+            1.1,
+            4.03
+          ],
+          "display_timing": {
+            "release": 3.05
+          }
+        },
+        "overhead_clap": {
+          "name": "dance-overhead-clap",
+          "source_interval_seconds": [
+            0,
+            0.58,
+            0.65
+          ],
+          "display_timing": {
+            "times": [
+              0,
+              0.5
+            ]
+          }
+        }
+      },
+      "cue": "Frontal view, mirrored on each full lateral raise cycle; the overhead clap retraces its original closing motion to its open start."
+    }
   },
   "authored_motion": {
     "copyright": "2026 Friday contributors",
@@ -58,7 +121,7 @@
     "view_checks": "20 default plus0 front/65 side audit only",
     "source_left_right_semantics_unchanged": true,
     "one_renderer_no_raf": true,
-    "static_target_count": 19,
+    "static_target_count": 23,
     "target_pixels": [
       480,
       540

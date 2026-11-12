@@ -14,7 +14,9 @@ async function run({wrongReply=false,stageChange=false}={}){
    if(options.method==='POST'){
     assert.equal(path,'/api/embodied/start');const data=JSON.parse(options.body);writes.push(data);
     assert.deepEqual(data,packet.command);
-    const result=structuredClone(packet.started);if(wrongReply)result.game.difficulty='standard';
+    const result=structuredClone(packet.started);
+    if(wrongReply==='difficulty')result.game.difficulty='standard';
+    if(wrongReply==='trail')result.game.ski_trail='summit';
     catalogue={...catalogue,service:result};return response(result);
    }
    if(path==='/api/games')return response(catalogue);
@@ -28,7 +30,12 @@ async function run({wrongReply=false,stageChange=false}={}){
  const choice=nodes().find(n=>n.tagName==='select');assert(choice);assert.equal(choice.children.length,3);
  choice.value=packet.command.difficulty;choice.onchange();assert.equal(writes.length,0,'selection alone cannot change an active round');
  const details=nodes().find(n=>n.className==='game-difficulty-note');assert.equal(details.textContent,packet.catalogue.difficulties.find(d=>d.id===packet.command.difficulty).description.ski);
- await button('重新开始').onclick();await settle();
+ const trail=id=>nodes().find(n=>n.dataset.skiTrail===id);
+ assert.equal(trail('summit').getAttribute('aria-pressed'),'true');
+ trail(packet.command.ski_trail).onclick();
+ assert.equal(trail(packet.command.ski_trail).getAttribute('aria-pressed'),'true');
+ assert.equal(writes.length,0);
+ await button('换道并开始').onclick();await settle();
  assert.equal(writes.length,1);
  if(wrongReply){assert(!nodes().some(n=>n.tagName==='iframe'));assert(root.textContent.includes('游戏状态已变化'));}
  else{
@@ -36,12 +43,15 @@ async function run({wrongReply=false,stageChange=false}={}){
   if(stageChange)catalogue={...catalogue,service:packet.peer};
   button('返回详情').onclick();await settle();
   const expected=stageChange?packet.peer.game.difficulty:packet.command.difficulty;
-  const label=packet.catalogue.difficulties.find(d=>d.id===expected).label;
+  const actual=stageChange?packet.peer.game.ski_trail:packet.command.ski_trail;
+  const label=packet.catalogue.ski_trails.find(item=>item.id===actual).name;
   assert(button('进入游戏 · '+label));assert.equal(choice.value,expected,'the confirmed choice follows changes made inside the stage');
+  assert.equal(trail(actual).getAttribute('aria-pressed'),'true');
   const alternate=packet.command.difficulty==='challenge'?'easy':'challenge';choice.value=alternate;choice.onchange();
-  assert(button('进入游戏 · '+label),'continue identifies the current difficulty, independent of the next requested round');
-  await button('进入游戏 · '+label).onclick();await settle();assert.equal(writes.length,1,'continue does not apply pending difficulty');
+  trail(actual==='summit'?packet.command.ski_trail:'summit').onclick();
+  assert(button('进入游戏 · '+label),'continue identifies the active trail even with a different selection pending');
+  await button('进入游戏 · '+label).onclick();await settle();assert.equal(writes.length,1,'continue does not apply either pending option');
  }
  owner.dispose();assert.equal(interval,null);assert.equal(root.children.length,0);
 }
-(async()=>{await run();await run({stageChange:true});await run({wrongReply:true});console.log(JSON.stringify({actual_asgi_receipts:true,selection_is_local:true,confirmed_difficulty:true,stage_choice_follows:true,continue_preserves_current:true,wrong_reply_rejected:true,disposed:true}));})().catch(e=>{console.error(e);process.exitCode=1;});
+(async()=>{await run();await run({stageChange:true});await run({wrongReply:'difficulty'});await run({wrongReply:'trail'});console.log(JSON.stringify({actual_asgi_receipts:true,selection_is_local:true,confirmed_options:true,stage_choice_follows:true,continue_preserves_current:true,wrong_reply_rejected:true,disposed:true}));})().catch(e=>{console.error(e);process.exitCode=1;});

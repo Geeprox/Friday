@@ -93,6 +93,14 @@ public final class KtvClient {
     public File downloadVideo(JSONObject media, AtomicBoolean cancel) throws Exception {
         return downloadMedia(media,cancel,true);
     }
+    public File downloadBackground(JSONObject media,AtomicBoolean cancel)throws Exception{
+        String hash=media.getString("sha256"),path=media.getString("url");long size=media.getLong("bytes");
+        if(!hash.matches("[a-f0-9]{64}")||size<33||size>12L*1024*1024||!"png".equals(media.getString("encoding"))||!MediaRoute.kind(path).equals("background"))throw new IOException("invalid_background");
+        File target=new File(cache,hash+".png");
+        MediaTransfer.Verifier verify=file->{try(DataInputStream in=new DataInputStream(new FileInputStream(file))){if(in.readLong()!=0x89504e470d0a1a0aL||in.readInt()!=13||in.readInt()!=0x49484452)throw new IOException("invalid_background");int width=in.readInt(),height=in.readInt();if(width<256||height<256||width>4096||height>4096||(long)width*height>9000000)throw new IOException("invalid_background");}};
+        File found=MediaTransfer.existing(target,size,hash,verify,cancel,mediaCache);if(found!=null)return found;
+        return MediaTransfer.download(target,size,hash,routes(media,path,"background"),route->openMedia(route,size),verify,cancel,mediaCache);
+    }
     public boolean manifestValid(JSONObject job){
         if(!coordinator||!job.optString("state").equals("ready"))return true;
         try{

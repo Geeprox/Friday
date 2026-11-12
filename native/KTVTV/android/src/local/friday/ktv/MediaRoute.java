@@ -11,7 +11,7 @@ public final class MediaRoute {
     public final boolean coordinator;
     private MediaRoute(String url,String header,String credential,boolean coordinator){this.url=url;this.header=header;this.credential=credential;this.coordinator=coordinator;}
     public static String kind(String path)throws IOException{
-        if(path==null||!path.matches("/v1/jobs/"+UUID+"/media/(original|instrumental|video)"))throw new IOException("invalid_media_route");
+        if(path==null||!path.matches("/v1/jobs/"+UUID+"/media/(original|instrumental|video|background)"))throw new IOException("invalid_media_route");
         return path.substring(path.lastIndexOf('/')+1);
     }
     public static MediaRoute local(KtvEndpoint endpoint,String path,String kind)throws IOException{

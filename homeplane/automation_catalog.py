@@ -1,6 +1,7 @@
 """Private observed catalog, independent of execution authority and source graphs."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -33,6 +34,9 @@ class Entry(BaseModel):
     actions: list[str] = Field(default_factory=list, max_length=24)
     issues: list[str] = Field(default_factory=list, max_length=8)
     fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    def observation_digest(self):
+        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
 
     @model_validator(mode="after")
     def valid_evidence(self):
@@ -78,6 +82,18 @@ class Import(BaseModel):
     bundle: Bundle
 
 
+class CatalogSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    key: str = Field(min_length=1, max_length=160)
+    entry_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class CatalogOrigin(CatalogSelection):
+    source: Literal["geek", "mijia"]
+    kind: Literal["automation", "scene"]
+    name: str = Field(min_length=1, max_length=160)
+
+
 class AutomationCatalog:
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -90,6 +106,16 @@ class AutomationCatalog:
             return Bundle()
         except (OSError, ValueError, TypeError):
             raise ValueError("invalid_config") from None
+
+    def origin(self, selection: CatalogSelection):
+        try:
+            entry = next((row for row in self.read().entries if row.key == selection.key), None)
+        except ValueError:
+            raise ValueError("catalog_source_changed") from None
+        if entry is None or entry.observation_digest() != selection.entry_digest:
+            raise ValueError("catalog_source_changed")
+        return CatalogOrigin(key=entry.key, entry_digest=selection.entry_digest,
+                             source=entry.source, kind=entry.kind, name=entry.name)
 
     @observe("automation.catalog.import")
     def replace(self, request: Import):
@@ -116,9 +142,8 @@ class AutomationCatalog:
         return updated
 
 
-def create_router(path, manager, geek_inventory):
+def create_router(owner, manager, geek_inventory):
     router = APIRouter(prefix="/api/home/automations")
-    owner = AutomationCatalog(path)
     router.catalog_owner = owner
 
     @router.get("/catalog")
@@ -135,6 +160,7 @@ def create_router(path, manager, geek_inventory):
             connection = {"status": "unavailable", "observed_at": None, "count": None}
         owned = [{"key": r.rule.id, "name": r.rule.intent, "enabled": r.enabled} for r in manager.records()]
         return {**bundle.model_dump(mode="json"), "owned": owned, "geek_connection": connection,
+                "entry_digests": {entry.key: entry.observation_digest() for entry in bundle.entries},
                 "coverage": "observed_catalog_only", "external_rules_intercepted": False,
                 "external_writes_supported": False, "mode_state": "unknown"}
 

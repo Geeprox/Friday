@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm'),{execFileSync}=require('node:child_process');
 const source=fs.readFileSync('homeplane/embodied/static/games.js','utf8');
-const stages=JSON.parse(execFileSync('.venv/bin/python',['-B','-c','import json;from homeplane.embodied.quest import STAGES;print(json.dumps([s.public() for s in STAGES]))'],{encoding:'utf8'}));
+const stages=JSON.parse(execFileSync(process.env.FRIDAY_TEST_PYTHON||'.venv/bin/python',['-B','-c','import json;from homeplane.embodied.quest import STAGES;print(json.dumps([s.public() for s in STAGES]))'],{encoding:'utf8'}));
 function setup(){
  const nodes=new Map();
  const create=()=>({textContent:'',innerHTML:'',dataset:{},style:{},children:[],setAttribute(k,v){this[k]=v;},replaceChildren(...values){this.children=values;}});
@@ -17,12 +17,12 @@ test('every route station presents the actual rule instruction and source teachi
  for(const[level,stage]of stages.entries()){
   const view=scope.questPresentation(game(level));
   assert.equal(view.title,stage.title);assert.equal(view.instruction,stage.instruction);
-  assert.equal(view.teaching,stage.teaching);assert.equal(view.total,10);
-  assert.equal(view.progress,level/10);
+  assert.equal(view.teaching,stage.teaching);assert.equal(view.total,14);
+  assert.equal(view.progress,level/stages.length);
  }
- const view=scope.questPresentation(game(10));
+ const view=scope.questPresentation(game(stages.length));
  assert.equal(view.progress,1);assert.equal(view.teaching,null);assert.equal(view.instruction,'');
- assert.equal(view.announcement,'10 站山径已完成');
+ assert.equal(view.announcement,'14 站山径已完成');
 });
 
 test('route progress never rewinds between a finished station and the next one',()=>{
@@ -31,19 +31,34 @@ test('route progress never rewinds between a finished station and the next one',
   const view=scope.questPresentation(game(level,{hold:stage.hold*ratio,reps:stage.reps*ratio}));
   assert(view.progress>=before);assert(view.progress<1);before=view.progress;
  }
- assert(scope.questPresentation(game(10)).progress>=before);
+ assert(scope.questPresentation(game(stages.length)).progress>=before);
 });
 
 test('preparation previews the next action but cannot display earned reps',()=>{
  const{scope}=setup();const view=scope.questPresentation(game(3,{phase:'transition',transition_seconds:2.21}));
- assert.equal(view.title,'下一站 · 左右侧迈');assert.equal(view.live,'3 秒后开始');
- assert.equal(view.teaching,'exercise.side_step');assert.equal(view.progress,3/10);
+ assert.equal(view.title,'下一站 · 侧点步');assert.equal(view.live,'3 秒后开始');
+ assert.equal(view.teaching,'exercise.side_tap');assert.equal(view.progress,3/stages.length);
+});
+
+test('creek instructions and screen-reader messages follow the recognized step and return',()=>{
+ const{scope,node}=setup();
+ let view=scope.updateQuestHUD(game(3,{step:{side:'left',phase:'step'}}));
+ assert.equal(view.stepSide,'left');assert.equal(node('instruction').textContent,'左脚向左点地');
+ assert.equal(node('questAnnouncement').textContent,'左脚向左点地');
+ scope.updateQuestHUD(game(3,{step:{side:'left',phase:'return'}}));
+ assert.equal(node('instruction').textContent,'收脚，回到中间');
+ assert.equal(node('questAnnouncement').textContent,'收脚，回到中间');
+ view=scope.updateQuestHUD(game(3,{reps:1,step:{side:'right',phase:'step'}}));
+ assert.equal(view.stepSide,'right');assert.equal(node('instruction').textContent,'右脚向右点地');
+ assert.equal(node('liveProgress').textContent,'1 / 4 块溪石');
+ const paused={...game(3,{reps:1,step:{side:'right',phase:'waiting'}}),status:'paused'};
+ assert.equal(scope.updateQuestHUD(paused).cue,'');
 });
 
 test('HUD gives each station a non-color state and announces only station or phase changes',()=>{
  const{scope,node}=setup();scope.updateQuestHUD(game(3));
- const children=node('questTrail').children;assert.equal(children.length,10);
- assert.deepEqual(children.flatMap((n,i)=>n.dataset.chapterStart==='true'?[i]:[]),[3,6]);
+ const children=node('questTrail').children;assert.equal(children.length,14);
+ assert.deepEqual(children.flatMap((n,i)=>n.dataset.chapterStart==='true'?[i]:[]),[3,7]);
  assert.equal(node('questTrail')['aria-label'],'山径路线，当前：溪畔步道');
  assert(children.slice(0,3).every(n=>n.dataset.state==='complete'&&n['aria-label'].includes('已完成')));
  assert.equal(children[3]['aria-current'],'step');assert.equal(children[4].dataset.state,'upcoming');

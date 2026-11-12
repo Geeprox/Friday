@@ -1,13 +1,87 @@
-"""Distance-driven skiing must stay fair across observed frame cadences."""
+"""验证不同画面间隔下的滑雪规则与试滑。"""
+
+import math
 
 import pytest
 
 from homeplane.embodied.motion_games import MotionGames
-from homeplane.embodied.ski_route import SKI_COURSES, SKI_GATES, SKI_ROUTE
+from homeplane.embodied.ski_route import SKI_COURSES, SKI_GATES, SKI_ROUTE, get_ski_trail
+from tests.embodied.test_motion_games import LOCK, human
 
 
-def run_ski(cadence, *, duration=None, lateral=0, difficulty='standard'):
+def test_warmup_uses_real_steering_and_wrist_motion_without_consuming_a_race():
     game = MotionGames()
+    game.select('ski', difficulty='challenge', ski_trail='pine-slalom')
+    game.reset('ski', ski_warmup=True)
+    now = 0.0
+
+    def feed(x, *, seconds=1, arms=False, occluded=False, capture=True):
+        nonlocal now
+        for _ in range(int(seconds / .05)):
+            now += .05
+            person = human(x=x)
+            if arms:
+                swing = .14 * math.sin(now * math.tau / .8)
+                person['joints']['leftWrist']['y'] = .47 + swing
+                person['joints']['rightWrist']['y'] = .47 - swing
+            if occluded:
+                person['joints'].pop('rightWrist')
+            game.update([person], LOCK, now, [{'person_id': 1, 'gesture': 'yeah'}],
+                        captured_at=now if capture else now - 2)
+        ski = game.public['ski']
+        assert ski['points'] == ski['distance'] == ski['speed'] == game.ski_elapsed == game.elapsed == 0
+        assert ski['event'] is None and not ski['guide']['active']
+        assert game.selected_mode == 'ski'
+        return ski['warmup']['step']
+
+    assert feed(.5) == 'left'
+    assert feed(.42) == 'left'
+    assert feed(.58, capture=False) == 'left'
+    assert feed(.58) == 'right'
+    assert feed(.42) == 'arms'
+    assert feed(.42, arms=True) == 'arms'
+    assert feed(.5, arms=True, occluded=True) == 'arms'
+    assert feed(.5, seconds=1.6, arms=True) == 'ready'
+
+    game.reset('ski')
+    assert game.public['ski']['warmup'] is None
+    assert game.public['ski_trail'] == 'pine-slalom' and game.public['difficulty'] == 'challenge'
+    assert game.public['ski']['distance'] == 0
+    for _ in range(80):
+        now += .05
+        p = human()
+        swing = .14 * math.sin(now * math.tau / .8)
+        p['joints']['leftWrist']['y'] = .47 + swing
+        p['joints']['rightWrist']['y'] = .47 - swing
+        game.update([p], LOCK, now)
+    assert game.public['ski']['distance'] > 0
+
+
+def test_warmup_requires_new_frames_and_drops_unfinished_holds():
+    game = MotionGames()
+    game.reset('ski', ski_warmup=True)
+    for i in range(20):
+        game.update([human()], LOCK, i * .05)
+    for i in range(20, 25):
+        game.update([human(x=.58)], LOCK, i * .05)
+    progress = game.public['ski']['warmup']
+    assert progress['step'] == 'left' and 0 < progress['fraction'] < 1
+    for i in range(25, 32):
+        game.update([human(x=.58)], LOCK, i * .05, captured_at=1.2)
+    assert game.public['ski']['warmup'] == {'step': 'left', 'fraction': 0}
+    for i in range(32, 40):
+        game.update([human(x=.58)], LOCK, i * .05)
+    assert game.public['ski']['warmup']['step'] == 'right'
+    game.set_paused(True)
+    assert game.public['ski']['warmup'] == {'step': 'right', 'fraction': 0}
+    game.suspend_source()
+    assert game.public['ski']['warmup'] == {'step': 'left', 'fraction': 0}
+
+
+def run_ski(cadence, *, duration=None, lateral=0, difficulty='standard', trail=None):
+    game = MotionGames()
+    if trail is not None:
+        game.select('ski', ski_trail=trail)
     game.reset("ski", difficulty=difficulty)
     elapsed = 0.0
     for i in range(20000):
@@ -131,7 +205,7 @@ def test_visible_gates_and_trees_share_one_world_plane_and_pause_preserves_earne
         assert item['z'] == pytest.approx((feature.at-game.distance) * 3)
     paused = game.set_paused(True)['ski']
     assert not paused['guide']['active']
-    for key in ['points', 'gates_passed', 'gates_missed', 'best_combo', 'combo', 'gates', 'obstacles']:
+    for key in ['points', 'gates_passed', 'gates_missed', 'best_combo', 'combo', 'gates', 'obstacles', 'trees']:
         assert paused[key] == before[key]
     game.begin_source()
     recovery = game.publish([], 'paused', '')['ski']
@@ -142,3 +216,56 @@ def test_visible_gates_and_trees_share_one_world_plane_and_pause_preserves_earne
     assert replay['points'] == replay['gates_passed'] == replay['gates_missed'] == replay['best_combo'] == 0
     assert replay['event'] is replay['stars'] is None
     assert not game.ski_results
+
+
+def test_preview_geometry_and_each_completed_section_use_the_scored_gate_plan():
+    game = MotionGames()
+    assert game.public['ski']['route'] is None
+    assert game.public['ski']['trees'] is None
+    selected = game.select('ski', difficulty='challenge')['ski']
+    assert selected['section_results'] is None
+    assert selected['route'][0] == (0, 0, 0) and selected['route'][-1] == (selected['total_distance'], 0, 0)
+    assert selected['route'][1:-1] == [
+        (gate.at, gate.x, gate.width * game.difficulty.ski_gate) for gate in SKI_GATES
+    ]
+    assert selected['trees'] == [(feature.at, feature.x) for feature in SKI_ROUTE if feature.kind == 'tree']
+
+    run = run_ski((.05,), lateral=lambda g: next_gate_center(g) if g.distance < 60 else 1)
+    result = run.publish([], 'complete', '')['ski']
+    assert [row['name'] for row in result['section_results']] == [spec['name'] for spec in SKI_COURSES]
+    assert [row['gate_count'] for row in result['section_results']] == [6, 6, 6]
+    assert [row['gates_passed'] for row in result['section_results']] == [6, 0, 0]
+    assert result['gates_passed'] == sum(row['gates_passed'] for row in result['section_results'])
+    run.reset('ski')
+    assert run.public['ski']['section_results'] is None
+
+
+@pytest.mark.parametrize('trail,length,gate_counts', [
+    ('first-snow', 54, [5]), ('pine-slalom', 92, [4, 4]), ('summit', 180, [6, 6, 6]),
+])
+def test_each_named_trail_drives_finish_gates_time_and_replay(trail, length, gate_counts):
+    plan = get_ski_trail(trail)
+    outcomes = []
+    for cadence in [(.02,), (.12, .019, .057)]:
+        game = run_ski(cadence, lateral=next_gate_center, trail=trail)
+        result = game.publish([], 'complete', '')
+        ski = result['ski']
+        assert result['ski_trail'] == trail
+        assert ski['distance'] == ski['total_distance'] == length and ski['progress'] == 1
+        assert ski['trees'] == [(feature.at, feature.x) for feature in plan.features if feature.kind == 'tree']
+        assert ski['gates_passed'] == ski['gate_count'] == sum(gate_counts)
+        assert ski['gates_missed'] == ski['collisions'] == 0
+        assert ski['stars'] == 3 and ski['time_seconds'] > 0
+        assert [row['gates_passed'] for row in ski['section_results']] == gate_counts
+        assert ski['route'] == list(plan.path)
+        outcomes.append((ski['time_seconds'], ski['points']))
+
+        reconnected = game.begin_source()
+        assert reconnected['ski']['time_seconds'] == ski['time_seconds']
+        game.reset('ski')
+        assert game.public['ski_trail'] == trail and game.public['ski']['route'] == ski['route']
+        assert game.public['ski']['time_seconds'] is None and game.public['ski']['distance'] == 0
+
+    assert outcomes[0] == outcomes[1]
+    missed = run_ski((.07,), lateral=1, trail=trail).publish([], 'complete', '')['ski']
+    assert missed['gates_missed'] == sum(gate_counts) and missed['stars'] == 1

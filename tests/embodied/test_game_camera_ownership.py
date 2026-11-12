@@ -11,6 +11,7 @@ import pytest
 
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.party_camera import PartyCamera
 from tests.embodied.test_camera_director import clear, person, sample
 from tests.embodied.test_capture_stream_recovery import frame_continuation, primary_frame_scope
 from tests.embodied.test_motor_recovery import primary_scope, view
@@ -19,6 +20,7 @@ WORKER = Path("homeplane/embodied/worker.py")
 
 
 def actual(name, scope):
+    scope.setdefault('party_camera',PartyCamera())
     node = next(
         n
         for n in ast.parse(WORKER.read_text()).body
@@ -35,7 +37,7 @@ def actual(name, scope):
 @pytest.mark.parametrize("mode", ["auto", "pets", "survey"])
 @pytest.mark.parametrize("covered", [False, True])
 def test_active_game_keeps_the_main_camera_still_through_wait_play_pause_and_results(mode, covered):
-    for game_mode in ("ski", "tennis", "quest", "hiit"):
+    for game_mode in ("ski", "tennis", "quest", "hiit", "beam"):
         for phase in ("waiting", "calibrating", "playing", "paused", "complete"):
             director = CameraDirector()
             director.apply_mode(mode, 1)
@@ -53,6 +55,11 @@ def test_active_game_keeps_the_main_camera_still_through_wait_play_pause_and_res
             assert director.phase == "game_held"
             assert director.survey_attempts == director.recovery_steps == 0
             assert director.public()["physical_motion_verified"] is False
+            if mode == 'survey':
+                assert director.public()['survey_result'] == 'interrupted'
+                game.reset('off')
+                assert director.choose(dict(sample(42), game=game.public), 42) is None
+                assert director.phase == 'survey_finished'
 
 
 @pytest.mark.parametrize("finish_before_send", [False, True])

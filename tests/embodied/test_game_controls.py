@@ -40,6 +40,57 @@ def game_handler(game):
 
 
 @pytest.mark.asyncio
+async def test_worker_admits_ski_warmup_only_at_an_explicit_start():
+    game = MotionGames()
+    game.select('ski', ski_trail='pine-slalom')
+    control, start, enable = game_handler(game)
+    for body in ({'action': 'select', 'mode': 'ski', 'ski_warmup': True},
+                 {'action': 'start', 'mode': 'tennis', 'ski_warmup': True},
+                 {'action': 'start', 'mode': 'ski', 'ski_warmup': 'true'}):
+        with pytest.raises(HTTPException) as error:
+            await control(request(body, game=game))
+        assert error.value.status_code == 400
+    start.assert_not_awaited()
+    body = {'action': 'start', 'mode': 'ski'}
+    warmup = await control(request(dict(body, ski_warmup=True), game=game))
+    assert warmup['ski']['warmup'] == {'step': 'left', 'fraction': 0}
+    with pytest.raises(HTTPException):
+        await control(request(dict(body, ski_warmup=True), game=game))
+    race = await control(request(body, game=game))
+    assert race['ski']['warmup'] is None and race['round_id'] > warmup['round_id']
+    assert race['ski_trail'] == warmup['ski_trail'] == 'pine-slalom'
+    assert start.await_count == 2
+    enable.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_quest_route_change_requires_lobby_or_completed_round():
+    game = MotionGames()
+    game.select('quest', quest_route='forest')
+    control, start, enable = game_handler(game)
+    selected = dict(action='select', mode='quest', quest_route='stream')
+    started = await control(request(dict(action='start', mode='quest'), game=game))
+    assert started['quest_route'] == 'forest'
+    for invalid in (selected, dict(selected, action='start'), dict(selected, mode='ski')):
+        with pytest.raises(HTTPException) as error:
+            await control(request(invalid, game=game))
+        assert error.value.status_code == 400
+    assert game.public == started
+
+    for _ in game.quest_stages:
+        game._advance_quest()
+    game.publish([], 'complete', '')
+    resumed = await control(request(selected, game=game))
+    assert resumed['mode'] == 'off' and resumed['quest_route'] == 'stream'
+    assert resumed['round_id'] > started['round_id']
+    assert resumed['quest']['level'] == 0
+    assert resumed['quest']['history'] == []
+    assert resumed['quest']['stage']['scene'] == 'stream'
+    start.assert_awaited_once()
+    enable.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_product_stop_payload_reaches_worker_reset_without_stopping_perception():
     game = MotionGames()
     game.reset('ski')

@@ -9,7 +9,7 @@ from .practice_requests import valid_id
 from .interaction import GESTURES, body_gestures
 from .smart_home import WindowGesture
 from .gestures import BINDABLE_HAND_LABELS
-from .hiit import EXERCISE_GESTURES, PLAN
+from .hiit import EXERCISE_GESTURES, PRACTICE_PLAN
 
 MOTION_GESTURES = {
     'body.lateral', 'body.arm_effort', 'body.swing', 'pose.horizontal', 'pose.overhead',
@@ -146,8 +146,7 @@ class RecognitionPractice:
             from .motion_games import BodyMotion
             from .hiit import HIITCircuit
             action = EXERCISE_GESTURES.get(lease['gesture'])
-            circuit = (HIITCircuit(plan=(next(row for row in PLAN if row[0] == action),), require_neutral=True)
-                       if action else None)
+            circuit = HIITCircuit(plan=(PRACTICE_PLAN[action],), require_neutral=True) if action else None
             item = dict(key=key, sample_at=-100., since=None, arms=WindowGesture(),
                         motion=BodyMotion(), circuit=circuit)
             self.observers[camera] = item
@@ -183,6 +182,8 @@ class RecognitionPractice:
                     item['circuit'].update(p, dt)
                     matched = item['circuit'].total_reps > 0
                 immediate = not gesture.startswith('pose.')
+            elif item['circuit'] is not None:
+                item['circuit'].invalidate_motion(keep_completed_side=True)
         lease.update(phase='seen', camera=camera, progress=0.0)
         item.update(phase='seen', progress=0.0)
         if not matched:

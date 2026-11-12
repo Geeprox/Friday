@@ -48,6 +48,8 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private JSONObject pendingPlay;
     private String currentFilesJob="";
     private final ExecutorService controlNetwork=Executors.newSingleThreadExecutor();
+    private final ExecutorService backdropNetwork=new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(1));
+    private final SongBackdrop songBackdrop=new SongBackdrop();
     private final ExecutorService controlActions=new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(16));
     private final LocalControlIntent localOriginal=new LocalControlIntent(),localMute=new LocalControlIntent();
     private final VocalEffectsIntent localVocal=new VocalEffectsIntent();
@@ -253,6 +255,22 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         try(InputStream in=getAssets().open(theme+".png")){background.setImageBitmap(BitmapFactory.decodeStream(in));}catch(Exception ignored){}
         if(activeLine>=0 && activeLine<lyricViews.size())lyricViews.get(activeLine).setTextColor(theme.equals("festival")?accent:WHITE);if(smallQr.hasFocus()){GradientDrawable frame=surface(0xffffffff,12);frame.setStroke(dp(4),accent);smallQr.setBackground(frame);}
     }
+    private void songBackground(JSONObject job){
+        final String song=job==null?"":job.optString("id","");
+        if(songBackdrop.select(song)){String previous=theme;theme="";setTheme(previous);}
+        if(job==null||client==null)return;
+        final JSONObject descriptor=job.optJSONObject("background");
+        if(descriptor==null||!descriptor.optString("status").equals("ready"))return;
+        final String hash=descriptor.optString("sha256");final long request=songBackdrop.begin(song,hash);if(request==0)return;
+        final KtvClient owner=client;final int version=generation.get();final AtomicBoolean cancelled=transferCancel;
+        try{backdropNetwork.execute(()->{try{
+            File image=owner.downloadBackground(descriptor,cancelled);
+            BitmapFactory.Options options=new BitmapFactory.Options();options.inJustDecodeBounds=true;BitmapFactory.decodeFile(image.getAbsolutePath(),options);
+            options.inSampleSize=1;while(options.outWidth/options.inSampleSize>1920||options.outHeight/options.inSampleSize>1080)options.inSampleSize*=2;
+            options.inJustDecodeBounds=false;final Bitmap bitmap=BitmapFactory.decodeFile(image.getAbsolutePath(),options);if(bitmap==null)throw new IOException("background_unavailable");
+            ui.post(()->{if(foreground&&version==generation.get()&&current!=null&&currentId.equals(song)&&songBackdrop.accept(song,hash,request))background.setImageBitmap(bitmap);else{songBackdrop.fail(request);bitmap.recycle();}});
+        }catch(Exception|OutOfMemoryError ignored){ui.post(()->songBackdrop.fail(request));}});}catch(RejectedExecutionException ignored){songBackdrop.fail(request);}
+    }
     private void connect(){
         prefetchCancel.set(true);
         coordinatorSession.requestOpen();readinessAt=0;coordinatorVisible=false;coordinatorStatus.disconnected(false);if(connectionBadge!=null)connectionBadge.setText("");
@@ -283,6 +301,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                 if(!room.optBoolean("active")){smallQr.setVisibility(View.INVISIBLE);bigQr.setVisibility(View.GONE);}
                 JSONArray order=room.optJSONArray("order");Set<String> allowed=new HashSet<>();if(order!=null)for(int i=0;i<order.length();i++)allowed.add(order.optString(i));
                 jobs.clear();JSONArray incoming=response.optJSONArray("jobs"),values=new JSONArray();if(incoming!=null)for(int i=0;i<incoming.length();i++){JSONObject job=incoming.optJSONObject(i);if(job!=null&&c.manifestValid(job))values.put(job);}refreshWarmup(values);for(int i=0;i<values.length();i++){JSONObject job=values.optJSONObject(i);rememberJob(job);if(order!=null&&allowed.contains(job.optString("id")))jobs.add(job);}
+                if(current!=null)for(JSONObject job:jobs)if(job.optString("id").equals(currentId)){songBackground(job);break;}
                 if(order!=null){final JSONArray sorted=order;jobs.sort((a,b)->Integer.compare(orderIndex(sorted,a.optString("id")),orderIndex(sorted,b.optString("id"))));}runPendingPlay();prepareFirstLyrics();prepareWarmupLyrics();
                 refreshQueuePlayback();protectCache();updateNext();prefetchNext();
             });
@@ -456,6 +475,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     }
     private JSONObject playbackReport(){JSONObject data=new JSONObject();try{boolean muteKnown=vendorMode?(vendorMic!=null&&vendorMic.muteConfirmed()):compatMuteKnown();boolean micMuted=vendorMode?(vendorMic!=null&&vendorMic.confirmedMuted()):muteKnown&&compatMute.muted();JSONArray done=new JSONArray();for(JSONObject job:jobs)if(played.contains(job.optString("id"))&&done.length()<80)done.put(job.optString("id"));JSONObject waiting=firstPending();data.put("audio_capabilities",new JSONObject().put("vocal_presets",vocalCapabilities()).put("sfx",soundEffects.ready&&backendSelection.playbackAllowed()).put("voice_protection",voiceProtectionReport(muteKnown))).put("vocal_preset",requestedVocalKey()).put("vocal_preset_state",vocalReportState()).put("sfx_seq",soundEffects.sequence).put("sfx_action",soundEffects.action).put("sfx_state",soundEffects.state);data.put("lyrics_waiting",waiting!=null&&waiting.optString("state").equals("ready")&&!readyForQueue(waiting)?waiting.optString("id"):"");data.put("playback_epoch",playbackTimeline.epoch()).put("room_id",roomId).put("current",current==null||warmup?"":currentId).put("played",done).put("state",loading?"preparing":engine.running?"playing":paused?"paused":"idle").put("mic_muted",micMuted).put("safety_latched",vendorMode?(vendorMic.telemetry().optBoolean("protection_latched")||(vocalEffects!=null&&vocalEffects.fault())):engine.mixer.safety.latched).put("position_ms",Math.min(1800000,Math.max(0,engine.playheadFrames/48))).put("last_command",lastCommand).put("applied_revision",Math.max(0,appliedRevision));}catch(Exception ignored){}return data;}
     private void showIdle(){
+        if(current==null)songBackground(null);
         warmupButton.setVisibility(!readyForQueue(firstPending())?View.VISIBLE:View.GONE);idle.setVisibility(View.VISIBLE);lyricScroll.setVisibility(View.GONE);byline.setVisibility(View.GONE);progress.setVisibility(View.INVISIBLE);clock.setText("");trackTitle.setText("");picture.setAlpha(0);
         boolean joining=qrBitmap!=null && autoRoom;
         headline.setVisibility(joining?View.GONE:View.VISIBLE);headline.setText("");notice.setText(joining?"":"正在连接房间…");mvLyrics.setVisibility(View.GONE);
@@ -540,6 +560,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         String edition=(dry==null?"":dry.optString("sha256"))+":"+(backing==null?"":backing.optString("sha256"));
         if(playbackTimeline.start(job.optString("id"),edition,restart))preferences.edit().putString("playback-epoch",playbackTimeline.epoch()).putString("playback-song",playbackTimeline.song()).putString("playback-media",playbackTimeline.media()).apply();
         stopAudio(false);warmupButton.setVisibility(View.GONE);loading=true;paused=false;current=job;currentId=job.optString("id");lyricFetchAt=SystemClock.elapsedRealtime();lyricRetries=0;protectCache();resumeFrame=position;final int version=generation.get();final KtvClient c=client;final AtomicBoolean cancelled=transferCancel;final boolean isWarmup=warmup;final String jobId=currentId;final JSONArray knownLyrics=preparedLyrics.get(jobId);final long[] knownEntries=preparedEntries.get(jobId);
+        songBackground(job);
         idle.setVisibility(View.VISIBLE);bigQr.setVisibility(View.GONE);smallQr.setVisibility(qrBitmap!=null?View.VISIBLE:View.INVISIBLE);headline.setVisibility(View.VISIBLE);headline.setText(SongTitle.display(job.optString("title","")));notice.setText("马上开唱…");trackTitle.setText(SongTitle.display(job.optString("title","")));
         if(!mediaBackground(()->{try{
             if(cancelled.get())return;
@@ -866,6 +887,6 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         refreshAutomaticBackend();syncVendorMic();ui.post(tick);ui.post(controlTick);if(preferences.getBoolean("audio-backend-owner-cleanup",false)&&vendorMic!=null)vendorMic.stop();
     }
     @Override protected void onStop(){foreground=false;controlEpoch++;pendingPlay=null;stopVocalEffects(6);micIntent.leaveForeground();if(vendorMic!=null)vendorMic.setForeground(false);prefetchCancel.set(true);ui.removeCallbacks(tick);ui.removeCallbacks(controlTick);localOriginal.clear();localMute.clear();queueIntent.pause();engine.mixer.micMuted=true;stopAudio(true);super.onStop();}
-    @Override protected void onDestroy(){if(vocalEffects!=null)vocalEffects.close();if(vendorMic!=null)vendorMic.close();if(soundEffects!=null)soundEffects.close();audio.unregisterAudioDeviceCallback(devices);transferCancel.set(true);engine.stop();releaseVideo();network.shutdownNow();mediaNetwork.shutdownNow();controlNetwork.shutdownNow();controlActions.shutdownNow();preloader.shutdownNow();audioLifecycle.shutdown();super.onDestroy();}
+    @Override protected void onDestroy(){songBackdrop.select("");backdropNetwork.shutdownNow();if(vocalEffects!=null)vocalEffects.close();if(vendorMic!=null)vendorMic.close();if(soundEffects!=null)soundEffects.close();audio.unregisterAudioDeviceCallback(devices);transferCancel.set(true);engine.stop();releaseVideo();network.shutdownNow();mediaNetwork.shutdownNow();controlNetwork.shutdownNow();controlActions.shutdownNow();preloader.shutdownNow();audioLifecycle.shutdown();super.onDestroy();}
     @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] grants){super.onRequestPermissionsResult(request,permissions,grants);if(request==74){readinessAt=0;Toast.makeText(this,grants.length>0&&grants[0]==PackageManager.PERMISSION_GRANTED?"麦克风权限已开启，请再按麦克风开启":"未获得麦克风权限，保持静音",Toast.LENGTH_SHORT).show();return;}if(request==73){Toast.makeText(this,grants.length>0&&grants[0]==PackageManager.PERMISSION_GRANTED?"语音保护权限已开启，请再按麦克风开启":"未获得语音保护权限，保持麦克风静音",Toast.LENGTH_SHORT).show();return;}if(request==72){Toast.makeText(this,grants.length>0&&grants[0]==PackageManager.PERMISSION_GRANTED?"权限已开启，请再次点开始试听":"混响试听尚未获得麦克风权限",Toast.LENGTH_SHORT).show();updateVocalDialog();return;}if(request==71){JSONObject job=pendingPermission;pendingPermission=null;if(grants.length>0&&grants[0]==PackageManager.PERMISSION_GRANTED&&job!=null&&foreground)play(job,resumeFrame);else{micIntent.block();engine.mixer.micMuted=true;if(job!=null&&foreground)play(job,resumeFrame);}}}
 }

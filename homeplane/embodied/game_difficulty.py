@@ -2,10 +2,12 @@
 
 import math
 from dataclasses import dataclass, replace
+from itertools import cycle, islice
 from typing import Literal
 
+from .hiit import ALTERNATING_ACTIONS
+
 DifficultyId = Literal["easy", "standard", "challenge"]
-_ALTERNATING = frozenset({"high_knee", "lunge", "side_step", "side_bend", "reach_up"})
 
 
 @dataclass(frozen=True)
@@ -22,7 +24,7 @@ class GameDifficulty:
 
     def reps(self, action, count):
         value = max(1, math.ceil(count * self.repetitions))
-        return value + value % 2 if action in _ALTERNATING else value
+        return value + value % 2 if action in ALTERNATING_ACTIONS else value
 
     def quest_plan(self, stages):
         if self.id == "standard":
@@ -39,6 +41,7 @@ class GameDifficulty:
                     stage,
                     hold=self.hold if stage.hold else 0.0,
                     reps=count,
+                    step_pattern=tuple(islice(cycle(stage.step_pattern), count)),
                     instruction=stage.instruction.replace(old, new),
                 )
             )
@@ -54,7 +57,7 @@ class GameDifficulty:
     def public(self):
         notes = {
             "easy": ("速度放慢，木门更宽", "来球更慢，回击时间更充裕", "动作次数较少"),
-            "standard": ("循序穿门，完成三段雪道", "来球节奏随回合渐进", "完成整轮动作"),
+            "standard": ("适中的滑速与门宽", "来球节奏随回合渐进", "完成整轮动作"),
             "challenge": ("速度更快，木门更窄", "来球更快，回击时机更紧", "增加动作次数"),
         }[self.id]
         return dict(

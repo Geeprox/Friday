@@ -29,6 +29,19 @@ def swing(receiver=0, stamp=10):
 
 
 @pytest.mark.parametrize("receiver", [0, 1])
+def test_return_leaves_from_the_actual_contact_depth(receiver):
+    game = match(receiver)
+    game.ball["z"] = 0.06 if receiver == 0 else 0.94
+    contact_z = game.ball["z"]
+
+    game.tennis(swing(receiver), 0, 10)
+
+    assert game.rally == 1
+    assert game.ball["z"] == pytest.approx(contact_z)
+    assert game.ball["toward"] == 1 - receiver
+
+
+@pytest.mark.parametrize("receiver", [0, 1])
 @pytest.mark.parametrize("cadence", [0.02, 0.03, 0.04, 0.06, 0.12])
 @pytest.mark.parametrize("curving", [False, True])
 def test_one_observed_leading_swing_has_the_same_result_at_fast_and_slow_frames(receiver, cadence, curving):

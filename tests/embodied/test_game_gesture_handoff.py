@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from homeplane.embodied.party_camera import PartyCamera
 
 from homeplane.embodied import interaction, interaction_fleet
 from homeplane.embodied.interaction import Binding, Configuration
@@ -67,6 +68,7 @@ async def test_a_held_finish_pose_cannot_reach_the_original_household_dispatch(m
     scope = dict(
         SELECTED={"id": CAMERA},
         games=game,
+        party_camera=PartyCamera(),
         interaction_enabled=True,
         home=SimpleNamespace(armed=True, spawn=queued.append),
         secondary_homes={},
@@ -221,7 +223,7 @@ def test_the_original_primary_frame_passes_the_game_window_to_the_real_coordinat
         scope["games"].reset("off")
         await frame_continuation(scope)()
         window = (scope["games"].control_context, scope["games"].control_revision)
-        assert scope["fleet"].update.call_args.kwargs["game_window"] == window
+        assert scope["fleet"].update.call_args.kwargs["game_window"] == (window,scope['party_camera'].window(10)[:2])
         assert scope["fleet"].update.call_args.kwargs["game_active"] is False
         assert scope["fleet"].update.call_args.kwargs["captured_mono"] == 10
 

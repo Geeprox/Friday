@@ -142,8 +142,9 @@ async def test_original_camera_observation_to_actual_gesture_engine_preserves_po
     session.pet_tracks=recognition.PetTracks();session.animals_enabled=False;session.animals_intent=None
     session.motion_generation=0;session.motion_until=-100;session.last=None;session.timing={}
     session.identities=SimpleNamespace(discard=lambda:None)
-    session.vision=SimpleNamespace(stdin=SimpleNamespace(write=lambda _:None,drain=AsyncMock()),
-        stdout=SimpleNamespace(readline=AsyncMock(return_value=json.dumps(detection).encode())))
+    session.vision=recognition.VisionProcess('synthetic-vision')
+    session.vision.process=SimpleNamespace(stdin=SimpleNamespace(write=lambda _:None,drain=AsyncMock()),
+        stdout=SimpleNamespace(readline=AsyncMock(return_value=(json.dumps(detection)+'\n').encode())))
     from tests.embodied.test_room_process import room_port
     session.room=room_port(registration=np.eye(3))
     engine=InteractionEngine('SYNTHETIC','synthetic-session')

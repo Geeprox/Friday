@@ -7,6 +7,7 @@ packet retains its oldest input receipt time and a capture-bound sequence.
 import base64
 from collections import deque
 from dataclasses import dataclass
+import json
 import math
 import re
 
@@ -16,6 +17,7 @@ PCM_BYTES = 6400
 SAMPLE_RATE = 16000
 MAX_AGE = 1.5
 MAX_GAP = .6
+VOICE_WINDOW_SECONDS = 1.3
 
 
 def number(value):
@@ -25,6 +27,31 @@ def number(value):
 def fresh(received, decoded, wall):
     return (all(number(x) and x >= 0 for x in (received, decoded, wall))
             and 0 <= wall-received <= MAX_AGE and received <= decoded <= wall)
+
+
+def offer_voice_window(writer, *, now, captured, enabled, attention):
+    """仅在控制管道可写时提交本帧授权，后续由新鲜帧续期。"""
+    if writer.is_closing() or writer.transport.get_write_buffer_size():
+        return
+    deadline = now
+    if number(captured) and 0 <= now - captured < MAX_AGE:
+        deadline = min(now + VOICE_WINDOW_SECONDS, captured + MAX_AGE)
+    command = dict(action='voice_window', expires_mono=deadline,
+                   enabled=enabled and deadline > now, attention=attention and deadline > now)
+    try:
+        writer.write((json.dumps(command, separators=(',', ':')) + '\n').encode())
+    except (OSError, RuntimeError):
+        # 管道关闭交由采集生命周期处理，视频观察可以继续结束本帧。
+        return
+
+
+def voice_window_deadlines(command, now):
+    """积压命令只能使用采集帧原有的剩余授权时间。"""
+    deadline = command.get('expires_mono')
+    if not number(deadline) or not now < deadline <= now + VOICE_WINDOW_SECONDS:
+        return 0.0, 0.0
+    return (deadline if command.get('enabled') is True else 0.0,
+            deadline if command.get('attention') is True else 0.0)
 
 
 @dataclass(frozen=True)

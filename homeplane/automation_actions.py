@@ -7,7 +7,6 @@ from fastapi import APIRouter,HTTPException
 from pydantic import BaseModel,ConfigDict,Field
 
 from .action_contracts import DevicePlanRequest
-from .core_rules import core_record
 from .rule_compiler import digest
 from .rule_contracts import DeviceInstruction,LightInstruction
 
@@ -69,7 +68,7 @@ class AutomationActions:
                 if any(r.enabled and r.id!=record.id and r.rule.id==record.rule.id for r in self.manager.records()):
                     raise ValueError('newer_rule_version_active')
                 self.manager._acyclic(record.rule,record)
-            updated=core_record(record.id,record.rule,request.enabled,record.source_scope,record.authority_revision)
+            updated=record.with_enabled(request.enabled)
             with self.core.store.connection:
                 self.core.store.connection.execute('UPDATE core_owned_rules SET body=? WHERE id=?',(updated.model_dump_json(),record.id))
             self.manager.changed()

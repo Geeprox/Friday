@@ -92,11 +92,3 @@ are recorded in `homeplane/static/motion-art/body/CLOTHING-LICENSES.md` and
 own source geometry and the existing skeleton. Three additional motion clips
 are explicitly Friday-authored MIT adaptations, identified in
 `authored-poses.json`; they are not attributed to Desk Break.
-
-## LG TV 独立菜单栏工具
-
-`native/LGTVMenu/AudioDriver/` 的音频服务驱动衍生自 Apple 2024 年的
-“Creating an Audio Server Driver Plug-in” 示例。原始出处、下载摘要和修改范围见
-[来源记录](native/LGTVMenu/AudioDriver/ORIGIN.md)，Apple 原许可完整保留在
-[APPLE-LICENSE.txt](native/LGTVMenu/AudioDriver/APPLE-LICENSE.txt)。该组件需要使用者
-另行安装；发布源码或运行合成测试不会加载驱动、配对电视或更改音频设备。

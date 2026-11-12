@@ -1,8 +1,10 @@
-const fs=require('node:fs'),vm=require('node:vm'),test=require('node:test'),assert=require('node:assert/strict');
-const source=fs.readFileSync('homeplane/static/werewolf-party.js','utf8');
+const vm=require('node:vm'),test=require('node:test'),assert=require('node:assert/strict');
+const {readClient}=require('./werewolf_client_fixture.cjs');
+const source=readClient('party');
 const all=node=>[node,...node.children.flatMap(all)],settle=()=>new Promise(setImmediate);
 
-function client({publicDisplay=false,phase='wolves',joined=true,lobby=null}={}){
+function client({publicDisplay=false,phase='wolves',joined=true,lobby=null,privateFields={},
+ invite=null,deferInvite=false,firstAccessDenied=false}={}){
  class Element{
   constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.dataset={};this._text='';this.events={};this.disabled=false;this.classList={toggle(){},add(){},remove(){}};}
   set textContent(value){this._text=String(value);this.children=[];}
@@ -17,28 +19,90 @@ function client({publicDisplay=false,phase='wolves',joined=true,lobby=null}={}){
  }
  const nodes=Object.fromEntries(['party','notice','roomLabel'].map(id=>[id,new Element('div')]));
  const storage=new Map(joined?[[publicDisplay?'Friday.werewolf.display':'Friday.werewolf.player','a'.repeat(64)]]:[]),requests=[],calls=[],pending={};
- const game={revision:1,phase,phase_name:phase==='lobby'?'等待大家入座':'狼人行动',player_count:6,round:1,paused:false,seconds_left:30,
+ const dealing=phase==='identity';
+ const game={revision:1,phase,phase_name:dealing?'查看身份':phase==='lobby'?'等待大家入座':'狼人行动',
+  player_count:6,round:dealing?0:1,paused:false,seconds_left:dealing?null:30,identities_confirmed:0,
   players:[1,2,3,4,5,6].map(seat=>({seat,name:'合成玩家'+seat,alive:true})),roles:[],announcements:[]};
- const player={seat:1,name:'合成玩家1',role:'wolf',role_name:'狼人',alive:true,actions:[{action:'attack',targets:[2,3,4,5,6]},{action:'pass',targets:[]}],public:game};
- let deferPoll=false,deferChoice=false,reads=0;
+ if(invite){game.players.pop();game.lobby_revision=0;}
+ const session='b'.repeat(32);
+ const player={seat:1,name:'合成玩家1',role:'wolf',role_name:'狼人',alive:true,
+  actions:dealing?[]:[{action:'attack',targets:[2,3,4,5,6]},{action:'pass',targets:[]}],
+  ...(dealing?{session:'b'.repeat(32)}:{}),...privateFields,public:game};
+ const events={};
+ let deferPoll=false,deferChoice=false,deferIdentity=false,reads=0;
  const reply=(status,data)=>({ok:status===200,status,headers:{get:()=>null},json:async()=>data});
  const context=vm.createContext({console,URLSearchParams,AbortController,AbortSignal,performance:{now:()=>0},crypto:{getRandomValues:a=>a.fill(1)},navigator:{},
-  location:{pathname:publicDisplay?'/display':'/phone',hash:'#code=123456'},history:{replaceState(){}},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
-  document:{body:new Element('body'),hidden:false,getElementById:id=>nodes[id],createElement:tag=>new Element(tag),addEventListener(){}},window:{addEventListener(){}},setInterval(){},
-  fetch:async(path,options)=>{requests.push(path);calls.push({path,options});if(path===(publicDisplay?'/api/public':'/api/player')){reads++;if(reads>1&&deferPoll)return new Promise(resolve=>pending.poll=resolve);return reply(200,structuredClone(publicDisplay?{active:true,game}:player));}
+  location:{pathname:publicDisplay?'/display':'/phone',origin:'http://127.0.0.1:12345',hash:'#code=123456'},history:{replaceState(){}},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
+  document:{body:new Element('body'),hidden:false,getElementById:id=>nodes[id],createElement:tag=>new Element(tag),addEventListener(){}},window:{addEventListener:(name,fn)=>events[name]=fn},setInterval(){},
+  fetch:async(path,options)=>{requests.push(path);calls.push({path,options});if(path===(publicDisplay?'/api/public':'/api/player')){reads++;if(reads===1&&firstAccessDenied)return reply(403,{detail:'player_access_required'});if(reads>1&&deferPoll)return new Promise(resolve=>pending.poll=resolve);return reply(200,structuredClone(publicDisplay?{active:true,session,game}:player));}
+   if(path==='/api/invitation'){if(deferInvite)return new Promise(resolve=>pending.invite=resolve);return reply(200,{session,lobby_revision:game.lobby_revision,...invite});}
    if(path==='/api/choice'){if(deferChoice)return new Promise((resolve,reject)=>{pending.choice=resolve;pending.choiceReject=reject;});return reply(200,structuredClone(player));}
+   if(path==='/api/identity'){
+    if(deferIdentity)return new Promise((resolve,reject)=>{pending.identity=resolve;pending.identityReject=reject;});
+    player.identity_confirmed=true;game.identities_confirmed++;
+    return reply(200,structuredClone(player));
+   }
    if(path==='/api/ready')return reply(403,{detail:'player_access_required'});
    if(path==='/api/lobby')return lobby?reply(200,structuredClone(lobby)):reply(409,{detail:'room_not_found'});throw Error('unexpected path '+path);}});
  vm.runInContext(source,context);
  const button=text=>all(nodes.party).find(n=>n.tagName==='button'&&n.textContent===text);
- return{context,nodes,storage,requests,calls,pending,reply,player,game,button,defer(){deferPoll=deferChoice=true;},
+ return{context,nodes,storage,requests,calls,pending,reply,player,game,button,events,defer(){deferPoll=deferChoice=true;},deferIdentity(){deferIdentity=true;},
   async choose(){button('放弃本次行动').onclick();button('确认选择').onclick();await settle();}};
 }
+
+test('the phone confirms only after the user has looked and let go of the private card',async()=>{
+ const c=client({phase:'identity'});await settle();
+ const reveal=c.button('按住查看身份'),confirm=c.button('我已看完');
+ assert(confirm.disabled);confirm.onclick();
+ assert(!c.calls.some(call=>call.path==='/api/identity'));
+ reveal.onpointerdown({pointerId:1});
+ assert.match(c.nodes.party.textContent,/狼人/);assert(confirm.disabled);
+ c.game.identities_confirmed=1;await vm.runInContext('poll()',c.context);
+ assert.equal(c.button('按住查看身份'),reveal);
+ reveal.events.pointerup();assert.doesNotMatch(c.nodes.party.textContent,/狼人/);
+ assert(!confirm.disabled);confirm.onclick();await settle();
+ assert.match(c.nodes.party.textContent,/已确认身份，等待首夜/);
+ assert.deepEqual(JSON.parse(c.calls.find(call=>call.path==='/api/identity').options.body),{revision:1});
+ assert.doesNotMatch(c.nodes.party.textContent,/狼人/);
+});
+
+test('lost identity acknowledgement is read back and a new deal requires looking again',async()=>{
+ const c=client({phase:'identity'});await settle();
+ c.deferIdentity();
+ const reveal=c.button('按住查看身份');
+ reveal.onkeydown({key:'Enter',preventDefault(){}});reveal.onkeyup({key:'Enter'});
+ c.button('我已看完').onclick();await settle();
+ c.player.identity_confirmed=true;c.game.identities_confirmed=1;
+ c.pending.identityReject(Error('network'));await settle();
+ assert(c.nodes.notice.textContent);
+ await vm.runInContext('poll()',c.context);
+ assert.match(c.nodes.party.textContent,/已确认身份/);assert.equal(c.nodes.notice.textContent,'');
+ c.events.offline();
+ assert(!c.button('按住查看身份'));
+ c.player.identity_confirmed=false;c.game.revision++;c.game.identities_confirmed=0;
+ await vm.runInContext('poll()',c.context);
+ assert(c.button('我已看完').disabled);
+ assert.equal(c.calls.filter(call=>call.path==='/api/identity').length,1);
+});
+
+test('the television updates only the aggregate identity count and has no night timer',async()=>{
+ const c=client({publicDisplay:true,phase:'identity'});await settle();
+ const stage=c.nodes.party.children[0],seats=c.nodes.party.children[1].children[1];
+ const roster=seats.children;
+ assert.match(c.nodes.party.textContent,/查看身份.*0 \/ 6 已确认/);
+ assert.doesNotMatch(stage.textContent,/00:30/);
+ c.game.identities_confirmed=5;await vm.runInContext('poll()',c.context);
+ assert.match(c.nodes.party.textContent,/5 \/ 6 已确认/);
+ assert.equal(seats.children,roster);
+ c.game.identities_confirmed=6;await vm.runInContext('poll()',c.context);
+ assert.match(stage.textContent,/准备入夜.*等候首夜/);
+ assert(!c.button('我已看完'));assert(!c.button('按住查看身份'));
+});
 
 test('closed phone clears its identity and offers a new room without retrying the old code',async()=>{
  const c=client();await settle();vm.runInContext('revealRole()',c.context);assert.match(c.nodes.party.textContent,/狼人/);
  c.defer();const job=vm.runInContext('poll()',c.context);await settle();c.pending.poll(c.reply(403,{detail:'player_access_required'}));await job;
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(vm.runInContext('game',c.context),null);
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(vm.runInContext('game',c.context),null);
  assert.equal(c.storage.size,0);assert.equal(c.requests.filter(p=>p==='/api/lobby').length,0);assert.equal(c.nodes.notice.textContent,'');
  c.button('输入房间号').onclick();await settle();assert.match(c.nodes.party.textContent,/一起入座/);
  assert.equal(vm.runInContext('code',c.context),'');assert.equal(c.requests.filter(p=>p==='/api/lobby').length,0);
@@ -46,16 +110,16 @@ test('closed phone clears its identity and offers a new room without retrying th
 
 test('a late choice response cannot restore identity after the background poll closed the room',async()=>{
  const c=client();await settle();c.defer();const poll=vm.runInContext('poll()',c.context);await settle();await c.choose();
- c.pending.poll(c.reply(403,{detail:'player_access_required'}));await poll;assert.match(c.nodes.party.textContent,/本局已关闭/);
+ c.pending.poll(c.reply(403,{detail:'player_access_required'}));await poll;assert.match(c.nodes.party.textContent,/座位已断开/);
  c.pending.choice(c.reply(200,structuredClone(c.player)));await settle();await settle();
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
 });
 
 test('a late background poll cannot restore identity after a rejected choice closed the room',async()=>{
  const c=client();await settle();c.defer();const poll=vm.runInContext('poll()',c.context);await settle();await c.choose();
- c.pending.choice(c.reply(403,{detail:'player_access_required'}));await settle();assert.match(c.nodes.party.textContent,/本局已关闭/);
+ c.pending.choice(c.reply(403,{detail:'player_access_required'}));await settle();assert.match(c.nodes.party.textContent,/座位已断开/);
  c.pending.poll(c.reply(200,structuredClone(c.player)));await poll;
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
 });
 
 for(const denied of ['poll','choice'])test('same-turn '+denied+' revocation wins over an already-resolved private response',async()=>{
@@ -63,19 +127,19 @@ for(const denied of ['poll','choice'])test('same-turn '+denied+' revocation wins
  c.pending[denied](c.reply(403,{detail:'player_access_required'}));
  c.pending[denied==='poll'?'choice':'poll'](c.reply(200,structuredClone(c.player)));
  await poll;await settle();
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
 });
 
 test('a late network failure from the retired session does not add an error to the closed screen',async()=>{
  const c=client();await settle();c.defer();const poll=vm.runInContext('poll()',c.context);await settle();await c.choose();
  c.pending.poll(c.reply(403,{detail:'player_access_required'}));await poll;
  c.pending.choiceReject(Error('network'));await settle();await settle();
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(c.nodes.notice.textContent,'');
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(c.nodes.notice.textContent,'');
 });
 
 test('revoked ready operation retires the phone immediately without waiting for polling',async()=>{
  const c=client({phase:'lobby'});await settle();c.button('准备好了').onclick();await settle();
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.storage.size,0);
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.storage.size,0);
  assert.equal(c.nodes.notice.textContent,'');assert.equal(c.nodes.roomLabel.textContent,'狼人杀');
 });
 
@@ -84,6 +148,69 @@ test('revoked public display clears its token and night appearance without offer
  const poll=vm.runInContext('poll()',c.context);await settle();c.pending.poll(c.reply(403,{detail:'display_access_required'}));await poll;
  assert.match(c.nodes.party.textContent,/公共画面已关闭/);assert.equal(c.storage.size,0);assert.equal(c.nodes.notice.textContent,'');
  assert.equal(c.nodes.party.textContent.includes('输入房间号'),false);assert.equal(vm.runInContext('document.body.dataset.night',c.context),'false');
+});
+
+test('public stage keeps the prompt above seats and refreshes the clock without rebuilding the stage', async () => {
+ const c = client({publicDisplay:true});
+ await settle();
+ const stage = c.nodes.party.children[0];
+ assert.equal(stage.className, 'public-stage');
+ c.game.host_script = {id:1, text:'其他玩家请闭眼。'};
+ c.game.players[0].role_name = '守卫';
+ c.game.seconds_left = 27;
+ await vm.runInContext('poll()', c.context);
+ assert.equal(c.nodes.party.children[0], stage);
+ assert.match(stage.textContent, /00:27.*其他玩家请闭眼/);
+ assert.doesNotMatch(c.nodes.party.textContent, /守卫/);
+ c.game.paused = true;
+ await vm.runInContext('poll()', c.context);
+ assert.match(stage.textContent, /已暂停.*等待主持人恢复游戏/);
+ assert.doesNotMatch(stage.textContent, /其他玩家请闭眼/);
+ c.game.paused = false;
+ c.game.phase = 'finished';
+ c.game.phase_name = '对局结束';
+ c.game.revision++;
+ c.game.winner = 'village';
+ c.game.end_reason = 'all_wolves_out';
+ c.game.recap = [
+  {round:1,events:[{kind:'dawn',seats:[4]}]},
+  {round:2,events:[{kind:'dawn',seats:[]}]},
+ ];
+ await vm.runInContext('poll()', c.context);
+ assert.match(c.nodes.party.textContent, /好人阵营获胜.*全部狼人出局/);
+ assert.match(c.nodes.party.textContent, /身份揭晓.*守卫/);
+ const recap = c.nodes.party.children.find(node=>node.className==='ww-recap');
+ const previous = all(recap).find(node=>node.attrs['aria-label']==='上一轮');
+ assert.match(recap.textContent,/第 2 轮/);
+ previous.onclick();
+ assert.match(recap.textContent,/4 号出局/);
+ assert.equal(previous.attrs['aria-disabled'],'true');
+ vm.runInContext('holdView()', c.context);
+ assert.equal(c.nodes.party.children[0].hidden,false);
+ await vm.runInContext('poll()', c.context);
+ assert.equal(c.nodes.party.children[0].hidden,true);
+ assert.equal(c.nodes.party.children[1],recap);
+ assert.match(recap.textContent,/第 1 轮/);
+ c.game.phase='lobby';c.game.revision++;c.game.players.forEach(player=>delete player.role_name);
+ delete c.game.recap;
+ await vm.runInContext('poll()', c.context);
+ assert(!c.nodes.party.children.includes(recap));
+});
+
+test('phone offers the sole target action first and sends it only after selecting a seat and confirming', async () => {
+ const c = client();
+ await settle();
+ assert.deepEqual(c.nodes.party.children.slice(0,3).map(node => node.className), ['phase', 'action-panel', 'identity']);
+ assert.equal(c.button('袭击').attrs['aria-pressed'], 'true');
+ assert.equal(c.button('确认选择').disabled, true);
+ all(c.nodes.party).find(node => node.dataset.choiceFocus === 'seat-2').onclick();
+ assert.equal(c.button('确认选择').disabled, false);
+ assert.equal(c.requests.includes('/api/choice'), false);
+ c.button('确认选择').onclick();
+ await settle();
+ const sent = c.calls.find(call => call.path === '/api/choice');
+ assert.equal(JSON.parse(sent.options.body).target, 2);
+ assert.equal(JSON.parse(sent.options.body).action, 'attack');
 });
 
 test('an older poll cannot erase an acknowledged choice or rewind a newer phase',async()=>{
@@ -96,7 +223,7 @@ test('an older poll cannot erase an acknowledged choice or rewind a newer phase'
   assert.equal(vm.runInContext('player.submitted?.[0]',c.context),'pass');
   assert.equal(vm.runInContext('game.revision',c.context),nextPhase?2:1);
   assert.match(c.nodes.notice.textContent,/已确认/);
-  if(nextPhase)assert.match(c.nodes.party.textContent,/自由讨论/);else assert.match(c.nodes.party.textContent,/已提交：放弃本次行动/);
+  if(nextPhase)assert.match(c.nodes.party.textContent,/自由讨论/);else assert.match(c.nodes.party.textContent,/已提交 · 放弃本次行动/);
  }
 });
 
@@ -123,6 +250,125 @@ test('pending choices keep their controls stable and leave private identity view
  assert.equal(attack.disabled,true);assert.equal(c.button('确认选择').disabled,true);
  assert.notEqual(c.button('按住查看身份').disabled,true);attack.onclick();assert.equal(vm.runInContext('selectedAction',c.context),'pass');
  c.pending.choice(c.reply(409,{detail:'phase_changed'}));await settle();assert.equal(attack.disabled,false);
+});
+
+test('returning to the phone reconciles a lost choice across phases without sending another choice', async () => {
+ const session='b'.repeat(32);
+ const c=client({privateFields:{session,choice_version:3}});
+ await settle();c.defer();await c.choose();
+ const choice=JSON.parse(c.calls.find(call=>call.path==='/api/choice').options.body);
+ assert.equal(choice.expected_choice_version,3);
+ const stamp=JSON.parse(c.storage.get('Friday.werewolf.choice'));
+ assert.deepEqual(stamp,{session,seat:1,revision:1,event_id:choice.event_id});
+ vm.runInContext('revealRole()',c.context);
+ c.events.pagehide();
+ assert.match(c.nodes.party.textContent,/身份已收起/);
+ c.events.pageshow({persisted:true});await settle();
+ assert.match(c.nodes.party.textContent,/正在同步对局/);
+ assert.equal(c.button('确认选择'),undefined);
+ assert.equal(c.calls.at(-1).options.headers['X-Friday-Choice'],choice.event_id);
+ const current=structuredClone(c.player);
+ current.public={...current.public,revision:2,phase:'discussion',phase_name:'自由发言'};
+ current.actions=[];current.choice_version=4;
+ current.choice_receipt={event_id:choice.event_id,recorded:true};
+ c.pending.poll(c.reply(200,current));await settle();
+ c.pending.choice(c.reply(500,{detail:'network'}));await settle();
+ assert.match(c.nodes.party.textContent,/自由发言/);
+ assert.match(c.nodes.notice.textContent,/已确认/);
+ assert.equal(c.storage.has('Friday.werewolf.choice'),false);
+ assert.equal(c.requests.filter(path=>path==='/api/choice').length,1);
+});
+
+test('public display drops a stale clock and narration, then restores the newest phase', async () => {
+ const c=client({publicDisplay:true});await settle();
+ c.game.host_script={id:1,text:'狼人请睁眼。'};
+ await vm.runInContext('poll()',c.context);
+ const stage=c.nodes.party.children[0];
+ assert.match(stage.textContent,/00:30.*狼人请睁眼/);
+ c.defer();
+ const broken=vm.runInContext('poll()',c.context);await settle();
+ c.pending.poll(c.reply(503,{detail:'network'}));await broken;
+ assert.equal(c.nodes.party.children[0],stage);
+ assert.match(stage.textContent,/正在同步对局.*连接恢复后会自动更新/);
+ assert.doesNotMatch(stage.textContent,/00:30|狼人请睁眼/);
+ const fresh=vm.runInContext('poll()',c.context);await settle();
+ const game={...c.game,revision:2,phase:'discussion',phase_name:'自由发言',seconds_left:90,
+  host_script:{id:2,text:'请轮流发言。'}};
+ c.pending.poll(c.reply(200,{active:true,game}));await fresh;
+ assert.match(stage.textContent,/自由发言.*01:30.*请轮流发言/);
+ assert.doesNotMatch(stage.textContent,/正在同步|狼人请睁眼/);
+});
+
+test('电视入座邀请在断流时收起，恢复后重新读取',async()=>{
+ const c=client({publicDisplay:true,phase:'lobby',invite:{room_code:'123456',qr_svg:'PHN2Zy8+'}});
+ await settle();
+ const view=vm.runInContext('displayView',c.context);
+ assert.equal(view.invitation.hidden,false);
+ assert.equal(view.number.textContent,'123456');
+ assert.equal(view.qr.hidden,false);
+ assert.equal(view.script.hidden,true);
+ const first=c.calls.find(call=>call.path==='/api/invitation');
+ assert.equal(first.options.headers.Authorization,'Bearer '+'a'.repeat(64));
+ c.events.offline();
+ assert.equal(view.invitation.hidden,true);
+ assert.equal(view.number.textContent,'');
+ assert.equal(view.script.hidden,false);
+ await vm.runInContext('poll()',c.context);await settle();
+ assert.equal(view.invitation.hidden,false);
+ assert.equal(c.requests.filter(path=>path==='/api/invitation').length,2);
+});
+
+test('满座后的晚到二维码不会恢复邀请',async()=>{
+ const c=client({publicDisplay:true,phase:'lobby',invite:{room_code:'123456'},deferInvite:true});
+ await settle();
+ const view=vm.runInContext('displayView',c.context);
+ const request=c.calls.find(call=>call.path==='/api/invitation');
+ c.game.players.push({seat:6,name:'合成玩家6',alive:true});
+ await vm.runInContext('poll()',c.context);
+ assert(request.options.signal.aborted);
+ c.pending.invite(c.reply(200,{session:'b'.repeat(32),lobby_revision:0,room_code:'123456',qr_svg:'PHN2Zy8+'}));
+ await settle();
+ assert.equal(view.invitation.hidden,true);
+ assert.equal(view.number.textContent,'');
+});
+
+test('二维码不可用时，大屏显示手机入口和房间号',async()=>{
+ const c=client({publicDisplay:true,phase:'lobby',invite:{room_code:'123456',qr_svg:null}});
+ await settle();
+ const view=vm.runInContext('displayView',c.context);
+ assert.equal(view.invitation.hidden,false);
+ assert.equal(view.qr.hidden,true);
+ assert.equal(view.address.textContent,'http://127.0.0.1:12345/phone');
+ assert.equal(view.number.textContent,'123456');
+});
+
+test('扫描当前邀请后，失效的旧座位凭据交还给选座页',async()=>{
+ const c=client({firstAccessDenied:true,lobby:{revision:1,phase:'lobby',player_count:6,players:[]}});
+ await settle();
+ assert.equal(c.storage.has('Friday.werewolf.player'),false);
+ assert(c.button('1 空位'));
+ const lookup=c.calls.find(call=>call.path==='/api/lobby');
+ assert.equal(lookup.options.headers.Authorization,undefined);
+ assert.equal(JSON.parse(lookup.options.body).code,'123456');
+ assert.equal(c.requests.includes('/api/join'),false);
+});
+
+test('原手机标签页复扫时保留有效座位，座位撤销后重新选座',async()=>{
+ const c=client({lobby:{revision:1,phase:'lobby',player_count:6,players:[]}});
+ await settle();
+ vm.runInContext("location.hash='#code=123456'",c.context);
+ c.events.hashchange();await settle();
+ assert(c.storage.has('Friday.werewolf.player'));
+ assert.equal(c.requests.includes('/api/lobby'),false);
+ c.defer();
+ const read=vm.runInContext('poll()',c.context);await settle();
+ c.pending.poll(c.reply(403,{detail:'player_access_required'}));await read;
+ assert.match(c.nodes.party.textContent,/座位已断开/);
+ vm.runInContext("location.hash='#code=123456'",c.context);
+ c.events.hashchange();await settle();
+ assert(c.button('1 空位'));
+ assert.equal(c.requests.filter(path=>path==='/api/lobby').length,1);
+ assert.equal(c.requests.includes('/api/join'),false);
 });
 
 test('editing the room number retires seats and prevents joining an unviewed room',async()=>{

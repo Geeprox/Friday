@@ -12,6 +12,7 @@ import pytest
 
 from homeplane.embodied import interaction
 from homeplane.embodied.interaction_fleet import InteractionFleet
+from homeplane.embodied.party_camera import PartyCamera
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,7 +59,7 @@ async def test_delayed_receipt_keeps_trigger_time_and_rule_metadata(monkeypatch)
                  interaction_enabled=True, SELECTED={'id': 'synthetic-camera'},
                  state={'status': 'live'}, identities=SimpleNamespace(session='synthetic-session'),
                  games=SimpleNamespace(mode='off', control_context='synthetic-game', control_revision=0),
-                 practice=RecognitionPractice(),
+                 party_camera=PartyCamera(), practice=RecognitionPractice(),
                  home=SimpleNamespace(armed=True, spawn=lambda coro: tasks.append(asyncio.create_task(coro))),
                  secondary_homes={}, fleet=fleet, wall=SimpleNamespace(notice=lambda *_: None))
     exec(compile(ast.Module(body=[source_guard, dispatch], type_ignores=[]), '<合成手势分发>', 'exec'), scope)

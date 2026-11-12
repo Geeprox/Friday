@@ -15,7 +15,7 @@ function questWorld(g){
  const stages=Array.isArray(q.stages)&&q.stages.length?q.stages:legacy;
  const level=Math.max(0,Math.min(stages.length,Number.isSafeInteger(q.level)?q.level:0));
  const stage=stages[Math.min(level,stages.length-1)],scenes=['forest','stream','camp'];
- const landmarks=['gate','canopy','branches','stones','steps','flowers','boughs','trail','flags','breeze'];
+ const landmarks=['gate','canopy','branches','stones','steps','flowers','crossing','boughs','trail','flags','breeze','landing','camp_flowers','lanterns'];
  const requestedScene=stage?.scene??oldWorld[stage?.action]?.[0];
  const scene=scenes.includes(requestedScene)?requestedScene:'forest',values={};
  for(const[s,part]of stages.entries()){
@@ -26,8 +26,12 @@ function questWorld(g){
   const observed=reps?Math.floor(Number(q.reps)||0):Number(q.hold)||0;
   const count=s<level?required:s===level&&q.phase!=='transition'?Math.max(0,Math.min(required,observed)):0;
   values[name]={count,required,ratio:required?count/required:0,complete:s<level,visible:s<=level};
+  if(name==='stones'&&Array.isArray(part.step_pattern)&&part.step_pattern.length===required&&
+    part.step_pattern.every(side=>side==='left'||side==='right'))values[name].pattern=part.step_pattern;
  }
- return{scene,level,done:level===stages.length,values};
+ const stones=values.stones,step=stage?.landmark==='stones'&&q.phase==='work'&&g.status==='playing'&&
+  stones?.pattern&&q.step&&stones.pattern[stones.count]===q.step.side?q.step:null;
+ return{scene,level,done:level===stages.length,values,step};
 }
 function questPlacements(places,count){
  count=Math.max(0,Math.min(32,Math.floor(count)));if(count===places.length)return places;
@@ -39,10 +43,22 @@ function questPlacements(places,count){
  for(let i=0;i<Math.max(left.length,right.length);i++){if(left[i])result.push(left[i]);if(right[i])result.push(right[i]);}
  return result;
 }
+function tennisBallHeight(arc,ball){
+ if(!arc)return null;
+ if(arc.bounce_z===null)return arc.launch_height;
+ const first=(ball.z-arc.launch_z)/(arc.bounce_z-arc.launch_z);
+ if(first<=1){
+  const t=Math.max(0,first);
+  return (1-t)*(arc.launch_height+4*arc.loft*t);
+ }
+ const depth=Math.min(1,Math.abs(ball.z-ball.toward)/Math.abs(arc.bounce_z-ball.toward));
+ return arc.rebound_height*(1-depth**2);
+}
 function createGameScenery(c,{base,onChange=()=>{}}){
  const images=new Map(),errors=new Set(),positions=[.5,.5];
  const tennisArt=['tennis-near-v1.png','tennis-far-v1.png'];
  const tennisCounts=[null,null],tennisPending=[null,null],tennisHitAt=[-10000,-10000],tennisPoses=[0,0];
+ let opponentSequence=0;
  let tennisClock=0,tennisAt=null,tennisRunning=false,tennisPacketAt=null,tennisPacketPlaying=false,tennisPhase=null;
  const reduced=matchMedia('(prefers-reduced-motion: reduce)');
  let lastAt=0,celebrateAt=-10000,lastLevel=0,portrait=false,lastRound=null,lastContext=null,lastTennisEvent=null,ballFrames=null,motionAt=null,shownBall=null;
@@ -51,16 +67,28 @@ function createGameScenery(c,{base,onChange=()=>{}}){
  function resetQuest(){questClock=0;questAt=null;questRunning=false;questShown=questPrevious=null;questReveals.clear();}
  function resetTennis(){
   tennisClock=0;tennisAt=tennisPacketAt=null;tennisRunning=tennisPacketPlaying=false;tennisPhase=null;
+  opponentSequence=0;
   tennisCounts.fill(null);tennisPending.fill(null);tennisHitAt.fill(-10000);tennisPoses.fill(0);
  }
  function receiveTennis(g,at){
   const running=g.mode==='tennis'&&g.status==='playing';
   const continuous=running&&tennisPacketPlaying&&tennisPacketAt!==null&&at>tennisPacketAt&&at-tennisPacketAt<=250;
+  const served=tennisPhase==='serve'&&g.tennis?.phase==='rally';
+  const feed=g.tennis?.event;
+  if(continuous&&g.tennis?.practice&&['ready','point'].includes(tennisPhase)&&g.tennis.phase==='rally'&&
+     feed?.kind==='serve'&&feed.player===1&&feed.age>=0&&feed.age<=.25)tennisPending[1]=at;
+  if(g.tennis?.opponent&&Number.isSafeInteger(feed?.sequence)&&feed.sequence>opponentSequence){
+   if(continuous&&feed.sequence===opponentSequence+1&&feed.player===1&&
+      ['serve','hit'].includes(feed.kind)&&feed.age>=0&&feed.age<=.25)tennisPending[1]=at;
+   opponentSequence=feed.sequence;
+  }
   for(let i=0;i<2;i++){
    const player=g.players?.[i],count=player?.swings;
    if(!Number.isSafeInteger(count)||count<0)continue;
+   const currentSwing=served?g.tennis.event?.kind==='serve'&&g.tennis.event.player===i:
+    g.tennis?.phase==='rally'||g.tennis?.phase==='point'&&tennisPhase==='rally';
    if(continuous&&player.observation==='fresh'&&tennisCounts[i]!==null&&count===tennisCounts[i]+1
-     &&(g.tennis?.phase==='rally'||g.tennis?.phase==='point'&&tennisPhase==='rally'))tennisPending[i]=at;
+     &&currentSwing)tennisPending[i]=at;
    if(tennisCounts[i]!==null&&count<tennisCounts[i]){tennisPending[i]=null;tennisHitAt[i]=-10000;}
    tennisCounts[i]=count;
   }
@@ -92,7 +120,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   return images.get(name);
  }
  const complete=im=>im?.complete&&im.naturalWidth>0;
- const assets=mode=>mode==='quest'?['summer-scene.png','quest-stream-scene.png','quest-camp-scene.png','quest-props.png']:
+ const assets=mode=>mode==='quest'?['summer-scene.png','quest-stream-scene.png','quest-camp-scene.png','quest-props.png','quest-lantern.webp']:
   mode==='ski'?['winter-scene.png','winter-props.png']:
   mode==='tennis'?['summer-scene.png','summer-props.png',...tennisArt]:['summer-scene.png','summer-props.png'];
  function prepare(mode){for(const name of assets(mode))image(name);}
@@ -119,10 +147,11 @@ function createGameScenery(c,{base,onChange=()=>{}}){
  const questRects=[[49,185,352,176],[472,192,390,168],[915,117,394,246],[1341,100,421,242],
   [53,511,340,321],[498,508,337,320],[964,470,265,372],[1373,500,350,333]];
  function questSprite(index,x,y,width,{alpha=1,angle=0,mirror=false,top=false}={}){
-  const im=image('quest-props.png');if(!complete(im))return;
-  const[sx,sy,sw,sh]=questRects[index],height=width*sh/sw;
+  const lantern=index==='lantern',im=image(lantern?'quest-lantern.webp':'quest-props.png');if(!complete(im))return;
+  const[sx,sy,sw,sh]=lantern?[59,13,221,298]:questRects[index],height=width*sh/sw;
+  const aw=lantern?320:1774,ah=lantern?320:887;
   c.save();c.globalAlpha*=alpha;c.translate(x,y);c.rotate(angle);if(mirror)c.scale(-1,1);
-  c.drawImage(im,sx*im.naturalWidth/1774,sy*im.naturalHeight/887,sw*im.naturalWidth/1774,sh*im.naturalHeight/887,
+  c.drawImage(im,sx*im.naturalWidth/aw,sy*im.naturalHeight/ah,sw*im.naturalWidth/aw,sh*im.naturalHeight/ah,
    -width/2,top?0:-height,width,height);c.restore();
  }
  const ease=t=>1-Math.pow(1-Math.max(0,Math.min(1,t)),3);
@@ -138,7 +167,32 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   }
   const p=settled(id);questSprite(index,x,y+(reduced.matches?0:6*(1-p)),width,{top,alpha:.4+.6*p});
  }
- function questWorldPaint(world){
+ function creekStones(part,step){
+  if(!part.visible)return;
+  const left=[[543,803,154],[577,693,131],[599,584,108]],right=left.map(([x,y,w])=>[1600-x,y,w]);
+  const leftCount=part.pattern.filter(side=>side==='left').length,rightCount=part.pattern.length-leftCount;
+  const places={left:questPlacements(left.slice(0,leftCount),leftCount),
+   right:questPlacements(right.slice(0,rightCount),rightCount)};
+  const cursor={left:0,right:0};
+  for(const [i,side]of part.pattern.entries()){
+   const [x,y,w]=places[side][cursor[side]++];
+   if(i<part.count){questSlot('stones:'+i,0,x,y,w,true);continue;}
+   const phase=i===part.count?step?.phase:null,active=phase==='step';
+   questSprite(0,x,y,w,{alpha:active?1:phase==='return'?.94:.48});
+   if(!active)continue;
+   const top=y-w*.39,direction=side==='left'?-1:1;
+   c.save();c.beginPath();c.arc(x,top,27,0,Math.PI*2);c.fillStyle='#3c3227';c.fill();
+   c.strokeStyle='#fff1ce';c.lineWidth=3;c.stroke();
+   c.beginPath();c.moveTo(x-11*direction,top);c.lineTo(x+11*direction,top);
+   c.moveTo(x+2*direction,top-9);c.lineTo(x+11*direction,top);c.lineTo(x+2*direction,top+9);
+   c.strokeStyle='#fff7e4';c.lineWidth=4;c.lineCap='round';c.lineJoin='round';c.stroke();c.restore();
+  }
+  if(step?.phase==='return'||step?.phase==='center'){
+   c.save();c.beginPath();c.ellipse(800,804,77,18,0,0,Math.PI*2);c.fillStyle='#3c322765';c.fill();
+   c.strokeStyle='#fff1ce';c.lineWidth=4;c.stroke();c.restore();
+  }
+ }
+ function questWorldPaint(world,showStep){
   background({forest:'summer-scene.png',stream:'quest-stream-scene.png',camp:'quest-camp-scene.png'}[world.scene]);
   const parts=world.values;
   function row(name,index,places,{clear=false,marker=true,top=false}={}){
@@ -155,9 +209,11 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    questSprite(3,1040+open*80,460-lift*65,300-open*40,{angle:open*.12});
    row('branches',2,[[490,815,250],[545,665,225],[475,535,195]],{clear:true});
   }else if(world.scene==='stream'){
-   row('stones',0,[[470,810,170],[540,700,150],[470,600,130],[545,510,115]]);
-   row('steps',1,[[1100,825,170],[1150,750,160],[1070,675,150],[1140,605,140],[1080,540,130],[1150,485,120]]);
-   row('flowers',5,[[585,860,120],[1040,865,120],[565,460,100],[1040,455,100]]);
+   if(parts.stones?.pattern)creekStones(parts.stones,showStep?world.step:null);
+   else row('stones',0,[[470,810,170],[540,700,150],[470,600,130],[545,510,115]]);
+   row('steps',1,[[1200,821,118],[1210,750,110],[1178,680,105],[1200,610,97],[1173,541,90],[1191,480,82]]);
+   row('flowers',5,[[407,855,113],[1072,463,99],[425,690,101],[940,488,90]]);
+   row('crossing',0,[[690,791,97],[910,791,97],[697,710,87],[903,710,87]]);
   }else if(world.scene==='camp'){
    row('boughs',2,[[470,825,235],[550,700,210],[470,590,185],[550,500,160]],{clear:true});
    row('trail',0,[[1130,820,175],[1060,710,155],[1140,600,135],[1070,510,115]]);
@@ -165,7 +221,10 @@ function createGameScenery(c,{base,onChange=()=>{}}){
     c.save();c.beginPath();c.moveTo(450,230);c.bezierCurveTo(630,295,970,295,1150,230);c.strokeStyle='#826747';c.lineWidth=3;c.stroke();c.restore();
     row('flags',4,[[470,237,80],[1130,237,80],[615,271,80],[985,271,80]],{top:true,marker:false});
    }
-   row('breeze',6,[[460,850,85],[1140,850,85],[590,885,100],[1010,885,100]]);
+   row('breeze',6,[[460,850,85],[1140,850,85],[391,882,88],[1209,882,88]]);
+   row('landing',1,[[610,802,110],[990,802,110],[625,736,96],[975,736,96]]);
+   row('camp_flowers',5,[[455,730,98],[1210,742,94],[510,440,74],[1090,438,74]]);
+   row('lanterns','lantern',[[615,650,92],[985,650,92],[555,510,70],[930,515,70]]);
    if(world.done)questSlot('picnic',7,1120,690,170,true,{marker:false});
   }
  }
@@ -190,8 +249,9 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    questShown=next;
   }
   const p=reduced.matches?1:ease((questClock-chapterAt)/360);
-  if(questPrevious&&p<1){questWorldPaint(questPrevious);c.save();c.globalAlpha*=p;questWorldPaint(questShown);c.restore();}
-  else{questPrevious=null;questWorldPaint(questShown);}
+  const showStep=g.mode==='quest'&&g.status==='playing';
+  if(questPrevious&&p<1){questWorldPaint(questPrevious,false);c.save();c.globalAlpha*=p;questWorldPaint(questShown,showStep);c.restore();}
+  else{questPrevious=null;questWorldPaint(questShown,showStep);}
  }
  function training(g,at){
   background();sprite(1,130,700,370);sprite(0,1480,750,470);sprite(2,250,840,220);
@@ -210,6 +270,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   const age=tennisClock-tennisHitAt[i],guide=g.tennis?.guide;
   // These are illustrations of an observed swing, never a hit/score decision.
   if(age>=0&&age<(reduced.matches?120:420))tennisPoses[i]=reduced.matches?5:5+Math.floor(age/60);
+  else if(!reduced.matches&&g.tennis?.serve?.ready&&g.tennis.serve.player===i)tennisPoses[i]=3;
   else if(!reduced.matches&&g.tennis?.phase==='rally'&&guide?.active&&guide.receiver===i&&guide.in_position
     &&g.players?.[i]?.observation==='fresh'&&Number.isFinite(guide.seconds)&&guide.seconds>=0&&guide.seconds<=.65)
    tennisPoses[i]=1+Math.min(3,Math.floor((.65-guide.seconds)/.65*4));
@@ -241,26 +302,36 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   for(const z of [.25,.75])line(project(.11,z),project(.89,z),'#fff6d9',3);
   line(project(.5,.25),project(.5,.75),'#fff6d9',3);c.restore();
   const guide=t.guide;
-  if(guide?.active&&Number.isFinite(guide.target_x)){
-   const z=guide.receiver===0?.1:.9,p=project(guide.target_x,z),left=project(guide.target_x-guide.reach,z),right=project(guide.target_x+guide.reach,z);
+  let cue;
+  if(running&&guide?.active&&Number.isFinite(guide.target_x)&&Number.isFinite(guide.reach)){
+   const window=guide.window>0&&guide.window<.5?guide.window:.1,z=guide.receiver===0?window:1-window;
+   const p=project(guide.target_x,z),left=project(guide.target_x-guide.reach,z),right=project(guide.target_x+guide.reach,z);
    const rx=Math.abs(right[0]-left[0])/2,ry=rx*.21,ink=guide.receiver===0?'#285e53':'#8b3c29';
-   c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle=guide.in_position?'#fff6d94d':'#fff6d91f';c.fill();c.strokeStyle=ink;c.lineWidth=4;c.stroke();
+   const swing=t.phase==='rally'&&guide.cue==='swing';
+   c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle=swing?'#fff6d9bd':guide.in_position?'#fff6d94d':'#fff6d91f';c.fill();c.strokeStyle=ink;c.lineWidth=swing?7:4;c.stroke();
    const approach=1+Math.max(0,Math.min(1,guide.seconds/.8))*.42;
-   if(!reduced.matches&&t.phase==='rally'){c.beginPath();c.ellipse(p[0],p[1],rx*approach,ry*approach,0,0,Math.PI*2);c.strokeStyle='#fff6d9';c.lineWidth=2;c.stroke();}
-   const labelFont=portrait?34:20;c.textAlign='center';c.font=`600 ${labelFont}px -apple-system, sans-serif`;
-   const label=t.phase==='ready'||t.phase==='point'?Math.max(1,Math.ceil(t.ready_seconds))+'':guide.cue==='swing'?'挥拍':(guide.receiver+1)+' 号落点';
-   const labelWidth=label.length*labelFont+20;c.fillStyle='#faf9f2';c.fillRect(p[0]-labelWidth/2,p[1]-ry-14-labelFont-5,labelWidth,labelFont+10);c.fillStyle=ink;
-   c.fillText(label,p[0],p[1]-ry-14);c.restore();
+   if(!reduced.matches&&t.phase==='rally'&&!swing){c.beginPath();c.ellipse(p[0],p[1],rx*approach,ry*approach,0,0,Math.PI*2);c.strokeStyle='#fff6d9';c.lineWidth=2;c.stroke();}
+   c.restore();
+   if(swing)cue={label:'挥拍',p,rx,ry,ink,swing};
+  }else if(running&&t.serve?.ready){
+   const p=project(t.ball.x,t.ball.z),rx=portrait?50:44,ry=rx*.25,ink=t.serve.player===0?'#285e53':'#8b3c29';
+   c.save();c.beginPath();c.ellipse(p[0],p[1],rx,ry,0,0,Math.PI*2);c.fillStyle='#fff6d9bd';c.fill();
+   c.strokeStyle=ink;c.lineWidth=5;c.stroke();c.restore();
+   const label=t.opponent?(t.serve.player===0?'挥拍发球':'对手发球'):(t.serve.player+1)+' 号 · 发球';
+   cue={label,p,rx,ry,ink,swing:true,side:t.serve.player===0?-1:1};
   }
   const dt=Math.min(.1,Math.max(0,(at-lastAt)/1000));lastAt=at;
   function player(i){
-   const p=players[i],wanted=.5+Math.max(-1,Math.min(1,p?.lateral||0))*.39;
-   if(g.status==='playing'&&p&&Number.isFinite(p.lateral))positions[i]+=(wanted-positions[i])*(reduced.matches?1:1-Math.exp(-dt/.075));
+   const p=players[i],far=i===1?(t.opponent?.x??t.practice?.feed_x):null;
+   const feed=Number.isFinite(far)?far:null;
+   const wanted=feed??(.5+Math.max(-1,Math.min(1,p?.lateral||0))*.39);
+   if(g.status==='playing'&&(feed!==null||Number.isFinite(p?.lateral)))positions[i]+=(wanted-positions[i])*(reduced.matches?1:1-Math.exp(-dt/.075));
    const point=project(positions[i],i===0?.025:.98),size=portrait?(i===0?300:205):(i===0?245:160);
    tennisActor(i,tennisPose(i,g,at),point[0],point[1],size);
    c.save();c.textAlign='center';c.font=`600 ${portrait?34:20}px -apple-system, sans-serif`;
    const labelWidth=portrait?90:60;c.fillStyle='#faf9f2';c.fillRect(point[0]-labelWidth/2,point[1]+8,labelWidth,portrait?44:27);
-   c.fillStyle=i?'#8a4030':'#234f49';c.fillText((i+1)+' 号',point[0],point[1]+(portrait?42:29));
+   const label=t.opponent?(i?'对手':'你'):t.practice?(i?'陪练':'你'):(i+1)+' 号';
+   c.fillStyle=i?'#8a4030':'#234f49';c.fillText(label,point[0],point[1]+(portrait?42:29));
    c.restore();
   }
   player(1);
@@ -272,12 +343,29 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   for(const p of [netLeft,netRight])line([p[0],p[1]+5],[p[0],p[1]-netHeight-7],'#2f6053',9);c.restore();
   player(0);
   if(!['ready','point','complete'].includes(t.phase)){
-   const ball=suspended&&shownBall?shownBall:ballFrame(g,at),p=project(ball.x,ball.z),lift=Math.sin(Math.max(0,Math.min(1,ball.z))*Math.PI)*90+18;
-   if(!suspended)shownBall={x:ball.x,z:ball.z};
-   c.save();c.fillStyle='#59391d40';c.beginPath();c.ellipse(p[0],p[1],13,5,0,0,Math.PI*2);c.fill();c.restore();sprite(6,p[0],p[1]-lift+14,portrait?52:42);
+   let ball=ballFrame(g,at),height=tennisBallHeight(t.arc,ball);
+   if(suspended&&t.phase==='rally'&&shownBall)({ball,height}=shownBall);
+   else if(!suspended)shownBall={ball,height};
+   const p=project(ball.x,ball.z),size=(portrait?57:47)-ball.z*13;
+   const lift=height===null?Math.sin(Math.max(0,Math.min(1,ball.z))*Math.PI)*90+18:height*(162-54*ball.z);
+   const shadow=size*.23*(1-Math.min(1,lift/160)*.35);
+   c.save();c.fillStyle='#59391d';c.globalAlpha=.42-Math.min(.25,lift/500);
+   c.beginPath();c.ellipse(p[0],p[1],shadow,shadow*.35,0,0,Math.PI*2);c.fill();c.restore();
+   sprite(6,p[0],p[1]-lift+size*.25,size);
   }
   if(!suspended&&t.event?.kind==='point'&&t.event.sequence!==lastTennisEvent){celebrateAt=motionAt;lastTennisEvent=t.event.sequence;}
   paperCelebration(motionAt);
+  if(cue){
+   const {label,p,rx,ry,ink,swing}=cue,font=portrait?36:24;
+   c.save();c.textAlign='center';c.textBaseline='middle';c.font=`650 ${font}px -apple-system, sans-serif`;
+   const halfWidth=c.measureText(label).width/2+font*.48,height=font*1.52;
+   const side=cue.side??(p[0]>800?-1:1),margin=portrait?340:24,offset=rx+halfWidth+12;
+   const minX=margin+halfWidth,maxX=1600-margin-halfWidth,preferred=p[0]+side*offset;
+   const beside=cue.side&&(preferred<minX||preferred>maxX)?p[0]-side*offset:preferred;
+   const x=Math.max(minX,Math.min(maxX,beside)),y=cue.side?p[1]-ry:p[1]+ry*.65;
+   c.beginPath();c.roundRect(x-halfWidth,y-height/2,halfWidth*2,height,font*.32);
+   c.fillStyle=swing?ink:'#faf9f2';c.fill();c.fillStyle=swing?'#fffaf2':ink;c.fillText(label,x,y+font*.05);c.restore();
+  }
  }
  return {prepare,ready,failed,reload,receive,adventure,training,tennis,
   teachingAnchor(mode){return mode==='hiit'?{x:800,y:535}:{x:800,y:790};},

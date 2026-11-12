@@ -81,6 +81,16 @@ SYNTHETIC_MEDIA = {
         '2505a47e2a477d3aae76a73063646d1205374fd8f4be6bb1d1d4de424ba759bb',
     'homeplane/static/motion-art/body/targets/exercise-side_bend.png':
         'afff12657b4e11f510a8037b645a3806f89ab31ef3f34c73d17f0b072b39e0ea',
+    'homeplane/static/motion-art/body/targets/exercise-balance.png':
+        'c1ee438bd4f1b9f16daac38a0e4e9a7c2ffa101efc482c709051815a0e1d9278',
+    'homeplane/static/motion-art/body/targets/exercise-cross_knee.png':
+        '38005bc9a21ce52217a5987f955dfe418d5cbe4162d0fd6c3cd288e710f82802',
+    'homeplane/embodied/static/game-art/quest-lantern.webp':
+        '08069e55ec432673bcf9c6e53e3f008162c1a6baa87626525ed2c2777d8f6137',
+    'homeplane/static/motion-art/body/targets/exercise-side_raise.png':
+        '97466f4b4992631b62631d1c5713adfc15ef326598b0dc4b20048ae50e99859b',
+    'homeplane/static/motion-art/body/targets/exercise-overhead_clap.png':
+        '810ace5e89e85db9a3a9865f292102626a6f8c561308c30f1ae2f33030cba5c0',
     # Original game environment art; exact prompts/provenance in adjacent JSON.
     'homeplane/embodied/static/game-art/winter-props.png':
         '73bba0b51c57e6470ea71bb87761a3d9b264a7f63844ea6468fb4f26fc6aebb0',
@@ -115,6 +125,13 @@ SYNTHETIC_MEDIA = {
         '65c686067b13e7ec6b8d9475c31da9ddeca5253cae95160a41404d49ae827c24',
     'homeplane/static/games-art/ktv.png':
         '11b30030c8ba0cce72f2561b23e7de98f6ae0bc38010fa557e2d7368b2c5e2a4',
+    # 光线保卫队原创生成美术；提示词、原图指纹和派生方式记录在相邻 JSON。
+    'homeplane/static/games-art/beam.webp':
+        '29f03a4aeffb8945117b50e64c68590d15f7b3bc53e93d0031d64bc1e2ef802d',
+    'homeplane/embodied/static/game-art/beam-glade.webp':
+        '7e4399ee70e6a8bd69b4409fdd5e77b310dd5f541b3d94e53b5a44523b94802d',
+    'homeplane/embodied/static/game-art/beam-fluff.webp':
+        '10dfe79fb36ff7dc13b12eef413b7c8cfaa230f5306e7c0239e4baabfeb1100c',
     # Approved Friday Icon, unchanged pixels with embedded origin metadata.
     'homeplane/static/brand/friday.png':
         'dba243be53573b3b2ec7572852cf23075c6b851c72c417d2c4d9a7396cca2d6e',

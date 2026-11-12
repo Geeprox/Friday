@@ -46,6 +46,10 @@ python3 scripts/setup-dependencies.py miloco-source
 
 [能力与限制](docs/capabilities.md) · [房型导入](docs/layout.md) · [架构](docs/architecture.md) · [隐私](docs/privacy.md)
 
+可在“设置 → 智能服务”选择 ARL · Codex、OpenAI API、API 优先或仅本地功能，分别配置
+每日请求、文本 Token、图片与语音上限。额度不足时按设置回退，基础设备控制、规则和
+KTV 播放保留。云端语音输入与逐曲背景各自单独开启，见[智能通道与用量](docs/intelligence.md)。
+
 ## 日常使用
 
 - **我的家**：按导入户型和真实房间查看设备模型，打开房间或设备完成主要控制。没有安装位置的数据保留未放置，不猜测坐标。
@@ -79,6 +83,6 @@ macOS 桌面源码位于 `native/FridayDesktop/`，用 SwiftPM 构建；[桌面�
 
 开发和 CI 使用显式准备、逐文件校验的固定公开 ARL SDK 输入；准备与清理步骤见桌面构建说明，公开客户端和完整宿主的测试边界见[开发说明](docs/development.md)。这不会安装 ARL 宿主、模型或修改已有 Python 环境。
 
-独立的 [LG TV 菜单栏工具](native/LGTVMenu/README.md) 支持对自己配对的 webOS 电视发送关机请求，并在 Mac 睡眠后唤醒时发送局域网唤醒包。需要电视支持并开启网络开机；此工具不启动 Friday 家庭服务。
+LG TV 菜单栏、电源和系统音量工具由独立项目维护。[LGTVMenu](https://github.com/Geeprox/LGTVMenu)
 
 代码采用 [MIT](LICENSE)。外部服务、SDK 与模型保持各自许可，见 [第三方声明](THIRD_PARTY_NOTICES.md)。Miloco、HA、ARL 应用和模型权重不随 Friday 分发。桌面候选可附带经来源与摘要校验的 MIT ARL Python SDK；它只提供客户端与共享契约，不包含 ARL 宿主、模型或账户材料。

@@ -199,6 +199,12 @@ def main(argv=None):
     library = SongLibrary(queue, Path(config["separation_cache"]), bridge=bridge, source_api=source_api, archive=archive)
     queue.storage_manager = library
     # No access log: song/job paths and authorization headers are private operational data.
+    from homeplane.intelligence.backgrounds import SongBackgrounds
+    from homeplane.intelligence.runtime import IntelligenceRuntime
+    from homeplane.intelligence.settings import default_directory
+    song_backgrounds = SongBackgrounds(IntelligenceRuntime(None,default_directory()))
+    if hasattr(bridge,'backgrounds'):
+        bridge.backgrounds = song_backgrounds
     app = create_app(
         queue,
         config["token"],
@@ -211,6 +217,7 @@ def main(argv=None):
         source_api=source_api,
         archive_manager=archive,
         library=library,
+        song_backgrounds=song_backgrounds,
     )
     listeners = []
     try:

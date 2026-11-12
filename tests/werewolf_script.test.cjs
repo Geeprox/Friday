@@ -30,17 +30,29 @@ const all=node=>[node,...node.children.flatMap(all)];
 for(const [index,packet]of packets.entries())test('original public outcome reaches host and TV: '+index,()=>{
  const document={createElement:tag=>new Element(tag),body:new Element('body')};
  const report={active:true,game:packet,camera_hints:[]},root=new Element('main'),roomLabel=new Element('p');
- const scope=vm.createContext({document,current:report,report,root,roomLabel,viewKey:''});
+ const scope=vm.createContext({document,current:report,report,root,roomLabel,displayView:null,recapView:null});
  vm.runInContext(host.split('\n').find(line=>line.startsWith('const node=')),scope);
  vm.runInContext(display.split('\n').find(line=>line.startsWith('const h=')),scope);
+ vm.runInContext(display.split('\n').find(line=>line.startsWith('const nightPhases ')),scope);
  vm.runInContext(extract(host,'function board(game)','\n function live()'),scope);
- vm.runInContext(extract(display,'function phaseHeader(g)','\nfunction seatButton('),scope);
- vm.runInContext(extract(display,'function updateTimer(g)','\nasync function poll()'),scope);
- const board=scope.board(packet),hostLine=all(board).find(n=>n.className==='ww-host-line');
- assert.equal(hostLine.textContent,packet.host_script.text);
+ vm.runInContext(extract(display,'function publicIllustration()','\nfunction startDisplayPair('),scope);
+ vm.runInContext(extract(display,'function createDisplay()','\nasync function poll()'),scope);
+ const board=scope.board(packet);
  scope.renderDisplay(report);
- assert.equal(all(root).find(n=>n.className==='public-script').textContent,packet.host_script.text);
- assert.match(packet.host_script.text,index===0?/1 号被放逐。 第 2 夜。/:/猎人带走了 1 号。 现在开始自由发言。/);
+ if(index===0){
+  assert.equal(packet.host_script.text,'1 号被放逐。');
+  assert.equal(all(board).find(n=>n.tagName==='H3').textContent,'1 号被放逐');
+  assert.equal(all(board).find(n=>n.className==='ww-ballot-ledger').children.length,9);
+  assert.equal(all(root).find(n=>n.tagName==='H1').textContent,'1 号被放逐');
+  const rows=all(root).find(n=>n.className==='ballot-rows').children;
+  assert.equal(rows.length,2);
+  assert.equal(rows[0].dataset.leading,'true');
+  assert.match(rows[0].textContent,/1 号.*8 票.*投票人 2、3、4、5、6、7、8、9 号/);
+ }else{
+  assert.equal(all(board).find(n=>n.className==='ww-host-line').textContent,packet.host_script.text);
+  assert.equal(all(root).find(n=>n.className==='public-script').textContent,packet.host_script.text);
+  assert.equal(packet.host_script.text,'猎人带走了 1 号。 现在开始自由发言。');
+ }
  assert(packet.players.every(p=>!Object.hasOwn(p,'role')),'individual roles remain private');
  const retained=root.children[0];packet.seconds_left-=1;scope.renderDisplay(report);
  assert.equal(root.children[0],retained,'timer refresh keeps the same public board');

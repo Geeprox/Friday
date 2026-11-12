@@ -1,6 +1,7 @@
 /* Actual phone source and ASGI receipts; dropped reply + page reload, no browser/LAN. */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
-const packet=JSON.parse(fs.readFileSync(process.argv[2],'utf8')),source=fs.readFileSync('homeplane/static/werewolf-party.js','utf8');
+const {readClient}=require('./werewolf_client_fixture.cjs');
+const packet=JSON.parse(fs.readFileSync(process.argv[2],'utf8')),source=readClient('party');
 const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate);
 class Element{
  constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.dataset={};this.events={};this.disabled=false;this._text='';this.classList={toggle(){},add(){},remove(){}};}

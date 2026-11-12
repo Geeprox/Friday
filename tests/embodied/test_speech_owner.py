@@ -425,13 +425,19 @@ async def test_fast_phase_changes_do_not_cancel_prior_output_cleanup_twice():
         service.pump.cancel()
         await asyncio.gather(service.pump, return_exceptions=True)
         service.pump = None
+        tokens = []
         for seat in range(1, 7):
             joined = await service.join(Join(code=service.join_code, seat=seat, name=f"合成玩家{seat}"))
+            tokens.append(joined["token"])
             await service.ready(joined["token"], True)
         await service.control("start")
         await asyncio.wait_for(entered.wait(), 1)
-        await service.control("pause")
+        assert service.game.phase == "identity"
+        for token in tokens:
+            await service.confirm_identity(token, service.game.revision)
+        await service.control("advance")
         await asyncio.wait_for(cleaning.wait(), 1)
+        await service.control("pause")
         await service.control("resume")
         await asyncio.sleep(0.01)
         await service.control("advance")
