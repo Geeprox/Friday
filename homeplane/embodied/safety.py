@@ -737,6 +737,7 @@ class _CaptureSource:
 class SafetyRuntime:
     MAX_CAMERAS = 8
     MAX_PEOPLE = 32
+    FRAME_TTL = 1.5
     POLICY_TTL = 2
     SOUND_VIEW_MAX_PENDING = 4
     SOUND_VIEW_SAVE_AGE = 5
@@ -800,13 +801,13 @@ class SafetyRuntime:
         source = self.capture_sources.get(camera)
         if (not isinstance(session, str) or not re.fullmatch(r'[a-f0-9]{32}', session)
                 or self._context(context) is None or type(captured) not in (int, float)
-                or not 0 <= now - captured <= 1.5):
+                or not 0 <= now - captured <= self.FRAME_TTL):
             if source is not None:
                 self.clear(camera)
             return
         if source is not None:
             if (source.session == session and source.context == context
-                    and 0 <= now - source.seen <= 1.5):
+                    and 0 <= now - source.seen <= self.FRAME_TTL):
                 source.seen = max(source.seen, captured)
                 return
             self.clear(camera)
@@ -819,7 +820,7 @@ class SafetyRuntime:
 
     def _capture_source(self, camera):
         source = self.capture_sources.get(camera)
-        if source is not None and 0 <= time.monotonic() - source.seen <= 1.5:
+        if source is not None and 0 <= time.monotonic() - source.seen <= self.FRAME_TTL:
             return source
         return None
 
@@ -848,32 +849,30 @@ class SafetyRuntime:
         """Perception never waits for storage; retain only each camera's latest frame."""
         if self.closed:
             return False
-        if (not isinstance(people, list)
-                or len(people) > self.MAX_PEOPLE or type(captured) not in (int, float)
-                or not math.isfinite(captured) or not 0 <= time.monotonic() - captured <= 1.5):
-            self.clear(camera)
-            return False
         source_context = self._context(source_context)
-        capture = None
+        capture = self._capture_source(camera)
         if capture_session is not None:
-            capture = self._capture_source(camera)
             if capture is None or (capture.session, capture.context) != (capture_session, source_context):
                 return False
-        if not stable:
-            if capture is None:
-                self.clear(camera)
-            else:
-                self.clear_view(camera)
+        elif capture is not None:
+            return False
+        previous_seen = self.last_seen.get(camera)
+        if (capture is not None and previous_seen is not None
+                and type(captured) in (int, float) and captured <= previous_seen):
+            return False
+        if (not stable or not isinstance(people, list) or len(people) > self.MAX_PEOPLE
+                or type(captured) not in (int, float) or not math.isfinite(captured)
+                or not 0 <= time.monotonic() - captured <= self.FRAME_TTL):
+            self.clear_view(camera)
             return False
         if camera not in self.sources and len(self.sources) >= self.MAX_CAMERAS:
             self.skipped += 1
             return False
         source = (session, source_context)
-        previous_seen = self.last_seen.get(camera)
         if (camera in self.sources and self.sources[camera] != source
-                or previous_seen is not None and not 0 < captured - previous_seen <= 1.5):
-            self.clear(camera)
-            if capture is not None:
+                or previous_seen is not None and not 0 < captured - previous_seen <= self.FRAME_TTL):
+            self.clear_view(camera)
+            if capture is not None and self.capture_sources.get(camera) is not capture:
                 return False
         self.sources[camera] = source
         token = self._source_token(camera)
@@ -1154,6 +1153,7 @@ class SafetyRuntime:
             return
         async def sync_safely():
             try:
+                self._retire_stale_inputs()
                 await self.sync_policy()
                 if self.closed:
                     return
@@ -1217,6 +1217,16 @@ class SafetyRuntime:
         self._clear_view(camera)
         self.recording.clear(camera)
 
+    def _retire_stale_inputs(self):
+        """先核对取流，再清理停止更新的视角与识别候选。"""
+        now = time.monotonic()
+        for camera, capture in tuple(self.capture_sources.items()):
+            if not 0 <= now - capture.seen <= self.FRAME_TTL:
+                self.clear(camera)
+        for camera, seen in tuple(self.last_seen.items()):
+            if not 0 <= now - seen <= self.FRAME_TTL:
+                self.clear_view(camera)
+
     async def observe(self, camera, session, people, now, captured, *, stable, jpeg=b"", aspect=16 / 9,
                       source_context=None, source_name=None, _admission=None, _coalesced=False, _capture=None):
         if self.closed:
@@ -1257,8 +1267,13 @@ class SafetyRuntime:
         if token.is_set() or self.source_tokens.get(camera) is not token:
             return
         policy = self._cached_policy()
-        if not policy.enabled or not stable or not 0 <= time.monotonic() - captured <= 1.5:
+        if not policy.enabled:
             self.clear(camera)
+            return
+        if not stable or not 0 <= time.monotonic() - captured <= self.FRAME_TTL:
+            # 处理较旧快照时，邮箱可能已经接到同一视角的更新观测。
+            if self.last_seen.get(camera, -math.inf) <= captured:
+                self.clear_view(camera)
             return
         if (not isinstance(source_name, str) or not 1 <= len(source_name) <= 80
                 or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in source_name)):
@@ -1522,14 +1537,13 @@ class SafetyRuntime:
         return result
 
     def status(self):
-        for camera, seen in list(self.last_seen.items()):
-            if not 0 <= time.monotonic() - seen <= 2:
-                self.clear(camera)
+        now = time.monotonic()
         recording = self.recording_status()
         return dict(
             cameras=[
-                dict(camera=camera, fresh=0 <= time.monotonic() - seen <= 2)
+                dict(camera=camera, fresh=True)
                 for camera, seen in self.last_seen.items()
+                if 0 <= now - seen <= self.FRAME_TTL
             ],
             pending_announcements=len(self.tasks),
             pending_observations=len(self.pending),
