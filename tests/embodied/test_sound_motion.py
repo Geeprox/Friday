@@ -57,6 +57,7 @@ class SoundPatrol:
         self.motor_shifts_view = motor_shifts_view
         self.occupied_elsewhere = occupied_elsewhere
         self.state = {}
+        self.exit_control = {}
         self.session = "SYNTHETIC-sound-motion"
         self.process = SimpleNamespace(returncode=None)
         self.director = CameraDirector()
@@ -85,7 +86,9 @@ class SoundPatrol:
         frame = dict(type="frame", received_at=1000+self.j.clock, capture_session="a"*32,
                      camera_source_context=CONTEXT)
         assert self.j.gate.observe_frame(frame, wall=1000+self.j.clock, mono=self.j.clock)
-        await self.j.runtime.sync_policy()
+        # 固定合成时钟下的数据库先后顺序，保留真实的策略读取与留档。
+        async with self.j.runtime.io.lock:
+            await self.j.runtime.sync_policy()
         self.j.runtime.capture_frame(CAMERA["id"], self.j.gate.session, CONTEXT, self.j.clock)
         self.j.runtime.offer(CAMERA["id"], self.session, people, self.j.clock, self.j.clock,
             stable=stable, jpeg=jpeg, source_context=CONTEXT, source_name="合成镜头",
@@ -120,7 +123,8 @@ class SoundPatrol:
                 sound_cue=self.j.runtime.sound_search_cue(CAMERA["id"], self.session,
                                                          self.director.sound_search_cue))
         if self.director.phase == 'sound_search':
-            assert len(self.j.store.events()) == 1, '先确认原留档成功，再准许转向'
+            events = await self.j.runtime.io.call(self.j.store.events)
+            assert len(events) == 1, '先确认原留档成功，再准许转向'
             self.sound_moves.append(direction)
             self.sound_sent_at.append(self.j.clock)
         if self.director.phase == 'following':
@@ -141,6 +145,10 @@ class SoundPatrol:
             planner = SimpleNamespace(public=lambda _: {}, mode="auto", intent_revision="intent",
                                       intent_status="configured")
             other = {"cam_2222222222": {"people": 1}} if self.occupied_elsewhere else {}
+
+            async def reap(_):
+                self.exit_control = self.state.get("camera_control", {})
+
             self.scope.update(Transport=lambda: SimpleNamespace(close=AsyncMock()),
                 CameraLease=lambda *a, **k: lease, SearchPlanner=lambda *a: planner,
                 camera_intents=SimpleNamespace(load=lambda: SimpleNamespace(
@@ -150,7 +158,7 @@ class SoundPatrol:
                 previews=SimpleNamespace(sessions=other, status=lambda _: {"state": "live"}),
                 home=SimpleNamespace(camera_focus=None), safety=self.j.runtime,
                 motor_step=self.motor, camera_lease=None, camera_planner=None,
-                reap=AsyncMock(), capture=self.process, generation=1)
+                reap=reap, capture=self.process, generation=1)
             loop = source_function("homeplane/embodied/worker.py", "camera_search", self.scope)
         else:
             self.scope.update(item=self.item, selected={"id": CAMERA["id"]}, director=self.director,
@@ -169,7 +177,7 @@ class SoundPatrol:
         except asyncio.CancelledError:
             pass
         else:
-            raise AssertionError("original camera loop exited before the bounded replay ended")
+            raise AssertionError(f"original camera loop exited at {self.j.clock:.1f}s: {self.exit_control}")
         await self.j.runtime.drain()
 
     def assert_saved_views(self, event):
