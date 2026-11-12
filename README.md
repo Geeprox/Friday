@@ -83,6 +83,6 @@ macOS 桌面源码位于 `native/FridayDesktop/`，用 SwiftPM 构建；[桌面�
 
 开发和 CI 使用显式准备、逐文件校验的固定公开 ARL SDK 输入；准备与清理步骤见桌面构建说明，公开客户端和完整宿主的测试边界见[开发说明](docs/development.md)。这不会安装 ARL 宿主、模型或修改已有 Python 环境。
 
-独立的 [LG TV 菜单栏工具](native/LGTVMenu/README.md) 支持对自己配对的 webOS 电视发送关机请求，并在 Mac 睡眠后唤醒时发送局域网唤醒包。需要电视支持并开启网络开机；此工具不启动 Friday 家庭服务。
+LG TV 菜单栏、电源和系统音量工具由独立项目维护。[LGTVMenu](https://github.com/Geeprox/LGTVMenu)
 
 代码采用 [MIT](LICENSE)。外部服务、SDK 与模型保持各自许可，见 [第三方声明](THIRD_PARTY_NOTICES.md)。Miloco、HA、ARL 应用和模型权重不随 Friday 分发。桌面候选可附带经来源与摘要校验的 MIT ARL Python SDK；它只提供客户端与共享契约，不包含 ARL 宿主、模型或账户材料。
