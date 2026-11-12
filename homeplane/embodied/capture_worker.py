@@ -93,6 +93,7 @@ async def main():
     last = 0.0
     attention_until = 0.0
     audio_until = 0.0
+    sound_until = 0.0
     video_until = 0.0
     audio_framer = PCMFramer(selected, capture_session)
     audio_observed = False
@@ -141,7 +142,7 @@ async def main():
         if not audio_observed:
             emit({"type": "diagnostic", "stage": "first_decoded_audio"})
             audio_observed = True
-        if channel != 0 or time.monotonic() >= audio_until:
+        if channel != 0 or time.monotonic() >= max(audio_until, sound_until):
             audio_framer.reset()
             return
         for packet in audio_framer.push(pcm.astype('<i2', copy=False).tobytes(),
@@ -181,7 +182,7 @@ async def main():
         motor = LocalMotor(camera)
 
         async def controls():
-            nonlocal audio_until, attention_until, video_until
+            nonlocal audio_until, sound_until, attention_until, video_until
             while raw := await reader.readline():
                 command = {}
                 try:
@@ -189,12 +190,17 @@ async def main():
                     if command.get('action')=='video_window':
                         video_until=time.monotonic()+1.5 if command.get('enabled') is True else 0.0
                         continue
-                    if command.get("action") == "voice_window":
+                    action = command.get('action')
+                    if action in {'voice_window', 'sound_window'}:
                         now = time.monotonic()
-                        next_audio, attention_until = voice_window_deadlines(command, now)
-                        if not next_audio or audio_until <= now:
+                        previous = max(audio_until, sound_until)
+                        deadline, attention = voice_window_deadlines(command, now)
+                        if action == 'voice_window':
+                            audio_until, attention_until = deadline, attention
+                        else:
+                            sound_until = deadline
+                        if previous <= now or max(audio_until, sound_until) <= now:
                             audio_framer.reset()
-                        audio_until = next_audio
                         continue
                     if command.get("action") != "motor_step":
                         continue

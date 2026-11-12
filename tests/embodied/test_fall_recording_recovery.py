@@ -209,7 +209,7 @@ async def test_corroborated_sound_saves_after_a_turn_only_with_audio_input_autho
     await runtime.observation_task
     at = monitor.clock[0]
     entered, release = hold_recording_write(store, monkeypatch)
-    receipt = runtime._sound_event(camera, 'same-session', monitor.context, dict(
+    receipt = runtime._sound_event(camera, 'e' * 32, monitor.context, dict(
         kind='glass_break', confidence=.9, corroborating_windows=2, audio_seconds=4,
         age_basis='local_sdk_receive', keyframes=[(safety.time.time(), b'SYNTHETIC-SOUND-EVIDENCE')],
         captured_at=safety.time.time(), captured_mono=at, policy_revision=policy.revision,

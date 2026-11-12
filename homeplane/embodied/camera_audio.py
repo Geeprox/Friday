@@ -40,13 +40,21 @@ def fresh(received, decoded, wall):
 
 
 def offer_voice_window(writer, *, now, captured, enabled, attention):
+    _offer_audio_window(writer, 'voice_window', now, captured, enabled, attention)
+
+
+def offer_sound_window(writer, *, now, captured, enabled):
+    _offer_audio_window(writer, 'sound_window', now, captured, enabled, False)
+
+
+def _offer_audio_window(writer, action, now, captured, enabled, attention):
     """仅在控制管道可写时提交本帧授权，后续由新鲜帧续期。"""
     if writer.is_closing() or writer.transport.get_write_buffer_size():
         return
     deadline = now
     if number(captured) and 0 <= now - captured < MAX_AGE:
         deadline = min(now + VOICE_WINDOW_SECONDS, captured + MAX_AGE)
-    command = dict(action='voice_window', expires_mono=deadline,
+    command = dict(action=action, expires_mono=deadline,
                    enabled=enabled and deadline > now, attention=attention and deadline > now)
     try:
         writer.write((json.dumps(command, separators=(',', ':')) + '\n').encode())

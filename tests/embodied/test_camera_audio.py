@@ -31,7 +31,7 @@ def actual(path, name, scope):
 @pytest.mark.asyncio
 async def test_capture_does_not_relabel_audio_left_before_a_gap_as_current():
     output=[];clock=[10.0]
-    scope=dict(audio_observed=True,audio_pending=bytearray(),audio_until=20,
+    scope=dict(audio_observed=True,audio_until=20,sound_until=0,
                time=SimpleNamespace(monotonic=lambda:clock[0],time=lambda:1000+clock[0]),
                base64=base64,emit=output.append)
     scope['audio_framer']=PCMFramer(CAMERA,'a'*32)
@@ -52,7 +52,7 @@ async def test_video_observation_survives_pipe_pressure_and_capture_cannot_reope
     paused = tmp_path / 'paused'
     monkeypatch.setattr(module, 'VOICE_INPUT_PAUSED', paused)
     service = voice_service(module)
-    service.enabled = service.armed = False
+    service.ensure_voice = Mock()
     service.attention = SimpleNamespace(update=Mock(), candidate=lambda *_: None)
     buffered = [32]
     writer = SimpleNamespace(write=Mock(), drain=AsyncMock(), is_closing=lambda: False,
@@ -60,8 +60,8 @@ async def test_video_observation_survives_pipe_pressure_and_capture_cannot_reope
     process = SimpleNamespace(stdin=writer)
 
     async def observe(captured):
-        await service.observe([dict(id=1)], [], {'status': 'locked'}, clock[0], process, False,
-                              sound_review=True, session_id='camera-session', captured_mono=captured)
+        await service.observe([dict(id=1)], [], {'status': 'locked'}, clock[0], process, True,
+                              session_id='camera-session', captured_mono=captured)
 
     for tick in (10.0, 10.5, 11.0):
         clock[0] = tick
@@ -100,7 +100,7 @@ async def test_video_observation_survives_pipe_pressure_and_capture_cannot_reope
     framer = PCMFramer(CAMERA, 'a' * 32)
     assert framer.push(bytes(3200), received=1012.5, decoded=1012.5, wall=1012.5, mono=12.5) == []
     epoch = framer.epoch
-    scope = dict(reader=SimpleNamespace(readline=readline), json=json, audio_until=12.6, attention_until=12.6,
+    scope = dict(reader=SimpleNamespace(readline=readline), json=json, audio_until=12.6, sound_until=0, attention_until=12.6,
                  time=monotonic, audio_framer=framer, voice_window_deadlines=voice_window_deadlines, emit=Mock())
     await actual('homeplane/embodied/capture_worker.py', 'controls', scope)()
     assert deadlines[1] == (0.0, 0.0)
@@ -108,6 +108,43 @@ async def test_video_observation_survives_pipe_pressure_and_capture_cannot_reope
     assert deadlines[3] == pytest.approx((0.0, 14.3))
     assert not framer.pending and framer.epoch > epoch
     scope['emit'].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_audio_capture_preserves_sound_window_when_voice_is_revoked():
+    clock = [10.0]
+    frames = []
+    framer = PCMFramer(CAMERA, 'a' * 32)
+    assert framer.push(bytes(3200), received=1010, decoded=1010, wall=1010, mono=10) == []
+    initial_epoch = framer.epoch
+    commands = iter([
+        (10.1, dict(action='sound_window', enabled=True, attention=True, expires_mono=11.2)),
+        (10.2, dict(action='voice_window', enabled=False, attention=False, expires_mono=11.2)),
+        (10.3, dict(action='sound_window', enabled=False, expires_mono=11.2)),
+    ])
+    time = SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1000 + clock[0])
+    scope = dict(time=time, json=json, audio_framer=framer, audio_until=10.8, attention_until=10.8,
+                 sound_until=0, voice_window_deadlines=voice_window_deadlines, emit=frames.append, audio_observed=True)
+    decode = actual('homeplane/embodied/capture_worker.py', 'decoded_audio', scope)
+
+    async def readline():
+        item = next(commands, None)
+        if item is None:
+            assert framer.epoch > initial_epoch and not framer.pending
+            await decode('synthetic', np.ones(3200, dtype=np.int16), 0, 0, 1010300, 1010300)
+            return b''
+        clock[0], command = item
+        if command['action'] == 'voice_window':
+            assert scope['attention_until'] == 10.8
+        if clock[0] == 10.3:
+            assert framer.epoch == initial_epoch
+            assert scope['audio_until'] == scope['attention_until'] == 0
+            await decode('synthetic', np.ones(1600, dtype=np.int16), 0, 0, 1010300, 1010300)
+        return json.dumps(command).encode()
+
+    scope['reader'] = SimpleNamespace(readline=readline)
+    await actual('homeplane/embodied/capture_worker.py', 'controls', scope)()
+    assert len(frames) == 1 and frames[0]['audio_epoch'] == initial_epoch
 
 
 @pytest.mark.parametrize('deadline', [None, True, float('nan'), 10, 11.31])

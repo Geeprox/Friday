@@ -463,10 +463,12 @@ async def test_sound_search_requires_a_saved_receipt_and_rechecks_the_active_sou
             await patrol.advance()
         assert len(runtime.recording.jobs) == 1 and not patrol.j.store.events()
         assert runtime.sound_search_cue(camera, session) is None
+        window = runtime.sound.windows[camera]
         runtime.clear_view(camera)
         patrol.moving_until = patrol.j.clock + .35
         await patrol.advance()
-        assert len(runtime.recording.jobs) == 1 and not runtime.sound.windows
+        assert len(runtime.recording.jobs) == 1 and runtime.sound.windows[camera] is window
+        assert runtime.sound_search_cue(camera, session) is None
         await patrol.advance()
         monkeypatch.setattr(runtime.recording, 'wake', wake)
         wake()

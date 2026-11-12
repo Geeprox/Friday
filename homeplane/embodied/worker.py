@@ -184,9 +184,13 @@ def clear_camera(camera_id):
     clear_interactions(camera_id)
 
 
-def clear_camera_view(camera_id):
+def clear_camera_view(camera_id, *, keep_wake=True):
     safety.clear_view(camera_id)
-    clear_interactions(camera_id, keep_wake=True)
+    clear_interactions(camera_id, keep_wake=keep_wake)
+
+
+def clear_camera_observation(camera_id):
+    clear_camera_view(camera_id, keep_wake=False)
 
 
 def camera_motion_cue(camera_id, sample, active):
@@ -214,7 +218,7 @@ def invalidate_calibration():
     tracks.invalidate()
     pet_tracks.clear()
     identities.discard()
-    clear_camera(SELECTED['id'])
+    clear_camera_observation(SELECTED['id'])
     wall.clear_observation(SELECTED['id'])
     if camera_planner:
         camera_planner.views.clear()
@@ -330,7 +334,7 @@ async def secondary_observation(observation, process):
             and not (PRIVATE/'voice-input-paused').exists())
     await service.observe(observation['people'],observation['faces'],observation['registration'],
         observation['now'],process,active,item.get('owner'),gestures_enabled=False,
-        sound_review=safety.sound_requested(camera_id),session_id=observation['session'],
+        session_id=observation['session'],
         captured_mono=observation['captured_mono'])
 
 
@@ -344,7 +348,7 @@ async def secondary_audio(camera_id, packet):
 
 previews = PreviewPool(identity_store=identity_store, continuous=True, recognize=True, wall=wall,
     on_observation=secondary_observation,on_audio=secondary_audio,on_clear=clear_camera,
-    on_motion=clear_camera_view, on_capture_frame=safety.capture_frame,
+    on_motion=clear_camera_view, on_view_lost=clear_camera_observation, on_capture_frame=safety.capture_frame,
     review_pending=safety.review_pending, fall_pending=safety.fall_pending,
     sound_cue=camera_motion_cue, sound_view=safety.offer_sound_search_frame,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
@@ -834,10 +838,11 @@ async def run_source(my_generation):
                         item['_motion_generation'] = motion_generation
                     latest_item = item
                     if item.get("type") == "frame":
-                        audio_ingress.observe_frame(item,wall=time.time(),mono=time.monotonic())
+                        fresh_frame = audio_ingress.observe_frame(item, wall=time.time(), mono=time.monotonic())
                         if state.get('status') in {'connecting', 'live'}:
                             safety.capture_frame(SELECTED['id'], audio_ingress.session, audio_ingress.context,
-                                                 audio_ingress.frame_at)
+                                audio_ingress.frame_at, source_name=item.get('camera_source_name'),
+                                audio_writer=getattr(capture, 'stdin', None) if fresh_frame else None)
                         if time.monotonic()-last_video_lease>.7:
                             last_video_lease=time.monotonic()
                             capture.stdin.write((json.dumps(dict(action='video_window',enabled=wall.video[SELECTED['id']].subscribers>0))+'\n').encode())
@@ -892,7 +897,7 @@ async def run_source(my_generation):
                 if frame_motion_generation != motion_generation:
                     continue
                 if not 0 <= time.time() - item['received_at'] <= 1.5:
-                    safety.clear(SELECTED['id'])
+                    safety.clear_view(SELECTED['id'])
                     fleet.clear(SELECTED['id'])
                     home.selected = False
                     home.epoch += 1
@@ -935,7 +940,7 @@ async def run_source(my_generation):
                 if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
                     state['pipeline_timing'] = dict(timings, dropped_stage='after_vision')
                     if frame_motion_generation == motion_generation:
-                        safety.clear(SELECTED['id'])
+                        safety.clear_view(SELECTED['id'])
                         fleet.clear(SELECTED['id']);home.selected=False;home.epoch+=1;identities.discard()
                     continue
                 now = time.monotonic()
@@ -1003,7 +1008,7 @@ async def run_source(my_generation):
                     if my_generation != generation:return
                     state['pipeline_timing']['dropped_stage'] = 'after_identity'
                     if frame_motion_generation == motion_generation:
-                        safety.clear(SELECTED['id'])
+                        safety.clear_view(SELECTED['id'])
                         fleet.clear(SELECTED['id'])
                         home.selected = False
                         home.epoch += 1
@@ -1097,7 +1102,6 @@ async def run_source(my_generation):
                     interaction_enabled and home.armed,
                     fleet.cameras.get(SELECTED['id'], {}).get('owner'),
                     gestures_enabled=False,
-                    sound_review=safety.sound_requested(SELECTED['id']),
                     session_id=identities.session,
                     captured_mono=voice_captured_mono,
                 )

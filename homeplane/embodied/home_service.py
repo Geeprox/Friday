@@ -205,7 +205,7 @@ class HomeService:
 
     async def observe(
         self, people, faces, registration, now, capture, selected, preferred=None, gestures_enabled=False,
-        sound_review=False, session_id=None, captured_mono=None,
+        session_id=None, captured_mono=None,
     ):
         session = session_id if type(session_id) is str and 0 < len(session_id) <= 128 else None
         selected = bool(selected and self.enabled and self.armed and session is not None)
@@ -248,10 +248,10 @@ class HomeService:
             # Keep the wake-word path available even with no qualified face. Audio is
             # bounded in RAM and only forwarded while this mode is selected.
             gate = bool(
-                not VOICE_INPUT_PAUSED.exists() and (sound_review is True or
+                not VOICE_INPUT_PAUSED.exists() and
                 selected and self.audio_allowed and self.voice_status() in ("ready", "transcribing")
                 and now > self.reply_until and (
-                    self.voice_routing is None or self.voice_routing.listening(now)))
+                    self.voice_routing is None or self.voice_routing.listening(now))
             )
             offer_voice_window(capture.stdin, now=time.monotonic(), captured=self.last_video, enabled=gate,
                 attention=bool(people and registration.get('status') not in {'moving', 'settling'}))

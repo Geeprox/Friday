@@ -381,7 +381,7 @@ async def test_capture_controls_pass_expiry_through_the_actual_child_and_native_
                  asyncio=SimpleNamespace(to_thread=delayed_thread), time=time)
     source = ast.parse(Path('homeplane/embodied/capture_worker.py').read_text())
     controls = next(node for node in ast.walk(source) if isinstance(node, ast.AsyncFunctionDef) and node.name == 'controls')
-    factory = ast.parse('async def factory():\n    audio_until = attention_until = video_until = 0\n    return controls').body[0]
+    factory = ast.parse('async def factory():\n    audio_until = sound_until = attention_until = video_until = 0\n    return controls').body[0]
     factory.body.insert(1, controls)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[factory], type_ignores=[])), '<actual capture controls>', 'exec'), scope)
     await (await scope['factory']())()

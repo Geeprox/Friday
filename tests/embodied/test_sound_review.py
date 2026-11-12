@@ -579,26 +579,37 @@ async def test_native_adapter_does_not_start_when_host_budget_is_unknown(tmp_pat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('source',['primary','secondary'])
-async def test_original_camera_pipe_delivers_sound_without_an_active_voice_owner(tmp_path,monkeypatch,source):
+@pytest.mark.parametrize('vision', ['stable', 'turning', 'unavailable'])
+async def test_original_camera_pipe_delivers_sound_without_an_active_voice_owner(
+        tmp_path, monkeypatch, source, vision):
     from collections import deque
     from tests.embodied.test_camera_audio import actual,voice_service
     from homeplane.embodied import home_service as home_module
     from homeplane.embodied.camera_audio import deliver_audio
     j=Journey(tmp_path,monkeypatch);index=0;frame_pending=True
+    if vision != 'stable':
+        j.store.configure_sound_search(j.store.policy().revision, True)
+        j.engine.analyze.return_value = {'kind': 'crying', 'confidence': .96, 'infant_cry': True}
     monkeypatch.setattr(home_module,'VOICE_INPUT_PAUSED',tmp_path/'voice-input-paused')
     monkeypatch.setattr(home_module,'time',SimpleNamespace(monotonic=lambda:j.clock))
     home=voice_service(home_module);home.selected=home.audio_allowed=False
     async def read():
         nonlocal index,frame_pending
         await settle()
-        if index>=24:return b''
+        if index >= 36:
+            return b''
         j.clock=index*.2
         if frame_pending:
-            await j.runtime.observe(CAMERA['id'],'visual-session',[],j.clock,j.clock,stable=True,
-                jpeg=b'SYNTHETIC-FRAME',source_context=CONTEXT)
+            await j.runtime.sync_policy()
             result=dict(type='frame',received_at=1000+j.clock,capture_session='a'*32,
-                        camera_source_context=CONTEXT,jpeg='SYNTHETIC')
+                        camera_source_context=CONTEXT,camera_source_name='示例镜头',jpeg='SYNTHETIC')
         else:
+            if vision != 'unavailable':
+                j.runtime.offer(CAMERA['id'], 'visual-session', [], j.clock, j.clock,
+                    stable=vision == 'stable' or index < 11, jpeg=b'SYNTHETIC-FRAME',
+                    source_context=CONTEXT, source_name='示例镜头', capture_session=j.gate.session)
+                if j.runtime.observation_task:
+                    await j.runtime.observation_task
             result=j.framer.push(bytes(6400),received=1000+j.clock,decoded=1000+j.clock,
                 wall=1000+j.clock,mono=j.clock)[0]
             index+=1
@@ -606,7 +617,8 @@ async def test_original_camera_pipe_delivers_sound_without_an_active_voice_owner
         return json.dumps(result).encode()
     time=SimpleNamespace(monotonic=lambda:j.clock,time=lambda:1000+j.clock)
     process=SimpleNamespace(stdout=SimpleNamespace(readline=read),
-                            stdin=SimpleNamespace(write=Mock(),drain=AsyncMock()))
+        stdin=SimpleNamespace(write=Mock(),drain=AsyncMock(),is_closing=lambda:False,
+                              transport=SimpleNamespace(get_write_buffer_size=lambda:0)))
     try:
         if source=='primary':
             scope=dict(capture=process,state={'status':'live'},home=home,audio_ingress=j.gate,
@@ -627,31 +639,60 @@ async def test_original_camera_pipe_delivers_sound_without_an_active_voice_owner
                 queue=asyncio.Queue(maxsize=1),last_video_lease=0,wall_epoch=1,time=time,json=json,
                 offer_frame=lambda *_:None,retire_source=Mock())
             await actual('homeplane/embodied/previews.py','receive',scope)()
-        await settle()
-        assert j.engine.analyze.await_count>=2 and len(j.store.events())==1
+        await j.runtime.drain()
+        assert j.engine.analyze.await_count >= (2 if vision == 'stable' else 3)
+        event, = j.store.events()
+        assert event['session'] == j.gate.session and event['camera_name'] == '示例镜头'
+        if vision != 'stable':
+            assert event['sound_evidence']['pattern'] == 'sustained_infant_cry'
+            assert not j.runtime.sound_search_cue(CAMERA['id'], 'visual-session')
+            assert len(event['frames']) == (0 if vision == 'unavailable' else 1)
+            j.clock += .2
+            j.runtime.capture_frame(CAMERA['id'], j.gate.session, CONTEXT, j.clock)
+            assert j.runtime.offer(CAMERA['id'], 'restored-visual-session', [], j.clock, j.clock,
+                stable=True, jpeg=b'SYNTHETIC-RESTORED-VIEW', source_context=CONTEXT, capture_session=j.gate.session)
+            await j.runtime.observation_task
+            cue = j.runtime.sound_search_cue(CAMERA['id'], 'restored-visual-session')
+            assert cue is not None and cue.receipt.event_id == event['id']
+        windows = [command for call in process.stdin.write.call_args_list
+                   if (command := json.loads(call.args[0]))['action'] == 'sound_window']
+        assert windows and all(command['enabled'] and not command['attention'] for command in windows)
         assert j.runtime.capture_sources[CAMERA['id']].session == 'a'*32
         home.transcribe.assert_not_awaited()
     finally:await j.runtime.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('paused',[False,True])
-async def test_original_capture_lease_can_review_sound_with_voice_off_but_respects_input_pause(tmp_path,monkeypatch,paused):
-    from homeplane.embodied import home_service as module
-    from tests.embodied.test_camera_audio import voice_service
-    monkeypatch.setattr(module,'time',SimpleNamespace(monotonic=lambda:0))
-    marker=tmp_path/'paused';monkeypatch.setattr(module,'VOICE_INPUT_PAUSED',marker)
-    if paused:marker.touch()
-    h=voice_service(module);h.selected=h.enabled=h.armed=False;h.voice_provider=None;h.gate_sent=-1
-    h.attention=SimpleNamespace(update=Mock(),candidate=lambda *_:None);h.gesture=SimpleNamespace(reset=Mock())
-    process=SimpleNamespace(stdin=SimpleNamespace(write=Mock(),drain=AsyncMock(),
-        is_closing=lambda:False,transport=SimpleNamespace(get_write_buffer_size=lambda:0)))
-    await h.observe([],[],{'status':'locked'},0,process,False,sound_review=True)
-    packet=json.loads(process.stdin.write.call_args.args[0])
-    assert packet['action']=='voice_window' and packet['enabled']==(not paused)
-    assert packet['expires_mono']==pytest.approx(1.3)
-    process.stdin.drain.assert_not_awaited()
-    assert h.selected is False
+@pytest.mark.parametrize('revocation', ['none', 'pause', 'policy', 'capture'])
+async def test_capture_only_sound_drops_old_corroboration_on_revocation(tmp_path, monkeypatch, revocation):
+    j = Journey(tmp_path, monkeypatch)
+    writer = SimpleNamespace(write=Mock(), drain=AsyncMock(), is_closing=lambda:False,
+                             transport=SimpleNamespace(get_write_buffer_size=lambda:0))
+    camera = CAMERA['id']
+    try:
+        for i in range(22):
+            j.clock = i*.2
+            if i == 10 and revocation == 'capture':
+                j.framer, j.gate = PCMFramer(CAMERA, 'b'*32), AudioIngress(CAMERA, 'b'*32)
+            if i == 10 and revocation == 'pause':
+                (tmp_path/'voice-input-paused').touch()
+            if i == 10 and revocation == 'policy':
+                j.store.configure(j.store.policy().model_copy(update={'sound_review': False}))
+            await j.runtime.sync_policy()
+            frame = dict(type='frame', received_at=1000+j.clock, capture_session=j.gate.session,
+                         camera_source_context=CONTEXT)
+            assert j.gate.observe_frame(frame, wall=1000+j.clock, mono=j.clock)
+            j.runtime.capture_frame(camera, j.gate.session, CONTEXT, j.clock, audio_writer=writer)
+            audio = j.framer.push(bytes(6400), received=1000+j.clock, decoded=1000+j.clock,
+                                  wall=1000+j.clock, mono=j.clock)[0]
+            j.runtime.observe_audio(camera, j.gate.accept(audio, wall=1000+j.clock, mono=j.clock))
+            await settle()
+        await j.runtime.drain()
+        assert len(j.store.events()) == (1 if revocation == 'none' else 0)
+        assert json.loads(writer.write.call_args.args[0])['enabled'] == (revocation not in {'pause', 'policy'})
+        writer.drain.assert_not_awaited()
+    finally:
+        await j.runtime.close()
 
 
 @pytest.mark.parametrize('success',[True,False])

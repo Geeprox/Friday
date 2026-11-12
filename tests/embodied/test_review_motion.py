@@ -272,6 +272,7 @@ def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
     assignment=next(n for n in tree.body if isinstance(n,ast.Assign)and any(isinstance(t,ast.Name)and t.id=='previews'for t in n.targets))
     scope=dict(PreviewPool=lambda **kwargs:kwargs,identity_store=None,wall=None,safety=safety,
                secondary_observation=noop,secondary_audio=noop,clear_camera=noop,clear_camera_view=noop,
+               clear_camera_observation=noop,
                camera_motion_cue=recorded_sound_only(safety))
     exec(compile(ast.fix_missing_locations(ast.Module(body=[assignment],type_ignores=[])),'original-preview-construction','exec'),scope)
     assert scope['previews']['review_pending'] is safety.review_pending
@@ -280,6 +281,7 @@ def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
     assert scope['previews']['sound_view'] is safety.offer_sound_search_frame
     assert scope['previews']['on_capture_frame'] is safety.capture_frame
     assert scope['previews']['on_motion'] is scope['clear_camera_view']
+    assert scope['previews']['on_view_lost'] is scope['clear_camera_observation']
 
 
 async def patrol_fleet(home,steps=480):

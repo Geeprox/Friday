@@ -104,7 +104,7 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
 
     pool = previews.PreviewPool(continuous=False, recognize=True, wall=wall,
                                on_observation=observation, on_clear=cleared.append,
-                               on_capture_frame=lambda *args: capture_frames.append(args))
+                               on_capture_frame=lambda *args, **_: capture_frames.append(args))
     item = dict(state='connecting', recognizer=None, process=None, shutter_changed=False,
                 expires=time.monotonic()+60, frames=0, frame=None, received_at=0)
     pool.sessions[CAMERA['id']] = item

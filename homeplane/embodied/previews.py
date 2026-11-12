@@ -49,7 +49,7 @@ async def camera_is_open(selected, *, client_factory=None, parameter_factory=Non
 class PreviewPool:
     def __init__(self, identity_store=None, continuous=False, *, recognize=False, control_camera=False,
                  on_observation=None, on_audio=None, on_clear=None, on_motion=None, on_capture_frame=None,
-                 focus=None, occupied_elsewhere=None,
+                 on_view_lost=None, focus=None, occupied_elsewhere=None,
                  review_pending=None, fall_pending=None, sound_cue=None, sound_view=None, wall=None, intent_factory=None):
         self.wall = wall
         self.sessions = {}
@@ -67,6 +67,7 @@ class PreviewPool:
         self.control_camera=control_camera
         self.on_observation, self.on_audio, self.on_clear = on_observation, on_audio, on_clear
         self.on_motion = on_motion or on_clear
+        self.on_view_lost = on_view_lost or on_clear
         self.on_capture_frame = on_capture_frame
         self.intent_factory = intent_factory or (lambda selected: CameraIntentStore(
             camera_storage(selected['id']), selected))
@@ -294,8 +295,8 @@ class PreviewPool:
                             pet_tracking=None, control_epoch=item['control_epoch']+1)
                 if self.wall:
                     self.wall.clear_observation(selected['id'])
-                if self.on_clear:
-                    self.on_clear(selected['id'])
+                if self.on_view_lost:
+                    self.on_view_lost(selected['id'])
             item.update(state='connecting', recognition_recovering=True, error_class=error_class,
                         error_stage='recognition')
 
@@ -382,10 +383,11 @@ class PreviewPool:
                             return
                         if packet.get('type')=='frame':
                             if audio_ingress:
-                                audio_ingress.observe_frame(packet,wall=time.time(),mono=time.monotonic())
+                                fresh_frame = audio_ingress.observe_frame(packet, wall=time.time(), mono=time.monotonic())
                                 if self.on_capture_frame and self.source_current(selected['id'], process):
                                     self.on_capture_frame(selected['id'], audio_ingress.session, audio_ingress.context,
-                                                          audio_ingress.frame_at)
+                                        audio_ingress.frame_at, source_name=packet.get('camera_source_name'),
+                                        audio_writer=process.stdin if fresh_frame and self.on_audio else None)
                             if self.wall and time.monotonic()-last_video_lease>.7:
                                 last_video_lease=time.monotonic()
                                 process.stdin.write((json.dumps(dict(action='video_window',enabled=self.wall.video[selected['id']].subscribers>0))+'\n').encode())
@@ -580,9 +582,9 @@ class PreviewPool:
                         item['timing'] = recognizer.timing
                         if observation is None or not 0 <= time.time()-packet['received_at'] <= 1.5:
                             item['dropped_frames'] = item.get('dropped_frames',0)+1
-                            if (self.on_clear and not item['recognition_recovering']
+                            if (self.on_view_lost and not item['recognition_recovering']
                                     and motor_sent == item.get('last_motor_sent')):
-                                self.on_clear(selected['id'])
+                                self.on_view_lost(selected['id'])
                             continue
                         latest = observation
                         if self.on_observation:

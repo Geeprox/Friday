@@ -176,8 +176,7 @@ class SoundReviewer:
         followup = self._followup_ready(camera, state)
         state.followup = False
         state.submitted = now
-        # Retiring a view discards its PCM and candidate, but must not let the
-        # same camera repeatedly jump ahead of feeds still awaiting analysis.
+        # 收音断开会清除样本和候选，但该镜头仍应让等候中的其他镜头先复核。
         self.served[camera] = now
         if len(self.served) > 8:
             self.served = dict(sorted(self.served.items(), key=lambda item: item[1])[-8:])
