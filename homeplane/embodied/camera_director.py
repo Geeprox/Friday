@@ -108,6 +108,7 @@ class CameraDirector:
         self.sound_confirmed_view = None
         self.sound_candidate = None
         self.sound_following = False
+        self.sound_follow_motion = None
         self.sound_intent_since = None
         self.last_sound_captured = -math.inf
 
@@ -335,6 +336,7 @@ class CameraDirector:
 
     def _clear_reframe(self):
         self.reframe_started = self.reframe_appearance = self.reframe_candidate = None
+        self.sound_follow_motion = None
 
     def _watch_target_after_move(self, pending, now):
         if pending and pending['phase'] == 'following':
@@ -361,9 +363,24 @@ class CameraDirector:
                 or sum(row['id'] == match['id'] for row in subjects) != 1):
             return None
         stamp = sample['_local_received']
-        self.reframe_candidate = (match['id'], stamp)
-        if previous is not None and previous[0] == match['id'] and 0 < stamp - previous[1] <= 1.5:
+        candidate = (match['id'], stamp)
+        same_target = previous is not None and previous[0] == match['id'] and 0 < stamp - previous[1] <= 1.5
+        if self.sound_follow_motion is None:
+            self.reframe_candidate = candidate
+            return match if same_target else None
+        cue, origin, direction = self.sound_follow_motion
+        view = sample.get('_patrol_view')
+        shift = self._directional_shift(origin, view, direction)
+        if shift is None or view[2] <= self.last_move:
+            return None
+        # 跟随转向后的同一目标必须出现在两次独立配准确认的新视角中。
+        if same_target and math.dist(shift, previous[3]) <= .025:
+            if view[2] - previous[2] < .35:
+                self.reframe_candidate = previous
+                return None
+            self.sound_confirmed_view = (cue, 'follow', stamp)
             return match
+        self.reframe_candidate = (*candidate, view[2], shift)
         return None
 
     def _follow_direction(self, target):
@@ -507,6 +524,14 @@ class CameraDirector:
         proof, self.sound_confirmed_view = self.sound_confirmed_view, None
         return proof
 
+    def _directional_shift(self, before, after, direction):
+        shift = _view_shift(before, after)
+        if shift is not None:
+            axis, sign = self.PATROL_AXES[direction]
+            if sign * shift[axis] >= .025 and abs(shift[axis]) >= 1.5 * abs(shift[1-axis]):
+                return shift
+        return None
+
     def _confirm_patrol(self, sample, now, sound_cue=None):
         pending = self.patrol_confirmation
         if pending is None:
@@ -534,9 +559,9 @@ class CameraDirector:
         if (self.mode == 'survey' or pending.get('sound_search')) and view is not None and view[0] != pending['view'][0]:
             self._discard_patrol()
             return False
-        shift = _view_shift(pending['view'], view) if sample.get('scene_visible') is True else None
-        axis, sign = self.PATROL_AXES[pending['direction']]
-        if shift is None or sign * shift[axis] < .025 or abs(shift[axis]) < 1.5 * abs(shift[1-axis]):
+        shift = (self._directional_shift(pending['view'], view, pending['direction'])
+                 if sample.get('scene_visible') is True else None)
+        if shift is None:
             pending['previous'] = None
             return True
         previous = pending['previous']
@@ -612,6 +637,7 @@ class CameraDirector:
     def _clear_sound_search(self):
         self.sound_search_cue = self.sound_candidate = None
         self.sound_following = False
+        self.sound_follow_motion = None
 
     def _end_sound_search(self, now):
         if self.sound_search_cue is not None:
@@ -968,6 +994,8 @@ class CameraDirector:
         pending = self.pending_decision
         if automatic and direction == self.pending_direction:
             self._watch_target_after_move(pending, now)
+            if pending and 'sound_box' in pending:
+                self.sound_follow_motion = (pending['sound_cue'], pending['view'], direction)
         patrol = automatic and direction == self.pending_direction and pending and pending['phase'] in {'patrolling', 'sound_search'}
         if patrol:
             self.patrol_confirmation = dict(direction=direction, session=pending['session'],

@@ -44,9 +44,12 @@ def _recording_frame(event, ordinal, stamp):
             lookback = MAX_CORROBORATION_SECONDS + WINDOW_SPAN
         return captured - lookback <= stamp <= captured
     views = event.get('sound_search_views')
-    if isinstance(views, list) and any(isinstance(view, dict) and type(view.get('ordinal')) is int
+    search_view = isinstance(views, list) and any(isinstance(view, dict) and type(view.get('ordinal')) is int
             and view['ordinal'] == ordinal and type(view.get('step')) is int and 1 <= view['step'] <= 3
-            for view in views):
+            for view in views)
+    follow = event.get('sound_follow_view')
+    follow_view = isinstance(follow, dict) and type(follow.get('ordinal')) is int and follow['ordinal'] == ordinal
+    if search_view or follow_view:
         return captured < stamp <= captured + SOUND_SEARCH_MAX_AGE
     return ordinal < 3 and captured - KEYFRAME_LOOKBACK <= stamp <= captured
 

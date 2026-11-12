@@ -136,13 +136,19 @@ test('verified sound-search views join the same incident in capture order and re
  view.dispose();
 });
 
-test('声音与环视画面按各自时刻回看，迟到的另一段回看不替换当前选择',async()=>{
+test('声音、环视与跟随画面按采集时间排列，回看跟随保留选择与焦点',async()=>{
  const sound={...event('a'),frames:[{ordinal:0,at:1800000000,recording_anchor:true},
-  {ordinal:1,at:1800000006,recording_anchor:true},{ordinal:2,at:1800000018,recording_anchor:true}],
-  sound_search_views:[{step:1,ordinal:1},{step:2,ordinal:2}]};
+  {ordinal:1,at:1800000006,recording_anchor:true},{ordinal:2,at:1800000018,recording_anchor:true},
+  {ordinal:3,at:1800000015,recording_anchor:true}],
+  sound_search_views:[{step:1,ordinal:1},{step:2,ordinal:3}],sound_follow_view:{ordinal:2}};
  const f=fixture([sound]),view=f.mount({initialEventId:sound.id});await settle();
  const frame=ordinal=>all(f.root).find(n=>n.attrs['data-recording-frame']===String(ordinal));
- assert(frame(0)&&frame(1)&&frame(2));
+ assert(f.by('h3','关键画面'));
+ assert.deepEqual(all(f.root).filter(n=>n.attrs['data-recording-frame']!==undefined)
+  .map(n=>n.attrs['data-recording-frame']),['0','1','3','2']);
+ assert(frame(0).attrs['aria-label'].startsWith('回看 异响时'));
+ assert(frame(1).attrs['aria-label'].startsWith('回看 环视'));
+ assert(frame(2).attrs['aria-label'].startsWith('回看 跟随'));
  assert(!f.calls.some(call=>call.path.includes('/recordings')));
  frame(1).onclick();await settle();frame(2).onclick();await settle();
  const path='/api/embodied/safety/events/'+sound.id+'/recordings?ordinal=';

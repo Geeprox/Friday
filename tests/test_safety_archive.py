@@ -170,6 +170,8 @@ async def test_sound_search_recordings_use_the_selected_saved_view_on_the_origin
         for step, delta in enumerate((6,18),start=1):
             runtime.store.append_sound_search_frame(saved['id'], (CAMERA['id'],'synthetic-session',SOURCE),
                 step, CAPTURED+delta, bytes([step]), policy_revision=policy.revision, guard=lambda:True)
+        runtime.store.append_sound_search_frame(saved['id'], (CAMERA['id'],'synthetic-session',SOURCE),
+            'follow', CAPTURED+19, b'synthetic-follow', policy_revision=policy.revision, guard=lambda:True)
         before = list(calls)
         path = '/api/embodied/safety/events/'+saved['id']+'/recordings'
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
@@ -183,18 +185,32 @@ async def test_sound_search_recordings_use_the_selected_saved_view_on_the_origin
             assert request.time_range.end.timestamp() == CAPTURED+33
             assert ArchiveResolveRequest.model_validate(original['recordings'][0]['request']).time_range.end.timestamp() == CAPTURED+15
             assert view['source_scan_attempted'] is False and view['media_read_attempted'] is False
-            for endpoint, ordinal in [(path,1),(path,9),(path.replace(saved['id'],unrelated['id']),3)]:
+            follow = (await client.get(path, params={'ordinal':4, 'captured_at':CAPTURED-600})).json()
+            assert follow['event_id'] == saved['id'] and follow['frame_ordinal'] == 4
+            follow_request = ArchiveResolveRequest.model_validate(follow['recordings'][0]['request'])
+            assert follow_request.time_range.start.timestamp() == CAPTURED+4
+            assert follow_request.time_range.end.timestamp() == CAPTURED+34
+            listing = (await client.get('/api/embodied/safety/events')).json()['events']
+            stored = next(row for row in listing if row['id'] == saved['id'])
+            assert stored['sound_follow_view'] == {'ordinal': 4}
+            assert [frame['ordinal'] for frame in stored['frames'] if frame.get('recording_anchor')] == [0, 2, 3, 4]
+            for endpoint, ordinal in [(path,1),(path,9),(path.replace(saved['id'],unrelated['id']),4)]:
                 reply = (await client.get(endpoint,params={'ordinal':ordinal})).json()
                 assert reply['code'] == 'event_frame_unavailable' and not reply['recordings']
             assert (await client.get(path,params={'ordinal':22})).status_code == 422
             registry[0]['source_context'] = 'b'*64
             assert (await client.get(path,params={'ordinal':3})).json()['code'] == 'archive_capture_mapping_changed'
+            assert (await client.get(path,params={'ordinal':4})).json()['code'] == 'archive_capture_mapping_changed'
             registry[0]['source_context'] = SOURCE
             assert calls == before
             clock[0] = clock[0].replace(second=3)
             resolved = await index.resolve(request)
             assert resolved.camera_id == request.camera_id and resolved.time_range == request.time_range
             assert not resolved.media_copied and not resolved.device_write_attempted
+            follow_resolved = await index.resolve(follow_request)
+            assert follow_resolved.camera_id == follow_request.camera_id
+            assert follow_resolved.time_range == follow_request.time_range
+            assert not follow_resolved.media_copied and not follow_resolved.device_write_attempted
             with runtime.store.connect() as db:
                 db.execute('UPDATE safety_events SET at=0 WHERE id=?',(saved['id'],))
             assert (await client.get(path,params={'ordinal':3})).status_code == 404

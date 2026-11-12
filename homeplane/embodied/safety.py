@@ -30,6 +30,10 @@ class SafetyAdmissionChanged(ValueError):
     pass
 
 
+def _sound_view_slot(step):
+    return step == 'follow' or type(step) is int and 1 <= step <= 3
+
+
 class SafetyControls(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool = False
@@ -356,9 +360,9 @@ class SafetyStore:
                 raise SafetyAdmissionChanged('safety_source_changed')
 
     def append_sound_search_frame(self, event_id, source, step, stamp, jpeg, *, policy_revision, guard):
-        """将已核实的环视画面追加到同一事件，重复写入不增加关键帧。"""
+        """将已核实的环视或跟随画面追加到同一提醒，每个位置只保留一张。"""
         if (not isinstance(event_id, str) or not re.fullmatch(r'[a-f0-9]{32}', event_id)
-                or type(step) is not int or not 1 <= step <= 3
+                or not _sound_view_slot(step)
                 or type(stamp) not in (int, float) or not math.isfinite(stamp)
                 or not isinstance(jpeg, bytes) or not 0 < len(jpeg) <= self.MAX_FRAME):
             raise ValueError('sound_search_frame_invalid')
@@ -372,15 +376,22 @@ class SafetyStore:
                     or (event.get('camera'), event.get('session'), event.get('camera_source_context')) != source
                     or type(captured_at) not in (int, float) or not math.isfinite(captured_at) or stamp <= captured_at):
                 raise SafetyAdmissionChanged('safety_event_changed')
-            views = event.setdefault('sound_search_views', [])
-            if any(view['step'] == step for view in views):
-                return
+            if step == 'follow':
+                if 'sound_follow_view' in event:
+                    return
+            else:
+                views = event.setdefault('sound_search_views', [])
+                if any(view['step'] == step for view in views):
+                    return
             ordinal = db.execute('SELECT COALESCE(MAX(ordinal),-1)+1 FROM safety_frames WHERE event=?',
                                  (event_id,)).fetchone()[0]
             if ordinal >= self.MAX_FRAMES:
                 return
             db.execute('INSERT INTO safety_frames VALUES (?,?,?,?)', (event_id, ordinal, stamp, jpeg))
-            views.append(dict(step=step, ordinal=ordinal))
+            if step == 'follow':
+                event['sound_follow_view'] = dict(ordinal=ordinal)
+            else:
+                views.append(dict(step=step, ordinal=ordinal))
             db.execute('UPDATE safety_events SET value=? WHERE id=?',
                        (json.dumps(event, ensure_ascii=False), event_id))
             self._prune(db)
@@ -942,11 +953,12 @@ class SafetyRuntime:
 
     def offer_sound_search_frame(self, camera, proof, jpeg, *, source_current):
         cue, step, captured = proof
+        if not _sound_view_slot(step):
+            return False
         event_id = cue.receipt.event_id
         key = (event_id, step)
         if (event_id is None or key in self.sound_view_tasks
                 or len(self.sound_view_tasks) >= self.SOUND_VIEW_MAX_PENDING
-                or type(step) is not int or not 1 <= step <= 3
                 or not isinstance(jpeg, bytes) or not 0 < len(jpeg) <= self.store.MAX_FRAME
                 or not 0 <= time.monotonic() - captured <= 1.5
                 or captured <= cue.captured

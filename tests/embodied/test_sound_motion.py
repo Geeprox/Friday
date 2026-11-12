@@ -38,7 +38,7 @@ class EpisodeEngine(SlowEngine):
 class SoundPatrol:
     def __init__(self, tmp_path, monkeypatch, owner, *, episode=(14.2, 18.2), infant=False,
                  people=None, motor_shifts_view=True, enable_search=True, occupied_elsewhere=False,
-                 run_until=40):
+                 follow_shifts_view=True, run_until=40):
         self.j = Journey(tmp_path, monkeypatch)
         if enable_search:
             self.j.store.configure_sound_search(self.j.store.policy().revision, True)
@@ -55,6 +55,7 @@ class SoundPatrol:
         self.run_until = run_until
         self.people = people or (lambda _: [])
         self.motor_shifts_view = motor_shifts_view
+        self.follow_shifts_view = follow_shifts_view
         self.occupied_elsewhere = occupied_elsewhere
         self.state = {}
         self.exit_control = {}
@@ -131,7 +132,7 @@ class SoundPatrol:
             self.follow_moves.append((direction, self.director.target))
         self.moves.append((self.j.clock, direction))
         self.moving_until = self.j.clock + 1
-        if self.motor_shifts_view:
+        if self.motor_shifts_view and (self.director.phase != 'following' or self.follow_shifts_view):
             self.view_offset += .05 if direction == 'right' else -.05
         self.j.runtime.clear_view(CAMERA["id"])
         if self.owner == "secondary":
@@ -222,7 +223,10 @@ async def test_short_sound_near_a_patrol_deadline_keeps_both_original_loops_stab
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner', ['primary', 'secondary'])
-async def test_saved_sound_search_hands_a_new_visual_track_to_existing_follow(tmp_path, monkeypatch, owner):
+@pytest.mark.parametrize('follow_shifts_view', [True, False], ids=['new-view', 'same-view'])
+async def test_saved_sound_search_hands_a_new_visual_track_to_existing_follow(
+    tmp_path, monkeypatch, owner, follow_shifts_view
+):
     def people(patrol):
         if patrol.sound_moves:
             return [sound_person(42, .43 if patrol.follow_moves else .76, 'SYNTHETIC-new')]
@@ -230,7 +234,8 @@ async def test_saved_sound_search_hands_a_new_visual_track_to_existing_follow(tm
             return [sound_person(7, .43, 'SYNTHETIC-previous')]
         return []
 
-    patrol = SoundPatrol(tmp_path, monkeypatch, owner, people=people, occupied_elsewhere=True)
+    patrol = SoundPatrol(tmp_path, monkeypatch, owner, people=people, occupied_elsewhere=True,
+                         follow_shifts_view=follow_shifts_view)
     try:
         await patrol.run()
         assert patrol.occupied_with_saved_sound
@@ -242,6 +247,16 @@ async def test_saved_sound_search_hands_a_new_visual_track_to_existing_follow(tm
         event, = patrol.j.store.events()
         assert not event['directional_audio'] and event['track'] is None
         patrol.assert_saved_views(event)
+        if follow_shifts_view:
+            follow = event['sound_follow_view']
+            frame = next(row for row in event['frames'] if row['ordinal'] == follow['ordinal'])
+            assert follow['ordinal'] not in {row['ordinal'] for row in event['sound_search_views']}
+            assert frame['at'] - 1000 >= patrol.moves[1][0] + 2.35 - 1e-8
+            index = round((frame['at'] - 1000) / .2)
+            assert patrol.j.store.frame(event['id'], frame['ordinal']) == f'SYNTHETIC-FRAME-{index}'.encode()
+        else:
+            assert 'sound_follow_view' not in event
+            assert any(phase == 'target_reacquiring' for _, phase in patrol.phases)
         assert len(patrol.moves) == 2, '普通自动巡视仍受其他镜头在场状态限制'
     finally:
         await patrol.j.runtime.close()
@@ -299,13 +314,20 @@ def test_sound_follow_confirms_continuity_and_rechecks_cue_before_dispatch():
     director.sent(4)
     assert director.choose(frame(6.1, replacement, x=.1), 6.1, sound_cue=cue) is None
     relocated = sound_person(48, .76, 'SYNTHETIC-new')
-    assert director.choose(frame(6.3, relocated, x=.1), 6.3, sound_cue=cue) is None
-    assert director.choose(frame(6.5, relocated, x=.1), 6.5, sound_cue=cue) == 'right'
+    assert director.choose(frame(6.3, relocated, x=0), 6.3, sound_cue=cue) is None
+    assert director.take_sound_view() is None
+    changed = frame(6.5, relocated, x=.1)
+    assert director.choose(changed, 6.5, sound_cue=cue) is None
+    repeated = dict(frame(6.9, relocated, x=.1), _patrol_view=changed['_patrol_view'])
+    assert director.choose(repeated, 6.9, sound_cue=cue) is None
+    assert director.take_sound_view() is None
+    assert director.choose(frame(7.1, relocated, x=.1), 7.1, sound_cue=cue) == 'right'
+    assert director.take_sound_view() == (cue, 'follow', 7.1)
     assert director.target == 48
-    director.failed(6.5)
+    director.failed(7.1)
     assert director.sound_search_cue is None
-    assert director.choose(frame(8.7, replacement, x=.15), 8.7) is None
-    assert director.choose(frame(8.9, replacement, x=.15), 8.9) is None
+    assert director.choose(frame(9.3, replacement, x=.15), 9.3) is None
+    assert director.choose(frame(9.7, replacement, x=.15), 9.7) is None
     assert director.target_identity == 'SYNTHETIC-new'
 
 
@@ -334,6 +356,7 @@ def test_sound_follow_reacquires_an_unregistered_person_by_current_view():
     assert observe(7.6, .1, (other, 8)) is None
     assert observe(8.2, .1, (returned, 7)) is None
     assert observe(8.6, .1, (returned, 7)) is None
+    assert director.take_sound_view() == (cue, 'follow', 8.6)
     assert observe(9.1, .1, (returned, 7)) == 'right'
     assert director.target == 48 and director.target_identity is None
 
@@ -411,7 +434,8 @@ async def test_sound_search_requires_a_saved_receipt_and_rechecks_the_active_sou
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['pan', 'source', 'process', 'policy', 'audio', 'false_alarm'])
-async def test_sound_search_frame_rechecks_custody_and_policy_at_storage(tmp_path, monkeypatch, change):
+@pytest.mark.parametrize('step', [1, 'follow'])
+async def test_sound_search_frame_rechecks_custody_and_policy_at_storage(tmp_path, monkeypatch, change, step):
     patrol = SoundPatrol(tmp_path, monkeypatch, 'primary', episode=(0, math.inf))
     runtime, store, camera = patrol.j.runtime, patrol.j.store, CAMERA['id']
     entered, release = asyncio.Event(), asyncio.Event()
@@ -432,7 +456,7 @@ async def test_sound_search_frame_rechecks_custody_and_policy_at_storage(tmp_pat
         event, = store.events()
         assert cue.receipt.event_id == event['id']
         monkeypatch.setattr(runtime.io, 'call', delayed)
-        proof = (cue, 1, patrol.j.clock)
+        proof = (cue, step, patrol.j.clock)
         jpeg = b'SYNTHETIC-PAN-RESULT'
         assert runtime.offer_sound_search_frame(camera, proof, jpeg, source_current=lambda: live)
         assert not runtime.offer_sound_search_frame(camera, proof, jpeg, source_current=lambda: live)
@@ -454,10 +478,11 @@ async def test_sound_search_frame_rechecks_custody_and_policy_at_storage(tmp_pat
         await runtime.drain()
         result, = store.events()
         assert result['id'] == event['id'] and result['captured_at'] == event['captured_at']
+        field = 'sound_follow_view' if step == 'follow' else 'sound_search_views'
         if change == 'pan':
-            view, = result['sound_search_views']
+            view = result[field] if step == 'follow' else result[field][0]
             assert store.frame(event['id'], view['ordinal']) == jpeg
-            store.append_sound_search_frame(event['id'], (camera, cue.session, cue.context), 1,
+            store.append_sound_search_frame(event['id'], (camera, cue.session, cue.context), step,
                 1000+patrol.j.clock, jpeg, policy_revision=cue.revision, guard=lambda: True)
             checks = iter((True, False))
             with pytest.raises(SafetyAdmissionChanged, match='safety_source_changed'):
@@ -468,7 +493,7 @@ async def test_sound_search_frame_rechecks_custody_and_policy_at_storage(tmp_pat
                     1000+patrol.j.clock+1, jpeg, policy_revision=cue.revision, guard=lambda: True)
             assert store.events() == [result]
         else:
-            assert 'sound_search_views' not in result and result['frames'] == event['frames']
+            assert field not in result and result['frames'] == event['frames']
     finally:
         release.set()
         await runtime.close()
