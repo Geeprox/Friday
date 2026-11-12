@@ -18,6 +18,7 @@ class Utterance:
     started: float
     ended: float
     level: float
+    wake_only: bool = False
 
 
 def overlaps(first, second):
@@ -68,6 +69,9 @@ class VoiceRouting:
         if not self._eligible(service, item, now):
             return
         camera = service.camera_id
+        previous = self.pending.get(camera)
+        if item.wake_only and previous and not previous[1].wake_only and self._eligible(*previous, now):
+            return
         self.pending[camera] = (service, item)
         asyncio.get_running_loop().call_later(
             self.START_LIMIT - (now - item.captured), self._expire, camera, item.captured)
@@ -93,9 +97,11 @@ class VoiceRouting:
                 candidates.append((service, item))
             else:
                 self.pending[service.camera_id] = (service, item)
+        # 仅可识别唤醒词的短片段不能抢占同一句的完整语音。
         # 注视只在收音证据接近时加权，入镜本身不影响录入资格。
         service, item = max(candidates, key=lambda row: (
-            row[1].level * (1.10 if row[1].attending else 1.0), row[1].ended - row[1].started,
+            not row[1].wake_only, row[1].level * (1.10 if row[1].attending else 1.0),
+            row[1].ended - row[1].started,
             row[0].camera_id))
         window = min(item.started for _, item in candidates), max(item.ended for _, item in candidates)
         return service, item, window
@@ -117,6 +123,11 @@ class VoiceRouting:
         now = self.clock()
         if not self._eligible(service, item, now):
             return
-        self.recent.append((now, window))
+        # 短片段识别失败时，迟到的完整语音仍有机会被识别。
+        if not item.wake_only:
+            self.recent.append((now, window))
         service.voice_busy = True
-        await service.transcribe(item.pcm, item.owner, item.captured, item.attending, item.epoch, item.source)
+        wake_detected = await service.transcribe(
+            item.pcm, item.owner, item.captured, item.attending, item.epoch, item.source, item.wake_only)
+        if item.wake_only and wake_detected:
+            self.recent.append((self.clock(), window))

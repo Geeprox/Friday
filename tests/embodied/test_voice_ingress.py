@@ -92,8 +92,9 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
             await h.audio(self.packet())
         await self.end(h)
         self.assertIsNotNone(h.pending_audio)
-        pcm, owner, _, attending, epoch, source = h.pending_audio
+        pcm, owner, _, attending, epoch, source, wake_only = h.pending_audio
         self.assertIsNone(source)
+        self.assertFalse(wake_only)
         self.assertEqual(len(pcm), 10 * 6400)
         self.assertEqual(owner, 7)
         self.assertTrue(attending)

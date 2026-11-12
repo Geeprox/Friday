@@ -58,9 +58,9 @@ def voice_at(camera, session, routing, *, owner=None, text='Friday'):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('winner', ['primary', 'secondary'])
-@pytest.mark.parametrize('text', ['Friday', 'Friday，打开玄关灯'])
+@pytest.mark.parametrize('text, voiced_frames', [('Friday', 2), ('Friday', 6), ('Friday，打开玄关灯', 6)])
 async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_occupied(
-        tmp_path, monkeypatch, winner, text):
+        tmp_path, monkeypatch, winner, text, voiced_frames):
     clock = clock_at()
     monkeypatch.setattr(home_service, 'time', clock)
     monkeypatch.setattr(home_service, 'DATA', tmp_path)
@@ -105,7 +105,7 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
                 await loop(camera_id, admission())
         receivers[cid] = on_packet
 
-    for index in range(10):
+    for index in range(voiced_frames + 4):
         for camera in (primary, secondary):
             cid = camera['id']
             home, gate = services[cid], ingress[cid]
@@ -116,7 +116,7 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
             frame = dict(type='frame', received_at=clock.time(),
                          capture_session=gate.session, camera_source_context=gate.context)
             assert gate.observe_frame(frame, wall=clock.time(), mono=clock.at)
-            amplitude = (1200 if camera == CAMERA else 400) if index < 6 else 0
+            amplitude = (1200 if camera == CAMERA else 400) if index < voiced_frames else 0
             raw = np.full(3200, amplitude, dtype='<i2').tobytes()
             packet, = framer[cid].push(raw, received=clock.time(), decoded=clock.time(),
                                        wall=clock.time(), mono=clock.at)
@@ -126,6 +126,7 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
     await routing.task
     home = services[CAMERA['id']]
     home.request.assert_awaited_once()
+    assert home.request.await_args.kwargs['wake_only'] == (voiced_frames == 2)
     services[OTHER['id']].request.assert_not_awaited()
     assert services[OTHER['id']].wake_camera is None
     source = ingress[CAMERA['id']].session, ingress[CAMERA['id']].context
@@ -152,7 +153,7 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
         return director.choose(frame, at, sound_cue=cue(CAMERA['id'], frame, director.sound_search_cue))
 
     director.choose(current_frame(1.0, source), 1.0)
-    assert choose(1.9) == 'right'
+    assert choose(clock.at + .1) == 'right'
     send, sent = dispatch_for(winner, frame, clock, director, home, cue, safety, party)
     await send('right')
     assert [(row['action'], row['direction']) for row in sent] == [('motor_step', 'right')]
@@ -160,6 +161,44 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
 
 def candidate(at):
     return Utterance(b'SYNTHETIC', None, at, False, 1, ('a'*32, 'b'*64), at-1.3, at-.7, .04)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('short_first, detected', [(False, False), (True, False), (True, True)])
+async def test_short_cue_only_deduplicates_complete_audio_after_confirmed_wake(short_first, detected):
+    clock = clock_at(10)
+    route = VoiceRouting(lambda: True, clock=clock.monotonic)
+    route.COLLECT_SECONDS = 0
+    short = SimpleNamespace(camera_id=CAMERA['id'], current=Mock(return_value=True),
+                            spawn=asyncio.create_task, transcribe=AsyncMock(return_value=detected))
+    full = SimpleNamespace(camera_id=OTHER['id'], current=Mock(return_value=True),
+                           spawn=asyncio.create_task, transcribe=AsyncMock())
+    phrase = candidate(clock.at)
+    route.offer(short, replace(phrase, wake_only=True, level=.08))
+    if short_first:
+        await route.task
+        clock.at += .5
+    route.offer(full, replace(phrase, captured=clock.at))
+    if route.task:
+        await route.task
+    assert short.transcribe.await_count == int(short_first)
+    assert full.transcribe.await_count == int(not detected)
+
+
+@pytest.mark.asyncio
+async def test_short_fragment_does_not_replace_a_pending_full_utterance_from_the_same_camera():
+    clock = clock_at(10)
+    route = VoiceRouting(lambda: True, clock=clock.monotonic)
+    route.COLLECT_SECONDS = 0
+    service = SimpleNamespace(camera_id=CAMERA['id'], current=Mock(return_value=True),
+                              spawn=asyncio.create_task, transcribe=AsyncMock())
+    full = candidate(clock.at)
+    route.offer(service, full)
+    clock.at += 1.25
+    route.offer(service, replace(candidate(clock.at), wake_only=True, pcm=b'SYNTHETIC-short'))
+    await route.task
+    service.transcribe.assert_awaited_once()
+    assert service.transcribe.await_args.args[0] == full.pcm
 
 
 @pytest.mark.asyncio

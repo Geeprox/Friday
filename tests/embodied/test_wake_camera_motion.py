@@ -1,14 +1,16 @@
 """合成收音、人物观测和云台管道贯通唤醒转向。"""
 
 import asyncio
+import base64
 import json
 import secrets
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from homeplane.embodied import home_service
+from homeplane.embodied import home_service, voice_worker
 from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, WakeCameraCue, deliver_audio
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.intent import address
@@ -35,7 +37,7 @@ def subject(track, x):
     return row
 
 
-async def hear_wake(tmp_path, monkeypatch, clock, word, *, text=None):
+async def hear_wake(tmp_path, monkeypatch, clock, word, *, text=None, voiced_frames=6):
     monkeypatch.setattr(home_service, 'DATA', tmp_path)
     monkeypatch.setattr(home_service, 'VOICE_INPUT_PAUSED', tmp_path / 'voice-input-paused')
     monkeypatch.setattr(home_service, 'time', clock)
@@ -51,7 +53,7 @@ async def hear_wake(tmp_path, monkeypatch, clock, word, *, text=None):
         text=text, voice_revision=7, address=address(text, False, wake_word=word)))
     h.command = AsyncMock()
     # 先给出完整的语音活动，再用连续的静音帧关闭语音段。
-    measurements = [(True, 1.0, .03)] * 6 + [(False, 0.0, .004)] * 4
+    measurements = [(True, 1.0, .03)] * voiced_frames + [(False, 0.0, .004)] * 4
     h.activity = SimpleNamespace(probability=.9, measure=Mock(side_effect=measurements))
     capture = 'a' * 32
     gate = AudioIngress(CAMERA, capture)
@@ -63,7 +65,7 @@ async def hear_wake(tmp_path, monkeypatch, clock, word, *, text=None):
         admitted = gate.accept(audio(clock.at, framer=framer), wall=clock.time(), mono=clock.at)
         assert await deliver_audio(h, admitted)
     await asyncio.gather(*jobs)
-    h.request.assert_awaited_once()
+    assert h.request.await_count == int(voiced_frames >= 2)
     h.command.assert_not_awaited()
     return h, (gate.session, gate.context)
 
@@ -124,7 +126,9 @@ def dispatch_for(owner, state, clock, director, h, cue, safety, party):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner, word', [('primary', 'Friday'), ('secondary', '小福')])
-async def test_wake_search_turns_and_follows_on_the_same_capture(tmp_path, monkeypatch, owner, word):
+@pytest.mark.parametrize('target_side, target_x', [('left', .10), ('right', .76)])
+async def test_wake_search_turns_and_follows_on_the_same_capture(
+        tmp_path, monkeypatch, owner, word, target_side, target_x):
     clock = SimpleNamespace(at=0.0)
     clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
     home, source = await hear_wake(tmp_path, monkeypatch, clock, word)
@@ -155,20 +159,21 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(tmp_path, monke
     await send('right')
     assert [(row['action'], row['direction']) for row in sent] == [('motor_step', 'right')]
 
-    found = subject(7, .76)
+    found = subject(7, target_x)
     assert observe(3.9, offset=.05, people=[found]) is None
     assert director.phase == 'confirming_view'
     assert observe(4.3, offset=.05, people=[found]) is None
-    assert observe(4.7, offset=.05, people=[found]) == 'right'
-    await send('right')
-    assert [row['direction'] for row in sent] == ['right', 'right']
+    assert observe(4.7, offset=.05, people=[found]) == target_side
+    await send(target_side)
+    assert [row['direction'] for row in sent] == ['right', target_side]
 
     centered = subject(9, .43)
     centered['identity'] = found['identity']
-    assert observe(7.1, offset=.1, people=[centered]) is None
-    assert observe(7.5, offset=.1, people=[centered]) is None
+    offset = 0 if target_side == 'left' else .1
+    assert observe(7.1, offset=offset, people=[centered]) is None
+    assert observe(7.5, offset=offset, people=[centered]) is None
     assert not director.public()['target_locked']
-    assert observe(7.9, offset=.1, people=[centered]) is None
+    assert observe(7.9, offset=offset, people=[centered]) is None
     assert director.target == 9 and director.public()['target_locked']
     assert not director.public()['physical_motion_verified']
     assert not home.attention.latest
@@ -231,3 +236,43 @@ async def test_ordinary_transcript_never_requests_camera_motion(tmp_path, monkey
     clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
     home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday', text='Fridayish')
     assert home.wake_motion_cue(current_frame(clock.at, source), clock.at) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('frames, text', [(1, 'Friday'), (2, 'Friday，打开玄关灯'), (2, '打开玄关灯')])
+async def test_short_input_reaches_neither_motor_nor_device_commands_without_exact_wake(
+        tmp_path, monkeypatch, frames, text):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    device = AsyncMock(return_value=dict(status='reported_match', reached_target=True))
+    monkeypatch.setattr(home_service.bridge, 'command', device)
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday', text=text, voiced_frames=frames)
+    assert home.wake_motion_cue(current_frame(clock.at, source), clock.at) is None
+    assert home.state.get('voice_command') is None
+    device.assert_not_awaited()
+
+
+def test_voice_worker_accepts_only_the_exact_configured_wake_on_short_input(monkeypatch):
+    texts = ['', '小福。', '小福，打开玄关灯', 'Friday', '打开玄关灯', '小福']
+    transcribe = Mock(side_effect=[(text, {}) for text in texts[:-1]] + [(texts[-1], {'avg_logprob': -1.2})])
+    classify = Mock()
+    output = []
+    request = dict(op='transcribe', wake_only=True, attending=True, voice_revision=7,
+                   pcm=base64.b64encode(bytes(16000)).decode())
+    monkeypatch.setattr(voice_worker, 'LocalASR', lambda _: SimpleNamespace(label='synthetic', transcribe=transcribe))
+    monkeypatch.setattr(voice_worker, 'read_preferences', lambda: SimpleNamespace(wake_word='小福', revision=7))
+    monkeypatch.setattr(voice_worker, 'signal', SimpleNamespace(signal=Mock(), SIGTERM=15))
+    monkeypatch.setattr(voice_worker, 'sys', SimpleNamespace(
+        stdin=[json.dumps(dict(request, id=i)) for i in range(1, len(texts))], stderr=sys.stderr))
+    monkeypatch.setattr(voice_worker, 'emit', output.append)
+    monkeypatch.setitem(sys.modules, 'homeplane.shared_laya', SimpleNamespace(
+        SharedLaya=lambda: SimpleNamespace(status=lambda: {'state': 'synthetic'}, predict=classify)))
+
+    voice_worker.main()
+
+    assert output[0]['type'] == 'ready'
+    _, wake, *rejected = output
+    assert wake['text'] == '小福。' and wake['address']['reason'] == 'waiting_instruction'
+    assert all(row['type'] == 'transcript' and not row['text'] and not row['address']['admitted'] for row in rejected)
+    assert rejected[-1]['asr_quality']['filter'] == 'low_asr_confidence'
+    classify.assert_not_called()
