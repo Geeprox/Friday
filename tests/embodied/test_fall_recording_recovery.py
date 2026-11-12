@@ -52,6 +52,73 @@ async def before_fall(monitor):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['position', 'identity'])
+async def test_different_people_cannot_complete_a_fall_under_one_track_number(monitor, change):
+    runtime, camera, session = monitor.runtime, monitor.camera, 'same-session'
+
+    async def offer(index, actor):
+        monitor.clock[0] = now = 100 + index * .25
+        await runtime.sync_policy()
+        assert runtime.offer(camera, session, [actor], now, now, stable=True,
+                             jpeg=b'SYNTHETIC-FALL-FRAME', source_context=monitor.context)
+
+    for index in range(20):
+        now = 100 + index * .25
+        actor = person(index >= 7)
+        if change == 'identity':
+            actor['identity'] = dict(state='tracked', observed_monotonic=now, face_observed_monotonic=now,
+                                     person_id='synthetic-a' if index < 9 else 'synthetic-b')
+        elif index >= 9:
+            # 两段倒卧来自同一追踪编号下互不相交的画面位置。
+            actor['box']['y'] += .21
+            for joint in actor['joints'].values():
+                joint['y'] += .21
+        await offer(index, actor)
+        if index == 9:
+            pending_after_change = runtime.fall_pending(camera, session)
+        await runtime.observation_task
+    await runtime.drain()
+    assert not monitor.store.events()
+    assert not pending_after_change
+    runtime.speaker.say.assert_not_awaited()
+
+    # 同一来源重新出现站立和下降，倒卧过程中短暂翻身后仍能重新计时。
+    for index in range(20, 40):
+        actor = person(index >= 27)
+        if index >= 27:
+            shift = (index-27) * .004
+            actor['box']['y'] += shift
+            for joint in actor['joints'].values():
+                joint['y'] += shift
+        if index == 28:
+            for side in ('left', 'right'):
+                hip = actor['joints'][side + 'Hip']
+                hip['x'] = actor['joints'][side + 'Shoulder']['x']
+                hip['y'] += .10
+        await offer(index, actor)
+        await runtime.observation_task
+    await runtime.drain()
+    event, = monitor.store.events()
+    assert event['kind'] == 'fall' and event['captured_at'] == 1800000109.25
+    assert event['frames'] and event['camera_source_context'] == monitor.context
+
+
+@pytest.mark.asyncio
+async def test_an_incomplete_neighbor_row_does_not_drop_the_confirmed_fall(monitor):
+    runtime = monitor.runtime
+    for index in range(16):
+        monitor.clock[0] = now = 100 + index * .25
+        await runtime.sync_policy()
+        assert runtime.offer(monitor.camera, 'same-session', [None, person(index >= 7)], now, now, stable=True,
+                             jpeg=b'SYNTHETIC-FALL-FRAME', source_context=monitor.context)
+        await runtime.observation_task
+    await runtime.drain()
+    event, = monitor.store.events()
+    assert event['kind'] == 'fall' and event['track'] == '7' and event['frames']
+    assert runtime.error is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('owner', ['primary', 'secondary'])
 @pytest.mark.parametrize('joint_gap', [False, True])
 async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(monitor, owner, joint_gap, monkeypatch):

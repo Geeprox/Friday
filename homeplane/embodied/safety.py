@@ -516,17 +516,21 @@ class FallDetector:
                 or not 0 <= evaluated_mono - seen <= 1 or not 0 <= evaluated_mono - face <= 5):
             return None
         person_id = identity.get('person_id')
-        return person_id if isinstance(person_id, str) and person_id else None
+        return person_id if isinstance(person_id, str) and 1 <= len(person_id) <= 128 else None
+
+    @staticmethod
+    def _identity_matches(track, person_id):
+        return person_id is None or track['person_id'] in (None, person_id)
 
     def _supports_descent(self, track, geometry, captured, coalesced):
         if not geometry["horizontal"]:
             return False
         down = track["down"]
         if down is not None:
+            overlap = iou(geometry["box"], down["box"])
             if geometry["partial"] or down["partial"] or coalesced:
-                return (0 < captured - down["at"] <= self.MAX_POSE_GAP
-                        and iou(geometry["box"], down["box"]) >= 0.45)
-            return True
+                return 0 < captured - down["at"] <= self.MAX_POSE_GAP and overlap >= 0.45
+            return overlap > 0
         anchor = track["anchor"]
         return (not geometry["partial"] and anchor is not None and captured - anchor["at"] <= 1.2
                 and geometry["center"] - anchor["center"] >= anchor["height"] * 0.25)
@@ -552,6 +556,8 @@ class FallDetector:
         for person in people[:self.MAX_TRACKS]:
             track = state["tracks"].get(self._track_key(person))
             if track is None or track["fired"] or not 0 < captured - track["last"] <= self.MAX_FRAME_GAP:
+                continue
+            if not self._identity_matches(track, self.current_identity(person, evaluated)):
                 continue
             geometry = self.geometry(person, aspect)
             if geometry is not None and self._supports_descent(track, geometry, captured, coalesced):
@@ -592,10 +598,15 @@ class FallDetector:
             if geometry is None:
                 state["tracks"].pop(track, None)
                 continue
+            person_id = self.current_identity(person, evaluated_mono)
             old = state["tracks"].get(track)
-            if old is None or not 0 < captured - old["last"] <= self.MAX_FRAME_GAP:
-                old = dict(last=captured, upright_since=None, anchor=None, down=None, fired=False)
+            if (old is None or not 0 < captured - old["last"] <= self.MAX_FRAME_GAP
+                    or not self._identity_matches(old, person_id)):
+                old = dict(last=captured, upright_since=None, anchor=None, down=None, fired=False,
+                           person_id=person_id)
                 state["tracks"][track] = old
+            elif person_id is not None:
+                old["person_id"] = person_id
             old["last"] = captured
             supports = self._supports_descent(old, geometry, captured, coalesced)
             down = old["down"]
@@ -606,7 +617,9 @@ class FallDetector:
                 else:
                     state["tracks"].pop(track, None)
                 continue
-            if down is not None and not supports and (down["partial"] or coalesced):
+            if (down is not None and not supports
+                    and (down["partial"] or coalesced or iou(geometry["box"], down["box"]) <= 0)):
+                # 画面无法接上原轨迹时，下一次确认须重新建立站立基线。
                 old["anchor"] = None
             if geometry["upright"]:
                 old["upright_since"] = old["upright_since"] if old["upright_since"] is not None else captured
@@ -628,7 +641,6 @@ class FallDetector:
             old["down"] = dict(at=captured, seconds=seconds, box=dict(geometry["box"]), partial=False)
             if seconds >= 2 and not old["fired"]:
                 old["fired"] = True
-                pid = self.current_identity(person, evaluated_mono)
                 found.append(
                     dict(
                         kind="fall",
@@ -636,11 +648,11 @@ class FallDetector:
                         camera=camera,
                         session=session,
                         track=track,
-                        person_id=pid,
+                        person_id=person_id,
                         simulated=False,
                         status="suspected",
                         basis="upright_rapid_descent_sustained_horizontal",
-                        detector="geometry-fall/2",
+                        detector="geometry-fall/3",
                         started_mono=old["anchor"]["at"],
                     )
                 )
@@ -1188,7 +1200,7 @@ class SafetyRuntime:
             event['camera_source_context'] = source_context
             event['camera_name'] = source_name
             event['captured_at'] = stamp
-            person = next((p for p in people if str(p.get('id')) == str(event.get('track'))), {})
+            person = next((p for p in people if FallDetector._track_key(p) == event['track']), {})
             identity = person.get('identity', {})
             identity = identity if isinstance(identity, dict) else {}
             person_id = identity.get('person_id')

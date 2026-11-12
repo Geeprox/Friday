@@ -137,7 +137,7 @@ def test_fall_confirmation_uses_capture_intervals_under_processing_jitter(latenc
     assert len(events) == 1
     confirmed_at, event = events[0]
     assert confirmed_at == 103.75
-    assert event["started_mono"] == 101.5 and event["detector"] == "geometry-fall/2"
+    assert event["started_mono"] == 101.5 and event["detector"] == "geometry-fall/3"
 
 
 @pytest.mark.parametrize("missing", ["absent", "weak"])
