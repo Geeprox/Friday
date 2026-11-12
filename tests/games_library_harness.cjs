@@ -15,6 +15,8 @@ class Element{
  querySelectorAll(selector){return walk(this).slice(1).filter(n=>selector.startsWith('.')?n.className.split(' ').includes(selector.slice(1)):n.tagName===selector);}
  querySelector(selector){return this.querySelectorAll(selector)[0]||null;}
  after(node){if(this.parent){const at=this.parent.children.indexOf(this);this.parent.children.splice(at+1,0,node);node.parent=this.parent;}}
+ showModal(){this.open=true;}
+ close(){this.open=false;}
  scrollIntoView(){}
  focus(){Element.active=this;}
 }

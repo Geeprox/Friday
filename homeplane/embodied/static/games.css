@@ -333,3 +333,5 @@ body[data-quest-result=true] :is(.mission,.instruction,.live-progress,.bar,.ques
  .quest-route-options{margin-bottom:8px}
  .overlay .quest-result-stations{margin-bottom:8px}
 }
+
+body.embedded #stageFullscreen{display:none}

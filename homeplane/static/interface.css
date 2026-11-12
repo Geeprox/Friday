@@ -666,11 +666,6 @@ body .files-root { --files-muted: var(--muted); --files-line: var(--line); --fil
  .experience .home-space .model-room-name{max-width:148px;min-width:104px;padding:7px 9px}
  .model-room-summary{font-size:11px}
  .home-space-footer{padding-block:8px;font-size:12px}
- body:has(.games-library[data-playing=true]) .sidebar,body:has(.games-library[data-playing=true]) .page-header{display:none}
- body:has(.games-library[data-playing=true]) .topbar{min-height:30px;padding-block:2px}
- body:has(.games-library[data-playing=true]) main#workspace{padding:12px}
- body:has(.games-library[data-playing=true]) .game-stage-heading{margin-bottom:8px;min-height:40px}
- body:has(.games-library[data-playing=true]) .game-stage{height:calc(100svh - 122px);min-height:min(590px,calc(100svh - 122px))}
 }
 
 .automation-task-attention{margin-block:8px 24px}.automation-task-attention[hidden]{display:none}.automation-task-attention>h3{font-size:16px;margin:0 0 8px}.automation-task-issue{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:16px 0;border-top:1px solid var(--line)}.automation-task-issue>div:first-child{min-width:0}.automation-task-issue h4{font-size:14px;margin:0 0 6px;overflow-wrap:anywhere}.automation-task-issue p{margin:4px 0}.automation-task-issue .product-actions{flex-shrink:0}.automation-task-issue[data-focused="true"] h4{outline:1px solid var(--ink);outline-offset:5px}.automation-task-issue [role="status"]:empty{display:none}@media(max-width:760px){.automation-task-issue{align-items:flex-start;flex-direction:column;gap:12px}.automation-task-issue .product-actions{flex-wrap:wrap}}

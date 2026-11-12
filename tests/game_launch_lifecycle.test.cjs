@@ -6,7 +6,7 @@ test('a first launch keeps its new game view while replacing the pre-launch stop
  h.button('林间滑雪').onclick();await h.button('开始游戏').onclick();await h.settle();
  assert.equal(h.requests.filter(r=>r.options.method==='POST').length,1);
  assert(h.all().some(n=>n.tagName==='iframe'),'the pre-launch catalogue must not remove the newly opened stage');
- assert.equal(h.all().find(n=>n.className==='games-library').dataset.playing,'true');
+ assert.equal(h.all().find(n=>n.tagName==='dialog').open,true);
  assert(!h.root.textContent.includes('游戏已停止，可以重新开始。'));
  h.owner.dispose();assert.equal(h.root.children.length,0);
 });
@@ -22,7 +22,7 @@ for(const retainedMode of ['off','quest'])test('a confirmed service stop with '+
  h.tick();await h.settle();assert.equal(h.button('返回游戏详情'),exit,'later reads preserve the exit and focus');
  const before=h.requests.filter(r=>r.options.method==='POST').length;
  exit.onclick();await h.settle();
- assert.equal(h.all().find(n=>n.className==='games-library').dataset.playing,'false');
+ assert.equal(h.all().find(n=>n.tagName==='dialog').open,false);
  assert(h.root.contains(h.focused()));assert.equal(h.focused().tagName,'h2');
  assert.equal(h.button('开始游戏').disabled,false);
  assert.equal(h.requests.filter(r=>r.options.method==='POST').length,before,'returning must not restart the camera service');
@@ -37,6 +37,32 @@ test('a failed service read leaves the running game and its back control intact'
  assert(h.all().includes(frame),'a failed status read is not proof of a stopped service');
  assert.equal(h.button('返回详情'),back);assert(!h.button('返回游戏详情'));
  assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+ h.owner.dispose();
+});
+
+test('Esc 返回详情并释放舞台，继续时仍读回原局',async()=>{
+ const h=library();await h.settle();h.button('体感闯关').onclick();
+ await h.button('继续游戏').onclick();await h.settle();
+ const stage=h.all().find(n=>n.tagName==='dialog'),round=h.service.game.round_id;
+ assert.equal(stage.open,true);
+ let cancelled=false;stage.oncancel({preventDefault(){cancelled=true;}});await h.settle();
+ assert(cancelled);assert.equal(stage.open,false);assert.equal(stage.children.length,0);
+ assert.equal(h.focused().tagName,'h2');
+ await h.button('继续游戏').onclick();await h.settle();
+ assert.equal(stage.open,true);assert.equal(h.service.game.round_id,round);
+ assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
+ h.owner.dispose();assert.equal(stage.open,false);
+});
+
+test('原局暂停导致版本更新时，只读入口重新核对一次',async()=>{
+ const h=library();await h.settle();h.button('体感闯关').onclick();
+ const round=h.service.game.round_id;
+ h.changeBeforeOpen(()=>{h.service.game.control_revision++;h.service.game.status='paused';});
+ await h.button('继续游戏').onclick();await h.settle();
+ const opens=h.requests.filter(r=>r.path==='/api/games/quest/open');
+ assert.equal(opens.length,2);assert.notEqual(opens[0].options.headers['X-Friday-Game-Intent'],opens[1].options.headers['X-Friday-Game-Intent']);
+ assert.equal(h.all().find(n=>n.tagName==='dialog').open,true);
+ assert.equal(h.service.game.round_id,round);assert.equal(h.requests.filter(r=>r.options.method==='POST').length,0);
  h.owner.dispose();
 });
 

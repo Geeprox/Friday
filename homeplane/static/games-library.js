@@ -35,7 +35,7 @@ function skiRoutePreview(trail){
 }
 export function mountGames(root,{go=()=>{}}={}){
  const difficultySelections=new Map();
- let alive=true,report=null,cameras=[],selection=null,filter='all',query='',busy=false,stageApp=null,frame=null,practice=null,party=null,ktv=null,diagrams=[],generation=0,ui={},lastError='',readOwner=null,readEpoch=0,readAt=null,stateFresh=false,readNotice='',catalogLoaded=false,pendingSkiTrail=null,pendingTennisVariant=null,pendingQuestRoute=null;
+ let alive=true,report=null,cameras=[],selection=null,filter='all',query='',busy=false,practice=null,party=null,ktv=null,diagrams=[],generation=0,ui={},lastError='',readOwner=null,readEpoch=0,readAt=null,stateFresh=false,readNotice='',catalogLoaded=false,pendingSkiTrail=null,pendingTennisVariant=null,pendingQuestRoute=null;
  const wrap=h('section',null,'games-library'),status=h('p','正在读取游戏库…','games-connection'),screen=h('div',null,'games-screen');status.setAttribute('role','status');wrap.append(status,screen);root.append(wrap);
  const abort=new AbortController();
  async function api(path,body,signal,headers={}){const r=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any([abort.signal,AbortSignal.timeout(12000),...(signal?[signal]:[])])});const data=await r.json();if(!r.ok)throw Error(data.detail||'unavailable');return data;}
@@ -115,7 +115,7 @@ export function mountGames(root,{go=()=>{}}={}){
   return group;
  }
  function retireRead(){readEpoch++;const previous=readOwner;readOwner=null;previous?.controller.abort();}
- function clean(){ktv?.dispose();ktv=null;practice?.dispose();practice=null;party?.dispose();party=null;diagrams.forEach(d=>d.dispose());diagrams=[];ui={};frame=null;stageApp=null;wrap.dataset.playing='false';}
+ function clean(){ktv?.dispose();ktv=null;practice?.dispose();practice=null;party?.dispose();party=null;diagrams.forEach(d=>d.dispose());diagrams=[];retireStage();ui={};}
  function cover(app,cls='game-cover'){const src=art(app.id);if(src){const image=h('img',null,cls);image.src=src;image.alt=app.name+'封面插画';image.width=1672;image.height=941;image.decoding='async';return image;}const fallback=h('div',null,'game-tool-cover'),icon=h('span',null,'icon icon-users');icon.setAttribute('aria-hidden','true');fallback.append(icon,h('span',app.name));return fallback;}
  function select(app){if(busy)return;selection=app;lastError='';generation++;draw();screen.scrollIntoView?.({block:'start',behavior:'instant'});const title=screen.querySelector('h2');title?.setAttribute('tabindex','-1');title?.focus?.({preventScroll:true});}
  function focusStoreGame(id){
@@ -226,7 +226,14 @@ export function mountGames(root,{go=()=>{}}={}){
   const options=gameDifficulties(app);
   if(options.length){const field=h('div',null,'game-difficulty'),label=h('label','难度');label.setAttribute('for','game-difficulty');difficulty=h('select');difficulty.id='game-difficulty';difficulty.setAttribute('aria-describedby','game-difficulty-note');for(const option of options){const item=h('option',option.label);item.value=option.id;difficulty.append(item);}difficulty.value=chosenDifficulty(app)?.id||'standard';difficultyNote=h('p',null,'game-difficulty-note');difficultyNote.id='game-difficulty-note';difficulty.onchange=()=>{if(busy){difficulty.value=chosenDifficulty(app)?.id||'standard';return;}if(options.some(d=>d.id===difficulty.value))difficultySelections.set(app.id,difficulty.value);update();};field.append(label,difficulty,difficultyNote);info.append(field);}
   const readiness=h('p',null,'game-readiness');info.append(readiness);const notice=h('p',lastError,'game-notice');notice.setAttribute('role','status');const actions=h('div',null,'game-actions'),start=button(app.kind==='seating'?'打开聚会工具':'开始游戏',()=>perform(intent=>startGame(app,intent)),'primary');actions.append(start);info.append(actions,notice);top.append(visual,info);screen.append(top);
-  const stage=h('div',null,'game-stage-slot');stage.hidden=true;screen.append(stage);
+  const stage=h('dialog',null,'game-stage-slot');
+  stage.setAttribute('aria-labelledby','game-stage-title');
+  stage.oncancel=event=>{
+   event.preventDefault();
+   if(ui.playView&&document.fullscreenElement===ui.playView)void document.exitFullscreen().catch(()=>{});
+   else closeStage();
+  };
+  screen.append(stage);
   const teaching=h('section',null,'game-how-to'),tennisTip=tennisPicker?h('p'):null;
   if(questPicker){
    teaching.append(h('h3','动作示范'),h('p','留出活动空间，让双手和双脚完整入镜。','game-motion-instruction'));
@@ -289,13 +296,64 @@ export function mountGames(root,{go=()=>{}}={}){
    ktv=mountKtv(screen,{endpoint:'/api/games/ktv',embedded:true,partyAudio:globalThis.FridayPartyAudio,readOnly:document.body.dataset.consoleReadOnly==='true',onBack:()=>{selection=null;generation++;draw();screen.querySelector('button[aria-label="查看家庭 KTV"]')?.focus?.();}});
   }catch{if(alive&&stamp===generation){screen.replaceChildren(h('h2','家庭 KTV'),h('p','页面暂时无法载入，请重试。','games-empty'),button('重新载入',()=>{screen.replaceChildren();void openKtv();}),button('返回游戏库',()=>{selection=null;generation++;draw();}));}}
  }
- function closeStage(){generation++;wrap.dataset.playing='false';ui.stageEnded=false;ui.stage?.replaceChildren();if(ui.stage)ui.stage.hidden=true;frame=null;stageApp=null;ui.playTitle=null;if(!busy){stateFresh=false;retireRead();update();void refresh(true);}const heading=screen.querySelector('h2');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});}
- async function openStage(intent){const round=generation,app=selection;if(!app)return;const result=await api('/api/games/'+encodeURIComponent(app.id)+'/open',undefined,undefined,{'X-Friday-Game-Intent':intent});if(!alive||round!==generation||selection?.id!==app.id)return;const url=new URL(result.url);if(url.hostname!=='127.0.0.1'||url.protocol!=='http:'||url.username||url.password)throw Error('invalid_stage');url.searchParams.set('embed','1');frame=h('iframe',null,'game-stage');frame.src=url.href;frame.title=modeTitle(app)+'实时画面';frame.setAttribute('allow','fullscreen');frame.setAttribute('referrerpolicy','no-referrer');const heading=h('div',null,'game-stage-heading'),back=button('返回详情',closeStage),title=h('h2',modeTitle(app));heading.append(back,title);ui.playTitle=title;ui.stageEnded=false;ui.stage.hidden=false;ui.stage.replaceChildren(heading,frame);stageApp=app.id;wrap.dataset.playing='true';ui.stage.scrollIntoView?.({block:'start',behavior:'instant'});back.focus?.({preventScroll:true});}
+ function retireStage(){
+  if(ui.stage?.open)ui.stage.close();
+  ui.stage?.replaceChildren();
+  ui.playView=ui.playTitle=ui.frame=null;
+  ui.stageEnded=false;
+ }
+ function closeStage(){
+  generation++;
+  retireStage();
+  if(!busy){stateFresh=false;retireRead();update();void refresh(true);}
+  const heading=screen.querySelector('h2');
+  heading?.setAttribute('tabindex','-1');heading?.focus({preventScroll:true});
+ }
+ async function openStage(intent){
+  const round=generation,app=selection;
+  if(!app)return;
+  const current=()=>alive&&round===generation&&selection?.id===app.id;
+  const lookup=version=>api('/api/games/'+encodeURIComponent(app.id)+'/open',undefined,undefined,{'X-Friday-Game-Intent':version});
+  const before=gameIntent()===intent?report.service.game:null;
+  let result;
+  try{result=await lookup(intent);}
+  catch(error){
+   if(!current()||error.message!=='game_state_changed'||!before?.control_context||!Number.isSafeInteger(before.round_id))throw error;
+   // 关闭最后一个舞台可能让原局暂停并更新版本。同一局的只读入口可重新读取一次。
+   if(!await refresh(true)||!current()||!report.service.owned||!gameIntent())throw error;
+   const after=report.service.game,fields=['control_context','round_id','mode','selected_mode','game_input_enabled',
+    'difficulty','ski_trail','tennis_variant','quest_route'];
+   if(!after||fields.some(field=>before[field]!==after[field]))throw error;
+   result=await lookup(gameIntent());
+  }
+  if(!current())return;
+  const url=new URL(result.url);
+  if(url.hostname!=='127.0.0.1'||url.protocol!=='http:'||url.username||url.password)throw Error('invalid_stage');
+  url.searchParams.set('embed','1');
+  const frame=h('iframe',null,'game-stage'),view=h('div',null,'game-play-view');
+  frame.src=url.href;frame.title=modeTitle(app)+'实时画面';frame.setAttribute('referrerpolicy','no-referrer');
+  const heading=h('div',null,'game-stage-heading'),back=button('返回详情',closeStage),title=h('h2',modeTitle(app));
+  title.id='game-stage-title';
+  const arrow=h('span',null,'icon icon-arrow-right');arrow.setAttribute('aria-hidden','true');back.prepend(arrow);
+  const fullscreen=button('全屏',async()=>{
+   try{
+    if(document.fullscreenElement===view)await document.exitFullscreen();
+    else await view.requestFullscreen();
+   }catch{if(document.fullscreenElement!==view)fullscreen.textContent='重试全屏';}
+  });
+  fullscreen.hidden=!document.fullscreenEnabled||typeof view.requestFullscreen!=='function';
+  view.onfullscreenchange=()=>{fullscreen.textContent=document.fullscreenElement===view?'退出全屏':'全屏';};
+  heading.append(back,title,fullscreen);view.append(heading,frame);
+  ui.stage.replaceChildren(view);
+  ui.playView=view;ui.playTitle=title;ui.frame=frame;ui.stageEnded=false;
+  ui.stage.showModal();
+  back.focus({preventScroll:true});
+ }
  function showStoppedStage(){
-  const restoreFocus=ui.stage.contains(document.activeElement),panel=h('section',null,'game-stage-ended'),title=h('h2','游戏已停止'),back=button('返回游戏详情',closeStage,'primary');
-  title.id='game-stage-ended-title';panel.setAttribute('aria-labelledby',title.id);panel.append(title,back);
-  ui.stage.replaceChildren(panel);ui.playTitle=null;ui.stageEnded=true;frame=null;
-  if(restoreFocus)back.focus?.({preventScroll:true});
+  const panel=h('section',null,'game-stage-ended'),title=h('h2','游戏已停止'),back=button('返回游戏详情',closeStage,'primary');
+  title.id='game-stage-title';panel.append(title,back);
+  ui.playView.replaceChildren(panel);ui.playTitle=ui.frame=null;ui.stageEnded=true;
+  back.focus({preventScroll:true});
  }
  async function stopGame(intent){
   const id=ui.running?.dataset.game,completed=report.service.game?.status==='complete';
@@ -420,7 +478,7 @@ export function mountGames(root,{go=()=>{}}={}){
   updateTennisVariants(same,completed);
   updateQuestRoutes(questRoute,same,s.game);
   updateTeaching(selection,questRoute);
-  if(frame&&ui.playTitle&&live){ui.playTitle.textContent=modeTitle(live);frame.title=modeTitle(live)+'实时画面';}
+  if(ui.frame&&live){ui.playTitle.textContent=modeTitle(live);ui.frame.title=modeTitle(live)+'实时画面';}
   ui.round.element.hidden=!live;
   if(live){
    const variant=roundVariant(live),status=roundStatus();
@@ -437,7 +495,7 @@ export function mountGames(root,{go=()=>{}}={}){
   if(!configured&&!ui.recovery){ui.recovery=button('设置摄像头',()=>go('Settings'));ui.readiness.after(ui.recovery);}
   const tv=s.tv_viewer,fresh=tv&&Date.now()/1000-tv.reported_at<12;
   ui.tv.textContent=fresh?'电视已连接，正在同步游戏画面':'大屏同玩：在电视上打开 Friday';
-  if(stageApp&&!ui.stageEnded&&!busy&&controlsCurrent()&&!s.owned)showStoppedStage();
+  if(ui.stage?.open&&!ui.stageEnded&&!busy&&controlsCurrent()&&!s.owned)showStoppedStage();
  }
  async function refresh(replace=false){
   if(!alive)return false;update();if(readOwner){if(!replace)return readOwner.promise;retireRead();}
