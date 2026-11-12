@@ -10,11 +10,12 @@ import asyncio
 import base64
 from contextlib import contextmanager
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import hmac
 import ipaddress
 import json
+import math
 from pathlib import Path
 import re
 import secrets
@@ -35,6 +36,7 @@ from .werewolf_effects import lighting_scene
 STATIC = Path(__file__).parent / "static"
 CHOICE_EVENT_ID = r"^[a-zA-Z0-9_-]{12,64}$"
 NARRATION_RECHECK_SECONDS = 2
+SEAT_RECOVERY_SECONDS = 120
 
 
 def join_qr_svg(url):
@@ -107,6 +109,13 @@ class Lobby(BaseModel):
     code: str = Field(pattern=r"^\d{6}$")
 
 
+class SeatClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    seat: int = Field(ge=1, le=12)
+    ticket: str = Field(pattern=r"^[a-f0-9]{64}$", repr=False)
+    attempt_id: str = Field(pattern=r"^[a-f0-9]{64}$", repr=False)
+
+
 class PhoneGateway:
     def __init__(self):
         self.server = self.task = self.sock = None
@@ -170,6 +179,14 @@ class _EffectRun:
         return self.retry_at is not None and now >= self.retry_at and self.task is not None and self.task.done()
 
 
+@dataclass
+class _SeatRecovery:
+    event_id: str
+    ticket: str = field(repr=False)
+    expires_at: float
+    attempt_digest: str | None = None
+
+
 class WerewolfService:
     def __init__(self, effects, *, embodied=None, gateway_factory=PhoneGateway,
                  addresses=local_party_addresses, clock=time.monotonic, game_factory=WerewolfGame):
@@ -186,6 +203,7 @@ class WerewolfService:
         self.credentials = {}
         self.join_retries = {}
         self.join_key = None
+        self.seat_recoveries: dict[int, _SeatRecovery] = {}
         self.retries = OrderedDict()
         self.choice_versions = {}
         self.light_bindings = {}
@@ -369,6 +387,49 @@ class WerewolfService:
                 raise GameError("join_closed")
             return dict(self.game.public(), session=self.session)
 
+    async def issue_seat_recovery(self, proof):
+        async with self.lock:
+            seat = proof.seat
+            admission, replay = self._host_admission(proof, 'recover-seat', seat)
+            if (self.session != proof.session or self.game is None or not self.origin
+                    or seat not in self.game.players):
+                raise GameError('seat_recovery_unavailable')
+            now = self.clock()
+            if replay:
+                recovery = self.seat_recoveries.get(seat)
+                if (recovery is None or recovery.event_id != proof.event_id
+                        or recovery.expires_at <= now or recovery.attempt_digest is not None):
+                    raise GameError('seat_recovery_unavailable')
+            else:
+                recovery = _SeatRecovery(proof.event_id, secrets.token_hex(32), now + SEAT_RECOVERY_SECONDS)
+                self.seat_recoveries[seat] = recovery
+                self._remember_host(admission)
+            url = f'{self.origin}/phone/recover#ticket={recovery.ticket}&seat={seat}'
+            return dict(seat=seat, url=url, seconds_left=math.ceil(recovery.expires_at - now))
+
+    async def claim_seat_recovery(self, payload: SeatClaim, origin: str):
+        async with self.lock:
+            recovery = self.seat_recoveries.get(payload.seat)
+            if (self.origin != origin or self.game is None or self.join_key is None
+                    or payload.seat not in self.game.players or recovery is None
+                    or recovery.expires_at <= self.clock()
+                    or not secrets.compare_digest(recovery.ticket, payload.ticket)):
+                raise GameError('seat_recovery_unavailable')
+            attempt = self._digest(payload.attempt_id)
+            token = hmac.new(
+                self.join_key, f'recover-seat:{self.session}:{payload.ticket}:{payload.attempt_id}'.encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            if recovery.attempt_digest is None:
+                # 原手机可继续使用至新手机确认。切换在房间锁内完成，不改对局状态。
+                self.credentials = {key: seat for key, seat in self.credentials.items() if seat != payload.seat}
+                self.credentials[self._digest(token)] = payload.seat
+                recovery.attempt_digest = attempt
+            elif not secrets.compare_digest(recovery.attempt_digest, attempt):
+                raise GameError('seat_recovery_unavailable')
+            seat = self._player(token)
+            return dict(token=token, session=self.session, player=self._private(seat))
+
     async def private(self, token, receipt_id=None):
         async with self.lock:
             seat = self._player(token)
@@ -460,6 +521,7 @@ class WerewolfService:
                 self.game.start()
             elif action == "reseat":
                 self.game.reseat()
+                self.seat_recoveries.clear()
             elif action == "rematch":
                 await self._rematch()
             elif action == "advance":
@@ -473,6 +535,7 @@ class WerewolfService:
             elif action == "remove":
                 self.game.remove(seat)
                 self.credentials = {key: s for key, s in self.credentials.items() if s != seat}
+                self.seat_recoveries.pop(seat, None)
                 if self.bindings.pop(seat, None) is not None:
                     self.camera_binding_revision += 1
             else:
@@ -499,6 +562,7 @@ class WerewolfService:
             except httpx.HTTPError as exc:
                 raise GameError('scene_light_unavailable') from exc
         self.game = game
+        self.seat_recoveries.clear()
         self.retries.clear()
         self.choice_versions.clear()
         self.camera_generation += 1
@@ -828,6 +892,7 @@ class WerewolfService:
             self.session = self.join_code = self.public_token = None
             self.credentials.clear()
             self.join_retries.clear()
+            self.seat_recoveries.clear()
             self.join_key = None
             self.camera_generation += 1
             self._clear_camera()
@@ -946,6 +1011,7 @@ def phone_app(owner, origin):
         return value[7:] if value.startswith("Bearer ") else ""
 
     @app.get("/phone")
+    @app.get("/phone/recover")
     @app.get("/display")
     async def page():
         return FileResponse(STATIC / "werewolf-party.html")
@@ -978,6 +1044,10 @@ def phone_app(owner, origin):
     @app.post("/api/join")
     async def join(payload: Join):
         return await owner.join(payload)
+
+    @app.post("/api/recover-seat")
+    async def recover_seat(payload: SeatClaim):
+        return await owner.claim_seat_recovery(payload, origin)
 
     @app.post("/api/lobby")
     async def lobby(payload: Lobby):

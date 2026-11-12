@@ -6,7 +6,7 @@ const errors={players_not_ready:'等大家准备好后再发身份。',identitie
 
 export function mountWerewolf(root,{go=()=>{}}={}){
  let alive=true,busy=false,context=null,current=null,revision='',lastNotice='',confirmation=null;
- let generation=0,readRequest=null,commandRequest=null,syncFailed=false,lobbyUI=null,roundCamera=null;
+ let generation=0,readRequest=null,commandRequest=null,syncFailed=false,lobbyUI=null,roundCamera=null,seatRecovery=null;
  const syncNotice='对局服务暂时无法连接，正在重试。';
  const abort=new AbortController(),wrap=node('section',null,'werewolf-host'),notice=node('p',null,'ww-notice'),content=node('div');notice.setAttribute('role','status');wrap.append(notice,content);root.append(wrap);
  async function api(path,body,signal){const signals=[abort.signal,AbortSignal.timeout(10000)];if(signal)signals.push(signal);const r=await fetch('/api/games/werewolf/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any(signals)});const data=await r.json();if(!r.ok)throw Error(data.detail||'game_unavailable');return data;}
@@ -62,6 +62,93 @@ export function mountWerewolf(root,{go=()=>{}}={}){
  }
  function rules(game){const details=node('details',null,'ww-rules'),summary=node('summary','本局规则');details.append(summary);const list=node('ul');for(const text of game.rules||[])list.append(node('li',text));details.append(list);return details;}
  function check(label,value=false){const row=node('label',null,'ww-check'),input=node('input');input.type='checkbox';input.checked=value;row.append(input,node('span',label));return{row,input};}
+ function recoveryQr(matrix){
+  if(!Array.isArray(matrix)||!matrix.length||matrix.length>185||
+     matrix.some(row=>typeof row!=='string'||row.length!==matrix.length||!/^[01]+$/.test(row)))return null;
+  const canvas=node('canvas',null,'ww-seat-recovery-qr'),scale=5;
+  canvas.width=canvas.height=matrix.length*scale;
+  canvas.setAttribute('role','img');
+  canvas.setAttribute('aria-label','找回座位二维码');
+  const pen=canvas.getContext('2d');
+  if(!pen)return null;
+  pen.fillStyle='#fff';
+  pen.fillRect(0,0,canvas.width,canvas.height);
+  pen.fillStyle='#191919';
+  for(const [y,row] of matrix.entries())for(let x=0;x<row.length;x++){
+   if(row[x]==='1')pen.fillRect(x*scale,y*scale,scale,scale);
+  }
+  return canvas;
+ }
+ function openSeatRecovery(){
+  if(seatRecovery||syncFailed||!current?.phone_url||!current.game.players.length)return;
+  const dialog=node('dialog',null,'ww-seat-recovery'),heading=node('h3','找回座位');
+  heading.id='ww-seat-recovery-title';dialog.setAttribute('aria-labelledby',heading.id);
+  const field=node('label','玩家','ww-field'),picker=node('select');
+  picker.autofocus=true;
+  for(const player of current.game.players){
+   const option=node('option',player.seat+' 号 · '+player.name);
+   option.value=String(player.seat);picker.append(option);
+  }
+  field.append(picker);
+  const result=node('div',null,'ww-seat-recovery-result'),status=node('p',null,'ww-field-help');
+  status.setAttribute('role','status');
+  const actions=node('div',null,'ww-seat-recovery-actions');
+  const done=button('关闭',()=>dialog.close());
+  const show=button('生成二维码',issue,'primary');
+  actions.append(done,show);dialog.append(heading,field,result,status,actions);wrap.append(dialog);
+  const session=current.session,lobbyRevision=current.game.lobby_revision;
+  const recovery={session,lobbyRevision,dialog};
+  seatRecovery=recovery;
+  let request=null,expiry=null;
+  function clear(){
+   request?.abort();request=null;clearTimeout(expiry);expiry=null;
+   result.replaceChildren();status.textContent='';
+   show.textContent='生成二维码';show.disabled=false;
+  }
+  picker.addEventListener('change',clear);
+  dialog.addEventListener('close',()=>{
+   clear();dialog.remove();
+   if(seatRecovery===recovery)seatRecovery=null;
+   if(alive&&current?.session===session)content.querySelector('[data-seat-recovery]')?.focus({preventScroll:true});
+  },{once:true});
+  async function issue(){
+   if(request||current?.session!==session||current.game.lobby_revision!==lobbyRevision)return;
+   if(syncFailed){status.textContent='连接恢复后再试。';return;}
+   clear();
+   const pending=new AbortController(),seat=Number(picker.value);
+   request=pending;show.disabled=true;status.textContent='正在生成…';
+   try{
+    const data=await api('seat-recovery',{
+     seat,session,revision:current.game.revision,event_id:crypto.randomUUID(),
+    },pending.signal);
+    if(request!==pending||!dialog.open||seatRecovery!==recovery)return;
+    const url=new URL(data.url);
+    if(data.seat!==seat||url.origin!==new URL(current.phone_url).origin||
+       url.pathname!=='/phone/recover'||!Number.isSafeInteger(data.seconds_left)||data.seconds_left<=0)throw Error('invalid_recovery');
+    const qr=recoveryQr(data.qr),copy=button('复制链接',async()=>{
+     try{
+      await navigator.clipboard.writeText(url.href);
+      if(result.contains(copy))status.textContent='链接已复制。';
+     }catch{
+      if(!result.contains(copy))return;
+      const input=node('input');input.readOnly=true;input.value=url.href;
+      input.setAttribute('aria-label','座位恢复链接');
+      copy.replaceWith(input);input.focus();input.select();
+     }
+    },'ww-text-button');
+    if(qr)result.append(qr);
+    result.append(copy);
+    status.textContent=qr?'请让 '+seat+' 号用手机扫码，2 分钟内有效。':'请把恢复链接发给 '+seat+' 号，2 分钟内有效。';
+    show.textContent='重新生成';
+    expiry=setTimeout(()=>{clear();status.textContent='恢复链接已过期，请重新生成。';},data.seconds_left*1000);
+   }catch(error){
+    if(request===pending&&dialog.open)status.textContent=errors[error.message]||'暂时无法生成二维码，请重试。';
+   }finally{
+    if(request===pending){request=null;show.disabled=false;}
+   }
+  }
+  dialog.showModal();
+ }
  function setup(){
   const intro=node('div',null,'ww-intro');intro.append(node('h2','狼人杀'),node('p','每人用手机入座。身份和夜间行动只在自己的手机上显示。'));content.append(intro);
   const launch=node('div',null,'ww-launch-layout'),cover=node('img',null,'ww-launch-cover');cover.src='/static/games-art/werewolf.png';cover.alt='狼人杀封面插画';cover.width=1672;cover.height=941;launch.append(cover);const form=node('form',null,'ww-setup'),fields=node('div',null,'ww-setup-fields');
@@ -431,6 +518,10 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    if(!g.paused&&!g.speaking_turn&&g.phase!=='vote_reveal')controls.append(button(confirmation==='advance'?'确认进入下一环节':'提前结束本环节',()=>confirmControl('advance'),'ww-text-button'));
   }
   if(g.phase==='finished')controls.append(button('再开一局',()=>perform(api=>api('control',{action:'rematch'})),'primary'));
+  if(current.phone_url){
+   const recover=button('找回座位',openSeatRecovery,'ww-text-button');
+   recover.dataset.seatRecovery='true';controls.append(recover);
+  }
   const close=button(confirmation==='close'?'确认关闭房间':'关闭房间',()=>confirmControl('close'),'ww-text-button');controls.append(close);aside.append(controls);
   mountRoundCamera(aside,layout);
   if(current.display_url){const tv=node('div',null,'ww-tv-link');tv.append(node('h3','大屏同玩'));if(g.phase==='lobby')tv.append(node('p','有空座时，大屏会显示入座二维码。'));const link=node('a','打开公共画面');link.href=current.display_url;link.target='_blank';link.rel='noopener noreferrer';tv.append(link,button('复制大屏地址',async()=>{try{await navigator.clipboard.writeText(current.display_url);notice.textContent='大屏地址已复制。';}catch{notice.textContent=current.display_url;}},'ww-text-button'));aside.append(tv);}const effects=node('div',null,'ww-effects'),voice=node('p',null,'ww-field-help');voice.dataset.voiceState='true';effects.append(voice);const recovery=node('div',null,'ww-recovery');recovery.dataset.lightRecovery='true';recovery.append(node('p','灯光有待恢复。'));const restore=button('恢复灯光',()=>perform(async api=>{await api('restore-lights',{});return api('host');}));restore.dataset.restoreLights='true';recovery.append(restore);effects.append(recovery);aside.append(effects);layout.append(aside);content.append(layout);
@@ -451,6 +542,9 @@ export function mountWerewolf(root,{go=()=>{}}={}){
  }
  function render(){
   if(!alive)return;
+  if(seatRecovery&&(current?.session!==seatRecovery.session||current.game.lobby_revision!==seatRecovery.lobbyRevision)){
+   seatRecovery.dialog.close();
+  }
   revision=renderKey();
   const focus=document.activeElement;
   const cameraFocused=Boolean(roundCamera?.section.contains(focus));
@@ -490,7 +584,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   if(title&&title.textContent!==phaseTitle)title.textContent=phaseTitle;
   if(prompt&&prompt.textContent!==publicPrompt)prompt.textContent=publicPrompt;
  }
- function updateControls(){for(const b of content.querySelectorAll('button')){if(b.dataset.start==='true'){b.disabled=busy||current.game.players.filter(p=>p.ready).length!==current.game.player_count;}else if(!b.dataset.startNight&&!b.dataset.speakerCommand)b.disabled=busy||b.dataset.unavailable==='true';}for(const select of content.querySelectorAll('select'))if(!select.dataset.speakerPicker)select.disabled=busy||Boolean(select.dataset.cameraPicker&&syncFailed);updateIdentityProgress();updateSpeakerControls();}
+ function updateControls(){for(const b of content.querySelectorAll('button')){if(b.dataset.start==='true'){b.disabled=busy||current.game.players.filter(p=>p.ready).length!==current.game.player_count;}else if(b.dataset.seatRecovery){b.hidden=!current.game.players.length;b.disabled=busy||syncFailed;}else if(!b.dataset.startNight&&!b.dataset.speakerCommand)b.disabled=busy||b.dataset.unavailable==='true';}for(const select of content.querySelectorAll('select'))if(!select.dataset.speakerPicker)select.disabled=busy||Boolean(select.dataset.cameraPicker&&syncFailed);updateIdentityProgress();updateSpeakerControls();}
  async function refresh(first=false){
   if(!alive||busy||readRequest)return;
   const request={generation:++generation,controller:new AbortController()};readRequest=request;
@@ -508,5 +602,5 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   finally{if(readRequest===request)readRequest=null;}
  }
  content.append(node('p','正在准备房间…','ww-field-help'));void refresh(true);const timer=setInterval(()=>{if(!busy)void refresh();},1000);
- return{dispose(){alive=false;lobbyUI?.alignment?.view.dispose();if(roundCamera)closeRoundPanel(roundCamera);roundCamera=null;generation++;readRequest?.controller.abort();commandRequest?.controller.abort();readRequest=commandRequest=lobbyUI=null;abort.abort();clearInterval(timer);wrap.remove();}};
+ return{dispose(){alive=false;seatRecovery?.dialog.close();lobbyUI?.alignment?.view.dispose();if(roundCamera)closeRoundPanel(roundCamera);roundCamera=null;generation++;readRequest?.controller.abort();commandRequest?.controller.abort();readRequest=commandRequest=lobbyUI=null;abort.abort();clearInterval(timer);wrap.remove();}};
 }

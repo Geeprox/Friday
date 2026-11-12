@@ -24,13 +24,21 @@ class Create(BaseModel):
     discussion_mode: Literal["free", "turns"] = "free"
 
 
-class Control(BaseModel):
+class HostProof(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    action: Literal["start", "advance", "pause", "resume", "end", "remove", "reseat", "close", "speaker", "rematch"]
     seat: int | None = Field(default=None, ge=1, le=12)
     session: str = Field(min_length=1, max_length=128)
     revision: int = Field(ge=0)
     event_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{12,64}$")
+
+
+class Control(HostProof):
+    action: Literal["start", "advance", "pause", "resume", "end", "remove", "reseat", "close", "speaker", "rematch"]
+
+
+class SeatRecovery(HostProof):
+    seat: int = Field(ge=1, le=12)
+    action: Literal['recover-seat'] = 'recover-seat'
 
 
 class Binding(BaseModel):
@@ -110,6 +118,19 @@ def create_router(core, lock, embodied, directory, *, owner=None):
         if payload.action == "close":
             return await guarded(owner.close_game(proof=payload))
         return await guarded(owner.control(payload.action, seat=payload.seat, proof=payload))
+
+    @router.post('/seat-recovery')
+    async def seat_recovery(payload: SeatRecovery):
+        result = await guarded(owner.issue_seat_recovery(payload))
+        try:
+            import qrcode
+        except ImportError:
+            matrix = None
+        else:
+            qr = qrcode.QRCode()
+            qr.add_data(result['url'])
+            matrix = [''.join('1' if cell else '0' for cell in row) for row in qr.get_matrix()]
+        return JSONResponse(dict(result, qr=matrix), headers={'Cache-Control': 'no-store'})
 
     @router.post("/camera-bind")
     async def bind(payload: Binding):

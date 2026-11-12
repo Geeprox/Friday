@@ -2,6 +2,12 @@
 .party-icon{width:26px;height:26px;display:block}.fixture-mode{font-size:11px;text-align:center;margin:0;padding:7px 16px;background:var(--soft)}
 .party-notice{overflow-wrap:anywhere}
 
+.seat-recovery { padding-block:12px 24px; }
+.seat-recovery h1 { margin-top:0; }
+.seat-recovery p { margin:0 0 24px;color:var(--muted);font-size:16px;line-height:1.6; }
+.seat-recovery .primary { width:100%; }
+.seat-recovery a { display:flex;align-items:center;justify-content:center;min-height:44px;margin-top:8px; }
+
 .phase {
   display: flex;
   align-items: baseline;

@@ -5,6 +5,8 @@ let invitationCode=display?'':roomCode(fragment);
 const storeKey=display?'Friday.werewolf.display':'Friday.werewolf.player';
 const joinStoreKey='Friday.werewolf.join';
 const choiceStoreKey='Friday.werewolf.choice';
+const recoveryStoreKey='Friday.werewolf.seat-recovery',recoveryPath='/phone/recover';
+let recovering=location.pathname===recoveryPath,seatRecovery=null;
 let credential='',code=invitationCode,alive=true,busy=false,readRequest=null,commandRequest=null,player=null,game=null,viewKey='',selectedAction=null,selectedTarget=null,selectedSeat=null,peeked=false,roleNode=null,nextPollAt=0,pollNotice='',sessionGeneration=0;
 let viewedIdentity=null,identityConfirmation=null;
 let joinPending=null,joinName='';
@@ -12,7 +14,8 @@ let choiceStamp=null,choiceNoticeRevision=null,syncing=false;
 let displayView=null,lastDisplay=null;
 let viewUpdatedAt=0;
 try{credential=display?(fragment.get('token')||sessionStorage.getItem(storeKey)||''):(sessionStorage.getItem(storeKey)||'');if(credential)sessionStorage.setItem(storeKey,credential);}catch{}
-if(!display)try{if(credential)sessionStorage.removeItem(joinStoreKey);else{const raw=sessionStorage.getItem(joinStoreKey);if(raw&&raw.length<=2048)joinPending=joinAttempt(JSON.parse(raw));if(joinPending&&invitationCode&&joinPending.code!==invitationCode)joinPending=null;if(joinPending){code=joinPending.code;joinName=joinPending.name;}else sessionStorage.removeItem(joinStoreKey);}}catch{}
+if(recovering)loadSeatRecovery(fragment);
+if(!display&&!recovering)try{if(credential)sessionStorage.removeItem(joinStoreKey);else{const raw=sessionStorage.getItem(joinStoreKey);if(raw&&raw.length<=2048)joinPending=joinAttempt(JSON.parse(raw));if(joinPending&&invitationCode&&joinPending.code!==invitationCode)joinPending=null;if(joinPending){code=joinPending.code;joinName=joinPending.name;}else sessionStorage.removeItem(joinStoreKey);}}catch{}
 if (!display) try {
  const raw=credential&&sessionStorage.getItem(choiceStoreKey);
  if (raw && raw.length<=240) choiceStamp=choiceReference(JSON.parse(raw));
@@ -46,6 +49,63 @@ function rememberChoice(payload) {
 }
 function joinAttempt(value){return value&&typeof value==='object'&&typeof value.code==='string'&&typeof value.session==='string'&&typeof value.attempt_id==='string'&&/^[0-9]{6}$/.test(value.code)&&/^[a-f0-9]{32}$/.test(value.session)&&/^[a-f0-9]{64}$/.test(value.attempt_id)&&Number.isInteger(value.seat)&&value.seat>=1&&value.seat<=12&&typeof value.name==='string'&&value.name.trim().length>0&&value.name.length<=20?{code:value.code,session:value.session,seat:value.seat,name:value.name,attempt_id:value.attempt_id}:null;}
 function forgetJoin(){joinPending=null;try{sessionStorage.removeItem(joinStoreKey);}catch{}}
+function newAttemptId(){
+ return Array.from(crypto.getRandomValues(new Uint8Array(32)),byte=>byte.toString(16).padStart(2,'0')).join('');
+}
+function validSeatRecovery(value){
+ return Number.isSafeInteger(value?.seat)&&value.seat>=1&&value.seat<=12&&
+  typeof value.ticket==='string'&&typeof value.attempt_id==='string'&&
+  /^[a-f0-9]{64}$/.test(value.ticket)&&/^[a-f0-9]{64}$/.test(value.attempt_id);
+}
+function loadSeatRecovery(params){
+ let previous=null;
+ try{
+  const raw=sessionStorage.getItem(recoveryStoreKey);
+  if(raw&&raw.length<=240){const saved=JSON.parse(raw);if(validSeatRecovery(saved))previous=saved;}
+ }catch{}
+ if(!params.has('ticket')&&!params.has('seat')){seatRecovery=previous;return;}
+ const ticket=params.get('ticket'),seat=Number(params.get('seat'));
+ const claim=previous?.ticket===ticket&&previous.seat===seat?previous:{ticket,seat,attempt_id:newAttemptId()};
+ seatRecovery=validSeatRecovery(claim)?claim:null;
+ try{
+  if(seatRecovery)sessionStorage.setItem(recoveryStoreKey,JSON.stringify(seatRecovery));
+  else sessionStorage.removeItem(recoveryStoreKey);
+ }catch{}
+}
+function forgetSeatRecovery(){
+ seatRecovery=null;
+ try{sessionStorage.removeItem(recoveryStoreKey);}catch{}
+}
+function renderSeatRecovery(){
+ document.body.dataset.night='false';roomLabel.textContent='狼人杀';
+ const intro=h('section',null,'seat-recovery');
+ const back=h('a','返回入座');back.href='/phone';back.onclick=forgetSeatRecovery;
+ if(!seatRecovery){
+  intro.append(h('h1','恢复链接已失效'),h('p','请让主持人重新生成二维码。'),back);
+ }else{
+  const claim=seatRecovery;
+  intro.append(h('h1','找回 '+claim.seat+' 号座位'),h('p','继续后，原手机会退出这个座位。'));
+  intro.append(button('继续对局',()=>perform(async()=>{
+   try{
+    await api('recover-seat',claim,result=>{
+     if(!/^[a-f0-9]{64}$/.test(result.token)||result.player?.seat!==claim.seat||
+        !result.session||result.session!==result.player.session)throw Error('network');
+     credential=result.token;
+     try{sessionStorage.setItem(storeKey,credential);}catch{}
+     forgetJoin();forgetChoice();forgetSeatRecovery();
+     recovering=false;history.replaceState(null,'','/phone');
+     viewedIdentity=null;viewKey='';updatePlayer(result.player,true);
+     const heading=root.querySelector('h1');
+     if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}
+    });
+   }catch(error){
+    if(error.message!=='seat_recovery_unavailable')throw error;
+    forgetSeatRecovery();renderSeatRecovery();
+   }
+  }),'primary'),back);
+ }
+ root.replaceChildren(intro);
+}
 function joinRecovery(){
  if(!joinPending||!alive)return;root.replaceChildren();document.body.dataset.night='false';roomLabel.textContent='狼人杀';
  const intro=h('section',null,'join-intro');intro.append(h('span',null,'moon'),h('h1','入座尚未确认'),h('p',joinPending.seat+' 号 · '+joinPending.name));
@@ -106,7 +166,7 @@ function joinForm(){
  let loadedCode='';const form=h('form',null,'join-form'),room=h('label','房间号'),roomInput=h('input');roomInput.type='text';roomInput.inputMode='numeric';roomInput.pattern='[0-9]{6}';roomInput.maxLength=6;roomInput.autocomplete='off';roomInput.value=code;roomInput.required=true;room.append(roomInput);const find=button('查看座位',lookup);form.append(room,find);const seats=h('div',null,'join-seats');form.append(seats);const name=h('label','你的名字'),nameInput=h('input');nameInput.maxLength=20;nameInput.autocomplete='nickname';nameInput.required=true;name.append(nameInput);const join=h('button','坐好了','primary');join.type='submit';join.disabled=true;form.append(name,join);
  roomInput.addEventListener('input',()=>{invitationCode='';code=roomInput.value;loadedCode='';selectedSeat=null;game=null;notice.textContent='';renderSeats();});
  nameInput.value=joinName;
- form.onsubmit=e=>{e.preventDefault();if(busy||!selectedSeat||!loadedCode||loadedCode!==roomInput.value)return;void submitJoin({code:loadedCode,session:game?.session,seat:selectedSeat,name:nameInput.value.trim(),attempt_id:Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join('')});};
+ form.onsubmit=e=>{e.preventDefault();if(busy||!selectedSeat||!loadedCode||loadedCode!==roomInput.value)return;void submitJoin({code:loadedCode,session:game?.session,seat:selectedSeat,name:nameInput.value.trim(),attempt_id:newAttemptId()});};
  function lookup(){void perform(async()=>{const requested=roomInput.value;code=requested;loadedCode='';selectedSeat=null;game=null;renderSeats();await api('lobby',{code:requested},data=>{if(!credential&&roomInput.value===requested){loadedCode=requested;game=data;}});}).finally(renderSeats);}
  function renderSeats(){seats.replaceChildren();join.disabled=!selectedSeat||loadedCode!==roomInput.value||!game||game.players.some(p=>p.seat===selectedSeat);if(!game||loadedCode!==roomInput.value)return;seats.append(h('p','选一个空座位，和电视上的编号一致。'));const grid=h('div',null,'seat-grid');for(let i=1;i<=game.player_count;i++){const occupied=game.players.some(p=>p.seat===i),b=seatButton(i,selectedSeat===i,()=>{if(!game||loadedCode!==roomInput.value)return;selectedSeat=i;renderSeats();});b.disabled=occupied;grid.append(b);}seats.append(grid);}
  root.append(form);if(code.length===6)lookup();
@@ -139,7 +199,7 @@ function closedSession(){
  try{sessionStorage.removeItem(storeKey);}catch{}
  if(display)root.replaceChildren(h('h1','公共画面已关闭'),h('p','请从 Friday 重新打开。'));
  else if(reopenInvitation){code=reopenInvitation;joinForm();}
- else{const intro=h('div',null,'join-intro');intro.append(h('span',null,'moon'),h('h1','本局已关闭'),h('p','重新扫码，加入下一局。'));root.replaceChildren(intro,button('输入房间号',joinForm,'primary'));}
+ else{const intro=h('div',null,'join-intro');intro.append(h('span',null,'moon'),h('h1','座位已断开'),h('p','请重新扫码或联系主持人。'));root.replaceChildren(intro,button('输入房间号',joinForm,'primary'));}
 }
 function revealRole(){
  if(!player?.role||!roleNode||document.hidden||identityStamp()&&syncing)return;
@@ -666,13 +726,19 @@ if (display) {
  brand?.removeAttribute('aria-label');
 }
 function refresh() {
- if (document.hidden || !alive) return;
+ if (document.hidden || !alive || recovering) return;
  if (!busy && (player || lastDisplay) && performance.now()-viewUpdatedAt>3000) holdView();
  void poll();
 }
 function reopenScannedInvitation() {
  if (!alive) return;
- const scanned = roomCode(new URLSearchParams(location.hash.slice(1)));
+ const params=new URLSearchParams(location.hash.slice(1));
+ if(recovering){
+  retireRequests();loadSeatRecovery(params);
+  history.replaceState(null,'',location.pathname);
+  notice.textContent='';renderSeatRecovery();return;
+ }
+ const scanned = roomCode(params);
  if (!scanned) return;
  history.replaceState(null,'',location.pathname);
  invitationCode=scanned;
@@ -703,8 +769,9 @@ window.addEventListener('pagehide',()=>{alive=false;retireRequests();hideRole();
 window.addEventListener('pageshow',event=>{
  if (!event.persisted) return;
  alive=true;
- if (credential) {holdView();refresh();}
+ if (recovering) renderSeatRecovery();
+ else if (credential) {holdView();refresh();}
  else if (joinPending) joinRecovery();
 });
-if(credential)void poll();else if(display)root.replaceChildren(h('h1','请从 Friday 打开公共画面'));else if(joinPending){joinRecovery();void submitJoin(joinPending);}else joinForm();
+if(recovering)renderSeatRecovery();else if(credential)void poll();else if(display)root.replaceChildren(h('h1','请从 Friday 打开公共画面'));else if(joinPending){joinRecovery();void submitJoin(joinPending);}else joinForm();
 setInterval(refresh,1000);

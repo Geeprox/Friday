@@ -101,7 +101,7 @@ test('the television updates only the aggregate identity count and has no night 
 test('closed phone clears its identity and offers a new room without retrying the old code',async()=>{
  const c=client();await settle();vm.runInContext('revealRole()',c.context);assert.match(c.nodes.party.textContent,/狼人/);
  c.defer();const job=vm.runInContext('poll()',c.context);await settle();c.pending.poll(c.reply(403,{detail:'player_access_required'}));await job;
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(vm.runInContext('game',c.context),null);
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(vm.runInContext('game',c.context),null);
  assert.equal(c.storage.size,0);assert.equal(c.requests.filter(p=>p==='/api/lobby').length,0);assert.equal(c.nodes.notice.textContent,'');
  c.button('输入房间号').onclick();await settle();assert.match(c.nodes.party.textContent,/一起入座/);
  assert.equal(vm.runInContext('code',c.context),'');assert.equal(c.requests.filter(p=>p==='/api/lobby').length,0);
@@ -109,16 +109,16 @@ test('closed phone clears its identity and offers a new room without retrying th
 
 test('a late choice response cannot restore identity after the background poll closed the room',async()=>{
  const c=client();await settle();c.defer();const poll=vm.runInContext('poll()',c.context);await settle();await c.choose();
- c.pending.poll(c.reply(403,{detail:'player_access_required'}));await poll;assert.match(c.nodes.party.textContent,/本局已关闭/);
+ c.pending.poll(c.reply(403,{detail:'player_access_required'}));await poll;assert.match(c.nodes.party.textContent,/座位已断开/);
  c.pending.choice(c.reply(200,structuredClone(c.player)));await settle();await settle();
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
 });
 
 test('a late background poll cannot restore identity after a rejected choice closed the room',async()=>{
  const c=client();await settle();c.defer();const poll=vm.runInContext('poll()',c.context);await settle();await c.choose();
- c.pending.choice(c.reply(403,{detail:'player_access_required'}));await settle();assert.match(c.nodes.party.textContent,/本局已关闭/);
+ c.pending.choice(c.reply(403,{detail:'player_access_required'}));await settle();assert.match(c.nodes.party.textContent,/座位已断开/);
  c.pending.poll(c.reply(200,structuredClone(c.player)));await poll;
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
 });
 
 for(const denied of ['poll','choice'])test('same-turn '+denied+' revocation wins over an already-resolved private response',async()=>{
@@ -126,19 +126,19 @@ for(const denied of ['poll','choice'])test('same-turn '+denied+' revocation wins
  c.pending[denied](c.reply(403,{detail:'player_access_required'}));
  c.pending[denied==='poll'?'choice':'poll'](c.reply(200,structuredClone(c.player)));
  await poll;await settle();
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.nodes.notice.textContent,'');
 });
 
 test('a late network failure from the retired session does not add an error to the closed screen',async()=>{
  const c=client();await settle();c.defer();const poll=vm.runInContext('poll()',c.context);await settle();await c.choose();
  c.pending.poll(c.reply(403,{detail:'player_access_required'}));await poll;
  c.pending.choiceReject(Error('network'));await settle();await settle();
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(c.nodes.notice.textContent,'');
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(c.nodes.notice.textContent,'');
 });
 
 test('revoked ready operation retires the phone immediately without waiting for polling',async()=>{
  const c=client({phase:'lobby'});await settle();c.button('准备好了').onclick();await settle();
- assert.match(c.nodes.party.textContent,/本局已关闭/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.storage.size,0);
+ assert.match(c.nodes.party.textContent,/座位已断开/);assert.equal(vm.runInContext('player',c.context),null);assert.equal(c.storage.size,0);
  assert.equal(c.nodes.notice.textContent,'');assert.equal(c.nodes.roomLabel.textContent,'狼人杀');
 });
 
@@ -338,7 +338,7 @@ test('原手机标签页复扫时保留有效座位，座位撤销后重新选�
  c.defer();
  const read=vm.runInContext('poll()',c.context);await settle();
  c.pending.poll(c.reply(403,{detail:'player_access_required'}));await read;
- assert.match(c.nodes.party.textContent,/本局已关闭/);
+ assert.match(c.nodes.party.textContent,/座位已断开/);
  vm.runInContext("location.hash='#code=123456'",c.context);
  c.events.hashchange();await settle();
  assert(c.button('1 空位'));
