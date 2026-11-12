@@ -112,7 +112,7 @@ class Lobby(BaseModel):
 class SeatClaim(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     seat: int = Field(ge=1, le=12)
-    ticket: str = Field(pattern=r"^[a-f0-9]{64}$", repr=False)
+    ticket: str = Field(pattern=r"^[a-zA-Z0-9_-]{43}$", repr=False)
     attempt_id: str = Field(pattern=r"^[a-f0-9]{64}$", repr=False)
 
 
@@ -401,7 +401,7 @@ class WerewolfService:
                         or recovery.expires_at <= now or recovery.attempt_digest is not None):
                     raise GameError('seat_recovery_unavailable')
             else:
-                recovery = _SeatRecovery(proof.event_id, secrets.token_hex(32), now + SEAT_RECOVERY_SECONDS)
+                recovery = _SeatRecovery(proof.event_id, secrets.token_urlsafe(32), now + SEAT_RECOVERY_SECONDS)
                 self.seat_recoveries[seat] = recovery
                 self._remember_host(admission)
             url = f'{self.origin}/phone/recover#ticket={recovery.ticket}&seat={seat}'

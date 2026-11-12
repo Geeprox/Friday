@@ -65,7 +65,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
  function recoveryQr(matrix){
   if(!Array.isArray(matrix)||!matrix.length||matrix.length>185||
      matrix.some(row=>typeof row!=='string'||row.length!==matrix.length||!/^[01]+$/.test(row)))return null;
-  const canvas=node('canvas',null,'ww-seat-recovery-qr'),scale=5;
+  const canvas=node('canvas',null,'ww-seat-recovery-qr'),scale=4;
   canvas.width=canvas.height=matrix.length*scale;
   canvas.setAttribute('role','img');
   canvas.setAttribute('aria-label','找回座位二维码');

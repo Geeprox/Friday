@@ -142,7 +142,7 @@
 .ww-seat-recovery-result input { width:100%; }
 .ww-seat-recovery-qr {
  display:block;
- width:min(220px,100%);
+ max-width:100%;
  height:auto;
  image-rendering:pixelated;
  forced-color-adjust:none;

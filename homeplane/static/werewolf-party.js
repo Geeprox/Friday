@@ -55,7 +55,7 @@ function newAttemptId(){
 function validSeatRecovery(value){
  return Number.isSafeInteger(value?.seat)&&value.seat>=1&&value.seat<=12&&
   typeof value.ticket==='string'&&typeof value.attempt_id==='string'&&
-  /^[a-f0-9]{64}$/.test(value.ticket)&&/^[a-f0-9]{64}$/.test(value.attempt_id);
+  /^[a-zA-Z0-9_-]{43}$/.test(value.ticket)&&/^[a-f0-9]{64}$/.test(value.attempt_id);
 }
 function loadSeatRecovery(params){
  let previous=null;
