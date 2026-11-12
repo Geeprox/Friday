@@ -145,6 +145,60 @@ async def test_already_confirmed_fall_finishes_saving_after_real_motor_dispatch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('interruption', ['status_read', 'late_pose', 'new_track_session', 'source_ended'])
+async def test_confirmed_fall_uses_live_capture_after_pose_observations_stop(monitor, monkeypatch, interruption):
+    runtime, store, camera = monitor.runtime, monitor.store, monitor.camera
+    capture_session = 'e' * 32
+    await before_fall(monitor, capture_session=capture_session)
+    entered, release = hold_recording_write(store, monkeypatch)
+    monitor.clock[0] += .25
+    await frame(monitor, capture_session=capture_session, jpeg=b'CONFIRMED-BEFORE-GAP')
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        incident, = runtime.recording.jobs.values()
+        capture = runtime.capture_sources[camera]
+        for _ in range(3):
+            monitor.clock[0] += .75
+            if interruption != 'source_ended':
+                runtime.capture_frame(camera, capture_session, monitor.context, monitor.clock[0])
+        if interruption == 'status_read':
+            handler = source_function('homeplane/embodied/worker.py', 'safety_status', {'safety': runtime})
+            assert (await handler())['cameras'] == []
+            assert runtime.recording.jobs.get(incident.identifier) is incident
+        elif interruption == 'late_pose':
+            assert not runtime.offer(camera, 'same-session', [person(True)], monitor.clock[0], incident.captured,
+                                     stable=True, source_context=monitor.context, capture_session=capture_session)
+        elif interruption == 'new_track_session':
+            await runtime.sync_policy()
+            assert await frame(monitor, session='new-view', capture_session=capture_session,
+                               down=False, jpeg=b'AFTER-GAP')
+            await runtime.observation_task
+
+        # 定时器清理过期识别。原采集仍有帧时，已确认事件用原编号继续写入。
+        await runtime.start()
+        if interruption == 'source_ended':
+            assert camera not in runtime.capture_sources
+        else:
+            assert runtime.capture_sources.get(camera) is capture
+            assert runtime.recording.jobs.get(incident.identifier) is incident
+        if interruption != 'new_track_session':
+            assert camera not in runtime.last_seen
+        release.set()
+        await runtime.drain()
+        if interruption == 'source_ended':
+            assert store.events() == []
+        else:
+            event, = store.events()
+            assert event['id'] == incident.identifier and event['captured_at'] == incident.event['captured_at']
+            assert {store.frame(event['id'], row['ordinal']) for row in event['frames']} == {
+                b'EXPLICIT-SYNTHETIC-JPEG', b'CONFIRMED-BEFORE-GAP',
+            }
+        runtime.speaker.say.assert_not_awaited()
+    finally:
+        release.set()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('pause_input', [False, True])
 async def test_corroborated_sound_saves_after_a_turn_only_with_audio_input_authorized(monitor, monkeypatch, pause_input):
     runtime, store, camera = monitor.runtime, monitor.store, monitor.camera

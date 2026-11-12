@@ -411,6 +411,8 @@ async def test_storage_processing_does_not_relabel_old_camera_input_as_newly_see
         assert runtime.last_seen['primary'] == 98.75
         clock[0] = 100.8
         assert runtime.status()['cameras'] == []
+        assert runtime.frames
+        await runtime.start()
         assert not runtime.frames
     finally:
         await runtime.close()
