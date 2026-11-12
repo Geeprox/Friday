@@ -14,7 +14,8 @@ from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.safety import SafetyAdmissionChanged
 from homeplane.embodied.sound_review import SoundReviewer
-from tests.embodied.test_camera_director import patrol_view
+from tests.embodied.test_camera_director import patrol_view, person, sample
+from tests.embodied.test_camera_follow_appearance import picture, subject
 from tests.embodied.test_review_motion import source_function
 from tests.embodied.test_sound_followup import Home, SlowEngine
 from tests.embodied.test_sound_review import CAMERA, CONTEXT, Engine, Journey, settle
@@ -36,7 +37,7 @@ class EpisodeEngine(SlowEngine):
 
 class SoundPatrol:
     def __init__(self, tmp_path, monkeypatch, owner, *, episode=(14.2, 18.2), infant=False,
-                 target=False, motor_shifts_view=True, enable_search=True, occupied_elsewhere=False):
+                 people=None, motor_shifts_view=True, enable_search=True, occupied_elsewhere=False):
         self.j = Journey(tmp_path, monkeypatch)
         if enable_search:
             self.j.store.configure_sound_search(self.j.store.policy().revision, True)
@@ -49,7 +50,8 @@ class SoundPatrol:
         self.moves, self.phases = [], []
         self.sound_moves, self.follow_moves = [], []
         self.sound_sent_at = []
-        self.target, self.motor_shifts_view = target, motor_shifts_view
+        self.people = people or (lambda _: [])
+        self.motor_shifts_view = motor_shifts_view
         self.occupied_elsewhere = occupied_elsewhere
         self.state = {}
         self.session = "SYNTHETIC-sound-motion"
@@ -75,10 +77,7 @@ class SoundPatrol:
             await task
             await settle()
         stable = self.j.clock >= self.moving_until
-        people = []
-        if stable and self.target and self.sound_moves:
-            x = .43 if self.follow_moves else .76
-            people = [dict(id=42, box=dict(x=x, y=.30, w=.14, h=.36))]
+        people = self.people(self) if stable else []
         jpeg = f"SYNTHETIC-FRAME-{self.index}".encode()
         await self.j.runtime.observe(CAMERA["id"], self.session, people, self.j.clock, self.j.clock,
             stable=stable, jpeg=jpeg, source_context=CONTEXT, source_name="合成镜头")
@@ -203,17 +202,101 @@ async def test_short_sound_near_a_patrol_deadline_keeps_both_original_loops_stab
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner', ['primary', 'secondary'])
 async def test_saved_sound_search_hands_a_new_visual_track_to_existing_follow(tmp_path, monkeypatch, owner):
-    patrol = SoundPatrol(tmp_path, monkeypatch, owner, target=True, occupied_elsewhere=True)
+    def people(patrol):
+        if patrol.sound_moves:
+            return [sound_person(42, .43 if patrol.follow_moves else .76, 'SYNTHETIC-new')]
+        if 12 <= patrol.j.clock < 18:
+            return [sound_person(7, .43, 'SYNTHETIC-previous')]
+        return []
+
+    patrol = SoundPatrol(tmp_path, monkeypatch, owner, people=people, occupied_elsewhere=True)
     try:
         await patrol.run()
         assert patrol.sound_moves == ['right']
         assert patrol.follow_moves == [('right', 42)]
+        assert any(phase == 'target_ambiguous' for _, phase in patrol.phases)
         event, = patrol.j.store.events()
         assert not event['directional_audio'] and event['track'] is None
         patrol.assert_saved_views(event)
         assert len(patrol.moves) == 2, '普通自动巡视仍受其他镜头在场状态限制'
     finally:
         await patrol.j.runtime.close()
+
+
+def sound_person(track, x, identity):
+    result = person(track, x=x, identity=identity)
+    result['box']['confidence'] = .9
+    return result
+
+
+def test_sound_follow_confirms_continuity_and_rechecks_cue_before_dispatch():
+    director = CameraDirector()
+    director.apply_mode('auto', 'intent')
+    cue = SimpleNamespace(captured=.9)
+    old = sound_person(7, .43, 'SYNTHETIC-previous')
+    target = sound_person(42, .76, 'SYNTHETIC-new')
+    replacement = sound_person(43, .81, 'SYNTHETIC-other')
+
+    def frame(at, *people, x=.05):
+        return dict(sample(at, people=people, x=x), tracking_current=True)
+
+    director.choose(frame(0, x=0), 0)
+    director.choose(frame(.5, old, x=0), .5)
+    assert director.choose(frame(1, x=0), 1, sound_cue=cue) == 'right'
+    director.sent(1)
+    assert director.choose(frame(3, target), 3, sound_cue=cue) is None
+    first = frame(3.4, target)
+    assert director.choose(first, 3.4, sound_cue=cue) is None
+    assert director.choose(first, 3.5, sound_cue=cue) is None
+    assert director.choose(frame(3.6, target, replacement), 3.6, sound_cue=cue) is None
+    assert director.choose(frame(3.8, target), 3.8, sound_cue=cue) is None
+    current = frame(4, target)
+    assert director.choose(current, 4, sound_cue=cue) == 'right'
+    assert director.decision_current(current, 4, 'right', sound_cue=cue)
+    assert not director.decision_current(current, 4, 'right')
+    assert not director.decision_current(frame(4.1, target, replacement), 4.1, 'right', sound_cue=cue)
+    assert not director.decision_current(frame(4.1, target, x=.10), 4.1, 'right', sound_cue=cue)
+    assert not director.decision_current(current, 4, 'right', sound_cue=cue, fall_pending=True)
+    director.sent(4)
+    assert director.choose(frame(6.1, replacement, x=.1), 6.1, sound_cue=cue) is None
+    relocated = sound_person(48, .76, 'SYNTHETIC-new')
+    assert director.choose(frame(6.3, relocated, x=.1), 6.3, sound_cue=cue) is None
+    assert director.choose(frame(6.5, relocated, x=.1), 6.5, sound_cue=cue) == 'right'
+    assert director.target == 48
+    director.failed(6.5)
+    assert director.sound_search_cue is None
+    assert director.choose(frame(8.7, replacement, x=.15), 8.7) is None
+    assert director.choose(frame(8.9, replacement, x=.15), 8.9) is None
+    assert director.target_identity == 'SYNTHETIC-new'
+
+
+def test_sound_follow_reacquires_an_unregistered_person_by_current_view():
+    director = CameraDirector()
+    director.apply_mode('auto', 'intent')
+    cue = SimpleNamespace(captured=.9)
+    target, other, returned = subject(42, .74), subject(43, .74), subject(48, .74)
+
+    def observe(at, x, *rows, sound_cue=cue):
+        frame = sample(at, people=[row for row, _ in rows], x=x)
+        frame.update(tracking_current=True, _follow_jpeg=picture(rows))
+        return director.choose(frame, at, sound_cue=sound_cue)
+
+    observe(0, 0, sound_cue=None)
+    observe(.5, 0, sound_cue=None)
+    assert observe(1, 0) == 'right'
+    director.sent(1)
+    assert observe(3, .05, (target, 7)) is None
+    assert observe(3.4, .05, (target, 7)) is None
+    assert observe(4.3, .05, (target, 7)) is None
+    assert observe(5, .05, (target, 7)) == 'right'
+    assert director.pending_decision['appearance'] is not None
+    director.sent(5)
+    assert observe(7.2, .1, (other, 8)) is None
+    assert observe(7.6, .1, (other, 8)) is None
+    assert observe(8.2, .1, (returned, 7)) is None
+    assert observe(8.6, .1, (returned, 7)) is None
+    assert observe(9.1, .1, (returned, 7)) == 'right'
+    assert director.target == 48 and director.target_identity is None
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import math
 import numpy as np
 
 from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES, finish_camera_survey
+from .pose_rules import iou
 
 
 def visible_scene(jpeg):
@@ -105,6 +106,8 @@ class CameraDirector:
         self.sound_route = ()
         self.sound_step = 0
         self.sound_confirmed_view = None
+        self.sound_candidate = None
+        self.sound_following = False
         self.sound_intent_since = None
         self.last_sound_captured = -math.inf
 
@@ -142,7 +145,7 @@ class CameraDirector:
             self._clear_reframe()
             self._clear_selection_reference()
             self.review_windows.clear()
-            self.sound_search_cue = None
+            self._clear_sound_search()
             self.sound_intent_since = None
             self.tilt_observation = None
             self.tilt_recovery = None
@@ -206,9 +209,12 @@ class CameraDirector:
         self.pending_decision = dict(direction=direction, phase=self.phase, intent=self.intent,
             session=sample.get('session_id'), stamp=sample['_local_received'],
             target=self.target, identity=self.target_identity, game_window=self._camera_window(sample))
-        if self.phase == 'following' and not self.target_identity:
+        if self.phase == 'following':
             subjects = [subject for subject in self._subjects(sample) if subject['id'] == self.target]
-            if len(subjects) == 1:
+            if len(subjects) == 1 and self.sound_following:
+                self.pending_decision.update(sound_cue=self.sound_search_cue, sound_box=dict(subjects[0]['box']),
+                                             view=sample['_patrol_view'])
+            if len(subjects) == 1 and not self.target_identity:
                 # Room 子进程复用本模块的视野检查，跟随依赖在实际需要时加载。
                 from .camera_follow_appearance import follow_reference_in_view, remember_follow_target
 
@@ -338,11 +344,11 @@ class CameraDirector:
             self._clear_selection_reference()
 
     def _reframe_target(self, sample, subjects):
-        explicit = self.mode in TARGET_MODES
+        strict = self.mode in TARGET_MODES or self.sound_following
         if self.target_identity:
             matches = [subject for subject in subjects if self.identity(subject) == self.target_identity]
             match = matches[0] if len(matches) == 1 else None
-            if not explicit:
+            if not strict:
                 return match
         elif self.reframe_appearance is not None:
             from .camera_follow_appearance import find_follow_target
@@ -351,7 +357,7 @@ class CameraDirector:
         else:
             match = None
         previous, self.reframe_candidate = self.reframe_candidate, None
-        if (match is None or explicit and not self._qualified_target(match)
+        if (match is None or strict and not self._qualified_target(match)
                 or sum(row['id'] == match['id'] for row in subjects) != 1):
             return None
         stamp = sample['_local_received']
@@ -409,6 +415,10 @@ class CameraDirector:
             return False
         if self._review_holds(sample, now, review_pending, fall_pending):
             return False
+        if pending.get('sound_cue') is not None and (
+                self.mode != 'auto' or sound_cue is not pending['sound_cue']
+                or sound_cue is not self.sound_search_cue or review_pending or fall_pending):
+            return False
         if self.mode in PET_MODES and not self._pets_current(sample):
             return False
         explicit = self.mode in TARGET_MODES
@@ -421,15 +431,16 @@ class CameraDirector:
             return False
         people = self._subjects(sample)
         if pending['phase'] in {'patrolling', 'sound_search'}:
-            if pending['phase'] == 'sound_search' and (
-                    self.mode != 'auto' or sound_cue is None or sound_cue is not pending['sound_cue']
-                    or sound_cue is not self.sound_search_cue or review_pending or fall_pending):
-                return False
             shift = _view_shift(pending['view'], sample.get('_patrol_view'))
             occupied = people or pending['phase'] == 'patrolling' and occupied_elsewhere
             return ((self.mode == 'survey' or not occupied)
                     and shift is not None and math.hypot(*shift) <= .012)
         if pending['phase'] != 'following':
+            return False
+        sound_follow = 'sound_box' in pending
+        if sound_follow and (not self.sound_following or len(people) != 1
+                             or self._sound_scope(sample) != self.sound_view
+                             or not self.target_frame_current(sample, now)):
             return False
         focus = self._current_focus(sample, now, focus)
         if (self.mode == 'auto' and focus
@@ -440,13 +451,17 @@ class CameraDirector:
                 (pending['session'], pending['target'], direction, pending['game_window']), pending['stamp']):
             return False
         matches = [p for p in people if p['id'] == pending['target']]
-        if not matches and pending['identity'] and not tilt and not explicit:
+        if not matches and pending['identity'] and not (tilt or explicit or sound_follow):
             matches = [p for p in people if self.identity(p) == pending['identity']]
         if len(matches) != 1:
             return False
         target = matches[0]
-        if explicit and not self._qualified_target(target):
+        if (explicit or sound_follow) and not self._qualified_target(target):
             return False
+        if sound_follow:
+            shift = _view_shift(pending['view'], sample.get('_patrol_view'))
+            if not iou(pending['sound_box'], target['box']) or shift is None or math.hypot(*shift) > .012:
+                return False
         if pending['identity'] and self.identity(target) and self.identity(target) != pending['identity']:
             return False
         return self._follow_direction(target) == direction
@@ -460,7 +475,7 @@ class CameraDirector:
         self._discard_patrol()
         self._clear_reframe()
         self._clear_selection_reference()
-        self.sound_search_cue = None
+        self._clear_sound_search()
         self.position = (0,0)
         self.blocked_positions.clear()
         self.scan_steps = 0
@@ -480,7 +495,7 @@ class CameraDirector:
             return
         self._interrupt_survey()
         if self.patrol_confirmation and self.patrol_confirmation.get('sound_search'):
-            self.sound_search_cue = None
+            self._clear_sound_search()
         self.patrol_confirmation = None
         self.patrol_view_state = 'unconfirmed'
         # 转过多少未知，相对角度及其遮挡记录已失去基准。
@@ -594,15 +609,22 @@ class CameraDirector:
         self.phase = 'patrolling'
         return self._aim(direction, sample, now)
 
+    def _clear_sound_search(self):
+        self.sound_search_cue = self.sound_candidate = None
+        self.sound_following = False
+
     def _end_sound_search(self, now):
         if self.sound_search_cue is not None:
             self.last_person = now
-            self.sound_search_cue = None
+            self._clear_sound_search()
+
+    def _sound_scope(self, sample):
+        view = sample.get('_patrol_view')
+        return (sample.get('session_id'), view[0], self._camera_window(sample)) if view is not None else None
 
     def _sound_search(self, sample, now, cue, *, may_search):
-        view = sample.get('_patrol_view')
-        scope = (sample.get('session_id'), view[0], self._camera_window(sample)) if view is not None else None
-        if (self.sound_search_cue is None and cue is not None and view is not None
+        scope = self._sound_scope(sample)
+        if (self.sound_search_cue is None and cue is not None and scope is not None
                 and cue.captured > self.last_sound_captured and cue.captured >= self.sound_intent_since):
             self.last_sound_captured = cue.captured
             if may_search:
@@ -616,19 +638,54 @@ class CameraDirector:
                 self.sound_step = 0
         if self.sound_search_cue is None:
             return None
-        if (cue is not self.sound_search_cue or not may_search or self.sound_step >= len(self.sound_route)
-                or scope is not None and scope != self.sound_view):
+        if not may_search or self.sound_step >= len(self.sound_route):
             self._end_sound_search(now)
             return None
         direction = self.sound_route[self.sound_step]
         if self._next_position(direction) in self.blocked_positions:
             self._end_sound_search(now)
             return None
-        if view is None:
+        if scope is None:
             self.phase = 'patrol_waiting_view'
             return None
         self.phase = 'sound_search'
         return self._aim(direction, sample, now)
+
+    def _sound_follow_target(self, sample, people, now):
+        """同一新视角的连续人体观测才能接手，异响回执不指认声源。"""
+        previous, self.sound_candidate = self.sound_candidate, None
+        target = people[0] if len(people) == 1 else None
+        if (self._sound_scope(sample) != self.sound_view or not self.target_frame_current(sample, now)
+                or not self._qualified_target(target)):
+            if self.sound_following:
+                self._interrupt_selection(now)
+            self.phase = 'target_ambiguous'
+            return None
+        if self.sound_following:
+            return self._selected_follow(sample, people, now)
+        stamp = sample['_local_received']
+        identity = self.identity(target)
+        self.sound_candidate = (target['id'], stamp, identity, dict(target['box']), sample['_patrol_view'])
+        self.phase = 'target_ambiguous'
+        if previous is None:
+            return None
+        track, observed, previous_identity, box, view = previous
+        shift = _view_shift(view, sample['_patrol_view'])
+        if (track != target['id'] or not 0 < stamp - observed <= 1.5
+                or previous_identity and identity and previous_identity != identity
+                or not iou(box, target['box']) or shift is None or math.hypot(*shift) > .012):
+            return None
+        self.sound_following = True
+        self.sound_candidate = None
+        self.target = target['id']
+        self.target_identity = identity or previous_identity
+        self.target_session = sample['session_id']
+        self.target_seen = now
+        self._clear_reframe()
+        self._clear_selection_reference()
+        self.selection_sample = stamp
+        self._remember_selection(sample, target)
+        return target
 
     @staticmethod
     def identity(person):
@@ -704,8 +761,9 @@ class CameraDirector:
             self.phase = 'motor_unavailable'
             return None
         if (not self._fresh(sample, now) or sample['_local_received'] <= self.last_move
-                or explicit and sample.get('tracking_current') is not True):
-            if explicit:
+                or (explicit or self.sound_following) and sample.get('tracking_current') is not True):
+            self.sound_candidate = None
+            if explicit or self.sound_following:
                 self._interrupt_selection(now)
             self.visible_samples = 0
             self.clear_since = None
@@ -741,7 +799,7 @@ class CameraDirector:
         stamp = sample.get('_local_received')
         if self.last_sample is not None and stamp <= self.last_sample:
             return None
-        if explicit and self.last_sample is not None and stamp - self.last_sample > 1.5:
+        if (explicit or self.sound_following) and self.last_sample is not None and stamp - self.last_sample > 1.5:
             self._interrupt_selection(now)
         self.last_sample = stamp
         previous_tilt, self.tilt_observation = self.tilt_observation, None
@@ -802,6 +860,7 @@ class CameraDirector:
         if self._review_holds(sample, now, review_pending, fall_pending, reserve=True):
             self.pending_direction = self.pending_decision = None
             self.reframe_candidate = None
+            self.sound_candidate = None
             self.phase = 'review_held'
             return None
         if self.mode == 'survey':
@@ -810,15 +869,26 @@ class CameraDirector:
                 self.phase = 'observing'
                 return None
             return self._patrol(sample, now)
-        if not explicit:
-            if self.mode == 'auto' and self.reframe_started is None:
+        if self.mode == 'auto':
+            focus = self._current_focus(sample, now, focus)
+            if self.sound_search_cue is not None:
+                scope = self._sound_scope(sample)
+                if (sound_cue is not self.sound_search_cue or scope is not None and scope != self.sound_view
+                        or focus and (not self.sound_following or focus['track'] != self.target)):
+                    self._end_sound_search(now)
+            if self.sound_search_cue is not None and self.sound_step and (people or self.sound_following):
+                target = self._sound_follow_target(sample, people, now)
+                if target is None:
+                    return None
+            elif self.reframe_started is None:
+                self.sound_candidate = None
                 direction = self._sound_search(sample, now, sound_cue, may_search=not (
                     people or review_pending or fall_pending))
                 if direction or self.sound_search_cue is not None:
                     return direction
+        if not explicit and not self.sound_following:
             ids = {p['id'] for p in people}
             self.target_session = session
-            focus = self._current_focus(sample, now, focus)
             if self.mode == 'auto' and focus and focus.get('track') in ids:
                 key = (session, focus['at'], focus['track'])
                 if key != self.last_focus:
@@ -893,6 +963,8 @@ class CameraDirector:
 
     def sent(self, now, direction=None, *, automatic=True):
         self.last_move = now
+        if not automatic:
+            self._end_sound_search(now)
         direction=direction or self.pending_direction
         pending = self.pending_decision
         if automatic and direction == self.pending_direction:
