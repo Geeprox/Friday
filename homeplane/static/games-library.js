@@ -4,7 +4,7 @@ import {mountWerewolf} from './werewolf-host.js';
 import {mountKtv} from './ktv-console/app.js';
 const h=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
 const button=(text,fn,cls)=>{const b=h('button',text,cls);b.type='button';b.onclick=fn;return b;};
-const art=id=>['ski','tennis','quest','hiit','werewolf','ktv'].includes(id)?'/static/games-art/'+id+'.png':null;
+const art=id=>id==='beam'?'/static/games-art/beam.webp':['ski','tennis','quest','hiit','werewolf','ktv'].includes(id)?'/static/games-art/'+id+'.png':null;
 const moves={ski:['body.arm_effort','body.lateral'],tennis:['body.lateral','body.swing'],quest:['pose.horizontal','pose.overhead','exercise.squat','exercise.side_tap','exercise.side_step','exercise.high_knee','exercise.jack','exercise.side_bend','exercise.side_lunge','exercise.reach_up','exercise.arm_open','exercise.balance','exercise.cross_knee','exercise.side_raise','exercise.overhead_clap'],hiit:['exercise.squat','exercise.jack','exercise.high_knee','exercise.side_lunge','exercise.side_step','exercise.side_bend','exercise.reach_up','exercise.arm_open','exercise.balance','exercise.cross_knee','exercise.side_raise','exercise.overhead_clap']};
 const tennisVariants=[
  ['practice','单人练习','1 人 · 9 球'],
@@ -237,6 +237,13 @@ export function mountGames(root,{go=()=>{}}={}){
   const teaching=h('section',null,'game-how-to'),tennisTip=tennisPicker?h('p'):null;
   if(questPicker){
    teaching.append(h('h3','动作示范'),h('p','留出活动空间，让双手和双脚完整入镜。','game-motion-instruction'));
+  }else if(app.id==='beam'){
+   const guide=h('figure',null,'game-beam-guide'),diagram=h('img'),caption=h('figcaption');
+   diagram.src='/static/games-art/beam-pose.svg';
+   diagram.alt='双臂从放下到在胸前摆成 L 的动作示范';
+   caption.append(h('strong','一竖一横，在胸前摆出 L'),h('p','用小幅转身和抬臂瞄准。保持到光线发出，放下双臂再瞄下一只。'));
+   guide.append(diagram,caption);
+   teaching.append(h('h3','怎么玩'),guide);
   }else{
    teaching.append(h('h3','怎么玩'));
    const steps=h('div',null,'game-play-steps');
@@ -254,7 +261,7 @@ export function mountGames(root,{go=()=>{}}={}){
  }
  function updateTeaching(app,route){
   const {tutorial,practiceSlot}=ui;
-  const keys=route?.teaching||moves[app.id]||['hand.point','hand.ok'],signature=keys.join(',');
+  const keys=app.id==='beam'?[]:route?.teaching||moves[app.id]||['hand.point','hand.ok'],signature=keys.join(',');
   if(tutorial.dataset.moves===signature)return;
   practice?.dispose();practice=null;practiceSlot.replaceChildren();
   diagrams.forEach(diagram=>diagram.dispose());

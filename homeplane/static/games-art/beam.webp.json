@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "asset": "beam",
+  "game_name": "光线保卫队",
+  "kind": "original_illustrative_game_cover",
+  "generator": "OpenAI built-in image_gen",
+  "generated_on": "2026-11-12",
+  "source_generated_image": "exec-ab5918ba-7205-4812-8c58-2515a935fa62.png",
+  "source_sha256": "35f4f7f12979699f84c9a4333ac8c0b754e5609d97df94fc8b714ae44427392a",
+  "transparent_background": false,
+  "width": 1440,
+  "height": 810,
+  "derivation": "以 cwebp 调整尺寸并移除生成端元数据；原图由本任务生成，未使用家庭照片或现有商业角色。",
+  "prompt": "Use case: stylized-concept.\nAsset type: original landscape family-motion-game store cover, full-bleed 16:9, no text.\nConcept: “光线保卫队”. In a sunlit miniature forest glade, a child in a moss-green hoodie with an ochre neckerchief and long trousers shows the game's one precise pose. Their right forearm is upright in front of the chest, hand open with fingers together; their left forearm is horizontal across the lower end of that upright forearm, wrist touching it; clearly one vertical and one horizontal forearm forming an L, both elbows comfortably bent. Side-front three-quarter angle where both forearms and the pose are unmistakable. One tiny warm golden paper light trail lifts off into the air toward a floating round apricot fluffball with two small rounded leafy horns, simple round eyes and a surprised smile. Two other little fluffballs peek from the meadow or float near mossy rocks. They are original toy-like characters; an innocent game of tag, everyone cheerful. No child actually holds anything. No weapon.\nStyle: premium crafted 3D children's picture book game art, physical felted paper, tactile warm matte modeling clay, gently layered papercut hills and moss, detail concentrated around figures. Studio-quality soft natural daylight; muted spruce, clear soft sky, butter cream and apricot. Make the child, exact pose and main fluffball large and legible at store thumbnail size. Subjects comfortably inside the center crop, balanced diagonal storytelling with breathing room. Full bleeds on all sides. No typography, no letters, no border, no UI, no logo, no known character, no armor, no capes, no photorealism, no neon gradients, no harsh outlines, no image of a television.",
+  "sha256": "29f03a4aeffb8945117b50e64c68590d15f7b3bc53e93d0031d64bc1e2ef802d"
+}

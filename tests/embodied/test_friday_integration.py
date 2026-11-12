@@ -96,7 +96,9 @@ async def test_console_catalog_without_optional_sdk_and_same_origin_lifecycle(tm
             transport=httpx.ASGITransport(app=app), base_url="http://testserver"
         ) as client:
             result = (await client.get("/api/games")).json()
-            assert len(result["apps"]) == 6
+            assert {entry["id"] for entry in result["apps"]} == {
+                "ski", "tennis", "quest", "hiit", "beam", "werewolf", "home",
+            }
             assert result["service"]["state"] == "not_configured"
             assert (await client.post("/api/embodied/start", json=dict(app="ski"))).status_code == 403
             assert (

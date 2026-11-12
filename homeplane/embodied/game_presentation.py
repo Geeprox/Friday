@@ -3,7 +3,7 @@ from collections import deque
 import secrets
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from typing import Literal
+from homeplane.embodied.catalog import MotionGameMode
 
 
 class GameViewReport(BaseModel):
@@ -11,7 +11,7 @@ class GameViewReport(BaseModel):
     expected_context: str = Field(pattern=r'^[a-f0-9]{32}$')
     expected_round: int = Field(ge=1, le=2**53-1)
     expected_view: str = Field(pattern=r'^[a-f0-9]{32}$')
-    mode: Literal['quest', 'ski', 'tennis', 'hiit']
+    mode: MotionGameMode
     view_id: str = Field(pattern=r'^[a-f0-9]{32}$')
     sequence: int = Field(ge=0, le=2**53-1)
     window: str = Field(pattern=r'^[a-f0-9]{32}$')

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "asset": "beam-glade",
+  "game_name": "光线保卫队",
+  "kind": "original_game_environment",
+  "generator": "OpenAI built-in image_gen",
+  "generated_on": "2026-11-12",
+  "source_generated_image": "exec-1bb92f7e-1f84-4056-8d02-f9e9dccf6cb9.png",
+  "source_sha256": "5aeb0bb2ada8f72817b70c281145e86e1b645191244d8ebd346be967bf3635c1",
+  "transparent_background": false,
+  "width": 1600,
+  "height": 900,
+  "derivation": "以 cwebp 调整尺寸并移除生成端元数据；原图由本任务生成，未使用家庭照片或现有商业角色。",
+  "prompt": "Use case: precise-object-edit. Asset: wide 16:9 empty play field for a family television game. The attached original cover is the edit target. Transform its same tactile matte clay and felt paper forest into a clean wide establishing view, from a few steps farther back. Remove the child, all creatures, all light trails and graphic effects. Replace them with an open sunlit clearing extending across the middle. Preserve the art's sage and spruce colors, ochre trail, a small distant waterfall toward the far right, paper hills, pale sky. Silhouette detail stays at the margins and bottom quarter, with a quiet smooth middle plane in pale moss where small creatures can be overlaid and easy to see. No large central foreground objects or tree blocking the view. Tactile light shadows, stylish composition, elevated storybook art for widescreen TV. No letters, UI, icons, targets, creatures, humans, or borders.",
+  "sha256": "7e4399ee70e6a8bd69b4409fdd5e77b310dd5f541b3d94e53b5a44523b94802d"
+}

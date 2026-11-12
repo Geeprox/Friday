@@ -125,6 +125,13 @@ SYNTHETIC_MEDIA = {
         '65c686067b13e7ec6b8d9475c31da9ddeca5253cae95160a41404d49ae827c24',
     'homeplane/static/games-art/ktv.png':
         '11b30030c8ba0cce72f2561b23e7de98f6ae0bc38010fa557e2d7368b2c5e2a4',
+    # 光线保卫队原创生成美术；提示词、原图指纹和派生方式记录在相邻 JSON。
+    'homeplane/static/games-art/beam.webp':
+        '29f03a4aeffb8945117b50e64c68590d15f7b3bc53e93d0031d64bc1e2ef802d',
+    'homeplane/embodied/static/game-art/beam-glade.webp':
+        '7e4399ee70e6a8bd69b4409fdd5e77b310dd5f541b3d94e53b5a44523b94802d',
+    'homeplane/embodied/static/game-art/beam-fluff.webp':
+        '10dfe79fb36ff7dc13b12eef413b7c8cfaa230f5306e7c0239e4baabfeb1100c',
     # Approved Friday Icon, unchanged pixels with embedded origin metadata.
     'homeplane/static/brand/friday.png':
         'dba243be53573b3b2ec7572852cf23075c6b851c72c417d2c4d9a7396cca2d6e',
