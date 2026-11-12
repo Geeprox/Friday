@@ -17,6 +17,7 @@ from homeplane.embodied.intent import address
 from homeplane.embodied.party_camera import PartyCamera
 from tests.embodied.test_camera_audio import CAMERA, audio, video, voice_service
 from tests.embodied.test_camera_director import patrol_view, person, sample
+from tests.embodied.test_camera_follow_appearance import picture
 from tests.embodied.test_motor_recovery import extract, primary_scope
 from tests.embodied.test_review_motion import source_function
 
@@ -127,8 +128,9 @@ def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, recogn
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner, word', [('primary', 'Friday'), ('secondary', '小福')])
 @pytest.mark.parametrize('target_side, target_x', [('left', .10), ('right', .76)])
+@pytest.mark.parametrize('known_face', [False, True])
 async def test_wake_search_turns_and_follows_on_the_same_capture(
-        tmp_path, monkeypatch, owner, word, target_side, target_x):
+        tmp_path, monkeypatch, owner, word, target_side, target_x, known_face):
     clock = SimpleNamespace(at=0.0)
     clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
     home, source = await hear_wake(tmp_path, monkeypatch, clock, word)
@@ -142,6 +144,11 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(
 
     def frame(at, offset, people):
         value = current_frame(at, source, offset=offset, people=people)
+        if not known_face:
+            value.update(
+                people=[dict(person, identity={}) for person in people],
+                _follow_jpeg=picture([(person, 7) for person in people]),
+            )
         if owner == 'primary':
             value['party_camera'] = party.status(camera=CAMERA['id'], session=SESSION, frame_mono=at, now=at)
         return value
@@ -163,7 +170,10 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(
     assert observe(3.9, offset=.05, people=[found]) is None
     assert director.phase == 'confirming_view'
     assert observe(4.3, offset=.05, people=[found]) is None
+    # 背景已确认转过，同一人体连续两帧即可对准，无须等人脸匹配。
     assert observe(4.7, offset=.05, people=[found]) == target_side
+    if not known_face:
+        assert director.pending_decision['appearance'] is not None
     await send(target_side)
     assert [row['direction'] for row in sent] == ['right', target_side]
 
@@ -234,7 +244,6 @@ async def test_secondary_wake_keeps_the_pre_turn_reference_while_a_frame_is_in_f
     import numpy as np
 
     from homeplane.embodied import camera_recognition
-    from tests.embodied.test_camera_follow_appearance import picture
 
     clock = SimpleNamespace(at=0.0)
     clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at

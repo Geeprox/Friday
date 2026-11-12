@@ -1138,13 +1138,13 @@ class CameraDirector:
                 self.target_seen = now
                 self.target_identity = self.target_identity or self.identity(target)
             self.phase = 'following'
-            # Allow fresh post-pan face evidence to accumulate before another
-            # impulse discards it. A matched identity may release this wait;
-            # an unrecognizable target never stalls following indefinitely.
-            if not self.identity(target) and now-self.last_move < 4:
-                return None
             wake_follow = self.sound_following and isinstance(self.sound_search_cue, WakeCameraCue)
-            direction = self._follow_direction(target, wake_aim=wake_follow and self.wake_first_aim)
+            wake_aim = wake_follow and self.wake_first_aim
+            # 普通跟随在转动后给人脸识别留出最多四秒，有有效身份时可提前继续。
+            # 唤醒后的首次对准已确认新视角和连续人体，无须额外等待人脸。
+            if not wake_aim and not self.identity(target) and now-self.last_move < 4:
+                return None
+            direction = self._follow_direction(target, wake_aim=wake_aim)
             if wake_follow and direction is None:
                 self.wake_first_aim = False
                 if self.pending_decision and self.pending_decision.get('sound_cue') is self.sound_search_cue:
