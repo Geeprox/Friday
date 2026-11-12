@@ -468,6 +468,28 @@ body .files-root { --files-muted: var(--muted); --files-line: var(--line); --fil
 .runtime-camera-open .icon { width: 15px; height: 15px; flex: none; color: var(--muted); }
 .runtime-camera-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: .8125rem; }
 .runtime-camera-open small { flex: none; color: var(--muted); font-size: .75rem; }
+.runtime-services > .runtime-review { margin-block: 0; }
+.experience .runtime-review-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: end;
+  gap: 5px;
+  min-height: 36px;
+  padding: 4px 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: end;
+}
+.experience .runtime-review-open:hover { background: var(--accent-soft); }
+.runtime-review-open .icon { width: 13px; height: 13px; flex: none; }
+.runtime-review[data-state='degraded'] dd { color: var(--warn); }
+@media (max-width: 640px) {
+  .runtime-services > .runtime-review { grid-column: 1/-1; }
+  .experience .runtime-review-open { min-height: 44px; }
+}
 .runtime-resources { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding-block: 20px; border-block: 1px solid var(--line); }
 .runtime-resource > div { display: grid; gap: 6px; }
 .runtime-resource span { font-size: .75rem; color: var(--muted); }

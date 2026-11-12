@@ -81,6 +81,23 @@ test('all active voice sources contribute to readiness without treating closed c
  }
 });
 
+test('review services surface only the current worker report and distinguish pressure from waiting',()=>{
+ const worker={configured:true,owned:true,state:'live',safety_recording:{state:'ready'},
+  camera_sessions:[{camera:'camera',state:'live',recognition:'running'}]};
+ const check=(safety_review,patch={})=>homeServiceSummary({worker:{...worker,...patch,safety_review}});
+ const summary=check({visual:'resource_limited',sound:'waiting_input'});
+ assert.equal(summary.state,'warning');
+ assert.deepEqual(summary.rows.filter(row=>row.review).map(row=>[row.label,row.text,row.state]),
+  [['画面复核','资源不足','degraded'],['声音复核','等待声音','waiting']]);
+ assert.equal(check({sound:'delayed'}).rows.at(-1).text,'复核延迟');
+ assert.equal(check({sound:'paused'}).rows.at(-1).state,'off');
+ assert.equal(check({sound:'running'}).rows.at(-1).text,'运行中');
+ assert.equal(check({sound:'unavailable'}).rows.at(-1).state,'warning');
+ for(const patch of [{owned:false},{capture_enabled:false},{state:'unavailable'}])
+  assert.equal(check({sound:'running'},patch).rows.some(row=>row.review),false);
+ assert.equal(check({visual:'constructor'}).rows.some(row=>row.review),false);
+});
+
 test('attention prioritizes unreviewed incidents and excludes simulated/reviewed events',()=>{
  const devices=[{id:'offline',name:'离线设备',room:'合成空间',available:false,readings:[]},{id:'low',name:'低电量设备',room:'合成空间',available:true,readings:[{device_class:'battery',value:12,unit:'%',available:true}]},{id:'stale',available:true,readings:[{device_class:'battery',value:1,available:false}]}];
  const events=[{id:'test',simulated:true,review:'unreviewed'},{id:'read',review:'acknowledged'},{id:'fall',review:'unreviewed',kind:'fall'}];

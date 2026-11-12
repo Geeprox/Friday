@@ -5,6 +5,21 @@ const add=(n,...children)=>{n.append(...children);return n;};
 const button=(text,run,attrs={})=>{const n=h('button',text,{type:'button',...attrs});n.onclick=run;return n;};
 const icon=name=>h('span',null,{class:'icon icon-'+name,'aria-hidden':'true'});
 const service=(label,state,text)=>({label,state,text});
+const reviews={visual:'画面复核',sound:'声音复核'};
+
+function reviewServices(worker){
+ if(!worker?.owned||worker.capture_enabled===false||worker.state==='unavailable')return [];
+ return Object.entries(reviews).flatMap(([review,label])=>{
+  const value=worker.safety_review?.[review];
+  const states={
+   waiting_input:['waiting',review==='visual'?'等待画面':'等待声音'],
+   waiting:['waiting','等待复核'],running:['on','运行中'],paused:['off','已暂停'],
+   delayed:['degraded','复核延迟'],resource_limited:['degraded','资源不足'],
+   recovering:['degraded','正在恢复'],unavailable:['warning','暂不可用'],
+  };
+  return Object.hasOwn(states,value)?[{...service(label,...states[value]),review}]:[];
+ });
+}
 
 function perceptionService(worker) {
  const row=(state,text)=>service('家庭感知',state,text);
@@ -69,6 +84,7 @@ export function homeServiceSummary({worker=null,infrastructure=null,rules=null,a
  if(worker?.configured){const recording=worker.safety_recording,state=recording?.state;rows.push(service('异常记录',worker.capture_enabled===false?'off':!worker.owned?'waiting':state==='unavailable'?'warning':state==='off'?'off':state==='ready'?'on':['saving','recovering'].includes(state)?'waiting':'unknown',worker.capture_enabled===false?'已暂停':!worker.owned?'待命':({unavailable:'需要检查',off:'已暂停',ready:'已就绪',saving:'正在保存',recovering:'正在恢复'}[state]||'未更新')));}
  const agent=arl?arlRuntimePresentation(arl):null;
  rows.push(service('智能服务',!agent?'unknown':agent.connected?'on':['disabled','sdk_missing','not_running'].includes(agent.state)?'off':['disconnected','unsafe_configuration'].includes(agent.state)?'warning':'waiting',!agent?'未更新':agent.connected?'已连接':['disabled','sdk_missing','not_running'].includes(agent.state)?'未启用':({registering:'正在连接',handshake_required:'尚未连接',upgrade_required:'需要更新'}[agent.state]||agent.label)));
+ rows.push(...reviewServices(worker));
  const issue=infrastructure?.failure||rows.some(r=>r.state==='warning');
  const degraded=rows.some(r=>r.state==='degraded');
  const unknown=rows.some(r=>r.state==='unknown');
@@ -92,7 +108,8 @@ export function homeAttention(devices,events=[],runs=[],recording=null,proposals
 export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice=()=>go('Devices'),onCamera=()=>go('Cameras')}={}){
  let alive=true,busy=false,controller=null,timer=null,expiry=null,currentDevices=devices;
  const section=h('section',null,{class:'home-runtime','aria-label':'Friday 运行状态'}),status=h('span','正在读取',{class:'runtime-overall',role:'status'}),list=h('dl',null,{class:'runtime-services'}),resources=h('div',null,{class:'runtime-resources'});
- section.append(add(h('div',null,{class:'home-aside-heading'}),h('h2','Friday'),button(null,()=>go('Settings'),{'aria-label':'Friday 设置',class:'quiet-icon'})),status,list,resources);
+ const heading=h('h2','Friday',{tabindex:'-1'});
+ section.append(add(h('div',null,{class:'home-aside-heading'}),heading,button(null,()=>go('Settings'),{'aria-label':'Friday 设置',class:'quiet-icon'})),status,list,resources);
  section.querySelector('button').append(icon('settings'));
  const perceptionTitle=h('dt','家庭感知',{tabindex:'-1'}),perceptionValue=h('dd');
  const sourceName=h('span',null,{class:'runtime-camera-name'}),sourceState=h('small');
@@ -102,6 +119,15 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
  const sourceDetail=add(h('dd',null,{class:'runtime-camera-detail'}),sourceButton);
  const perception=add(h('div',null,{class:'runtime-perception'}),perceptionTitle,perceptionValue,sourceDetail);
  list.append(perception);
+ const serviceRows=new Map();
+ for(const [label,review] of [['语音交互'],['自动任务'],['异常记录'],['智能服务'],
+    ...Object.entries(reviews).map(([review,label])=>[label,review])]){
+  const value=h(review?'span':'dd');
+  const control=review?add(button(null,()=>go('Safety',{review}),{class:'runtime-review-open'}),value,icon('chevron-right')):null;
+  const group=add(h('div',null,review?{class:'runtime-review'}:{}),h('dt',label),control?add(h('dd'),control):value);
+  serviceRows.set(label,{group,value,control});
+  list.append(group);
+ }
  const attention=h('section',null,{class:'home-attention','aria-label':'需要关注'}),count=h('span','',{class:'attention-count'}),items=h('div',null,{class:'home-attention-items'});
  attention.append(add(h('div',null,{class:'home-aside-heading'}),h('h2','需要关注'),count),items);
  root.append(section,attention);
@@ -124,8 +150,17 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
    const label=(name?'查看'+name:caption)+'，'+camera.source.text;
    if(sourceButton.getAttribute('aria-label')!==label)sourceButton.setAttribute('aria-label',label);
   }
-  for(const group of Array.from(list.children).slice(1))group.remove();
-  for(const row of otherServices)list.append(add(h('div',null,{'data-state':row.state}),h('dt',row.label),h('dd',row.text)));
+  for(const [label,{group,value,control}] of serviceRows){
+   const row=otherServices.find(item=>item.label===label);
+   if(!row&&control&&document.activeElement===control)heading.focus({preventScroll:true});
+   group.hidden=!row;
+   if(!row)continue;
+   group.dataset.state=row.state;
+   if(value.textContent!==row.text){
+    value.textContent=row.text;
+    control?.setAttribute('aria-label','查看'+label+'，'+row.text);
+   }
+  }
   const sample=report?.resources,age=sample?Date.now()-Date.parse(sample.sampled_at):NaN;
   const fresh=sample?.available&&Number.isFinite(age)&&age>=-2000&&age<=Math.min(15,sample.valid_for_seconds||0)*1000;
   resources.replaceChildren();

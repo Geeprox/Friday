@@ -1820,6 +1820,7 @@ async def health():
 async def status():
     result = view()
     result.pop("frame", None)
+    result['safety_review'] = safety.review_status()
     return result
 
 

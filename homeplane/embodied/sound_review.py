@@ -11,6 +11,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from .camera_audio import MAX_AGE, PCM_BYTES, SAMPLE_RATE, AdmittedAudio
+from .review_health import review_progress
 from .safety_recording import ReviewReceipt
 from .sound_model import AppleSoundProcess
 
@@ -52,6 +53,8 @@ class SoundWindow:
     revision: int
     packets: deque[SoundPacket] = field(default_factory=lambda: deque(maxlen=10))
     seen: float = -math.inf
+    opened_at: float = 0
+    last_result_at: float | None = None
     submitted: float = -math.inf
     recorded_sample_end: int = 0
     candidate: SoundEvidence | None = None
@@ -147,6 +150,7 @@ class SoundReviewer:
                 self.skipped += 1
                 return
             state = self.windows[camera] = SoundWindow(session, context, capture, epoch, revision,
+                                                        opened_at=admission.received_mono,
                                                         submitted=self.served.get(camera, -math.inf))
         if (state.packets and (p['audio_sequence'] != state.packets[-1].sequence+1
                 or p['sample_start'] != state.packets[-1].sample_start+PCM_BYTES//2)):
@@ -308,6 +312,7 @@ class SoundReviewer:
                     or first.sample_start < state.recorded_sample_end):
                 return
             self.completed += 1
+            state.last_result_at = last.received_mono
             self.error = None
             previous = state.candidate
             candidate = None
@@ -410,9 +415,13 @@ class SoundReviewer:
         self.retry_after = 0
 
     def status(self):
+        now = self.clock()
+        live = [state for camera, state in self.windows.items()
+                if 0 <= now - state.seen <= MAX_AGE and self._source_current(camera, state)]
         return dict(self.readiness(), state='reviewing' if self.task else 'deferred' if self.error else 'idle',
                     completed_windows=self.completed, skipped_windows=self.skipped, error=self.error,
                     camera_count=len(self.windows), parallel_requests=1, window_seconds=2,
+                    progress=review_progress(live, now, REVIEW_MAX_AGE * max(1, len(live))),
                     raw_audio_stored=False, thresholds_calibrated=False)
 
     async def close(self):

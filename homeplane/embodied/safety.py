@@ -744,8 +744,11 @@ class SafetyRuntime:
         self.sound = SoundReviewer(policy=self._cached_policy, current=self._sound_current,
                                    deliver=self._sound_event, keyframe=self._sound_keyframe, engine=sound_engine)
 
+    def _policy_current(self):
+        return not self.closed and 0 <= time.monotonic() - self.policy_read_at <= self.POLICY_TTL
+
     def _cached_policy(self):
-        if self.closed or not 0 <= time.monotonic() - self.policy_read_at <= self.POLICY_TTL:
+        if not self._policy_current():
             return SafetyPolicy(revision=self.policy_cache.revision)
         return self.policy_cache
 
@@ -1374,7 +1377,7 @@ class SafetyRuntime:
     def recording_status(self):
         """Cheap frame/Console projection; never probes optional native models."""
         report = self.recording.status()
-        current = not self.closed and 0 <= time.monotonic() - self.policy_read_at <= self.POLICY_TTL
+        current = self._policy_current()
         failed_for = (max(0, time.monotonic() - self.policy_failure_since)
                       if self.policy_failure_since is not None else 0)
         state = ('unavailable' if report['dropped'] or report['partial'] or report['unconfirmed'] or failed_for >= self.recording.RETRY_WINDOW
@@ -1383,6 +1386,28 @@ class SafetyRuntime:
                  else 'saving' if report['pending'] else 'ready')
         return dict(report, state=state, enabled=self.policy_cache.enabled if current else None,
                     policy_current=current)
+
+    def review_status(self):
+        """只读当前选用的复核状态，不启动模型或采集。"""
+        from .review_health import review_health
+
+        policy = self.policy_cache
+        current = self._policy_current()
+        result = {}
+        for kind, configured, reviewer in (('visual', policy.visual_review, self.visual),
+                                            ('sound', policy.sound_review, self.sound)):
+            if not configured:
+                continue
+            if not current:
+                result[kind] = 'recovering'
+            elif not policy.enabled or kind == 'sound' and not self._sound_input_open():
+                result[kind] = 'paused'
+            else:
+                try:
+                    result[kind] = review_health(reviewer.status())
+                except (OSError, ValueError, ImportError):
+                    result[kind] = 'recovering'
+        return result
 
     def status(self):
         for camera, seen in list(self.last_seen.items()):

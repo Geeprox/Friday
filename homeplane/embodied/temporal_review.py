@@ -10,6 +10,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from .rapid_review import MAX_CANDIDATE_AGE, RapidReviewWindow
+from .review_health import review_progress
 from .safety_recording import ReviewReceipt
 from .temporal_model import WINDOW_SPAN, MlxWindowProcess, VisualResult, VisualSourceChanged, model_readiness
 
@@ -20,6 +21,8 @@ class WindowState:
     revision: int
     frames: deque = field(default_factory=lambda: deque(maxlen=4))
     seen: float = 0
+    opened_at: float = 0
+    last_result_at: float | None = None
     submitted: float = -math.inf
     candidate: tuple | None = None
     followup: bool = False
@@ -90,7 +93,8 @@ class TemporalReviewer:
                 return
             # View changes retire every pixel/candidate, but must not erase
             # scheduling debt and repeatedly put this camera before its peers.
-            state = self.windows[camera] = WindowState(session, revision, submitted=self.served.get(camera, -math.inf))
+            state = self.windows[camera] = WindowState(
+                session, revision, opened_at=captured, submitted=self.served.get(camera, -math.inf))
         state.seen = captured
         if posture_track != state.posture_track:
             state.posture_track, state.posture_since = posture_track, captured
@@ -249,6 +253,7 @@ class TemporalReviewer:
             if not self._current(camera, state, frames):
                 return
             self.completed += 1
+            state.last_result_at = frames[-1][0]
             self.error = None
             self.failures = 0
             if rapid:
@@ -325,6 +330,8 @@ class TemporalReviewer:
             frames = tuple(state.frames)
             if len(frames) == 4 and state.posture_subject(frames) and self._current(posture.camera, state, frames):
                 posture_camera = posture.camera
+        live = [state for camera, state in self.windows.items()
+                if state.frames and self._current(camera, state, state.frames)]
         return dict(
             **ready,
             enabled=bool(policy.enabled and policy.visual_review),
@@ -335,6 +342,7 @@ class TemporalReviewer:
             resident=bool(getattr(self.engine, "process", None)),
             peak_mlx_mib=round(getattr(self.engine, "peak_mlx_bytes", 0) / 1024**2),
             camera_count=len(self.windows),
+            progress=review_progress(live, self.clock(), self._corroboration_limit()),
             posture_ready_camera=posture_camera,
             posture_revision=policy.revision if posture_camera else None,
         )

@@ -1,6 +1,6 @@
 /* Local safety review. Untrusted names and observations are always text nodes. */
 import {soundReviewNames as soundNames,isSafetyOutputTest as isOutputTest,safetyEventTitle as eventTitle,isRapidMovementReview} from './safety-event-labels.js';
-export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiveSettings=()=>go('Settings'),initialEventId=null,onEventSelected=()=>{}}={}){
+export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiveSettings=()=>go('Settings'),initialEventId=null,initialReview=null,onEventSelected=()=>{}}={}){
  const base='/api/embodied/safety';let alive=true,report=null,busy=false,lastEvents='',lastDetail='',selected=null,selectionVersion=0,timer,events=[],historyLoaded=false,statusFresh=false,retrying=false,retryController=null,retryTimer=null;
  const statusFeed={read:null},historyFeed={read:null};
  const validEventId=id=>typeof id==='string'&&/^[a-f0-9]{32}$/.test(id)?id:null;let requested=validEventId(initialEventId);
@@ -23,7 +23,8 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  const postureField=add(el('div',null,{class:'safety-posture'}),el('label','趴卧复核镜头',{for:'safety-posture-camera'}),postureSelect,postureNote);
  postureField.hidden=true;postureSelect.disabled=true;let postureOptions='';
  postureSelect.onchange=()=>void selectPostureCamera();
- const visual=add(el('section',null,{class:'safety-visual'}),el('h2','本机画面复核'),el('p','查看面部遮挡、快速搬动等画面线索。'),visualStatus,
+ const visualTitle=el('h2','本机画面复核',{tabindex:'-1'}),soundTitle=el('h2','声音复核',{tabindex:'-1'});
+ const visual=add(el('section',null,{class:'safety-visual'}),visualTitle,el('p','查看面部遮挡、快速搬动等画面线索。'),visualStatus,
    add(el('div',null,{class:'safety-actions'}),visualToggle),postureField);
  const soundStatus=el('p','正在读取声音复核状态…',{role:'status','aria-live':'polite'});
  const soundToggle=button('开启声音复核',()=>change('sound_review'));soundToggle.setAttribute('role','switch');soundToggle.setAttribute('aria-checked','false');soundToggle.disabled=true;
@@ -32,7 +33,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  soundSearch.setAttribute('aria-describedby','safety-sound-search-note');soundSearch.hidden=true;
  const soundSearchNote=el('p','自动镜头在异响留档后查看附近画面。',{class:'caption',id:'safety-sound-search-note'});
  soundSearchNote.hidden=true;
- const sound=add(el('section',null,{class:'safety-sound'}),el('h2','声音复核'),el('p','留意疑似哭声、尖叫、破碎声和警报，记录后由你查看。'),soundStatus,
+ const sound=add(el('section',null,{class:'safety-sound'}),soundTitle,el('p','留意疑似哭声、尖叫、破碎声和警报，记录后由你查看。'),soundStatus,
    add(el('div',null,{class:'safety-actions'}),soundToggle,soundSearch),soundSearchNote,
    el('p','声音仅在本机内存处理。暂停声音输入会同时暂停复核。',{class:'caption'}));
  const capabilities=el('section',null,{class:'safety-capabilities','aria-label':'监测能力'}),list=el('section',null,{class:'safety-events','aria-label':'预警记录'}),detail=el('section',null,{class:'safety-detail','aria-label':'事件详情'});
@@ -118,7 +119,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    const model=next.visual_review||{};visualToggle.textContent=next.policy.visual_review?'关闭画面复核':'开启画面复核';visualToggle.setAttribute('aria-checked',String(Boolean(next.policy.visual_review)));visualToggle.disabled=busy||(!next.policy.visual_review&&(!next.policy.enabled||!model.available));
    renderPosture();
    const modelReasons={model_not_installed:'本机模型尚未安装，完成本地模型配置后可开启。',model_pin_mismatch:'本机模型需要核对，重新检查模型文件后重试。',local_runtime_missing:'本机运行环境尚未就绪，完成本地模型配置后重试。',apple_silicon_required:'当前主机不支持这套本地模型。',memory_pressure:'本机内存紧张，画面复核已暂缓。',memory_capacity:'本机可用内存容量不足，画面复核已暂缓。',memory_unknown:'暂时无法检查本机内存，稍后自动重试。',cpu_busy:'本机正在忙，稍后继续复核。',model_busy:'本机模型正在处理其他请求，稍后重试。',visual_review_deferred:'画面复核暂不可用，请检查本机模型后重试。'};
-   const visualMessage=!model.available?(modelReasons[model.reason]||'本机模型尚未就绪，完成配置后可开启。'):!next.policy.enabled?'先开启监测。':next.policy.visual_review&&model.error?(modelReasons[model.error]||'画面复核已暂缓，稍后重试。'):'';
+   const visualMessage=!model.available?(modelReasons[model.reason]||'本机模型尚未就绪，完成配置后可开启。'):!next.policy.enabled?'先开启监测。':next.policy.visual_review?(model.error?(modelReasons[model.error]||'画面复核已暂缓，稍后重试。'):({waiting_input:'等待摄像头画面。',waiting:'等待首轮画面复核。',delayed:'画面复核延迟较高。'}[model.progress]||'')):'';
    if(visualStatus.textContent!==visualMessage)visualStatus.textContent=visualMessage;visualStatus.hidden=!visualMessage;
    const soundModel=next.sound_review||{};soundToggle.textContent=next.policy.sound_review?'关闭声音复核':'开启声音复核';soundToggle.setAttribute('aria-checked',String(Boolean(next.policy.sound_review)));availability();
    soundSearch.hidden=soundSearchNote.hidden=typeof next.sound_search!=='boolean'||
@@ -126,7 +127,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    soundSearch.textContent=next.sound_search?'关闭异响后环视':'开启异响后环视';
    soundSearch.setAttribute('aria-checked',String(next.sound_search===true));
    const supported=(soundModel.supported_types||[]).filter(kind=>soundNames[kind]).map(kind=>soundNames[kind]);
-   soundStatus.textContent=!soundModel.available?'当前版本尚未提供本机声音复核。':!next.policy.enabled?'开启监测后可使用声音复核。':!next.policy.sound_review?'声音复核已关闭。':soundModel.input_paused?'声音输入已暂停。':soundModel.error?({'sound_memory_pressure':'本机内存紧张，稍后自动重试。','sound_cpu_busy':'本机正忙，稍后自动重试。','sound_labels_unavailable':'本机分类器尚未提供这些声音类别。'}[soundModel.error]||'声音复核暂缓，稍后自动重试。'):supported.length?'已开启 · '+supported.join('、'):'已开启，等待摄像头声音。';
+   soundStatus.textContent=!soundModel.available?'当前版本尚未提供本机声音复核。':!next.policy.enabled?'开启监测后可使用声音复核。':!next.policy.sound_review?'声音复核已关闭。':soundModel.input_paused?'声音输入已暂停。':soundModel.error?({'sound_memory_pressure':'本机内存紧张，稍后自动重试。','sound_cpu_busy':'本机正忙，稍后自动重试。','sound_labels_unavailable':'本机分类器尚未提供这些声音类别。'}[soundModel.error]||'声音复核暂缓，稍后自动重试。'):({waiting_input:'等待摄像头声音。',waiting:'等待首轮声音复核。',delayed:'声音复核延迟较高。'}[soundModel.progress]||(supported.length?'已开启 · '+supported.join('、'):'已开启，等待摄像头声音。'));
    const count=next.worker.cameras?.filter(c=>c.fresh).length||0;
    const recording=next.worker.recording;
    const recordingFailure=recording?.dropped>0?'有提醒未能保存，请检查本机存储。':recording?.unconfirmed>0?'有提醒的保存结果尚未确认，请查看记录并检查本机存储。':recording?.partial>0?'有提醒的画面未完整保存，可查看已保存的记录。':'提醒记录暂不可用，请检查本机存储。';
@@ -299,6 +300,14 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    if(!reasons[found.code])recordings.append(button('录像设置',onArchiveSettings));
   }catch{unavailable();}
  }
+ function focusReview(review){
+  const title=review==='visual'?visualTitle:review==='sound'?soundTitle:null;
+  if(!alive||!title)return;
+  requested=null;
+  settings.open=true;
+  title.focus();
+ }
+ if(initialReview&&!requested)focusReview(initialReview);
  availability();refresh();timer=setInterval(()=>{if(!busy)refresh();},5000);
- return{selectEvent,dispose(){alive=false;retireRead(statusFeed);retireRead(historyFeed);selectionVersion++;clearInterval(timer);clearTimeout(retryTimer);retryController?.abort();stopRecording();root.remove();}};
+ return{selectEvent,focusReview,dispose(){alive=false;retireRead(statusFeed);retireRead(historyFeed);selectionVersion++;clearInterval(timer);clearTimeout(retryTimer);retryController?.abort();stopRecording();root.remove();}};
 }

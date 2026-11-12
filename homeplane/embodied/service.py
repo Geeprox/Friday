@@ -256,6 +256,7 @@ class EmbodiedService:
                     game=value.get("game"),
                     recording=value.get("recording"),
                     safety_recording=value.get('safety_recording'),
+                    safety_review=value.get('safety_review'),
                     camera_control=value.get("camera_control"),
                     home=value.get("home"),
                     interactions=value.get('interactions'),
@@ -269,6 +270,7 @@ class EmbodiedService:
         if source != self._game_source():
             base.pop('game', None)
             base.pop('safety_recording', None)
+            base.pop('safety_review', None)
             base.update(state='unavailable', owned=False, capture_enabled=self.capture_enabled,
                         recovery_pending=self.recovery_pending, camera_sessions=[], latency_ms=None)
         elif base['state'] != 'unavailable':

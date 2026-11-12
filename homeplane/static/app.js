@@ -105,19 +105,22 @@ async function api(path, options = {}) {
 }
 let requestedTaskAttention=null;
 let requestedRecordingCamera=null;
+let requestedSafetyReview=null;
 function taskAttentionId(value){return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)?value:null;}
 function safetyEventId(value){return typeof value==='string'&&/^[a-f0-9]{32}$/.test(value)?value:null;}
+function safetyReviewKind(value){return ['visual','sound'].includes(value)?value:null;}
 function recordingCameraId(value){return typeof value==='string'&&/^cam_[a-f0-9]{10}$/.test(value)?value:null;}
 function pageLocation(){
   const [path,query='']=location.hash.slice(1).split('?');
   const name=pages.find(name=>name.toLowerCase().replace(' ','-')===path);
   const params=new URLSearchParams(query);
-  return {name,eventId:name==='Safety'?safetyEventId(params.get('event')):null,
+  const eventId=name==='Safety'?safetyEventId(params.get('event')):null;
+  return {name,eventId,review:name==='Safety'&&!eventId?safetyReviewKind(params.get('review')):null,
     attentionId:name==='Automations'?taskAttentionId(params.get('attention')):null,
     recordingCamera:name==='Activity'?recordingCameraId(params.get('camera')):null};
 }
-function rememberSafetyEvent(id){if(page!=='Safety')return;requestedSafetyEvent=safetyEventId(id);history.replaceState(null,'','#safety'+(requestedSafetyEvent?'?event='+requestedSafetyEvent:''));}
-function go(name,{eventId=null,attentionId=null,recordingCamera=null}={}){
+function rememberSafetyEvent(id){if(page!=='Safety')return;requestedSafetyReview=null;requestedSafetyEvent=safetyEventId(id);history.replaceState(null,'','#safety'+(requestedSafetyEvent?'?event='+requestedSafetyEvent:''));}
+function go(name,{eventId=null,review=null,attentionId=null,recordingCamera=null}={}){
   const changed=page!==name;
   const camera=name==='Activity'?recordingCameraId(recordingCamera):null;
   const recordingScopeChanged=name==='Activity'&&requestedRecordingCamera!==camera;
@@ -127,17 +130,20 @@ function go(name,{eventId=null,attentionId=null,recordingCamera=null}={}){
   }
   page=name;
   requestedSafetyEvent=name==='Safety'?safetyEventId(eventId):null;
+  requestedSafetyReview=name==='Safety'&&!requestedSafetyEvent?safetyReviewKind(review):null;
   requestedTaskAttention=name==='Automations'?taskAttentionId(attentionId):null;
   requestedRecordingCamera=camera;
   lastTrace=null;
   const query=new URLSearchParams();
   if(requestedSafetyEvent)query.set('event',requestedSafetyEvent);
+  if(requestedSafetyReview)query.set('review',requestedSafetyReview);
   if(requestedTaskAttention)query.set('attention',requestedTaskAttention);
   if(camera)query.set('camera',camera);
   const suffix=query.toString();
   history.replaceState(null,'','#'+name.toLowerCase().replace(' ','-')+(suffix?'?'+suffix:''));
   render();
   if(page==='Safety'&&requestedSafetyEvent)experienceView?.selectEvent?.(requestedSafetyEvent);
+  if(page==='Safety'&&requestedSafetyReview)experienceView?.focusReview?.(requestedSafetyReview);
   if(page==='Automations')experienceView?.selectTaskAttention?.(requestedTaskAttention);
   if(changed||recordingScopeChanged){
     const heading=$('page-title');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});
@@ -355,7 +361,7 @@ function render() {
   renderSourceStatus();
   if(page==='Safety'){
     experiencePage=page;
-    import('/static/safety.js').then(({mountSafety})=>{if(experienceCurrent===experienceVersion&&experiencePage===page)experienceView=mountSafety(content,{go,initialEventId:requestedSafetyEvent,onEventSelected:rememberSafetyEvent,onOpenRecording:openEventRecording,onArchiveSettings:()=>{requestArchiveSettings=true;go('Settings');}});}).catch(()=>{if(page==='Safety')content.append(note('预警页面暂不可用，请刷新。',true));});return;
+    import('/static/safety.js').then(({mountSafety})=>{if(experienceCurrent===experienceVersion&&experiencePage===page)experienceView=mountSafety(content,{go,initialEventId:requestedSafetyEvent,initialReview:requestedSafetyReview,onEventSelected:rememberSafetyEvent,onOpenRecording:openEventRecording,onArchiveSettings:()=>{requestArchiveSettings=true;go('Settings');}});}).catch(()=>{if(page==='Safety')content.append(note('预警页面暂不可用，请刷新。',true));});return;
   }
   if(page==='Games'){
     const version=gamesViewVersion;
@@ -2700,8 +2706,8 @@ async function refreshPassive() {
 $('brand-home')?.addEventListener('click',event => {event.preventDefault();go('Home');});
 $('refresh').addEventListener('click',refresh);
 $('developer-mode').addEventListener('change',()=>{if(page==='Developer'&&!$('developer-mode').checked)page='Home';navigation();render();});
-const initial=pageLocation();if(initial.name){page=initial.name;requestedSafetyEvent=initial.eventId;requestedTaskAttention=initial.attentionId;requestedRecordingCamera=initial.recordingCamera;}
-globalThis.addEventListener?.('hashchange',()=>{const next=pageLocation();if(next.name&&(next.name!==page||next.eventId!==requestedSafetyEvent||next.attentionId!==requestedTaskAttention||next.recordingCamera!==requestedRecordingCamera))go(next.name,next);});
+const initial=pageLocation();if(initial.name){page=initial.name;requestedSafetyEvent=initial.eventId;requestedSafetyReview=initial.review;requestedTaskAttention=initial.attentionId;requestedRecordingCamera=initial.recordingCamera;}
+globalThis.addEventListener?.('hashchange',()=>{const next=pageLocation();if(next.name&&(next.name!==page||next.eventId!==requestedSafetyEvent||next.review!==requestedSafetyReview||next.attentionId!==requestedTaskAttention||next.recordingCamera!==requestedRecordingCamera))go(next.name,next);});
 render(); refresh();
 // OAuth return and browser restoration must refresh authorization independently of HA polling.
 globalThis.addEventListener?.('pageshow', () => { if (page === 'Settings') void refreshHaStatus(); });
