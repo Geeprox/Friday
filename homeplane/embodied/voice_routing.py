@@ -1,0 +1,122 @@
+"""从各路本机语音段选出同一句话的收音来源。"""
+
+import asyncio
+from collections import deque
+from contextlib import contextmanager
+from dataclasses import dataclass
+import time
+
+
+@dataclass(frozen=True, slots=True)
+class Utterance:
+    pcm: bytes
+    owner: int | str | None
+    captured: float
+    attending: bool
+    epoch: int
+    source: tuple[str, str]
+    started: float
+    ended: float
+    level: float
+
+
+def overlaps(first, second):
+    return first[0] <= second[1] + .25 and second[0] <= first[1] + .25
+
+
+class VoiceRouting:
+    COLLECT_SECONDS = .35
+    START_LIMIT = 3.0
+    REPEAT_LIMIT = 12.0
+
+    def __init__(self, input_open, *, clock=time.monotonic):
+        self.input_open = input_open
+        self.clock = clock
+        self.pending = {}
+        self.recent = deque(maxlen=12)
+        self.reply_until = 0.0
+        self.replies = 0
+        self.task = None
+
+    def listening(self, now):
+        return self.input_open() and self.replies == 0 and now >= self.reply_until
+
+    @contextmanager
+    def replying(self, until):
+        self.reply_until = max(self.reply_until, until)
+        self.pending.clear()
+        self.replies += 1
+        try:
+            yield
+        finally:
+            self.replies -= 1
+            self.reply_until = max(self.reply_until, self.clock() + .25)
+
+    def discard(self, camera):
+        self.pending.pop(camera, None)
+
+    def _eligible(self, service, item, now):
+        return (self.listening(now) and item.started >= self.reply_until
+                and 0 <= now - item.captured <= self.START_LIMIT
+                and service.current(item.captured, item.epoch)
+                and not any(0 <= now - admitted <= self.REPEAT_LIMIT
+                            and overlaps((item.started, item.ended), window)
+                            for admitted, window in self.recent))
+
+    def offer(self, service, item):
+        now = self.clock()
+        if not self._eligible(service, item, now):
+            return
+        camera = service.camera_id
+        self.pending[camera] = (service, item)
+        asyncio.get_running_loop().call_later(
+            self.START_LIMIT - (now - item.captured), self._expire, camera, item.captured)
+        if self.task is None:
+            self.task = asyncio.create_task(self._dispatch(), name='friday-voice-routing')
+
+    def _expire(self, camera, captured):
+        candidate = self.pending.get(camera)
+        if candidate is not None and candidate[1].captured == captured:
+            self.discard(camera)
+
+    def _select(self, now):
+        fresh = [(service, item) for service, item in self.pending.values()
+                 if self._eligible(service, item, now)]
+        self.pending.clear()
+        if not fresh:
+            return None
+        _, first = min(fresh, key=lambda row: (row[1].started, row[0].camera_id))
+        window = first.started, first.ended
+        candidates = []
+        for service, item in fresh:
+            if overlaps(window, (item.started, item.ended)):
+                candidates.append((service, item))
+            else:
+                self.pending[service.camera_id] = (service, item)
+        # 注视只在收音证据接近时加权，入镜本身不影响录入资格。
+        service, item = max(candidates, key=lambda row: (
+            row[1].level * (1.10 if row[1].attending else 1.0), row[1].ended - row[1].started,
+            row[0].camera_id))
+        window = min(item.started for _, item in candidates), max(item.ended for _, item in candidates)
+        return service, item, window
+
+    async def _dispatch(self):
+        try:
+            while self.pending:
+                await asyncio.sleep(self.COLLECT_SECONDS)
+                selection = self._select(self.clock())
+                if selection is None:
+                    continue
+                service, item, window = selection
+                job = service.spawn(self._transcribe(service, item, window))
+                await asyncio.gather(job, return_exceptions=True)
+        finally:
+            self.task = None
+
+    async def _transcribe(self, service, item, window):
+        now = self.clock()
+        if not self._eligible(service, item, now):
+            return
+        self.recent.append((now, window))
+        service.voice_busy = True
+        await service.transcribe(item.pcm, item.owner, item.captured, item.attending, item.epoch, item.source)

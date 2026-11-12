@@ -130,9 +130,9 @@ def test_primary_game_handoff_does_not_block_another_camera_or_its_microphone(mo
     configure(monkeypatch)
     fleet = InteractionFleet()
     fleet.session(CAMERA, "SYNTHETIC")
-    assert fleet.voice(CAMERA, 0, False, people=1, session="SYNTHETIC")
+    assert fleet.voice(CAMERA, 0, enabled=True, session="SYNTHETIC")
     consume(fleet)
-    assert fleet.voice_camera == CAMERA
+    assert fleet.voice_current(CAMERA, 1)
     events = []
     for i in range(12, 40):
         assert not step(fleet, i / 10, label="open_palm", pose=person(raised=True))

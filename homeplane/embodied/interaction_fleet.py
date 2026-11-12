@@ -12,18 +12,13 @@ from .interaction import load
 
 
 class InteractionFleet:
-    def __init__(self):
+    def __init__(self, *, voice_revoked=None):
         self.cameras = {}
         self.operators = {}
         self.recent = {}
         self.latched = set()
         self.receipts = deque(maxlen=12)
-        self.voice_camera = None
-        self.voice_until = 0
-        self.voice_session = None
-        self.voice_order = {}
-        self.voice_sequence = 0
-        self.voice_now = -math.inf
+        self.voice_revoked = voice_revoked or (lambda camera: None)
 
     @staticmethod
     def identity(person):
@@ -33,8 +28,8 @@ class InteractionFleet:
     def session(self, camera, session):
         old = self.cameras.get(camera)
         if not old or old['session'] != session:
-            if self.voice_camera == camera:
-                self.voice_camera = self.voice_session = None
+            if old:
+                self.voice_revoked(camera)
             engine=InteractionEngine(camera,session)
             if old and old['engine'].rearm:engine.require_release(not_before=old['engine'].release_not_before)
             self.cameras[camera] = dict(session=session, engine=engine,game_window=old.get('game_window')if old else None,
@@ -48,11 +43,8 @@ class InteractionFleet:
             item.update(owner=None, candidate=None, suppress_ok=False, gestures={}, people=0, state='waiting')
             item['engine'].reset()
             if voice:
-                item.update(voice_enabled=False, voice_seen=-100., voice_speaking=False,
-                            voice_speech_since=None, attending=False)
-        if voice and self.voice_camera == camera:
-            self.voice_camera = None
-            self.voice_session = None
+                item['voice_enabled'] = False
+                self.voice_revoked(camera)
 
     def operator(self, camera, session, people, hands, now, *, stationary=True):
         item = self.session(camera, session)
@@ -60,7 +52,8 @@ class InteractionFleet:
             self.clear(camera)
             return None
         if not stationary or not 0 <= now-item['seen'] <= 1.5:
-            self.clear(camera)
+            # 画面暂时无法判定手势时，当前采集的收音仍可接收显式唤醒。
+            self.clear(camera, voice=False)
         item.update(seen=now, people=len(people), state='ready' if stationary else 'moving')
         self.operators = {p:t for p,t in self.operators.items() if 0 <= now-t < 120}
         if not stationary:
@@ -176,66 +169,21 @@ class InteractionFleet:
                     and item['state'] == 'ready' and 0 <= now-event['observed_mono'] <= 1.5
                     and now-item['seen'] <= 1.5)
 
-    def voice(self, camera, now, attending, *, speaking=False, enabled=True, people=None, session=None):
-        """Arbitrate fresh microphone windows independently of callback order.
-
-        Qualified attention outranks presence, and presence outranks empty views.
-        Same-priority cameras take turns after four seconds. A current utterance
-        holds its source for at most 8.5 seconds; callers supply *fresh* VAD state.
-        No audio, transcript or identity inference enters this coordinator.
-        """
+    def voice(self, camera, now, *, enabled, session):
+        """各镜头依据自己的识别帧续期收音，语句来源在收到声音后选定。"""
         item = self.cameras.get(camera)
-        # Observations establish sessions. A delayed audio callback must never
-        # replace the new session or move the shared microphone clock backwards.
-        if item is None or (session is not None and item['session'] != session):
+        if (item is None or item['session'] != session or not math.isfinite(now)
+                or now < item.get('voice_seen', -math.inf)):
             return False
-        if not math.isfinite(now) or now < self.voice_now:
-            return False
-        self.voice_now = now
-        count = item['people'] if people is None else people
-        count = count if isinstance(count, int) and 0 <= count <= 32 else 0
-        was_speaking = item.get('voice_speaking', False)
-        item.update(voice_seen=now, voice_enabled=bool(enabled), voice_people=count,
-                    attending=bool(enabled and attending and count), voice_speaking=bool(enabled and speaking))
-        if not item['voice_speaking']:
-            item['voice_speech_since'] = None
-        elif self.voice_camera == camera and (not was_speaking or item.get('voice_speech_since') is None):
-            item['voice_speech_since'] = now
-
-        def fresh(value):
-            return value.get('voice_enabled', False) and 0 <= now-value.get('voice_seen', -100.) <= 1.5
-
-        def priority(value):
-            return 2 if value.get('attending') else 1 if value.get('voice_people', 0) else 0
-
-        eligible = {key:value for key,value in self.cameras.items() if fresh(value)}
-        current = eligible.get(self.voice_camera)
-        if current is None or current['session'] != self.voice_session:
-            self.voice_camera = self.voice_session = None
-            current = None
-        if not eligible:
-            return False
-        speech_at = current.get('voice_speech_since') if current else None
-        in_utterance = bool(current and current.get('voice_speaking') and speech_at is not None
-                            and 0 <= now-speech_at < 8.5)
-        highest = max(priority(value) for value in eligible.values())
-        if not in_utterance and (current is None or now >= self.voice_until or highest > priority(current)):
-            best = [key for key,value in eligible.items() if priority(value) == highest]
-            selected = min(best, key=lambda key:(self.voice_order.get(key, 0), key))
-            self.voice_sequence += 1
-            self.voice_order[selected] = self.voice_sequence
-            self.voice_camera = selected
-            self.voice_session = eligible[selected]['session']
-            self.voice_until = now + 4
-        return bool(enabled and self.voice_camera == camera and item['session'] == self.voice_session)
+        if item.get('voice_enabled') and enabled is not True:
+            self.voice_revoked(camera)
+        item.update(voice_seen=now, voice_enabled=enabled is True)
+        return item['voice_enabled']
 
     def voice_current(self, camera, now):
-        """Check a packet's microphone lease without renewing or selecting it."""
+        """只检查该镜头的收音时限，音频包本身不能续期。"""
         item = self.cameras.get(camera)
-        return bool(item and math.isfinite(now) and now >= self.voice_now
-                    and self.voice_camera == camera and item['session'] == self.voice_session
-                    and item.get('voice_enabled', False)
-                    and 0 <= now-item.get('voice_seen', -100.) <= 1.5)
+        return bool(item and item.get('voice_enabled') and 0 <= now-item['voice_seen'] <= 1.5)
 
     def public(self, now):
         return dict(scope='all_cameras', cameras=[dict(camera=k, state=v['state'] if now-v['seen'] < 1.5 else 'waiting',
