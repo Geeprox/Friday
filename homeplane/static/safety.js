@@ -203,7 +203,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  function focusDetail(heading){root.dataset.detailOpen='true';heading.focus?.({preventScroll:true});detail.scrollIntoView?.({block:'start',behavior:'instant'});}
  function missingEvent(id,{focus=false}={}){selected=id;lastDetail='';selectionVersion++;stopRecording();recordings.replaceChildren();frameButtons.clear();detailFooter.replaceChildren();detail.hidden=false;for(const row of eventRows.values())row.setAttribute('aria-current','false');const heading=el('h2','这条提醒已不在记录中',{tabindex:'-1'});detailBody.replaceChildren(heading,button('查看近期提醒',()=>{const current=events.find(e=>e.review==='unreviewed')||events[0];if(current)choose(current.id);else backToList();}));if(focus)focusDetail(heading);}
  const frameTime=frame=>new Date(frame.at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'});
- function frameGrid(event,frames,lookaround=false){
+ function frameGrid(event,frames){
    const grid=el('div',null,{class:'safety-frames'});
    const sequence=isRapidMovementReview(event)&&frames.length===4;
    if(sequence)grid.dataset.sequence='rapid';
@@ -211,23 +211,23 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
      const time=frameTime(frame);
      const phase=sequence?['动作前','动作前','动作中','动作后段'][frame.ordinal]:null;
      const caption=phase?phase+' · '+(frame.at-frames[0].at).toFixed(2)+' 秒':time;
-     const playable=lookaround&&event.simulated===false&&event.camera&&Number.isInteger(frame.ordinal)&&frame.ordinal>=0;
+     const playable=frame.recording_anchor===true&&Number.isSafeInteger(frame.ordinal)&&frame.ordinal>=0;
      const image=el('img',null,{src:base+'/events/'+event.id+'/frames/'+frame.ordinal,alt:playable?'':(phase||time)+'的关键帧',loading:'lazy'});
      if(playable){
        const play=button('',()=>void openRecordings(event,frame));
        play.className='safety-frame-play';
-       play.setAttribute('aria-label','回看 '+time+' 附近录像');
+       play.setAttribute('aria-label','回看 '+(phase?caption+'，':'')+time+' 附近录像');
        play.setAttribute('aria-pressed',String(selectedFrame===String(frame.ordinal)));
        play.setAttribute('data-recording-frame',String(frame.ordinal));
-       play.append(image,add(el('span',null,{class:'safety-frame-caption'}),el('span',time),el('span','回看')));
+       play.append(image,add(el('span',null,{class:'safety-frame-caption'}),el('span',caption),el('span','回看')));
        frameButtons.set(String(frame.ordinal),play);
        grid.append(add(el('figure'),play));
      }else grid.append(add(el('figure'),image,el('figcaption',caption)));
    }
    return grid;
  }
- function soundFrameGroup(title,event,frames,lookaround=false){
-   return add(el('section',null,{class:'safety-sound-evidence'}),el('h3',title),frameGrid(event,frames,lookaround));
+ function soundFrameGroup(title,event,frames){
+   return add(el('section',null,{class:'safety-sound-evidence'}),el('h3',title),frameGrid(event,frames));
  }
  function show(event,{focus=false}={}){
    const fingerprint=JSON.stringify(event);
@@ -263,13 +263,20 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    if(!rapid)detailBody.append(actions);
    if(searchFrames.length||sustained&&eventFrames.length){
      if(eventFrames.length)detailBody.append(soundFrameGroup(sustained?'哭声时的画面':'异响时的画面',event,eventFrames.sort((a,b)=>a.at-b.at)));
-     if(searchFrames.length)detailBody.append(soundFrameGroup('环视画面',event,searchFrames,true));
+     if(searchFrames.length)detailBody.append(soundFrameGroup('环视画面',event,searchFrames));
    }else if(eventFrames.length){
      detailBody.append(el('h3','关键帧'));
-     if(event.visual_kind==='prone_posture'&&event.frames.length===8){
-       const [first,...rest]=event.frames,second=rest[3];
-       detailBody.append(frameGrid(event,[first,second]));
-       const extra=add(el('details',null,{class:'safety-extra-frames'}),el('summary','查看其余关键帧'),frameGrid(event,rest.filter(frame=>frame!==second)));
+     const compared=event.kind==='visual_review'&&eventFrames.length===8&&
+       ['two_disjoint_local_windows','same_track_two_local_windows'].includes(event.basis);
+     if(compared){
+       const comparison=el('div',null,{class:'safety-review-windows'});
+       const first=eventFrames[0],second=eventFrames[eventFrames.length/2];
+       for(const [label,frame] of [['首次观察',first],['再次观察',second]]){
+         comparison.append(add(el('section'),el('h4',label),frameGrid(event,[frame])));
+       }
+       detailBody.append(comparison);
+       const extra=add(el('details',null,{class:'safety-extra-frames'}),el('summary','查看其余关键帧'),
+         frameGrid(event,eventFrames.filter(frame=>frame!==first&&frame!==second)));
        extra.open=Boolean(extraOpen);detailBody.append(extra);
      }else detailBody.append(frameGrid(event,eventFrames));
    }else detailBody.append(el('p',isOutputTest(event)?'播报测试不采集摄像头画面。':'没有可用关键帧。',{class:'caption'}));
@@ -291,7 +298,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
   const play=async item=>{if(owns())try{await onOpenRecording(recordings,item);}catch{unavailable();}};
   try{
    const found=await api('/events/'+event.id+'/recordings'+(frame?'?ordinal='+frame.ordinal:''));if(!owns())return;
-   if(frame&&(found.event_id!==event.id||found.frame_ordinal!==frame.ordinal))throw Error('unavailable');
+   if(found.event_id!==event.id||frame&&found.frame_ordinal!==frame.ordinal)throw Error('unavailable');
    if(found.recordings?.length===1){await play(found.recordings[0]);return;}
    recordings.replaceChildren();
    if(found.recordings?.length){recordings.append(el('h3','选择录像来源'));for(const item of found.recordings)recordings.append(button(item.camera_name,()=>void play(item)));return;}

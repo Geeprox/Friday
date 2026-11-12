@@ -136,12 +136,13 @@ test('verified sound-search views join the same incident in capture order and re
  view.dispose();
 });
 
-test('环视回看按当前关键帧查找，迟到的另一段回看不替换它',async()=>{
- const sound={...event('a'),frames:[{ordinal:0,at:1800000000},{ordinal:1,at:1800000006},{ordinal:2,at:1800000018}],
+test('声音与环视画面按各自时刻回看，迟到的另一段回看不替换当前选择',async()=>{
+ const sound={...event('a'),frames:[{ordinal:0,at:1800000000,recording_anchor:true},
+  {ordinal:1,at:1800000006,recording_anchor:true},{ordinal:2,at:1800000018,recording_anchor:true}],
   sound_search_views:[{step:1,ordinal:1},{step:2,ordinal:2}]};
  const f=fixture([sound]),view=f.mount({initialEventId:sound.id});await settle();
  const frame=ordinal=>all(f.root).find(n=>n.attrs['data-recording-frame']===String(ordinal));
- assert(!frame(0));assert(frame(1)&&frame(2));
+ assert(frame(0)&&frame(1)&&frame(2));
  assert(!f.calls.some(call=>call.path.includes('/recordings')));
  frame(1).onclick();await settle();frame(2).onclick();await settle();
  const path='/api/embodied/safety/events/'+sound.id+'/recordings?ordinal=';
@@ -170,17 +171,25 @@ test('a replaced posture camera needs a fresh selection and keeps its field thro
  view.dispose();
 });
 
-test('a posture candidate opens its own keyframes without implying a speaker action',async()=>{
- const prone={...event('a','visual_review'),visual_kind:'prone_posture',frames:Array.from({length:8},(_,ordinal)=>({ordinal,at:1800000000+ordinal}))};
+test('趴卧提醒分开两次观察，并按所选画面的采集时间回看',async()=>{
+ const prone={...event('a','visual_review'),visual_kind:'prone_posture',basis:'same_track_two_local_windows',
+  frames:Array.from({length:8},(_,ordinal)=>({ordinal,at:1800000000+ordinal,recording_anchor:ordinal===0||ordinal===4}))};
  const f=fixture([prone]),home=f.home();await settle();
  const notice=all(f.root).find(n=>n.attrs.class==='home-attention-item'&&n.textContent.includes('疑似趴卧'));
  assert(notice);notice.onclick();assert.equal(f.navigations[0][1].eventId,prone.id);home.dispose();
  const view=f.mount({initialEventId:prone.id});await settle();
  assert(f.by('h2','疑似趴卧'));assert(f.by('h3','关键帧'));
+ assert(f.by('h4','首次观察')&&f.by('h4','再次观察'));
  const frames=all(f.root).filter(n=>n.attrs.class==='safety-frames');
- const firstPair=all(frames[0]).filter(n=>n.tagName==='img').map(n=>n.attrs.src);
+ const firstPair=frames.slice(0,2).flatMap(group=>all(group).filter(n=>n.tagName==='img').map(n=>n.attrs.src));
  assert.deepEqual(firstPair,[0,4].map(index=>'/api/embodied/safety/events/'+prone.id+'/frames/'+index));
- assert.equal(all(frames[1]).filter(n=>n.tagName==='img').length,6);
+ assert.equal(all(frames[2]).filter(n=>n.tagName==='img').length,6);
+ assert(!all(frames[2]).some(n=>n.attrs['data-recording-frame']));
+ all(frames[0]).find(n=>n.attrs['data-recording-frame']==='0').onclick();await settle();
+ assert.equal(f.calls.at(-1).path,'/api/embodied/safety/events/'+prone.id+'/recordings?ordinal=0');
+ const replay={request:{time_range:{start:'first-window'}}};
+ f.resolveRecording({event_id:prone.id,frame_ordinal:0,recordings:[replay]});await settle();
+ assert.deepEqual(f.opened,[replay]);
  assert(!f.root.textContent.includes('未请求播报'));assert(!f.calls.some(c=>c.path.endsWith('/test')));
  await f.by('button','我已查看').onclick();assert.equal(f.events[0].review,'acknowledged');view.dispose();
 });

@@ -10,7 +10,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from .camera_audio import MAX_AGE, PCM_BYTES, SAMPLE_RATE, AdmittedAudio
+from .camera_audio import MAX_AGE, MAX_GAP, PCM_BYTES, SAMPLE_RATE, AdmittedAudio
 from .review_health import review_progress
 from .safety_recording import ReviewReceipt
 from .sound_model import AppleSoundProcess
@@ -19,6 +19,8 @@ INFANT_CRY_MAX_GAP_SAMPLES = int(SAMPLE_RATE * .4)
 INFANT_CRY_INTERVAL = 2.6
 INFANT_CRY_DEADLINE = INFANT_CRY_INTERVAL + MAX_AGE
 REVIEW_MAX_AGE = 6
+REVIEW_PACKETS = 10
+KEYFRAME_LOOKBACK = REVIEW_MAX_AGE + (REVIEW_PACKETS - 1) * MAX_GAP
 SOUND_SEARCH_START_AGE = 8
 SOUND_SEARCH_MAX_AGE = 20
 MAX_RECORDING_RECEIPTS = 40
@@ -51,7 +53,7 @@ class SoundWindow:
     capture: str
     epoch: int
     revision: int
-    packets: deque[SoundPacket] = field(default_factory=lambda: deque(maxlen=10))
+    packets: deque[SoundPacket] = field(default_factory=lambda: deque(maxlen=REVIEW_PACKETS))
     seen: float = -math.inf
     opened_at: float = 0
     last_result_at: float | None = None
@@ -185,7 +187,7 @@ class SoundReviewer:
 
     @staticmethod
     def _window_ready(state, now):
-        return (len(state.packets) == 10 and 0 <= now-state.seen <= MAX_AGE and now-state.submitted >= 2
+        return (len(state.packets) == REVIEW_PACKETS and 0 <= now-state.seen <= MAX_AGE and now-state.submitted >= 2
                 and state.packets[0].sample_start >= state.recorded_sample_end)
 
     def _followup_ready(self, camera, state):
@@ -211,7 +213,7 @@ class SoundReviewer:
                 return True
         state = self.windows.get(camera)
         if (state is None or state.session != session or state.revision != revision
-                or len(state.packets) != 10
+                or len(state.packets) != REVIEW_PACKETS
                 or not self._current(camera, state, tuple(state.packets))):
             return False
         active = (self.active_camera == camera and self.task is not None

@@ -161,7 +161,7 @@ def install(router, service, *, archive=None, infrastructure=None):
 
     @router.get("/api/embodied/safety/events")
     async def events():
-        return dict(events=await stored(store.events))
+        return dict(events=await stored(recordings.events))
 
     @router.get('/api/embodied/safety/events/{event_id}/recordings')
     async def event_recordings(event_id: str, ordinal: int | None = Query(None, ge=0, lt=SafetyStore.MAX_FRAMES)):

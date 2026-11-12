@@ -165,7 +165,7 @@ async def test_sound_search_recordings_use_the_selected_saved_view_on_the_origin
         policy = runtime.store.configure_sound_search(policy.revision, True)
         saved = runtime.store.create(dict(kind='sound_review', simulated=False, camera=CAMERA['id'],
             session='synthetic-session', camera_source_context=SOURCE, captured_at=CAPTURED),
-            frames=[(CAPTURED-1,b'synthetic-original')])
+            frames=[(CAPTURED-1,b'synthetic-original'), (CAPTURED+1,b'synthetic-unverified')])
         unrelated = event(runtime.store, kind='sound_review')
         for step, delta in enumerate((6,18),start=1):
             runtime.store.append_sound_search_frame(saved['id'], (CAMERA['id'],'synthetic-session',SOURCE),
@@ -174,19 +174,21 @@ async def test_sound_search_recordings_use_the_selected_saved_view_on_the_origin
         path = '/api/embodied/safety/events/'+saved['id']+'/recordings'
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
             original = (await client.get(path)).json()
-            view = (await client.get(path, params={'ordinal':2,'captured_at':CAPTURED-600})).json()
+            original_frame = (await client.get(path, params={'ordinal':0})).json()
+            assert datetime.fromisoformat(original_frame['recordings'][0]['anchor_at']).timestamp() == CAPTURED-1
+            view = (await client.get(path, params={'ordinal':3,'captured_at':CAPTURED-600})).json()
             request = ArchiveResolveRequest.model_validate(view['recordings'][0]['request'])
-            assert view['event_id'] == saved['id'] and view['frame_ordinal'] == 2
+            assert view['event_id'] == saved['id'] and view['frame_ordinal'] == 3
             assert request.time_range.start.timestamp() == CAPTURED+3
             assert request.time_range.end.timestamp() == CAPTURED+33
             assert ArchiveResolveRequest.model_validate(original['recordings'][0]['request']).time_range.end.timestamp() == CAPTURED+15
             assert view['source_scan_attempted'] is False and view['media_read_attempted'] is False
-            for endpoint, ordinal in [(path,0),(path,9),(path.replace(saved['id'],unrelated['id']),2)]:
+            for endpoint, ordinal in [(path,1),(path,9),(path.replace(saved['id'],unrelated['id']),3)]:
                 reply = (await client.get(endpoint,params={'ordinal':ordinal})).json()
                 assert reply['code'] == 'event_frame_unavailable' and not reply['recordings']
             assert (await client.get(path,params={'ordinal':22})).status_code == 422
             registry[0]['source_context'] = 'b'*64
-            assert (await client.get(path,params={'ordinal':2})).json()['code'] == 'archive_capture_mapping_changed'
+            assert (await client.get(path,params={'ordinal':3})).json()['code'] == 'archive_capture_mapping_changed'
             registry[0]['source_context'] = SOURCE
             assert calls == before
             clock[0] = clock[0].replace(second=3)
@@ -195,7 +197,65 @@ async def test_sound_search_recordings_use_the_selected_saved_view_on_the_origin
             assert not resolved.media_copied and not resolved.device_write_attempted
             with runtime.store.connect() as db:
                 db.execute('UPDATE safety_events SET at=0 WHERE id=?',(saved['id'],))
-            assert (await client.get(path,params={'ordinal':2})).status_code == 404
+            assert (await client.get(path,params={'ordinal':3})).status_code == 404
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_both_saved_visual_windows_resolve_using_the_selected_keyframe(setup, tmp_path, monkeypatch):
+    """通过原留档队列和 HTTP 入口读取相隔较远的两段画面。"""
+    from homeplane.embodied import safety, safety_api
+
+    index, _, _, _, _, clock, calls = setup
+    catalog(index)
+    await mapped(index)
+    captured_at = CAPTURED + 15
+    monkeypatch.setattr(safety, 'time', SimpleNamespace(monotonic=lambda: 100.0, time=lambda: captured_at))
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path / 'private')
+    router = APIRouter()
+    runtime = safety_api.install(router, SimpleNamespace(process=None), archive=index)
+    app = FastAPI()
+    app.include_router(router)
+    try:
+        runtime.store.configure(SafetyPolicy(enabled=True, visual_review=True))
+        await runtime.sync_policy()
+        await runtime.observe(CAMERA['id'], 'synthetic-session', [], 100., 100., stable=True,
+                              source_context=SOURCE, source_name=CAMERA['name'])
+        frames = [(stamp, b'synthetic-frame') for stamp in (70, 71, 72, 73, 97, 98, 99, 100)]
+        assert runtime._visual_event(CAMERA['id'], 'synthetic-session', frames,
+                                     SimpleNamespace(event='face_obscured', observation='示例线索'), captured_at)
+        await runtime.drain()
+        entry = runtime.store.events()[0]
+        runtime.store.append_frame(entry['id'], captured_at-200, b'synthetic-invalid-time')
+        legacy = runtime.store.create(dict(kind='visual_review', simulated=False, camera=CAMERA['id'],
+                                           captured_at=captured_at), [(captured_at, b'synthetic-legacy')])
+        prior = list(calls)
+        base = '/api/embodied/safety/events'
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            history = (await client.get(base)).json()['events']
+            rows = {row['id']: row['frames'] for row in history}
+            assert [f['ordinal'] for f in rows[entry['id']] if f.get('recording_anchor')] == list(range(8))
+            assert not rows[legacy['id']][0].get('recording_anchor')
+            path = base+'/'+entry['id']+'/recordings'
+            references = []
+            for ordinal, at in ((0,captured_at-30),(4,captured_at-3)):
+                found = (await client.get(path, params={'ordinal':ordinal,'captured_at':captured_at+500})).json()
+                assert found['frame_ordinal'] == ordinal
+                reference, = found['recordings']
+                assert datetime.fromisoformat(reference['anchor_at']).timestamp() == at
+                request = ArchiveResolveRequest.model_validate(reference['request'])
+                assert request.time_range.start.timestamp() == at-15
+                assert request.time_range.end.timestamp() == at+15
+                references.append(request)
+            assert (await client.get(path, params={'ordinal':8})).json()['code'] == 'event_frame_unavailable'
+            assert calls == prior
+        clock[0] = clock[0].replace(second=3)
+        for request in references:
+            resolved = await index.resolve(request)
+            assert resolved.time_range == request.time_range
+            assert any(segment.status=='ready' and segment.camera_id==request.camera_id for segment in resolved.segments)
+            assert not resolved.media_copied and not resolved.device_write_attempted
     finally:
         await runtime.close()
 

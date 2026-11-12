@@ -6,10 +6,63 @@ from datetime import UTC, datetime, timedelta
 
 from homeplane.archive_contracts import ArchiveResolveRequest
 
+from .rapid_review import MAX_FRAME_GAP
+from .safety_recording import SafetyRecorder
+from .sound_review import KEYFRAME_LOOKBACK, SOUND_SEARCH_MAX_AGE
+from .temporal_model import WINDOW_SPAN
+from .temporal_review import MAX_CORROBORATION_SECONDS, POSTURE_CORROBORATION_SECONDS
+
+
+REPLAY_KINDS = {'fall', 'visual_review', 'sound_review'}
+
+
+def _camera_source(event):
+    camera, source = event.get('camera'), event.get('camera_source_context')
+    if (isinstance(camera, str) and re.fullmatch(r'cam_[a-f0-9]{10}', camera)
+            and isinstance(source, str) and re.fullmatch(r'[a-f0-9]{64}', source)):
+        return camera, source
+    return None
+
+
+def _time(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _recording_frame(event, ordinal, stamp):
+    """按同一条留档的采集时序校验关键帧，回看请求不接受客户端时间。"""
+    captured = event.get('captured_at')
+    if type(ordinal) is not int or ordinal < 0 or not (_time(stamp) and _time(captured)):
+        return False
+    if event['kind'] == 'fall':
+        return captured - SafetyRecorder.PRE_WINDOW <= stamp <= captured + SafetyRecorder.POST_WINDOW
+    if event['kind'] == 'visual_review':
+        if event.get('basis') == 'same_pair_rapid_window':
+            lookback = 3 * MAX_FRAME_GAP
+        elif event.get('visual_kind') == 'prone_posture':
+            lookback = POSTURE_CORROBORATION_SECONDS + WINDOW_SPAN
+        else:
+            lookback = MAX_CORROBORATION_SECONDS + WINDOW_SPAN
+        return captured - lookback <= stamp <= captured
+    views = event.get('sound_search_views')
+    if isinstance(views, list) and any(isinstance(view, dict) and type(view.get('ordinal')) is int
+            and view['ordinal'] == ordinal and type(view.get('step')) is int and 1 <= view['step'] <= 3
+            for view in views):
+        return captured < stamp <= captured + SOUND_SEARCH_MAX_AGE
+    return ordinal < 3 and captured - KEYFRAME_LOOKBACK <= stamp <= captured
+
 
 class SafetyArchive:
     def __init__(self, store, archive):
         self.store, self.archive = store, archive
+
+    def events(self):
+        events = self.store.events()
+        for event in events:
+            if event.get('simulated') is False and event.get('kind') in REPLAY_KINDS and _camera_source(event):
+                for frame in event['frames']:
+                    if _recording_frame(event, frame['ordinal'], frame['at']):
+                        frame['recording_anchor'] = True
+        return events
 
     def references(self, event_id, ordinal=None):
         event, frame_at = self.store.recording_target(event_id, ordinal)
@@ -21,24 +74,17 @@ class SafetyArchive:
                 value['frame_ordinal'] = ordinal
             return value
 
-        if event.get('simulated') is not False or event.get('kind') not in {'fall', 'visual_review', 'sound_review'}:
+        if event.get('simulated') is not False or event.get('kind') not in REPLAY_KINDS:
             return answer('event_recording_not_applicable')
-        source = event.get('camera_source_context')
-        camera_id = event.get('camera')
-        if (not isinstance(source, str) or not re.fullmatch(r'[a-f0-9]{64}', source)
-                or not isinstance(camera_id, str) or not re.fullmatch(r'cam_[a-f0-9]{10}', camera_id)):
+        camera_source = _camera_source(event)
+        if camera_source is None:
             return answer('event_source_unverified')
+        camera_id, source = camera_source
         captured = event.get('captured_at')
-        if type(captured) not in (int, float) or not math.isfinite(captured):
+        if not _time(captured):
             return answer('event_time_unavailable')
         if ordinal is not None:
-            views = event.get('sound_search_views')
-            if (type(ordinal) is not int or event['kind'] != 'sound_review' or not isinstance(views, list) or
-                    not any(isinstance(view, dict) and type(view.get('ordinal')) is int
-                            and view['ordinal'] == ordinal and type(view.get('step')) is int
-                            and 1 <= view['step'] <= 3 for view in views)):
-                return answer('event_frame_unavailable')
-            if type(frame_at) not in (int, float) or not math.isfinite(frame_at) or frame_at <= captured:
+            if not _recording_frame(event, ordinal, frame_at):
                 return answer('event_frame_unavailable')
             captured = frame_at
         try:
@@ -70,7 +116,7 @@ class SafetyArchive:
                 continue
             request = ArchiveResolveRequest(expected_context=context['fingerprint'], camera_id=camera['id'],
                                             time_range=span)
-            references.append(dict(event_id=event_id, camera_name=camera['name'],
+            references.append(dict(event_id=event_id, camera_name=camera['name'], anchor_at=stamp.isoformat(),
                                    request=request.model_dump(mode='json'), playback_verified=False))
         return answer('configured_camera_time_lookup' if references else 'archive_recording_clock_unreviewed',
                       references)

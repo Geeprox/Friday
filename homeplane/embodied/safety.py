@@ -932,7 +932,7 @@ class SafetyRuntime:
         if not self._sound_current(camera, session, context):
             return None
         midpoint = (start + end) / 2
-        matches = ((captured, jpeg) for captured, _, jpeg in self.frames[camera]['items']
+        matches = ((captured, jpeg) for captured, jpeg in self.frames[camera]['items']
                    if start <= captured <= end)
         return min(matches, key=lambda frame: abs(frame[0] - midpoint), default=None)
 
@@ -1184,12 +1184,12 @@ class SafetyRuntime:
         if (
             jpeg
             and len(jpeg) <= self.store.MAX_FRAME
-            and (not ring["items"] or stamp - ring["items"][-1][1] >= 0.5)
+            and (not ring["items"] or captured - ring["items"][-1][0] >= 0.5)
         ):
-            ring["items"].append((captured, stamp, jpeg))
+            ring["items"].append((captured, jpeg))
             pending = self.post_frames.get(camera, [])
             self.post_frames[camera] = [p for p in pending if captured <= p["until"]]
-            self.recording.frame(camera, captured, stamp, jpeg)
+            self.recording.frame(camera, captured, jpeg)
         events = self.detector.observe(
             camera, session, people, now, captured, stable=stable, aspect=aspect,
             evaluated_mono=time.monotonic(), coalesced=coalesced,
@@ -1214,7 +1214,8 @@ class SafetyRuntime:
             job = self.recording.submit(camera=camera, session=session, context=source_context,
                 token=token, captured=captured, revision=policy.revision, event=event,
                 person={'identity': identity},
-                frames=[(stamp, frame) for _, stamp, frame in ring['items'] if 0 <= time.time() - stamp <= 8],
+                frames=[(stamp - (captured - frame_at), frame) for frame_at, frame in ring['items']
+                        if 0 <= captured - frame_at <= self.recording.PRE_WINDOW],
                 announce=policy.announce)
             if job is not None:
                 self.post_frames.setdefault(camera, []).append(

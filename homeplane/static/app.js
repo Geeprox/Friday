@@ -778,8 +778,11 @@ function renderActivity(content) {
 const archiveLabels={ready:'可准备隐私预览',pending:'等待落盘或完成核对',missing:'该区间没有已知片段',expired:'索引中的原片已不存在',unavailable:'暂不能定位原片'};
 const archiveReasons={archive_camera_mapping_required:'请先对应NAS录像目录与摄像头',archive_recording_clock_unreviewed:'需要核对摄像头录像时钟。',archive_file_still_changing:'文件仍在变化，暂不能用于区间引用。',archive_completion_unreviewed:'录像写入完成的规则尚未核对。',archive_media_time_or_container_unvalidated:'媒体格式或时长与文件名区间尚未匹配。',archive_index_coverage_incomplete:'目录记录不完整，请刷新并检查对应关系。当前索引只覆盖部分目录或文件名；请刷新索引并检查映射。',archive_coverage_or_clock_boundary_uncertain:'片段之间存在空缺或时钟边界不确定。',archive_overlapping_segments_ambiguous:'该区间存在重叠片段，需要核对来源。',archive_within_declared_arrival_delay:'仍在你设置的归档等待时间内。',archive_source_segment_expired:'已知原片已从可读目录中消失。'};
 function localArchiveDate(value){const d=new Date(value);return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,23);}
-function showArchiveResolution(output,report){
-  output.replaceChildren();add(output,badge(report.simulated?'simulated · 合成录像引用':'NAS · 录像只读引用'),el('h3',archiveLabels[report.status]??'需要核对'),el('p',archiveReasons[report.reason]??(report.status==='ready'?(report.simulated?'已定位合成录像片段，未读取真实原片。':'录像引用和时间已核对；播放前会在本机生成保护预览。'):'请核对归档来源和当前索引。')));
+function showArchiveResolution(output,report,{adjacent=false}={}){
+  const title=adjacent?'未找到所选时刻的录像':archiveLabels[report.status]??'需要核对';
+  const message=adjacent?'可以查看相邻片段。':archiveReasons[report.reason]??
+    (report.status==='ready'?(report.simulated?'已定位合成录像片段，未读取真实原片。':'录像引用和时间已核对；播放前会在本机生成保护预览。'):'请核对归档来源和当前索引。');
+  output.replaceChildren();add(output,badge(report.simulated?'simulated · 合成录像引用':'NAS · 录像只读引用'),el('h3',title),el('p',message));
   for(const segment of report.segments??[]){
     const row=el('article',null,{class:'automation-row'});add(row,el('p',`${time(segment.time_range.start)} — ${time(segment.time_range.end)}`),badge(archiveLabels[segment.status]??'需要核对'),el('p',`时钟误差 ${segment.clock_uncertainty_seconds===null?'未知':'±'+segment.clock_uncertainty_seconds+' 秒'} · ${segment.audio_track===true?'含音轨':segment.audio_track===false?'未发现音轨':'音轨未确认'}`,{class:'meta'}),detail('片段依据',segment));output.append(row);
     if(segment.status==='ready')row.append(button('打开片段',()=>openArchivePlayer(output,report,segment),{class:'secondary','data-archive-playback-ref':segment.media_ref}));
@@ -796,6 +799,13 @@ function stopArchivePlayer(message=''){
   archivePlayerVersion++;const view=archivePlayerView;archivePlayerView=null;if(!view)return;
   view.video.pause?.();view.video.removeAttribute?.('src');view.video.load?.();view.video.setAttribute('hidden','');cancelArchivePlayback(view.plan);
   if(message)settingsMessage(view.status,message,true);
+}
+function archivePlaybackInterval(report,segment){
+  const uncertainty=(segment.clock_uncertainty_seconds??0)*1000;
+  return [
+    Math.max(Date.parse(report.time_range.start),Date.parse(segment.time_range.start)+uncertainty),
+    Math.min(Date.parse(report.time_range.end),Date.parse(segment.time_range.end)-uncertainty),
+  ];
 }
 async function openEventRecording(output,details){
   stopArchivePlayer();const version=++archiveVersion,ownerPage=page;output.replaceChildren();
@@ -818,16 +828,22 @@ async function openEventRecording(output,details){
     if(version!==archiveVersion||page!==ownerPage||!output.isConnected)return;
     if(report.context_fingerprint!==request.expected_context||context.fingerprint!==report.context_fingerprint||context.simulated!==report.simulated)throw Error('source_changed');
     const ready=(report.segments??[]).filter(segment=>segment.status==='ready');
-    if(ownerPage==='Safety'&&ready.length===1){output.replaceChildren();await openArchivePlayer(output,report,ready[0]);return;}
-    showArchiveResolution(output,report);
+    const anchor=ownerPage==='Safety'?Date.parse(details.anchor_at):NaN;
+    const covering=Number.isFinite(anchor)?ready.filter(segment=>{
+      const [start,end]=archivePlaybackInterval(report,segment);
+      return start<=anchor&&anchor<end;
+    }):ready;
+    if(ownerPage==='Safety'&&covering.length===1){output.replaceChildren();await openArchivePlayer(output,report,covering[0]);return;}
+    const adjacent=ready.length>0&&covering.length===0;
+    showArchiveResolution(output,report,{adjacent});
     output.scrollIntoView?.({block:'nearest'});
-    if(ready.length===1)await openArchivePlayer(output,report,ready[0]);
+    if(ready.length===1&&!adjacent)await openArchivePlayer(output,report,ready[0]);
   }catch(_){if(version===archiveVersion&&page===ownerPage&&output.isConnected)output.replaceChildren(el('p','事件录像暂不可定位，请核对 NAS 连接、时间和摄像头对应关系后重试。',{role:'status'}));}
 }
 async function openArchivePlayer(output,report,segment){
   stopArchivePlayer();const version=++archivePlayerVersion,queryVersion=archiveVersion,ownerPage=page;
   if(!['Activity','Safety'].includes(ownerPage))return;
-  const start=Math.max(Date.parse(report.time_range.start),Date.parse(segment.time_range.start)+(segment.clock_uncertainty_seconds??0)*1000),end=Math.min(Date.parse(report.time_range.end),Date.parse(segment.time_range.end)-(segment.clock_uncertainty_seconds??0)*1000);
+  const [start,end]=archivePlaybackInterval(report,segment);
   if(!(end>start))return;
   const status=el('div','正在生成隐私预览…',{role:'status','aria-live':'polite'});output.append(status);
   if(typeof AbortController==='function')archivePrepareController=new AbortController();

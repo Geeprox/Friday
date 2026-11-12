@@ -52,6 +52,26 @@ async def before_fall(monitor):
 
 
 @pytest.mark.asyncio
+async def test_fall_frames_keep_one_time_anchor_when_system_clock_moves(monitor, monkeypatch):
+    wall_shift = [0.]
+    monkeypatch.setattr(safety.time, 'time', lambda: 1800000000 + monitor.clock[0] + wall_shift[0])
+    await before_fall(monitor)
+    wall_shift[0] = 300
+    await frame(monitor, sync=True)
+    await monitor.runtime.drain()
+    incident, = monitor.store.events()
+    captured_at = incident['captured_at']
+    assert incident['frames'][0]['at'] == captured_at-3.75
+    wall_shift[0] = -300
+    monitor.clock[0] += .75
+    await frame(monitor, sync=True)
+    await monitor.runtime.drain()
+    incident, = monitor.store.events()
+    assert incident['frames'][-1]['at'] == captured_at+.75
+    assert [frame['at'] for frame in incident['frames']] == sorted(frame['at'] for frame in incident['frames'])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['position', 'identity'])
 async def test_different_people_cannot_complete_a_fall_under_one_track_number(monitor, change):
     runtime, camera, session = monitor.runtime, monitor.camera, 'same-session'
@@ -614,11 +634,11 @@ async def test_recording_queue_and_private_frame_memory_are_bounded():
     try:
         for _ in range(4):
             recorder.submit(camera='same', session='same', context='a'*64, token=None, captured=100,
-                            revision=1, event={}, person={}, frames=[(1, b'12345678')]*4, announce=False)
+                            revision=1, event={'captured_at':2.0}, person={}, frames=[(1, b'12345678')]*4, announce=False)
         await entered.wait()
         assert len(recorder.jobs) == 3 and recorder.bytes <= 32
         for i in range(12):
-            recorder.frame('same', 100+i*.25, 2+i*.25, b'12345678')
+            recorder.frame('same', 100+i*.25, b'12345678')
         assert recorder.bytes <= 32 and all(len(job.following) <= 6 for job in recorder.jobs.values())
         assert recorder.status()['dropped'] == 1 and recorder.status()['skipped_frames'] > 0
     finally:

@@ -14,6 +14,9 @@ from .review_health import review_progress
 from .safety_recording import ReviewReceipt
 from .temporal_model import WINDOW_SPAN, MlxWindowProcess, VisualResult, VisualSourceChanged, model_readiness
 
+MAX_CORROBORATION_SECONDS = 60
+POSTURE_CORROBORATION_SECONDS = 18
+
 
 @dataclass
 class WindowState:
@@ -153,8 +156,8 @@ class TemporalReviewer:
 
     def _corroboration_limit(self, event=None):
         if event == 'prone_posture':
-            return 18
-        return max(18, min(60, len(self.windows)*6+12))
+            return POSTURE_CORROBORATION_SECONDS
+        return max(18, min(MAX_CORROBORATION_SECONDS, len(self.windows)*6+12))
 
     def _followup_ready(self, state):
         previous = state.candidate

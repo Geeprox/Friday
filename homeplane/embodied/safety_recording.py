@@ -55,6 +55,7 @@ class SafetyRecorder:
     MAX_REVIEW_PENDING = 8
     MAX_REVIEW_BYTES = 8 * 1024 * 1024
     RETRY_WINDOW = 20
+    PRE_WINDOW = 8
     POST_WINDOW = 3
 
     def __init__(self, *, persist, reconcile, current, clock=time.monotonic):
@@ -149,13 +150,15 @@ class SafetyRecorder:
         self.wake()
         return job
 
-    def frame(self, camera, captured, stamp, jpeg):
+    def frame(self, camera, captured, jpeg):
         self.maintain()
         for job in self.jobs.values():
             if (job.feature is not None or job.camera != camera
                     or not job.captured < captured <= job.captured + self.POST_WINDOW
                     or len(job.following) >= 6):
                 continue
+            # 续帧沿同一个事件的时钟锚点定位，避免系统校时把画面移到另一段录像。
+            stamp = job.event['captured_at'] + (captured - job.captured)
             if job.following and stamp <= job.following[-1][0]:
                 continue
             if self.bytes + len(jpeg) > self.MAX_BYTES:
