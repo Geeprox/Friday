@@ -237,6 +237,26 @@
   text-wrap: pretty;
 }
 
+.public-pairing {
+  min-block-size: clamp(300px, 57vh, 540px);
+}
+
+.public-pair-code {
+  margin-block-start: clamp(18px, 2.6vw, 38px);
+  font-size: clamp(35px, 7.2vw, 96px);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+  letter-spacing: .07em;
+  white-space: nowrap;
+}
+
+.public-pair-retry {
+  align-self: flex-start;
+  margin-block-start: 18px;
+  font-size: clamp(15px, 1.5vw, 20px);
+}
+
 .public-invitation {
   display: flex;
   flex-wrap: wrap;

@@ -3,6 +3,7 @@ const display=location.pathname==='/display',fragment=new URLSearchParams(locati
 const roomCode=params=>{const value=params.get('code')||'';return /^[0-9]{6}$/.test(value)?value:'';};
 let invitationCode=display?'':roomCode(fragment);
 const storeKey=display?'Friday.werewolf.display':'Friday.werewolf.player';
+const displayPairKey='Friday.werewolf.display-pairing';
 const joinStoreKey='Friday.werewolf.join';
 const choiceStoreKey='Friday.werewolf.choice';
 const recoveryStoreKey='Friday.werewolf.seat-recovery',recoveryPath='/phone/recover';
@@ -12,6 +13,7 @@ let viewedIdentity=null,identityConfirmation=null;
 let joinPending=null,joinName='';
 let choiceStamp=null,choiceNoticeRevision=null,syncing=false;
 let displayView=null,lastDisplay=null;
+let displayPair=null;
 let viewUpdatedAt=0;
 try{credential=display?(fragment.get('token')||sessionStorage.getItem(storeKey)||''):(sessionStorage.getItem(storeKey)||'');if(credential)sessionStorage.setItem(storeKey,credential);}catch{}
 if(recovering)loadSeatRecovery(fragment);
@@ -124,15 +126,23 @@ async function submitJoin(value){
  if(!alive||generation!==sessionGeneration||credential)return;
  if(joinPending)joinRecovery();else joinForm();
 }
-async function api(path,body,apply=()=>{}){
+function boundedSignal(controller){
+ if(typeof AbortSignal.any==='function'&&typeof AbortSignal.timeout==='function'){
+  return {signal:AbortSignal.any([controller.signal,AbortSignal.timeout(6000)])};
+ }
+ const timer=setTimeout(()=>controller.abort(),6000);
+ return {signal:controller.signal,finish:()=>clearTimeout(timer)};
+}
+async function api(path,body,apply=()=>{},bearer=credential){
  const generation=sessionGeneration,request=body===undefined?readRequest:commandRequest;
  const current=()=>request&&(body===undefined?readRequest:commandRequest)===request;
+ const deadline=request?boundedSignal(request.controller):null;
  try{
   if(!current())throw Error('response_retired');
   const headers={'Content-Type':'application/json'};
-  if (credential) headers.Authorization='Bearer '+credential;
+  if (bearer) headers.Authorization='Bearer '+bearer;
   if (path==='player' && choiceStamp) headers['X-Friday-Choice']=choiceStamp.event_id;
-  const response=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any([AbortSignal.timeout(6000),request.controller.signal]),cache:'no-store'}),data=await response.json();
+  const response=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',headers,body:body===undefined?undefined:JSON.stringify(body),signal:deadline.signal,cache:'no-store'}),data=await response.json();
   if(generation!==sessionGeneration||!alive)throw Error('session_changed');
   // Revocation of this credential remains authoritative even if an ordinary read was retired.
   if(!response.ok&&typeof data.detail==='string'&&data.detail.endsWith('access_required'))throw Error(data.detail);
@@ -140,6 +150,7 @@ async function api(path,body,apply=()=>{}){
   if(!response.ok){if(response.status===429){const retry=Number(response.headers.get('Retry-After'));nextPollAt=performance.now()+Math.min(60,Math.max(1,Number.isFinite(retry)?retry:5))*1000;}throw Error(data.detail||'network');}
   apply(data);return data;
  }catch(e){if(generation!==sessionGeneration||!alive)throw Error('session_changed');if(!e.message.endsWith('access_required')&&!current())throw Error('response_retired');throw e;}
+ finally{deadline?.finish?.();}
 }
 function sayError(e){notice.textContent=problems[e.message]||'暂时无法完成，请重试。';}
 async function perform(fn){
@@ -197,7 +208,8 @@ function closedSession(){
  if (!display) forgetChoice();
  retireRequests();hideRole();credential='';code='';player=null;game=null;roleNode=null;viewedIdentity=null;identityConfirmation=null;viewKey='';displayView=null;lastDisplay=null;selectedSeat=null;selectedAction=null;selectedTarget=null;choiceNoticeRevision=null;syncing=false;nextPollAt=0;pollNotice='';notice.textContent='';document.body.dataset.night='false';roomLabel.textContent='狼人杀';
  try{sessionStorage.removeItem(storeKey);}catch{}
- if(display)root.replaceChildren(h('h1','公共画面已关闭'),h('p','请从 Friday 重新打开。'));
+ if(display)root.replaceChildren(h('h1','公共画面已关闭'),
+  button('重新连接',()=>startDisplayPair(true),'primary'));
  else if(reopenInvitation){code=reopenInvitation;joinForm();}
  else{const intro=h('div',null,'join-intro');intro.append(h('span',null,'moon'),h('h1','座位已断开'),h('p','请重新扫码或联系主持人。'));root.replaceChildren(intro,button('输入房间号',joinForm,'primary'));}
 }
@@ -439,6 +451,90 @@ function renderPlayer(force=false){
  if (focusChoice) root.querySelector('[data-choice-focus="' + focusChoice + '"]')?.focus({preventScroll:true});
 }
 function updateTimer(g){const timer=root.querySelector('[data-timer]');if(timer)timer.textContent=g.paused?'已暂停':g.seconds_left==null?'':Math.max(0,g.seconds_left)+' 秒';}
+function publicIllustration(){
+ const art=h('img',null,'public-art');
+ art.src='/assets/werewolf-scene.png';
+ art.alt='';
+ art.width=1672;
+ art.height=941;
+ const illustration=h('div',null,'public-illustration');
+ illustration.append(art);
+ return illustration;
+}
+
+function startDisplayPair(reset=false){
+ retireRequests();
+ let token='';
+ try{if(!reset)token=sessionStorage.getItem(displayPairKey)||'';}catch{}
+ if(!/^[a-f0-9]{64}$/.test(token))token=newAttemptId();
+ try{sessionStorage.setItem(displayPairKey,token);}catch{}
+ const stage=h('section',null,'public-stage public-pairing');
+ const content=h('div',null,'public-stage-content'),heading=h('div',null,'public-heading');
+ heading.append(h('h1','连接电视'));
+ const digits=h('strong',null,'public-pair-code'),status=h('p','正在获取连接码…','public-script');
+ const retry=button('生成新码',()=>startDisplayPair(true),'public-pair-retry');
+ digits.hidden=retry.hidden=true;
+ status.setAttribute('role','status');
+ content.append(heading,digits,status,retry);
+ stage.append(content,publicIllustration());
+ root.replaceChildren(stage);
+ displayPair={token,digits,status,retry,registered:false,expiresAt:0,stopped:false};
+ void syncDisplayPair();
+}
+
+function displayPairExpired(pair){
+ pair.digits.hidden=true;
+ pair.status.textContent='连接码已过期。';
+ pair.retry.hidden=false;
+}
+
+async function syncDisplayPair(){
+ const pair=displayPair;
+ if(!pair||pair.stopped||credential||document.hidden||!alive)return;
+ const now=performance.now();
+ if(pair.expiresAt&&now>=pair.expiresAt)displayPairExpired(pair);
+ if(readRequest||commandRequest||now<nextPollAt)return;
+ const request={controller:new AbortController()},register=!pair.registered;
+ if(register)commandRequest=request;else readRequest=request;
+ try{
+  const data=await api('display-pairing',register?{}:undefined,()=>{},pair.token);
+  if(displayPair!==pair)return;
+  if(data.state==='approved'){
+   credential=pair.token;
+   displayPair=null;
+   try{sessionStorage.setItem(storeKey,credential);sessionStorage.removeItem(displayPairKey);}catch{}
+   pair.digits.hidden=pair.retry.hidden=true;
+   pair.status.textContent='正在打开对局…';
+  }else{
+   if(data.state!=='waiting'||!/^[0-9]{6}$/.test(data.code)||
+      !Number.isSafeInteger(data.seconds_left)||data.seconds_left<=0)throw Error('network');
+   pair.registered=true;
+   pair.expiresAt=performance.now()+data.seconds_left*1000;
+   const number=data.code.slice(0,3)+' '+data.code.slice(3);
+   if(pair.digits.textContent!==number)pair.digits.textContent=number;
+   pair.digits.hidden=false;
+   pair.retry.hidden=true;
+   const instruction='在 Friday 的狼人杀页面选择「连接电视」，输入这六位数字。';
+   if(pair.status.textContent!==instruction)pair.status.textContent=instruction;
+  }
+ }catch(error){
+  if(retired(error))return;
+  if(error.message==='display_pairing_expired'){
+   pair.stopped=true;displayPairExpired(pair);
+  }else if(error.message==='display_room_closed'){
+   pair.stopped=true;pair.digits.hidden=true;pair.status.textContent='房间已关闭。';
+  }else if(error.message==='display_pairing_busy'){
+   pair.stopped=true;pair.status.textContent='暂时无法生成连接码，请稍后再试。';pair.retry.hidden=false;
+  }else if(!pair.expiresAt||performance.now()<pair.expiresAt){
+   pair.status.textContent='连接暂时中断，正在重试。';
+  }
+ }finally{
+  if(readRequest===request)readRequest=null;
+  if(commandRequest===request)commandRequest=null;
+ }
+ if(credential)void poll();
+}
+
 function createDisplay() {
  const stage = h('section', null, 'public-stage');
  const content = h('div', null, 'public-stage-content');
@@ -463,13 +559,7 @@ function createDisplay() {
  instructions.append(prompt, room, address);
  invitation.append(qr, instructions);
  content.append(heading, script, invitation);
- const art = h('img', null, 'public-art');
- art.setAttribute('src', '/assets/werewolf-scene.png');
- art.setAttribute('alt', '');
- art.setAttribute('width', '1672');
- art.setAttribute('height', '941');
- const illustration = h('div', null, 'public-illustration');
- illustration.append(art);
+ const illustration = publicIllustration();
  const reveal=h('section',null,'public-ballot');
  const ballotTitle=h('h2','本次票型');
  const ballot=h('ul',null,'ballot-rows');
@@ -557,13 +647,14 @@ async function updateInvitation(view, report, waiting) {
  }
  if (!view.invitation.hidden || view.invitationRequest || performance.now()<view.invitationRetryAt) return;
  const controller = new AbortController();
+ const deadline = boundedSignal(controller);
  view.invitationRequest = controller;
  view.invitationRetryAt = performance.now()+4000;
  const current = () => view===displayView && view.invitationRequest===controller && !document.hidden;
  try {
   const response = await fetch('/api/invitation', {
    headers:{Authorization:'Bearer '+credential}, cache:'no-store',
-   signal:AbortSignal.any([controller.signal, AbortSignal.timeout(6000)]),
+   signal:deadline.signal,
   });
   if (!current()) return;
   if (response.status===429) {
@@ -587,6 +678,7 @@ async function updateInvitation(view, report, waiting) {
  } catch {
   // 公屏仍按原节奏更新；下一次有效大厅状态可重试邀请。
  } finally {
+  deadline.finish?.();
   if (view.invitationRequest===controller) view.invitationRequest=null;
  }
 }
@@ -618,7 +710,8 @@ function renderDisplay(report, waiting=false) {
   (upcoming ? '下一位 ' + upcoming + ' 号' : '发言后进入投票');
  const title = waiting ? '正在同步对局' : result ? ballotHeadline(result) : readyForNight ? '准备入夜' : turn ? speaker + ' 号发言' : g.phase_name;
  const script = waiting ? '连接恢复后会自动更新。' : readyForNight ? '请把手机放低，等候首夜。' :
-  result ? ballotFollowup(result) : g.paused ? '等待主持人恢复游戏。' : turn ? turnPrompt : (g.host_script || g.announcements?.at(-1))?.text || '';
+  result ? ballotFollowup(result) : g.paused ? '等待主持人恢复游戏。' : turn ? turnPrompt :
+   (g.host_script || g.announcements?.[g.announcements.length-1])?.text || '';
  if (view.title.textContent !== title) view.title.textContent = title;
  if (view.script.textContent !== script) view.script.textContent = script;
  view.stage.dataset.voteReveal=String(Boolean(result));
@@ -727,6 +820,7 @@ if (display) {
 }
 function refresh() {
  if (document.hidden || !alive || recovering) return;
+ if (displayPair) {void syncDisplayPair();return;}
  if (!busy && (player || lastDisplay) && performance.now()-viewUpdatedAt>3000) holdView();
  void poll();
 }
@@ -762,7 +856,11 @@ function reopenScannedInvitation() {
 }
 if(!display)window.addEventListener('hashchange',reopenScannedInvitation);
 window.addEventListener('blur',hideRole);
-document.addEventListener('visibilitychange',()=>{hideRole();if(document.hidden)retireInvitation(displayView);refresh();});
+document.addEventListener('visibilitychange',()=>{
+ hideRole();
+ if(document.hidden){retireInvitation(displayView);if(displayPair)retireRequests();}
+ refresh();
+});
 window.addEventListener('offline',holdView);
 window.addEventListener('online',refresh);
 window.addEventListener('pagehide',()=>{alive=false;retireRequests();hideRole();});
@@ -771,7 +869,8 @@ window.addEventListener('pageshow',event=>{
  alive=true;
  if (recovering) renderSeatRecovery();
  else if (credential) {holdView();refresh();}
+ else if (displayPair) refresh();
  else if (joinPending) joinRecovery();
 });
-if(recovering)renderSeatRecovery();else if(credential)void poll();else if(display)root.replaceChildren(h('h1','请从 Friday 打开公共画面'));else if(joinPending){joinRecovery();void submitJoin(joinPending);}else joinForm();
+if(recovering)renderSeatRecovery();else if(credential)void poll();else if(display)startDisplayPair();else if(joinPending){joinRecovery();void submitJoin(joinPending);}else joinForm();
 setInterval(refresh,1000);

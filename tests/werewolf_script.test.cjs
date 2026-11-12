@@ -35,6 +35,7 @@ for(const [index,packet]of packets.entries())test('original public outcome reach
  vm.runInContext(display.split('\n').find(line=>line.startsWith('const h=')),scope);
  vm.runInContext(display.split('\n').find(line=>line.startsWith('const nightPhases ')),scope);
  vm.runInContext(extract(host,'function board(game)','\n function live()'),scope);
+ vm.runInContext(extract(display,'function publicIllustration()','\nfunction startDisplayPair('),scope);
  vm.runInContext(extract(display,'function createDisplay()','\nasync function poll()'),scope);
  const board=scope.board(packet);
  scope.renderDisplay(report);

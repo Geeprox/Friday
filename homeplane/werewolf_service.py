@@ -37,6 +37,9 @@ STATIC = Path(__file__).parent / "static"
 CHOICE_EVENT_ID = r"^[a-zA-Z0-9_-]{12,64}$"
 NARRATION_RECHECK_SECONDS = 2
 SEAT_RECOVERY_SECONDS = 120
+DISPLAY_PAIR_SECONDS = 120
+DISPLAY_PAIR_LIMIT = 16
+DISPLAY_FRESH_SECONDS = 6
 
 
 def join_qr_svg(url):
@@ -187,6 +190,14 @@ class _SeatRecovery:
     attempt_digest: str | None = None
 
 
+@dataclass
+class _DisplayPairing:
+    code: str = field(repr=False)
+    expires_at: float
+    approved: bool = False
+    seen: float | None = None
+
+
 class WerewolfService:
     def __init__(self, effects, *, embodied=None, gateway_factory=PhoneGateway,
                  addresses=local_party_addresses, clock=time.monotonic, game_factory=WerewolfGame):
@@ -200,6 +211,7 @@ class WerewolfService:
         self.game = None
         self.session = None
         self.join_code = self.public_token = None
+        self.display_pairings: dict[str, _DisplayPairing] = {}
         self.credentials = {}
         self.join_retries = {}
         self.join_key = None
@@ -250,8 +262,58 @@ class WerewolfService:
         return result
 
     def public_access(self, token):
-        return bool(self.public_token and isinstance(token, str) and re.fullmatch(r'[a-f0-9]{64}', token)
-                    and secrets.compare_digest(self.public_token, token))
+        if (self.session is None or not self.public_token
+                or not isinstance(token, str) or not re.fullmatch(r'[a-f0-9]{64}', token)):
+            return False
+        pair = self.display_pairings.get(self._digest(token))
+        return secrets.compare_digest(self.public_token, token) or (pair is not None and pair.approved)
+
+    def display_read(self, token):
+        if (pair := self.display_pairings.get(self._digest(token))) is not None and pair.approved:
+            pair.seen = self.clock()
+
+    def _expire_display_pairings(self, now):
+        for digest, pair in tuple(self.display_pairings.items()):
+            if not pair.approved and now >= pair.expires_at:
+                del self.display_pairings[digest]
+
+    async def display_pairing(self, token, origin, *, create=False):
+        async with self.lock:
+            if self.session is None or self.game is None or self.origin != origin:
+                raise GameError('display_room_closed')
+            if not isinstance(token, str) or not re.fullmatch(r'[a-f0-9]{64}', token):
+                raise GameError('display_pairing_access_required')
+            digest = self._digest(token)
+            if digest in self.credentials or secrets.compare_digest(self.public_token, token):
+                raise GameError('display_pairing_access_required')
+            now = self.clock()
+            self._expire_display_pairings(now)
+            pair = self.display_pairings.get(digest)
+            if pair is None:
+                if not create:
+                    raise GameError('display_pairing_expired')
+                if len(self.display_pairings) >= DISPLAY_PAIR_LIMIT:
+                    raise GameError('display_pairing_busy')
+                occupied = {row.code for row in self.display_pairings.values()} | {self.join_code}
+                number = secrets.randbelow(900_000)
+                while str(number + 100_000) in occupied:
+                    number = (number + 1) % 900_000
+                pair = self.display_pairings[digest] = _DisplayPairing(str(number + 100_000), now + DISPLAY_PAIR_SECONDS)
+            if pair.approved:
+                return dict(state='approved')
+            return dict(state='waiting', code=pair.code, seconds_left=math.ceil(pair.expires_at - now))
+
+    async def approve_display(self, session, code):
+        async with self.lock:
+            if self.session != session or self.game is None or self.origin is None:
+                raise GameError('room_changed')
+            now = self.clock()
+            self._expire_display_pairings(now)
+            pair = next((row for row in self.display_pairings.values() if row.code == code), None)
+            if pair is None or now >= pair.expires_at:
+                raise GameError('display_pairing_expired')
+            pair.approved = True
+            return dict(session=session)
 
     def phone_url(self):
         return self.origin + '/phone#code=' + self.join_code if self.origin and self.join_code else None
@@ -294,7 +356,11 @@ class WerewolfService:
             camera_available = binding_open and self._camera_current()
             report.update(effects=self.effects.status(), join_code=self.join_code,
                           phone_url=self.phone_url(),
+                          display_entry=self.origin + '/display' if self.origin else None,
                           display_url=self.origin + "/display#token=" + self.public_token if self.origin else None,
+                          connected_display_codes=[row.code for row in self.display_pairings.values()
+                                                   if row.approved and row.seen is not None
+                                                   and 0 <= self.clock() - row.seen <= DISPLAY_FRESH_SECONDS],
                           speaker_seats=[] if self.game.speaker_order else self.game.eligible_speakers(),
                           camera_enabled=self.camera_enabled, camera_available=camera_available,
                           camera_binding_open=binding_open, camera_binding_revision=self.camera_binding_revision,
@@ -890,6 +956,7 @@ class WerewolfService:
             self._remember_host(admission)
             # Revoke both phone/public access before waiting for any output.
             self.session = self.join_code = self.public_token = None
+            self.display_pairings.clear()
             self.credentials.clear()
             self.join_retries.clear()
             self.seat_recoveries.clear()
@@ -983,12 +1050,15 @@ def phone_app(owner, origin):
                     pass
                 else:
                     identity = ('player', owner._digest(supplied))
-            key = (identity, request.url.path)
+            display_registration = request.url.path == '/api/display-pairing' and request.method == 'POST'
+            key = (identity, request.url.path, display_registration)
             now = owner.clock()
             events = attempts.setdefault(key, deque())
             while events and now - events[0] > 60:
                 events.popleft()
             limit = (30 if identity[0] == 'room' else 10) if request.url.path == "/api/join" else 150
+            if display_registration:
+                limit = 12
             if len(events) >= limit:
                 retry = min(60, max(1, int(61 - (now - events[0]))))
                 return JSONResponse({"detail": "party_rate_limited"}, status_code=429,
@@ -1028,9 +1098,17 @@ def phone_app(owner, origin):
 
     @app.get("/api/public")
     async def public(request: Request):
-        if not owner.public_access(token(request)):
+        credential = token(request)
+        if not owner.public_access(credential) or owner.origin != origin:
             raise HTTPException(403, detail="public_access_required")
-        return owner.public()
+        report = owner.public()
+        owner.display_read(credential)
+        return report
+
+    @app.get('/api/display-pairing')
+    @app.post('/api/display-pairing')
+    async def display_pairing(request: Request):
+        return await owner.display_pairing(token(request), origin, create=request.method == 'POST')
 
     @app.get('/api/invitation')
     async def invitation(request: Request):

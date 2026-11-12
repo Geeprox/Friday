@@ -15,7 +15,7 @@ from homeplane.werewolf_service import Choice, Join, WerewolfService, join_qr_sv
 from homeplane.werewolf_service import PhoneGateway
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_device_controls import rig
-from tests.test_werewolf import confirm_deal
+from tests.test_werewolf import Clock, confirm_deal
 
 
 class SilentLights:
@@ -59,6 +59,71 @@ async def begin_play(service):
     await service.control("start")
     confirm_deal(service.game)
     await service.control("advance")
+
+
+@pytest.mark.asyncio
+async def test_tv_pairing_requires_current_host_approval_and_a_public_board_read(tmp_path):
+    clock = Clock()
+    service = WerewolfService(HostEffects(SilentLights()), gateway_factory=NoNetwork,
+                              addresses=lambda: ['192.168.50.20'], clock=clock)
+    await service.create(6, address='192.168.50.20')
+    room, origin = service.session, service.origin
+    path = '/api/games/werewolf/display-pairing'
+    host_app = FastAPI()
+    host_app.include_router(create_router(None, None, None, tmp_path, owner=service))
+    tv = {'Authorization': 'Bearer ' + 'a' * 64}
+    other = {'Authorization': 'Bearer ' + 'b' * 64}
+    try:
+        async with (
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=host_app), base_url='http://host.invalid',
+                              headers={'Origin': 'http://host.invalid'}) as host,
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=phone_app(service, origin)), base_url=origin) as lan,
+        ):
+            assert service.host()['display_entry'] == origin + '/display'
+            issued = await lan.post('/api/display-pairing', headers=tv)
+            assert issued.status_code == 200 and issued.headers['cache-control'] == 'no-store'
+            code = issued.json()['code']
+            assert len(code) == 6 and code != service.join_code
+            assert issued.json()['state'] == 'waiting'
+            assert (await lan.post('/api/display-pairing', headers=tv)).json() == issued.json()
+            assert (await lan.get('/api/display-pairing', headers=other)).status_code == 409
+            assert (await lan.get('/api/public', headers=tv)).status_code == 403
+            assert (await lan.get('/api/invitation', headers=tv)).status_code == 403
+            assert (await lan.post(path, json={'session': room, 'code': code})).status_code == 404
+            assert (await host.post(path, json={'session': '0' * 32, 'code': code})).status_code == 409
+            assert (await host.post(path, json={'session': room, 'code': service.join_code})).status_code == 409
+            assert (await host.post(path, headers={'Origin': 'http://foreign.invalid'},
+                                    json={'session': room, 'code': code})).status_code == 403
+            approval = await host.post(path, json={'session': room, 'code': code})
+            assert approval.json() == {'session': room}
+            assert approval.headers['cache-control'] == 'no-store'
+            assert (await host.post(path, json={'session': room, 'code': code})).json() == approval.json()
+            assert (await lan.get('/api/display-pairing', headers=tv)).json() == {'state': 'approved'}
+            assert (await host.get('/api/games/werewolf/host')).json()['connected_display_codes'] == []
+            assert (await lan.get('/api/public', headers=other)).status_code == 403
+            snapshot = await lan.get('/api/public', headers=tv)
+            assert snapshot.json()['game']['phase'] == 'lobby'
+            assert 'display_url' not in snapshot.json() and 'connected_display_codes' not in snapshot.json()
+            assert (await host.get('/api/games/werewolf/host')).json()['connected_display_codes'] == [code]
+            assert (await lan.get('/api/invitation', headers=tv)).json()['room_code'] == service.join_code
+            assert (await lan.get('/api/player', headers=tv)).status_code == 403
+            clock.now += 8
+            assert service.host()['connected_display_codes'] == []
+            assert (await lan.get('/api/public', headers=tv)).status_code == 200
+            assert service.host()['connected_display_codes'] == [code]
+            expired = (await lan.post('/api/display-pairing', headers=other)).json()['code']
+            clock.now += 121
+            assert (await host.post(path, json={'session': room, 'code': expired})).status_code == 409
+            assert (await lan.get('/api/display-pairing', headers=other)).status_code == 409
+            assert (await lan.get('/api/public', headers=tv)).status_code == 200
+            await service.close_game()
+            assert (await lan.get('/api/public', headers=tv)).status_code == 403
+            assert (await lan.post('/api/display-pairing', headers=tv)).status_code == 409
+            await service.create(6, address='192.168.50.20')
+            assert (await host.post(path, json={'session': room, 'code': code})).status_code == 409
+            assert (await lan.get('/api/public', headers=tv)).status_code == 403
+    finally:
+        await service.close()
 
 
 @pytest.mark.asyncio

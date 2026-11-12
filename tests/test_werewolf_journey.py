@@ -179,11 +179,18 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
             assert created.status_code==200 and created.json()['game']['discussion_mode']==mode
             service.pump.cancel();await asyncio.gather(service.pump,return_exceptions=True);service.pump=None
             party=phone_app(service,service.origin)
-            tv=await stack.enter_async_context(httpx.AsyncClient(transport=httpx.ASGITransport(app=party),base_url=service.origin,headers={'Authorization':'Bearer '+service.public_token}))
+            tv=await stack.enter_async_context(httpx.AsyncClient(transport=httpx.ASGITransport(app=party),
+                base_url=service.origin,headers={'Authorization':'Bearer '+'a'*64}))
+            pairing=(await tv.post('/api/display-pairing')).json()
+            approved=await host.post('/api/games/werewolf/display-pairing',
+                                     json=dict(session=service.session,code=pairing['code']))
+            assert approved.status_code==200 and (await tv.get('/api/display-pairing')).json()['state']=='approved'
+            invite=(await tv.get('/api/invitation')).json()
+            assert invite['room_code']==service.join_code and invite['qr_svg']
             phones={}
             for seat in range(1,count+1):
                 phone=await stack.enter_async_context(httpx.AsyncClient(transport=httpx.ASGITransport(app=party,client=(f'192.168.50.{seat+50}',1000+seat)),base_url=service.origin))
-                joined=await phone.post('/api/join',json=dict(code=service.join_code,seat=seat,name=f'合成玩家{seat}'))
+                joined=await phone.post('/api/join',json=dict(code=invite['room_code'],seat=seat,name=f'合成玩家{seat}'))
                 assert joined.status_code==200
                 phone.headers['Authorization']='Bearer '+joined.json()['token']
                 assert (await phone.post('/api/ready',json=dict(ready=True))).status_code==200

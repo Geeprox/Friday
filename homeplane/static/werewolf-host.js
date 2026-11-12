@@ -6,7 +6,7 @@ const errors={players_not_ready:'等大家准备好后再发身份。',identitie
 
 export function mountWerewolf(root,{go=()=>{}}={}){
  let alive=true,busy=false,context=null,current=null,revision='',lastNotice='',confirmation=null;
- let generation=0,readRequest=null,commandRequest=null,syncFailed=false,lobbyUI=null,roundCamera=null,seatRecovery=null;
+ let generation=0,readRequest=null,commandRequest=null,syncFailed=false,lobbyUI=null,roundCamera=null,seatRecovery=null,displayPair=null;
  const syncNotice='对局服务暂时无法连接，正在重试。';
  const abort=new AbortController(),wrap=node('section',null,'werewolf-host'),notice=node('p',null,'ww-notice'),content=node('div');notice.setAttribute('role','status');wrap.append(notice,content);root.append(wrap);
  async function api(path,body,signal){const signals=[abort.signal,AbortSignal.timeout(10000)];if(signal)signals.push(signal);const r=await fetch('/api/games/werewolf/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any(signals)});const data=await r.json();if(!r.ok)throw Error(data.detail||'game_unavailable');return data;}
@@ -173,6 +173,86 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   if(context.recovery?.recovery_pending){const recovery=node('div',null,'ww-recovery');recovery.append(node('p','上局灯光还有待恢复。'),button('恢复灯光',()=>perform(async api=>{await api('restore-lights',{});return api('host');})));form.append(recovery);}
   const create=node('button','创建房间','primary');create.type='submit';create.dataset.unavailable=String(!(context.addresses||[]).length);create.disabled=create.dataset.unavailable==='true';form.append(create);if(create.disabled)form.append(node('p','将手机与 Friday 连到同一局域网后，即可创建房间。','ww-field-help'));launch.append(form);content.append(launch);
   const how=node('div',null,'ww-how');for(const [title,text] of [['手机入座','每人用自己的手机选择座位。'],['私下行动','身份与夜间选择，只在自己的手机上显示。'],['一起推理','Friday 计时主持，电视展示公开进展。']]){const item=node('div');item.append(node('h3',title),node('p',text));how.append(item);}content.append(how,rules({rules:context.rules}));
+ }
+ function openDisplayPair(){
+  if(displayPair||syncFailed||!current?.display_entry)return;
+  const session=current.session,dialog=node('dialog',null,'ww-display-pair'),title=node('h3','连接电视');
+  title.id='ww-display-pair-title';dialog.setAttribute('aria-labelledby',title.id);
+  const form=node('form'),addressLabel=node('label','电视浏览器地址','ww-field'),address=node('input');
+  address.readOnly=true;address.value=current.display_entry;address.addEventListener('focus',()=>address.select());
+  addressLabel.append(address);
+  const codeLabel=node('label','电视上的六位码','ww-field'),input=node('input');
+  input.type='text';input.inputMode='numeric';input.autocomplete='off';input.pattern='[0-9]{6}';
+  input.maxLength=6;input.required=true;input.setAttribute('autofocus','');codeLabel.append(input);
+  const status=node('p',null,'ww-field-help');
+  status.setAttribute('role','status');
+  const actions=node('div',null,'ww-seat-recovery-actions');
+  const dismiss=button('取消',()=>dialog.close()),submit=node('button','确认连接','primary');
+  submit.type='submit';actions.append(dismiss,submit);
+  const pair={session,dialog,input,status,dismiss,submit,code:null,request:null,connected:false};
+  displayPair=pair;
+  form.append(addressLabel,codeLabel,status,actions);dialog.append(title,form);wrap.append(dialog);
+  dialog.addEventListener('close',()=>{
+   pair.request?.abort();dialog.remove();
+   if(displayPair===pair)displayPair=null;
+   if(alive&&current?.session===session)content.querySelector('[data-display-pair]')?.focus({preventScroll:true});
+  },{once:true});
+  input.addEventListener('input',()=>{
+   pair.code=null;
+   status.textContent='';
+  });
+  form.onsubmit=async event=>{
+   event.preventDefault();
+   if(pair.request||pair.connected||syncFailed||current?.session!==session||!/^[0-9]{6}$/.test(input.value))return;
+   const code=input.value,request=new AbortController();
+   pair.code=code;pair.request=request;submit.disabled=true;input.readOnly=true;
+   status.textContent='正在连接电视…';
+   const owns=()=>displayPair===pair&&dialog.open&&current?.session===session&&pair.request===request;
+   try{
+    const result=await api('display-pairing',{session,code},request.signal);
+    if(!owns()||pair.connected)return;
+    if(result.session!==session)throw Error('room_changed');
+    status.textContent='请看电视，公屏即将打开。';
+    void refresh();
+   }catch(error){
+    if(!owns()||pair.connected)return;
+    if(error.message==='display_pairing_expired')pair.code=null;
+    status.textContent=error.message==='display_pairing_expired'?'请核对电视上的连接码。':
+     errors[error.message]||'暂时无法确认，请重试。';
+   }finally{
+    if(owns()){
+     pair.request=null;input.readOnly=pair.connected;
+     submit.disabled=syncFailed||pair.connected;
+    }
+   }
+  };
+  dialog.showModal();
+ }
+ function updateDisplayConnection(){
+  const codes=current?.connected_display_codes??[];
+  const indicator=content.querySelector('[data-display-connected]');
+  if(indicator)indicator.hidden=syncFailed||!codes.length;
+  if(!displayPair)return;
+  const pair=displayPair;
+  if(current?.session!==pair.session){pair.dialog.close();return;}
+  if(pair.connected)return;
+  if(!syncFailed&&pair.code&&codes.includes(pair.code)){
+   pair.connected=true;pair.input.readOnly=true;pair.submit.hidden=true;
+   pair.status.textContent='电视已连接。';pair.dismiss.textContent='完成';pair.dismiss.focus();
+  }else pair.submit.disabled=syncFailed||Boolean(pair.request);
+ }
+ function televisionControls(){
+  if(!current.display_url)return null;
+  const panel=node('div',null,'ww-tv-link');
+  panel.append(node('h3','大屏同玩'));
+  if(current.display_entry){
+   const connect=button('连接电视',openDisplayPair),indicator=node('p','电视已连接','ww-display-connected');
+   connect.dataset.displayPair='true';indicator.dataset.displayConnected='true';indicator.hidden=true;
+   panel.append(connect,indicator);
+  }
+  const link=node('a','打开公共画面');
+  link.href=current.display_url;link.target='_blank';link.rel='noopener noreferrer';panel.append(link);
+  return panel;
  }
  function confirmControl(action){
   if(confirmation!==action){
@@ -417,6 +497,8 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   const ready=g.players.filter(p=>p.ready).length;
   updateLobbyInvitation();
   lobbyUI.ready.textContent=ready===g.player_count?'大家都准备好了':ready+' / '+g.player_count+' 人已准备';
+  const closeLabel=confirmation==='close'?'确认关闭房间':'关闭房间';
+  if(lobbyUI.close.textContent!==closeLabel)lobbyUI.close.textContent=closeLabel;
   if(lobbyUI.alignment)updateAlignment(lobbyUI.alignment);
  }
  function speakerControls(game, seats){
@@ -491,6 +573,8 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    join.append(node('p','房间号'),node('strong',current.join_code,'ww-room-code'));aside.append(join);
    updateLobbyInvitation();
   }
+  const tv=televisionControls();
+  if(tv&&g.phase==='lobby')aside.append(tv);
   const controls=node('div',null,'ww-host-controls');
   if(g.phase==='lobby'){
    const ready=g.players.filter(p=>p.ready).length,readyLine=node('p',ready===g.player_count?'大家都准备好了':ready+' / '+g.player_count+' 人已准备');
@@ -522,9 +606,12 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    const recover=button('找回座位',openSeatRecovery,'ww-text-button');
    recover.dataset.seatRecovery='true';controls.append(recover);
   }
-  const close=button(confirmation==='close'?'确认关闭房间':'关闭房间',()=>confirmControl('close'),'ww-text-button');controls.append(close);aside.append(controls);
+  const close=button(confirmation==='close'?'确认关闭房间':'关闭房间',()=>confirmControl('close'),'ww-text-button');
+  if(lobbyUI)lobbyUI.close=close;
+  controls.append(close);aside.append(controls);
   mountRoundCamera(aside,layout);
-  if(current.display_url){const tv=node('div',null,'ww-tv-link');tv.append(node('h3','大屏同玩'));if(g.phase==='lobby')tv.append(node('p','有空座时，大屏会显示入座二维码。'));const link=node('a','打开公共画面');link.href=current.display_url;link.target='_blank';link.rel='noopener noreferrer';tv.append(link,button('复制大屏地址',async()=>{try{await navigator.clipboard.writeText(current.display_url);notice.textContent='大屏地址已复制。';}catch{notice.textContent=current.display_url;}},'ww-text-button'));aside.append(tv);}const effects=node('div',null,'ww-effects'),voice=node('p',null,'ww-field-help');voice.dataset.voiceState='true';effects.append(voice);const recovery=node('div',null,'ww-recovery');recovery.dataset.lightRecovery='true';recovery.append(node('p','灯光有待恢复。'));const restore=button('恢复灯光',()=>perform(async api=>{await api('restore-lights',{});return api('host');}));restore.dataset.restoreLights='true';recovery.append(restore);effects.append(recovery);aside.append(effects);layout.append(aside);content.append(layout);
+  if(tv&&g.phase!=='lobby')aside.append(tv);
+  const effects=node('div',null,'ww-effects'),voice=node('p',null,'ww-field-help');voice.dataset.voiceState='true';effects.append(voice);const recovery=node('div',null,'ww-recovery');recovery.dataset.lightRecovery='true';recovery.append(node('p','灯光有待恢复。'));const restore=button('恢复灯光',()=>perform(async api=>{await api('restore-lights',{});return api('host');}));restore.dataset.restoreLights='true';recovery.append(restore);effects.append(recovery);aside.append(effects);layout.append(aside);content.append(layout);
   if(g.vote_result&&g.phase!=='vote_reveal'){const votes=node('section',null,'ww-vote-results');votes.append(node('h3','最近一次投票'));const line=node('div');for(const vote of g.vote_result.votes)line.append(node('span',vote.seat+' 号 → '+(vote.target?vote.target+' 号':'弃票')));votes.append(line);content.append(votes);}const roleLine=node('p',g.roles.map(r=>r.name+' × '+r.count).join('　'),'ww-role-line');content.append(roleLine,rules(g));
   if(current.camera_enabled&&g.phase==='lobby'){lobbyUI.alignment=cameraAlignment();layout.append(lobbyUI.alignment.section);}
  }
@@ -584,7 +671,7 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   if(title&&title.textContent!==phaseTitle)title.textContent=phaseTitle;
   if(prompt&&prompt.textContent!==publicPrompt)prompt.textContent=publicPrompt;
  }
- function updateControls(){for(const b of content.querySelectorAll('button')){if(b.dataset.start==='true'){b.disabled=busy||current.game.players.filter(p=>p.ready).length!==current.game.player_count;}else if(b.dataset.seatRecovery){b.hidden=!current.game.players.length;b.disabled=busy||syncFailed;}else if(!b.dataset.startNight&&!b.dataset.speakerCommand)b.disabled=busy||b.dataset.unavailable==='true';}for(const select of content.querySelectorAll('select'))if(!select.dataset.speakerPicker)select.disabled=busy||Boolean(select.dataset.cameraPicker&&syncFailed);updateIdentityProgress();updateSpeakerControls();}
+ function updateControls(){for(const b of content.querySelectorAll('button')){if(b.dataset.start==='true'){b.disabled=busy||current.game.players.filter(p=>p.ready).length!==current.game.player_count;}else if(b.dataset.seatRecovery){b.hidden=!current.game.players.length;b.disabled=busy||syncFailed;}else if(b.dataset.displayPair)b.disabled=busy||syncFailed;else if(!b.dataset.startNight&&!b.dataset.speakerCommand)b.disabled=busy||b.dataset.unavailable==='true';}for(const select of content.querySelectorAll('select'))if(!select.dataset.speakerPicker)select.disabled=busy||Boolean(select.dataset.cameraPicker&&syncFailed);updateIdentityProgress();updateSpeakerControls();updateDisplayConnection();}
  async function refresh(first=false){
   if(!alive||busy||readRequest)return;
   const request={generation:++generation,controller:new AbortController()};readRequest=request;
@@ -602,5 +689,5 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   finally{if(readRequest===request)readRequest=null;}
  }
  content.append(node('p','正在准备房间…','ww-field-help'));void refresh(true);const timer=setInterval(()=>{if(!busy)void refresh();},1000);
- return{dispose(){alive=false;seatRecovery?.dialog.close();lobbyUI?.alignment?.view.dispose();if(roundCamera)closeRoundPanel(roundCamera);roundCamera=null;generation++;readRequest?.controller.abort();commandRequest?.controller.abort();readRequest=commandRequest=lobbyUI=null;abort.abort();clearInterval(timer);wrap.remove();}};
+ return{dispose(){alive=false;seatRecovery?.dialog.close();displayPair?.dialog.close();lobbyUI?.alignment?.view.dispose();if(roundCamera)closeRoundPanel(roundCamera);roundCamera=null;generation++;readRequest?.controller.abort();commandRequest?.controller.abort();readRequest=commandRequest=lobbyUI=null;abort.abort();clearInterval(timer);wrap.remove();}};
 }

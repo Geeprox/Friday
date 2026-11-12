@@ -266,6 +266,19 @@ test('an older poll cannot reopen a room after acknowledged close',async()=>{
  assert(!c.button('暂停对局'));c.mounted.dispose();
 });
 
+test('大厅关闭确认在原按钮回显，确认后才关闭房间',async()=>{
+ const c=client({initial:cameraLobby()});await settle();
+ const close=c.button('关闭房间');close.focus();close.onclick();
+ assert.equal(c.button('确认关闭房间'),close);
+ assert.equal(c.activeElement(),close);
+ assert.equal(c.requests.filter(r=>r.path.endsWith('/control')).length,0);
+ await c.tick();assert.equal(c.button('确认关闭房间'),close);
+ c.setNext(report({active:false}));close.onclick();await settle();
+ assert(c.button('创建房间'));
+ assert.equal(c.requests.filter(r=>r.path.endsWith('/control')).length,1);
+ c.mounted.dispose();
+});
+
 test('a slow first context read is not overtaken or repeatedly aborted by polling',async()=>{
  const c=client({delayInitial:true});await settle();
  await c.tick();await c.tick();

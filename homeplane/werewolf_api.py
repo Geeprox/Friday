@@ -41,6 +41,12 @@ class SeatRecovery(HostProof):
     action: Literal['recover-seat'] = 'recover-seat'
 
 
+class DisplayApproval(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    session: str = Field(pattern=r'^[a-f0-9]{32}$')
+    code: str = Field(pattern=r'^[0-9]{6}$', repr=False)
+
+
 class Binding(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     seat: int = Field(ge=1, le=12)
@@ -118,6 +124,11 @@ def create_router(core, lock, embodied, directory, *, owner=None):
         if payload.action == "close":
             return await guarded(owner.close_game(proof=payload))
         return await guarded(owner.control(payload.action, seat=payload.seat, proof=payload))
+
+    @router.post('/display-pairing')
+    async def display_pairing(payload: DisplayApproval):
+        result = await guarded(owner.approve_display(payload.session, payload.code))
+        return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
     @router.post('/seat-recovery')
     async def seat_recovery(payload: SeatRecovery):
