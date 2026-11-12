@@ -21,18 +21,19 @@ ROLE_NAMES = {
 PHASE_NAMES = {
     "lobby": "等待大家入座", "identity": "查看身份", "guard": "守卫行动", "wolves": "狼人行动",
     "seer": "预言家行动", "witch": "女巫行动", "dawn": "天亮了",
-    "discussion": "自由发言", "vote": "放逐投票", "runoff_discussion": "平票发言",
+    "discussion": "自由发言", "vote": "放逐投票", "vote_reveal": "投票结果", "runoff_discussion": "平票发言",
     "runoff": "再次投票", "hunter": "猎人行动", "finished": "本局结束",
 }
 RULES = (
     "好人找出全部狼人获胜；存活狼人达到其余存活人数时，狼人获胜。",
-    "不设警长，不翻出局身份。发言后手机匿名投票，公布票型。一次平票加赛，再平票则无人出局。",
+    "不设警长，不翻出局身份。发言后用手机投票，收票后统一公布票型。一次平票加赛，再平票则无人出局。",
     "狼人每晚分别投票，唯一最高票为袭击目标；平票或全部放弃则不袭击。",
     "女巫每晚最多使用一瓶药，仅首夜可以自救；解药用尽后不再获知袭击目标。",
     "守卫不能连续两晚守护同一人；同守同救会出局。猎人被毒杀时不能开枪。",
     "夜间各角色环节均按固定时长进行；未提交行动视为放弃。摄像头指认不直接计入投票。",
 )
 SPEAKER_SECONDS = 30
+VOTE_REVEAL_SECONDS = 12
 
 
 class GameError(ValueError):
@@ -73,7 +74,8 @@ class WerewolfGame:
         self.rng = rng or random.SystemRandom()
         self.durations = dict.fromkeys(("guard", "wolves", "seer", "witch", "hunter"), night_seconds)
         self.durations.update(dawn=10, discussion=discussion_seconds,
-                              runoff_discussion=45, vote=vote_seconds, runoff=vote_seconds)
+                              runoff_discussion=45, vote=vote_seconds, runoff=vote_seconds,
+                              vote_reveal=VOTE_REVEAL_SECONDS)
         if any(type(v) is not int or not 10 <= v <= 600 for v in self.durations.values()):
             raise GameError("duration_invalid")
         self.players: dict[int, Player] = {}
@@ -378,22 +380,25 @@ class WerewolfGame:
         self.advance()
 
     def _close_vote(self):
+        ballot = self.phase
         voters = [s for s in sorted(self.players) if "vote" in self.actions(s)]
         votes = {s: self.choices.get(s, ("pass", None))[1] for s in voters}
         counts = Counter(v for v in votes.values() if v is not None)
         top = max(counts.values(), default=0)
         leaders = sorted(s for s, n in counts.items() if n == top)
-        self.vote_result = dict(votes=[dict(seat=s, target=t) for s, t in votes.items()],
+        out = leaders[0] if len(leaders) == 1 else None
+        self.vote_result = dict(ballot=ballot, eliminated=out, votes=[dict(seat=s, target=t) for s, t in votes.items()],
                                 counts=[dict(seat=s, count=n) for s, n in sorted(counts.items())],
                                 tied=leaders if len(leaders) > 1 else [])
-        if len(leaders) > 1 and self.phase == "vote":
+        if len(leaders) > 1 and ballot == "vote":
             self.runoff_candidates = leaders
-            self._discussion("runoff_discussion", "、".join(f"{s} 号" for s in leaders) + "平票。请平票玩家发言。")
+            named = "、".join(f"{s} 号" for s in leaders) if len(leaders) <= 3 else f"{len(leaders)} 位玩家"
+            text = named + "平票。"
         else:
-            out = leaders[0] if len(leaders) == 1 else None
             self._kill(out, "vote")
-            self._announce(f"{out} 号被放逐。" if out else "本轮无人被放逐。")
-            self._interrupt_or_continue("night")
+            text = (f"{out} 号被放逐。" if out else
+                    "再次平票，本轮无人被放逐。" if len(leaders) > 1 else "本轮无人被放逐。")
+        self._phase("vote_reveal", text)
 
     def advance(self):
         if self.paused:
@@ -421,6 +426,11 @@ class WerewolfGame:
             self._phase("runoff", "请其他存活玩家在平票玩家中再次投票。")
         elif self.phase in {"vote", "runoff"}:
             self._close_vote()
+        elif self.phase == "vote_reveal":
+            if self.vote_result["ballot"] == "vote" and self.vote_result["tied"]:
+                self._discussion("runoff_discussion", "请平票玩家发言。")
+            else:
+                self._interrupt_or_continue("night")
         elif self.phase == "hunter":
             action, target = self.choices.get(self.pending_hunter, ("pass", None))
             self.pending_hunter = None

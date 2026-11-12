@@ -259,6 +259,11 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
                 if public['phase']=='finished':break
                 assert all('role'not in p and 'role_name'not in p for p in public['players'])
                 private={seat:(await phone.get('/api/player')).json()for seat,phone in phones.items()}
+                if public['phase'] == 'vote_reveal':
+                    assert public['vote_result']['votes']
+                    assert all(p['public'] == public and not p['actions'] for p in private.values())
+                    assert spoken[-1] == public['host_script']['text']
+                    assert next(row for row in rows if row['entity_id']=='light.simulated')['attributes']['brightness'] == 179
                 wolves=[s for s,p in private.items()if p['alive']and p['role']=='wolf']
                 villagers=[s for s,p in private.items()if p['alive']and p['role']!='wolf']
                 for seat,p in private.items():
@@ -288,7 +293,7 @@ async def test_complete_private_phone_match_public_host_and_scoped_lights(tmp_pa
             assert all('role'in p for p in public['players'])
             assert spoken and set(spoken)<=script
             assert spoken[-1]==public['host_script']['text']
-            assert '号被放逐。 好人阵营获胜。'in spoken[-1]
+            assert spoken[-2].endswith('号被放逐。') and spoken[-1] == '好人阵营获胜。'
             assert not lights.status()['recovery_pending'] and not lights.records
             assert next(row for row in rows if row['entity_id']=='light.simulated')['state']=='off'
             assert writes and all(json.loads(w.content)['entity_id']=='light.simulated'for w in writes)

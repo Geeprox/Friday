@@ -97,16 +97,32 @@ export function mountWerewolf(root,{go=()=>{}}={}){
  }
  function board(game){
   const scene=node('section',null,'ww-scene'),lobby=game.phase==='lobby',identity=game.phase==='identity';
+  const result=game.phase==='vote_reveal'?game.vote_result:null;
   scene.dataset.count=String(game.player_count);scene.dataset.night=String(['guard','wolves','seer','witch'].includes(game.phase));
   const title=node('div',null,'ww-phase-heading');
-  const phaseTitle=node('h3',game.phase_name);
+  const tied=result?.ballot==='vote'&&result.tied.length;
+  const outcome=result?.eliminated?result.eliminated+' 号被放逐':tied?'平票':'无人被放逐';
+  const phaseTitle=node('h3',result?outcome:game.phase_name);
   phaseTitle.setAttribute('tabindex','-1');
   if(identity)phaseTitle.dataset.identityTitle='true';
-  title.append(node('span',null,'ww-moon'),phaseTitle);
+  if(!result)title.append(node('span',null,'ww-moon'));
+  title.append(phaseTitle);
   const turn=game.paused?null:game.speaking_turn;
   if(game.round||lobby)title.append(node('p',game.round?'第 '+game.round+' 轮'+(turn?' · 发言 '+turn.position+' / '+turn.total:''):'等大家准备好'));
   const time=node('strong',game.paused?'已暂停':game.seconds_left==null?'':Math.max(0,game.seconds_left)+' 秒','ww-timer');
   time.hidden=!game.paused&&game.seconds_left==null;time.dataset.timer='true';title.append(time);scene.append(title);
+  if(result){
+   scene.dataset.voteReveal='true';
+   const names=new Map(game.players.map(player=>[player.seat,player.name]));
+   const ledger=node('ul',null,'ww-ballot-ledger');
+   ledger.setAttribute('aria-label','本次票型');
+   for(const vote of result.votes){
+    const item=node('li');
+    item.append(node('span',vote.seat+' 号 · '+(names.get(vote.seat)||'')),node('strong',vote.target?'投给 '+vote.target+' 号':'弃票'));
+    ledger.append(item);
+   }
+   scene.append(ledger);return scene;
+  }
   const roster=node('ol',null,'ww-roster');
   const discussing=game.phase==='discussion'||game.phase==='runoff_discussion';
   for(let seat=1;seat<=game.player_count;seat++){
@@ -385,14 +401,19 @@ export function mountWerewolf(root,{go=()=>{}}={}){
     const next=button(g.speaking_turn.next_seat?'下一位':'开始投票',()=>perform(api=>api('control',{action:'advance'})),'primary');
     next.dataset.turnCommand='true';controls.append(next);
    }
+   if(g.phase==='vote_reveal'&&!g.paused){
+    const tied=g.vote_result?.ballot==='vote'&&g.vote_result.tied.length;
+    const next=button(tied?'平票发言':'下一环节',()=>perform(api=>api('control',{action:'advance'})),'primary');
+    next.dataset.turnCommand='true';controls.append(next);
+   }
    controls.append(button(g.paused?'继续对局':'暂停对局',()=>perform(api=>api('control',{action:g.paused?'resume':'pause'}))));
-   if(!g.paused&&!g.speaking_turn)controls.append(button(confirmation==='advance'?'确认进入下一环节':'提前结束本环节',()=>confirmControl('advance'),'ww-text-button'));
+   if(!g.paused&&!g.speaking_turn&&g.phase!=='vote_reveal')controls.append(button(confirmation==='advance'?'确认进入下一环节':'提前结束本环节',()=>confirmControl('advance'),'ww-text-button'));
   }
   if(g.phase==='finished')controls.append(button('再开一局',()=>perform(api=>api('control',{action:'rematch'})),'primary'));
   const close=button(confirmation==='close'?'确认关闭房间':'关闭房间',()=>confirmControl('close'),'ww-text-button');controls.append(close);aside.append(controls);
   mountRoundCamera(aside,layout);
-  if(current.display_url){const tv=node('div',null,'ww-tv-link');tv.append(node('h3','大屏同玩'),node('p','有空座时，大屏会显示入座二维码。'));const link=node('a','打开公共画面');link.href=current.display_url;link.target='_blank';link.rel='noopener noreferrer';tv.append(link,button('复制大屏地址',async()=>{try{await navigator.clipboard.writeText(current.display_url);notice.textContent='大屏地址已复制。';}catch{notice.textContent=current.display_url;}},'ww-text-button'));aside.append(tv);}const effects=node('div',null,'ww-effects'),voice=node('p',null,'ww-field-help');voice.dataset.voiceState='true';effects.append(voice);const recovery=node('div',null,'ww-recovery');recovery.dataset.lightRecovery='true';recovery.append(node('p','灯光有待恢复。'));const restore=button('恢复灯光',()=>perform(async api=>{await api('restore-lights',{});return api('host');}));restore.dataset.restoreLights='true';recovery.append(restore);effects.append(recovery);aside.append(effects);layout.append(aside);content.append(layout);
-  if(g.vote_result){const votes=node('section',null,'ww-vote-results');votes.append(node('h3','上轮票型'));const line=node('div');for(const vote of g.vote_result.votes)line.append(node('span',vote.seat+' 号 → '+(vote.target?vote.target+' 号':'弃票')));votes.append(line);content.append(votes);}const roleLine=node('p',g.roles.map(r=>r.name+' × '+r.count).join('　'),'ww-role-line');content.append(roleLine,rules(g));
+  if(current.display_url){const tv=node('div',null,'ww-tv-link');tv.append(node('h3','大屏同玩'));if(g.phase==='lobby')tv.append(node('p','有空座时，大屏会显示入座二维码。'));const link=node('a','打开公共画面');link.href=current.display_url;link.target='_blank';link.rel='noopener noreferrer';tv.append(link,button('复制大屏地址',async()=>{try{await navigator.clipboard.writeText(current.display_url);notice.textContent='大屏地址已复制。';}catch{notice.textContent=current.display_url;}},'ww-text-button'));aside.append(tv);}const effects=node('div',null,'ww-effects'),voice=node('p',null,'ww-field-help');voice.dataset.voiceState='true';effects.append(voice);const recovery=node('div',null,'ww-recovery');recovery.dataset.lightRecovery='true';recovery.append(node('p','灯光有待恢复。'));const restore=button('恢复灯光',()=>perform(async api=>{await api('restore-lights',{});return api('host');}));restore.dataset.restoreLights='true';recovery.append(restore);effects.append(recovery);aside.append(effects);layout.append(aside);content.append(layout);
+  if(g.vote_result&&g.phase!=='vote_reveal'){const votes=node('section',null,'ww-vote-results');votes.append(node('h3','最近一次投票'));const line=node('div');for(const vote of g.vote_result.votes)line.append(node('span',vote.seat+' 号 → '+(vote.target?vote.target+' 号':'弃票')));votes.append(line);content.append(votes);}const roleLine=node('p',g.roles.map(r=>r.name+' × '+r.count).join('　'),'ww-role-line');content.append(roleLine,rules(g));
   if(current.camera_enabled&&g.phase==='lobby'){lobbyUI.alignment=cameraAlignment();layout.append(lobbyUI.alignment.section);}
  }
  function updateEffects(){

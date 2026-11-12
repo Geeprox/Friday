@@ -262,7 +262,10 @@ async def test_interrupted_scene_is_reconciled_even_when_the_next_phase_returns_
             try:
                 await table.service.control('advance')  # Discussion -> vote.
                 await table.service.effect_task
-                await table.service.control('advance')  # All abstain -> night.
+                await table.service.control('advance')
+                await table.service.effect_task
+                assert table.service.game.phase == 'vote_reveal' and row['attributes']['brightness'] == 179
+                await table.service.control('advance')
                 await asyncio.wait_for(entered.wait(), .5)
                 assert row['attributes']['brightness'] == 46
                 while table.service.game.phase in {'wolves', 'seer', 'witch'}:

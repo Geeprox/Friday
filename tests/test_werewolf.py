@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from homeplane.werewolf import GameError, SPEAKER_SECONDS, WerewolfGame, role_pack
+from homeplane.werewolf import GameError, SPEAKER_SECONDS, VOTE_REVEAL_SECONDS, WerewolfGame, role_pack
 
 
 class Clock:
@@ -62,6 +62,10 @@ def test_ordered_discussion_only_gives_runoff_candidates_turns_and_rotates_next_
     for seat, target in [(1, 2), (2, 3), (3, 2), (4, 3)]:
         act(g, seat, "vote", target)
     g.advance()
+    assert g.phase == 'vote_reveal' and g.public()['vote_result']['tied'] == [2, 3]
+    assert g.public()['seconds_left'] == VOTE_REVEAL_SECONDS and not g.eligible_speakers()
+    clock.now += VOTE_REVEAL_SECONDS
+    g.tick()
     assert g.phase == "runoff_discussion" and g.speaker_order == (2, 3)
     assert g.speaker_seat == 2 and g.public()["seconds_left"] == SPEAKER_SECONDS
     g.finish_speaking(2, g.revision)
@@ -141,6 +145,8 @@ def test_speaker_selection_respects_alive_seats_runoff_and_the_existing_timer():
     act(g, 3, "vote", 4)
     act(g, 5, "vote", 1)
     g.advance()
+    assert not g.eligible_speakers()
+    g.advance()
     assert g.phase == "runoff_discussion" and g.eligible_speakers() == [1, 4]
     with pytest.raises(GameError, match="speaker_unavailable"):
         g.set_speaker(2)
@@ -206,7 +212,7 @@ def test_antidote_and_poison_are_single_resources_and_one_action_per_night():
     g.advance()
     assert g.players[victim].alive and not g.antidote
     until(g, "vote")
-    g.advance()  # No votes, next night.
+    until(g, "wolves")
     act(g, 1, "attack", victim)
     until(g, "witch")
     private = g.private(witch)
@@ -227,7 +233,7 @@ def test_guard_consecutive_target_and_double_protection():
     g.advance()
     assert not g.players[12].alive  # The published double-protection rule.
     until(g, "vote")
-    g.advance()
+    until(g, "guard")
     with pytest.raises(GameError, match="target_invalid"):
         act(g, guard, "guard", 12)
 
@@ -237,6 +243,7 @@ def test_guard_cannot_repeat_a_still_living_target():
     guard = role(g, "guard")
     act(g, guard, "guard", 11)
     until(g, "vote")
+    g.advance()
     g.advance()
     assert g.players[11].alive
     with pytest.raises(GameError, match="target_invalid"):
@@ -269,11 +276,18 @@ def test_second_tie_abstains_and_candidate_cannot_vote_in_runoff():
     act(g, 1, "vote", 7)
     act(g, 2, "vote", 8)
     g.advance()
+    assert g.public()['vote_result']['ballot'] == 'vote'
+    g.advance()
     assert g.phase == "runoff_discussion" and g.runoff_candidates == [7, 8]
     g.advance()
     assert not g.actions(7) and not g.actions(8)
     act(g, 1, "vote", 7)
     act(g, 2, "vote", 8)
+    g.advance()
+    result = g.public()['vote_result']
+    assert g.phase == 'vote_reveal' and result['ballot'] == 'runoff'
+    assert result['tied'] == [7, 8] and result['eliminated'] is None
+    assert {7, 8}.isdisjoint(row['seat'] for row in result['votes'])
     g.advance()
     assert g.round == 2 and all(p.alive for p in g.players.values())
 
@@ -285,6 +299,8 @@ def test_a_whole_village_victory_reveals_roles_only_at_the_end():
         for seat, p in g.players.items():
             if p.alive and seat != target:
                 act(g, seat, "vote", target)
+        g.advance()
+        assert g.phase == 'vote_reveal' and all('role' not in player for player in g.public()['players'])
         g.advance()
     assert g.phase == "finished" and g.winner == "village"
     assert all(p["role"] in role_pack(9) for p in g.public()["players"])
@@ -301,6 +317,7 @@ def test_a_whole_wolf_victory_with_automatic_phase_deadlines():
         if g.phase == "finished":
             break
         until(g, "vote")
+        g.advance()
         g.advance()
     assert g.phase == "finished" and g.winner == "wolves"
 
@@ -322,17 +339,34 @@ def test_pause_freezes_private_actions_and_resumes_exact_remaining_time():
 
 
 @pytest.mark.parametrize('target',[None,1,6])
-def test_public_host_script_keeps_vote_result_with_the_next_phase(target):
-    g,_=game();until(g,'vote')
+def test_public_host_script_announces_ballot_before_the_next_phase(target):
+    g, clock = game()
+    until(g, 'vote')
     if target is not None:
         for seat in g.players:
             if seat!=target:act(g,seat,'vote',target)
-    first=len(g.announcements);g.advance();public=g.public();script=public['host_script']
-    assert script['id']==public['announcements'][-1]['id']
-    assert script['text']==' '.join(a['text']for a in g.announcements[first:])
-    assert script['text'].startswith(f'{target} 号被放逐。'if target else'本轮无人被放逐。')
-    assert ('第 2 夜。'if target!=6 else'6 号猎人')in script['text']
-    assert all('role'not in p for p in public['players'])
+    assert g.public()['vote_result'] is None
+    clock.now = g.deadline
+    g.tick()
+    public = g.public()
+    script = public['host_script']
+    assert public['phase'] == 'vote_reveal' and public['round'] == 1
+    assert public['vote_result']['eliminated'] == target and public['seconds_left'] == VOTE_REVEAL_SECONDS
+    assert script == public['announcements'][-1]
+    assert script['text'] == (f'{target} 号被放逐。' if target else '本轮无人被放逐。')
+    assert all('role' not in p for p in public['players'])
+    assert all(not g.actions(seat) for seat in g.players)
+    g.pause(True)
+    clock.now += 40
+    g.tick()
+    assert g.phase == 'vote_reveal' and g.public()['seconds_left'] == VOTE_REVEAL_SECONDS
+    g.pause(False)
+    clock.now = g.deadline
+    g.tick()
+    follow = g.public()['host_script']
+    assert follow['id'] == script['id'] + 1
+    assert ('第 2 夜。' if target != 6 else '6 号猎人') in follow['text']
+    assert '放逐' not in follow['text']
 
 
 def test_hunter_result_and_victory_are_not_lost_from_the_current_public_script():
@@ -344,7 +378,9 @@ def test_hunter_result_and_victory_are_not_lost_from_the_current_public_script()
         for seat,p in g.players.items():
             if p.alive and seat!=target:act(g,seat,'vote',target)
         g.advance()
-    assert g.public()['host_script']['text']=='3 号被放逐。 好人阵营获胜。'
+        assert g.public()['host_script']['text'] == f'{target} 号被放逐。'
+        g.advance()
+    assert g.public()['host_script']['text'] == '好人阵营获胜。'
 
 
 def test_private_night_choices_do_not_change_or_extend_the_public_host_script():

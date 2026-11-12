@@ -365,7 +365,17 @@ function renderPlayer(force=false){
  }
  if(g.phase==='identity'){root.append(identity());return;}
  if(g.phase==='finished'){const result=h('section',null,'result');result.append(h('h2',g.winner==='village'?'好人阵营获胜':g.winner==='wolves'?'狼人阵营获胜':'本局已结束'));const list=h('ul');for(const p of g.players)list.append(h('li',p.seat+' 号 · '+p.name+'　'+p.role_name));result.append(list,h('p','留在这个页面，等待主持人开启下一局。'));root.append(result);return;}
- root.append(actionPanel(),identity());if(player.checks?.length){const checks=h('details',null,'private-records');checks.append(h('summary','我的查验记录'));for(const check of player.checks)checks.append(h('p','第 '+check.round+' 夜 · '+check.seat+' 号是'+(check.wolf?'狼人':'好人')));root.append(checks);}if(player.team_choices?.length){const team=h('details',null,'private-records');team.append(h('summary','同伴的本夜选择'));for(const c of player.team_choices)team.append(h('p',c.seat+' 号 → '+(c.target?c.target+' 号':'放弃')));root.append(team);}
+ if(g.phase==='vote_reveal'&&g.vote_result){
+  const result=h('section',null,'phone-ballot');
+  result.append(h('h2',ballotHeadline(g.vote_result)));
+  const follow=ballotFollowup(g.vote_result);
+  if(follow)result.append(h('p',follow));
+  const rows=h('ul',null,'ballot-rows');
+  rows.setAttribute('aria-label','本次票型');
+  rows.append(...ballotRows(g));
+  result.append(rows);root.append(result);
+ }else root.append(actionPanel());
+ root.append(identity());if(player.checks?.length){const checks=h('details',null,'private-records');checks.append(h('summary','我的查验记录'));for(const check of player.checks)checks.append(h('p','第 '+check.round+' 夜 · '+check.seat+' 号是'+(check.wolf?'狼人':'好人')));root.append(checks);}if(player.team_choices?.length){const team=h('details',null,'private-records');team.append(h('summary','同伴的本夜选择'));for(const c of player.team_choices)team.append(h('p',c.seat+' 号 → '+(c.target?c.target+' 号':'放弃')));root.append(team);}
  if (focusChoice) root.querySelector('[data-choice-focus="' + focusChoice + '"]')?.focus({preventScroll:true});
 }
 function updateTimer(g){const timer=root.querySelector('[data-timer]');if(timer)timer.textContent=g.paused?'已暂停':g.seconds_left==null?'':Math.max(0,g.seconds_left)+' 秒';}
@@ -374,6 +384,7 @@ function createDisplay() {
  const content = h('div', null, 'public-stage-content');
  const heading = h('div', null, 'public-heading');
  const title = h('h1');
+ title.setAttribute('aria-live','polite');
  const clock = h('span', null, 'public-clock');
  clock.setAttribute('role', 'timer');
  heading.append(title, clock);
@@ -399,7 +410,13 @@ function createDisplay() {
  art.setAttribute('height', '941');
  const illustration = h('div', null, 'public-illustration');
  illustration.append(art);
- stage.append(content, illustration);
+ const reveal=h('section',null,'public-ballot');
+ const ballotTitle=h('h2','本次票型');
+ const ballot=h('ul',null,'ballot-rows');
+ ballot.setAttribute('role','list');
+ reveal.hidden=true;
+ reveal.append(ballotTitle,ballot);
+ stage.append(content, illustration, reveal);
 
  const seating = h('section', null, 'public-seating');
  const seatHeading = h('div', null, 'public-seat-heading');
@@ -422,8 +439,36 @@ function createDisplay() {
   prompt.textContent = '用手机加入';
   address.hidden = false;
  };
- return {title, clock, script, seatTitle, seatSummary, roster, composition, voting, votes,
+ return {stage, title, clock, script, illustration, reveal, ballotTitle, ballot, seating, seatTitle, seatSummary, roster, composition, voting, votes,
   invitation, qr, prompt, number, address, invitationKey:null, invitationRequest:null, invitationRetryAt:0};
+}
+
+function ballotHeadline(result) {
+ if(result.eliminated)return result.eliminated+' 号被放逐';
+ return result.ballot==='vote'&&result.tied.length?'平票':'无人被放逐';
+}
+function ballotFollowup(result) {
+ if(!result.tied.length)return '';
+ return result.ballot==='vote'?'请平票玩家准备发言。':'再次平票。';
+}
+function ballotRows(game) {
+ const {counts, votes, tied, eliminated}=game.vote_result;
+ const players=new Map(game.players.map(player=>[player.seat,player.name]));
+ const voters=new Map();
+ for(const {seat,target} of votes){
+  if(!voters.has(target))voters.set(target,[]);
+  voters.get(target).push(seat);
+ }
+ const groups=[...counts].sort((a,b)=>b.count-a.count||a.seat-b.seat);
+ if(voters.has(null))groups.push({seat:null,count:voters.get(null).length});
+ return groups.map(({seat,count})=>{
+  const row=h('li',null,'ballot-row');
+  row.dataset.leading=String(seat!==null&&(eliminated===seat||tied.includes(seat)));
+  const name=seat===null?'弃票':seat+' 号'+(players.get(seat)?' · '+players.get(seat):'');
+  row.append(h('strong',name,'ballot-name'),h('b',count+' 票','ballot-count'),
+   h('span','投票人 '+(voters.get(seat)||[]).join('、')+' 号','ballot-voters'));
+  return row;
+ });
 }
 
 function retireInvitation(view) {
@@ -503,6 +548,7 @@ function renderDisplay(report, waiting=false) {
  const dealing = g.phase === 'identity';
  const readyForNight = dealing && g.identities_confirmed === g.player_count;
  const finished = g.phase === 'finished';
+ const result = !waiting && g.phase === 'vote_reveal' ? g.vote_result : null;
  document.body.dataset.night = String(night);
  roomLabel.textContent = g.round ? '狼人杀 · 第 ' + g.round + ' 轮' : '狼人杀 · ' + g.player_count + ' 人局';
  const speaker = waiting || g.paused ? null : g.speaker_seat;
@@ -510,11 +556,22 @@ function renderDisplay(report, waiting=false) {
  const upcoming = turn?.next_seat;
  const turnPrompt = (g.phase === 'runoff_discussion' ? '平票发言 · ' : '') +
   (upcoming ? '下一位 ' + upcoming + ' 号' : '发言后进入投票');
- const title = waiting ? '正在同步对局' : readyForNight ? '准备入夜' : turn ? speaker + ' 号发言' : g.phase_name;
+ const title = waiting ? '正在同步对局' : result ? ballotHeadline(result) : readyForNight ? '准备入夜' : turn ? speaker + ' 号发言' : g.phase_name;
  const script = waiting ? '连接恢复后会自动更新。' : readyForNight ? '请把手机放低，等候首夜。' :
-  g.paused ? '等待主持人恢复游戏。' : turn ? turnPrompt : (g.host_script || g.announcements?.at(-1))?.text || '';
+  result ? ballotFollowup(result) : g.paused ? '等待主持人恢复游戏。' : turn ? turnPrompt : (g.host_script || g.announcements?.at(-1))?.text || '';
  if (view.title.textContent !== title) view.title.textContent = title;
  if (view.script.textContent !== script) view.script.textContent = script;
+ view.stage.dataset.voteReveal=String(Boolean(result));
+ view.illustration.hidden=view.seating.hidden=Boolean(result);
+ view.reveal.hidden=!result;
+ if(result){
+  const key=JSON.stringify(result);
+  if(view.ballotKey!==key){
+   view.ballotKey=key;
+   view.ballotTitle.textContent=result.ballot==='runoff'?'加赛票型':'本次票型';
+   view.ballot.replaceChildren(...ballotRows(g));
+  }
+ }
  void updateInvitation(view, report, waiting);
  const seconds = Math.max(0, g.seconds_left ?? 0);
  view.clock.hidden = waiting || g.seconds_left == null && !g.paused;
@@ -563,10 +620,10 @@ function renderDisplay(report, waiting=false) {
   view.composition.textContent = lobby ? (g.roles || []).map(r => r.name + ' × ' + r.count).join('　') : '';
  }
  const votes = g.vote_result?.votes || [];
+ view.voting.hidden = !votes.length || Boolean(result) || waiting || night;
  const voteKey = JSON.stringify(votes);
  if (view.voteKey !== voteKey) {
   view.voteKey = voteKey;
-  view.voting.hidden = !votes.length;
   view.votes.replaceChildren(...votes.map(vote => h('li', vote.seat + ' 号 → ' + (vote.target ? vote.target + ' 号' : '弃票'))));
  }
 }

@@ -430,6 +430,53 @@
   font-variant-numeric: tabular-nums;
 }
 
+.public-stage[data-vote-reveal=true] {
+  grid-template-columns: minmax(0, 4fr) minmax(0, 5fr);
+  min-block-size: clamp(212px, 32vh, 318px);
+}
+
+.public-stage[data-vote-reveal=true] .public-script:empty { display: none; }
+
+@media (min-width: 881px) {
+  .display main:has(.public-stage[data-vote-reveal=true]) {
+    min-block-size: calc(100svh - clamp(54px, 5vw, 76px));
+    display: grid;
+    align-content: center;
+  }
+}
+
+.public-ballot {
+  align-self: center;
+  min-width: 0;
+  padding: clamp(18px, 2.4vw, 34px);
+  border-inline-start: 1px solid var(--stage-border);
+  margin-block: 16px;
+}
+
+.public-ballot h2 { margin: 0 0 16px; font-size: clamp(18px, 1.6vw, 25px); }
+.ballot-rows { list-style: none; margin: 0; padding: 0; }
+.public-ballot .ballot-rows { display: grid; gap: 0 22px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 196px), 1fr)); }
+
+.ballot-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 3px 12px;
+  border-block-start: 1px solid var(--line);
+  padding: 11px 0;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.public-ballot .ballot-row { font-size: clamp(16px, 1.5vw, 23px); }
+.ballot-name { font-weight: 560; overflow-wrap: anywhere; }
+.ballot-count { font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ballot-row[data-leading=true] .ballot-count { color: var(--stage-clock, #73552b); }
+.ballot-voters { grid-column: 1/-1; color: var(--muted); font-size: .84em; overflow-wrap: anywhere; }
+.phone-ballot h2 { margin: 0 0 12px; font-size: 23px; }
+.phone-ballot > p { margin: -6px 0 14px; }
+
 .display .party-notice {
   max-width: 1200px;
   text-align: center;
@@ -451,6 +498,11 @@
   .public-illustration {
     display: none;
   }
+
+  .public-stage[data-vote-reveal=true] { grid-template-columns: minmax(0, 1fr); }
+  .public-stage[data-vote-reveal=true] .public-stage-content { padding-block-end: 14px; }
+  .public-ballot { margin: 0; padding-block-start: 0; border-inline-start: 0; }
+  .public-ballot h2 { margin-block-end: 8px; }
 
   .display-roster {
     grid-template-columns: repeat(3, minmax(0, 1fr));

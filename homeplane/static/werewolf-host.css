@@ -6,6 +6,18 @@
 
 .werewolf-host .ww-phase-heading h3{color:inherit}
 
+.ww-scene[data-vote-reveal=true] .ww-phase-heading{
+ display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 16px;align-items:baseline;
+ min-height:0;text-align:start;margin-block-end:20px;
+}
+.ww-scene[data-vote-reveal=true] .ww-phase-heading h3{margin:0;line-height:1.22;overflow-wrap:anywhere}
+.ww-scene[data-vote-reveal=true] .ww-timer{grid-column:2;grid-row:1;margin:0}
+.ww-ballot-ledger{margin:0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:0 22px}
+.ww-ballot-ledger li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:baseline;
+ border-block-start:1px solid var(--line);padding:11px 0;font-size:14px;line-height:1.45}
+.ww-ballot-ledger li span{overflow-wrap:anywhere}
+.ww-ballot-ledger li strong{font-weight:650;white-space:nowrap;font-variant-numeric:tabular-nums}
+
 .ww-live-layout[data-aligning=true]{grid-template-areas:"scene tools" "alignment tools";align-items:start}
 .ww-live-layout[data-aligning=true]>.ww-scene{grid-area:scene}
 .ww-live-layout[data-aligning=true]>.ww-room-tools{grid-area:tools}
