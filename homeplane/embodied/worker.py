@@ -1021,8 +1021,10 @@ async def run_source(my_generation):
                     games.gesture_release = None
                     game = games.public
                 else:
-                    game = games.update(people, layout["registration"], now, hands,
-                                        captured_at=time.monotonic()-(time.time()-item['received_at']))
+                    game_now = time.monotonic()
+                    game = games.update(people, layout["registration"], game_now if games.mode == 'beam' else now,
+                                        hands, captured_at=game_now-(time.time()-item['received_at']),
+                                        aspect=item['width']/max(1, item['height']))
                 extension_events = registry.observe(
                     camera=SELECTED["id"], session=identities.session, people=people, hands=hands, game=game, now=now
                 )

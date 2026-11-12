@@ -8,6 +8,7 @@ import math
 import numpy as np
 
 from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES, finish_camera_survey
+from .catalog import MOTION_GAME_MODES
 from .pose_rules import iou
 
 
@@ -117,7 +118,7 @@ class CameraDirector:
     def _game_active(game):
         if not isinstance(game, dict):
             return False
-        return (game.get('mode') in {'ski', 'tennis', 'quest', 'hiit'}
+        return (game.get('mode') in MOTION_GAME_MODES
                 or game.get('mode') is None and game.get('status') in {'playing', 'calibrating'})
 
     @staticmethod

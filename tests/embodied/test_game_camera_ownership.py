@@ -37,7 +37,7 @@ def actual(name, scope):
 @pytest.mark.parametrize("mode", ["auto", "pets", "survey"])
 @pytest.mark.parametrize("covered", [False, True])
 def test_active_game_keeps_the_main_camera_still_through_wait_play_pause_and_results(mode, covered):
-    for game_mode in ("ski", "tennis", "quest", "hiit"):
+    for game_mode in ("ski", "tennis", "quest", "hiit", "beam"):
         for phase in ("waiting", "calibrating", "playing", "paused", "complete"):
             director = CameraDirector()
             director.apply_mode(mode, 1)

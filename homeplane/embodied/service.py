@@ -16,7 +16,7 @@ import httpx
 
 from homeplane.runtime_log import observe
 
-from .catalog import TENNIS_VARIANTS, get_app
+from .catalog import MOTION_GAME_MODES, TENNIS_VARIANTS, get_app
 from .game_difficulty import game_difficulty
 from .quest import get_quest_route
 from .paths import DATA, PRIVATE, PROJECT, PYTHON, VISION, camera, configuration
@@ -186,9 +186,9 @@ class EmbodiedService:
                     or type(revision) is not int or revision < 0
                     or type(game.get('round_id')) is not int or game['round_id'] < 1
                     or type(game.get('mode')) is not str
-                    or game['mode'] not in {'off', 'quest', 'ski', 'tennis', 'hiit', 'home'}
+                    or game['mode'] not in ('off', 'home', *MOTION_GAME_MODES)
                     or type(game.get('selected_mode')) is not str
-                    or game['selected_mode'] not in {'quest', 'ski', 'tennis', 'hiit', 'home'}):
+                    or game['selected_mode'] not in ('home', *MOTION_GAME_MODES)):
                 return None
             scope = (context, revision)
         return hashlib.sha256(json.dumps((self._game_source(), scope)).encode()).hexdigest()

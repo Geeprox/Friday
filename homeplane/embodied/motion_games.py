@@ -6,7 +6,8 @@ import secrets
 import time
 from dataclasses import dataclass
 
-from homeplane.embodied.catalog import TENNIS_VARIANTS
+from homeplane.embodied.beam_game import BOARD_ASPECT, MAX_FRAME_AGE, MAX_FRAME_GAP, BeamRound, read_l_pose
+from homeplane.embodied.catalog import MOTION_GAME_MODES, TENNIS_VARIANTS
 from homeplane.embodied.game_difficulty import difficulty_options, game_difficulty
 from homeplane.embodied.hiit import PLAN as HIIT_PLAN, HIITCircuit, signals
 from homeplane.embodied.pose_rules import angle
@@ -485,7 +486,7 @@ class MotionGames:
         self.reset("off")
 
     def reset(self, mode, *, difficulty=None, ski_warmup=False, quest_route=None):
-        if mode not in ("off", "quest", "ski", "tennis", "hiit", "home"):
+        if mode not in ("off", "home", *MOTION_GAME_MODES):
             raise ValueError("invalid_game")
         if type(ski_warmup) is not bool or ski_warmup and mode != 'ski':
             raise ValueError('invalid_ski_warmup')
@@ -501,7 +502,8 @@ class MotionGames:
         self.mode = mode
         self.control_revision += 1
         self.round_id = getattr(self, 'round_id', 0) + 1
-        self.game_input_enabled = mode in {'quest','ski','tennis','hiit'}
+        self.game_input_enabled = mode in MOTION_GAME_MODES
+        self.beam = BeamRound() if mode == 'beam' else None
         self.readers = {}
         self.slots = []
         self.preferred_track = None
@@ -519,6 +521,7 @@ class MotionGames:
         self.recovery_ready_count = 0
         self.recovery_tracks = ()
         self.recovery_frame_at = None
+        self.beam_recovery_since = None
         self.resume_seconds = 0.0
         self.presentation_blocked = False
         self.presentation_recovery = False
@@ -579,7 +582,8 @@ class MotionGames:
         return ((self.mode == 'quest' and self.level >= len(self.quest_stages))
                 or (self.mode == 'hiit' and self.circuit.complete)
                 or (self.mode == 'ski' and self.distance >= self.ski_trail.length)
-                or (self.mode == 'tennis' and self._tennis_complete()))
+                or (self.mode == 'tennis' and self._tennis_complete())
+                or (self.beam is not None and self.beam.complete))
 
     def _tennis_complete(self):
         return (self.tennis_winner is not None or
@@ -599,7 +603,7 @@ class MotionGames:
         return len(sections)-1, sections[-1], sections[-1]['length']
 
     def select(self, mode, *, difficulty=None, ski_trail=None, tennis_variant=None, quest_route=None, replace_round=False):
-        if mode not in ("quest", "ski", "tennis", "hiit", "home"):
+        if mode not in ("home", *MOTION_GAME_MODES):
             raise ValueError("invalid_game")
         if mode == 'home' and difficulty is not None:
             raise ValueError('invalid_game_difficulty')
@@ -622,6 +626,9 @@ class MotionGames:
         return self.publish([], "off", "OK 保持 1 秒开始 · Yeah 保持 1 秒切换")
 
     def _drop_source_inputs(self):
+        if self.beam is not None:
+            self.beam.interrupt(remeasure=True)
+        self.beam_recovery_since = None
         self.readers = {}
         self.slots = []
         self.preferred_track = None
@@ -685,9 +692,9 @@ class MotionGames:
                     phase='display' if self.presentation_recovery and self.presentation_blocked else self.recovery_phase if ready or self.recovery_phase != 'ready' else 'players',
                     required_players=self.required_players,
                     ready_players=self.recovery_ready_count if ready else 0,
-                    accepts_ok=bool(self.recovery_previous_slots))
+                    accepts_ok=bool(self.recovery_previous_slots and self.beam is None))
 
-    def _recover_source(self, people, registration, now, captured_at, hands=()):
+    def _recover_source(self, people, registration, now, captured_at, hands=(), *, aspect=BOARD_ASPECT):
         required = self.required_players
         if (registration.get('status') != 'locked' or type(captured_at) not in (int,float)
                 or not 0 <= now-captured_at <= 1.5):
@@ -702,6 +709,21 @@ class MotionGames:
         if tracks != self.recovery_tracks:
             self._drop_source_inputs()
             self.recovery_tracks = tracks
+        if self.beam is not None:
+            previous = self.recovery_frame_at
+            usable = (0 <= now-captured_at <= MAX_FRAME_AGE and (previous is None or captured_at > previous)
+                      and read_l_pose(people[0].get('joints'), aspect)[0] == 'released')
+            if usable:
+                if self.beam_recovery_since is None or previous is None or captured_at-previous > MAX_FRAME_GAP:
+                    self.beam_recovery_since = captured_at
+                self.recovery_frame_at = captured_at
+            else:
+                self.beam_recovery_since = None
+            self.recovery_ready = usable and captured_at-self.beam_recovery_since >= .36
+            self.recovery_ready_count = int(self.recovery_ready)
+            self.recovery_phase = 'ready' if self.recovery_ready else 'calibrating'
+            self.recovery_pending_slots = tracks if self.recovery_ready else ()
+            return self.publish([], 'paused', '玩家已就绪' if self.recovery_ready else '放下双臂，站稳片刻')
         observed = [result for p in people if (result := self.readers.setdefault(p['id'],BodyMotion()).update(p,now))]
         ready = [p for p in observed if p['calibrated'] and p['squat_calibrated']
                  and p['foot_observation'] == 'fresh']
@@ -726,7 +748,7 @@ class MotionGames:
         return self.publish(observed, 'paused', '玩家已就绪' if self.recovery_ready else '请自然站定片刻')
 
     def set_paused(self, value):
-        if type(value) is not bool or self.mode not in {'quest','ski','tennis','hiit'} or self.complete:
+        if type(value) is not bool or self.mode not in MOTION_GAME_MODES or self.complete:
             raise ValueError('game_not_playing')
         if not value:
             self.require_game_view(self.mode)
@@ -751,6 +773,8 @@ class MotionGames:
         self.down_since = self.up_since = None
         self.circuit.invalidate_motion(keep_completed_side=True)
         self._invalidate_quest_motion()
+        if self.beam is not None:
+            self.beam.interrupt()
         for reader in self.readers.values():
             reader.invalidate_motion(keep_stance=recovered)
         if value and self.source_resume_required:
@@ -769,11 +793,12 @@ class MotionGames:
         return self.control_context, self.round_id, self.selected_mode, step
 
     def viewer_state(self):
-        return dict(self.public, source_recovery=self.recovery_public(),
+        return dict(self.public, beam=self.beam.public(self.clock()) if self.beam is not None else None,
+                    source_recovery=self.recovery_public(),
                     presentation=self.presentation.public(self.presentation_scope()) if self.presentation and self.selected_mode != 'home' else dict(required=False, ready=True))
 
     def require_game_view(self, mode):
-        if self.presentation and mode in {'quest','ski','tennis','hiit'}:
+        if self.presentation and mode in MOTION_GAME_MODES:
             if mode != self.selected_mode or not self.presentation.ready(self.presentation_scope()):
                 raise ValueError('game_presentation_not_ready')
 
@@ -858,7 +883,7 @@ class MotionGames:
         return candidate
 
     def gesture_control(self, people, hands, registration, now):
-        if not self.game_input_enabled or self.manually_paused:
+        if not self.game_input_enabled or self.manually_paused or self.selected_mode == 'beam':
             return
         tracks = (self.preferred_track,) if self.preferred_track is not None else None
         allowed = ('ok', 'yeah')
@@ -882,13 +907,14 @@ class MotionGames:
             self.preferred_track = candidate[0]
             self.gesture_event = "started"
 
-    def update(self, people, registration, now, hands=(), *, captured_at=None):
+    def update(self, people, registration, now, hands=(), *, captured_at=None, aspect=BOARD_ASPECT):
         if self._hold_for_presentation():
             return self.public
         dt = clamp(now - self.previous, 0, 0.12) if self.previous is not None else 0.0
         self.previous = now
         if self.source_resume_required:
-            return self._recover_source(people, registration, now, now if captured_at is None else captured_at, hands)
+            return self._recover_source(people, registration, now, now if captured_at is None else captured_at, hands,
+                                        aspect=aspect)
         if not self.ski_warmup and not self.manually_paused and self.resume_seconds <= 0:
             self.gesture_control(people, hands, registration, now)
         if self._hold_for_presentation():
@@ -903,9 +929,13 @@ class MotionGames:
             return self.publish([], 'paused', '休息一下，准备好后继续')
         required = self.required_players
         if registration.get("status") != "locked":
+            if self.beam is not None:
+                self.beam.interrupt(remeasure=True)
             for reader in self.readers.values():
                 reader.invalidate_motion()
             return self.publish([], "paused", "镜头转动或背景未对齐")
+        if self.beam is not None:
+            return self._update_beam(people, registration, now, now if captured_at is None else captured_at, aspect, dt)
         warmup = self.ski_warmup
         if warmup and not warmup.accept_frame(now if captured_at is None else captured_at, now):
             return self.publish([], 'paused', '等待最新画面')
@@ -995,6 +1025,30 @@ class MotionGames:
             else "playing",
             "动作驱动中",
         )
+
+    def _update_beam(self, people, registration, now, captured_at, aspect, dt):
+        if len(people) != 1:
+            self.beam.interrupt()
+            return self.publish([], 'waiting', '请一位玩家面对电视站好')
+        player = people[0]
+        track = player['id']
+        if self.slots and self.slots[0] != track:
+            self.suspend_source()
+            return self._recover_source(people, registration, now, captured_at, aspect=aspect)
+        if self.resume_seconds > 0:
+            self.resume_seconds = max(0., self.resume_seconds-dt)
+            if self.resume_seconds < 1e-6:
+                self.resume_seconds = 0.
+            return self.publish([], 'calibrating', '准备继续本局')
+        self.beam.update(player.get('joints'), now=now, captured_at=captured_at, aspect=aspect)
+        if self.beam.complete:
+            return self.publish([], 'complete', '本局已完成')
+        if self.beam.phase == 'waiting':
+            return self.publish([], 'waiting', '请让上半身和双臂完整入镜')
+        if not self.slots:
+            self.slots, self.preferred_track = [track], track
+        self.elapsed += dt
+        return self.publish([], 'playing', '光线保卫队')
 
     def quest(self, p, dt):
         if self.level >= len(self.quest_stages):
@@ -1466,5 +1520,6 @@ class MotionGames:
             "quest": self.quest_public(players, status),
             "ski": self.ski_public(players, status),
             "tennis": self.tennis_public(players, status),
+            "beam": self.beam.public(self.clock()) if self.beam is not None else None,
         }
         return self.public

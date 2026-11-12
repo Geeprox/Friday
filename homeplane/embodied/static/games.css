@@ -340,3 +340,38 @@ body[data-quest-result=true] :is(.mission,.instruction,.live-progress,.bar,.ques
 }
 
 body.embedded #stageFullscreen{display:none}
+
+/* 草地保持静止。提示和分数占各自的位置，命中时不移动控件。 */
+body[data-mode=beam] .workspace{background:#e8ede2}
+body[data-mode=beam] .mission-block{width:min(382px,65%);background:#faf8ee;color:#263e34}
+body[data-mode=beam] .mission{font-size:clamp(18px,2.05vw,32px);line-height:1.3;letter-spacing:-.025em}
+body[data-mode=beam] .instruction{color:#42594b;font-size:clamp(13px,1.2vw,17px);min-height:1.55em}
+body[data-mode=beam] .bar{background:#d7decf}
+body[data-mode=beam] .bar i{background:#446c53}
+body[data-mode=beam] .score{background:#faf8ee;color:#263e34;min-width:104px;white-space:nowrap;font-variant-numeric:tabular-nums;text-align:end}
+body[data-mode=beam] .score small{color:#42594b;font-size:13px}
+body[data-beam-lobby=true] .hud{visibility:hidden}
+body[data-mode=beam] .overlay{width:min(408px,calc(100% - 32px))}
+body[data-mode=beam] .overlay:has(.beam-lobby-pose){padding-block:21px 24px}
+.beam-lobby-pose{display:block;width:136px;height:110px;object-fit:contain;margin:2px auto 6px}
+body[data-mode=beam] .overlay .primary{min-width:140px}
+body[data-mode=beam] .player-feedback:has(#camera[hidden]){background:transparent;border:0;padding:0;min-width:0}
+body[data-mode=beam] #feedback{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+
+@media(max-width:760px) and (orientation:portrait){
+ body[data-mode=beam] .workspace{background:var(--paper);grid-template-rows:auto clamp(204px,43svh,310px) auto auto}
+ body[data-mode=beam] #world{height:100%;min-height:0}
+ body[data-mode=beam] .hud{padding:2px 0;align-items:center}
+ body[data-mode=beam] .mission-block,body[data-mode=beam] .score{background:transparent}
+ body[data-mode=beam] .score{min-width:56px}
+ body[data-mode=beam] .score small{font-size:11px}
+ body[data-mode=beam] .instruction{min-height:3.1em}
+ body[data-beam-lobby=true] .hud{display:none}
+ body[data-mode=beam] .overlay{max-height:calc(100% - 12px);overflow:auto;padding:15px}
+ body[data-mode=beam] .overlay:has(.beam-lobby-pose){padding-block:12px 15px}
+ .beam-lobby-pose{width:92px;height:74px}
+}
+@media(max-height:560px) and (orientation:landscape){
+ body[data-mode=beam] .overlay:has(.beam-lobby-pose){padding:13px 16px}
+ body[data-mode=beam] .overlay .beam-lobby-pose{height:62px;width:78px;margin:0 auto}
+}

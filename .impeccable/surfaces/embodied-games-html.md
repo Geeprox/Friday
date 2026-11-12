@@ -2,6 +2,8 @@
 
 Mode: Experience. The game world leads; readable controls support play.
 
+光线保卫队延续游戏库的原创纸毡插画，使用固定草地、绒球角色和清楚的上半身 L 动作图。校准用独立光点，未识别 L 时不画准星。锁定环随本局实际蓄力增长；命中用光线、绒球退场和文字一起确认。放下双臂后出现下一目标。减少动态效果时保留静态命中标记，背景、相机和 HUD 都不抖动。
+
 Target: `homeplane/embodied/static/games.html`, `games.css`, `games.js`; pure rules in `motion_games.py` and `hiit.py`.
 
 User intent: commercial consumer quality for skiing, tennis and body challenges, including art, levels, gameplay, controls and more body actions. The storefront already establishes tactile paper/clay illustration. Extend that collection into the game world; maintain Friday's actual graphite paper/matte-metal identity in the UI. Preserve real body input and camera/privacy/source guards.

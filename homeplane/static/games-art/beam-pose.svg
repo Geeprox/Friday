@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 130" role="img" aria-labelledby="pose-title">
+  <title id="pose-title">从双臂放下到胸前形成 L</title>
+  <style>
+    .arm { transform-origin: 0px 0px; animation: 4s ease-in-out infinite; }
+    .up-upper { transform: rotate(-27deg); animation-name: up-upper; }
+    .up-lower { transform: rotate(-153deg); animation-name: up-lower; }
+    .across-upper { transform: rotate(13deg); animation-name: across-upper; }
+    .across-lower { transform: rotate(77deg); animation-name: across-lower; }
+    @keyframes up-upper { 0%, 12%, 96%, 100% { transform: rotate(13deg); } 44%, 74% { transform: rotate(-27deg); } }
+    @keyframes up-lower { 0%, 12%, 96%, 100% { transform: rotate(-5deg); } 44%, 74% { transform: rotate(-153deg); } }
+    @keyframes across-upper { 0%, 12%, 96%, 100% { transform: rotate(-13deg); } 44%, 74% { transform: rotate(13deg); } }
+    @keyframes across-lower { 0%, 12%, 96%, 100% { transform: rotate(5deg); } 44%, 74% { transform: rotate(77deg); } }
+    @media (prefers-reduced-motion: reduce) { .arm { animation: none; } }
+  </style>
+  <g stroke="#334a3d" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <path fill="#d1b38c" d="M63 101h34l4 26H84l-4-14-4 14H59z"/>
+    <path fill="#94ac86" d="M69 48h22l16 13-7 45H60l-7-45z"/>
+    <path fill="#e3b76b" d="m68 51 12 10 12-10-7 19-7-6-6 3z"/>
+    <path fill="#fae9cb" d="M66 33c0-9 6-15 14-15s14 6 14 15v6c0 8-6 13-14 13s-14-5-14-13z"/>
+    <path fill="#46594a" d="M67 33c-3-3-3-9 0-13 5-6 14-8 21-4 6 3 8 8 6 14-4-1-8-5-9-8-4 6-11 9-18 11z"/>
+    <path fill="none" d="M74 38h.1m12-.1h.1m-9 6q3 2 6 0" stroke-width="2.1"/>
+  </g>
+  <g transform="translate(55 63)">
+    <g class="arm up-upper" fill="none" stroke-linecap="round">
+      <path d="M0 0v23" stroke="#334a3d" stroke-width="14"/>
+      <path d="M0 0v23" stroke="#94ac86" stroke-width="9.5"/>
+      <g transform="translate(0 23)">
+        <g class="arm up-lower">
+          <path d="M0 0v28" stroke="#334a3d" stroke-width="14"/>
+          <path d="M0 2v21" stroke="#a7b79a" stroke-width="9.5"/>
+          <path d="M0 26v4" stroke="#fae9cb" stroke-width="8"/>
+        </g>
+      </g>
+    </g>
+  </g>
+  <g transform="translate(105 63)">
+    <g class="arm across-upper" fill="none" stroke-linecap="round">
+      <path d="M0 0v23" stroke="#334a3d" stroke-width="14"/>
+      <path d="M0 0v23" stroke="#94ac86" stroke-width="9.5"/>
+      <g transform="translate(0 23)">
+        <g class="arm across-lower">
+          <path d="M0 0v34" stroke="#334a3d" stroke-width="14"/>
+          <path d="M0 2v27" stroke="#a7b79a" stroke-width="9.5"/>
+          <path d="M0 32v4" stroke="#fae9cb" stroke-width="8"/>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>
