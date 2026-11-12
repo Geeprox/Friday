@@ -1,9 +1,7 @@
-"""Consumer questions over the original scoped HomeQueries, with ARL intent only.
+"""模型只解释有限的查询参数；读数、范围与撤销仍属于原有 HomeQueries。
 
-Models select a bounded read; they never supply measurements, grant scope or
-execute tools. The original query owner supplies all displayed household truth.
-Question state is transient, expires with the original Console session, and is
-revoked before cancellation waits. No prompt/result journal is added here.
+ARL 和 API 的回执分别核对。模型不能提供家庭测量值、扩大授权或执行工具，
+问题状态随原会话过期，不持久保存原始问题与模型回复。
 """
 from __future__ import annotations
 
@@ -238,11 +236,8 @@ class HomeQuestions:
                         current=lambda: self._live(state, context)):
             result = await self._await(state, context, self.runtime.complete_scenario(
                 'home_planning', prompt, request_id=identifier, deadline=deadline), deadline=deadline)
-        if (not isinstance(result, dict) or result.get('simulated') is not False
-                or result.get('native_acknowledgements_verified') is not True
-                or result.get('device_authority') is not False
-                or result.get('application_admission', {}).get('scenario_id') != 'home_planning'
-                or result.get('application_admission', {}).get('package_id') != 'high'):
+        from .intelligence.runtime import verified_planning_result
+        if not verified_planning_result(result, identifier):
             raise FlowAbort('question_model_result_unverified')
         output = result.get('text')
         if not isinstance(output, str) or len(output.encode()) > 4096:
@@ -255,7 +250,7 @@ class HomeQuestions:
                 result[key] = value
             return result
         selection = QuestionSelection.model_validate(json.loads(output, object_pairs_hook=unique))
-        state.provider = 'arl_application_scenario'
+        state.provider = 'openai_api' if result.get('provider_id') == 'openai_responses' else 'arl_application_scenario'
         return selection
 
     def _query(self, selection, state, catalog, entities):

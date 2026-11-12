@@ -53,9 +53,12 @@ async def lifespan(app):
         app.state.inference_lock = asyncio.Lock()
         app.state.credentials = Credentials(s, client)
         app.state.home = HAHome(s, client, app.state.credentials)
-        planner = ARLPlanner(s, app.state.arl)
+        from homeplane.intelligence.runtime import IntelligenceRuntime
+        from homeplane.intelligence.settings import default_directory
+        app.state.intelligence = IntelligenceRuntime(app.state.arl,default_directory())
+        planner = ARLPlanner(s, app.state.arl,intelligence=app.state.intelligence)
         app.state.orchestrator = Orchestrator(
-            s, app.state.home, planner, ARLRouteDecision(s, app.state.arl), app.state.controller, app.state.journal
+            s, app.state.home, planner, ARLRouteDecision(s, app.state.arl, intelligence=app.state.intelligence), app.state.controller, app.state.journal
         )
         app.state.oauth_states = {}
         app.state.client = client

@@ -852,12 +852,15 @@ def create_app(
     source_api=None,
     archive_manager=None,
     library=None,
+    song_backgrounds=None,
 ) -> FastAPI:
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token):
         raise ValueError("strong_token_required")
 
     @asynccontextmanager
     async def lifespan(app):
+        if song_backgrounds is not None:
+            song_backgrounds.bind_loop()
         if archive_manager is not None:
             archive_manager.start()
         if bridge is not None:
@@ -865,6 +868,8 @@ def create_app(
         if library is not None:
             library.start()
         yield
+        if song_backgrounds is not None:
+            await song_backgrounds.close()
         if library is not None:
             library.close()
         if bridge is not None:
@@ -1275,7 +1280,7 @@ def create_app(
             ):
                 return JSONResponse({"code": "origin_refused"}, status_code=403)
         else:
-            media_match = re.fullmatch(r"/v1/jobs/([a-f0-9-]{36})/media/(original|instrumental|video|guide_original|guide_reference)", request.url.path)
+            media_match = re.fullmatch(r"/v1/jobs/([a-f0-9-]{36})/media/(original|instrumental|video|background|guide_original|guide_reference)", request.url.path)
             media_authorized = False
             if request.method in {"GET", "HEAD"} and media_match and request.headers.get("X-KTV-Media"):
                 try:
@@ -1534,7 +1539,23 @@ def create_app(
     @app.get("/v1/jobs")
     def jobs():
         from .ktv_metadata import song_title
-        return {"jobs": [{**job, "title": song_title(job["title"])} for job in queue.list(for_playback=True)]}
+        values = queue.list(for_playback=True)
+        if song_backgrounds is not None:
+            from .intelligence.backgrounds import song_identity
+            active = bridge.current() if bridge is not None else {}
+            selected = set(active.get('order',[])[:3]) if active.get('active') else set()
+            for job in values:
+                if job['state'] != 'ready':
+                    continue
+                try:
+                    candidate = song_backgrounds.request_from_thread(job) if job['id'] in selected else song_backgrounds.cached(
+                        song_identity(job,song_backgrounds.runtime.settings.read().image_model))
+                    if candidate and candidate.get('status') == 'ready':
+                        job['background'] = {k:candidate[k] for k in ('status','sha256','bytes')}
+                        job['background'].update(encoding='png',url=f"/v1/jobs/{job['id']}/media/background")
+                except (OSError,ValueError):
+                    pass
+        return {"jobs": [{**job,'title':song_title(job['title'])} for job in values]}
 
     @app.get("/v1/party")
     def party():
@@ -1613,7 +1634,15 @@ def create_app(
 
     @app.api_route("/v1/jobs/{job_id}/media/{kind}", methods=["GET", "HEAD"])
     def media(job_id: str, kind: str, request: Request):
-        if kind in {"guide_original", "guide_reference"}:
+        if kind == 'background' and song_backgrounds is not None:
+            from .intelligence.backgrounds import song_identity
+            job = queue.get(job_id)
+            identifier = song_identity(job,song_backgrounds.runtime.settings.read().image_model)
+            item = song_backgrounds.cached(identifier)
+            if not item:
+                raise HTTPException(404,'background_unavailable')
+            stream = (song_backgrounds.directory / (identifier+'.png')).open('rb')
+        elif kind in {"guide_original", "guide_reference"}:
             try:
                 stream, item = bridge.guide.media(job_id, kind)
             except (AttributeError, OSError, ValueError):
@@ -1665,7 +1694,7 @@ def create_app(
         return StreamingResponse(
             blocks(),
             status_code=status_code,
-            media_type="video/mp4" if kind == "video" else "audio/mpeg" if kind.startswith("guide_") else "audio/wav",
+            media_type="image/png" if kind == 'background' else "video/mp4" if kind == "video" else "audio/mpeg" if kind.startswith("guide_") else "audio/wav",
             headers=headers,
         )
 

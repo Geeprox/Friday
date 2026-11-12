@@ -19,7 +19,7 @@ class IntentRuntime:
         self.admission = None
 
     def report(self):
-        return dict(route='arl_application_scenario', state=self.state, scenario_id='voice_intent',
+        return dict(route=getattr(self, 'route', 'arl_application_scenario'), state=self.state, scenario_id='voice_intent',
                     package_id='low', tools=False, device_authority=False, admission=self.admission)
 
     def complete(self, prompt, *, request_id, voice_revision=None):
@@ -43,13 +43,12 @@ class IntentRuntime:
             if response.status_code != 200:
                 raise ValueError('application_model_unavailable')
             result = response.json()
-            if (not isinstance(result, dict) or result.get('simulated') is not False
-                    or result.get('native_acknowledgements_verified') is not True):
+            from homeplane.intelligence.runtime import verified_planning_result
+            if not verified_planning_result(result, request_id, 'voice_intent'):
                 raise ValueError('model_result_unverified')
-            admission = result.get('application_admission', {})
-            if admission.get('scenario_id') != 'voice_intent' or admission.get('package_id') != 'low':
-                raise ValueError('model_admission_invalid')
+            admission = result.get('api_receipt') if result.get('provider_id') == 'openai_responses' else result.get('application_admission', {})
             self.admission = admission
+            self.route = 'openai_api' if result.get('provider_id') == 'openai_responses' else 'arl_application_scenario'
             self.state = 'completed'
             return result
         except (httpx.HTTPError, ValueError):

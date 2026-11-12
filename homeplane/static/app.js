@@ -1207,6 +1207,7 @@ function renderRuleAnalysis(content) {
     output.replaceChildren();
     const review=ruleAnalysisReview,result=ruleAnalysisResult;
     if(result){
+      if(result.code==='analysis_channel_unavailable'){output.append(el('p','这项分析需要 ARL。请选择 ARL 通道或允许 ARL 备用后重试。'));return;}
       output.append(el('p',result.status==='planned'?'候选已转成变更预览，请继续核对差异。':result.status==='clarification'?'还需要明确要移除的动作。':result.status==='needs_review'?'分析结果待核对，本次请求不会自动重试。':result.code==='analysis_controlled_actor_not_authorized'?'模型分析尚未启用。':'没有生成可部署的变更。'));
       if(result.summary)output.append(el('p',result.summary));
       if(result.baseline_comparison==='matched')output.append(el('p','候选与当前确定性解析一致。',{class:'meta'}));
@@ -2381,6 +2382,9 @@ function renderSettings(content) {
     geek.section.append(el('p','连接由现有后台管理，此处查看同步状态。',{class:'meta'}));
   }
   const arl = settingsSection(content, copyName('Friday-1506'), '连接ARL共享能力，不调用模型。通过 ARL 使用本机共享智能能力。连接不会启动模型推理。', 'settings-arl');
+  if(!content.closest?.('.experience'))import('/static/intelligence-settings.js').then(({mountIntelligenceSettings})=>{
+    if(arl.section.isConnected)void mountIntelligenceSettings(arl.section,{api,onOpenConversation:()=>go('Ask Home')});
+  }).catch(()=>{if(arl.section.isConnected)arl.section.append(el('p','智能通道设置暂时无法加载，请刷新。',{class:'meta'}));});
   const arlHome = settingsField(arl.form, copyName('Friday-1957'), 'settings-arl-home', config.arl_home, {maxlength:90}, '留空使用共享 ARL 默认目录');
   settingsSave(arl, 'settings-arl', () => ({arl_home: settingValue(arlHome)}));
   let arlConsumerSequence = 0;
@@ -2397,7 +2401,7 @@ function renderSettings(content) {
       const state = {ready:'已发现',disabled:'尚未启用',unavailable:'不可用',not_ready:'尚未就绪'}[provider.availability] ?? '待检查';
       arl.output.append(el('p', provider.name + ' · ' + state, {class:'meta'}));
     }
-    arl.output.append(el('p','Friday 仅接入 Codex。服务连接成功后，查询范围和规划执行许可仍需分别核对。',{class:'muted'}));
+    arl.output.append(el('p','ARL 通道使用 Codex；OpenAI API 可在下方单独配置。查询范围和执行许可仍需分别核对。',{class:'muted'}));
     if (document.body.dataset.consoleReadOnly === 'true') {
       api('/desktop/capabilities').then(capabilities => {if(arl.output.isConnected&&consumerSequence===arlConsumerSequence)showArlConsumers(arl.output,capabilities);})
         .catch(() => {if(arl.output.isConnected&&consumerSequence===arlConsumerSequence)arl.output.append(el('p','查询与规划的可用状态暂时无法确认。',{class:'meta'}));});

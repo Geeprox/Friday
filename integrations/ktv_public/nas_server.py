@@ -1718,12 +1718,12 @@ def make_handler(store, agent_key, assets):
                         return self.reply(200, coordinator.diagnostics or {})
                 if path == "/v1/jobs" and self.command == "GET":
                     return self.reply(200, coordinator.jobs())
-                media = re.fullmatch(r"/v1/jobs/([a-f0-9-]{36})/(lyrics|media/(original|instrumental|video))", path)
+                media = re.fullmatch(r"/v1/jobs/([a-f0-9-]{36})/(lyrics|media/(original|instrumental|video|background))", path)
                 if media and self.command in {"GET", "HEAD"}:
                     if media.group(2) == "lyrics":
                         return self.reply(200, coordinator.lyrics(media.group(1)))
                     file, spec = coordinator.media_file(media.group(1), media.group(3))
-                    return self.media_reply(file, "video/mp4" if media.group(3) == "video" else "audio/wav", spec["bytes"])
+                    return self.media_reply(file, 'image/png' if media.group(3) == 'background' else "video/mp4" if media.group(3) == "video" else "audio/wav", spec["bytes"])
                 raise Refusal(404, "not_found")
             if path.startswith("/agent/"):
                 supplied = self.headers.get("Authorization", "")

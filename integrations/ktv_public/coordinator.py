@@ -645,6 +645,12 @@ class Coordinator:
         # filesystem paths, arbitrary URLs, worker internals or exception strings.
         clean = {k: copy.deepcopy(job[k]) for k in ("id", "song_id", "title", "state", "code", "created", "progress", "requester", "audio_origin", "simulated", "source") if k in job}
         clean["media"] = media
+        background = job.get('background',{})
+        if (isinstance(background,dict) and background.get('status') == 'ready' and background.get('encoding') == 'png'
+                and isinstance(background.get('sha256'),str) and SHA.fullmatch(background['sha256'])
+                and type(background.get('bytes')) is int and 33 <= background['bytes'] <= 12*1024*1024
+                and fixed_media_path(background.get('url'),'background')):
+            clean['background'] = {k:background[k] for k in ('status','encoding','sha256','bytes','url')}
         video = job.get("video", {})
         if isinstance(video, dict) and video.get("status") == "ready":
             spec = self._media_spec({k: v for k, v in video.items() if k in {"url", "sha256", "bytes", "duration_seconds", "sample_rate", "channels", "encoding"}}, "video", timeline["duration_ms"])
@@ -704,6 +710,8 @@ class Coordinator:
     def _specs(self, row):
         job = json.loads(row["job"])
         result = dict(job["media"])
+        if job.get('background',{}).get('status') == 'ready':
+            result['background'] = job['background']
         if job.get("video", {}).get("status") == "ready":
             result["video"] = job["video"]
         if "guide" in job:
@@ -885,6 +893,8 @@ class Coordinator:
                 public["url"] = "/v1/jobs/" + song["id"] + "/media/" + kind
                 if kind == "video":
                     job["video"] = public
+                elif kind == 'background':
+                    job['background'] = public
                 else:
                     job["media"][kind] = public
             if any(not spec.get("sources") for spec in job["media"].values()):

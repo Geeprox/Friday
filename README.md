@@ -46,6 +46,10 @@ python3 scripts/setup-dependencies.py miloco-source
 
 [能力与限制](docs/capabilities.md) · [房型导入](docs/layout.md) · [架构](docs/architecture.md) · [隐私](docs/privacy.md)
 
+可在“设置 → 智能服务”选择 ARL · Codex、OpenAI API、API 优先或仅本地功能，分别配置
+每日请求、文本 Token、图片与语音上限。额度不足时按设置回退，基础设备控制、规则和
+KTV 播放保留。云端语音输入与逐曲背景各自单独开启，见[智能通道与用量](docs/intelligence.md)。
+
 ## 日常使用
 
 - **我的家**：按导入户型和真实房间查看设备模型，打开房间或设备完成主要控制。没有安装位置的数据保留未放置，不猜测坐标。

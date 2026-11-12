@@ -135,6 +135,8 @@ def create_app(
     oauth_transport=None,
     authority_path=None,
     arl_runtime=None,
+    intelligence_runtime=None,
+    intelligence_directory=None,
     arl_planning_authorizer=None,
     arl_planning_executor=None,
     archive_runner=None,
@@ -257,6 +259,9 @@ def create_app(
         lambda: Path(settings.config.arl_home) if settings.config.arl_home else DEFAULT_HOME,
         state_directory=lambda: settings.path.parent,
     )
+    from .intelligence.runtime import IntelligenceRuntime
+    intelligence = intelligence_runtime or IntelligenceRuntime(
+        runtime, intelligence_directory or settings.path.parent / 'intelligence')
     rule_text = RuleTextChanges(rules, runtime)
     rule_analysis = ARLRuleChanges(
         rule_text,
@@ -264,6 +269,7 @@ def create_app(
         runtime,
         authorizer=arl_planning_authorizer,
         planning_executor=arl_planning_executor,
+        model_allowed=intelligence.allows_arl_analysis,
     )
     from .event_provenance import registered_room_context
     from .embodied.camera_provenance import configured_camera_sources
@@ -276,7 +282,7 @@ def create_app(
     home_flow = HomeFlow(core, settings, rules, rule_text, queries, archive, archive_player,
                          rule_runtime, core_rule_runtime, nas_status=nas_status,
                          household_timezone=flow_household_timezone,household_mode=household_mode,
-                         question_runtime=runtime)
+                         question_runtime=intelligence)
     geek.prune()
     from .embodied.service import EmbodiedService
     from .embodied.api import create_router as embodied_router
@@ -325,6 +331,7 @@ def create_app(
                 query_adoption.bind_loop()
             yield
         finally:
+            await intelligence_router.backgrounds.close()
             await infrastructure.close()
             await app.state.home_experience.close()
             await app.state.werewolf.close()
@@ -359,6 +366,10 @@ def create_app(
             store.close()
 
     app = FastAPI(title="Home Control Plane", version="1", lifespan=lifespan)
+    from .intelligence.api import create_router as intelligence_api
+    intelligence_router = intelligence_api(intelligence, origin=console_origin)
+    app.include_router(intelligence_router)
+    app.state.intelligence = intelligence
     app.state.embodied = embodied
     app.state.infrastructure = infrastructure
 
@@ -372,7 +383,7 @@ def create_app(
             return await infrastructure.configure(request)
         except ValueError:
             raise HTTPException(409, detail="source_conflict") from None
-    app.include_router(embodied_router(embodied, core, lock, infrastructure, arl_runtime=runtime, archive=archive,
+    app.include_router(embodied_router(embodied, core, lock, infrastructure, arl_runtime=intelligence, archive=archive,
                                      home_flow=home_flow))
     from .werewolf_api import create_router as werewolf_router
     party_router = werewolf_router(core, lock, embodied, settings.path.parent)
@@ -491,6 +502,15 @@ def create_app(
         )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.middleware("http")
+    async def intelligence_connections(request, call_next):
+        """仅为主动语音添加当前 Console 的固定本机连接来源。"""
+        response = await call_next(request)
+        policy = response.headers.get("Content-Security-Policy")
+        if policy:
+            response.headers["Content-Security-Policy"] = policy + f"; connect-src 'self' ws://127.0.0.1:{console_port}"
         return response
 
     @app.exception_handler(RequestValidationError)
@@ -925,10 +945,10 @@ def create_app(
     @app.get("/api/decision/providers")
     async def decision_providers():
         from .decision_providers import registry_descriptors
-
+        selection = intelligence.settings.read()
         return {
             "providers": registry_descriptors(),
-            "default": "arl:laya_mlx",
+            "default": 'openai:decisions' if selection.provider in {'openai','auto'} and selection.cloud_text else 'local_rules' if selection.provider == 'local' else "arl:laya_mlx",
             "runtime": await runtime.status(),
             "mode": "shadow",
             "automatic_cloud_fallback": False,

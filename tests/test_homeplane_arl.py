@@ -89,7 +89,7 @@ class SDK:
 
 
 @pytest.fixture
-def setup(tmp_path):
+async def setup(tmp_path):
     from types import SimpleNamespace
     class Session:
         def __init__(self, home):
@@ -104,7 +104,10 @@ def setup(tmp_path):
     sdk = SDK()
     runtime = ARLRuntime(lambda: tmp_path, client_factory=sdk.factory, settings_client_factory=sdk.settings_factory,
                          application_factory=Session)
-    return runtime, sdk
+    try:
+        yield runtime, sdk
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -157,6 +160,7 @@ async def test_missing_runtime_is_passive_and_private_errors_sanitized(tmp_path,
         sdk.error = "user_disabled"
         assert (await runtime.status(start=True))["status"] == "user_disabled"
         assert runtime.application.started
+        assert runtime.application.session.client.home == tmp_path
     finally:
         await runtime.close()
     assert runtime.application.status()["state"] == "closed"
@@ -285,7 +289,10 @@ async def test_formal_fast_engine_abstains_without_inventing_task_api(setup):
     assert not any(m == "submit" for m, _ in sdk.calls)
     assert (await engine.decide(DecisionRequest("intent", {}, time.monotonic()-1))).unknown_reason == "expired"
     assert (await engine.decide(DecisionRequest("intent", {"text": "中"*500}, time.monotonic()+1))).unknown_reason == "context_overflow"
-    assert all(p["runtime"] == "arl" for p in registry_descriptors())
+    providers = registry_descriptors()
+    assert {p["provider_id"] for p in providers if p["runtime"] == "arl"} == {"laya_mlx", "jev", "codex_app_server"}
+    assert next(p for p in providers if p["runtime"] == "openai")["availability"] == "requires_configuration"
+    assert all(not p["action_authority"] for p in providers)
 
 
 def test_settings_sdk_roundtrip_never_writes_devices_and_requires_origin(setup, tmp_path):

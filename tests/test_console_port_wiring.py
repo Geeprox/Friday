@@ -82,12 +82,13 @@ def test_invalid_console_ports_fail_before_any_runtime_is_created(port):
         create_app(console_port=port)
 
 
-def test_cli_passes_same_declared_port_to_console_and_listener(monkeypatch):
+def test_cli_passes_same_declared_port_to_console_and_listener(monkeypatch, tmp_path):
     import uvicorn
 
     from homeplane import api, cli
     calls = []
     adapter, application = object(), object()
+    monkeypatch.setenv('FRIDAY_INTELLIGENCE_DIRECTORY', str(tmp_path / 'intelligence'))
     monkeypatch.setattr('sys.argv', ['home','serve','--port','18744'])
     monkeypatch.setattr(cli, 'adapter_from_env', lambda _args: adapter)
     def build(value, **kwargs):
@@ -100,6 +101,6 @@ def test_cli_passes_same_declared_port_to_console_and_listener(monkeypatch):
     monkeypatch.setattr(api, 'create_app', build)
     monkeypatch.setattr(uvicorn, 'run', serve)
     cli.main()
-    assert calls[0] == ('create', {'console_port':18744})
+    assert calls[0] == ('create', {'console_port':18744, 'intelligence_directory':tmp_path / 'intelligence'})
     assert calls[1][1]['port'] == 18744 and calls[1][1]['host'] == '127.0.0.1'
     assert calls[1][1]['proxy_headers'] is False
