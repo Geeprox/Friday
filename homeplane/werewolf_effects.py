@@ -327,33 +327,53 @@ class HostEffects:
             if current():
                 self.last_scene = night
 
-    async def narrate(self, public, current):
+    async def narrate(self, public, current) -> bool:
+        """返回当前提示是否仍可在输出恢复后尝试发送。"""
         async with self._narration_lock:
             latest = public.get('host_script') or public["announcements"][-1]
             if not self.narration or latest["id"] <= self.last_announcement:
-                return
+                return False
             if not current() or public["paused"]:
-                return
+                return False
+            if self.speech_status is None or self.speak is None:
+                self.voice_state = "unavailable"
+                return False
             try:
-                status = self.speech_status() if self.speech_status else {}
-                if status.get("quiet") is not False or status.get("configured") is not True:
-                    self.voice_state = "quiet" if status.get("quiet") else "unavailable"
-                    return
-                if self.speak is None or not current():
-                    return
-                # 暂停前未尝试的提示可以在恢复时播报，已尝试或结果不确定的提示不重播。
-                self.last_announcement = latest["id"]
-                self.voice_state = "speaking"
+                status = self.speech_status()
+            except (ValueError, OSError, KeyError, TypeError, httpx.HTTPError):
+                status = {}
+            if not isinstance(status, dict):
+                status = {}
+            if status.get("quiet") is not False or status.get("configured") is not True:
+                self.voice_state = "quiet" if status.get("quiet") else "unavailable"
+                return True
+            if not current():
+                return False
+
+            # 调用输出前登记编号。即使取消或回执不明，也保留登记。
+            previous = self.last_announcement
+            self.last_announcement = latest["id"]
+            self.voice_state = "speaking"
+            try:
                 async with asyncio.timeout(25):
                     receipt = await self.speak(latest["text"], current=current)
-                self.voice_state = ("requested" if receipt.get("status") in {"accepted", "playing", "sent"}
-                                    else "quiet" if receipt.get("status") in {"paused", "muted"}
-                                    else "unconfirmed" if receipt.get("status") == "unconfirmed" else "unavailable")
             except asyncio.CancelledError:
                 self.voice_state = 'unconfirmed'
                 raise
             except (ValueError, OSError, TimeoutError, KeyError, httpx.HTTPError):
                 self.voice_state = "unavailable"
+                return False
+
+            result = receipt.get("status") if isinstance(receipt, dict) else "unconfirmed"
+            if result in ("busy", "muted"):
+                # 输出层仅在尚未发送时返回占用或音箱静音。
+                self.last_announcement = previous
+                self.voice_state = "quiet" if result == "muted" else "unavailable"
+                return True
+            self.voice_state = ("requested" if result in ("accepted", "playing", "sent")
+                                else "quiet" if result == "paused"
+                                else "unconfirmed" if result == "unconfirmed" else "unavailable")
+            return False
 
     def status(self):
         return dict(narration=self.narration, voice=self.voice_state,

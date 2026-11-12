@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -19,7 +20,7 @@ from tests.test_werewolf_service import begin_play
 
 
 @asynccontextmanager
-async def party(tmp_path):
+async def party(tmp_path, *, clock=time.monotonic):
     core, rows, writes, *_ = rig(tmp_path)
     lights = SceneLights(core, asyncio.Lock(), tmp_path / 'scene.json')
     spoken = []
@@ -30,7 +31,7 @@ async def party(tmp_path):
         return dict(status='accepted', physical_audio_verified=False)
 
     effects = HostEffects(lights, speak=speak, speech_status=lambda: dict(quiet=False, configured=True))
-    service = WerewolfService(effects)
+    service = WerewolfService(effects, clock=clock)
     try:
         target = (await lights.choices())[0]['id']
         await service.create(6, lights=[target], narration=True)
@@ -53,6 +54,91 @@ async def until(predicate):
     async with asyncio.timeout(.5):
         while not predicate():
             await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('blocked', ['quiet', 'unconfigured', 'status_error', 'busy', 'muted'])
+async def test_current_prompt_recovers_without_advancing_or_replaying_lights(tmp_path, blocked):
+    now = [100.]
+    ready = False
+    checks, attempts = [], []
+    async with party(tmp_path, clock=lambda: now[0]) as table:
+        def status():
+            checks.append(now[0])
+            if blocked == 'status_error' and not ready:
+                raise OSError('读取合成输出状态失败')
+            return dict(quiet=blocked == 'quiet' and not ready, configured=blocked != 'unconfigured' or ready)
+
+        async def speak(text, *, current):
+            assert current()
+            attempts.append(text)
+            if blocked in {'busy', 'muted'} and not ready:
+                return {'status': blocked}
+            table.spoken.append(text)
+            return {'status': 'accepted'}
+
+        table.effects.speech_status, table.effects.speak = status, speak
+        await begin_play(table.service)
+        await table.service.effect_task
+        assert not table.spoken
+        phase = table.service.game.public()
+        original_checks, original_attempts, original_writes = len(checks), len(attempts), len(table.writes)
+
+        ready = True
+        now[0] += .5
+        await table.service.step()
+        assert len(checks) == original_checks and len(attempts) == original_attempts
+        now[0] += 2
+        await table.service.step()
+        await table.service.effect_task
+        assert table.spoken == [phase['host_script']['text']]
+        assert len(table.writes) == original_writes
+        assert table.service.game.revision == phase['revision']
+        app = FastAPI()
+        app.include_router(create_router(None, None, None, tmp_path, owner=table.service))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            host = (await client.get('/api/games/werewolf/host')).json()
+        assert host['game']['host_script'] == phase['host_script']
+        assert host['effects']['voice'] == 'requested' and host['effects']['physical_audio_verified'] is False
+
+        now[0] += 3
+        await table.service.step()
+        await table.service.effect_task
+        assert len(attempts) == original_attempts + 1 and len(table.spoken) == 1
+
+
+@pytest.mark.asyncio
+async def test_recovery_skips_retired_and_uncertain_prompts(tmp_path):
+    now = [100.]
+    quiet = True
+    attempts = []
+    async with party(tmp_path, clock=lambda: now[0]) as table:
+        table.effects.speech_status = lambda: dict(quiet=quiet, configured=True)
+
+        async def uncertain(text, *, current):
+            assert current()
+            attempts.append(text)
+            return {'status': 'unconfirmed'}
+
+        table.effects.speak = uncertain
+        await begin_play(table.service)
+        await table.service.effect_task
+        retired = table.service.game.public()['host_script']
+        assert not attempts
+        quiet = False
+        now[0] = table.service.game.deadline + .1
+        await table.service.step()
+        await table.service.effect_task
+        current = table.service.game.public()['host_script']
+        assert current != retired and attempts == [current['text']]
+        assert table.effects.voice_state == 'unconfirmed'
+
+        now[0] += 3
+        await table.service.step()
+        await table.service.control('pause')
+        await table.service.control('resume')
+        await table.service.effect_task
+        assert attempts == [current['text']]
 
 
 @pytest.mark.asyncio

@@ -34,6 +34,7 @@ from .werewolf_effects import lighting_scene
 
 STATIC = Path(__file__).parent / "static"
 CHOICE_EVENT_ID = r"^[a-zA-Z0-9_-]{12,64}$"
+NARRATION_RECHECK_SECONDS = 2
 
 
 def join_qr_svg(url):
@@ -163,6 +164,10 @@ class PhoneGateway:
 class _EffectRun:
     scope: tuple[str, WerewolfGame, str | int]
     task: asyncio.Task | None = None
+    retry_at: float | None = None
+
+    def ready_to_retry(self, now):
+        return self.retry_at is not None and now >= self.retry_at and self.task is not None and self.task.done()
 
 
 class WerewolfService:
@@ -495,22 +500,32 @@ class WerewolfService:
         self.effects.last_scene = None
 
     def _schedule_effects(self):
-        if self.game is None or self.session is None or self.game.revision == self.last_effect_revision:
+        if self.game is None or self.session is None:
             return
-        self.last_effect_revision = self.game.revision
+        changed = self.game.revision != self.last_effect_revision
+        narration = self.effect_runs.get('narration')
+        if not changed and (narration is None or not narration.ready_to_retry(self.clock())):
+            return
         public = self.game.public()
-        self._schedule_effect('lighting', public, self.effects.lighting,
-                              lambda game: lighting_scene(game.phase, game.paused) if self.effects.lights_active else None)
-        self._schedule_effect('narration', public, self.effects.narrate,
-                              lambda game: game.host_script['id'] if self.effects.narration and not game.paused else None)
+        if changed:
+            self.last_effect_revision = self.game.revision
+            self._schedule_effect('lighting', public, self.effects.lighting,
+                                  lambda game: lighting_scene(game.phase, game.paused) if self.effects.lights_active else None)
+        self._schedule_effect('narration', public, self.effects.narrate, self._narration_cue)
         self.effect_task = asyncio.gather(*tuple(self.effect_tasks), return_exceptions=True)
+
+    def _narration_cue(self, game):
+        if (self.effects.narration and not game.paused
+                and (game.deadline is None or self.clock() < game.deadline)):
+            return game.host_script['id']
+        return None
 
     def _schedule_effect(self, channel, public, output, cue_of):
         session, game = self.session, self.game
         cue = cue_of(game)
         previous = self.effect_runs.get(channel)
         scope = (session, game, cue)
-        if previous is not None and previous.scope == scope:
+        if previous is not None and previous.scope == scope and not previous.ready_to_retry(self.clock()):
             return
         if previous is not None and not previous.task.done() and not previous.task.cancelling():
             previous.task.cancel()
@@ -526,7 +541,9 @@ class WerewolfService:
 
         async def apply():
             if current():
-                await output(public, current)
+                retry = await output(public, current)
+                if channel == 'narration' and retry is True and current():
+                    run.retry_at = self.clock() + NARRATION_RECHECK_SECONDS
 
         run.task = asyncio.create_task(apply(), name='friday-werewolf-' + channel)
         self.effect_tasks.add(run.task)
