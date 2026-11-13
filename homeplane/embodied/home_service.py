@@ -38,6 +38,12 @@ MAX_UTTERANCE_SECONDS = 8.0
 VOICE_DECODE_MAX_AGE = 10.0
 WAKE_VOICED_SECONDS = .25
 COMMAND_VOICED_SECONDS = .45
+TRANSCRIPT_REJECTIONS = frozenset({
+    'no_speech', 'unsupported_script', 'no_chinese_task', 'low_asr_confidence', 'likely_no_speech', 'invalid_text',
+})
+VOICE_ADMISSION_REJECTIONS = TRANSCRIPT_REJECTIONS | {
+    'need_wake_word_without_attention', 'wake_word_required',
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -627,27 +633,41 @@ class HomeService:
 
     async def transcribe(self, pcm, owner, captured, attending=False, epoch=None, source=None, wake_only=False,
                          *, decoded=None, decode_current=None, decode_deadline=None, started=None, ended=None,
-                         view_epoch=None, source_epoch=None):
+                         view_epoch=None, source_epoch=None, expected_wake_revision=None):
         epoch = self.epoch if epoch is None else epoch
         source_epoch = self.audio_source_epoch if source_epoch is None else source_epoch
         view_epoch = self.voice_view_epoch if view_epoch is None else view_epoch
-        attending = attending and view_epoch == self.voice_view_epoch
+        attending = attending and expected_wake_revision is None and view_epoch == self.voice_view_epoch
+        if expected_wake_revision is not None:
+            owner = None
         began = time.monotonic()
         result_kind, result_code = "ok", "none"
         command = None
+        rejected_revision = None
         self.runtime_log.record("embodied.voice", "start")
         try:
             self.voice_needs_stable_view = True
             self.state["voice"] = "transcribing"
             policy=self.voice_preferences()
-            if source is not None and not self._voice_context_current(captured, epoch, policy, source, source_epoch):
+            if expected_wake_revision is not None and policy.revision != expected_wake_revision:
                 return
-            timing = dict(guard=decode_current, deadline=decode_deadline) if decode_current is not None else {}
-            followup = None if started is None or wake_only else self.followup_for(source, started, captured)
+
+            def context_current():
+                return ((expected_wake_revision is None or self.audio_allowed)
+                        and self._voice_context_current(captured, epoch, policy, source, source_epoch))
+
+            if source is not None and not context_current():
+                return
+            timing = (dict(guard=lambda: decode_current() and context_current(), deadline=decode_deadline)
+                      if decode_current is not None else {})
+            followup = (self.followup_for(source, started, captured)
+                        if started is not None and not wake_only and expected_wake_revision is None else None)
             result = await self.request("transcribe", pcm=base64.b64encode(pcm).decode(), attending=attending,
                                         voice_revision=policy.revision, wake_only=wake_only,
                                         after_wake=followup is not None, **timing)
             if decode_current is not None and not decode_current():
+                return
+            if expected_wake_revision is not None and not context_current():
                 return
             if result.get('voice_revision',0)!=policy.revision or self.voice_preferences()!=policy:
                 self.state['reason']='唤醒词已更新，请重新说一次'
@@ -667,20 +687,17 @@ class HomeService:
             self.state["laya_result"] = None
             self.state["asr_quality"] = result.get("asr_quality")
             route = result.get("address", {})
-            if route.get("reason") in (
-                "no_speech",
-                "unsupported_script",
-                "no_chinese_task",
-                "low_asr_confidence",
-                "likely_no_speech",
-                "invalid_text",
-            ):
+            reason = route.get("reason")
+            if (result.get('type') == 'transcript' and route.get('admitted') is False and self.audio_allowed
+                    and reason in VOICE_ADMISSION_REJECTIONS and context_current()):
+                rejected_revision = policy.revision
+            if reason in TRANSCRIPT_REJECTIONS:
                 self.state["reason"] = "等待清晰的语音指令"
                 return
             if wake_only or not route.get("admitted"):
                 if wake_only:
                     self.state["reason"] = "等待清晰的语音指令"
-                elif route.get("reason") == "need_wake_word_without_attention":
+                elif reason == "need_wake_word_without_attention":
                     self.state["reason"] = f"未确认注视，请先说 {policy.wake_word}"
                 else:
                     self.state["reason"] = "请继续说出指令"
@@ -861,7 +878,10 @@ class HomeService:
             self.voice_busy = False
             self.voice_needs_stable_view = False
             if decoded is not None:
-                decoded()
+                if rejected_revision is None:
+                    decoded()
+                else:
+                    decoded(rejected_revision=rejected_revision)
             self.refresh_voice()
             pending = self.pending_audio
             self.pending_audio = None

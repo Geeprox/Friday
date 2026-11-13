@@ -62,8 +62,9 @@ def voice_at(camera, session, routing, *, owner=None, text='Friday'):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('winner', ['primary', 'secondary'])
 @pytest.mark.parametrize('text, voiced_frames', [('Friday', 2), ('Friday', 6), ('Friday，打开玄关灯', 6)])
+@pytest.mark.parametrize('rejected_loudest', [False, True])
 async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_occupied(
-        tmp_path, monkeypatch, winner, text, voiced_frames):
+        tmp_path, monkeypatch, winner, text, voiced_frames, rejected_loudest):
     clock = clock_at()
     monkeypatch.setattr(home_service, 'time', clock)
     monkeypatch.setattr(home_service, 'DATA', tmp_path)
@@ -79,6 +80,9 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
         CAMERA['id']: voice_at(CAMERA, SESSION, routing, text=text),
         OTHER['id']: voice_at(OTHER, 'SYNTHETIC-other-view', routing, owner=7, text=text),
     }
+    if rejected_loudest:
+        services[OTHER['id']].request.return_value = dict(type='transcript', voice_revision=0,
+            address=dict(admitted=False, reason='low_asr_confidence'))
     receivers, framer, ingress = {}, {}, {}
     for camera, generation in ((CAMERA, 'a' * 32), (OTHER, 'b' * 32)):
         cid = camera['id']
@@ -119,7 +123,8 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
             frame = dict(type='frame', received_at=clock.time(),
                          capture_session=gate.session, camera_source_context=gate.context)
             assert gate.observe_frame(frame, wall=clock.time(), mono=clock.at)
-            amplitude = (1200 if camera == CAMERA else 400) if index < voiced_frames else 0
+            other_amplitude = 2000 if rejected_loudest else 400
+            amplitude = (1200 if camera == CAMERA else other_amplitude) if index < voiced_frames else 0
             raw = np.full(3200, amplitude, dtype='<i2').tobytes()
             packet, = framer[cid].push(raw, received=clock.time(), decoded=clock.time(),
                                        wall=clock.time(), mono=clock.at)
@@ -131,7 +136,7 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
     home = services[CAMERA['id']]
     home.request.assert_awaited_once()
     assert home.request.await_args.kwargs['wake_only'] == (voiced_frames == 2)
-    services[OTHER['id']].request.assert_not_awaited()
+    assert services[OTHER['id']].request.await_count == int(rejected_loudest)
     assert services[OTHER['id']].wake_camera is None
     source = ingress[CAMERA['id']].session, ingress[CAMERA['id']].context
     assert home.wake_camera.source == source and not home.attention.latest
@@ -170,7 +175,7 @@ def candidate(at):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', [
     'primary_turn', 'secondary_turn', 'quiet', 'other_camera', 'other_room', 'source', 'capture_session', 'input',
-    'policy', 'expired',
+    'policy', 'expired', 'fallback_primary_turn', 'fallback_secondary_turn',
 ])
 async def test_standalone_wake_continues_only_on_the_live_source(tmp_path, monkeypatch, change):
     clock = clock_at(10)
@@ -193,7 +198,8 @@ async def test_standalone_wake_continues_only_on_the_live_source(tmp_path, monke
     home = voice_at(CAMERA, SESSION, routing)
     other = voice_at(OTHER, 'SYNTHETIC-other-view', routing)
     policy = SimpleNamespace(wake_word='小福', revision=7)
-    script = iter(('小福', '打开玄关灯', '关闭玄关灯'))
+    fallback = change.startswith('fallback_')
+    script = iter((*([''] if fallback else []), '小福', '打开玄关灯', '关闭玄关灯'))
     calls = []
 
     def run_worker(request):
@@ -242,7 +248,8 @@ async def test_standalone_wake_continues_only_on_the_live_source(tmp_path, monke
 
     if change == 'quiet':
         home_service.VOICE_PAUSED.touch()
-    await utterance((home, 1200))
+    initial_sources = ((home, 1200), (other, 2000)) if fallback else ((home, 1200),)
+    await utterance(*initial_sources)
     if change == 'quiet':
         launch.assert_not_called()
     else:
@@ -251,12 +258,13 @@ async def test_standalone_wake_continues_only_on_the_live_source(tmp_path, monke
         playback.wait.assert_awaited_once()
         child.close.assert_awaited_once()
     assert home.wake_followup is not None and home.wake_camera is not None
+    assert other.wake_followup is None and other.wake_camera is None
     assert home.voice_receipt() is None and routing.listening(clock.at)
     devices.assert_not_awaited()
 
-    turned = change in {'primary_turn', 'secondary_turn'}
+    turned = change.endswith('_turn')
     if turned:
-        owner = change.removesuffix('_turn')
+        owner = change.removeprefix('fallback_').removesuffix('_turn')
         gate = gates[CAMERA['id']]
         source = gate.session, gate.context
         cue, safety = cue_source(home, clock, owner)
@@ -305,7 +313,8 @@ async def test_standalone_wake_continues_only_on_the_live_source(tmp_path, monke
         devices.assert_awaited_once()
         assert devices.await_args.args[:2] == ('玄关灯', 'on')
         assert home.voice_receipt()['state'] == 'readback' and home.wake_followup is None
-        assert calls == [(CAMERA['id'], False, False), (CAMERA['id'], True, False)]
+        assert calls == ([(OTHER['id'], False, False)] if fallback else []) + [
+            (CAMERA['id'], False, False), (CAMERA['id'], True, False)]
         clock.at = max(clock.at, routing.reply_until, home.reply_until) + .2
         await utterance((home, 1200))
         devices.assert_awaited_once()
@@ -314,7 +323,7 @@ async def test_standalone_wake_continues_only_on_the_live_source(tmp_path, monke
         devices.assert_not_awaited()
         assert all(not after_wake for _, after_wake, _ in calls)
         if change == 'other_room':
-            assert calls[-1] == (OTHER['id'], False, False)
+            assert calls[1:] == [(OTHER['id'], False, False), (CAMERA['id'], False, False)]
     assert launch.call_count == int(change != 'quiet')
     home.clear_voice_receipt()
 
@@ -449,6 +458,85 @@ async def test_short_fragment_does_not_replace_a_pending_full_utterance_from_the
     await route.task
     service.transcribe.assert_awaited_once()
     assert service.transcribe.await_args.args[0] == full.pcm
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['none', 'disabled', 'reply', 'source', 'preferences', 'first_retired',
+                                   'expired', 'different_phrase', 'worker_error', 'first_admitted', 'no_wake'])
+async def test_second_recording_requires_a_current_explicitly_rejected_wake_group(tmp_path, monkeypatch, change):
+    clock = clock_at(10)
+    monkeypatch.setattr(home_service, 'time', clock)
+    monkeypatch.setattr(home_service, 'DATA', tmp_path)
+    monkeypatch.setattr(home_service, 'VOICE_INPUT_PAUSED', tmp_path / 'input-paused')
+    monkeypatch.setattr(home_service, 'VOICE_PAUSED', tmp_path / 'quiet')
+    enabled = True
+    feedback = AsyncMock()
+    routing = VoiceRouting(lambda: enabled, wake_feedback=feedback, clock=clock.monotonic)
+    routing.COLLECT_SECONDS = 0
+    first = voice_at(CAMERA, SESSION, routing)
+    other = voice_at(OTHER, 'SYNTHETIC-other-view', routing)
+    for service in (first, other):
+        service.last_video = clock.at
+    phrase = replace(candidate(clock.at), level=.08)
+    alternate = replace(phrase, source=('c'*32, 'd'*64), level=.04, attending=True, owner=3)
+    if change == 'different_phrase':
+        alternate = replace(alternate, started=phrase.ended+.1, ended=phrase.ended+.7)
+        other.request.return_value = dict(type='transcript', voice_revision=0,
+            address=dict(admitted=False, reason='need_wake_word_without_attention'))
+    if change == 'no_wake':
+        other.request.return_value = dict(type='transcript', voice_revision=0, text='打开玄关灯',
+            address=address('打开玄关灯', attending=True))
+    if change == 'preferences':
+        other.voice_preferences = lambda: SimpleNamespace(wake_word='小福', revision=1)
+    started, release = asyncio.Event(), asyncio.Event()
+    device = AsyncMock()
+    monkeypatch.setattr(home_service.bridge, 'command', device)
+
+    async def recognize(*args, **kwargs):
+        started.set()
+        await release.wait()
+        if change == 'worker_error':
+            return dict(type='error', voice_revision=0, address=dict(admitted=False, reason='no_speech'))
+        if change == 'first_admitted':
+            return dict(type='wake', voice_revision=0, latency_ms=1)
+        return dict(type='transcript', voice_revision=0, address=dict(admitted=False, reason='no_speech'))
+
+    first.request = AsyncMock(side_effect=recognize)
+    routing.offer(first, phrase)
+    routing.offer(other, alternate)
+    owner = routing.task
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        assert routing.waiting(other, alternate.source, clock.at) == (change != 'different_phrase')
+        if change == 'disabled':
+            enabled = False
+        elif change == 'source':
+            other.revoke_audio_source()
+        elif change == 'first_retired':
+            routing.discard(first.camera_id)
+        elif change == 'expired':
+            clock.at += routing.START_LIMIT + .1
+            first.last_video = other.last_video = clock.at
+        elif change == 'reply':
+            with routing.replying(clock.at + .6):
+                pass
+            clock.at += .7
+        release.set()
+        await asyncio.wait_for(owner, 1)
+        await asyncio.gather(*first.jobs, *other.jobs)
+    finally:
+        release.set()
+        await asyncio.gather(owner, return_exceptions=True)
+    assert first.request.await_count == 1
+    assert other.request.await_count == int(change in {'none', 'no_wake'})
+    assert (other.wake_camera is not None) == (change == 'none')
+    assert (first.wake_camera is not None) == (change == 'first_admitted')
+    if other.request.await_count:
+        assert other.request.await_args.kwargs['attending'] is False
+        assert other.request.await_args.kwargs['after_wake'] is False
+    assert feedback.await_count == int(change in {'none', 'first_admitted'})
+    device.assert_not_awaited()
+    assert not routing.pending and not routing.inflight and routing.standby is None
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,14 @@ class Utterance:
     source_epoch: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class AlternateInput:
+    first_camera: str
+    service: object
+    utterance: Utterance
+    window: tuple[float, float]
+
+
 def overlaps(first, second):
     return first[0] <= second[1] + .25 and second[0] <= first[1] + .25
 
@@ -30,6 +38,7 @@ def overlaps(first, second):
 class VoiceRouting:
     COLLECT_SECONDS = .35
     FOLLOWUP_LEVEL_RATIO = 1.25
+    ALTERNATE_EDGE_SECONDS = .5
     START_LIMIT = 3.0
     DECODE_SECONDS = 8.0
     REPEAT_LIMIT = 12.0
@@ -40,6 +49,7 @@ class VoiceRouting:
         self.clock = clock
         self.pending = {}
         self.dispatching = None
+        self.standby: AlternateInput | None = None
         self.inflight = {}
         self.recent = deque(maxlen=12)
         self.followup_owner = None
@@ -59,6 +69,7 @@ class VoiceRouting:
         self.reply_until = max(self.reply_until, until)
         self.pending.clear()
         self.dispatching = None
+        self.standby = None
         self.clear_followup()
         self.replies += 1
         try:
@@ -71,6 +82,8 @@ class VoiceRouting:
         self.pending.pop(camera, None)
         if self.dispatching is not None and self.dispatching[0].camera_id == camera:
             self.dispatching = None
+        if self.standby is not None and camera in (self.standby.first_camera, self.standby.service.camera_id):
+            self.standby = None
         if self.followup_owner is not None and self.followup_owner.camera_id == camera:
             self.clear_followup()
 
@@ -105,19 +118,27 @@ class VoiceRouting:
 
     def waiting(self, service, source, now):
         """只为同一采集来源仍可受理的语音段暂缓唤醒转向。"""
-        for entry in (self.pending.get(service.camera_id), self.dispatching):
-            if entry is not None:
-                owner, item = entry
-                if owner is service and item.source == source and self._eligible(service, item, now):
-                    return True
+        entries = []
+        pending = self.pending.get(service.camera_id)
+        if pending is not None:
+            entries.append((*pending, None))
+        if self.dispatching is not None:
+            entries.append(self.dispatching)
+        if self.standby is not None:
+            entries.append((self.standby.service, self.standby.utterance, self.standby.window))
+        for owner, item, window in entries:
+            if owner is service and item.source == source and self._eligible(service, item, now, window):
+                return True
         return False
 
-    def _eligible(self, service, item, now):
+    def _input_current(self, service, item, now):
         return (self.listening(now) and item.started >= self.reply_until
-                and 0 <= now - item.captured <= self.START_LIMIT
                 and service.current(item.captured, item.epoch)
-                and item.source_epoch == service.audio_source_epoch
-                and not any(0 <= now - admitted <= self.REPEAT_LIMIT
+                and item.source_epoch == service.audio_source_epoch)
+
+    def _eligible(self, service, item, now, reserved_window=None):
+        return (0 <= now - item.captured <= self.START_LIMIT and self._input_current(service, item, now)
+                and not any(window is not reserved_window and 0 <= now - admitted <= self.REPEAT_LIMIT
                             and overlaps((item.started, item.ended), window)
                             for admitted, window in self.recent))
 
@@ -126,18 +147,24 @@ class VoiceRouting:
         if not self._eligible(service, item, now):
             return
         camera = service.camera_id
+        if self.standby is not None and self.standby.service.camera_id == camera:
+            # 每路只保留一条候选，新的独立语句可以取代还未处理的备用录音。
+            self.standby = None
         previous = self.pending.get(camera)
         if item.wake_only and previous and not previous[1].wake_only and self._eligible(*previous, now):
             return
         self.pending[camera] = (service, item)
         asyncio.get_running_loop().call_later(
-            self.START_LIMIT - (now - item.captured), self._expire, camera, item.captured)
+            max(0, self.START_LIMIT - (now - item.captured)), self._expire, camera, item.captured)
         self._schedule()
 
     def _expire(self, camera, captured):
         candidate = self.pending.get(camera)
         if candidate is not None and candidate[1].captured == captured:
             self.pending.pop(camera, None)
+        if (self.standby is not None and self.standby.service.camera_id == camera
+                and self.standby.utterance.captured == captured):
+            self.standby = None
 
     def _schedule(self):
         if self.task is None and self.pending:
@@ -175,6 +202,17 @@ class VoiceRouting:
         for candidate_service, _ in candidates:
             self.pending.pop(candidate_service.camera_id)
         window = min(item.started for _, item in candidates), max(item.ended for _, item in candidates)
+        # 只有首尾都接近且真正重叠的另一路才可补识别。
+        alternate = max(
+            ((owner, voice) for owner, voice in candidates if owner is not service
+             and voice.source != item.source
+             and abs(voice.started - item.started) <= self.ALTERNATE_EDGE_SECONDS
+             and abs(voice.ended - item.ended) <= self.ALTERNATE_EDGE_SECONDS
+             and max(voice.started, item.started) < min(voice.ended, item.ended)),
+            key=priority, default=None,
+        )
+        if alternate is not None:
+            self.standby = AlternateInput(service.camera_id, *alternate, window)
         return service, item, window
 
     async def _dispatch(self):
@@ -184,52 +222,68 @@ class VoiceRouting:
                 selection = self._select(self.clock())
                 if selection is None:
                     return
-                service, item, window = selection
-                self.dispatching = (service, item)
-                recognized = asyncio.Event()
-                job = service.spawn(self._transcribe(service, item, window, recognized))
-                self.inflight[service.camera_id] = job
-                job.add_done_callback(
-                    lambda finished, camera=service.camera_id, ready=recognized:
-                    self._turn_finished(camera, finished, ready)
-                )
-                await recognized.wait()
+                await self._recognize_group(*selection)
         finally:
             self.dispatching = None
+            self.standby = None
             self.task = None
+
+    async def _recognize_group(self, service, item, window):
+        deadline = self.clock() + self.DECODE_SECONDS
+        revision = await self._start_attempt(service, item, window, deadline)
+        standby, self.standby = self.standby, None
+        if revision is None or standby is None or not self._input_current(service, item, self.clock()):
+            return
+        await self._start_attempt(standby.service, standby.utterance, standby.window, deadline,
+                                  expected_wake_revision=revision)
+
+    def _start_attempt(self, service, item, window, deadline, *, expected_wake_revision=None):
+        self.dispatching = (service, item, window if expected_wake_revision is not None else None)
+        recognized = asyncio.get_running_loop().create_future()
+        job = service.spawn(self._transcribe(service, item, window, deadline, recognized, expected_wake_revision))
+        self.inflight[service.camera_id] = job
+        job.add_done_callback(lambda finished: self._turn_finished(service.camera_id, finished, recognized))
+        return recognized
 
     def _turn_finished(self, camera, job, recognized):
         if self.inflight.get(camera) is job:
             self.inflight.pop(camera)
-        recognized.set()
+        if not recognized.done():
+            recognized.set_result(None)
         if not job.cancelled():
             job.exception()
         self._schedule()
 
-    async def _transcribe(self, service, item, window, recognized):
+    async def _transcribe(self, service, item, window, deadline, recognized, expected_wake_revision):
         now = self.clock()
         if self.dispatching is None or self.dispatching[1] is not item:
             return
+        _, _, reserved_window = self.dispatching
         self.dispatching = None
-        if not self._eligible(service, item, now):
+        if now >= deadline or not self._eligible(service, item, now, reserved_window):
             return
         # 短片段识别失败时，迟到的完整语音仍有机会被识别。
-        if not item.wake_only:
+        if not item.wake_only and (reserved_window is None or not any(previous is window for _, previous in self.recent)):
             self.recent.append((now, window))
         service.voice_busy = True
+        decode_deadline = min(deadline, item.captured + 10)
 
-        def decoded(wake_detected=False):
-            if item.wake_only and wake_detected:
+        def decoded(wake_detected=False, *, rejected_revision=None):
+            if recognized.done():
+                return
+            if rejected_revision is None:
+                self.standby = None
+            if item.wake_only and wake_detected and not any(previous is window for _, previous in self.recent):
                 self.recent.append((self.clock(), window))
-            recognized.set()
+            recognized.set_result(rejected_revision)
 
         def current():
-            return (self.listening(self.clock()) and item.started >= self.reply_until
-                    and service.current(item.captured, item.epoch)
-                    and item.source_epoch == service.audio_source_epoch)
+            now = self.clock()
+            return now < decode_deadline and self._input_current(service, item, now)
 
         await service.transcribe(
             item.pcm, item.owner, item.captured, item.attending, item.epoch, item.source,
             item.wake_only, decoded=decoded, decode_current=current,
-            decode_deadline=min(now + self.DECODE_SECONDS, item.captured + 10),
-            started=item.started, ended=item.ended, view_epoch=item.view_epoch, source_epoch=item.source_epoch)
+            decode_deadline=decode_deadline, started=item.started, ended=item.ended,
+            view_epoch=item.view_epoch, source_epoch=item.source_epoch,
+            expected_wake_revision=expected_wake_revision)
