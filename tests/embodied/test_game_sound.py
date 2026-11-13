@@ -23,8 +23,8 @@ def test_sound_control_native_lifecycle_and_full_shipped_bootstrap_are_inert():
 def test_original_ski_and_joint_driven_tennis_events_reach_sound_without_scoring_changes():
     from tests.embodied.test_motion_games import LOCK, human
     game = MotionGames(); game.reset('ski')
-    before = copy.deepcopy(game.publish([], 'playing', ''))
     game.distance, game.speed = 7.99, 2.4
+    before = copy.deepcopy(game.publish([], 'playing', ''))
     game.ski({'arm_effort': 1, 'lateral': 0}, .05, 1)
     after = copy.deepcopy(game.publish([], 'playing', ''))
     assert after['ski']['gates_passed'] == 1

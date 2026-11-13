@@ -168,6 +168,54 @@ def test_a_gate_is_scored_once_at_its_actual_crossing(offset, passed):
     assert game.ski_event_sequence == 1
 
 
+@pytest.mark.parametrize('start,end,kind', [(.40, .60, 'gate'), (.60, .40, 'miss')])
+def test_turning_is_scored_at_crossing_even_when_the_next_frame_is_already_on_the_other_side(start, end, kind):
+    results = []
+    for cadence in [(.1,), (.025, .025, .025, .025)]:
+        game = MotionGames()
+        game.reset('ski')
+        game.distance, game.speed = 7.94, 2.4
+        game.ski({'arm_effort': 1, 'lateral': start}, 0, 1.)
+        elapsed = 0.
+        for dt in cadence:
+            elapsed += dt
+            lateral = start + (end - start) * (elapsed / .1)
+            game.ski({'arm_effort': 1, 'lateral': lateral}, dt, 1. + elapsed)
+        event = game.ski_public([{'lateral': end}], 'playing')['event']
+        assert event['kind'] == kind
+        assert event['distance'] == 8.
+        assert event['elapsed'] == pytest.approx(.025, abs=1e-9)
+        assert event['sequence'] == 1
+        results.append(game.distance)
+    assert results[0] == pytest.approx(results[1])
+
+
+def test_ski_never_blends_pre_pause_steering_into_a_new_crossing():
+    game = MotionGames()
+    game.reset('ski')
+    game.distance, game.speed = 7.94, 2.4
+    game.ski({'arm_effort': 1, 'lateral': .40}, 0, 1.)
+    game.set_paused(True)
+    game.set_paused(False)
+    game.ski({'arm_effort': 1, 'lateral': .60}, .10, 2.)
+    assert game.ski_event['kind'] == 'miss'
+
+
+def test_first_recovered_ski_frame_does_not_coast_through_a_gate():
+    game = MotionGames()
+    game.reset('ski')
+    for i in range(25):
+        game.update([human(x=.5)], LOCK, i * .05)
+    assert game.status == 'playing'
+    game.distance, game.speed = 7.94, 2.4
+    assert game.update([human(x=.5)], {'status': 'moving'}, 1.25)['status'] == 'paused'
+    recovered = game.update([human(x=.5)], LOCK, 1.35)
+    assert recovered['status'] == 'playing'
+    assert recovered['ski']['distance'] == 7.94 and recovered['ski']['event'] is None
+    after = game.update([human(x=.5)], LOCK, 1.45)
+    assert after['ski']['gates_passed'] == 1
+
+
 def test_collision_slowdown_applies_at_the_crossing_not_the_end_of_a_frame():
     tree = next(f for f in SKI_ROUTE if f.kind == 'tree')
     results = []

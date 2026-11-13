@@ -17,7 +17,7 @@ function makeClient(extra={}){
   location:{host:'127.0.0.1',protocol:'http:'},document:{hidden:false,createElement:tag=>({tagName:tag.toUpperCase()}),querySelectorAll:()=>[node('mode'),node('start')],querySelector:()=>node('actions')},
   $:node,url:p=>p,fetch:async()=>{throw Error('unexpected network');},
   selectMode:mode=>{c.selected=mode;calls.push(['selected',mode]);},updateHUD:()=>calls.push(['updated']),
-  skiScenery:{receive(){}},scenery:{receive(){},ready:()=>true},winterReady:()=>true,beamStage:{forget(){},receive(){},ready:()=>true},presentationClient:{tick(){},ready:()=>true,release(){},close(){}},gameSound:{quiet(){},close(){},tick(){}},
+  skiScenery:{receive(){},interrupt(){},display:g=>g},scenery:{receive(){},ready:()=>true},winterReady:()=>true,beamStage:{forget(){},receive(){},ready:()=>true},presentationClient:{tick(){},ready:()=>true,release(){},close(){}},gameSound:{quiet(){},close(){},tick(){}},
   setTimeout:(fn,ms)=>{const id=++nextTimer;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),
   cancelAnimationFrame:id=>calls.push(['cancelled-frame',id]),
   WebSocket:function(url){this.url=url;this.close=()=>{this.closed=true;};sockets.push(this);},

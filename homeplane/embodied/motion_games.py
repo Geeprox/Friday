@@ -552,6 +552,7 @@ class MotionGames:
         self.ski_cursor = 0
         self.ski_results = {}
         self.ski_elapsed = 0.0
+        self.ski_lateral = None
         self.ski_event = None
         self.ski_event_sequence = 0
         self.gates_passed = self.gates_missed = 0
@@ -1046,8 +1047,9 @@ class MotionGames:
         if warmup:
             warmup.observe(selected[0])
             return self.publish(selected, 'playing', '试滑')
-        if self.mode == 'tennis' and self.status in {'paused', 'waiting'}:
-            # 恢复首帧重新建立时间基准，冻结期间不推进球。
+        if (self.mode in {'ski', 'tennis'} and self.status in {'paused', 'waiting'}
+                or self.mode == 'ski' and self.status == 'calibrating'):
+            # 恢复首帧只建立时间和站位基准，冻结期间不推进雪道或球。
             dt = 0.0
         self.elapsed += dt
         if self.mode == "quest":
@@ -1178,6 +1180,10 @@ class MotionGames:
     def ski(self, p, dt, now):
         if self.complete:
             return
+        lateral = p['lateral']
+        fresh = p.get('observation', 'fresh') == 'fresh'
+        previous_lateral = self.ski_lateral if fresh and self.ski_lateral is not None else lateral
+        self.ski_lateral = lateral if fresh else None
         effort = clamp(p.get("arm_effort", 0), 0, 1)
         if effort > 0.03:
             self.active += dt
@@ -1202,7 +1208,10 @@ class MotionGames:
                 self.distance = boundary
                 remaining -= used
                 if feature and abs(feature.at - boundary) < 1e-8:
-                    self._cross_ski_feature(feature, p['lateral'], self.ski_elapsed + dt - remaining)
+                    # 按过门时刻在两次站位观测之间取值。
+                    crossing = dt - remaining
+                    position = previous_lateral + (lateral - previous_lateral) * (crossing / dt)
+                    self._cross_ski_feature(feature, position, self.ski_elapsed + crossing)
                     self.ski_cursor += 1
         self.ski_elapsed += dt - remaining
         self.obstacles, self.ski_gates = [], []
@@ -1243,7 +1252,7 @@ class MotionGames:
         self.ski_results[feature.id] = kind
         self.ski_event_sequence += 1
         self.ski_event = dict(sequence=self.ski_event_sequence, kind=kind, feature=feature.id,
-                              elapsed=at, combo=self.ski_combo, points=points)
+                              distance=feature.at, elapsed=at, combo=self.ski_combo, points=points)
 
     def ski_public(self, players, status):
         trail = self.ski_trail
@@ -1509,6 +1518,8 @@ class MotionGames:
                     opponent=dict(x=round(self.tennis_opponent.x, 4)) if solo else None)
 
     def publish(self, players, status, reason, *, framing=None):
+        if self.mode == 'ski' and status != 'playing':
+            self.ski_lateral = None
         if self.mode == 'quest' and status not in {'playing', 'complete'}:
             self._invalidate_quest_motion()
         if self.mode == 'hiit' and status not in {'playing', 'complete'}:

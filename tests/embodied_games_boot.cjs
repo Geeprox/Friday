@@ -2,7 +2,7 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync(process.argv[2]||'homeplane/embodied/static/games.js','utf8');
 let animationRequests=0,sockets=0;const nodes=new Map(),documentEvents={},windowEvents={};
-const context=new Proxy({createLinearGradient:()=>({addColorStop(){}})},{get:(o,k)=>k in o?o[k]:()=>{}});
+const context=new Proxy({createLinearGradient:()=>({addColorStop(){}}),createPattern:()=>null},{get:(o,k)=>k in o?o[k]:()=>{}});
 class Element{
  constructor(tag='div'){this.tagName=tag.toUpperCase();this.width=1600;this.height=900;this.dataset={};this.children=[];this.attrs={};this._text='';this.innerHTML='';const classes=new Set();this.classList={add:(...names)=>names.forEach(name=>classes.add(name)),remove:(...names)=>names.forEach(name=>classes.delete(name)),contains:name=>classes.has(name),toggle:(name,force)=>{const on=force??!classes.has(name);if(on)classes.add(name);else classes.delete(name);return on;}};}
  get style(){return this.__style??={setProperty(){}};}

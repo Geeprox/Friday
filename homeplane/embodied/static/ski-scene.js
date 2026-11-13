@@ -4,6 +4,7 @@
 function createSkiScenery(c,{scene,props,reducedMotion=()=>false}){
  const WORLD_TRAVEL=3,COURSE_WIDTH=1.9,HORIZON=335,FOCAL=350,EYE_HEIGHT=2.45;
  const BLEND_MS=120,UNSEEN_MS=1500;
+ const GATE_TINT={gate:'#2b574b',miss:'#875b26'};
  const mod=(n,size)=>(n%size+size)%size,clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
  let current=null,rendered=null,snowPattern=null,textureSource='';
  const scope=g=>(g?.control_context||'')+':'+(g?.round_id??'');
@@ -23,19 +24,50 @@ function createSkiScenery(c,{scene,props,reducedMotion=()=>false}){
   if(current?.key===key&&at<current.at)return;
   const continuous=current?.key===key&&target.distance>=current.target.distance;
   if(!continuous||rendered?.key!==key)rendered=null;
-  let from=target;
+  let from=target,crossing=null;
   if(continuous&&playing&&at-current.at<=UNSEEN_MS&&(!rendered||at-rendered.at<=UNSEEN_MS)){
    // 新包从这一刻的可见位置接续。短包间隔不缩短补间，暂停后沿用最后画面。
    from=current.playing&&!rendered?.paused?interpolate(current,at):rendered?.pose??current.target;
+   if(current.playing&&!rendered?.paused){
+    const event=g.ski?.event;
+    if(current.crossing&&current.crossing.sequence===event?.sequence)crossing=current.crossing;
+    else if(rendered?.key===key&&event?.sequence===(rendered.game.ski?.event?.sequence??0)+1&&
+      event.age>=0&&event.age<=.25&&Number.isFinite(event.distance)&&event.distance>=from.distance&&
+      event.distance<=target.distance&&rendered.game.ski){
+     crossing={sequence:event.sequence,distance:event.distance,before:rendered.game.ski};
+    }
+   }
   }
-  current={key,at,target,from,playing};
+  current={key,at,target,from,playing,crossing,game:g};
  }
  function frame(g,at){
   const key=scope(g),target=pose(g,key);
   if(g.mode!=='ski'||g.status==='complete')return target;
   if(g.status!=='playing'&&rendered?.key===key&&target.distance>=rendered.pose.distance)return rendered.pose;
-  if(g.status==='playing'&&current?.key===key&&current.playing&&current.target.distance===target.distance)return interpolate(current,at);
+  if(g.status==='playing'&&current?.key===key&&current.playing&&current.target.distance===target.distance)
+   return rendered?.key===key&&at-rendered.at>UNSEEN_MS?target:interpolate(current,at);
   return target;
+ }
+ function display(g,at){
+  const crossing=current?.key===scope(g)&&current.crossing;
+  if(g.mode!=='ski'||g.status!=='playing'||!crossing||g.ski?.event?.sequence!==crossing.sequence)return g;
+  const visible=frame(g,at);
+  if(visible.distance>=crossing.distance)return g;
+  const ski=g.ski,guide=crossing.before.guide;
+  const next=guide?.next_gate;
+  const distance=next?Math.max(0,crossing.before.distance+next.distance-visible.distance):0;
+  return {...g,ski:{...ski,event:crossing.before.event,points:crossing.before.points,
+   gates_passed:crossing.before.gates_passed,gates_missed:crossing.before.gates_missed,
+   collisions:crossing.before.collisions,guide:next?{...guide,next_gate:{...next,distance}}:guide}};
+ }
+ function interrupt(){
+  if(current){current.crossing=null;current.playing=false;}
+ }
+ function soundState(g){
+  const event=g?.ski?.event;
+  if(!Number.isFinite(event?.distance)||event.sequence===current?.crossing?.sequence)return g;
+  // 仍记住收到的序号与分数，让下一次有效的过门回执可立即使用。
+  return {...g,ski:{...g.ski,event:{...event,age:1}}};
  }
  function project(x,z,lateral){const scale=FOCAL/(z+1.8);return[800+(x-lateral*COURSE_WIDTH)*scale,HORIZON+scale*EYE_HEIGHT,scale];}
  function texture(){
@@ -128,21 +160,47 @@ function createSkiScenery(c,{scene,props,reducedMotion=()=>false}){
   corners.forEach(([at,d],i)=>{const [px,py]=project(at,d,lateral);if(i===0)c.moveTo(px,py);else c.lineTo(px,py);});
   c.closePath();c.fillStyle=color;c.fill();
  }
+ function gateLine(gate,visible,guide,outcome,reduced){
+  const {x,z,width}=gate,halfWidth=width*COURSE_WIDTH;
+  const marked=gate.id&&guide?.next_gate?.id===gate.id;
+  snowMark(x,z,halfWidth,visible.lateral,marked ? .28 : .19,marked?'#526d62':'rgba(100,77,56,.38)');
+  if(!outcome)return;
+  const progress=clamp(-z/.7,0,1);
+  c.save();c.globalAlpha=reduced?1:1-progress*.52;
+  const ink=GATE_TINT[outcome];
+  snowMark(x,z,halfWidth,visible.lateral,.16,ink);
+  const [px,py,scale]=project(x,z+.09,visible.lateral),size=clamp(scale*.07,5,13);
+  c.beginPath();c.arc(px,py,size+5,0,Math.PI*2);c.fillStyle=ink;c.fill();
+  c.lineWidth=1.5;c.strokeStyle='#fff7e9';c.stroke();
+  const dx=size*.58,dy=dx*.68,weight=Math.max(1.6,dx*.32);
+  if(outcome==='gate'){
+   line([px-dx,py],[px-dx*.25,py+dy],'#fff7e9',weight);
+   line([px-dx*.25,py+dy],[px+dx,py-dy],'#fff7e9',weight);
+  }else line([px-dx,py],[px+dx,py],'#fff7e9',weight);
+  c.restore();
+ }
  function prop(index,x,z,lateral,multiplier=1,alpha=1){
   if(z<=-.30||z>38)return;const[px,py,s]=project(x,z,lateral),size=s*3.1*multiplier,sw=props.naturalWidth/4,sh=props.naturalHeight/2;
   c.globalAlpha=alpha;
   c.drawImage(props,(index%4)*sw,Math.floor(index/4)*sh,sw,sh,px-size/2,py-size+s*.08,size,size);
   c.globalAlpha=1;
  }
+ function arch(x,z,halfWidth,lateral){
+  const [px,py,s]=project(x,z,lateral);
+  const sw=Math.floor(props.naturalWidth/4),sh=Math.floor(props.naturalHeight/2);
+  // 木柱内缘为原图格的 90 和 337 像素，落脚线为 383 像素。
+  const width=halfWidth*2*s*443/247,height=s*3.1;
+  c.drawImage(props,3*sw,sh,sw,sh,px-width*213.5/443,py-height*383/443,width,height);
+ }
  function line(a,b,color,width){c.beginPath();c.moveTo(...a);c.lineTo(...b);c.strokeStyle=color;c.lineWidth=width;c.lineCap='round';c.stroke();}
  function draw(g,at){
   if(scene.complete&&scene.naturalWidth)c.drawImage(scene,0,0,1600,900);else{c.fillStyle='#f3f0e8';c.fillRect(0,0,1600,900);}
   if(!scene.complete||!scene.naturalWidth||!props.complete||!props.naturalWidth)return;
-  const visible=frame(g,at),travel=visible.distance*WORLD_TRAVEL,items=[],ski=g.ski||{};
+  const visible=frame(g,at),travel=visible.distance*WORLD_TRAVEL,items=[],shown=display(g,at),ski=shown.ski||{};
   const route=Array.isArray(ski.route)&&ski.route.length>1&&ski.route.length<=64&&
    ski.route.every((p,i)=>Array.isArray(p)&&p.length===3&&p.every(Number.isFinite)&&
     (i===0?p[0]===0:p[0]>ski.route[i-1][0])&&Math.abs(p[1])<=1&&p[2]>=0&&p[2]<=1)?ski.route:null;
-  rendered=g.mode==='ski'?{pose:visible,key:scope(g),at,paused:g.status!=='playing'}:null;
+  rendered=g.mode==='ski'?{pose:visible,key:scope(g),at,paused:g.status!=='playing',game:shown}:null;
   const reduced=reducedMotion();
   if(!reduced){
    snow(travel,visible.lateral);
@@ -169,15 +227,19 @@ function createSkiScenery(c,{scene,props,reducedMotion=()=>false}){
    const alpha=clamp((30-z)/6,0,1)*clamp((z+.30)/.42,0,1);
    if(alpha>0)items.push({x:x*COURSE_WIDTH,z,index:0,alpha});
   }
-  // The existing illustrated arch is the crossing target. Scale its opening to
-  // the actual clearance plus the skis' half-width, on the same snow plane.
-  const gates=route?route.filter(point=>point[2]>0).map(([distance,x,width])=>({x,width,z:distance*WORLD_TRAVEL-travel})):
+  // 木门开口与雪面过门线按同一实际判定宽度投影。
+  const gates=route?route.filter(point=>point[2]>0).map(([distance,x,width],index)=>({
+   id:'gate-'+(index+1),x,width,z:distance*WORLD_TRAVEL-travel})):
    (ski.gates||[]).map(gate=>({...gate,z:gate.z+correction}));
+  const event=ski.event;
   for(const gate of gates){
    const {z,width}=gate,x=gate.x*COURSE_WIDTH;
-   if(z<=-.30||z>30)continue;
-   snowMark(x,z,width*COURSE_WIDTH,visible.lateral,.19,'rgba(100,77,56,.38)');
-   items.push({x,z,index:7,multiplier:(width+.10)/.43});
+   const outcome=g.status==='playing'&&event&&current?.crossing?.sequence===event.sequence&&
+    event.feature===gate.id&&Object.hasOwn(GATE_TINT,event.kind)&&event.age>=0&&event.age<=1.6&&
+    z<=1e-5&&z>=-.7?event.kind:null;
+   if(z>30||z<=-.30&&!outcome)continue;
+   gateLine({...gate,x},visible,ski.guide,outcome,reduced);
+   if(z>-.30)items.push({x,z,halfWidth:width*COURSE_WIDTH});
   }
   if(route){
    const [end]=route.at(-1),z=end*WORLD_TRAVEL-travel;
@@ -187,7 +249,11 @@ function createSkiScenery(c,{scene,props,reducedMotion=()=>false}){
     items.push({x:3.2,z:z+3,index:6,multiplier:1.1});
    }
   }else if(g.status==='complete')items.push({x:0,z:3,index:7});
-  items.sort((a,b)=>b.z-a.z);for(const item of items)prop(item.index,item.x,item.z,visible.lateral,item.multiplier,item.alpha);
+  items.sort((a,b)=>b.z-a.z);
+  for(const item of items){
+   if(item.halfWidth)arch(item.x,item.z,item.halfWidth,visible.lateral);
+   else prop(item.index,item.x,item.z,visible.lateral,item.multiplier,item.alpha);
+  }
   // 雪板保留近处的稳定参照，镜头不会随摆臂上下晃动。
   for(const offset of[-1,1]){
    const x=800+offset*72+visible.lateral*26,tip=x-offset*5;
@@ -198,6 +264,7 @@ function createSkiScenery(c,{scene,props,reducedMotion=()=>false}){
    line([x-13,895],[tip-7,793],'#d9ad77',2);
    line([x+3,892],[tip+1,790],'#f2cf93',3.5);
   }
+  return shown;
  }
- return{receive,draw};
+ return{receive,draw,display,interrupt,soundState};
 }

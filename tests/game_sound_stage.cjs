@@ -11,16 +11,22 @@ sandbox.AudioContext=class{
  createOscillator(){const o={frequency:{setValueAtTime(value){o.hz=value;}},connect(){},disconnect(){},start(){notes.push(o.hz);},stop(){}};return o;}
  createGain(){return{gain:{setValueAtTime(){},linearRampToValueAtTime(){},exponentialRampToValueAtTime(){}},connect(){},disconnect(){}};}
 };
-vm.runInContext('winterProps.complete=winterScene.complete=true;winterProps.naturalWidth=winterScene.naturalWidth=100;scenery.ready=()=>true;',sandbox);
+vm.runInContext('winterProps.complete=winterScene.complete=true;winterProps.naturalWidth=winterScene.naturalWidth=1600;winterProps.naturalHeight=winterScene.naturalHeight=900;scenery.ready=()=>true;',sandbox);
 const ws=vm.runInContext('gameSocket',sandbox);ws.onopen();
+const paint=()=>vm.runInContext(`draw(${now});`,sandbox);
 function deliver(game){
  const bytes=new TextEncoder().encode(JSON.stringify({status:'live',game,simulated:true,people:[],recording:{armed:false,status:'off'}})),data=new ArrayBuffer(bytes.length+8),view=new DataView(data);view.setUint32(0,bytes.length);new Uint8Array(data,8).set(bytes);now+=100;ws.onmessage({data});assert.equal(vm.runInContext('meta?.game.control_context',sandbox),game.control_context,'The full original packet must reach the real stage receiver');
 }
 async function main(){
- assert.equal(created,0);deliver(trace.packets[0]);assert.equal(created,0);
+ assert.equal(created,0);deliver(trace.packets[0]);if(trace.packets[0].mode==='ski')paint();assert.equal(created,0);
  const toggle=node('soundToggle'),markup=fs.readFileSync('homeplane/embodied/static/games.html','utf8').match(/<button id="soundToggle"[^>]*data-click="([^"]+)"/);assert(markup);toggle.setAttribute('data-click',markup[1]);
  documentEvents.click({target:{closest:()=>toggle}});assert.equal(created,1);await new Promise(setImmediate);assert.equal(toggle.getAttribute('aria-pressed'),'true');notes.length=0;
- for(const game of trace.packets.slice(1))deliver(game);
+ for(const game of trace.packets.slice(1))if(game.mode==='ski'){
+  const before=notes.length;
+  deliver(game);
+  assert.equal(notes.length,before,'the socket packet alone cannot play the gate sound');
+  paint();now+=121;paint();
+ }else deliver(game);
  assert.equal(notes.length,trace.expected_notes);windowEvents.pagehide();assert.equal(closed,1);assert.equal(toggle.getAttribute('aria-pressed'),'false');
  process.stdout.write(JSON.stringify({original_packets:trace.packets.length,outcome_notes:notes.length,closed,actual_delegated_click:true}));
 }

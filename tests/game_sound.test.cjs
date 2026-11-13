@@ -114,11 +114,12 @@ test('the actual game entry invokes the control and retires sound with its lifec
  let enabled=false,quiet=0,closed=0,reopened=0,interrupted=0;
  const c=vm.createContext({$:node,television:false,televisionPaintedView:null,gameSound:{status:()=>({enabled,pending:false,state:enabled?'on':'off'}),enable:async()=>{enabled=true;return true;},disable(){enabled=false;},quiet(){quiet++;},close(){closed++;},reopen(){reopened++;}},stageClosed:false,beamStage:{forget(){}},presentationClient:{release(){},close(){}},streamGeneration:0,reconnectTimer:null,commandPending:null,gameSocket:null,streamOpen:true,stageFrame:null,clearTimeout(){},cancelAnimationFrame(){},document:{hidden:true,querySelector:()=>null,addEventListener:(k,f)=>docListeners[k]=f},window:{addEventListener:(k,f)=>listeners[k]=f},updateHUD(){},scheduleStage(){},connect(){},performance:{now:()=>0}});
  c.scenery={interruptTennis(){interrupted++;}};
+ c.skiScenery={interrupt(){interrupted++;}};
  vm.runInContext(text.slice(text.indexOf('function updateGameSound('),text.indexOf('function winterReady(')),c);
  await c.toggleGameSound();assert(enabled);await c.toggleGameSound();assert(!enabled);c.updateGameSound({enabled:true,pending:false});assert.equal(node('soundToggle')['aria-pressed'],'true');
  const action=text.slice(text.indexOf('function delegatedCall('),text.indexOf("for(const kind of ['click'"));vm.runInContext(action,c);c.delegatedCall({},'toggleGameSound()');await new Promise(setImmediate);assert(enabled);
  vm.runInContext(text.slice(text.indexOf("document.addEventListener('visibilitychange'"),text.indexOf('/* Canvas-only recording')),c);
- docListeners.visibilitychange();assert.equal(quiet,1);assert.equal(interrupted,1);
+ docListeners.visibilitychange();assert.equal(quiet,1);assert.equal(interrupted,2);
  listeners.pagehide();assert.equal(closed,1);listeners.pageshow({persisted:true});assert.equal(reopened,1);
 });
 

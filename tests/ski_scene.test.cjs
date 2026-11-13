@@ -2,7 +2,7 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const fingerprint=value=>require('node:crypto').createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function scene({reduced=false}={}){
  const calls=[],texture={save(){},restore(){},translate(){},scale(){},drawImage(){}},pattern={setTransform(m){calls.push(['uv',...m.values]);}};
- const c={save(){},restore(){},beginPath(){},closePath(){},moveTo(...p){calls.push(['move',...p]);},lineTo(...p){calls.push(['line',...p]);},quadraticCurveTo(...p){calls.push(['curve',...p]);},stroke(){},fill(){calls.push(['fill',this.fillStyle]);},fillRect(...p){calls.push(['snow',...p]);},drawImage(im,...p){calls.push([im.id,...p]);},createPattern(){return pattern;}};
+ const c={save(){},restore(){},beginPath(){},closePath(){},moveTo(...p){calls.push(['move',...p]);},lineTo(...p){calls.push(['line',...p]);},arc(){},quadraticCurveTo(...p){calls.push(['curve',...p]);},stroke(){},fill(){calls.push(['fill',this.fillStyle]);},fillRect(...p){calls.push(['snow',...p]);},drawImage(im,...p){calls.push([im.id,...p]);},createPattern(){return pattern;}};
  const context=vm.createContext({document:{createElement(){return{getContext:()=>texture};}},DOMMatrix:class{constructor(values){this.values=values;}}});
  vm.runInContext(fs.readFileSync('homeplane/embodied/static/ski-scene.js','utf8'),context);
  const api=context.createSkiScenery(c,{scene:{id:'background',src:'snow.png',complete:true,naturalWidth:1600,naturalHeight:900},props:{id:'tree',complete:true,naturalWidth:1600,naturalHeight:800},reducedMotion:()=>reduced});
@@ -12,6 +12,59 @@ const game=(distance,status='playing')=>({mode:'ski',status,players:[{lateral:0}
 const groundUV=(row,y)=>(y-row[6])/row[4];
 function wrap(value){return ((value+256)%512+512)%512-256;}
 const arch=draws=>draws.find(c=>c[0]==='tree'&&c[1]===1200&&c[2]===400);
+function crossingPacket(distance, sequence=0, kind='gate'){
+ const g={...game(distance),control_context:'a'.repeat(32),round_id:1};
+ const event=sequence?{sequence,kind,feature:'gate-1',distance:7,age:.03}:null;
+ const guide={active:true,next_gate:sequence?{id:'gate-2',x:-.2,width:.54,distance:16-distance}:
+  {id:'gate-1',x:0,width:.54,distance:7-distance}};
+ Object.assign(g.ski,{route:[[0,0,0],[7,0,.54],[16,-.2,.54],[54,0,0]],event,
+  gates_passed:kind==='gate'?sequence:0,gates_missed:kind==='miss'?sequence:0,guide,points:kind==='gate'?sequence*250:0});
+ return g;
+}
+
+test('the canvas exposes scoring and the next cue on the same frame the gate crosses the snow',()=>{
+ for(const reduced of [false,true])for(const kind of ['gate','miss']){
+  const s=scene({reduced}),before=crossingPacket(6.94),after=crossingPacket(7.10,1,kind);
+  s.receive(before,1000);s.paint(before,1000);s.receive(after,1100);
+  const notYet=s.display(after,1100);
+  assert.equal(notYet.ski.event,null);
+  assert.equal(notYet.ski.points,0);
+  assert.equal(notYet.ski.guide.next_gate.id,'gate-1');
+  assert(!s.paint(after,1100).some(row=>row[0]==='fill'&&row[1]==='#2b574b'));
+  const afterDrawing=s.paint(after,1170);
+  const crossed=s.display(after,1170);
+  assert.equal(crossed,after);
+  assert.equal(crossed.ski.guide.next_gate.id,'gate-2');
+  assert(afterDrawing.some(row=>row[0]==='fill'&&row[1]===(kind==='gate'?'#2b574b':'#875b26')));
+  assert.equal(s.display(after,2000),after);
+ }
+});
+
+test('a waiting crossing result is never carried through interruption or replay',()=>{
+ const s=scene(),before=crossingPacket(6.94),after=crossingPacket(7.10,1);
+ s.receive(before,1000);s.paint(before,1000);s.receive(after,1100);
+ assert.equal(s.display(after,1100).ski.event,null);
+ const pause={...after,status:'paused',players:[]};
+ s.receive(pause,1105);
+ assert.equal(s.display(pause,1105),pause);
+ assert.equal(s.soundState(pause).ski.event.age,1,'an interrupted event seeds the counter silently');
+ assert(!s.paint(pause,1105).some(row=>row[0]==='fill'&&row[1]==='#2b574b'));
+ const restarted={...crossingPacket(0),round_id:2};
+ s.receive(restarted,1200);
+ assert.equal(s.display(restarted,1200),restarted);
+ assert(!s.paint(restarted,1200).some(row=>row[0]==='fill'&&row[1]==='#2b574b'));
+});
+
+test('several packets between paints cannot erase the first visible gate confirmation',()=>{
+ const s=scene(),before=crossingPacket(6.94),crossed=crossingPacket(7.1,1);
+ const newer=crossingPacket(7.16,1);
+ s.receive(before,1000);s.paint(before,1000);
+ s.receive(crossed,1100);s.receive(newer,1120);
+ assert.equal(s.display(newer,1120).ski.points,0);
+ assert.equal(s.soundState(s.display(newer,1120)).ski.event,null);
+ assert.equal(s.display(newer,1170).ski.points,250);
+ assert.equal(s.soundState(s.display(newer,1170)).ski.event.age,.03);
+});
 test('only observed progress moves the snow, tracks and trees; wall time does not',()=>{
  const s=scene(),g=game(0);s.receive(g,1000);const first=s.paint(g,1000);
  assert.deepEqual(s.paint(g,1400),first);
@@ -109,7 +162,7 @@ test('illustrated gates share observed ground motion and their opening follows r
  assert(b[8]>a[8],'the same three world units bring the arch closer');
  assert.equal(fingerprint(s.paint(next,5000)),fingerprint(s.paint(next,6000)),'wall time cannot move a gate');
  const narrow=game(0);narrow.ski.gates=[{x:0,z:24,width:.34}];const n=gate(scene().paint(narrow,1000));
- assert(Math.abs(n[8]/a[8]-(.34+.1)/(.48+.1))<1e-9,'drawn opening tracks each section clearance');
+ assert(Math.abs(n[7]/a[7]-.34/.48)<1e-9,'drawn opening tracks each section clearance');
 });
 test('a preview and the moving snow grooves go through the authored gate at its true width',()=>{
  const route=[[0,0,0],[6,-.48,.43],[14,.48,.34],[180,0,0]],s=scene();
@@ -122,12 +175,14 @@ test('a preview and the moving snow grooves go through the authored gate at its 
  const measure=(g,at)=>{
   const draws=s.paint(g,at),z=(6-g.ski.distance)*3,scale=350/(z+1.8),y=335+scale*2.45;
   const x=800-.48*1.9*scale,arch=gate(draws);
-  assert(arch);assert(Math.abs(arch[5]+arch[7]/2-x)<1e-8);
+  assert(arch);assert(Math.abs(arch[5]+arch[7]*213.5/443-x)<1e-8);
   const tracks=path(draws,'rgba(255,248,240,.24)').filter(p=>Math.abs(p[2]-y)<1e-8);
   assert.equal(tracks.length,2);assert(Math.abs((tracks[0][1]+tracks[1][1])/2-x)<1e-8);
   const crossing=path(draws,'rgba(100,77,56,.38)');
   assert(Math.abs(crossing[0][1]-(x-.43*1.9*scale))<1e-8);
   assert(Math.abs(crossing[1][1]-(x+.43*1.9*scale))<1e-8);
+  assert(Math.abs(arch[5]+arch[7]*90/443-crossing[0][1])<1e-8);
+  assert(Math.abs(arch[5]+arch[7]*337/443-crossing[1][1])<1e-8);
   return arch[8];
  };
  const before=measure(first,1000),next=game(3);next.ski.route=route;
