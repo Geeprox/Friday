@@ -60,8 +60,10 @@ class Binding(BaseModel):
     camera: str = Field(pattern=r"^cam_[a-f0-9]{10}$")
     session: str = Field(min_length=1, max_length=128)
     track: int = Field(ge=0)
+    track_revision: int = Field(default=0, ge=0, le=2**53 - 1)
     game_session: str = Field(min_length=1, max_length=128)
     revision: int = Field(ge=0)
+    lobby_revision: int | None = Field(default=None, ge=0)
     binding_revision: int | None = Field(default=None, ge=0)
     event_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{12,64}$")
 
@@ -158,11 +160,13 @@ def create_router(core, lock, embodied, directory, *, owner=None):
 
     @router.post("/camera-bind")
     async def bind(payload: Binding):
-        return await guarded(owner.bind(payload.seat, payload.camera, payload.session, payload.track, proof=payload))
+        return await guarded(owner.bind(payload.seat, payload.camera, payload.session, payload.track,
+                                        track_revision=payload.track_revision, proof=payload))
 
     @router.post("/camera-unbind")
     async def unbind(payload: Binding):
-        return await guarded(owner.unbind(payload.seat, payload.camera, payload.session, payload.track, proof=payload))
+        return await guarded(owner.unbind(payload.seat, payload.camera, payload.session, payload.track,
+                                          track_revision=payload.track_revision, proof=payload))
 
     @router.post("/camera-view")
     async def camera_view(payload: CameraView):

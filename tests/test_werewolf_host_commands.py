@@ -194,7 +194,7 @@ async def test_camera_binding_is_game_scoped_and_deduplicated_after_acknowledgem
         assert not service.bindings and service.embodied.request.await_count == 0
         response = await client.post(route, json=body)
         assert response.status_code == 200
-        assert service.bindings == {1: (camera, "SYNTHETIC-camera", 7)}
+        assert service.bindings == {1: (camera, "SYNTHETIC-camera", 7, 0)}
         service.embodied.process.returncode = 1
         assert (await client.post(route, json=body)).status_code == 200
         assert service.embodied.request.await_count == 1

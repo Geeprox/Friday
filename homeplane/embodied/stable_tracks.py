@@ -12,6 +12,7 @@ IDENTITY = np.eye(3)
 TRACK_GAP_SECONDS = 3.0
 POSE_GAP_SECONDS = .75
 FOLLOW_GAP_SECONDS = 1.5
+MAX_TRACKED_PEOPLE = 12
 
 
 def valid_point(point):
@@ -38,7 +39,7 @@ def assign_poses(detection, boxes):
     """只分配归属唯一的骨架，同时保留归属不明确的检测框。"""
     assignments = {i:[] for i in range(len(boxes))}
     ambiguous = set()
-    for pose in detection.get('poses',[])[:10]:
+    for pose in detection.get('poses', [])[:MAX_TRACKED_PEOPLE]:
         raw = pose.get('joints',{}) if isinstance(pose,dict) else {}
         if not isinstance(raw,dict):
             continue
@@ -133,7 +134,7 @@ class StableTracks:
             return []
         boxes = []
         xy = []
-        for box in detection.get("boxes", [])[:10]:
+        for box in detection.get("boxes", [])[:MAX_TRACKED_PEOPLE]:
             if not valid_box(box):
                 self.invalidate()
                 return []

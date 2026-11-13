@@ -173,7 +173,7 @@ test('主持端二维码随空位恢复，旧图片失败不影响本次邀请',
 test('occupied numbers stay visible but cannot submit a second seat for the same person',async()=>{
  const first=cameraLobby();first.camera_bindings=[{seat:1,...first.camera_candidates[0]}];
  const c=client({initial:first});await settle();const fields=c.root.querySelectorAll('select');
- const own=fields[0].children.find(o=>o.value===JSON.stringify(['cam_1234567890','SYNTHETIC-camera',7]));
+ const own=fields[0].children.find(o=>o.value===JSON.stringify(['cam_1234567890','SYNTHETIC-camera',7,0]));
  const occupied=fields[1].children.find(o=>o.value===own.value);
  assert.equal(own.disabled,false);assert.equal(occupied.disabled,true);assert.match(occupied.textContent,/1 号/);
  fields[1].value=occupied.value;fields[1].onchange();await settle();
@@ -200,7 +200,7 @@ test('camera waiting and fresh absence are distinct without changing the saved m
  const empty=structuredClone(first);empty.camera_available=true;c.setNext(empty);await c.tick();
  assert.equal(c.root.querySelector('select'),select);assert.equal(c.activeElement(),select);assert.match(select.children[0].textContent,/原位置/);assert(!select.children[0].textContent.includes('恢复'));
  const recovered=structuredClone(first);recovered.camera_available=true;recovered.camera_candidates=[mapped];c.setNext(recovered);await c.tick();
- assert.equal(select.value,JSON.stringify(['cam_1234567890','SYNTHETIC-camera',7]));assert.equal(c.activeElement(),select);
+ assert.equal(select.value,JSON.stringify(['cam_1234567890','SYNTHETIC-camera',7,0]));assert.equal(c.activeElement(),select);
  assert(!c.requests.some(r=>r.options.method==='POST'));c.mounted.dispose();
 });
 
@@ -211,9 +211,31 @@ test('releasing a number in another seat reenables the same existing option with
  assert.equal(c.root.querySelectorAll('select')[1],select);assert.equal(select.children[1],option);assert.equal(c.activeElement(),select);assert.equal(option.disabled,false);assert(!option.textContent.includes('已对应'));c.mounted.dispose();
 });
 
+test('a reused camera number asks for a new correspondence without moving keyboard focus',async()=>{
+ const first=cameraLobby(),original={...first.camera_candidates[0],track_revision:0};
+ first.camera_candidates[0]=original;first.camera_bindings=[{seat:1,...original}];
+ const c=client({initial:first});await settle();const select=c.root.querySelector('select');select.focus();
+ const originalKey=select.value;
+ const replacement={...original,track_revision:1},next=structuredClone(first);
+ next.camera_candidates[0]=replacement;next.camera_rebind_seats=[1];
+ c.setNext(next);await c.tick();
+ assert.equal(c.activeElement(),select);
+ assert.equal(select.value,'');
+ assert.equal(select.children[0].textContent,'请重新对应');
+ assert(!select.children.some(option=>option.value===originalKey));
+ const returned=structuredClone(next);returned.camera_bindings=[{seat:1,...replacement}];returned.camera_rebind_seats=[];
+ c.setNext(returned);
+ select.value=select.children.find(option=>option.textContent==='镜头中的 #7').value;
+ select.onchange();await settle();
+ const request=c.requests.find(row=>row.path.endsWith('/camera-bind'));
+ assert.equal(JSON.parse(request.options.body).track_revision,1);
+ assert.equal(c.activeElement(),select);assert.notEqual(select.value,originalKey);
+ c.mounted.dispose();
+});
+
 test('a native pending choice survives camera refresh until change submits and reads it back',async()=>{
  const first=cameraLobby(),c=client({initial:first});await settle();const select=c.root.querySelectorAll('select')[1];select.focus();
- const choice=JSON.stringify(['cam_1234567890','SYNTHETIC-camera',8]);select.value=choice;
+ const choice=JSON.stringify(['cam_1234567890','SYNTHETIC-camera',8,0]);select.value=choice;
  const polled=structuredClone(first);polled.camera_candidates.reverse();c.setNext(polled);await c.tick();
  assert.equal(select.value,choice,'camera refresh must preserve the highlighted native draft before its change event');
  assert(!c.requests.some(r=>r.options.method==='POST'));
@@ -224,13 +246,13 @@ test('a native pending choice survives camera refresh until change submits and r
 
 test('a failed native draft restores the acknowledged mapping instead of displaying success',async()=>{
  const first=cameraLobby();first.camera_bindings=[{seat:2,...first.camera_candidates[0]}];const c=client({initial:first});await settle();
- const select=c.root.querySelectorAll('select')[1];select.focus();c.deferWrite();select.value=JSON.stringify(['cam_1234567890','SYNTHETIC-camera',8]);select.onchange();await settle();
+ const select=c.root.querySelectorAll('select')[1];select.focus();c.deferWrite();select.value=JSON.stringify(['cam_1234567890','SYNTHETIC-camera',8,0]);select.onchange();await settle();
  c.heldWrite().reject(Error('camera_track_unavailable'));await settle();
- assert.equal(select.value,JSON.stringify(['cam_1234567890','SYNTHETIC-camera',7]));assert.equal(c.activeElement(),select);assert.equal(select.disabled,false);c.mounted.dispose();
+ assert.equal(select.value,JSON.stringify(['cam_1234567890','SYNTHETIC-camera',7,0]));assert.equal(c.activeElement(),select);assert.equal(select.disabled,false);c.mounted.dispose();
 });
 
 test('a pending draft is withdrawn when its source disappears before submission',async()=>{
- const first=cameraLobby(),c=client({initial:first});await settle();const select=c.root.querySelectorAll('select')[1];select.focus();select.value=JSON.stringify(['cam_1234567890','SYNTHETIC-camera',8]);
+ const first=cameraLobby(),c=client({initial:first});await settle();const select=c.root.querySelectorAll('select')[1];select.focus();select.value=JSON.stringify(['cam_1234567890','SYNTHETIC-camera',8,0]);
  const next=structuredClone(first);next.camera_candidates=next.camera_candidates.filter(c=>c.track!==8);c.setNext(next);await c.tick();
  assert.equal(select.value,'');assert.equal(c.activeElement(),select);select.onchange();await settle();assert(!c.requests.some(r=>r.options.method==='POST'));c.mounted.dispose();
 });

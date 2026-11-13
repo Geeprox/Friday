@@ -51,6 +51,8 @@ Werewolf phone join recovery: persist only the exact pending join intent in curr
 
 同一阶段刷新画面时保留当前选项和键盘焦点。已对应的编号显示所属座位并禁用。新会话清除旧画面的举手和指向提示，主持人确认新编号后恢复提示。局中调整只更新镜头对应，发言座位和计时继续推进。可移除已有对应，玩家的座位及准备状态继续由对局保管。
 
+人物重叠后轨迹变化时，在「镜头座位」原进度位置显示需要重新对应的座位。「调整座位」优先定位到其中一席，原选择框就地显示「请重新对应」。确认后同一位置回到进度，只有有效的举手与指向出现在座位旁。
+
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
 
 ## Scope and evidence

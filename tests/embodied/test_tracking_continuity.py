@@ -117,6 +117,29 @@ def test_separate_people_keep_their_own_pose_and_track_when_detector_order_rever
         assert 'raised_arm' in p['actions']
 
 
+def test_twelve_people_each_keep_a_distinct_pose_and_track():
+    tracker = StableTracks()
+    points = [(x, y) for y in (.17, .46, .75) for x in (.12, .37, .62, .87)]
+    boxes = [dict(x=x - .07, y=y - .10, w=.14, h=.22, confidence=.95) for x, y in points]
+    poses = []
+    for x, y in points:
+        joints = pose(x)['joints']
+        for joint in joints.values():
+            joint['y'] = y + (joint['y'] - .55) * .18
+        poses.append({'joints': joints})
+    tracker.update(dict(boxes=boxes, poses=poses), 1)
+    people = tracker.update(dict(boxes=boxes, poses=poses), 1.1)
+    assert len({person['id'] for person in people}) == 12
+    previous = {(person['box']['x'], person['box']['y']): person['id'] for person in people}
+    people = tracker.update(dict(boxes=boxes[::-1], poses=poses[::-1]), 1.2)
+    assert len(people) == 12
+    for person in people:
+        x, y = person['box']['x'], person['box']['y']
+        assert person['joints']['root']['x'] == pytest.approx(x + .07)
+        assert person['joints']['root']['y'] == pytest.approx(y + .10)
+        assert person['id'] == previous[x, y]
+
+
 @pytest.mark.parametrize('bad', [float('nan'),float('inf'),-.1])
 def test_invalid_frame_clock_retires_old_continuity(bad):
     tracker=StableTracks();old=warm(tracker)[0]['id']

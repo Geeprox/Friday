@@ -30,7 +30,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .werewolf import GameError, WerewolfGame
-from .werewolf_camera import observation as camera_observation, hints as camera_advice, picture as camera_picture
+from .werewolf_camera import CameraTrack, observation as camera_observation, hints as camera_advice, picture as camera_picture
 from .werewolf_effects import lighting_scene
 
 STATIC = Path(__file__).parent / "static"
@@ -240,12 +240,13 @@ class WerewolfService:
         self.created = None
         self.camera_enabled = False
         self.camera_context = None
-        self.bindings = {}
+        self.bindings: dict[int, CameraTrack] = {}
         self.camera_binding_revision = 0
         self.camera_read_lock = asyncio.Lock()
         self.camera_task = None
         self.camera_hints = []
-        self.camera_candidates = []
+        self.camera_candidates: list[CameraTrack] = []
+        self.camera_rebind_seats: set[int] = set()
         self.camera_generation = 0
         self.camera_process = None
         self.camera_source = None
@@ -378,6 +379,7 @@ class WerewolfService:
         if report["active"]:
             binding_open = self._camera_binding_window() is not None
             camera_available = binding_open and self._camera_current()
+            binding_seats = self._camera_binding_seats() if binding_open else []
             phone_url = self.phone_url()
             report.update(effects=self.effects.status(), join_code=self.join_code,
                           phone_url=phone_url,
@@ -389,11 +391,13 @@ class WerewolfService:
                           speaker_seats=[] if self.game.speaker_order else self.game.eligible_speakers(),
                           camera_enabled=self.camera_enabled, camera_available=camera_available,
                           camera_binding_open=binding_open, camera_binding_revision=self.camera_binding_revision,
-                          camera_binding_seats=self._camera_binding_seats() if binding_open else [],
+                          camera_binding_seats=binding_seats,
                           camera_source=dict(camera=self.camera_source[0], session=self.camera_source[1])
                               if camera_available else None,
-                          camera_candidates=list(self.camera_candidates) if camera_available else [],
-                          camera_bindings=[dict(seat=s, camera=v[0], session=v[1], track=v[2]) for s, v in self.bindings.items()])
+                          camera_candidates=[ref._asdict() for ref in self.camera_candidates] if camera_available else [],
+                          camera_bindings=[dict(seat=seat, **ref._asdict()) for seat, ref in self.bindings.items()],
+                          camera_rebind_seats=sorted(self.camera_rebind_seats.intersection(binding_seats))
+                          if camera_available else [])
             if self.gateway is not None:
                 report['network'] = dict(state='interrupted' if self.network_interrupted else 'ready',
                     revision=self.network_revision, addresses=list(self.network_addresses) if self.network_interrupted else [])
@@ -676,9 +680,13 @@ class WerewolfService:
             return None, True
         if self.game is None or self.session != session:
             raise GameError("room_changed")
-        if self.game.revision != proof.revision:
+        if camera_command and proof.lobby_revision is not None:
+            if self.game.phase != 'lobby' or self.game.lobby_revision != proof.lobby_revision:
+                raise GameError("phase_changed")
+        elif self.game.revision != proof.revision:
             raise GameError("phase_changed")
-        if camera_command and (self.game.phase != 'lobby' or proof.binding_revision is not None):
+        if camera_command and (self.game.phase != 'lobby' or proof.lobby_revision is not None
+                               or proof.binding_revision is not None):
             if proof.binding_revision != self.camera_binding_revision:
                 raise GameError('camera_binding_changed')
         return (key, digest), False
@@ -721,10 +729,12 @@ class WerewolfService:
                 self.game.remove(seat)
                 self.credentials = {key: s for key, s in self.credentials.items() if s != seat}
                 self.seat_recoveries.pop(seat, None)
+                # 座号重新开放后，同一座号的旧镜头选择应当失效。
+                self.camera_binding_revision += 1
                 if self.network_waiting_seats is not None:
                     self.network_waiting_seats.discard(seat)
-                if self.bindings.pop(seat, None) is not None:
-                    self.camera_binding_revision += 1
+                self.bindings.pop(seat, None)
+                self.camera_rebind_seats.discard(seat)
             else:
                 raise GameError("host_action_invalid")
             if action in {'advance', 'resume', 'rematch', 'end'}:
@@ -976,11 +986,18 @@ class WerewolfService:
         if not held or not 0 <= elapsed < 1 or remaining <= 0:
             self._clear_camera()
             return
-        self.camera_candidates = [dict(camera=sample['camera'], session=sample['session'], track=track)
-                                  for track in sample['people']]
-        self.camera_hints = camera_advice(sample, self.bindings, game.players)
+        self.camera_candidates = list(sample['tracks'].values())
+        self.camera_rebind_seats.update(
+            seat for seat, ref in self.bindings.items()
+            if ref[:2] != source or ref.track in sample['people'] and sample['tracks'].get(ref.track) != ref
+        )
+        self._update_camera_hints(sample)
         self.camera_until, self.camera_process, self.camera_source = now + remaining, process, source
         return generation, sample
+
+    def _update_camera_hints(self, sample):
+        confirmed = {seat: ref for seat, ref in self.bindings.items() if seat not in self.camera_rebind_seats}
+        self.camera_hints = camera_advice(sample, confirmed, self.game.players)
 
     async def camera_view(self, game_session, phase=None, round_number=None):
         if game_session != self.session or self.game is None:
@@ -1023,7 +1040,7 @@ class WerewolfService:
         finally:
             self.camera_view_busy = False
 
-    async def bind(self, seat, camera, session, track, *, proof=None):
+    async def bind(self, seat, camera, session, track, *, track_revision=0, proof=None):
         async with self.lock:
             _, replay = self._host_admission(proof, "bind", seat)
             if replay:
@@ -1031,40 +1048,45 @@ class WerewolfService:
             window = self._camera_binding_window()
             if window is None or seat not in self._camera_binding_seats():
                 raise GameError("camera_binding_unavailable")
-            game, room, revision = self.game, self.session, self.game.revision
+            game, room = self.game, self.session
+            player = game.players[seat]
+            revision = game.revision
         sample = await self._camera()
         async with self.lock:
             admission, replay = self._host_admission(proof, "bind", seat)
             if replay:
                 return self.host()
-            if self.game is not game or self.session != room or game.revision != revision:
+            if (self.game is not game or self.session != room or game.players.get(seat) is not player
+                    or (proof is None or proof.lobby_revision is None) and game.revision != revision):
                 raise GameError("phase_changed")
             if self._camera_binding_window() != window or seat not in self._camera_binding_seats():
                 raise GameError("camera_binding_unavailable")
-            value = dict(camera=camera, session=session, track=track)
+            value = CameraTrack(camera, session, track, track_revision)
             if (sample is None or sample[0] != self.camera_generation or not self._camera_current()
                     or value not in self.camera_candidates
-                    or any(v == (camera, session, track) for s, v in self.bindings.items() if s != seat)):
+                    or any(ref == value for bound_seat, ref in self.bindings.items() if bound_seat != seat)):
                 raise GameError("camera_track_unavailable")
-            if self.bindings.get(seat) != (camera, session, track):
-                self.bindings[seat] = (camera, session, track)
+            if self.bindings.get(seat) != value:
+                self.bindings[seat] = value
                 self.camera_binding_revision += 1
                 if game.phase == 'lobby':
                     game.revision += 1
-                self.camera_hints = camera_advice(sample[1], self.bindings, game.players)
+            self.camera_rebind_seats.discard(seat)
+            self._update_camera_hints(sample[1])
             self._remember_host(admission)
             return self.host()
 
-    async def unbind(self, seat, camera, session, track, *, proof=None):
+    async def unbind(self, seat, camera, session, track, *, track_revision=0, proof=None):
         async with self.lock:
             admission, replay = self._host_admission(proof, 'unbind', seat)
             if replay:
                 return self.host()
             if self._camera_binding_window() is None or seat not in self._camera_binding_seats():
                 raise GameError('camera_binding_unavailable')
-            if self.bindings.get(seat) != (camera, session, track):
+            if self.bindings.get(seat) != CameraTrack(camera, session, track, track_revision):
                 raise GameError('camera_binding_changed')
             del self.bindings[seat]
+            self.camera_rebind_seats.discard(seat)
             self.camera_binding_revision += 1
             if self.game.phase == 'lobby':
                 self.game.revision += 1
@@ -1132,6 +1154,7 @@ class WerewolfService:
                 self.retries.clear()
                 self.choice_versions.clear()
                 self.bindings.clear()
+                self.camera_rebind_seats.clear()
                 self.last_effect_revision = None
                 self.effect_runs.clear()
                 self.close_task = None

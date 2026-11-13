@@ -16,7 +16,9 @@ export function mountWerewolf(root,{go=()=>{}}={}){
  async function api(path,body,signal){const signals=[abort.signal,AbortSignal.timeout(10000)];if(signal)signals.push(signal);const r=await fetch('/api/games/werewolf/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any(signals)});const data=await r.json();if(!r.ok)throw Error(data.detail||'game_unavailable');return data;}
  async function perform(fn){
   if(busy||!alive)return;
-  const request={generation:++generation,controller:new AbortController(),session:current?.session,revision:current?.game?.revision,bindingRevision:current?.camera_binding_revision,event:null,focused:document.activeElement};
+  const request={generation:++generation,controller:new AbortController(),session:current?.session,revision:current?.game?.revision,
+   lobbyRevision:current?.game?.phase==='lobby'?current.game.lobby_revision:null,
+   bindingRevision:current?.camera_binding_revision,event:null,focused:document.activeElement};
   readRequest?.controller.abort();readRequest=null;commandRequest=request;
   const owns=()=>alive&&commandRequest===request&&generation===request.generation;
   const commandApi=(path,body)=>{
@@ -25,6 +27,8 @@ export function mountWerewolf(root,{go=()=>{}}={}){
     request.event??=crypto.randomUUID();
     body={...body,[mapping?'game_session':'session']:request.session,revision:request.revision,event_id:request.event};
     if(mapping&&Number.isSafeInteger(request.bindingRevision))body.binding_revision=request.bindingRevision;
+    if(mapping&&Number.isSafeInteger(request.bindingRevision)&&Number.isSafeInteger(request.lobbyRevision))
+     body.lobby_revision=request.lobbyRevision;
     if(path==='reconnect')request.reconnect=true;
    }
    return api(path,body,request.controller.signal);
@@ -334,10 +338,13 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   if(latest)scene.append(node('p',game.paused?'':latest.text,'ww-host-line'));
   return scene;
  }
- function candidateKey(candidate){return JSON.stringify([candidate.camera,candidate.session,candidate.track]);}
+ function candidateKey(candidate){return JSON.stringify([candidate.camera,candidate.session,candidate.track,candidate.track_revision??0]);}
  function visibleCandidates(ui){
   const fallback=current.camera_candidates||[];
-  return ui.view?.candidates(fallback,current.camera_source)||fallback;
+  const rebind=current.camera_rebind_seats||[];
+  const retired=new Set((current.camera_bindings||[]).filter(b=>rebind.includes(b.seat)).map(candidateKey));
+  const candidates=ui.view?.candidates(fallback,current.camera_source)||fallback;
+  return candidates.filter(candidate=>!retired.has(candidateKey(candidate)));
  }
  function applyAlignment(ui,seat,select){
   if(!ui.isCurrent()||busy||syncFailed||!content.contains(select))return;
@@ -361,7 +368,8 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    const selected=Number(ui.seatPicker.value);
    const visible=new Set(candidates.map(candidateKey));
    const bound=new Set((current.camera_bindings||[]).filter(b=>visible.has(candidateKey(b))).map(b=>b.seat));
-   const initial=eligible.find(p=>p.seat===selected)||eligible.find(p=>!bound.has(p.seat))||eligible[0];
+   const initial=eligible.find(p=>p.seat===selected)||eligible.find(p=>current.camera_rebind_seats?.includes(p.seat))||
+    eligible.find(p=>!bound.has(p.seat))||eligible[0];
    ui.seatPicker.replaceChildren(...eligible.map(p=>{
     const option=node('option',p.seat+' 号 · '+p.name);option.value=String(p.seat);return option;
    }));
@@ -401,7 +409,9 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    const binding=current.camera_bindings?.find(b=>b.seat===player.seat),key=binding?candidateKey(binding):'';
    if(binding&&!row.clear){row.clear=node('option','取消当前对应');row.clear.value='__clear__';row.select.append(row.clear);}
    if(!binding&&row.clear){row.clear.remove();row.clear=null;}
-   const placeholder=binding&&!keys.has(key)?available?'原位置暂不可见':'等待画面恢复':'选择镜头中的编号';if(row.empty.textContent!==placeholder)row.empty.textContent=placeholder;
+   const placeholder=current.camera_rebind_seats?.includes(player.seat)?'请重新对应':
+    binding&&!keys.has(key)?available?'原位置暂不可见':'等待画面恢复':'选择镜头中的编号';
+   if(row.empty.textContent!==placeholder)row.empty.textContent=placeholder;
    const value=keys.has(key)?key:'',draft=row.select.value,valid=draft===''||(draft==='__clear__'?Boolean(binding):row.options.has(draft)&&!row.options.get(draft).disabled);
    if(force||row.readbackValue!==value||!valid){if(row.select.value!==value)row.select.value=value;row.readbackValue=value;}
    if(row.action){
@@ -478,7 +488,9 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   const eligible=current.camera_binding_seats||[];
   const candidates=new Set((current.camera_candidates||[]).map(candidateKey));
   const count=(current.camera_bindings||[]).filter(b=>eligible.includes(b.seat)&&candidates.has(candidateKey(b))).length;
-  const text=syncFailed?'正在同步对局':current.camera_available?'已对应 '+count+' / '+eligible.length:'等待镜头恢复';
+  const rebind=current.camera_rebind_seats||[];
+  const text=syncFailed?'正在同步对局':!current.camera_available?'等待镜头恢复':
+   rebind.length?rebind.join('、')+' 号需重新对应':'已对应 '+count+' / '+eligible.length;
   if(ui.status.textContent!==text)ui.status.textContent=text;
   ui.toggle.dataset.unavailable=String(syncFailed&&!ui.alignment);
   if(ui.alignment){ui.alignment.view.recheck();updateAlignment(ui.alignment);}

@@ -123,7 +123,8 @@ async def test_same_snapshot_numbers_reach_host_and_bind_through_original_source
         assert response.status_code == 200 and response.headers['cache-control'] == 'no-store'
         assert data == dict(available=True, ttl_ms=980, camera='cam_1234567890', session='SYNTHETIC',
                            width=640, height=360, jpeg=state.report['frame'],
-                           people=[dict(track=p['id'], box={k: p['box'][k] for k in ('x', 'y', 'w', 'h')})
+                           people=[dict(track=p['id'], track_revision=0,
+                                        box={k: p['box'][k] for k in ('x', 'y', 'w', 'h')})
                                    for p in state.report['people']])
         assert 'NEVER-EXPOSE' not in response.text
         assert [r.url.path for r in state.calls] == ['/api/frame','/api/party-camera']
@@ -131,10 +132,52 @@ async def test_same_snapshot_numbers_reach_host_and_bind_through_original_source
                     game_session=party.session, revision=party.game.revision, event_id='SYNTHETIC-picture-bind')
         bound = await client.post('/api/games/werewolf/camera-bind', json=body)
         assert bound.status_code == 200
-        assert bound.json()['camera_bindings'] == [dict(seat=1, camera=data['camera'], session=data['session'], track=7)]
+        assert bound.json()['camera_bindings'] == [dict(seat=1, camera=data['camera'], session=data['session'],
+                                                        track=7, track_revision=0)]
         assert not party.game.choices and party.game.phase == 'lobby'
         assert not any(k in party.host() for k in ('jpeg', 'frame', 'people'))
         assert not any(k in party.public() for k in ('jpeg', 'frame', 'people'))
+
+
+@pytest.mark.asyncio
+async def test_old_picture_cannot_bind_a_reused_track_and_public_hints_require_reconfirmation(tmp_path, monkeypatch):
+    async with host(tmp_path, monkeypatch) as (party, _, state, _, client):
+        await party.bind(1, 'cam_1234567890', 'SYNTHETIC', 7)
+        await party.bind(2, 'cam_1234567890', 'SYNTHETIC', 8)
+        await discussion(party, state)
+        await party._camera()
+        assert party.public()['camera_hints'][0]['pointing_at'] == 2
+        window = dict(session=party.session, phase='discussion', round=party.game.round)
+        frame = (await client.post('/api/games/werewolf/camera-view', json=window)).json()
+        assert frame['available']
+        old = binding_request(party, 1, 7, 'SYNTHETIC-old-continuity')
+        old['session'] = frame['session']
+        old['track_revision'] = frame['people'][0].get('track_revision', 0)
+        before = await party.private(state.tokens[1])
+
+        lost = state.report['people'].pop(0)
+        await party._camera()
+        assert [hint['seat'] for hint in party.public()['camera_hints']] == [2]
+        assert party.host()['camera_rebind_seats'] == []
+        state.report['people'].insert(0, lost)
+
+        # 同一个编号曾经重叠。主持端即使没读到重叠帧，也应暂停原座位的提示。
+        state.report['people'][0]['tracking'] = dict(overlapping=False, follow_revision=1)
+        await party._camera()
+        host_state = party.host()
+        assert [hint['seat'] for hint in host_state['camera_hints']] == [2]
+        assert host_state['camera_rebind_seats'] == [1]
+        assert host_state['camera_binding_revision'] == old['binding_revision']
+        assert (await client.post('/api/games/werewolf/camera-bind', json=old)).json()['detail'] == 'camera_track_unavailable'
+
+        new_frame = (await client.post('/api/games/werewolf/camera-view', json=window)).json()
+        assert new_frame['people'][0]['track_revision'] == 1
+        current = dict(old, event_id='SYNTHETIC-new-continuity', track_revision=1)
+        rebound = await client.post('/api/games/werewolf/camera-bind', json=current)
+        assert rebound.status_code == 200 and rebound.json()['camera_rebind_seats'] == []
+        assert rebound.json()['camera_hints'][0]['pointing_at'] == 2
+        assert await party.private(state.tokens[1]) == before
+        assert 'camera_rebind_seats' not in party.public() and not party.game.choices
 
 
 @pytest.mark.asyncio

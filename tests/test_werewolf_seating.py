@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from homeplane.werewolf_service import phone_app
+from homeplane.werewolf_service import Join, phone_app
 from tests.test_werewolf_camera_view import host
 
 
@@ -32,8 +32,10 @@ async def test_swapped_seats_can_be_corrected_without_removing_players(tmp_path,
         assert 2 not in party.bindings
         await bind(client, party, 1, 8, 'SYNTHETIC-correct-first')
         final = await bind(client, party, 2, 7, 'SYNTHETIC-correct-second')
-        assert final['camera_bindings'] == [dict(seat=1, camera='cam_1234567890', session='SYNTHETIC', track=8),
-                                            dict(seat=2, camera='cam_1234567890', session='SYNTHETIC', track=7)]
+        assert final['camera_bindings'] == [
+            dict(seat=1, camera='cam_1234567890', session='SYNTHETIC', track=8, track_revision=0),
+            dict(seat=2, camera='cam_1234567890', session='SYNTHETIC', track=7, track_revision=0),
+        ]
         assert party.game.public()['players'] == players and party.credentials == credentials
         assert party.game.phase == 'lobby' and not party.game.choices
 
@@ -76,6 +78,35 @@ async def test_unchanged_binding_does_not_advance_the_room_version_again(tmp_pat
         first = await bind(client, party, 1, 7, 'SYNTHETIC-original-bind')
         same = await bind(client, party, 1, 7, 'SYNTHETIC-same-mapping')
         assert first['game']['revision'] == same['game']['revision']
+
+
+@pytest.mark.asyncio
+async def test_phone_ready_during_a_camera_lookup_does_not_lose_the_hosts_selection(tmp_path, monkeypatch):
+    async with host(tmp_path, monkeypatch) as (party, _, state, _, client):
+        changed = False
+
+        async def read_status(_request):
+            nonlocal changed
+            if not changed:
+                changed = True
+                await party.ready(state.tokens[2], False)
+            return httpx.Response(200, json=state.report)
+
+        state.status_handler = read_status
+        body = binding(party, 1, 7, 'SYNTHETIC-ready-during-bind')
+        body.update(binding_revision=party.camera_binding_revision, lobby_revision=party.game.lobby_revision)
+        result = await client.post('/api/games/werewolf/camera-bind', json=body)
+        assert result.status_code == 200 and result.json()['camera_bindings'][0]['track'] == 7
+        assert not party.game.players[2].ready
+
+        # 移除并重新入座会换凭据，同一座号不能沿用旧选择。
+        old = binding(party, 1, 8, 'SYNTHETIC-old-seat')
+        old.update(binding_revision=party.camera_binding_revision, lobby_revision=party.game.lobby_revision)
+        await party.control('remove', seat=1)
+        await party.join(Join(code=party.join_code, seat=1, name='另一位玩家'))
+        rejected = await client.post('/api/games/werewolf/camera-bind', json=old)
+        assert rejected.status_code == 409
+        assert 1 not in party.bindings
 
 
 @pytest.mark.asyncio

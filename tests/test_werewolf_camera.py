@@ -116,6 +116,25 @@ async def test_two_conflicting_pointing_hands_do_not_pick_the_last_target():
 
 
 @pytest.mark.asyncio
+async def test_manual_calibration_matches_the_bound_person_only_when_the_target_seat_is_unique():
+    async with party() as (service, embodied, _):
+        report = embodied.report
+        report['room'].update(seat_mode='manual', seats=[dict(id=1), dict(id=2)])
+        for person, seat in zip(report['people'], (1, 2)):
+            person['seat'] = seat
+        await service._camera()
+        assert service.public()['camera_hints'][0]['pointing_at'] == 2
+
+        # 同一已标定位置有两个人时，即使其中一个还没对应，也没有唯一目标。
+        guest = copy.deepcopy(report['people'][1])
+        guest['id'] = 9
+        report['people'].append(guest)
+        await service._camera()
+        assert service.public()['camera_hints'][0]['pointing_at'] is None
+        assert not service.game.choices
+
+
+@pytest.mark.asyncio
 async def test_camera_advice_expires_without_requiring_another_frame_poll():
     async with party()as(service,_,clock):
         assert service.public()['camera_hints']

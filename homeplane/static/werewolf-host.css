@@ -47,7 +47,7 @@
 .ww-round-camera-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .ww-round-camera-heading h3{margin:0;font-size:15px}
 .ww-round-camera-heading .ww-field-help{margin:4px 0 0;font-variant-numeric:tabular-nums}
-.ww-round-camera-heading button{flex:none}
+.ww-round-camera-heading button{flex:none;min-inline-size:44px;min-block-size:44px;padding-inline:8px;text-align:center}
 .ww-round-camera .ww-round-camera-panel[data-viewing=true]{display:block;padding-top:8px;border:0}
 .ww-round-camera-panel .ww-camera-align-heading{justify-content:flex-end}
 .ww-round-camera .ww-round-camera-panel[data-viewing=true]>.ww-seat-camera{position:static;margin-bottom:12px;padding-bottom:0}
