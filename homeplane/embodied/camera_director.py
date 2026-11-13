@@ -778,6 +778,15 @@ class CameraDirector:
     def _wake_frame_current(self, sample, now, cue):
         return self._wake_source_current(sample, cue) and self.target_frame_current(sample, now)
 
+    def _wake_can_interrupt_patrol(self, sample, now, cue):
+        pending = self.patrol_confirmation
+        return (pending is not None and not pending['sound_search']
+                and isinstance(cue, WakeCameraCue) and self._sound_start_available(sample, now, cue)
+                and pending['session'] == sample['session_id']
+                and pending['game_window'] == self._camera_window(sample)
+                and sample['_local_received'] >= self.last_move + 2
+                and self.last_move + 2 <= sample['_patrol_view'][2] <= now)
+
     def _wake_waits_for_voice(self, sample, now, sound_cue):
         if not isinstance(sound_cue, WakeCameraPause):
             return False
@@ -948,7 +957,12 @@ class CameraDirector:
         wake_waiting = self._wake_waits_for_voice(sample, now, sound_cue)
         # 已发出的转向继续等待画面确认。语音结束后才能根据新画面决定下一步。
         confirming_cue = sound_cue.cue if wake_waiting else sound_cue
-        if self._confirm_patrol(sample, now, confirming_cue):
+        if (not (review_pending or fall_pending) and self._wake_can_interrupt_patrol(sample, now, sound_cue)):
+            # 以转动结束后的新画面为起点，丢弃普通环视尚未确认的相对角度。
+            self._discard_patrol()
+            # 有人入镜时本帧即可开始核对人体。空画面仍需两帧才能开始环视。
+            self.visible_samples = int(bool(self._subjects(sample)))
+        elif self._confirm_patrol(sample, now, confirming_cue):
             return None
         if self._survey_done():
             self.phase = 'survey_finished'

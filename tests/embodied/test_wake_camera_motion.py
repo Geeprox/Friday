@@ -339,6 +339,57 @@ async def test_wake_centers_an_off_center_person_once(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+@pytest.mark.parametrize('shift', [.012, .05], ids=['small-pan', 'full-pan'])
+async def test_wake_can_take_over_a_settled_ordinary_patrol_step(
+        tmp_path, monkeypatch, owner, shift):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday', voiced_frames=2)
+    # 环视先发出，再交付由合成收音和原语音入口生成的唤醒事件。
+    heard, home.wake_camera = home.wake_camera, None
+    cue, safety = cue_source(home, clock, owner)
+    director = CameraDirector()
+    director.apply_mode('auto', 'original')
+    party, state = PartyCamera(), {}
+    send, sent = dispatch_for(owner, state, clock, director, home, cue, safety, party)
+
+    def observe(at, *, offset=0, people=(), registered_at=None, wake=False, review=False):
+        clock.at = at
+        state.update(current_frame(at, source, offset=offset, people=people))
+        if registered_at is not None:
+            state['_patrol_view'] = patrol_view(registered_at, x=offset)
+        if owner == 'primary':
+            state['party_camera'] = party.status(camera=CAMERA['id'], session=SESSION, frame_mono=at, now=at)
+        return director.choose(state, at, review_pending=review,
+                               sound_cue=cue(CAMERA['id'], state, director.sound_search_cue) if wake else None)
+
+    assert observe(-17) is None
+    assert observe(-16.6) is None
+    assert observe(.8) == 'right'
+    assert director.phase == 'patrolling'
+    await send('right')
+    assert director.patrol_confirmation is not None
+    home.wake_camera = heard
+
+    caller = subject(7, .24)
+    assert observe(2.4, offset=shift, people=[caller], wake=True) is None
+    assert observe(3.0, registered_at=.7, people=[caller], wake=True) is None
+    assert observe(3.1, offset=shift, people=[caller], wake=True, review=True) is None
+    assert director.patrol_confirmation is not None
+    # 已有新的稳定画面，先确认同一个人，再用新视角向其转动。
+    assert observe(3.4, offset=shift, people=[caller], wake=True) is None
+    assert observe(3.8, offset=shift, people=[caller], wake=True) == 'left'
+    assert director.pending_decision['sound_cue'] is home.wake_camera
+    assert not director.public()['target_locked']
+    await send('left')
+    assert [(row['action'], row['direction']) for row in sent] == [
+        ('motor_step', 'right'), ('motor_step', 'left'),
+    ]
+    assert not director.public()['physical_motion_verified']
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('busy_action', ['register', 'layout'])
 @pytest.mark.parametrize('known_face', [False, True])
 async def test_secondary_wake_keeps_the_pre_turn_reference_while_a_frame_is_in_flight(
