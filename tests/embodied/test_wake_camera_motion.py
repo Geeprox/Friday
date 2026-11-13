@@ -298,8 +298,14 @@ async def test_wake_does_not_resume_after_revocation(tmp_path, monkeypatch, revo
     ('primary', 'right', .605, .04),
     ('secondary', 'left', .245, -.04),
 ])
-async def test_wake_centers_an_off_center_person_once(
-        tmp_path, monkeypatch, owner, direction, x, shift):
+@pytest.mark.parametrize('result, remaining', [
+    ('still_off_center', .14),
+    ('centered', .08),
+    ('no_progress', .18),
+    ('overshot', -.14),
+])
+async def test_wake_rechecks_aim_after_turning(
+        tmp_path, monkeypatch, owner, direction, x, shift, result, remaining):
     clock = SimpleNamespace(at=0.0)
     clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
     home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
@@ -310,9 +316,9 @@ async def test_wake_centers_an_off_center_person_once(
     state = {}
     send, sent = dispatch_for(owner, state, clock, director, home, cue, safety, party)
 
-    def observe(at, *, offset=0, hear=False):
+    def observe(at, *, offset=0, hear=False, target_x=None):
         clock.at = at
-        target = subject(7 if offset == 0 else 9, x - offset)
+        target = subject(7 if offset == 0 else 9, x - offset if target_x is None else target_x)
         target['identity'] = subject(7, x)['identity']
         state.update(current_frame(at, source, offset=offset, people=[target]))
         if owner == 'primary':
@@ -329,12 +335,25 @@ async def test_wake_centers_an_off_center_person_once(
     assert [(row['action'], row['direction']) for row in sent] == [('motor_step', direction)]
     assert not director.public()['target_locked']
 
-    # 偏移仍超过首次对准的阈值。确认转过后恢复普通跟随，不再补一小步。
+    # 云台收到回执后，仍须通过新画面核对转向及同一人。
+    side = 1 if direction == 'right' else -1
+    observed_x = .425 + side * remaining
     for at in (4.3, 4.7):
-        assert observe(at, offset=shift, hear=True) is None
+        assert observe(at, offset=shift, hear=True, target_x=observed_x) is None
         assert not director.public()['target_locked']
-    assert observe(5.1, offset=shift, hear=True) is None
-    assert director.public()['target_locked'] and director.target == 9
+    needs_correction = result == 'still_off_center'
+    assert observe(5.1, offset=shift, hear=True, target_x=observed_x) == (
+        direction if needs_correction else None)
+    assert director.public()['target_locked'] is not needs_correction
+    if needs_correction:
+        await send(direction)
+        assert not director.public()['target_locked']
+        # 第二次转动也要核对。即使人稍向外走，仍只补一次。
+        for at in (7.2, 7.6, 8.0):
+            assert observe(at, offset=2 * shift, hear=True, target_x=observed_x - side * .01) is None
+            assert director.public()['target_locked'] == (at == 8.0)
+    assert [row['direction'] for row in sent] == [direction] * (2 if needs_correction else 1)
+    assert director.target == 9
     assert not director.public()['physical_motion_verified']
 
 

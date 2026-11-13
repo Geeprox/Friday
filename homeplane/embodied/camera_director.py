@@ -53,6 +53,7 @@ class CameraDirector:
     FOLLOW_REACQUIRE_SECONDS = 8
     FOLLOW_REFERENCE_INTERVAL = 2
     WAKE_PAN_THRESHOLD = .12
+    WAKE_MIN_PAN_PROGRESS = .025
     TILT_DIRECTIONS = ('up', 'down')
     SURVEY_ATTEMPT_LIMIT = 12
     SURVEY_ROUTE = ('right', 'right', 'down', 'left', 'left', 'left', 'left', 'up', 'right', 'right')
@@ -119,7 +120,8 @@ class CameraDirector:
         self.sound_candidate = None
         self.sound_following = False
         self.sound_follow_motion = None
-        self.wake_first_aim = False
+        self.wake_centering = False
+        self.wake_initial_pan = None
         self.sound_intent_since = None
         self.last_sound_captured = -math.inf
         self.last_wake_captured = -math.inf
@@ -477,6 +479,12 @@ class CameraDirector:
         horizontal_error = left + width / 2 - .5
         threshold = self.WAKE_PAN_THRESHOLD if wake_aim else .20
         horizontal = ('right' if horizontal_error > 0 else 'left') if abs(horizontal_error) > threshold else None
+        if wake_aim and self.wake_initial_pan is not None:
+            # 只在同方向仍有明显偏移且上一步确实缩小偏差时补一次。
+            previous_direction, previous_offset = self.wake_initial_pan
+            if horizontal == previous_direction and previous_offset - abs(horizontal_error) >= self.WAKE_MIN_PAN_PROGRESS:
+                return horizontal
+            return None
         vertical_error = top + height / 2 - .5
         vertical_margin = min(top, bottom)
         # 目标贴近上下边缘且明显偏向一侧才俯仰。两轴都偏离时，先保住更近的边缘。
@@ -583,7 +591,7 @@ class CameraDirector:
                 return False
         if pending['identity'] and self.identity(target) and self.identity(target) != pending['identity']:
             return False
-        return self._follow_direction(target, wake_aim=sound_follow and self.wake_first_aim) == direction
+        return self._follow_direction(target, wake_aim=sound_follow and self.wake_centering) == direction
 
     def _next_position(self, direction):
         x,y = self.position
@@ -758,7 +766,8 @@ class CameraDirector:
         self.sound_search_cue = self.sound_candidate = None
         self.sound_following = False
         self.sound_follow_motion = None
-        self.wake_first_aim = False
+        self.wake_centering = False
+        self.wake_initial_pan = None
 
     def _end_sound_search(self, now):
         if self.sound_search_cue is not None:
@@ -822,7 +831,7 @@ class CameraDirector:
         if not wake and self._next_position(first) in self.blocked_positions:
             return
         self.sound_search_cue = cue
-        self.wake_first_aim = wake
+        self.wake_centering = wake
         self.sound_view = self._sound_scope(sample)
         self.sound_route = (first, other, other)
         self.sound_step = 0
@@ -1177,14 +1186,14 @@ class CameraDirector:
                 self.target_identity = self.target_identity or self.identity(target)
             self.phase = 'following'
             wake_follow = self.sound_following and isinstance(self.sound_search_cue, WakeCameraCue)
-            wake_aim = wake_follow and self.wake_first_aim
+            wake_aim = wake_follow and self.wake_centering
             # 普通跟随在转动后给人脸识别留出最多四秒，有有效身份时可提前继续。
-            # 唤醒后的首次对准已确认新视角和连续人体，无须额外等待人脸。
+            # 唤醒对准依赖确认过的视角与连续人体观测，无须额外等待人脸。
             if not wake_aim and not self.identity(target) and now-self.last_move < 4:
                 return None
             direction = self._follow_direction(target, wake_aim=wake_aim)
             if wake_follow and direction is None:
-                self.wake_first_aim = False
+                self.wake_centering = False
                 if self.pending_decision and self.pending_decision.get('sound_cue') is self.sound_search_cue:
                     self.pending_direction = self.pending_decision = None
             if direction in self.TILT_DIRECTIONS:
@@ -1220,8 +1229,11 @@ class CameraDirector:
         if automatic and direction == self.pending_direction:
             self._watch_target_after_move(pending, now)
             if pending and 'sound_box' in pending:
-                # 首次对准只允许一步更灵敏的调整，之后按普通跟随避免来回摆动。
-                self.wake_first_aim = False
+                if self.wake_centering and self.wake_initial_pan is None and direction in {'left', 'right'}:
+                    box = pending['sound_box']
+                    self.wake_initial_pan = (direction, abs(box['x'] + box['w'] / 2 - .5))
+                else:
+                    self.wake_centering = False
                 self.sound_follow_motion = (pending['sound_cue'], pending['view'], direction)
         patrol = automatic and direction == self.pending_direction and pending and pending['phase'] in {'patrolling', 'sound_search'}
         if patrol:
@@ -1302,7 +1314,7 @@ class CameraDirector:
             if self.phase == 'following':
                 pending_turn = (self.pending_decision is not None
                                 and self.pending_decision.get('sound_cue') is self.sound_search_cue)
-                wake_aiming = pending_turn or self.sound_follow_motion is not None
+                wake_aiming = self.wake_centering or pending_turn or self.sound_follow_motion is not None
                 if pending_turn:
                     reason = '已唤醒，镜头正在转向'
                 elif wake_aiming:
