@@ -352,6 +352,7 @@ async def test_saved_alert_and_frame_remain_readable_during_evidence_write(tmp_p
     url = '/api/embodied/safety/events'
     frame = f'{url}/{event["id"]}/frames/0'
     reference = f'{url}/{event["id"]}/recordings?ordinal=0'
+    attention = '/api/embodied/safety/attention'
     running, release = threading.Event(), threading.Event()
 
     def queued():
@@ -368,8 +369,9 @@ async def test_saved_alert_and_frame_remain_readable_during_evidence_write(tmp_p
                 job = asyncio.create_task(runtime.io.call(queued))
                 assert await asyncio.to_thread(running.wait, 1)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
-                listing, jpeg, playback = await asyncio.gather(*(client.get(path) for path in (url, frame, reference)))
-                assert [response.status_code for response in (listing, jpeg, playback)] == [200, 200, 200]
+                listing, jpeg, playback, summary = await asyncio.gather(
+                    *(client.get(path) for path in (url, frame, reference, attention)))
+                assert [response.status_code for response in (listing, jpeg, playback, summary)] == [200] * 4
                 [saved] = listing.json()['events']
                 assert saved['id'] == event['id'] and saved['frames'] == [
                     dict(ordinal=0, at=captured, recording_anchor=True)]
@@ -378,12 +380,17 @@ async def test_saved_alert_and_frame_remain_readable_during_evidence_write(tmp_p
                 assert found['event_id'] == event['id'] and found['frame_ordinal'] == 0
                 assert found['recordings'][0]['request']['camera_id'] == binding['id']
                 assert not found['source_scan_attempted'] and not found['media_read_attempted']
+                assert summary.headers['cache-control'] == 'no-store'
+                assert summary.json() == dict(events=[dict(id=event['id'], at=event['at'], kind='fall',
+                    captured_at=captured, review='unreviewed', simulated=False)], pending=1)
                 if job is not None:
                     assert not job.done()
                 writer.commit()
-                listing, jpeg, playback = await asyncio.gather(*(client.get(path) for path in (url, frame, reference)))
+                listing, jpeg, playback, summary = await asyncio.gather(
+                    *(client.get(path) for path in (url, frame, reference, attention)))
                 assert listing.json() == {'events': []}
                 assert jpeg.status_code == playback.status_code == 404
+                assert summary.json() == dict(events=[], pending=0)
     finally:
         release.set()
         if job is not None:
@@ -400,10 +407,12 @@ async def test_history_does_not_create_or_upgrade_database_and_rejects_a_link(tm
     app = FastAPI()
     app.include_router(router)
     events = '/api/embodied/safety/events'
+    attention = '/api/embodied/safety/attention'
     frame, reference = f'{events}/{"c" * 32}/frames/0', f'{events}/{"c" * 32}/recordings'
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
             assert (await client.get(events)).json() == {'events': []}
+            assert (await client.get(attention)).json() == dict(events=[], pending=0)
             assert (await client.get(frame)).status_code == (await client.get(reference)).status_code == 404
             assert not root.exists()
             root.mkdir()
@@ -415,12 +424,13 @@ async def test_history_does_not_create_or_upgrade_database_and_rejects_a_link(tm
             before = legacy.read_bytes()
             legacy.rename(runtime.store.path)
             assert (await client.get(events)).json() == {'events': [dict(kind='fall', simulated=True, frames=[])]}
+            assert (await client.get(attention)).json() == dict(events=[], pending=0)
             assert (await client.get(frame)).status_code == 404
             assert (await client.get(reference)).json()['code'] == 'event_recording_not_applicable'
             assert runtime.store.path.read_bytes() == before
             runtime.store.path.rename(legacy)
             runtime.store.path.symlink_to(legacy)
-            for path in (events, frame, reference):
+            for path in (events, attention, frame, reference):
                 denied = await client.get(path)
                 assert denied.status_code == 503 and denied.json() == {'detail': 'safety_storage_unavailable'}
             assert legacy.read_bytes() == before

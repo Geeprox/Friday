@@ -1,5 +1,7 @@
 export const soundReviewNames={crying:'疑似哭声',scream:'疑似尖叫声',glass_break:'疑似破碎声',alarm:'疑似警报声'};
 export const isSafetyOutputTest=event=>event.simulated&&event.status==='test';
+export const isPendingSafetyEvent=event=>event.simulated===false&&event.review==='unreviewed';
+export const isPendingFall=event=>event.kind==='fall'&&isPendingSafetyEvent(event);
 export const isRapidMovementReview=event=>event.kind==='visual_review'&&event.visual_kind==='rapid_movement'&&event.basis==='same_pair_rapid_window';
 export function safetyEventTitle(event,{includePerson=true}={}){
  if(isSafetyOutputTest(event))return '播报测试';

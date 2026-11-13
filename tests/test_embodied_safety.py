@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -219,6 +220,78 @@ def test_store_restart_review_retention_and_disk_budget(tmp_path, monkeypatch):
     with store.connect() as db:
         db.execute("UPDATE safety_events SET at=0")
     assert store.events() == []
+
+
+@pytest.mark.parametrize("limit", ["count", "bytes"])
+def test_retention_prioritizes_a_pending_fall_until_review_or_expiry(tmp_path, monkeypatch, limit):
+    from homeplane.embodied.safety_storage import SafetyStorageFull
+
+    now = [time.time()]
+    monkeypatch.setattr("homeplane.embodied.safety.time.time", lambda: now[0])
+    store = SafetyStore(tmp_path / "safety.sqlite")
+    monkeypatch.setattr(store, "MAX_EVENTS" if limit == "count" else "MAX_BYTES", 2 if limit == "count" else 8)
+    event = dict(kind="fall", simulated=False)
+    fall = store.create(event, [(now[0], b"fall")])
+    for _ in range(3):
+        now[0] += 1
+        ordinary = store.create(dict(kind="sound_review", simulated=False), [(now[0], b"test")])
+    assert [row["id"] for row in store.events()] == [ordinary["id"], fall["id"]]
+    assert store.frame(fall["id"], 0) == b"fall"
+    assert store.attention()["events"][0]["id"] == fall["id"]
+
+    now[0] += 1
+    second_fall = store.create(event, [(now[0], b"fall")])
+    now[0] += 1
+    with pytest.raises(SafetyStorageFull, match="capacity"):
+        store.create(dict(kind="fall", simulated=True), [(now[0], b"test")])
+    assert [row["id"] for row in store.events()] == [second_fall["id"], fall["id"]]
+    assert store.frame(fall["id"], 0) == b"fall"
+    store.update(fall["id"], review="acknowledged")
+    now[0] += 1
+    ordinary = store.create(dict(kind="sound_review", simulated=False), [(now[0], b"test")])
+    assert [row["id"] for row in store.events()] == [ordinary["id"], second_fall["id"]]
+
+    now[0] += store.RETENTION + 1
+    store.prune_expired()
+    assert store.events() == []
+    assert store.attention() == dict(events=[], pending=0)
+
+
+@pytest.mark.asyncio
+async def test_attention_counts_all_pending_and_reads_the_same_event_after_review(tmp_path, monkeypatch):
+    monkeypatch.setattr(safety_api, "PRIVATE", tmp_path)
+    router = APIRouter()
+    runtime = safety_api.install(router, SimpleNamespace(process=None))
+    app = FastAPI()
+    app.include_router(router)
+    captured = time.time()
+    fall = runtime.store.create(dict(kind="fall", simulated=False, camera="cam_1111111111",
+        camera_source_context="a" * 64, camera_name="合成客厅", captured_at=captured,
+        person_name="合成人物"), [(captured, b"synthetic-evidence")])
+    later = [runtime.store.create(dict(kind="sound_review", simulated=False, sound_kind="crying",
+        sound_evidence=dict(pattern="sustained_infant_cry", duration_seconds=6))) for _ in range(5)]
+    runtime.store.create(dict(kind="fall", simulated=True, status="test"))
+    base = "/api/embodied/safety"
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
+            summary = (await client.get(base + "/attention")).json()
+            assert summary["pending"] == 6
+            assert [row["id"] for row in summary["events"]] == [fall["id"], later[-1]["id"], later[-2]["id"]]
+            assert summary["events"][1]["sound_evidence"] == dict(pattern="sustained_infant_cry")
+            assert all("person_name" not in row and "camera_source_context" not in row and "frames" not in row
+                       for row in summary["events"])
+            listing = (await client.get(base + "/events")).json()["events"]
+            assert listing[-1]["id"] == fall["id"]
+            assert listing[-1]["frames"] == [dict(ordinal=0, at=captured, recording_anchor=True)]
+            frame = await client.get(f'{base}/events/{fall["id"]}/frames/0')
+            assert frame.content == b"synthetic-evidence"
+            reviewed = await client.post(f'{base}/events/{fall["id"]}/review', json=dict(review="acknowledged"))
+            assert reviewed.json()["review"] == "acknowledged"
+            summary = (await client.get(base + "/attention")).json()
+            assert summary["pending"] == 5
+            assert [row["id"] for row in summary["events"]] == [row["id"] for row in later[-1:-4:-1]]
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

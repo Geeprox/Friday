@@ -14,7 +14,8 @@ test('home uses the actual task outcome and does not revive an acknowledged raw 
 test('the original home attention button carries the exact task entry into the workspace',async()=>{
  const missed=item(),f=fixture({modeReport:report([missed])});await settle();
  const scope=f.context;scope.AbortController=AbortController;scope.setInterval=()=>1;scope.clearInterval=()=>{};scope.setTimeout=()=>2;scope.clearTimeout=()=>{};
- scope.homeApi=async path=>path==='/api/rules/core/runtime'?{available:true,execution_state:'ready',...report([missed])}:path==='/api/embodied/safety/events'?{events:[]}:path==='/api/settings/arl/status'?null:{};
+ scope.homeApi=async path=>path==='/api/rules/core/runtime'?{available:true,execution_state:'ready',...report([missed])}:path==='/api/embodied/safety/attention'?{events:[],pending:0}:path==='/api/settings/arl/status'?null:{};
+ vm.runInContext(fs.readFileSync('homeplane/static/safety-event-labels.js','utf8').replace(/export /g,''),scope);
  let selected;scope.homeGo=(page,options)=>{assert.equal(page,'Automations');selected=options.attentionId;f.owner.selectAttention(selected);};
  const source=fs.readFileSync('homeplane/static/home-status.js','utf8').replace(/^import .*;$/gm,'').replace(/export /g,'');
  vm.runInContext('globalThis.homeOwner=(function(){'+source+';const root=document.createElement("aside");document.body.append(root);return mountHomeStatus(root,{api:homeApi,go:homeGo});})()',scope);

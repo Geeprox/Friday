@@ -14,9 +14,11 @@ function mount({hidden=false,read=null}={}){
   if(path==='/api/embodied/status')return {configured:false};
   if(path==='/api/rules/core/runtime')return {available:true,automatic_enabled:true,execution_state:'ready'};
   if(path==='/api/settings/arl/status')return null;
-  return {events:[],proposals:[]};
+  return {events:[],pending:0,proposals:[]};
  };
  context.homeRoot=f.root;
+ const labels=fs.readFileSync('homeplane/static/safety-event-labels.js','utf8').replace(/export /g,'');
+ vm.runInContext(labels,context);
  const source=fs.readFileSync('homeplane/static/home-status.js','utf8').replace(/^import .*;$/gm,'').replace(/export /g,'');
  vm.runInContext('globalThis.homeOwner=(function(){'+source+';return mountHomeStatus(homeRoot,{api:homeApi,go(){}});})()',context);
  return {root:f.root,calls,timers,intervals,owner:context.homeOwner,

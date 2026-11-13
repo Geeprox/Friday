@@ -33,7 +33,12 @@ function fixture(initial=[event('b'),event('a')]){
   if(path.endsWith('/retry')){if(holdRetry)return new Promise(resolve=>heldRetry=()=>resolve({ok:true,json:async()=>supervision}));return{ok:true,json:async()=>supervision};}
   if(path.endsWith('/posture')){assert.equal(body.expected_revision,policy.revision);policy.revision++;postureReview={...postureReview,camera:body.camera,state:body.camera?'waiting':'off'};data={camera:body.camera,revision:policy.revision};}
   else if(path.endsWith('/review')){const id=path.split('/').at(-2),current=events.find(e=>e.id===id);current.review=body.review;data=current;}
-  else if(path.endsWith('/events')){if(historyFailure)return{ok:false,status:503};data={events};}
+  else if(path.endsWith('/events')||path.endsWith('/attention')){
+   if(historyFailure)return{ok:false,status:503};
+   const pending=events.filter(e=>e.simulated===false&&e.review==='unreviewed');
+   const top=pending.slice().sort((a,b)=>Number(b.kind==='fall')-Number(a.kind==='fall')).slice(0,3);
+   data=path.endsWith('/attention')?{events:top,pending:pending.length}:{events};
+  }
   else if(path==='/api/embodied/safety'){
    data={policy,worker:{status:workerStatus,cameras,waiting_observations:waitingObservations,recording},supervision,visual_review:{available:false},sound_review:{available:false},capabilities:[],posture_review:postureReview};
    if(holdStatus)return new Promise(resolve=>heldStatus=ok=>resolve({ok,status:ok?200:503,json:async()=>structuredClone(data)}));
@@ -48,9 +53,9 @@ function fixture(initial=[event('b'),event('a')]){
  const context=vm.createContext({document,fetch,Date,JSON,console,AbortController,Blob,URL,
   setInterval(fn){tick=fn;return 1;},clearInterval(){},setTimeout(){return 1;},clearTimeout(){}});
  const labels=fs.readFileSync('homeplane/static/safety-event-labels.js','utf8').replace(/export /g,'');
- Object.assign(context,vm.runInContext('(function(){'+labels+';return {soundNames:soundReviewNames,isOutputTest:isSafetyOutputTest,eventTitle:safetyEventTitle,safetyEventTitle,isRapidMovementReview};})()',context));
+ Object.assign(context,vm.runInContext('(function(){'+labels+';return {soundNames:soundReviewNames,isOutputTest:isSafetyOutputTest,eventTitle:safetyEventTitle,safetyEventTitle,isRapidMovementReview,isPendingFall,isPendingSafetyEvent};})()',context));
  for(const file of ['homeplane/static/arl-status.js','homeplane/static/safety.js','homeplane/static/home-status.js'])vm.runInContext(fs.readFileSync(file,'utf8').replace(/^import .*;$/gm,'').replace(/export /g,''),context);
- const go=(...args)=>navigations.push(args),api=async(path)=>{const r=await fetch(path);return r.json();};
+ const go=(...args)=>navigations.push(args),api=async(path)=>{const r=await fetch(path);if(!r.ok)throw Error('unavailable');return r.json();};
  const by=(tag,text)=>all(root).find(n=>n.tagName===tag&&n.textContent===text),rows=()=>all(root).filter(n=>n.attrs.class==='safety-event');
  return{root,calls,navigations,opened,context,by,rows,get focused(){return focused;},get events(){return events;},
   mount(options={}){return context.mountSafety(root,{go,onOpenRecording:(out,item)=>{out.replaceChildren();if(item)opened.push(item);},...options});},
@@ -254,12 +259,52 @@ test('expanded home attention includes every counted item and keeps its expanded
  assert.equal(f.by('button','收起提醒')?.attrs['aria-expanded'],'true');home.dispose();
 });
 
+test('待查看跌倒优先于新异响和留档故障，首页能继续查看完整队列',async()=>{
+ const fall=event('a','fall'),f=fixture([event('f'),event('e'),event('d'),event('c'),event('b'),fall]);
+ f.recording({state:'unavailable',dropped:1});
+ const home=f.home();await settle();
+ const notices=()=>all(f.root).filter(n=>n.attrs.class==='home-attention-item');
+ const seeAlerts=count=>all(f.root).find(n=>n.attrs['aria-label']===('查看全部 '+count+' 条待查看提醒'));
+ const first=notices()[0];assert.match(first.textContent,/疑似跌倒/);
+ assert.equal(first.attrs['data-priority'],'0');
+ assert.match(notices()[1].textContent,/有提醒未能保存/);
+ assert.equal(all(f.root).find(n=>n.attrs.class==='attention-count').textContent,'7');
+ const listLink=seeAlerts(6);
+ assert.equal(listLink.hidden,false);listLink.onclick();assert.deepEqual(f.navigations.at(-1),['Safety']);
+ first.focus();await home.refresh();assert.equal(f.focused,notices()[0]);
+ first.onclick();assert.equal(f.navigations.at(-1)[1].eventId,fall.id);
+ home.dispose();
+
+ const view=f.mount({initialEventId:fall.id});await settle();
+ assert.match(f.rows()[0].textContent,/疑似跌倒/);
+ assert.equal(f.rows()[0].dataset.priority,'urgent');
+ f.by('button','我已查看').focus();await f.by('button','我已查看').onclick();
+ assert.equal(f.focused,f.by('button','已查看'));
+ assert.match(f.rows().at(-1).textContent,/疑似跌倒.*已查看/);
+ assert.equal(f.rows().at(-1).attrs['aria-current'],'true');view.dispose();
+
+ const again=f.home();await settle();
+ assert(!notices().some(row=>row.textContent.includes('疑似跌倒')));
+ assert.equal(seeAlerts(5).hidden,false);
+ f.historyFailure(true);await again.refresh();
+ assert(f.by('div','事件记录暂未更新'));
+ assert.equal(seeAlerts(0).hidden,true);
+ again.dispose();
+});
+
 test('direct review opens an unreviewed event while mobile drilldown remains an explicit action',async()=>{
  const f=fixture([event('b','sound_review','acknowledged'),event('a')]),view=f.mount();await settle();
  assert.ok(f.by('h2','疑似哭声'));assert.equal(all(f.root).find(n=>n.attrs.class==='safety-page').dataset.detailOpen,'false');
  f.rows().find(n=>n.textContent.includes('疑似哭声')).onclick();assert.equal(all(f.root).find(n=>n.attrs.class==='safety-page').dataset.detailOpen,'true');
  f.by('button','全部提醒').onclick();assert.equal(all(f.root).find(n=>n.attrs.class==='safety-page').dataset.detailOpen,'false');
  assert.equal(f.focused,f.rows().find(n=>n.attrs['aria-current']==='true'));assert.equal(f.calls.some(c=>c.body),false);view.dispose();
+});
+
+test('安全页把工具栏刷新接到监测和留档的只读入口',async()=>{
+ const f=fixture(),view=f.mount();await settle();
+ const before=f.calls.length;await view.refresh();
+ assert.deepEqual(f.calls.slice(before).map(c=>c.path),['/api/embodied/safety','/api/embodied/safety/events']);
+ assert(f.calls.slice(before).every(c=>!c.body));view.dispose();
 });
 
 test('a missing linked event never silently shows a different incident',async()=>{

@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .camera_audio import offer_sound_window
 from .pose_rules import body_track_revision, iou
-from .safety_storage import SafetyIO, SafetyStorageBusy
+from .safety_storage import SafetyIO, SafetyStorageBusy, SafetyStorageFull
 
 
 class SafetyAdmissionChanged(ValueError):
@@ -109,6 +109,11 @@ class SafetyStore:
     RETENTION = 30 * 86400
     PRUNE_INTERVAL = 60
     POLICY_FIELDS = (('safety_policy', 'value'), ('safety_posture', 'value'), ('safety_sound_search', 'enabled'))
+    _PENDING_EVENT = """CASE WHEN json_valid(value) THEN
+        json_extract(value, '$.review') IS 'unreviewed' AND json_type(value, '$.simulated') IS 'false'
+        ELSE 0 END"""
+    _PENDING_FALL = f"""CASE WHEN ({_PENDING_EVENT})
+        THEN json_extract(value, '$.kind') IS 'fall' ELSE 0 END"""
 
     def __init__(self, path):
         self.path = Path(path)
@@ -232,11 +237,12 @@ class SafetyStore:
                     db.execute('DELETE FROM safety_sound_search WHERE id=1')
         return value
 
-    def _prune(self, db):
+    def _prune(self, db, *, keep_event=None):
         db.execute("DELETE FROM safety_events WHERE at < ?", (time.time() - self.RETENTION,))
+        # 数量或画面容量不足时，先清理普通记录，再清理最早的待查看跌倒。
         db.execute(
             "DELETE FROM safety_events WHERE id NOT IN "
-            "(SELECT id FROM safety_events ORDER BY at DESC LIMIT ?)",
+            f"(SELECT id FROM safety_events ORDER BY ({self._PENDING_FALL}) DESC, at DESC, rowid DESC LIMIT ?)",
             (self.MAX_EVENTS,),
         )
         db.execute("DELETE FROM safety_frames WHERE event NOT IN (SELECT id FROM safety_events)")
@@ -245,9 +251,13 @@ class SafetyStore:
             > self.MAX_BYTES
         ):
             db.execute(
-                "DELETE FROM safety_events WHERE id=(SELECT id FROM safety_events ORDER BY at LIMIT 1)"
+                "DELETE FROM safety_events WHERE id="
+                f"(SELECT id FROM safety_events ORDER BY ({self._PENDING_FALL}), at, rowid LIMIT 1)"
             )
             db.execute("DELETE FROM safety_frames WHERE event NOT IN (SELECT id FROM safety_events)")
+        if keep_event is not None and not db.execute("SELECT 1 FROM safety_events WHERE id=?", (keep_event,)).fetchone():
+            # 回滚本次写入和清理，保留已存提醒，也避免返回刚被淘汰的记录。
+            raise SafetyStorageFull('safety_recording_capacity_reached')
 
     @classmethod
     def _admit(cls, db, *, policy_revision=None, feature=None, guard=None):
@@ -307,7 +317,7 @@ class SafetyStore:
                     db.execute(
                         "INSERT INTO safety_frames VALUES (?,?,?,?)", (event["id"], ordinal, stamp, jpeg)
                     )
-            self._prune(db)
+            self._prune(db, keep_event=event["id"])
             if guard is not None and not guard():
                 raise SafetyAdmissionChanged('safety_source_changed')
         return event
@@ -447,7 +457,7 @@ class SafetyStore:
             db.execute("BEGIN IMMEDIATE")
             self._admit(db, policy_revision=policy_revision, guard=guard)
             if not db.execute("SELECT 1 FROM safety_events WHERE id=?", (event_id,)).fetchone():
-                return
+                raise SafetyRecordMissing('safety_event_unavailable')
             if deduplicate:
                 previous = db.execute('SELECT jpeg FROM safety_frames WHERE event=? AND at=?',
                                       (event_id, stamp)).fetchone()
@@ -460,7 +470,7 @@ class SafetyStore:
             ).fetchone()[0]
             if count < self.MAX_FRAMES:
                 db.execute("INSERT INTO safety_frames VALUES (?,?,?,?)", (event_id, count, stamp, jpeg))
-            self._prune(db)
+            self._prune(db, keep_event=event_id)
             if guard is not None and not guard():
                 raise SafetyAdmissionChanged('safety_source_changed')
 
@@ -496,7 +506,7 @@ class SafetyStore:
                 views.append(dict(step=step, ordinal=ordinal))
             db.execute('UPDATE safety_events SET value=? WHERE id=?',
                        (json.dumps(event, ensure_ascii=False), event_id))
-            self._prune(db)
+            self._prune(db, keep_event=event_id)
             if not guard():
                 raise SafetyAdmissionChanged('safety_source_changed')
 
@@ -536,6 +546,29 @@ class SafetyStore:
                     return False
         return True
 
+    def attention(self):
+        """首页只读取最先需要查看的摘要和同一快照中的待查看总数。"""
+        with self._read_snapshot() as db:
+            if 'safety_events' not in self._tables(db, ('safety_events',)):
+                return dict(events=[], pending=0)
+            rows = db.execute(
+                f"""SELECT id, at, value, COUNT(*) OVER () FROM safety_events WHERE at>=? AND ({self._PENDING_EVENT})
+                    ORDER BY ({self._PENDING_FALL}) DESC, at DESC, rowid DESC LIMIT 3""",
+                (time.time() - self.RETENTION,),
+            ).fetchall()
+        events = []
+        for key, at, value, _ in rows:
+            event = json.loads(value)
+            fields = ('kind', 'review', 'simulated', 'captured_at', 'camera_name',
+                      'sound_kind', 'visual_kind', 'basis')
+            summary = {field: event[field] for field in fields if field in event}
+            if (event.get('kind') == 'sound_review' and event.get('sound_kind') == 'crying'
+                    and isinstance(event.get('sound_evidence'), dict)):
+                if event['sound_evidence'].get('pattern') == 'sustained_infant_cry':
+                    summary['sound_evidence'] = dict(pattern='sustained_infant_cry')
+            events.append(dict(summary, id=key, at=at))
+        return dict(events=events, pending=rows[0][3] if rows else 0)
+
     def events(self):
         cutoff = time.time() - self.RETENTION
         with self._read_snapshot() as db:
@@ -543,7 +576,7 @@ class SafetyStore:
             if 'safety_events' not in tables:
                 return []
             rows = db.execute(
-                "SELECT id,value FROM safety_events WHERE at>=? ORDER BY at DESC LIMIT ?",
+                "SELECT id,value FROM safety_events WHERE at>=? ORDER BY at DESC, rowid DESC LIMIT ?",
                 (cutoff, self.MAX_EVENTS),
             )
             events = {key: dict(json.loads(value), frames=[]) for key, value in rows}
@@ -1131,6 +1164,9 @@ class SafetyRuntime:
                                        step, stamp, jpeg, policy_revision=cue.revision, guard=current)
                     return
                 except SafetyAdmissionChanged:
+                    return
+                except SafetyStorageFull:
+                    self.recording.partial += 1
                     return
                 except (OSError, sqlite3.Error, SafetyStorageBusy):
                     if attempt:

@@ -10,6 +10,10 @@ class SafetyStorageBusy(RuntimeError):
     pass
 
 
+class SafetyStorageFull(RuntimeError):
+    pass
+
+
 class SafetyIO:
     def __init__(self, *, max_pending=16, acquire_timeout=2.5, thread_name_prefix='friday-safety-store'):
         self.max_pending = max_pending

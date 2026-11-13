@@ -273,8 +273,8 @@ async def test_closing_the_camera_during_the_sqlite_transaction_rolls_back_event
     entered, release = threading.Event(), threading.Event()
     prune = store._prune
 
-    def held_prune(db):
-        prune(db)
+    def held_prune(db, **kwargs):
+        prune(db, **kwargs)
         entered.set()
         assert release.wait(5)
 
@@ -927,6 +927,39 @@ async def test_exhausted_recording_is_bounded_and_not_hidden_by_another_camera(m
     assert monitor.runtime.status()['error'] == 'safety_recording_lost'
     monitor.runtime.speaker.say.assert_not_awaited()
     await verify_public_recording_health(monitor, monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_fall_prunes_lower_priority_evidence_and_reports_a_full_store_without_false_success(monitor, monkeypatch):
+    runtime, store = monitor.runtime, monitor.store
+    monkeypatch.setattr(store, 'MAX_EVENTS', 1)
+    ordinary = store.create(dict(kind='sound_review', simulated=False), [(1800000100, b'older-sound')])
+    await before_fall(monitor)
+    assert await frame(monitor)
+    await runtime.drain()
+    await asyncio.gather(*runtime.tasks)
+    fall, = store.events()
+    assert fall['kind'] == 'fall' and fall['id'] != ordinary['id'] and fall['frames']
+    assert store.attention()['events'][0]['id'] == fall['id']
+    assert runtime.recording.status()['completed'] == 1
+
+    store.configure(SafetyPolicy(enabled=True, announce=True, sound_review=True, revision=store.policy().revision))
+    await runtime.sync_policy()
+    monitor.clock[0] += .25
+    await frame(monitor)
+    if runtime.observation_task is not None:
+        await runtime.observation_task
+    now = monitor.clock[0]
+    token, revision = runtime.source_tokens[monitor.camera], runtime.policy_cache.revision
+    runtime.recording.submit(camera=monitor.camera, session='same-session', context=monitor.context,
+        token=token, captured=now, revision=revision,
+        event=dict(kind='sound_review', simulated=False, camera=monitor.camera,
+                   camera_source_context=monitor.context, session='same-session', captured_at=1800000000+now),
+        frames=[(1800000000+now, b'newer-sound')], feature='sound_review')
+    await runtime.drain()
+    report = runtime.recording.status()
+    assert report['completed'] == 1 and report['dropped'] == 1 and report['pending'] == 0
+    assert [event['id'] for event in store.events()] == [fall['id']]
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .camera_provenance import configured_camera_sources
 from .paths import PRIVATE
 from .safety import CAPABILITIES, PostureSource, SafetyControls, SafetyRecordMissing, SafetyRuntime, SafetyStore, SoundMotionBusy
-from .safety_storage import SafetyStorageBusy
+from .safety_storage import SafetyStorageBusy, SafetyStorageFull
 
 
 class Review(BaseModel):
@@ -65,7 +65,7 @@ def install(router, service, *, archive=None, infrastructure=None):
     async def protected(operation):
         try:
             return await operation
-        except (OSError, sqlite3.Error, SafetyStorageBusy):
+        except (OSError, sqlite3.Error, SafetyStorageBusy, SafetyStorageFull):
             raise HTTPException(503, detail='safety_storage_unavailable') from None
 
     async def stored(operation, *args, **kwargs):
@@ -184,6 +184,11 @@ def install(router, service, *, archive=None, infrastructure=None):
     @router.get("/api/embodied/safety/events")
     async def events():
         return dict(events=await evidence(recordings.events))
+
+    @router.get("/api/embodied/safety/attention")
+    async def attention(response: Response):
+        response.headers["Cache-Control"] = "no-store"
+        return await evidence(store.attention)
 
     @router.get('/api/embodied/safety/events/{event_id}/recordings')
     async def event_recordings(event_id: str, ordinal: int | None = Query(None, ge=0, lt=SafetyStore.MAX_FRAMES)):

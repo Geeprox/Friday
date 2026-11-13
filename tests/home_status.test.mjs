@@ -100,7 +100,7 @@ test('review services surface only the current worker report and distinguish pre
 
 test('attention prioritizes unreviewed incidents and excludes simulated/reviewed events',()=>{
  const devices=[{id:'offline',name:'离线设备',room:'合成空间',available:false,readings:[]},{id:'low',name:'低电量设备',room:'合成空间',available:true,readings:[{device_class:'battery',value:12,unit:'%',available:true}]},{id:'stale',available:true,readings:[{device_class:'battery',value:1,available:false}]}];
- const events=[{id:'test',simulated:true,review:'unreviewed'},{id:'read',review:'acknowledged'},{id:'fall',review:'unreviewed',kind:'fall'}];
+ const events=[{id:'test',simulated:true,review:'unreviewed'},{id:'read',review:'acknowledged'},{id:'fall',review:'unreviewed',kind:'fall',simulated:false}];
  const rows=homeAttention(devices,events,[]);
  assert.deepEqual(rows.map(r=>r.key),['safety:fall','battery:low','device:offline']);
  assert.equal(rows[0].title,'疑似跌倒');assert(!rows.some(r=>r.key.includes('stale')));
@@ -132,8 +132,9 @@ test('home and event review preserve each actual evidence kind without inventing
   assert.equal(row.title,title);assert.equal(safetyEventTitle(event),title);
   assert.equal(row.detail,'示例客厅');assert.equal(row.page,'Safety');
  }
- const fall={id:'fall',kind:'fall',review:'unreviewed',person_name:'Example'};
+ const fall={id:'fall',kind:'fall',review:'unreviewed',person_name:'Example',simulated:false};
  assert.equal(homeAttention([],[fall])[0].title,'疑似跌倒');
+ assert.equal(homeAttention([],[fall])[0].detail,'查看事件与关键画面');
  assert.equal(safetyEventTitle(fall),'Example · 疑似跌倒');
  assert.deepEqual(homeAttention([],[{...fall,simulated:true,status:'test'}]),[]);
  assert.equal(safetyEventTitle({...fall,simulated:true,status:'test'}),'播报测试');

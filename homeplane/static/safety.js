@@ -1,5 +1,5 @@
 /* Local safety review. Untrusted names and observations are always text nodes. */
-import {soundReviewNames as soundNames,isSafetyOutputTest as isOutputTest,safetyEventTitle as eventTitle,isRapidMovementReview} from './safety-event-labels.js';
+import {soundReviewNames as soundNames,isSafetyOutputTest as isOutputTest,safetyEventTitle as eventTitle,isRapidMovementReview,isPendingFall,isPendingSafetyEvent} from './safety-event-labels.js';
 export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiveSettings=()=>go('Settings'),initialEventId=null,initialReview=null,onEventSelected=()=>{}}={}){
  const base='/api/embodied/safety';let alive=true,report=null,busy=false,lastEvents='',lastDetail='',selected=null,selectionVersion=0,timer,events=[],historyLoaded=false,statusFresh=false,retrying=false,retryController=null,retryTimer=null;
  const statusFeed={read:null},historyFeed={read:null};
@@ -48,7 +48,8 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  const stopRecording=()=>{selectRecordingFrame(null);try{const pending=onOpenRecording(recordings,null);pending?.catch?.(()=>{});}catch{recordings.replaceChildren();}};
  const limits=add(el('details',null,{class:'safety-limits'}),el('summary','监测范围与限制'),capabilities);
  const historyStatus=el('p','正在读取提醒…',{class:'safety-history-status',role:'status'});
- const historyView=el('div',null,{class:'safety-history'}),settings=add(el('details',null,{class:'safety-settings'}),el('summary','监测设置'),intro,visual,sound,limits);historyView.append(historyStatus,add(el('div',null,{class:'safety-list-panel'}),add(el('div',null,{class:'safety-actions'}),el('h2','近期提醒'),button('刷新记录',()=>refreshHistory())),list),detail);
+ const listTitle=el('h2','近期提醒',{tabindex:'-1'});
+ const historyView=el('div',null,{class:'safety-history'}),settings=add(el('details',null,{class:'safety-settings'}),el('summary','监测设置'),intro,visual,sound,limits);historyView.append(historyStatus,add(el('div',null,{class:'safety-list-panel'}),add(el('div',null,{class:'safety-actions'}),listTitle,button('刷新记录',()=>refreshHistory())),list),detail);
  const reconnect=button('重试连接',()=>retryConnection()),cameraCheck=button('查看摄像头',()=>go('Cameras')),recoveryActions=add(el('div',null,{class:'safety-actions',role:'group','aria-label':'监测操作'}),reconnect,cameraCheck);
  recoveryActions.hidden=true;
  root.append(add(el('div',null,{class:'safety-monitoring'}),status,recoveryActions),historyView,settings);
@@ -168,13 +169,30 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  }
  function renderHistory(history){
    if(!Array.isArray(history?.events))throw Error('unavailable');
-   const fingerprint=JSON.stringify(history.events);historyLoaded=true;events=history.events;historyView.dataset.empty=String(!events.length);historyStatus.hidden=true;
-   if(fingerprint!==lastEvents){lastEvents=fingerprint;list.replaceChildren();eventRows.clear();
-     if(!events.length)list.append(el('p','暂无提醒记录',{class:'product-empty'}));
-     for(const e of events){const row=button('',()=>choose(e.id));row.className='safety-event';row.setAttribute('aria-current',String(e.id===selected));eventRows.set(e.id,row);row.append(el('strong',eventTitle(e)),el('span',(e.camera_name?e.camera_name+' · ':'')+new Date(eventTime(e)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})),el('span',reviewNames[e.review]||'待查看'));list.append(row);}
-     if(requested){const id=requested;requested=null;selectEvent(id);}
-     else if(selected){const current=events.find(e=>e.id===selected);if(current)show(current);else missingEvent(selected);}
-     else if(events.length)show(events.find(e=>e.review==='unreviewed')||events[0]);
+   const fingerprint=JSON.stringify(history.events);
+   historyLoaded=true;historyView.dataset.empty=String(!history.events.length);historyStatus.hidden=true;
+   if(fingerprint===lastEvents)return;
+   const focused=[...eventRows].find(([,row])=>row===document.activeElement)?.[0];
+   lastEvents=fingerprint;list.replaceChildren();eventRows.clear();
+   events=[...history.events].sort((a,b)=>Number(isPendingFall(b))-Number(isPendingFall(a))||
+     Number(isPendingSafetyEvent(b))-Number(isPendingSafetyEvent(a)));
+   if(!events.length)list.append(el('p','暂无提醒记录',{class:'product-empty'}));
+   for(const event of events){
+     const row=button('',()=>choose(event.id));
+     row.className='safety-event';
+     row.setAttribute('aria-current',String(event.id===selected));
+     if(isPendingFall(event))row.dataset.priority='urgent';
+     eventRows.set(event.id,row);
+     const context=[event.camera_name,new Date(eventTime(event)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})];
+     row.append(el('strong',eventTitle(event)),el('span',context.filter(Boolean).join(' · ')));
+     if(!isOutputTest(event))row.append(el('span',reviewNames[event.review]||'待查看',{class:'safety-event-state'}));
+     list.append(row);
+   }
+   if(requested){const id=requested;requested=null;selectEvent(id);}
+   else if(selected){const current=events.find(e=>e.id===selected);if(current)show(current);else missingEvent(selected);}
+   else if(events.length)show(events[0]);
+   if(focused&&document.activeElement!==detailBody.querySelector('h2')){
+     (eventRows.get(focused)||listTitle).focus({preventScroll:true});
    }
  }
  function retireRead(feed){
@@ -212,12 +230,12 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    historyStatus.textContent=historyLoaded?'暂时无法刷新，显示上次读取的提醒。':'暂时无法读取提醒，请重试。';
   },replace);
  }
- function refresh(){void refreshStatus();void refreshHistory();}
- function backToList(){selectionVersion++;stopRecording();recordings.replaceChildren();root.dataset.detailOpen='false';if(!events.length){selected=null;detail.hidden=true;}onEventSelected(null);eventRows.get(selected)?.focus?.({preventScroll:true});}
+ function refresh(){return Promise.all([refreshStatus(),refreshHistory()]);}
+ function backToList(){selectionVersion++;stopRecording();recordings.replaceChildren();root.dataset.detailOpen='false';if(!events.length){selected=null;detail.hidden=true;}onEventSelected(null);(eventRows.get(selected)||listTitle).focus({preventScroll:true});}
  function selectEvent(id){if(!alive||!validEventId(id))return;requested=id;if(!historyLoaded)return;requested=null;const event=events.find(e=>e.id===id);if(event)show(event,{focus:true});else missingEvent(id,{focus:true});}
  function choose(id){selectEvent(id);onEventSelected(id);}
  function focusDetail(heading){root.dataset.detailOpen='true';heading.focus?.({preventScroll:true});detail.scrollIntoView?.({block:'start',behavior:'instant'});}
- function missingEvent(id,{focus=false}={}){selected=id;lastDetail='';selectionVersion++;stopRecording();recordings.replaceChildren();frameButtons.clear();detailFooter.replaceChildren();detail.hidden=false;for(const row of eventRows.values())row.setAttribute('aria-current','false');const heading=el('h2','这条提醒已不在记录中',{tabindex:'-1'});detailBody.replaceChildren(heading,button('查看近期提醒',()=>{const current=events.find(e=>e.review==='unreviewed')||events[0];if(current)choose(current.id);else backToList();}));if(focus)focusDetail(heading);}
+ function missingEvent(id,{focus=false}={}){selected=id;lastDetail='';selectionVersion++;stopRecording();recordings.replaceChildren();frameButtons.clear();detailFooter.replaceChildren();detail.hidden=false;for(const row of eventRows.values())row.setAttribute('aria-current','false');const heading=el('h2','这条提醒已不在记录中',{tabindex:'-1'});detailBody.replaceChildren(heading,button('查看近期提醒',()=>{if(events.length)choose(events[0].id);else backToList();}));if(focus)focusDetail(heading);}
  const frameTime=frame=>new Date(frame.at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'});
  function frameGrid(event,frames,stages){
    const grid=el('div',null,{class:'safety-frames'});
@@ -356,5 +374,5 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  }
  if(initialReview&&!requested)focusReview(initialReview);
  availability();refresh();timer=setInterval(()=>{if(!busy)refresh();},5000);
- return{selectEvent,focusReview,dispose(){alive=false;retireRead(statusFeed);retireRead(historyFeed);selectionVersion++;clearInterval(timer);clearTimeout(retryTimer);retryController?.abort();stopRecording();root.remove();}};
+ return{refresh,selectEvent,focusReview,dispose(){alive=false;retireRead(statusFeed);retireRead(historyFeed);selectionVersion++;clearInterval(timer);clearTimeout(retryTimer);retryController?.abort();stopRecording();root.remove();}};
 }

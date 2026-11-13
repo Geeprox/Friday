@@ -1,5 +1,5 @@
 import {arlRuntimePresentation} from './arl-status.js';
-import {safetyEventTitle} from './safety-event-labels.js';
+import {isPendingFall,isPendingSafetyEvent,safetyEventTitle} from './safety-event-labels.js';
 const h=(tag,text,attrs={})=>{const n=document.createElement(tag);if(text!=null)n.textContent=String(text);for(const[k,v]of Object.entries(attrs))n.setAttribute(k,v);return n;};
 const add=(n,...children)=>{n.append(...children);return n;};
 const button=(text,run,attrs={})=>{const n=h('button',text,{type:'button',...attrs});n.onclick=run;return n;};
@@ -92,8 +92,13 @@ export function homeServiceSummary({worker=null,infrastructure=null,rules=null,a
 }
 export function homeAttention(devices,events=[],runs=[],recording=null,proposals=[],taskAttention=null){
  const items=[];
+ const pending=events.filter(isPendingSafetyEvent)
+  .sort((a,b)=>Number(isPendingFall(b))-Number(isPendingFall(a)));
+ for(const event of pending.slice(0,3)){
+  items.push({key:'safety:'+event.id,eventId:event.id,title:safetyEventTitle(event,{includePerson:false}),
+   detail:event.camera_name||'查看事件与关键画面',priority:isPendingFall(event)?0:1,page:'Safety'});
+ }
  if(recording?.state==='unavailable')items.push({key:'safety-recording',title:recording.dropped>0?'有提醒未能保存':recording.unconfirmed>0?'有提醒的保存结果待核对':recording.partial>0?'有提醒画面未完整保存':'提醒记录暂不可用',detail:recording.unconfirmed>0?'查看记录与本机存储':recording.partial>0?'查看已保存的记录':'检查本机存储',priority:0,page:'Safety'});
- for(const event of events.filter(e=>e.review==='unreviewed'&&!e.simulated).slice(0,3))items.push({key:'safety:'+event.id,eventId:event.id,title:safetyEventTitle(event,{includePerson:false}),detail:(event.kind==='fall'?event.person_name:null)||event.camera_name||'查看事件与关键画面',priority:0,page:'Safety'});
  for(const proposal of proposals.filter(p=>typeof p.id==='string'&&/^[a-f0-9]{64}$/.test(p.id)&&Date.parse(p.expires_at)>Date.now()).slice(0,8))items.push({key:'proposal:'+proposal.id,proposalRef:proposal.id,title:'有一项语音任务待确认',detail:proposal.task_review?.title||'核对任务后启用',priority:1,page:'Ask Home'});
  for(const d of devices){
   if(d.available===false){items.push({key:'device:'+d.id,title:d.name+'暂时不可用',detail:d.room,priority:2,device:d});continue;}
@@ -129,7 +134,24 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
   list.append(group);
  }
  const attention=h('section',null,{class:'home-attention','aria-label':'需要关注'}),count=h('span','',{class:'attention-count'}),items=h('div',null,{class:'home-attention-items'});
- attention.append(add(h('div',null,{class:'home-aside-heading'}),h('h2','需要关注'),count),items);
+ const attentionHeading=h('h2','需要关注',{tabindex:'-1'});
+ const allAlerts=button(null,()=>go('Safety'),{class:'home-alerts-link text-button',hidden:''});
+ allAlerts.append(h('span'),icon('chevron-right'));
+ const expand=button(null,()=>{
+  attention.dataset.expanded=String(attention.dataset.expanded!=='true');
+  updateExpansion();
+ },{class:'home-attention-expand text-button','aria-expanded':'false',hidden:''});
+ const attentionRows=new Map();
+ const empty=h('div',null,{class:'home-attention-empty',role:'status',hidden:''});
+ let visibleCount=0;
+ function updateExpansion(){
+  const expanded=attention.dataset.expanded==='true';
+  const label=expanded?'收起提醒':'展开 '+visibleCount+' 项提醒';
+  if(expand.textContent!==label)expand.textContent=label;
+  expand.setAttribute('aria-expanded',String(expanded));
+ }
+ attention.append(add(h('div',null,{class:'home-aside-heading'}),attentionHeading,count),empty,items,
+  add(h('div',null,{class:'home-attention-actions'}),expand,allAlerts));
  root.append(section,attention);
  function draw(report,pending=false){
   const summary=homeServiceSummary({...report,simulated});
@@ -175,19 +197,59 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
    const label=slow?'画面处理较慢 · ':multiple?'最慢画面处理 ':'画面处理 ';
    resources.append(h('p',label+Math.round(ms)+' ms',{class:'runtime-latency','data-state':slow?'degraded':'on'}));
   }
-  const notices=homeAttention(report?currentDevices:[],report?.events?.events||[],report?.rules?.runs||[],report?.worker?.owned?report.worker.safety_recording:null,report?.proposals?.proposals||[],report?.rules?.task_attention);count.textContent=notices.length?String(notices.length):'';items.replaceChildren();
-  if(!report)items.append(h('p',pending?'正在更新待处理事项…':'提醒暂未更新',{class:'home-attention-empty'}));
-  else if(!notices.length)items.append(add(h('div',null,{class:'home-attention-empty'}),icon('check'),h('p',report.events?'暂无需要你处理的事项':'事件记录暂未更新')));
-  for(const item of notices){
-   const row=button(null,()=>{if(item.proposalRef){try{sessionStorage.setItem('Friday.taskReview',item.proposalRef);}catch{}go('Ask Home');}else if(item.device)onDevice(item.device);else if(item.eventId)go(item.page,{eventId:item.eventId});else if(item.attentionId)go(item.page,{attentionId:item.attentionId});else go(item.page);},{class:'home-attention-item','data-priority':item.priority});row.append(icon(item.priority===0?'alert-circle':item.device?'devices':'clock'),add(h('span'),h('strong',item.title),h('small',item.detail)),icon('chevron-right'));items.append(row);
+  const feed=report?.events;
+  const alerts=Array.isArray(feed?.events)&&feed.events.length<=3&&Number.isSafeInteger(feed.pending)
+   &&feed.pending>=feed.events.length?feed:null;
+  const notices=homeAttention(report?currentDevices:[],alerts?.events||[],report?.rules?.runs||[],report?.worker?.owned?report.worker.safety_recording:null,report?.proposals?.proposals||[],report?.rules?.task_attention);
+  const extra=alerts?alerts.pending-alerts.events.length:0,noticeCount=notices.length+extra;
+  const focused=document.activeElement;
+  const message=!report?(pending?'正在更新待处理事项…':'提醒暂未更新'):
+   !alerts?'事件记录暂未更新':!notices.length?'暂无需要你处理的事项':'';
+  if(empty.textContent!==message)empty.textContent=message;
+  empty.hidden=!message;
+  const countLabel=noticeCount?String(noticeCount):'';
+  if(count.textContent!==countLabel)count.textContent=countLabel;
+  const keys=new Set(notices.map(item=>item.key));
+  for(const [key,{row}] of attentionRows){
+   if(keys.has(key))continue;
+   row.remove();
+   attentionRows.delete(key);
   }
-  if(notices.length>1){const expanded=attention.dataset.expanded==='true',more=button(expanded?'收起提醒':'展开 '+notices.length+' 项提醒',()=>{const expanded=attention.dataset.expanded!=='true';attention.dataset.expanded=String(expanded);more.textContent=expanded?'收起提醒':'展开 '+notices.length+' 项提醒';more.setAttribute('aria-expanded',String(expanded));},{class:'home-attention-expand text-button'+(notices.length>4?' has-overflow':''),'aria-expanded':String(expanded)});items.append(more);}
+  for(const item of notices){
+   let entry=attentionRows.get(item.key);
+   if(!entry){
+    const mark=icon(item.key.startsWith('safety:')||item.priority===0?'alert-circle':item.device?'devices':'clock');
+    const title=h('strong'),detail=h('small');
+    const row=add(button(null,null,{class:'home-attention-item'}),mark,add(h('span'),title,detail),icon('chevron-right'));
+    entry={row,title,detail};
+    attentionRows.set(item.key,entry);
+   }
+   const {row,title,detail}=entry;
+   row.onclick=()=>{if(item.proposalRef){try{sessionStorage.setItem('Friday.taskReview',item.proposalRef);}catch{}go('Ask Home');}else if(item.device)onDevice(item.device);else if(item.eventId)go(item.page,{eventId:item.eventId});else if(item.attentionId)go(item.page,{attentionId:item.attentionId});else go(item.page);};
+   if(title.textContent!==item.title)title.textContent=item.title;
+   if(detail.textContent!==(item.detail||''))detail.textContent=item.detail||'';
+   row.setAttribute('data-priority',item.priority);
+  }
+  const ordered=notices.map(item=>attentionRows.get(item.key).row);
+  if(ordered.some((row,index)=>row!==items.children[index]))items.replaceChildren(...ordered);
+  allAlerts.hidden=extra===0;
+  const pendingCount=alerts?.pending||0;
+  allAlerts.setAttribute('aria-label','查看全部 '+pendingCount+' 条待查看提醒');
+  const linkLabel='全部提醒 · '+pendingCount;
+  if(allAlerts.children[0].textContent!==linkLabel)allAlerts.children[0].textContent=linkLabel;
+  visibleCount=notices.length;
+  expand.hidden=visibleCount<2||(extra>0&&notices.every(item=>item.eventId));
+  expand.className='home-attention-expand text-button'+(visibleCount>4?' has-overflow':'');
+  updateExpansion();
+  if(focused&&document.activeElement!==focused&&ordered.includes(focused))focused.focus({preventScroll:true});
+  else if((focused===allAlerts&&allAlerts.hidden)||(focused===expand&&expand.hidden)||
+   (focused?.className==='home-attention-item'&&!ordered.includes(focused)))attentionHeading.focus({preventScroll:true});
  }
  async function refresh(force=false){
   if(!alive||busy||(!force&&document.hidden))return;busy=true;controller=new AbortController();
   const timeout=setTimeout(()=>controller?.abort(),7000);
   try{
-   const paths={worker:'/api/embodied/status',infrastructure:'/api/embodied/infrastructure',rules:'/api/rules/core/runtime',arl:'/api/settings/arl/status',resources:'/api/home/resources',events:'/api/embodied/safety/events',proposals:'/api/home-flow/task-proposals'};
+   const paths={worker:'/api/embodied/status',infrastructure:'/api/embodied/infrastructure',rules:'/api/rules/core/runtime',arl:'/api/settings/arl/status',resources:'/api/home/resources',events:'/api/embodied/safety/attention',proposals:'/api/home-flow/task-proposals'};
    const keys=Object.keys(paths),values=await Promise.allSettled(keys.map(k=>api(paths[k],undefined,{signal:controller.signal})));
    if(!alive)return;const report={};values.forEach((v,i)=>report[keys[i]]=v.status==='fulfilled'?v.value:null);draw(report);
    clearTimeout(expiry);expiry=setTimeout(()=>{if(alive)draw(null);},16000);

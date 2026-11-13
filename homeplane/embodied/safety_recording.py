@@ -12,6 +12,8 @@ import secrets
 import time
 from dataclasses import dataclass, field
 
+from .safety_storage import SafetyStorageFull
+
 
 @dataclass(eq=False)
 class ReviewReceipt:
@@ -206,7 +208,7 @@ class SafetyRecorder:
         self._drop(job)
 
     async def _run(self):
-        from .safety import SafetyAdmissionChanged
+        from .safety import SafetyAdmissionChanged, SafetyRecordMissing
         try:
             while not self.closed:
                 self.changed.clear()
@@ -246,6 +248,15 @@ class SafetyRecorder:
                     except asyncio.CancelledError:
                         raise
                     except SafetyAdmissionChanged:
+                        self._drop(job)
+                    except SafetyRecordMissing:
+                        self.dropped += 1
+                        self._drop(job)
+                    except SafetyStorageFull:
+                        if job.saved is None:
+                            self.dropped += 1
+                        else:
+                            self.partial += 1
                         self._drop(job)
                     except Exception:
                         job.failed = True
