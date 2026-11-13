@@ -19,8 +19,8 @@ OBJECT = r"[\u3400-\u9fffA-Za-z0-9]{1,32}?"
 VERB = r"打开|拉开|开启|推开|关闭|关上|合上|拉上|关掉|开|关"
 
 
-def basic_command(text, attending=False, *, wake_word='Friday'):
-    admission = address(text, attending, wake_word=wake_word)
+def basic_command(text, attending=False, *, wake_word='Friday', after_wake=False):
+    admission = address(text, attending, wake_word=wake_word, after_wake=after_wake)
     if not admission["admitted"]:
         return None
     body = admission["body"].strip().rstrip("。.!！").replace(" ", "")

@@ -58,7 +58,8 @@ def main():
                 text, quality = asr.transcribe(samples)
             valid, quality_reason = transcript_quality(text, quality, wake_word=policy.wake_word)
             wake_only = request.get("wake_only") is True
-            route = (address(text, not wake_only and request.get("attending") is True, wake_word=policy.wake_word)
+            route = (address(text, not wake_only and request.get("attending") is True, wake_word=policy.wake_word,
+                             after_wake=not wake_only and request.get('after_wake') is True)
                      if valid else {"admitted": False, "reason": quality_reason})
             latency = round((time.monotonic() - began) * 1000, 1)
             if route.get("reason") == "waiting_instruction" and route.get("wake_word") is True:

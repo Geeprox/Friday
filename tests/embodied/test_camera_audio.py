@@ -155,13 +155,14 @@ def test_capture_rejects_invalid_or_stale_voice_window_deadlines(deadline):
 
 @pytest.mark.asyncio
 async def test_secondary_old_audio_cannot_reach_voice_recognition():
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),revoke_audio_source=Mock(),state={})
     scope=dict(secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
                time=__import__('time'),deliver_audio=deliver_audio,safety=SimpleNamespace(observe_audio=Mock()))
     callback=actual('homeplane/embodied/worker.py','secondary_audio',scope)
     await callback(CAMERA['id'],dict(type='audio',sample_rate=16000,received_at=1,
                    pcm=base64.b64encode(bytes(6400)).decode()))
     service.audio.assert_not_awaited()
+    service.revoke_audio_source.assert_called_once()
 
 
 def audio(at=0, *, framer=None):
@@ -229,14 +230,15 @@ def test_packet_replay_sample_overlap_source_epoch_and_video_freshness_are_indep
 @pytest.mark.asyncio
 async def test_qualified_secondary_packet_reaches_original_voice_consumer_and_reports_gap():
     g=AudioIngress(CAMERA,'a'*32);f=PCMFramer(CAMERA,'a'*32);assert video(g,0)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),revoke_audio_source=Mock(),state={})
     scope=dict(secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
                time=__import__('time'),deliver_audio=deliver_audio,safety=SimpleNamespace(observe_audio=Mock()))
     callback=actual('homeplane/embodied/worker.py','secondary_audio',scope)
     p=audio(framer=f);await callback(CAMERA['id'],g.accept(p,wall=1000,mono=0))
     service.audio.assert_awaited_once_with(p)
     await callback(CAMERA['id'],g.accept(p,wall=1000.1,mono=.1))
-    assert service.audio.await_count==1 and service.reset_audio.call_count==2
+    assert service.audio.await_count==1 and service.reset_audio.call_count==1
+    service.revoke_audio_source.assert_called_once()
     assert service.state['audio_input']['audio_persisted'] is False
 
 
@@ -247,7 +249,7 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
     frame=dict(type='frame',capture_session='a'*32,camera_source_context=camera_source_context(CAMERA),
                received_at=1000,jpeg='SYNTHETIC')
     packet=audio(framer=framer)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),revoke_audio_source=Mock(),state={})
     time=SimpleNamespace(monotonic=lambda:0,time=lambda:1000)
     callback=actual('homeplane/embodied/worker.py','secondary_audio',dict(
         secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
@@ -274,7 +276,7 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
 async def test_original_primary_receiver_gates_pcm_and_stops_an_obsolete_generation():
     g=AudioIngress(CAMERA,'a'*32);assert video(g,0)
     p=audio();old=dict(p,received_at=998)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),revoke_audio_source=Mock(),state={})
     for obsolete in (False,True):
         scope=dict(capture=SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(side_effect=[json.dumps(old).encode(),b'']))),
             state={'status':'live'},audio_ingress=g,home=service,deliver_audio=deliver_audio,

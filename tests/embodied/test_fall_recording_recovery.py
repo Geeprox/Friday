@@ -244,8 +244,10 @@ async def test_disabling_interactions_leaves_the_camera_monitoring_and_its_queue
     try:
         assert await asyncio.to_thread(entered.wait, 1)
         token = runtime.source_tokens[camera]
-        home = SimpleNamespace(armed=True, selected=True, epoch=0, vad=[1], pending_audio=b'SYNTHETIC',
-                               clear_voice_receipt=lambda: None)
+        from homeplane.embodied.home_service import HomeService
+        home = HomeService(camera)
+        home.armed = home.selected = True
+        home.pending_audio = b'SYNTHETIC'
         scope = dict(safety=runtime, home=home, SELECTED={'id': camera}, Request=object,
                      interaction_enabled=True, secondary_homes={},
                      fleet=SimpleNamespace(cameras={camera: {}}, clear=lambda _: None))

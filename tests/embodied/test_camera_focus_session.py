@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.intent import address
 from tests.embodied.test_camera_director import clear, person, sample
 from tests.embodied.test_speech_owner import rig as rig
 from tests.embodied.test_voice_admission import voice as voice
@@ -30,6 +31,13 @@ def camera(voice, monkeypatch):
 
 def hint(session="source-a", *, track=7, at=None):
     return dict(track=track, at=time.monotonic() if at is None else at, session_id=session)
+
+
+def voice_lease(camera, epoch):
+    home = camera.home
+    return home._voice_guard(address(camera.text, True, wake_word=camera.policy.wake_word),
+                             time.monotonic(), epoch, camera.policy, 7, home.audio_source,
+                             home.audio_source_epoch, home.voice_view_epoch)
 
 
 async def frame(camera, origin, session, *, active=True, registration="locked", people=()):
@@ -80,7 +88,7 @@ async def test_replacement_source_retires_old_hint_and_voice_lease(camera, origi
     h = camera.home
     h.camera_focus = hint()
     epoch = h.epoch
-    current = h._voice_guard(camera.text, time.monotonic(), epoch, True, camera.policy, 7)
+    current = voice_lease(camera, epoch)
     assert current()
     await frame(camera, origin, "source-b")
     assert h.epoch > epoch
@@ -95,7 +103,7 @@ async def test_same_source_keeps_completed_lease_when_microphone_moves(camera, o
     original = h.camera_focus = hint()
     h.audio_allowed = False
     epoch = h.epoch
-    current = h._voice_guard(camera.text, time.monotonic(), epoch, True, camera.policy, 7)
+    current = voice_lease(camera, epoch)
     await frame(camera, origin, "source-a")
     assert h.epoch == epoch and h.camera_focus is original and current()
 

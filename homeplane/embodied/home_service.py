@@ -6,6 +6,7 @@ import hashlib
 import json
 import time
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import numpy as np
@@ -32,8 +33,21 @@ VOICE_PYTHON = str(PYTHON)
 VOICE_PAUSED = PRIVATE / "voice-paused"
 VOICE_INPUT_PAUSED = PRIVATE / 'voice-input-paused'
 WAKE_CAMERA_SECONDS = 16.0
+WAKE_FOLLOWUP_SECONDS = 6.0
+MAX_UTTERANCE_SECONDS = 8.0
+VOICE_DECODE_MAX_AGE = 10.0
 WAKE_VOICED_SECONDS = .25
 COMMAND_VOICED_SECONDS = .45
+
+
+@dataclass(frozen=True, slots=True)
+class WakeFollowup:
+    source: tuple[str, str]
+    session: str
+    epoch: int
+    revision: int
+    wake_ended: float
+    expires: float
 
 
 def voice_command_outcome(receipt):
@@ -81,16 +95,21 @@ class HomeService:
         self.noise = 0.004
         self.last_audio = None
         self.audio_input_at = None
+        self.audio_source = None
+        self.audio_source_epoch = 0
         self.audio_retry_at = 0.0
         self.voice_busy = False
         self.last_video = -100.0
         self.camera_focus = None
         self.wake_camera = None
+        self.wake_followup = None
         self.camera_session = None
         self.visible_tracks = set()
         self.activity = None  # Optional model loads only after admitted live audio.
         self.speaker = Speaker()
         self.epoch = 0
+        self.voice_view_epoch = 0
+        self.utterance_view_epoch = 0
         self.utterance_attention = []
         self.utterance_started = self.utterance_ended = self.utterance_level = 0.0
         self.reply_until = 0.0
@@ -189,8 +208,14 @@ class HomeService:
     def refresh_voice(self):
         phase = self.voice_status()
         previous = self.state['voice']
-        if phase == 'paused' and self._voice_receipt is not None:
-            self.clear_voice_receipt()
+        if phase == 'paused':
+            if self.wake_followup is not None or self.wake_camera is not None:
+                self.revoke_audio_source()
+            if self._voice_receipt is not None:
+                self.clear_voice_receipt()
+        elif self.wake_followup is not None and time.monotonic() > (
+                self.wake_followup.expires + MAX_UTTERANCE_SECONDS + CAMERA_INPUT_MAX_AGE + VOICE_DECODE_MAX_AGE):
+            self.wake_followup = None
         if phase != previous:
             reason = {'ready': '等待语音指令', 'loading_local_models': '本地语音模型启动中',
                       'unavailable': '语音暂不可用', 'paused': '语音指令已暂停，手势控制仍可用'}
@@ -262,8 +287,7 @@ class HomeService:
         source_changed = session != self.camera_session or not continuous
         if selected != self.selected or source_changed:
             self.epoch += 1
-            self.reset_audio()
-            self.pending_audio = None
+            self.revoke_audio_source()
             self.camera_focus = None
             if self.voice_routing is not None:
                 self.voice_routing.discard(self.camera_id)
@@ -307,6 +331,25 @@ class HomeService:
             offer_voice_window(capture.stdin, now=time.monotonic(), captured=self.last_video, enabled=gate,
                 attention=bool(people and registration.get('status') not in {'moving', 'settling'}))
 
+    def clear_view_for_motion(self):
+        """重置画面依据，保持同一次采集的语音授权。"""
+        self.voice_view_epoch += 1
+        self.gesture.reset()
+        self.attention.update([], [], time.monotonic())
+        self.visible_tracks.clear()
+        self.owner = self.voice_owner = self.utterance_owner = None
+        self.camera_focus = None
+
+    def revoke_wake_followup(self):
+        self.wake_followup = None
+
+    def revoke_audio_source(self):
+        """来源失效后，旧语音不能借恢复的新采集继续执行。"""
+        self.audio_source = self.wake_followup = self.wake_camera = self.pending_audio = None
+        self.audio_source_epoch += 1
+        self.last_audio = None
+        self.reset_audio()
+
     def reset_audio(self):
         """Discard a partial segment; completed admitted requests have their own lease."""
         self.vad = []
@@ -336,8 +379,17 @@ class HomeService:
             or self.voice_routing is not None and not self.voice_routing.listening(now)
             or not 0 <= now - self.last_video < CAMERA_INPUT_MAX_AGE
         ):
+            if not self.selected or VOICE_INPUT_PAUSED.exists():
+                self.wake_followup = None
             self.reset_audio()
             return
+        source = (item.get('capture_session'), item.get('camera_source_context'))
+        if not all(isinstance(value, str) and value for value in source):
+            source = None
+        if source != self.audio_source:
+            if self.audio_source is not None:
+                self.revoke_audio_source()
+            self.audio_source = source
         raw = base64.b64decode(item["pcm"])
         samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
         duration = len(samples) / 16000.0
@@ -381,6 +433,7 @@ class HomeService:
             if not speech:
                 return
             self.speaking = True
+            self.utterance_view_epoch = self.voice_view_epoch
             self.duration = sum(len(p) for p in self.vad) / 32000.0
             self.silence = 0.0
             self.utterance_owner = self.voice_owner
@@ -399,23 +452,23 @@ class HomeService:
             self.voiced_duration += voiced
             self.utterance_ended = min(now, sample_at + duration)
             self.utterance_level += level
-        if self.duration >= 8 or self.silence >= 0.65:
+        if self.duration >= MAX_UTTERANCE_SECONDS or self.silence >= 0.65:
             pcm = b"".join(self.vad)
             self.vad = []
             self.speaking = False
             self.duration = 0.0
             owner, attending = utterance_focus(self.utterance_attention)
+            if self.utterance_view_epoch != self.voice_view_epoch:
+                owner, attending = None, False
             if len(pcm) >= 16000 and self.voiced_duration >= WAKE_VOICED_SECONDS:
-                source = (item.get('capture_session'), item.get('camera_source_context'))
-                if not all(isinstance(value, str) and value for value in source):
-                    source = None
                 segment = (pcm, owner, now, attending, self.epoch, source)
                 wake_only = self.voiced_duration < COMMAND_VOICED_SECONDS
                 if self.voice_routing is not None:
                     if source is not None:
                         self.voice_routing.offer(self, Utterance(
                             *segment, self.utterance_started, self.utterance_ended,
-                            self.utterance_level / self.voiced_duration, wake_only=wake_only))
+                            self.utterance_level / self.voiced_duration, wake_only=wake_only,
+                            view_epoch=self.utterance_view_epoch, source_epoch=self.audio_source_epoch))
                 elif self.voice_busy:
                     self.pending_audio = (*segment, wake_only)
                 else:
@@ -434,30 +487,47 @@ class HomeService:
             and 0 <= now - self.last_video < CAMERA_INPUT_MAX_AGE
         )
 
-    def _voice_context_current(self, captured, epoch, policy):
+    def _voice_context_current(self, captured, epoch, policy, source, source_epoch):
         return (self.voice_preferences() == policy and self.current(captured, epoch)
+                and source_epoch == self.audio_source_epoch
+                and (source is None or self.audio_source is None or source == self.audio_source)
                 and not VOICE_INPUT_PAUSED.exists())
 
-    def _voice_guard(self, text, captured, epoch, attending, policy, owner=None, *, addressed=None):
-        # Wake and gaze are alternative cues. Both still require the original
-        # input source, policy and camera generation to remain current.
-        if addressed is None:
-            addressed = address(text, attending, wake_word=policy.wake_word)
+    def _voice_guard(self, addressed, captured, epoch, policy, owner, source, source_epoch, view_epoch):
+        # 注视凭据随视角撤销，唤醒和续接仍须核对采集来源。
         explicit_wake = addressed.get('wake_word') is True
+        followup = addressed.get('reason') == 'wake_followup'
+        attending = addressed.get('attention') is True
         admitted = addressed.get('admitted') is True
 
         def current():
-            # Microphone arbitration gates new samples, not a completed
-            # utterance's own lease while another camera collects audio.
             return bool(
-                self._voice_context_current(captured, epoch, policy) and admitted
-                and (explicit_wake or attending and owner is not None and owner in self.attention.latest)
+                self._voice_context_current(captured, epoch, policy, source, source_epoch) and admitted
+                and (explicit_wake or followup or attending and view_epoch == self.voice_view_epoch
+                     and owner is not None and owner in self.attention.latest)
             )
 
         return current
 
-    def _wake_focus(self, captured, epoch, policy, source):
-        if self.camera_session is None or not self._voice_context_current(captured, epoch, policy):
+    def followup_for(self, source, started, captured):
+        followup = self.wake_followup
+        if (followup is None or source != followup.source or self.camera_session != followup.session
+                or not self.current(captured, followup.epoch) or not self.audio_allowed
+                or self.audio_source is not None and self.audio_source != source
+                or VOICE_INPUT_PAUSED.exists() or not followup.wake_ended <= started < followup.expires
+                or not 0 <= captured - started <= MAX_UTTERANCE_SECONDS + CAMERA_INPUT_MAX_AGE):
+            return None
+        try:
+            revision = self.voice_preferences().revision
+        except (OSError, ValueError):
+            revision = None
+        if revision == followup.revision:
+            return followup
+        self.revoke_wake_followup()
+        return None
+
+    def _wake_focus(self, captured, epoch, policy, source, source_epoch):
+        if self.camera_session is None or not self._voice_context_current(captured, epoch, policy, source, source_epoch):
             return False
         if source is not None:
             self.camera_focus = None
@@ -498,15 +568,15 @@ class HomeService:
         with self.voice_routing.replying(self.reply_until) if audible else nullcontext():
             await self.speaker.say(text, current=current)
 
-    async def answer_question(self, text, event, captured, epoch, attending, policy, command, *, owner=None):
-        current = self._voice_guard(text, captured, epoch, attending, policy, owner)
+    async def answer_question(self, text, event, captured, epoch, policy, command, *, addressed, current):
         if not current():
             command.update(state='expired',updated_at=time.time())
             self.state['reason']='这次提问已过期，请重新说一次'
             return
         answer = await bridge.question(text,camera_id=self.camera_id,
             request_id=hashlib.sha256(f'voice-query:{self.camera_id}:{event}:{epoch}:{captured}'.encode()).hexdigest(),
-            captured_mono=captured,voice_revision=policy.revision,attending=attending)
+            captured_mono=captured, voice_revision=policy.revision, attending=addressed['attention'],
+            after_wake=addressed['reason'] == 'wake_followup')
         if not current() or answer.valid_until <= datetime.now(UTC):
             command.update(state='expired',updated_at=time.time())
             self.state['reason']='这次提问已过期，请重新说一次'
@@ -520,14 +590,14 @@ class HomeService:
             self.state.update(last_result=answer.model_dump(mode='json'), last_route='query', reason='已核对家庭状态')
         await self.speak_reply(answer.reply, lambda: current() and answer.valid_until > datetime.now(UTC))
 
-    async def prepare_task(self,text,event,captured,epoch,attending,policy,command,owner=None):
-        current = self._voice_guard(text, captured, epoch, attending, policy, owner)
+    async def prepare_task(self, text, event, captured, epoch, policy, command, *, addressed, current):
         if not current():
             command.update(state='expired',updated_at=time.time())
             return
         answer=await bridge.task(text,camera_id=self.camera_id,
             request_id=hashlib.sha256(f'voice-task:{self.camera_id}:{event}:{epoch}:{captured}'.encode()).hexdigest(),
-            captured_mono=captured,voice_revision=policy.revision,attending=attending)
+            captured_mono=captured, voice_revision=policy.revision, attending=addressed['attention'],
+            after_wake=addressed['reason'] == 'wake_followup')
         if not current() or answer.valid_until<=datetime.now(UTC):
             if answer.proposal_ref:await bridge.discard_task(answer.proposal_ref)
             command.update(state='expired',updated_at=time.time())
@@ -539,8 +609,12 @@ class HomeService:
         await self.speak_reply(answer.reply, lambda: current() and answer.valid_until > datetime.now(UTC))
 
     async def transcribe(self, pcm, owner, captured, attending=False, epoch=None, source=None, wake_only=False,
-                         *, decoded=None, decode_current=None, decode_deadline=None):
+                         *, decoded=None, decode_current=None, decode_deadline=None, started=None, ended=None,
+                         view_epoch=None, source_epoch=None):
         epoch = self.epoch if epoch is None else epoch
+        source_epoch = self.audio_source_epoch if source_epoch is None else source_epoch
+        view_epoch = self.voice_view_epoch if view_epoch is None else view_epoch
+        attending = attending and view_epoch == self.voice_view_epoch
         began = time.monotonic()
         result_kind, result_code = "ok", "none"
         command = None
@@ -548,21 +622,32 @@ class HomeService:
         try:
             self.state["voice"] = "transcribing"
             policy=self.voice_preferences()
+            if source is not None and not self._voice_context_current(captured, epoch, policy, source, source_epoch):
+                return
             timing = dict(guard=decode_current, deadline=decode_deadline) if decode_current is not None else {}
+            followup = None if started is None or wake_only else self.followup_for(source, started, captured)
             result = await self.request("transcribe", pcm=base64.b64encode(pcm).decode(), attending=attending,
-                                        voice_revision=policy.revision, wake_only=wake_only, **timing)
+                                        voice_revision=policy.revision, wake_only=wake_only,
+                                        after_wake=followup is not None, **timing)
             if decode_current is not None and not decode_current():
                 return
             if result.get('voice_revision',0)!=policy.revision or self.voice_preferences()!=policy:
                 self.state['reason']='唤醒词已更新，请重新说一次'
                 return
             self.state["asr_ms"] = result.get("latency_ms")
-            if not self.current(captured, epoch) or time.monotonic() - captured > 10:
+            if not self.current(captured, epoch) or time.monotonic() - captured > VOICE_DECODE_MAX_AGE:
                 self.state["reason"] = "指令已过期或操作者变化"
                 return
             if result.get("type") == "wake":
                 self.state.update(reason="请继续说出指令", laya_result=None, asr_quality=None)
-                wake_detected = self._wake_focus(captured, epoch, policy, source)
+                wake_detected = self._wake_focus(captured, epoch, policy, source, source_epoch)
+                if wake_detected and source is not None:
+                    opened = time.monotonic()
+                    self.wake_followup = followup = WakeFollowup(
+                        source, self.camera_session, epoch, policy.revision,
+                        captured if ended is None else ended, opened + WAKE_FOLLOWUP_SECONDS)
+                    if self.voice_routing is not None:
+                        self.voice_routing.acknowledge(self, followup, deadline=opened + 1.0)
                 if decoded is not None:
                     decoded(wake_detected)
                     decoded = None
@@ -596,29 +681,35 @@ class HomeService:
                 "started_at": time.time(),
                 "updated_at": time.time(),
             }
-            addressed = address(result['text'], attending, wake_word=policy.wake_word)
-            current = self._voice_guard(result['text'], captured, epoch, attending, policy, owner, addressed=addressed)
+            after_wake = followup is not None and self.followup_for(source, started, captured) is followup
+            attending = attending and view_epoch == self.voice_view_epoch
+            addressed = address(result['text'], attending, wake_word=policy.wake_word, after_wake=after_wake)
+            current = self._voice_guard(addressed, captured, epoch, policy, owner, source, source_epoch, view_epoch)
             if not current():
                 if self._voice_receipt is None:
                     self.state["voice_command"] = dict(state="expired", updated_at=time.time())
                 self.state["reason"] = "指令已过期或操作者变化"
                 return
+            if after_wake:
+                self.revoke_wake_followup()
             self._remember_voice_receipt(command, policy.revision)
             if addressed.get('wake_word') is True:
-                self._wake_focus(captured, epoch, policy, source)
+                self._wake_focus(captured, epoch, policy, source, source_epoch)
             if decoded is not None:
                 decoded()
                 decoded = None
             decision_started = time.monotonic()
             body = addressed.get('body', '')
             if is_task_request(body):
-                await self.prepare_task(result['text'],event,captured,epoch,attending,policy,command,owner=owner)
+                await self.prepare_task(result['text'], event, captured, epoch, policy, command,
+                                        addressed=addressed, current=current)
                 return
             if is_home_question(body):
-                await self.answer_question(result['text'],event,captured,epoch,attending,policy,command,owner=owner)
+                await self.answer_question(result['text'], event, captured, epoch, policy, command,
+                                           addressed=addressed, current=current)
                 return
-            fast = household_plan(result["text"], attending,wake_word=policy.wake_word)
-            general = basic_command(result["text"], attending,wake_word=policy.wake_word)
+            fast = household_plan(result["text"], attending, wake_word=policy.wake_word, after_wake=after_wake)
+            general = basic_command(result["text"], attending, wake_word=policy.wake_word, after_wake=after_wake)
             if not fast and general:
                 fast = {
                     "is_command": True,
@@ -641,7 +732,8 @@ class HomeService:
             else:
                 self.state["reason"] = "ARL Codex 正在理解指令"
                 task = await self.request(
-                    "delegate", text=result["text"], context=dict(attention=addressed['attention'], person_id=owner),
+                    "delegate", text=result["text"],
+                    context=dict(attention=addressed['attention'], person_id=owner, after_wake=after_wake),
                     request_id=hashlib.sha256(f'voice-intent:{self.camera_id}:{event}:{epoch}:{captured}'.encode()).hexdigest(),
                     voice_revision=policy.revision, guard=current, deadline=captured+40,
                 )
@@ -774,6 +866,8 @@ class HomeService:
         self.camera_session = None
         self.camera_focus = None
         self.wake_camera = None
+        self.wake_followup = None
+        self.audio_source = None
         self.pending_audio = None
         self.clear_voice_receipt()
         self.reset_audio()

@@ -7,12 +7,42 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
+from homeplane.embodied.local_child import LocalChild
 from homeplane.embodied.paths import PRIVATE, configuration
 from homeplane.embodied.speech_http import AsyncHA
 from homeplane.embodied.speech_lifecycle import SpeechExpired, output_lock, run_output
 
 VOICE_PAUSED = PRIVATE / "voice-paused"
+WAKE_TONE = Path("/System/Library/Sounds/Tink.aiff")
+_WAKE_TONE_SLOT = threading.BoundedSemaphore(1)
+
+
+async def play_wake_tone(*, current):
+    """经本机当前音频输出播放一次固定短音。"""
+    if not WAKE_TONE.is_file():
+        return
+
+    def valid():
+        return not VOICE_PAUSED.exists() and current()
+
+    async def play(guard):
+        with output_lock(PRIVATE) as acquired:
+            if not acquired:
+                return
+            child = LocalChild(("/usr/bin/afplay", "-t", "0.30", str(WAKE_TONE)), _WAKE_TONE_SLOT)
+            try:
+                guard.dispatch()
+                await (await child.start()).wait()
+            finally:
+                await child.close()
+
+    try:
+        await run_output(play, valid, timeout=0.8)
+    except (OSError, ValueError):
+        # 声音通道忙、被静音或暂不可用时，当前语音会话仍可继续。
+        pass
 
 
 class HA:

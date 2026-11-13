@@ -28,7 +28,8 @@ def run(request):
     text, context = request.get("text"), request.get("context")
     if not isinstance(context, dict):
         raise ValueError("invalid_task")
-    route = address(text, context.get("attention") is True, wake_word=policy.wake_word)
+    route = address(text, context.get("attention") is True, wake_word=policy.wake_word,
+                    after_wake=context.get('after_wake') is True)
     if not route["admitted"]:
         raise ValueError("invalid_task")
 

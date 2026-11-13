@@ -167,7 +167,8 @@ class VoiceTasks:
             raise HTTPException(409, detail="voice_task_busy")
         try:
             binding = self.source._binding(request, key)
-            admitted = address(request.text, request.attending, wake_word=binding[4].wake_word)
+            admitted = address(request.text, request.attending, wake_word=binding[4].wake_word,
+                               after_wake=request.after_wake)
             body = admitted.get("body", "")
             if not admitted["admitted"] or not is_task_request(body):
                 raise FlowAbort("voice_task_not_admitted")

@@ -238,12 +238,15 @@ class AudioIngress:
 
 async def deliver_audio(service, admission):
     if not isinstance(admission, AdmittedAudio):
-        service.reset_audio()
+        service.revoke_audio_source()
         service.audio_input_at = None
         return False
     service.state['audio_input'] = admission.diagnostics
     service.audio_input_at = admission.received_mono
-    if admission.reset:service.reset_audio()
-    if admission.packet is None:return False
+    if admission.packet is None:
+        service.revoke_audio_source()
+        return False
+    if admission.reset:
+        service.reset_audio()
     await service.audio(admission.packet)
     return True

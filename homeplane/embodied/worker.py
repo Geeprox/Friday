@@ -55,6 +55,7 @@ from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.embodied.camera_audio import AudioIngress, WakeCameraCue, deliver_audio
 from homeplane.embodied.voice_routing import VoiceRouting
+from homeplane.embodied.speech import play_wake_tone
 from homeplane.embodied.vision_pipe import VisionProcess
 from homeplane.people.live import IdentityStore, analyze, close_identity
 from homeplane.people.identity_session import IdentitySession
@@ -113,7 +114,10 @@ games = MotionGames(require_presentation=True)
 party_camera = PartyCamera()
 recorder = PageRecording(DATA / "recordings")
 record_lock = asyncio.Lock()
-voice_routing = VoiceRouting(lambda: interaction_enabled and not (PRIVATE / 'voice-input-paused').exists())
+voice_routing = VoiceRouting(
+    lambda: interaction_enabled and not (PRIVATE / 'voice-input-paused').exists(),
+    wake_feedback=play_wake_tone,
+)
 home = HomeService(SELECTED['id'], voice_routing=voice_routing)
 from homeplane.embodied.interaction import InteractionEngine
 from homeplane.embodied.interaction_fleet import InteractionFleet
@@ -169,15 +173,14 @@ async def dispatch_interactions(events):
         home.spawn(dispatch())
 
 
-def clear_interactions(camera_id, *, keep_wake=False):
+def clear_interactions(camera_id):
     fleet.clear(camera_id)
     service=home if camera_id==SELECTED['id'] else secondary_homes.get(camera_id)
     if service:
-        service.selected=False;service.epoch+=1;service.vad=[];service.pending_audio=None
-        service.armed=False;service.audio_allowed=False;service.speaking=False;service.last_audio=None
+        service.selected=False;service.epoch+=1
+        service.armed=False;service.audio_allowed=False
         service.camera_session=None;service.camera_focus=None
-        if not keep_wake:
-            service.wake_camera = None
+        service.revoke_audio_source()
 
 
 def clear_camera(camera_id):
@@ -190,7 +193,13 @@ def clear_camera(camera_id):
 
 def clear_camera_view(camera_id, *, keep_wake=True):
     safety.clear_view(camera_id)
-    clear_interactions(camera_id, keep_wake=keep_wake)
+    if not keep_wake:
+        clear_interactions(camera_id)
+        return
+    fleet.clear(camera_id, voice=False)
+    service = home if camera_id == SELECTED['id'] else secondary_homes.get(camera_id)
+    if service is not None:
+        service.clear_view_for_motion()
 
 
 def clear_camera_observation(camera_id):
@@ -422,17 +431,12 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             if now >= expires:
                 raise RuntimeError('motor_request_expired')
             motion_generation += 1
-            safety.clear_view(SELECTED['id'])
+            clear_camera_view(SELECTED['id'])
             calibration_frames.clear()
             motor_last_sent = now
             state['_patrol_view'] = None
             state['scene'] = {'objects': []}
             identities.discard()
-            fleet.clear(SELECTED['id'])
-            home.selected = False
-            home.epoch += 1
-            home.vad = []
-            home.pending_audio = None
             if room:
                 room.expect_motion(now, 2)
             capture.stdin.write((json.dumps(dict(action='motor_step', direction=direction,
@@ -1423,9 +1427,7 @@ async def interaction_policy(request: Request):
         for service in [home, *secondary_homes.values()]:
             service.armed = service.selected = False
             service.epoch += 1
-            service.vad = []
-            service.pending_audio = None
-            service.wake_camera = None
+            service.revoke_audio_source()
             service.clear_voice_receipt()
     return dict(enabled=interaction_enabled)
 

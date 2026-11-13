@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from .paths import PRIVATE, camera, configuration
 
 
-async def question(text, *, camera_id, request_id, captured_mono, voice_revision, attending):
+async def question(text, *, camera_id, request_id, captured_mono, voice_revision, attending, after_wake=False):
     """A one-shot admitted read; configured loopback owner only, no retry."""
     from .camera_provenance import camera_source_context
     from .voice_question_contracts import VoiceAnswer, VoiceQuestion
@@ -26,7 +26,8 @@ async def question(text, *, camera_id, request_id, captured_mono, voice_revision
     if not 32 <= len(key) <= 512:
         raise ValueError('question_worker_unavailable')
     request = VoiceQuestion(text=text,camera=camera_id,request_id=request_id,captured_mono=captured_mono,
-        voice_revision=voice_revision,attending=attending,camera_source_context=camera_source_context(selected))
+        voice_revision=voice_revision, attending=attending, after_wake=after_wake,
+        camera_source_context=camera_source_context(selected))
     async with httpx.AsyncClient(trust_env=False,timeout=32,follow_redirects=False) as client:
         response = await client.post(origin+'/api/embodied/question',
             headers={'Origin':origin,'X-Friday-Worker':key},json=request.model_dump(mode='json'))
@@ -45,7 +46,7 @@ async def question(text, *, camera_id, request_id, captured_mono, voice_revision
     return answer
 
 
-async def task(text, *, camera_id, request_id, captured_mono, voice_revision, attending):
+async def task(text, *, camera_id, request_id, captured_mono, voice_revision, attending, after_wake=False):
     """Bounded non-executing proposal over the current worker port; no retry."""
     from .camera_provenance import camera_source_context
     from .voice_question_contracts import VoiceQuestion
@@ -63,7 +64,8 @@ async def task(text, *, camera_id, request_id, captured_mono, voice_revision, at
     key=(PRIVATE/'control-key').read_text().strip()
     if not 32<=len(key)<=512:raise ValueError('task_worker_unavailable')
     request=VoiceQuestion(text=text,camera=camera_id,request_id=request_id,captured_mono=captured_mono,
-        voice_revision=voice_revision,attending=attending,camera_source_context=camera_source_context(selected))
+        voice_revision=voice_revision, attending=attending, after_wake=after_wake,
+        camera_source_context=camera_source_context(selected))
     async with httpx.AsyncClient(trust_env=False,timeout=32,follow_redirects=False) as client:
         response=await client.post(origin+'/api/embodied/task',headers={'Origin':origin,'X-Friday-Worker':key},
                                    json=request.model_dump(mode='json'))

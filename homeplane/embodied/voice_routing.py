@@ -19,6 +19,8 @@ class Utterance:
     ended: float
     level: float
     wake_only: bool = False
+    view_epoch: int | None = None
+    source_epoch: int = 0
 
 
 def overlaps(first, second):
@@ -27,17 +29,20 @@ def overlaps(first, second):
 
 class VoiceRouting:
     COLLECT_SECONDS = .35
+    FOLLOWUP_LEVEL_RATIO = 1.25
     START_LIMIT = 3.0
     DECODE_SECONDS = 8.0
     REPEAT_LIMIT = 12.0
 
-    def __init__(self, input_open, *, clock=time.monotonic):
+    def __init__(self, input_open, *, wake_feedback=None, clock=time.monotonic):
         self.input_open = input_open
+        self.wake_feedback = wake_feedback
         self.clock = clock
         self.pending = {}
         self.dispatching = None
         self.inflight = {}
         self.recent = deque(maxlen=12)
+        self.followup_owner = None
         self.reply_until = 0.0
         self.replies = 0
         self.task = None
@@ -50,6 +55,7 @@ class VoiceRouting:
         self.reply_until = max(self.reply_until, until)
         self.pending.clear()
         self.dispatching = None
+        self.clear_followup()
         self.replies += 1
         try:
             yield
@@ -61,6 +67,26 @@ class VoiceRouting:
         self.pending.pop(camera, None)
         if self.dispatching is not None and self.dispatching[0].camera_id == camera:
             self.dispatching = None
+        if self.followup_owner is not None and self.followup_owner.camera_id == camera:
+            self.clear_followup()
+
+    def clear_followup(self):
+        if self.followup_owner is not None:
+            self.followup_owner.revoke_wake_followup()
+            self.followup_owner = None
+
+    def acknowledge(self, service, followup, *, deadline):
+        if self.followup_owner is not service:
+            self.clear_followup()
+        self.followup_owner = service
+        if self.wake_feedback is not None:
+            def current():
+                now = self.clock()
+                return (now < deadline and self.listening(now) and not service.speaking
+                        and service.wake_followup is followup
+                        and service.followup_for(followup.source, now, now) is followup)
+
+            service.spawn(self.wake_feedback(current=current))
 
     def waiting(self, service, source, now):
         """只为同一采集来源仍可受理的语音段暂缓唤醒转向。"""
@@ -75,6 +101,7 @@ class VoiceRouting:
         return (self.listening(now) and item.started >= self.reply_until
                 and 0 <= now - item.captured <= self.START_LIMIT
                 and service.current(item.captured, item.epoch)
+                and item.source_epoch == service.audio_source_epoch
                 and not any(0 <= now - admitted <= self.REPEAT_LIMIT
                             and overlaps((item.started, item.ended), window)
                             for admitted, window in self.recent))
@@ -112,12 +139,24 @@ class VoiceRouting:
         window = first.started, first.ended
         candidates = [(service, item) for service, item in available
                       if overlaps(window, (item.started, item.ended))]
+        strongest = max((item.level for _, item in candidates if not item.wake_only), default=0.0)
+
+        def priority(row):
+            service, item = row
+            followup = service.followup_for(item.source, item.started, item.captured)
+            # 只有收音接近时才让刚唤醒的镜头优先，避免接走其他房间的清楚语音。
+            if item.level * self.FOLLOWUP_LEVEL_RATIO < strongest:
+                followup = None
+            attending = item.attending and (item.view_epoch is None or item.view_epoch == service.voice_view_epoch)
+            return (
+                not item.wake_only, followup is not None,
+                item.level * (1.10 if attending else 1.0),
+                item.ended - item.started, service.camera_id,
+            )
+
         # 仅可识别唤醒词的短片段不能抢占同一句的完整语音。
         # 注视只在收音证据接近时加权，入镜本身不影响录入资格。
-        service, item = max(candidates, key=lambda row: (
-            not row[1].wake_only, row[1].level * (1.10 if row[1].attending else 1.0),
-            row[1].ended - row[1].started,
-            row[0].camera_id))
+        service, item = max(candidates, key=priority)
         for candidate_service, _ in candidates:
             self.pending.pop(candidate_service.camera_id)
         window = min(item.started for _, item in candidates), max(item.ended for _, item in candidates)
@@ -171,9 +210,11 @@ class VoiceRouting:
 
         def current():
             return (self.listening(self.clock()) and item.started >= self.reply_until
-                    and service.current(item.captured, item.epoch))
+                    and service.current(item.captured, item.epoch)
+                    and item.source_epoch == service.audio_source_epoch)
 
         await service.transcribe(
             item.pcm, item.owner, item.captured, item.attending, item.epoch, item.source,
             item.wake_only, decoded=decoded, decode_current=current,
-            decode_deadline=min(now + self.DECODE_SECONDS, item.captured + 10))
+            decode_deadline=min(now + self.DECODE_SECONDS, item.captured + 10),
+            started=item.started, ended=item.ended, view_epoch=item.view_epoch, source_epoch=item.source_epoch)

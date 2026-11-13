@@ -443,9 +443,11 @@ async def test_actual_worker_callback_cannot_rearm_or_dispatch_after_source_reti
     entry = dict(source_active=phase != 'before', process=process, state='live', privacy_closed=False)
     pool = previews.PreviewPool.__new__(previews.PreviewPool)
     pool.sessions = {CAMERA['id']: entry}
-    service = SimpleNamespace(enabled=False, armed=True, selected=True, epoch=1, vad=[b'private'],
-        pending_audio=object(), speaking=False, last_audio=None, audio_allowed=True,
-        attention=SimpleNamespace(candidate=lambda: None), observe=AsyncMock(), clear_voice_receipt=Mock())
+    from homeplane.embodied.home_service import HomeService
+    service = HomeService(CAMERA['id'])
+    service.armed = service.selected = True
+    service.epoch, service.vad, service.pending_audio = 1, [b'private'], object()
+    service.observe, service.clear_voice_receipt = AsyncMock(), Mock()
     scope = dict(previews=pool, time=SimpleNamespace(monotonic=lambda: 10, time=lambda: 1000),
         practice=SimpleNamespace(observe=Mock()),
         safety=SimpleNamespace(offer=None, clear=Mock(), sound_requested=lambda _: False),

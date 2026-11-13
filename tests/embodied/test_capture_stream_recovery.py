@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from homeplane.embodied.camera_audio import AudioIngress
 from homeplane.embodied.camera_provenance import camera_source_context
+from homeplane.embodied.home_service import HomeService
 from homeplane.embodied.party_camera import PartyCamera
 
 from tests.embodied.test_camera_audio import actual, CAMERA
@@ -98,6 +99,11 @@ def closed_scope():
     pending=asyncio.get_running_loop().create_future()
     acknowledged=asyncio.get_running_loop().create_future()
     acknowledged.set_result({'native_code':0})
+    home = HomeService(camera['id'])
+    home.armed = home.selected = True
+    home.epoch, home.vad, home.pending_audio = 2, [b'private audio'], object()
+    home.clear_voice_receipt = Mock()
+    home.voice_health = lambda: {}
     scope=dict(
         generation=1,primary_wall_epoch=epoch,primary_retired_scope=None,SELECTED=camera,motion_generation=4,
         calibration_frames=CalibrationFrames(clock=lambda:10,wall=lambda:1000),SESSION='synthetic',
@@ -105,8 +111,7 @@ def closed_scope():
         last_preview=b'private preview',last_preview_at=1000,
         state=dict(status='live',frame='private pixels',people=[{'id':1}],hands=[{}],
                    animals=[{}],animals_current=True,room={'private':'position'}),
-        home=SimpleNamespace(armed=True,selected=True,epoch=2,vad=[b'private audio'],pending_audio=object(),
-                             clear_voice_receipt=Mock(), voice_health=lambda: {}),
+        home=home,
         secondary_homes={},safety=SimpleNamespace(clear=Mock(), clear_view=Mock(), capture_frame=Mock()),
         fleet=SimpleNamespace(clear=Mock()),
         pet_tracks=SimpleNamespace(clear=Mock()),wall=wall,identities=SimpleNamespace(discard=Mock()),

@@ -25,13 +25,13 @@ def wake_pattern(wake_word='Friday'):
     return r'^\s*(?:hey[，,\s]*)?'+re.escape(name)+boundary+r'[，,：:\s。.!！]*'
 
 
-def address(text, attending=False, *, wake_word='Friday'):
+def address(text, attending=False, *, wake_word='Friday', after_wake=False):
     if not isinstance(text, str) or not 1 <= len(text) <= 1000:
         return {"admitted": False, "reason": "invalid_text"}
     text=unicodedata.normalize('NFKC',text)
     match = re.match(wake_pattern(wake_word), text, re.I)
     body = text[match.end() :].strip() if match else text.strip()
-    if not match and not attending:
+    if not match and not (attending or after_wake):
         return {"admitted": False, "reason": "need_wake_word_without_attention"}
     if not body:
         return {"admitted": False, "wake_word": bool(match), "reason": "waiting_instruction"}
@@ -40,7 +40,7 @@ def address(text, attending=False, *, wake_word='Friday'):
         "wake_word": bool(match),
         "attention": bool(attending),
         "body": body,
-        "reason": "wake_word" if match else "sustained_attention",
+        "reason": "wake_word" if match else "wake_followup" if after_wake else "sustained_attention",
     }
 
 
@@ -69,7 +69,7 @@ def classify_input(text, context):
     return {
         "message": text,
         "looking_at_camera": bool(context.get("attention")),
-        "wake_word": bool(context.get("wake_word")),
+        "wake_word": bool(context.get("wake_word") or context.get("reason") == "wake_followup"),
     }
 
 

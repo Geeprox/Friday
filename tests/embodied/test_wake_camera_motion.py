@@ -84,13 +84,16 @@ def cue_source(h, clock, owner):
     return source_function(WORKER, 'camera_motion_cue', scope), quiet
 
 
-def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, recognizer=None, room_lock=None):
+def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, recognizer=None, room_lock=None, fleet=None):
     """执行主、副镜头原来的发送函数，原生端只以管道回执替身回应。"""
     if owner == 'primary':
         scope, sent = primary_scope()
         scope.update(time=clock, SELECTED=CAMERA, home=h, state=state, director=director,
                      safety=safety, previews=SimpleNamespace(sessions={}), direction='right',
                      games=SimpleNamespace(public={}), party_camera=party, camera_motion_cue=cue)
+        if fleet is not None:
+            scope.update(fleet=fleet, secondary_homes={})
+            extract(WORKER, {'clear_camera_view', 'clear_interactions'}, scope)
         extract(WORKER, {'decision_current'}, scope)
 
         async def send(direction):
@@ -117,6 +120,11 @@ def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, recogn
                          stdin=SimpleNamespace(write=write, drain=AsyncMock())),
                      camera_is_open=AsyncMock(return_value=True), motion_lock=asyncio.Lock(),
                      recognizer=recognizer, room_lock=room_lock or asyncio.Lock(), privacy_closed=Mock())
+        if fleet is not None:
+            worker = dict(fleet=fleet, SELECTED={'id': 'SYNTHETIC-primary'},
+                          secondary_homes={CAMERA['id']: h}, safety=safety)
+            extract(WORKER, {'clear_camera_view', 'clear_interactions'}, worker)
+            motion.on_motion = worker['clear_camera_view']
         extract(PREVIEWS, {'current_sample', 'send_motion'}, scope)
 
         async def send(direction):

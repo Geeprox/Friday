@@ -144,15 +144,17 @@ def primary_scope():
                  motor_last_sent=-100, motor_waiters={}, room_lock=asyncio.Lock(),calibration_frames=CalibrationFrames(),
                  room=SimpleNamespace(expect_motion=noop), identities=SimpleNamespace(discard=noop),
                  safety=SimpleNamespace(clear_view=noop),
+                 secondary_homes={},
                  fleet=SimpleNamespace(clear=noop),
                  home=SimpleNamespace(selected=True, epoch=0, vad=[], pending_audio=None,
+                                      clear_view_for_motion=noop, revoke_audio_source=noop,
                                       runtime_log=SimpleNamespace(record=noop)))
     def write(data):
         command = json.loads(data)
         sent.append(command)
         scope['motor_waiters'][command['request_id']].set_result(dict(native_code=0))
     scope['capture'] = SimpleNamespace(stdin=SimpleNamespace(write=write, drain=AsyncMock()))
-    extract('homeplane/embodied/worker.py', {'motor_step'}, scope)
+    extract('homeplane/embodied/worker.py', {'motor_step', 'clear_camera_view'}, scope)
     return scope, sent
 
 

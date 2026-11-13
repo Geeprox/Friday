@@ -17,7 +17,7 @@ from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.home_service import HomeService
 from homeplane.embodied.voice_preferences import VoiceEdit, VoicePreferencesStore
 from homeplane.runtime_log import RuntimeLog
-from tests.embodied.test_voice_questions import CAMERA, KEY, transcript
+from tests.embodied.test_voice_questions import CAMERA, KEY, after_standalone_wake, transcript
 from tests.test_homeplane_core_rules import event
 from tests.test_homeplane_home_flow import bootstrap, domain, request, turn
 from tests.test_homeplane_task_composition import TEXT, TaskRuntime, task_app
@@ -108,9 +108,12 @@ async def post(o, body):
     return await o.client.post("/api/embodied/task", json=body, headers={"X-Friday-Worker": KEY})
 
 
-async def receive(o):
-    o.home.request = AsyncMock(return_value=transcript("Friday，" + TEXT))
-    await o.home.transcribe(b"SYNTHETIC task audio", None, time.monotonic(), False)
+async def receive(o, *, followup=False):
+    if followup:
+        await after_standalone_wake(o.home, TEXT)
+    else:
+        o.home.request = AsyncMock(return_value=transcript("Friday，" + TEXT))
+        await o.home.transcribe(b"SYNTHETIC task audio", None, time.monotonic(), False)
     command = o.home.state["voice_command"]
     assert command["state"] == "awaiting_confirmation", o.home.state.get("last_result", o.home.state)
     reply = await o.client.get("/api/home-flow/task-proposals")
@@ -119,11 +122,12 @@ async def receive(o):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("followup", [False, True])
 async def test_spoken_task_is_only_a_draft_then_console_adopts_same_plan_without_second_model(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, followup
 ):
     async with setup(tmp_path, monkeypatch) as o:
-        proposal = await receive(o)
+        proposal = await receive(o, followup=followup)
         assert len(o.model.calls) == 1 and not o.calls
         assert (
             o.app.state.core.store.connection.execute("SELECT count(*) FROM core_rule_plans").fetchone()[0]
