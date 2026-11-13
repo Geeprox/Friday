@@ -156,10 +156,12 @@ class LivePreviews:
         task, self.expiry_task = self.expiry_task, None
         if task is not None:
             task.cancel()
-        async with self.lock:
-            await self.service.manual_previews.close()
-        if task is not None:
-            await asyncio.gather(task, return_exceptions=True)
+        try:
+            async with self.lock:
+                await self.service.manual_previews.close()
+        finally:
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
 
     async def read(self, camera, token, *, frame=False):
         view = self.current(camera, token)
