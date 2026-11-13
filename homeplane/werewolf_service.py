@@ -235,6 +235,7 @@ class WerewolfService:
         self.network_addresses = []
         self.network_interrupted = False
         self.network_revision = 0
+        self.network_waiting_seats: set[int] | None = None
         self.network_check_at = 0
         self.created = None
         self.camera_enabled = False
@@ -350,6 +351,14 @@ class WerewolfService:
             svg = None
         return dict(session=self.session, lobby_revision=self.game.lobby_revision, room_code=self.join_code, qr_svg=svg)
 
+    def _waiting_phones(self):
+        if self.network_waiting_seats is None or self.game.phase == 'finished':
+            return []
+        # 已出局的玩家不影响继续。猎人进入公开的行动环节后再等待他的手机。
+        hunter = self.game.pending_hunter if self.game.phase == 'hunter' else None
+        return sorted(seat for seat in self.network_waiting_seats
+                      if self.game.players[seat].alive or seat == hunter)
+
     def public(self):
         if self.game is None or self.session is None:
             return dict(active=False)
@@ -388,6 +397,9 @@ class WerewolfService:
             if self.gateway is not None:
                 report['network'] = dict(state='interrupted' if self.network_interrupted else 'ready',
                     revision=self.network_revision, addresses=list(self.network_addresses) if self.network_interrupted else [])
+                if (not self.network_interrupted and self.network_waiting_seats is not None
+                        and self.game.phase != 'finished'):
+                    report['network']['waiting_seats'] = self._waiting_phones()
         return report
 
     async def create(self, count, *, address=None, lights=(), narration=False, camera=False, discussion_mode="free"):
@@ -419,6 +431,7 @@ class WerewolfService:
             self.network_addresses = addresses
             self.network_interrupted = False
             self.network_revision = 0
+            self.network_waiting_seats = None
             try:
                 if gateway:
                     self.origin = await gateway.open(address, self)
@@ -462,8 +475,10 @@ class WerewolfService:
             if self.network_interrupted != interrupted:
                 self.network_interrupted = interrupted
                 self.network_revision += 1
-                if interrupted and self.game.phase not in {'lobby', 'identity', 'finished'}:
-                    self.game.pause(True)
+                if interrupted:
+                    self.network_waiting_seats = set(self.game.players)
+                    if self.game.phase not in {'lobby', 'identity', 'finished'}:
+                        self.game.pause(True)
 
     async def reconnect(self, proof):
         addresses = await asyncio.to_thread(self.addresses)
@@ -487,6 +502,7 @@ class WerewolfService:
             # 新地址有自己的公屏配对和座位恢复链接。游戏、座位与选择留在原房间。
             self.display_pairings.clear()
             self.seat_recoveries.clear()
+            self.network_waiting_seats = set(self.game.players)
             self.public_token = secrets.token_hex(32)
             self._remember_host(admission)
             report = self.host()
@@ -590,6 +606,9 @@ class WerewolfService:
         async with self.lock:
             self._require_listener(origin)
             seat = self._player(token)
+            # 只有当前局域网入口上通过座位认证的读取能确认玩家回来。
+            if origin is not None and self.network_waiting_seats is not None:
+                self.network_waiting_seats.discard(seat)
             return self._private(seat, receipt_id)
 
     async def ready(self, token, value, lobby_revision=None, *, origin=None):
@@ -680,6 +699,9 @@ class WerewolfService:
                 raise GameError("game_not_found")
             if self.network_interrupted and action in NETWORK_REQUIRED_ACTIONS:
                 raise GameError('party_link_unavailable')
+            continue_without_phones = action == 'resume' and proof is not None and proof.continue_without_phones
+            if action in NETWORK_REQUIRED_ACTIONS and not continue_without_phones and self._waiting_phones():
+                raise GameError('players_reconnecting')
             if action == "start":
                 self.game.start()
             elif action == "reseat":
@@ -699,10 +721,14 @@ class WerewolfService:
                 self.game.remove(seat)
                 self.credentials = {key: s for key, s in self.credentials.items() if s != seat}
                 self.seat_recoveries.pop(seat, None)
+                if self.network_waiting_seats is not None:
+                    self.network_waiting_seats.discard(seat)
                 if self.bindings.pop(seat, None) is not None:
                     self.camera_binding_revision += 1
             else:
                 raise GameError("host_action_invalid")
+            if action in {'advance', 'resume', 'rematch', 'end'}:
+                self.network_waiting_seats = None
             self._remember_host(admission)
             result = self.host()
         self._schedule_effects()
@@ -1097,6 +1123,7 @@ class WerewolfService:
                     await self.gateway.close()
             finally:
                 self.game = self.gateway = None
+                self.network_waiting_seats = None
                 self.pump = self.effect_task = self.camera_task = None
                 self.origin = None
                 self.effects.lights_active = False

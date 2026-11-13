@@ -88,6 +88,47 @@ test('the host can start the first night only after reading all identity acknowl
  c.mounted.dispose();
 });
 
+function recoveringPhones(waiting){
+ const value=report({paused:true,revision:5});
+ value.game.players=[1,2,3].map(seat=>({seat,name:'示例玩家 '+seat,ready:true,alive:true}));
+ value.phone_url='http://example.test:18750/phone#code=123456';
+ value.network={state:'ready',revision:2,addresses:[],waiting_seats:waiting};
+ return value;
+}
+
+test('玩家返回后在原位置启用继续对局',async()=>{
+ const c=client({initial:recoveringPhones([1,2,3])});await settle();
+ const recovery=c.root.querySelector('.ww-phone-recovery');
+ const resume=c.button('继续对局'),find=c.button('找回座位');
+ assert(resume.hidden&&resume.disabled&&!find.hidden);
+ assert.match(recovery.textContent,/1、2、3 号尚未返回/);
+ c.setNext(recoveringPhones([3]));await c.tick();
+ assert.equal(c.root.querySelector('.ww-phone-recovery'),recovery);
+ assert.match(recovery.textContent,/3 号尚未返回/);
+ find.focus();
+ c.setNext(recoveringPhones([]));await c.tick();
+ assert.equal(c.button('继续对局'),resume);
+ assert(!resume.disabled&&!resume.hidden&&find.hidden);
+ assert.equal(c.activeElement(),resume);
+ c.setNext(report({revision:6}));await resume.onclick();await settle();
+ const body=JSON.parse(c.requests.find(r=>r.path.endsWith('/control')).options.body);
+ assert.equal(body.action,'resume');assert.equal(body.revision,5);
+ assert(!Object.hasOwn(body,'continue_without_phones'));c.mounted.dispose();
+});
+
+test('还有玩家未返回时需要确认才会恢复倒计时',async()=>{
+ const c=client({initial:recoveringPhones([2])});await settle();
+ const direct=c.button('直接继续');
+ direct.onclick();
+ assert.equal(c.button('确认继续'),direct);
+ assert.match(c.root.textContent,/倒计时会恢复/);
+ assert(!c.requests.some(r=>r.path.endsWith('/control')));
+ c.setNext(report({revision:6}));await direct.onclick();await settle();
+ const body=JSON.parse(c.requests.find(r=>r.path.endsWith('/control')).options.body);
+ assert.equal(body.action,'resume');assert.equal(body.continue_without_phones,true);
+ c.mounted.dispose();
+});
+
 function cameraLobby(){
  const first=report();first.game.phase='lobby';first.game.phase_name='等待大家入座';
  first.game.players=[{seat:1,name:'合成玩家1',alive:true,ready:false},{seat:2,name:'合成玩家2',alive:true,ready:false}];

@@ -12,6 +12,7 @@ test('same-phase effects refresh without rebuilding seats or clearing a confirma
  const next=structuredClone(original);next.effects.voice='unconfirmed';next.effects.lights.recovery_pending=true;
  next.connected_display_codes=['234567'];
  const scope=vm.createContext({current:original,alive:true,busy:false,context:{},generation:0,readRequest:null,lobbyUI:null,roundCamera:null,displayPair:null,syncFailed:false,syncNotice:'对局服务暂时无法连接，正在重试。',AbortController,confirmation:'close',notice:{},content:{querySelector:selector=>nodes[selector],querySelectorAll:()=>[]},api:async()=>next,render:()=>assert.fail('a status change must not rebuild the board or dismiss confirmation')});
+ vm.runInContext(extract('const networkInterrupted=', '\n const abort='),scope);
  vm.runInContext(extract('function updateEffects()', '\n function render()'),scope);
  vm.runInContext(extract('function updateDisplayConnection()', '\n function confirmControl('),scope);
  vm.runInContext(extract('function roundCameraKey()', '\n function closeRoundPanel('),scope);

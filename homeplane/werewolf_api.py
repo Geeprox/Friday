@@ -34,6 +34,7 @@ class HostProof(BaseModel):
 
 class Control(HostProof):
     action: Literal["start", "advance", "pause", "resume", "end", "remove", "reseat", "close", "speaker", "rematch"]
+    continue_without_phones: bool = False
 
 
 class Reconnect(HostProof):
@@ -127,6 +128,8 @@ def create_router(core, lock, embodied, directory, *, owner=None):
 
     @router.post("/control")
     async def control(payload: Control):
+        if payload.continue_without_phones and payload.action != 'resume':
+            raise HTTPException(422, detail='host_action_invalid')
         if payload.action == "close":
             return await guarded(owner.close_game(proof=payload))
         return await guarded(owner.control(payload.action, seat=payload.seat, proof=payload))

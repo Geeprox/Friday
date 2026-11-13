@@ -133,7 +133,7 @@ export function mountGames(root,{go=()=>{}}={}){
   const message=error?lastError:!controlsCurrent()?(readNotice||'正在更新游戏状态'):
     !service.configured?'接入摄像头后，即可用身体动作玩游戏':
     service.capture_enabled===false?'摄像头已暂停':!gameIntent()?'游戏状态暂时不可用':'';
-  status.hidden=selection?.id==='ktv'||!message;
+  status.hidden=selection?.id==='ktv'||selection?.id==='werewolf'||!message;
   if(status.textContent!==message)status.textContent=message;
   status.dataset.state=error?'changed':'waiting';
  }

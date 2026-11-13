@@ -129,7 +129,7 @@ async def test_new_address_keeps_seat_identity_choice_clock_and_public_screen(tm
         rebound = await host.post(HOST + '/reconnect', json=command)
         assert rebound.status_code == 200 and rebound.headers['cache-control'] == 'no-store'
         assert rebound.json()['session'] == session and service.game is game
-        assert rebound.json()['network'] == dict(state='ready', revision=2, addresses=[])
+        assert rebound.json()['network'] == dict(state='ready', revision=2, addresses=[], waiting_seats=[1, 2, 3, 4, 5, 6])
         assert rebound.json()['game'] == frozen['game']
         assert len(network.opened) == 2 and network.closed == [old_gateway]
         assert (await host.post(HOST + '/reconnect', json=command)).json() == rebound.json()
@@ -137,6 +137,10 @@ async def test_new_address_keeps_seat_identity_choice_clock_and_public_screen(tm
         assert (await old_party.get('/api/player', headers=players[1])).status_code == 409
         assert (await old_party.get('/api/public', headers=TV)).status_code == 403
         async with party_client(service) as party:
+            # 新入口能访问时，已入局的手机还需要回来。电视配对和旧入口的请求不计入。
+            waiting = await phase(host, service, 'resume', 'resume-before-phones')
+            assert waiting.status_code == 409 and waiting.json()['detail'] == 'players_reconnecting'
+            assert service.host()['network']['waiting_seats'] == [1, 2, 3, 4, 5, 6]
             assert (await party.post('/api/recover-seat', json=expired_ticket)).status_code == 409
             assert (await party.get('/api/public', headers=TV)).status_code == 403
             assert (await party.get('/api/public', headers=old_public_token)).status_code == 403
@@ -145,17 +149,24 @@ async def test_new_address_keeps_seat_identity_choice_clock_and_public_screen(tm
             assert resumed_board['paused'] and resumed_board['players'] == old_board['players']
             assert all('role' not in player for player in resumed_board['players'])
             assert 'network' not in (await party.get('/api/public', headers=TV)).json()
-            assert (await host.get(HOST + '/host')).json()['connected_display_codes'] == [code]
+            host_readback = (await host.get(HOST + '/host')).json()
+            assert host_readback['connected_display_codes'] == [code]
+            assert host_readback['network']['waiting_seats'] == [1, 2, 3, 4, 5, 6]
             claim = await recovery(host, service, 'new-phone')
             recovered = await party.post('/api/recover-seat', json=claim)
             assert recovered.status_code == 200 and recovered.json()['session'] == session
             private = recovered.json()['player']
             assert private['role'] == 'wolf' and service.game.identities_confirmed == set(players)
             assert private['submitted'] == ['attack', 3] and private['choice_version'] == 1
+            assert (await host.get(HOST + '/host')).json()['network']['waiting_seats'] == [1, 2, 3, 4, 5, 6]
             assert (await party.get('/api/player', headers=players[1])).status_code == 403
             headers = {**bearer(recovered.json()['token']), 'X-Friday-Choice': choice['event_id']}
             assert (await party.get('/api/player', headers=headers)).json()['choice_receipt']['recorded']
             assert (await party.get('/api/player', headers=TV)).status_code == 403
+            assert (await host.get(HOST + '/host')).json()['network']['waiting_seats'] == [2, 3, 4, 5, 6]
+            for seat in range(2, 7):
+                assert (await party.get('/api/player', headers=players[seat])).json()['seat'] == seat
+            assert (await host.get(HOST + '/host')).json()['network']['waiting_seats'] == []
             resumed = (await phase(host, service, 'resume', 'resume-rebound')).json()['game']
             assert not resumed['paused'] and resumed['phase'] == 'wolves' and resumed['seconds_left'] == remaining
             assert (await party.get('/api/public', headers=TV)).json()['game'] == resumed
@@ -186,9 +197,36 @@ async def test_address_return_uses_original_connection_and_retains_host_pause(tm
         await service.step()
         assert service.host()['network']['state'] == 'ready' and service.game.paused
         assert service.origin == origin and len(network.opened) == 1
+        assert service.host()['network']['waiting_seats'] == [1, 2, 3, 4, 5, 6]
         assert (await party.get('/api/player', headers=players[1])).json()['role'] == 'wolf'
+        assert service.host()['network']['waiting_seats'] == [2, 3, 4, 5, 6]
         assert (await party.get('/api/public', headers=TV)).status_code == 200
         assert service.host()['connected_display_codes'] == [code]
+
+
+@pytest.mark.asyncio
+async def test_host_can_explicitly_continue_a_paused_game_without_all_phones(tmp_path):
+    async with match(tmp_path) as (service, clock, network, host, party):
+        players = await first_night(host, service, party)
+        network.addresses = []
+        clock.now += NETWORK_CHECK_SECONDS
+        await service.step()
+        network.addresses = [OLD_ADDRESS]
+        clock.now += NETWORK_CHECK_SECONDS
+        await service.step()
+        await party.get('/api/player', headers=players[1])
+        advance = proof(service, 'not-a-resume', action='advance', continue_without_phones=True)
+        assert (await host.post(HOST + '/control', json=advance)).status_code == 422
+        waiting = service.host()
+        assert waiting['network']['waiting_seats'] == [2, 3, 4, 5, 6]
+        override = proof(service, 'continue-without-phones', action='resume', continue_without_phones=True)
+        done = await host.post(HOST + '/control', json=override)
+        assert done.status_code == 200
+        assert done.json()['game']['phase'] == waiting['game']['phase']
+        assert done.json()['game']['seconds_left'] == waiting['game']['seconds_left']
+        assert not done.json()['game']['paused'] and 'waiting_seats' not in done.json()['network']
+        assert (await party.get('/api/player', headers=players[6])).json()['seat'] == 6
+        assert (await host.post(HOST + '/control', json=override)).json()['game'] == done.json()['game']
 
 
 @pytest.mark.asyncio

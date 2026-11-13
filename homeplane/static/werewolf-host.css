@@ -183,6 +183,10 @@
 .ww-network-actions { display:flex;align-items:end;flex-wrap:wrap;gap:8px; }
 .ww-network-actions select { min-width:152px;font-size:16px; }
 .ww-network-actions button { min-height:44px;white-space:nowrap; }
+.ww-phone-recovery .ww-network-copy p { overflow-wrap:anywhere; }
+.ww-phone-recovery .ww-network-actions { align-items:center;flex-shrink:0; }
+.ww-phone-recovery .ww-network-actions button[hidden] { display:none; }
+.ww-phone-recovery .ww-text-button { padding-inline:10px;text-underline-offset:3px; }
 @media(max-width:680px) {
  .ww-network-recovery { flex-direction:column;align-items:stretch; }
  .ww-network-actions > .ww-field { flex:1 1 150px; }
