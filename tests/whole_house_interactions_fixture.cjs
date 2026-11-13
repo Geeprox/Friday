@@ -5,6 +5,7 @@ class Element{
  constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this._text='';this.style={};this.value='';this.disabled=false;this.hidden=false;this.dataset={};}
  set textContent(v){this._text=v;this.children=[];}get textContent(){return this._text+this.children.map(c=>c.textContent).join('');}
  setAttribute(k,v){this.attrs[k]=String(v);if(k==='value')this.value=String(v);}getAttribute(k){return this.attrs[k];}
+ removeAttribute(k){delete this.attrs[k];}set src(value){this.setAttribute('src',value);}get src(){return this.getAttribute('src');}
  append(...nodes){for(const n of nodes){this.children.push(n);n.parent=this;}if(this.tagName==='select'&&!this.value&&this.children.length)this.value=this.children[0].value;}
  replaceChildren(...nodes){this.children=[];this.append(...nodes);}remove(){if(this.parent)this.parent.children=this.parent.children.filter(x=>x!==this);}
  get isConnected(){return true;}getBoundingClientRect(){return {left:0,top:0,width:640,height:360};}focus(){}scrollIntoView(){}contains(n){return all(this).includes(n);}
@@ -27,7 +28,7 @@ class Element{
    if(path==='/api/embodied/voice-input'){voice=body.enabled;if(!voice)voiceReceipts=[];return{};}
    if(path==='/api/embodied/voice-preferences'){assert.equal(body.expected_revision,voicePreferences.revision);voicePreferences={revision:voicePreferences.revision+1,wake_word:body.wake_word};return voicePreferences;}
    if(path==='/api/home/interactions'){config={...body,revision:config.revision+1};return config;}
-   if(path.endsWith('/preview'))return{preview_token:'e'.repeat(32)};
+   if(path.endsWith('/preview')){assert.equal(body.purpose,'pointing');return{preview_token:'e'.repeat(32)};}
    if(path.endsWith('/preview/stop'))return{};
    throw Error('unexpected write '+path);
   }
@@ -44,7 +45,7 @@ class Element{
   if(path==='/api/embodied/infrastructure')return{policy};
   if(path==='/api/embodied/voice-preferences')return voicePreferences;
   if(path.endsWith('/power'))return{enabled:true,revision:'e'.repeat(64)};
-  if(path.endsWith('/preview'))return{state:'live'};
+  if(path.endsWith('/preview')){assert.equal(options.headers['X-Friday-Live-View'],'e'.repeat(32));return{state:'live'};}
   throw Error('unexpected read '+path);
  }});
  const diagram=()=>{const n=new Element('svg');n.dispose=()=>{};return n;};
@@ -101,7 +102,8 @@ class Element{
  find('button','添加设备控制').onclick();const target=byLabel('控制设备');target.value='lamp';target.onchange();
  all(root).find(n=>n.tagName==='form').onsubmit({preventDefault(){}});await settle();assert.equal(config.bindings[0].camera,null);assert.equal(config.bindings[0].scope,'home');
  find('button','指向设备').onclick();const scope=byLabel('使用范围');scope.value=cameras[2].id;scope.onchange();const pointTarget=byLabel('控制设备');pointTarget.value='curtain';pointTarget.onchange();
- await find('button','打开镜头并查看').onclick();await settle();const image=all(root).find(n=>n.tagName==='img');image.onload();image.onclick({clientX:320,clientY:180});all(root).find(n=>n.tagName==='form').onsubmit({preventDefault(){}});await settle();
+ await find('button','打开镜头并查看').onclick();await settle();const image=all(root).find(n=>n.tagName==='img');
+ assert(image.src.includes('view='+ 'e'.repeat(32)));assert(find('button','停止查看'));image.onload();image.onclick({clientX:320,clientY:180});all(root).find(n=>n.tagName==='form').onsubmit({preventDefault(){}});await settle();
  assert.equal(config.bindings[1].camera,cameras[2].id);assert.equal(config.bindings[1].gesture,'hand.point');assert.deepEqual(config.bindings[1].anchor,[.5,.5]);
  assert.ok(!writes.some(w=>['/api/embodied/start','/api/embodied/stop'].includes(w.path)),'Viewing or saving interactions must not restart perception');
  assert.ok(!reads.some(p=>p.includes('/cameras/')&&p.includes(cameras[0].id)),'Pointing preview stays on its explicitly selected camera');owner.dispose();console.log('All-camera voice, passive browsing, home bindings and scoped pointing preview: OK');

@@ -232,7 +232,24 @@ function reloadTeaching(){location.reload();}
 function reloadScene(){if(selected==='beam'){beamStage.reload();return;}if(selected!=='ski'){scenery.reload(selected);return;}artError=false;for(const[image,name]of [[winterProps,'winter-props.png'],[winterScene,'winter-scene.png']]){image.onload=sceneRefreshed;image.onerror=()=>{artError=true;if(meta)updateHUD();};image.src=new URL(name+(image.src?'?retry='+Date.now():''),artRoot).href;}}
 async function pauseGame(){if(meta?.game?.manually_paused)return false;return commandGame({mode:selected,action:'pause'},'暂时无法暂停，请重试。');}
 async function resumeGame(){if(!resumeInputReady()||!gameDisplayReady())return false;return commandGame({mode:selected,action:'resume'},'暂时无法继续本局，请重试。');}
-function togglePlayerView(){const panel=$('playerView');panel.hidden=!panel.hidden;const control=$('previewToggle');control.setAttribute('aria-pressed',String(!panel.hidden));control.textContent=panel.hidden?'查看我的动作':'收起动作画面';}
+function togglePlayerView(){setPlayerView(!playerViewVisible());}
+function playerViewVisible(){return !television&&!document.hidden&&$('playerView').hidden===false;}
+function sendPlayerView(){
+ if(gameSocket&&streamOpen&&!television){
+  try{gameSocket.send(playerViewVisible()?'show-player-view':'hide-player-view');}catch{}
+ }
+}
+function setPlayerView(visible){
+ const panel=$('playerView'),control=$('previewToggle');
+ panel.hidden=!visible;
+ control.setAttribute('aria-pressed',String(visible));
+ control.textContent=visible?'收起动作画面':'查看我的动作';
+ if(!visible){
+  debugFrame=debugMeta=debugReceived=null;decodeOwner++;decoding=false;
+  dc.clearRect(0,0,640,360);$('debugMetrics').textContent='';
+ }
+ sendPlayerView();
+}
 if(key&&!television){sessionStorage.setItem(storageKey,key);history.replaceState(null,'',location.pathname+(embedded?'?embed=1':''));}
 
 const descriptions={beam:['','光线保卫队','摆出 L，瞄准草地上出没的绒球。'],home:['镜头联动 / 05','双臂开合，控制梦幻帘','OK 绑定操作者 · 双手在胸前合拢后向两侧打开 · 眼部注视确认后可直接说 · 看不清眼睛时先说 Friday'],quest:['山径训练 / 01','山径冒险','沿着山径，跟随示范完成动作，抵达山顶营地。'],ski:['山地滑行 / 02','林间滑雪','左右移动躲树 · 双臂同向或交替摆动前进 · 停止摆臂会减速'],hiit:['循环训练 / 04','运动训练','跟随示范完成一轮站姿动作。'],tennis:['客厅球场 / 03','双人网球','两位玩家分别站定 · 横移接球 · 快速挥动手臂触发击球']};
@@ -424,9 +441,9 @@ function receiveGamePacket(ws,generation,data){
   }
   if(firstPacket||lastBackendMode!==meta.game.selected_mode||lastBackendRound!==meta.game.mode){firstPacket=false;lastBackendMode=meta.game.selected_mode;lastBackendRound=meta.game.mode;selectMode(meta.game.selected_mode);}
   updateHUD();if(typeof updateRecording==='function')updateRecording(meta.recording);syncGameControls();
-  if(size&&!decoding){
+  if(size&&playerViewVisible()&&!decoding){
    decoding=true;const decode=++decodeOwner,snapshot=meta,at=received,img=new Image(),done=()=>{if(decodeOwner===decode)decoding=false;};
-   img.onload=()=>{if(gameSocket===ws&&streamGeneration===generation&&decodeOwner===decode&&performance.now()-at<=1500){debugFrame=img;debugMeta=snapshot;debugReceived=at;}done();};
+   img.onload=()=>{if(gameSocket===ws&&streamGeneration===generation&&decodeOwner===decode&&playerViewVisible()&&performance.now()-at<=1500){debugFrame=img;debugMeta=snapshot;debugReceived=at;}done();};
    img.onerror=done;const reader=new FileReader();
    reader.onload=()=>{if(gameSocket===ws&&streamGeneration===generation&&decodeOwner===decode)img.src=reader.result;else done();};reader.onerror=done;
    reader.readAsDataURL(new Blob([new Uint8Array(data,8+n,size)],{type:'image/jpeg'}));
@@ -441,7 +458,7 @@ function connect(){
  if(television)televisionPaintedView=null;
  received=null;streamOpen=false;debugFrame=debugMeta=null;debugReceived=null;decodeOwner++;decoding=false;socketAttemptAt=performance.now();const generation=++streamGeneration;
  try{const ws=new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/ws?view=${television?'television':'game'}&k=${encodeURIComponent(key)}`);gameSocket=ws;ws.binaryType='arraybuffer';
-  ws.onopen=()=>{if(gameSocket===ws&&streamGeneration===generation){streamOpen=true;updateHUD();}};
+  ws.onopen=()=>{if(gameSocket===ws&&streamGeneration===generation){streamOpen=true;sendPlayerView();updateHUD();}};
   ws.onmessage=e=>receiveGamePacket(ws,generation,e.data);ws.onclose=()=>streamLost(ws);ws.onerror=()=>streamLost(ws);
  }catch{reconnectTimer=setTimeout(()=>{reconnectTimer=null;connect();},1500);}
  updateHUD();
@@ -762,7 +779,7 @@ function homeWorld(){c.fillStyle='#e6ece0';c.fillRect(0,0,1600,900);const h=meta
 function hiitWorld(at){scenery.training(presentedGame(),at);}
 function tennis(at){scenery.tennis(presentedGame(),at);}
 function realSkeleton(){const players=meta?.game?.players||[];if(!players.length)return;const links=[['leftShoulder','rightShoulder'],['leftShoulder','leftElbow'],['leftElbow','leftWrist'],['rightShoulder','rightElbow'],['rightElbow','rightWrist'],['leftShoulder','leftHip'],['rightShoulder','rightHip'],['leftHip','rightHip'],['leftHip','leftKnee'],['leftKnee','leftAnkle'],['rightHip','rightKnee'],['rightKnee','rightAnkle']];for(const [i,p]of players.entries()){const pts=Object.values(p.joints||{});if(!pts.length)continue;const xs=pts.map(q=>q.x),ys=pts.map(q=>q.y),minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys),scale=Math.min(160/Math.max(.01,maxX-minX),200/Math.max(.01,maxY-minY)),x=65+i*200,y=460;for(const [a,b]of links){const A=p.joints[a],B=p.joints[b];if(A&&B)line([x+(A.x-minX)*scale,y+(A.y-minY)*scale],[x+(B.x-minX)*scale,y+(B.y-minY)*scale],i?'#a78254':'#4a775c',4)}c.font='13px sans-serif';c.fillStyle='#6e856e';c.fillText((i+1)+'号 · 实时骨架',x,y+225)}}
-let debugDrawAt=0;function drawDebug(){if(performance.now()-debugDrawAt<100)return;debugDrawAt=performance.now();
+let debugDrawAt=0;function drawDebug(){if(!playerViewVisible()||performance.now()-debugDrawAt<100)return;debugDrawAt=performance.now();
  const fresh=gameViewCurrent()&&meta?.status==='live'&&debugReceived!==null&&performance.now()-debugReceived<=1500;dc.clearRect(0,0,640,360);dc.fillStyle='#14251a';dc.fillRect(0,0,640,360);
  if(fresh&&debugFrame){dc.drawImage(debugFrame,0,0,640,360);dc.lineWidth=2.5;dc.strokeStyle='#b4f9c3';const links=[['leftShoulder','rightShoulder'],['leftShoulder','leftElbow'],['leftElbow','leftWrist'],['rightShoulder','rightElbow'],['rightElbow','rightWrist'],['leftShoulder','leftHip'],['rightShoulder','rightHip'],['leftHip','rightHip'],['leftHip','leftKnee'],['leftKnee','leftAnkle'],['rightHip','rightKnee'],['rightKnee','rightAnkle']];
  for(const p of debugMeta?.people||[]){for(const [a,b] of links){const A=p.joints?.[a],B=p.joints?.[b];if(A&&B){dc.beginPath();dc.moveTo(A.x*640,A.y*360);dc.lineTo(B.x*640,B.y*360);dc.stroke()}}for(const q of Object.values(p.joints||{})){dc.beginPath();dc.arc(q.x*640,q.y*360,2.8,0,7);dc.fillStyle='#ffffff';dc.fill()}}
@@ -817,8 +834,8 @@ function draw(now=performance.now()){
  drawDebug();if(typeof drawRecordPage==='function')drawRecordPage(performance.now());
  scheduleStage();
 }
-document.addEventListener('visibilitychange',()=>{if(document.hidden){gameSound.quiet();beamStage.forget();skiScenery.interrupt();scenery.interruptTennis();presentationClient.release();televisionPaintedView=null;if(stageFrame!=null)cancelAnimationFrame(stageFrame);stageFrame=null;}else{updateHUD();scheduleStage();}});
-function closeGameView(){gameSound.close();presentationClient.close();stageClosed=true;streamGeneration++;clearTimeout(reconnectTimer);reconnectTimer=null;commandPending?.controller.abort();commandPending=null;const old=gameSocket;gameSocket=null;streamOpen=false;if(old){old.onclose=null;old.close();}if(stageFrame!==null)cancelAnimationFrame(stageFrame);stageFrame=null;}
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(!television)setPlayerView(false);gameSound.quiet();beamStage.forget();skiScenery.interrupt();scenery.interruptTennis();presentationClient.release();televisionPaintedView=null;if(stageFrame!=null)cancelAnimationFrame(stageFrame);stageFrame=null;}else{updateHUD();scheduleStage();}});
+function closeGameView(){if(!television)setPlayerView(false);gameSound.close();presentationClient.close();stageClosed=true;streamGeneration++;clearTimeout(reconnectTimer);reconnectTimer=null;commandPending?.controller.abort();commandPending=null;const old=gameSocket;gameSocket=null;streamOpen=false;if(old){old.onclose=null;old.close();}if(stageFrame!==null)cancelAnimationFrame(stageFrame);stageFrame=null;}
 window.addEventListener('pagehide',closeGameView);
 window.addEventListener('pageshow',event=>{if(event.persisted){gameSound.reopen();stageClosed=false;connect();scheduleStage();}});
 
@@ -830,7 +847,7 @@ async function toggleRecording(){if(!gameViewCurrent()||commandPending)return;co
 function recordText(ctx,text,x,y,size=16,color='#314d3a',max=1100){ctx.font=`${size}px -apple-system, sans-serif`;ctx.fillStyle=color;ctx.textAlign='left';ctx.fillText(String(text||''),x,y,max)}
 function drawRecordPage(at){if(!localRecorder||localRecorder.state!=='recording'||at-recordDrawAt<65)return;recordDrawAt=at;const x=recordCanvas.getContext('2d');x.fillStyle='#edf1e9';x.fillRect(0,0,1280,720);x.drawImage(canvas,0,70,1280,590);recordText(x,'山径 · 客厅运动',24,38,24);const modes=[['quest','Pose 闯关'],['ski','第一人称滑雪'],['tennis','双人网球'],['hiit','HIIT 闯关'],['home','智能家居']];modes.forEach(([m,name],i)=>{x.fillStyle=m===selected?'#3e6550':'#e3eade';x.fillRect(350+i*130,15,120,37);recordText(x,name,362+i*130,39,16,m===selected?'#ffffff':'#50614c',125)});recordText(x,$('connection').textContent,1030,38,14);recordText(x,$('chapter').textContent,24,100,13,'#748473');recordText(x,$('mission').textContent,24,138,27);recordText(x,$('instruction').textContent,24,169,14,'#667d69',1000);recordText(x,$('score').innerText.replace(/\n/g,' '),1030,115,24,'#314d3a',230);
  const overlay=$('overlay');if(overlay.textContent.trim()){x.fillStyle='#edf3e9ed';x.fillRect(340,260,620,150);recordText(x,overlay.querySelector('h2')?.textContent||'',370,310,28,'#314d3a',560);recordText(x,overlay.querySelector('p')?.textContent||'',370,355,15,'#667d69',560)}
- x.fillStyle='#f1f5ed';x.fillRect(16,420,300,220);x.drawImage($('debugVideo'),20,446,292,164);recordText(x,'实时识别 · 调试浮窗',26,439,13);recordText(x,$('debugMetrics').textContent,26,630,11,'#4f6e57',280);recordText(x,$('input').textContent,340,605,14,'#365d42',900);recordText(x,$('camera').textContent,340,634,13,'#667d69',900);recordText(x,'OK 保持 1 秒开始 · Yeah 保持 1 秒切换',24,694,14,'#667d69');x.fillStyle='#b4604e';x.beginPath();x.arc(1060,690,5,0,7);x.fill();recordText(x,'录制中 · '+Math.floor((Date.now()-recordIdentity.started_at*1000)/1000)+' 秒',1075,695,14,'#8f5446',190)}
+ recordText(x,$('input').textContent,24,605,14,'#365d42',900);recordText(x,$('camera').textContent,24,634,13,'#667d69',900);recordText(x,'OK 保持 1 秒开始 · Yeah 保持 1 秒切换',24,694,14,'#667d69');x.fillStyle='#b4604e';x.beginPath();x.arc(1060,690,5,0,7);x.fill();recordText(x,'录制中 · '+Math.floor((Date.now()-recordIdentity.started_at*1000)/1000)+' 秒',1075,695,14,'#8f5446',190)}
 async function beginPageRecording(){if(recordClaim||localRecorder)return;recordClaim=true;try{
  if(typeof MediaRecorder==='undefined'||!HTMLCanvasElement.prototype.captureStream)throw Error('页面录制能力不可用');
  const mime=['video/webm;codecs=vp8','video/mp4','video/mp4;codecs=avc1.42E01E','video/webm'].find(t=>MediaRecorder.isTypeSupported(t));if(!mime)throw Error('没有可用的视频编码器');
@@ -841,7 +858,7 @@ async function beginPageRecording(){if(recordClaim||localRecorder)return;recordC
  }catch(e){recordClaim=false;$('recordState').textContent=e.message;try{await recordRequest({action:'error',reason:String(e.message).slice(0,120)})}catch{}}}
 function updateRecording(state){state=state||{};const button=$('recordToggle');if(!button)return;button.disabled=!gameViewCurrent()||!!commandPending||typeof state.armed!=='boolean';button.setAttribute('aria-pressed',String(!!state.armed));button.textContent=state.status==='recording'?'停止录制':state.armed?'本局录制已开启':'录制本局';$('recordState').textContent=({armed:'本局录制已开启',recording:'正在录制 · 不含声音',stopping:'正在保存视频',saved:'视频已保存',interrupted:'录制已中断',error:'录制暂不可用',off:''})[state.status]||'';
  if(localRecorder&&state.status==='stopping'&&localRecorder.state==='recording')localRecorder.stop();
- const visible=meta?.status==='live'&&(meta.people||[]).some(p=>Object.keys(p.joints||{}).length>=8);presenceSince=visible?(presenceSince||performance.now()):0;
+ const visible=meta?.status==='live'&&(meta.player_visible===true||(meta.people||[]).some(p=>Object.keys(p.joints||{}).length>=8));presenceSince=visible?(presenceSince||performance.now()):0;
  if(localRecordingHost&&state.armed&&state.status==='armed'&&presenceSince&&performance.now()-presenceSince>350)beginPageRecording();
  if(state.status==='saved'&&state.id){$('recordState').innerHTML='已保存 · <a href="'+url('/api/record/file')+'&id='+encodeURIComponent(state.id)+'" download>下载视频</a>'}}
 

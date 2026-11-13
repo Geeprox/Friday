@@ -268,6 +268,7 @@ async def test_original_service_transport_worker_route_and_director_share_the_sa
     monkeypatch.setattr(service_module, "PRIVATE", tmp_path)
     monkeypatch.setattr(service_module, "configuration", lambda: dict(viewer_port=31973))
     (tmp_path / "viewer-key").write_text("SYNTHETIC-key")
+    (tmp_path / "control-key").write_text("SYNTHETIC-control-key")
     camera = service_module.EmbodiedService()
     await camera.client.aclose()
     camera.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), trust_env=False)

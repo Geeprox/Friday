@@ -308,6 +308,7 @@ async def test_survey_readback_and_stop_are_bound_to_the_current_intent(tmp_path
     service.cameras = lambda: list(registered.values())
     service._url = lambda path: 'http://127.0.0.1:18743'+path
     service.manual_previews = SimpleNamespace(has=lambda _: False, command=AsyncMock())
+    service.closed = service.recovery_pending = False
     service.capture_enabled, service.process = True, SimpleNamespace(returncode=None)
     app.include_router(create_router(service, None, None))
     base = '/api/embodied/cameras/'+camera_id

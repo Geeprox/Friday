@@ -52,6 +52,7 @@ from homeplane.embodied.camera_intent import (
 from homeplane.embodied.camera_follow_picker import FollowCommand
 from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from homeplane.embodied.camera_wall import CameraWall
+from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.embodied.camera_audio import AudioIngress, WakeCameraCue, deliver_audio
@@ -801,7 +802,8 @@ async def run_source(my_generation):
             (
                 json.dumps(
                     {"source": "miloco", "camera": SELECTED["id"], "motor": bool(camera_task),
-                     "audio": True, "identity": False, "capture_session": capture_session}
+                     "audio": True, "identity": False, "capture_session": capture_session,
+                     "source_context": audio_ingress.context}
                 )
                 + "\n"
             ).encode()
@@ -1357,6 +1359,25 @@ def require_console_worker(request):
         raise HTTPException(403)
 
 
+def require_preview_source(request, camera_id, selected, *, opening=False):
+    require_console_worker(request)
+    supplied = request.headers.get('x-friday-camera-source')
+    try:
+        expected = camera_source_context(camera(camera_id))
+    except (OSError, ValueError):
+        expected = None
+    epoch = wall.epochs.get(camera_id)
+    if (expected is None or supplied != expected or camera_source_context(selected) != expected
+            or epoch is None or not opening and request.headers.get('x-friday-capture-epoch') != str(epoch)):
+        raise HTTPException(409, 'camera_preview_ended', headers={'X-Friday-View-Ended': '1'})
+
+
+def preview_selection(camera_id):
+    if camera_id == SELECTED['id']:
+        return SELECTED
+    return previews.sessions.get(camera_id, {}).get('selected')
+
+
 @app.get("/api/internal/identity")
 async def identity_status(request: Request):
     require_console_worker(request)
@@ -1533,11 +1554,19 @@ async def voice_control(request: Request):
 
 @app.post("/api/previews/{camera_id}")
 async def start_preview(camera_id: str, request: Request):
-    if request.client.host not in {"127.0.0.1", "::1"}:
-        raise HTTPException(403)
+    try:
+        selected = preview_selection(camera_id) or camera(camera_id)
+    except (OSError, ValueError):
+        raise HTTPException(409, 'camera_preview_unavailable') from None
+    require_preview_source(request, camera_id, selected, opening=True)
     if camera_id == SELECTED["id"]:
-        return {"state": view()["status"], "camera": camera_id, "primary": True}
-    return await previews.start(camera_id)
+        report = {"state": view()["status"], "camera": camera_id, "primary": True}
+        if report['state'] in {'stopped', 'unavailable', 'shutter_closed'}:
+            raise HTTPException(409, 'camera_preview_unavailable')
+    else:
+        report = await previews.start(camera_id, selected=selected)
+    require_preview_source(request, camera_id, preview_selection(camera_id), opening=True)
+    return dict(report, capture_epoch=wall.epochs[camera_id])
 
 
 def primary_recovery_frame():
@@ -1551,6 +1580,8 @@ def primary_recovery_frame():
 async def preview_status(camera_id: str, request: Request):
     if request.client.host not in {"127.0.0.1", "::1"}:
         raise HTTPException(403)
+    if request.headers.get('x-friday-camera-source') is not None:
+        require_preview_source(request, camera_id, preview_selection(camera_id))
     if camera_id == SELECTED["id"]:
         report = view()
         session = report['camera_sessions'][0]
@@ -1576,11 +1607,11 @@ async def preview_status(camera_id: str, request: Request):
 
 @app.get("/api/previews/{camera_id}/frame")
 async def preview_frame(camera_id: str, request: Request):
-    if request.client.host not in {"127.0.0.1", "::1"}:
-        raise HTTPException(403)
+    require_preview_source(request, camera_id, preview_selection(camera_id))
     if camera_id == SELECTED['id']:
         recovery_frame = primary_recovery_frame()
-        frame = recovery_frame[0] if recovery_frame else last_preview if view()['status'] == 'live' else None
+        frame = recovery_frame[0] if recovery_frame else (
+            last_preview if view()['status'] == 'live' and 0 <= time.time() - last_preview_at < 2 else None)
     else:
         frame = previews.frame(camera_id)
     if not frame:
@@ -1614,6 +1645,7 @@ def follow_picker(camera_id, request):
 
 @app.get('/api/previews/{camera_id}/follow-target')
 async def follow_target_view(camera_id: str, request: Request):
+    require_preview_source(request, camera_id, preview_selection(camera_id))
     try:
         result = follow_picker(camera_id, request).snapshot()
     except ValueError:
@@ -1623,6 +1655,8 @@ async def follow_target_view(camera_id: str, request: Request):
 
 @app.post('/api/previews/{camera_id}/follow-target')
 async def follow_target_command(camera_id: str, command: FollowCommand, request: Request):
+    if command.action != 'stop':
+        require_preview_source(request, camera_id, preview_selection(camera_id))
     try:
         return follow_picker(camera_id, request).command(command)
     except (ValueError, RuntimeError, OSError):
@@ -1982,12 +2016,14 @@ async def voice_receipts(request: Request):
 
 
 @app.get("/api/frame")
-async def frame():
+async def frame(request: Request):
+    require_console_worker(request)
     return view()
 
 
 @app.get("/api/live")
 async def live(request: Request):
+    require_console_worker(request)
     async def stream():
         previous = -1
         while not await request.is_disconnected():
@@ -2166,7 +2202,9 @@ async def control(action: str, request: Request):
 async def websocket(ws: WebSocket):
     display = ws.query_params.get('view')
     television = display == 'television'
-    if not (television_access(ws) if television else authorized(ws.client, ws.query_params.get('k'))):
+    local = ws.client is not None and ws.client.host in {'127.0.0.1', '::1'}
+    permitted = television_access(ws) if television else local and authorized(ws.client, ws.query_params.get('k'))
+    if not permitted:
         await ws.close(code=1008)
         return
     origin = ws.headers.get("origin")
@@ -2174,17 +2212,37 @@ async def websocket(ws: WebSocket):
         await ws.close(code=1008)
         return
     await ws.accept()
+    player_view = False
+    view_changed = False
+
+    async def player_controls():
+        nonlocal player_view, view_changed
+        try:
+            async for command in ws.iter_text():
+                requested = command == 'show-player-view'
+                if requested != player_view:
+                    player_view = requested
+                    view_changed = True
+                    async with changed:
+                        changed.notify_all()
+        finally:
+            player_view = False
+
+    controls = asyncio.create_task(player_controls()) if display == 'game' else None
     try:
         previous = -1
         preview_sent = 0.0
         tv_checked = time.monotonic()
         while True:
-            if previous == state["processed_frames"]:
+            if controls is not None and controls.done():
+                return
+            if previous == state["processed_frames"] and not view_changed:
                 async with changed:
                     try:
                         await asyncio.wait_for(changed.wait(), 1)
                     except asyncio.TimeoutError:
                         pass
+            view_changed = False
             if television:
                 now = time.monotonic()
                 if now - tv_checked >= 1:
@@ -2198,25 +2256,43 @@ async def websocket(ws: WebSocket):
                 meta = view()
                 meta.pop('frame', None)
                 meta['sent_at'] = time.time()
-                jpeg = last_jpeg if meta['status'] == 'live' else b''
+                jpeg = last_jpeg if display != 'game' and meta['status'] == 'live' else b''
             previous = state['processed_frames']
             if display == "game":
                 jpeg = (
                     last_preview
-                    if meta["status"] == "live"
+                    if player_view and meta["status"] == "live"
                     and last_preview_at != preview_sent
                     and time.time() - last_preview_at < 1.5
                     else b""
                 )
                 if jpeg:
                     preview_sent = last_preview_at
-                meta["preview_at"] = last_preview_at
+                if not player_view:
+                    preview_sent = 0.0
+                    meta['player_visible'] = any(len(p.get('joints') or {}) >= 8 for p in meta.get('people', []))
+                    for key in ('people', 'hands', 'animals', 'scene'):
+                        meta.pop(key, None)
+                    registration = (meta.get('room') or {}).get('registration') or {}
+                    meta['room'] = {'registration': {'status': registration.get('status')}}
+                    game = meta.get('game')
+                    if isinstance(game, dict):
+                        meta['game'] = dict(game, players=[
+                            {key: value for key, value in player.items() if key not in {'joints', 'identity'}}
+                            for player in game.get('players', [])
+                        ])
+                else:
+                    meta["preview_at"] = last_preview_at
             encoded = json.dumps(meta, separators=(",", ":"), ensure_ascii=False).encode()
             await asyncio.wait_for(
                 ws.send_bytes(struct.pack(">II", len(encoded), len(jpeg)) + encoded + jpeg), 2
             )
     except Exception:
         pass
+    finally:
+        if controls is not None:
+            controls.cancel()
+            await asyncio.gather(controls, return_exceptions=True)
 
 
 async def serve():

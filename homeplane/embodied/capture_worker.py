@@ -104,6 +104,8 @@ async def main():
     if quality not in (2, 3):
         raise ValueError("quality_not_allowed")
     selected = registered_camera(request.get("camera"))
+    if 'source_context' in request and request['source_context'] != camera_source_context(selected):
+        raise ValueError('camera_source_changed')
     device = selected["device"]
     from .miot_session import MiSession
     login = await MiSession(PRIVATE).current()

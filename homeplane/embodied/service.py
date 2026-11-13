@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import os
@@ -17,7 +16,9 @@ import httpx
 from homeplane.runtime_log import observe
 
 from .catalog import MOTION_GAME_MODES, TENNIS_VARIANTS, get_app
+from .camera_provenance import camera_source_context
 from .game_difficulty import game_difficulty
+from .live_preview import LivePreviews
 from .quest import get_quest_route
 from .paths import DATA, PRIVATE, PROJECT, PYTHON, VISION, camera, configuration
 from .ski_route import get_ski_trail
@@ -37,6 +38,7 @@ class EmbodiedService:
         self.interaction_enabled = True
         self.health_failures = 0
         self.capture_enabled = True
+        self.preview_suspended = False
         self.guardian = None
         self.recovery_pending = False
         self.recovery_enabled = False
@@ -46,6 +48,7 @@ class EmbodiedService:
         self._practice_requests = PracticeRequests(self)
         from .manual_preview import ManualPreview
         self.manual_previews=ManualPreview()
+        self.live_previews = LivePreviews(self)
 
     async def ensure_background(self, *, interaction=True, open_privacy=False):
         # Background recovery must never override Mi Home's newer shutter state.
@@ -120,6 +123,10 @@ class EmbodiedService:
         key = (PRIVATE / "viewer-key").read_text().strip()
         return f"http://127.0.0.1:{int(config['viewer_port'])}" + path + "?" + urlencode(dict(k=key, **query))
 
+    def _worker_headers(self):
+        return {"Origin": f"http://127.0.0.1:{int(configuration()['viewer_port'])}",
+                "X-Friday-Worker": (PRIVATE / "control-key").read_text().strip()}
+
     async def request(self, path, body=None, *, timeout=5):
         response = await self.client.request(
             "GET" if body is None else "POST",
@@ -162,7 +169,8 @@ class EmbodiedService:
         if (self.closed or not self.capture_enabled or self.recovery_pending
                 or self.process is None or self.process.returncode is not None or not self.selected):
             raise ValueError('camera_view_unavailable')
-        async with self.client.stream('GET', self._url('/api/frame'), timeout=1) as response:
+        async with self.client.stream('GET', self._url('/api/frame'),
+                                      headers=self._worker_headers(), timeout=1) as response:
             response.raise_for_status()
             data = bytearray()
             async for chunk in response.aiter_bytes():
@@ -442,13 +450,13 @@ class EmbodiedService:
             return await self._stop()
 
     async def _stop(self):
+        self._game_lifecycle = secrets.token_hex(16)
         await self._practice_requests.retire()
         # Constructing/closing a Simulator or an unadmitted service never sends
         # device commands. Real household admission also permits orphan recovery.
         if self.process is None and not self.recovery_enabled:
             self._practice_requests.worker_stopped()
             return dict(status='stopped', restored=True)
-        self._game_lifecycle = secrets.token_hex(16)
         worker_pid = self.process.pid if self.process is not None else None
         if self.process is not None and self.process.returncode is None:
             try:
@@ -566,36 +574,26 @@ class EmbodiedService:
         return result
 
     @observe("embodied.preview")
-    async def preview(self, camera_id, *, start=False, frame=False,explicit=False):
-        manual_active=self.manual_previews.has(camera_id)
-        if not self.capture_enabled and not manual_active and not (explicit and start):
+    async def preview(self, camera_id, *, start=False, frame=False, explicit=False, token=None, purpose='live'):
+        if not self.capture_enabled and not token and not (explicit and start):
             raise ValueError('camera_capture_paused')
-        camera(camera_id)
-        if manual_active or explicit and start and (not self.capture_enabled or not self.process or self.process.returncode is not None):
-            if self.closed or not self.configured():raise ValueError('embodied_not_configured')
-            report=await self.manual_previews.command('start' if start else 'frame' if frame else 'status',camera_id)
-            if frame:
-                value=report.get('frame')
-                if not value:raise ValueError('camera_frame_unavailable')
-                return base64.b64decode(value,validate=True)
-            return dict(report,recognition_enabled=False)
-        if not self.capture_enabled:
-            raise ValueError("camera_capture_paused")
-        if not self.process or self.process.returncode is not None:
+        if start and explicit:
+            return await self.live_previews.open(camera_id, purpose)
+        if token or frame or start:
+            return await self.live_previews.read(camera_id, token, frame=frame)
+        self.preview_source(camera_id)
+        if self.closed or self.recovery_pending or not self.process or self.process.returncode is not None:
             raise ValueError("embodied_not_running")
-        if frame:
-            result = await self.client.get(self._url("/api/previews/" + camera_id + "/frame"))
-            if result.status_code != 200 or len(result.content) > 2_000_000:
-                raise ValueError("camera_frame_unavailable")
-            return result.content
-        return await self.request("/api/previews/" + camera_id, {} if start else None)
+        return await self.request("/api/previews/" + camera_id)
 
-    async def stop_preview(self,camera_id,token=None):
-        camera(camera_id)
-        if self.manual_previews.has(camera_id):
-            if token is not None and self.manual_previews.tokens.get(camera_id)!=token:return dict(state='superseded')
-            await self.manual_previews.command('stop',camera_id)
-            if not self.manual_previews.cameras:await self.manual_previews.close()
+    def preview_source(self, camera_id):
+        source = camera_source_context(camera(camera_id))
+        if source is None:
+            raise ValueError('camera_preview_unavailable')
+        return source
+
+    async def stop_preview(self, camera_id, token):
+        await self.live_previews.stop(camera_id, token)
         return dict(state='stopped')
 
     async def camera_control(self,camera_id,*,direction=None,mode=None,survey_revision=None):
@@ -610,13 +608,24 @@ class EmbodiedService:
             body['survey_revision'] = survey_revision
         return await self.request(f'/api/previews/{camera_id}/control', body)
 
-    async def camera_follow_target(self, camera_id, command=None):
+    async def camera_follow_target(self, camera_id, command=None, *, token=None):
         camera(camera_id)
+        reads_view = command is None or command.get('action') in {'prepare', 'choose'}
+        if reads_view:
+            view = self.live_previews.current(camera_id, token, purpose='live')
+            if view.manual:
+                raise ValueError('follow_target_unavailable')
         source = self._game_source()
         if (self.closed or not self.capture_enabled or self.recovery_pending or self.manual_previews.has(camera_id)
                 or self.process is None or self.process.returncode is not None):
             raise ValueError('follow_target_unavailable')
-        result = await self.request(f'/api/previews/{camera_id}/follow-target', command)
+        path = f'/api/previews/{camera_id}/follow-target'
+        if reads_view:
+            result = await self._private_worker_request(path, command,
+                media_source=view.source, media_epoch=view.capture)
+            self.live_previews.current(camera_id, token, purpose='live')
+        else:
+            result = await self.request(path, command)
         if source != self._game_source() or self.manual_previews.has(camera_id):
             raise ValueError('follow_target_unavailable')
         return result
@@ -624,20 +633,30 @@ class EmbodiedService:
     async def camera_power(self,camera_id,*,enabled=None,revision=None,event_id=None):
         camera(camera_id)
         if self.closed or not self.configured():raise ValueError('embodied_not_configured')
-        if enabled is False:await self.stop_preview(camera_id)
         request=dict(camera=camera_id,action='read' if enabled is None else 'set')
         if enabled is not None:request.update(enabled=enabled,revision=revision,event_id=event_id)
-        process=await asyncio.create_subprocess_exec(str(PYTHON),'-B','-m','homeplane.embodied.camera_power',
-            cwd=str(PROJECT),env=dict(os.environ,PYTHONPATH=str(PROJECT),FRIDAY_EMBODIED_DATA=str(DATA)),
-            stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
+        closing = self.live_previews.closing_cameras
+        if enabled is False:
+            if camera_id in closing:
+                raise ValueError('camera_power_unavailable')
+            closing.add(camera_id)
         try:
-            output,_=await asyncio.wait_for(process.communicate(json.dumps(request).encode()),38)
-            if len(output)>8192:raise ValueError('camera_power_unavailable')
-            result=json.loads(output)
-            if result.get('status')=='unavailable':raise ValueError('camera_power_unavailable')
-            return result
+            if enabled is False:
+                await self.stop_preview(camera_id, None)
+            process=await asyncio.create_subprocess_exec(str(PYTHON),'-B','-m','homeplane.embodied.camera_power',
+                cwd=str(PROJECT),env=dict(os.environ,PYTHONPATH=str(PROJECT),FRIDAY_EMBODIED_DATA=str(DATA)),
+                stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
+            try:
+                output,_=await asyncio.wait_for(process.communicate(json.dumps(request).encode()),38)
+                if len(output)>8192:raise ValueError('camera_power_unavailable')
+                result=json.loads(output)
+                if result.get('status')=='unavailable':raise ValueError('camera_power_unavailable')
+                return result
+            finally:
+                if process.returncode is None:process.kill();await process.wait()
         finally:
-            if process.returncode is None:process.kill();await process.wait()
+            if enabled is False:
+                closing.discard(camera_id)
 
     async def connection(self,action='status',return_url=None):
         if self.closed or not PYTHON.is_file() or not (PRIVATE/'miot-session.json').is_file():
@@ -671,14 +690,33 @@ class EmbodiedService:
         finally:
             if process.returncode is None:process.kill();await process.wait()
 
-    async def _private_worker_request(self, path, body=None, *, timeout=8):
+    async def _private_worker_request(self, path, body=None, *, timeout=8,
+                                      media_source=None, media_epoch=None, jpeg=False):
         if not self.process or self.process.returncode is not None:
             raise ValueError('identity_not_running')
         try:
+            headers = self._worker_headers()
+            if media_source is not None:
+                headers['X-Friday-Camera-Source'] = media_source
+            if media_epoch is not None:
+                headers['X-Friday-Capture-Epoch'] = str(media_epoch)
+            if jpeg:
+                async with self.client.stream('GET', self._url(path), headers=headers, timeout=timeout) as response:
+                    if response.status_code == 409 and response.headers.get('X-Friday-View-Ended') == '1':
+                        raise ValueError('camera_preview_ended')
+                    if response.status_code != 200 or response.headers.get('content-type') != 'image/jpeg':
+                        raise ValueError('camera_frame_unavailable')
+                    image = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(image) + len(chunk) > 2_000_000:
+                            raise ValueError('camera_frame_unavailable')
+                        image.extend(chunk)
+                    if not image:
+                        raise ValueError('camera_frame_unavailable')
+                    return bytes(image)
             response = await self.client.request(
                 "GET" if body is None else "POST", self._url(path), json=body,
-                headers={"Origin": f"http://127.0.0.1:{int(configuration()['viewer_port'])}",
-                         "X-Friday-Worker": (PRIVATE / "control-key").read_text().strip()}, timeout=timeout)
+                headers=headers, timeout=timeout)
             if response.status_code != 200:
                 payload = response.json()
                 raise ValueError(payload.get('detail', 'identity_enrollment_unavailable')
@@ -744,7 +782,7 @@ class EmbodiedService:
         self.closed = True
         try:
             try:
-                await self.manual_previews.close()
+                await self.live_previews.close()
             finally:
                 try:
                     if getattr(self, 'safety_output', None) is not None:

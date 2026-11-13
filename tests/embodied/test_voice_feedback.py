@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from homeplane.embodied import home_service, service
 from homeplane.embodied.api import create_router
@@ -116,8 +117,9 @@ async def test_only_the_console_receipt_route_returns_admitted_speech(system, mo
         with TestClient(system.worker, client=('127.0.0.1', 0)) as browser:
             params = {'k': VIEWER}
             assert browser.get('/api/internal/voice-receipts', params=params).status_code == 403
+            assert browser.get('/api/frame', params=params).status_code == 403
             for path in ('/api/status', '/api/frame'):
-                report = browser.get(path, params=params).json()
+                report = browser.get(path, params=params, headers={'X-Friday-Worker': CONTROL}).json()
                 assert all(value not in json.dumps(report, ensure_ascii=False) for value in (UTTERANCE, REPLY))
                 assert report['home']['curtain'] == dict(position=42, status='ready')
             with browser.websocket_connect('/ws?view=game&k=' + VIEWER) as connection:
@@ -130,6 +132,39 @@ async def test_only_the_console_receipt_route_returns_admitted_speech(system, mo
             response = await remote.get('/api/internal/voice-receipts', params={'k': VIEWER},
                                         headers={'X-Friday-Worker': CONTROL})
             assert response.status_code == 403
+    finally:
+        await system.owner.client.aclose()
+        await system.other.close()
+        await system.primary.close()
+
+
+@pytest.mark.asyncio
+async def test_stage_plays_without_pixels_and_retires_its_own_preview(system):
+    system.scope['state'].update(people=[dict(joints={str(i): {} for i in range(8)})],
+                                 room=dict(registration=dict(status='locked'), private='synthetic-room-detail'))
+    endpoint = next(route.endpoint for route in system.worker.routes if route.path == '/ws')
+    endpoint.__globals__.update(last_preview=b'synthetic-player-preview', last_preview_at=time.time())
+
+    def packet(connection):
+        value = connection.receive_bytes()
+        metadata, size = struct.unpack('>II', value[:8])
+        return json.loads(value[8:8 + metadata]), value[-size:] if size else b''
+
+    try:
+        with TestClient(system.worker, client=('127.0.0.1', 0)) as browser:
+            with browser.websocket_connect('/ws?view=game&k=' + VIEWER) as connection:
+                initial, jpeg = packet(connection)
+                assert jpeg == b'' and 'people' not in initial and initial['player_visible'] is True
+                assert initial['room'] == {'registration': {'status': 'locked'}}
+                connection.send_text('show-player-view')
+                opened, jpeg = packet(connection)
+                assert jpeg == b'synthetic-player-preview' and 'people' in opened
+                connection.send_text('hide-player-view')
+                closed, jpeg = packet(connection)
+                assert jpeg == b'' and 'people' not in closed
+        with TestClient(system.worker, client=('192.0.2.1', 0)) as browser:
+            with pytest.raises(WebSocketDisconnect), browser.websocket_connect('/ws?k=' + VIEWER):
+                pass
     finally:
         await system.owner.client.aclose()
         await system.other.close()

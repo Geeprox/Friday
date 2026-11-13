@@ -99,10 +99,20 @@ for(const data of [new ArrayBuffer(2),new ArrayBuffer(8),packet({...game(),contr
  });
 }
 test('late image callbacks cannot release or replace a newer decode',()=>{
- const h=makeClient(),c=h.c;c.connect();let ws=h.sockets[0];ws.onopen();ws.onmessage({data:packet(game(),1)});h.readers[0].onload();
+ const h=makeClient(),c=h.c;c.connect();let ws=h.sockets[0];ws.onopen();c.togglePlayerView();ws.onmessage({data:packet(game(),1)});h.readers[0].onload();
  c.reconnectGame();ws=h.sockets[1];ws.onopen();ws.onmessage({data:packet(game({control_context:'b'.repeat(32)}),1)});h.readers[1].onload();
  h.images[0].onload();assert.equal(c.decoding,true);assert.equal(c.debugFrame,null);
  h.images[1].onload();assert.equal(c.decoding,false);assert.equal(c.debugFrame,h.images[1]);
+});
+test('隐藏动作画面会撤下已解码画面并拒绝晚到的画面',()=>{
+ const h=makeClient(),c=h.c;c.connect();const ws=h.sockets[0];ws.onopen();
+ ws.onmessage({data:packet(game(),1)});
+ assert.equal(h.images.length,0);
+ c.togglePlayerView();ws.onmessage({data:packet(game(),1)});h.readers[0].onload();
+ c.togglePlayerView();h.images[0].onload();
+ assert.equal(c.debugFrame,null);
+ assert.deepEqual(h.calls.filter(row=>row[0]==='preview').map(row=>row[1]),
+  ['hide-player-view','show-player-view','hide-player-view']);
 });
 test('socket error creates one reconnect and closing the view retires every callback',()=>{
  const h=makeClient(),c=h.c;c.connect();const ws=h.sockets[0];ws.onopen();ws.onerror();ws.onclose();

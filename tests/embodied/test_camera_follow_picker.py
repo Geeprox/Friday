@@ -155,6 +155,7 @@ async def test_public_api_relays_the_pick_to_the_camera_owner(tmp_path, monkeypa
     previews.sessions = {secondary_id: dict(source_active=True, process=process, state='live', follow_picker=camera.picker)}
     scope = dict(SELECTED={'id': primary_id}, previews=previews, HTTPException=HTTPException, Request=Request,
                  JSONResponse=JSONResponse, FollowCommand=FollowCommand,
+                 require_preview_source=lambda *_: None, preview_selection=lambda _: None,
                  camera_planner=SimpleNamespace(follow_picker=camera.picker),
                  camera_lease=SimpleNamespace(snapshot={'status': 'owned'}))
     worker_source = 'homeplane/embodied/worker.py'
@@ -166,11 +167,18 @@ async def test_public_api_relays_the_pick_to_the_camera_owner(tmp_path, monkeypa
     allowed = {'id': camera.id}
     monkeypatch.setattr(service_module, 'camera', lambda camera_id: allowed if camera_id == camera.id else None)
     monkeypatch.setattr(service_module, 'configuration', lambda: {'viewer_port': 18743})
-    service = object.__new__(EmbodiedService)
+    service = EmbodiedService()
+    await service.client.aclose()
     service._url = lambda path: 'http://127.0.0.1:18743' + path
     service._game_lifecycle, service.selected, service.process = 1, primary_id, process
     service.closed, service.capture_enabled, service.recovery_pending = False, True, False
     service.manual_previews = SimpleNamespace(has=lambda camera_id: False)
+    service._worker_headers = lambda: {}
+    from homeplane.embodied.live_preview import LiveView
+    service.preview_source = lambda _: 's' * 64
+    token = 'a' * 32
+    service.live_previews.views[token] = LiveView(token, camera.id, 'live', 's' * 64,
+        service.live_previews._source(False), None, False, service.live_previews.clock() + 12)
     app = FastAPI()
     app.include_router(create_router(service, None, None))
     path = f'/api/embodied/cameras/{camera.id}/follow-target'
@@ -178,6 +186,8 @@ async def test_public_api_relays_the_pick_to_the_camera_owner(tmp_path, monkeypa
         httpx.AsyncClient(transport=httpx.ASGITransport(app=worker)) as service.client,
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as ui,
     ):
+        assert (await ui.get(path)).status_code == 409
+        ui.headers['X-Friday-Live-View'] = token
         assert (await ui.get(path)).status_code == 409
         body = dict(action='prepare', kind='person', revision=camera.intent()[1])
         assert (await ui.post(path, json=dict(body, track=2))).status_code == 422

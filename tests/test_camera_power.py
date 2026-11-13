@@ -62,10 +62,16 @@ async def test_manual_preview_selects_one_camera_without_recognition_or_audio(mo
     calls=[]
     class Pool:
         def __init__(self,**options):calls.append(options)
-        async def start(self,camera):calls.append(camera);return {'state':'connecting'}
+        async def start(self,camera,*,selected):
+            assert selected == SELECTED
+            calls.append(camera)
+            return {'state':'connecting'}
         async def close(self):calls.append('closed')
-    monkeypatch.setattr(manual_preview,'camera',lambda value:dict(id=value))
-    monkeypatch.setattr(manual_preview.sys,'stdin',type('Input',(),{'buffer':io.BytesIO(b'{"action":"start","camera":"cam_aaaaaaaaaa"}\n')})())
+    import json
+    from homeplane.embodied.camera_provenance import camera_source_context
+    monkeypatch.setattr(manual_preview,'camera',lambda _:SELECTED)
+    request=json.dumps(dict(action='start',camera=SELECTED['id'],source_context=camera_source_context(SELECTED)))
+    monkeypatch.setattr(manual_preview.sys,'stdin',type('Input',(),{'buffer':io.BytesIO((request+'\n').encode())})())
     await manual_preview.worker(Pool)
     assert calls==[{'recognize':False,'control_camera':True},'cam_aaaaaaaaaa','closed']
     assert 'connecting' in capsys.readouterr().out
@@ -78,7 +84,7 @@ async def test_only_explicit_view_may_use_manual_preview_while_background_is_pau
     from homeplane.embodied import service
     owner=service.EmbodiedService();owner.capture_enabled=False
     command=AsyncMock(return_value={'state':'connecting'})
-    owner.manual_previews=SimpleNamespace(has=lambda _:False,command=command,close=AsyncMock())
+    owner.manual_previews=SimpleNamespace(has=lambda _:False,command=command,close=AsyncMock(),process=None)
     monkeypatch.setattr(service,'camera',lambda _:SELECTED)
     monkeypatch.setattr(owner,'configured',lambda:True)
     try:
@@ -87,5 +93,5 @@ async def test_only_explicit_view_may_use_manual_preview_while_background_is_pau
         assert not command.called
         result=await owner.preview(SELECTED['id'],start=True,explicit=True)
         assert result['recognition_enabled'] is False and owner.capture_enabled is False
-        command.assert_awaited_once_with('start',SELECTED['id'])
+        command.assert_awaited_once_with('start',SELECTED['id'],source_context=owner.preview_source(SELECTED['id']))
     finally:await owner.close()

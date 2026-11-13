@@ -9,6 +9,7 @@ function panel({supported=true,recognition=true,powerEnabled=true,initialMode='a
  class Element{
   constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.textContent='';this.isConnected=true;this.hidden=false;this.classList={toggle(){}};}
   append(...nodes){this.children.push(...nodes);}setAttribute(k,v){this.attrs[k]=String(v);}removeAttribute(k){delete this.attrs[k];}
+  getAttribute(k){return this.attrs[k];}set src(value){this.setAttribute('src',value);this.onload?.();}get src(){return this.getAttribute('src');}
   get lastElementChild(){return this.children.at(-1);}addEventListener(){}
  }
  const h=(tag,text,attrs={})=>{const n=new Element(tag);n.textContent=text||'';for(const[k,v]of Object.entries(attrs)){n.setAttribute(k,v);if(k==='class')n.className=v;if(k==='hidden')n.hidden=true;}return n;};

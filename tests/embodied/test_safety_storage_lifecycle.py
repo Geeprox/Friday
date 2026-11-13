@@ -695,11 +695,13 @@ async def test_actual_primary_frame_continues_game_and_home_input_while_safety_s
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fault', ['manual_previews', 'safety_output', 'stop'])
 async def test_original_service_always_stops_worker_and_closes_client_after_optional_cleanup_fault(fault):
+    from homeplane.embodied.live_preview import LivePreviews
     from homeplane.embodied.service import EmbodiedService
 
     service = EmbodiedService.__new__(EmbodiedService)
     service.closed = False
     service.manual_previews = SimpleNamespace(close=AsyncMock())
+    service.live_previews = LivePreviews(service)
     service.safety_output = SimpleNamespace(close=AsyncMock())
     service.stop = AsyncMock()
     service.client = SimpleNamespace(aclose=AsyncMock())

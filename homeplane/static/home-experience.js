@@ -16,7 +16,7 @@ const h=(tag,text,attrs={})=>{const n=document.createElement(tag);if(text!=null)
 const add=(n,...children)=>{children.forEach(c=>c&&n.append(c));return n;};
 const ico=name=>h('span',null,{class:'icon icon-'+name,'aria-hidden':'true'});
 const btn=(text,run,attrs={})=>{const n=h('button',text,{type:'button',...attrs});n.addEventListener('click',run);return n;};
-const api=async(path,body,options={})=>{const r=await fetch(path,{...options,...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)}),headers:{'Content-Type':'application/json'}});const d=await r.json();if(!r.ok)throw Error(d.detail||d.code||'连接暂时不可用');return d;};
+const api=async(path,body,options={})=>{const r=await fetch(path,{...options,...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)}),headers:{'Content-Type':'application/json',...options.headers}});const d=await r.json();if(!r.ok)throw Error(d.detail||d.code||'连接暂时不可用');return d;};
 const names={humidifier:'除湿与加湿',water_heater:'热水',trigger:'动作按键',light:'灯光',switch:'开关',cover:'窗帘',climate:'空调',camera:'摄像头',fan:'风扇',vacuum:'清洁',sensor:'环境',binary_sensor:'传感器',media_player:'影音',lock:'门锁'};
 const marks={humidifier:'temperature',water_heater:'temperature',trigger:'adjustments-horizontal',light:'bulb',switch:'plug',cover:'adjustments-horizontal',climate:'air-conditioning',camera:'video',fan:'devices',vacuum:'devices',sensor:'temperature',binary_sensor:'devices',media_player:'player-play',lock:'door'};
 const visualMark=d=>({ceiling_vent:'ceiling-vent',power_supply:'plug',led_strip:'light-strip',pendant:'pendant',downlight:'downlight',spotlight:'spotlight'}[d.presentation?.fixture]||marks[d.kind]||'devices');
@@ -137,6 +137,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   stopPreview();
   const endpoint='/api/embodied/cameras/'+d.id;
   let power=null,pending=false,viewing=false,previewEpoch=0,previewTimer=null,previewToken=null;
+  let loadedFrame=false;
   let modePending=false,directionPending=false,followReport=null,cameraControl=null,previousIntent=null;
   let modeVersion=0,pollSequence=0,appliedPoll=0;
   let lastPoll=Date.now(),statusReadFailed=false;
@@ -165,13 +166,14 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const owns=()=>alive&&frame.isConnected&&previewStop===dispose;
   const current=epoch=>owns()&&epoch===previewEpoch;
   const hasLiveFrame=()=>followReport?.frame_available||followReport?.state==='live'||followReport?.status==='live';
-  const live=()=>viewing&&hasLiveFrame();
+  const live=()=>viewing&&loadedFrame&&hasLiveFrame();
   const surveyControl=()=>cameraControl?.mode==='survey'?cameraControl:null;
   const surveying=()=>!!surveyControl()&&!cameraControl.survey_result&&cameraControl.phase!=='survey_finished';
   const patrolControl=()=>cameraControl?.mode==='patrol'?cameraControl:null;
   const selectingMode=()=>['person_target','pet_target'].includes(cameraControl?.mode);
   const setStatus=value=>{if(status.textContent!==value)status.textContent=value;};
-  const release=token=>{if(token)void api(endpoint+'/preview/stop',{token}).catch(()=>{});};
+  const viewHeaders=()=>({'X-Friday-Live-View':previewToken});
+  const release=token=>{if(token)void api(endpoint+'/preview/stop',{token},{keepalive:true}).catch(()=>{});};
   const modeAvailability=(button,available)=>{
    button.disabled=!available;
    button.setAttribute('aria-disabled',String(!available||modePending||!!picker));
@@ -196,8 +198,10 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   }
 
   function clearFrame(){
+   loadedFrame=false;
    image.hidden=true;
    placeholder.hidden=false;
+   image.removeAttribute('src');
   }
   function stopViewing(){
    previewEpoch++;
@@ -208,10 +212,17 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    leavePicker();
    followReport=null;
    clearFrame();
-   image.removeAttribute('src');
+  }
+  function onViewHidden(event){
+   if((event?.type!=='pagehide'&&!globalThis.document?.hidden)||!owns()||!viewing&&!pending)return;
+   stopViewing();
+   setStatus('已停止查看');
+   syncControls();
   }
   function dispose(){
    clearInterval(previewTimer);
+   globalThis.document?.removeEventListener?.('visibilitychange',onViewHidden);
+   globalThis.removeEventListener?.('pagehide',onViewHidden);
    stopViewing();
    cameraControl=previousIntent=null;
   }
@@ -307,7 +318,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    }
   }
   const watch=btn('查看实时画面',async()=>{
-   if(!owns())return;
+   if(!owns()||globalThis.document?.hidden)return;
    if(viewing){
     stopViewing();setStatus('已停止查看');syncControls();
     void poll();
@@ -328,7 +339,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     }
     setStatus('正在连接画面…');
     const report=await api(endpoint+'/preview',{});
-    if(!current(epoch)){release(report.preview_token);return;}
+    if(!current(epoch)||globalThis.document?.hidden){release(report.preview_token);return;}
+    if(!report.preview_token)throw Error('camera_preview_unavailable');
     viewing=true;previewToken=report.preview_token;
     syncControls();
     await poll();
@@ -385,7 +397,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    const read=new AbortController(), began=performance.now();
    entry.read=read;
    try{
-    const report=await api(targetPath,undefined,{signal:read.signal});
+    const report=await api(targetPath,undefined,{signal:read.signal,headers:viewHeaders()});
     if(!pickerIsCurrent(entry)||entry.read!==read||report.intent_revision!==entry.revision)return;
     if(report.status==='waiting'){setStatus('等'+kindNames[entry.kind]+'入镜');return;}
     if(report.status!=='ready'||!validTargetView(report))throw Error('invalid_target_view');
@@ -427,7 +439,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    modeVersion++;syncControls();setStatus('正在准备画面…');
    kindButtons.get(kind).focus({preventScroll:true});
    try{
-    const result=await api(targetPath,{action:'prepare',kind,revision});
+    const result=await api(targetPath,{action:'prepare',kind,revision},{headers:viewHeaders()});
     if(!pickerIsCurrent(entry))return;
     if(result.mode!==(kind==='pet'?'pet_target':'person_target')||!result.intent_revision)throw Error('camera_mode_unconfirmed');
     entry.revision=result.intent_revision;
@@ -448,7 +460,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    entry.busy=true;
    modeVersion++;syncControls();setStatus('正在确认所选目标…');
    try{
-    const result=await api(targetPath,{action:'choose',snapshot:token,choice});
+    const result=await api(targetPath,{action:'choose',snapshot:token,choice},{headers:viewHeaders()});
     if(!pickerIsCurrent(entry))return;
     if(result.status!=='selected'||result.intent_revision!==entry.revision)throw Error('follow_target_changed');
     leavePicker();receiveTargetMode(result,'正在确认所选目标');
@@ -542,12 +554,12 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    directions.push(control);cameraControls.append(control);
   }
   async function poll(){
-   if(!owns())return;
+   if(!owns()||globalThis.document?.hidden)return;
    lastPoll=Date.now();
    const epoch=previewEpoch,version=modeVersion,sequence=++pollSequence;
    const accepted=()=>current(epoch)&&version===modeVersion&&sequence>=appliedPoll;
    try{
-    const report=await api(endpoint+'/preview');
+    const report=await api(endpoint+'/preview',undefined,previewToken?{headers:viewHeaders()}:undefined);
     if(!accepted())return;
     appliedPoll=sequence;followReport=report;statusReadFailed=false;
     if(report.recognition_enabled===false){cameraControl=null;previousIntent=null;}
@@ -561,12 +573,11 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
      leavePicker();
      if(focused)watch.focus({preventScroll:true});
     }
-    if(live()){
-     image.src=endpoint+'/frame?t='+Date.now();
-     image.hidden=false;placeholder.hidden=true;
+    if(hasLiveFrame()){
+     image.src=endpoint+'/frame?view='+encodeURIComponent(previewToken)+'&t='+Date.now();
      if(picker?.revision&&(!selectingMode()||cameraControl?.intent_revision!==picker.revision||!report.follow_target_available))leavePicker();
      if(picker)void readTargetPhoto(picker);
-     else setStatus(recovering?'实时画面 · 感知恢复中':
+     else if(loadedFrame)setStatus(recovering?'实时画面 · 感知恢复中':
       report.recognition_enabled===false||surveyControl()||patrolControl()?.scheduled_survey_active
        ?'实时画面':cameraControl?.reason||'实时画面');
     }else{
@@ -579,14 +590,26 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
       setStatus(recovering?'感知恢复中':modePending&&cameraControl?.mode==='hold'?cameraControl.reason:'正在连接画面，请稍候…');
      }
     }
-   }catch(_){
+   }catch(error){
     if(!accepted())return;
     appliedPoll=sequence;followReport=null;statusReadFailed=true;
-    if(viewing){leavePicker();clearFrame();setStatus('画面连接中断，正在重连…');}
+    if(viewing&&error.message==='camera_preview_ended'){
+     const focused=liveControls.contains?.(globalThis.document?.activeElement)||pickerTools.contains?.(globalThis.document?.activeElement);
+     stopViewing();setStatus('查看已结束，请重新打开画面');
+     if(focused)watch.focus({preventScroll:true});
+    }else if(viewing){leavePicker();clearFrame();setStatus('画面连接中断，正在重连…');}
    }finally{if(owns())syncControls();}
   }
+  image.onload=()=>{
+   if(!owns()||!viewing||globalThis.document?.hidden||!image.getAttribute('src'))return;
+   loadedFrame=true;image.hidden=false;placeholder.hidden=true;
+   if(!picker)setStatus(followReport?.recognition==='recovering'?'实时画面 · 感知恢复中':
+    followReport?.recognition_enabled===false||surveyControl()||patrolControl()?.scheduled_survey_active
+     ?'实时画面':cameraControl?.reason||'实时画面');
+   syncControls();
+  };
   image.addEventListener('error',()=>{
-   if(owns()&&viewing&&live()){clearFrame();if(!picker)setStatus('暂时无法显示画面');}
+   if(owns()&&viewing){clearFrame();if(!picker)setStatus('暂时无法显示画面');syncControls();}
   });
   const viewActions=add(h('div',null,{class:'camera-view-actions'}),watch,recordings);
   const viewBar=add(h('div',null,{class:'camera-view-bar'}),status,viewActions);
@@ -596,6 +619,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     btn('人物识别',()=>go('People'),{class:'text-button'}));
   add(workspace,picture,liveControls,powerRow);slot.append(workspace);
   previewStop=dispose;
+  globalThis.document?.addEventListener?.('visibilitychange',onViewHidden);
+  globalThis.addEventListener?.('pagehide',onViewHidden);
   void readPower().then(()=>{if(start&&owns()&&power?.enabled)watch.click();});
   void poll();
   previewTimer=setInterval(()=>{

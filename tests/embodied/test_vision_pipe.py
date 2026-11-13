@@ -237,7 +237,9 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         actual('homeplane/embodied/worker.py', name, owner)
     task = asyncio.create_task(owner['run_source'](1))
     state = owner['state']
-    request = SimpleNamespace(client=SimpleNamespace(host='127.0.0.1'))
+    owner['require_preview_source'] = Mock()
+    owner['preview_selection'] = lambda _: camera
+    request = SimpleNamespace(client=SimpleNamespace(host='127.0.0.1'), headers={})
     try:
         await until(lambda:capture.stdin.write.called)
         frame(b'SYNTHETIC-FIRST')

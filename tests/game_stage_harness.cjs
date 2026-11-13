@@ -15,12 +15,12 @@ function makeClient(extra={}){
   firstPacket:false,lastBackendMode:'quest',lastBackendRound:'quest',stageFrame:3,key:'',television:false,
   AbortController,ArrayBuffer,DataView,Uint8Array,TextDecoder,Blob,performance:{now:()=>at},
   location:{host:'127.0.0.1',protocol:'http:'},document:{hidden:false,createElement:tag=>({tagName:tag.toUpperCase()}),querySelectorAll:()=>[node('mode'),node('start')],querySelector:()=>node('actions')},
-  $:node,url:p=>p,fetch:async()=>{throw Error('unexpected network');},
+  $:node,dc:{clearRect(){}},url:p=>p,fetch:async()=>{throw Error('unexpected network');},
   selectMode:mode=>{c.selected=mode;calls.push(['selected',mode]);},updateHUD:()=>calls.push(['updated']),
   skiScenery:{receive(){},interrupt(){},display:g=>g},scenery:{receive(){},ready:()=>true},winterReady:()=>true,beamStage:{forget(){},receive(){},ready:()=>true},presentationClient:{tick(){},ready:()=>true,release(){},close(){}},gameSound:{quiet(){},close(){},tick(){}},
   setTimeout:(fn,ms)=>{const id=++nextTimer;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),
   cancelAnimationFrame:id=>calls.push(['cancelled-frame',id]),
-  WebSocket:function(url){this.url=url;this.close=()=>{this.closed=true;};sockets.push(this);},
+  WebSocket:function(url){this.url=url;this.close=()=>{this.closed=true;};this.send=value=>calls.push(['preview',value]);sockets.push(this);},
   Image:function(){images.push(this);},FileReader:function(){this.result='data:synthetic-only';this.readAsDataURL=()=>{};readers.push(this);},
   ...extra});
  vm.runInContext(part('const tennisModes=', '\nif(embedded||television)'),c);
@@ -29,6 +29,8 @@ function makeClient(extra={}){
  vm.runInContext(part('async function commandGame(', '\nfunction selectMode('),c);
  vm.runInContext(part('async function startGame(', '\nfunction tennisPresentation('),c);
  vm.runInContext(part('async function pauseGame()', '\nfunction togglePlayerView('),c);
+ vm.runInContext(part('function togglePlayerView(', '\nif(key&&!television)'),c);
+ node('playerView').hidden=true;
  vm.runInContext(part('function streamLost(', '\nfunction updateHUD('),c);
  vm.runInContext(part('function closeGameView()', "\nwindow.addEventListener('pagehide'"),c);
  return {c,node,calls,sockets,images,readers,timers,setNow:value=>{at=value;},fire:ms=>{const [id,t]=[...timers].find(([,t])=>t.ms===ms)||[];assert(t,'missing timer '+ms);timers.delete(id);t.fn();}};

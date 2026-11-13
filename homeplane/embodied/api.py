@@ -2,6 +2,7 @@
 
 import secrets
 import time
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -58,7 +59,19 @@ class CameraPower(BaseModel):
 
 class StopPreview(BaseModel):
     model_config=ConfigDict(extra='forbid',strict=True)
-    token:str|None=Field(default=None,pattern=r'^[a-f0-9]{32}$')
+    token: str = Field(pattern=r'^[a-f0-9]{32}$')
+
+
+class StartPreview(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    purpose: Literal['live', 'pointing', 'identity'] = 'live'
+
+
+def local_camera_view(request):
+    if (request.client is None or request.client.host not in {'127.0.0.1', '::1'}
+            or request.headers.get('sec-fetch-site') not in (None, 'same-origin')
+            or request.headers.get('origin') not in (None, str(request.base_url).rstrip('/'))):
+        raise HTTPException(403)
 
 
 class SceneRun(BaseModel):
@@ -281,9 +294,11 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         except (ValueError,OSError,TimeoutError):raise HTTPException(409,detail='camera_power_unavailable')from None
 
     @router.post('/api/embodied/cameras/{camera_id}/preview/stop')
-    async def stop_preview(camera_id:str,request:StopPreview):
+    async def stop_preview(camera_id: str, request: StopPreview, incoming: Request):
+        local_camera_view(incoming)
         try:return await service.stop_preview(camera_id,request.token)
-        except (ValueError,OSError):raise HTTPException(409,detail='camera_preview_unavailable')from None
+        except (ValueError, OSError, TimeoutError, httpx.HTTPError):
+            raise HTTPException(409, detail='camera_preview_unavailable') from None
 
     @router.get("/api/embodied/devices")
     async def inventory():
@@ -299,38 +314,53 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         return core.actions.policy_report()
 
     @router.post("/api/embodied/cameras/{camera_id}/preview")
-    async def start_preview(camera_id: str):
+    async def start_preview(camera_id: str, request: StartPreview, incoming: Request):
+        local_camera_view(incoming)
         try:
-            return await service.preview(camera_id, start=True,explicit=True)
-        except ValueError:
+            result = await service.preview(camera_id, start=True, explicit=True, purpose=request.purpose)
+            return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+        except (ValueError, OSError, TimeoutError, httpx.HTTPError):
             raise HTTPException(409, detail="camera_preview_unavailable") from None
 
     @router.get("/api/embodied/cameras/{camera_id}/preview")
-    async def preview_status(camera_id: str):
+    async def preview_status(camera_id: str, request: Request):
+        token = request.headers.get('x-friday-live-view')
+        if token is not None:
+            local_camera_view(request)
         try:
-            return await service.preview(camera_id)
-        except ValueError:
-            raise HTTPException(409, detail="camera_preview_unavailable") from None
+            result = await service.preview(camera_id, token=token)
+            return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+        except (ValueError, OSError, TimeoutError, httpx.HTTPError) as error:
+            detail = 'camera_preview_ended' if str(error) == 'camera_preview_ended' else 'camera_preview_unavailable'
+            raise HTTPException(409, detail=detail) from None
 
     @router.get("/api/embodied/cameras/{camera_id}/frame")
-    async def preview_frame(camera_id: str):
+    async def preview_frame(camera_id: str, request: Request, view: str | None = None):
+        local_camera_view(request)
         try:
-            return Response(await service.preview(camera_id, frame=True), media_type="image/jpeg")
-        except ValueError:
+            result = await service.preview(camera_id, frame=True, token=view)
+            return Response(result, media_type="image/jpeg", headers={
+                'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+                'Cross-Origin-Resource-Policy': 'same-origin',
+            })
+        except (ValueError, OSError, TimeoutError, httpx.HTTPError):
             raise HTTPException(409, detail="camera_frame_unavailable") from None
 
     @router.get('/api/embodied/cameras/{camera_id}/follow-target')
-    async def follow_target_view(camera_id: str):
+    async def follow_target_view(camera_id: str, request: Request):
+        local_camera_view(request)
         try:
-            report = await service.camera_follow_target(camera_id)
+            report = await service.camera_follow_target(camera_id, token=request.headers.get('x-friday-live-view'))
         except (ValueError, OSError, httpx.HTTPError):
             raise HTTPException(409, detail='follow_target_unavailable') from None
         return JSONResponse(report, headers={'Cache-Control': 'no-store'})
 
     @router.post('/api/embodied/cameras/{camera_id}/follow-target')
-    async def follow_target_command(camera_id: str, command: FollowCommand):
+    async def follow_target_command(camera_id: str, command: FollowCommand, request: Request):
+        local_camera_view(request)
         try:
-            return await service.camera_follow_target(camera_id, command.model_dump())
+            return await service.camera_follow_target(camera_id, command.model_dump(),
+                token=request.headers.get('x-friday-live-view'))
         except (ValueError, OSError, httpx.HTTPError):
             raise HTTPException(409, detail='follow_target_unavailable') from None
 

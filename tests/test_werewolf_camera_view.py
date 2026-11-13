@@ -38,6 +38,7 @@ async def host(directory, monkeypatch):
     monkeypatch.setattr(camera_module, 'PRIVATE', directory)
     monkeypatch.setattr(camera_module, 'configuration', lambda: dict(viewer_port=41973))
     (directory / 'viewer-key').write_text('SYNTHETIC-LOCAL-KEY')
+    (directory / 'control-key').write_text('SYNTHETIC-LOCAL-CONTROL-KEY')
     camera = camera_module.EmbodiedService()
     await camera.client.aclose()
     camera.process = SimpleNamespace(returncode=None)
@@ -55,6 +56,8 @@ async def host(directory, monkeypatch):
             return httpx.Response(200,json=dict(context=payload['context'],scope='a'*32,
                 sequence=payload['sequence'],active=payload['action']=='renew'))
         assert request.method=='GET'
+        if request.url.path=='/api/frame':
+            assert request.headers['x-friday-worker']=='SYNTHETIC-LOCAL-CONTROL-KEY'
         if state.handler and request.url.path == '/api/frame':
             return await state.handler(request)
         if state.status_handler and request.url.path == '/api/status':

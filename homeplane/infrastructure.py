@@ -148,9 +148,18 @@ class HouseholdInfrastructure:
             self.failure, self.retry_at = None, 0
             try:
                 if not updated.enabled or not updated.recognition:
-                    preview=getattr(self.service,'manual_previews',None)
-                    if preview is not None:await preview.close()
-                    await self.service.stop()
+                    preview = getattr(self.service, 'live_previews', None)
+                    if preview is None:
+                        preview = getattr(self.service, 'manual_previews', None)
+                    self.service.preview_suspended = True
+                    try:
+                        try:
+                            if preview is not None:
+                                await preview.close()
+                        finally:
+                            await self.service.stop()
+                    finally:
+                        self.service.preview_suspended = False
                 else:
                     await self.service.set_interaction(updated.interaction)
             except (OSError, ValueError, TimeoutError, httpx.HTTPError):

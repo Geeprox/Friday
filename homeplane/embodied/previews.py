@@ -13,6 +13,7 @@ from .camera_intent import (
     CAMERA_MODES, PET_MODES, TARGET_MODES, CameraIntentStore, camera_intent_readback, finish_camera_survey,
 )
 from .camera_audio import AudioIngress
+from .camera_provenance import camera_source_context
 from .frame_sampling import CAPTURE_IDLE_TIMEOUT, CAPTURE_RECEIVE_TIMEOUT, offer_frame
 from .local_motor import SOUND_MOTION_DENIALS
 from homeplane.runtime_log import RuntimeLog
@@ -75,8 +76,8 @@ class PreviewPool:
         self.intent_factory = intent_factory or (lambda selected: CameraIntentStore(
             camera_storage(selected['id']), selected))
 
-    async def start(self, camera_id):
-        selected = camera(camera_id)
+    async def start(self, camera_id, *, selected=None):
+        selected = camera(camera_id) if selected is None else selected
         async with self.lock:
             old = self.sessions.get(camera_id)
             if old and not old["task"].done():
@@ -86,6 +87,8 @@ class PreviewPool:
             entry = dict(
                 state="connecting",
                 frame=None,
+                selected=selected,
+                wall_epoch=self.wall.begin(camera_id) if self.wall else None,
                 frames=0,
                 received_at=0,
                 # The native transport may need its bounded 65s reconnect on a
@@ -253,7 +256,10 @@ class PreviewPool:
                     source_active=False, state='connecting', recognition_recovering=False)
         latest = None
         stage='initializing'
-        wall_epoch = self.wall.begin(selected['id']) if self.wall else None
+        wall_epoch = item.get('wall_epoch')
+        item['wall_epoch'] = None
+        if self.wall and wall_epoch is None:
+            wall_epoch = self.wall.begin(selected['id'])
 
         def retire_source(reason, error_class=None):
             nonlocal latest, retired
@@ -346,7 +352,8 @@ class PreviewPool:
             process.stdin.write(
                 (
                     json.dumps(dict(source="miloco", camera=selected["id"], motor=lease is not None,
-                        audio=bool(audio_ingress and self.on_audio), identity=False,capture_session=capture_session)) + "\n"
+                        audio=bool(audio_ingress and self.on_audio), identity=False, capture_session=capture_session,
+                        source_context=camera_source_context(selected))) + "\n"
                 ).encode()
             )
             await process.stdin.drain()

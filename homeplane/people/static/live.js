@@ -2,7 +2,8 @@ const el=(tag,text,attrs={})=>{const n=document.createElement(tag);if(text!==und
 const messages={identity_candidate_unavailable:'候选人脸已更新，请刷新后重试。',identity_samples_required:'请面向镜头停留片刻，等待清晰人脸。',identity_session_changed:'镜头已切换，请重新选择。',identity_samples_inconsistent:'人脸样本不一致，请单独站到镜头前重试。',people_revision_conflict:'人物记录已变化，请刷新后重试。',people_name_conflict:'名字已存在，请选择已有的人物。'};
 
 export function mountLivePeople(root,{readOnly=false,onSaved=()=>{}}={}){
-  let data=null,closed=false,busy=false,timer=null,choice=null,imageCamera=null,showLive=false;
+  let data=null,closed=false,busy=false,timer=null,choice=null,showLive=false;
+  let preview=null,refreshing=false;
   const candidateNodes=new Map(),forgetButtons=new Map();
   const selectedGroups=new Set();
   let removalDialog=null;
@@ -13,7 +14,7 @@ export function mountLivePeople(root,{readOnly=false,onSaved=()=>{}}={}){
   const note=el('p','相似的人脸会归在一起。核对照片是同一人后，再登记姓名或归入已有家人。',{class:'inspector-subtitle'});
   const body=el('div',undefined,{class:'live-workspace'}),view=el('div',undefined,{class:'live-preview'});
   const image=el('img',undefined,{alt:'当前登记镜头'}),boxes=el('div',undefined,{class:'live-face-boxes'});
-  view.append(image,boxes);view.hidden=true;
+  view.append(image,boxes);view.hidden=true;boxes.hidden=true;
   const side=el('div'),tracks=el('div',undefined,{class:'live-track-list'}),form=el('form');
   const identity=el('select',undefined,{'aria-label':'登记到人物'}),name=el('input',undefined,{placeholder:'姓名',maxlength:'40','aria-label':'人物姓名'});
   const save=el('button','登记当前人物',{type:'submit'}),notice=el('p','',{role:'status','aria-live':'polite',class:'live-caption'});
@@ -23,6 +24,78 @@ export function mountLivePeople(root,{readOnly=false,onSaved=()=>{}}={}){
   const groupTools=el('div',undefined,{class:'live-group-tools'}),groupTitle=el('h3','待确认的人物'),merge=el('button','选中的是同一人',{type:'button'}),undoGroup=el('button','撤销归组',{type:'button'});
   groupTools.append(groupTitle,merge,undoGroup);groupTools.hidden=readOnly;root.append(header,note,notice,profiles,groupTools,candidates,body);
   const visibleCandidates=()=>data?.candidate_groups??data?.candidates??[];
+  const currentRecognition=()=>{
+    const whole=data?.recognition||{};
+    const requested=cameraSelect.value||whole.camera;
+    return whole.sessions?.find(s=>s.camera===requested)||(requested===whole.camera?whole:{});
+  };
+  const viewPath=camera=>'/api/embodied/cameras/'+encodeURIComponent(camera);
+  const releasePreview=(camera,token)=>{
+    if(token)void fetch(viewPath(camera)+'/preview/stop',{method:'POST',keepalive:true,
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({token})}).catch(()=>{});
+  };
+  function clearPreview(){
+    view.hidden=true;boxes.hidden=true;
+    if(image.src)image.removeAttribute('src');
+    save.disabled=true;
+  }
+  function stopPreview(){
+    const old=preview;preview=null;clearPreview();
+    if(old)releasePreview(old.camera,old.token);
+  }
+  function finishLive(message){
+    showLive=false;choice=null;stopPreview();render();
+    if(message)notice.textContent=message;
+  }
+  const currentView=entry=>preview===entry&&!closed&&showLive&&!document.hidden&&
+    currentRecognition().camera===entry.camera&&currentRecognition().session===entry.session;
+  async function pollPreview(){
+    const rec=currentRecognition();
+    if(closed||!showLive||document.hidden||readOnly)return;
+    if(preview&&(preview.camera!==rec.camera||preview.session!==rec.session)){
+      finishLive('镜头已切换，请重新打开现场画面');return;
+    }
+    if(!preview?.token)return;
+    const entry=preview;
+    try{
+      const response=await fetch(viewPath(entry.camera)+'/preview',{cache:'no-store',
+        headers:{'X-Friday-Live-View':entry.token}});
+      const report=await response.json();
+      if(!currentView(entry))return;
+      if(report.detail==='camera_preview_ended'||report.state==='shutter_closed'){
+        finishLive('查看已结束，请重新打开现场画面');return;
+      }
+      if(!response.ok||rec.state!=='live'||report.state!=='live'){
+        clearPreview();return;
+      }
+      image.src=viewPath(entry.camera)+'/frame?view='+encodeURIComponent(entry.token)+'&t='+Date.now();
+    }catch{if(currentView(entry))clearPreview();}
+  }
+  async function openPreview(){
+    stopPreview();
+    const rec=currentRecognition();
+    if(!showLive||readOnly||closed||document.hidden)return;
+    if(rec.state!=='live'||!rec.camera||!rec.session){
+      finishLive('镜头就绪后可打开现场画面');return;
+    }
+    const entry={camera:rec.camera,session:rec.session,token:null};
+    preview=entry;notice.textContent='正在连接画面…';
+    try{
+      const response=await fetch(viewPath(entry.camera)+'/preview',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({purpose:'identity'})});
+      const result=await response.json();
+      if(!currentView(entry)){releasePreview(entry.camera,result.preview_token);return;}
+      if(!response.ok||!result.preview_token)throw Error('preview_unavailable');
+      entry.token=result.preview_token;notice.textContent='';await pollPreview();
+    }catch{if(currentView(entry))finishLive('暂时无法查看现场画面');}
+  }
+  image.onload=()=>{
+    if(preview?.token&&currentView(preview)&&image.getAttribute('src')){
+      view.hidden=false;boxes.hidden=false;render();
+    }
+  };
+  image.onerror=()=>clearPreview();
+  function onViewHidden(event){if((document.hidden||event.type==='pagehide')&&showLive)finishLive('');}
   function updateGrouping(){merge.disabled=busy||selectedGroups.size<2;undoGroup.disabled=busy||!data?.group_undo_available;groupTitle.textContent='待确认的人物'+(visibleCandidates().length?' · '+visibleCandidates().length:'');}
   merge.onclick=()=>{const members=[...new Set(visibleCandidates().filter(c=>selectedGroups.has(c.id)).flatMap(c=>c.members||[c.id]))];if(members.length>8){notice.textContent='一次最多合并 8 组照片，请分次选择。';return;}void mutate('candidate-group',{members});};
   undoGroup.onclick=()=>void mutate('candidate-group/undo',{});
@@ -40,7 +113,7 @@ export function mountLivePeople(root,{readOnly=false,onSaved=()=>{}}={}){
   }
   function render(){
     if(!data||closed)return;
-    const whole=data.recognition||{},rec=whole.sessions?.find(s=>s.camera===(cameraSelect.value||whole.camera))||whole,cameras=data.cameras||[],room=id=>cameras.find(c=>c.id===id)?.room||'镜头';
+    const whole=data.recognition||{},rec=currentRecognition(),cameras=data.cameras||[],room=id=>cameras.find(c=>c.id===id)?.room||'镜头';
     const rows=rec.tracks||[];
     const running=!['stopped',undefined].includes(whole.state);
     if(cameraSelect.dataset.loaded!=='true'){
@@ -64,10 +137,8 @@ export function mountLivePeople(root,{readOnly=false,onSaved=()=>{}}={}){
     const old=identity.value,known=data.profiles.map(p=>p.person_id).join(',');
     if(identity.dataset.known!==known){identity.replaceChildren(el('option','登记新人物',{value:''}));for(const p of data.profiles)identity.append(el('option',p.name,{value:p.person_id}));identity.dataset.known=known;identity.value=old;}
     const ready=choice&&rows.find(r=>r.track===choice.track)?.enroll_ready;
-    save.disabled=busy||!ready;
-    if(showLive&&rec.state==='live'&&rec.camera){
-      view.hidden=false;if(imageCamera!==rec.camera){imageCamera=rec.camera;image.src=`/api/embodied/cameras/${encodeURIComponent(rec.camera)}/frame?t=${Date.now()}`;}
-    }else view.hidden=true;
+    save.disabled=busy||!ready||!preview?.token||view.hidden;
+    if(!showLive||rec.state!=='live')clearPreview();
     const available=new Set(visibleCandidates().map(c=>c.id));
     for(const id of selectedGroups)if(!available.has(id))selectedGroups.delete(id);
     for(const [id,card] of candidateNodes)if(!available.has(id)){card.remove();candidateNodes.delete(id);}
@@ -117,9 +188,11 @@ export function mountLivePeople(root,{readOnly=false,onSaved=()=>{}}={}){
     if(focusedPerson)forgetButtons.get(focusedPerson)?.focus();
   }
   async function refresh(){
-    if(closed||busy)return;
-    try{const r=await fetch('/api/people/live',{cache:'no-store'});if(!r.ok)throw Error();data=await r.json();imageCamera=null;render();}
-    catch{status.textContent='人物识别暂不可用，请检查摄像头连接';}
+    if(closed||busy||refreshing)return;
+    refreshing=true;
+    try{const r=await fetch('/api/people/live',{cache:'no-store'});if(!r.ok)throw Error();data=await r.json();render();await pollPreview();}
+    catch{status.textContent='人物识别暂不可用，请检查摄像头连接';clearPreview();}
+    finally{refreshing=false;}
   }
   async function mutate(path,body){
     if(busy||readOnly)return;busy=true;save.disabled=true;for(const card of candidateNodes.values())card.querySelector('button').disabled=true;
@@ -128,9 +201,11 @@ export function mountLivePeople(root,{readOnly=false,onSaved=()=>{}}={}){
       data=result;notice.textContent=path==='forget'?'人脸登记已删除。':path==='candidate-group'?'人脸已重新归组，可撤销。':path==='candidate-group/undo'?'已撤销归组。':'人脸已登记。';selectedGroups.clear();onSaved();
     }catch{notice.textContent='连接中断，请核对登记状态。';}finally{busy=false;for(const card of candidateNodes.values())card.querySelector('button').disabled=readOnly;await refresh();}
   }
-  control.onclick=()=>{showLive=!showLive;imageCamera=null;render();};
-  cameraSelect.onchange=()=>{choice=null;imageCamera=null;render();};
-  form.addEventListener('submit',event=>{event.preventDefault();if(!choice||!name.value.trim()||!data)return;void mutate('register',{expected_revision:data.revision,...choice,name:name.value.trim(),...(identity.value?{person_id:identity.value}:{})});});
+  control.onclick=()=>{if(showLive){finishLive('');return;}showLive=true;render();void openPreview();};
+  cameraSelect.onchange=()=>{choice=null;render();void openPreview();};
+  form.addEventListener('submit',event=>{event.preventDefault();if(!choice||!name.value.trim()||!data||!preview?.token||view.hidden)return;void mutate('register',{expected_revision:data.revision,...choice,name:name.value.trim(),...(identity.value?{person_id:identity.value}:{})});});
+  document.addEventListener?.('visibilitychange',onViewHidden);
+  globalThis.addEventListener?.('pagehide',onViewHidden);
   void refresh();timer=setInterval(refresh,1800);
-  return {destroy(){closed=true;clearInterval(timer);removalDialog?.close();removalDialog?.remove();removalDialog=null;forgetButtons.clear();root.replaceChildren();}};
+  return {destroy(){closed=true;clearInterval(timer);document.removeEventListener?.('visibilitychange',onViewHidden);globalThis.removeEventListener?.('pagehide',onViewHidden);stopPreview();removalDialog?.close();removalDialog?.remove();removalDialog=null;forgetButtons.clear();root.replaceChildren();}};
 }

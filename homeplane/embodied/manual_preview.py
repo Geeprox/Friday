@@ -3,14 +3,14 @@ import asyncio
 import base64
 import json
 import os
-import secrets
 import sys
 
+from .camera_provenance import camera_source_context
 from .paths import DATA, PROJECT, PYTHON, camera
 
 
 class ManualPreview:
-    def __init__(self):self.process=None;self.cameras=set();self.tokens={};self.lock=asyncio.Lock()
+    def __init__(self):self.process=None;self.cameras=set();self.lock=asyncio.Lock()
 
     def has(self,camera_id):return camera_id in self.cameras and self.process is not None and self.process.returncode is None
 
@@ -30,17 +30,19 @@ class ManualPreview:
                 line=await asyncio.wait_for(self.process.stdout.readline(),20)
                 if len(line)>2_800_000:raise ValueError('camera_preview_unavailable')
                 result=json.loads(line)
-                if result.get('error'):raise ValueError('camera_preview_unavailable')
-                if action=='start':
-                    self.cameras.add(camera_id);self.tokens[camera_id]=secrets.token_hex(16)
-                    result['preview_token']=self.tokens[camera_id]
-                if action=='stop':self.cameras.discard(camera_id);self.tokens.pop(camera_id,None)
-                return result
             except BaseException:
                 await self._close();raise
+            if result.get('error') == 'camera_preview_ended':
+                raise ValueError('camera_preview_ended')
+            if result.get('error'):
+                await self._close()
+                raise ValueError('camera_preview_unavailable')
+            if action=='start':self.cameras.add(camera_id)
+            if action=='stop':self.cameras.discard(camera_id)
+            return result
 
     async def _close(self):
-        process,self.process=self.process,None;self.cameras.clear();self.tokens.clear()
+        process,self.process=self.process,None;self.cameras.clear()
         if process is not None and process.returncode is None:
             process.stdin.close()
             try:await asyncio.wait_for(process.wait(),7)
@@ -56,18 +58,37 @@ async def worker(pool_factory=None):
         from .previews import PreviewPool
         pool_factory=PreviewPool
     pool=pool_factory(recognize=False,control_camera=True)
+    sources={}
     try:
         while line:=await asyncio.to_thread(sys.stdin.buffer.readline,2049):
             try:
                 if len(line)>2048:raise ValueError('request_budget')
                 request=json.loads(line);selected=camera(request['camera']);action=request['action']
-                if action=='start':result=await pool.start(selected['id'])
-                elif action=='status':result=pool.status(selected['id'])
+                camera_id = selected['id']
+                if action in {'start', 'status', 'frame'}:
+                    source = camera_source_context(selected)
+                    if (source is None or request.get('source_context') != source
+                            or action != 'start' and sources.get(camera_id) != source):
+                        print(json.dumps(dict(error='camera_preview_ended')),flush=True)
+                        continue
+                if action=='start':
+                    if camera_id in sources and sources[camera_id] != source:
+                        await pool.stop(camera_id)
+                    result=await pool.start(camera_id, selected=selected)
+                    sources[camera_id]=source
+                elif action=='status':result=pool.status(camera_id)
                 elif action=='frame':
-                    frame=pool.frame(selected['id'])
+                    frame=pool.frame(camera_id)
                     result=dict(frame=base64.b64encode(frame).decode() if frame and len(frame)<=2_000_000 else None)
-                elif action=='stop':await pool.stop(selected['id']);result=dict(state='stopped')
-                elif action=='control':result=await pool.control(selected['id'],direction=request.get('direction'),mode='hold' if request.get('mode')=='hold' else None)
+                elif action=='stop':
+                    await pool.stop(camera_id)
+                    sources.pop(camera_id,None)
+                    result=dict(state='stopped')
+                elif action=='control':
+                    if sources.get(camera_id) != camera_source_context(selected):
+                        print(json.dumps(dict(error='camera_preview_ended')),flush=True)
+                        continue
+                    result=await pool.control(camera_id,direction=request.get('direction'),mode='hold' if request.get('mode')=='hold' else None)
                 else:raise ValueError('unsupported_preview_operation')
                 print(json.dumps(result),flush=True)
             except Exception:print(json.dumps(dict(error='camera_preview_unavailable')),flush=True)

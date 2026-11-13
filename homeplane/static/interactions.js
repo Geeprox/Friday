@@ -3,7 +3,7 @@ import {MOTION_GUIDES,createMotionDiagram} from './motion-guide.js';
 const h=(tag,text,attrs={})=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;for(const[k,v]of Object.entries(attrs))n.setAttribute(k,v);return n;};
 const add=(n,...children)=>{children.forEach(c=>c&&n.append(c));return n;};
 const btn=(text,run,attrs={})=>{const n=h('button',text,{type:'button',...attrs});n.onclick=run;return n;};
-const api=async(path,body,signal)=>{const r=await fetch(path,{signal,headers:{'Content-Type':'application/json'},...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)})});const data=await r.json();if(!r.ok){const error=Error(typeof data.detail==='string'?data.detail:'unavailable');error.status=r.status;throw error;}return data;};
+const api=async(path,body,signal,options={})=>{const r=await fetch(path,{...options,signal,headers:{'Content-Type':'application/json',...options.headers},...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)})});const data=await r.json();if(!r.ok){const error=Error(typeof data.detail==='string'?data.detail:'unavailable');error.status=r.status;throw error;}return data;};
 const actionName=value=>({on:'开启',off:'关闭',open:'打开',close:'关闭','mode:off':'关闭','mode:cool':'制冷','mode:heat':'制热','mode:auto':'自动','mode:heat_cool':'自动冷暖','mode:dry':'除湿','mode:fan_only':'送风'}[value]||(value?.startsWith('position:')?'开到 '+value.slice(9)+'%':'调整设备'));
 const states={live:'识别中',ready:'识别中',connecting:'正在连接',waiting:'等待画面',stopped:'未开启',unavailable:'连接中断',shutter_closed:'镜头已关闭',stale:'画面已中断'};
 function voiceCommandPresentation(command){
@@ -16,6 +16,7 @@ const gestureHelp={'body.arms_open':'面对镜头，将双臂向两侧打开并�
 export function mountInteractions(root,{data,go,toast}){
  let alive=true,config=null,targets=[],gestures={},report={},policy=null,voicePreferences=null,voiceDraft='',busy=false,mode='voice',editing=null,undo=null,previewToken=null,previewCamera=null,image=null,previewLive=false,anchor=null;
  let motionLibrary=null,selectedDiagram=null,configuring=false;const cameras=data.devices.filter(d=>d.kind==='camera');const slot=h('div',null,{class:'interaction-workspace'});root.append(slot);
+ let previewState=null,previewButton=null,previewEpoch=0;
  let voiceReceipts=[],voiceFeedback='loading',voiceRequest=null,voiceExpiry=null;
  let refreshing=false;
  let draft={camera:'',target:'',gesture:'body.arms_open',action:''};
@@ -63,7 +64,21 @@ export function mountInteractions(root,{data,go,toast}){
  }
  function retain(){try{sessionStorage.setItem('Friday.interactionDraft',JSON.stringify(draft));}catch(_){}}
  function openCamera(id){retain();try{sessionStorage.setItem('Friday.cameraFocus',id);}catch(_){}go('Cameras');}
- function stopPreview(){const token=previewToken,id=previewCamera;previewToken=null;previewCamera=null;previewLive=false;if(token)void api(`/api/embodied/cameras/${id}/preview/stop`,{token}).catch(()=>{});}
+ function releasePreview(id,token){
+  if(token)void api(`/api/embodied/cameras/${id}/preview/stop`,{token},undefined,{keepalive:true}).catch(()=>{});
+ }
+ function hidePreview(message){
+  previewLive=false;
+  if(image){image.hidden=true;image.removeAttribute('src');}
+  if(previewState)previewState.textContent=message;
+ }
+ function stopPreview(message='尚未查看镜头'){
+  previewEpoch++;
+  releasePreview(previewCamera,previewToken);
+  previewToken=null;previewCamera=null;
+  hidePreview(message);
+  if(previewButton)previewButton.textContent='打开镜头并查看';
+ }
  async function perform(run){if(busy)return;busy=true;try{await run();}catch(_){toast('设置未保存，请刷新状态后重试。',true);}finally{busy=false;if(alive)await refresh();}}
  async function save(bindings){const next={...config,enabled:true,bindings:bindings.map(b=>valid(b)?b:{...b,enabled:false})};config=await api('/api/home/interactions',next);draw();}
  function voiceFeedbackVisible(){
@@ -124,7 +139,7 @@ export function mountInteractions(root,{data,go,toast}){
   }
  }
  function voiceVisibilityChanged(){
-  if(document.hidden){discardVoiceFeedback();renderVoiceFeedback();}
+  if(document.hidden){discardVoiceFeedback();renderVoiceFeedback();stopPreview();}
   else if(mode==='voice')void refresh();
  }
  function readiness(){
@@ -163,8 +178,26 @@ export function mountInteractions(root,{data,go,toast}){
    }
   }finally{refreshing=false;}
  }
- async function pollImage(){if(!image?.isConnected||!previewCamera)return;try{const result=await api(`/api/embodied/cameras/${previewCamera}/preview`);if(result.state==='live'){image.src=`/api/embodied/cameras/${previewCamera}/frame?t=${Date.now()}`;}else previewLive=false;}catch(_){previewLive=false;}}
- function draw(){if(!alive||!config)return;motionLibrary?.dispose();motionLibrary=null;selectedDiagram?.dispose();selectedDiagram=null;image=null;slot.replaceChildren();
+ async function pollImage(){
+  const token=previewToken,photo=image;
+  if(!photo?.isConnected||!token||document.hidden)return;
+  const endpoint='/api/embodied/cameras/'+previewCamera;
+  const current=()=>token===previewToken&&image===photo&&photo.isConnected&&!document.hidden;
+  try{
+   const result=await api(endpoint+'/preview',undefined,undefined,{headers:{'X-Friday-Live-View':token}});
+   if(!current())return;
+   if(result.state==='live'||result.frame_available){
+    photo.src=endpoint+'/frame?view='+encodeURIComponent(token)+'&t='+Date.now();
+   }else if(['shutter_closed','privacy_closed','privacy_shutter_closed'].includes(result.state)){
+    stopPreview('镜头已关闭');
+   }else hidePreview('正在等待画面…');
+  }catch(error){
+   if(!current())return;
+   if(error.message==='camera_preview_ended')stopPreview('查看已结束，请重新打开画面');
+   else hidePreview('画面连接中断，正在重连…');
+  }
+ }
+ function draw(){if(!alive||!config)return;motionLibrary?.dispose();motionLibrary=null;selectedDiagram?.dispose();selectedDiagram=null;stopPreview();image=previewState=previewButton=null;slot.replaceChildren();
   const intro=add(h('div',null,{class:'interaction-intro'}),add(h('div'),h('h2',mode==='voice'?'开口说，Friday 来处理':mode==='gestures'?'用一个动作，控制家中设备':'指向设备，确认操作'),h('p',mode==='voice'?'全屋镜头共同接收，无需切换房间。':'看懂动作，亲自试一次，再设置设备控制。',{class:'interaction-description'})),btn(mode==='voice'?'开启语音控制':'启用手势控制',()=>perform(async()=>{
    if(mode==='voice'){
     const enabled=!(policy?.enabled&&policy?.recognition&&policy?.interaction&&report.voice_input);
@@ -212,12 +245,42 @@ export function mountInteractions(root,{data,go,toast}){
   form.append(field('2 · 控制哪个设备',target));
   if(mode==='pointing'){
    form.append(h('h4','3 · 在当前画面中标记设备'),h('p','点击设备所在位置，或填写下方的位置百分比。移动镜头后需要重新核对。',{class:'caption'}));
-   const stage=h('div',null,{class:'pointing-stage'}),pin=h('span','设备位置',{class:'target-pin',hidden:''}),out=h('p','尚未查看镜头',{role:'status'});image=h('img',null,{alt:'用于标记设备位置的实时画面',hidden:''});add(stage,image,pin);form.append(stage,out);
+   const stage=h('div',null,{class:'pointing-stage'}),pin=h('span','设备位置',{class:'target-pin',hidden:''}),out=h('p','尚未查看镜头',{role:'status'});
+   const photo=h('img',null,{alt:'用于标记设备位置的实时画面',hidden:''});image=photo;previewState=out;
+   add(stage,photo,pin);form.append(stage,out);
    const x=h('input',null,{type:'number',min:0,max:100,step:1,'aria-label':'设备水平位置百分比'}),y=h('input',null,{type:'number',min:0,max:100,step:1,'aria-label':'设备垂直位置百分比'});
    const mark=()=>{if(anchor){pin.hidden=false;pin.style.left=anchor[0]*100+'%';pin.style.top=anchor[1]*100+'%';x.value=Math.round(anchor[0]*100);y.value=Math.round(anchor[1]*100);}};
    const typed=()=>{if(!previewLive)return;if(x.value!==''&&y.value!==''&&Number(x.value)>=0&&Number(x.value)<=100&&Number(y.value)>=0&&Number(y.value)<=100){anchor=[Number(x.value)/100,Number(y.value)/100];mark();}};x.oninput=typed;y.oninput=typed;
-   image.onload=()=>{image.hidden=false;previewLive=true;out.textContent='点击画面中的设备位置';};image.onerror=()=>{previewLive=false;out.textContent='画面暂不可用，请重新查看。';};image.onclick=e=>{if(!previewLive)return;const r=image.getBoundingClientRect();anchor=[(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];mark();};mark();
-   form.append(btn('打开镜头并查看',()=>perform(async()=>{const chosen=draft.camera||cameras[0]?.id;if(!chosen)return;draft.camera=chosen;scope.value=chosen;let power=await api(`/api/embodied/cameras/${chosen}/power`);if(!power.enabled){power=await api(`/api/embodied/cameras/${chosen}/power`,{enabled:true,revision:power.revision,event_id:crypto.randomUUID()});if(power.status!=='reported_match')throw Error();}const result=await api(`/api/embodied/cameras/${chosen}/preview`,{});previewCamera=chosen;previewToken=result.preview_token;out.textContent='正在连接画面…';await pollImage();})),add(h('div',null,{class:'pointing-position-fields'}),field('水平位置 %',x),field('垂直位置 %',y)),field('4 · 执行动作',action));
+   photo.onload=()=>{if(image!==photo||!previewToken||!photo.getAttribute('src')||document.hidden)return;photo.hidden=false;previewLive=true;out.textContent='点击画面中的设备位置';};
+   photo.onerror=()=>{if(image===photo&&previewToken)hidePreview('暂时无法显示画面');};
+   photo.onclick=e=>{if(!previewLive)return;const r=photo.getBoundingClientRect();anchor=[(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];mark();};mark();
+   previewButton=btn('打开镜头并查看',async()=>{
+    if(previewToken){stopPreview('已停止查看');return;}
+    if(busy||document.hidden)return;
+    const chosen=draft.camera||cameras[0]?.id;
+    if(!chosen)return;
+    const epoch=++previewEpoch,button=previewButton;
+    const current=()=>alive&&image===photo&&photo.isConnected&&previewEpoch===epoch&&!document.hidden;
+    draft.camera=chosen;scope.value=chosen;button.disabled=true;
+    const endpoint='/api/embodied/cameras/'+chosen;
+    out.textContent='正在连接画面…';
+    try{
+     let power=await api(endpoint+'/power');
+     if(!current())return;
+     if(!power.enabled){
+      power=await api(endpoint+'/power',{enabled:true,revision:power.revision,event_id:crypto.randomUUID()});
+      if(!current())return;
+      if(power.status!=='reported_match')throw Error('camera_power_unavailable');
+     }
+     const result=await api(endpoint+'/preview',{purpose:'pointing'});
+     if(!current()){releasePreview(chosen,result.preview_token);return;}
+     if(!result.preview_token)throw Error('camera_preview_unavailable');
+     previewCamera=chosen;previewToken=result.preview_token;
+     button.textContent='停止查看';await pollImage();
+    }catch{if(current())stopPreview('暂时无法查看画面');}
+    finally{button.disabled=false;}
+   });
+   form.append(previewButton,add(h('div',null,{class:'pointing-position-fields'}),field('水平位置 %',x),field('垂直位置 %',y)),field('4 · 执行动作',action));
   }else form.append(add(h('div',null,{class:'interaction-action-fields'}),field('3 · 做什么手势',gesture),field('执行动作',action)),gestureVisual,help);
   const saveButton=h('button',editing?'保存修改':'保存手势控制',{type:'submit',class:'primary'});form.append(summary,add(h('div',null,{class:'product-actions'}),saveButton,btn(editing?'取消编辑':'取消',()=>{editing=null;configuring=false;draw();})));
   form.onsubmit=e=>{e.preventDefault();if(!target.value){toast('请先选择要控制的设备',true);target.focus?.();return;}if(mode==='pointing'&&(!anchor||!previewLive&&!editing)){toast('请先查看镜头，并标记设备位置',true);return;}const binding={id:editing||crypto.randomUUID().replaceAll('-',''),camera:draft.camera||null,scope:draft.camera?'camera':'home',gesture:mode==='pointing'?'hand.point':gesture.value,target:target.value,action:action.value,enabled:true,anchor:mode==='pointing'?anchor:null};if(config.bindings.some(b=>b.id!==editing&&b.gesture===binding.gesture&&b.target===binding.target&&b.camera===binding.camera)){toast('这个手势已用于该设备，请编辑已有控制。',true);return;}saveButton.disabled=true;void perform(async()=>{await save([...config.bindings.filter(b=>b.id!==editing),binding]);editing=null;configuring=false;undo=null;stopPreview();toast('手势控制已保存');draw();}).finally(()=>saveButton.disabled=false);};
@@ -238,6 +301,8 @@ export function mountInteractions(root,{data,go,toast}){
  async function load(){slot.replaceChildren(h('p','正在读取互动设置…',{role:'status'}));try{const[r,inventory,s,p,v]=await Promise.all([api('/api/home/interactions'),api('/api/embodied/devices'),api('/api/embodied/status'),api('/api/embodied/infrastructure'),api('/api/embodied/voice-preferences').catch(()=>null)]);if(!alive)return;config=r.config;gestures=r.gestures;voicePreferences=v;const product=new Map(data.devices.flatMap(d=>(d.controls||[]).map(c=>[c.id,{name:c.name,room:d.room}])));targets=inventory.devices.filter(t=>t.controllable&&t.actions?.length).map(t=>({...t,...product.get(t.id)}));report=s;policy=p.policy;draw();}catch(_){if(alive)slot.replaceChildren(h('p','互动设置暂时无法读取，请检查家庭连接后重试。',{role:'status'}),btn('重试',load));}}
  try{if(sessionStorage.getItem('Friday.interactionMode')==='gestures'){mode='gestures';sessionStorage.removeItem('Friday.interactionMode');}}catch(_){}
  document.addEventListener('visibilitychange',voiceVisibilityChanged);
+ globalThis.addEventListener?.('pagehide',stopPreviewOnPageHide);
+ function stopPreviewOnPageHide(){stopPreview();}
  void load();const timer=setInterval(()=>{if(!busy&&!document.hidden)void refresh();},1800);
- return{dispose(){alive=false;clearInterval(timer);discardVoiceFeedback();document.removeEventListener('visibilitychange',voiceVisibilityChanged);stopPreview();motionLibrary?.dispose();selectedDiagram?.dispose();slot.remove();}};
+ return{dispose(){alive=false;clearInterval(timer);discardVoiceFeedback();document.removeEventListener('visibilitychange',voiceVisibilityChanged);globalThis.removeEventListener?.('pagehide',stopPreviewOnPageHide);stopPreview();motionLibrary?.dispose();selectedDiagram?.dispose();slot.remove();}};
 }
