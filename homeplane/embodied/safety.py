@@ -7,8 +7,10 @@ No camera is opened here. Only the perception owner may supply observations.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import math
+import os
 import re
 import secrets
 import sqlite3
@@ -16,7 +18,7 @@ import stat
 import threading
 import time
 from collections import OrderedDict, deque
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +30,10 @@ from .safety_storage import SafetyIO, SafetyStorageBusy
 
 
 class SafetyAdmissionChanged(ValueError):
+    pass
+
+
+class SoundMotionBusy(RuntimeError):
     pass
 
 
@@ -140,7 +146,7 @@ class SafetyStore:
             return self._read_policy(db)
 
     @contextmanager
-    def _read_snapshot(self):
+    def _read_snapshot(self, *, timeout=.25):
         """只读已提交的数据。缺少数据库时返回空快照，不创建文件或目录。"""
         try:
             metadata = self.path.lstat()
@@ -150,7 +156,7 @@ class SafetyStore:
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError('safety_private_path_required')
         uri = self.path.absolute().as_uri() + '?mode=ro'
-        with closing(sqlite3.connect(uri, uri=True, timeout=.25)) as db:
+        with closing(sqlite3.connect(uri, uri=True, timeout=timeout)) as db:
             db.execute('BEGIN')
             yield db
 
@@ -307,7 +313,14 @@ class SafetyStore:
         return event
 
     def update(self, event_id, **fields):
-        with self.connect() as db:
+        boundary = nullcontext()
+        if fields.get('review') == 'false_alarm':
+            event = self.event(event_id)
+            camera = event.get('camera')
+            if (event.get('kind') == 'sound_review' and not event.get('announcement_withdrawn')
+                    and event.get('review') != 'false_alarm' and self._sound_lock_camera(camera)):
+                boundary = self._sound_motion_lock(camera)
+        with boundary, self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT value FROM safety_events WHERE id=?", (event_id,)).fetchone()
             if not row:
@@ -315,14 +328,78 @@ class SafetyStore:
             previous = json.loads(row[0])
             value = dict(previous, **fields)
             if previous.get('announcement_withdrawn') or fields.get('review') == 'false_alarm':
-                # Changing a review afterwards does not authorize an old
-                # pending announcement again, including from another process.
+                # 沿用既有持久标记，改回查看状态也不恢复旧播报或异响动作。
                 value['announcement_withdrawn'] = True
             db.execute(
                 "UPDATE safety_events SET value=? WHERE id=?",
                 (json.dumps(value, ensure_ascii=False), event_id),
             )
         return value
+
+    @staticmethod
+    def _sound_lock_camera(camera):
+        return isinstance(camera, str) and re.fullmatch(r'cam_[a-f0-9]{10}', camera) is not None
+
+    @contextmanager
+    def _sound_motion_lock(self, camera):
+        """同一镜头的异响转向与误报写入互斥，其他留档可继续。"""
+        if not self._sound_lock_camera(camera):
+            raise SafetyAdmissionChanged('safety_source_changed')
+        path = self.path.with_name(f'{camera}-sound-motion.lock')
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise OSError('invalid_sound_motion_lock')
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise SoundMotionBusy('sound_motion_busy') from None
+            yield
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _sound_search_event(db, event_id, source):
+        row = db.execute('SELECT value FROM safety_events WHERE id=?', (event_id,)).fetchone()
+        event = json.loads(row[0]) if row else {}
+        if (not isinstance(event, dict) or event.get('kind') != 'sound_review'
+                or event.get('review') == 'false_alarm'
+                or event.get('announcement_withdrawn')
+                or (event.get('camera'), event.get('session'), event.get('camera_source_context')) != source):
+            raise SafetyAdmissionChanged('safety_event_changed')
+        return event
+
+    def sound_search_event_current(self, event_id, source):
+        """跨进程读取当前事件，供镜头决策剔除已撤销的回执。"""
+        with self._read_snapshot() as db:
+            if db is None:
+                return False
+            try:
+                self._sound_search_event(db, event_id, source)
+            except SafetyAdmissionChanged:
+                return False
+            return True
+
+    @contextmanager
+    def sound_motor_admission(self, event_id, source, revision):
+        """让原生发送与同镜头的误报写入排序。"""
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(self._sound_motion_lock(source[0]))
+                # 原生发送期间只持有镜头锁，先释放数据库读事务。
+                with self._read_snapshot(timeout=0) as db:
+                    if db is None:
+                        raise SafetyAdmissionChanged('sound_motion_revoked')
+                    self._admit(db, policy_revision=revision, feature='sound_search')
+                    self._sound_search_event(db, event_id, source)
+                if self.path.with_name('voice-input-paused').exists():
+                    raise SafetyAdmissionChanged('sound_motion_revoked')
+            except SafetyAdmissionChanged:
+                raise RuntimeError('sound_motion_revoked') from None
+            except (OSError, sqlite3.Error, ValueError, TypeError):
+                raise RuntimeError('sound_motion_unavailable') from None
+            yield
 
     def event(self, event_id):
         with self.connect() as db:
@@ -397,12 +474,9 @@ class SafetyStore:
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             self._admit(db, policy_revision=policy_revision, feature='sound_search', guard=guard)
-            row = db.execute('SELECT value FROM safety_events WHERE id=?', (event_id,)).fetchone()
-            event = json.loads(row[0]) if row else {}
+            event = self._sound_search_event(db, event_id, source)
             captured_at = event.get('captured_at')
-            if (event.get('kind') != 'sound_review' or event.get('review') == 'false_alarm'
-                    or (event.get('camera'), event.get('session'), event.get('camera_source_context')) != source
-                    or type(captured_at) not in (int, float) or not math.isfinite(captured_at) or stamp <= captured_at):
+            if type(captured_at) not in (int, float) or not math.isfinite(captured_at) or stamp <= captured_at:
                 raise SafetyAdmissionChanged('safety_event_changed')
             if step == 'follow':
                 if 'sound_follow_view' in event:
@@ -1007,6 +1081,21 @@ class SafetyRuntime:
         if source is None or self.sources.get(camera) != (session, source['source_context']):
             return None
         return self.sound.search_cue(camera, source['session'], active)
+
+    async def check_sound_motion(self, camera, session, cue):
+        """异步核对当前镜头使用的异响事件，包括静止跟随时。"""
+        from .sound_review import SoundSearchCue
+
+        if not isinstance(cue, SoundSearchCue) or self.sound_search_cue(camera, session, cue) is not cue:
+            return False
+        source = (cue.camera, cue.session, cue.context)
+        try:
+            current = await self.evidence_io.call(self.store.sound_search_event_current, cue.receipt.event_id, source)
+        except (OSError, sqlite3.Error, ValueError, TypeError, SafetyStorageBusy):
+            return False
+        if not current:
+            cue.withdrawn.set()
+        return current and self.sound_search_cue(camera, session, cue) is cue
 
     def offer_sound_search_frame(self, camera, proof, jpeg, *, source_current):
         cue, step, captured = proof

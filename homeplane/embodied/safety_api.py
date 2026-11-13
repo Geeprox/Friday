@@ -2,6 +2,7 @@
 
 import asyncio
 import sqlite3
+import time
 from typing import Literal
 
 from fastapi import HTTPException, Query, Response
@@ -9,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .camera_provenance import configured_camera_sources
 from .paths import PRIVATE
-from .safety import CAPABILITIES, PostureSource, SafetyControls, SafetyRecordMissing, SafetyRuntime, SafetyStore
+from .safety import CAPABILITIES, PostureSource, SafetyControls, SafetyRecordMissing, SafetyRuntime, SafetyStore, SoundMotionBusy
 from .safety_storage import SafetyStorageBusy
 
 
@@ -198,8 +199,16 @@ def install(router, service, *, archive=None, infrastructure=None):
 
     @router.post("/api/embodied/safety/events/{event_id}/review")
     async def review(event_id: str, request: Review):
+        deadline = time.monotonic() + 1.5
         try:
-            return await stored(store.update, event_id, review=request.review)
+            while True:
+                try:
+                    return await stored(store.update, event_id, review=request.review)
+                except SoundMotionBusy:
+                    # 等本镜头已开始的发送结束。等待不占用其他提醒的写入队列。
+                    if time.monotonic() >= deadline:
+                        raise HTTPException(503, detail='safety_storage_unavailable') from None
+                    await asyncio.sleep(.05)
         except ValueError:
             raise HTTPException(404, detail="safety_event_unavailable") from None
 

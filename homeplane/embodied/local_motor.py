@@ -11,11 +11,19 @@ import json
 import math
 import platform
 import time
+from contextlib import nullcontext
 from pathlib import Path
+
+SOUND_MOTION_DENIALS = frozenset({'sound_motion_revoked', 'sound_motion_busy', 'sound_motion_unavailable'})
 
 SHA256 = "df4610cae665ec2f4dbc40f203d0a59d6161f18fbd551219bdf853ab101bf4f0"
 NEW = 0x1B10
 SEND = 0x6F570
+
+
+def motor_error_code(error):
+    code = str(error)
+    return code if code in SOUND_MOTION_DENIALS or code == 'motor_request_expired' else 'local_motor_rejected'
 
 
 def check_motor_deadline(expires_mono):
@@ -45,7 +53,7 @@ class LocalMotor:
         self.send = c.CFUNCTYPE(c.c_int, c.c_void_p, c.c_uint32, c.c_char_p, c.c_size_t)(self.base + SEND)
         self.last = -10.0
 
-    def step(self, direction, *, expires_mono):
+    def step(self, direction, *, expires_mono, admission=None):
         operation = {"left": 1, "right": 2, "up": 3, "down": 4}.get(direction)
         if operation is None:
             raise ValueError("direction_not_allowed")
@@ -62,14 +70,15 @@ class LocalMotor:
         payload = json.dumps({"operation": operation}, separators=(",", ":")).encode()
         # A worker-pool wait or delayed SDK/session inspection may outlive the
         # decision. Refuse it at the final native boundary as well.
-        check_motor_deadline(expires_mono)
-        self.last = time.monotonic()
-        began = time.monotonic()
-        code = self.send(session, 0x112, payload, len(payload))
+        with admission() if admission is not None else nullcontext():
+            check_motor_deadline(expires_mono)
+            began = self.last = time.monotonic()
+            code = self.send(session, 0x112, payload, len(payload))
+            send_ms = round((time.monotonic() - began) * 1000, 2)
         return {
             "direction": direction,
             "native_code": code,
-            "send_ms": round((time.monotonic() - began) * 1000, 2),
+            "send_ms": send_ms,
             "transport": "existing_local_miss_session",
             "physical_movement_verified": False,
         }

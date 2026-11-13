@@ -267,7 +267,8 @@ async def test_active_initial_analysis_is_protected_and_recorded_duplicates_rele
 def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
     noop=lambda *_:None
     safety=SimpleNamespace(review_pending=noop,fall_pending=noop,sound_search_cue=noop,
-                           offer_sound_search_frame=lambda *_, **__: False, capture_frame=noop)
+                           offer_sound_search_frame=lambda *_, **__: False, capture_frame=noop,
+                           check_sound_motion=AsyncMock())
     tree=ast.parse(Path('homeplane/embodied/worker.py').read_text())
     assignment=next(n for n in tree.body if isinstance(n,ast.Assign)and any(isinstance(t,ast.Name)and t.id=='previews'for t in n.targets))
     scope=dict(PreviewPool=lambda **kwargs:kwargs,identity_store=None,wall=None,safety=safety,
@@ -279,6 +280,7 @@ def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
     assert scope['previews']['fall_pending'] is safety.fall_pending
     assert scope['previews']['sound_cue'] is scope['camera_motion_cue']
     assert scope['previews']['sound_view'] is safety.offer_sound_search_frame
+    assert scope['previews']['sound_motion'] is safety.check_sound_motion
     assert scope['previews']['on_capture_frame'] is safety.capture_frame
     assert scope['previews']['on_motion'] is scope['clear_camera_view']
     assert scope['previews']['on_view_lost'] is scope['clear_camera_observation']

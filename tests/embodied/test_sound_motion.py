@@ -1,22 +1,32 @@
 """Qualified synthetic sound through original camera loops and the event store."""
 
 import asyncio
+import json
 import math
+import secrets
+import threading
+from contextlib import nullcontext
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from fastapi import APIRouter, FastAPI
 
+from homeplane.embodied import safety, safety_api
 from homeplane.embodied.camera_audio import AudioIngress, PCMFramer
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.camera_intent import camera_intent_readback, finish_camera_survey
 from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.local_motor import SOUND_MOTION_DENIALS
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.safety import SafetyAdmissionChanged
 from homeplane.embodied.sound_review import SoundReviewer
 from tests.embodied.test_camera_director import patrol_view, person, sample
 from tests.embodied.test_camera_follow_appearance import picture, subject
+from tests.embodied.test_motor_recovery import capture_motor_command, inert_motor, primary_scope
 from tests.embodied.test_review_motion import recorded_sound_only, source_function
 from tests.embodied.test_sound_followup import Home, SlowEngine
 from tests.embodied.test_sound_review import CAMERA, CONTEXT, Engine, Journey, settle
@@ -120,6 +130,10 @@ class SoundPatrol:
     async def motor(self, direction, *_, **kwargs):
         if callback := kwargs.get("decision_current"):
             assert callback(), "original final-dispatch guard must still admit this move"
+            recorded_sound = self.director.recorded_sound_for_motion(direction)
+            assert kwargs.get('recorded_sound') is recorded_sound
+            if recorded_sound is not None:
+                assert await self.j.runtime.check_sound_motion(CAMERA['id'], self.session, recorded_sound)
         elif self.owner == "secondary":
             assert self.director.decision_current(self.state, self.j.clock, direction,
                 occupied_elsewhere=self.occupied_elsewhere,
@@ -175,6 +189,7 @@ class SoundPatrol:
                                      fall_pending=self.j.runtime.fall_pending,
                                      sound_cue=recorded_sound_only(self.j.runtime),
                                      sound_view=self.j.runtime.offer_sound_search_frame,
+                                     sound_motion=self.j.runtime.check_sound_motion,
                                      source_current=lambda _, process: process is self.process),
                 current_sample=lambda: dict(self.state), privacy_closed=lambda: None,
                 send_motion=self.motor)
@@ -671,6 +686,282 @@ async def test_sound_search_frame_rechecks_custody_and_policy_at_storage(tmp_pat
             assert field not in result and result['frames'] == event['frames']
     finally:
         release.set()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('restored', [False, True])
+async def test_sound_archive_stays_closed_after_a_false_alarm_even_if_review_changes(tmp_path, monkeypatch, restored):
+    patrol = SoundPatrol(tmp_path, monkeypatch, 'primary', episode=(0, math.inf))
+    runtime, store, camera = patrol.j.runtime, patrol.j.store, CAMERA['id']
+    try:
+        for _ in range(30):
+            await patrol.advance()
+        await runtime.drain()
+        cue = runtime.sound_search_cue(camera, patrol.session)
+        event, = store.events()
+        assert cue.receipt.event_id == event['id']
+
+        store.update(event['id'], review='false_alarm')
+        if restored:
+            store.update(event['id'], review='acknowledged')
+        with pytest.raises(SafetyAdmissionChanged, match='safety_event_changed'):
+            store.append_sound_search_frame(event['id'], (camera, cue.session, cue.context), 'follow',
+                cue.captured_at + 1, b'SYNTHETIC-FOLLOW', policy_revision=cue.revision, guard=lambda: True)
+        assert store.events()[0]['frames'] == event['frames']
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+@pytest.mark.parametrize('change', ['before_pipe', 'before_native', 'follow_before_native',
+                                   'other_event', 'acknowledged', 'busy', 'source_changed', 'capture_changed'])
+async def test_review_reaches_both_camera_dispatch_boundaries(tmp_path, monkeypatch, owner, change):
+    patrol = SoundPatrol(tmp_path, monkeypatch, owner, episode=(0, math.inf))
+    runtime, store = patrol.j.runtime, patrol.j.store
+    camera = CAMERA['id']
+    store.path.rename(tmp_path/'safety.sqlite')
+    store.path = tmp_path/'safety.sqlite'
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
+    router, app = APIRouter(), FastAPI()
+    console = safety_api.install(router, SimpleNamespace(process=None))
+    app.include_router(router)
+    try:
+        for _ in range(30):
+            await patrol.advance()
+        await runtime.drain()
+        event, = store.events()
+        other = store.create(dict(kind='sound_review', camera=camera, session=event['session'],
+                                  camera_source_context=CONTEXT, captured_at=event['captured_at']))
+        cue = runtime.sound_search_cue(camera, patrol.session)
+        assert cue.receipt.event_id == event['id']
+        director = patrol.director
+        director.apply_mode('auto', 'intent')
+        director.choose(dict(patrol.state, _local_received=1), 1)
+        director.choose(dict(patrol.state, _local_received=1.5), 1.5)
+        current = dict(patrol.state)
+        direction = director.choose(current, patrol.j.clock, sound_cue=cue)
+        if change == 'follow_before_native':
+            director.sent(patrol.j.clock)
+            original = sound_person(42, .76, 'SYNTHETIC-original')
+            for offset in (2, 2.4, 2.8):
+                stamp = patrol.j.clock + offset
+                current = dict(sample(stamp, people=[original], x=.05, session=patrol.session),
+                               tracking_current=True)
+                direction = director.choose(current, stamp, sound_cue=cue)
+            patrol.j.clock = current['_local_received']
+            runtime.capture_sources[camera].seen = patrol.j.clock
+            runtime.last_seen[camera] = patrol.j.clock
+            runtime.policy_read_at = patrol.j.clock
+            assert director.phase == 'following'
+        assert direction == 'right' and director.recorded_sound_for_motion(direction) is cue
+        read_cue = recorded_sound_only(runtime)
+        motor, native, keepalive = inert_motor(monkeypatch, [patrol.j.clock])
+        commands, results = [], []
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
+            async def review(event_id, value):
+                response = await client.post(f"/api/embodied/safety/events/{event_id}/review", json={'review': value})
+                assert response.status_code == 200 and response.json()['review'] == value
+
+            async def drain():
+                if change in {'before_native', 'follow_before_native'}:
+                    await review(event['id'], 'false_alarm')
+                    # 改回查看状态，已经撤销的转向仍不能复活。
+                    await review(event['id'], 'acknowledged')
+                selected = CAMERA if change != 'source_changed' else {
+                    **CAMERA, 'device': {'did': 'synthetic-replacement'},
+                }
+                capture_session = cue.session if change != 'capture_changed' else 'b'*32
+                with store._sound_motion_lock(camera) if change == 'busy' else nullcontext():
+                    result = await capture_motor_command(commands[-1], motor, selected=selected,
+                                                         capture_session=capture_session, private=tmp_path)
+                results.append(result)
+                request_id = result['request_id']
+                waiters[request_id].set_result(result)
+
+            def write(raw):
+                commands.append(json.loads(raw))
+
+            checked = False
+
+            async def camera_open(_):
+                nonlocal checked
+                if not checked and change == 'before_pipe':
+                    await review(event['id'], 'false_alarm')
+                checked = True
+                return True
+
+            if change == 'other_event':
+                await review(other['id'], 'false_alarm')
+            if change == 'acknowledged':
+                await review(event['id'], 'acknowledged')
+            pipe = SimpleNamespace(stdin=SimpleNamespace(write=write, drain=drain), returncode=None)
+            if owner == 'primary':
+                scope, _ = primary_scope()
+                waiters = scope['motor_waiters']
+                scope.update(safety=runtime, time=safety.time, SELECTED=CAMERA, state=current, capture=pipe,
+                             camera_is_open=camera_open, last_frame=patrol.j.clock,
+                             SOUND_MOTION_DENIALS=SOUND_MOTION_DENIALS)
+
+                def decision_current():
+                    return director.decision_current(current, patrol.j.clock, direction,
+                        sound_cue=read_cue(camera, current, director.sound_search_cue))
+
+                dispatch = scope['motor_step'](direction, patrol.j.clock, expected_intent='original',
+                                                decision_current=decision_current, recorded_sound=cue)
+            else:
+                waiters = {}
+                worker = SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
+                    review_pending=runtime.review_pending, fall_pending=runtime.fall_pending, sound_cue=read_cue,
+                    sound_motion=runtime.check_sound_motion, on_motion=runtime.clear_view,
+                    runtime_log=SimpleNamespace(record=lambda *_args, **_kwargs: None))
+                scope = dict(asyncio=asyncio, time=safety.time, secrets=secrets, json=json,
+                    SOUND_MOTION_DENIALS=SOUND_MOTION_DENIALS, waiters=waiters, motion_lock=asyncio.Lock(),
+                    room_lock=asyncio.Lock(), selected=CAMERA, recognizer=None, director=director,
+                    camera_is_open=camera_open, current_sample=lambda: current, privacy_closed=lambda: None,
+                    item=dict(privacy_closed=False, source_active=True, control_epoch=1), process=pipe, self=worker)
+                dispatch = source_function('homeplane/embodied/previews.py', 'send_motion', scope)(
+                    direction, patrol.j.clock, expected_epoch=1)
+            if change in {'before_pipe', 'before_native', 'follow_before_native', 'busy', 'source_changed', 'capture_changed'}:
+                with pytest.raises(RuntimeError, match='stale_input'):
+                    await dispatch
+                assert native == [] and director.failed_moves == 0
+            else:
+                assert (await dispatch)['native_code'] == 0 and len(native) == 1
+            assert not waiters
+            assert bool(commands) is (change != 'before_pipe')
+            if commands:
+                assert commands[0]['sound_event'] == cue.motor_evidence()
+            if change in {'before_native', 'follow_before_native', 'source_changed', 'capture_changed'}:
+                assert results[0]['error_code'] == 'sound_motion_revoked'
+            if change == 'busy':
+                assert results[0]['error_code'] == 'sound_motion_busy' and not cue.withdrawn.is_set()
+            if change in {'before_pipe', 'before_native', 'follow_before_native'}:
+                assert cue.withdrawn.is_set()
+                assert runtime.sound.search_cue(camera, cue.session, cue) is None
+                assert not runtime.offer_sound_search_frame(
+                    camera, (cue, 1, patrol.j.clock), b'SYNTHETIC-FRAME', source_current=lambda: True)
+                frame = dict(current, _local_received=patrol.j.clock + .2)
+                assert director.choose(frame, patrol.j.clock + .2) is None
+                assert director.sound_search_cue is None and not director.public()['target_locked']
+    finally:
+        await console.close()
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_review_and_native_dispatch_cannot_cross_their_commit_boundary(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    busy = asyncio.Event()
+    clock = [10]
+    motor, native, keepalive = inert_motor(monkeypatch, clock)
+    send = motor.send
+
+    def reserved_send(*args):
+        entered.set()
+        assert release.wait(3)
+        return send(*args)
+
+    motor.send = reserved_send
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
+    router, app = APIRouter(), FastAPI()
+    console = safety_api.install(router, SimpleNamespace(process=None))
+    app.include_router(router)
+    store = console.store
+    policy = store.configure(safety.SafetyPolicy(enabled=True, sound_review=True))
+    policy = store.configure_sound_search(policy.revision, True)
+    source = dict(kind='sound_review', camera=CAMERA['id'], session='a'*32, camera_source_context=CONTEXT,
+                  captured_at=1)
+    event = store.create(source)
+    other = store.create(dict(source, camera='cam_2222222222'))
+    command = dict(action='motor_step', direction='right', request_id=1, expires_mono=11,
+                   sound_event=dict(event=event['id'], session=event['session'], revision=policy.revision))
+    original_call = console.io.call
+
+    async def observe_busy(operation, *args, **kwargs):
+        try:
+            return await original_call(operation, *args, **kwargs)
+        except safety.SoundMotionBusy:
+            busy.set()
+            raise
+
+    monkeypatch.setattr(console.io, 'call', observe_busy)
+
+    async def dispatch(request):
+        return await capture_motor_command(request, motor, selected=CAMERA,
+                                           capture_session=event['session'], private=tmp_path)
+
+    task = asyncio.create_task(dispatch(command))
+    pending = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
+            async def review_event(record):
+                return await client.post(f"/api/embodied/safety/events/{record['id']}/review",
+                                         json={'review': 'false_alarm'})
+
+            pending = asyncio.create_task(review_event(event))
+            await asyncio.wait_for(busy.wait(), 1)
+            # 同镜头等已发的操作收尾，另一镜头仍可先提交。
+            independent = await asyncio.wait_for(review_event(other), 1)
+            assert independent.status_code == 200 and independent.json()['review'] == 'false_alarm'
+            assert not pending.done() and store.event(event['id'])['review'] == 'unreviewed'
+            release.set()
+            assert (await task)['native_code'] == 0 and len(native) == 1
+            review = await pending
+            assert review.status_code == 200 and review.json()['review'] == 'false_alarm'
+        clock[0] = 10.8
+        result = await dispatch(dict(command, request_id=2))
+        assert result['error_code'] == 'sound_motion_revoked' and len(native) == 1
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        if pending is not None:
+            await asyncio.gather(pending, return_exceptions=True)
+        await console.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+async def test_original_camera_loop_retires_the_stationary_target_for_the_exact_false_alarm(tmp_path, monkeypatch, owner):
+    def people(patrol):
+        if not patrol.sound_moves:
+            return []
+        return [sound_person(42, .43, 'SYNTHETIC-original'),
+                *([sound_person(43, .19, 'SYNTHETIC-bystander')] if revoked else [])]
+
+    patrol = SoundPatrol(tmp_path, monkeypatch, owner, people=people, occupied_elsewhere=True)
+    runtime, store, camera = patrol.j.runtime, patrol.j.store, CAMERA['id']
+    revoked = []
+    original = runtime.check_sound_motion
+
+    async def revoke_while_stationary(camera_id, session, cue):
+        if patrol.director.sound_following and not revoked:
+            event, = store.events()
+            assert patrol.director.target == 42 and patrol.director.pending_direction is None
+            # 同源新提醒已接替最新回执，旧跟随仍须核对自己的事件。
+            newer = store.create(dict(kind='sound_review', camera=camera, session=cue.session,
+                                      camera_source_context=cue.context, captured_at=cue.captured_at+1))
+            latest = replace(cue, captured=patrol.j.clock, captured_at=newer['captured_at'],
+                             receipt=replace(cue.receipt, event_id=newer['id']), withdrawn=threading.Event())
+            runtime.sound.search_cues[camera] = latest
+            store.update(event['id'], review='false_alarm')
+            revoked.append((cue, latest, event))
+        return await original(camera_id, session, cue)
+
+    monkeypatch.setattr(runtime, 'check_sound_motion', revoke_while_stationary)
+    try:
+        await patrol.run()
+        (cue, latest, event), = revoked
+        assert cue.withdrawn.is_set() and runtime.sound_search_cue(camera, patrol.session, cue) is None
+        assert not latest.withdrawn.is_set()
+        assert patrol.sound_moves == ['right'] and patrol.follow_moves == []
+        assert patrol.director.sound_search_cue is None and not patrol.director.public()['target_locked']
+        assert store.event(event['id'])['review'] == 'false_alarm'
+        assert store.events()[1]['frames'] == event['frames']
+    finally:
         await runtime.close()
 
 

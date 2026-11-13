@@ -4,6 +4,7 @@ import asyncio
 import ctypes
 import json
 from pathlib import Path
+import re
 import secrets
 import time
 from types import SimpleNamespace
@@ -12,8 +13,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.local_motor import LocalMotor
-from homeplane.embodied.local_motor import check_motor_deadline
+from homeplane.embodied.local_motor import check_motor_deadline, motor_error_code
 from tests.embodied.test_camera_director import patrol_view
 from tests.embodied.test_review_motion import recorded_sound_only
 
@@ -370,7 +372,7 @@ async def test_cancelled_pre_send_releases_reservation_and_logs_the_actual_stage
 
 def inert_motor(monkeypatch, clock):
     from homeplane.embodied import local_motor
-    monkeypatch.setattr(local_motor.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(local_motor, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
     # Only fake SDK structs are accessed; LocalMotor.__init__ is deliberately
     # bypassed so no library, camera, native code or device is loaded.
     session = ctypes.c_uint32(4)
@@ -421,24 +423,37 @@ def test_native_expiry_during_session_preparation_never_calls_sdk(monkeypatch):
 async def test_capture_controls_pass_expiry_through_the_actual_child_and_native_method(monkeypatch, expired_in_thread):
     clock = [10]
     motor, sent, keepalive = inert_motor(monkeypatch, clock)
-    outputs = []
     command = dict(action='motor_step', request_id=1, direction='left',
                    expires_mono=11 if expired_in_thread else 9.9)
-    reader = SimpleNamespace(readline=AsyncMock(side_effect=[json.dumps(command).encode(), b'']))
     calls = []
     async def delayed_thread(function, *args, **kwargs):
         calls.append(True)
         clock[0] = 11.1
         return function(*args, **kwargs)
+
+    result = await capture_motor_command(command, motor, to_thread=delayed_thread)
+    assert calls == ([True] if expired_in_thread else [])
+    assert not sent
+    assert result['request_id'] == 1 and result['error_code'] == 'motor_request_expired'
+
+
+async def capture_motor_command(command, motor, *, to_thread=asyncio.to_thread,
+                                selected=None, capture_session=None, private=None):
+    """运行采集进程原控制循环，原生对象由调用方提供。"""
+    outputs = []
+    reader = SimpleNamespace(readline=AsyncMock(side_effect=[json.dumps(command).encode(), b'']))
+
     scope = dict(reader=reader, json=json, request=dict(motor=True), motor=motor,
-                 emit=outputs.append, check_motor_deadline=check_motor_deadline,
-                 asyncio=SimpleNamespace(to_thread=delayed_thread), time=time)
+                 emit=outputs.append, check_motor_deadline=check_motor_deadline, motor_error_code=motor_error_code,
+                 asyncio=SimpleNamespace(to_thread=to_thread), time=time, selected=selected, PRIVATE=private,
+                 camera_source_context=camera_source_context, re=re, capture_session=capture_session)
     source = ast.parse(Path('homeplane/embodied/capture_worker.py').read_text())
     controls = next(node for node in ast.walk(source) if isinstance(node, ast.AsyncFunctionDef) and node.name == 'controls')
     factory = ast.parse('async def factory():\n    audio_until = sound_until = attention_until = video_until = 0\n    return controls').body[0]
     factory.body.insert(1, controls)
-    exec(compile(ast.fix_missing_locations(ast.Module(body=[factory], type_ignores=[])), '<actual capture controls>', 'exec'), scope)
+    gate = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == 'sound_motor_gate')
+    code = ast.Module(body=[gate, factory], type_ignores=[])
+    exec(compile(ast.fix_missing_locations(code), '<actual capture controls>', 'exec'), scope)
     await (await scope['factory']())()
-    assert calls == ([True] if expired_in_thread else [])
-    assert not sent and len(outputs) == 1
-    assert outputs[0]['request_id'] == 1 and outputs[0]['error_code'] == 'motor_request_expired'
+    result, = outputs
+    return result

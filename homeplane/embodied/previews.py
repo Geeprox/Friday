@@ -14,6 +14,7 @@ from .camera_intent import (
 )
 from .camera_audio import AudioIngress
 from .frame_sampling import CAPTURE_IDLE_TIMEOUT, CAPTURE_RECEIVE_TIMEOUT, offer_frame
+from .local_motor import SOUND_MOTION_DENIALS
 from homeplane.runtime_log import RuntimeLog
 from homeplane.people.live import close_identity
 
@@ -50,7 +51,8 @@ class PreviewPool:
     def __init__(self, identity_store=None, continuous=False, *, recognize=False, control_camera=False,
                  on_observation=None, on_audio=None, on_clear=None, on_motion=None, on_capture_frame=None,
                  on_view_lost=None, focus=None, occupied_elsewhere=None,
-                 review_pending=None, fall_pending=None, sound_cue=None, sound_view=None, wall=None, intent_factory=None):
+                 review_pending=None, fall_pending=None, sound_cue=None, sound_view=None, sound_motion=None,
+                 wall=None, intent_factory=None):
         self.wall = wall
         self.sessions = {}
         self.focus = focus or (lambda camera: None)
@@ -59,6 +61,7 @@ class PreviewPool:
         self.fall_pending = fall_pending or (lambda camera, session: False)
         self.sound_cue = sound_cue or (lambda camera, sample, active: None)
         self.sound_view = sound_view
+        self.sound_motion = sound_motion
         self.runtime_log = RuntimeLog(DATA / "logs" / "camera-motion")
         self.lock = asyncio.Lock()
         self.identity_store = identity_store
@@ -451,6 +454,7 @@ class PreviewPool:
                 if motion_lock.locked():raise RuntimeError('motor_busy')
                 began = time.monotonic()
                 expires = min(began+1.5, observed+1.5) if observed is not None else began+1.5
+                recorded_sound = director.recorded_sound_for_motion(direction) if observed is not None else None
                 async with motion_lock:
                     request_id = secrets.token_hex(12)
                     correlation = secrets.token_hex(16)
@@ -463,6 +467,10 @@ class PreviewPool:
                         if not await camera_is_open(selected):
                             privacy_closed()
                             raise RuntimeError('privacy_shutter_closed')
+                        if recorded_sound is not None:
+                            session = current_sample()['session_id']
+                            if self.sound_motion is None or not await self.sound_motion(selected['id'], session, recorded_sound):
+                                raise RuntimeError('stale_input')
                         # 等当前配准或布局完成，再清除这一视角。转向前后需要同一背景基准。
                         async with room_lock:
                             if item['privacy_closed']:raise RuntimeError('privacy_shutter_closed')
@@ -487,13 +495,20 @@ class PreviewPool:
                             item['last_motor_sent'] = now
                             if recognizer is not None:recognizer.mark_motion(now)
                             if self.on_motion:self.on_motion(selected['id'])
-                            process.stdin.write((json.dumps(dict(action='motor_step',direction=direction,
-                                request_id=request_id,expires_mono=expires))+'\n').encode())
+                            command = dict(action='motor_step', direction=direction, request_id=request_id,
+                                           expires_mono=expires)
+                            if recorded_sound is not None:
+                                command['sound_event'] = recorded_sound.motor_evidence()
+                            process.stdin.write((json.dumps(command)+'\n').encode())
                             sent = True
                         await process.stdin.drain()
                         result = await asyncio.wait_for(future,3)
                         if result.get('error_code') == 'motor_request_expired':
                             raise RuntimeError('motor_request_expired')
+                        if recorded_sound is not None and result.get('error_code') in SOUND_MOTION_DENIALS:
+                            if result['error_code'] == 'sound_motion_revoked':
+                                recorded_sound.withdrawn.set()
+                            raise RuntimeError('stale_input')
                         if result.get('error_class') or result.get('native_code')!=0:
                             raise RuntimeError('local_motor_rejected')
                         director.sent(time.monotonic(), direction, automatic=observed is not None)
@@ -555,6 +570,8 @@ class PreviewPool:
                             await send_motion(direction,sample['_local_received'],epoch)
                         except (RuntimeError, OSError, TimeoutError):
                             if item['privacy_closed']:return
+                    elif director.sound_search_cue is not None and self.sound_motion is not None:
+                        await self.sound_motion(selected['id'], sample['session_id'], director.sound_search_cue)
                     await asyncio.sleep(.3)
             if lease is not None and self.recognize:motion_task=asyncio.create_task(direct())
             checked_power=0.

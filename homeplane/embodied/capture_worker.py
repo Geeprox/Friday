@@ -15,10 +15,10 @@ import miot.camera as camera_sdk
 from miot.camera import MIoTCamera
 from miot.types import MIoTCameraInfo, MIoTCameraStatus
 
-from homeplane.embodied.local_motor import LocalMotor, check_motor_deadline
+from homeplane.embodied.local_motor import LocalMotor, check_motor_deadline, motor_error_code
 from homeplane.embodied.frame_sampling import CAPTURE_IDLE_TIMEOUT, LatestFrameEncoder
 from homeplane.embodied.capture_decoder import install_decoder
-from homeplane.embodied.camera_provenance import bind_capture_packet
+from homeplane.embodied.camera_provenance import bind_capture_packet, camera_source_context
 from homeplane.embodied.camera_audio import PCMFramer, voice_window_deadlines
 from homeplane.embodied.paths import PRIVATE
 from homeplane.embodied.paths import camera as registered_camera
@@ -36,6 +36,27 @@ def emit(value):
     data = (json.dumps(value, separators=(",", ":")) + "\n").encode()
     while data:
         data = data[os.write(OUTPUT, data) :]
+
+
+def sound_motor_gate(evidence, selected, capture_session, private):
+    """从同一采集进程绑定的镜头配置构造发送校验。"""
+    if not isinstance(evidence, dict) or set(evidence) != {'event', 'session', 'revision'}:
+        raise RuntimeError('sound_motion_revoked')
+    event, session, revision = evidence['event'], evidence['session'], evidence['revision']
+    context = camera_source_context(selected)
+    if (not isinstance(event, str) or not re.fullmatch(r'[a-f0-9]{32}', event)
+            or not isinstance(session, str) or not re.fullmatch(r'[a-f0-9]{32}', session)
+            or session != capture_session
+            or type(revision) is not int or revision < 0 or context is None):
+        raise RuntimeError('sound_motion_revoked')
+
+    def admission():
+        from homeplane.embodied.safety import SafetyStore
+
+        return SafetyStore(private / 'safety.sqlite').sound_motor_admission(
+            event, (selected['id'], session, context), revision)
+
+    return admission
 
 
 class ObservedCamera(MIoTCamera):
@@ -207,8 +228,11 @@ async def main():
                     if request.get("motor") is not True:
                         raise ValueError("motor_not_owned")
                     check_motor_deadline(command.get('expires_mono'))
+                    guard = {}
+                    if 'sound_event' in command:
+                        guard['admission'] = sound_motor_gate(command['sound_event'], selected, capture_session, PRIVATE)
                     result = await asyncio.to_thread(motor.step, command.get("direction"),
-                                                     expires_mono=command['expires_mono'])
+                                                     expires_mono=command['expires_mono'], **guard)
                     emit(dict(result, type="motor_result", request_id=command.get("request_id")))
                 except Exception as e:
                     emit(
@@ -216,7 +240,7 @@ async def main():
                             "type": "motor_result",
                             "request_id": command.get("request_id") if isinstance(command, dict) else None,
                             "error_class": type(e).__name__,
-                            "error_code": 'motor_request_expired' if str(e)=='motor_request_expired' else 'local_motor_rejected',
+                            "error_code": motor_error_code(e),
                         }
                     )
 

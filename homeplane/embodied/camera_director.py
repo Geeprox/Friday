@@ -622,6 +622,17 @@ class CameraDirector:
             return False
         return self._follow_direction(target, wake_aim=sound_follow and self.wake_centering) == direction
 
+    def recorded_sound_for_motion(self, direction):
+        """只交出属于当前待发转向的已留档声音回执。"""
+        from .sound_review import SoundSearchCue
+
+        pending = self.pending_decision
+        if pending and pending['direction'] == direction:
+            cue = pending.get('sound_cue')
+            if isinstance(cue, SoundSearchCue):
+                return cue
+        return None
+
     def _next_position(self, direction):
         x,y = self.position
         return (x+(direction=='right')-(direction=='left'), y+(direction=='up')-(direction=='down'))
@@ -820,6 +831,24 @@ class CameraDirector:
         self._interrupt_selection(now)
         return True
 
+    def _end_withdrawn_sound(self, now):
+        cue = self.sound_search_cue
+        if not getattr(cue, 'withdrawn', None) or not cue.withdrawn.is_set():
+            return False
+        self._end_sound_search(now)
+        self._discard_patrol()
+        self.pending_direction = self.pending_decision = None
+        self.target = self.target_identity = self.target_follow_key = self.target_session = None
+        self.last_focus = None
+        self._clear_reframe()
+        self._clear_selection_reference()
+        self.tilt_observation = self.tilt_recovery = None
+        self.visible_samples = 0
+        self.clear = False
+        self.clear_since = None
+        self.phase = 'survey_finished' if self._survey_done() else 'checking_view'
+        return True
+
     def _wake_source_current(self, sample, cue):
         accepts_wake = (self.mode == 'auto'
                         or (self.mode == 'survey' and self.intent is not None and self.intent[0] == 'patrol'))
@@ -986,6 +1015,8 @@ class CameraDirector:
                                     else max(self.last_sample, sample['_local_received']))
                 self.last_person = now
             self.phase = 'game_held' if fresh else 'waiting_video'
+            return None
+        if self._end_withdrawn_sound(now):
             return None
         explicit = self.mode in TARGET_MODES
         if explicit and (self.target_session is None or self.target_session != sample.get('session_id')):

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import inspect
 import math
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -83,6 +84,11 @@ class SoundSearchCue:
     captured_at: float
     receipt: ReviewReceipt
     source_token: object = field(repr=False)
+    withdrawn: threading.Event = field(default_factory=threading.Event, repr=False)
+
+    def motor_evidence(self):
+        """交给采集进程的最小事件凭据。"""
+        return dict(event=self.receipt.event_id, session=self.session, revision=self.revision)
 
 
 class SoundReviewer:
@@ -242,7 +248,8 @@ class SoundReviewer:
     def owns_search_cue(self, cue):
         """同一采集来源可以换视角，也可以有更新的异响回执。"""
         latest = self.search_cues.get(cue.camera)
-        return (not self.closed and latest is not None and latest.source_token is cue.source_token
+        return (not self.closed and not cue.withdrawn.is_set()
+                and latest is not None and latest.source_token is cue.source_token
                 and cue.generation == self.search_generation)
 
     def search_cue(self, camera, session, active=None):

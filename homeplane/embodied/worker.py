@@ -128,6 +128,7 @@ fleet = InteractionFleet(voice_revoked=voice_routing.discard)
 secondary_homes = {}
 identity_store = IdentityStore(PRIVATE / "identities.sqlite")
 from homeplane.embodied.safety import SafetyRuntime, SafetyStore
+from homeplane.embodied.local_motor import SOUND_MOTION_DENIALS
 safety = SafetyRuntime(SafetyStore(PRIVATE / "safety.sqlite"), label=identity_store.read_label)
 identities = IdentitySession(identity_store, SELECTED["id"], SESSION, MODELS)
 
@@ -364,6 +365,7 @@ previews = PreviewPool(identity_store=identity_store, continuous=True, recognize
     on_motion=clear_camera_view, on_view_lost=clear_camera_observation, on_capture_frame=safety.capture_frame,
     review_pending=safety.review_pending, fall_pending=safety.fall_pending,
     sound_cue=camera_motion_cue, sound_view=safety.offer_sound_search_frame,
+    sound_motion=safety.check_sound_motion,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
     occupied_elsewhere=lambda cid: (cid!=SELECTED['id'] and bool(view().get('people')))
         or any(other!=cid and previews.status(other)['state']=='live' and item.get('people',0)
@@ -373,7 +375,7 @@ bindings = ActionBindings(registry)
 configure(registry, bindings, games, home)
 
 
-async def motor_step(direction, observed=None, expected_intent=None, decision_current=None):
+async def motor_step(direction, observed=None, expected_intent=None, decision_current=None, *, recorded_sound=None):
     global motor_sequence, motion_generation, motor_last_sent
     if direction not in ("left", "right", "up", "down"):
         raise ValueError("invalid_motor_direction")
@@ -406,6 +408,9 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
         if not await camera_is_open(SELECTED):
             close_primary_view()
             raise RuntimeError('privacy_shutter_closed')
+        if recorded_sound is not None and not await safety.check_sound_motion(
+                SELECTED['id'], state.get('session_id'), recorded_sound):
+            raise RuntimeError('stale_input')
         async with room_lock:
             if not await camera_is_open(SELECTED):
                 close_primary_view()
@@ -439,13 +444,19 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             identities.discard()
             if room:
                 room.expect_motion(now, 2)
-            capture.stdin.write((json.dumps(dict(action='motor_step', direction=direction,
-                request_id=request_id, expires_mono=expires))+'\n').encode())
+            command = dict(action='motor_step', direction=direction, request_id=request_id, expires_mono=expires)
+            if recorded_sound is not None:
+                command['sound_event'] = recorded_sound.motor_evidence()
+            capture.stdin.write((json.dumps(command)+'\n').encode())
             sent = True
         await capture.stdin.drain()
         result = await asyncio.wait_for(future, 3)
         if result.get('error_code') == 'motor_request_expired':
             raise RuntimeError('motor_request_expired')
+        if recorded_sound is not None and result.get('error_code') in SOUND_MOTION_DENIALS:
+            if result['error_code'] == 'sound_motion_revoked':
+                recorded_sound.withdrawn.set()
+            raise RuntimeError('stale_input')
         if result.get("error_class") or result.get("native_code") != 0:
             raise RuntimeError("local_motor_rejected")
         state["local_motor"] = dict(result, at=time.time())
@@ -530,8 +541,9 @@ async def camera_search():
                             review_pending=safety.review_pending(SELECTED['id'], current.get('session_id')),
                             fall_pending=safety.fall_pending(SELECTED['id'], current.get('session_id')),
                             sound_cue=camera_motion_cue(SELECTED['id'], current, director.sound_search_cue))
+                    recorded_sound = director.recorded_sound_for_motion(direction)
                     await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
-                                     decision_current=decision_current)
+                                     decision_current=decision_current, recorded_sound=recorded_sound)
                     director.sent(time.monotonic())
                     lease.event('local_follow_impulse', direction=direction)
                 except (RuntimeError, OSError, TimeoutError) as error:
@@ -540,6 +552,8 @@ async def camera_search():
                     if str(error) not in {'stale_input', 'camera_intent_changed', 'motor_busy', 'motor_request_expired', 'capture_source_changed'}:
                         state['camera_control']['phase'] = 'motor_unavailable'
                         director.failed(time.monotonic())
+            elif director.sound_search_cue is not None:
+                await safety.check_sound_motion(SELECTED['id'], sample['session_id'], director.sound_search_cue)
             await asyncio.sleep(.3)
     except asyncio.CancelledError:
         raise
