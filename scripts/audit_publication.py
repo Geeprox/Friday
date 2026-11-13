@@ -87,6 +87,8 @@ SYNTHETIC_MEDIA = {
         '38005bc9a21ce52217a5987f955dfe418d5cbe4162d0fd6c3cd288e710f82802',
     'homeplane/embodied/static/game-art/quest-lantern.webp':
         '08069e55ec432673bcf9c6e53e3f008162c1a6baa87626525ed2c2777d8f6137',
+    'homeplane/embodied/static/game-art/quest-bridge-scene.webp':
+        '42079edf2f401dd9cae3b3593301be07977e652b79a65593c7b68fa64737de96',
     'homeplane/static/motion-art/body/targets/exercise-side_raise.png':
         '97466f4b4992631b62631d1c5713adfc15ef326598b0dc4b20048ae50e99859b',
     'homeplane/static/motion-art/body/targets/exercise-overhead_clap.png':

@@ -13,7 +13,9 @@ function update(event){
   diagram?.dispose();root=host;diagram=null;key=null;
  }
  if(!root)return;
+ // 新关的图要先进入视口完成就绪读回，过桥时再暂时藏到画面后。
  root.hidden=!state.key||!state.visible;root.dataset.mode=state.mode;
+ root.classList.toggle('teaching-cover',state.covered===true);
  if(key!==state.key){
   const previous=diagram;key=state.key;
   diagram=key?createSourceBodyDiagram(key,{name:names[key]||'动作',transparentBackground:true}):null;

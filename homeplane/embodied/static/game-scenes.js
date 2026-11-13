@@ -15,7 +15,7 @@ function questWorld(g){
  const stages=Array.isArray(q.stages)&&q.stages.length?q.stages:legacy;
  const level=Math.max(0,Math.min(stages.length,Number.isSafeInteger(q.level)?q.level:0));
  const stage=stages[Math.min(level,stages.length-1)],scenes=['forest','stream','camp'];
- const landmarks=['gate','canopy','branches','stones','steps','flowers','crossing','boughs','trail','flags','breeze','landing','camp_flowers','lanterns'];
+ const landmarks=['gate','canopy','branches','stones','steps','flowers','crossing','bridge','boughs','trail','flags','breeze','landing','camp_flowers','lanterns'];
  const requestedScene=stage?.scene??oldWorld[stage?.action]?.[0];
  const scene=scenes.includes(requestedScene)?requestedScene:'forest',values={};
  for(const[s,part]of stages.entries()){
@@ -26,12 +26,17 @@ function questWorld(g){
   const observed=reps?Math.floor(Number(q.reps)||0):Number(q.hold)||0;
   const count=s<level?required:s===level&&q.phase!=='transition'?Math.max(0,Math.min(required,observed)):0;
   values[name]={count,required,ratio:required?count/required:0,complete:s<level,visible:s<=level};
-  if(name==='stones'&&Array.isArray(part.step_pattern)&&part.step_pattern.length===required&&
+  if(['stones','bridge'].includes(name)&&Array.isArray(part.step_pattern)&&part.step_pattern.length===required&&
     part.step_pattern.every(side=>side==='left'||side==='right'))values[name].pattern=part.step_pattern;
  }
  const stones=values.stones,step=stage?.landmark==='stones'&&q.phase==='work'&&g.status==='playing'&&
   stones?.pattern&&q.step&&stones.pattern[stones.count]===q.step.side?q.step:null;
- return{scene,level,done:level===stages.length,values,step};
+ const crossing=stage?.landmark==='bridge';
+ const justCrossed=q.phase==='transition'&&stages[level-1]?.landmark==='bridge';
+ const place=crossing||justCrossed?'bridge':scene,boards=values.bridge;
+ const bridge=crossing&&q.phase==='work'&&g.status==='playing'&&
+  q.bridge&&boards?.pattern?.[boards.count]===q.bridge.side?q.bridge:null;
+ return{scene,place,level,done:level===stages.length,values,step,bridge};
 }
 function questPlacements(places,count){
  count=Math.max(0,Math.min(32,Math.floor(count)));if(count===places.length)return places;
@@ -143,7 +148,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   return images.get(name);
  }
  const complete=im=>im?.complete&&im.naturalWidth>0;
- const assets=mode=>mode==='quest'?['summer-scene.png','quest-stream-scene.png','quest-camp-scene.png','quest-props.png','quest-lantern.webp']:
+ const assets=mode=>mode==='quest'?['summer-scene.png','quest-stream-scene.png','quest-bridge-scene.webp','quest-camp-scene.png','quest-props.png','quest-lantern.webp']:
   mode==='ski'?['winter-scene.png','winter-props.png']:
   mode==='tennis'?['summer-scene.png','summer-props.png',...tennisArt]:['summer-scene.png','summer-props.png'];
  function prepare(mode){for(const name of assets(mode))image(name);}
@@ -215,8 +220,85 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    c.strokeStyle='#fff1ce';c.lineWidth=4;c.stroke();c.restore();
   }
  }
+ // 桥面从近岸延伸到对面小路。桥板宽度和间距由同一个透视基准计算。
+ function bridgePoint(t,edge=0){
+  const depth=1-Math.pow(1-t,1.42);
+  return [785-132*depth+edge*(132-71*depth),769-329*depth];
+ }
+ function bridgeBoard(points){
+  c.beginPath();c.moveTo(...points[0]);for(const p of points.slice(1))c.lineTo(...p);c.closePath();
+ }
+ function bridgeStage(part,cue){
+  if(!part?.required)return;
+  const n=part.required,atlas=image('quest-props.png');
+  for(const edge of [-1,1]){
+   const near=bridgePoint(0,edge),far=bridgePoint(1,edge);
+   line([near[0]+4,near[1]+15],[far[0]+2,far[1]+8],'#235b5e66',9);
+   line(near,far,'#59391f',9);
+   line([near[0]-1,near[1]-2],[far[0]-1,far[1]-2],'#bb8859',3);
+  }
+  for(let i=n-1;i>=0;i--){
+   const earned=i<part.count,active=i===part.count&&['lift','hold','land'].includes(cue?.phase);
+   if(!earned&&!active)continue;
+   const start=(i+.055)/n,end=(i+.94)/n;
+   const front=bridgePoint(start),back=bridgePoint(end);
+   const points=[bridgePoint(end,-1),bridgePoint(end,1),bridgePoint(start,1),bridgePoint(start,-1)];
+   const p=earned?settled('bridge:'+i):Math.max(0,Math.min(1,Number(cue.progress)||0));
+   const x=earned||reduced.matches?0:(cue.side==='left'?-1:1)*42*(1-p);
+   const y=reduced.matches?0:earned?0:-23*(1-p);
+   const [left,top]=[Math.min(...points.map(a=>a[0])),back[1]];
+   const width=Math.max(...points.map(a=>a[0]))-left,height=front[1]-top;
+   c.save();c.translate(x,y);
+   if(earned&&!reduced.matches&&p<1){
+    const settle=1+.06*(1-p);
+    const mid=[(front[0]+back[0])/2,(front[1]+back[1])/2];
+    c.translate(...mid);c.scale(settle,settle);c.translate(-mid[0],-mid[1]);
+   }
+   bridgeBoard(points.map(([px,py])=>[px,py+7]));c.fillStyle='#724723';c.fill();
+   bridgeBoard(points);c.fillStyle='#dca671';c.fill();
+   if(complete(atlas)){
+    c.save();c.clip();
+    c.drawImage(atlas,526*atlas.naturalWidth/1774,223*atlas.naturalHeight/887,
+     268*atlas.naturalWidth/1774,47*atlas.naturalHeight/887,left,top,width,height);
+    c.restore();
+   }
+   c.lineWidth=active?4:1.8;c.strokeStyle=active?'#fff0be':'#80532d';c.stroke();
+   const center=[(front[0]+back[0])/2,(front[1]+back[1])/2];
+   if(earned){
+    for(const edge of [-1,1]){
+     const [px,py]=bridgePoint((start+end)/2,edge*.85);
+     c.beginPath();c.ellipse(px,py,3.6,2.3,0,0,Math.PI*2);c.fillStyle='#69462c';c.fill();
+    }
+   }else{
+    const track=Math.min(width*.22,43),ty=center[1]+Math.min(12,height*.16);
+    line([center[0]-track,ty],[center[0]+track,ty],'#65472d',7);
+    if(p>0)line([center[0]-track,ty],[center[0]-track+2*track*p,ty],'#fff4c7',4);
+    if(cue.phase!=='hold'){
+     const ax=center[0],ay=top-17,down=cue.phase==='land',direction=down?1:-1;
+     const s=portrait?1.25:1;
+     c.beginPath();c.arc(ax,ay,21*s,0,Math.PI*2);c.fillStyle='#443323';c.fill();
+     line([ax,ay-8*s*direction],[ax,ay+8*s*direction],'#fff4d0',3.5*s);
+     line([ax-6*s,ay+2*s*direction],[ax,ay+8*s*direction],'#fff4d0',3.5*s);
+     line([ax+6*s,ay+2*s*direction],[ax,ay+8*s*direction],'#fff4d0',3.5*s);
+    }
+   }
+   c.restore();
+  }
+  for(const edge of [-1,1]){
+   const near=bridgePoint(0,edge*1.12),far=bridgePoint(1,edge*1.12);
+   line([far[0],far[1]+3],[far[0],far[1]-44],'#78512f',9);
+   line([near[0],near[1]+9],[near[0],near[1]-86],'#78512f',14);
+   line([near[0]-2,near[1]+7],[near[0]-2,near[1]-84],'#c79560',5);
+   const rail=(shade,width,offset=0)=>{
+    c.beginPath();c.moveTo(far[0],far[1]-37+offset);
+    c.quadraticCurveTo((near[0]+far[0])/2,(near[1]+far[1])/2-40+offset,near[0],near[1]-72+offset);
+    c.strokeStyle=shade;c.lineWidth=width;c.lineCap='round';c.stroke();
+   };
+   rail('#6c5033',6);rail('#d8b37e',3,-1);
+  }
+ }
  function questWorldPaint(world,showStep){
-  background({forest:'summer-scene.png',stream:'quest-stream-scene.png',camp:'quest-camp-scene.png'}[world.scene]);
+  background({forest:'summer-scene.png',stream:'quest-stream-scene.png',bridge:'quest-bridge-scene.webp',camp:'quest-camp-scene.png'}[world.place]);
   const parts=world.values;
   function row(name,index,places,{clear=false,marker=true,top=false}={}){
    const part=parts[name];if(!part?.visible)return;
@@ -231,6 +313,8 @@ function createGameScenery(c,{base,onChange=()=>{}}){
    questSprite(3,560-open*80,460-lift*65,300-open*40,{mirror:true,angle:-open*.12});
    questSprite(3,1040+open*80,460-lift*65,300-open*40,{angle:open*.12});
    row('branches',2,[[490,815,250],[545,665,225],[475,535,195]],{clear:true});
+  }else if(world.place==='bridge'){
+   bridgeStage(parts.bridge,showStep?world.bridge:null);
   }else if(world.scene==='stream'){
    if(parts.stones?.pattern)creekStones(parts.stones,showStep?world.step:null);
    else row('stones',0,[[470,810,170],[540,700,150],[470,600,130],[545,510,115]]);
@@ -258,7 +342,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   questAt=at;questRunning=running;
   if(!questShown||running||g.mode!=='quest'){
    const next=questWorld(g),old=questShown;
-   const unseenChange=dt>250&&old&&(next.scene!==old.scene||next.level!==old.level||
+   const unseenChange=dt>250&&old&&(next.place!==old.place||next.level!==old.level||
     Object.entries(next.values).some(([name,part])=>part.count!==old.values[name]?.count));
    if(!running||unseenChange){questReveals.clear();questPrevious=null;}
    else if(old){
@@ -267,7 +351,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
      for(let i=Math.floor(before);i<Math.floor(part.count);i++)questReveals.set(name+':'+i,questClock);
     }
     if(next.done&&!old.done)questReveals.set('picnic',questClock);
-    if(next.scene!==old.scene){questPrevious={...next,scene:old.scene,done:false};chapterAt=questClock;}
+   if(next.place!==old.place){questPrevious={...old,done:false};chapterAt=questClock;}
    }
    questShown=next;
   }
@@ -427,6 +511,7 @@ function createGameScenery(c,{base,onChange=()=>{}}){
   }
  }
  return {prepare,ready,failed,reload,receive,interruptTennis,adventure,training,tennis,
-  teachingAnchor(mode){return mode==='hiit'?{x:800,y:535}:{x:800,y:790};},
+  teachingAnchor(mode,g){return mode==='hiit'?{x:800,y:535}:g?.quest?.stage?.landmark==='bridge'?
+   {x:1050,y:804}:{x:800,y:790};},
   setPortrait(value){portrait=value;}};
 }

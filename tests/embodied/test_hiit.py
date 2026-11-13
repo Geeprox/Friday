@@ -207,11 +207,12 @@ def test_new_actions_use_live_joints_dwell_alternation_and_neutral_return(mode, 
     assert feed(human(), 5)['reps'] == 0
 
     active_frames = 25 if action == 'balance' else 6
-    feed(new_action_pose(action), active_frames)
+    first_side, second_side = ('right', 'left') if mode == 'quest' and action == 'balance' else ('left', 'right')
+    feed(new_action_pose(action, first_side), active_frames)
     assert feed(human(), 5)['reps'] == 1
-    feed(new_action_pose(action), active_frames)
+    feed(new_action_pose(action, first_side), active_frames)
     assert feed(human(), 5)['reps'] == 1
-    other = new_action_pose(action, 'right')
+    other = new_action_pose(action, second_side)
     feed(other, active_frames)
     tick += 1
     assert game.update([], LOCK, tick*.05)['status'] == 'waiting'

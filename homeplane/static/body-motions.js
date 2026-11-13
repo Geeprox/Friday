@@ -49,7 +49,8 @@ const mappings = {
   'exercise.side_bend': {key:'side_bend'},
   'exercise.reach_up': {key:'overhead-reach', alternatingTimes:[.9,0,1.8], fallback:'body.left_hand_up'},
   'exercise.arm_open': {key:'open-close-swings', times:[.6,1.2333333492], fallback:'body.arms_open'},
-  'exercise.balance': {key:'balance', mirrorCycle:true, yaw:0},
+  // 原片抬角色左脚，正面示范中位于观看者右侧。
+  'exercise.balance': {key:'balance', mirrorCycle:true, yaw:0, sourceFoot:'right'},
   'exercise.cross_knee': {key:'cross_knee', mirrorCycle:true, yaw:0},
   'exercise.side_raise': {key:'side_raise', mirrorCycle:true, yaw:0},
   'exercise.overhead_clap': {key:'dance-overhead-clap', times:[0,.50], fromStart:true, yaw:0},
@@ -87,7 +88,8 @@ function paint(at) {
     }
     const elapsed=localClock?item.motionTime:at,duration=map.period??period;
     const phase=item.paused || reduced?.matches ? .57 : (elapsed%duration)/duration;
-    const mirror=item.stepSide?item.stepSide==='right':map.mirrorCycle&&Math.floor(elapsed/duration)%2===1;
+    const mirror=item.stepSide?item.stepSide!==(map.sourceFoot||'left'):
+      map.mirrorCycle&&Math.floor(elapsed/duration)%2===1;
     const instruction={key:map.key,phase,yaw:map.yaw,mirror,
       transparentBackground:item.transparentBackground,rect:{x:(i%cols)*width,y:Math.floor(i/cols)*height,width,height}};
     if (map.times) instruction.sourceTime=sourceTime(phase,...map.times);
@@ -113,7 +115,9 @@ function fallback(item){
   const {node,context}=item;
   context.clearRect(0,0,node.width,node.height);
   context.save();
-  if(item.stepSide==='right'){context.translate(node.width,0);context.scale(-1,1);}
+  if(item.stepSide&&item.stepSide!==(mappings[item.key]?.sourceFoot||'left')){
+    context.translate(node.width,0);context.scale(-1,1);
+  }
   context.drawImage(item.fallback,0,0,node.width,node.height);
   context.restore();
   node.dataset.motion='static';
@@ -142,11 +146,16 @@ export function createSourceBodyDiagram(key,{label=true,name='体感动作',tran
   observer?.observe(node);if(!observer)item.visible=true;
   if(!reduced?.matches)prepare(item);
   node.setPaused=value=> {const paused=Boolean(value);if(item.paused===paused)return;item.paused=paused;item.lastPaint=null;item.dirty=true;paint(performance.now());schedule();};
-  if(key==='exercise.side_tap')node.setStepSide=side=>{
+  if(key==='exercise.side_tap'||key==='exercise.balance')node.setStepSide=side=>{
     const next=side==='left'||side==='right'?side:null;
     if(item.stepSide===next)return;
     item.stepSide=next;item.motionTime=0;item.lastPaint=null;item.dirty=true;
-    if(label)node.setAttribute('aria-label',name+(next?(next==='left'?'（向左）':'（向右）'):'')+'：点地、收脚');
+    if(label){
+      const foot=next==='left'?'左脚':'右脚';
+      const action=key==='exercise.balance'?(next?'抬'+foot+'、站稳、落脚':'抬脚、站稳、落脚'):
+        (next?foot+'点地、收脚':'点地、收脚');
+      node.setAttribute('aria-label',name+'，'+action);
+    }
     if(reduced?.matches||failed||node.dataset.motion==='static')fallback(item);
     paint(performance.now());schedule();
   };

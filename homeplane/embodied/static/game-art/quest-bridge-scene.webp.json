@@ -1,0 +1,17 @@
+{
+  "asset": "quest-bridge-scene.webp",
+  "origin": "Built-in ImageGen, original synthetic game environment",
+  "prompt": "Create a single new environment plate for a children's movement adventure videogame, intended for a fixed 16:9 TV camera, full-bleed wide landscape with no frame. The supplied image is a style reference only, not an edit target. Match its premium handmade matte modeling clay and layered cut-paper trees, tactile paper-fiber surfaces, rounded natural forms, clear warm daylight, leaf greens, turquoise creek, and ochre dirt, with the same material look and sun direction. New composition: low but slightly elevated view standing on the near bank of a small forest creek. The creek itself fills a very broad open band between roughly 45 percent and 85 percent of the image height, flowing across the screen from left to right and visibly crossing the dirt trail. A small, clearly defined landing on the far bank is near 46 percent of the image width at about 46 percent image height. The open near-bank dirt landing fills the bottom 14 to 16 percent of the frame, and is widest toward the lower right, to hold a separate animated guide. A clear empty corridor for future perspective bridge overlays runs from about (40% width, 84% height) on the near bank toward (46% width, 46% height) at the far bank. Turquoise water in this central corridor is clear, matte, softly rippled, and visually quiet. The shore edges and softly sculpted trees, brush and little wildflowers at the far left and right give the creek natural depth; keep the central 50% of the image uncluttered including in a narrow portrait crop. A little ochre forest path is visible on the other side, and the wooded hills and warm sky occupy the upper third. Broad, readable shapes at a distance, warm woodsy morning, premium tactile miniature diorama. Show the creek before a bridge is built: no bridge of any sort, no posts, no rope, no planks, no stepping stones in water, no figures, animals, text, signage, arrows, UI, or glowing effects. Strong focus on the real crossing and a consistent believable perspective.",
+  "reference_asset": "quest-stream-scene.png",
+  "reference_sha256": "8b8acf2a4abcf31746d6615f296773e65f43b970a0a8afad41a5b38d3d43a9ae",
+  "reference_resize": "sips -Z 960",
+  "generated_png_sha256": "a5f36a465aa01c63645ebfad5a2c1c48cd87674543a96531fc4fb5ed6ca33e6f",
+  "sha256": "42079edf2f401dd9cae3b3593301be07977e652b79a65593c7b68fa64737de96",
+  "pixels": [
+    1672,
+    941
+  ],
+  "alpha": false,
+  "conversion": "Pillow WebP quality=91, method=6",
+  "input_media": "Only existing synthetic Friday game artwork."
+}

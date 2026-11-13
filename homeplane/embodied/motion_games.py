@@ -11,7 +11,9 @@ from homeplane.embodied.catalog import MOTION_GAME_MODES, TENNIS_VARIANTS
 from homeplane.embodied.game_difficulty import difficulty_options, game_difficulty
 from homeplane.embodied.hiit import PLAN as HIIT_PLAN, HIITCircuit, signals
 from homeplane.embodied.pose_rules import angle
-from homeplane.embodied.quest import DEFAULT_QUEST_ROUTE, TRANSITION_SECONDS, get_quest_route, quest_route_options
+from homeplane.embodied.quest import (
+    DEFAULT_QUEST_ROUTE, TRANSITION_SECONDS, QuestBalanceBridge, get_quest_route, quest_route_options,
+)
 from homeplane.embodied.ski_route import (
     DEFAULT_SKI_TRAIL, SKI_TREE_REACH, SKI_VISIBLE_AHEAD, SKI_WORLD_TRAVEL,
     SkiWarmup, advance, crossing_time, get_ski_trail, ski_trail_options,
@@ -450,6 +452,13 @@ class BodyMotion:
         elif exercise['side_tap'] in ('left', 'right'):
             foot = exercise['side_tap']
             exercise['side_tap'] = 'left' if sign * (j[foot+'Ankle']['x'] - j[foot+'Hip']['x']) < 0 else 'right'
+        # 桥板提示与镜像画面一致，训练仍沿用原来的左右腿信号。
+        if fresh_ankles and exercise['visible'] and abs(lh['x']-rh['x']) >= max(.02, .25*abs(ls['x']-rs['x'])):
+            balance = exercise['balance']
+            if balance in ('left', 'right'):
+                hip_order = lh['x']-rh['x'] if balance == 'left' else rh['x']-lh['x']
+                balance = 'left' if sign*hip_order < 0 else 'right'
+            exercise['bridge_balance'] = balance or 'transition'
         if (fresh_ankles and self.origin is not None and exercise['visible']
                 and .5 <= exercise['leg_spread'] <= 2.2 and exercise['leg_bend'] < 18):
             exercise['side_step'] = ('left' if self.lateral < -.35 else
@@ -536,6 +545,7 @@ class MotionGames:
         self.pose_feedback = ""
         self.quest_counter = None
         self.quest_counter_level = None
+        self.quest_bridge = None
         self.quest_transition = 0.0
         self.quest_history = []
         self.down_since = None
@@ -1053,7 +1063,7 @@ class MotionGames:
             dt = 0.0
         self.elapsed += dt
         if self.mode == "quest":
-            self.quest(selected[0], dt)
+            self.quest(selected[0], dt, now, captured_at)
         elif self.mode == "ski":
             self.ski(selected[0], dt, now)
         elif self.mode == "tennis":
@@ -1092,7 +1102,7 @@ class MotionGames:
         self.elapsed += dt
         return self.publish([], 'playing', '光线保卫队')
 
-    def quest(self, p, dt):
+    def quest(self, p, dt, now=None, captured_at=None):
         if self.level >= len(self.quest_stages):
             return
         if self.quest_transition > 0:
@@ -1116,6 +1126,18 @@ class MotionGames:
                     self.hold = max(0.0, self.hold - dt * 1.5)
             if self.hold >= stage.hold:
                 self._advance_quest()
+        elif stage.landmark == "bridge":
+            if self.quest_bridge is None:
+                self.quest_bridge = QuestBalanceBridge(stage.step_pattern)
+            bridge = self.quest_bridge
+            progress = bridge.progress
+            now = self.clock() if now is None else now
+            bridge.update(p, now, now if captured_at is None else captured_at)
+            self.active += max(0.0, bridge.progress - progress) * bridge.HOLD_SECONDS
+            self.reps = bridge.count
+            self.pose_feedback = ""
+            if bridge.complete:
+                self._advance_quest()
         else:
             if self.quest_counter_level != self.level:
                 self.quest_counter_level = self.level
@@ -1134,6 +1156,8 @@ class MotionGames:
         self.hold = self.pose_gap = 0.0
         if self.quest_counter is not None:
             self.quest_counter.invalidate_motion(keep_completed_side=True)
+        if self.quest_bridge is not None:
+            self.quest_bridge.invalidate_motion()
 
     def _advance_quest(self):
         stage = self.quest_stages[self.level]
@@ -1142,6 +1166,7 @@ class MotionGames:
         self.hold = self.pose_gap = 0.0
         self.reps = 0
         self.quest_counter = self.quest_counter_level = None
+        self.quest_bridge = None
         self.quest_transition = TRANSITION_SECONDS if self.level < len(self.quest_stages) else 0.0
         self.pose_feedback = "准备下一站" if self.quest_transition else ""
 
@@ -1164,7 +1189,15 @@ class MotionGames:
             total_reps=sum(s["reps"] for s in self.quest_history) + self.reps,
             history=[dict(s) for s in self.quest_history], feedback=self.pose_feedback,
             depth=players[0].get("squat_depth") if players else None)
-        if stage and stage.step_pattern:
+        if stage and stage.landmark == "bridge":
+            bridge = self.quest_bridge
+            active = status == "playing" and not self.quest_transition
+            state["bridge"] = dict(
+                side=stage.step_pattern[self.reps],
+                phase=(bridge.phase if bridge else "center") if active else "waiting",
+                progress=round(bridge.progress, 2) if active and bridge else 0.0,
+            )
+        elif stage and stage.step_pattern:
             counter = self.quest_counter
             if status != "playing" or self.quest_transition:
                 phase = "waiting"

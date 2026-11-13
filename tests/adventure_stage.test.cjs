@@ -6,7 +6,7 @@ function setup(){
  const nodes=new Map();
  const create=()=>({textContent:'',innerHTML:'',dataset:{},style:{},children:[],setAttribute(k,v){this[k]=v;},replaceChildren(...values){this.children=values;}});
  const node=id=>{if(!nodes.has(id))nodes.set(id,create());return nodes.get(id);};
- const scope=vm.createContext({selected:'quest',$:node,document:{createElement:create}});
+ const scope=vm.createContext({selected:'quest',$:node,document:{createElement:create,body:create()}});
  vm.runInContext(source.slice(source.indexOf('function completedGame('),source.indexOf('function gamePhaseMessage(')),scope);
  return{scope,node};
 }
@@ -69,6 +69,26 @@ test('HUD gives each station a non-color state and announces only station or pha
  scope.updateQuestHUD(game(4,{phase:'transition',transition_seconds:2}));
  assert.notEqual(node('questTrail').children,children);
  assert.equal(node('questAnnouncement').textContent,'下一站：交替抬膝。'+stages[4].instruction);
+});
+
+test('bridge instructions follow the cue without announcing each hold packet',()=>{
+ const{scope,node}=setup(),cue=(phase,progress=0,reps=1)=>game(6,{reps,bridge:{side:'right',phase,progress}});
+ let view=scope.updateQuestHUD(cue('lift'));
+ assert.equal(view.title,'搭桥过溪');assert.equal(view.stepSide,'right');
+ assert.equal(node('instruction').textContent,'抬起右脚');
+ assert.equal(node('liveProgress').textContent,'1 / 4 块桥板');
+ scope.updateQuestHUD(cue('hold',.35));
+ const notice=node('questAnnouncement').dataset.notice;
+ scope.updateQuestHUD(cue('hold',.65));
+ assert.equal(node('questAnnouncement').dataset.notice,notice);
+ scope.updateQuestHUD(cue('land',1));
+ assert.equal(node('questAnnouncement').textContent,'右脚落回原位');
+ assert.equal(node('liveProgress').textContent,'1 / 4 块桥板');
+ const paused={...cue('waiting'),status:'paused'};
+ assert.equal(scope.updateQuestHUD(paused).cue,'');
+ const transition=scope.updateQuestHUD(game(7,{phase:'transition',transition_seconds:2.25}));
+ assert.equal(transition.title,'桥搭好了');assert.equal(transition.instruction,'下一站 · 站姿侧倾');
+ assert.equal(transition.teaching,'exercise.side_bend');assert.equal(transition.bridgeComplete,true);
 });
 
 test('an older running three-station backend keeps its actual route and completion count',()=>{

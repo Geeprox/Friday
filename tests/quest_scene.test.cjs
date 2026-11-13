@@ -41,21 +41,25 @@ function scene({reduced=false,autoLoad=true}={}){
  return out;
 }
 const sprites=(draws,index)=>draws.filter(call=>call.sprite===index&&call.alpha>.99);
-const plate=draws=>draws.filter(call=>call.sprite===null&&call.asset.endsWith('scene.png')).at(-1)?.asset;
+const plate=draws=>draws.filter(call=>call.sprite===null&&/scene\.(png|webp)$/.test(call.asset)).at(-1)?.asset;
 
 if(process.argv.includes('--packets')){
  const packets=JSON.parse(fs.readFileSync(0,'utf8')),s=scene();let at=1000,checked=0;
  for(const g of packets){
   const before=structuredClone(g),draws=s.settle(g,at),q=g.quest,current=q.stage||q.stages.at(-1),world=s.world(g);
-  assert.equal(plate(draws),{forest:'summer-scene.png',stream:'quest-stream-scene.png',camp:'quest-camp-scene.png'}[current.scene]);
+  assert.equal(plate(draws),{forest:'summer-scene.png',stream:'quest-stream-scene.png',bridge:'quest-bridge-scene.webp',camp:'quest-camp-scene.png'}[world.place]);
   const count=action=>q.history.find(item=>item.action===action)?.reps||
    (q.stage?.action===action&&q.phase==='work'?q.reps:0);
-  if(world.scene==='stream'){
-   assert.equal(sprites(draws,0).length,count('side_tap')+count('balance')+Number(world.step?.phase==='step'));
+  if(world.place==='bridge'){
+   assert.equal(world.values.bridge.count,count('balance'));
+   const boards=draws.filter(call=>call.asset==='quest-props.png'&&call.args[0]===526);
+   assert.equal(boards.length,count('balance')+Number(['lift','hold','land'].includes(world.bridge?.phase)));
+  }else if(world.scene==='stream'){
+   assert.equal(sprites(draws,0).length,count('side_tap')+Number(world.step?.phase==='step'));
    assert.equal(sprites(draws,1).length,count('high_knee'));
    assert.equal(sprites(draws,5).length,count('jack'));
   }
-  if(world.scene==='camp'){
+  if(world.place==='camp'){
    assert.equal(sprites(draws,0).length,count('lunge'));
    assert.equal(sprites(draws,4).length,count('reach_up'));
    assert.equal(sprites(draws,6).length,count('arm_open'));
@@ -150,7 +154,7 @@ if(process.argv.includes('--packets')){
  });
  test('new chapter errors stay recoverable and retry covers the exact public art set',()=>{
   const s=scene({autoLoad:false});assert.equal(s.ready('quest'),false);
-  const names=['summer-scene.png','quest-stream-scene.png','quest-camp-scene.png','quest-props.png','quest-lantern.webp'];
+  const names=['summer-scene.png','quest-stream-scene.png','quest-bridge-scene.webp','quest-camp-scene.png','quest-props.png','quest-lantern.webp'];
   assert.deepEqual([...s.images.keys()],names);
   for(const name of names){const im=s.images.get(name);im.complete=true;im.naturalWidth=100;im.onload();}
   assert.equal(s.ready('quest'),true);

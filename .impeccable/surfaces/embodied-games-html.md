@@ -72,9 +72,11 @@ Ski route: eighteen illustrated wooden crossing arches, six per section. Wide, s
 
 「踏过溪石」沿用溪畔纸雕场景。左右溪石都在画面中，当前目标用深底浅色箭头标明。点中后提示收脚，标记移到示范脚下。标准路线的方向依次为左、右、右、左。每次收脚后下一块石头才亮起。动作示范复用已授权的侧点步原片，并随当前目标方向镜像。竖屏裁切保留两侧的石头与中间的穿衣示范。
 
+「搭桥过溪」以同风格的近溪纸雕场景收尾。镜头稳定，桥跨在两岸之间，穿衣示范立在近岸侧边。跟随短提示抬脚时，当前桥板从对应的一侧靠向桥面。保持到位后提示落脚，落脚确认才固定桥板并显示下一块。桥板位移取自实际保持进度，进度重置随之回退。减弱动态时保持桥板位置，仍保留进度、落脚指示和已安装的桥板。手机竖屏要同时看清对岸、桥面和两只示范脚。
+
 营地最后两站沿用穿衣角色、同源定格图和已有反馈区域。侧抬腿每次落脚种下一丛野花，头顶合掌后重新打开双臂点亮一盏纸雕灯。两组道具分布在示范两侧，按当前难度和实际次数放置。最后一次完成后在原结算显示 14 站，画面出现野餐篮。灯笼沿用现有素材就绪、重试和画布时钟。
 
-Adventure world and motion thesis: the single route plan also names each station's forest, stream or camp scene and its landmark. Original sibling paper/clay plates change the place without changing the fixed camera. Side taps complete a cued trail of creek stones, balances place a separate crossing, knee raises build wooden steps, jacks grow a flower path, reaches hang camp flags, open/close cycles place pinwheels, and cross-knee cycles place camp boards. Squats and side bends clear low branches; completed holds open and lift the forest foliage. A picnic basket appears only after the original route reports completion. Keep these objects beside the full clothed demonstration and inside the portrait crop. Do not turn elapsed time into progress, invent currency, replace source teaching or add another renderer/dependency.
+Adventure world and motion thesis: the single route plan also names each station's forest, stream or camp scene and its landmark. Original sibling paper/clay plates change the place without changing the fixed camera. Side taps complete a cued trail of creek stones, directed balances assemble a footbridge, knee raises build wooden steps, jacks grow a flower path, reaches hang camp flags, open/close cycles place pinwheels, and cross-knee cycles place camp boards. Squats and side bends clear low branches; completed holds open and lift the forest foliage. A picnic basket appears only after the original route reports completion. Keep these objects beside the full clothed demonstration and inside the portrait crop. Do not turn elapsed time into progress, invent currency, replace source teaching or add another renderer/dependency.
 
 新增两段 Desk Break 原始动作重定向至现有穿衣角色。单腿站立与交叉触膝从站姿起步，做完一侧、回正，再示范另一侧。单腿站立的画面停留覆盖 1 秒规则，交叉触膝用正面角度展示对侧手。山径冒险、运动训练与“试一试”共用示范，静态模式使用实际目标姿势。
 

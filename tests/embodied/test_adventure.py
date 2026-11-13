@@ -19,7 +19,9 @@ NEUTRAL = {"arm_open": "arms_closed", "overhead_clap": "arms_high_open"}
 
 
 def actor(action="neutral", side="left"):
-    if action in {"balance", "cross_knee"}:
+    if action in {"balance", "bridge_balance", "cross_knee"}:
+        if action == "bridge_balance":
+            return new_action_pose("balance", "right" if side == "left" else "left")
         return new_action_pose(action, side)
     p = human(arms=action if action in {"horizontal", "overhead"} else "down")
     j = p["joints"]
@@ -110,7 +112,7 @@ def test_fourteen_station_journey_completes_from_joints_and_replay_starts_clean(
         packets.append(copy.deepcopy(state))
         assert g.level == level and state["quest"]["phase"] == "work"
         stage = state["quest"]["stage"]
-        if action == "side_tap":
+        if action in ("side_tap", "balance"):
             assert stage["step_pattern"] == {
                 "easy": ["left", "right"],
                 "standard": ["left", "right", "right", "left"],
@@ -125,7 +127,8 @@ def test_fourteen_station_journey_completes_from_joints_and_replay_starts_clean(
             journey.feed(neutral)
             sides = stage.get("step_pattern") or ["left" if rep % 2 == 0 else "right" for rep in range(stage["reps"])]
             for side in sides:
-                journey.feed(action, 26 if action == "balance" else 16, side=side)
+                journey.feed("bridge_balance" if action == "balance" else action,
+                             26 if action == "balance" else 16, side=side)
                 packets.append(copy.deepcopy(g.public))
                 journey.feed(neutral)
                 packets.append(copy.deepcopy(g.public))
@@ -175,7 +178,8 @@ def test_each_chapter_ends_at_its_last_station_and_replays_from_its_first(route,
             journey.feed(neutral)
             sides = station.get('step_pattern') or ['left' if rep % 2 == 0 else 'right' for rep in range(station['reps'])]
             for side in sides:
-                journey.feed(action, 26 if action == 'balance' else 16, side=side)
+                journey.feed('bridge_balance' if action == 'balance' else action,
+                             26 if action == 'balance' else 16, side=side)
                 journey.feed(neutral)
         assert game.level == level + 1
     completed = game.public
@@ -335,6 +339,58 @@ def test_actual_stage_presenter_uses_the_same_route_and_teaching_keys():
     result = subprocess.run(["node", "--test", "tests/adventure_stage.test.cjs"],
                             capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_bridge_uses_one_continuous_hold_then_a_landing_in_the_original_stance():
+    j = Journey()
+    j.game.level = ACTIONS.index("balance")
+    q = j.feed(count=30)["quest"]
+    assert q["bridge"] == dict(side="left", phase="lift", progress=0)
+
+    assert j.feed("bridge_balance", 23, side="right")["quest"]["bridge"]["phase"] == "wrong"
+    assert j.feed()["quest"]["reps"] == 0
+    q = j.feed("bridge_balance", 11)["quest"]
+    assert q["bridge"] == dict(side="left", phase="hold", progress=.5)
+    assert j.feed()["quest"]["reps"] == 0
+
+    q = j.feed("bridge_balance", 23)["quest"]
+    assert q["reps"] == 0 and q["bridge"]["phase"] == "land"
+    assert j.feed("side_step")["quest"]["reps"] == 0
+    j.feed()
+    j.feed("bridge_balance", 26)
+    q = j.feed()["quest"]
+    assert q["reps"] == 1 and q["bridge"] == dict(side="right", phase="lift", progress=0)
+    for reps in (2, 3):
+        j.feed("bridge_balance", 26, side="right")
+        q = j.feed()["quest"]
+        assert q["reps"] == reps
+    assert q["bridge"]["side"] == "left"
+
+
+@pytest.mark.parametrize("interruption", ["ankle", "frame_gap", "view_change", "pause"])
+def test_bridge_keeps_earned_boards_but_drops_an_unfinished_landing(interruption):
+    j = Journey()
+    j.game.level = ACTIONS.index("balance")
+    j.feed(count=30)
+    j.feed("bridge_balance", 23)
+    assert j.feed()["quest"]["reps"] == 1
+    assert j.feed("bridge_balance", 23, side="right")["quest"]["bridge"]["phase"] == "land"
+    if interruption == "ankle":
+        player = actor("bridge_balance", side="right")
+        del player["joints"]["rightAnkle"]
+        j.game.update([player], LOCK, j.now)
+        j.now += .05
+    elif interruption == "frame_gap":
+        j.now += .38
+    elif interruption == "view_change":
+        j.feed(count=1, registration={"status": "moving"})
+    else:
+        j.game.set_paused(True)
+        j.game.set_paused(False)
+    q = j.feed(count=80)["quest"]
+    assert q["reps"] == 1 and q["bridge"]["side"] == "right"
+    j.feed("bridge_balance", 23, side="right")
+    assert j.feed()["quest"]["reps"] == 2
 
 
 def test_side_raise_needs_a_held_lateral_lift_and_alternating_returns():
