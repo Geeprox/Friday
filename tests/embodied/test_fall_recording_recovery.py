@@ -964,28 +964,51 @@ async def test_delayed_labels_do_not_stop_observation_or_name_an_expired_identit
 
 @pytest.mark.asyncio
 async def test_uncertain_post_frame_commit_is_reconciled_without_duplicate_frames(monitor, monkeypatch):
-    append = monitor.store.append_frame
-    calls = []
+    runtime, store = monitor.runtime, monitor.store
+    call = runtime.io.call
+    attempts = []
+    failed = asyncio.Event()
 
-    def uncertain(*args, **kwargs):
-        value = append(*args, **kwargs)
-        calls.append(args[1])
-        if len(calls) == 1:
-            raise OSError('synthetic lost frame receipt')
-        return value
+    async def lose_first_receipt(operation, *args, **kwargs):
+        result = await call(operation, *args, **kwargs)
+        if operation == store.append_frame:
+            attempts.append(args[:3])
+            if len(attempts) == 1:
+                failed.set()
+                raise OSError('synthetic lost frame receipt')
+        return result
 
-    monkeypatch.setattr(monitor.store, 'append_frame', uncertain)
+    monkeypatch.setattr(runtime.io, 'call', lose_first_receipt)
     await before_fall(monitor)
     await frame(monitor)
-    await monitor.runtime.drain()
-    for _ in range(12):
-        monitor.clock[0] += .25
-        await frame(monitor, sync=True)
-        await asyncio.sleep(.01)
-    await monitor.runtime.drain()
-    frames = monitor.store.events()[0]['frames']
-    assert len(calls) > len(set(calls)) and len({f['at'] for f in frames}) == len(frames)
-    assert len(frames) <= 22
+    await runtime.drain()
+    original, = store.events()
+
+    monitor.clock[0] += .25
+    assert await frame(monitor, sync=True, jpeg=b'SYNTHETIC-FIRST-POST-FRAME')
+    await runtime.observation_task
+    await asyncio.wait_for(failed.wait(), 2)
+    job, = runtime.recording.jobs.values()
+    assert job.failed and job.appended == 0
+    # 先确认首帧已提交，再推进合成时间触发重试。
+    committed, = store.events()
+    assert committed['id'] == original['id'] == job.identifier
+    assert len(committed['frames']) == len(original['frames']) + 1
+
+    monitor.clock[0] += .5
+    assert await frame(monitor, jpeg=b'SYNTHETIC-NEXT-POST-FRAME')
+    await runtime.drain()
+    event, = store.events()
+    assert event['id'] == original['id']
+    assert len(attempts) == 3 and attempts[0] == attempts[1] and attempts[2] != attempts[1]
+    expected = original['frames'] + [
+        dict(ordinal=len(original['frames']) + i, at=stamp) for i, (_, stamp, _) in enumerate(attempts[1:])
+    ]
+    assert event['frames'] == expected
+    assert [store.frame(event['id'], row['ordinal']) for row in expected[-2:]] == [
+        b'SYNTHETIC-FIRST-POST-FRAME', b'SYNTHETIC-NEXT-POST-FRAME',
+    ]
+    assert runtime.recording.status()['retried'] == 1
 
 
 @pytest.mark.asyncio
