@@ -489,6 +489,7 @@ class MotionGames:
         self.gesture_fired = -10.0
         self.gesture_progress = 0.0
         self.gesture_event = None
+        self.party_camera_window = None
         self.readers = {}
         self.slots = []
         self.previous = None
@@ -948,7 +949,17 @@ class MotionGames:
         clear = sum(p['id'] in visible and p['observation'] == 'fresh' for p in observed)
         return 'body' if clear < required else 'feet'
 
-    def update(self, people, registration, now, hands=(), *, captured_at=None, aspect=BOARD_ASPECT):
+    def update(self, people, registration, now, hands=(), *, captured_at=None, aspect=BOARD_ASPECT,
+               party_camera_window=None):
+        if party_camera_window is not None:
+            previous, self.party_camera_window = self.party_camera_window, party_camera_window
+            if party_camera_window[2] or previous is not None and previous != party_camera_window:
+                # 一次占用也可能在两帧之间结束，旧手势需要重新放下后再做。
+                self._require_gesture_release()
+                self.gesture_event = None
+            if party_camera_window[2]:
+                self.previous = None
+                return self.publish([], self.status, self.reason)
         if self._hold_for_presentation():
             return self.public
         dt = clamp(now - self.previous, 0, 0.12) if self.previous is not None else 0.0

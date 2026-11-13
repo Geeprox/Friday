@@ -82,6 +82,15 @@ test('an unavailable source and a changed source each clear the original corresp
  assert.equal(h.view.candidates([{...key(7),session:'SYNTHETIC-replacement'}]).length,0);assert.equal(h.frame().hidden,true);h.view.dispose();
 });
 
+test('体感游戏占用时撤下画面，释放后在原位置恢复人物编号',async()=>{
+ const h=harness();h.button('显示画面').onclick();await settle();
+ h.setPhoto({available:false,reason:'motion_game_camera_busy'});await h.advance(400);
+ assert.equal(h.frame().hidden,true);assert.deepEqual(h.labels(),[]);
+ assert(all(h.section).some(node=>node.textContent==='体感游戏正在使用镜头，结束后可对应座位。'));
+ h.setPhoto(photo());await h.advance(400);
+ assert.equal(h.frame().hidden,false);assert.deepEqual(h.labels(),[7]);h.view.dispose();
+});
+
 test('disposing the host view prevents a held response from decoding or drawing',async()=>{
  const h=harness();let release;h.handler(()=>new Promise(resolve=>release=resolve));h.button('显示画面').onclick();await settle();
  h.view.dispose();assert.equal(h.requests[0].signal.aborted,true);release(photo());await settle();

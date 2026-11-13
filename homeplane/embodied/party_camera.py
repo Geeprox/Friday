@@ -59,7 +59,7 @@ class PartyCamera:
         self._prune(now)
         return self.scope, self.revision, self.current is not None
 
-    def command(self, payload, sample, now, *, motor_busy=False, motor_last_sent=-100.0):
+    def command(self, payload, sample, now, *, motor_busy=False, motor_last_sent=-100.0, game_active=False):
         try:
             request = Command.model_validate(payload)
         except ValueError:
@@ -81,6 +81,8 @@ class PartyCamera:
         if previous is None and len(self.requests) >= 64:
             raise ValueError("party_camera_capacity")
         if request.action == "renew":
+            if game_active:
+                raise ValueError("motion_game_camera_busy")
             stamp = sample.get("_local_received")
             if (
                 request.camera is None

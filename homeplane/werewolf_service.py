@@ -251,6 +251,7 @@ class WerewolfService:
         self.camera_process = None
         self.camera_source = None
         self.camera_until = None
+        self.camera_busy = None
         self.camera_view_busy = False
         self.camera_sequence = 0
         self.camera_hold = None
@@ -379,6 +380,10 @@ class WerewolfService:
         if report["active"]:
             binding_open = self._camera_binding_window() is not None
             camera_available = binding_open and self._camera_current()
+            busy = self.camera_busy
+            camera_reason = ('motion_game_camera_busy' if binding_open and busy is not None
+                             and self.clock() < busy[1] and busy[0] is getattr(self.embodied, 'process', None)
+                             and busy[0].returncode is None else None)
             binding_seats = self._camera_binding_seats() if binding_open else []
             phone_url = self.phone_url()
             report.update(effects=self.effects.status(), join_code=self.join_code,
@@ -390,6 +395,7 @@ class WerewolfService:
                                                    and 0 <= self.clock() - row.seen <= DISPLAY_FRESH_SECONDS],
                           speaker_seats=[] if self.game.speaker_order else self.game.eligible_speakers(),
                           camera_enabled=self.camera_enabled, camera_available=camera_available,
+                          camera_reason=camera_reason,
                           camera_binding_open=binding_open, camera_binding_revision=self.camera_binding_revision,
                           camera_binding_seats=binding_seats,
                           camera_source=dict(camera=self.camera_source[0], session=self.camera_source[1])
@@ -874,6 +880,7 @@ class WerewolfService:
         self.camera_process = None
         self.camera_source = None
         self.camera_until = None
+        self.camera_busy = None
 
     async def _hold_camera(self,report,game,session,process):
         capability=report.get('party_camera')if isinstance(report,dict)else None
@@ -972,9 +979,11 @@ class WerewolfService:
         try:
             async with asyncio.timeout(1):
                 held=await self._hold_camera(report,game,session,process)
-        except(ValueError,OSError,TimeoutError,httpx.HTTPError):
+        except(ValueError,OSError,TimeoutError,httpx.HTTPError) as error:
             if generation == self.camera_generation:
                 self._clear_camera()
+                if str(error) == 'motion_game_camera_busy' and current():
+                    self.camera_busy = (process, self.clock() + 1.5)
             return
         if not current():
             if generation == self.camera_generation:
@@ -1035,7 +1044,9 @@ class WerewolfService:
             if remaining <= 0:
                 return dict(available=False)
             return dict(available=True, ttl_ms=int(remaining * 1000), **sample)
-        except (ValueError, OSError, TimeoutError, httpx.HTTPError):
+        except (ValueError, OSError, TimeoutError, httpx.HTTPError) as error:
+            if str(error) == 'motion_game_camera_busy' and current():
+                return dict(available=False, reason='motion_game_camera_busy')
             return dict(available=False)
         finally:
             self.camera_view_busy = False

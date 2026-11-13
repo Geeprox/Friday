@@ -16,6 +16,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.testclient import TestClient
 
 from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.catalog import MOTION_GAME_MODES
+from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.static_page import static_asset, static_page
 from tests.embodied.test_game_controls import handler
 from tests.embodied.test_game_presentation import view
@@ -41,6 +43,7 @@ def television_app(clock=time.monotonic):
     fake_names.labels.return_value = {}
     start = AsyncMock()
     namespace = dict(secrets=secrets, time=time, games=game, state=state, KEY=WALL_KEY,
+                     party_camera=PartyCamera(), MOTION_GAME_MODES=MOTION_GAME_MODES,
                      ALLOWED_IPS={TV, OTHER_TV, WALL}, configuration=lambda: config,
                      last_frame=time.monotonic(), start=start, home=Mock(enable=AsyncMock()),
                      practice=Mock(active=lambda: False), previews=Mock(), wall=fake_wall,

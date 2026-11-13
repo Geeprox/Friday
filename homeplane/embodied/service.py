@@ -129,10 +129,12 @@ class EmbodiedService:
             timeout=timeout,
         )
         if response.status_code >= 400:
-            if path == '/api/game' and response.status_code == 409:
+            if response.status_code == 409:
                 try:
-                    if response.json().get('detail') == 'game_state_changed':
-                        raise ValueError('game_state_changed')
+                    detail = response.json().get('detail')
+                    if (path, detail) in (('/api/game', 'game_state_changed'),
+                                          ('/api/party-camera', 'motion_game_camera_busy')):
+                        raise ValueError(detail)
                 except (json.JSONDecodeError, AttributeError):
                     pass
             raise ValueError("embodied_operation_unavailable")

@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from homeplane.embodied.extensions import ActionBindings, RecognizerRegistry
 from homeplane.embodied.home_service import HomeService
 from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.catalog import MOTION_GAME_MODES
 from homeplane.embodied.page_recording import PageRecording
 from homeplane.embodied.paths import (
     DATA,
@@ -604,7 +605,7 @@ def view():
     result.pop('_wake_source', None)
     result['party_camera'] = party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
         frame_mono=last_frame,now=now)
-    result["game"] = games.viewer_state()
+    result["game"] = dict(games.viewer_state(), camera_in_use_by_party=result['party_camera']['active'])
     result["recording"] = recorder.public()
     result['safety_recording'] = safety.recording_status()
     result["home"] = home.public()
@@ -684,6 +685,7 @@ def television_packet():
     mode = {'simulated': True} if state.get('simulated') is True else {}
     if game is None:
         return dict(television_idle=True, **mode)
+    game['camera_in_use_by_party'] = party_camera.window(time.monotonic())[2]
     status = state['status']
     if status == 'live' and not (last_frame and 0 <= time.monotonic()-last_frame <= 1.5):
         status = 'unavailable'
@@ -1094,7 +1096,8 @@ async def run_source(my_generation):
                     game_now = time.monotonic()
                     game = games.update(people, layout["registration"], game_now if games.mode == 'beam' else now,
                                         hands, captured_at=game_now-(time.time()-item['received_at']),
-                                        aspect=item['width']/max(1, item['height']))
+                                        aspect=item['width']/max(1, item['height']),
+                                        party_camera_window=party_camera.window(game_now))
                 extension_events = registry.observe(
                     camera=SELECTED["id"], session=identities.session, people=people, hands=hands, game=game, now=now
                 )
@@ -1629,8 +1632,10 @@ async def follow_target_command(camera_id: str, command: FollowCommand, request:
 @app.post('/api/party-camera')
 async def party_camera_control(request: Request):
     try:
-        return party_camera.command(await request.json(),dict(view(),_local_received=last_frame),
-            time.monotonic(),motor_busy=bool(motor_waiters),motor_last_sent=motor_last_sent)
+        payload = await request.json()
+        return party_camera.command(payload, dict(view(), _local_received=last_frame),
+            time.monotonic(),motor_busy=bool(motor_waiters),motor_last_sent=motor_last_sent,
+            game_active=games.mode in MOTION_GAME_MODES)
     except ValueError as error:
         raise HTTPException(409,detail=str(error))from None
 
@@ -1827,6 +1832,9 @@ async def game_control(request: Request, *, display_host=None):
         raise HTTPException(400, detail='invalid_quest_route')
     if not games.control_current(data.get('expected_context'),data.get('expected_revision')):
         raise HTTPException(409, detail='game_state_changed')
+    starts_motion = (action == 'resume' or action in {None, 'start'}) and data.get('mode') in MOTION_GAME_MODES
+    if starts_motion and party_camera.window(time.monotonic())[2]:
+        raise HTTPException(409, detail='party_camera_busy')
     if practice.active() and action != 'pause' and data.get("mode", "quest") not in {"off", "home"}:
         raise HTTPException(409, detail="practice_active")
     try:

@@ -86,3 +86,14 @@ test('游戏库准备的单人挑战通过球场的原二进制流入口', () =>
   assert.equal(socket.closed,true);
   assert.equal(context.meta.game.control_revision,2);
 });
+
+test('狼人杀占用时显示恢复方式，释放后原游戏可直接开始', () => {
+  const state=game({mode:'off',selected_mode:'ski',status:'off',game_input_enabled:true,camera_in_use_by_party:true});
+  const owner=makeClient({meta:{game:state},selected:'ski'}),client=owner.c;
+  assert.match(client.stageOverlayMarkup(state,true,false),/镜头正用于狼人杀.*镜头释放后，可在这里开始/);
+  client.syncGameControls();
+  assert.equal(owner.node('start').disabled,true);
+  state.camera_in_use_by_party=false;
+  client.syncGameControls();
+  assert.equal(owner.node('start').disabled,false);
+});

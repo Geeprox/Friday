@@ -1,7 +1,7 @@
 const element=(tag,cls)=>{const n=document.createElement(tag);if(cls)n.className=cls;return n;};
 
 // A view of an existing source, never a request to start recognition or capture.
-export function mountSeatCamera(section,{heading,session,phase,round,api,isCurrent,onChange,go,hostOpens=false}){
+export function mountSeatCamera(section,{heading,session,phase,round,api,isCurrent,onChange,go,hostOpens=false,cameraBusy=()=>false}){
  const actions=element('div','ww-camera-view-actions'),toggle=element('button','ww-text-button'),settings=element('button','ww-text-button');
  toggle.type=settings.type='button';toggle.textContent='显示画面';toggle.setAttribute('aria-pressed','false');settings.textContent='摄像头设置';settings.onclick=()=>go('Cameras');
  if(!hostOpens)actions.append(toggle);
@@ -25,6 +25,9 @@ export function mountSeatCamera(section,{heading,session,phase,round,api,isCurre
   const controller=new AbortController(),began=performance.now();request=controller;
   try{
    const data=await api(phase?{session,phase,round}:{session},controller.signal);if(!current(token))return;
+   if(!data.available&&data.reason==='motion_game_camera_busy'){
+    clear(cameraBusy()?'':'体感游戏正在使用镜头，结束后可对应座位。');onChange();return;
+   }
    if(!data.available){clear(hostOpens?'镜头画面暂不可用。':'画面暂不可用，可检查摄像头设置。',true);onChange();return;}
    if(!Number.isFinite(data.ttl_ms)||data.ttl_ms<=0||data.ttl_ms>1000||typeof data.jpeg!=='string'||data.jpeg.length>2700000||!Array.isArray(data.people))throw Error('invalid_frame');
    const bytes=Uint8Array.from(atob(data.jpeg),c=>c.charCodeAt(0));
@@ -45,9 +48,9 @@ export function mountSeatCamera(section,{heading,session,phase,round,api,isCurre
   }catch{if(current(token)){clear('画面暂不可用，正在重试。');onChange();}}
   finally{if(request===controller){request=null;if(current(token))next=setTimeout(()=>{next=null;void refresh();},400);}}
  }
- function setOpen(value){if(!alive||!isCurrent()||open===value)return;open=value;retire();view.hidden=!open;section.dataset.viewing=String(open);toggle.textContent=open?'隐藏画面':'显示画面';toggle.setAttribute('aria-pressed',String(open));onChange();if(open){message('正在读取画面…');void refresh();}}
+ function setOpen(value){if(!alive||!isCurrent()||open===value)return;open=value;retire();view.hidden=!open;section.dataset.viewing=String(open);toggle.textContent=open?'隐藏画面':'显示画面';toggle.setAttribute('aria-pressed',String(open));onChange();if(open){if(!cameraBusy())message('正在读取画面…');void refresh();}}
  toggle.onclick=()=>setOpen(!open);
- const visibility=()=>{if(!open)return;retire();onChange();if(!document.hidden){message('正在读取画面…');void refresh();}};
+ const visibility=()=>{if(!open)return;retire();onChange();if(!document.hidden){if(!cameraBusy())message('正在读取画面…');void refresh();}};
  document.addEventListener('visibilitychange',visibility);
  return{
   show(){setOpen(true);},

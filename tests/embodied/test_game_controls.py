@@ -5,13 +5,16 @@ The worker module is not imported: it owns native camera/model startup globals.
 import ast
 from pathlib import Path
 from types import SimpleNamespace
+import time
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
 
 from homeplane.embodied.api import GameControl
+from homeplane.embodied.catalog import MOTION_GAME_MODES
 from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.service import EmbodiedService
 from tests.embodied.test_motion_games import LOCK, human
 
@@ -31,11 +34,13 @@ def request(data, origin='http://127.0.0.1:8860', *, game=None):
     return SimpleNamespace(headers={'host':'127.0.0.1:8860', 'origin':origin}, json=AsyncMock(return_value=data))
 
 
-def game_handler(game):
+def game_handler(game, party_camera=None, clock=time.monotonic):
     start, enable = AsyncMock(), AsyncMock()
     control = handler('homeplane/embodied/worker.py', 'game_control', games=game,
                       practice=SimpleNamespace(active=lambda:False), start=start,
-                      home=SimpleNamespace(enable=enable))
+                      home=SimpleNamespace(enable=enable), MOTION_GAME_MODES=MOTION_GAME_MODES,
+                      party_camera=party_camera if party_camera is not None else PartyCamera(),
+                      time=SimpleNamespace(monotonic=clock))
     return control, start, enable
 
 

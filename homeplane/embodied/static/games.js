@@ -26,6 +26,7 @@ function skiWarmup(g){
  return g?.mode==='ski'&&Object.hasOwn(skiWarmupSteps,step)?g.ski.warmup:null;
 }
 const stageModes=['quest','ski','tennis','hiit','beam','home'];
+const partyCameraBusyNotice='镜头正用于狼人杀。结束狼人杀后再开始。';
 function validGameState(g){return !!g&&typeof g.control_context==='string'&&/^[a-f0-9]{32}$/.test(g.control_context)&&Number.isSafeInteger(g.control_revision)&&g.control_revision>=0&&Number.isSafeInteger(g.round_id)&&g.round_id>0&&stageModes.includes(g.selected_mode)&&(g.mode==='off'||stageModes.includes(g.mode))&&(g.difficulty===undefined||['easy','standard','challenge'].includes(g.difficulty))&&(g.tennis_variant==null||g.selected_mode==='tennis'&&typeof g.tennis_variant==='string'&&Object.hasOwn(tennisModes,g.tennis_variant))&&(g.presentation===undefined||g.presentation&&typeof g.presentation.required==='boolean'&&typeof g.presentation.ready==='boolean'&&(!g.presentation.required||/^[a-f0-9]{32}$/.test(g.presentation.context)&&/^[a-f0-9]{32}$/.test(g.presentation.window)));}
 function gameViewCurrent(at=performance.now()){return !stageClosed&&streamOpen&&received!==null&&at-received>=0&&at-received<=1500&&validGameState(meta?.game);}
 function presentedGame(){const g=meta?.game||{};return gameViewCurrent()||g.mode==='off'||g.status==='complete'?g:{...g,status:'paused',gesture_control:{}};}
@@ -40,7 +41,9 @@ function syncGameControls(){
   'chooseTennisVariant','toggleQuestChooser','chooseQuestRoute'];
  for(const n of document.querySelectorAll('[data-mode],'+controls.map(name=>'[data-click="'+name+'()"]').join(','))){
   const call=n.getAttribute('data-click'),starts=['startGame()','startSkiWarmup()'].includes(call);
-  n.disabled=disabled||starts&&!gameDisplayReady()||call==='resumeGame()'&&(!resumeInputReady()||!gameDisplayReady());
+  const needsCamera=starts||call==='resumeGame()';
+  n.disabled=disabled||needsCamera&&(meta?.game?.camera_in_use_by_party===true||!gameDisplayReady())
+   ||call==='resumeGame()'&&!resumeInputReady();
  }
  document.querySelector('.actions')?.setAttribute('aria-busy',String(!!commandPending));
  syncGameDifficulty(disabled);
@@ -247,7 +250,19 @@ async function commandGame(body,failure){
  try{
   const r=await fetch(url(television?'/api/game/tv':'/api/game'),{method:'POST',headers:{'Content-Type':'application/json'},signal:lease.controller.signal,body:JSON.stringify({...body,expected_context:lease.context,expected_revision:lease.revision})});
   if(!current())return false;
-  if(!r.ok){if(r.status===409){let info={};try{if(typeof r.json==='function')info=await r.json();}catch{}if(!current())return false;reportNotice(info?.detail==='game_input_not_ready'?'请先回到镜头前站定，再继续。':info?.detail==='game_presentation_not_ready'?'游戏画面正在准备，请稍候。':'本局状态已变化，请稍后重试。');return false;}throw Error('request_failed');}
+  if(!r.ok){
+   if(r.status!==409)throw Error('request_failed');
+   let info;try{info=await r.json();}catch{}
+   if(!current())return false;
+   const messages={
+    game_input_not_ready:'请先回到镜头前站定，再继续。',
+    game_presentation_not_ready:'游戏画面正在准备，请稍候。',
+    party_camera_busy:partyCameraBusyNotice
+   };
+   if(info?.detail!=='party_camera_busy'||meta.game.camera_in_use_by_party!==true)
+    reportNotice(Object.hasOwn(messages,info?.detail)?messages[info.detail]:'本局状态已变化，请稍后重试。');
+   return false;
+  }
   const result=await r.json();if(!current())return false;
   const matches=(body.mode==='off'?result.mode==='off':body.action==='select'?result.mode==='off'&&result.selected_mode===body.mode:result.mode===body.mode&&result.selected_mode===body.mode)
    &&(body.action!=='pause'||result.manually_paused===true)&&(body.action!=='resume'||result.manually_paused===false)
@@ -262,7 +277,8 @@ async function commandGame(body,failure){
      expectedVariant&&result.tennis_variant!==expectedVariant||expectedRoute&&result.quest_route!==expectedRoute)throw Error('game_reply_invalid');
   if(meta.game.control_revision>result.control_revision)return false;
   // A same-revision stream packet can already contain newer motion/score state.
-  if(meta.game.control_revision<result.control_revision)meta={...meta,game:result};
+  if(meta.game.control_revision<result.control_revision)
+   meta={...meta,game:meta.game.camera_in_use_by_party===true?{...result,camera_in_use_by_party:true}:result};
   if(body.mode==='beam'&&body.action==='pause')beamStage.forget();
   selectMode(meta.game.selected_mode);updateHUD();return true;
  }catch{if(current())reportNotice(failure);return false;}
@@ -586,6 +602,8 @@ function stageOverlayMarkup(g,current,playing){
  const showingBridge=selected==='quest'&&g.status==='playing'&&questPresentation(g).bridgeComplete;
  if(!teachingPending)teachingWaitSince=null;
  if(!current)return'<h2>'+(meta?'连接已中断':'正在连接游戏')+'</h2><p>连接恢复后会同步本局状态。</p><button data-click="reconnectGame()">重新连接</button>';
+ if(!playing&&selected!=='home'&&g.camera_in_use_by_party===true)
+  return'<h2>镜头正用于狼人杀</h2><p>镜头释放后，可在这里开始。</p>';
  if(!finished&&selected==='beam'&&!beamStage.ready())return beamStage.failed()?'<h2>草地画面暂不可用</h2><button data-click="reloadScene()">重新载入画面</button>':'<h2>正在准备草地</h2>';
  if(!finished&&['quest','hiit','tennis'].includes(selected)&&!scenery.ready(selected))return scenery.failed(selected)?'<h2>游戏画面暂不可用</h2><button data-click="reloadScene()">重新载入画面</button>':'<h2>正在准备游戏画面</h2>';
  if(!finished&&selected==='ski'&&!winterReady())return artError?'<h2>雪道画面暂不可用</h2><button data-click="reloadScene()">重新载入画面</button>':'<h2>正在准备雪道</h2>';
@@ -677,6 +695,8 @@ function updateHUD(){
  updateSourceMode(meta);
  if(television&&!meta?.game){televisionLobby();return;}
  const current=gameViewCurrent(),g=presentedGame(),playing=g.mode===selected&&g.mode!=='off';
+ document.body.classList.toggle('party-camera-held',current&&!playing&&selected!=='home'&&g.camera_in_use_by_party===true);
+ if(current&&$('gameNotice').textContent===partyCameraBusyNotice)$('gameNotice').textContent='';
  if(television)document.body.classList.toggle('television-preparing',!playing);
  active=current&&playing&&(g.status!=='complete'||selected==='beam'&&!!beamStage.impact(performance.now()));
  $('camera').textContent=({locked:'镜头已就绪',moving:'镜头正在调整，游戏暂停',settling:'镜头稳定中'})[meta?.room?.registration?.status]||'等待镜头就绪';
@@ -709,7 +729,7 @@ if(g.manually_paused||g.source_recovery?.required===true||g.resume_seconds>0)$('
 $('feedback').hidden=!$('feedback').textContent||$('feedback').textContent===$('instruction').textContent;
 const gestureHint=$('gestureHint');
 if(gestureHint){
- const canStart=current&&g.game_input_enabled&&!['home','beam'].includes(selected)&&!g.manually_paused&&(!playing||g.status==='complete');
+ const canStart=current&&g.game_input_enabled&&g.camera_in_use_by_party!==true&&!['home','beam'].includes(selected)&&!g.manually_paused&&(!playing||g.status==='complete');
  gestureHint.hidden=!canStart;
  gestureHint.textContent=(g.status==='complete'?'OK 重玩':'OK 开始')+' · 剪刀手切换游戏 · 触发后放下手';
 }

@@ -377,6 +377,7 @@ body.television{display:grid;height:100vh;height:100svh;grid-template-rows:auto 
 .television-lobby h2:focus,.television .overlay h2:focus,.television #world:focus{outline:none}
 .television footer{font-size:clamp(13px,.95vw,18px)}
 .television-preparing .hud{visibility:hidden}
+.party-camera-held .hud{visibility:hidden}
 .television-idle .workspace>:not(.television-lobby),.television-idle footer{visibility:hidden}
 
 .overlay:has(.player-framing){

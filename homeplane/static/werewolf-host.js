@@ -421,7 +421,13 @@ export function mountWerewolf(root,{go=()=>{}}={}){
     row.action.dataset.unavailable=String(syncFailed||!row.select.value||row.select.value===value);
    }
   }
-  if(!ui.seatPicker)ui.hint.textContent=!players.length?'大家入座后，在这里对应镜头中的编号。':!candidates.length?available?'还没有可对应的编号。':'等画面恢复后，可继续对应。':'投票仍在各自手机上完成。';
+  if(!ui.seatPicker){
+   const busy=!available&&current.camera_reason==='motion_game_camera_busy';
+   const text=busy?'体感游戏正在使用镜头，结束后可对应座位。':
+    !players.length?'大家入座后，在这里对应镜头中的编号。':!candidates.length?
+     available?'还没有可对应的编号。':'等画面恢复后，可继续对应。':'投票仍在各自手机上完成。';
+   if(ui.hint.textContent!==text)ui.hint.textContent=text;
+  }
  }
  function cameraAlignment(inRound=false){
   const section=node('section',null,'ww-camera-alignment'),heading=node('div',null,'ww-camera-align-heading'),title=node('h3','对齐镜头中的座位'),hint=node('p',null,'ww-field-help'),grid=node('div',null,'ww-camera-seat-grid');
@@ -435,9 +441,10 @@ export function mountWerewolf(root,{go=()=>{}}={}){
    const seatLabel=node('label','座位','ww-camera-binding');
    ui.seatPicker=node('select');ui.seatPicker.dataset.cameraPicker='true';seatLabel.append(ui.seatPicker);grid.append(seatLabel);
    ui.seatPicker.onchange=()=>{updateAlignment(ui,true);updateControls();};
-  }else{heading.append(title);section.append(hint);}
+  }else{heading.append(title);hint.setAttribute('role','status');section.append(hint);}
   ui.view=mountSeatCamera(section,{heading,session,...(inRound?{phase,round,hostOpens:true}:{}),
    api:(body,signal)=>api('camera-view',body,signal),isCurrent:ui.isCurrent,
+   cameraBusy:()=>current?.camera_reason==='motion_game_camera_busy',
    onChange:()=>{updateAlignment(ui);updateControls();},go});
   section.append(grid);updateAlignment(ui);return ui;
  }
@@ -489,7 +496,8 @@ export function mountWerewolf(root,{go=()=>{}}={}){
   const candidates=new Set((current.camera_candidates||[]).map(candidateKey));
   const count=(current.camera_bindings||[]).filter(b=>eligible.includes(b.seat)&&candidates.has(candidateKey(b))).length;
   const rebind=current.camera_rebind_seats||[];
-  const text=syncFailed?'正在同步对局':!current.camera_available?'等待镜头恢复':
+  const text=syncFailed?'正在同步对局':current.camera_reason==='motion_game_camera_busy'?'体感游戏正在使用镜头':
+   !current.camera_available?'等待镜头恢复':
    rebind.length?rebind.join('、')+' 号需重新对应':'已对应 '+count+' / '+eligible.length;
   if(ui.status.textContent!==text)ui.status.textContent=text;
   ui.toggle.dataset.unavailable=String(syncFailed&&!ui.alignment);

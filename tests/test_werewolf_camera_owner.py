@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.catalog import MOTION_GAME_MODES
+from homeplane.embodied.motion_games import MotionGames
 from homeplane.werewolf_effects import HostEffects
 from homeplane.werewolf_service import WerewolfService
 from tests.test_werewolf_camera import observation
@@ -240,6 +242,8 @@ async def test_original_service_transport_worker_route_and_director_share_the_sa
         Request=Request,
         HTTPException=HTTPException,
         party_camera=holder,
+        games=MotionGames(),
+        MOTION_GAME_MODES=MOTION_GAME_MODES,
         view=report,
         last_frame=10.0,
         motor_waiters={},
@@ -260,6 +264,7 @@ async def test_original_service_transport_worker_route_and_director_share_the_sa
     app.middleware("http")(privacy)
     app.add_api_route("/api/party-camera", route, methods=["POST"])
     app.get("/api/status")(report)
+    app.get("/api/frame")(lambda: dict(report(), width=2, height=2, frame="/9j/2Q=="))
     monkeypatch.setattr(service_module, "PRIVATE", tmp_path)
     monkeypatch.setattr(service_module, "configuration", lambda: dict(viewer_port=31973))
     (tmp_path / "viewer-key").write_text("SYNTHETIC-key")
@@ -286,8 +291,16 @@ async def test_original_service_transport_worker_route_and_director_share_the_sa
         owner.pump.cancel()
         await asyncio.gather(owner.pump, return_exceptions=True)
         owner.pump = None
+        scope['games'].reset('tennis')
         await owner._camera()
+        assert owner.host()['camera_reason'] == 'motion_game_camera_busy'
+        assert not owner.camera_candidates and holder.current is None
+        assert await owner.camera_view(owner.session) == dict(available=False, reason='motion_game_camera_busy')
+        scope['games'].reset('off')
+        await owner._camera()
+        assert owner.host()['camera_reason'] is None
         assert owner.camera_candidates and holder.current["context"] == owner.session
+        assert (await owner.camera_view(owner.session))['available'] is True
         director = CameraDirector()
         clear(director)
         view = dict(sample(10, people=[person(identity="SYNTHETIC")]), party_camera=report()["party_camera"])

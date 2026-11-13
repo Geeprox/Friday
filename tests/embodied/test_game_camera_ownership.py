@@ -8,13 +8,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from fastapi import HTTPException
 
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from tests.embodied.test_camera_director import clear, person, sample
 from tests.embodied.test_capture_stream_recovery import frame_continuation, primary_frame_scope
+from tests.embodied.test_game_controls import game_handler, request
+from tests.embodied.test_motion_games import LOCK, human
 from tests.embodied.test_motor_recovery import primary_scope, view
+from tests.test_werewolf_camera_owner import renew, source
 
 WORKER = Path("homeplane/embodied/worker.py")
 
@@ -99,6 +103,56 @@ def test_out_of_order_game_frames_cannot_lower_the_resume_watermark():
     old = dict(sample(9.8, people=[person(identity="SYNTHETIC")]), game=game.public)
     assert director.choose(old, 10.2) is None
     assert director.choose(old, 10.3) is None
+
+
+@pytest.mark.asyncio
+async def test_party_lease_blocks_local_and_tv_start_until_release_without_changing_the_round():
+    clock = [10.0]
+    game = MotionGames(clock=lambda: clock[0])
+    holder = PartyCamera()
+    holder.command(renew(holder), source(), clock[0])
+    control, start, _ = game_handler(game, holder, clock=lambda: clock[0])
+    await control(request({'action': 'select', 'mode': 'ski'}, game=game))
+    round_id, revision = game.round_id, game.control_revision
+    body = request({'action': 'start', 'mode': 'ski'}, game=game)
+    for display in (None, '192.0.2.10'):
+        with pytest.raises(HTTPException) as error:
+            await control(body, display_host=display)
+        assert (error.value.status_code, error.value.detail) == (409, 'party_camera_busy')
+        assert (game.mode, game.round_id, game.control_revision) == ('off', round_id, revision)
+    start.assert_not_awaited()
+    clock[0] += holder.LEASE_SECONDS
+    assert (await control(body))['mode'] == 'ski'
+    start.assert_awaited_once()
+
+
+@pytest.mark.parametrize('observed_during_hold', [False, True])
+def test_party_handoff_requires_releasing_the_old_start_gesture(observed_during_hold):
+    game, holder = MotionGames(), PartyCamera()
+    game.select('ski')
+    pose = [human()]
+    ok = [{'person_id': 1, 'gesture': 'ok'}]
+    for step in range(1, 10):
+        at = 10 + step / 10
+        game.update(pose, LOCK, at, ok, party_camera_window=holder.window(at))
+    assert 0 < game.gesture_progress < 1
+    holder.command(renew(holder, at=11.0), source(11.0), 11.0)
+    if observed_during_hold:
+        held = game.update(pose, LOCK, 11.0, ok, party_camera_window=holder.window(11.0))
+        assert held['gesture_control']['progress'] == 0
+    holder.command(dict(action='end', context='b'*32, expected_scope=holder.scope, sequence=2,
+                        not_after=12.0), {}, 11.0)
+    for step in range(11, 24):
+        at = 10 + step / 10
+        game.update(pose, LOCK, at, ok, party_camera_window=holder.window(at))
+    assert game.mode == 'off'
+    for step in range(24, 31):
+        at = 10 + step / 10
+        game.update(pose, LOCK, at, party_camera_window=holder.window(at))
+    for step in range(31, 43):
+        at = 10 + step / 10
+        game.update(pose, LOCK, at, ok, party_camera_window=holder.window(at))
+    assert game.mode == 'ski'
 
 
 @pytest.mark.asyncio
