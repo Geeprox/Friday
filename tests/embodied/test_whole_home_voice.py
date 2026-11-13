@@ -127,6 +127,7 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
 
     assert routing.task is not None
     await routing.task
+    await asyncio.gather(*services[CAMERA['id']].jobs)
     home = services[CAMERA['id']]
     home.request.assert_awaited_once()
     assert home.request.await_args.kwargs['wake_only'] == (voiced_frames == 2)
@@ -233,6 +234,7 @@ async def test_wake_motor_waits_for_collected_followup_to_reach_the_actuator(tmp
         start.set()
         release.set()
         await asyncio.wait_for(job, 1)
+        await asyncio.gather(*routing.inflight.values())
     device.assert_awaited_once()
     assert device.await_args.args[:2] == ('玄关灯', 'on')
     assert home.state['voice_command']['state'] == 'readback'
@@ -247,8 +249,11 @@ async def test_short_cue_only_deduplicates_complete_audio_after_confirmed_wake(s
     clock = clock_at(10)
     route = VoiceRouting(lambda: True, clock=clock.monotonic)
     route.COLLECT_SECONDS = 0
+    async def decode(*args, decoded, **kwargs):
+        decoded(detected)
+
     short = SimpleNamespace(camera_id=CAMERA['id'], current=Mock(return_value=True),
-                            spawn=asyncio.create_task, transcribe=AsyncMock(return_value=detected))
+                            spawn=asyncio.create_task, transcribe=AsyncMock(side_effect=decode))
     full = SimpleNamespace(camera_id=OTHER['id'], current=Mock(return_value=True),
                            spawn=asyncio.create_task, transcribe=AsyncMock())
     phrase = candidate(clock.at)
@@ -362,7 +367,7 @@ async def test_distinct_phrases_use_the_shared_transcriber_in_order():
     route.COLLECT_SECONDS = 0
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def hold(*_):
+    async def hold(*_, **kwargs):
         entered.set()
         await release.wait()
 
@@ -380,6 +385,110 @@ async def test_distinct_phrases_use_the_shared_transcriber_in_order():
         release.set()
         await route.task
     second.transcribe.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('effect', ['device', 'task'])
+async def test_another_room_can_turn_while_first_voice_request_waits_for_result(tmp_path, monkeypatch, effect):
+    clock = clock_at(10)
+    monkeypatch.setattr(home_service, 'time', clock)
+    monkeypatch.setattr(home_service, 'DATA', tmp_path)
+    monkeypatch.setattr(home_service, 'VOICE_INPUT_PAUSED', tmp_path / 'voice-input-paused')
+    monkeypatch.setattr(home_service, 'VOICE_PAUSED', tmp_path / 'voice-quiet')
+    home_service.VOICE_PAUSED.touch()
+    routing = VoiceRouting(lambda: True, clock=clock.monotonic)
+    routing.COLLECT_SECONDS = 0
+    command = 'Friday，打开玄关灯' if effect == 'device' else 'Friday，每天晚上十点关掉客厅的灯'
+    first = voice_at(OTHER, 'SYNTHETIC-other-view', routing, text=command)
+    second = voice_at(CAMERA, SESSION, routing)
+    for service in (first, second):
+        service.last_video = clock.at
+    reached, release = asyncio.Event(), asyncio.Event()
+
+    async def wait_for_result(*args, **kwargs):
+        reached.set()
+        await release.wait()
+        return dict(status='reported_match', reached_target=True, acknowledged=True)
+
+    device = AsyncMock(side_effect=wait_for_result)
+
+    async def task(*args, **kwargs):
+        await wait_for_result()
+        return SimpleNamespace(valid_until=home_service.datetime.max.replace(tzinfo=home_service.UTC),
+                               status='pending_confirmation', proposal_ref=None, reply='合成方案待确认',
+                               model_dump=lambda **_: {})
+
+    monkeypatch.setattr(home_service.bridge, 'command', device)
+    monkeypatch.setattr(home_service.bridge, 'task', AsyncMock(side_effect=task))
+    routing.offer(first, candidate(clock.at))
+    try:
+        await asyncio.wait_for(reached.wait(), 1)
+        assert first.voice_busy
+        clock.at += 2
+        for service in (first, second):
+            service.last_video = clock.at
+        source = ('c' * 32, 'd' * 64)
+        routing.offer(second, replace(candidate(clock.at), source=source, wake_only=True))
+
+        async def wait_for_wake():
+            while second.wake_camera is None:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_wake(), .25)
+        assert first.voice_busy and not release.is_set()
+        assert second.wake_camera.source == source
+        cue, safety = cue_source(second, clock, 'secondary')
+        director = CameraDirector()
+        director.apply_mode('auto', 'original')
+        director.choose(current_frame(clock.at - 2, source), clock.at - 2)
+        frame = current_frame(clock.at, source)
+        assert director.choose(frame, clock.at, sound_cue=cue(CAMERA['id'], frame, None)) == 'right'
+        send, sent = dispatch_for('secondary', frame, clock, director, second, cue, safety, PartyCamera())
+        await send('right')
+        assert [row['direction'] for row in sent] == ['right']
+        assert first.voice_busy
+    finally:
+        release.set()
+        for running in (routing.task, *first.jobs, *second.jobs):
+            if running is not None:
+                await asyncio.wait_for(running, 1)
+        result = first.state['voice_command']
+        for service in (first, second):
+            service.clear_voice_receipt()
+    assert result['state'] == ('readback' if effect == 'device' else 'awaiting_confirmation')
+    assert device.await_count == int(effect == 'device')
+
+
+@pytest.mark.asyncio
+async def test_audible_reply_invalidates_an_unconfirmed_overlapping_wake(tmp_path, monkeypatch):
+    clock = clock_at(10)
+    monkeypatch.setattr(home_service, 'time', clock)
+    monkeypatch.setattr(home_service, 'DATA', tmp_path)
+    monkeypatch.setattr(home_service, 'VOICE_INPUT_PAUSED', tmp_path / 'voice-input-paused')
+    routing = VoiceRouting(lambda: True, clock=clock.monotonic)
+    routing.COLLECT_SECONDS = 0
+    home = voice_at(CAMERA, SESSION, routing)
+    home.last_video = clock.at
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def recognize(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return dict(type='wake', voice_revision=0, latency_ms=1)
+
+    home.request = AsyncMock(side_effect=recognize)
+    routing.offer(home, replace(candidate(clock.at), wake_only=True))
+    job = routing.task
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        with routing.replying(clock.at + 3):
+            assert not routing.listening(clock.at)
+            release.set()
+            await asyncio.wait_for(job, 1)
+    finally:
+        release.set()
+        await asyncio.gather(*home.jobs)
+    assert home.wake_camera is None and not routing.recent
 
 
 def test_cameras_share_model_weights_with_independent_voice_state_and_reload_after_failure(monkeypatch):

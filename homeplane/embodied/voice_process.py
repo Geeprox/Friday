@@ -15,9 +15,8 @@ from .local_child import LocalChild, owned
 
 REPLIES = {
     'transcribe': {'transcript', 'wake', 'error'},
-    'delegate': {'task_result', 'error'},
+    'delegate': {'task_result', 'ignored', 'error'},
 }
-REPLY_TYPES = REPLIES['transcribe'] | REPLIES['delegate']
 
 
 def _nonfinite(_):
@@ -34,11 +33,14 @@ def _reply(line):
 
 
 class VoiceProcess:
-    def __init__(self, command, *, startup_timeout=60, request_timeout=60, retry_delay=30):
+    def __init__(self, command, *, operation='transcribe', startup_timeout=60, request_timeout=60, retry_delay=30):
         self.command = tuple(command)
+        self.operation = operation
+        self.reply_types = REPLIES[operation]
         self.startup_timeout, self.request_timeout = startup_timeout, request_timeout
         self.retry_delay, self.retry_at = retry_delay, 0
         self.child = self.reader = None
+        self.started = asyncio.Event()
         self.phase = 'not_started'
         self.metadata = {}
         self.lock = asyncio.Lock()
@@ -65,38 +67,44 @@ class VoiceProcess:
             return
         child = LocalChild(self.command, self.slots, limit=100000)
         self.child = child
+        self.started = asyncio.Event()
         self.phase, self.metadata = 'loading_local_models', {}
-        self.reader = owned(asyncio.create_task(self._read(child)))
+        self.reader = owned(asyncio.create_task(self._read(child, self.started)))
 
     def _fail_pending(self):
         for future in self.futures.values():
             if not future.done():
                 future.set_exception(RuntimeError('voice_worker_closed'))
 
-    def stop(self, phase='stopped'):
+    def stop(self, phase='stopped', *, retry_delay=None):
         self.phase, self.metadata = phase, {}
-        self.retry_at = time.monotonic() + self.retry_delay if phase == 'unavailable' else 0
+        delay = self.retry_delay if retry_delay is None else retry_delay
+        self.retry_at = time.monotonic() + delay if phase == 'unavailable' else 0
         self._fail_pending()
+        self.started.set()
         if self.reader and not self.reader.done():
             self.reader.cancel()
         if self.child:
             self.child.retire()
 
-    async def _read(self, child):
+    async def _read(self, child, started):
         try:
             async with asyncio.timeout(self.startup_timeout):
                 process = await child.start()
                 initial = _reply(await process.stdout.readline())
-                if (initial.get('type') != 'ready' or not isinstance(initial.get('asr'), str)
-                        or not 1 <= len(initial['asr']) <= 128
+                asr = initial.get('asr')
+                if (initial.get('type') != 'ready'
+                        or (self.operation == 'transcribe' and (not isinstance(asr, str) or not 1 <= len(asr) <= 128))
+                        or (self.operation == 'delegate' and set(initial) != {'type'})
                         or initial.get('intelligence') is not None and not isinstance(initial['intelligence'], dict)):
                     raise ValueError('invalid_voice_ready')
-            self.metadata = dict(asr_model=initial['asr'], intelligence=initial.get('intelligence'))
+            self.metadata = dict(asr_model=asr, intelligence=initial.get('intelligence'))
             self.phase = 'ready'
+            started.set()
             while line := await process.stdout.readline():
                 item = _reply(line)
                 seq = item.get('id')
-                if type(seq) is not int or seq <= 0 or item.get('type') not in REPLY_TYPES:
+                if type(seq) is not int or seq <= 0 or item.get('type') not in self.reply_types:
                     raise ValueError('invalid_voice_reply')
                 future = self.futures.get(seq)
                 if future and not future.done():
@@ -107,24 +115,31 @@ class VoiceProcess:
             # Model errors and decoded content never enter lifecycle diagnostics.
             pass
         finally:
+            started.set()
             if self.child is child:
-                if self.phase != 'stopped':
+                if self.phase not in {'stopped', 'unavailable'}:
                     self.phase = 'unavailable'
                     self.retry_at = time.monotonic() + self.retry_delay
                 self.metadata = {}
                 self._fail_pending()
             child.retire()
 
-    async def request(self, op, **payload):
-        expected = REPLIES.get(op)
-        if expected is None:
+    async def request(self, op, *, guard=None, deadline=None, **payload):
+        if op != self.operation:
             raise ValueError('operation_not_allowed')
         child = future = seq = None
         sent = False
         try:
             # Queueing, pipe backpressure and the response share one deadline.
-            async with asyncio.timeout(self.request_timeout):
+            if deadline is not None and not time.monotonic() < deadline:
+                raise TimeoutError('voice_request_expired')
+            timeout = self.request_timeout if deadline is None else min(self.request_timeout, deadline - time.monotonic())
+            async with asyncio.timeout(timeout):
                 async with self.lock:
+                    if guard is not None and guard() is not True:
+                        return {'type': 'error', 'code': 'voice_context_changed'}
+                    if deadline is not None and not time.monotonic() < deadline:
+                        raise TimeoutError('voice_request_expired')
                     if not self.ready:
                         raise RuntimeError('voice_not_ready')
                     child = self.child
@@ -142,8 +157,6 @@ class VoiceProcess:
                     result = await future
                     if self.child is not child or not self.ready:
                         raise RuntimeError('voice_worker_closed')
-                    if result['type'] not in expected:
-                        raise ValueError('invalid_voice_reply')
                     if result['type'] == 'wake' and not (
                         set(result) == {'id', 'type', 'voice_revision', 'latency_ms'}
                         and type(result['voice_revision']) is int
@@ -153,9 +166,11 @@ class VoiceProcess:
                     ):
                         raise ValueError('invalid_voice_reply')
                     return result
-        except BaseException:
+        except BaseException as error:
             if sent and self.child is child:
-                self.stop('unavailable')
+                # 单次识别超时后仍等实际回收，下一条语音可尽快恢复。
+                retry = 1 if op == 'transcribe' and isinstance(error, TimeoutError) else None
+                self.stop('unavailable', retry_delay=retry)
             raise
         finally:
             if seq is not None:
@@ -171,3 +186,14 @@ class VoiceProcess:
         if self.reader:
             await asyncio.gather(self.reader, return_exceptions=True)
         return await self.child.close() if self.child else True
+
+    async def start_for_request(self):
+        """仅按需启动文字子进程，等待就绪期间仍由原所有者管理进程。"""
+        self.ensure_started()
+        reader = self.reader
+        if reader is None:
+            raise RuntimeError('voice_not_ready')
+        async with asyncio.timeout(self.startup_timeout):
+            await self.started.wait()
+        if self.reader is not reader or not self.ready:
+            raise RuntimeError('voice_not_ready')

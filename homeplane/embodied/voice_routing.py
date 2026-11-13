@@ -28,6 +28,7 @@ def overlaps(first, second):
 class VoiceRouting:
     COLLECT_SECONDS = .35
     START_LIMIT = 3.0
+    DECODE_SECONDS = 8.0
     REPEAT_LIMIT = 12.0
 
     def __init__(self, input_open, *, clock=time.monotonic):
@@ -35,6 +36,7 @@ class VoiceRouting:
         self.clock = clock
         self.pending = {}
         self.dispatching = None
+        self.inflight = {}
         self.recent = deque(maxlen=12)
         self.reply_until = 0.0
         self.replies = 0
@@ -88,34 +90,36 @@ class VoiceRouting:
         self.pending[camera] = (service, item)
         asyncio.get_running_loop().call_later(
             self.START_LIMIT - (now - item.captured), self._expire, camera, item.captured)
-        if self.task is None:
-            self.task = asyncio.create_task(self._dispatch(), name='friday-voice-routing')
+        self._schedule()
 
     def _expire(self, camera, captured):
         candidate = self.pending.get(camera)
         if candidate is not None and candidate[1].captured == captured:
             self.pending.pop(camera, None)
 
+    def _schedule(self):
+        if self.task is None and self.pending:
+            self.task = asyncio.create_task(self._dispatch(), name='friday-voice-routing')
+
     def _select(self, now):
         fresh = [(service, item) for service, item in self.pending.values()
                  if self._eligible(service, item, now)]
-        self.pending.clear()
-        if not fresh:
+        self.pending = {service.camera_id: (service, item) for service, item in fresh}
+        available = [(service, item) for service, item in fresh if service.camera_id not in self.inflight]
+        if not available:
             return None
-        _, first = min(fresh, key=lambda row: (row[1].started, row[0].camera_id))
+        _, first = min(available, key=lambda row: (row[1].started, row[0].camera_id))
         window = first.started, first.ended
-        candidates = []
-        for service, item in fresh:
-            if overlaps(window, (item.started, item.ended)):
-                candidates.append((service, item))
-            else:
-                self.pending[service.camera_id] = (service, item)
+        candidates = [(service, item) for service, item in available
+                      if overlaps(window, (item.started, item.ended))]
         # 仅可识别唤醒词的短片段不能抢占同一句的完整语音。
         # 注视只在收音证据接近时加权，入镜本身不影响录入资格。
         service, item = max(candidates, key=lambda row: (
             not row[1].wake_only, row[1].level * (1.10 if row[1].attending else 1.0),
             row[1].ended - row[1].started,
             row[0].camera_id))
+        for candidate_service, _ in candidates:
+            self.pending.pop(candidate_service.camera_id)
         window = min(item.started for _, item in candidates), max(item.ended for _, item in candidates)
         return service, item, window
 
@@ -125,16 +129,30 @@ class VoiceRouting:
                 await asyncio.sleep(self.COLLECT_SECONDS)
                 selection = self._select(self.clock())
                 if selection is None:
-                    continue
+                    return
                 service, item, window = selection
                 self.dispatching = (service, item)
-                job = service.spawn(self._transcribe(service, item, window))
-                await asyncio.gather(job, return_exceptions=True)
+                recognized = asyncio.Event()
+                job = service.spawn(self._transcribe(service, item, window, recognized))
+                self.inflight[service.camera_id] = job
+                job.add_done_callback(
+                    lambda finished, camera=service.camera_id, ready=recognized:
+                    self._turn_finished(camera, finished, ready)
+                )
+                await recognized.wait()
         finally:
             self.dispatching = None
             self.task = None
 
-    async def _transcribe(self, service, item, window):
+    def _turn_finished(self, camera, job, recognized):
+        if self.inflight.get(camera) is job:
+            self.inflight.pop(camera)
+        recognized.set()
+        if not job.cancelled():
+            job.exception()
+        self._schedule()
+
+    async def _transcribe(self, service, item, window, recognized):
         now = self.clock()
         if self.dispatching is None or self.dispatching[1] is not item:
             return
@@ -145,7 +163,17 @@ class VoiceRouting:
         if not item.wake_only:
             self.recent.append((now, window))
         service.voice_busy = True
-        wake_detected = await service.transcribe(
-            item.pcm, item.owner, item.captured, item.attending, item.epoch, item.source, item.wake_only)
-        if item.wake_only and wake_detected:
-            self.recent.append((self.clock(), window))
+
+        def decoded(wake_detected=False):
+            if item.wake_only and wake_detected:
+                self.recent.append((self.clock(), window))
+            recognized.set()
+
+        def current():
+            return (self.listening(self.clock()) and item.started >= self.reply_until
+                    and service.current(item.captured, item.epoch))
+
+        await service.transcribe(
+            item.pcm, item.owner, item.captured, item.attending, item.epoch, item.source,
+            item.wake_only, decoded=decoded, decode_current=current,
+            decode_deadline=min(now + self.DECODE_SECONDS, item.captured + 10))

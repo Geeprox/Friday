@@ -7,11 +7,11 @@ from pathlib import Path
 import subprocess
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from homeplane.embodied import home_service
+from homeplane.embodied import home_service, voice_intent_worker
 
 
 class SilentProcess:
@@ -147,6 +147,7 @@ async def test_request_timeout_covers_a_child_not_reading_stdin(tmp_path, monkey
         await until(process.exited.is_set)
         assert home.public()['voice'] == 'unavailable'
         assert len(process.requests) == 1 and not home.voice_process.futures
+        assert 0 < home.voice_process.retry_at - time.monotonic() <= 1
     finally:
         await home.close()
 
@@ -260,6 +261,132 @@ async def test_cancelled_inflight_reply_cannot_enter_the_next_generation(tmp_pat
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await home.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('retire', ['queued_context', 'inflight_context'])
+async def test_text_worker_cannot_block_or_retire_shared_recognition(tmp_path, monkeypatch, retire):
+    home = make_home(tmp_path, monkeypatch)
+    other = home_service.HomeService(camera_id='cam_2222222222', voice_provider=home)
+    other.curtain.close = AsyncMock()
+    recognition = SilentProcess()
+    intent = SilentProcess(ready=False)
+    spawn = AsyncMock(side_effect=[recognition, intent])
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
+    device = AsyncMock()
+    monkeypatch.setattr(home_service.bridge, 'command', device)
+    tasks = []
+    try:
+        await home.enable()
+        await other.enable()
+        await until(lambda: home.voice_status() == 'ready')
+        assert spawn.await_count == 1
+        assert spawn.await_args.args[-1] == 'homeplane.embodied.voice_worker'
+        home.camera_session, home.selected, home.last_video = 'SYNTHETIC-first', True, time.monotonic()
+        first = asyncio.create_task(home.transcribe(b'SYNTHETIC-first', None, home.last_video))
+        tasks.append(first)
+        await until(lambda: len(recognition.requests) == 1)
+        text = 'Friday，把玄关灯处理一下'
+        recognition.output.put_nowait((json.dumps(dict(
+            type='transcript', id=recognition.requests[0]['id'], text=text, voice_revision=0,
+            address={'admitted': True, 'wake_word': True})) + '\n').encode())
+        await until(lambda: spawn.await_count == 2)
+        assert spawn.await_args.args[-1] == 'homeplane.embodied.voice_intent_worker'
+        assert not intent.requests and not first.done()
+        intent.output.put_nowait(b'{"type":"ready"}\n')
+        await until(lambda: len(intent.requests) == 1)
+        assert intent.requests[0]['text'] == text
+        assert intent.requests[0]['op'] == 'delegate' and 'pcm' not in intent.requests[0]
+        assert not first.done()
+
+        valid = True
+        waiting = asyncio.Event()
+
+        async def observed_start():
+            await start_intent()
+            waiting.set()
+
+        start_intent = home.intent_process.start_for_request
+        monkeypatch.setattr(home.intent_process, 'start_for_request', observed_start)
+        queued = asyncio.create_task(home.request(
+            'delegate', text=text, voice_revision=0, guard=lambda: valid))
+        tasks.append(queued)
+        await asyncio.wait_for(waiting.wait(), .5)
+        valid = False
+        other.selected, other.last_video, other.camera_session = True, time.monotonic(), 'SYNTHETIC-second'
+        source = ('b' * 32, 'c' * 64)
+        wake = asyncio.create_task(other.transcribe(
+            b'SYNTHETIC-second', None, other.last_video, source=source, wake_only=True))
+        tasks.append(wake)
+        await until(lambda: len(recognition.requests) == 2)
+        assert recognition.requests[1]['op'] == 'transcribe'
+        recognition.output.put_nowait((json.dumps(dict(type='wake', id=recognition.requests[1]['id'],
+                                                      voice_revision=0, latency_ms=2)) + '\n').encode())
+        assert await asyncio.wait_for(wake, .5)
+        assert other.wake_camera.source == source and other.voice_receipt() is None
+        assert not first.done() and len(intent.requests) == 1
+
+        if retire == 'queued_context':
+            intent.output.put_nowait((json.dumps(dict(
+                type='ignored', id=intent.requests[0]['id'], laya={'choice': '闲聊或转述', 'confidence': .9})) + '\n').encode())
+            await asyncio.wait_for(first, .5)
+            assert home.state['voice_command']['state'] == 'ignored'
+            assert (await asyncio.wait_for(queued, .5))['code'] == 'voice_context_changed'
+        else:
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            await until(intent.terminated.is_set)
+            assert (await asyncio.wait_for(queued, .5))['code'] == 'voice_context_changed'
+        assert len(intent.requests) == 1
+        assert other.voice_status() == 'ready' and not recognition.terminated.is_set()
+        device.assert_not_awaited()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await other.close()
+        await home.close()
+    assert recognition.exited.is_set() and intent.exited.is_set()
+
+
+@pytest.mark.parametrize('semantic', ['unavailable', 'small_talk', 'revision_changed', 'input_paused'])
+def test_text_intent_keeps_classification_and_original_model_port(tmp_path, monkeypatch, semantic):
+    policy = SimpleNamespace(wake_word='小福', revision=7)
+    after = SimpleNamespace(wake_word='小管家', revision=8) if semantic == 'revision_changed' else policy
+    monkeypatch.setattr(voice_intent_worker, 'read_preferences', Mock(side_effect=[policy, after]))
+    monkeypatch.setattr(voice_intent_worker, 'PRIVATE', tmp_path)
+    laya = {'choice': '闲聊或转述', 'confidence': .9} if semantic == 'small_talk' else {'status': 'unavailable'}
+    def evaluate(*_):
+        if semantic == 'input_paused':
+            (tmp_path / 'voice-input-paused').touch()
+        return laya
+
+    classify = Mock(side_effect=evaluate)
+    monkeypatch.setattr(voice_intent_worker, '_classify', classify)
+    plan = dict(is_command=True, route='reply', device=None, action=None, reply='合成回答')
+    intent = SimpleNamespace(complete=Mock(return_value=dict(
+        simulated=False, provider='synthetic', text=json.dumps(plan))), report=Mock(return_value={}), close=Mock())
+    runtime = Mock(return_value=intent)
+    monkeypatch.setattr(voice_intent_worker, 'IntentRuntime', runtime)
+    request = dict(op='delegate', text='小福，为什么天空是蓝色的',
+                   voice_revision=7, context={'attention': False, 'person_id': None}, request_id='synthetic-voice')
+
+    if semantic in {'revision_changed', 'input_paused'}:
+        with pytest.raises(ValueError, match='voice_preferences_changed'):
+            voice_intent_worker.run(request)
+    else:
+        result = voice_intent_worker.run(request)
+        assert result['laya'] == laya
+        assert result['type'] == ('ignored' if semantic == 'small_talk' else 'task_result')
+    classify.assert_called_once()
+    if semantic == 'unavailable':
+        intent.complete.assert_called_once()
+        assert intent.complete.call_args.kwargs == {'request_id': 'synthetic-voice', 'voice_revision': 7}
+        assert '小福，为什么天空是蓝色的' in intent.complete.call_args.args[0]
+        intent.close.assert_called_once()
+    else:
+        runtime.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -409,6 +536,8 @@ async def test_invalid_unsent_request_does_not_take_a_ready_voice_process_down(t
             with pytest.raises(ValueError):
                 await home.request(op, **payload)
             assert home.public()['voice'] == 'ready'
+        with pytest.raises(TimeoutError, match='voice_request_expired'):
+            await home.request('transcribe', pcm='NOT-SENT', deadline=time.monotonic()-1)
         assert not process.requests and not process.terminated.is_set()
     finally:
         await home.close()

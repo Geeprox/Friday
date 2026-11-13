@@ -64,6 +64,9 @@ class HomeService:
         self.attention = Attention()
         self.voice_process = None if voice_provider else VoiceProcess(
             (VOICE_PYTHON, '-B', '-m', 'homeplane.embodied.voice_worker'))
+        self.intent_process = None if voice_provider else VoiceProcess(
+            (VOICE_PYTHON, '-B', '-m', 'homeplane.embodied.voice_intent_worker'),
+            operation='delegate', startup_timeout=5, request_timeout=45)
         self.poller = None
         self.jobs = set()
         self.selected = False
@@ -229,6 +232,12 @@ class HomeService:
     async def request(self, op, **kwargs):
         if self.voice_provider is not None:
             return await self.voice_provider.request(op, **kwargs)
+        if op == 'delegate':
+            guard = kwargs.get('guard')
+            if guard is not None and not guard():
+                return {'type': 'error', 'code': 'voice_context_changed'}
+            await self.intent_process.start_for_request()
+            return await self.intent_process.request(op, **kwargs)
         return await self.voice_process.request(op, **kwargs)
 
     def spawn(self, coro):
@@ -429,10 +438,11 @@ class HomeService:
         return (self.voice_preferences() == policy and self.current(captured, epoch)
                 and not VOICE_INPUT_PAUSED.exists())
 
-    def _voice_guard(self, text, captured, epoch, attending, policy, owner=None):
+    def _voice_guard(self, text, captured, epoch, attending, policy, owner=None, *, addressed=None):
         # Wake and gaze are alternative cues. Both still require the original
         # input source, policy and camera generation to remain current.
-        addressed = address(text, attending, wake_word=policy.wake_word)
+        if addressed is None:
+            addressed = address(text, attending, wake_word=policy.wake_word)
         explicit_wake = addressed.get('wake_word') is True
         admitted = addressed.get('admitted') is True
 
@@ -528,7 +538,8 @@ class HomeService:
             self.state.update(last_result=answer.model_dump(mode='json'), last_route='task', reason='已处理任务请求')
         await self.speak_reply(answer.reply, lambda: current() and answer.valid_until > datetime.now(UTC))
 
-    async def transcribe(self, pcm, owner, captured, attending=False, epoch=None, source=None, wake_only=False):
+    async def transcribe(self, pcm, owner, captured, attending=False, epoch=None, source=None, wake_only=False,
+                         *, decoded=None, decode_current=None, decode_deadline=None):
         epoch = self.epoch if epoch is None else epoch
         began = time.monotonic()
         result_kind, result_code = "ok", "none"
@@ -537,8 +548,11 @@ class HomeService:
         try:
             self.state["voice"] = "transcribing"
             policy=self.voice_preferences()
+            timing = dict(guard=decode_current, deadline=decode_deadline) if decode_current is not None else {}
             result = await self.request("transcribe", pcm=base64.b64encode(pcm).decode(), attending=attending,
-                                        voice_revision=policy.revision, wake_only=wake_only)
+                                        voice_revision=policy.revision, wake_only=wake_only, **timing)
+            if decode_current is not None and not decode_current():
+                return
             if result.get('voice_revision',0)!=policy.revision or self.voice_preferences()!=policy:
                 self.state['reason']='唤醒词已更新，请重新说一次'
                 return
@@ -548,8 +562,12 @@ class HomeService:
                 return
             if result.get("type") == "wake":
                 self.state.update(reason="请继续说出指令", laya_result=None, asr_quality=None)
-                return self._wake_focus(captured, epoch, policy, source)
-            self.state["laya_result"] = result.get("laya")
+                wake_detected = self._wake_focus(captured, epoch, policy, source)
+                if decoded is not None:
+                    decoded(wake_detected)
+                    decoded = None
+                return wake_detected
+            self.state["laya_result"] = None
             self.state["asr_quality"] = result.get("asr_quality")
             route = result.get("address", {})
             if route.get("reason") in (
@@ -578,18 +596,21 @@ class HomeService:
                 "started_at": time.time(),
                 "updated_at": time.time(),
             }
-            current = self._voice_guard(result['text'], captured, epoch, attending, policy, owner)
+            addressed = address(result['text'], attending, wake_word=policy.wake_word)
+            current = self._voice_guard(result['text'], captured, epoch, attending, policy, owner, addressed=addressed)
             if not current():
                 if self._voice_receipt is None:
                     self.state["voice_command"] = dict(state="expired", updated_at=time.time())
                 self.state["reason"] = "指令已过期或操作者变化"
                 return
             self._remember_voice_receipt(command, policy.revision)
-            if address(result['text'], False, wake_word=policy.wake_word).get('wake_word') is True:
+            if addressed.get('wake_word') is True:
                 self._wake_focus(captured, epoch, policy, source)
+            if decoded is not None:
+                decoded()
+                decoded = None
             decision_started = time.monotonic()
-            laya = result.get("laya") or {}
-            body = address(result['text'],attending,wake_word=policy.wake_word).get('body','')
+            body = addressed.get('body', '')
             if is_task_request(body):
                 await self.prepare_task(result['text'],event,captured,epoch,attending,policy,command,owner=owner)
                 return
@@ -618,16 +639,21 @@ class HomeService:
                     "latency_ms": round((time.monotonic() - decision_started) * 1000, 2),
                 }
             else:
-                if laya.get("choice") == "闲聊或转述" and laya.get("confidence", 0) >= 0.75:
+                self.state["reason"] = "ARL Codex 正在理解指令"
+                task = await self.request(
+                    "delegate", text=result["text"], context=dict(attention=addressed['attention'], person_id=owner),
+                    request_id=hashlib.sha256(f'voice-intent:{self.camera_id}:{event}:{epoch}:{captured}'.encode()).hexdigest(),
+                    voice_revision=policy.revision, guard=current, deadline=captured+40,
+                )
+                if not current():
+                    command.update(state="expired", updated_at=time.time())
+                    self.state["reason"] = "任务返回时交互已结束，未执行"
+                    return
+                self.state["laya_result"] = task.get("laya")
+                if task.get("type") == "ignored":
                     command.update(state="ignored", updated_at=time.time())
                     self.state["reason"] = "闲聊，未触发任务"
                     return
-                self.state["reason"] = "ARL Codex 正在理解指令"
-                task = await self.request(
-                    "delegate", text=result["text"], context=dict(route, person_id=owner), laya=laya,
-                    request_id=hashlib.sha256(f'voice-intent:{self.camera_id}:{event}:{epoch}:{captured}'.encode()).hexdigest(),
-                    voice_revision=policy.revision,
-                )
                 self.state["codex_runtime"] = task.get("runtime")
                 if task.get("type") != "task_result" or task.get("simulated") is not False:
                     self.state["last_failure"] = {
@@ -726,6 +752,8 @@ class HomeService:
                 elapsed_ms=(time.monotonic() - began) * 1000,
             )
             self.voice_busy = False
+            if decoded is not None:
+                decoded()
             self.refresh_voice()
             pending = self.pending_audio
             self.pending_audio = None
@@ -753,12 +781,16 @@ class HomeService:
             self.voice_routing.discard(self.camera_id)
         if self.voice_process:
             self.voice_process.stop()
+        if self.intent_process:
+            self.intent_process.stop()
         tasks = [t for t in [self.poller, *self.jobs] if t]
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         if self.voice_process:
             await self.voice_process.close()
+        if self.intent_process:
+            await self.intent_process.close()
         await self.curtain.close()
         self.enabled = False
         self.armed = False
