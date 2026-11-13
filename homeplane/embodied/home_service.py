@@ -99,6 +99,7 @@ class HomeService:
         self.audio_source_epoch = 0
         self.audio_retry_at = 0.0
         self.voice_busy = False
+        self.voice_needs_stable_view = False
         self.last_video = -100.0
         self.camera_focus = None
         self.wake_camera = None
@@ -526,12 +527,24 @@ class HomeService:
         self.revoke_wake_followup()
         return None
 
-    def _wake_focus(self, captured, epoch, policy, source, source_epoch):
-        if self.camera_session is None or not self._voice_context_current(captured, epoch, policy, source, source_epoch):
+    def _wake_focus(self, captured, epoch, policy, source, source_epoch, *, followup_from=None):
+        if (self.camera_session is None or not self.audio_allowed
+                or not self._voice_context_current(captured, epoch, policy, source, source_epoch)):
             return False
         if source is not None:
             self.camera_focus = None
-            self.wake_camera = WakeCameraCue(captured, self.camera_session, source, policy.revision)
+            self.wake_camera = cue = WakeCameraCue(captured, self.camera_session, source, policy.revision)
+            opened = time.monotonic()
+            followup = None
+            if followup_from is not None:
+                self.wake_followup = followup = WakeFollowup(
+                    source, self.camera_session, epoch, policy.revision, followup_from, opened + WAKE_FOLLOWUP_SECONDS)
+            if self.voice_routing is not None:
+                def current():
+                    return (self.wake_camera is cue and self.audio_allowed
+                            and self._voice_context_current(captured, epoch, policy, source, source_epoch))
+
+                self.voice_routing.acknowledge(self, followup, current=current, deadline=opened + 1.0)
             return True
         # 没有采集凭据时只保留原有的单人构图提示。
         visible = self.visible_tracks
@@ -544,7 +557,8 @@ class HomeService:
         cue = self.wake_camera
         if cue is None:
             return None
-        if not 0 <= now - cue.captured < WAKE_CAMERA_SECONDS or VOICE_INPUT_PAUSED.exists():
+        if (not 0 <= now - cue.captured < WAKE_CAMERA_SECONDS or not self.audio_allowed
+                or VOICE_INPUT_PAUSED.exists()):
             self.wake_camera = None
             return None
         # 短时缺少识别帧不代表采集已换源；真正停止或恢复识别时由采集所有者撤销。
@@ -556,7 +570,7 @@ class HomeService:
         try:
             if self.voice_preferences().revision == cue.voice_revision:
                 waiting = self.voice_routing is not None and self.voice_routing.waiting(self, cue.source, now)
-                return WakeCameraPause(cue) if self.speaking or self.voice_busy or waiting else cue
+                return WakeCameraPause(cue) if self.speaking or self.voice_needs_stable_view or waiting else cue
         except (OSError, ValueError):
             pass
         self.wake_camera = None
@@ -565,7 +579,10 @@ class HomeService:
     async def speak_reply(self, text, current):
         self.reply_until = time.monotonic() + min(30, max(3.5, len(text) / 4.5 + 1.5))
         audible = self.voice_routing is not None and not VOICE_PAUSED.exists()
-        with self.voice_routing.replying(self.reply_until) if audible else nullcontext():
+        with (self.voice_routing.replying(self.reply_until) if audible else nullcontext()) as feedback:
+            if feedback is not None:
+                # 先撤销短音，再等它交还通道，避免吞掉更重要的语音回报。
+                await asyncio.gather(asyncio.shield(feedback), return_exceptions=True)
             await self.speaker.say(text, current=current)
 
     async def answer_question(self, text, event, captured, epoch, policy, command, *, addressed, current):
@@ -620,6 +637,7 @@ class HomeService:
         command = None
         self.runtime_log.record("embodied.voice", "start")
         try:
+            self.voice_needs_stable_view = True
             self.state["voice"] = "transcribing"
             policy=self.voice_preferences()
             if source is not None and not self._voice_context_current(captured, epoch, policy, source, source_epoch):
@@ -640,14 +658,8 @@ class HomeService:
                 return
             if result.get("type") == "wake":
                 self.state.update(reason="请继续说出指令", laya_result=None, asr_quality=None)
-                wake_detected = self._wake_focus(captured, epoch, policy, source, source_epoch)
-                if wake_detected and source is not None:
-                    opened = time.monotonic()
-                    self.wake_followup = followup = WakeFollowup(
-                        source, self.camera_session, epoch, policy.revision,
-                        captured if ended is None else ended, opened + WAKE_FOLLOWUP_SECONDS)
-                    if self.voice_routing is not None:
-                        self.voice_routing.acknowledge(self, followup, deadline=opened + 1.0)
+                wake_detected = self._wake_focus(captured, epoch, policy, source, source_epoch,
+                                                 followup_from=captured if ended is None else ended)
                 if decoded is not None:
                     decoded(wake_detected)
                     decoded = None
@@ -693,8 +705,11 @@ class HomeService:
             if after_wake:
                 self.revoke_wake_followup()
             self._remember_voice_receipt(command, policy.revision)
-            if addressed.get('wake_word') is True:
+            explicit_wake = addressed.get('wake_word') is True
+            if explicit_wake:
                 self._wake_focus(captured, epoch, policy, source, source_epoch)
+            # 明确唤醒或接续的语句准入后，设备回报和文字推理不再占用视角。
+            self.voice_needs_stable_view = not (explicit_wake or after_wake)
             if decoded is not None:
                 decoded()
                 decoded = None
@@ -844,6 +859,7 @@ class HomeService:
                 elapsed_ms=(time.monotonic() - began) * 1000,
             )
             self.voice_busy = False
+            self.voice_needs_stable_view = False
             if decoded is not None:
                 decoded()
             self.refresh_voice()

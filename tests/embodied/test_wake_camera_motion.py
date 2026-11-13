@@ -242,12 +242,12 @@ async def test_wake_search_resumes_after_the_followup_utterance(tmp_path, monkey
     assert observe(3.9, shift, *people) is None
     assert observe(4.3, shift, *people) is None
     home.speaking = False
-    home.voice_busy = True
+    home.voice_needs_stable_view = True
     assert observe(4.7, shift, *people) is None
     assert director.sound_search_cue is original and director.sound_step == 1
     assert [row['direction'] for row in sent] == ['right']
 
-    home.voice_busy = False
+    home.voice_needs_stable_view = False
     if not shift:
         assert observe(5.1) == 'left'
         await send('left')
@@ -277,13 +277,13 @@ async def test_wake_search_resumes_after_the_followup_utterance(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('revoked', ['session', 'source', 'policy', 'pause', 'expired'])
+@pytest.mark.parametrize('revoked', ['session', 'source', 'policy', 'pause', 'audio_permission', 'expired'])
 async def test_wake_does_not_resume_after_revocation(tmp_path, monkeypatch, revoked):
     clock = SimpleNamespace(at=0.0)
     clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
     home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
     original = home.wake_camera
-    home.voice_busy = True
+    home.voice_needs_stable_view = True
     clock.at += .1
     frame = current_frame(clock.at, source)
     assert home.wake_motion_cue(frame, clock.at).cue is original
@@ -295,11 +295,13 @@ async def test_wake_does_not_resume_after_revocation(tmp_path, monkeypatch, revo
         home.voice_preferences = lambda: SimpleNamespace(wake_word='小福', revision=8)
     elif revoked == 'pause':
         home_service.VOICE_INPUT_PAUSED.touch()
+    elif revoked == 'audio_permission':
+        home.audio_allowed = False
     else:
         clock.at += home_service.WAKE_CAMERA_SECONDS
     assert home.wake_motion_cue(frame, clock.at) is None
     assert home.wake_camera is None
-    home.voice_busy = False
+    home.voice_needs_stable_view = False
     assert home.wake_motion_cue(current_frame(clock.at, source), clock.at) is None
 
 

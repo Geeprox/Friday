@@ -43,6 +43,8 @@ class VoiceRouting:
         self.inflight = {}
         self.recent = deque(maxlen=12)
         self.followup_owner = None
+        self.feedback_task = None
+        self.reply_revision = 0
         self.reply_until = 0.0
         self.replies = 0
         self.task = None
@@ -52,13 +54,15 @@ class VoiceRouting:
 
     @contextmanager
     def replying(self, until):
+        self.reply_revision += 1
+        feedback = self.feedback_task
         self.reply_until = max(self.reply_until, until)
         self.pending.clear()
         self.dispatching = None
         self.clear_followup()
         self.replies += 1
         try:
-            yield
+            yield feedback
         finally:
             self.replies -= 1
             self.reply_until = max(self.reply_until, self.clock() + .25)
@@ -75,18 +79,29 @@ class VoiceRouting:
             self.followup_owner.revoke_wake_followup()
             self.followup_owner = None
 
-    def acknowledge(self, service, followup, *, deadline):
-        if self.followup_owner is not service:
+    def acknowledge(self, service, followup, *, current, deadline):
+        if followup is None or self.followup_owner is not service:
             self.clear_followup()
-        self.followup_owner = service
-        if self.wake_feedback is not None:
-            def current():
-                now = self.clock()
-                return (now < deadline and self.listening(now) and not service.speaking
-                        and service.wake_followup is followup
-                        and service.followup_for(followup.source, now, now) is followup)
+        if followup is not None:
+            self.followup_owner = service
+        if self.wake_feedback is None or self.feedback_task is not None and not self.feedback_task.done():
+            return
+        reply_revision = self.reply_revision
 
-            service.spawn(self.wake_feedback(current=current))
+        def valid():
+            now = self.clock()
+            return (now < deadline and self.reply_revision == reply_revision and self.listening(now)
+                    and not service.speaking and current()
+                    and (followup is None or service.followup_for(followup.source, now, now) is followup))
+
+        task = self.feedback_task = service.spawn(self.wake_feedback(current=valid))
+        task.add_done_callback(self._feedback_finished)
+
+    def _feedback_finished(self, task):
+        if self.feedback_task is task:
+            self.feedback_task = None
+        if not task.cancelled():
+            task.exception()
 
     def waiting(self, service, source, now):
         """只为同一采集来源仍可受理的语音段暂缓唤醒转向。"""

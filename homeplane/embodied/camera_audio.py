@@ -32,7 +32,7 @@ class WakeCameraCue:
 
 @dataclass(frozen=True)
 class WakeCameraPause:
-    """语音仍在采集或处理时，保留原唤醒凭据，暂缓新的云台动作。"""
+    """收音、识别或核对注视时，保留原唤醒凭据并暂缓云台动作。"""
 
     cue: WakeCameraCue
 
