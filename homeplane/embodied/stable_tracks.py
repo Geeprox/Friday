@@ -28,7 +28,7 @@ def valid_box(box):
             and box['w'] > 0 and box['h'] > 0 and box['x']+box['w'] <= 1.000001
             and box['y']+box['h'] <= 1.000001)
 
-def _overlapping(a, b):
+def boxes_overlap(a, b):
     width = min(a['x']+a['w'], b['x']+b['w']) - max(a['x'], b['x'])
     height = min(a['y']+a['h'], b['y']+b['h']) - max(a['y'], b['y'])
     # 以较小框为准，保留成人经过婴儿或宠物前方这类大小差异明显的情况。
@@ -167,8 +167,8 @@ class StableTracks:
             joints = poses.get(index,{})
             prev = self.items.get(track_id)
             # 使用当帧检测框，包括尚未被追踪器确认为新轨迹的框。
-            overlapping = (any(i != index and _overlapping(box, other) for i, other in enumerate(boxes))
-                           or any(_overlapping(box, other) for other in occluders))
+            overlapping = (any(i != index and boxes_overlap(box, other) for i, other in enumerate(boxes))
+                           or any(boxes_overlap(box, other) for other in occluders))
             follow_revision = 0
             follow_changed_at = now if overlapping else None
             if prev:

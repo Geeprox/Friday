@@ -356,6 +356,26 @@ class CameraDirector:
         box = target.get('box') if target else None
         return valid_box(box) and box['confidence'] >= .65
 
+    def _sound_target_unique(self, target, subjects, identity):
+        from .stable_tracks import boxes_overlap, valid_box
+
+        identity = identity or self.identity(target)
+        # 补查当前可见框，保留与人体跟踪器一致的遮挡判定。
+        for subject in subjects:
+            if subject is target:
+                continue
+            if identity and self.identity(subject) == identity:
+                return False
+            box = subject.get('box')
+            if valid_box(box) and boxes_overlap(target['box'], box):
+                return False
+        return True
+
+    @property
+    def _following_recorded_sound(self):
+        return (self.sound_following and self.sound_search_cue is not None
+                and not isinstance(self.sound_search_cue, WakeCameraCue))
+
     def _clear_selection_reference(self):
         self.selection_sample = self.selection_reference = None
         self.selection_reference_attempt = -math.inf
@@ -393,7 +413,9 @@ class CameraDirector:
         if self.reframe_started is None and (
                 not self._qualified_target(target) or self.follow_key(target) != self.target_follow_key
                 or self.target_identity
-                and self.identity(target) not in (None, self.target_identity)):
+                and self.identity(target) not in (None, self.target_identity)
+                or self._following_recorded_sound
+                and not self._sound_target_unique(target, subjects, self.target_identity)):
             self._interrupt_selection(now)
         if self.reframe_started is not None:
             target = self._reframe_target(sample, subjects)
@@ -442,6 +464,9 @@ class CameraDirector:
         key = self.follow_key(match) if match is not None else None
         if (key is None or strict and not self._qualified_target(match)
                 or sum(row['id'] == match['id'] for row in subjects) != 1):
+            return None
+        if (self._following_recorded_sound
+                and not self._sound_target_unique(match, subjects, self.target_identity)):
             return None
         stamp = sample['_local_received']
         candidate = (key, stamp)
@@ -564,7 +589,8 @@ class CameraDirector:
         if pending['phase'] != 'following':
             return False
         sound_follow = 'sound_box' in pending
-        if sound_follow and (not self.sound_following or len(people) != 1
+        if sound_follow and (not self.sound_following
+                             or isinstance(sound_cue, WakeCameraCue) and len(people) != 1
                              or self._sound_scope(sample) != self.sound_view
                              or not self.target_frame_current(sample, now)):
             return False
@@ -586,6 +612,9 @@ class CameraDirector:
         if (explicit or sound_follow) and not self._qualified_target(target):
             return False
         if sound_follow:
+            if (self._following_recorded_sound
+                    and not self._sound_target_unique(target, people, pending['identity'])):
+                return False
             shift = _view_shift(pending['view'], sample.get('_patrol_view'))
             if not iou(pending['sound_box'], target['box']) or shift is None or math.hypot(*shift) > .012:
                 return False
@@ -778,6 +807,19 @@ class CameraDirector:
         view = sample.get('_patrol_view')
         return (sample.get('session_id'), view[0], self._camera_window(sample)) if view is not None else None
 
+    def _wait_for_sound_target_view(self, sample, now, sound_cue):
+        if (not self._following_recorded_sound or sample.get('session_id') != self.target_session
+                or self._camera_window(sample) != self.sound_view[2]
+                or sound_cue is not None and sound_cue is not self.sound_search_cue
+                or not 0 <= now - self.target_seen <= self.FOLLOW_REACQUIRE_SECONDS):
+            return False
+        scope = self._sound_scope(sample)
+        if scope is not None and scope != self.sound_view:
+            return False
+        # 视野中断时只保留重新确认原目标的窗口。有效回执和画面恢复之前不转动。
+        self._interrupt_selection(now)
+        return True
+
     def _wake_source_current(self, sample, cue):
         accepts_wake = (self.mode == 'auto'
                         or (self.mode == 'survey' and self.intent is not None and self.intent[0] == 'patrol'))
@@ -856,15 +898,19 @@ class CameraDirector:
     def _sound_follow_target(self, sample, people, now):
         """同一新视角的连续人体观测才能接手，异响回执不指认声源。"""
         previous, self.sound_candidate = self.sound_candidate, None
-        target = people[0] if len(people) == 1 else None
+        wake = isinstance(self.sound_search_cue, WakeCameraCue)
         if (self._sound_scope(sample) != self.sound_view or not self.target_frame_current(sample, now)
-                or not self._qualified_target(target) or (key := self.follow_key(target)) is None):
+                or wake and len(people) != 1):
             if self.sound_following:
                 self._interrupt_selection(now)
             self.phase = 'target_ambiguous'
             return None
         if self.sound_following:
             return self._selected_follow(sample, people, now)
+        target = people[0] if len(people) == 1 else None
+        if not self._qualified_target(target) or (key := self.follow_key(target)) is None:
+            self.phase = 'target_ambiguous'
+            return None
         stamp = sample['_local_received']
         identity = self.identity(target)
         self.sound_candidate = (key, stamp, identity, dict(target['box']), sample['_patrol_view'])
@@ -1030,12 +1076,14 @@ class CameraDirector:
         visible = sample.get('scene_visible') is True
         self.visible_samples = self.visible_samples+1 if visible else 0
         if not visible:
-            self._end_sound_search(now)
             self.clear_since = None
             self.obscured_samples += 1
             if self.obscured_since is None:self.obscured_since = now
             self.phase = 'view_obscured'
             self.reframe_candidate = None
+            if self._wait_for_sound_target_view(sample, now, sound_cue):
+                return None
+            self._end_sound_search(now)
             if explicit:
                 self._interrupt_selection(now)
                 return None
@@ -1100,6 +1148,10 @@ class CameraDirector:
             may_search = not people and not safety_pending
             if self.sound_search_cue is not None:
                 scope = self._sound_scope(sample)
+                if (scope is None and (not focus or focus['track'] == self.target)
+                        and self._wait_for_sound_target_view(sample, now, sound_cue)):
+                    self.phase = 'target_reacquiring'
+                    return None
                 if (sound_cue is not self.sound_search_cue or scope is not None and scope != self.sound_view
                         or wake and safety_pending
                         or focus and (not self.sound_following or focus['track'] != self.target)):
@@ -1321,7 +1373,7 @@ class CameraDirector:
                     reason = '已唤醒，正在重新对准'
         elif self.sound_search_cue is not None and self.phase in {'confirming_view', 'checking_view', 'patrol_waiting_view'}:
             reason = '异响后环视'
-        if self.mode == 'survey' and self.sound_following and self.phase == 'following':
+        if self._following_recorded_sound and self.phase == 'following':
             reason = '异响后跟随人物'
         if self.phase == 'patrolling' and self.mode == 'survey':
             reason = {'down': '巡视低处', 'up': '抬回视野'}.get(self.pending_direction, reason)

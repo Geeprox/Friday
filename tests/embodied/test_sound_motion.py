@@ -375,7 +375,15 @@ def test_sound_follow_confirms_continuity_and_rechecks_cue_before_dispatch():
     assert director.choose(current, 4, sound_cue=cue) == 'right'
     assert director.decision_current(current, 4, 'right', sound_cue=cue)
     assert not director.decision_current(current, 4, 'right')
+    bystander = sound_person(43, .20, 'SYNTHETIC-other')
+    ambiguous = dict(target, tracking=dict(overlapping=True))
+    assert director.decision_current(frame(4.1, target, bystander), 4.1, 'right', sound_cue=cue)
     assert not director.decision_current(frame(4.1, target, replacement), 4.1, 'right', sound_cue=cue)
+    assert not director.decision_current(frame(4.1, ambiguous, replacement), 4.1, 'right', sound_cue=cue)
+    duplicate = sound_person(43, .20, 'SYNTHETIC-new')
+    assert not director.decision_current(frame(4.1, target, duplicate), 4.1, 'right', sound_cue=cue)
+    assert not director.decision_current(frame(4.1, dict(target, identity={}), duplicate), 4.1, 'right',
+                                         sound_cue=cue)
     assert not director.decision_current(frame(4.1, target, x=.10), 4.1, 'right', sound_cue=cue)
     assert not director.decision_current(current, 4, 'right', sound_cue=cue, fall_pending=True)
     director.sent(4)
@@ -398,11 +406,41 @@ def test_sound_follow_confirms_continuity_and_rechecks_cue_before_dispatch():
     assert director.target_identity == 'SYNTHETIC-new'
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+async def test_original_loops_keep_the_confirmed_sound_target_when_someone_walks_in(tmp_path, monkeypatch, owner):
+    def people(patrol):
+        if not patrol.sound_moves:
+            return []
+        elapsed = patrol.j.clock - patrol.sound_sent_at[0]
+        if elapsed < 3.4:
+            return [sound_person(42, .43, 'SYNTHETIC-original')]
+        bystander = sound_person(43, .16, 'SYNTHETIC-bystander')
+        if not patrol.follow_moves:
+            return [bystander, sound_person(42, .76, 'SYNTHETIC-original')]
+        return [bystander, sound_person(48, .43, 'SYNTHETIC-original')]
+
+    patrol = SoundPatrol(tmp_path, monkeypatch, owner, people=people, occupied_elsewhere=True)
+    try:
+        await patrol.run()
+        assert patrol.sound_moves == ['right']
+        assert patrol.follow_moves == [('right', 42)]
+        event, = patrol.j.store.events()
+        patrol.assert_saved_views(event)
+        frame = next(row for row in event['frames'] if row['ordinal'] == event['sound_follow_view']['ordinal'])
+        assert frame['at'] - 1000 >= patrol.moves[1][0] + 2.35 - 1e-8
+        assert event['track'] is None and event['directional_audio'] is False
+        index = round((frame['at'] - 1000) / .2)
+        assert patrol.j.store.frame(event['id'], frame['ordinal']) == f'SYNTHETIC-FRAME-{index}'.encode()
+    finally:
+        await patrol.j.runtime.close()
+
+
 def test_sound_follow_reacquires_an_unregistered_person_by_current_view():
     director = CameraDirector()
     director.apply_mode('auto', 'intent')
     cue = SimpleNamespace(captured=.9)
-    target, other, returned = subject(42, .74), subject(43, .74), subject(48, .74)
+    target, other, returned = subject(42, .68), subject(43, .47), subject(48, .68)
 
     def observe(at, x, *rows, sound_cue=cue):
         frame = sample(at, people=[row for row, _ in rows], x=x)
@@ -421,11 +459,79 @@ def test_sound_follow_reacquires_an_unregistered_person_by_current_view():
     director.sent(5)
     assert observe(7.2, .1, (other, 8)) is None
     assert observe(7.6, .1, (other, 8)) is None
-    assert observe(8.2, .1, (returned, 7)) is None
-    assert observe(8.6, .1, (returned, 7)) is None
-    assert director.take_sound_view() == (cue, 'follow', 8.6)
-    assert observe(9.1, .1, (returned, 7)) == 'right'
+    assert observe(8.2, .1, (returned, 7), (other, 7)) is None
+    assert observe(8.6, .1, (returned, 7), (other, 8)) is None
+    assert director.take_sound_view() is None
+    assert observe(9.0, .1, (returned, 7), (other, 8)) == 'right'
+    assert director.take_sound_view() == (cue, 'follow', 9.0)
     assert director.target == 48 and director.target_identity is None
+
+
+@pytest.mark.parametrize('visible', [False, True], ids=['obscured', 'unregistered'])
+def test_sound_follow_waits_for_the_same_view_without_adopting_a_bystander(visible):
+    director = CameraDirector()
+    director.apply_mode('auto', 'intent')
+    cue = SimpleNamespace(captured=.9)
+    target = sound_person(42, .43, 'SYNTHETIC-original')
+    bystander = sound_person(43, .76, 'SYNTHETIC-other')
+
+    def observe(at, people=(), *, sound_cue=cue, visible=True, registered=True, x=.05, **view):
+        frame = dict(sample(at, people=people, visible=visible, x=x, **view), tracking_current=True)
+        if not registered:
+            frame['_patrol_view'] = None
+        return director.choose(frame, at, sound_cue=sound_cue)
+
+    assert observe(0, sound_cue=None, x=0) is None
+    assert observe(.5, sound_cue=None, x=0) is None
+    assert observe(1, x=0) == 'right'
+    director.sent(1)
+    assert observe(3.0, [target]) is None
+    assert observe(3.4, [target]) is None
+    assert observe(3.8, [target]) is None
+    assert director.sound_following
+    for stamp in (4.1, 4.7, 5.3):
+        assert observe(stamp, visible=visible, registered=False, sound_cue=None) is None
+        assert director.public()['target_locked'] is False
+        assert director.take_sound_view() is None
+    assert director.sound_search_cue is cue
+    assert observe(5.6, [bystander]) is None
+    assert observe(6.0, [bystander]) is None
+    returned = sound_person(48, .76, 'SYNTHETIC-original')
+    assert observe(6.2, [bystander, returned]) is None
+    assert director.public()['target_locked'] is False
+    separate = sound_person(43, .16, 'SYNTHETIC-other')
+    assert observe(6.4, [separate, returned]) is None
+    assert director.take_sound_view() is None
+    assert observe(6.8, [separate, returned]) == 'right'
+    assert director.target == 48
+    assert director.take_sound_view() is None
+    assert director.public()['reason'] == '异响后跟随人物'
+
+
+@pytest.mark.parametrize('changes', [dict(session='new-capture'), dict(basis='new-background'), {}],
+                         ids=['source-changed', 'basis-changed', 'cue-revoked'])
+def test_sound_follow_ends_when_the_restored_view_loses_its_original_authority(changes):
+    director = CameraDirector()
+    director.apply_mode('survey', 'intent')
+    cue = SimpleNamespace(captured=.9)
+    target = sound_person(42, .43, 'SYNTHETIC-original')
+
+    def frame(at, *, x=.05, people=(target,), **view):
+        return dict(sample(at, x=x, people=people, **view), tracking_current=True)
+
+    director.choose(frame(0, x=0, people=()), 0)
+    director.choose(frame(.5, x=0, people=()), .5)
+    assert director.choose(frame(1, x=0, people=()), 1, sound_cue=cue) == 'right'
+    director.sent(1)
+    for stamp in (3.0, 3.4, 3.8):
+        assert director.choose(frame(stamp), stamp, sound_cue=cue) is None
+    assert director.sound_following
+    assert director.choose(dict(frame(4.1), _patrol_view=None), 4.1) is None
+    assert director.sound_search_cue is cue
+    visible = frame(4.6, people=(sound_person(48, .76, 'SYNTHETIC-original'),), **changes)
+    assert director.choose(visible, 4.6, sound_cue=cue if changes else None) is None
+    assert director.sound_search_cue is None
+    assert director.take_sound_view() is None
 
 
 @pytest.mark.asyncio
