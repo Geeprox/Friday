@@ -638,7 +638,7 @@ def test_bare_wake_word_retains_quality_gate_without_becoming_device_command():
 async def test_bare_wake_focus_requires_current_video_and_unique_visible_target():
     h=HomeService(voice_preferences=lambda:SimpleNamespace(wake_word='Friday',revision=0))
     h.selected=h.armed=True;h.visible_tracks={8};h.camera_session='first'
-    h.request=AsyncMock(return_value=dict(text='Friday',voice_revision=0,address=address('Friday')))
+    h.request=AsyncMock(return_value=dict(type='wake',voice_revision=0,latency_ms=1))
     h.last_video=time.monotonic()
     await h.transcribe(b'',None,time.monotonic(),epoch=h.epoch)
     assert h.camera_focus['track']==8

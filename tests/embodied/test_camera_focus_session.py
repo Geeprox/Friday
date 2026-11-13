@@ -153,12 +153,14 @@ async def test_old_decode_or_plan_cannot_actuate_after_source_replacement(camera
 @pytest.mark.parametrize("word", ["Friday", "小福"])
 async def test_bare_configured_wake_frames_current_source_without_a_command(camera, word):
     camera.policy.wake_word = word
-    camera.text, camera.attending, camera.owner = word, False, None
+    camera.home.request = AsyncMock(return_value=dict(
+        type='wake', voice_revision=camera.policy.revision, latency_ms=1))
     await camera.home.transcribe(b"SYNTHETIC-bare-wake", None, time.monotonic())
     assert camera.home.camera_focus["track"] == 7
     assert camera.home.camera_focus["session_id"] == "source-a"
     assert camera.home.state["voice_command"] is None
-    assert camera.requests == ["transcribe"] and not camera.audio.calls
+    camera.home.request.assert_awaited_once()
+    assert camera.home.request.await_args.args == ('transcribe',) and not camera.audio.calls
     camera.device.assert_not_awaited()
 
 
