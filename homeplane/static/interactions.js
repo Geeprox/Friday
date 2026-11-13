@@ -3,12 +3,10 @@ import {MOTION_GUIDES,createMotionDiagram} from './motion-guide.js';
 const h=(tag,text,attrs={})=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;for(const[k,v]of Object.entries(attrs))n.setAttribute(k,v);return n;};
 const add=(n,...children)=>{children.forEach(c=>c&&n.append(c));return n;};
 const btn=(text,run,attrs={})=>{const n=h('button',text,{type:'button',...attrs});n.onclick=run;return n;};
-const api=async(path,body)=>{const r=await fetch(path,{headers:{'Content-Type':'application/json'},...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)})});const data=await r.json();if(!r.ok){const error=Error(typeof data.detail==='string'?data.detail:'unavailable');error.status=r.status;throw error;}return data;};
+const api=async(path,body,signal)=>{const r=await fetch(path,{signal,headers:{'Content-Type':'application/json'},...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)})});const data=await r.json();if(!r.ok){const error=Error(typeof data.detail==='string'?data.detail:'unavailable');error.status=r.status;throw error;}return data;};
 const actionName=value=>({on:'开启',off:'关闭',open:'打开',close:'关闭','mode:off':'关闭','mode:cool':'制冷','mode:heat':'制热','mode:auto':'自动','mode:heat_cool':'自动冷暖','mode:dry':'除湿','mode:fan_only':'送风'}[value]||(value?.startsWith('position:')?'开到 '+value.slice(9)+'%':'调整设备'));
 const states={live:'识别中',ready:'识别中',connecting:'正在连接',waiting:'等待画面',stopped:'未开启',unavailable:'连接中断',shutter_closed:'镜头已关闭',stale:'画面已中断'};
-function voiceCommandPresentation(voice){
- const command=voice.voice_command;
- if(!command||command.text!==voice.last_transcript)return{state:'unknown',text:'这条指令的结果尚未确认',recover:true};
+function voiceCommandPresentation(command){
  if(command.state==='answered'&&command.route==='query'&&command.receipt?.read_only===true&&command.receipt?.device_authority===false&&typeof command.reply==='string'&&command.reply)return{state:'idle',text:command.reply,recover:false};
  if(command.state==='readback'&&['reported_match','already_at_target','observed_at_target'].includes(command.receipt?.status)&&command.receipt?.reached_target===true)return{state:'success',text:'设备状态已更新',recover:false};
  if(command.state==='accepted'&&command.receipt?.acknowledged===true)return{state:'pending',text:'指令已发送，等待设备回报',recover:true};
@@ -18,6 +16,8 @@ const gestureHelp={'body.arms_open':'面对镜头，将双臂向两侧打开并�
 export function mountInteractions(root,{data,go,toast}){
  let alive=true,config=null,targets=[],gestures={},report={},policy=null,voicePreferences=null,voiceDraft='',busy=false,mode='voice',editing=null,undo=null,previewToken=null,previewCamera=null,image=null,previewLive=false,anchor=null;
  let motionLibrary=null,selectedDiagram=null,configuring=false;const cameras=data.devices.filter(d=>d.kind==='camera');const slot=h('div',null,{class:'interaction-workspace'});root.append(slot);
+ let voiceReceipts=[],voiceFeedback='loading',voiceRequest=null,voiceExpiry=null;
+ let refreshing=false;
  let draft={camera:'',target:'',gesture:'body.arms_open',action:''};
  try{const saved=JSON.parse(sessionStorage.getItem('Friday.interactionDraft')||'null');if(saved&&typeof saved==='object')for(const key of Object.keys(draft))if(typeof saved[key]==='string')draft[key]=saved[key];}catch(_){}
  const select=(items,label)=>{const n=h('select',null,{'aria-label':label});for(const[value,text]of items)n.append(h('option',text,{value}));return n;};
@@ -66,6 +66,67 @@ export function mountInteractions(root,{data,go,toast}){
  function stopPreview(){const token=previewToken,id=previewCamera;previewToken=null;previewCamera=null;previewLive=false;if(token)void api(`/api/embodied/cameras/${id}/preview/stop`,{token}).catch(()=>{});}
  async function perform(run){if(busy)return;busy=true;try{await run();}catch(_){toast('设置未保存，请刷新状态后重试。',true);}finally{busy=false;if(alive)await refresh();}}
  async function save(bindings){const next={...config,enabled:true,bindings:bindings.map(b=>valid(b)?b:{...b,enabled:false})};config=await api('/api/home/interactions',next);draw();}
+ function voiceFeedbackVisible(){
+  return alive&&mode==='voice'&&!document.hidden&&report.voice_input===true&&report.capture_enabled!==false
+   &&report.interaction_enabled!==false&&policy?.enabled&&policy.recognition&&policy.interaction;
+ }
+ function discardVoiceFeedback(){
+  voiceRequest?.abort();voiceRequest=null;clearTimeout(voiceExpiry);
+  voiceReceipts=[];voiceFeedback='loading';
+ }
+ function renderVoiceFeedback(){
+  clearTimeout(voiceExpiry);
+  const region=slot.querySelector('[data-voice-state]');if(!region)return;
+  const now=performance.now();
+  voiceReceipts=voiceFeedbackVisible()?voiceReceipts.filter(row=>row.expires>now):[];
+  const rows=voiceReceipts.map(command=>({text:command.text,room:cameras.find(c=>c.id===command.camera)?.room||'家中',outcome:voiceCommandPresentation(command)}));
+  const empty=report.voice_input===false&&policy?.enabled?'语音输入已暂停':!voiceFeedbackVisible()?'语音控制未开启':
+   voiceFeedback==='unavailable'?'语音结果暂不可用':voiceFeedback==='loading'?'正在读取语音结果…':'暂无近期语音结果';
+  const summary=JSON.stringify(rows.length?rows:empty);
+  if(region.voiceSummary!==summary){
+   const moveFocus=region.contains(document.activeElement);
+   region.voiceSummary=summary;
+   region.replaceChildren();
+   for(const {text,room,outcome} of rows){
+    const row=add(h('div',null,{class:'voice-recent-row'}),h('span',room,{class:'caption'}),h('p',text,{dir:'auto'}),
+     h('span',outcome.text,{class:'voice-command-result','data-state':outcome.state}));
+    if(outcome.recover)row.append(add(h('div',null,{class:'voice-command-recovery'}),
+     btn('查看设备',()=>go('Devices')),btn('刷新结果',refreshVoiceFeedback)));
+    region.append(row);
+   }
+   if(!rows.length){
+    region.append(h('p',empty,{class:'caption'}));
+    if(voiceFeedback==='unavailable'&&voiceFeedbackVisible())region.append(btn('重试',refreshVoiceFeedback));
+   }
+   if(moveFocus)slot.querySelector('[data-voice-heading]')?.focus();
+  }
+  if(voiceReceipts.length){
+   const next=Math.min(...voiceReceipts.map(row=>row.expires));
+   voiceExpiry=setTimeout(renderVoiceFeedback,Math.max(1,Math.ceil(next-performance.now())));
+  }
+ }
+ async function refreshVoiceFeedback(){
+  if(!voiceFeedbackVisible()){discardVoiceFeedback();renderVoiceFeedback();return;}
+  if(voiceRequest)return;
+  const request=new AbortController(),requested=performance.now();voiceRequest=request;
+  try{
+   const result=await api('/api/embodied/voice-receipts',undefined,request.signal);
+   if(voiceRequest!==request||!voiceFeedbackVisible())return;
+   voiceReceipts=(Array.isArray(result.receipts)?result.receipts:[]).slice(0,3)
+    .filter(row=>typeof row?.text==='string'&&row.text.trim()&&Number.isFinite(row.remaining_ms)&&row.remaining_ms>0)
+    .map(row=>({...row,expires:requested+Math.min(row.remaining_ms,60000)}));
+   voiceFeedback='ready';
+  }catch{
+   if(voiceRequest!==request||!voiceFeedbackVisible())return;
+   voiceReceipts=[];voiceFeedback='unavailable';
+  }finally{
+   if(voiceRequest===request){voiceRequest=null;renderVoiceFeedback();}
+  }
+ }
+ function voiceVisibilityChanged(){
+  if(document.hidden){discardVoiceFeedback();renderVoiceFeedback();}
+  else if(mode==='voice')void refresh();
+ }
  function readiness(){
   const voiceExample=slot.querySelector?.('[data-voice-example]'),voiceCue=slot.querySelector?.('[data-voice-cue]');
   if(voicePreferences&&voiceExample&&voiceCue){voiceExample.textContent=`“${voicePreferences.wake_word}，把客厅的灯打开。”`;voiceCue.textContent=`看向镜头直接说话，也可以先叫 ${voicePreferences.wake_word}。`;}
@@ -81,21 +142,34 @@ export function mountInteractions(root,{data,go,toast}){
   const scopeStatus=slot.querySelector?.('[data-all-camera-summary]');if(scopeStatus)scopeStatus.textContent=cameras.length?`${live.length} / ${cameras.length} 个镜头可用`:'还没有接入摄像头';
   const toggle=slot.querySelector?.('[data-interaction-toggle]');if(toggle){toggle.textContent=mode==='voice'?(policy?.enabled&&policy?.recognition&&policy?.interaction&&report.voice_input?'暂停语音输入':'开启语音控制'):policy?.enabled&&policy?.recognition&&policy?.interaction?'暂停手势控制':'启用手势控制';toggle.disabled=busy;}
   const status=slot.querySelector?.('[data-camera-status]');if(status&&!status.contains?.(document.activeElement)){status.replaceChildren();for(const c of cameras){status.append(add(h('div',null,{class:'interaction-camera'}),h('strong',c.room+' · '+c.name),h('span',cameraInputStatus(c.id).text),btn('查看镜头',()=>openCamera(c.id))));}}
-  const voiceState=slot.querySelector?.('[data-voice-state]');if(voiceState){
-   const voices=(report.voice_sessions||[]).filter(v=>v.last_transcript);if(!voices.length&&report.home?.last_transcript)voices.push({...report.home,camera:report.camera});
-   const rows=voices.slice(-3).map(voice=>({voice,room:cameras.find(c=>c.id===voice.camera)?.room||'家中',outcome:voiceCommandPresentation(voice)}));
-   const summary=JSON.stringify([report.voice_input,rows.map(({voice,room,outcome})=>[voice.last_transcript,room,outcome])]);
-   if(voiceState.voiceSummary!==summary){voiceState.voiceSummary=summary;voiceState.replaceChildren();for(const{voice,room,outcome}of rows){const row=add(h('div',null,{class:'voice-recent-row'}),h('span',room,{class:'caption'}),h('p',voice.last_transcript),h('span',outcome.text,{class:'voice-command-result','data-state':outcome.state}));if(outcome.recover)row.append(add(h('div',null,{class:'voice-command-recovery'}),btn('查看设备',()=>go('Devices')),btn('刷新结果',()=>refresh())));voiceState.append(row);}if(!rows.length)voiceState.append(h('p',report.voice_input?'还没有最近的语音指令':'语音输入已暂停',{class:'caption'}));}
-  }
+  if(!voiceFeedbackVisible())discardVoiceFeedback();
+  renderVoiceFeedback();
   renderHistory();
  }
- async function refresh(){try{const[next,infra]=await Promise.all([api('/api/embodied/status'),api('/api/embodied/infrastructure')]);if(alive){report=next;policy=infra.policy;readiness();if(image?.isConnected&&previewCamera)void pollImage();}}catch(_){const line=slot.querySelector?.('[data-interaction-readiness]');if(line)line.replaceChildren(h('p','状态暂时无法读取，请刷新后重试。'),btn('重试',()=>refresh()));}}
+ async function refresh(){
+  if(refreshing)return;refreshing=true;
+  try{
+   const [next,infra]=await Promise.all([api('/api/embodied/status'),api('/api/embodied/infrastructure')]);
+   if(!alive||busy)return;
+   report=next;policy=infra.policy;readiness();
+   if(mode==='voice')await refreshVoiceFeedback();
+   if(image?.isConnected&&previewCamera)void pollImage();
+  }catch{
+   if(!alive||busy)return;
+   const line=slot.querySelector('[data-interaction-readiness]');
+   if(line)line.replaceChildren(h('p','状态暂时无法读取，请刷新后重试。'),btn('重试',refresh));
+   else if(voiceFeedbackVisible()){
+    discardVoiceFeedback();voiceFeedback='unavailable';renderVoiceFeedback();
+   }
+  }finally{refreshing=false;}
+ }
  async function pollImage(){if(!image?.isConnected||!previewCamera)return;try{const result=await api(`/api/embodied/cameras/${previewCamera}/preview`);if(result.state==='live'){image.src=`/api/embodied/cameras/${previewCamera}/frame?t=${Date.now()}`;}else previewLive=false;}catch(_){previewLive=false;}}
  function draw(){if(!alive||!config)return;motionLibrary?.dispose();motionLibrary=null;selectedDiagram?.dispose();selectedDiagram=null;image=null;slot.replaceChildren();
   const intro=add(h('div',null,{class:'interaction-intro'}),add(h('div'),h('h2',mode==='voice'?'开口说，Friday 来处理':mode==='gestures'?'用一个动作，控制家中设备':'指向设备，确认操作'),h('p',mode==='voice'?'全屋镜头共同接收，无需切换房间。':'看懂动作，亲自试一次，再设置设备控制。',{class:'interaction-description'})),btn(mode==='voice'?'开启语音控制':'启用手势控制',()=>perform(async()=>{
    if(mode==='voice'){
     const enabled=!(policy?.enabled&&policy?.recognition&&policy?.interaction&&report.voice_input);
     if(enabled){const result=await api('/api/embodied/infrastructure',{...policy,enabled:true,recognition:true,interaction:true,auto_open_cameras:false});policy=result.policy;}
+    if(!enabled){report.voice_input=false;readiness();}
     await api('/api/embodied/voice-input',{enabled});toast(enabled?'全屋语音输入已开启':'语音输入已暂停');
    }else{const enabled=!(policy?.enabled&&policy?.recognition&&policy?.interaction);const result=await api('/api/embodied/infrastructure',{...policy,...(enabled?{enabled:true,recognition:true}:{}),interaction:enabled,auto_open_cameras:false});policy=result.policy;toast(enabled?'全屋手势控制已启用':'手势控制已暂停');}
   }),{'data-interaction-toggle':'',class:'primary'}));slot.append(intro);
@@ -105,8 +179,8 @@ export function mountInteractions(root,{data,go,toast}){
   if(mode==='voice'){
    const name=voicePreferences?.wake_word;
    const panel=h('section',null,{class:'voice-interaction'});
-   const status=add(h('section',null,{class:'voice-response'}),h('h3','最近听到'),h('div',null,{'data-voice-state':'','aria-live':'polite'}));
-   const reply=btn(report.quiet?'开启语音回复':'静音语音回复',()=>perform(async()=>{await api('/api/embodied/quiet',{quiet:!report.quiet});await refresh();draw();}));
+   const status=add(h('section',null,{class:'voice-response'}),h('h3','最近的语音结果',{'data-voice-heading':'',tabindex:'-1'}),h('div',null,{'data-voice-state':'','aria-live':'polite'}));
+   const reply=btn(report.quiet?'开启语音回复':'静音语音回复',()=>perform(async()=>{const result=await api('/api/embodied/quiet',{quiet:!report.quiet});report.quiet=result.quiet;draw();}));
    panel.append(status,add(h('div',null,{class:'product-actions'}),reply,btn('体验手势与动作',()=>{mode='gestures';draw();})));
    const example=add(h('div',null,{class:'voice-example'}),h('span',null,{class:'icon icon-microphone','aria-hidden':'true'}),h('p',name?`“${name}，把客厅的灯打开。”`:'“把客厅的灯打开。”',{'data-voice-example':''}),h('span',name?`看向镜头直接说话，也可以先叫 ${name}。`:'看向镜头直接说话。',{class:'caption','data-voice-cue':''}));panel.append(example);
    if(voicePreferences){
@@ -114,7 +188,7 @@ export function mountInteractions(root,{data,go,toast}){
     input.value=voiceDraft||name;status.hidden=true;commit.disabled=busy||input.value.trim()===name;
     input.oninput=()=>{voiceDraft=input.value;status.hidden=true;status.textContent='';commit.disabled=busy||input.value.trim()===voicePreferences.wake_word;};
     form.onsubmit=async event=>{event.preventDefault();if(busy||commit.disabled)return;busy=true;input.disabled=commit.disabled=true;status.hidden=false;status.textContent='正在保存…';let saved=false;
-     try{const next=await api('/api/embodied/voice-preferences',{expected_revision:voicePreferences.revision,wake_word:input.value.trim()});if(alive){voicePreferences=next;voiceDraft=next.wake_word;saved=true;toast('唤醒词已保存');}}
+     try{const next=await api('/api/embodied/voice-preferences',{expected_revision:voicePreferences.revision,wake_word:input.value.trim()});if(alive){voicePreferences=next;voiceDraft=next.wake_word;discardVoiceFeedback();saved=true;toast('唤醒词已保存');}}
      catch(error){if(alive){status.textContent=error.status===422?'请使用 2–24 个文字、字母或数字。':'唤醒词未保存，请检查后重试。';if(error.message==='voice_preferences_not_saved'){try{voicePreferences=await api('/api/embodied/voice-preferences');status.textContent=`当前唤醒词已改为“${voicePreferences.wake_word}”，确认后可重新保存。`;}catch{}}}}
      finally{busy=false;if(alive){if(saved)draw();else{input.disabled=false;commit.disabled=input.value.trim()===voicePreferences.wake_word;readiness();}}}
     };
@@ -122,7 +196,7 @@ export function mountInteractions(root,{data,go,toast}){
    }else panel.append(h('p','唤醒词设置暂时无法读取。',{class:'caption'}),btn('重新读取唤醒词',async()=>{try{voicePreferences=await api('/api/embodied/voice-preferences');if(alive)draw();}catch{toast('唤醒词设置暂时无法读取。',true);}}));
    const scope=add(h('section',null,{class:'voice-scope'}),add(h('div',null,{class:'voice-scope-heading'}),h('h3','全屋摄像头'),h('span','正在读取状态…',{'data-all-camera-summary':'',class:'caption'})),h('section',null,{class:'interaction-cameras','data-camera-status':''}));panel.append(scope);
    if(!cameras.length)scope.append(h('p','接入摄像头后，即可在家中说出指令。',{class:'caption'}),btn('接入摄像头',()=>go('Cameras')));
-   slot.append(panel);readiness();return;
+   slot.append(panel);readiness();void refreshVoiceFeedback();return;
   }
   if(mode==='gestures')motionLibrary=mountMotionLibrary(slot,{go,cameras,keys:null,heading:'选择一个动作',description:'',onChoose:key=>{draft.gesture=key;retain();configuring=true;const form=slot.querySelector('form');if(form)form.hidden=false;const field=slot.querySelector('[aria-label=动作]');if(field){field.value=key;field.onchange();slot.querySelector('form')?.scrollIntoView?.({block:'start',behavior:'auto'});}}});
   const form=h('form',null,{class:'interaction-setup','aria-label':editing?'编辑手势控制':'新建手势控制'});
@@ -163,6 +237,7 @@ export function mountInteractions(root,{data,go,toast}){
  }
  async function load(){slot.replaceChildren(h('p','正在读取互动设置…',{role:'status'}));try{const[r,inventory,s,p,v]=await Promise.all([api('/api/home/interactions'),api('/api/embodied/devices'),api('/api/embodied/status'),api('/api/embodied/infrastructure'),api('/api/embodied/voice-preferences').catch(()=>null)]);if(!alive)return;config=r.config;gestures=r.gestures;voicePreferences=v;const product=new Map(data.devices.flatMap(d=>(d.controls||[]).map(c=>[c.id,{name:c.name,room:d.room}])));targets=inventory.devices.filter(t=>t.controllable&&t.actions?.length).map(t=>({...t,...product.get(t.id)}));report=s;policy=p.policy;draw();}catch(_){if(alive)slot.replaceChildren(h('p','互动设置暂时无法读取，请检查家庭连接后重试。',{role:'status'}),btn('重试',load));}}
  try{if(sessionStorage.getItem('Friday.interactionMode')==='gestures'){mode='gestures';sessionStorage.removeItem('Friday.interactionMode');}}catch(_){}
- void load();const timer=setInterval(()=>{if(!busy)void refresh();},1800);
- return{dispose(){alive=false;clearInterval(timer);stopPreview();motionLibrary?.dispose();selectedDiagram?.dispose();slot.remove();}};
+ document.addEventListener('visibilitychange',voiceVisibilityChanged);
+ void load();const timer=setInterval(()=>{if(!busy&&!document.hidden)void refresh();},1800);
+ return{dispose(){alive=false;clearInterval(timer);discardVoiceFeedback();document.removeEventListener('visibilitychange',voiceVisibilityChanged);stopPreview();motionLibrary?.dispose();selectedDiagram?.dispose();slot.remove();}};
 }

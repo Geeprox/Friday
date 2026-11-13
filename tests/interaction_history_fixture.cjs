@@ -10,6 +10,7 @@ class Element{
  replaceChildren(...nodes){this.ownText='';this.children=[];this.append(...nodes);}
  querySelector(selector){const match=selector.match(/^\[([^\]]+)\]$/);return all(this).find(n=>match?Object.hasOwn(n.attrs,match[1]):n.tagName===selector)||null;}
  get isConnected(){return true;}
+ contains(node){return all(this).includes(node);}
  focus(){focused=this;}
  remove(){}
 }
@@ -29,8 +30,8 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
   assert.ok(Object.hasOwn(routes,path),path);return {ok:true,json:async()=>routes[path]};
  };
  const diagram=()=>{const n=new Element('svg');n.dispose=()=>{};return n;};
- const context=vm.createContext({document:{createElement:tag=>new Element(tag),get activeElement(){return all(root).includes(focused)?focused:null;}},fetch,Date,
-  sessionStorage:{getItem:()=>null,setItem(){}},setInterval:fn=>{poll=fn;return 1;},clearInterval(){},
+ const context=vm.createContext({document:{createElement:tag=>new Element(tag),get activeElement(){return all(root).includes(focused)?focused:null;},addEventListener(){},removeEventListener(){}},fetch,Date,performance,
+  sessionStorage:{getItem:()=>null,setItem(){}},setInterval:fn=>{poll=fn;return 1;},clearInterval(){},setTimeout,clearTimeout,
   mountMotionLibrary:()=>({dispose(){}}),createMotionDiagram:diagram,MOTION_GUIDES:{},
   root,options:{data:{devices:fixture.devices},go(){},toast(){}}});
  vm.runInContext(fs.readFileSync('homeplane/static/interactions.js','utf8').replace(/^import.*$/gm,'').replace('export function mountInteractions','function mountInteractions'),context);

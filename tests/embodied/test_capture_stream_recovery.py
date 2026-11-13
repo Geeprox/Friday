@@ -105,7 +105,8 @@ def closed_scope():
         last_preview=b'private preview',last_preview_at=1000,
         state=dict(status='live',frame='private pixels',people=[{'id':1}],hands=[{}],
                    animals=[{}],animals_current=True,room={'private':'position'}),
-        home=SimpleNamespace(armed=True,selected=True,epoch=2,vad=[b'private audio'],pending_audio=object()),
+        home=SimpleNamespace(armed=True,selected=True,epoch=2,vad=[b'private audio'],pending_audio=object(),
+                             clear_voice_receipt=Mock(), voice_health=lambda: {}),
         secondary_homes={},safety=SimpleNamespace(clear=Mock(), clear_view=Mock(), capture_frame=Mock()),
         fleet=SimpleNamespace(clear=Mock()),
         pet_tracks=SimpleNamespace(clear=Mock()),wall=wall,identities=SimpleNamespace(discard=Mock()),
@@ -139,6 +140,7 @@ async def test_source_loss_invalidates_inputs_and_pending_motion_before_notifyin
     assert scope['state']['people']==scope['state']['hands']==scope['state']['animals']==[]
     assert scope['state']['frame'] is None and scope['state']['room'] is None
     assert not scope['home'].selected and scope['home'].epoch==3
+    scope['home'].clear_voice_receipt.assert_called_once()
     assert not scope['home'].vad and scope['home'].pending_audio is None
     scope['safety'].clear.assert_called_once_with(CAMERA['id'])
     scope['fleet'].clear.assert_called_once_with(CAMERA['id'])
@@ -202,7 +204,7 @@ async def test_original_queue_consumer_publishes_fault_and_preserves_a_closed_sh
 
 @pytest.mark.parametrize('source_status',['unavailable','stopped','shutter_closed'])
 def test_live_status_view_cannot_publish_old_game_players_while_source_is_down(tmp_path,source_status):
-    home=SimpleNamespace(public=lambda:{})
+    home=SimpleNamespace(public=lambda:{},voice_health=lambda:{})
     game=MotionGames();game.reset('ski');game.publish([{'id':1}],'playing','')
     scope=dict(
         state=dict(status=source_status,processed_frames=5,people=[],hands=[],room=None),
@@ -225,6 +227,7 @@ def test_live_status_view_cannot_publish_old_game_players_while_source_is_down(t
 async def test_capture_loss_while_waiting_for_room_lock_cannot_send_a_manual_or_automatic_move(automatic):
     from tests.embodied.test_motor_recovery import primary_scope as motor_scope
     scope,sent=motor_scope()
+    scope['home'].clear_voice_receipt = Mock()
     scope.update(generation=1,primary_wall_epoch=1,primary_retired_scope=None,pet_tracks=SimpleNamespace(clear=Mock()),
                  wall=SimpleNamespace(clear=Mock()),safety=SimpleNamespace(clear=Mock()),
                  secondary_homes={},notify=AsyncMock(),games=MotionGames())

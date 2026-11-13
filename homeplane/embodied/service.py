@@ -21,6 +21,7 @@ from .game_difficulty import game_difficulty
 from .quest import get_quest_route
 from .paths import DATA, PRIVATE, PROJECT, PYTHON, VISION, camera, configuration
 from .ski_route import get_ski_trail
+from .voice_feedback import VOICE_RECEIPT_SECONDS, home_status, voice_health, voice_receipt_fields
 
 
 class EmbodiedService:
@@ -258,12 +259,16 @@ class EmbodiedService:
                     safety_recording=value.get('safety_recording'),
                     safety_review=value.get('safety_review'),
                     camera_control=value.get("camera_control"),
-                    home=value.get("home"),
+                    home=home_status(value.get("home")),
                     interactions=value.get('interactions'),
                     camera_sessions=value.get('camera_sessions',[]),
                     tv_viewer=value.get('tv_viewer'),
                     voice_input=value.get('voice_input',False),
-                    voice_sessions=value.get('voice_sessions',[]),
+                    voice_sessions=[
+                        dict(camera=row['camera'], **voice_health(row))
+                        for row in (value.get('voice_sessions') or [])
+                        if isinstance(row, dict) and isinstance(row.get('camera'), str)
+                    ],
                 )
             except (httpx.HTTPError, OSError, ValueError, KeyError):
                 base.update(state='unavailable', camera_sessions=[])
@@ -522,6 +527,42 @@ class EmbodiedService:
             await self.request('/api/voice',{'input':enabled},timeout=15)
         return await self.status()
 
+    def _voice_receipts_available(self):
+        return (not self.closed and self.capture_enabled and self.interaction_enabled
+                and not self.recovery_pending and self.process is not None and self.process.returncode is None
+                and not (PRIVATE / 'voice-input-paused').exists())
+
+    async def voice_receipts(self):
+        """只读当前识别进程已准入的短期回执。"""
+        source = self._game_source()
+        if not self._voice_receipts_available():
+            return []
+        try:
+            report = await self._private_worker_request('/api/internal/voice-receipts', timeout=2)
+        except (httpx.HTTPError, OSError, ValueError):
+            if source != self._game_source() or not self._voice_receipts_available():
+                return []
+            raise ValueError('voice_receipts_unavailable') from None
+        if source != self._game_source() or not self._voice_receipts_available():
+            return []
+        rows = report.get('receipts') if isinstance(report, dict) else None
+        if not isinstance(rows, list) or len(rows) > 3:
+            raise ValueError('voice_receipts_unavailable')
+        now = time.monotonic()
+        result = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            expires, text, camera_id = row.get('expires_mono'), row.get('text'), row.get('camera')
+            if (type(expires) not in (int, float) or not now < expires <= now + VOICE_RECEIPT_SECONDS
+                    or not isinstance(text, str) or not 1 <= len(text) <= 1000
+                    or not isinstance(camera_id, str)):
+                continue
+            remaining_ms = int((expires - now) * 1000)
+            if remaining_ms > 0:
+                result.append(dict(voice_receipt_fields(row), camera=camera_id, remaining_ms=remaining_ms))
+        return result
+
     @observe("embodied.preview")
     async def preview(self, camera_id, *, start=False, frame=False,explicit=False):
         manual_active=self.manual_previews.has(camera_id)
@@ -628,22 +669,24 @@ class EmbodiedService:
         finally:
             if process.returncode is None:process.kill();await process.wait()
 
-    async def _identity_request(self, path, body=None):
+    async def _private_worker_request(self, path, body=None, *, timeout=8):
         if not self.process or self.process.returncode is not None:
-            raise ValueError("identity_not_running")
+            raise ValueError('identity_not_running')
         try:
             response = await self.client.request(
                 "GET" if body is None else "POST", self._url(path), json=body,
                 headers={"Origin": f"http://127.0.0.1:{int(configuration()['viewer_port'])}",
-                         "X-Friday-Worker": (PRIVATE / "control-key").read_text().strip()}, timeout=8)
+                         "X-Friday-Worker": (PRIVATE / "control-key").read_text().strip()}, timeout=timeout)
             if response.status_code != 200:
-                raise ValueError(response.json().get("detail", "identity_enrollment_unavailable"))
+                payload = response.json()
+                raise ValueError(payload.get('detail', 'identity_enrollment_unavailable')
+                                 if isinstance(payload, dict) else 'identity_enrollment_unavailable')
             return response.json()
         except httpx.HTTPError:
-            raise ValueError("identity_worker_unavailable") from None
+            raise ValueError('identity_worker_unavailable') from None
 
     async def identity_status(self, camera_id=None):
-        report = await self._identity_request("/api/internal/identity")
+        report = await self._private_worker_request("/api/internal/identity")
         if camera_id:
             camera(camera_id)
             return next((r for r in report.get('sessions', [report]) if r.get('camera') == camera_id),
@@ -651,7 +694,7 @@ class EmbodiedService:
         return report
 
     async def identity_enroll(self, camera_id, session, track, person):
-        return await self._identity_request("/api/internal/identity/register",
+        return await self._private_worker_request("/api/internal/identity/register",
                                            dict(camera=camera_id, session=session, track=track, person=person))
 
     async def miot_cover(self, action, event_id, expected_revision=None):

@@ -398,7 +398,7 @@ async def test_invalid_unsent_request_does_not_take_a_ready_voice_process_down(t
 
 
 def original_voice_projection(home, secondary_homes=None):
-    """Run only the unchanged view projections; never import the worker entry."""
+    """运行原工作进程的状态投影，不启动采集入口。"""
     from homeplane.embodied.motion_games import MotionGames
 
     worker = Path(__file__).resolve().parents[2] / 'homeplane/embodied/worker.py'
@@ -414,7 +414,8 @@ def original_voice_projection(home, secondary_homes=None):
     assert len(selected) == 3
     scope = dict(result={'status': 'live', 'camera_id': 'cam_1111111111',
                          'game': MotionGames().viewer_state()},
-                 home=home, secondary_homes=secondary_homes or {}, SELECTED={'id': 'cam_1111111111'}, PRIVATE=home_service.VOICE_INPUT_PAUSED.parent)
+                 home=home, secondary_homes=secondary_homes or {}, SELECTED={'id': 'cam_1111111111'},
+                 PRIVATE=home_service.VOICE_INPUT_PAUSED.parent)
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(worker), 'exec'), scope)
     return scope['result']
 

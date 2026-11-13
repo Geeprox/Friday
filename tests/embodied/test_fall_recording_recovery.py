@@ -244,7 +244,8 @@ async def test_disabling_interactions_leaves_the_camera_monitoring_and_its_queue
     try:
         assert await asyncio.to_thread(entered.wait, 1)
         token = runtime.source_tokens[camera]
-        home = SimpleNamespace(armed=True, selected=True, epoch=0, vad=[1], pending_audio=b'SYNTHETIC')
+        home = SimpleNamespace(armed=True, selected=True, epoch=0, vad=[1], pending_audio=b'SYNTHETIC',
+                               clear_voice_receipt=lambda: None)
         scope = dict(safety=runtime, home=home, SELECTED={'id': camera}, Request=object,
                      interaction_enabled=True, secondary_homes={},
                      fleet=SimpleNamespace(cameras={camera: {}}, clear=lambda _: None))
@@ -1115,7 +1116,7 @@ async def verify_public_recording_health(monitor, monkeypatch):
     scope = dict(state=dict(status='live', camera_id=camera, processed_frames=1),party_camera=PartyCamera(),
         games=MotionGames(clock=lambda: monitor.clock[0]),
         recorder=SimpleNamespace(public=lambda: {}), safety=monitor.runtime,
-        home=SimpleNamespace(public=lambda: {}), secondary_homes={}, fleet=SimpleNamespace(public=lambda _: {}),
+        home=SimpleNamespace(public=lambda: {}, voice_health=lambda: {}), secondary_homes={}, fleet=SimpleNamespace(public=lambda _: {}),
         PRIVATE=monitor.store.path.parent, time=safety.time, last_frame=0, camera_planner=None,
         SELECTED={'id': camera}, configuration=lambda: {'cameras': [{'id': camera}]}, previews=None)
     public = actual('homeplane/embodied/worker.py', 'view', scope)()

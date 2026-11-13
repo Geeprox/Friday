@@ -668,6 +668,8 @@ body .files-root { --files-muted: var(--muted); --files-line: var(--line); --fil
 .voice-command-result[data-state=success]{color:var(--good)}
 .voice-command-result[data-state=failed]{color:var(--bad)}
 .voice-command-result[data-state=unknown]{color:var(--warn)}
+.voice-recent-row p,.voice-command-result{overflow-wrap:anywhere}
+.voice-command-recovery{display:flex;flex-wrap:wrap;gap:8px;margin-block-start:8px}
 .voice-command-recovery{display:flex;gap:8px;margin-top:8px}
 .voice-command-recovery button{font-size:12px;min-height:34px;padding:6px 10px}
 @media(max-width:760px){

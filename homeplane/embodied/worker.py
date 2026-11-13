@@ -182,6 +182,9 @@ def clear_interactions(camera_id, *, keep_wake=False):
 
 def clear_camera(camera_id):
     safety.clear(camera_id)
+    service = home if camera_id == SELECTED['id'] else secondary_homes.get(camera_id)
+    if service is not None:
+        service.clear_voice_receipt()
     clear_interactions(camera_id)
 
 
@@ -587,7 +590,10 @@ def view():
     result["recording"] = recorder.public()
     result['safety_recording'] = safety.recording_status()
     result["home"] = home.public()
-    result["voice_sessions"] = [dict(camera=cid,**{key:service.public().get(key) for key in ("enabled","voice","reason","last_transcript","last_event","voice_command","audio_input","audio_analysis")}) for cid,service in [(SELECTED["id"],home),*secondary_homes.items()]]
+    result["voice_sessions"] = [
+        dict(camera=cid, **service.voice_health())
+        for cid, service in [(SELECTED["id"], home), *secondary_homes.items()]
+    ]
     result['interactions'] = fleet.public(now)
     result['voice_input'] = not (PRIVATE/'voice-input-paused').exists()
     if camera_planner and result.get('camera_control'):
@@ -1318,16 +1324,21 @@ async def safety_policy_changed():
     return {'revision': safety.policy_revision}
 
 
-def identity_authorized(request):
-    if request.client.host not in {"127.0.0.1", "::1"} or not secrets.compare_digest(
-        request.headers.get("x-friday-worker", ""), (PRIVATE / "control-key").read_text().strip()
-    ):
+def require_console_worker(request):
+    try:
+        expected = (PRIVATE / 'control-key').read_text().strip()
+    except (OSError, UnicodeError):
+        expected = ''
+    supplied = request.headers.get('x-friday-worker', '')
+    if (request.client is None or request.client.host not in {'127.0.0.1', '::1'}
+            or not 32 <= len(expected) <= 512 or not expected.isascii() or not supplied.isascii()
+            or not secrets.compare_digest(supplied, expected)):
         raise HTTPException(403)
 
 
 @app.get("/api/internal/identity")
 async def identity_status(request: Request):
-    identity_authorized(request)
+    require_console_worker(request)
     primary=dict(camera=SELECTED["id"], session=identities.session, state=view()['status'],
                 reason=identities.reason, diagnostics=identities.diagnostics(), tracks=identities.public() if view()['status']=='live' else [])
     sessions=[dict(primary)]
@@ -1341,7 +1352,7 @@ async def identity_status(request: Request):
 
 @app.post("/api/internal/identity/register")
 async def identity_register(request: Request):
-    identity_authorized(request)
+    require_console_worker(request)
     body = await request.json()
     if set(body) != {"camera", "session", "track", "person"}:
         raise HTTPException(409, "identity_session_changed")
@@ -1415,6 +1426,7 @@ async def interaction_policy(request: Request):
             service.vad = []
             service.pending_audio = None
             service.wake_camera = None
+            service.clear_voice_receipt()
     return dict(enabled=interaction_enabled)
 
 
@@ -1932,6 +1944,17 @@ async def status():
     result.pop("frame", None)
     result['safety_review'] = safety.review_status()
     return result
+
+
+@app.get('/api/internal/voice-receipts')
+async def voice_receipts(request: Request):
+    require_console_worker(request)
+    if not interaction_enabled or (PRIVATE / 'voice-input-paused').exists():
+        return {'receipts': []}
+    receipts = [receipt for service in (home, *secondary_homes.values())
+                if (receipt := service.voice_receipt()) is not None]
+    receipts.sort(key=lambda receipt: receipt['expires_mono'], reverse=True)
+    return {'receipts': receipts[:3]}
 
 
 @app.get("/api/frame")

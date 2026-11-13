@@ -128,7 +128,7 @@ def test_visible_display_cannot_replace_a_missing_player_or_camera():
 def test_original_idle_view_refreshes_the_display_window_without_claiming_camera_or_player_readiness(tmp_path):
     from types import SimpleNamespace
     game,now=engine();game.select('ski');cached=game.public['presentation']['window']
-    camera={'id':'SYNTHETIC-camera'};home=SimpleNamespace(public=lambda:{})
+    camera={'id':'SYNTHETIC-camera'};home=SimpleNamespace(public=lambda:{},voice_health=lambda:{})
     from homeplane.embodied.party_camera import PartyCamera
     scope=dict(games=game,party_camera=PartyCamera(),state={'status':'starting','processed_frames':0},recorder=home,home=home,
                safety=SimpleNamespace(recording_status=lambda:{}),SELECTED=camera,secondary_homes={},

@@ -68,7 +68,7 @@ def test_primary_recognition_health_requires_a_current_frame(tmp_path, state_nam
     from homeplane.embodied.party_camera import PartyCamera
     context=dict(state=state,games=MotionGames(),party_camera=PartyCamera(),recorder=SimpleNamespace(public=lambda:{}),
         safety=SimpleNamespace(recording_status=lambda:{'state':'off'}),
-        home=SimpleNamespace(public=lambda:{}),secondary_homes={},fleet=SimpleNamespace(public=lambda _:{}),time=time,
+        home=SimpleNamespace(public=lambda:{},voice_health=lambda:{}),secondary_homes={},fleet=SimpleNamespace(public=lambda _:{}),time=time,
         PRIVATE=tmp_path,last_frame=time.monotonic()-age if age is not None else 0,
         SELECTED={'id':'main'},camera_planner=None,
         configuration=lambda:{'cameras':[{'id':'main'}]})

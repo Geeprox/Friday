@@ -20,6 +20,7 @@ from homeplane.embodied.paths import DATA, PRIVATE, PYTHON
 from homeplane.embodied.smart_home import Attention, Curtain, WindowGesture
 from homeplane.embodied.speech import Speaker
 from homeplane.embodied.voice_activity import VoiceActivity
+from homeplane.embodied.voice_feedback import VOICE_RECEIPT_SECONDS, home_status, voice_health, voice_receipt_fields
 from homeplane.embodied.voice_preferences import read_preferences
 from homeplane.embodied.voice_process import VoiceProcess
 from homeplane.embodied.voice_routing import Utterance
@@ -91,6 +92,8 @@ class HomeService:
         self.utterance_started = self.utterance_ended = self.utterance_level = 0.0
         self.reply_until = 0.0
         self.pending_audio = None
+        self._voice_receipt = None
+        self._voice_receipt_timer = None
         self.state = {
             "enabled": False,
             "voice": "not_started",
@@ -107,25 +110,60 @@ class HomeService:
             "wake_policy": "attention_optional_wake_otherwise_required",
         }
 
-    def public(self):
+    def voice_health(self):
         self.refresh_voice()
         audio_input = self.state.get('audio_input')
         if audio_input:
             age = time.monotonic()-self.audio_input_at if self.audio_input_at is not None else None
-            audio_input = dict(audio_input,age_ms=round(age*1000) if age is not None and age >= 0 else None)
             if audio_input.get('status') == 'ready' and (age is None or not 0 <= age <= 1.5):
-                audio_input.update(status='waiting',reason='input_stale')
-        return {
-            **self.state,
+                audio_input = dict(status='waiting', reason='input_stale')
+        return voice_health({
+            'voice': self.state['voice'],
+            'voice_activity': self.state.get('voice_activity'),
+            'audio_analysis': self.state.get('audio_analysis'),
             'audio_input': audio_input,
             "enabled": self.enabled and self.armed,
+        })
+
+    def public(self):
+        return home_status({
+            **self.voice_health(),
             "owner_track": self.owner,
-            "curtain": dict(self.curtain.state),
-            "attention": list(self.attention.public),
-            "window_gesture": dict(self.gesture.public),
-            "speaker": dict(self.speaker.state),
-            "diagnostics": self.runtime_log.export(),
-        }
+            "curtain": self.curtain.state,
+            "attention": self.attention.public,
+            "window_gesture": self.gesture.public,
+        })
+
+    def clear_voice_receipt(self):
+        if self._voice_receipt_timer is not None:
+            self._voice_receipt_timer.cancel()
+            self._voice_receipt_timer = None
+        self._voice_receipt = None
+        self.state.update(last_transcript=None, voice_command=None, last_result=None)
+
+    def _remember_voice_receipt(self, command, revision):
+        self.clear_voice_receipt()
+        self._voice_receipt = (time.monotonic() + VOICE_RECEIPT_SECONDS, revision, command)
+        self.state.update(last_transcript=command['text'], voice_command=command)
+        self._voice_receipt_timer = asyncio.get_running_loop().call_later(VOICE_RECEIPT_SECONDS, self.clear_voice_receipt)
+
+    def _voice_receipt_is_current(self, command):
+        return (self._voice_receipt is not None and self._voice_receipt[2] is command
+                and time.monotonic() < self._voice_receipt[0] and not VOICE_INPUT_PAUSED.exists())
+
+    def voice_receipt(self):
+        """只读取仍有效的本机语音回执。读取不续期。"""
+        if self._voice_receipt is None:
+            return None
+        expires, revision, command = self._voice_receipt
+        try:
+            current = self.voice_preferences().revision == revision
+        except (OSError, ValueError):
+            current = False
+        if time.monotonic() >= expires or not current or VOICE_INPUT_PAUSED.exists():
+            self.clear_voice_receipt()
+            return None
+        return dict(voice_receipt_fields(command), camera=self.camera_id, expires_mono=expires)
 
     def voice_status(self):
         if not self.enabled:
@@ -148,6 +186,8 @@ class HomeService:
     def refresh_voice(self):
         phase = self.voice_status()
         previous = self.state['voice']
+        if phase == 'paused' and self._voice_receipt is not None:
+            self.clear_voice_receipt()
         if phase != previous:
             reason = {'ready': '等待语音指令', 'loading_local_models': '本地语音模型启动中',
                       'unavailable': '语音暂不可用', 'paused': '语音指令已暂停，手势控制仍可用'}
@@ -219,6 +259,8 @@ class HomeService:
             if self.voice_routing is not None:
                 self.voice_routing.discard(self.camera_id)
         if source_changed:
+            if self.camera_session is not None and session != self.camera_session:
+                self.clear_voice_receipt()
             # 恢复后的首帧不能延续断流前的注视时长。
             self.attention.update([], [], now)
             self.gate_sent = -100.0
@@ -463,7 +505,8 @@ class HomeService:
         completed = report.phase == 'result' and result and result.get('status') != 'refused'
         command.update(route='query',state='answered' if completed else 'clarify',reply=answer.reply,
             receipt={'status':report.code,'read_only':True,'device_authority':False},updated_at=time.time())
-        self.state.update(last_result=answer.model_dump(mode='json'),last_route='query',reason=answer.reply)
+        if self._voice_receipt_is_current(command):
+            self.state.update(last_result=answer.model_dump(mode='json'), last_route='query', reason='已核对家庭状态')
         await self.speak_reply(answer.reply, lambda: current() and answer.valid_until > datetime.now(UTC))
 
     async def prepare_task(self,text,event,captured,epoch,attending,policy,command,owner=None):
@@ -480,7 +523,8 @@ class HomeService:
             return
         command.update(route='task',state='awaiting_confirmation' if answer.status=='pending_confirmation' else 'clarify',
             reply=answer.reply,receipt={'status':answer.status,'configured':False,'device_authority':False},updated_at=time.time())
-        self.state.update(last_result=answer.model_dump(mode='json'),last_route='task',reason=answer.reply)
+        if self._voice_receipt_is_current(command):
+            self.state.update(last_result=answer.model_dump(mode='json'), last_route='task', reason='已处理任务请求')
         await self.speak_reply(answer.reply, lambda: current() and answer.valid_until > datetime.now(UTC))
 
     async def transcribe(self, pcm, owner, captured, attending=False, epoch=None, source=None, wake_only=False):
@@ -501,7 +545,6 @@ class HomeService:
             self.state["laya_result"] = result.get("laya")
             self.state["asr_quality"] = result.get("asr_quality")
             route = result.get("address", {})
-            self.state["last_address"] = route
             if route.get("reason") in (
                 "no_speech",
                 "unsupported_script",
@@ -528,8 +571,6 @@ class HomeService:
                 else:
                     self.state["reason"] = "请继续说出指令"
                 return
-            if result.get("text"):
-                self.state["last_transcript"] = result["text"]
             event = "voice:" + hashlib.sha256(pcm).hexdigest()[:24]
             command = {
                 "id": event,
@@ -538,12 +579,13 @@ class HomeService:
                 "started_at": time.time(),
                 "updated_at": time.time(),
             }
-            self.state["voice_command"] = command
             current = self._voice_guard(result['text'], captured, epoch, attending, policy, owner)
             if not current():
-                command.update(state="expired", updated_at=time.time())
+                if self._voice_receipt is None:
+                    self.state["voice_command"] = dict(state="expired", updated_at=time.time())
                 self.state["reason"] = "指令已过期或操作者变化"
                 return
+            self._remember_voice_receipt(command, policy.revision)
             self._wake_focus(result['text'], captured, epoch, policy, source)
             decision_started = time.monotonic()
             laya = result.get("laya") or {}
@@ -609,7 +651,8 @@ class HomeService:
                 self.state["reason"] = "任务返回时交互已结束，未执行"
                 return
             task["returned_at"] = time.time()
-            self.state["last_result"] = task
+            if self._voice_receipt_is_current(command):
+                self.state["last_result"] = task
             self.state["last_route"] = plan["route"]
             self.state["intent_provider"] = task.get("provider")
             self.state["intent_ms"] = task.get("latency_ms")
@@ -630,16 +673,15 @@ class HomeService:
                 )
             elif plan["route"] == "home":
                 receipt = await bridge.command(plan["device"], plan["action"], event, camera_id=self.camera_id)
-                self.state["last_event"] = {"source": "voice", "receipt": receipt, "at": time.time()}
                 self.state["reason"] = (
                     "已读回目标状态"
                     if receipt.get("reached_target")
                     else "家居指令已发送"
                     if receipt.get("acknowledged")
-                    else receipt.get("reply", "设备暂不可用")
+                    else "设备暂不可用"
                 )
             else:
-                self.state["reason"] = plan["reply"]
+                self.state["reason"] = "已处理语音指令"
             if plan["route"] in {"curtain", "home"}:
                 command.update(
                     state=voice_command_outcome(receipt),
@@ -653,17 +695,17 @@ class HomeService:
                     updated_at=time.time(),
                 )
             if plan["is_command"] or plan["route"] == "clarify":
-                spoken = (
-                    (self.state["reason"] if plan["route"] == "home" else plan["reply"])
-                    if plan["route"] != "curtain"
-                    else (
+                spoken = plan["reply"]
+                if plan["route"] == "home":
+                    spoken = self.state["reason"]
+                    if not (receipt.get("reached_target") or receipt.get("acknowledged")):
+                        spoken = receipt.get("reply") or spoken
+                elif plan["route"] == "curtain":
+                    spoken = (
                         "已发送打开窗帘的指令。"
                         if plan["action"] == "open"
                         else "已发送关闭窗帘的指令。"
-                    )
-                    if receipt.get("acknowledged") or receipt.get("reached_target")
-                    else "窗帘暂时没有响应。"
-                )
+                    ) if receipt.get("acknowledged") or receipt.get("reached_target") else "窗帘暂时没有响应。"
                 await self.speak_reply(spoken, current)
         except asyncio.CancelledError:
             if command and command["state"] in {"processing", "executing"}:
@@ -705,6 +747,7 @@ class HomeService:
         self.camera_focus = None
         self.wake_camera = None
         self.pending_audio = None
+        self.clear_voice_receipt()
         self.reset_audio()
         if self.voice_routing is not None:
             self.voice_routing.discard(self.camera_id)

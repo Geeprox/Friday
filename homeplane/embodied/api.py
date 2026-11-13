@@ -204,6 +204,19 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     async def status():
         return await service.status()
 
+    @router.get('/api/embodied/voice-receipts')
+    async def voice_receipts(request: Request):
+        if (request.client is None or request.client.host not in {'127.0.0.1', '::1'}
+                or request.headers.get('sec-fetch-site') not in (None, 'same-origin')
+                or request.headers.get('origin') not in (None, str(request.base_url).rstrip('/'))):
+            raise HTTPException(403)
+        try:
+            receipts = await service.voice_receipts()
+        except ValueError:
+            return JSONResponse({'detail': 'voice_receipts_unavailable'}, status_code=503,
+                                headers={'Cache-Control': 'no-store'})
+        return JSONResponse({'receipts': receipts}, headers={'Cache-Control': 'no-store'})
+
     @router.post('/api/embodied/practice/start')
     async def practice_start(request: PracticeStart):
         try:
