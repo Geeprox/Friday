@@ -7,10 +7,17 @@ This module imports no speech model or device SDK.
 
 import asyncio
 import json
+import math
 import threading
 import time
 
 from .local_child import LocalChild, owned
+
+REPLIES = {
+    'transcribe': {'transcript', 'wake', 'error'},
+    'delegate': {'task_result', 'error'},
+}
+REPLY_TYPES = REPLIES['transcribe'] | REPLIES['delegate']
 
 
 def _nonfinite(_):
@@ -89,7 +96,7 @@ class VoiceProcess:
             while line := await process.stdout.readline():
                 item = _reply(line)
                 seq = item.get('id')
-                if type(seq) is not int or seq <= 0 or item.get('type') not in {'transcript', 'task_result', 'error'}:
+                if type(seq) is not int or seq <= 0 or item.get('type') not in REPLY_TYPES:
                     raise ValueError('invalid_voice_reply')
                 future = self.futures.get(seq)
                 if future and not future.done():
@@ -109,7 +116,7 @@ class VoiceProcess:
             child.retire()
 
     async def request(self, op, **payload):
-        expected = {'transcribe': 'transcript', 'delegate': 'task_result'}.get(op)
+        expected = REPLIES.get(op)
         if expected is None:
             raise ValueError('operation_not_allowed')
         child = future = seq = None
@@ -135,7 +142,15 @@ class VoiceProcess:
                     result = await future
                     if self.child is not child or not self.ready:
                         raise RuntimeError('voice_worker_closed')
-                    if result['type'] not in {expected, 'error'}:
+                    if result['type'] not in expected:
+                        raise ValueError('invalid_voice_reply')
+                    if result['type'] == 'wake' and not (
+                        set(result) == {'id', 'type', 'voice_revision', 'latency_ms'}
+                        and type(result['voice_revision']) is int
+                        and result['voice_revision'] == payload.get('voice_revision')
+                        and type(result['latency_ms']) in {int, float}
+                        and 0 <= result['latency_ms'] < math.inf
+                    ):
                         raise ValueError('invalid_voice_reply')
                     return result
         except BaseException:

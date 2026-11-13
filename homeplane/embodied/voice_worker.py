@@ -1,7 +1,6 @@
-"""Local PCM -> Whisper -> addressing + Laya; complex tasks use ARL Codex.
+"""在本机识别语音，单独的唤醒词仅返回确认事件。
 
-Friday writes no audio/transcript files or downloads. Explicit model text/results
-use ARL's shared durable queue and its retention policy.
+音频和转写不在此进程落盘。已准入的复杂指令沿原 ARL 队列和保留策略处理。
 """
 
 import base64
@@ -84,7 +83,11 @@ def main():
                     if valid
                     else {"admitted": False, "reason": quality_reason}
                 )
-                if valid and wake_only and route.get("reason") != "waiting_instruction":
+                if route.get("reason") == "waiting_instruction" and route.get("wake_word") is True:
+                    emit(dict(id=request["id"], type="wake", voice_revision=policy.revision,
+                              latency_ms=round((time.monotonic() - began) * 1000, 1)))
+                    continue
+                if valid and wake_only:
                     valid = False
                     quality_reason = "wake_word_required"
                     route = {"admitted": False, "reason": quality_reason}

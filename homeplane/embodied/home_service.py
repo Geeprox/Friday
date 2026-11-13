@@ -425,7 +425,11 @@ class HomeService:
             and 0 <= now - self.last_video < CAMERA_INPUT_MAX_AGE
         )
 
-    def _voice_guard(self, text, captured, epoch, attending, policy, owner=None, *, cue_only=False):
+    def _voice_context_current(self, captured, epoch, policy):
+        return (self.voice_preferences() == policy and self.current(captured, epoch)
+                and not VOICE_INPUT_PAUSED.exists())
+
+    def _voice_guard(self, text, captured, epoch, attending, policy, owner=None):
         # Wake and gaze are alternative cues. Both still require the original
         # input source, policy and camera generation to remain current.
         addressed = address(text, attending, wake_word=policy.wake_word)
@@ -436,18 +440,14 @@ class HomeService:
             # Microphone arbitration gates new samples, not a completed
             # utterance's own lease while another camera collects audio.
             return bool(
-                self.voice_preferences() == policy
-                and self.current(captured, epoch)
-                and not VOICE_INPUT_PAUSED.exists()
-                and (explicit_wake if cue_only else admitted and (
-                    explicit_wake or attending and owner is not None and owner in self.attention.latest))
+                self._voice_context_current(captured, epoch, policy) and admitted
+                and (explicit_wake or attending and owner is not None and owner in self.attention.latest)
             )
 
         return current
 
-    def _wake_focus(self, text, captured, epoch, policy, source=None):
-        if (self.camera_session is None
-                or not self._voice_guard(text, captured, epoch, False, policy, cue_only=True)()):
+    def _wake_focus(self, captured, epoch, policy, source):
+        if self.camera_session is None or not self._voice_context_current(captured, epoch, policy):
             return False
         if source is not None:
             self.camera_focus = None
@@ -475,7 +475,8 @@ class HomeService:
             return None
         try:
             if self.voice_preferences().revision == cue.voice_revision:
-                return WakeCameraPause(cue) if self.speaking or self.voice_busy else cue
+                waiting = self.voice_routing is not None and self.voice_routing.waiting(self, cue.source, now)
+                return WakeCameraPause(cue) if self.speaking or self.voice_busy or waiting else cue
         except (OSError, ValueError):
             pass
         self.wake_camera = None
@@ -542,6 +543,12 @@ class HomeService:
                 self.state['reason']='唤醒词已更新，请重新说一次'
                 return
             self.state["asr_ms"] = result.get("latency_ms")
+            if not self.current(captured, epoch) or time.monotonic() - captured > 10:
+                self.state["reason"] = "指令已过期或操作者变化"
+                return
+            if result.get("type") == "wake":
+                self.state.update(reason="请继续说出指令", laya_result=None, asr_quality=None)
+                return self._wake_focus(captured, epoch, policy, source)
             self.state["laya_result"] = result.get("laya")
             self.state["asr_quality"] = result.get("asr_quality")
             route = result.get("address", {})
@@ -555,15 +562,7 @@ class HomeService:
             ):
                 self.state["reason"] = "等待清晰的语音指令"
                 return
-            if not self.current(captured, epoch) or time.monotonic() - captured > 10:
-                self.state["reason"] = "指令已过期或操作者变化"
-                return
             if wake_only or not route.get("admitted"):
-                if (route.get('reason') == 'waiting_instruction'
-                        and address(result.get('text'), False, wake_word=policy.wake_word).get('reason')
-                        == 'waiting_instruction'):
-                    self.state["reason"] = "请继续说出指令"
-                    return self._wake_focus(result['text'], captured, epoch, policy, source)
                 if wake_only:
                     self.state["reason"] = "等待清晰的语音指令"
                 elif route.get("reason") == "need_wake_word_without_attention":
@@ -586,7 +585,8 @@ class HomeService:
                 self.state["reason"] = "指令已过期或操作者变化"
                 return
             self._remember_voice_receipt(command, policy.revision)
-            self._wake_focus(result['text'], captured, epoch, policy, source)
+            if address(result['text'], False, wake_word=policy.wake_word).get('wake_word') is True:
+                self._wake_focus(captured, epoch, policy, source)
             decision_started = time.monotonic()
             laya = result.get("laya") or {}
             body = address(result['text'],attending,wake_word=policy.wake_word).get('body','')

@@ -50,8 +50,10 @@ async def hear_wake(tmp_path, monkeypatch, clock, word, *, text=None, voiced_fra
     jobs = []
     h.spawn = lambda coro: jobs.append(asyncio.create_task(coro))
     text = word if text is None else text
-    h.request = AsyncMock(return_value=dict(
-        text=text, voice_revision=7, address=address(text, False, wake_word=word)))
+    route = address(text, False, wake_word=word)
+    result = (dict(type='wake', voice_revision=7, latency_ms=1) if route.get('reason') == 'waiting_instruction'
+              else dict(type='transcript', text=text, voice_revision=7, address=route))
+    h.request = AsyncMock(return_value=result)
     h.command = AsyncMock()
     # 先给出完整的语音活动，再用连续的静音帧关闭语音段。
     measurements = [(True, 1.0, .03)] * voiced_frames + [(False, 0.0, .004)] * 4
@@ -705,8 +707,8 @@ async def test_short_input_reaches_neither_motor_nor_device_commands_without_exa
     device.assert_not_awaited()
 
 
-def test_voice_worker_accepts_only_the_exact_configured_wake_on_short_input(monkeypatch):
-    texts = ['', '小福。', '小福，打开玄关灯', 'Friday', '打开玄关灯', '小福']
+def test_voice_worker_only_exports_an_event_for_a_standalone_wake(monkeypatch):
+    texts = ['', '小福。', '小福', '小福，打开玄关灯', '小福，打开玄关灯', 'Friday', '打开玄关灯', '小福']
     transcribe = Mock(side_effect=[(text, {}) for text in texts[:-1]] + [(texts[-1], {'avg_logprob': -1.2})])
     classify = Mock()
     output = []
@@ -716,7 +718,8 @@ def test_voice_worker_accepts_only_the_exact_configured_wake_on_short_input(monk
     monkeypatch.setattr(voice_worker, 'read_preferences', lambda: SimpleNamespace(wake_word='小福', revision=7))
     monkeypatch.setattr(voice_worker, 'signal', SimpleNamespace(signal=Mock(), SIGTERM=15))
     monkeypatch.setattr(voice_worker, 'sys', SimpleNamespace(
-        stdin=[json.dumps(dict(request, id=i)) for i in range(1, len(texts))], stderr=sys.stderr))
+        stdin=[json.dumps(dict(request, id=i, wake_only=i not in {2, 3}))
+               for i in range(1, len(texts))], stderr=sys.stderr))
     monkeypatch.setattr(voice_worker, 'emit', output.append)
     monkeypatch.setitem(sys.modules, 'homeplane.shared_laya', SimpleNamespace(
         SharedLaya=lambda: SimpleNamespace(status=lambda: {'state': 'synthetic'}, predict=classify)))
@@ -724,8 +727,12 @@ def test_voice_worker_accepts_only_the_exact_configured_wake_on_short_input(monk
     voice_worker.main()
 
     assert output[0]['type'] == 'ready'
-    _, wake, *rejected = output
-    assert wake['text'] == '小福。' and wake['address']['reason'] == 'waiting_instruction'
+    _, short_wake, full_wake, command, *rejected = output
+    for wake in (short_wake, full_wake):
+        assert wake['type'] == 'wake' and wake['voice_revision'] == 7
+        assert set(wake) == {'type', 'id', 'voice_revision', 'latency_ms'}
+    assert command['type'] == 'transcript'
+    assert command['text'] == '小福，打开玄关灯' and command['address']['admitted']
     assert all(row['type'] == 'transcript' and not row['text'] and not row['address']['admitted'] for row in rejected)
     assert rejected[-1]['asr_quality']['filter'] == 'low_asr_confidence'
     classify.assert_not_called()

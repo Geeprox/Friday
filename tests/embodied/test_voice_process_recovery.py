@@ -306,7 +306,16 @@ async def test_malformed_startup_never_opens_voice_input(tmp_path, monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_wrong_reply_kind_never_reaches_the_home_actuator(tmp_path, monkeypatch):
+@pytest.mark.parametrize('reply, mutation', [
+    ('wake', {}),
+    ('wake', {'text': 'SYNTHETIC-transcript'}),
+    ('wake', {'voice_revision': 1}),
+    ('wake', {'latency_ms': -1}),
+    ('wake', {'latency_ms': True}),
+    ('task_result', {'text': 'Friday，打开客厅灯', 'address': {'admitted': True, 'wake_word': True}}),
+])
+async def test_wake_pipe_accepts_only_current_metadata_and_never_grants_device_control(
+        tmp_path, monkeypatch, reply, mutation):
     home = make_home(tmp_path, monkeypatch)
     process = SilentProcess()
     command = AsyncMock()
@@ -317,14 +326,22 @@ async def test_wrong_reply_kind_never_reaches_the_home_actuator(tmp_path, monkey
         await home.enable()
         await until(lambda: home.public()['voice'] == 'ready')
         home.selected, home.last_video = True, time.monotonic()
-        work = asyncio.create_task(home.transcribe(b'SYNTHETIC', None, time.monotonic()))
+        home.camera_session = 'SYNTHETIC-view'
+        source = ('a' * 32, 'b' * 64)
+        work = asyncio.create_task(home.transcribe(b'SYNTHETIC', None, home.last_video, source=source))
         await until(lambda: len(process.requests) == 1)
-        process.output.put_nowait((json.dumps(dict(id=process.requests[0]['id'], type='task_result',
-            voice_revision=0, text='Friday，打开客厅灯', address={'admitted': True, 'wake_word': True}))+'\n').encode())
+        record = dict(id=process.requests[0]['id'], type=reply, voice_revision=0, latency_ms=1.5)
+        record.update(mutation)
+        process.output.put_nowait((json.dumps(record)+'\n').encode())
         await asyncio.wait_for(work, .5)
         command.assert_not_awaited()
         home.speaker.say.assert_not_awaited()
-        assert home.public()['voice'] == 'unavailable'
+        assert home.voice_receipt() is None
+        if reply == 'wake' and not mutation:
+            assert home.wake_camera is not None and home.wake_camera.source == source
+            assert home.public()['voice'] == 'ready'
+        else:
+            assert home.wake_camera is None and home.public()['voice'] == 'unavailable'
     finally:
         if work and not work.done():
             work.cancel()

@@ -20,7 +20,7 @@ from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.voice_routing import Utterance, VoiceRouting
 from tests.embodied.test_camera_audio import CAMERA, actual, voice_service
 from tests.embodied.test_wake_camera_motion import (
-    SESSION, WORKER, cue_source, current_frame, dispatch_for,
+    SESSION, WORKER, cue_source, current_frame, dispatch_for, hear_wake,
 )
 
 
@@ -44,7 +44,10 @@ def voice_at(camera, session, routing, *, owner=None, text='Friday'):
     service.runtime_log = SimpleNamespace(record=Mock())
     service.transcribe = home_service.HomeService.transcribe.__get__(service)
     service.spawn = home_service.HomeService.spawn.__get__(service)
-    service.request = AsyncMock(return_value=dict(text=text, address=address(text)))
+    route = address(text)
+    result = (dict(type='wake', voice_revision=0, latency_ms=1) if route.get('reason') == 'waiting_instruction'
+              else dict(type='transcript', text=text, address=route, voice_revision=0))
+    service.request = AsyncMock(return_value=result)
     service.speaker = SimpleNamespace(say=AsyncMock())
 
     def measure(pcm):
@@ -164,6 +167,81 @@ def candidate(at):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+async def test_wake_motor_waits_for_collected_followup_to_reach_the_actuator(tmp_path, monkeypatch, owner):
+    clock = clock_at()
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
+    monkeypatch.setattr(home_service, 'VOICE_PAUSED', tmp_path / 'voice-quiet')
+    home_service.VOICE_PAUSED.touch()
+    home.speaker = SimpleNamespace(say=AsyncMock())
+    routing = VoiceRouting(lambda: True, clock=clock.monotonic)
+    routing.COLLECT_SECONDS = 0
+    home.voice_routing = routing
+    entered, release = asyncio.Event(), asyncio.Event()
+    selected, start = asyncio.Event(), asyncio.Event()
+
+    async def after_selection(coro):
+        try:
+            selected.set()
+            await start.wait()
+            return await coro
+        finally:
+            coro.close()
+
+    home.spawn = lambda coro: asyncio.create_task(after_selection(coro))
+
+    async def recognize(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        text = 'Friday，打开玄关灯'
+        return dict(type='transcript', text=text, address=address(text), voice_revision=7)
+
+    home.request = AsyncMock(side_effect=recognize)
+    device = AsyncMock(return_value=dict(status='reported_match', reached_target=True, acknowledged=True))
+    monkeypatch.setattr(home_service.bridge, 'command', device)
+    cue, safety = cue_source(home, clock, owner)
+    director = CameraDirector()
+    director.apply_mode('auto', 'original')
+    party, state = PartyCamera(), {}
+
+    def choose(at):
+        clock.at = home.last_video = at
+        state.update(current_frame(at, source))
+        if owner == 'primary':
+            state['party_camera'] = party.status(camera=CAMERA['id'], session=SESSION, frame_mono=at, now=at)
+        return director.choose(state, at, sound_cue=cue(CAMERA['id'], state, director.sound_search_cue))
+
+    director.choose(current_frame(1.0, source), 1.0)
+    assert choose(4.0) == 'right'
+    send, sent = dispatch_for(owner, state, clock, director, home, cue, safety, party)
+    routing.offer(home, replace(candidate(clock.at), source=source, epoch=home.epoch))
+    job = routing.task
+    try:
+        # 语音段已结束，调度尚未进入识别；两条真实发送路径都必须保住这一语句。
+        assert not home.speaking and not home.voice_busy
+        with pytest.raises(RuntimeError, match='stale_input'):
+            await send('right')
+        assert not sent and not entered.is_set()
+        await asyncio.wait_for(selected.wait(), 1)
+        assert not routing.pending and not home.voice_busy
+        assert choose(4.2) is None
+        start.set()
+        await asyncio.wait_for(entered.wait(), 1)
+        assert choose(4.4) is None
+        assert not sent
+    finally:
+        start.set()
+        release.set()
+        await asyncio.wait_for(job, 1)
+    device.assert_awaited_once()
+    assert device.await_args.args[:2] == ('玄关灯', 'on')
+    assert home.state['voice_command']['state'] == 'readback'
+    assert choose(4.8) == 'right'
+    await send('right')
+    assert [row['direction'] for row in sent] == ['right']
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('short_first, detected', [(False, False), (True, False), (True, True)])
 async def test_short_cue_only_deduplicates_complete_audio_after_confirmed_wake(short_first, detected):
     clock = clock_at(10)
@@ -243,6 +321,37 @@ async def test_collected_voice_is_revoked_before_the_shared_transcriber(revocati
             assert not route.listening(clock.at + 3)
     await route.task
     assert not route.pending
+    service.transcribe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revocation', ['other_camera', 'new_source', 'stale_epoch', 'expired', 'discard'])
+async def test_pending_voice_only_holds_its_own_current_camera(revocation):
+    clock = clock_at(10)
+    route = VoiceRouting(lambda: True, clock=clock.monotonic)
+    route.COLLECT_SECONDS = 0
+    service = SimpleNamespace(camera_id=CAMERA['id'], current=Mock(return_value=True),
+                              spawn=asyncio.create_task, transcribe=AsyncMock())
+    item = candidate(clock.at)
+    route.offer(service, item)
+    try:
+        assert route.waiting(service, item.source, clock.at)
+        checked = service
+        source = item.source
+        if revocation == 'other_camera':
+            checked = SimpleNamespace(camera_id=OTHER['id'])
+        elif revocation == 'new_source':
+            source = ('c' * 32, item.source[1])
+        elif revocation == 'stale_epoch':
+            service.current.return_value = False
+        elif revocation == 'expired':
+            clock.at += route.START_LIMIT + .01
+        else:
+            route.discard(service.camera_id)
+        assert not route.waiting(checked, source, clock.at)
+    finally:
+        route.discard(service.camera_id)
+        await route.task
     service.transcribe.assert_not_awaited()
 
 

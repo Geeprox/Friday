@@ -34,6 +34,7 @@ class VoiceRouting:
         self.input_open = input_open
         self.clock = clock
         self.pending = {}
+        self.dispatching = None
         self.recent = deque(maxlen=12)
         self.reply_until = 0.0
         self.replies = 0
@@ -46,6 +47,7 @@ class VoiceRouting:
     def replying(self, until):
         self.reply_until = max(self.reply_until, until)
         self.pending.clear()
+        self.dispatching = None
         self.replies += 1
         try:
             yield
@@ -55,6 +57,17 @@ class VoiceRouting:
 
     def discard(self, camera):
         self.pending.pop(camera, None)
+        if self.dispatching is not None and self.dispatching[0].camera_id == camera:
+            self.dispatching = None
+
+    def waiting(self, service, source, now):
+        """只为同一采集来源仍可受理的语音段暂缓唤醒转向。"""
+        for entry in (self.pending.get(service.camera_id), self.dispatching):
+            if entry is not None:
+                owner, item = entry
+                if owner is service and item.source == source and self._eligible(service, item, now):
+                    return True
+        return False
 
     def _eligible(self, service, item, now):
         return (self.listening(now) and item.started >= self.reply_until
@@ -81,7 +94,7 @@ class VoiceRouting:
     def _expire(self, camera, captured):
         candidate = self.pending.get(camera)
         if candidate is not None and candidate[1].captured == captured:
-            self.discard(camera)
+            self.pending.pop(camera, None)
 
     def _select(self, now):
         fresh = [(service, item) for service, item in self.pending.values()
@@ -114,13 +127,18 @@ class VoiceRouting:
                 if selection is None:
                     continue
                 service, item, window = selection
+                self.dispatching = (service, item)
                 job = service.spawn(self._transcribe(service, item, window))
                 await asyncio.gather(job, return_exceptions=True)
         finally:
+            self.dispatching = None
             self.task = None
 
     async def _transcribe(self, service, item, window):
         now = self.clock()
+        if self.dispatching is None or self.dispatching[1] is not item:
+            return
+        self.dispatching = None
         if not self._eligible(service, item, now):
             return
         # 短片段识别失败时，迟到的完整语音仍有机会被识别。
