@@ -15,11 +15,12 @@ function scene(reduced=false,{pending=[]}={}){
     const frame=Math.round(args[0]/(im.naturalWidth/4))+Math.round(args[1]/(im.naturalHeight/3))*4;
     calls.push(['player',name.includes('near')?0:1,...translation,rotation,frame]);
    }else if(name==='summer-props.png'){
-    if(args[0]===800&&args[1]===400)calls.push(['ball',...translation]);
+    if(args[0]>800&&args[0]<1200&&args[1]>400)calls.push(['ball',...translation]);
     if(args[1]===400&&[0,400].includes(args[0]))calls.push(['player',args[0]/400,...translation,rotation,0]);
    }
   };
   if(key==='ellipse')return(...args)=>calls.push(['ellipse',...args]);
+  if(key==='arc')return(x,y,r)=>calls.push(['contact',x,y,r]);
   if(key==='fillText')return(...args)=>calls.push(['text',...args]);
   if(key==='measureText')return label=>({width:[...label].length*parseFloat(target.font.split(' ')[1])*.7});
   return()=>{};

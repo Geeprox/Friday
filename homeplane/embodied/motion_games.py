@@ -1337,7 +1337,7 @@ class MotionGames:
 
     def _start_tennis_flight(self, launch_height=TENNIS_SERVE_HEIGHT):
         self.tennis_flight += 1
-        self.tennis_arc = dict(launch_z=self.ball['z'], launch_height=launch_height,
+        self.tennis_arc = dict(launch_x=self.ball['x'], launch_z=self.ball['z'], launch_height=launch_height,
                                bounce_z=TENNIS_BOUNCE_DEPTH if self.ball['toward'] == 0 else 1-TENNIS_BOUNCE_DEPTH,
                                loft=.62, rebound_height=TENNIS_REBOUND_HEIGHT)
 

@@ -389,7 +389,8 @@ function receiveGamePacket(ws,generation,data){
   meta=packet;received=lastAcceptedAt=performance.now();lastConnectionFresh=true;
   if(television)televisionDisconnected=false;
   beamStage.receive(meta.game,received,streamGeneration,meta.status==='live'&&!document.hidden);
-  skiScenery.receive(meta.game,received);scenery.receive(meta.game,received);
+  skiScenery.receive(meta.game,received);
+  if(!document.hidden)scenery.receive(meta.game,received);
   if(firstPacket||lastBackendMode!==meta.game.selected_mode||lastBackendRound!==meta.game.mode){firstPacket=false;lastBackendMode=meta.game.selected_mode;lastBackendRound=meta.game.mode;selectMode(meta.game.selected_mode);}
   updateHUD();if(typeof updateRecording==='function')updateRecording(meta.recording);syncGameControls();
   if(size&&!decoding){
@@ -404,6 +405,7 @@ function receiveGamePacket(ws,generation,data){
 function connect(){
  if(stageClosed)return;
  beamStage.forget();
+ scenery.interruptTennis?.();
  if(television)televisionPaintedView=null;
  received=null;streamOpen=false;debugFrame=debugMeta=null;debugReceived=null;decodeOwner++;decoding=false;socketAttemptAt=performance.now();const generation=++streamGeneration;
  try{const ws=new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/ws?view=${television?'television':'game'}&k=${encodeURIComponent(key)}`);gameSocket=ws;ws.binaryType='arraybuffer';
@@ -758,7 +760,7 @@ function draw(now=performance.now()){
  drawDebug();if(typeof drawRecordPage==='function')drawRecordPage(performance.now());
  scheduleStage();
 }
-document.addEventListener('visibilitychange',()=>{if(document.hidden){gameSound.quiet();beamStage.forget();presentationClient.release();televisionPaintedView=null;if(stageFrame!=null)cancelAnimationFrame(stageFrame);stageFrame=null;}else{updateHUD();scheduleStage();}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){gameSound.quiet();beamStage.forget();scenery.interruptTennis();presentationClient.release();televisionPaintedView=null;if(stageFrame!=null)cancelAnimationFrame(stageFrame);stageFrame=null;}else{updateHUD();scheduleStage();}});
 function closeGameView(){gameSound.close();presentationClient.close();stageClosed=true;streamGeneration++;clearTimeout(reconnectTimer);reconnectTimer=null;commandPending?.controller.abort();commandPending=null;const old=gameSocket;gameSocket=null;streamOpen=false;if(old){old.onclose=null;old.close();}if(stageFrame!==null)cancelAnimationFrame(stageFrame);stageFrame=null;}
 window.addEventListener('pagehide',closeGameView);
 window.addEventListener('pageshow',event=>{if(event.persisted){gameSound.reopen();stageClosed=false;connect();scheduleStage();}});

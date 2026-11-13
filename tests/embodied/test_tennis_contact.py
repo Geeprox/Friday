@@ -1,10 +1,11 @@
 """Same observed swing must survive a longer frame without a late-swing rescue."""
 
 import copy
+import math
 
 import pytest
 
-from homeplane.embodied.motion_games import MotionGames
+from homeplane.embodied.motion_games import MotionGames, TENNIS_CURVE
 from tests.embodied.test_tennis_match import players
 
 
@@ -39,6 +40,25 @@ def test_return_leaves_from_the_actual_contact_depth(receiver):
     assert game.rally == 1
     assert game.ball["z"] == pytest.approx(contact_z)
     assert game.ball["toward"] == 1 - receiver
+
+
+@pytest.mark.parametrize("receiver", [0, 1])
+def test_contact_position_survives_the_remainder_of_a_pose_step(receiver):
+    game = match(receiver)
+    game.ball.update(x=.54, target_x=.23)
+    contact_x, contact_z = game.ball['x'], game.ball['z']
+    before = dict(game.ball)
+    game.tennis(swing(receiver), .12, 10.12)
+    state = game.publish(players(), 'playing', '')['tennis']
+    moved = (.09 - .08) / before['speed']
+    expected_x = before['target_x'] + (contact_x - before['target_x']) * math.exp(-TENNIS_CURVE * moved)
+    expected_z = .08 if receiver == 0 else .92
+    assert state['event']['kind'] == 'hit'
+    assert state['arc']['launch_x'] == pytest.approx(expected_x)
+    assert state['arc']['launch_z'] == pytest.approx(expected_z)
+    assert state['arc']['launch_z'] != contact_z
+    assert abs(state['ball']['z'] - state['arc']['launch_z']) > .05
+    assert state['event']['age'] == 0
 
 
 @pytest.mark.parametrize("receiver", [0, 1])

@@ -44,7 +44,7 @@
 | Game difficulty | Easy, Standard and Challenge change actual ski speed/gate width, tennis speed/return window, adventure holds and whole-cycle counts. Standard preserves prior rules; alternating cycles stay paired. Game details and stage options share the same declared choices. Confirmed settings survive replay/source recovery, Continue retains the current round, and earned scenery follows the actual goal count within the existing side columns | Current-source API, synthetic joints and inert DOM/canvas evidence only. Web/native layout, real-person balance, recognition latency and comfort still require acceptance |
 | 滑雪雪道 | 初雪坡、松林回转、三段山径各自定义路线、木门和终点。选道后可直接开局，或跟着动作示范试滑，确认左移、右移和摆臂。滑行时雪痕、木门和树共享同一雪地坐标。开启减少动态效果后保留过门和避障参照。滑完显示用时、星级和各段穿门，支持原道重滑或换道 | 原接口、规则与浏览器使用合成输入验收。真实玩家的过门手感、识别延迟与电视显示仍待实测 |
 | 体感网球单人挑战 | 一位玩家用横移和挥拍与球场对手比赛。双方轮流发球，先到 7 分并领先 2 分获胜，15 分封顶。对手按难度移动和回球。玩家出画时暂停球路与计分，返回同一站位后续接。结算可重玩或切换玩法 | 合成关节覆盖三种难度，浏览器覆盖从游戏库开局、暂离镜头、计分结算和重玩。真实玩家的识别、对打节奏与电视体验待实测 |
-| 网球球路与接球 | 发球和回球过网后弹地一次，光圈标出接球位。双人对打中看不清接球人的手脚时，比分和球路暂停，重新入镜后继续本球 | 合成关节覆盖两个接球位，浏览器和画布测试覆盖过网、弹地与挥拍接续。真人动作识别、球感和电视实机待验收 |
+| 网球球路与接球 | 发球和回球过网后弹地一次，光圈标出接球位。球从规则确认的触球点飞出，触球处短暂亮起。双人对打中看不清接球人的手脚时，比分和球路暂停，重新入镜后继续本球 | 合成关节覆盖两个接球位，浏览器和画布测试覆盖触球、弹地与挥拍接续。真人动作识别、球感和电视实机待验收 |
 | 光线保卫队 | 单人面对屏幕，用胸前的 L 完成五个方向的校准。只在识别到 L 时显示准星，稳定瞄准绒球后发出光线，放下双臂才能开始下一次。每局六个目标，保留结算、暂停和重玩 | 使用已接入摄像头的二维关节，不测量视线。校准、蓄力、得分和镜头恢复用合成帧验证；真实玩家的瞄准手感和电视体验待验收 |
 | 玩家重新入镜 | 滑雪、网球、山径冒险和运动训练均保留本局进度。追踪编号变化时，重新确认站位后可点「继续本局」或先放手再保持 OK，从原进度续玩 | 合成姿态覆盖四种游戏、双人座次、原比分和球路，桌面与手机浏览器覆盖按键接续。真人识别和电视实机待验收 |
 | 体感站位提示 | 滑雪、网球、山径冒险和运动训练根据当前人体观测分别提示入镜、让双脚入镜和站定。双人网球在两位玩家的当前画面合格后分配本局编号 | 合成输入和舞台回读覆盖开局时双脚缺失、三人同框后退到两人、原局暂停及继续。真人识别和电视实机待验收 |

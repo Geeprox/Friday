@@ -29,6 +29,55 @@ test('pause, new return, replay and reduced motion never tween through an old ba
  assert.deepEqual(ball(still.paint(second,1100)),ball(direct.paint(second,1100)));
 });
 
+for(const receiver of [0,1])test('confirmed return starts at the observed contact for player '+(receiver+1),()=>{
+ const {lead,hit}=require('./tennis_animation_packets.cjs')(receiver);
+ const s=scene(),direct=scene(true);
+ s.receive(lead,1000);s.paint(lead,1000);
+ s.receive(hit,1120);
+ const launch=structuredClone(hit);
+ launch.tennis.ball.x=hit.tennis.arc.launch_x;
+ launch.tennis.ball.z=hit.tennis.arc.launch_z;
+ const contact=direct.paint(launch,1120),rendered=s.paint(hit,1120);
+ assert.deepEqual(ball(rendered),ball(contact),'start at rule-confirmed x, depth and height');
+ const pulse=rendered.find(c=>c[0]==='contact');
+ assert(pulse,'show the contact mark');
+ assert(pulse.slice(1,3).every((value,i)=>Math.abs(value-ball(contact)[i+1])<1e-8));
+ const later=s.paint(hit,1240);
+ assert.deepEqual(ball(later),ball(direct.paint(hit,1240)),'advance only as far as the known outgoing sample');
+ assert(later.some(c=>c[0]==='contact'));
+});
+
+test('contact mark neither replays a repeated report nor appears after joining or while paused',()=>{
+ const {lead,hit}=require('./tennis_animation_packets.cjs')();
+ for(const reduced of [false,true]){
+  const s=scene(reduced),joined=scene(reduced);
+  const pulse=draws=>draws.some(c=>c[0]==='contact');
+  joined.receive(hit,1000);
+  assert(!pulse(joined.paint(hit,1000)));
+  s.receive(lead,1000);s.paint(lead,1000);
+  s.receive(hit,1120);
+  assert(pulse(s.paint(hit,1120)));
+  const next=structuredClone(hit);next.tennis.event.age=.1;
+  s.receive(next,1220);s.paint(next,1220);
+  assert(!pulse(s.paint(next,1410)),'a repeat does not restart the 260 ms mark');
+  const paused={...hit,status:'paused'};
+  s.receive(paused,1430);assert(!pulse(s.paint(paused,1430)));
+  s.receive(hit,1450);assert(!pulse(s.paint(hit,1450)));
+ }
+});
+
+test('visibility or socket interruption discards a pending contact before it is drawn',()=>{
+ const {lead,hit}=require('./tennis_animation_packets.cjs')();
+ const s=scene();
+ s.receive(lead,1000);s.paint(lead,1000);
+ s.receive(hit,1120);
+ s.interruptTennis();
+ s.receive(hit,1150);
+ const drawn=s.paint(hit,1150),direct=scene(true).paint(hit,1150);
+ assert(!drawn.some(c=>c[0]==='contact'));
+ assert.deepEqual(ball(drawn),ball(direct));
+});
+
 test('preparation and point states hide the flight and the receiving marker',()=>{
  const s=scene();
  for(const current of [originalPacket('ready'),originalPacket('point'),game(.5,.5,'complete')]){
@@ -69,7 +118,7 @@ test('the ball touches its shadow once between two observed frames and lifts aga
  const lift=at=>{
   const drawn=s.paint(after,at),shadow=drawn.filter(item=>item[0]==='ellipse').at(-1);
   const depth=(840-shadow[2])/460;
-  return shadow[2]+(47-depth*13)*.25-ball(drawn)[2];
+  return shadow[2]-ball(drawn)[2]-(47-depth*13)*.265;
  };
  assert(lift(1100)>12);
  assert(Math.abs(lift(1150))<1e-8);
