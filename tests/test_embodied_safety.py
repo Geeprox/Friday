@@ -237,7 +237,7 @@ async def test_runtime_persists_before_named_speech_and_keeps_evidence_local(tmp
         return dict(status="accepted", physical_audio_verified=True)
 
     speaker = SimpleNamespace(say=AsyncMock(side_effect=say))
-    runtime = SafetyRuntime(store, labels=lambda: {"synthetic-person": "Example Person"}, speaker=speaker)
+    runtime = SafetyRuntime(store, label={"synthetic-person": "Example Person"}.get, speaker=speaker)
     for i in range(25):
         clock[0] = now = 100 + i * 0.25
         identity = dict(
@@ -420,7 +420,7 @@ async def test_delayed_pipeline_cannot_name_expired_identity(tmp_path, monkeypat
         monotonic=lambda: clock[0], time=lambda: 1800000000 + clock[0]))
     store = SafetyStore(tmp_path / "private/safety.sqlite")
     store.configure(SafetyPolicy(enabled=True))
-    runtime = SafetyRuntime(store, labels=lambda: {"registered-person": "Example"})
+    runtime = SafetyRuntime(store, label={"registered-person": "Example"}.get)
     for i in range(25):
         source = 100 + i * 0.25
         clock[0] = source + 1.25

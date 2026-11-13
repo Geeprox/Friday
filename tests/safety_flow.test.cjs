@@ -4,7 +4,7 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
 const event=(id,kind='sound_review',review='unreviewed')=>({id:id.repeat(32),kind,sound_kind:id==='a'?'crying':'glass_break',at:1800000000,
  simulated:false,camera:'cam_1111111111',camera_name:'合成客厅',message:'合成事件 '+id,review,announcement:{status:'not_requested'},frames:[]});
 function fixture(initial=[event('b'),event('a')]){
- let focused,events=structuredClone(initial),tick,recording=null,workerStatus='running',supervision=null,holdRetry=false,heldRetry,postureReview=null;
+ let focused,events=structuredClone(initial),tick,recording=null,workerStatus='running',cameras=[],waitingObservations=0,supervision=null,holdRetry=false,heldRetry,postureReview=null;
  let holdStatus=false,heldStatus,historyFailure=false;
  const recordingReads=[];
  class Element{
@@ -35,7 +35,7 @@ function fixture(initial=[event('b'),event('a')]){
   else if(path.endsWith('/review')){const id=path.split('/').at(-2),current=events.find(e=>e.id===id);current.review=body.review;data=current;}
   else if(path.endsWith('/events')){if(historyFailure)return{ok:false,status:503};data={events};}
   else if(path==='/api/embodied/safety'){
-   data={policy,worker:{status:workerStatus,cameras:[],recording},supervision,visual_review:{available:false},sound_review:{available:false},capabilities:[],posture_review:postureReview};
+   data={policy,worker:{status:workerStatus,cameras,waiting_observations:waitingObservations,recording},supervision,visual_review:{available:false},sound_review:{available:false},capabilities:[],posture_review:postureReview};
    if(holdStatus)return new Promise(resolve=>heldStatus=ok=>resolve({ok,status:ok?200:503,json:async()=>structuredClone(data)}));
   }
   else if(path==='/api/embodied/status')data={configured:true,owned:true,state:'live',safety_recording:recording};
@@ -58,6 +58,7 @@ function fixture(initial=[event('b'),event('a')]){
   tick:async()=>{tick();await settle();},resolveRecording:(data,index=-1)=>recordingReads.at(index)(data),
   holdStatus(){holdStatus=true;},resolveStatus(ok){holdStatus=false;heldStatus(ok);},historyFailure(value){historyFailure=value;},
   recording(value){recording=value;},
+  observation(active,waiting){cameras=Array.from({length:active},()=>({fresh:true}));waitingObservations=waiting;},
   posture(value){postureReview=value;},
   monitoring(state,owner){workerStatus=state;supervision=owner;},holdRetry(){holdRetry=true;},resolveRetry(){heldRetry();},
  };
@@ -70,6 +71,36 @@ test('a home incident keeps its exact identity through navigation into the revie
  const view=f.mount({initialEventId:f.navigations[0][1].eventId});await settle();
  assert.equal(f.by('h2','疑似哭声')?.textContent,'疑似哭声');assert.equal(f.rows().find(n=>n.attrs['aria-current']==='true')?.textContent.includes('疑似哭声'),true);
  assert.equal(f.calls.some(c=>c.path.endsWith('/recordings')||c.path.endsWith('/test')||c.body),false);view.dispose();
+});
+
+test('监测只显示已处理的镜头，恢复后把焦点从摄像头入口交还状态',async()=>{
+ const f=fixture(),view=f.mount({initialEventId:'a'.repeat(32)});await settle();
+ f.monitoring('waiting_policy',null);await f.tick();
+ assert(f.by('p','监测状态更新中…'));
+ f.monitoring('running',null);f.observation(0,2);await f.tick();
+ assert(f.by('p','等待可用的监测画面'));
+ f.observation(1,1);await f.tick();
+ assert(f.by('p','1 台摄像头正在监测，1 台等待可用画面'));
+ const check=f.by('button','查看摄像头');assert(!check.parent.hidden);
+ assert(f.by('button','重试连接').hidden);check.onclick();
+ assert.equal(f.navigations.at(-1)[0],'Cameras');
+ check.focus();f.observation(2,0);await f.tick();
+ assert(check.parent.hidden);assert.equal(f.focused,f.by('p','2 台摄像头正在监测'));
+ assert(f.by('h2','疑似哭声'));view.dispose();
+});
+
+test('疑似跌倒先显示来源和证据，再显示查看操作',async()=>{
+ const fall={...event('a','fall'),message:'有人疑似跌倒，请立即查看。',frames:[{ordinal:0,at:1800000000}]};
+ const f=fixture([fall]),view=f.mount({initialEventId:fall.id});await settle();
+ assert(f.by('h2','有人疑似跌倒'));
+ assert(!f.by('p',fall.message));assert(!f.by('p','未请求播报'));
+ const body=f.by('h2','有人疑似跌倒').parent;
+ const evidence=f.by('h3','关键帧');
+ assert(body.children.indexOf(evidence)<body.children.indexOf(f.by('button','我已查看').parent));
+ f.events[0].announcement.status='cancelled';await f.tick();
+ assert(f.by('p','已取消播报'));
+ await f.by('button','我已查看').onclick();
+ assert.equal(f.events[0].review,'acknowledged');view.dispose();
 });
 
 test('监测状态未返回或失败时，链接仍打开已存提醒并确认查看',async()=>{

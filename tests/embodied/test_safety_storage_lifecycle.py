@@ -529,12 +529,13 @@ async def test_identity_is_rechecked_after_delayed_label_lookup(tmp_path, monkey
     await runtime.sync_policy()
     entered, release = threading.Event(), threading.Event()
 
-    def labels():
+    def label(person_id):
+        assert person_id == 'known-person'
         entered.set()
         release.wait(1)
-        return {'known-person': 'Example'}
+        return 'Example'
 
-    runtime.labels = labels
+    runtime.label = label
     runtime.detector.observe = Mock(return_value=[dict(kind='fall', severity='urgent', camera='primary',
         session='session', track='7', person_id='known-person', simulated=False, status='suspected')])
     try:
@@ -572,6 +573,68 @@ async def test_storage_processing_does_not_relabel_old_camera_input_as_newly_see
         await runtime.start()
         assert not runtime.frames
     finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_reports_completed_monitoring_and_recovers_each_camera_independently(tmp_path, monkeypatch):
+    from homeplane.embodied import safety
+
+    clock = [100.]
+    monkeypatch.setattr(safety, 'time', SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1000 + clock[0]))
+    runtime = SafetyRuntime(SafetyStore(tmp_path / 'safety.sqlite'))
+    runtime.store.configure(SafetyPolicy(enabled=True))
+    await runtime.sync_policy()
+    report = actual('homeplane/embodied/worker.py', 'safety_status', {'safety': runtime})
+    entered, release = asyncio.Event(), asyncio.Event()
+    observe = runtime._observe
+    failed = False
+
+    async def wait_for_consumer(camera, *args, **kwargs):
+        if camera == 'primary':
+            entered.set()
+            await release.wait()
+            if failed:
+                raise RuntimeError('synthetic observation fault')
+        return await observe(camera, *args, **kwargs)
+
+    monkeypatch.setattr(runtime, '_observe', wait_for_consumer)
+
+    def submit(camera):
+        now = clock[0]
+        capture = ('a' if camera == 'primary' else 'b') * 32
+        context = capture * 2
+        runtime.capture_frame(camera, capture, context, now)
+        assert runtime.offer(camera, 'stable', [], now, now, stable=True, source_context=context,
+                             capture_session=capture)
+
+    try:
+        submit('primary')
+        await asyncio.wait_for(entered.wait(), 1)
+        status = await report()
+        assert status['cameras'] == []
+        assert status['waiting_observations'] == 1
+        release.set()
+        await runtime.observation_task
+        assert (await report())['cameras'] == [dict(camera='primary', fresh=True)]
+        clock[0] += .25
+        failed = True
+        submit('primary')
+        submit('secondary')
+        await runtime.observation_task
+        status = await report()
+        assert status['cameras'] == [dict(camera='secondary', fresh=True)]
+        assert status['waiting_observations'] == 1
+        assert status['error'] is None
+        assert runtime._capture_source('primary') is not None
+        clock[0] += .25
+        failed = False
+        submit('primary')
+        await runtime.observation_task
+        assert [row['camera'] for row in (await report())['cameras']] == ['primary', 'secondary']
+        assert (await report())['waiting_observations'] == 0
+    finally:
+        release.set()
         await runtime.close()
 
 

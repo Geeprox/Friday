@@ -124,7 +124,7 @@ fleet = InteractionFleet(voice_revoked=voice_routing.discard)
 secondary_homes = {}
 identity_store = IdentityStore(PRIVATE / "identities.sqlite")
 from homeplane.embodied.safety import SafetyRuntime, SafetyStore
-safety = SafetyRuntime(SafetyStore(PRIVATE / "safety.sqlite"), labels=identity_store.labels)
+safety = SafetyRuntime(SafetyStore(PRIVATE / "safety.sqlite"), label=identity_store.read_label)
 identities = IdentitySession(identity_store, SELECTED["id"], SESSION, MODELS)
 
 

@@ -20,7 +20,7 @@ import stat
 import threading
 import time
 from collections import deque
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from functools import wraps
 from pathlib import Path
 
@@ -354,6 +354,15 @@ class IdentityStore:
 
     def labels(self):
         with self.lock:return dict(self.db.execute('SELECT person,name FROM identity_labels'))
+
+    def read_label(self, person):
+        """只读一个姓名，存储繁忙时让提醒及时使用通用称呼。"""
+        if not stat.S_ISREG(self.path.lstat().st_mode):
+            raise ValueError('identity_private_database_required')
+        uri = self.path.as_uri() + '?mode=ro'
+        with closing(sqlite3.connect(uri, uri=True, timeout=.05)) as db:
+            row = db.execute('SELECT name FROM identity_labels WHERE person=?', (person,)).fetchone()
+        return row[0] if row else None
 
     def forget(self, person):
         with self.lock, self.db:

@@ -13,7 +13,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  if(!document.getElementById('safety-style'))document.head.append(el('link',null,{id:'safety-style',rel:'stylesheet',href:'/static/safety.css'}));
  const status=el('p','正在读取监测状态…',{role:'status','aria-live':'polite',tabindex:'-1'}),enable=button('开启监测',()=>change('enabled')),announce=button('开启语音提醒',()=>change('announce'));
  const test=button('试听跌倒提醒',async()=>{if(!alive||busy||!statusFresh)return;busy=true;availability();status.textContent='正在发送测试提醒…';try{await api('/test',{});await Promise.all([refreshStatus(true),refreshHistory(true)]);}catch{if(alive)status.textContent='试听未发送，请检查播报音箱连接。';}finally{busy=false;if(alive)availability();}});
- const intro=add(el('section',null,{class:'safety-intro'}),el('h2','家中提醒'),el('p','发现疑似跌倒时记录事件，按需通过选定音箱提醒家人。'),status,
+ const intro=add(el('section',null,{class:'safety-intro'}),el('h2','跌倒提醒'),
    add(el('div',null,{class:'safety-actions'}),enable,announce,test,button('选择播报音箱',()=>go('Settings'))),
    el('p','此功能仍在试用，可能漏报或误报。请保持日常照护。事件画面仅保存在本机，保留 30 天。',{class:'caption'}));
  const visualStatus=el('p','正在检查本机画面复核…',{role:'status','aria-live':'polite'});
@@ -49,7 +49,9 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  const limits=add(el('details',null,{class:'safety-limits'}),el('summary','监测范围与限制'),capabilities);
  const historyStatus=el('p','正在读取提醒…',{class:'safety-history-status',role:'status'});
  const historyView=el('div',null,{class:'safety-history'}),settings=add(el('details',null,{class:'safety-settings'}),el('summary','监测设置'),intro,visual,sound,limits);historyView.append(historyStatus,add(el('div',null,{class:'safety-list-panel'}),add(el('div',null,{class:'safety-actions'}),el('h2','近期提醒'),button('刷新记录',()=>refreshHistory())),list),detail);
- const reconnect=button('重试连接',()=>retryConnection()),cameraCheck=button('查看摄像头',()=>go('Cameras')),recoveryActions=add(el('div',null,{class:'safety-actions',role:'group','aria-label':'监测连接恢复'}),reconnect,cameraCheck);recoveryActions.hidden=true;root.append(status,recoveryActions,historyView,settings);
+ const reconnect=button('重试连接',()=>retryConnection()),cameraCheck=button('查看摄像头',()=>go('Cameras')),recoveryActions=add(el('div',null,{class:'safety-actions',role:'group','aria-label':'监测操作'}),reconnect,cameraCheck);
+ recoveryActions.hidden=true;
+ root.append(add(el('div',null,{class:'safety-monitoring'}),status,recoveryActions),historyView,settings);
  const reviewNames={unreviewed:'待查看',acknowledged:'已查看',false_alarm:'已标记误报'};
  const eventRows=new Map();
  const audioNames={not_requested:'未请求播报',requesting:'正在发送播报',accepted:'音箱已接受，实际声音待确认',unconfirmed:'播报结果待确认',paused:'安静模式，未播报',busy:'音箱忙，未播报',unavailable:'播报不可用',cancelled:'已取消播报',interrupted:'播报已中断'};
@@ -128,14 +130,28 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    soundSearch.setAttribute('aria-checked',String(next.sound_search===true));
    const supported=(soundModel.supported_types||[]).filter(kind=>soundNames[kind]).map(kind=>soundNames[kind]);
    soundStatus.textContent=!soundModel.available?'当前版本尚未提供本机声音复核。':!next.policy.enabled?'开启监测后可使用声音复核。':!next.policy.sound_review?'声音复核已关闭。':soundModel.input_paused?'声音输入已暂停。':soundModel.error?({'sound_memory_pressure':'本机内存紧张，稍后自动重试。','sound_cpu_busy':'本机正忙，稍后自动重试。','sound_labels_unavailable':'本机分类器尚未提供这些声音类别。'}[soundModel.error]||'声音复核暂缓，稍后自动重试。'):({waiting_input:'等待摄像头声音。',waiting:'等待首轮声音复核。',delayed:'声音复核延迟较高。'}[soundModel.progress]||(supported.length?'已开启 · '+supported.join('、'):'已开启，等待摄像头声音。'));
-   const count=next.worker.cameras?.filter(c=>c.fresh).length||0;
-   const recording=next.worker.recording;
+   const worker=next.worker;
+   const count=worker.cameras?.filter(c=>c.fresh).length||0;
+   const waiting=worker.waiting_observations||0;
+   const recording=worker.recording;
    const recordingFailure=recording?.dropped>0?'有提醒未能保存，请检查本机存储。':recording?.unconfirmed>0?'有提醒的保存结果尚未确认，请查看记录并检查本机存储。':recording?.partial>0?'有提醒的画面未完整保存，可查看已保存的记录。':'提醒记录暂不可用，请检查本机存储。';
    const supervision=next.supervision,recovery=supervision?.recovery,paused=!next.policy.enabled||Boolean(supervision?.policy&&(!supervision.policy.enabled||!supervision.policy.recognition));
-   const disconnected=['not_running','unavailable'].includes(next.worker.status),recovering=recovery?.automatic&&(recovery.in_progress||supervision.failure==='service_unavailable');
-   const recoveryFocused=recoveryActions.contains(document.activeElement);recoveryActions.hidden=paused||!disconnected;reconnect.hidden=!recovery?.automatic||supervision?.failure!=='service_unavailable';availability();
-   const message=next.worker.error||recording?.state==='unavailable'?recordingFailure:paused?'监测已暂停':disconnected?(recovering?'正在恢复监测，稍后自动重试。':next.worker.status==='not_running'?'监测尚未运行':'暂时无法读取监测状态'):next.worker.status!=='running'?'监测状态尚未更新':recording?.state==='recovering'?'提醒正在保存，稍后自动重试。':recording?.state==='saving'?'提醒正在保存。':count?`${count} 台摄像头正在监测 · ${next.policy.announce?'单设备语音提醒':'只记录事件'}`:'监测已开启，等待清晰、稳定的摄像头画面';if(status.textContent!==message)status.textContent=message;
-   if(recoveryFocused&&(recoveryActions.hidden||document.activeElement===reconnect&&reconnect.disabled))status.focus({preventScroll:true});
+   const disconnected=['not_running','unavailable'].includes(worker.status),recovering=recovery?.automatic&&(recovery.in_progress||supervision.failure==='service_unavailable');
+   const recoveryFocused=recoveryActions.contains(document.activeElement);
+   recoveryActions.hidden=paused||!(disconnected||waiting>0);
+   reconnect.hidden=!disconnected||!recovery?.automatic||supervision?.failure!=='service_unavailable';
+   availability();
+   let message;
+   if(worker.error||recording?.state==='unavailable')message=recordingFailure;
+   else if(paused)message='监测已暂停';
+   else if(disconnected)message=recovering?'正在恢复监测，稍后自动重试。':worker.status==='not_running'?'监测尚未运行':'暂时无法读取监测状态';
+   else if(worker.status==='waiting_policy')message='监测状态更新中…';
+   else if(recording?.state==='recovering')message='提醒正在保存，稍后自动重试。';
+   else if(recording?.state==='saving')message='提醒正在保存。';
+   else if(count)message=waiting?`${count} 台摄像头正在监测，${waiting} 台等待可用画面`:`${count} 台摄像头正在监测`;
+   else message=waiting?'等待可用的监测画面':'等待清晰、稳定的摄像头画面';
+   if(status.textContent!==message)status.textContent=message;
+   if(recoveryFocused&&(recoveryActions.hidden||document.activeElement===reconnect&&(reconnect.hidden||reconnect.disabled)))status.focus({preventScroll:true});
    capabilities.replaceChildren(el('h2','监测场景'));
    const descriptions={rough_handling:'目前无法可靠判断照护动作的力度或意图。'};
    for(const c of next.capabilities){
@@ -241,6 +257,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    selected=event.id;detail.hidden=false;frameButtons.clear();
    const heading=el('h2',eventTitle(event),{tabindex:'-1'});
    const rapid=isRapidMovementReview(event),review=reviewNames[event.review]||'待查看';
+   const fall=event.kind==='fall'&&!isOutputTest(event);
    const sustained=event.kind==='sound_review'&&event.sound_kind==='crying'&&event.sound_evidence?.pattern==='sustained_infant_cry';
    const source=event.camera?(event.camera_name||'摄像头记录')+' · '+new Date(eventTime(event)*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'';
    const searchOrdinals=new Set(event.kind==='sound_review'&&Array.isArray(event.sound_search_views)?
@@ -251,20 +268,23 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    const eventFrames=event.frames.filter(frame=>!searchOrdinals.has(frame.ordinal));
    const compared=event.kind==='visual_review'&&eventFrames.length===8&&
      ['two_disjoint_local_windows','same_track_two_local_windows'].includes(event.basis);
-   const compact=rapid||sustained||compared||searchFrames.length>0||followFrame;
+   const compact=fall||rapid||sustained||compared||searchFrames.length>0||followFrame;
    detailBody.replaceChildren(heading);
    if(compact)detailBody.append(el('p',[source,review].filter(Boolean).join(' · '),{class:'caption'}));
    else detailBody.append(el('p',event.message),el('p',review));
    if(sustained||compared)detailBody.append(el('p',event.message));
    for(const[id,row]of eventRows)row.setAttribute('aria-current',String(id===event.id));
-   if(event.kind==='fall'||isOutputTest(event))detailBody.append(el('p',audioNames[event.announcement.status]||'播报状态未知',{role:'status'}));
+   const output=event.announcement?.status;
+   if(isOutputTest(event)||fall&&output!=='not_requested'){
+     detailBody.append(el('p',audioNames[output]||'播报状态未知',{role:'status',class:'caption'}));
+   }
    if(event.observation&&!rapid)detailBody.append(el('h3','模型观察 · 待你核对'),el('p',event.observation));
    if(source&&!compact)detailBody.append(el('p',source,{class:'caption'}));
    const actions=el('div',null,{class:'safety-actions'});
    let restoreFocus;
    if(!event.simulated&&event.camera){const recording=button('查看附近录像',()=>void openRecordings(event));recording.className='primary safety-event-recording';actions.append(recording);if(focusedRecording)restoreFocus=recording;}
    for(const[value,label]of [['acknowledged',event.review==='acknowledged'?'已查看':'我已查看'],['false_alarm','标记误报']]){const action=button(label,async()=>{try{await api('/events/'+event.id+'/review',{review:value});await refreshHistory(true);}catch{if(alive){historyStatus.hidden=false;historyStatus.textContent='标记未保存，请重试。';}}});action.setAttribute('data-review',value);action.setAttribute('aria-pressed',String(event.review===value));if(value===focusedReview)restoreFocus=action;actions.append(action);}
-   if(!rapid&&!compared)detailBody.append(actions);
+   if(!fall&&!rapid&&!compared)detailBody.append(actions);
    if(followFrame){
      const timeline=[...event.frames].sort((a,b)=>a.at-b.at);
      const stages=new Map(timeline.map(frame=>[frame.ordinal,frame===followFrame?'跟随':
@@ -286,7 +306,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
        extra.open=Boolean(extraOpen);detailBody.append(extra);
      }else detailBody.append(el('h3','关键帧'),frameGrid(event,eventFrames));
    }else detailBody.append(el('p',isOutputTest(event)?'播报测试不采集摄像头画面。':'没有可用关键帧。',{class:'caption'}));
-   if(rapid||compared)detailBody.append(actions);
+   if(fall||rapid||compared)detailBody.append(actions);
    const exportEvent=button('导出事件记录',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(event,null,2)],{type:'application/json'}));const a=el('a',null,{href:url,download:'Friday-safety-'+event.id+'.json'});a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});exportEvent.className='text-button safety-export';detailFooter.replaceChildren(exportEvent);
    if(focus)focusDetail(heading);else (restoreFocus||frameButtons.get(focusedFrame))?.focus({preventScroll:true});
  }

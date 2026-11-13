@@ -560,6 +560,112 @@ async def test_fall_saves_original_event_without_announcing_from_changed_observa
 
 
 @pytest.mark.asyncio
+async def test_a_slow_commit_can_announce_a_still_observed_fall_once(monitor, monkeypatch):
+    runtime, store = monitor.runtime, monitor.store
+    capture_session = 'e' * 32
+    await before_fall(monitor, capture_session=capture_session)
+    entered, release = hold_recording_write(store, monkeypatch)
+    assert await frame(monitor, capture_session=capture_session, jpeg=b'CONFIRMED-FALL')
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        job, = runtime.recording.jobs.values()
+        for _ in range(8):
+            monitor.clock[0] += .25
+            assert await frame(monitor, capture_session=capture_session, sync=True)
+            await runtime.observation_task
+        assert monitor.clock[0] - job.captured > runtime.FRAME_TTL
+        assert store.events() == []
+        runtime.speaker.say.assert_not_awaited()
+    finally:
+        release.set()
+    await runtime.drain()
+    await asyncio.gather(*runtime.tasks)
+    event, = store.events()
+    assert event['id'] == job.identifier and event['captured_at'] == 1800000000 + job.captured
+    assert event['announcement'] == dict(status='accepted', physical_audio_confirmed=False)
+    runtime.speaker.say.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('changed', ['upright', 'new_descent', 'stopped', 'moved'])
+async def test_fall_output_checks_the_same_active_episode_at_dispatch(monitor, monkeypatch, changed):
+    runtime = monitor.runtime
+    entered, release = asyncio.Event(), asyncio.Event()
+    sent = []
+
+    async def say(text, *, current, revalidate):
+        from homeplane.embodied.speech_lifecycle import SpeechExpired, SpeechGuard
+
+        guard = SpeechGuard(current, revalidate=revalidate)
+        await guard.checkpoint()
+        entered.set()
+        await release.wait()
+        try:
+            await guard.checkpoint()
+            guard.dispatch()
+        except SpeechExpired:
+            return guard.receipt()
+        sent.append(text)
+        return dict(status='accepted')
+
+    runtime.speaker.say.side_effect = say
+    await before_fall(monitor, capture_session='e' * 32)
+    assert await frame(monitor, capture_session='e' * 32)
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        if changed == 'stopped':
+            monitor.clock[0] += .8
+        elif changed == 'moved':
+            await manual_turn(monitor, 'primary')
+        else:
+            monitor.clock[0] += .25
+            assert await frame(monitor, capture_session='e' * 32, down=False)
+            await runtime.observation_task
+            if changed == 'new_descent':
+                monitor.clock[0] += .25
+                # 原站立锚点仍在，但这次倒卧是在已确认事件之后新出现的。
+                assert await frame(monitor, capture_session='e' * 32)
+                await runtime.observation_task
+    finally:
+        release.set()
+    await runtime.drain()
+    await asyncio.gather(*runtime.tasks)
+    event, = monitor.store.events()
+    assert event['announcement'] == dict(status='cancelled', physical_audio_confirmed=False)
+    assert event['frames'] and not sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('recognized', [False, True])
+async def test_identity_read_failure_cannot_block_a_fall_or_its_frames(monitor, recognized):
+    reads = []
+
+    def label(person_id):
+        reads.append(person_id)
+        raise sqlite3.OperationalError('synthetic identity registry unavailable')
+
+    monitor.runtime.label = label
+    await before_fall(monitor)
+    now = monitor.clock[0]
+    identity = dict(state='matched', person_id='synthetic-known', observed_monotonic=now,
+                    face_observed_monotonic=now) if recognized else None
+    assert monitor.runtime.offer(monitor.camera, 'same-session', [person(True, identity)], now, now, stable=True,
+                                 jpeg=b'CONFIRMED-FALL', source_context=monitor.context)
+    await monitor.runtime.observation_task
+    # 时间向前推进，让旧实现的失败重试也可结束，不阻塞回归。
+    for _ in range(44):
+        monitor.clock[0] += .5
+        await frame(monitor, sync=True, jpeg=b'')
+        await monitor.runtime.observation_task
+    await monitor.runtime.drain()
+    event, = monitor.store.events()
+    assert event['person_id'] is None and event['person_name'] is None
+    assert event['message'] == '有人疑似跌倒，请立即查看。'
+    assert b'CONFIRMED-FALL' in [monitor.store.frame(event['id'], row['ordinal']) for row in event['frames']]
+    assert len(reads) == int(recognized)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('retirement', ['source', 'shutter', 'stale', 'policy'])
 async def test_queued_fall_candidate_cannot_hold_a_retired_view(monitor, retirement):
     runtime, camera, session = monitor.runtime, monitor.camera, 'same-session'
@@ -825,12 +931,13 @@ async def test_exhausted_recording_is_bounded_and_not_hidden_by_another_camera(m
 async def test_delayed_labels_do_not_stop_observation_or_name_an_expired_identity(monitor, monkeypatch):
     entered, release = threading.Event(), threading.Event()
 
-    def labels():
+    def label(person_id):
+        assert person_id == 'known-person'
         entered.set()
         release.wait(2)
-        return {'known-person': 'Example'}
+        return 'Example'
 
-    monitor.runtime.labels = labels
+    monitor.runtime.label = label
     await before_fall(monitor)
     now = monitor.clock[0]
     tracked = person(True, dict(state='matched', person_id='known-person', observed_monotonic=now,

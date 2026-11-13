@@ -92,21 +92,34 @@ def install(router, service, *, archive=None, infrastructure=None):
     @router.get("/api/embodied/safety")
     async def status():
         await protected(runtime.sync_policy())
+        sources = await evidence(configured_camera_sources)
+        process = service.process
         worker = dict(status="not_running", cameras=[])
-        if service.process and service.process.returncode is None:
+        if process and process.returncode is None:
             try:
-                worker = dict(status="running", **await asyncio.wait_for(service.request("/api/safety/status"), 2))
+                result = await asyncio.wait_for(service.request("/api/safety/status"), 2)
+                if service.process is not process or process.returncode is not None:
+                    raise ValueError('safety_worker_changed')
+                worker = dict(status="running", **result)
             except Exception:
                 worker = dict(status="unavailable", cameras=[])
+        policy = runtime.policy_cache
+        if worker['status'] == 'running' and (
+                not policy.enabled or worker.get('policy_revision') != policy.revision):
+            # 保留留档健康回执。启用新策略前，旧版本不能证明当前镜头正在监测。
+            worker.update(cameras=[], waiting_observations=0)
+            if policy.enabled:
+                worker['status'] = 'waiting_policy'
+                worker.pop('sound_review', None)
+                worker.pop('visual_review', None)
         sound_review = worker.get('sound_review') or runtime.sound.status()
         visual_review = worker.get('visual_review') or runtime.visual.status()
-        sources = await evidence(configured_camera_sources)
         crying_available = (sound_review.get('available') is True and 'infant_cry_supported' in sound_review
                             and sound_review['infant_cry_supported'] is not False)
         capabilities = [dict(row, status='unavailable') if row['id'] == 'crying' and not crying_available else row
                         for row in CAPABILITIES]
         return dict(
-            policy=runtime.policy_cache.model_dump(),
+            policy=policy.model_dump(),
             worker=worker,
             supervision=infrastructure.report() if infrastructure is not None else None,
             capabilities=capabilities,
@@ -117,8 +130,8 @@ def install(router, service, *, archive=None, infrastructure=None):
             evidence_kind="private_keyframes",
             visual_review=visual_review,
             sound_review=sound_review,
-            sound_search=runtime.policy_cache.sound_search,
-            posture_review=posture_status(runtime.policy_cache, sources, visual_review),
+            sound_search=policy.sound_search,
+            posture_review=posture_status(policy, sources, visual_review),
         )
 
     @router.post('/api/embodied/safety/retry')

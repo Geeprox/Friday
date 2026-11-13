@@ -594,7 +594,6 @@ body .files-root { --files-muted: var(--muted); --files-line: var(--line); --fil
 .connection-state-details { font-size: .8125rem; color: var(--muted); }
 .connection-state-details summary { cursor: pointer; min-height: 32px; padding-block: 5px; }
 .connection-state-details p { padding-block: 4px; max-width: 65ch; }
-.safety-page > [role='status'] { margin-block: 0 24px; color: var(--muted); font-size: .875rem; }
 .safety-page .safety-settings { margin-block-start: 32px; padding-block-start: 12px; border-block-start: 1px solid var(--line); }
 .safety-settings > summary { font-size: .875rem; color: var(--muted); min-height: 44px; padding-block: 10px; cursor: pointer; }
 .safety-settings .safety-intro { margin-block-start: 12px; padding: 0; border: 0; background: transparent; }

@@ -612,10 +612,12 @@ class FallDetector:
                 return True
         return False
 
-    def confirmed_down(self, camera, session, track, started):
+    def confirmed_down(self, camera, session, track, started, *, confirmed_at, now):
         state = self.cameras.get(camera)
         current = state["tracks"].get(str(track)) if state and state["session"] == session else None
-        return bool(current and current["fired"] and current["down"] and not current["down"]["partial"]
+        down = current["down"] if current and current["fired"] else None
+        return bool(down and not down["partial"] and down["since"] <= confirmed_at <= down["at"]
+                    and 0 <= now - down["at"] <= self.MAX_FRAME_GAP
                     and current["anchor"] is not None and current["anchor"]["at"] == started)
 
     def observe(self, camera, session, people, now, captured, *, stable, aspect=16 / 9, evaluated_mono=None,
@@ -687,7 +689,8 @@ class FallDetector:
             # 仅将相邻的完整倒卧观测间隔计入确认时长。
             if down is not None and not down["partial"] and not coalesced:
                 seconds += captured - down["at"]
-            old["down"] = dict(at=captured, seconds=seconds, box=dict(geometry["box"]), partial=False)
+            old["down"] = dict(at=captured, since=down["since"] if down is not None else captured,
+                               seconds=seconds, box=dict(geometry["box"]), partial=False)
             if seconds >= 2 and not old["fired"]:
                 old["fired"] = True
                 found.append(
@@ -790,8 +793,8 @@ class SafetyRuntime:
     SOUND_VIEW_MAX_PENDING = 4
     SOUND_VIEW_SAVE_AGE = 5
 
-    def __init__(self, store, *, labels=lambda: {}, speaker=None, visual_engine=None, sound_engine=None):
-        self.store, self.labels, self.speaker = store, labels, speaker
+    def __init__(self, store, *, label=lambda _person: None, speaker=None, visual_engine=None, sound_engine=None):
+        self.store, self.label, self.speaker = store, label, speaker
         self.io = SafetyIO()
         self.policy_io = SafetyIO(max_pending=1, thread_name_prefix='friday-safety-policy-read')
         self.evidence_io = SafetyIO(max_pending=32, thread_name_prefix='friday-safety-evidence-read')
@@ -803,6 +806,7 @@ class SafetyRuntime:
         self.tasks = set()
         self.sound_view_tasks = {}
         self.last_seen = {}
+        self.last_processed = {}
         self.source_epochs = {}
         self.source_tokens = {}
         self.sources = {}
@@ -935,19 +939,7 @@ class SafetyRuntime:
         token = self._source_token(camera)
         self.last_seen[camera] = captured
         if not self._cached_policy().enabled:
-            if self.policy_cache.enabled and self.recording.has_camera(camera):
-                # Keep only the receipt of live input for an already qualified
-                # recording. Unknown policy admits no new detection or frames;
-                # the original DB transaction still checks its exact revision.
-                self.pending.pop(camera, None)
-                self.detector.clear(camera)
-                self.visual.clear(camera)
-                self.sound.clear(camera)
-                self.frames.pop(camera, None)
-                self.post_frames.pop(camera, None)
-                self.recording.wake()
-            else:
-                self.clear(camera)
+            self._wait_for_policy(camera)
             return False
         coalesced = camera in self.pending
         if coalesced:
@@ -971,8 +963,10 @@ class SafetyRuntime:
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    self.clear(args[0])
-                    self.error = 'safety_observation_failed'
+                    camera = args[0]
+                    if self.source_tokens.get(camera) is kwargs['_admission']:
+                        # 本镜头等待新的处理结果，声音与已经确认的留档仍使用有效采集来源。
+                        self.clear_view(camera)
         finally:
             self.observation_task = None
 
@@ -1195,6 +1189,7 @@ class SafetyRuntime:
                 if self.policy_failure_since is None:
                     self.policy_failure_since = time.monotonic()
                 self.policy_read_at = -math.inf
+                self.last_processed.clear()
                 raise
             if self.closed:
                 return
@@ -1218,6 +1213,7 @@ class SafetyRuntime:
             self.frames.clear()
             self.post_frames.clear()
             self.last_seen.clear()
+            self.last_processed.clear()
             await self.visual.invalidate()
             await self.sound.invalidate()
 
@@ -1280,6 +1276,7 @@ class SafetyRuntime:
         self.frames.pop(camera, None)
         self.post_frames.pop(camera, None)
         self.last_seen.pop(camera, None)
+        self.last_processed.pop(camera, None)
 
     def clear_view(self, camera):
         """视角失效时清除观测，已确认事件依原采集会话完成留档。"""
@@ -1294,6 +1291,20 @@ class SafetyRuntime:
         self.capture_sources.pop(camera, None)
         self._clear_view(camera)
         self.recording.clear(camera)
+
+    def _wait_for_policy(self, camera):
+        if not self.policy_cache.enabled or not self.recording.has_camera(camera):
+            self.clear(camera)
+            return
+        # 已确认的留档仍由原 SQLite 事务核对策略。策略暂不可读时停止接纳新观测和续帧。
+        self.pending.pop(camera, None)
+        self.detector.clear(camera)
+        self.visual.clear(camera)
+        self.sound.clear(camera)
+        self.frames.pop(camera, None)
+        self.post_frames.pop(camera, None)
+        self.last_processed.pop(camera, None)
+        self.recording.wake()
 
     def _retire_stale_inputs(self):
         """先核对取流，再清理停止更新的视角与识别候选。"""
@@ -1328,27 +1339,29 @@ class SafetyRuntime:
                 source_context=source_context, source_name=source_name, token=token,
                 refresh_policy=_admission is None, coalesced=_coalesced, capture=_capture,
             )
-            if not token.is_set():
-                self.error = None
         except SafetyAdmissionChanged:
             self.skipped += 1
-        except (OSError, sqlite3.Error, ValueError, TypeError, KeyError, SafetyStorageBusy):
-            # A full disk or broken safety database must not stop perception.
-            if self.source_tokens.get(camera) is token:
-                self.clear(camera)
-            self.error = "safety_storage_unavailable"
 
     async def _observe(self, camera, session, people, now, captured, *, stable, jpeg, aspect,
                        source_context=None, source_name=None, token, refresh_policy=True, coalesced=False, capture=None):
         if refresh_policy:
-            await self.sync_policy()
+            try:
+                await self.sync_policy()
+            except (OSError, sqlite3.Error, ValueError, TypeError, SafetyStorageBusy):
+                self.error = 'safety_storage_unavailable'
+                if self.source_tokens.get(camera) is token:
+                    self._wait_for_policy(camera)
+                return
         if token.is_set() or self.source_tokens.get(camera) is not token:
             return
         policy = self._cached_policy()
         if not policy.enabled:
-            self.clear(camera)
+            self._wait_for_policy(camera)
             return
-        if not stable or not 0 <= time.monotonic() - captured <= self.FRAME_TTL:
+        evaluated = time.monotonic()
+        if (not stable or not 0 <= evaluated - captured <= self.FRAME_TTL
+                or not 0 <= now - captured <= self.FRAME_TTL or not .2 <= aspect <= 5
+                or capture is not None and self._capture_source(camera) is not capture):
             # 处理较旧快照时，邮箱可能已经接到同一视角的更新观测。
             if self.last_seen.get(camera, -math.inf) <= captured:
                 self.clear_view(camera)
@@ -1376,9 +1389,12 @@ class SafetyRuntime:
             self.recording.frame(camera, token, captured, jpeg)
         events = self.detector.observe(
             camera, session, people, now, captured, stable=stable, aspect=aspect,
-            evaluated_mono=time.monotonic(), coalesced=coalesced,
+            evaluated_mono=evaluated, coalesced=coalesced,
         )
-        if not events or not guard():
+        if not guard():
+            return
+        self.last_processed[camera] = (captured, capture)
+        if not events:
             return
         frames = [(stamp - (captured - frame_at), frame) for frame_at, frame in ring['items']
                   if 0 <= captured - frame_at <= self.recording.PRE_WINDOW]
@@ -1425,11 +1441,17 @@ class SafetyRuntime:
         if job.saved is None:
             event = dict(job.event)
             if job.feature is None:
-                labels = await self.io.call(self.labels)
-                if event['person_id'] != FallDetector.current_identity(job.person, time.monotonic()):
-                    event['person_id'] = None
-                name = labels.get(event['person_id']) if event['person_id'] is not None else None
-                event.update(person_name=name, message=f'检测到 {name} 疑似跌倒，请立即查看。' if name
+                person_id = event['person_id']
+                name = None
+                if person_id is not None and person_id == FallDetector.current_identity(job.person, time.monotonic()):
+                    try:
+                        name = await self.io.call(self.label, person_id)
+                    except (OSError, sqlite3.Error, ValueError, SafetyStorageBusy):
+                        pass  # 人物库暂不可用时，仍保存未具名的提醒和原始证据。
+                    if person_id != FallDetector.current_identity(job.person, time.monotonic()):
+                        name = None
+                event.update(person_id=person_id if name else None, person_name=name,
+                             message=f'检测到 {name} 疑似跌倒，请立即查看。' if name
                              else '有人疑似跌倒，请立即查看。')
             job.saved = await self.io.call(self.store.create, event, job.initial, event_id=job.identifier,
                 policy_revision=job.revision, feature=job.feature, guard=lambda: self._recording_current(job))
@@ -1438,15 +1460,31 @@ class SafetyRuntime:
             return
         if not job.output_considered:
             job.output_considered = True
-            if (job.announce and not job.token.is_set() and 0 <= time.monotonic() - job.captured <= 1.5
-                    and self.detector.confirmed_down(
-                        job.camera, job.session, job.event.get('track'), job.event.get('started_mono'))):
-                await self.schedule(job.saved, revision=job.revision)
+            if job.announce:
+                current = self._fall_output_guard(job)
+                if current():
+                    await self.schedule(job.saved, revision=job.revision, current=current)
         while job.appended < len(job.following) and self._recording_current(job):
             stamp, jpeg = job.following[job.appended]
             await self.io.call(self.store.append_frame, job.identifier, stamp, jpeg,
                 policy_revision=job.revision, guard=lambda: self._recording_current(job), deduplicate=True)
             job.appended += 1
+
+    def _fall_output_guard(self, job):
+        camera, session, context, token = job.camera, job.session, job.context, job.token
+        captured, revision, capture = job.captured, job.revision, job.capture_source
+        track, started = job.event.get('track'), job.event.get('started_mono')
+
+        def current():
+            now, policy = time.monotonic(), self._cached_policy()
+            return (policy.enabled and policy.announce and policy.revision == revision
+                    and not token.is_set() and self.source_tokens.get(camera) is token
+                    and self.sources.get(camera) == (session, context)
+                    and (capture is None or self._capture_source(camera) is capture)
+                    and 0 <= now - captured <= self.recording.RETRY_WINDOW
+                    and self.detector.confirmed_down(camera, session, track, started, confirmed_at=captured, now=now))
+
+        return current
 
     async def _recording_receipt(self, job):
         receipt = await self.io.call(self.store.recording_receipt, job.identifier)
@@ -1499,21 +1537,28 @@ class SafetyRuntime:
             captured=frames[-1][0], revision=policy.revision, max_age=12, require_complete=True,
         )
 
-    async def schedule(self, event, revision=None):
+    async def schedule(self, event, revision=None, *, current=None):
         # Bound pending output independently of the perception frame rate.
         if self.tasks:
             await self.io.call(self.store.update, event["id"], announcement={"status": "busy", "physical_audio_confirmed": False})
             return
-        task = asyncio.create_task(self.announce(event, revision))
+        task = asyncio.create_task(self.announce(event, revision, current=current))
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
         self.output_revisions[task] = revision
         task.add_done_callback(lambda job: self.output_revisions.pop(job, None))
 
-    async def announce(self, event, revision=None):
+    async def announce(self, event, revision=None, *, current=None):
         status = "unavailable"
         claimed = False
+
+        def allowed():
+            return not self.closed and (current is None or current())
+
         try:
+            if not allowed():
+                status = 'cancelled'
+                return
             policy = await self.io.call(self.store.policy)
             if (await self.io.call(self.store.event, event["id"])).get("review") == "false_alarm":
                 status = "cancelled"
@@ -1533,7 +1578,7 @@ class SafetyRuntime:
                 )
                 current_policy = await self.io.call(self.store.policy)
                 current_event = await self.io.call(self.store.event, event['id'])
-                if (current_event.get('review') == 'false_alarm' or revision is not None and (
+                if (not allowed() or current_event.get('review') == 'false_alarm' or revision is not None and (
                         current_policy.revision != revision or not current_policy.enabled or not current_policy.announce)):
                     status = 'cancelled'
                     return
@@ -1545,7 +1590,7 @@ class SafetyRuntime:
                         return False
 
                 receipt = await asyncio.wait_for(speaker.say(event["message"],
-                    current=lambda: not self.closed, revalidate=revalidate), 35)
+                    current=allowed, revalidate=revalidate), 35)
                 status = receipt.get("status", "unavailable")
                 status = {"muted": "paused", "expired": "cancelled"}.get(status, status)
                 if status not in {"accepted", "paused", "busy", "unavailable", "unconfirmed", "cancelled"}:
@@ -1625,12 +1670,16 @@ class SafetyRuntime:
     def status(self):
         now = time.monotonic()
         recording = self.recording_status()
+        policy = self._cached_policy()
+        fresh = {camera for camera, (captured, capture) in self.last_processed.items()
+                 if policy.enabled and 0 <= now - captured <= self.FRAME_TTL
+                 and (capture is None or self._capture_source(camera) is capture)}
         return dict(
-            cameras=[
-                dict(camera=camera, fresh=True)
-                for camera, seen in self.last_seen.items()
-                if 0 <= now - seen <= self.FRAME_TTL
-            ],
+            cameras=[dict(camera=camera, fresh=True) for camera in sorted(fresh)],
+            policy_revision=policy.revision if recording['policy_current'] else None,
+            waiting_observations=sum(0 <= now - source.seen <= self.FRAME_TTL
+                                     for camera, source in self.capture_sources.items()
+                                     if policy.enabled and camera not in fresh),
             pending_announcements=len(self.tasks),
             pending_observations=len(self.pending),
             coalesced_observations=self.coalesced,

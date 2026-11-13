@@ -71,7 +71,8 @@ class Element{
  await find('button','标记误报').onclick();assert.equal(events[0].review,'false_alarm');
  assert.notEqual(focusedElement,previousFocus);assert.equal(focusedElement.textContent,'标记误报','review refresh preserves keyboard position');
  events=[{...fakeEvent,status:'suspected',person_name:'<img src=x onerror=alert(1)>',simulated:false,message:'<unsafe>',frames:[{ordinal:0,at:1800000000}]}];interval();await settle();
- find('button','').onclick();assert(find('p','<unsafe>'));assert.equal(all(root).filter(n=>n.tagName==='img').length,1);
+ find('button','').onclick();assert(find('h2','<img src=x onerror=alert(1)> · 疑似跌倒'));
+ assert.equal(all(root).filter(n=>n.tagName==='img').length,1);
  assert(all(root).find(n=>n.tagName==='img').attrs.src.endsWith('/frames/0'));
  events=[{...events[0],camera:'cam_1111111111'}];interval();await settle();find('button','').onclick();
  assert(!calls.some(c=>c.path.endsWith('/recordings')),'viewing an event never scans or opens NAS');
