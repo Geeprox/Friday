@@ -191,6 +191,109 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+@pytest.mark.parametrize('shift', [.05, 0], ids=['turned', 'unchanged'])
+async def test_wake_search_resumes_after_the_followup_utterance(tmp_path, monkeypatch, owner, shift):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
+    original = home.wake_camera
+    cue, safety = cue_source(home, clock, owner)
+    director = CameraDirector()
+    director.apply_mode('auto', 'original')
+    party, state = PartyCamera(), {}
+    send, sent = dispatch_for(owner, state, clock, director, home, cue, safety, party)
+    found = subject(7, .605)
+
+    def observe(at, offset=0, *people, with_wake=True):
+        clock.at = at
+        state.update(current_frame(at, source, offset=offset, people=people))
+        if owner == 'primary':
+            state['party_camera'] = party.status(camera=CAMERA['id'], session=SESSION, frame_mono=at, now=at)
+        wake = cue(CAMERA['id'], state, director.sound_search_cue) if with_wake else None
+        return director.choose(state, at, sound_cue=wake)
+
+    assert observe(1.0, with_wake=False) is None
+    assert observe(1.8) == 'right'
+    await send('right')
+
+    # 转动后短暂没有识别帧。主镜头仍带原会话，副镜头暂时无观测。
+    clock.at = 2.3
+    no_frame = dict(status='connecting', session_id=None, _wake_source=None, _local_received=-100)
+    if owner == 'primary':
+        no_frame.update(session_id=SESSION, _wake_source=source, party_camera=state['party_camera'])
+    assert cue(CAMERA['id'], no_frame, director.sound_search_cue) is None
+    assert home.wake_camera is original
+    assert director.choose(no_frame, clock.at) is None
+
+    # 后续语句的采集和识别跨过第一次转动的两次画面确认。
+    people = (found,) if shift else ()
+    home.speaking = True
+    assert observe(3.9, shift, *people) is None
+    assert observe(4.3, shift, *people) is None
+    home.speaking = False
+    home.voice_busy = True
+    assert observe(4.7, shift, *people) is None
+    assert director.sound_search_cue is original and director.sound_step == 1
+    assert [row['direction'] for row in sent] == ['right']
+
+    home.voice_busy = False
+    if not shift:
+        assert observe(5.1) == 'left'
+        await send('left')
+        assert [row['direction'] for row in sent] == ['right', 'left']
+        return
+
+    assert observe(5.1, .05, found) is None
+    assert observe(5.5, .05, found) == 'right'
+    home.speaking = True
+    with pytest.raises(RuntimeError, match='stale_input'):
+        await send('right')
+    assert observe(5.9, .05, found) is None
+    assert [row['direction'] for row in sent] == ['right']
+    home.speaking = False
+    assert observe(5.9, .05, found) is None
+    assert observe(6.3, .05, found) is None
+    assert observe(6.7, .05, found) == 'right'
+    await send('right')
+
+    centered = dict(subject(9, .43), identity=found['identity'])
+    for at in (9.1, 9.5):
+        assert observe(at, .10, centered) is None
+        assert not director.public()['target_locked']
+    assert observe(9.9, .10, centered) is None
+    assert director.target == 9 and director.public()['target_locked']
+    assert [row['direction'] for row in sent] == ['right', 'right']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revoked', ['session', 'source', 'policy', 'pause', 'expired'])
+async def test_wake_does_not_resume_after_revocation(tmp_path, monkeypatch, revoked):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
+    original = home.wake_camera
+    home.voice_busy = True
+    clock.at += .1
+    frame = current_frame(clock.at, source)
+    assert home.wake_motion_cue(frame, clock.at).cue is original
+    if revoked == 'session':
+        frame['session_id'] = 'SYNTHETIC-replaced-view'
+    elif revoked == 'source':
+        frame['_wake_source'] = ('b' * 32, source[1])
+    elif revoked == 'policy':
+        home.voice_preferences = lambda: SimpleNamespace(wake_word='小福', revision=8)
+    elif revoked == 'pause':
+        home_service.VOICE_INPUT_PAUSED.touch()
+    else:
+        clock.at += home_service.WAKE_CAMERA_SECONDS
+    assert home.wake_motion_cue(frame, clock.at) is None
+    assert home.wake_camera is None
+    home.voice_busy = False
+    assert home.wake_motion_cue(current_frame(clock.at, source), clock.at) is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('owner, direction, x, shift', [
     ('primary', 'right', .605, .04),
     ('secondary', 'left', .245, -.04),

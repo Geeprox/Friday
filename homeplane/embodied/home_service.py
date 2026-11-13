@@ -12,7 +12,7 @@ import numpy as np
 
 from homeplane.embodied import bridge
 from homeplane.embodied.camera_audio import MAX_AGE as CAMERA_INPUT_MAX_AGE
-from homeplane.embodied.camera_audio import WakeCameraCue, offer_voice_window
+from homeplane.embodied.camera_audio import WakeCameraCue, WakeCameraPause, offer_voice_window
 from homeplane.embodied.household import basic_command
 from homeplane.embodied.intent import address, parse_plan, utterance_focus
 from homeplane.embodied.local_intent import household_plan
@@ -422,17 +422,18 @@ class HomeService:
         cue = self.wake_camera
         if cue is None:
             return None
-        if (not 0 <= now - cue.captured < WAKE_CAMERA_SECONDS
-                or sample.get('session_id') != cue.session
-                or VOICE_INPUT_PAUSED.exists()):
+        if not 0 <= now - cue.captured < WAKE_CAMERA_SECONDS or VOICE_INPUT_PAUSED.exists():
             self.wake_camera = None
             return None
-        if (sample.get('status') != 'live' or sample.get('_wake_source') != cue.source
-                or self.speaking or self.voice_busy):
+        # 短时缺少识别帧不代表采集已换源；真正停止或恢复识别时由采集所有者撤销。
+        if sample.get('status') != 'live':
+            return None
+        if sample.get('session_id') != cue.session or sample.get('_wake_source') != cue.source:
+            self.wake_camera = None
             return None
         try:
             if self.voice_preferences().revision == cue.voice_revision:
-                return cue
+                return WakeCameraPause(cue) if self.speaking or self.voice_busy else cue
         except (OSError, ValueError):
             pass
         self.wake_camera = None

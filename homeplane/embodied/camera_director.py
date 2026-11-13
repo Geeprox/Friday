@@ -7,7 +7,7 @@ import cv2
 import math
 import numpy as np
 
-from .camera_audio import WakeCameraCue
+from .camera_audio import WakeCameraCue, WakeCameraPause
 from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES, finish_camera_survey
 from .catalog import MOTION_GAME_MODES
 from .pose_rules import iou
@@ -513,6 +513,8 @@ class CameraDirector:
             return False
         if self._review_holds(sample, now, review_pending, fall_pending):
             return False
+        if self._wake_waits_for_voice(sample, now, sound_cue):
+            return False
         if (self.intent and self.intent[0] == 'patrol' and self.mode == 'survey'
                 and pending['phase'] == 'patrolling' and now >= self.scheduled_at):
             return False
@@ -767,17 +769,30 @@ class CameraDirector:
         view = sample.get('_patrol_view')
         return (sample.get('session_id'), view[0], self._camera_window(sample)) if view is not None else None
 
-    def _wake_frame_current(self, sample, now, cue):
+    def _wake_source_current(self, sample, cue):
         accepts_wake = (self.mode == 'auto'
                         or (self.mode == 'survey' and self.intent is not None and self.intent[0] == 'patrol'))
         return (accepts_wake and sample.get('session_id') == cue.session
-                and sample.get('_wake_source') == cue.source
-                and self.target_frame_current(sample, now))
+                and sample.get('_wake_source') == cue.source)
+
+    def _wake_frame_current(self, sample, now, cue):
+        return self._wake_source_current(sample, cue) and self.target_frame_current(sample, now)
+
+    def _wake_waits_for_voice(self, sample, now, sound_cue):
+        if not isinstance(sound_cue, WakeCameraPause):
+            return False
+        cue = sound_cue.cue
+        if self.sound_search_cue is cue:
+            scope = self._sound_scope(sample)
+            return self._wake_source_current(sample, cue) and (scope is None or scope == self.sound_view)
+        return self._sound_start_available(sample, now, cue)
 
     def _sound_start_available(self, sample, now, cue):
+        if cue is None or isinstance(cue, WakeCameraPause):
+            return False
         wake = isinstance(cue, WakeCameraCue)
         last_captured = self.last_wake_captured if wake else self.last_sound_captured
-        return (self.sound_search_cue is None and cue is not None and self._sound_scope(sample) is not None
+        return (self.sound_search_cue is None and self._sound_scope(sample) is not None
                 and self.sound_intent_since is not None
                 and cue.captured > last_captured and cue.captured >= self.sound_intent_since
                 and (not wake or self._wake_frame_current(sample, now, cue))
@@ -930,7 +945,10 @@ class CameraDirector:
             self.visible_samples = self.obscured_samples = 0
             self.clear_since = self.obscured_since = None
             self.phase = 'checking_view'
-        if self._confirm_patrol(sample, now, sound_cue):
+        wake_waiting = self._wake_waits_for_voice(sample, now, sound_cue)
+        # 已发出的转向继续等待画面确认。语音结束后才能根据新画面决定下一步。
+        confirming_cue = sound_cue.cue if wake_waiting else sound_cue
+        if self._confirm_patrol(sample, now, confirming_cue):
             return None
         if self._survey_done():
             self.phase = 'survey_finished'
@@ -1045,6 +1063,12 @@ class CameraDirector:
             self.reframe_candidate = None
             self.sound_candidate = None
             self.phase = 'review_held'
+            return None
+        if wake_waiting:
+            self.pending_direction = self.pending_decision = None
+            self.sound_candidate = self.reframe_candidate = self.tilt_observation = None
+            self.selection_sample = None
+            self.phase = 'checking_view'
             return None
         if self.mode in {'auto', 'survey'}:
             focus = self._current_focus(sample, now, focus)
