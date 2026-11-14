@@ -17,7 +17,7 @@ from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.intent import address
 from homeplane.embodied.interaction_fleet import InteractionFleet
 from homeplane.embodied.party_camera import PartyCamera
-from homeplane.embodied.voice_routing import Utterance, VoiceRouting
+from homeplane.embodied.voice_routing import RETRY_OTHER_MIC, Utterance, VoiceRouting
 from tests.embodied.test_camera_audio import CAMERA, actual, voice_service
 from tests.embodied.test_wake_camera_motion import (
     SESSION, WORKER, cue_source, current_frame, dispatch_for,
@@ -161,6 +161,72 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
 
 def candidate(at):
     return Utterance(b'SYNTHETIC', None, at, False, 1, ('a'*32, 'b'*64), at-1.3, at-.7, .04)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('first_result', ['rejected', 'accepted', 'expired', 'paused', 'replace_source', 'alternate_no_wake'])
+async def test_same_utterance_uses_one_fresh_alternate_only_after_explicit_asr_rejection(
+        first_result, monkeypatch, tmp_path):
+    clock = clock_at(10)
+    monkeypatch.setattr(home_service, 'time', clock)
+    monkeypatch.setattr(home_service, 'VOICE_INPUT_PAUSED', tmp_path/'pause')
+    routing = VoiceRouting(lambda: not home_service.VOICE_INPUT_PAUSED.exists(), clock=clock.monotonic)
+    routing.COLLECT_SECONDS = 0
+    primary = voice_at(CAMERA, 'primary-view', routing)
+    second = voice_at(OTHER, 'other-view', routing, owner=7)
+    first_track, second_track = primary.epoch, second.epoch
+    primary.last_video = second.last_video = clock.at
+
+    async def answer(*args, **kwargs):
+        if first_result == 'expired':
+            clock.at += routing.START_LIMIT + .1
+            primary.last_video = second.last_video = clock.at
+        elif first_result == 'paused':
+            home_service.VOICE_INPUT_PAUSED.touch()
+        elif first_result == 'replace_source':
+            second.epoch += 1
+        if first_result == 'accepted':
+            return {'text': 'Friday', 'address': address('Friday')}
+        return {'text': '', 'address': {'admitted': False, 'reason': 'no_speech'}}
+
+    primary.request = AsyncMock(side_effect=answer)
+    if first_result == 'alternate_no_wake':
+        async def alternate_answer(op, *, attending, **kwargs):
+            assert op == 'transcribe'
+            text = '打开玄关灯'
+            return {'text': text, 'address': address(text, attending)}
+        second.request = AsyncMock(side_effect=alternate_answer)
+    phrase = candidate(clock.at)
+    assert routing.offer(primary, replace(phrase, epoch=first_track, level=.1))
+    assert routing.offer(second, replace(phrase, epoch=second_track, attending=True, owner=7,
+                                         source=('b'*32, 'c'*64)))
+    await routing.task
+    primary.request.assert_awaited_once()
+    if first_result in ('rejected', 'alternate_no_wake'):
+        second.request.assert_awaited_once()
+        assert second.request.await_args.kwargs['attending'] is False
+        if first_result == 'rejected':
+            assert second.wake_camera.source == ('b'*32, 'c'*64)
+        else:
+            assert second.wake_camera is None and second.state.get('voice_command') is None
+        assert primary.wake_camera is None
+    else:
+        second.request.assert_not_awaited()
+    assert (primary.wake_camera is not None) == (first_result == 'accepted')
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_fallback_is_bounded_and_does_not_try_a_third_microphone():
+    clock = clock_at(10)
+    routing = VoiceRouting(lambda: True, clock=clock.monotonic)
+    routing.COLLECT_SECONDS = 0
+    three = [SimpleNamespace(camera_id=f'cam_{i:010x}', current=lambda *_: True,
+                            spawn=asyncio.create_task, transcribe=AsyncMock(return_value=RETRY_OTHER_MIC))
+             for i in range(3)]
+    for service in three:
+        assert routing.offer(service, candidate(10))
+    await routing.task
+    assert sorted(item.transcribe.await_count for item in three) == [0, 1, 1]
 
 
 @pytest.mark.asyncio

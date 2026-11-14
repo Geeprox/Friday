@@ -7,6 +7,10 @@ from dataclasses import dataclass
 import time
 
 
+# 只有本机转写明确拒绝、且未确认唤醒或动作时，才能换一路收音。
+RETRY_OTHER_MIC = object()
+
+
 @dataclass(frozen=True, slots=True)
 class Utterance:
     pcm: bytes
@@ -56,13 +60,18 @@ class VoiceRouting:
     def discard(self, camera):
         self.pending.pop(camera, None)
 
-    def _eligible(self, service, item, now):
+    def _current(self, service, item, now):
         return (self.listening(now) and item.started >= self.reply_until
                 and 0 <= now - item.captured <= self.START_LIMIT
-                and service.current(item.captured, item.epoch)
-                and not any(0 <= now - admitted <= self.REPEAT_LIMIT
-                            and overlaps((item.started, item.ended), window)
-                            for admitted, window in self.recent))
+                and service.current(item.captured, item.epoch))
+
+    def _duplicates(self, item, now):
+        return any(
+            0 <= now - admitted <= self.REPEAT_LIMIT and overlaps((item.started, item.ended), window)
+            for admitted, window in self.recent)
+
+    def _eligible(self, service, item, now):
+        return not self._duplicates(item, now) and self._current(service, item, now)
 
     def offer(self, service, item):
         now = self.clock()
@@ -100,12 +109,12 @@ class VoiceRouting:
                 self.pending[service.camera_id] = (service, item)
         # 仅可识别唤醒词的短片段不能抢占同一句的完整语音。
         # 注视只在收音证据接近时加权，入镜本身不影响录入资格。
-        service, item = max(candidates, key=lambda row: (
+        candidates.sort(key=lambda row: (
             not row[1].wake_only, row[1].level * (1.10 if row[1].attending else 1.0),
             row[1].ended - row[1].started,
-            row[0].camera_id))
+            row[0].camera_id), reverse=True)
         window = min(item.started for _, item in candidates), max(item.ended for _, item in candidates)
-        return service, item, window
+        return candidates[:2], window
 
     async def _dispatch(self):
         try:
@@ -114,21 +123,30 @@ class VoiceRouting:
                 selection = self._select(self.clock())
                 if selection is None:
                     continue
-                service, item, window = selection
-                job = service.spawn(self._transcribe(service, item, window))
-                await asyncio.gather(job, return_exceptions=True)
+                candidates, window = selection
+                for index, (service, item) in enumerate(candidates):
+                    job = service.spawn(self._transcribe(service, item, window, alternate=index > 0))
+                    result, = await asyncio.gather(job, return_exceptions=True)
+                    if result is not RETRY_OTHER_MIC:
+                        break
         finally:
             self.task = None
 
-    async def _transcribe(self, service, item, window):
+    async def _transcribe(self, service, item, window, *, alternate=False):
         now = self.clock()
-        if not self._eligible(service, item, now):
-            return
+        duplicate = self._duplicates(item, now)
+        if not alternate and duplicate:
+            return None
+        if not self._current(service, item, now):
+            return RETRY_OTHER_MIC
         # 短片段识别失败时，迟到的完整语音仍有机会被识别。
-        if not item.wake_only:
+        if not item.wake_only and not duplicate:
             self.recent.append((now, window))
         service.voice_busy = True
-        wake_detected = await service.transcribe(
-            item.pcm, item.owner, item.captured, item.attending, item.epoch, item.source, item.wake_only)
-        if item.wake_only and wake_detected:
+        # 备用镜头必须听清唤醒词。原镜头的注视和人员归属不能转移。
+        result = await service.transcribe(item.pcm, None if alternate else item.owner,
+                                          item.captured, item.attending and not alternate,
+                                          item.epoch, item.source, item.wake_only)
+        if item.wake_only and result is True:
             self.recent.append((self.clock(), window))
+        return result

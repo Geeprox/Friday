@@ -22,7 +22,8 @@ from homeplane.embodied.speech import Speaker
 from homeplane.embodied.voice_activity import VoiceActivity
 from homeplane.embodied.voice_preferences import read_preferences
 from homeplane.embodied.voice_process import VoiceProcess
-from homeplane.embodied.voice_routing import Utterance
+from homeplane.embodied.voice_routing import RETRY_OTHER_MIC, Utterance
+from homeplane.embodied.vision_benchmark import WakeMotionCounts
 from homeplane.runtime_log import RuntimeLog, observe
 from homeplane.home_questions import is_home_question
 from homeplane.task_composition import is_task_request
@@ -85,6 +86,8 @@ class HomeService:
         self.duration = 0.0
         self.voiced_duration = self.wake_duration = 0.0
         self.voice_events = {}
+        self.asr_attempts = 0
+        self.wake_motion_counts = WakeMotionCounts()
         self.noise = 0.004
         self.last_audio = None
         self.audio_input_at = None
@@ -139,6 +142,9 @@ class HomeService:
             "speaker": dict(self.speaker.state),
             "diagnostics": self.runtime_log.export(),
         }
+
+    def vision_benchmark_voice(self):
+        return {'asr_attempts': self.asr_attempts, 'wake_confirmed': self.voice_events.get('wake_confirmed', 0)}
 
     def voice_status(self):
         if not self.enabled:
@@ -544,6 +550,7 @@ class HomeService:
         try:
             self.state["voice"] = "transcribing"
             policy=self.voice_preferences()
+            self.asr_attempts += 1
             result = await self.request("transcribe", pcm=base64.b64encode(pcm).decode(), attending=attending,
                                         voice_revision=policy.revision, wake_only=wake_only)
             if result.get('voice_revision',0)!=policy.revision or self.voice_preferences()!=policy:
@@ -558,6 +565,8 @@ class HomeService:
             if refusal:
                 result_kind, result_code = 'refused', refusal
                 self.state["reason"] = "等待清晰的语音指令"
+                if self.current(captured, epoch) and not VOICE_INPUT_PAUSED.exists():
+                    return RETRY_OTHER_MIC
                 return
             if not self.current(captured, epoch) or time.monotonic() - captured > 10:
                 result_kind, result_code = "refused", "stale_input"
@@ -572,9 +581,11 @@ class HomeService:
                 if wake_only:
                     result_kind, result_code = "refused", "voice_asr_rejected"
                     self.state["reason"] = "等待清晰的语音指令"
+                    return RETRY_OTHER_MIC
                 elif route.get("reason") == "need_wake_word_without_attention":
                     result_kind, result_code = "refused", "voice_not_addressed"
                     self.state["reason"] = f"未确认注视，请先说 {policy.wake_word}"
+                    return RETRY_OTHER_MIC
                 else:
                     self.state["reason"] = "请继续说出指令"
                 return

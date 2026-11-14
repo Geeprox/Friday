@@ -57,6 +57,7 @@ from homeplane.embodied.camera_audio import AudioIngress, WakeCameraCue, deliver
 from homeplane.embodied import camera_interaction
 from homeplane.embodied.voice_routing import VoiceRouting
 from homeplane.embodied.vision_pipe import VisionProcess
+from homeplane.embodied.vision_benchmark import VisionBenchmark, camera_sample, valid_token
 from homeplane.people.live import IdentityStore, analyze, close_identity
 from homeplane.people.identity_session import IdentitySession
 
@@ -354,11 +355,12 @@ async def secondary_audio(camera_id, packet):
         await deliver_audio(service, packet)
 
 
-full_vision_deadline = 0.0
+vision_measurement = VisionBenchmark()
 
 
 def benchmark_full_vision():
-    return time.monotonic() < full_vision_deadline
+    return (vision_measurement.active()
+            and vision_measurement.status(vision_measurement_sample())['full_rate'])
 
 
 def needs_full_vision(camera_id, session):
@@ -463,7 +465,7 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
                 request_id=request_id, expires_mono=expires))+'\n').encode())
             sent = True
             if wake is not None:
-                record_wake_motor(home.runtime_log, wake, direction)
+                record_wake_motor(home.runtime_log, wake, direction, counts=home.wake_motion_counts)
         await capture.stdin.drain()
         result = await asyncio.wait_for(future, 3)
         if result.get('error_code') == 'motor_request_expired':
@@ -474,7 +476,7 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             elapsed_ms=round((time.monotonic()-began)*1000))
         if wake is not None:
-            record_wake_motor(home.runtime_log, wake, direction, result='ok')
+            record_wake_motor(home.runtime_log, wake, direction, result='ok', counts=home.wake_motion_counts)
         return result
     except asyncio.CancelledError:
         home.runtime_log.record('embodied.command','result',correlation=correlation,
@@ -1413,23 +1415,72 @@ async def safety_policy_changed():
 
 
 def identity_authorized(request):
-    if request.client.host not in {"127.0.0.1", "::1"} or not secrets.compare_digest(
-        request.headers.get("x-friday-worker", ""), (PRIVATE / "control-key").read_text().strip()
-    ):
+    if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
         raise HTTPException(403)
+    try:
+        expected = (PRIVATE / "control-key").read_text().strip()
+    except (OSError, UnicodeError):
+        raise HTTPException(403) from None
+    supplied = request.headers.get("x-friday-worker", "")
+    if (not expected.isascii() or not supplied.isascii() or not 32 <= len(expected) <= 512
+            or not secrets.compare_digest(supplied, expected)):
+        raise HTTPException(403)
+
+
+def vision_measurement_sample():
+    now = time.monotonic()
+    primary_open = (state['status'] == 'live' and 0 <= now-last_frame <= 1.5
+                    and capture is not None and capture.returncode is None)
+    primary_state = ('live' if primary_open else 'stale' if state['status'] == 'live' else state['status'])
+    rows = [camera_sample(1, primary_state, 'running' if primary_open else 'waiting', identities.session,
+                          str(camera_planner.intent_revision) if camera_planner else 'fixed',
+                          state.get('vision_cadence'), state['processed_frames'],
+                          state.get('pipeline_ms') if primary_open else None,
+                          home.vision_benchmark_voice() | home.wake_motion_counts.public())]
+    for camera_id in (camera['id'] for camera in wall.cameras if camera['id'] != SELECTED['id']):
+        item = previews.sessions.get(camera_id, {})
+        report = previews.status(camera_id)
+        recognizer = item.get('recognizer')
+        service = secondary_homes.get(camera_id)
+        counts = item.get('wake_motion_counts')
+        voice = service.vision_benchmark_voice() if service else {}
+        if counts is not None:
+            voice.update(counts.public())
+        rows.append(camera_sample(len(rows)+1, report['state'], report.get('recognition', 'waiting'),
+                                  recognizer.session if recognizer else None, item.get('mode_revision'),
+                                  report.get('vision_cadence'), report['frames'], report.get('latency_ms'),
+                                  voice))
+    interactive = (games.mode not in {'off', 'home'} or party_camera.window(now)[2]
+                   or practice.active() is not None)
+    return dict(worker=SESSION, sampled_mono=now, interactive_session=interactive, cameras=rows)
+
+
+@app.get("/api/internal/vision-benchmark")
+async def vision_benchmark_status(request: Request):
+    identity_authorized(request)
+    return vision_measurement.status(vision_measurement_sample())
 
 
 @app.post("/api/internal/vision-benchmark")
 async def vision_benchmark(request: Request):
-    global full_vision_deadline
-
     identity_authorized(request)
-    body = await request.json()
-    seconds = body.get('full_rate_seconds') if isinstance(body, dict) and set(body) == {'full_rate_seconds'} else None
-    if type(seconds) is not int or not 0 <= seconds <= 75:
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
         raise HTTPException(422, 'vision_benchmark_invalid')
-    full_vision_deadline = time.monotonic() + seconds
-    return {'full_rate_seconds': seconds}
+    try:
+        if set(body) == {'full_rate_seconds', 'scope'} and isinstance(body['scope'], list):
+            token = vision_measurement.begin(body['full_rate_seconds'], vision_measurement_sample(),
+                                             tuple(body['scope']))
+            return {'token': token}
+        if set(body) == {'cancel'} and valid_token(body['cancel']):
+            vision_measurement.cancel(body['cancel'])
+            return {'full_rate': False}
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    raise HTTPException(422, 'vision_benchmark_invalid')
 
 
 @app.get("/api/internal/identity")

@@ -111,7 +111,8 @@ def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, recogn
         motion = SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                  review_pending=safety.review_pending, fall_pending=safety.fall_pending,
                                  sound_cue=cue, on_motion=None, runtime_log=h.runtime_log)
-        item = dict(privacy_closed=False, source_active=True, control_epoch=1)
+        item = dict(privacy_closed=False, source_active=True, control_epoch=1,
+                    wake_motion_counts=h.wake_motion_counts)
         scope = dict(time=clock, asyncio=asyncio, secrets=secrets, json=json,
                      director=director, selected=CAMERA, self=motion, item=item, waiters=waiters,
                      process=SimpleNamespace(returncode=None,

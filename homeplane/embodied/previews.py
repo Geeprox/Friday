@@ -10,6 +10,7 @@ from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage, captur
 from .miot_spec import camera_can_take_motor
 from .camera_director import CameraDirector
 from .camera_follow_picker import CameraFollowPicker
+from .vision_benchmark import WakeMotionCounts
 from .camera_intent import (
     CAMERA_MODES, PET_MODES, TARGET_MODES, CameraIntentStore, camera_intent_readback, finish_camera_survey,
 )
@@ -102,6 +103,7 @@ class PreviewPool:
                 mode=intent.mode if self.recognize else 'hold',
                 mode_revision=intent.revision,
                 intent_status=intent.status,
+                wake_motion_counts=WakeMotionCounts(),
             )
             self.sessions[camera_id] = entry
             entry["task"] = asyncio.create_task(self._monitor(selected, entry))
@@ -518,7 +520,7 @@ class PreviewPool:
                                 request_id=request_id,expires_mono=expires))+'\n').encode())
                             sent = True
                             if wake is not None:
-                                record_wake_motor(self.runtime_log, wake, direction)
+                                record_wake_motor(self.runtime_log, wake, direction, counts=item['wake_motion_counts'])
                         await process.stdin.drain()
                         result = await asyncio.wait_for(future,3)
                         if result.get('error_code') == 'motor_request_expired':
@@ -529,7 +531,8 @@ class PreviewPool:
                         self.runtime_log.record('embodied.command','result',correlation=correlation,
                             elapsed_ms=round((time.monotonic()-began)*1000))
                         if wake is not None:
-                            record_wake_motor(self.runtime_log, wake, direction, result='ok')
+                            record_wake_motor(self.runtime_log, wake, direction, result='ok',
+                                              counts=item['wake_motion_counts'])
                         return result
                     except asyncio.CancelledError:
                         self.runtime_log.record('embodied.command','result',correlation=correlation,
