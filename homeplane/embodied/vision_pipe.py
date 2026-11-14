@@ -5,6 +5,8 @@ import json
 import math
 import time
 
+from .vision_benchmark import LatencyHistogram
+
 
 PIPE_LIMIT = 6_000_000
 
@@ -54,6 +56,7 @@ class VisionProcess:
         self.process = None
         self.failures = 0
         self.retry_at = 0.0
+        self.timings = {'vision_request': LatencyHistogram(), 'native_processing': LatencyHistogram()}
 
     async def detect(self, payload, *, on_failure):
         if time.monotonic() < self.retry_at:
@@ -67,7 +70,11 @@ class VisionProcess:
                     self.executable, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL, limit=PIPE_LIMIT,
                 )
-            reply = await request_vision(self.process, payload)
+            started = time.monotonic()
+            try:
+                reply = await request_vision(self.process, payload)
+            finally:
+                self.timings['vision_request'].record_ms((time.monotonic() - started) * 1000)
         except (OSError, RuntimeError, ValueError) as error:
             self.failures += 1
             self.retry_at = time.monotonic() + 2 ** min(self.failures - 1, 3)
@@ -77,6 +84,7 @@ class VisionProcess:
                 await self._retire_failed()
             return None
         self.failures = 0
+        self.timings['native_processing'].record_ms(reply.get('inference_ms'))
         return reply
 
     async def _retire_failed(self):

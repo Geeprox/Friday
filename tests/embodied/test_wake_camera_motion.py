@@ -173,6 +173,9 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(
                 if kwargs.get('correlation') == home.wake_camera.correlation]
     assert [kwargs['code'] for _, kwargs in receipts] == [
         'wake_confirmed', 'wake_motor_right', 'wake_motor_acknowledged']
+    timings = home.wake_motion_counts.timings
+    assert sum(timings['wake_confirm_to_motor_submit'].bins) == 1
+    assert sum(timings['motor_submit_to_ack'].bins) == 1
 
     found = subject(7, target_x)
     assert observe(3.9, offset=.05, people=[found]) is None

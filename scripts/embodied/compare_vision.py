@@ -16,7 +16,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from homeplane.embodied.vision_benchmark import comparison_scope, valid_token
+from homeplane.embodied.vision_benchmark import comparison_scope, summarize_timing, timing_deltas, valid_token
 
 ENDPOINT = '/api/internal/vision-benchmark'
 WAKE_COUNTS = ('asr_attempts', 'wake_confirmed', 'wake_motor_sent', 'wake_motor_acknowledged')
@@ -85,6 +85,7 @@ def summarize(rows):
     for lane in zip(*(sample['cameras'] for sample, _ in rows)):
         start, end = lane[0], lane[-1]
         latency = sorted(row['latency_ms'] for row in lane if row['latency_ms'] is not None)
+        timings = timing_deltas(start.get('timings'), end.get('timings'))
         cameras.append(dict(slot=end['slot'],
             inference_submitted=end['inference']-start['inference'],
             skipped_static=end['skipped']-start['skipped'],
@@ -92,7 +93,8 @@ def summarize(rows):
             quiet_samples=sum(row['quiet_ms'] is not None and row['quiet_ms'] >= 4500 for row in lane),
             sampled_frame_age_median_ms=statistics.median(latency) if latency else None,
             sampled_frame_age_p95_ms=latency[math.ceil(len(latency)*.95)-1] if latency else None,
-            voice={key: end['voice'].get(key, 0)-start['voice'].get(key, 0) for key in WAKE_COUNTS}))
+            voice={key: end['voice'].get(key, 0)-start['voice'].get(key, 0) for key in WAKE_COUNTS},
+            timings={key: summarize_timing(counts) for key, counts in timings.items()}))
     hosts = {sample['sampled_at']: sample for _, sample in rows if sample.get('available')}
     cpu = [row['cpu_percent'] for row in hosts.values() if row.get('cpu_percent') is not None]
     memory = [row['memory_used_bytes'] for row in hosts.values() if row.get('memory_used_bytes') is not None]
@@ -122,6 +124,7 @@ def measure(port, pool, seconds, scope, *, full_rate):
                 if (any(row[k] < previous[k] for k in COUNTERS)
                         or any(row['voice'].get(k, 0) < previous['voice'].get(k, 0) for k in WAKE_COUNTS)):
                     raise ValueError('measurement_counter_reset')
+                timing_deltas(previous.get('timings'), row.get('timings'))
         rows.append((sample, host.result()))
     return summarize(rows)
 

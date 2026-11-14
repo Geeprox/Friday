@@ -465,7 +465,8 @@ class HomeService:
             return False
         if source is not None:
             self.camera_focus = None
-            self.wake_camera = WakeCameraCue(captured, self.camera_session, source, policy.revision)
+            self.wake_camera = WakeCameraCue(captured, self.camera_session, source, policy.revision,
+                                            confirmed_mono=time.monotonic())
             self.note_voice("wake_confirmed", correlation=self.wake_camera.correlation)
             return True
         # 没有采集凭据时只保留原有的单人构图提示。

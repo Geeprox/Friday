@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from homeplane.embodied.vision_pipe import PIPE_LIMIT, request_vision
+from homeplane.embodied.vision_benchmark import VisionBenchmark, summarize_timing
 from homeplane.embodied import camera_recognition, previews, ptz_control, vision_pipe
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.party_camera import PartyCamera
@@ -151,6 +152,33 @@ def owned_port():
     return process
 
 
+@pytest.mark.asyncio
+async def test_recognizer_records_request_round_trip_and_separate_native_processing(monkeypatch):
+    clock = [20.0]
+    monkeypatch.setattr(vision_pipe, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    owner = vision_pipe.VisionProcess('synthetic-vision')
+    owner.process = owned_port()
+    on_failure = Mock()
+
+    async def respond(_process, payload):
+        if payload['jpeg'] == 'synthetic-timeout':
+            clock[0] += .22
+            raise TimeoutError()
+        clock[0] += .055
+        return {'inference_ms': 41.0}
+
+    monkeypatch.setattr(vision_pipe, 'request_vision', respond)
+    assert (await owner.detect({'jpeg': 'synthetic-frame'}, on_failure=on_failure))['inference_ms'] == 41
+    assert await owner.detect({'jpeg': 'synthetic-timeout'}, on_failure=on_failure) is None
+    on_failure.assert_called_once_with('TimeoutError')
+    assert summarize_timing(owner.timings['vision_request'].bins) == {
+        'samples': 2, 'p95_upper_ms': 300, 'above_range': 0,
+    }
+    assert summarize_timing(owner.timings['native_processing'].bins) == {
+        'samples': 1, 'p95_upper_ms': 50, 'above_range': 0,
+    }
+
+
 def camera_ports(monkeypatch, fault):
     capture, failed, replacement = owned_port(), owned_port(), owned_port()
     queue = asyncio.Queue()
@@ -207,6 +235,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         offer_frame=offer_frame, CAPTURE_RECEIVE_TIMEOUT=CAPTURE_RECEIVE_TIMEOUT, AudioIngress=AudioIngress,
         close_identity=close_identity, camera_is_open=AsyncMock(return_value=True), capture_environment=lambda:{},
         VisionProcess=vision_pipe.VisionProcess, RoomSession=lambda *_,**__:room_port(), room=None,
+        vision_measurement=VisionBenchmark(),
         CAMERA_STORAGE=tmp_path, room_lock=asyncio.Lock(), close_rooms=AsyncMock(),
         SceneProcess=lambda _:SimpleNamespace(analyze=AsyncMock(return_value=None),
             close=AsyncMock(return_value=True), status=lambda:dict(state='idle')),

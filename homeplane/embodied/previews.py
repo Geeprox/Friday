@@ -485,6 +485,7 @@ class PreviewPool:
                     future = asyncio.get_running_loop().create_future()
                     waiters[request_id] = future
                     sent = False
+                    wake_submitted_at = None
                     wake = (director.pending_decision or {}).get('sound_cue') if observed is not None else None
                     self.runtime_log.record('embodied.command','start',correlation=correlation)
                     try:
@@ -520,9 +521,12 @@ class PreviewPool:
                                 request_id=request_id,expires_mono=expires))+'\n').encode())
                             sent = True
                             if wake is not None:
-                                record_wake_motor(self.runtime_log, wake, direction, counts=item['wake_motion_counts'])
+                                wake_submitted_at = record_wake_motor(
+                                    self.runtime_log, wake, direction, counts=item['wake_motion_counts'],
+                                    submitted_at=time.monotonic())
                         await process.stdin.drain()
                         result = await asyncio.wait_for(future,3)
+                        wake_reply_at = time.monotonic() if wake is not None else None
                         if result.get('error_code') == 'motor_request_expired':
                             raise RuntimeError('motor_request_expired')
                         if result.get('error_class') or result.get('native_code')!=0:
@@ -532,7 +536,8 @@ class PreviewPool:
                             elapsed_ms=round((time.monotonic()-began)*1000))
                         if wake is not None:
                             record_wake_motor(self.runtime_log, wake, direction, result='ok',
-                                              counts=item['wake_motion_counts'])
+                                              counts=item['wake_motion_counts'], submitted_at=wake_submitted_at,
+                                              acknowledged_at=wake_reply_at)
                         return result
                     except asyncio.CancelledError:
                         self.runtime_log.record('embodied.command','result',correlation=correlation,

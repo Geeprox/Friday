@@ -418,6 +418,7 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
     began = time.monotonic()
     expires = min(began+1.5, observed+1.5) if observed is not None else began+1.5
     sent = False
+    wake_submitted_at = None
     home.runtime_log.record('embodied.command','start',correlation=correlation)
     try:
         if not await camera_is_open(SELECTED):
@@ -465,9 +466,11 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
                 request_id=request_id, expires_mono=expires))+'\n').encode())
             sent = True
             if wake is not None:
-                record_wake_motor(home.runtime_log, wake, direction, counts=home.wake_motion_counts)
+                wake_submitted_at = record_wake_motor(home.runtime_log, wake, direction, counts=home.wake_motion_counts,
+                                                     submitted_at=time.monotonic())
         await capture.stdin.drain()
         result = await asyncio.wait_for(future, 3)
+        wake_reply_at = time.monotonic() if wake is not None else None
         if result.get('error_code') == 'motor_request_expired':
             raise RuntimeError('motor_request_expired')
         if result.get("error_class") or result.get("native_code") != 0:
@@ -476,7 +479,8 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             elapsed_ms=round((time.monotonic()-began)*1000))
         if wake is not None:
-            record_wake_motor(home.runtime_log, wake, direction, result='ok', counts=home.wake_motion_counts)
+            record_wake_motor(home.runtime_log, wake, direction, result='ok', counts=home.wake_motion_counts,
+                              submitted_at=wake_submitted_at, acknowledged_at=wake_reply_at)
         return result
     except asyncio.CancelledError:
         home.runtime_log.record('embodied.command','result',correlation=correlation,
@@ -830,6 +834,7 @@ async def run_source(my_generation):
             limit=6_000_000,
         )
         vision = VisionProcess(VISION)
+        vision_measurement.primary_timings = vision.timings
         capture.stdin.write(
             (
                 json.dumps(
@@ -1427,16 +1432,18 @@ def identity_authorized(request):
         raise HTTPException(403)
 
 
-def vision_measurement_sample():
+def vision_measurement_sample(*, include_timings=False):
     now = time.monotonic()
     primary_open = (state['status'] == 'live' and 0 <= now-last_frame <= 1.5
                     and capture is not None and capture.returncode is None)
     primary_state = ('live' if primary_open else 'stale' if state['status'] == 'live' else state['status'])
+    primary_timings = (vision_measurement.primary_timings | home.wake_motion_counts.timings
+                       if include_timings else None)
     rows = [camera_sample(1, primary_state, 'running' if primary_open else 'waiting', identities.session,
                           str(camera_planner.intent_revision) if camera_planner else 'fixed',
                           state.get('vision_cadence'), state['processed_frames'],
                           state.get('pipeline_ms') if primary_open else None,
-                          home.vision_benchmark_voice() | home.wake_motion_counts.public())]
+                          home.vision_benchmark_voice() | home.wake_motion_counts.public(), timings=primary_timings)]
     for camera_id in (camera['id'] for camera in wall.cameras if camera['id'] != SELECTED['id']):
         item = previews.sessions.get(camera_id, {})
         report = previews.status(camera_id)
@@ -1446,10 +1453,15 @@ def vision_measurement_sample():
         voice = service.vision_benchmark_voice() if service else {}
         if counts is not None:
             voice.update(counts.public())
+        timings = None
+        if include_timings:
+            timings = {} if recognizer is None else recognizer.vision.timings
+            if counts is not None:
+                timings = timings | counts.timings
         rows.append(camera_sample(len(rows)+1, report['state'], report.get('recognition', 'waiting'),
                                   recognizer.session if recognizer else None, item.get('mode_revision'),
                                   report.get('vision_cadence'), report['frames'], report.get('latency_ms'),
-                                  voice))
+                                  voice, timings=timings))
     interactive = (games.mode not in {'off', 'home'} or party_camera.window(now)[2]
                    or practice.active() is not None)
     return dict(worker=SESSION, sampled_mono=now, interactive_session=interactive, cameras=rows)
@@ -1458,7 +1470,7 @@ def vision_measurement_sample():
 @app.get("/api/internal/vision-benchmark")
 async def vision_benchmark_status(request: Request):
     identity_authorized(request)
-    return vision_measurement.status(vision_measurement_sample())
+    return vision_measurement.status(vision_measurement_sample(include_timings=True))
 
 
 @app.post("/api/internal/vision-benchmark")

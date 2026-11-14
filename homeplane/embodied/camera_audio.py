@@ -30,6 +30,7 @@ class WakeCameraCue:
     source: tuple[str, str]
     voice_revision: int
     correlation: str = field(default_factory=lambda: secrets.token_hex(16), compare=False)
+    confirmed_mono: float | None = field(default=None, compare=False, repr=False, kw_only=True)
 
 
 @dataclass(frozen=True)
