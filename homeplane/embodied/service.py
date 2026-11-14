@@ -295,7 +295,7 @@ class EmbodiedService:
                 name=c["name"],
                 room=c["room"],
                 model=c["model"],
-                can_takeover=camera_can_take_motor(c),
+                can_takeover=c.get('preview_only') is not True and camera_can_take_motor(c),
                 power_writable=(c.get('preview_only') is not True and (
                     c.get('mijia_enrolled') is not True or camera_power_writable(c))),
                 preserve_shutter=not c.get("allow_open"),

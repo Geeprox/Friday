@@ -114,11 +114,12 @@ async def camera_spec(device):
             raise ValueError('camera_power_missing')
         services = []
         for entry in raw['services']:
-            name = entry['type'].split(':')[3:4]
-            wanted = {property_name for service_name, property_name in _CAMERA_CAPABILITIES
+            name = entry.get('type', '').split(':')[3:4]
+            wanted = {property_name for service_name, property_name in _CAMERA_CAPABILITIES.values()
                       if name == [service_name]}
-            relevant = [{key: p[key] for key in ('iid', 'type', 'format', 'access')}
-                        for p in entry.get('properties', []) if p['type'].split(':')[3] in wanted]
+            relevant = [{key: p[key] for key in ('iid', 'type', 'access')} | {'format': p.get('format')}
+                        for p in entry.get('properties', []) if p.get('type', '').split(':')[3:4]
+                        and p['type'].split(':')[3] in wanted]
             if relevant:
                 services.append(dict(iid=entry['iid'], type=entry['type'], properties=relevant))
         return {'type': urn, 'services': services}

@@ -1,8 +1,10 @@
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from homeplane.embodied.miot_spec import camera_can_take_motor, camera_power_writable, camera_properties
 
 from homeplane.embodied import camera_interaction, mijia_inventory
 from homeplane.embodied.mijia_inventory import connect_camera, home_scope, public_inventory, read_inventory
@@ -29,6 +31,49 @@ def fixture():
     login = SimpleNamespace(current=AsyncMock(return_value={'cloud_server': 'cn', 'access_token': 'synthetic-grant'}),
                             http=lambda **_: transport)
     return config, home, login, transport
+
+
+@pytest.mark.asyncio
+async def test_mijia_spec_preserves_supported_controls_without_human_close_up(monkeypatch):
+    import httpx
+
+    def prop(iid, name, access, kind='bool'):
+        return dict(iid=iid, type=f'urn:miot-spec-v2:property:{name}:00000001', access=access, format=kind)
+
+    def service(iid, name, *properties):
+        return dict(iid=iid, type=f'urn:miot-spec-v2:service:{name}:00000001', properties=list(properties))
+
+    urn = 'urn:miot-spec-v2:device:camera:00:fixture.camera.one:1'
+    read, write = ['read', 'notify'], ['read', 'write', 'notify']
+    raw = {'type': urn, 'services': [
+        service(2, 'camera-control', prop(1, 'on', write), prop(2, 'ptz-camera', read),
+                prop(3, 'human-tracking', write), prop(4, 'vendor-private', read)),
+        service(3, 'cruise', prop(1, 'cruise-switch', write)),
+        service(4, 'ai-detection', prop(1, 'pet-tracking', write)),
+        service(5, 'camera-fav-area', prop(1, 'fav-area', read, 'string'),
+                prop(2, 'active-fav-area', write, 'uint8')),
+        service(6, 'indicator-light', prop(1, 'on', write)),
+    ]}
+
+    async def response_bytes():
+        yield json.dumps(raw).encode()
+
+    @asynccontextmanager
+    async def stream(method, url, *, params):
+        assert (method, url, params) == ('GET', 'https://miot-spec.org/miot-spec-v2/instance', {'type': urn})
+        yield SimpleNamespace(raise_for_status=lambda: None, aiter_bytes=response_bytes)
+
+    @asynccontextmanager
+    async def client(**_):
+        yield SimpleNamespace(stream=stream)
+
+    monkeypatch.setattr(httpx, 'AsyncClient', client)
+    spec = await mijia_inventory.camera_spec(SimpleNamespace(urn=urn))
+    camera = dict(spec=spec, mijia_enrolled=True, ptz_supported=True)
+    assert len(spec['services']) == 4
+    assert camera_power_writable(camera) and camera_can_take_motor(camera)
+    assert 'human_close_up' not in camera_properties(camera)
+    assert len(spec['services'][0]['properties']) == 3
 
 
 @pytest.mark.asyncio
