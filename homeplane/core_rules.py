@@ -192,6 +192,19 @@ class CoreRules:
         # 时区属于已核对的家庭与账号，长期规则的属性证明另行绑定授权。
         return [context[1], context[2]] if context is not None else None
 
+    def rule_authority(self, rule):
+        targets = {action.target for action in rule.actions if hasattr(action, 'target')}
+        enrolled = {target for target in targets if target.startswith('mijia:property:')}
+        if not enrolled:
+            return self.core.actions.legacy_authority()
+        native, revision = self.core.actions.native_authority()
+        if enrolled == targets:
+            return native, revision
+        legacy, legacy_revision = self.core.actions.legacy_authority()
+        if native is None or legacy is None:
+            return None, None
+        return legacy, digest(['combined_mijia_rule_authority', legacy_revision, revision])
+
     def available(self, rule=None):
         if not self.owner.owned:
             return False
@@ -199,6 +212,7 @@ class CoreRules:
             return self.event_available()
         authority, _ = self.core.actions.authority()
         if rule is not None:
+            authority, _ = self.rule_authority(rule)
             bindings = home.schedule_bindings(rule, authority)
             return bindings is not None and home.schedule_routable(bindings)
         context, targets = home.active(authority) if authority else (None, {})
@@ -209,7 +223,7 @@ class CoreRules:
         home = self.mijia_home()
         if home is None:
             return
-        bindings = home.schedule_bindings(rule, self.core.actions.authority()[0])
+        bindings = home.schedule_bindings(rule, self.rule_authority(rule)[0])
         if bindings is None:
             raise ValueError("core_rule_source_or_authority_unavailable")
         if record is not None and home.schedule_scope(bindings) not in (
@@ -268,7 +282,7 @@ class CoreRules:
         if snapshot.mode == MIJIA_POWER_MODE:
             home = self.mijia_home()
             if home is not None:
-                bindings = home.schedule_bindings(rule, self.core.actions.authority()[0])
+                bindings = home.schedule_bindings(rule, self.rule_authority(rule)[0])
                 if bindings is not None:
                     return home.schedule_scope(bindings)
             return None
@@ -315,7 +329,6 @@ class CoreRules:
     def mijia_migration(self, *, check_routes=False):
         """沿用旧规则与触发回执，用独立证明绑定到本地租约下的米家属性。"""
         home = self.core.actions.mijia_power_home
-        authority, revision = self.core.actions.authority()
         excluded, migrations, required = [], {}, None
         ha_online = self.event_available()
         cached = self.core._diagnostic_snapshot
@@ -331,6 +344,7 @@ class CoreRules:
                 ).fetchone()
                 if consumed or now > occurrence.at + timedelta(milliseconds=record.rule.execution.max_event_age_ms):
                     continue
+            authority, revision = self.rule_authority(record.rule)
             bindings = (home.schedule_bindings(record.rule, authority)
                         if home and revision == record.authority_revision else None)
             if bindings is not None:
@@ -490,7 +504,7 @@ class CoreRules:
             if request.catalog_selection:
                 origin = self._catalog_origin(request.catalog_selection)
             start_paused = request.start_paused or request.catalog_selection is not None
-            _, authority = self.core.actions.authority()
+            _, authority = self.rule_authority(request.rule)
             identifier = str(uuid4())
             new = core_record(
                 "core:version:" + identifier,
@@ -538,7 +552,7 @@ class CoreRules:
         snapshot = await self.core.snapshot()
         self._live(plan)
         require_future_once(plan.new.rule.trigger, datetime.now(UTC))
-        _, revision = self.core.actions.authority()
+        _, revision = self.rule_authority(plan.new.rule)
         if (
             adapter is not self.core.adapter
             or plan.context_fingerprint != self.context()["fingerprint"]
@@ -1051,7 +1065,7 @@ class CoreRuleRuntime:
             or (item["event"].received_at or item["event"].wall_time) < self.modes["home.sleep"].issued_at
         ):
             return "event_precedes_current_mode_window"
-        _, revision = self.core.actions.authority()
+        _, revision = self.manager.rule_authority(record.rule)
         if revision != record.authority_revision:
             return "authority_changed_requires_review"
         if self.manager.read(record.id) != record or not record.enabled:

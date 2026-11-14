@@ -321,6 +321,12 @@ async def serve(reader, session):
                              'push': sum(hub.can_push(did) for did in routes)}
                 elif request.keys() == {'property_watches'}:
                     reply = await notifications.fetch(request['property_watches'])
+                elif 'native_power' in request:
+                    from homeplane.mijia_enrollment import native_power_operation
+
+                    reply = await native_power_operation(
+                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
+                    )
                 elif 'cover' in request:
                     reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
                 elif 'registered_cover' in request:

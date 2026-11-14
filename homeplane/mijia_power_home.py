@@ -8,7 +8,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, ClassVar
 from uuid import uuid4
 
 import httpx
@@ -66,6 +66,7 @@ from .rule_contracts import (
 
 CATALOG = 'mijia-power-catalog.json'
 NUMERIC_CATALOG = 'mijia-numeric-catalog.json'
+NATIVE_CATALOG = 'mijia-enrolled-devices.json'
 MAX_TARGETS = 512
 MAX_CATALOG_BYTES = 512 * 1024
 SAMPLE_TTL = 45
@@ -87,6 +88,10 @@ class PowerTarget(Contract):
         return self.identity, self.siid, self.piid
 
     @property
+    def native(self):
+        return self.entity.id.startswith('mijia:property:')
+
+    @property
     def reference(self):
         # 名称和所在房间可变化，设备和通道标识才参与发送校验。
         return (self.entity.id, self.device.id, self.property_key, self.model, self.urn, self.registry_uid, self.operation,
@@ -95,7 +100,8 @@ class PowerTarget(Contract):
     @model_validator(mode='after')
     def validate_binding(self):
         if (self.entity.simulated or self.device.simulated or self.device.category != 'device'
-                or POWER_BY_KIND.get(self.entity.kind) != self.operation or not bindings(self.entity)
+                or POWER_BY_KIND.get(self.entity.kind) != self.operation
+                or not (self.native or bindings(self.entity))
                 or not any(b.source == 'xiaomi-identity' and b.external_id == self.identity
                            for b in self.device.bindings)):
             raise ValueError('mijia_power_catalog_binding')
@@ -110,10 +116,46 @@ class PowerCatalog(Contract):
 
     @model_validator(mode='after')
     def unique_targets(self):
-        if (len({t.entity.id for t in self.targets}) != len(self.targets)
+        if (any(t.native for t in self.targets) or len({t.entity.id for t in self.targets}) != len(self.targets)
                 or len({t.property_key for t in self.targets}) != len(self.targets)):
             raise ValueError('mijia_power_catalog_binding')
         return self
+
+
+class NativeDeviceCatalog(Contract):
+    household: str = Field(pattern=FAMILY.pattern + '$')
+    family: str = Field(pattern=FAMILY.pattern + '$')
+    epoch: str = Field(pattern=r'^[a-f0-9]{32}$')
+    enabled: bool
+    targets: list[PowerTarget] = Field(max_length=MAX_TARGETS)
+    scope: ClassVar[str] = 'mijia_selected_devices'
+    expires_at: ClassVar[None] = None
+
+    @model_validator(mode='after')
+    def unique_targets(self):
+        if (any(not t.native for t in self.targets) or len({t.entity.id for t in self.targets}) != len(self.targets)
+                or len({t.property_key for t in self.targets}) != len(self.targets)):
+            raise ValueError('mijia_invalid_enrollment')
+        for target in self.targets:
+            key = digest([self.household, target.identity, target.siid, target.piid])
+            if (target.entity.id != 'mijia:property:' + key or target.registry_uid != key
+                    or [(b.source, b.external_id) for b in target.entity.bindings] != [('mijia-property', key)]):
+                raise ValueError('mijia_invalid_enrollment')
+        return self
+
+    @property
+    def operations(self):
+        return sorted({t.operation for t in self.targets})
+
+    @property
+    def revision(self):
+        # 登记另一台设备不会使已批准的规则失效。暂停、恢复或更换家庭会更新修订。
+        return digest([self.family, self.household, self.epoch, self.enabled])
+
+
+def read_native_catalog(directory):
+    body, stamp = _read_authority_file(directory / NATIVE_CATALOG, limit=MAX_CATALOG_BYTES)
+    return NativeDeviceCatalog.model_validate_json(body), hashlib.sha256(body + stamp).hexdigest()
 
 
 def read_catalog(directory):
@@ -127,6 +169,11 @@ def read_numeric_catalog(directory):
 
 
 def catalog_available(directory):
+    try:
+        if read_native_catalog(directory)[0].targets:
+            return True
+    except (OSError, ValueError):
+        pass
     try:
         if read_catalog(directory).targets:
             return True
@@ -294,6 +341,40 @@ class MijiaPowerHome:
         self.hints = set()
         self.watch_context = None
 
+    def native_catalog(self, context=None):
+        context = context if context is not None else self.discovery_context()
+        if context is None:
+            return None, None
+        try:
+            catalog, generation = read_native_catalog(self.path.parent)
+        except (OSError, ValueError):
+            return None, None
+        if (catalog.family, catalog.household) != context[:2] or not catalog.targets:
+            return None, None
+        return catalog, generation
+
+    def save_native_catalog(self, catalog):
+        from .embodied.ptz_control import atomic
+
+        body = catalog.model_dump(mode='json')
+        if len(json.dumps(body, ensure_ascii=False, indent=2).encode()) > MAX_CATALOG_BYTES:
+            raise ValueError('mijia_enrollment_limit')
+        atomic(self.path.with_name(NATIVE_CATALOG), body)
+
+    def set_native_enabled(self, enabled, expected):
+        catalog, _ = self.native_catalog()
+        if catalog is None or catalog.revision != expected:
+            raise ValueError('source_conflict')
+        if catalog.enabled != enabled:
+            self.save_native_catalog(catalog.model_copy(update={'enabled': enabled}))
+
+    def enrollment_identities(self, context):
+        # 同一家庭已从 HA 登记过的设备保留已有编号和选择。
+        family, household = context[:2]
+        return {target.identity for catalog in (self.catalog, self.covers)
+                if catalog and (catalog.family, catalog.household) == (family, household)
+                for target in catalog.targets}
+
     def discovery_context(self):
         from .embodied.mijia_lan import home_input
         from .embodied.mijia_power import grant_binding
@@ -333,6 +414,8 @@ class MijiaPowerHome:
         if context is None:
             return
         family, household, _, _, configuration = context
+        native, _ = self.native_catalog(context)
+        enrolled = {t.identity for t in native.targets} if native else set()
         approval = cover_approval(authority)
         previous = self.catalog
         known = ({(t.identity, t.urn, t.model, t.registry_uid, t.entity.kind): t.property_key for t in previous.targets}
@@ -372,7 +455,7 @@ class MijiaPowerHome:
                                                     or operation is None and entity.kind != 'cover'))):
                 continue
             source = self.power.registry_source(adapter, entity, device)
-            if source is None:
+            if source is None or source.identity in enrolled:
                 continue
             urn, model = source.catalog['urn'], source.catalog.get('model')
             unique = source.registry['unique_id']
@@ -538,23 +621,22 @@ class MijiaPowerHome:
     def active(self, authority=None):
         catalog = self.catalog
         cover_catalog = self.covers
-        if catalog is None and self.numeric is None and cover_catalog is None:
-            return None, {}
         if authority is None:
-            authority, _ = self.core.actions.authority(include_inactive=True)
-        if not isinstance(authority, HomeDeviceAuthority):
-            return None, {}
+            authority, _ = self.core.actions.legacy_authority(include_inactive=True)
         context = self.discovery_context()
         if context is None:
             return None, {}
         family, household, grant, models, configuration = context
-        approval = cover_approval(authority)
+        native, _ = self.native_catalog(context)
+        if not isinstance(authority, HomeDeviceAuthority):
+            authority = None
+        approval = cover_approval(authority) if authority is not None else None
         power_matches = catalog and (family, household, approval) == (
             catalog.family, catalog.household, catalog.legacy_approval)
         cover_matches = cover_catalog and (family, household, approval) == (
             cover_catalog.family, cover_catalog.household, cover_catalog.legacy_approval)
         numeric_matches = self.numeric and (family, approval) == (self.numeric.family, self.numeric.legacy_approval)
-        if not (power_matches or cover_matches or numeric_matches):
+        if not (power_matches or cover_matches or numeric_matches or native):
             return None, {}
         targets = {t.entity.id: t for t in (catalog.targets if power_matches else []) if t.operation in authority.operations
                    and (authority.external_entity_ids is None or bindings(t.entity)[0] in authority.external_entity_ids)
@@ -568,6 +650,22 @@ class MijiaPowerHome:
                             and t.operations.intersection(authority.operations)
                             and (authority.external_entity_ids is None or bindings(t.entity)[0] in authority.external_entity_ids)
                             and models.get(t.identity) == {'urn': t.urn, 'model': t.model}})
+        if native:
+            existing = {target.identity for target in targets.values()}
+            rows = {row['identity']: row for row in self.power.service.discovery_report.get('devices', ())
+                    if row.get('kind') == 'device'}
+            # 已登记的原编号优先。单台设备不会同时从两份登记导出。
+            for target in native.targets:
+                row = rows.get(target.identity)
+                if (target.identity in existing or row is None
+                        or models.get(target.identity) != {'urn': target.urn, 'model': target.model}):
+                    continue
+                name, room = row['name'], row['room']
+                suffix = target.entity.name.removeprefix(target.device.name)
+                targets[target.entity.id] = target.model_copy(update={
+                    'entity': target.entity.model_copy(update={'name': name + suffix, 'room': room}),
+                    'device': target.device.model_copy(update={'name': name, 'room': room}),
+                })
         return (family, grant), targets
 
     def numeric_active(self):
@@ -638,12 +736,14 @@ class MijiaPowerHome:
 
     def schedule_bindings(self, rule, authority):
         """只解析规则所用的精确属性。瞬时读数和网关连通性不改变绑定。"""
-        if (not isinstance(rule.trigger, CLOCK_TRIGGERS) or not isinstance(authority, HomeDeviceAuthority)
+        if (not isinstance(rule.trigger, CLOCK_TRIGGERS) or authority is None
                 or rule.execution.require_wan_independent):
             return None
-        context, targets = self.active(authority)
+        context, targets = self.active()
         if context is None:
             return None
+        native, _ = self.native_catalog()
+        legacy, _ = self.core.actions.legacy_authority()
         # SDK 读数没有设备采样时刻，仍可展示，但不能接替有质量要求的规则条件。
         if any(isinstance(condition, NumericCondition) for condition in rule.conditions):
             return None
@@ -659,7 +759,10 @@ class MijiaPowerHome:
             else:
                 continue
             target = targets.get(action.target)
-            if target is None or operation not in authority.operations:
+            if target is None:
+                return None
+            permitted = native if isinstance(target, PowerTarget) and target.native else legacy
+            if permitted is None or not permitted.enabled or operation not in permitted.operations:
                 return None
             references[target.reference] = (target, None)
             if isinstance(target, CoverTarget):
@@ -862,6 +965,10 @@ class MijiaPowerHome:
         context, targets = self.active()
         if (target := targets.get(entity_id)) is None:
             return None
+        if isinstance(target, PowerTarget) and target.native:
+            from .mijia_enrollment import native_fingerprint
+
+            return native_fingerprint(context, target)
         catalog = self.covers if isinstance(target, CoverTarget) else self.catalog
         return hashlib.sha256(repr((context, target.reference, catalog.legacy_approval)).encode()).hexdigest()
 
@@ -987,8 +1094,11 @@ class MijiaPowerHome:
                     and self.power.lan.ready(family, did))
 
         async def request(payload):
+            if target.native:
+                payload = {**payload, 'native_power': self.fingerprint(entity_id)}
             if 'power' not in payload:
-                return await self.power.lan.request({**payload, 'registered_power': True}, family=family)
+                fields = payload if target.native else {**payload, 'registered_power': True}
+                return await self.power.lan.request(fields, family=family)
             if deadline is None or revision is None or guard is None:
                 raise ValueError('mijia_permission_changed')
             return await self.power.lan.request(

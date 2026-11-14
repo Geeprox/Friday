@@ -17,6 +17,8 @@ OWN-WORLD: The approved Friday icon is the visual authority: charcoal matte meta
 
 STORY: Read the 3D household state and operate in place; inspect quiet service/resource summaries; follow a specific attention item to its device, task or incident. Internal processes and raw errors stay inside disclosure controls. Existing jobs run autonomously; only decisions and failed recovery ask for intervention.
 
+米家设备接入从「设备」页的待接入列表开始。确认框只显示设备名和开关授权。中枢读回后打开原有设备详情，房间和各通道沿用设备列表。窄屏使用同一顺序。
+
 FIRST VIEWPORT: A compact navigation rail, a 56px source toolbar and a 28px title. An imported 3D home takes the main work area; a narrower right column holds service states, measured CPU/memory/latency and prioritized attention rows. Without imported geometry, an honest import state occupies the space with a direct device-list escape. Devices use room navigation, grouped rows, immediate controls and an adjacent or inline detail pane. Mobile stacks the same work areas with labelled navigation. Safety opens on recent incidents; monitoring configuration is a disclosure.
 
 FORM: User-pinned approved Friday identity and user-confirmed background-steward architecture override the earlier rejected blue/card direction. seed:0bbe4960b462f190 remains the session reference, not aesthetic authority. Code-first application screen. The existing Friday icon is copied unchanged with origin metadata. Games is a consumer storefront with individually authored illustrative covers, browse/filter/detail/play flow, honest player counts and prototype labels. Interaction and Games are primary navigation destinations.

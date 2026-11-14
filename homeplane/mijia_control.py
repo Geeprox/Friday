@@ -106,7 +106,9 @@ class MijiaPower:
             from .embodied.mijia_inventory import public_spec
             spec = public_spec
         self.service, self.spec, self.request = service, spec, request
-        self.lan = lan if lan is not None else MijiaLanClient(self.current_family)
+        self.lan = lan if lan is not None else MijiaLanClient(
+            self.current_family, current_inventory=lambda: self.service.discovery_report.get('roster'),
+        )
         self.specs = {}
         self.warming = None
         self.home = None

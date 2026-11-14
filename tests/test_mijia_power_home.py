@@ -28,6 +28,7 @@ from homeplane.home_experience import create_router
 from homeplane.local_camera_home import LocalCameraHome
 from homeplane.mijia_climate_mode import climate_mode_operation
 from homeplane.mijia_control import MijiaPower
+from homeplane.mijia_enrollment import native_power_operation
 from homeplane.mijia_power_home import MijiaPowerHome, catalog_available
 from homeplane.settings import SettingsService
 from homeplane.store import TraceStore
@@ -134,6 +135,10 @@ class Gateway:
                 )
             if 'registered_climate_mode' in payload:
                 return await climate_mode_operation(
+                    *args, family, 'cn', 'synthetic-group', self.dids, lambda: True, self.path,
+                )
+            if 'native_power' in payload:
+                return await native_power_operation(
                     *args, family, 'cn', 'synthetic-group', self.dids, lambda: True, self.path,
                 )
             if guard is not None:

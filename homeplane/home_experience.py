@@ -39,7 +39,7 @@ def control_name(entity_name,device_name):
 
 def household_function(entity, alias, functions):
     """Select the physical function for the product view, independently of authority."""
-    if alias:
+    if alias or getattr(entity, 'id', '').startswith('mijia:property:'):
         return True
     name = entity.name.lower()
     if any(word in name for word in ('指示灯', 'indicator', '凌动', '延时', '防闪烁',
@@ -373,6 +373,16 @@ class HomeExperience:
                        if b.source == 'xiaomi-identity'}
         discover = getattr(self.embodied, 'mijia_discovery', None)
         discovery = discover(known_mijia) if discover and snapshot.mode != 'simulator' else None
+        if discovery and (home := self.core.actions.mijia_power_home) is not None:
+            from .local_camera_home import LocalCameraHome
+            from .mijia_enrollment import enrollment_candidates
+
+            if isinstance(self.core.adapter, LocalCameraHome) and (context := home.discovery_context()) is not None:
+                discovery['direct_enrollment'] = True
+                candidates = enrollment_candidates(home, context)
+                for row in discovery['devices']:
+                    if candidate := candidates.get(row['id']):
+                        row['enrollment_revision'] = candidate.revision
         connected = (any(o.transport_health == 'online' for o in snapshot.observations) if local
                      else self.connection_health().get('transport') == 'online')
         return dict(home_name=HOME_NAME,devices=devices,discovery=discovery,preferences=self.preferences,presentation=profile.model_dump(),

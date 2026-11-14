@@ -274,6 +274,7 @@ async def run(request, directory=PRIVATE):
             }
             devices = public_inventory(region, rows)
             return {'state': 'ready', 'region': region, 'devices': devices, 'models': models,
+                    'roster': hashlib.sha256(json.dumps(sorted(models)).encode()).hexdigest(),
                     'grant': grant, 'family': family_binding(grant, home_id),
                     'household': account_household(saved, home_id), 'inputs': home_inputs(config, membership)}
         if action == 'connect' and re.fullmatch(r'[a-f0-9]{64}', request.get('candidate') or ''):

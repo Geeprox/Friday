@@ -11,11 +11,13 @@ DID = re.compile(r'(?:[0-9]{1,32}|blt\.[0-9]\.[a-z0-9]{1,64})')
 
 
 class MijiaLanClient:
-    def __init__(self, current_family):
+    def __init__(self, current_family, *, current_inventory=lambda: None):
         self.current_family = current_family
+        self.current_inventory = current_inventory
         self.task = None
         self.process = None
         self.family = None
+        self.inventory = None
         self.routes = frozenset()
         self.connected = False
         self.push = 0
@@ -28,7 +30,8 @@ class MijiaLanClient:
             self.task = asyncio.create_task(self._watch(), name='friday-mijia-lan')
 
     def ready(self, family, did=None):
-        return (self.family == family == self.current_family() and self.process is not None
+        return (self.family == family == self.current_family() and self.inventory == self.current_inventory()
+                and self.process is not None
                 and self.process.returncode is None and self.connected
                 and self.updated_at is not None and 0 <= time.monotonic() - self.updated_at <= 12
                 and (did is None or did in self.routes))
@@ -38,7 +41,7 @@ class MijiaLanClient:
         return {'connected': live, 'control_devices': len(self.routes) if live else 0,
                 'push_capable': self.push if live else 0}
 
-    async def _open(self, family):
+    async def _open(self, family, inventory=None):
         from .embodied.paths import DATA, PROJECT, PYTHON
 
         self.process = await asyncio.create_subprocess_exec(
@@ -52,10 +55,12 @@ class MijiaLanClient:
         if reply != {'ready': True, 'family': family}:
             raise ValueError('mijia_lan_unavailable')
         self.family = family
+        self.inventory = inventory
 
     async def _close_process(self):
         proc, self.process = self.process, None
         self.family = self.updated_at = None
+        self.inventory = None
         self.routes, self.connected, self.push = frozenset(), False, 0
         if proc is None or proc.returncode is not None:
             return
@@ -73,7 +78,7 @@ class MijiaLanClient:
         async with self.io:
             proc = self.process
             if (proc is None or proc.returncode is not None or self.family != family
-                    or family != self.current_family()):
+                    or family != self.current_family() or self.inventory != self.current_inventory()):
                 raise ValueError('mijia_lan_unavailable')
             if guard is not None and not guard():
                 raise ValueError('mijia_permission_changed')
@@ -131,13 +136,15 @@ class MijiaLanClient:
                     await asyncio.sleep(2)
                     continue
                 try:
-                    if self.family != family or self.process is None or self.process.returncode is not None:
-                        await self._close_process()
-                        await self._open(family)
                     # 健康查询不占用正在等待设备回执的管道，也不因操作繁忙重启进程。
                     if self.io.locked():
                         await asyncio.sleep(.25)
                         continue
+                    inventory = self.current_inventory()
+                    if (self.family != family or self.process is None or self.process.returncode is not None
+                            or self.inventory != inventory):
+                        await self._close_process()
+                        await self._open(family, inventory)
                     async with asyncio.timeout(2.0):
                         row = await self._call({'routes': True}, family)
                     ids = row.get('routes')

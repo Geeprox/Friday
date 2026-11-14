@@ -747,6 +747,36 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   }
   return list;
  }
+ function enrollDevice(device){
+  const dialog=h('dialog',null,{class:'product-dialog','aria-labelledby':'mijia-enrollment-title'});
+  const status=h('p',null,{role:'status','aria-live':'polite',hidden:''});
+  const cancel=btn('取消',()=>dialog.close());
+  const enroll=btn('接入并允许控制',async()=>{
+   enroll.disabled=true;cancel.disabled=true;enroll.textContent='正在接入…';status.hidden=true;
+   try{
+    const result=await api('/api/embodied/discovery/enroll-device',{
+     candidate:device.id,expected_revision:device.enrollment_revision,allow_power:true});
+    dialog.close();
+    if(!alive)return;
+    await load();
+    const added=data.devices.find(item=>item.id===result.device);
+    if(added)inspect(added);
+    toast('已接入 '+device.name);
+   }catch(error){
+    status.hidden=false;status.textContent=({
+     mijia_enrollment_changed:'设备信息有变化，请关闭后重新选择。',
+     mijia_enrollment_offline:'米家中枢还没读到设备，请稍后重试。',
+     mijia_enrollment_unsupported:'这台设备暂不支持直连控制。',
+     mijia_enrollment_limit:'已达到接入上限。',
+    })[error.message]||'暂时无法接入，请稍后重试。';
+   }finally{enroll.disabled=false;cancel.disabled=false;enroll.textContent='接入并允许控制';}
+  },{class:'primary'});
+  add(dialog,h('h2',device.name,{id:'mijia-enrollment-title'}),h('p','允许 Friday 控制这台设备的开关。'),
+      status,add(h('div',null,{class:'button-row'}),cancel,enroll));
+  dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+  dialog.addEventListener('cancel',event=>{if(enroll.disabled)event.preventDefault();});
+  view.append(dialog);dialog.showModal();
+ }
  function drawDiscovery(force=false){
   if(!discoverySlot?.isConnected||connectingCamera||!force&&discoverySlot.contains(document.activeElement))return;
   const rows=(data.discovery?.devices||[]).filter(d=>page!=='Cameras'||d.kind==='camera');
@@ -783,7 +813,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     row.append(addCamera);
    }else{
     if(d.kind==='camera')row.append(btn('查看连接',()=>go('Settings'),{class:'text-button'}));
-    else row.append(h('span','等待 Home Assistant 接入',{class:'caption'}));
+    else if(d.enrollment_revision)row.append(btn('接入设备',()=>enrollDevice(d),{'aria-label':'接入设备 '+d.name}));
+    else row.append(h('span',data.discovery.direct_enrollment?'暂不支持直连':'等待 Home Assistant 接入',{class:'caption'}));
    }
    list.append(row);
   }
@@ -792,7 +823,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  }
  function updateSourceBanner(){
   if(!sourceBanner)return;
-  const show=!data.connected&&!data.simulated;
+  const firstMijiaDevice=data.source==='local-cameras'&&data.discovery?.direct_enrollment&&data.discovery.devices.length;
+  const show=!data.connected&&!data.simulated&&!firstMijiaDevice;
   const local=data.source==='mijia-lan';
   const title=local?'正在读取米家设备':'家庭连接已中断';
   if(!show){sourceBanner.replaceChildren();return;}

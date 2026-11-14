@@ -885,7 +885,7 @@ class DesktopService:
                         _device_control.reset(grant_context)
                 if adapter is None:
                     settings = self.setup_settings().config
-                    adapter = LocalCameraHome(mijia_selected=explicit_source == 'mijia-lan')
+                    adapter = LocalCameraHome(mijia_selected=prefer_mijia)
                     snapshot = await adapter.snapshot()
                 phase = 'workspace'
                 from homeplane.api import create_app
@@ -906,7 +906,8 @@ class DesktopService:
                 from homeplane.intelligence.settings import default_directory
                 inner = create_app(adapter, db_path=STATE / 'traces.sqlite', settings_service=local_settings,
                                    intelligence_directory=default_directory(),
-                                   authority_path=directory/'action-authority.json' if controls else STATE/'no-device-authority.json', geek_launcher=closed_geek,
+                                   authority_path=directory/'action-authority.json' if controls or direct_configured else STATE/'no-device-authority.json',
+                                   geek_launcher=closed_geek,
                                    geek_readonly_directory=Path(os.environ['FRIDAY_EMBODIED_DATA']).parent/'homeplane',
                                    arl_runtime=self.arl_runtime,
                                    arl_planning_authorizer=self.planning_authorizer,

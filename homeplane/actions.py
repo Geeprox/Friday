@@ -116,14 +116,17 @@ class ActionController:
         self._owner_owned = False
 
     def pause(self):
-        authority, revision = self.authority(include_inactive=True)
+        native, native_revision = self.native_authority(include_inactive=True)
+        if native is not None:
+            self.mijia_power_home.set_native_enabled(False, native_revision)
+        authority, revision = self.legacy_authority(include_inactive=True)
         if authority is None:
             return {"status": "paused", "action_targets": []}
         self._save_authority(authority.model_copy(update={'enabled': False}), revision)
         return {"status": "paused", "action_targets": [], "external_rules_changed": False}
 
     def _save_authority(self, authority, revision):
-        if self.authority(include_inactive=True)[1] != revision:
+        if self.legacy_authority(include_inactive=True)[1] != revision:
             raise ValueError("source_conflict")
         fd, name = tempfile.mkstemp(prefix=".authority-", dir=self.authority_path.parent)
         try:
@@ -138,20 +141,41 @@ class ActionController:
                 os.unlink(name)
 
     def resume(self, expected_revision):
-        authority, revision = self.authority(include_inactive=True)
+        authority, revision = self.legacy_authority(include_inactive=True)
+        native, native_revision = self.native_authority(include_inactive=True)
         adapter = self.core.adapter
         matching_ha = (authority and isinstance(adapter, HAReadOnlyAdapter)
                        and authority.ha_url.rstrip("/") == adapter.url and authority.ha_instance == adapter.instance_id)
         power = self.mijia_power_home
-        matching_power = bool(power and authority and power.active(authority)[1])
-        if not authority or revision != expected_revision or not (matching_ha or matching_power or self._cover_scope(authority)):
+        targets = power.active(authority)[1].values() if power else ()
+        matching_power = bool(authority and any(not getattr(t, 'native', False) for t in targets))
+        matching_native = bool(native and power.uses_lan_home(adapter) and any(
+            getattr(t, 'native', False) for t in targets
+        ))
+        matching_legacy = matching_ha or matching_power or self._cover_scope(authority)
+        if self.policy_report()['revision'] != expected_revision or not (matching_legacy or matching_native):
             raise ValueError("source_conflict")
-        self._save_authority(authority.model_copy(update={'enabled': True}), revision)
         # Restoring the existing grant never renews an old action plan.
         self._deadlines.clear()
+        if matching_legacy:
+            self._save_authority(authority.model_copy(update={'enabled': True}), revision)
+        if matching_native:
+            power.set_native_enabled(True, native_revision)
 
     def policy_report(self):
-        authority, revision = self.authority(include_inactive=True)
+        authority, revision = self.legacy_authority(include_inactive=True)
+        power = self.mijia_power_home
+        native, native_revision = self.native_authority(include_inactive=True) if (
+            power and power.uses_lan_home(self.core.adapter)
+        ) else (None, None)
+        if native is not None:
+            combined = hashlib.sha256(repr((revision, native_revision)).encode()).hexdigest() if revision else native_revision
+            shared_operations = authority.operations if isinstance(authority, HomeDeviceAuthority) else []
+            return {
+                'configured': True, 'enabled': native.enabled or bool(authority and authority.enabled),
+                'revision': combined, 'scope': native.scope, 'operations': sorted(set(shared_operations + native.operations)),
+                'expires_at': None, 'device_write_attempted': False,
+            }
         return {
             "configured": authority is not None,
             "enabled": bool(authority and authority.enabled),
@@ -170,11 +194,34 @@ class ActionController:
             "device_write_attempted": False,
         }
 
-    def authority(self, *, include_inactive=False, include_generation=False):
+    def legacy_authority(self, *, include_inactive=False, include_generation=False):
         if not self._owner_owned:
             return None, None
         return read_device_authority(self.authority_path, include_inactive=include_inactive,
                                      include_generation=include_generation)
+
+    def native_authority(self, *, include_inactive=False, include_generation=False):
+        home = self.mijia_power_home
+        if not self._owner_owned or home is None:
+            return None, None
+        catalog, generation = home.native_catalog()
+        if catalog is None or not include_inactive and not catalog.enabled:
+            return None, None
+        return catalog, generation if include_generation else catalog.revision
+
+    def authority(self, *, include_inactive=False, include_generation=False):
+        from .local_camera_home import LocalCameraHome
+
+        options = dict(include_inactive=include_inactive, include_generation=include_generation)
+        legacy = self.legacy_authority(**options)
+        if legacy[0] is not None or not isinstance(self.core.adapter, LocalCameraHome):
+            return legacy
+        return self.native_authority(**options)
+
+    def dispatch_authority(self, target, local):
+        if local and target.startswith('mijia:property:'):
+            return self.native_authority(include_generation=True)
+        return self.legacy_authority(include_generation=local)
 
     def _cover_scope(self, authority, cover=None):
         if self.mijia is None or not isinstance(authority, HomeDeviceAuthority) or authority.external_entity_ids is not None:
@@ -238,14 +285,18 @@ class ActionController:
         return self.mijia.home if self.mijia else None
 
     def targets(self, snapshot):
-        authority, _ = self.authority()
+        authority, _ = self.legacy_authority()
         adapter = self.core.adapter
         if snapshot.mode == MIJIA_POWER_MODE:
             home = self.mijia_power_home
-            if home is None or authority is None or not home.uses_lan_home(adapter):
+            if home is None or not home.uses_lan_home(adapter):
+                return []
+            native, _ = self.native_authority()
+            if authority is None and native is None:
                 return []
             context, targets = home.active(authority)
             return [entity.id for entity in snapshot.entities if (target := targets.get(entity.id))
+                    and (native is not None if getattr(target, 'native', False) else authority is not None)
                     and (version := home.version(context, target)) and version == entity.state_version]
         if snapshot.mode != "ha-read-only" or not isinstance(adapter, HAReadOnlyAdapter) or authority is None:
             return []
@@ -430,7 +481,7 @@ class ActionController:
                 return existing
             snapshot = await self.core.snapshot()
             local = snapshot.mode == MIJIA_POWER_MODE
-            authority, revision = self.authority(include_generation=local)
+            authority, revision = self.dispatch_authority(request.target, local)
             code = self._policy(request, snapshot, authority)
             if isinstance(request, CoreRuleEffect):
                 code = managed_guard(snapshot) or code
@@ -521,7 +572,7 @@ class ActionController:
             snapshot = await self.core.snapshot()
             if local != (snapshot.mode == MIJIA_POWER_MODE):
                 return self._stage(trace, "rejected", "source_conflict")
-            authority, revision = self.authority(include_generation=local)
+            authority, revision = self.dispatch_authority(trace.request.target, local)
             code = self._policy(trace.request, snapshot, authority)
             if revision != trace.authority_revision:
                 code = "authority_changed"
@@ -545,7 +596,7 @@ class ActionController:
 
             def current_dispatch():
                 if not (self.core.adapter is adapter and home.uses_lan_home(adapter)
-                        and time.monotonic() < deadline and self.authority(include_generation=True)[1] == revision
+                        and time.monotonic() < deadline and self.dispatch_authority(entity.id, True)[1] == revision
                         and home.fingerprint(entity.id) == fingerprint
                         and home.state_version(entity.id) == entity.state_version
                         and (dispatch_guard is None or dispatch_guard() is True)):
@@ -556,7 +607,7 @@ class ActionController:
                 return True
 
             # 镜头指令只尝试已经就绪的局域网路径，给原有手势有效期保留派发余量。
-            if self.mijia is not None and isinstance(authority, HomeDeviceAuthority):
+            if self.mijia is not None and (local or isinstance(authority, HomeDeviceAuthority)):
                 quick = dispatch_guard is not None
                 try:
                     remaining = deadline - time.monotonic()
@@ -577,7 +628,7 @@ class ActionController:
                                 return self._stage(trace, "rejected", "source_conflict")
                 except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                     writer = None
-                if self.core.adapter is not adapter or self.authority(include_generation=local)[1] != revision:
+                if self.core.adapter is not adapter or self.dispatch_authority(entity.id, local)[1] != revision:
                     return self._stage(trace, "rejected", "authority_changed")
                 if writer is not None:
                     if not writer.current():
@@ -589,7 +640,7 @@ class ActionController:
                         changed = managed_guard(current_snapshot) or changed
                     if changed:
                         return self._stage(trace, "expired" if changed == "expired_request" else "rejected", changed)
-                if self.core.adapter is not adapter or self.authority(include_generation=local)[1] != revision:
+                if self.core.adapter is not adapter or self.dispatch_authority(entity.id, local)[1] != revision:
                     return self._stage(trace, "rejected", "authority_changed")
                 if writer is not None and not writer.current():
                     return self._stage(trace, "rejected", "source_conflict")

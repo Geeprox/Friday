@@ -140,6 +140,11 @@ class MiHomeCandidate(BaseModel):
     candidate: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
+class MiHomeDeviceEnrollment(MiHomeCandidate):
+    expected_revision: str = Field(pattern=r'^[a-f0-9]{64}$')
+    allow_power: bool
+
+
 class CameraInteractionSettings(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     enabled: bool
@@ -272,6 +277,27 @@ def create_router(service, core, lock, infrastructure=None, *, intelligence=None
             return await service.connect_discovered_camera(request.candidate)
         except (OSError, ValueError, TimeoutError):
             return {'state': 'unavailable'}
+
+    @router.post('/api/embodied/discovery/enroll-device')
+    async def mijia_enroll_device(request: MiHomeDeviceEnrollment, http_request: Request):
+        from homeplane.mijia_enrollment import enroll
+
+        if (http_request.client is None or http_request.client.host not in {'127.0.0.1', '::1'}
+                or http_request.headers.get('origin') != str(http_request.base_url).rstrip('/')):
+            raise HTTPException(403, detail='invalid_local_origin')
+        if not request.allow_power:
+            raise HTTPException(422, detail='mijia_power_consent_required')
+        home = core.actions.mijia_power_home
+        if home is None:
+            raise HTTPException(409, detail='mijia_enrollment_changed')
+        try:
+            device = await enroll(home, request.candidate, request.expected_revision)
+        except (OSError, ValueError, TimeoutError, httpx.HTTPError) as error:
+            accepted = {'mijia_enrollment_changed', 'mijia_enrollment_offline', 'mijia_enrollment_unsupported',
+                        'mijia_enrollment_limit'}
+            code = str(error)
+            raise HTTPException(409, detail=code if code in accepted else 'mijia_enrollment_unavailable') from None
+        return {'state': 'connected', 'device': device}
 
     @router.get("/api/embodied/cameras")
     async def cameras():
