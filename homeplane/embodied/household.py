@@ -284,7 +284,8 @@ class DeviceCommands:
                       and target.startswith('ha:') and len(targets) == 1
                       and targets[0].get('source_kind') in {'light', 'switch', 'fan', 'climate', 'cover'})
         # 固定米家窗帘由其独立发送锁保护。HA 查询不能阻塞已配对的窗帘手势。
-        standalone_cover = len(targets) == 1 and targets[0].get('source_kind') == 'miot'
+        standalone_cover = (len(targets) == 1 and targets[0]['id'] == 'friday:configured-cover'
+                            and targets[0].get('source_kind') == 'miot')
         async with nullcontext() if ha_gesture or standalone_cover else self.lock:
             for item in targets:
                 if dispatch_guard is not None and dispatch_guard() is not True:
