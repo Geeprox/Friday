@@ -408,11 +408,14 @@ def create_app(
     async def mijia_lan_status():
         if core.actions.mijia is not None:
             home = core.actions.mijia_power_home
+            _, targets = home.active() if home else (None, {})
             return {**core.actions.mijia.lan.status(),
-                    "migrated_power": len(home.active()[1]) if home else 0,
-                    "standalone_power_ready": home.ready_count() if home else 0}
+                    "migrated_power": len(targets),
+                    "standalone_power_ready": home.ready_count(include_sensors=False) if home else 0,
+                    "migrated_settings": sum(len(home.settings_for(t)) for t in targets.values()),
+                    "migrated_sensors": len(home.active_sensors()) if home else 0}
         return {"connected": False, "control_devices": 0, "push_capable": 0,
-                "migrated_power": 0, "standalone_power_ready": 0}
+                "migrated_power": 0, "standalone_power_ready": 0, "migrated_settings": 0, "migrated_sensors": 0}
 
     @app.get("/api/embodied/infrastructure")
     async def infrastructure_status():

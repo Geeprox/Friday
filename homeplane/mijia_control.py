@@ -40,16 +40,22 @@ async def request_property(request):
             await process.wait()
 
 
-def power_property(spec, unique_id, kind, device_urn, device_model):
-    """按 Xiaomi Home 的属性或服务注册标识精确绑定，不解析用户改过的实体名。"""
-    from .embodied.miot_spec import properties
-
+def registry_prefix(spec, kind, device_urn, device_model):
     model = device_model.split('.') if isinstance(device_model, str) else []
     if (len(model) < 2 or not all(re.fullmatch(r'[a-z0-9-]{1,40}', part) for part in model)
             or spec.get('type') != device_urn):
         return None
     vendor, product = re.escape(model[0][:9]), re.escape(model[-1][:20])
-    prefix = rf'(?:xiaomi_home|{re.escape(kind)})\.{vendor}_([a-z]{{2}}_(?:\d{{1,32}}|blt[._]\d[._][a-z0-9]{{1,64}}))_{product}'
+    return rf'(?:xiaomi_home|{re.escape(kind)})\.{vendor}_([a-z]{{2}}_(?:\d{{1,32}}|blt[._]\d[._][a-z0-9]{{1,64}}))_{product}'
+
+
+def power_property(spec, unique_id, kind, device_urn, device_model):
+    """按 Xiaomi Home 的属性或服务注册标识精确绑定，不解析用户改过的实体名。"""
+    from .embodied.miot_spec import properties
+
+    prefix = registry_prefix(spec, kind, device_urn, device_model)
+    if prefix is None:
+        return None
     # 规格 URN 仅确定型号的能力；厂商和型号段来自米家目录独立的 model 字段。
     # 支持注册表中的设备、服务和 on 属性；服务描述是显示文本，不参与绑定。
     matches = re.fullmatch(prefix + r'(?:_on_p_(\d+)_(\d+)|_s_(\d+)(?:_[^\r\n]{0,128})?)?', unique_id)
@@ -323,3 +329,9 @@ class MijiaPowerWriter:
         if self.on_readback is not None:
             self.on_readback(reported)
         return reported
+
+    @staticmethod
+    def matches(desired, reported):
+        from .ha_control import reported_matches
+
+        return reported_matches(desired, reported)

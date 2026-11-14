@@ -14,7 +14,12 @@ from homeplane.actions import ActionController
 from homeplane.core import HomeCore
 from homeplane.embodied.household import DeviceCommands, basic_command
 from homeplane.embodied.mijia_inventory import account_household
-from homeplane.embodied.mijia_lan import home_input, migrated_power_operation, property_operation
+from homeplane.embodied.mijia_lan import (
+    home_input,
+    migrated_power_operation,
+    numeric_operation,
+    property_operation,
+)
 from homeplane.embodied.mijia_power import family_binding, grant_binding
 from homeplane.embodied.ptz_control import atomic
 from homeplane.home_experience import create_router
@@ -34,7 +39,7 @@ MODEL = 'fixture.switch.channel'
 
 
 class Gateway:
-    def __init__(self, path, service):
+    def __init__(self, path, service, fields=None):
         self.path, self.service = path, service
         self.io = asyncio.Lock()
         self.value = False
@@ -42,8 +47,9 @@ class Gateway:
         self.online = True
         self.lose_response = False
         self.before_dispatch = lambda: None
+        self.fields = fields if fields is not None else {}
         self.manager = SimpleNamespace(
-            can_control=lambda did: self.online and did == DID,
+            can_control=lambda did: self.online and did in self.dids,
             in_local_cooldown=lambda _: False,
             local_device=lambda _: {'group_id': 'synthetic-group'},
             get_prop_async=AsyncMock(side_effect=self.read),
@@ -51,13 +57,21 @@ class Gateway:
         )
 
     def ready(self, family, did=None):
-        return self.online and family == self.service.discovery_report['family'] and did in {None, DID}
+        return self.online and family == self.service.discovery_report['family'] and (did is None or did in self.dids)
 
-    def read(self, *_):
-        return {'code': 0, 'value': self.value}
+    @property
+    def dids(self):
+        return {DID, *(did for did, _, _ in self.fields)}
+
+    def read(self, did, siid, piid):
+        value = self.value if not self.fields else self.fields.get((did, siid, piid))
+        return {'code': 0, 'value': value}
 
     def write(self, did, siid, piid, value):
-        self.value = value
+        if self.fields:
+            self.fields[did, siid, piid] = value
+        else:
+            self.value = value
         if self.lose_response:
             raise httpx.ReadTimeout('synthetic')
         return {'code': 0, 'did': did, 'siid': siid, 'piid': piid}
@@ -70,10 +84,15 @@ class Gateway:
                 assert guard()
                 # 模拟父进程完成派发、子进程消费命令前撤销授权。
                 self.before_dispatch()
-                return await migrated_power_operation(
-                    *args, family, 'cn', 'synthetic-group', {DID}, lambda: True, self.path,
+            if payload.get('numeric') is True:
+                return await numeric_operation(
+                    *args, family, 'cn', 'synthetic-group', self.dids, lambda: True, self.path,
                 )
-            return await property_operation(*args, 'synthetic-group', {DID}, lambda: True)
+            if guard is not None:
+                return await migrated_power_operation(
+                    *args, family, 'cn', 'synthetic-group', self.dids, lambda: True, self.path,
+                )
+            return await property_operation(*args, 'synthetic-group', self.dids, lambda: True)
 
 
 async def provision(tmp_path, *, configurable=False, allowed=True, duplicate=False):

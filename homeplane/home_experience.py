@@ -17,6 +17,7 @@ from starlette.background import BackgroundTask
 
 from .action_contracts import DevicePlanRequest
 from .mijia_control import MIJIA_POWER_MODE
+from .mijia_numeric import OBSERVATION_PREFIX, SETTINGS
 from .recordings import Recordings
 from .preview_request import prepare_for_viewer
 from . import home_presentation
@@ -230,6 +231,7 @@ class HomeExperience:
         entities = {e.id:e for e in snapshot.entities}
         states = {s.id:s for s in snapshot.states}
         observations = {(o.entity_id,o.capability):o for o in snapshot.observations}
+        local = snapshot.mode == MIJIA_POWER_MODE
         authorized = set(snapshot.action_targets)
         try:
             from .embodied.paths import PRIVATE
@@ -252,7 +254,7 @@ class HomeExperience:
             for e in functions:
                 binding=next((b.external_id for b in e.bindings if b.source=='ha'),'')
                 alias=aliases.get(binding,{})
-                channel=getattr(self.core.adapter,'_switch_channels',{}).get(binding,{})
+                channel={} if local else getattr(self.core.adapter,'_switch_channels',{}).get(binding,{})
                 if e.kind=='event' and getattr(self.core.adapter,'_control_attributes',{}).get(binding,{}).get('device_class')=='button' and not any(f.kind in {'switch','light','climate','fan','cover','humidifier','water_heater'} for f in functions):
                     triggers.append(dict(id=e.id,name=control_name(e.name,device.name),role='event',basis='ha_event_button',mode=None,mode_entity=None))
                 if e.kind=='switch' and channel.get('role') in {'wireless','unknown'}:
@@ -260,8 +262,13 @@ class HomeExperience:
                 caps=[c.model_dump(mode='json') for c in e.capabilities if c.access=='write' and c.support=='supported' and c.name in {'humidifier.power','humidifier.humidity','humidifier.mode','water_heater.power','water_heater.mode','light.set','light.color_temperature','switch.set','fan.set','fan.percentage','climate.mode','climate.power','climate.temperature','climate.fan_mode','cover.position','cover.tilt','cover.state','lock.set','media_player.power','media_player.volume','media_player.mute','media_player.playback'}] if e.id in authorized else []
                 if not household_function(e,alias,functions):caps=[]
                 if caps:
-                    attrs={} if snapshot.mode == MIJIA_POWER_MODE else getattr(self.core.adapter,'_control_attributes',{}).get(binding,{})
-                    o=next((v for (id,_),v in observations.items() if id==e.id),None)
+                    if local:
+                        attrs={key: state.value for key in SETTINGS
+                               if (state := observations.get((e.id, OBSERVATION_PREFIX + key))) is not None}
+                        o=observations.get((e.id, f'{e.kind}.state'))
+                    else:
+                        attrs=getattr(self.core.adapter,'_control_attributes',{}).get(binding,{})
+                        o=next((v for (id,_),v in observations.items() if id==e.id),None)
                     state=next((s for id,s in states.items() if id.startswith(e.id+':')),None)
                     controls.append(dict(id=e.id,name=alias.get('name') or control_name(e.name,device.name),
                         kind=alias.get('kind')or e.kind,capabilities=caps,state_version=e.state_version,
@@ -281,6 +288,9 @@ class HomeExperience:
                         if isinstance(value,str) and (len(value)>128 or value.lstrip().startswith(('[','{','http:','https:'))):continue
                         if any(word in e.name for word in ('ui支持控制的品类','搭配appconfig','接入设备列表','外部 IP')):continue
                         device_class=attrs.get('device_class')
+                        if local:
+                            device_class={'temperature':'temperature','humidity':'humidity',
+                                          '%':'battery','lx':'illuminance'}.get(cap.name if cap.name != 'sensor.state' else o.unit)
                         if e.kind=='binary_sensor' and value in ('on','off'):
                             labels={'moisture':('未检测到漏水','检测到漏水'),'motion':('无人移动','检测到移动'),
                                     'occupancy':('无人','有人'),'door':('已关闭','已打开'),'opening':('已关闭','已打开'),
@@ -289,7 +299,7 @@ class HomeExperience:
                             value=pair[value=='on']
                         label=re.sub(r'[（(].*?[）)]','',e.name.rsplit(' ',1)[-1]).strip() or e.name
                         readings.append(dict(id=e.id,name=label,value=value if available else None,available=available,
-                            unit=o.unit,device_class=device_class,reported_at=o.integration_written_at,
+                            unit=o.unit,device_class=device_class,reported_at=o.received_at if local and available else o.integration_written_at,
                             measured_at=o.measured_at,basis='reported',transport=o.transport_health))
             kind=controls[0]['kind'] if controls else ('lock' if '门锁' in device.name else primary[0].kind if primary else device.kind)
             if triggers:kind='switch' if controls else 'trigger'
@@ -363,8 +373,8 @@ class HomeExperience:
                        if b.source == 'xiaomi-identity'}
         discover = getattr(self.embodied, 'mijia_discovery', None)
         discovery = discover(known_mijia) if discover and snapshot.mode != 'simulator' else None
-        connected = (self.connection_health().get('transport') == 'online' if snapshot.mode != MIJIA_POWER_MODE
-                     else bool(snapshot.observations))
+        connected = (any(o.transport_health == 'online' for o in snapshot.observations) if local
+                     else self.connection_health().get('transport') == 'online')
         return dict(home_name=HOME_NAME,devices=devices,discovery=discovery,preferences=self.preferences,presentation=profile.model_dump(),
                     rooms=sorted({d['room']for d in devices if d['room']!='其他'} | {r.name for r in layout.rooms} if layout else {d['room']for d in devices if d['room']!='其他'}),
                     connected=connected, source=snapshot.mode,

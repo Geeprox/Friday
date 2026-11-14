@@ -1,4 +1,4 @@
-"""米家中枢的独立只读探测和已授权电源操作。仅使用父进程的 stdin/stdout。"""
+"""米家中枢的独立只读探测和已授权设备操作。仅使用父进程的 stdin/stdout。"""
 
 import asyncio
 import fcntl
@@ -9,6 +9,8 @@ import re
 import secrets
 import stat
 import sys
+
+from homeplane.mijia_numeric import finite_numeric
 
 from .mijia_inventory import home_devices, home_inputs, home_scope
 from .mijia_power import family_binding, grant_binding, property_request
@@ -92,6 +94,43 @@ async def migrated_power_operation(manager, request, grant, family, region, grou
     if desired is None or not authorize_send(directory, revision, deadline, family, region, did, siid, piid):
         raise ValueError('mijia_permission_changed')
     return await property_operation(manager, request, grant, group, dids, current)
+
+
+async def numeric_operation(manager, request, grant, family, region, group, dids, current, directory):
+    from homeplane.mijia_power_home import authorize_numeric
+
+    write = 'value' in request
+    required = {'numeric', 'did', 'siid', 'piid', 'grant'}
+    if write:
+        required |= {'value', 'authority_revision', 'deadline'}
+    if request.keys() != required or request['numeric'] is not True:
+        raise ValueError('mijia_property_unsupported')
+    did, siid, piid, _ = property_request({k: request[k] for k in ('did', 'siid', 'piid', 'grant')})
+    if (not current() or request['grant'] != grant or did not in dids or not manager.can_control(did)
+            or manager.in_local_cooldown(did) or (manager.local_device(did) or {}).get('group_id') != group):
+        raise ValueError('mijia_lan_unavailable')
+    guard = authorize_numeric(directory, family, region, did, siid, piid, request)
+    try:
+        async with asyncio.timeout(1.0 if not write else 4.0):
+            if write:
+                if guard is not None:
+                    # 亮度和色温只修改已打开的灯，不组合两次写入。
+                    power_row = await manager.get_prop_async(did, siid, guard)
+                    if local_result(power_row, did, siid, guard, write=False)['power'] != 'on':
+                        raise ValueError('mijia_permission_changed')
+                    if not current():
+                        raise ValueError('mijia_permission_changed')
+                    authorize_numeric(directory, family, region, did, siid, piid, request)
+                row = await manager.set_prop_async(did, siid, piid, request['value'])
+                return local_result(row, did, siid, piid, write=True)
+            row = await manager.get_prop_async(did, siid, piid)
+    except TimeoutError:
+        manager.note_local_failure(did)
+        raise
+    if (not isinstance(row, dict) or type(row.get('code')) is not int or row['code'] != 0
+            or not finite_numeric(row.get('value')) or abs(row['value']) > 1000000):
+        raise ValueError('mijia_property_unsupported')
+    return {'value': row['value']}
 
 
 async def cover_operation(manager, request, grant, group, dids, scope_current, directory):
@@ -199,13 +238,21 @@ async def serve(reader, session):
                              'push': sum(hub.can_push(did) for did in routes)}
                 elif 'cover' in request:
                     reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
+                elif 'numeric' in request:
+                    reply = await numeric_operation(
+                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
+                    )
                 elif 'authority_revision' in request or 'deadline' in request:
                     reply = await migrated_power_operation(
                         hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
                     )
                 else:
                     reply = await property_operation(hub, request, grant, home.group_id, allowed, current)
-            except (OSError, ValueError, RuntimeError, TimeoutError, TypeError, KeyError, ExceptionGroup):
+            except ValueError as error:
+                code = str(error)
+                if code in {'mijia_property_unsupported', 'mijia_permission_changed'}:
+                    reply = {'error': code}
+            except (OSError, RuntimeError, TimeoutError, TypeError, KeyError, ExceptionGroup):
                 pass
             print(json.dumps({'id': ident, **reply}), flush=True)
     finally:

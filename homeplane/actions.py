@@ -35,9 +35,8 @@ from .ha_control import (
     admitted_capabilities,
     bindings,
     parameter_error,
-    reported_matches,
 )
-from .mijia_control import MIJIA_POWER_MODE, MIJIA_POWER_ROUTE, power_intent
+from .mijia_control import MIJIA_POWER_MODE, MIJIA_POWER_ROUTE
 from .runtime_log import observe
 
 AUTHORITY = TypeAdapter(LightAuthority | HomeDeviceAuthority)
@@ -247,7 +246,7 @@ class ActionController:
                 return []
             context, targets = home.active(authority)
             return [entity.id for entity in snapshot.entities if (target := targets.get(entity.id))
-                    and (sample := home.sample_for(context, target)) and sample.version == entity.state_version]
+                    and (version := home.version(context, target)) and version == entity.state_version]
         if snapshot.mode != "ha-read-only" or not isinstance(adapter, HAReadOnlyAdapter) or authority is None:
             return []
         if authority.ha_url.rstrip("/") != adapter.url or authority.ha_instance != adapter.instance_id:
@@ -332,14 +331,11 @@ class ActionController:
         entity = next(e for e in snapshot.entities if e.id == request.target)
         operation = getattr(request, "operation", "light.set")
         if snapshot.mode == MIJIA_POWER_MODE:
-            target = self.mijia_power_home.active(authority)[1].get(entity.id)
             if isinstance(request, CoreRuleEffect):
                 return "identity_unavailable"
             if entity.state_version != request.expected_state_version:
                 return "source_conflict"
-            if target is None or target.operation != operation or not power_intent(request.desired):
-                return "unsupported"
-            return None
+            return self.mijia_power_home.intent_error(entity.id, operation, request.desired, authority)
         if not self.core.adapter.health().get("registry_available"):
             return "identity_unavailable"
         if self.core.adapter.health().get("transport") != "online":
@@ -563,7 +559,8 @@ class ActionController:
                     remaining = deadline - time.monotonic()
                     async with asyncio.timeout(min(.22 if quick else 1.2, max(0, remaining))):
                         if local:
-                            writer = home.writer(entity.id, deadline=deadline, revision=revision, guard=current_dispatch)
+                            writer = home.writer(entity.id, deadline=deadline, revision=revision, guard=current_dispatch,
+                                                 operation=operation, desired=trace.request.desired)
                         else:
                             writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
                                                              quick=quick)
@@ -571,7 +568,8 @@ class ActionController:
                             observed = await writer.readback()
                             # 已锁定到原计划时的状态版本，再核对一次实际开关。
                             # 避免 HA 尚未收到上游变化时继续覆盖新状态。
-                            if writer.channel == 'lan' and not self.mijia.state_agrees(snapshot, entity, observed):
+                            if (writer.channel == 'lan' and 'power' in observed
+                                    and not self.mijia.state_agrees(snapshot, entity, observed)):
                                 return self._stage(trace, "rejected", "source_conflict")
                 except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                     writer = None
@@ -623,7 +621,7 @@ class ActionController:
         # 上方仍按顺序校验发送占用、权限和时效，再发送请求；回读不会重发。
         try:
             reported = await self._settle(writer, trace.request.desired)
-            matches = reported_matches(trace.request.desired, reported)
+            matches = writer.matches(trace.request.desired, reported)
             return self._stage(
                 trace,
                 "reported_match" if matches else "unknown_outcome",
@@ -649,7 +647,7 @@ class ActionController:
             try:
                 async with asyncio.timeout(2):
                     reported = await writer.readback()
-                if reported_matches(desired, reported):
+                if writer.matches(desired, reported):
                     return reported
             except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                 continue
@@ -675,7 +673,8 @@ class ActionController:
                     if (home is None or channel != 'lan' or not mijia_binding or not trace.target_binding_fingerprint
                             or home.fingerprint(trace.request.target) != trace.target_binding_fingerprint):
                         return trace
-                    writer = home.writer(trace.request.target)
+                    writer = home.writer(trace.request.target, operation=getattr(trace.request, 'operation', 'light.set'),
+                                         desired=trace.request.desired, reconcile=True)
                 else:
                     snapshot = await self.core.snapshot()
                     adapter = self.core.adapter
@@ -700,7 +699,7 @@ class ActionController:
                 reported = await writer.readback()
             except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                 return trace
-            matches = reported_matches(trace.request.desired, reported)
+            matches = writer.matches(trace.request.desired, reported)
             reported["causality"] = "unknown; readback cannot prove the original request caused this state"
             recent = datetime.now(UTC) < trace.request.expires_at + timedelta(seconds=60)
             return self._stage(

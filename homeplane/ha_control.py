@@ -286,6 +286,10 @@ class HADeviceWriter:
             raise ValueError("invalid_actuator_binding")
         self.adapter, self.external, self.operation = adapter, bound[0], operation
 
+    @staticmethod
+    def matches(desired, reported):
+        return reported_matches(desired, reported)
+
     @observe('device.call', upstream='ha')
     async def send(self, desired):
         domain, service, parameters = command(self.operation, desired)

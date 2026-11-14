@@ -100,10 +100,12 @@ class MijiaLanClient:
     async def request(self, request, *, family, guard=None):
         if not self.ready(family, request.get('did')):
             raise ValueError('mijia_lan_unavailable')
-        read_only = request.get('cover') == 'read' or ('cover' not in request and 'power' not in request)
+        read_only = request.get('cover') == 'read' or not {'cover', 'power', 'value'}.intersection(request)
         async with asyncio.timeout(1.6 if read_only else 5):
             reply = await self._call(request, family, guard=guard)
         if 'error' in reply:
+            if reply['error'] in ('mijia_property_unsupported', 'mijia_permission_changed'):
+                raise ValueError(reply['error'])
             # 本地候选失效后，让下一次用户操作重新选择仍可用的渠道。
             self.routes = self.routes.difference({request.get('did')})
             raise ValueError('mijia_lan_unavailable')
