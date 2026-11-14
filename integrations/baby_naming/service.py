@@ -31,6 +31,8 @@ ASSETS = {"": ("index.html", "text/html; charset=utf-8"),
 VENDOR = frozenset({"vendor/three.module.js", "vendor/three.core.js"})
 MAX_BODY = 4096
 SESSION = re.compile(r"[a-zA-Z0-9_-]{30,65}")
+# Mac 中继的空闲窗口是 300 秒，给高推理阶段留到 275 秒。
+SOL_STAGE_TIMEOUT = 275
 
 
 class App:
@@ -41,14 +43,16 @@ class App:
         self.proxy_proof = proxy_proof
         self.sessions = {}
         self.sessions_lock = threading.Lock()
-        self.wake = threading.Event()
+        self.wake = {direction: threading.Event() for direction in DIRECTIONS}
         self.stop = threading.Event()
-        self.worker = threading.Thread(target=self.run, daemon=True) if worker and pipeline else None
-        self.preference_worker = threading.Thread(target=self.analyze_preferences, daemon=True) if self.worker else None
-        if self.worker:
+        self.workers = {}
+        if worker and pipeline:
             self.book.interrupt_running()
-            self.worker.start()
-            self.preference_worker.start()
+            for direction in DIRECTIONS:
+                thread = threading.Thread(target=self.run, args=(direction,), daemon=True)
+                self.workers[direction] = thread
+                thread.start()
+            threading.Thread(target=self.analyze_preferences, daemon=True).start()
 
     def analyze_preferences(self):
         while not self.stop.wait(25):
@@ -58,20 +62,18 @@ class App:
                 # 证据分析独立于人工查找和发卡。
                 continue
 
-    def run(self):
+    def run(self, direction):
+        wake = self.wake[direction]
         while not self.stop.is_set():
-            self.wake.clear()
-            job = self.book.claim()
+            wake.clear()
+            job = self.book.claim(direction)
             if not job:
-                self.wake.wait(2)
+                wake.wait(2)
                 continue
-            number, direction = job
+            number, _ = job
             try:
-                self.pipeline.execute(number, direction)
-                proof = self.book.proof(number)
-                audited = next((row["result"]["approved"] for row in proof["receipts"]
-                                if row["stage"] == "audit" and "approved" in row["result"]), 0)
-                self.book.finish_job(number, "complete", "ready" if audited else "no_approved")
+                published = self.pipeline.execute(number, direction)
+                self.book.finish_job(number, "complete", "ready" if published else "no_approved")
             except APIError as error:
                 self.book.finish_job(number, "failed", error.code)
             except Exception:
@@ -208,8 +210,8 @@ class Handler(BaseHTTPRequestHandler):
             direction = data.get("direction")
             self.app.book.check(role, direction)
             book = self.app.book
-            daily = self.app.pipeline.daily if self.app.worker else None
-            refill = {"auto_refill": bool(self.app.worker), "daily": daily}
+            daily = self.app.pipeline.daily if self.app.workers else None
+            refill = {"auto_refill": bool(self.app.workers), "daily": daily}
             if key == "api/state":
                 result = book.state(role, direction, **refill)
             elif key == "api/next":
@@ -235,7 +237,6 @@ class Handler(BaseHTTPRequestHandler):
                     if not self.app.pipeline:
                         raise Rejected("key_unavailable")
                     book.request_generation(role, direction, daily=daily)
-                    self.app.wake.set()
                     result = book.state(role, direction)
                 else:
                     raise Rejected("invalid_request")
@@ -243,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(404, {"error": "not_found"})
                 return
             if (result.get("model") or {}).get("state") == "queued":
-                self.app.wake.set()
+                self.app.wake[direction].set()
             self.respond(200, result)
         except Rejected as error:
             self.respond(409, {"error": str(error)})
@@ -345,7 +346,7 @@ def main():
             key = credential(args.key_file)
             client = OpenAI(key, args.model, proxy=args.api_proxy)
             deep_model, deep_effort = MODEL_PROFILES["sol-high"]
-            high_client = OpenAI(key, deep_model, timeout=220, proxy=args.api_proxy, effort=deep_effort)
+            high_client = OpenAI(key, deep_model, timeout=SOL_STAGE_TIMEOUT, proxy=args.api_proxy, effort=deep_effort)
             pipeline = Pipeline(book, client, high_client=high_client, daily=args.daily_requests,
                                 decisions_shadow=args.decisions_shadow)
         except APIError:
@@ -356,15 +357,13 @@ def main():
             parser.error("smoke requires a real API client")
         book.interrupt_running()
         job = book.request_generation("husband", args.smoke, args.smoke_profile, daily=pipeline.daily)
-        if book.claim() != (job, args.smoke):
+        if book.claim(args.smoke) != (job, args.smoke):
             parser.error("queued job mismatch")
         try:
-            pipeline.execute(job, args.smoke)
+            published = pipeline.execute(job, args.smoke)
             result = book.proof(job)
             succeeded = {row["stage"] for row in result["receipts"] if row["status"] == "complete"}
-            approved = any(row["stage"] == "audit" and row["result"].get("approved", 0)
-                           for row in result["receipts"])
-            okay = {"plan", "generate", "audit"} <= succeeded and approved
+            okay = {"plan", "generate", "audit"} <= succeeded and published > 0
             book.finish_job(job, "complete" if okay else "failed", "ready" if okay else "no_approved")
         except APIError as error:
             okay = False
@@ -384,7 +383,8 @@ def main():
             pass
         finally:
             app.stop.set()
-            app.wake.set()
+            for wake in app.wake.values():
+                wake.set()
 
 
 if __name__ == "__main__":

@@ -1,11 +1,14 @@
 import json
+import socket
 import threading
+from urllib.error import URLError
 
 import pytest
 
 from integrations.baby_naming.notebook import Notebook, Rejected
 from integrations.baby_naming.pipeline import APIError, OpenAI, Pipeline, current_analysis, evidence_for, evidence_versions
 from integrations.baby_naming.search import estimate
+from integrations.baby_naming.service import App
 
 
 @pytest.fixture
@@ -118,6 +121,21 @@ def test_empty_deck_reports_budget_and_automatically_resumes_next_day(book):
     book.clock[0] += 86400
     reopening = book.state("husband", direction, **refill)
     assert reopening["refill_wait"] is None and reopening["model"]["state"] == "queued"
+
+
+def test_polling_buffers_next_batch_with_an_open_card_and_fresh_feedback(book):
+    add(book, "沈星阑", "沈雪初", "沈知临", "沈从容", "沈清风", "沈明月", "沈时雨",
+        "沈长云", "沈晨宁", "沈明河", "沈冬晴", "沈小夏")
+    opened = book.assign("husband", "girl", auto_refill=True)
+    assert opened["available_names"] == 12
+    first, _ = book.claim("girl")
+    assert book.state("husband", "girl")["model"]["stage"] == "plan"
+    book.clock[0] += 1
+    following = book.answer("husband", "girl", opened["task"]["id"], "later", advance=True, auto_refill=True)
+    book.finish_job(first, "complete", "ready")
+    polled = book.state("husband", "girl", auto_refill=True)
+    assert polled["task"] == following["task"] and polled["model"]["state"] == "queued"
+    assert book.request_generation("wife", "girl") == book.claim("girl")[0]
 
 
 def test_preference_analysis_uses_shared_evidence_without_locking_a_card_save(book):
@@ -254,6 +272,54 @@ def test_two_workers_get_one_job_and_receipts_enforce_persistent_budget(book):
     assert not book.reserve(job, "generate", "2026-11-14", 1)
     book.interrupt_running()
     assert book.proof(job)["job"]["outcome"] == "interrupted"
+
+
+def test_search_in_each_direction_makes_progress_while_the_other_waits_for_openai(book):
+    girl_started, girl_release, boy_started = (threading.Event() for _ in range(3))
+    girl = book.request_generation("husband", "girl")
+    boy = book.request_generation("wife", "boy")
+
+    class BlockedGirlPipeline:
+        def execute(self, job, direction):
+            if direction == "girl":
+                girl_started.set()
+                girl_release.wait(5)
+                raise APIError("provider_timeout")
+            boy_started.set()
+            return 1
+
+    app = App(book, BlockedGirlPipeline(), (), "")
+    try:
+        assert girl_started.wait(2)
+        assert boy_started.wait(2)
+        assert book.proof(girl)["job"]["state"] == "running"
+        assert book.request_generation("husband", "girl") == girl
+    finally:
+        app.stop.set()
+        girl_release.set()
+        for direction, worker in app.workers.items():
+            app.wake[direction].set()
+            worker.join(timeout=2)
+    assert book.proof(boy)["job"]["outcome"] == "ready"
+    assert book.proof(girl)["job"]["outcome"] == "provider_timeout"
+
+
+@pytest.mark.parametrize(("cause", "code"), [
+    (socket.timeout(), "provider_timeout"),
+    (URLError(OSError()), "provider_connection"),
+])
+def test_connection_failure_reports_timeout_separately_and_makes_one_attempt(monkeypatch, cause, code):
+    api = OpenAI("mock-key")
+    calls = []
+
+    def fail(request, timeout):
+        calls.append(timeout)
+        raise cause
+
+    monkeypatch.setattr(api.opener, "open", fail)
+    with pytest.raises(APIError, match=code):
+        api.post("responses", {})
+    assert len(calls) == 1
 
 
 class MockProvider:

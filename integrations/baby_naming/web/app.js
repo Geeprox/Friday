@@ -89,6 +89,7 @@ const knownErrors = {
   budget_or_stale: "现在的搜索额度不足。可以先看已有名字，稍后再试。",
   rate_limit: "模型服务正在限流。稍后可以重试。",
   provider_connection: "模型服务连接失败。稍后可以重试。",
+  provider_timeout: "这轮搜索等模型响应太久了，可以重新搜索。",
   provider_output: "模型没有给出完整结果。稍后可以重试。",
   invalid_plan: "这次没形成可用的搜索计划，可以再试一次。",
   incomplete_audit: "盲审还缺结果。可以稍后再找一组。",
@@ -679,9 +680,17 @@ function renderEmpty(book) {
       await api("resume");
       await next();
     }));
-  } else if (["queued", "running"].includes(book.model?.state)) {
+  } else if (book.model?.state === "queued") {
+    title = "搜索已排队";
+    copy = "新一轮会自动开始。";
+    searchLabel = null;
+  } else if (book.model?.state === "running") {
     title = book.completed ? "正在准备下一张" : "正在找名字";
-    copy = "审核通过后会自动显示。";
+    copy = {
+      plan: "正在梳理这轮的取名方向。",
+      generate: "正在找新的名字组合。",
+      audit: "正在核对读音和用字。",
+    }[book.model.stage] || "审核通过后会自动显示。";
     searchLabel = null;
   } else if (book.refill_wait === "budget") {
     title = "下一张等待搜索额度";

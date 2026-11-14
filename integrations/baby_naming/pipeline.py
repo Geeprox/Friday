@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import socket
 import math
 import os
 import re
@@ -163,7 +164,11 @@ class OpenAI:
                     401: "key_rejected", 403: "permission", 429: "rate_limit",
                 }.get(error.code, "provider_http"))
             raise APIError(code, error.code, error.headers.get("x-request-id")) from None
-        except (URLError, OSError, ValueError):
+        except (URLError, OSError, ValueError) as error:
+            cause = error.reason if isinstance(error, URLError) else error
+            if isinstance(cause, (socket.timeout, TimeoutError)):
+                # 读取超时可能发生在上游已经接收请求之后，保留回执，由用户决定是否开始新一轮。
+                raise APIError("provider_timeout") from None
             raise APIError("provider_connection") from None
 
     def respond(self, stage, instructions, data, schema, ceiling):
@@ -508,8 +513,7 @@ class Pipeline:
         self.book.set_receipt_result(job, "generate", {"submitted": len(proposal["candidates"]),
                                                        "eligible": len(candidates), "excluded": dict(excluded)})
         if not candidates:
-            self.book.publish(job, direction, [], [], plan)
-            return
+            return self.book.publish(job, direction, [], [], plan)
         # 盲审只见姓名、音读和资料；轮次换位降低顺序影响。
         ordered = sorted(candidates, key=lambda row: (row["audit_id"] * (19 if job % 2 else 7)) % 31)
         audit_input = {"direction": direction, "candidates": [
@@ -534,7 +538,7 @@ class Pipeline:
                                                        bool(x["pronunciation"]["needs_check"]) for x in candidates),
                                                    "verdicts": dict(Counter(x["verdict"] for x in reviews.values()))})
         pair = proposal.get("pair")
-        self.book.publish(job, direction, selected, pair if isinstance(pair, list) else [], plan)
+        published = self.book.publish(job, direction, selected, pair if isinstance(pair, list) else [], plan)
         if self.shadow:
             features = self.book.decision_features(direction)
             try:
@@ -543,3 +547,4 @@ class Pipeline:
             except APIError:
                 # 影子接口独立失败时，已通过盲审的名字继续使用。
                 pass
+        return published

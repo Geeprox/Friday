@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS receipts (
     date TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1, tokens INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL, model TEXT, latency_ms INTEGER, provider_request TEXT, result TEXT
 );
+CREATE INDEX IF NOT EXISTS receipts_job ON receipts(job,id);
 CREATE TABLE IF NOT EXISTS preference_runs (
     id INTEGER PRIMARY KEY, direction TEXT NOT NULL, day TEXT NOT NULL,
     started REAL NOT NULL, status TEXT NOT NULL, evidence TEXT NOT NULL,
@@ -58,7 +59,8 @@ CREATE TABLE IF NOT EXISTS preference_runs (
 """
 REVIEW_DELAY = 24 * 60 * 60
 KEY_PAUSE = "paused_"
-REFILL_STOCK = 6
+# 每轮最多有六个新名字，库存降到两轮的量就开始补牌。
+REFILL_STOCK = 12
 
 
 class Rejected(ValueError):
@@ -256,21 +258,26 @@ class Notebook:
             next_name = self.preview_card(db, role, direction, task, names, opinions, denied, flash_count)
             if next_name:
                 preview = self.task_payload({"id": None, "kind": "flash", "first": next_name}, names)["names"][0]
+        model = {key: job[key] for key in ("state", "outcome", "profile")} if job else None
+        if model and model["state"] == "running":
+            stage = db.execute("""SELECT stage FROM receipts WHERE job=? AND stage IN ('plan','generate','audit')
+                                  ORDER BY id DESC LIMIT 1""", (job["id"],)).fetchone()
+            model["stage"] = stage["stage"] if stage else "plan"
         return {"role": role, "direction": direction, "task": self.task_payload(task, names),
                 "preview": preview, "available_names": inventory, "refill_wait": "budget" if waiting_for_budget else None,
                 "personal": personal, "common": common, "paused": paused, "completed": count,
                 "can_undo": bool(last), "review_available": review_available,
-                "model": {key: job[key] for key in ("state", "outcome", "profile")} if job else None,
+                "model": model,
                 "model_profile": self.selected_profile(db, role), "simulation": self.setting(db, "simulation", False)}
 
     def state(self, role, direction, *, auto_refill=False, daily=None):
         self.check(role, direction)
         with self.transaction(write=False) as db:
             report = self.snapshot(db, role, direction, daily=daily)
-        model = report["model"] or {}
-        can_resume = not model or (model["state"] == "complete" and model["outcome"] == "ready")
-        if (auto_refill and can_resume and not report["task"] and not report["refill_wait"]
-                and not report["paused"] and not report["simulation"] and report["available_names"] == 0):
+            # 搜索完成时当前卡可能还开着。只要有新反馈且库存偏低，轮询也可以接着补牌。
+            should_refill = (auto_refill and report["available_names"] <= REFILL_STOCK
+                             and self.refill_eligible(db, direction) and self.generation_budget_available(db, daily))
+        if should_refill:
             return self.assign(role, direction, auto_refill=True, daily=daily)
         return report
 
@@ -617,25 +624,26 @@ class Notebook:
         """, (day,)).fetchone()[0] or 0
         return self.used_budget(db, day) + active + 3 <= daily
 
-    def refill(self, db, role, direction, daily):
-        if not self.setting(db, "seed") or self.setting(db, "simulation", False):
-            return
-        if self.setting(db, KEY_PAUSE + direction):
-            return
+    def refill_eligible(self, db, direction):
+        if (not self.setting(db, "seed") or self.setting(db, "simulation", False)
+                or self.setting(db, KEY_PAUSE + direction)):
+            return False
         latest = self.latest_generation(db, direction)
-        if latest:
-            if latest["state"] in ("queued", "running", "failed") or latest["outcome"] == "no_approved":
-                return
-            if latest["state"] != "cancelled" and not db.execute(
-                    "SELECT 1 FROM tasks WHERE direction=? AND kind='flash' AND state='done' AND done>? LIMIT 1",
-                    (direction, latest["created"])).fetchone():
-                return
+        if not latest or latest["state"] == "cancelled":
+            return True
+        if latest["state"] != "complete" or latest["outcome"] != "ready":
+            return False
+        return db.execute(
+            "SELECT 1 FROM tasks WHERE direction=? AND kind='flash' AND state='done' AND done>? LIMIT 1",
+            (direction, latest["created"])).fetchone() is not None
+
+    def refill(self, db, role, direction, daily):
+        if not self.refill_eligible(db, direction):
+            return
         names, opinions = self.names(db, direction), self.opinions(db, direction)
         denied = self.vetoes(opinions, role)
         remaining = sum(self.unseen_card(key, role, names, opinions, denied) for key in names)
-        if remaining > REFILL_STOCK:
-            return
-        if self.generation_budget_available(db, daily):
+        if remaining <= REFILL_STOCK and self.generation_budget_available(db, daily):
             self.enqueue_generation(db, direction, self.selected_profile(db, role))
 
     def request_generation(self, role, direction, profile=None, *, daily=None):
@@ -662,9 +670,14 @@ class Notebook:
                 raise Rejected("invalid_model_profile")
             return row["profile"]
 
-    def claim(self):
+    def claim(self, direction=None):
         with self.transaction() as db:
-            row = db.execute("SELECT id,direction FROM jobs WHERE state='queued' ORDER BY id LIMIT 1").fetchone()
+            query = "SELECT id,direction FROM jobs WHERE state='queued'"
+            args = ()
+            if direction is not None:
+                query += " AND direction=?"
+                args = (direction,)
+            row = db.execute(query + " ORDER BY id LIMIT 1", args).fetchone()
             if not row:
                 return None
             db.execute("UPDATE jobs SET state='running',started=? WHERE id=?", (self.now(), row["id"]))
