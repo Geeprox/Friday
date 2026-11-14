@@ -276,7 +276,7 @@ class ActionController:
         return None
 
     @observe('action.transition', upstream='local')
-    def _stage(self, trace, status, code, *, reported=None, mijia_binding=None):
+    def _stage(self, trace, status, code, *, reported=None, mijia_binding=None, mijia_channel=None):
         event = Event(
             source="action-gateway",
             source_context=trace.events[0].source_context if trace.events else None,
@@ -292,7 +292,7 @@ class ActionController:
                 "code": code,
                 "write_attempted": trace.real_write_attempted or status == "sent",
                 "physical_verification": "NOT_RUN",
-                **({"mijia_binding": mijia_binding} if mijia_binding else {}),
+                **({"mijia_binding": mijia_binding, "mijia_channel": mijia_channel} if mijia_binding else {}),
             },
         )
         updated = trace.model_copy(
@@ -417,14 +417,20 @@ class ActionController:
                 return self._stage(trace, "rejected", "source_conflict")
             operation = getattr(trace.request, "operation", "light.set")
             writer = None
-            # 手势和镜头语音有自己的短时效，云端预检不能挤占这些输入的派发预算。
-            if self.mijia is not None and dispatch_guard is None and isinstance(authority, HomeDeviceAuthority):
+            # 镜头指令只尝试已经就绪的局域网路径，给原有手势有效期保留派发余量。
+            if self.mijia is not None and isinstance(authority, HomeDeviceAuthority):
+                quick = dispatch_guard is not None
                 try:
                     remaining = self._deadlines[action_id] - time.monotonic()
-                    async with asyncio.timeout(min(1.2, max(0, remaining))):
-                        writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired)
+                    async with asyncio.timeout(min(.22 if quick else 1.2, max(0, remaining))):
+                        writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
+                                                         quick=quick)
                         if writer is not None:
-                            await writer.readback()
+                            observed = await writer.readback()
+                            # 已锁定到原计划时的状态版本，再核对一次实际开关。
+                            # 避免 HA 尚未收到上游变化时继续覆盖新状态。
+                            if writer.channel == 'lan' and not self.mijia.state_agrees(snapshot, entity, observed):
+                                return self._stage(trace, "rejected", "source_conflict")
                 except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                     writer = None
                 if self.core.adapter is not adapter or self.authority()[1] != revision:
@@ -449,7 +455,9 @@ class ActionController:
                 raise ValueError("dispatch_guard_rejected")
             # 访问网络前先持久化发送占用记录，写库或状态比较失败则不发送。
             # 其他 Core 也不能重复领取同一计划。
-            trace = self._stage(trace, "sent", "send_claim_recorded", mijia_binding=writer.fingerprint() if mijia else None)
+            trace = self._stage(trace, "sent", "send_claim_recorded",
+                                mijia_binding=writer.fingerprint() if mijia else None,
+                                mijia_channel=writer.channel if mijia else None)
             try:
                 if not mijia:
                     writer = HADeviceWriter(adapter, entity, operation)
@@ -523,12 +531,14 @@ class ActionController:
                 return trace
             try:
                 operation = getattr(trace.request, "operation", "light.set")
-                mijia_binding = next((item.payload.get("mijia_binding") for item in trace.events
-                                      if item.payload.get("status") == "sent"), None)
+                sent = next((item.payload for item in trace.events if item.payload.get("status") == "sent"), {})
+                mijia_binding = sent.get("mijia_binding")
                 if mijia_binding:
-                    if self.mijia is None:
+                    channel = sent.get("mijia_channel", "cloud")
+                    if self.mijia is None or channel not in {"lan", "cloud"}:
                         return trace
-                    writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired)
+                    writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
+                                                     channel=channel)
                     if writer is None or writer.fingerprint() != mijia_binding or not writer.current():
                         return trace
                 else:

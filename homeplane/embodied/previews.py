@@ -52,7 +52,7 @@ class PreviewPool:
                  on_observation=None, on_audio=None, on_clear=None, on_motion=None, on_capture_frame=None,
                  on_view_lost=None, focus=None, occupied_elsewhere=None,
                  review_pending=None, fall_pending=None, sound_cue=None, sound_view=None, wall=None, intent_factory=None,
-                 needs_full_vision=None):
+                 needs_full_vision=None, full_vision=None):
         self.wall = wall
         self.sessions = {}
         self.focus = focus or (lambda camera: None)
@@ -62,6 +62,7 @@ class PreviewPool:
         self.sound_cue = sound_cue or (lambda camera, sample, active: None)
         self.sound_view = sound_view
         self.needs_full_vision = needs_full_vision or (lambda camera, session: False)
+        self.full_vision = full_vision
         self.runtime_log = RuntimeLog(DATA / "logs" / "camera-motion")
         self.lock = asyncio.Lock()
         self.identity_store = identity_store
@@ -341,7 +342,7 @@ class PreviewPool:
                 from .camera_recognition import CameraRecognition
                 from .vision_cadence import VisionCadence
                 recognizer = CameraRecognition(selected['id'], self.identity_store)
-                cadence = VisionCadence()
+                cadence = VisionCadence(full_rate=self.full_vision)
                 item['recognizer'] = recognizer
             elif self.identity_store is not None:
                 from homeplane.people.identity_session import IdentitySession

@@ -354,6 +354,13 @@ async def secondary_audio(camera_id, packet):
         await deliver_audio(service, packet)
 
 
+full_vision_deadline = 0.0
+
+
+def benchmark_full_vision():
+    return time.monotonic() < full_vision_deadline
+
+
 def needs_full_vision(camera_id, session):
     service = home if camera_id == SELECTED['id'] else secondary_homes.get(camera_id)
     policy = safety.policy_cache
@@ -369,6 +376,7 @@ previews = PreviewPool(identity_store=identity_store, continuous=True, recognize
     on_motion=clear_camera_view, on_view_lost=clear_camera_observation, on_capture_frame=safety.capture_frame,
     review_pending=safety.review_pending, fall_pending=safety.fall_pending,
     sound_cue=camera_motion_cue, sound_view=safety.offer_sound_search_frame, needs_full_vision=needs_full_vision,
+    full_vision=benchmark_full_vision,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
     occupied_elsewhere=lambda cid: (cid!=SELECTED['id'] and bool(view().get('people')))
         or any(other!=cid and previews.status(other)['state']=='live' and item.get('people',0)
@@ -747,7 +755,7 @@ async def run_source(my_generation):
     pet_tracks = PetTracks()
     processed_times.clear()
     captured_times.clear()
-    cadence = VisionCadence()
+    cadence = VisionCadence(full_rate=lambda: benchmark_full_vision())
     gate_generation = None
     state.update(
         status="connecting",
@@ -850,6 +858,7 @@ async def run_source(my_generation):
                             item['camera_source_context'], frame_generation) if current() else None)
                     quiet = (key is not None and type(item.get('scene_quiet_ms')) is int
                              and item['scene_quiet_ms'] >= cadence.minimum_quiet_ms
+                             and not benchmark_full_vision()
                              and not state.get('people') and not state.get('animals')
                              and games.mode in {'home','off'} and not party_camera.window(time.monotonic())[2]
                              and (camera_planner is None or camera_planner.mode in {'auto','hold','patrol'})
@@ -1405,6 +1414,19 @@ def identity_authorized(request):
         request.headers.get("x-friday-worker", ""), (PRIVATE / "control-key").read_text().strip()
     ):
         raise HTTPException(403)
+
+
+@app.post("/api/internal/vision-benchmark")
+async def vision_benchmark(request: Request):
+    global full_vision_deadline
+
+    identity_authorized(request)
+    body = await request.json()
+    seconds = body.get('full_rate_seconds') if isinstance(body, dict) and set(body) == {'full_rate_seconds'} else None
+    if type(seconds) is not int or not 0 <= seconds <= 75:
+        raise HTTPException(422, 'vision_benchmark_invalid')
+    full_vision_deadline = time.monotonic() + seconds
+    return {'full_rate_seconds': seconds}
 
 
 @app.get("/api/internal/identity")
@@ -2029,6 +2051,7 @@ async def status():
     result = view()
     result.pop("frame", None)
     result['safety_review'] = safety.review_status()
+    result['full_vision_benchmark'] = benchmark_full_vision()
     return result
 
 

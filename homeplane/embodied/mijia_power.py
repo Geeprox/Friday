@@ -19,6 +19,10 @@ def grant_binding(saved):
     return hashlib.sha256(json.dumps([region, uid, registration]).encode()).hexdigest()
 
 
+def family_binding(grant, home_id):
+    return hashlib.sha256(json.dumps([grant, str(home_id)]).encode()).hexdigest()
+
+
 def response_value(rows, did, siid, piid, *, write):
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
         raise ValueError('mijia_property_unconfirmed')
@@ -33,17 +37,24 @@ def response_value(rows, did, siid, piid, *, write):
     return {'power': 'on' if row['value'] else 'off'}
 
 
-async def run(request):
-    from miot.types import MIoTGetPropertyParam, MIoTSetPropertyParam
-
-    from .miot_session import MiSession
-
+def property_request(request):
+    if set(request) - {'did', 'siid', 'piid', 'grant', 'power'}:
+        raise ValueError('mijia_invalid_binding')
     did, siid, piid = request['did'], request['siid'], request['piid']
     desired = request.get('power')
     if (not isinstance(did, str) or not re.fullmatch(r'(?:[0-9]{1,32}|blt\.[0-9]\.[a-z0-9]{1,64})', did)
             or any(type(iid) is not int or not 1 <= iid <= 65535 for iid in (siid, piid))
             or desired not in (None, 'on', 'off')):
         raise ValueError('mijia_invalid_binding')
+    return did, siid, piid, desired
+
+
+async def run(request):
+    from miot.types import MIoTGetPropertyParam, MIoTSetPropertyParam
+
+    from .miot_session import MiSession
+
+    did, siid, piid, desired = property_request(request)
     session = MiSession()
     saved = await session.current()
     if grant_binding(saved) != request.get('grant'):

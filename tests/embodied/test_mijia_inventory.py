@@ -83,7 +83,8 @@ async def test_discovery_uses_configured_home_and_does_not_register_until_confir
     before = json.dumps(config, ensure_ascii=False)
     path.write_text(before)
     path.chmod(0o600)
-    region, candidates = await read_inventory(login, config, {'home_id': 'old-import'})
+    region, home_id, candidates = await read_inventory(login, config, {'home_id': 'old-import'})
+    assert home_id == home.home_id
     transport.get_devices_async.assert_awaited_once_with(home_infos=[home], fetch_share_home=True)
     rows = public_inventory(region, candidates)
     row, = rows

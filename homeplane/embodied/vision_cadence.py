@@ -42,7 +42,8 @@ class VisionCadence:
     minimum_quiet_ms = 4500
     settle_seconds = 4
 
-    def __init__(self):
+    def __init__(self, *, full_rate=None):
+        self.full_rate = full_rate or (lambda: False)
         self.checked_at = -math.inf
         self.active_until = -math.inf
         self.processed = self.skipped = 0
@@ -52,7 +53,7 @@ class VisionCadence:
     def due(self, packet, now, *, force):
         quiet = packet.get('scene_quiet_ms')
         self.quiet_ms = quiet if type(quiet) is int else None
-        if force:
+        if self.full_rate() or force:
             self.active_frames += 1
         elif self.quiet_ms is None or self.quiet_ms < self.minimum_quiet_ms:
             self.recent_motion_frames += 1

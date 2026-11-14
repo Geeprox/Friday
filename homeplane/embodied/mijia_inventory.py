@@ -59,7 +59,7 @@ async def read_inventory(session, config, membership):
         if len(dids) > 512:
             raise ValueError('inventory_limit')
         devices = await api.get_devices_async(home_infos=[home], fetch_share_home=True) if dids else {}
-        return region, device_rows(region, home, devices)
+        return region, home.home_id, device_rows(region, home, devices)
     finally:
         await api.deinit_async()
 
@@ -164,7 +164,7 @@ async def connect_camera(candidate, session, directory, config, membership, read
                          read_ptz=ptz_readback):
     if not config.get('enabled') or not config.get('main_origin') or not config.get('viewer_port'):
         raise ValueError('camera_setup_required')
-    region, rows = await read_inventory(session, config, membership)
+    region, _, rows = await read_inventory(session, config, membership)
     device = rows.get(candidate)
     if device is None or not is_camera(device) or region != 'cn':
         raise ValueError('camera_setup_required')
@@ -206,7 +206,7 @@ async def upgrade_registered_cameras(session, directory, config, membership):
     legacy = [camera for camera in config.get('cameras', []) if camera.get('preview_only') is True]
     if not legacy:
         return {'state': 'ready', 'upgraded': []}
-    region, rows = await read_inventory(session, config, membership)
+    region, _, rows = await read_inventory(session, config, membership)
     devices = {device.did: device for device in rows.values() if is_camera(device)}
     updates = {}
     for camera in legacy:
@@ -248,10 +248,10 @@ async def run(request, directory=PRIVATE):
         membership = read_lease(membership_path) if membership_path.exists() else {}
         session = MiSession(directory)
         if action == 'inventory':
-            from .mijia_power import grant_binding
+            from .mijia_power import family_binding, grant_binding
 
             grant = grant_binding(await session.current())
-            region, rows = await read_inventory(session, config, membership)
+            region, home_id, rows = await read_inventory(session, config, membership)
             if grant != grant_binding(await session.current()):
                 raise ValueError('inventory_changed')
             models = {
@@ -259,7 +259,8 @@ async def run(request, directory=PRIVATE):
                 for device in (physical, *physical.sub_devices.values())
             }
             devices = public_inventory(region, rows)
-            return {'state': 'ready', 'region': region, 'devices': devices, 'models': models, 'grant': grant}
+            return {'state': 'ready', 'region': region, 'devices': devices, 'models': models,
+                    'grant': grant, 'family': family_binding(grant, home_id)}
         if action == 'connect' and re.fullmatch(r'[a-f0-9]{64}', request.get('candidate') or ''):
             return await connect_camera(request['candidate'], session, directory, config, membership)
         if action == 'upgrade':

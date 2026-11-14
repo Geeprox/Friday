@@ -353,6 +353,7 @@ def create_app(
             await infrastructure.start()
             if background_enabled and isinstance(core.adapter, (HAReadOnlyAdapter, LocalCameraHome)):
                 embodied.start_mijia_discovery()
+                core.actions.mijia.start(core)
             embodied.safety_output.start_retention()
             if query_adoption:
                 query_adoption.bind_loop()
@@ -362,6 +363,8 @@ def create_app(
             await infrastructure.close()
             await app.state.home_experience.close()
             await app.state.werewolf.close()
+            if core.actions.mijia is not None:
+                await core.actions.mijia.close()
             await embodied.close()
             await home_flow.close()
             if query_adoption:
@@ -400,6 +403,12 @@ def create_app(
     app.state.embodied = embodied
     app.state.infrastructure = infrastructure
     app.state.attach_ha = attach_ha
+
+    @app.get("/api/embodied/mijia-lan")
+    async def mijia_lan_status():
+        if core.actions.mijia is not None:
+            return core.actions.mijia.lan.status()
+        return {"connected": False, "control_devices": 0, "push_capable": 0}
 
     @app.get("/api/embodied/infrastructure")
     async def infrastructure_status():

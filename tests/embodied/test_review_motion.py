@@ -273,7 +273,7 @@ def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
     scope=dict(PreviewPool=lambda **kwargs:kwargs,identity_store=None,wall=None,safety=safety,
                secondary_observation=noop,secondary_audio=noop,clear_camera=noop,clear_camera_view=noop,
                clear_camera_observation=noop,
-               camera_motion_cue=recorded_sound_only(safety), needs_full_vision=noop)
+               camera_motion_cue=recorded_sound_only(safety), needs_full_vision=noop, benchmark_full_vision=noop)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[assignment],type_ignores=[])),'original-preview-construction','exec'),scope)
     assert scope['previews']['review_pending'] is safety.review_pending
     assert scope['previews']['fall_pending'] is safety.fall_pending

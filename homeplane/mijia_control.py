@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Callable
 
+import httpx
+
 from .devices import xiaomi_identifier
+from .mijia_lan_client import FAMILY, MijiaLanClient
 
 
 async def request_property(request):
@@ -88,14 +91,84 @@ POWER_OPERATIONS = frozenset({'light.set', 'switch.set', 'fan.set', 'climate.pow
 class MijiaPower:
     """直连只接管已有授权的确定性电源操作，使用原有实体 ID。"""
 
-    def __init__(self, service, *, spec=None, request=request_property):
+    def __init__(self, service, *, spec=None, request=request_property, lan=None):
         if spec is None:
             from .embodied.mijia_inventory import public_spec
             spec = public_spec
         self.service, self.spec, self.request = service, spec, request
+        self.lan = lan if lan is not None else MijiaLanClient(self.current_family)
         self.specs = {}
+        self.warming = None
 
-    async def writer(self, adapter, snapshot, entity, operation, desired):
+    def current_family(self):
+        report = getattr(self.service, 'discovery_report', {})
+        checked = getattr(self.service, 'discovery_checked_at', None)
+        family = report.get('family')
+        if (report.get('state') == 'ready' and checked is not None
+                and 0 <= time.monotonic() - checked <= 330
+                and isinstance(family, str) and FAMILY.fullmatch(family)):
+            return family
+        return None
+
+    def start(self, core):
+        self.lan.start()
+        self.warming = asyncio.create_task(self._warm(core), name='friday-mijia-specs')
+
+    async def close(self):
+        if self.warming is not None:
+            self.warming.cancel()
+            await asyncio.gather(self.warming, return_exceptions=True)
+            self.warming = None
+        await self.lan.close()
+
+    async def _spec(self, urn):
+        if urn not in self.specs:
+            self.specs[urn] = await self.spec(urn)
+            if len(self.specs) > 128:
+                self.specs.pop(next(iter(self.specs)))
+        return self.specs[urn]
+
+    async def _warm(self, core):
+        # 只预取家庭已匹配设备的公开规格；不会读取或改变设备属性。
+        retry = {}
+        limit = asyncio.Semaphore(3)
+
+        async def read(urn):
+            try:
+                async with limit, asyncio.timeout(6):
+                    await self._spec(urn)
+            except (OSError, ValueError, TimeoutError, httpx.HTTPError):
+                retry[urn] = time.monotonic() + 60
+
+        while True:
+            family = self.current_family()
+            snapshot = getattr(core.adapter, '_last', None)
+            if family and snapshot is not None and self.lan.ready(family):
+                models = self.service.discovery_report.get('models', {})
+                identifiers = {binding.external_id for device in snapshot.devices
+                               for binding in device.bindings if binding.source == 'xiaomi-identity'}
+                now = time.monotonic()
+                retry = {urn: until for urn, until in retry.items() if until > now}
+                urns = {row['urn'] for identity in identifiers
+                        if (stable := xiaomi_identifier(identity)) and isinstance(row := models.get(stable), dict)
+                        and isinstance(row.get('urn'), str) and self.lan.ready(family, stable.split('_', 1)[1])}
+                fresh = sorted(urns - self.specs.keys() - retry.keys())[:24]
+                await asyncio.gather(*(read(urn) for urn in fresh))
+            await asyncio.sleep(5)
+
+    @staticmethod
+    def state_agrees(snapshot, entity, observed):
+        name = f'{entity.id}:{entity.kind}.state'
+        value = next((state.value for state in snapshot.states if state.id == name), None)
+        if value == 'off':
+            return observed['power'] == 'off'
+        if value == 'on' or (entity.kind == 'climate' and value in {
+            'heat', 'cool', 'auto', 'dry', 'heat_cool', 'fan_only',
+        }):
+            return observed['power'] == 'on'
+        return True
+
+    async def writer(self, adapter, snapshot, entity, operation, desired, *, channel=None, quick=False):
         if (operation not in POWER_OPERATIONS or operation.split('.', 1)[0] != entity.kind
                 or set(desired) != {'power'} or desired['power'] not in {'on', 'off'}):
             return None
@@ -121,12 +194,14 @@ class MijiaPower:
         if not isinstance(catalog, dict) or not isinstance(catalog.get('urn'), str):
             return None
         urn = catalog['urn']
+        did = identity.split('_', 1)[1]
+        family = self.current_family()
+        local = bool(family and channel != 'cloud' and self.lan.ready(family, did))
+        if (channel == 'lan' and not local) or (quick and (not local or urn not in self.specs)):
+            return None
         try:
-            if urn not in self.specs:
-                self.specs[urn] = await self.spec(urn)
-                if len(self.specs) > 128:
-                    self.specs.pop(next(iter(self.specs)))
-            match = power_property(self.specs[urn], row['unique_id'], entity.kind, urn, catalog.get('model'))
+            spec = await self._spec(urn)
+            match = power_property(spec, row['unique_id'], entity.kind, urn, catalog.get('model'))
         except (OSError, ValueError, KeyError, TypeError, IndexError):
             return None
         def current():
@@ -141,8 +216,17 @@ class MijiaPower:
         if not match or match[0] != identity or not current():
             return None
         _, siid, piid = match
-        return MijiaPowerWriter(self.request, {'did': identity.split('_', 1)[1], 'siid': siid,
-                                               'piid': piid, 'grant': grant}, current)
+        binding = {'did': did, 'siid': siid, 'piid': piid, 'grant': grant}
+        if not local:
+            return MijiaPowerWriter(self.request, binding, current)
+
+        async def request_lan(payload):
+            return await self.lan.request(payload, family=family)
+
+        def local_current():
+            return current() and self.lan.ready(family, did)
+
+        return MijiaPowerWriter(request_lan, binding, local_current, channel='lan', family=family)
 
 
 @dataclass(frozen=True)
@@ -151,9 +235,15 @@ class MijiaPowerWriter:
 
     binding: dict
     current: Callable[[], bool]
+    channel: str = 'cloud'
+    family: str | None = None
 
     def fingerprint(self):
-        return hashlib.sha256(json.dumps(self.binding, sort_keys=True).encode()).hexdigest()
+        # 保持旧版云端回执的核对方式。局域网回执绑定同一家庭和通道。
+        payload = self.binding if self.channel == 'cloud' else {
+            **self.binding, 'channel': self.channel, 'family': self.family,
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     async def send(self, desired):
         result = await self.request({**self.binding, **desired})
@@ -163,4 +253,5 @@ class MijiaPowerWriter:
         result = await self.request(self.binding)
         if result.get('power') not in ('on', 'off'):
             raise ValueError('unavailable_readback')
-        return dict(power=result['power'], received_at=datetime.now(UTC).isoformat(), evidence='mijia_property_readback')
+        source = 'mijia_lan_readback' if self.channel == 'lan' else 'mijia_property_readback'
+        return dict(power=result['power'], received_at=datetime.now(UTC).isoformat(), evidence=source)
