@@ -347,7 +347,7 @@ async function update() {
     await work(next);
     return;
   }
-  if (taskChanged || modelChanged || result.paused !== previous.paused) {
+  if (taskChanged || modelChanged || result.paused !== previous.paused || result.refill_wait !== previous.refill_wait) {
     state.book = result;
     if (taskChanged || result.paused !== previous.paused || !result.task) render();
     else if (!showingSettings) renderLists();
@@ -682,6 +682,10 @@ function renderEmpty(book) {
   } else if (["queued", "running"].includes(book.model?.state)) {
     title = book.completed ? "正在准备下一张" : "正在找名字";
     copy = "审核通过后会自动显示。";
+    searchLabel = null;
+  } else if (book.refill_wait === "budget") {
+    title = "下一张等待搜索额度";
+    copy = "额度恢复后会自动继续。每日额度在北京时间零点重置。";
     searchLabel = null;
   } else if (book.model?.state === "failed") {
     title = "这轮搜索没完成";

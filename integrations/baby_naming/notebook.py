@@ -229,7 +229,7 @@ class Notebook:
                                   skip=skip, limit=1)
         return next(iter(choices), None)
 
-    def snapshot(self, db, role, direction):
+    def snapshot(self, db, role, direction, *, daily=None):
         names = self.names(db, direction)
         opinions = self.opinions(db, direction)
         personal, common = self.projected_names(role, names, opinions)
@@ -245,6 +245,11 @@ class Notebook:
         review_available = not task and not paused and self.review_candidate(
             role, names, opinions, denied) is not None
         inventory = sum(self.unseen_card(key, role, names, opinions, denied) for key in names)
+        waiting_for_budget = (
+            daily is not None and not paused and not task and not inventory and not review_available
+            and (not job or (job["state"] == "complete" and job["outcome"] == "ready"))
+            and not self.generation_budget_available(db, daily)
+        )
         preview = None
         if task and task["kind"] != "compare" and not paused:
             flash_count = self.completed_flashes(db, role, direction)
@@ -252,7 +257,7 @@ class Notebook:
             if next_name:
                 preview = self.task_payload({"id": None, "kind": "flash", "first": next_name}, names)["names"][0]
         return {"role": role, "direction": direction, "task": self.task_payload(task, names),
-                "preview": preview, "available_names": inventory,
+                "preview": preview, "available_names": inventory, "refill_wait": "budget" if waiting_for_budget else None,
                 "personal": personal, "common": common, "paused": paused, "completed": count,
                 "can_undo": bool(last), "review_available": review_available,
                 "model": {key: job[key] for key in ("state", "outcome", "profile")} if job else None,
@@ -261,11 +266,11 @@ class Notebook:
     def state(self, role, direction, *, daily=None):
         self.check(role, direction)
         with self.transaction(write=False) as db:
-            report = self.snapshot(db, role, direction)
+            report = self.snapshot(db, role, direction, daily=daily)
         model = report["model"] or {}
         can_resume = not model or (model["state"] == "complete" and model["outcome"] == "ready")
-        if (daily is not None and can_resume and not report["task"] and
-                not report["paused"] and not report["simulation"] and report["available_names"] == 0):
+        if (daily is not None and can_resume and not report["task"] and not report["refill_wait"]
+                and not report["paused"] and not report["simulation"] and report["available_names"] == 0):
             return self.assign(role, direction, daily=daily)
         return report
 
@@ -396,7 +401,7 @@ class Notebook:
         with self.transaction() as db:
             self.assign_task(db, role, direction)
             self.refill(db, role, direction, daily)
-            return self.snapshot(db, role, direction)
+            return self.snapshot(db, role, direction, daily=daily)
 
     def assign_task(self, db, role, direction, *, prepared=None):
         if (self.setting(db, KEY_PAUSE + direction) or
@@ -433,7 +438,7 @@ class Notebook:
                 if advance:
                     self.assign_task(db, role, direction)
                     self.refill(db, role, direction, daily)
-                return self.snapshot(db, role, direction)
+                return self.snapshot(db, role, direction, daily=daily)
             if task["state"] != "open" or self.setting(db, KEY_PAUSE + direction):
                 raise Rejected("task_not_current")
             if advance and prepared is not None and task["kind"] != "compare":
@@ -462,7 +467,7 @@ class Notebook:
             if advance:
                 self.assign_task(db, role, direction, prepared=prepared)
                 self.refill(db, role, direction, daily)
-            return self.snapshot(db, role, direction)
+            return self.snapshot(db, role, direction, daily=daily)
 
     def undo(self, role, direction):
         self.check(role, direction)
@@ -614,12 +619,10 @@ class Notebook:
             return
         latest = self.latest_generation(db, direction)
         if latest:
-            if latest["state"] in ("queued", "running", "failed"):
-                return
-            if latest["outcome"] == "no_approved":
+            if latest["state"] in ("queued", "running", "failed") or latest["outcome"] == "no_approved":
                 return
             if latest["state"] != "cancelled" and not db.execute(
-                    "SELECT 1 FROM tasks WHERE direction=? AND kind='flash' AND done>? LIMIT 1",
+                    "SELECT 1 FROM tasks WHERE direction=? AND kind='flash' AND state='done' AND done>? LIMIT 1",
                     (direction, latest["created"])).fetchone():
                 return
         names, opinions = self.names(db, direction), self.opinions(db, direction)

@@ -102,6 +102,22 @@ def test_refill_begins_with_cards_left_and_can_recover_from_provider_failure(boo
     assert book.claim() is None
 
 
+def test_empty_deck_reports_budget_and_automatically_resumes_next_day(book):
+    add(book, "沈知春")
+    opened = book.assign("husband", "girl", daily=3)
+    job, direction = book.claim()
+    for stage in ("plan", "generate", "audit"):
+        assert book.reserve(job, stage, "1970-01-01", 3)
+    book.finish_job(job, "complete", "ready")
+    book.clock[0] += 1
+    exhausted = book.answer("husband", direction, opened["task"]["id"], "dislike", advance=True, daily=3)
+    assert exhausted["task"] is None and exhausted["refill_wait"] == "budget"
+    assert book.claim() is None
+    book.clock[0] += 86400
+    reopening = book.state("husband", direction, daily=3)
+    assert reopening["refill_wait"] is None and reopening["model"]["state"] == "queued"
+
+
 def test_preference_analysis_uses_shared_evidence_without_locking_a_card_save(book):
     add(book, "沈星阑", "沈知临", "沈雪初", "沈从容")
     book.clock[0] += 100
