@@ -1,0 +1,20 @@
+[
+  {"id":"shijing-luming","branch":"object","title":"《诗经·小雅·鹿鸣》","text":"呦呦鹿鸣，食野之苹。我有嘉宾，鼓瑟吹笙。","url":"https://zh.wikisource.org/wiki/詩經/鹿鳴"},
+  {"id":"shijing-jianjia","branch":"scene","title":"《诗经·秦风·蒹葭》","text":"蒹葭苍苍，白露为霜。所谓伊人，在水一方。","url":"https://zh.wikisource.org/wiki/詩經/蒹葭"},
+  {"id":"shijing-qiao","branch":"character","title":"《诗经·卫风·淇奥》","text":"有匪君子，如切如磋，如琢如磨。","url":"https://zh.wikisource.org/wiki/詩經/淇奧"},
+  {"id":"shijing-yeyou","branch":"allusion","title":"《诗经·郑风·野有蔓草》","text":"有美一人，清扬婉兮。邂逅相遇，适我愿兮。","url":"https://zh.wikisource.org/wiki/詩經/野有蔓草"},
+  {"id":"chuci-lisao","branch":"character","title":"屈原《离骚》","text":"纷吾既有此内美兮，又重之以修能。","url":"https://zh.wikisource.org/wiki/離騷"},
+  {"id":"zhouyi-jian","branch":"object","title":"《周易·渐》","text":"鸿渐于陆，其羽可用为仪。","url":"https://zh.wikisource.org/wiki/周易/漸"},
+  {"id":"xietiao-wandeng","branch":"scene","title":"谢朓《晚登三山还望京邑》","text":"余霞散成绮，澄江静如练。","url":"https://zh.wikisource.org/wiki/晚登三山還望京邑"},
+  {"id":"taoqian-yinjiu","branch":"scene","title":"陶渊明《饮酒·其五》","text":"采菊东篱下，悠然见南山。山气日夕佳，飞鸟相与还。","url":"https://zh.wikisource.org/wiki/飲酒_(陶淵明)"},
+  {"id":"lunyu-yongye","branch":"character","title":"《论语·雍也》","text":"质胜文则野，文胜质则史。文质彬彬，然后君子。","url":"https://zh.wikisource.org/wiki/論語/雍也第六"},
+  {"id":"zhangjiuling-wangyue","branch":"scene","title":"张九龄《望月怀远》","text":"海上生明月，天涯共此时。","url":"https://zh.wikisource.org/wiki/望月懷遠"},
+  {"id":"wangwei-shanju","branch":"scene","title":"王维《山居秋暝》","text":"明月松间照，清泉石上流。","url":"https://zh.wikisource.org/wiki/山居秋暝"},
+  {"id":"wangwan-beigu","branch":"scene","title":"王湾《次北固山下》","text":"潮平两岸阔，风正一帆悬。","url":"https://zh.wikisource.org/wiki/次北固山下"},
+  {"id":"wangbo-tengwang","branch":"allusion","title":"王勃《滕王阁序》","text":"落霞与孤鹜齐飞，秋水共长天一色。","url":"https://zh.wikisource.org/wiki/滕王閣序"},
+  {"id":"liuyuxi-loushi","branch":"character","title":"刘禹锡《陋室铭》","text":"苔痕上阶绿，草色入帘青。","url":"https://zh.wikisource.org/wiki/陋室銘"},
+  {"id":"zhou-dunyi-ailian","branch":"object","title":"周敦颐《爱莲说》","text":"出淤泥而不染，濯清涟而不妖。中通外直，不蔓不枝。","url":"https://zh.wikisource.org/wiki/愛蓮說"},
+  {"id":"sushi-dingfengbo","branch":"character","title":"苏轼《定风波》","text":"竹杖芒鞋轻胜马，谁怕？一蓑烟雨任平生。","url":"https://zh.wikisource.org/wiki/定風波_(蘇軾)"},
+  {"id":"shangshu-yaodian","branch":"allusion","title":"《尚书·尧典》","text":"诗言志，歌永言，声依永，律和声。","url":"https://zh.wikisource.org/wiki/尚書/堯典"},
+  {"id":"zhouyi-xici","branch":"life","title":"《周易·系辞下》","text":"穷则变，变则通，通则久。","url":"https://zh.wikisource.org/wiki/周易/繫辭下"}
+]

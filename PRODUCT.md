@@ -95,3 +95,9 @@ README.md、docs/deployment.md、docs/privacy.md 与现有 Web / SwiftUI 实现�
 # Confirmed hand teaching visual (2026-11-04)
 
 The user explicitly approved the Godot XR Tools CC0 rigged-hand preview: orthographic white hand with smooth charcoal contours, real source-bone open-palm → target → hold → reset. This is the visual reference replacing the rejected authored hand diagrams. Preserve this source and style. The user additionally asked to review the official common poses and support practical additional gestures in recognition, bindings and teaching; source poses alone do not prove recognition support. Prioritize clearly distinguishable inputs and provide the same bounded practice/feedback path.
+
+## 宝宝起名工作台
+
+两位家长在不同时间、不同设备上寻找「贺＋双字名」，男孩和女孩各自探索。工作台部署在 NAS，由 Friday 家庭内网门户进入。进入时选择「老公」或「老婆」，服务保存两人的独立进度。对同一名字的判断在双方都提交后共享。暖白纸面上用宋体大字、墨玉山水和烫金卡边呈现姓名。老公以松墨绿头像辨识，老婆以胭脂红头像辨识。
+
+AI 根据有来源的传统取名方法规划、造名、盲审，并按已有反馈安排闪卡、对照题和复看。明确否决只排除该全名；普通左划把当前名字移出个人队列；积累不同样本后才减少某个搜索方向的预算。一个名字由双方分别确认愿意使用后，当前方向可以先停。

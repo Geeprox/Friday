@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#182a23">
+  <title>宝宝起名 · Friday</title>
+  <link rel="preload" as="image" href="./jade-relief.webp">
+  <link rel="stylesheet" href="./style.css">
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <a href="/" class="back">
+        <svg aria-hidden="true"><use href="./icons.svg#back"></use></svg>Friday
+      </a>
+      <span class="brand">宝宝起名</span>
+      <button class="identity quiet" id="identity" type="button" hidden></button>
+    </div>
+  </header>
+
+  <main>
+    <section id="entry" class="entry" aria-labelledby="entry-title">
+      <div class="entry-cover" aria-hidden="true">
+        <span class="cover-rim"></span>
+        <span class="cover-title">名</span>
+      </div>
+      <div class="entry-copy">
+        <h1 id="entry-title">一起给宝宝起名</h1>
+        <p>选自己的身份，接着上次往下看。</p>
+        <div class="roles">
+          <button type="button" class="role husband" data-join="husband">
+            <span class="portrait"><svg aria-hidden="true"><use href="./icons.svg#husband"></use></svg></span>
+            <span>老公</span><svg class="role-arrow" aria-hidden="true"><use href="./icons.svg#forward"></use></svg>
+          </button>
+          <button type="button" class="role wife" data-join="wife">
+            <span class="portrait"><svg aria-hidden="true"><use href="./icons.svg#wife"></use></svg></span>
+            <span>老婆</span><svg class="role-arrow" aria-hidden="true"><use href="./icons.svg#forward"></use></svg>
+          </button>
+        </div>
+        <p id="entry-error" class="error" role="alert" hidden></p>
+      </div>
+    </section>
+
+    <div id="work" hidden>
+      <div class="workspace-top">
+        <h1>名字簿</h1>
+        <div class="workspace-controls">
+          <nav class="direction" aria-label="起名方向">
+            <button type="button" data-direction="girl" aria-pressed="true">女孩</button>
+            <button type="button" data-direction="boy" aria-pressed="false">男孩</button>
+          </nav>
+          <a href="#settings" id="settings-toggle" class="settings-toggle" aria-label="设置">
+            <svg aria-hidden="true"><use href="./icons.svg#gear"></use></svg>
+          </a>
+        </div>
+      </div>
+      <p id="simulation" class="simulation" hidden>演示数据</p>
+      <div class="layout">
+        <section class="desk" aria-labelledby="desk-title">
+          <div class="desk-top">
+            <h2 id="desk-title" tabindex="-1">现在看一个</h2>
+            <span id="progress"></span>
+          </div>
+          <div id="task"></div>
+          <div class="desk-foot">
+            <p id="saved" hidden></p>
+            <button id="undo" class="quiet" type="button" hidden>撤销上一次</button>
+          </div>
+          <p id="task-error" class="error" role="alert" hidden></p>
+        </section>
+
+        <aside class="side">
+          <section aria-labelledby="common-title">
+            <h2 id="common-title">共同备选</h2>
+            <div id="common"></div>
+          </section>
+          <section class="personal" aria-labelledby="personal-title">
+            <details id="personal-fold">
+              <summary id="personal-title">我的记录 <span id="record-count"></span></summary>
+              <div id="personal"></div>
+            </details>
+          </section>
+        </aside>
+      </div>
+    </div>
+    <section id="settings-panel" class="settings-page" aria-labelledby="settings-title" hidden>
+      <a href="#" id="settings-back" class="settings-back">
+        <svg aria-hidden="true"><use href="./icons.svg#back"></use></svg>名字簿
+      </a>
+      <h1 id="settings-title" tabindex="-1">设置</h1>
+      <div class="setting-row">
+        <div>
+          <label for="model-profile">搜索档位</label>
+          <p>保存后用在你发起的下一轮。</p>
+        </div>
+        <select id="model-profile" data-actionable aria-describedby="settings-note">
+          <option value="sol-high">6.1-Sol 高</option>
+          <option value="luna-low">Luna 低</option>
+        </select>
+      </div>
+      <p id="settings-note" class="setting-note"></p>
+      <p id="settings-result" class="setting-note" role="status" hidden></p>
+    </section>
+    <p id="live" class="visually-hidden" role="status"></p>
+  </main>
+
+  <template id="icons">
+    <svg aria-hidden="true"><use></use></svg>
+  </template>
+</body>
+</html>
