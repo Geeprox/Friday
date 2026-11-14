@@ -47,7 +47,7 @@ class App:
         self.stop = threading.Event()
         self.workers = {}
         if worker and pipeline:
-            self.book.interrupt_running()
+            self.book.interrupt_running(auto_retry=True)
             for direction in DIRECTIONS:
                 thread = threading.Thread(target=self.run, args=(direction,), daemon=True)
                 self.workers[direction] = thread
@@ -75,7 +75,8 @@ class App:
                 published = self.pipeline.execute(number, direction)
                 self.book.finish_job(number, "complete", "ready" if published else "no_approved")
             except APIError as error:
-                self.book.finish_job(number, "failed", error.code)
+                if not self.book.retry_failed_stage(number, error.code):
+                    self.book.finish_job(number, "failed", error.code)
             except Exception:
                 # 标准错误和 UI 只显示固定状态，不记录姓名、请求正文或凭据。
                 self.book.finish_job(number, "failed", "model_unavailable")

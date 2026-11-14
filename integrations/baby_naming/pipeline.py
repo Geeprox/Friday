@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import secrets
 import socket
 import ssl
 import time
@@ -105,10 +106,11 @@ AUDIT_SCHEMA = schema_object({"reviews": schema_list(schema_object({
 
 
 class APIError(RuntimeError):
-    def __init__(self, code, status=None, request_id=None, *, usage=None, reason=None):
+    def __init__(self, code, status=None, request_id=None, *, usage=None, reason=None, network=None, trace=None):
         super().__init__(code)
         self.code, self.status, self.request_id = code, status, request_id
         self.usage, self.reason = usage or {}, reason
+        self.network, self.trace = network, trace
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -121,18 +123,39 @@ class BeforePost(OSError):
 
 
 class ResponseConnection(HTTPSConnection):
+    def __init__(self, host, *, trace, **options):
+        super().__init__(host, **options)
+        self.trace = trace
+        self.tunnel_established = False
+
+    def set_tunnel(self, host, port=None, headers=None):
+        # 追踪编号仅到本地中继，OpenAI 的 HTTPS 请求不带这个头部。
+        super().set_tunnel(host, port, {**(headers or {}), "X-Friday-Tunnel-Id": self.trace})
+
+    def _tunnel(self):
+        try:
+            super()._tunnel()
+        except (OSError, HTTPException) as error:
+            raise BeforePost("relay_connect") from error
+        self.tunnel_established = True
+
     def connect(self):
         try:
             super().connect()
         except ssl.SSLCertVerificationError:
             raise
+        except BeforePost:
+            raise
         except (OSError, HTTPException) as error:
-            raise BeforePost() from error
+            phase = "upstream_tls" if self.tunnel_established or self.sock else "socket_connect"
+            raise BeforePost(phase) from error
 
 
 class ResponsesHTTPSHandler(HTTPSHandler):
     def https_open(self, request):
-        return self.do_open(ResponseConnection, request, context=self._context)
+        def connect(host, **options):
+            return ResponseConnection(host, trace=request.naming_trace, **options)
+        return self.do_open(connect, request, context=self._context)
 
 
 def read_event_stream(response, request_id, deadline):
@@ -215,10 +238,13 @@ class OpenAI:
         request = Request(API + route, data=as_json(body).encode(), method="POST",
                           headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json",
                                    "Accept": "text/event-stream" if stream else "application/json"})
+        request.naming_trace = secrets.token_hex(8)
         request_id = None
+        phase = "response_headers"
         try:
             with self.open_request(request) as response:
                 request_id = response.headers.get("x-request-id")
+                phase = "response_body"
                 if stream:
                     if response.headers.get_content_type() != "text/event-stream":
                         raise APIError("provider_output", request_id=request_id, reason="expected_stream")
@@ -240,10 +266,24 @@ class OpenAI:
             raise APIError(code, error.code, error.headers.get("x-request-id")) from None
         except (OSError, HTTPException) as error:
             cause = error.reason if isinstance(error, URLError) else error
+            if isinstance(cause, ssl.SSLCertVerificationError):
+                raise APIError("provider_certificate", network="upstream_tls", trace=request.naming_trace) from None
+            before = isinstance(cause, BeforePost)
+            if before and cause.args:
+                phase = cause.args[0]
+            if before and cause.__cause__ is not None:
+                cause = cause.__cause__
             if isinstance(cause, (socket.timeout, TimeoutError)):
-                raise APIError("provider_timeout", request_id=request_id, reason="response_timeout") from None
-            reason = "before_post" if isinstance(cause, BeforePost) else "transport_interrupted"
-            raise APIError("provider_connection", request_id=request_id, reason=reason) from None
+                raise APIError("provider_timeout", request_id=request_id, reason="response_timeout",
+                               network=phase, trace=request.naming_trace) from None
+            reason = "before_post" if before else "transport_interrupted"
+            raise APIError("provider_connection", request_id=request_id, reason=reason,
+                           network=phase, trace=request.naming_trace) from None
+        except APIError as error:
+            if error.code in ("provider_connection", "provider_timeout"):
+                error.network = phase
+                error.trace = request.naming_trace
+            raise
         except (ValueError, UnicodeError):
             raise APIError("provider_output", request_id=request_id, reason="invalid_response") from None
 
@@ -548,9 +588,12 @@ class Pipeline:
             if validate is not None:
                 value = validate(value)
         except APIError as error:
+            details = {"http_status": error.status, "reason": error.reason}
+            if error.trace:
+                details.update(trace=error.trace, network=error.network)
             self.book.receipt(receipt, error.code, round((time.monotonic()-start)*1000), {
                 **error.usage, "request_id": error.request_id},
-                {"http_status": error.status, "reason": error.reason})
+                details)
             raise
         checkpoint = {"fingerprint": fingerprint, "value": value} if fingerprint is not None else None
         self.book.receipt(receipt, "complete", round((time.monotonic()-start)*1000), meta,
@@ -572,6 +615,9 @@ class Pipeline:
                              fingerprint=fingerprint, validate=validate)
 
     def execute(self, job, direction):
+        published = self.book.published_count(job, direction)
+        if published is not None:
+            return published
         deep = self.book.generation_profile(job) == "sol-high"
         client = self.high_client if deep else self.client
         if client is None:

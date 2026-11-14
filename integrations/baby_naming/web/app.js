@@ -90,6 +90,7 @@ const knownErrors = {
   rate_limit: "模型服务正在限流。稍后可以重试。",
   provider_connection: "连接中断了。可以接着搜索。",
   provider_timeout: "模型响应超时了。可以接着搜索。",
+  provider_certificate: "模型服务的连接校验失败。请检查中继。",
   provider_output: "模型没有给出完整结果。稍后可以重试。",
   invalid_plan: "这次没形成可用的搜索计划，可以再试一次。",
   incomplete_audit: "盲审还缺结果。可以稍后再找一组。",
@@ -681,8 +682,8 @@ function renderEmpty(book) {
       await next();
     }));
   } else if (book.model?.state === "queued") {
-    title = "搜索已排队";
-    copy = "新一轮会自动开始。";
+    title = book.model.retrying ? "正在恢复搜索" : "搜索已排队";
+    copy = book.model.retrying ? "刚才连接中断了，稍后会自动接着找。" : "新一轮会自动开始。";
     searchLabel = null;
   } else if (book.model?.state === "running") {
     title = book.completed ? "正在准备下一张" : "正在找名字";

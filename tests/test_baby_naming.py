@@ -1,6 +1,7 @@
 import json
 import socket
 import threading
+import time
 from email.message import Message
 from io import BytesIO
 from urllib.error import URLError
@@ -8,6 +9,7 @@ from urllib.error import URLError
 import pytest
 
 from integrations.baby_naming.notebook import Notebook, Rejected
+from integrations.baby_naming import openai_connect_relay
 from integrations.baby_naming.pipeline import (
     APIError, BeforePost, OpenAI, Pipeline, current_analysis, evidence_for, evidence_versions,
 )
@@ -288,7 +290,7 @@ def test_search_in_each_direction_makes_progress_while_the_other_waits_for_opena
             if direction == "girl":
                 girl_started.set()
                 girl_release.wait(5)
-                raise APIError("provider_timeout")
+                raise APIError("model_access")
             boy_started.set()
             return 1
 
@@ -305,7 +307,7 @@ def test_search_in_each_direction_makes_progress_while_the_other_waits_for_opena
             app.wake[direction].set()
             worker.join(timeout=2)
     assert book.proof(boy)["job"]["outcome"] == "ready"
-    assert book.proof(girl)["job"]["outcome"] == "provider_timeout"
+    assert book.proof(girl)["job"]["outcome"] == "model_access"
 
 
 @pytest.mark.parametrize(("cause", "code"), [
@@ -356,6 +358,7 @@ def test_stream_returns_only_completed_result_and_does_not_replay_a_dropped_post
         api.respond("plan", "", {}, {}, 100)
     assert (failure.value.code, failure.value.reason, failure.value.request_id) == (
         "provider_connection", "stream_interrupted", "fixture")
+    assert failure.value.network == "response_body" and len(failure.value.trace) == 16
     assert len(requests) == 2
 
 
@@ -374,7 +377,33 @@ def test_retry_only_reconnects_a_request_that_was_not_sent(monkeypatch):
     with pytest.raises(APIError) as failure:
         api.post("responses", {})
     assert failure.value.reason == "transport_interrupted"
+    assert failure.value.network == "response_headers"
     assert len(attempts) == 2
+
+
+def test_relay_records_upstream_closing_first_without_capturing_payload(monkeypatch):
+    upstream, peer = socket.socketpair()
+    events = []
+    monkeypatch.setattr(openai_connect_relay, "upstream_socket", lambda port: upstream)
+    with peer, openai_connect_relay.Relay(("127.0.0.1", 0), "127.0.0.1", 1082, events.append) as relay:
+        server = threading.Thread(target=relay.serve_forever, daemon=True)
+        server.start()
+        try:
+            with socket.create_connection(relay.server_address, timeout=2) as client:
+                client.sendall(b"CONNECT api.openai.com:443 HTTP/1.0\r\nX-Friday-Tunnel-Id: 0123456789abcdef\r\n\r\n")
+                with client.makefile("rb") as response:
+                    assert response.readline().startswith(b"HTTP/1.1 200")
+                    assert response.readline() == b"\r\n"
+                    peer.sendall(b"payload")
+                    peer.shutdown(socket.SHUT_WR)
+                    assert response.read() == b"payload"
+                client.shutdown(socket.SHUT_WR)
+        finally:
+            relay.shutdown()
+            server.join(timeout=3)
+    assert len(events) == 1
+    assert events[0]["first_close"] == "upstream" and events[0]["trace"] == "0123456789abcdef"
+    assert "payload" not in str(events)
 
 
 class MockProvider:
@@ -447,6 +476,65 @@ def test_continue_search_reuses_validated_stages_after_audit_connection_loss(boo
     assert proof["receipts"][2]["status"] == "provider_connection"
     assert proof["receipts"][2]["result"]["reason"] == "stream_interrupted"
     assert reopened.completed_stage(job, "generate")[0] is None
+
+
+def test_worker_resumes_from_audit_after_restart_without_a_browser_request(book, monkeypatch):
+    monkeypatch.setattr("integrations.baby_naming.notebook.RETRY_DELAYS", (10, 30, 90))
+    provider = MockProvider()
+    stages = []
+
+    def interrupted_audit(route, body):
+        stage = body["text"]["format"]["name"]
+        stages.append(stage)
+        if stages == ["naming_plan", "naming_generate", "naming_audit"]:
+            raise APIError("provider_connection", reason="stream_interrupted")
+        return provider(route, body)
+
+    job = book.request_generation("husband", "girl", "luna-low")
+    client = OpenAI("fixture-key", transport=interrupted_audit)
+    app = App(book, Pipeline(book, client), (), "")
+
+    def shutdown(service):
+        service.stop.set()
+        for direction, worker in service.workers.items():
+            service.wake[direction].set()
+            worker.join(timeout=2)
+
+    try:
+        end = time.monotonic() + 2
+        while book.proof(job)["job"]["state"] != "queued" or not stages:
+            assert time.monotonic() < end
+            time.sleep(.01)
+        assert book.state("wife", "girl")["model"]["retrying"]
+        assert book.claim("girl") is None
+    finally:
+        shutdown(app)
+    book.clock[0] += 10
+    rebooted = Notebook(book.root, now=book.now)
+    app = App(rebooted, Pipeline(rebooted, client), (), "")
+    try:
+        end = time.monotonic() + 2
+        while rebooted.proof(job)["job"]["state"] != "complete":
+            assert time.monotonic() < end
+            time.sleep(.01)
+        assert stages == ["naming_plan", "naming_generate", "naming_audit", "naming_audit"]
+        assert rebooted.assign("husband", "girl")["task"]
+    finally:
+        shutdown(app)
+
+
+def test_retry_backoff_is_bounded_and_excludes_permanent_errors(book):
+    job = book.request_generation("husband", "girl")
+    assert book.claim("girl") == (job, "girl")
+    assert not book.retry_failed_stage(job, "key_rejected")
+    assert not book.retry_failed_stage(job, "provider_certificate")
+    for delay in (10, 30, 90):
+        assert book.retry_failed_stage(job, "provider_timeout")
+        book.clock[0] += delay - 1
+        assert book.claim("girl") is None
+        book.clock[0] += 1
+        assert book.claim("girl") == (job, "girl")
+    assert not book.retry_failed_stage(job, "provider_timeout")
 
 
 def test_switching_to_unlimited_resumes_a_depleted_deck_after_the_old_daily_limit(book):

@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS comparisons (
 );
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY, direction TEXT NOT NULL, state TEXT NOT NULL,
-    created REAL NOT NULL, started REAL, ended REAL, outcome TEXT, profile TEXT NOT NULL DEFAULT 'luna-low'
+    created REAL NOT NULL, started REAL, ended REAL, outcome TEXT, profile TEXT NOT NULL DEFAULT 'luna-low',
+    retry_at REAL, retries INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_job ON jobs(direction) WHERE state IN ('queued','running');
 CREATE TABLE IF NOT EXISTS receipts (
@@ -63,6 +64,7 @@ KEY_PAUSE = "paused_"
 REFILL_STOCK = 12
 CONTINUE_WINDOW = 30 * 60
 CONTINUE_OUTCOMES = ("provider_connection", "provider_timeout", "interrupted")
+RETRY_DELAYS = (10, 30, 90)
 
 
 class Rejected(ValueError):
@@ -93,6 +95,10 @@ class Notebook:
             fields = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
             if "profile" not in fields:
                 db.execute("ALTER TABLE jobs ADD COLUMN profile TEXT NOT NULL DEFAULT 'luna-low'")
+            if "retry_at" not in fields:
+                db.execute("ALTER TABLE jobs ADD COLUMN retry_at REAL")
+            if "retries" not in fields:
+                db.execute("ALTER TABLE jobs ADD COLUMN retries INTEGER NOT NULL DEFAULT 0")
             if "card_note" not in {row["name"] for row in db.execute("PRAGMA table_info(names)")}:
                 db.execute("ALTER TABLE names ADD COLUMN card_note TEXT")
             if "checkpoint" not in {row["name"] for row in db.execute("PRAGMA table_info(receipts)")}:
@@ -263,6 +269,8 @@ class Notebook:
             if next_name:
                 preview = self.task_payload({"id": None, "kind": "flash", "first": next_name}, names)["names"][0]
         model = {key: job[key] for key in ("state", "outcome", "profile")} if job else None
+        if model and job["state"] == "queued" and job["retry_at"] is not None:
+            model["retrying"] = True
         if model and model["state"] == "running":
             stage = db.execute("""SELECT stage FROM receipts WHERE job=? AND stage IN ('plan','generate','audit')
                                   ORDER BY id DESC LIMIT 1""", (job["id"],)).fetchone()
@@ -671,8 +679,9 @@ class Notebook:
                     and db.execute("""SELECT 1 FROM receipts WHERE job=? AND stage='plan' AND status='complete'
                                       AND (checkpoint IS NOT NULL OR result IS NOT NULL) LIMIT 1""",
                                    (latest["id"],)).fetchone()):
-                # 保留失败回执和阶段结果。只有明确点击继续时，才再次提交未完成的阶段。
-                db.execute("UPDATE jobs SET state='queued',started=NULL,ended=NULL,outcome=NULL WHERE id=?",
+                # 用户可以在多次自动恢复失败后重新接续这轮，旧请求继续计入用量。
+                db.execute("""UPDATE jobs SET state='queued',started=NULL,ended=NULL,outcome=NULL,
+                              retry_at=NULL,retries=0 WHERE id=?""",
                            (latest["id"],))
                 return latest["id"]
             db.execute("""UPDATE receipts SET checkpoint=NULL
@@ -689,21 +698,45 @@ class Notebook:
 
     def claim(self, direction=None):
         with self.transaction() as db:
-            query = "SELECT id,direction FROM jobs WHERE state='queued'"
-            args = ()
+            now = self.now()
+            query = "SELECT id,direction FROM jobs WHERE state='queued' AND (retry_at IS NULL OR retry_at<=?)"
+            args = (now,)
             if direction is not None:
                 query += " AND direction=?"
-                args = (direction,)
+                args += (direction,)
             row = db.execute(query + " ORDER BY id LIMIT 1", args).fetchone()
             if not row:
                 return None
-            db.execute("UPDATE jobs SET state='running',started=? WHERE id=?", (self.now(), row["id"]))
+            db.execute("""UPDATE jobs SET state='running',started=coalesce(started,?),retry_at=NULL,
+                          outcome=NULL WHERE id=?""", (now, row["id"]))
             return row["id"], row["direction"]
 
-    def interrupt_running(self):
+    def defer_retry(self, db, job, outcome):
+        now = self.now()
+        row = db.execute("SELECT direction,created,retries FROM jobs WHERE id=? AND state='running'", (job,)).fetchone()
+        if not row or row["retries"] >= len(RETRY_DELAYS) or self.setting(db, KEY_PAUSE + row["direction"]):
+            return False
+        retry_at = now + RETRY_DELAYS[row["retries"]]
+        if retry_at >= row["created"] + CONTINUE_WINDOW:
+            return False
+        db.execute("""UPDATE jobs SET state='queued',outcome=?,retry_at=?,retries=retries+1
+                      WHERE id=? AND state='running'""", (outcome, retry_at, job))
+        return True
+
+    def retry_failed_stage(self, job, outcome):
+        if outcome not in CONTINUE_OUTCOMES:
+            return False
+        with self.transaction() as db:
+            return self.defer_retry(db, job, outcome)
+
+    def interrupt_running(self, *, auto_retry=False):
         with self.transaction() as db:
             db.execute("""UPDATE receipts SET status='interrupted' WHERE status='pending'
                           AND job IN (SELECT id FROM jobs WHERE state='running')""")
+            if auto_retry:
+                running = db.execute("SELECT id FROM jobs WHERE state='running'").fetchall()
+                for row in running:
+                    self.defer_retry(db, row["id"], "interrupted")
             db.execute("UPDATE jobs SET state='failed',ended=?,outcome='interrupted' WHERE state='running'",
                        (self.now(),))
             db.execute("UPDATE preference_runs SET status='interrupted' WHERE status='pending'")
@@ -754,6 +787,11 @@ class Notebook:
                           SELECT max(id) FROM receipts WHERE job=? AND stage=? AND status='complete')""",
                        (as_json(value), job, stage))
 
+    def published_count(self, job, direction):
+        with self.transaction(write=False) as db:
+            last = self.setting(db, "last_published_" + direction, {})
+            return last.get("count") if last.get("job") == job else None
+
     def publish(self, job, direction, candidates, pair, plan):
         with self.transaction() as db:
             row = db.execute("SELECT state FROM jobs WHERE id=? AND direction=?", (job, direction)).fetchone()
@@ -779,7 +817,7 @@ class Notebook:
                 first, second = sorted(inserted[name] for name in pair)
                 db.execute("INSERT INTO comparisons(direction,first,second,axis) VALUES(?,?,?,?) ON CONFLICT DO NOTHING",
                            (direction, first, second, axis))
-            self.put_setting(db, "last_published_" + direction, {"count": len(inserted), "time": self.now()})
+            self.put_setting(db, "last_published_" + direction, {"job": job, "count": len(inserted), "time": self.now()})
             return len(inserted)
 
     def model_context(self, direction, *, current_job=None):
@@ -901,7 +939,7 @@ class Notebook:
 
     def proof(self, job):
         with self.transaction(write=False) as db:
-            item = db.execute("SELECT id,direction,state,outcome,profile FROM jobs WHERE id=?", (job,)).fetchone()
+            item = db.execute("SELECT id,direction,state,outcome,profile,retries FROM jobs WHERE id=?", (job,)).fetchone()
             receipts = [dict(row) for row in db.execute(
                 "SELECT stage,status,model,tokens,latency_ms,provider_request,result FROM receipts WHERE job=? ORDER BY id",
                 (job,))]
