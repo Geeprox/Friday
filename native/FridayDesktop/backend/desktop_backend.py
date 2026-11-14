@@ -666,9 +666,11 @@ class DesktopService:
     async def status(self):
         facts = connection_configuration()
         observed_failure = self.connection_failure()
+        power = self.inner.state.core.actions.mijia_power_home if self.inner else None
+        local_devices = power.ready_count() if power and power.uses_lan_home(self.adapter) else 0
         local_home = (isinstance(self.adapter, LocalCameraHome)
-                      or bool(observed_failure and self.persistent and self.inner
-                              and self.inner.state.embodied.configured()))
+                      or bool(observed_failure and self.persistent and self.inner and (
+                              local_devices or self.inner.state.embodied.configured())))
         connection = 'connected' if local_home else 'failed' if observed_failure else self.connection
         failure = observed_failure or self.failure
         health_result = (connection, failure)
@@ -678,11 +680,13 @@ class DesktopService:
                                     result='unavailable' if failure else 'ok',
                                     code=failure or 'none', upstream='ha' if self.inner else 'local')
         return {**facts, 'service': 'running', 'connection': connection,
-                'failure': failure, 'source': 'local-cameras' if local_home else 'ha-read-only' if self.inner else 'not_connected',
+                'failure': failure, 'source': ('mijia-lan' if local_devices else 'local-cameras'
+                                               if local_home else 'ha-read-only' if self.inner else 'not_connected'),
                 'failureEvidence': self.failure_evidence,
-                'homeReadable': self.inner is not None and not local_home and not observed_failure and self.connection == 'connected',
+                'homeReadable': bool(local_devices or (self.inner is not None and not local_home
+                                                       and not observed_failure and self.connection == 'connected')),
                 'providerReads': self.provider_reads,
-                'entityCount': self.entity_count, 'deviceWrites': 'scoped' if self.inner and self.inner.state.core.actions.policy_report()['enabled'] else 'disabled',
+                'entityCount': local_devices or self.entity_count, 'deviceWrites': 'scoped' if self.inner and self.inner.state.core.actions.policy_report()['enabled'] else 'disabled',
                 'arl': self.arl, 'simulated': False, 'pid': os.getpid(),
                 'lifetime': 'persistent' if self.persistent else 'parent'}
 
@@ -704,6 +708,8 @@ class DesktopService:
         replay commands to recover an upstream transport gap.
         """
         from homeplane.embodied.service import camera_runtime_configured
+        from homeplane.embodied.paths import PRIVATE
+        from homeplane.mijia_power_home import catalog_available
 
         attempt = 0
         rejected_revision = None
@@ -713,7 +719,9 @@ class DesktopService:
             local = isinstance(self.adapter, LocalCameraHome)
             saved_ha = facts.get('configurationAvailable') and facts.get('credentialAvailable')
             if ((self.inner is None or local) and not (STATE / 'connection-paused').exists()
-                    and (saved_ha or self.inner is None and camera_runtime_configured())
+                    and (saved_ha or self.inner is None and (
+                        camera_runtime_configured() or catalog_available(PRIVATE)
+                    ))
                     and (rejected_revision is None or revision != rejected_revision)):
                 try:
                     await self._connect()
@@ -759,15 +767,17 @@ class DesktopService:
             lifespan_entered = False
             try:
                 from homeplane.embodied.service import EmbodiedService
+                from homeplane.mijia_power_home import catalog_available
                 integration=EmbodiedService()
                 # Household control is independent from optional camera/ML setup.
-                controls=(Path(os.environ['FRIDAY_EMBODIED_DATA'])/'private/action-authority.json').is_file()
+                directory = Path(os.environ['FRIDAY_EMBODIED_DATA']) / 'private'
+                controls = (directory / 'action-authority.json').is_file()
                 grant_context=_device_control.set(controls)
                 local_failure = None
                 try:
                     settings, adapter, snapshot = await real_adapter(self.renewal)
                 except (OSError, ValueError, RuntimeError) as error:
-                    if not self.persistent or not integration.configured():
+                    if not self.persistent or not (integration.configured() or catalog_available(directory)):
                         raise
                     settings, adapter = self.setup_settings().config, LocalCameraHome()
                     snapshot = await adapter.snapshot()
@@ -792,7 +802,7 @@ class DesktopService:
                 from homeplane.intelligence.settings import default_directory
                 inner = create_app(adapter, db_path=STATE / 'traces.sqlite', settings_service=local_settings,
                                    intelligence_directory=default_directory(),
-                                   authority_path=Path(os.environ['FRIDAY_EMBODIED_DATA'])/'private/action-authority.json' if controls else STATE/'no-device-authority.json', geek_launcher=closed_geek,
+                                   authority_path=directory/'action-authority.json' if controls else STATE/'no-device-authority.json', geek_launcher=closed_geek,
                                    geek_readonly_directory=Path(os.environ['FRIDAY_EMBODIED_DATA']).parent/'homeplane',
                                    arl_runtime=self.arl_runtime,
                                    arl_planning_authorizer=self.planning_authorizer,

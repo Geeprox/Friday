@@ -76,7 +76,7 @@ class QualityCounts(Contract):
 
 
 class SnapshotSummary(Contract):
-    mode: Literal["simulator", "ha-read-only", "unavailable"]
+    mode: Literal["simulator", "ha-read-only", "mijia-lan", "unavailable"]
     simulated: bool | None
     cached_snapshot_at: datetime | None = None
     snapshot_available: bool = False
@@ -191,7 +191,7 @@ def choice(value, allowed, default=None):
 
 def project(source, mode, ha, geek, journal):
     """Construct every field; extra upstream text never enters the export."""
-    mode = choice(mode, {"simulator", "ha-read-only"}, "unavailable")
+    mode = choice(mode, {"simulator", "ha-read-only", "mijia-lan"}, "unavailable")
     snapshot = SnapshotSummary(mode=mode, simulated=mode == "simulator" if mode != "unavailable" else None)
     if source is not None and source.mode == mode:
         collections = [source.entities, source.devices, source.states]

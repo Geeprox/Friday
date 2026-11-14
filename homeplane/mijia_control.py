@@ -85,7 +85,11 @@ def power_property(spec, unique_id, kind, device_urn, device_model):
     return None
 
 
-POWER_OPERATIONS = frozenset({'light.set', 'switch.set', 'fan.set', 'climate.power', 'humidifier.power', 'water_heater.power'})
+POWER_BY_KIND = {'light': 'light.set', 'switch': 'switch.set', 'fan': 'fan.set', 'climate': 'climate.power',
+                 'humidifier': 'humidifier.power', 'water_heater': 'water_heater.power'}
+POWER_OPERATIONS = frozenset(POWER_BY_KIND.values())
+MIJIA_POWER_MODE = 'mijia-lan'
+MIJIA_POWER_ROUTE = 'mijia-scoped-power'
 
 
 class MijiaPower:
@@ -99,6 +103,8 @@ class MijiaPower:
         self.lan = lan if lan is not None else MijiaLanClient(self.current_family)
         self.specs = {}
         self.warming = None
+        self.home = None
+        self.sampling = None
 
     def current_family(self):
         report = getattr(self.service, 'discovery_report', {})
@@ -134,14 +140,19 @@ class MijiaPower:
                     family=family, did=str(cover['did']))
 
     def start(self, core):
+        from .mijia_power_home import MijiaPowerHome
+
+        self.home = MijiaPowerHome(core, self)
         self.lan.start()
         self.warming = asyncio.create_task(self._warm(core), name='friday-mijia-specs')
+        self.sampling = asyncio.create_task(self.home.sample(), name='friday-mijia-power-state')
 
     async def close(self):
-        if self.warming is not None:
-            self.warming.cancel()
-            await asyncio.gather(self.warming, return_exceptions=True)
-            self.warming = None
+        tasks = [task for task in (self.warming, self.sampling) if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.warming = self.sampling = None
         await self.lan.close()
 
     async def _spec(self, urn):
@@ -182,6 +193,11 @@ class MijiaPower:
                         and isinstance(row.get('urn'), str) and self.lan.ready(family, stable.split('_', 1)[1])}
                 fresh = sorted(urns - self.specs.keys() - retry.keys())[:24]
                 await asyncio.gather(*(read(urn) for urn in fresh))
+            try:
+                self.home.migrate()
+            except (OSError, ValueError):
+                # 私有目录写入失败时，下次重新核对来源和授权。
+                pass
             await asyncio.sleep(5)
 
     @staticmethod
@@ -196,10 +212,7 @@ class MijiaPower:
             return observed['power'] == 'on'
         return True
 
-    async def writer(self, adapter, snapshot, entity, operation, desired, *, channel=None, quick=False):
-        if (operation not in POWER_OPERATIONS or operation.split('.', 1)[0] != entity.kind
-                or set(desired) != {'power'} or desired['power'] not in {'on', 'off'}):
-            return None
+    def registry_source(self, adapter, entity, device):
         report = getattr(self.service, "discovery_report", {})
         updated_at = getattr(self.service, "discovery_checked_at", None)
         if (report.get('state') != 'ready' or updated_at is None
@@ -211,8 +224,7 @@ class MijiaPower:
         if (registry_ids != [row.get('device_id')] or row.get('platform') != 'xiaomi_home'
                 or not isinstance(row.get('unique_id'), str)):
             return None
-        ids = {b.external_id for device in snapshot.devices if entity.id in device.function_ids
-               for b in device.bindings if b.source == 'xiaomi-identity'}
+        ids = {b.external_id for b in device.bindings if b.source == 'xiaomi-identity'}
         models = report.get('models', {})
         grant = report.get('grant')
         if len(ids) != 1 or not isinstance(grant, str) or not re.fullmatch(r'[a-f0-9]{64}', grant):
@@ -221,6 +233,17 @@ class MijiaPower:
         catalog = models.get(identity)
         if not isinstance(catalog, dict) or not isinstance(catalog.get('urn'), str):
             return None
+        return RegistrySource(identity, catalog, external, row, grant)
+
+    async def writer(self, adapter, snapshot, entity, operation, desired, *, channel=None, quick=False):
+        if operation not in POWER_OPERATIONS or operation.split('.', 1)[0] != entity.kind or not power_intent(desired):
+            return None
+        devices = [d for d in snapshot.devices if entity.id in d.function_ids]
+        source = self.registry_source(adapter, entity, devices[0]) if len(devices) == 1 else None
+        if source is None:
+            return None
+        identity, catalog = source.identity, source.catalog
+        row, external, grant = source.registry, source.external, source.grant
         urn = catalog['urn']
         did = identity.split('_', 1)[1]
         family = self.current_family()
@@ -257,6 +280,19 @@ class MijiaPower:
         return MijiaPowerWriter(request_lan, binding, local_current, channel='lan', family=family)
 
 
+def power_intent(desired):
+    return set(desired) == {'power'} and desired['power'] in ('on', 'off')
+
+
+@dataclass(frozen=True)
+class RegistrySource:
+    identity: str
+    catalog: dict
+    external: str
+    registry: dict
+    grant: str
+
+
 @dataclass(frozen=True)
 class MijiaPowerWriter:
     request: object
@@ -265,6 +301,7 @@ class MijiaPowerWriter:
     current: Callable[[], bool]
     channel: str = 'cloud'
     family: str | None = None
+    on_readback: Callable[[dict], None] | None = None
 
     def fingerprint(self):
         # 保持旧版云端回执的核对方式。局域网回执绑定同一家庭和通道。
@@ -282,4 +319,7 @@ class MijiaPowerWriter:
         if result.get('power') not in ('on', 'off'):
             raise ValueError('unavailable_readback')
         source = 'mijia_lan_readback' if self.channel == 'lan' else 'mijia_property_readback'
-        return dict(power=result['power'], received_at=datetime.now(UTC).isoformat(), evidence=source)
+        reported = dict(power=result['power'], received_at=datetime.now(UTC).isoformat(), evidence=source)
+        if self.on_readback is not None:
+            self.on_readback(reported)
+        return reported

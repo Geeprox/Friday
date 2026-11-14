@@ -36,7 +36,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  let alive=true,data=null,room='全部',category='全部',query='',selected=null,model=null,timer=null,busy=false,recordings=null,recordingFolder='',recordingDate='',interactions=null;
  let loadVersion=0,loadAbort=null,hasDrawn=false;
  const view=add(h('div',null,{class:'experience','data-page':page}));root.append(view);
- let listSlot=null,inspectorSlot=null,statsSlot=null,modelSlot=null,spatialScene=null,spacePanel=null,spatialRoom=null,spatialDevice=null,placementNotice=null,placementSaving=false;
+ let listSlot=null,inspectorSlot=null,modelSlot=null,spatialScene=null,spacePanel=null,spatialRoom=null,spatialDevice=null,placementNotice=null,placementSaving=false,sourceBanner=null;
  let spatialTrigger=null,inspectorTrigger=null;
  let previewStop=null;
  let discoverySlot=null, connectingCamera=null;
@@ -89,7 +89,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    if(!alive||version!==loadVersion)return;
    data=next;
    for(const d of data.devices)for(const c of d.controls)if(requestedPositions.has(c.id))c.attributes.requested_position=requestedPositions.get(c.id);
-   document.dispatchEvent(new CustomEvent('Friday.homeStatus',{detail:{generated_at:next.generated_at,connected:next.connected,simulated:next.simulated,control_count:next.control_count}}));
+   document.dispatchEvent(new CustomEvent('Friday.homeStatus',{detail:{generated_at:next.generated_at,connected:next.connected,simulated:next.simulated,control_count:next.control_count,source:next.source}}));
    if(initial||!hasDrawn){draw();hasDrawn=true;if(page==='Devices'){try{const id=sessionStorage.getItem('Friday.deviceFocus');sessionStorage.removeItem('Friday.deviceFocus');const target=data.devices.find(d=>d.id===id);if(target)inspect(target);}catch(_){}}}else update();
   }catch(e){
    if(!alive||version!==loadVersion)return;
@@ -784,10 +784,19 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   section.append(list);
   discoverySlot.replaceChildren(section);
  }
+ function updateSourceBanner(){
+  if(!sourceBanner)return;
+  const show=!data.connected&&!data.simulated;
+  const local=data.source==='mijia-lan';
+  const title=local?'正在读取米家设备':'家庭连接已中断';
+  if(!show){sourceBanner.replaceChildren();return;}
+  if(sourceBanner.firstElementChild?.getAttribute('data-title')===title)return;
+  sourceBanner.replaceChildren(add(h('section',null,{class:'home-source-banner source-offline',role:'status','data-title':title}),ico('alert-circle'),add(h('div'),h('strong',title),h('p',local?'读到当前状态后即可操作。':'连接恢复后可继续查看和操作。')),btn('连接设置',()=>go('Settings'))));
+ }
  function drawHome(){
-  stopPreview();model?.dispose();model=null;spacePanel=null;spatialScene=null;listSlot=null;inspectorSlot=null;statsSlot=null;
+  stopPreview();model?.dispose();model=null;spacePanel=null;spatialScene=null;listSlot=null;inspectorSlot=null;
   homeStatus?.dispose();homeStatus=null;view.replaceChildren();connectionSetup?.dispose();connectionSetup=null;
-  if(!data.connected&&!data.simulated)view.append(add(h('section',null,{class:'home-source-banner source-offline',role:'status'}),ico('alert-circle'),add(h('div'),h('strong','家庭连接已中断'),h('p','显示上次记录，请恢复连接后再操作。')),btn('恢复连接',()=>go('Settings'))));
+  sourceBanner=h('div');view.append(sourceBanner);updateSourceBanner();
   const dashboard=page==='Home'?h('div',null,{class:'home-dashboard'}):null;const space=dashboard?h('section',null,{class:'home-space','aria-label':'家庭空间'}):null;if(dashboard){const tools=add(h('div',null,{class:'home-space-tools'}),h('h2','家庭空间'),btn('户型与位置',editHouse,{class:'text-button'}));space.append(tools);filters(space);dashboard.append(space);view.append(dashboard);}
   if(page==='Home'&&data.layout?.rooms?.length){
    const scene=h('section',null,{class:'house-scene','aria-label':'家庭空间控制'});spatialScene=scene;modelSlot=h('div',null,{class:'house-canvas'});scene.append(modelSlot);
@@ -821,7 +830,6 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const layout=h('div',null,{class:'product-device-layout'});listSlot=h('div');inspectorSlot=h('aside',null,{class:'product-inspector',id:'device-detail-panel',hidden:''});add(layout,listSlot,inspectorSlot);main.append(layout);
   updateTiles();if(selected){const d=data.devices.find(x=>x.id===selected);if(d)inspect(d);}
  }
- function drawStats(){}
  async function savePlacement(device,placedRoom,position){if(placementSaving)return;placementSaving=true;model?.place(null);try{data.layout=await api('/api/home/layout/device-position',{expected_revision:data.layout.revision,device_id:device.bindings?.find(b=>b.source==='xiaomi-identity')?.external_id||device.id,room_id:placedRoom.id,position});cancelPlacement();toast(device.name+'的位置已保存');drawHome();}catch(_){toast('位置未保存，请刷新户型后重试',true);cancelPlacement();}finally{placementSaving=false;}}
  function editHouse(){const dialog=h('dialog',null,{class:'product-dialog'});add(dialog,h('h2','家庭空间档案'),h('p','导入米家房间轮廓或完整户型。更新时按房间与设备 ID 对齐，已有设备位置会保留。'));const file=h('input',null,{type:'file',accept:'.json,application/json','aria-label':'导入家庭空间档案'}),out=h('div',null,{role:'status'});file.onchange=async()=>{const f=file.files[0];if(!f)return;if(f.size>2*1024*1024){out.textContent='文件过大，请选择家庭空间 JSON。';return;}try{const incoming=JSON.parse(await f.text()),report=await api('/api/home/layout/preview',{layout:incoming});out.replaceChildren(h('p',`房间：新增 ${report.rooms?.added?.length||0}，更新 ${report.rooms?.changed?.length||0}；设备点位：新增 ${report.devices?.added?.length||0}`));if(report.conflicts?.some(c=>c.kind!=='device_position_changed')){out.append(h('p','发现房间或设备归属冲突，请检查导入档案后重试。'));return;}if(report.conflicts?.length)out.append(h('p',`${report.conflicts.length} 个设备位置发生变化，导入会同步到新位置。`));out.append(btn('导入更新',async()=>{data.layout=await api('/api/home/layout/import',{layout:incoming,expected_revision:report.base_revision,accept_device_changes:Boolean(report.conflicts?.length)});dialog.close();drawHome();},{class:'primary'}));}catch(_){out.textContent='文件格式不正确，请使用 Friday 空间档案或米家 FloorMapV3 数据。';}};dialog.append(field('选择档案',file),out);if(data.layout){dialog.append(btn('撤销上次导入',async()=>{try{data.layout=await api('/api/home/layout/restore',{expected_revision:data.layout.revision});dialog.close();drawHome();}catch(_){toast('没有可恢复的上一版户型',true);}}));dialog.append(btn('导出当前档案',()=>{const blob=new Blob([JSON.stringify(data.layout,null,2)],{type:'application/json'}),a=h('a',null,{href:URL.createObjectURL(blob),download:'Friday-home-layout.json'});a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}));const target=choices([['','选择需要定位的设备'],...data.devices.map(d=>[d.id,d.room+' · '+d.name])],'定位设备');dialog.append(field('设备位置',target),btn('在户型中定位',()=>{const d=data.devices.find(d=>d.id===target.value);if(!d)return;dialog.close();beginPlacement(d);}));const placed=new Set(data.layout.devices.map(d=>d.id)),unplaced=data.devices.filter(d=>!placed.has(d.id)&&!d.bindings?.some(b=>placed.has(b.external_id)));dialog.append(h('p',`${unplaced.length} 个设备尚未定位。未定位设备可以在列表中正常控制。`));}presentationEditor(dialog);dialog.append(btn('完成',()=>dialog.close()));document.body.append(dialog);dialog.onclose=()=>dialog.remove();dialog.showModal();}
  function presentationEditor(dialog){
@@ -841,7 +849,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  }
  async function drawConnections(){const generation=++connectionDraw;connectionSetup?.dispose();cameraConnection?.dispose();cameraPrivacy?.dispose();view.replaceChildren();connectionSetup=mountConnectionSetup(view,{includeCamera:false,onCameraSetup:slot=>mountCameraSetup(slot)});const statusSlot=h('div');view.append(statusSlot);statusSlot.append(h('p','正在检查可选服务…'));let connections,desktop,worker;try{[connections,desktop,worker]=await Promise.all([api('/api/home/connections'),api('/desktop/status').catch(async()=>({arl:await api('/api/settings/arl/status').then(v=>({...v,metadataFreshness:v.metadata_freshness,refreshPending:v.metadata_refresh_pending})).catch(()=>null)})),api('/api/embodied/status')]);}catch(_){if(alive&&generation===connectionDraw)statusSlot.replaceChildren(h('p','可选服务状态暂不可用，家庭连接仍可在上方设置。'),btn('重试',drawConnections));return;}if(!alive||generation!==connectionDraw)return;statusSlot.remove();
   const arl=desktop?.arl?.metadata_freshness!==undefined?arlRuntimePresentation(desktop.arl):arlPresentation(desktop?.arl);const arlLabel=({connected:'已连接',registering:'正在连接',handshake_required:'尚未连接',upgrade_required:'需要更新'}[arl.state]||arl.label);
-  const rows=[['家庭设备',connections.home.simulated?'Simulator · 示例家庭':'Home Assistant',connections.home.transport==='online',connections.home.simulated?'合成示例 · 未连接真实家庭':'房间、状态与设备控制'],['录像存储','系统共享目录',connections.nas.connected,connections.nas.connected?'已连接 · 可准备隐私预览':'连接后可查看录像'],['智能服务','ARL',arl.connected,arl.description,arlLabel,arl.recovery]];
+  const localPower=connections.home.mode==='mijia-lan';
+  const rows=[['家庭设备',localPower?'米家中枢':connections.home.simulated?'Simulator · 示例家庭':'Home Assistant',connections.home.transport==='online',localPower?'设备电源与状态':connections.home.simulated?'合成示例 · 未连接真实家庭':'房间、状态与设备控制'],['录像存储','系统共享目录',connections.nas.connected,connections.nas.connected?'已连接 · 可准备隐私预览':'连接后可查看录像'],['智能服务','ARL',arl.connected,arl.description,arlLabel,arl.recovery]];
   const direct=connections.file_source;if(direct){const online=direct.state==='online'&&direct.reachable===true&&direct.authenticated===true&&direct.readable===true;rows.splice(2,0,['家庭资料','NAS 直连',online,online?'资料目录可读取':'连接后可查看家庭资料目录']);}
   const list=h('section',null,{class:'connection-list'});rows.forEach(([title,source,on,description,label,recovery])=>{const info=add(h('div'),h('h2',title));if(recovery)info.append(add(h('details',null,{class:'connection-state-details'}),h('summary','连接详情'),h('p',description),h('p',recovery)));else info.append(h('p',description));const row=add(h('article',null,{class:'connection-row'}),add(h('span',null,{class:'connection-dot'+(on?' online':'')})),info,h('span',source,{class:'caption'}),h('strong',label||(on?'已连接':'需要连接')));if(title==='录像存储')info.append(btn('录像对应',()=>void openArchiveMapping(),{class:'text-button'}));list.append(row);});view.append(list);cameraConnection?.dispose();cameraConnection=mountCameraConnection(list,{api,go,legacyConnections,worker,isAlive:()=>alive});
   const intelligenceSlot=h('section',null,{'aria-label':'智能服务设置'});view.append(intelligenceSlot);
@@ -858,7 +867,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  async function drawAutomations(){automationView?.dispose();view.replaceChildren();automationView=mountAutomations(view,{api,data,snapshot,go,toast,legacyRules,attentionId});}
  async function drawInteraction(){const {mountInteractions}=await import('./interactions.js');if(alive){interactions?.dispose();view.replaceChildren();interactions=mountInteractions(view,{data,go,toast});}}
  function draw(){if(['Home','Devices'].includes(page))drawHome();else if(page==='Cameras')drawCameras();else if(page==='Activity')void drawRecordings();else if(page==='Settings')void drawConnections();else if(page==='Automations')void drawAutomations();else if(page==='Interaction')void drawInteraction();}
- function update(){homeStatus?.update(data.devices);drawDiscovery();if(page==='Cameras')updateTiles();if(['Home','Devices'].includes(page)){model?.updateDevices(data.devices);updateTiles();drawStats();if(spatialRoom&&!busy&&data.devices.find(d=>d.id===spatialDevice)?.kind!=='camera'&&!spacePanel?.contains(document.activeElement))drawSpatialPanel();if(selected&&!busy&&inspectorSlot?.isConnected){const d=data.devices.find(x=>x.id===selected);if(d&&d.kind!=='camera'&&!inspectorSlot.contains(document.activeElement))inspect(d);}}}
+ function update(){homeStatus?.update(data.devices);drawDiscovery();if(page==='Cameras')updateTiles();if(['Home','Devices'].includes(page)){updateSourceBanner();model?.updateDevices(data.devices);updateTiles();if(spatialRoom&&!busy&&data.devices.find(d=>d.id===spatialDevice)?.kind!=='camera'&&!spacePanel?.contains(document.activeElement))drawSpatialPanel();if(selected&&!busy&&inspectorSlot?.isConnected){const d=data.devices.find(x=>x.id===selected);if(d&&d.kind!=='camera'&&!inspectorSlot.contains(document.activeElement))inspect(d);}}}
  void load(true);if(['Home','Devices','Cameras'].includes(page))timer=setInterval(()=>{if(!loadAbort)void load();},10000);
  return{selectTaskAttention(id){attentionId=id;automationView?.selectAttention(id);},refresh:()=>{if(homeStatus)void homeStatus.refresh();return recordingsView?recordingsView.refresh():page==='Settings'?drawConnections():load();},dispose(){alive=false;++loadVersion;loadAbort?.abort();loadAbort=null;homeStatus?.dispose();connectionSetup?.dispose();clearInterval(timer);stopPreview();recordingsView?.dispose();cameraPrivacy?.dispose();cameraConnection?.dispose();recognitionDebug?.dispose();automationView?.dispose();model?.dispose();thumbnails?.dispose();interactions?.dispose();view.replaceChildren();}};
 }

@@ -200,7 +200,7 @@ function expireHomeQueryStates() {
 }
 document.addEventListener('Friday.homeStatus',event=>{
  const status=event.detail;if(!status||!status.generated_at||!Number.isFinite(Date.parse(status.generated_at)))return;
- $('mode').textContent=status.simulated?'示例家庭 · simulated':status.connected?(status.control_count?'家庭已连接':'家庭已连接 · 只读'):'连接中断';
+ $('mode').textContent=status.simulated?'示例家庭 · simulated':status.connected?(status.source==='mijia-lan'?'米家中枢已连接':status.control_count?'家庭已连接':'家庭已连接 · 只读'):status.source==='mijia-lan'?'正在读取米家设备':'连接中断';
  $('mode').setAttribute('data-state',status.simulated?'simulated':status.connected?'connected':'offline');
  $('snapshot-time').textContent='更新于'+shortTime(status.generated_at);
 });
@@ -210,7 +210,7 @@ function renderSourceStatus() {
   $('snapshot-time').textContent = snapshot ? '更新于' + shortTime(snapshot.generated_at) : '';
   const source = $('settings-source-result');
   if (page === 'Settings' && source && source.getAttribute?.('aria-busy') !== 'true') settingsMessage(source,
-    !snapshot ? '未连接家庭数据' : !connected ? '连接中断 · 显示上次记录' : snapshot.mode === 'simulator' ? '当前使用：示例家庭' : snapshot.action_targets?.length ? '通过Home Assistant操作设备。当前使用：Home Assistant · 设备受控' : '通过Home Assistant只读状态。当前使用：Home Assistant · 只读');
+    !snapshot ? '未连接家庭数据' : !connected ? '连接中断 · 显示上次记录' : snapshot.mode === 'simulator' ? '当前使用：示例家庭' : snapshot.mode === 'mijia-lan' ? '米家中枢提供设备电源状态' : snapshot.mode === 'local-cameras' ? '本机摄像头可用' : snapshot.action_targets?.length ? 'Home Assistant · 设备受控' : 'Home Assistant · 只读');
   const pause = $('settings-actions-pause');
   if (page === 'Settings' && pause) pause.disabled = !snapshot?.action_targets?.length;
   const ha = $('settings-ha-result');
@@ -641,18 +641,20 @@ function renderActionForm(content,entity = null) {
   brightness.setAttribute('aria-label','亮度档位');
   form.append(add(el('div',null,{class:'control-field'}),el('span','亮度档位',{class:'control-label'}),brightnessGroup));
   const cap = targets[0].capabilities.find(c => c.name === 'light.set');
-  const controlled = snapshot.mode === 'ha-read-only' && (snapshot.action_targets ?? []).includes(targets[0].id);
+  const controlled = (snapshot.action_targets ?? []).includes(targets[0].id);
   if(controlled&&cap.minimum==null){brightness.disabled=true;brightnessGroup.hidden=true;}
   if (cap.minimum !== null && cap.minimum !== undefined) brightness.setAttribute('min',cap.minimum);
   if (cap.maximum !== null && cap.maximum !== undefined) brightness.setAttribute('max',cap.maximum);
-  const hint = el('p',`范围 ${cap.minimum ?? '未知'}–${cap.maximum ?? '未知'}${controlled ? ' · HA 参数范围，真实最低档与无闪烁尚未核验' : ''}`,{class:'meta',id:'brightness-hint'});form.append(hint);
+  if (!brightnessGroup.hidden) {
+    const hint = el('p',`范围 ${cap.minimum ?? '未知'}–${cap.maximum ?? '未知'}${controlled ? ' · HA 参数范围，真实最低档与无闪烁尚未核验' : ''}`,{class:'meta',id:'brightness-hint'});form.append(hint);
+  }
   ttl.hidden = true; form.append(ttl);
   const boundVersion = snapshot.version;
   const boundStateVersion = targets[0].state_version;
   const submit = add(el('button',null,{type:'submit',class:'primary',id:'dry-run-submit'}),icon('eye'),el('span','预览调整'));form.append(submit);
   form.addEventListener('submit',async event => {
     event.preventDefault();rememberDraft();submit.disabled = true;$('notification').textContent = '';
-    const desired = {power:power.value}; if (brightness.value !== '' && power.value === 'on') desired.brightness = Number(brightness.value);
+    const desired = {power:power.value}; if (!brightness.disabled && brightness.value !== '' && power.value === 'on') desired.brightness = Number(brightness.value);
     const request = controlled ? {schema_version:1,target:target.value,desired,actor:'console',expires_at:new Date(Date.now()+Number(ttl.value)*1000).toISOString(),expected_state_version:boundStateVersion,idempotency_key:crypto.randomUUID()} : {schema_version:1,target:target.value,capability:'light.set',desired,actor:'console',origin:'dry-run',expires_at:new Date(Date.now()+Number(ttl.value)*1000).toISOString(),expected_version:boundVersion,idempotency_key:crypto.randomUUID()};
     try {
       lastTrace = await api(controlled ? '/api/actions/plan' : '/api/actions/dry-run',{method:'POST',body:JSON.stringify(request)});
@@ -664,7 +666,7 @@ function renderActionForm(content,entity = null) {
 }
 function renderDeviceActionForm(content,entity) {
   const caps=entity.capabilities.filter(c=>deviceOperationLabels[c.name]&&c.access==='write'&&c.support==='supported');
-  if(snapshot.mode!=='ha-read-only'||!(snapshot.action_targets??[]).includes(entity.id)||!caps.length)return;
+  if(!(snapshot.action_targets??[]).includes(entity.id)||!caps.length)return;
   const form=el('form',null,{id:'device-action-form',class:'action-form'});
   const operation=el('select',null,{id:'device-action-operation','aria-label':'调整功能'});
   for(const c of caps)operation.append(el('option',deviceOperationLabels[c.name],{value:c.name}));
@@ -681,7 +683,7 @@ function renderDeviceActionForm(content,entity) {
   };
   const draw=()=>{
     const cap=caps.find(c=>c.name===operation.value);fields.replaceChildren();
-    key={'switch.set':'power','fan.set':'power','fan.percentage':'percentage','climate.mode':'hvac_mode','climate.temperature':'temperature','cover.position':'position','lock.set':'lock','number.value':'value','select.option':'option'}[cap.name];
+    key={'switch.set':'power','fan.set':'power','fan.percentage':'percentage','climate.power':'power','climate.mode':'hvac_mode','climate.temperature':'temperature','cover.position':'position','lock.set':'lock','number.value':'value','select.option':'option'}[cap.name];
     const choices=key==='power'?['on','off']:cap.choices??[];
     if(choices.length){
       parameter=el('select',null,{id:'device-action-value',required:true,'aria-label':deviceOperationLabels[cap.name]});
@@ -713,7 +715,7 @@ function renderTrace(content,trace) {
   const block = el('section',null,{class:'trace',id:'trace-result','aria-label':'调整预览'});
   add(block,el('h3',qualityNames[trace.status] ?? trace.status),el('p',trace.status === 'rejected' ? ({source_conflict:'家庭状态已更新，请刷新后重试。',ambiguous_target:'设备目标需要重新确认。',unsupported:'设备不支持这项调整。',unsupported_parameters:'调整超出设备支持范围。',stale_input:'设备状态需要更新，请刷新后重试。',unsupported_ttl:'预览时间设置无效，请重试。'}[trace.code] ?? '暂时无法预览，请检查设备状态。') : trace.real_write_attempted ? '设备操作已提交' : '预览已记录，设备未改变。',{class:'muted'}),detail('操作记录',trace));
   block.append(button('刷新记录',async () => {try {lastTrace = await api('/api/traces/'+encodeURIComponent(trace.action_id));render();}catch(error){$('notification').textContent = error.message;}},{class:'text-button'}));content.append(block);
-  if (['ha-scoped-light','ha-scoped-device'].includes(trace.route)) {
+  if (['ha-scoped-light','ha-scoped-device','mijia-scoped-power'].includes(trace.route)) {
     if(trace.status === 'planned')block.append(el('p','点击执行才会操作这台设备。',{class:'muted'}));
     if(trace.status === 'reported_match')block.append(el('p','设备回报符合目标，尚未独立确认物理效果。',{class:'muted'}));
     if(trace.status === 'unknown_outcome')block.append(el('p','设备状态待确认。',{class:'muted'}));
@@ -2271,7 +2273,7 @@ function renderSettings(content) {
   resume.disabled=true;
   api('/api/settings/actions/status').then(report=>{
     if(!source.output.isConnected)return;
-    resume.disabled=!report.configured||report.enabled||snapshot?.mode!=='ha-read-only';
+    resume.disabled=!report.configured||report.enabled||!['ha-read-only','mijia-lan'].includes(snapshot?.mode);
     if(report.scope==='all_registered_devices')source.section.append(el('p','全家设备已授权，操作仍按HA能力开放。已授权本家庭全部设备；实际控制项按当前 HA 能力开放。',{class:'meta'}));
   }).catch(()=>{});
 
@@ -2831,13 +2833,13 @@ async function refresh() {
 let passiveLoading = false;
 async function refreshPassive() {
   // Read only on viewing pages; drafts, approvals and source switches retain ownership.
-  if (experienceView || loading || passiveLoading || snapshot?.mode !== 'ha-read-only' || !['Home','Activity'].includes(page) || document.hidden === true) return;
+  if (experienceView || loading || passiveLoading || !['ha-read-only','local-cameras','mijia-lan'].includes(snapshot?.mode) || !['Home','Activity'].includes(page) || document.hidden === true) return;
   const before = snapshot, viewing = page;
   passiveLoading = true;
   try {
     const signal = globalThis.AbortSignal?.timeout(5000);
     const next = await api('/api/snapshot',{signal});
-    if (snapshot !== before || page !== viewing || next.mode !== snapshot.mode) return;
+    if (snapshot !== before || page !== viewing || next.mode === 'simulator') return;
     snapshot = next; connected = true; render();
   } catch (_) {
     if (snapshot === before && page === viewing) {connected = false;render();}

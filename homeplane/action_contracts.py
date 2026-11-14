@@ -186,7 +186,7 @@ class LightExecutionTrace(Contract):
         "planned", "rejected", "expired", "sent", "accepted", "reported_match", "failed", "unknown_outcome"
     ]
     code: str
-    route: Literal["ha-scoped-light", "ha-scoped-device"] = "ha-scoped-light"
+    route: Literal["ha-scoped-light", "ha-scoped-device", "mijia-scoped-power"] = "ha-scoped-light"
     reasons: list[str]
     events: list[Event] = Field(default_factory=list)
     real_write_attempted: bool = False

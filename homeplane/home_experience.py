@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
 from .action_contracts import DevicePlanRequest
+from .mijia_control import MIJIA_POWER_MODE
 from .recordings import Recordings
 from .preview_request import prepare_for_viewer
 from . import home_presentation
@@ -130,6 +131,12 @@ class HomeExperience:
             return {'transport': 'simulated', 'source': 'simulator', 'simulated': True,
                     'registry_available': False}
         return self.core.adapter.health()
+
+    def appliance_health(self):
+        power = self.core.actions.mijia_power_home
+        if power is not None and power.uses_lan_home(self.core.adapter) and power.ready_count():
+            return {'mode': MIJIA_POWER_MODE, 'transport': 'online', 'simulated': False}
+        return self.connection_health()
 
     async def start(self):
         await self.runtime.set_execution(bool(self.preferences.get("automatic_running")))
@@ -253,7 +260,7 @@ class HomeExperience:
                 caps=[c.model_dump(mode='json') for c in e.capabilities if c.access=='write' and c.support=='supported' and c.name in {'humidifier.power','humidifier.humidity','humidifier.mode','water_heater.power','water_heater.mode','light.set','light.color_temperature','switch.set','fan.set','fan.percentage','climate.mode','climate.power','climate.temperature','climate.fan_mode','cover.position','cover.tilt','cover.state','lock.set','media_player.power','media_player.volume','media_player.mute','media_player.playback'}] if e.id in authorized else []
                 if not household_function(e,alias,functions):caps=[]
                 if caps:
-                    attrs=getattr(self.core.adapter,'_control_attributes',{}).get(binding,{})
+                    attrs={} if snapshot.mode == MIJIA_POWER_MODE else getattr(self.core.adapter,'_control_attributes',{}).get(binding,{})
                     o=next((v for (id,_),v in observations.items() if id==e.id),None)
                     state=next((s for id,s in states.items() if id.startswith(e.id+':')),None)
                     controls.append(dict(id=e.id,name=alias.get('name') or control_name(e.name,device.name),
@@ -356,9 +363,11 @@ class HomeExperience:
                        if b.source == 'xiaomi-identity'}
         discover = getattr(self.embodied, 'mijia_discovery', None)
         discovery = discover(known_mijia) if discover and snapshot.mode != 'simulator' else None
+        connected = (self.connection_health().get('transport') == 'online' if snapshot.mode != MIJIA_POWER_MODE
+                     else bool(snapshot.observations))
         return dict(home_name=HOME_NAME,devices=devices,discovery=discovery,preferences=self.preferences,presentation=profile.model_dump(),
                     rooms=sorted({d['room']for d in devices if d['room']!='其他'} | {r.name for r in layout.rooms} if layout else {d['room']for d in devices if d['room']!='其他'}),
-                    connected=self.connection_health().get('transport')=='online',
+                    connected=connected, source=snapshot.mode,
                     generated_at=snapshot.generated_at,simulated=snapshot.mode=='simulator',
                     control_count=len(authorized))
 
@@ -507,7 +516,7 @@ def create_router(core, lock, settings, embodied, archive, runtime, *, file_sour
         except (ValueError,OSError,TimeoutError):
             pass
         direct=file_source_status() if file_source_status is not None else None
-        return dict(home=owner.connection_health(),cameras=dict(configured=embodied.configured(),count=len(embodied.cameras())),
+        return dict(home=owner.appliance_health(),cameras=dict(configured=embodied.configured(),count=len(embodied.cameras())),
                     nas=nas,file_source=direct.model_dump(mode='json') if hasattr(direct,'model_dump') else direct)
 
     @router.get('/automatic-status')

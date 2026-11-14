@@ -43,7 +43,7 @@ def basic_command(text, attending=False, *, wake_word='Friday'):
     match = next((m for p in patterns if (m := re.fullmatch(p, body))), None)
     if match:
         target = match["object"].removesuffix("一下").removesuffix("吧").removesuffix("谢谢")
-        if not any(t in target for t in ("灯", "窗帘", "梦幻帘", "空调")):
+        if not any(t in target for t in ("灯", "窗帘", "梦幻帘", "空调", "风扇", "插座", "开关")):
             return None
         return {
             "route": "home",
@@ -86,15 +86,8 @@ def resolve_targets(query, items, *, room=None):
     value = normalize(query)
     group = value.startswith(("所有", "全部", "全屋"))
     value = re.sub(r"^(?:所有|全部|全屋)", "", value)
-    kind = (
-        "cover"
-        if any(k in value for k in ("帘", "窗帘"))
-        else "climate"
-        if "空调" in value
-        else "light"
-        if "灯" in value
-        else None
-    )
+    kinds = {"帘": "cover", "空调": "climate", "灯": "light", "风扇": "fan", "插座": "switch", "开关": "switch"}
+    kind = next((kind for keyword, kind in kinds.items() if keyword in value), None)
     if kind is None:
         return []
     candidates = [item for item in items if item["kind"] == kind and item["controllable"]]
@@ -113,7 +106,8 @@ def resolve_targets(query, items, *, room=None):
     if selected_room:
         candidates = [i for i in candidates if normalize(i["room"]) == selected_room]
         value = value.replace(selected_room, "", 1)
-    generic = {"light": {"灯", "所有灯"}, "cover": {"窗帘", "帘"}, "climate": {"空调"}}[kind]
+    generic = {"light": {"灯"}, "cover": {"窗帘", "帘"}, "climate": {"空调"},
+               "fan": {"风扇"}, "switch": {"开关"}}[kind]
     if value not in generic:
         candidates = [i for i in candidates if value in normalize(i["name"])]
     return candidates if group or len(candidates) == 1 else []
@@ -356,7 +350,8 @@ class DeviceCommands:
                     )
                     trace = await self.core.actions.plan(request)
                 try:
-                    trace = await self.core.actions.execute(trace.action_id, dispatch_guard=dispatch_guard)
+                    trace = await self.core.actions.execute(trace.action_id, dispatch_guard=dispatch_guard,
+                                                            dispatch_deadline=dispatch_deadline)
                 except ValueError:
                     outcomes.append(dict(target=item['id'],status='rejected',code='stale_interaction',
                                          write_attempted=False,acknowledged=False))
@@ -402,7 +397,7 @@ def supported_actions(item):
         state_caps = {'cover.state'} if item.get('source_kind') == 'miot' else {'cover.state','cover.position','cover.open'}
         actions = ['open','close'] if caps & state_caps else []
         return actions + (['stop'] if 'cover.stop' in caps else []) + (['position:'+str(p) for p in (0,25,50,75,100)] if 'cover.position' in caps else [])
-    if kind == 'climate' and 'climate.mode' in caps:
+    if kind == 'climate':
         choices = item.get('capability_specs', {}).get('climate.mode', {}).get('choices', [])
         return (['on','off'] if 'climate.power' in caps else []) + ['off' if c == 'off' else 'mode:'+c for c in choices if c!='off' or 'climate.power' not in caps]
     return []

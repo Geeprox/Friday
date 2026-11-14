@@ -407,8 +407,12 @@ def create_app(
     @app.get("/api/embodied/mijia-lan")
     async def mijia_lan_status():
         if core.actions.mijia is not None:
-            return core.actions.mijia.lan.status()
-        return {"connected": False, "control_devices": 0, "push_capable": 0}
+            home = core.actions.mijia_power_home
+            return {**core.actions.mijia.lan.status(),
+                    "migrated_power": len(home.active()[1]) if home else 0,
+                    "standalone_power_ready": home.ready_count() if home else 0}
+        return {"connected": False, "control_devices": 0, "push_capable": 0,
+                "migrated_power": 0, "standalone_power_ready": 0}
 
     @app.get("/api/embodied/infrastructure")
     async def infrastructure_status():
@@ -638,7 +642,9 @@ def create_app(
         active = core.adapter
         cached = core._diagnostic_snapshot
         source = cached[1] if cached is not None and cached[0] is active else None
-        mode = "simulator" if isinstance(active, Simulator) else "ha-read-only" if isinstance(active, HAReadOnlyAdapter) else "unavailable"
+        mode = source.mode if source else (
+            "simulator" if isinstance(active, Simulator) else "ha-read-only"
+            if isinstance(active, HAReadOnlyAdapter) else "unavailable")
         ha = active.health() if isinstance(active, HAReadOnlyAdapter) else None
         try:
             data = await diagnostics.export(source, mode, ha, geek_session.status())

@@ -1007,7 +1007,8 @@
       "enum": [
         "simulator",
         "ha-read-only",
-        "local-cameras"
+        "local-cameras",
+        "mijia-lan"
       ],
       "title": "Mode",
       "type": "string"

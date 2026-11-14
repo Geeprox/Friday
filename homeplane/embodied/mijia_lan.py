@@ -83,6 +83,17 @@ async def property_operation(manager, request, grant, group, dids, scope_current
     return local_result(row, did, siid, piid, write=power is not None)
 
 
+async def migrated_power_operation(manager, request, grant, family, region, group, dids, current, directory):
+    from homeplane.mijia_power_home import authorize_send
+
+    request = dict(request)
+    revision, deadline = request.pop('authority_revision', None), request.pop('deadline', None)
+    did, siid, piid, desired = property_request(request)
+    if desired is None or not authorize_send(directory, revision, deadline, family, region, did, siid, piid):
+        raise ValueError('mijia_permission_changed')
+    return await property_operation(manager, request, grant, group, dids, current)
+
+
 async def cover_operation(manager, request, grant, group, dids, scope_current, directory):
     from .cover_worker import authorized
 
@@ -188,6 +199,10 @@ async def serve(reader, session):
                              'push': sum(hub.can_push(did) for did in routes)}
                 elif 'cover' in request:
                     reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
+                elif 'authority_revision' in request or 'deadline' in request:
+                    reply = await migrated_power_operation(
+                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
+                    )
                 else:
                     reply = await property_operation(hub, request, grant, home.group_id, allowed, current)
             except (OSError, ValueError, RuntimeError, TimeoutError, TypeError, KeyError, ExceptionGroup):

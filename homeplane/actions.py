@@ -19,8 +19,15 @@ from weakref import WeakValueDictionary
 import httpx
 from pydantic import TypeAdapter
 
-from .action_contracts import CoreRuleEffect, HomeDeviceAuthority, LightAuthority, LightExecutionTrace, MijiaCoverAuthority
+from .action_contracts import (
+    CoreRuleEffect,
+    HomeDeviceAuthority,
+    LightAuthority,
+    LightExecutionTrace,
+    MijiaCoverAuthority,
+)
 from .contracts import Capability, Event
+from .event_provenance import entity_source_context
 from .ha import HAReadOnlyAdapter
 from .ha_control import (
     OPERATIONS,
@@ -30,24 +37,23 @@ from .ha_control import (
     parameter_error,
     reported_matches,
 )
-
+from .mijia_control import MIJIA_POWER_MODE, MIJIA_POWER_ROUTE, power_intent
 from .runtime_log import observe
-from .event_provenance import entity_source_context
 
 AUTHORITY = TypeAdapter(LightAuthority | HomeDeviceAuthority)
 
 
-def _read_authority_file(path):
+def _read_authority_file(path, *, limit=16384):
     if any(parent.is_symlink() for parent in path.parents):
         raise ValueError('authority_symlink_rejected')
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, 'rb') as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077 or info.st_size > 16384):
+                or info.st_mode & 0o077 or info.st_size > limit):
             raise ValueError('invalid_authority_file')
-        body = stream.read(16385)
-        if len(body) > 16384:
+        body = stream.read(limit + 1)
+        if len(body) > limit:
             raise ValueError('invalid_authority_file')
     stamp = f'{info.st_dev}:{info.st_ino}:{info.st_mtime_ns}'.encode()
     return body, stamp
@@ -137,7 +143,9 @@ class ActionController:
         adapter = self.core.adapter
         matching_ha = (authority and isinstance(adapter, HAReadOnlyAdapter)
                        and authority.ha_url.rstrip("/") == adapter.url and authority.ha_instance == adapter.instance_id)
-        if not authority or revision != expected_revision or not (matching_ha or self._cover_scope(authority)):
+        power = self.mijia_power_home
+        matching_power = bool(power and authority and power.active(authority)[1])
+        if not authority or revision != expected_revision or not (matching_ha or matching_power or self._cover_scope(authority)):
             raise ValueError("source_conflict")
         self._save_authority(authority.model_copy(update={'enabled': True}), revision)
         # Restoring the existing grant never renews an old action plan.
@@ -226,9 +234,20 @@ class ActionController:
     def cover_read_context(self, cover):
         return self.mijia.cover_context(cover, self.authority_path.parent) if self.mijia else None
 
+    @property
+    def mijia_power_home(self):
+        return self.mijia.home if self.mijia else None
+
     def targets(self, snapshot):
         authority, _ = self.authority()
         adapter = self.core.adapter
+        if snapshot.mode == MIJIA_POWER_MODE:
+            home = self.mijia_power_home
+            if home is None or authority is None or not home.uses_lan_home(adapter):
+                return []
+            context, targets = home.active(authority)
+            return [entity.id for entity in snapshot.entities if (target := targets.get(entity.id))
+                    and (sample := home.sample_for(context, target)) and sample.version == entity.state_version]
         if snapshot.mode != "ha-read-only" or not isinstance(adapter, HAReadOnlyAdapter) or authority is None:
             return []
         if authority.ha_url.rstrip("/") != adapter.url or authority.ha_instance != adapter.instance_id:
@@ -268,12 +287,15 @@ class ActionController:
 
     def decorate(self, snapshot):
         targets = self.targets(snapshot)
+        local = snapshot.mode == MIJIA_POWER_MODE
         entities = []
         authority, _ = self.authority()
         for entity in snapshot.entities:
-            if entity.id in targets:
+            if local and entity.id not in targets:
+                entity = entity.model_copy(update={'capabilities': [c for c in entity.capabilities if c.access != 'write']})
+            elif not local and entity.id in targets:
                 caps = [c for c in entity.capabilities if c.name not in OPERATIONS]
-                # 1 is the API's numeric bound, NOT a verified hardware minimum.
+                # 下限 1 来自 API 参数范围，实际硬件最低亮度需另行验证。
                 if isinstance(authority, HomeDeviceAuthority):
                     caps += admitted_capabilities(self.core.adapter, entity, authority)
                 else:
@@ -307,11 +329,21 @@ class ActionController:
             return "unsupported_ttl"
         if request.target not in self.targets(snapshot) or not authority:
             return "unauthorized"
+        entity = next(e for e in snapshot.entities if e.id == request.target)
+        operation = getattr(request, "operation", "light.set")
+        if snapshot.mode == MIJIA_POWER_MODE:
+            target = self.mijia_power_home.active(authority)[1].get(entity.id)
+            if isinstance(request, CoreRuleEffect):
+                return "identity_unavailable"
+            if entity.state_version != request.expected_state_version:
+                return "source_conflict"
+            if target is None or target.operation != operation or not power_intent(request.desired):
+                return "unsupported"
+            return None
         if not self.core.adapter.health().get("registry_available"):
             return "identity_unavailable"
         if self.core.adapter.health().get("transport") != "online":
             return "offline_dependency"
-        entity = next(e for e in snapshot.entities if e.id == request.target)
         if entity.state_version != request.expected_state_version:
             return "source_conflict"
         if not any(
@@ -322,7 +354,6 @@ class ActionController:
             for s in snapshot.states
         ):
             return "stale_input"
-        operation = getattr(request, "operation", "light.set")
         if isinstance(authority, HomeDeviceAuthority):
             cap = next(
                 (
@@ -404,7 +435,8 @@ class ActionController:
                     raise ValueError("source_conflict")
                 return existing
             snapshot = await self.core.snapshot()
-            authority, revision = self.authority()
+            local = snapshot.mode == MIJIA_POWER_MODE
+            authority, revision = self.authority(include_generation=local)
             code = self._policy(request, snapshot, authority)
             if isinstance(request, CoreRuleEffect):
                 code = managed_guard(snapshot) or code
@@ -419,19 +451,25 @@ class ActionController:
                 code=code or "awaiting_explicit_execution",
                 reasons=[
                     "Only the local operator's current device and operation authority applies.",
-                    "HA readback is reported state, not independent physical confirmation.",
+                    "Device readback is reported state, not independent physical confirmation.",
                     "Device mechanics/brightness minimum/no-flash and offline paths require separate qualification.",
                     "External rules remain outside this action authority.",
                 ],
             )
             entity = next((e for e in snapshot.entities if e.id == request.target), None)
-            if entity is not None and isinstance(self.core.adapter, HAReadOnlyAdapter):
+            if local:
+                trace.route = MIJIA_POWER_ROUTE
+                if trace.status == 'planned':
+                    trace.target_binding_fingerprint = self.mijia_power_home.fingerprint(entity.id)
+                    if trace.target_binding_fingerprint is None:
+                        trace.status, trace.code = 'rejected', 'source_conflict'
+            elif entity is not None and isinstance(self.core.adapter, HAReadOnlyAdapter):
                 trace.target_binding_fingerprint = self.binding_fingerprint(entity)
-            if getattr(request, "operation", "light.set") != "light.set":
+            if not local and getattr(request, "operation", "light.set") != "light.set":
                 trace.route = "ha-scoped-device"
             event = Event(
                 source="action-gateway",
-                source_context=entity_source_context(self.core.adapter, entity) if entity is not None else None,
+                source_context=entity_source_context(self.core.adapter, entity) if not local and entity is not None else None,
                 kind="action-result",
                 correlation_id=trace.correlation_id,
                 causation_id=request.source_event_id if isinstance(request, CoreRuleEffect) else None,
@@ -454,13 +492,14 @@ class ActionController:
             return trace
 
     @observe('action.approve', upstream='ha', key='action_id')
-    async def execute(self, action_id, *, managed_guard=None, dispatch_guard=None):
+    async def execute(self, action_id, *, managed_guard=None, dispatch_guard=None, dispatch_deadline=None):
         # 同一动作的重复调用等待各自的最终回读，不占用新手势需要的发送锁。
         execution_lock = self._execution_locks.setdefault(action_id, asyncio.Lock())
         async with execution_lock:
-            return await self._execute(action_id, managed_guard=managed_guard, dispatch_guard=dispatch_guard)
+            return await self._execute(action_id, managed_guard=managed_guard, dispatch_guard=dispatch_guard,
+                                       dispatch_deadline=dispatch_deadline)
 
-    async def _execute(self, action_id, *, managed_guard=None, dispatch_guard=None):
+    async def _execute(self, action_id, *, managed_guard=None, dispatch_guard=None, dispatch_deadline=None):
         async with self._lock:
             trace = self.core.store.light_action(action_id)
             if trace is None:
@@ -473,9 +512,10 @@ class ActionController:
                 return self._stage(trace, "expired", "restart_requires_new_plan")
             if time.monotonic() >= self._deadlines[action_id]:
                 return self._stage(trace, "expired", "expired_request")
+            local = trace.route == MIJIA_POWER_ROUTE
             # HA 事件流正常不代表 HTTP 访问凭据仍有效。先刷新现有授权，
             # 再做最终权限、手势和有效期检查；结果未知时不重试设备写请求。
-            if isinstance(self.core.adapter, HAReadOnlyAdapter):
+            if not local and isinstance(self.core.adapter, HAReadOnlyAdapter):
                 try:
                     async with asyncio.timeout(max(0, self._deadlines[action_id]-time.monotonic())):
                         await self.core.adapter._refresh_auth()
@@ -484,7 +524,9 @@ class ActionController:
                 except (httpx.HTTPError, ValueError, OSError):
                     return self._stage(trace, "rejected", "authentication_unavailable")
             snapshot = await self.core.snapshot()
-            authority, revision = self.authority()
+            if local != (snapshot.mode == MIJIA_POWER_MODE):
+                return self._stage(trace, "rejected", "source_conflict")
+            authority, revision = self.authority(include_generation=local)
             code = self._policy(trace.request, snapshot, authority)
             if revision != trace.authority_revision:
                 code = "authority_changed"
@@ -496,18 +538,34 @@ class ActionController:
                 return self._stage(trace, "expired" if code == "expired_request" else "rejected", code)
             adapter = self.core.adapter
             entity = next(e for e in snapshot.entities if e.id == trace.request.target)
-            if trace.target_binding_fingerprint != self.binding_fingerprint(entity):
+            home = self.mijia_power_home
+            fingerprint = home.fingerprint(entity.id) if local else self.binding_fingerprint(entity)
+            if not fingerprint or trace.target_binding_fingerprint != fingerprint:
                 return self._stage(trace, "rejected", "source_conflict")
             operation = getattr(trace.request, "operation", "light.set")
             writer = None
+            deadline = self._deadlines[action_id]
+            if local and dispatch_deadline is not None:
+                deadline = min(deadline, dispatch_deadline)
+
+            def current_dispatch():
+                return (self.core.adapter is adapter and home.uses_lan_home(adapter)
+                        and time.monotonic() < deadline and self.authority(include_generation=True)[1] == revision
+                        and home.fingerprint(entity.id) == fingerprint
+                        and home.state_version(entity.id) == entity.state_version
+                        and (dispatch_guard is None or dispatch_guard() is True))
+
             # 镜头指令只尝试已经就绪的局域网路径，给原有手势有效期保留派发余量。
             if self.mijia is not None and isinstance(authority, HomeDeviceAuthority):
                 quick = dispatch_guard is not None
                 try:
-                    remaining = self._deadlines[action_id] - time.monotonic()
+                    remaining = deadline - time.monotonic()
                     async with asyncio.timeout(min(.22 if quick else 1.2, max(0, remaining))):
-                        writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
-                                                         quick=quick)
+                        if local:
+                            writer = home.writer(entity.id, deadline=deadline, revision=revision, guard=current_dispatch)
+                        else:
+                            writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
+                                                             quick=quick)
                         if writer is not None:
                             observed = await writer.readback()
                             # 已锁定到原计划时的状态版本，再核对一次实际开关。
@@ -516,23 +574,26 @@ class ActionController:
                                 return self._stage(trace, "rejected", "source_conflict")
                 except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                     writer = None
-                if self.core.adapter is not adapter or self.authority()[1] != revision:
+                if self.core.adapter is not adapter or self.authority(include_generation=local)[1] != revision:
                     return self._stage(trace, "rejected", "authority_changed")
                 if writer is not None:
                     if not writer.current():
                         return self._stage(trace, "rejected", "source_conflict")
                     current_snapshot = await self.core.snapshot()
-                    changed = self._policy(trace.request, current_snapshot, authority)
+                    changed = ("source_conflict" if local != (current_snapshot.mode == MIJIA_POWER_MODE)
+                               else self._policy(trace.request, current_snapshot, authority))
                     if isinstance(trace.request, CoreRuleEffect):
                         changed = managed_guard(current_snapshot) or changed
                     if changed:
                         return self._stage(trace, "expired" if changed == "expired_request" else "rejected", changed)
-                if self.core.adapter is not adapter or self.authority()[1] != revision:
+                if self.core.adapter is not adapter or self.authority(include_generation=local)[1] != revision:
                     return self._stage(trace, "rejected", "authority_changed")
                 if writer is not None and not writer.current():
                     return self._stage(trace, "rejected", "source_conflict")
-                if time.monotonic() >= self._deadlines[action_id]:
+                if time.monotonic() >= deadline:
                     return self._stage(trace, "expired", "expired_request")
+            if local and writer is None:
+                return self._stage(trace, "rejected", "offline_dependency")
             mijia = writer is not None
             if dispatch_guard is not None and dispatch_guard() is not True:
                 raise ValueError("dispatch_guard_rejected")
@@ -544,7 +605,7 @@ class ActionController:
             try:
                 if not mijia:
                     writer = HADeviceWriter(adapter, entity, operation)
-                async with asyncio.timeout(max(0, self._deadlines[action_id] - time.monotonic())):
+                async with asyncio.timeout(max(0, deadline - time.monotonic())):
                     outcome = await writer.send(trace.request.desired)
                 if outcome != "accepted":
                     return self._stage(
@@ -604,28 +665,37 @@ class ActionController:
                 raise ValueError("not_found")
             if trace.status != "unknown_outcome" or not self._owner_owned:
                 return trace
-            snapshot = await self.core.snapshot()
-            adapter = self.core.adapter
-            entity = next((e for e in snapshot.entities if e.id == trace.request.target), None)
-            if not isinstance(adapter, HAReadOnlyAdapter) or not entity:
-                return trace
-            binding = next((b.external_id for b in entity.bindings if b.source == "ha"), None)
-            if not binding or trace.target_binding_fingerprint != self.binding_fingerprint(entity):
-                return trace
+            sent = next((item.payload for item in trace.events if item.payload.get("status") == "sent"), {})
+            mijia_binding = sent.get("mijia_binding")
+            channel = sent.get("mijia_channel", "cloud")
             try:
-                operation = getattr(trace.request, "operation", "light.set")
-                sent = next((item.payload for item in trace.events if item.payload.get("status") == "sent"), {})
-                mijia_binding = sent.get("mijia_binding")
-                if mijia_binding:
-                    channel = sent.get("mijia_channel", "cloud")
-                    if self.mijia is None or channel not in {"lan", "cloud"}:
+                if trace.route == MIJIA_POWER_ROUTE:
+                    home = self.mijia_power_home
+                    if (home is None or channel != 'lan' or not mijia_binding or not trace.target_binding_fingerprint
+                            or home.fingerprint(trace.request.target) != trace.target_binding_fingerprint):
                         return trace
-                    writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
-                                                     channel=channel)
+                    writer = home.writer(trace.request.target)
+                else:
+                    snapshot = await self.core.snapshot()
+                    adapter = self.core.adapter
+                    entity = next((e for e in snapshot.entities if e.id == trace.request.target), None)
+                    if (not isinstance(adapter, HAReadOnlyAdapter) or entity is None
+                            or not any(b.source == "ha" for b in entity.bindings)
+                            or trace.target_binding_fingerprint != self.binding_fingerprint(entity)):
+                        return trace
+                    operation = getattr(trace.request, "operation", "light.set")
+                    if mijia_binding:
+                        if self.mijia is None or snapshot.mode == MIJIA_POWER_MODE or channel not in {"lan", "cloud"}:
+                            return trace
+                        writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
+                                                         channel=channel)
+                    else:
+                        if snapshot.mode == MIJIA_POWER_MODE:
+                            return trace
+                        writer = HADeviceWriter(adapter, entity, operation)
+                if mijia_binding:
                     if writer is None or writer.fingerprint() != mijia_binding or not writer.current():
                         return trace
-                else:
-                    writer = HADeviceWriter(adapter, entity, operation)
                 reported = await writer.readback()
             except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                 return trace

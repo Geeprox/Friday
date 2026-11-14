@@ -69,12 +69,14 @@ class MijiaLanClient:
                 pass
             await proc.wait()
 
-    async def _call(self, request, family):
+    async def _call(self, request, family, *, guard=None):
         async with self.io:
             proc = self.process
             if (proc is None or proc.returncode is not None or self.family != family
                     or family != self.current_family()):
                 raise ValueError('mijia_lan_unavailable')
+            if guard is not None and not guard():
+                raise ValueError('mijia_permission_changed')
             self.sequence += 1
             ident = self.sequence
             try:
@@ -95,12 +97,12 @@ class MijiaLanClient:
             self.connected = False
             raise ValueError('mijia_lan_unavailable')
 
-    async def request(self, request, *, family):
+    async def request(self, request, *, family, guard=None):
         if not self.ready(family, request.get('did')):
             raise ValueError('mijia_lan_unavailable')
         read_only = request.get('cover') == 'read' or ('cover' not in request and 'power' not in request)
         async with asyncio.timeout(1.6 if read_only else 5):
-            reply = await self._call(request, family)
+            reply = await self._call(request, family, guard=guard)
         if 'error' in reply:
             # 本地候选失效后，让下一次用户操作重新选择仍可用的渠道。
             self.routes = self.routes.difference({request.get('did')})
