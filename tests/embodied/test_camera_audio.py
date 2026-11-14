@@ -113,6 +113,32 @@ async def test_video_observation_survives_pipe_pressure_and_capture_cannot_reope
 
 
 @pytest.mark.asyncio
+async def test_fresh_recognition_renews_audio_before_a_delayed_frame_expires(tmp_path, monkeypatch):
+    from homeplane.embodied import home_service as module
+
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(module, 'VOICE_INPUT_PAUSED', tmp_path / 'paused')
+    service = voice_service(module)
+    service.ensure_voice = Mock()
+    writer = SimpleNamespace(write=Mock(), is_closing=lambda: False,
+                             transport=SimpleNamespace(get_write_buffer_size=lambda: 0))
+    capture = SimpleNamespace(stdin=writer)
+
+    await service.observe([], [], {'status': 'locked'}, clock.now, capture, True,
+                          session_id='camera-session', captured_mono=8.7)
+    clock.now = 10.15
+    await service.observe([], [], {'status': 'locked'}, clock.now, capture, True,
+                          session_id='camera-session', captured_mono=10.0)
+    first, second = [json.loads(call.args[0]) for call in writer.write.call_args_list]
+    assert voice_window_deadlines(first, 10.21) == (0.0, 0.0)
+    assert voice_window_deadlines(second, 10.21) == (pytest.approx(11.45), 0.0)
+    assert service.listening(10.21)
+    assert voice_window_deadlines(second, 11.51) == (0.0, 0.0)
+    assert not service.listening(11.51)
+
+
+@pytest.mark.asyncio
 async def test_audio_capture_preserves_sound_window_when_voice_is_revoked():
     clock = [10.0]
     frames = []

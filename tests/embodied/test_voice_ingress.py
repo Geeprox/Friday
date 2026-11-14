@@ -138,7 +138,7 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
         h.transcribe = HomeService.transcribe.__get__(h)
         h.request = AsyncMock(
             return_value={
-                "text": "",
+                "text": "synthetic-transcription-marker",
                 "address": {"admitted": False, "reason": "unsupported_script"},
                 "asr_quality": {"filter": "unsupported_script"},
             }
@@ -150,6 +150,9 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
         h.speaker.say.assert_not_awaited()
         self.assertIsNone(h.state["last_transcript"])
         self.assertEqual(h.state["asr_quality"]["filter"], "unsupported_script")
+        journal = h.runtime_log.export()
+        self.assertEqual(journal['events'][-1]['code'], 'voice_asr_language_mismatch')
+        self.assertNotIn('synthetic-transcription-marker', str(journal))
 
     async def test_unaddressed_background_text_does_not_replace_last_command(self):
         h = self.service()

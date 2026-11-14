@@ -33,6 +33,15 @@ VOICE_INPUT_PAUSED = PRIVATE / 'voice-input-paused'
 WAKE_CAMERA_SECONDS = 16.0
 WAKE_VOICED_SECONDS = .128
 COMMAND_VOICED_SECONDS = .45
+ASR_REFUSALS = {
+    'no_speech': 'voice_asr_empty',
+    'unsupported_script': 'voice_asr_language_mismatch',
+    'no_chinese_task': 'voice_asr_language_mismatch',
+    'low_asr_confidence': 'voice_asr_low_confidence',
+    'likely_no_speech': 'voice_asr_likely_no_speech',
+    'invalid_text': 'voice_asr_rejected',
+    'wake_word_required': 'voice_asr_wake_word_missing',
+}
 
 
 def voice_command_outcome(receipt):
@@ -70,7 +79,6 @@ class HomeService:
         self.selected = False
         self.owner = None
         self.voice_owner = None
-        self.gate_sent = -100.0
         self.vad = []
         self.speaking = False
         self.silence = 0.0
@@ -226,7 +234,6 @@ class HomeService:
         if source_changed:
             # 恢复后的首帧不能延续断流前的注视时长。
             self.attention.update([], [], now)
-            self.gate_sent = -100.0
         self.camera_session = session
         self.selected = selected
         self.last_video = now if captured_mono is None else captured_mono
@@ -248,10 +255,8 @@ class HomeService:
             event = self.gesture.update(next((p for p in people if p["id"] == owner), None), now)
             if event:
                 self.spawn(self.command(event["action"], event["id"], "window_gesture"))
-        if capture and capture.stdin and now - self.gate_sent > 0.4:
-            self.gate_sent = now
-            # Keep the wake-word path available even with no qualified face. Audio is
-            # bounded in RAM and only forwarded while this mode is selected.
+        if capture and capture.stdin:
+            # 用每张有效识别帧续期。较迟送达的上一帧可能只剩很短的收音窗口。
             gate = bool(
                 not VOICE_INPUT_PAUSED.exists() and
                 selected and self.audio_allowed and self.voice_status() in ("ready", "transcribing")
@@ -549,16 +554,9 @@ class HomeService:
             self.state["asr_quality"] = result.get("asr_quality")
             route = result.get("address", {})
             self.state["last_address"] = route
-            if route.get("reason") in (
-                "no_speech",
-                "unsupported_script",
-                "no_chinese_task",
-                "low_asr_confidence",
-                "likely_no_speech",
-                "invalid_text",
-                "wake_word_required",
-            ):
-                result_kind, result_code = "refused", "voice_asr_rejected"
+            refusal = ASR_REFUSALS.get(route.get('reason'))
+            if refusal:
+                result_kind, result_code = 'refused', refusal
                 self.state["reason"] = "等待清晰的语音指令"
                 return
             if not self.current(captured, epoch) or time.monotonic() - captured > 10:

@@ -72,6 +72,7 @@ async def test_actual_qualified_audio_creates_one_reviewable_event_without_audio
         for i in range(10):await j.tick(i)
         assert j.engine.analyze.await_count==1 and j.store.events()==[]
         for i in range(10,22):await j.tick(i)
+        await j.runtime.drain()
         events=j.store.events();assert len(events)==1
         e=events[0]
         assert e['kind']=='sound_review' and e['sound_kind']=='crying' and e['status']=='pending_review'
@@ -82,6 +83,7 @@ async def test_actual_qualified_audio_creates_one_reviewable_event_without_audio
         assert 'pcm' not in json.dumps(e) and e['announcement']['status']=='not_requested'
         j.runtime.speaker.say.assert_not_awaited()
         for i in range(22,60):await j.tick(i)
+        await j.runtime.drain()
         assert len(j.store.events())==1,'Same episode cannot flood the event history'
         assert all(len(call.args[0])==64000 for call in j.engine.analyze.call_args_list)
         assert len(j.runtime.sound.windows[CAMERA['id']].packets)==10
