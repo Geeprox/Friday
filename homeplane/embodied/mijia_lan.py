@@ -323,6 +323,12 @@ async def serve(reader, session):
                     reply = await notifications.fetch(request['property_watches'])
                 elif 'cover' in request:
                     reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
+                elif 'registered_cover' in request:
+                    from homeplane.mijia_registered_cover import registered_cover_operation
+
+                    reply = await registered_cover_operation(
+                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
+                    )
                 elif 'numeric' in request:
                     reply = await numeric_operation(
                         hub, request, grant, family, region, home.group_id, allowed, current, session.directory,

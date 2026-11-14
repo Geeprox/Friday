@@ -110,8 +110,9 @@ class TraceStore:
                     event.event_id, event.wall_time.isoformat(), event_body))
 
     def unresolved_light_actions(self):
-        return [load_light_action(row[0]) for row in self.connection.execute(
-            "SELECT body FROM light_actions WHERE status IN ('sent','accepted')")]
+        return [trace for row in self.connection.execute(
+            "SELECT body FROM light_actions WHERE status IN ('sent','accepted')")
+            if (trace := load_light_action(row[0])).code != 'mijia_cover_acknowledged']
 
     def get(self, action_id: str) -> ActionTrace | None:
         self.prune()

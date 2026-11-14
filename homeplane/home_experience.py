@@ -263,7 +263,7 @@ class HomeExperience:
                 if not household_function(e,alias,functions):caps=[]
                 if caps:
                     if local:
-                        attrs={key: state.value for key in SETTINGS
+                        attrs={key: state.value for key in (*SETTINGS, 'current_position', 'target_position')
                                if (state := observations.get((e.id, OBSERVATION_PREFIX + key))) is not None}
                         o=observations.get((e.id, f'{e.kind}.state'))
                     else:
@@ -274,7 +274,7 @@ class HomeExperience:
                         kind=alias.get('kind')or e.kind,capabilities=caps,state_version=e.state_version,
                         value=o.value if o else None,available=bool(o and o.transport_health=='online' and o.value not in (None,'unknown','unavailable')),
                         quality=state.quality if state else 'unknown',
-                        attributes={k:attrs[k]for k in ('brightness','color_temp_kelvin','color_temp','temperature','current_temperature','current_position','current_tilt_position','percentage','hvac_modes','fan_modes','fan_mode','hvac_action','unit_of_measurement','volume_level','is_volume_muted','media_title','source','humidity','current_humidity','mode','operation_mode','operation_list')if k in attrs}))
+                        attributes={k:attrs[k]for k in ('brightness','color_temp_kelvin','color_temp','temperature','current_temperature','current_position','target_position','current_tilt_position','percentage','hvac_modes','fan_modes','fan_mode','hvac_action','unit_of_measurement','volume_level','is_volume_muted','media_title','source','humidity','current_humidity','mode','operation_mode','operation_list')if k in attrs}))
                 for cap in e.capabilities:
                     if cap.access!='read' or cap.name not in ('temperature','humidity','sensor.state','binary_sensor.state'):
                         continue

@@ -32,6 +32,18 @@ from .mijia_numeric import (
     sensor_binding,
     setting_bindings,
 )
+from .mijia_registered_cover import (
+    COVER_CATALOG,
+    COVER_CATALOG_LIMIT,
+    CoverCatalog,
+    CoverReading,
+    CoverTarget,
+    CoverWriter,
+    cover_binding,
+    cover_digest,
+    read_cover_catalog,
+    reserved_covers,
+)
 from .quality import resolve
 from .rule_compiler import digest
 from .rule_contracts import (
@@ -111,7 +123,12 @@ def catalog_available(directory):
     except (OSError, ValueError):
         pass
     try:
-        return bool(read_numeric_catalog(directory).sensors)
+        if read_numeric_catalog(directory).sensors:
+            return True
+    except (OSError, ValueError):
+        pass
+    try:
+        return bool(read_cover_catalog(directory).targets)
     except (OSError, ValueError):
         return False
 
@@ -200,11 +217,11 @@ def ha_available(adapter):
 
 @dataclass(frozen=True)
 class Sample:
-    value: str | int | float
+    value: str | int | float | CoverReading
     received_at: datetime
     expires: float
     version: str
-    comparison: str | int | float
+    comparison: str | int | float | CoverReading
 
 
 @dataclass(frozen=True)
@@ -253,13 +270,17 @@ class MijiaPowerHome:
             self.numeric = read_numeric_catalog(self.path.parent)
         except (OSError, ValueError):
             self.numeric = None
+        try:
+            self.covers = read_cover_catalog(self.path.parent)
+        except (OSError, ValueError):
+            self.covers = None
         self.samples = {}
         self.last_poll = {}
         self.last_hint_check = 0.0
         self.hints = set()
         self.watch_context = None
 
-    def context(self):
+    def discovery_context(self):
         from .embodied.mijia_lan import home_input
         from .embodied.mijia_power import grant_binding
         from .embodied.ptz_control import read_lease
@@ -271,14 +292,18 @@ class MijiaPowerHome:
             return None
         directory = self.path.parent
         try:
-            _, _, inputs = home_input(directory)
+            configuration, _, inputs = home_input(directory)
             if (inputs != report.get('inputs')
                     or grant_binding(read_lease(directory / 'miot-session.json')) != grant):
                 return None
         except (OSError, TypeError, ValueError, KeyError):
             return None
         models = report.get('models')
-        return (family, household, grant, models) if isinstance(models, dict) else None
+        return (family, household, grant, models, configuration) if isinstance(models, dict) else None
+
+    def context(self):
+        discovery = self.discovery_context()
+        return discovery[:4] if discovery else None
 
     def migrate(self):
         from .embodied.ptz_control import atomic
@@ -290,10 +315,10 @@ class MijiaPowerHome:
                 or not adapter._services
                 or authority.ha_instance != adapter.instance_id or authority.ha_url.rstrip('/') != adapter.url):
             return
-        context = self.context()
+        context = self.discovery_context()
         if context is None:
             return
-        family, household, _, _ = context
+        family, household, _, _, configuration = context
         approval = cover_approval(authority)
         previous = self.catalog
         known = ({(t.identity, t.urn, t.model, t.registry_uid, t.entity.kind): t.property_key for t in previous.targets}
@@ -312,12 +337,21 @@ class MijiaPowerHome:
         candidates = []
         duplicates = Counter()
         sensor_candidates = []
+        cover_candidates = []
+        cover_claims = Counter()
+        previous_covers = self.covers
+        known_covers = ({t.entity.id: t for t in previous_covers.targets}
+                        if previous_covers and (previous_covers.family, previous_covers.household,
+                                                previous_covers.legacy_approval) == (family, household, approval)
+                        else {})
+        reserved = reserved_covers(configuration)
         numeric_devices = {}
         for entity in snapshot.entities:
             device = devices.get(entity.id)
             operation = POWER_BY_KIND.get(entity.kind)
             if (device is None or entity.simulated or device.simulated
-                    or (entity.kind != 'sensor' and (operation is None or not bindings(entity)))):
+                    or (entity.kind != 'sensor' and (not bindings(entity)
+                                                    or operation is None and entity.kind != 'cover'))):
                 continue
             source = self.power.registry_source(adapter, entity, device)
             if source is None:
@@ -350,6 +384,33 @@ class MijiaPowerHome:
                     continue
                 if sensor is not None:
                     sensor_candidates.append(sensor)
+                continue
+            if entity.kind == 'cover':
+                if source.identity in reserved:
+                    continue
+                capabilities = admitted_capabilities(adapter, entity, authority)
+                try:
+                    if spec is not None:
+                        target = cover_binding(spec, source, entity, device, capabilities)
+                    else:
+                        target = known_covers.get(entity.id)
+                        same_binding = target and (target.device.id, target.identity, target.urn,
+                                                  target.model, target.registry_uid, bindings(target.entity)) == (
+                            device.id, source.identity, urn, model, unique, bindings(entity))
+                        if same_binding and all(any(cap.name == c.name and set(c.choices or []) <= set(cap.choices or [])
+                                              for cap in capabilities) for c in target.capabilities()):
+                            target = target.model_copy(update={
+                                'entity': entity.model_copy(update={'capabilities': [], 'state_version': None}),
+                                'device': device.model_copy(update={'capabilities': [], 'function_ids': [], 'limitations': []}),
+                            })
+                        else:
+                            target = None
+                except (IndexError, KeyError, TypeError, ValueError):
+                    continue
+                if target is not None:
+                    cover_claims[target.service_key] += 1
+                    if authority.external_entity_ids is None or source.external in authority.external_entity_ids:
+                        cover_candidates.append(target)
                 continue
             try:
                 match = (power_property(spec, unique, entity.kind, urn, model) if spec is not None
@@ -423,27 +484,49 @@ class MijiaPowerHome:
                 raise ValueError('mijia_numeric_catalog_size')
             atomic(self.path.with_name(NUMERIC_CATALOG), body)
             self.numeric = numeric
+        covers = CoverCatalog(family=family, household=household, legacy_approval=approval,
+                              targets=sorted((t for t in cover_candidates if cover_claims[t.service_key] == 1),
+                                             key=lambda t: t.entity.id)[:MAX_TARGETS])
+        if covers != self.covers and (covers.targets or self.covers is not None):
+            body = covers.model_dump(mode='json')
+            if len(json.dumps(body, ensure_ascii=False, indent=2).encode()) > COVER_CATALOG_LIMIT:
+                raise ValueError('mijia_cover_catalog_size')
+            atomic(self.path.with_name(COVER_CATALOG), body)
+            self.covers = covers
 
     def active(self, authority=None):
         catalog = self.catalog
-        if catalog is None and self.numeric is None:
+        cover_catalog = self.covers
+        if catalog is None and self.numeric is None and cover_catalog is None:
             return None, {}
         if authority is None:
             authority, _ = self.core.actions.authority(include_inactive=True)
         if not isinstance(authority, HomeDeviceAuthority):
             return None, {}
-        context = self.context()
+        context = self.discovery_context()
         if context is None:
             return None, {}
-        family, household, grant, models = context
+        family, household, grant, models, configuration = context
         approval = cover_approval(authority)
-        if catalog is None or (family, household, approval) != (catalog.family, catalog.household, catalog.legacy_approval):
-            if self.numeric and (family, approval) == (self.numeric.family, self.numeric.legacy_approval):
-                return (family, grant), {}
+        power_matches = catalog and (family, household, approval) == (
+            catalog.family, catalog.household, catalog.legacy_approval)
+        cover_matches = cover_catalog and (family, household, approval) == (
+            cover_catalog.family, cover_catalog.household, cover_catalog.legacy_approval)
+        numeric_matches = self.numeric and (family, approval) == (self.numeric.family, self.numeric.legacy_approval)
+        if not (power_matches or cover_matches or numeric_matches):
             return None, {}
-        targets = {t.entity.id: t for t in catalog.targets if t.operation in authority.operations
+        targets = {t.entity.id: t for t in (catalog.targets if power_matches else []) if t.operation in authority.operations
                    and (authority.external_entity_ids is None or bindings(t.entity)[0] in authority.external_entity_ids)
                    and models.get(t.identity) == {'urn': t.urn, 'model': t.model}}
+        if cover_matches:
+            try:
+                reserved = reserved_covers(configuration)
+            except ValueError:
+                reserved = {t.identity for t in cover_catalog.targets}
+            targets.update({t.entity.id: t for t in cover_catalog.targets if t.identity not in reserved
+                            and t.operations.intersection(authority.operations)
+                            and (authority.external_entity_ids is None or bindings(t.entity)[0] in authority.external_entity_ids)
+                            and models.get(t.identity) == {'urn': t.urn, 'model': t.model}})
         return (family, grant), targets
 
     def numeric_active(self):
@@ -467,7 +550,7 @@ class MijiaPowerHome:
 
     def settings_for(self, target):
         numeric, catalog = self.numeric, self.catalog
-        if (numeric is None or catalog is None
+        if (not isinstance(target, PowerTarget) or numeric is None or catalog is None
                 or (numeric.family, numeric.legacy_approval) != (catalog.family, catalog.legacy_approval)):
             return []
         bound = numeric.devices.get(target.entity.id)
@@ -489,10 +572,11 @@ class MijiaPowerHome:
             return value
         return None
 
-    def ready_count(self, *, include_sensors=True):
+    def ready_count(self, *, include_sensors=True, include_covers=True):
         context, targets = self.active()
         sensors = self.active_sensors().values() if include_sensors else ()
-        return sum(self.sample_for(context, t) is not None for t in (*targets.values(), *sensors))
+        return sum(self.version(context, t) is not None for t in (*targets.values(), *sensors)
+                   if include_covers or not isinstance(t, CoverTarget))
 
     def connected_targets(self):
         context, targets = self.active()
@@ -527,6 +611,15 @@ class MijiaPowerHome:
             if target is None or operation not in authority.operations:
                 return None
             references[target.reference] = (target, None)
+            if isinstance(target, CoverTarget):
+                # 定时任务只能保存绝对目标，临时停止动作继续从交互入口发出。
+                try:
+                    if desired == {'state': 'stopped'}:
+                        return None
+                    target.wire(operation, next(iter(desired.values())))
+                except (StopIteration, ValueError):
+                    return None
+                continue
             if target.operation == operation and power_intent(desired):
                 continue
             # HA 调光和设色温可同时开灯。直连的灯光属性写入依赖灯已打开，不能替代原动作。
@@ -573,13 +666,15 @@ class MijiaPowerHome:
 
     def schedule_fresh(self, bindings):
         context, references = bindings
-        return all(self._sample(context, reference, target.identity) is not None
+        return all((self.version(context, target) is not None if isinstance(target, CoverTarget)
+                    else self._sample(context, reference, target.identity) is not None)
                    for reference, (target, _) in references.items())
 
     async def read_schedule(self, bindings, *, refresh=False):
         context, references = bindings
         for reference, (target, setting) in references.items():
-            if not refresh and self._sample(context, reference, target.identity) is not None:
+            if not refresh and (self.version(context, target) is not None if isinstance(target, CoverTarget)
+                                else self._sample(context, reference, target.identity) is not None):
                 continue
             writer = (self.setting_writer(context, target, setting) if setting else
                       self.writer(target.entity.id, context=context, target=target))
@@ -589,7 +684,7 @@ class MijiaPowerHome:
 
     def unqualified_references(self, targets):
         # 保留现有手势目标，并检查本地通道能表达它实际绑定的动作。
-        from .embodied.household import supported_actions
+        from .embodied.household import DeviceCommands, supported_actions
         from .embodied.interaction import load
 
         interactions = load()
@@ -603,7 +698,16 @@ class MijiaPowerHome:
                 permission = self.core.actions.cover_permission() or {}
                 actions = supported_actions({'kind': 'cover', 'source_kind': 'miot',
                                              'capabilities': permission.get('operations', [])})
-            elif isinstance(target := targets.get(binding.target), PowerTarget):
+            elif isinstance(target := targets.get(binding.target), CoverTarget):
+                caps = {c.name: c.model_dump() for c in target.capabilities()}
+                item = {'kind': 'cover', 'source_kind': 'cover', 'capabilities': list(caps), 'capability_specs': caps}
+                try:
+                    operation, desired = DeviceCommands.parameters(item, binding.action)
+                    target.wire(operation, next(iter(desired.values())))
+                except (KeyError, ValueError):
+                    missing.add(binding.target)
+                continue
+            elif isinstance(target, PowerTarget):
                 actions = supported_actions({'kind': target.entity.kind, 'capabilities': [target.operation]})
             else:
                 actions = ()
@@ -650,7 +754,7 @@ class MijiaPowerHome:
 
     def version(self, context, target):
         primary = self.sample_for(context, target)
-        if primary is None:
+        if primary is None or (isinstance(primary.value, CoverReading) and not primary.value.healthy):
             return None
         settings = [(s.key, sample.version) for s in self.settings_for(target)
                     if (sample := self.setting_sample(context, target, s)) is not None]
@@ -671,6 +775,15 @@ class MijiaPowerHome:
         target = targets.get(target_id)
         if target is None:
             return 'unauthorized'
+        if isinstance(target, CoverTarget):
+            if operation not in authority.operations:
+                return 'unauthorized'
+            try:
+                key = 'position' if operation == 'cover.position' else 'state'
+                target.wire(operation, desired[key])
+            except (KeyError, ValueError):
+                return 'unsupported_parameters'
+            return None
         if target.operation == operation and power_intent(desired):
             return None
         if operation not in authority.operations:
@@ -688,7 +801,8 @@ class MijiaPowerHome:
         context, targets = self.active()
         if (target := targets.get(entity_id)) is None:
             return None
-        return hashlib.sha256(repr((context, target.reference, self.catalog.legacy_approval)).encode()).hexdigest()
+        catalog = self.covers if isinstance(target, CoverTarget) else self.catalog
+        return hashlib.sha256(repr((context, target.reference, catalog.legacy_approval)).encode()).hexdigest()
 
     def state_version(self, entity_id):
         context, targets = self.active()
@@ -716,23 +830,40 @@ class MijiaPowerHome:
             writable = [s for setting in known if (s := self.active_setting(context, target, setting)) is not None]
             read_caps = [Capability(name=capability, access='read', support='supported')]
             write_caps = {s.operation: s.capability() for s in writable}
-            if sample and target.operation not in write_caps:
+            value = sample.value if sample else None
+            healthy = sample is not None
+            if isinstance(target, CoverTarget):
+                if sample:
+                    value, healthy = sample.value.state, sample.value.healthy
+                    if healthy:
+                        for key, amount in (('current_position', sample.value.position),
+                                            ('target_position', sample.value.target_position)):
+                            if amount is not None:
+                                observations.append(Observation(
+                                    entity_id=entity.id, capability=OBSERVATION_PREFIX + key, value=amount,
+                                    physical_source_id=entity.physical_source_id, ingest_source=MODE,
+                                    received_at=sample.received_at, freshness_basis='upstream_report',
+                                    semantics='latched_state', transport_health='online',
+                                ))
+                if healthy:
+                    write_caps = {c.name: c for c in target.capabilities()}
+            elif sample and target.operation not in write_caps:
                 write_caps[target.operation] = Capability(name=target.operation, access='write', support='supported')
             entities.append(entity.model_copy(update={
                 'capabilities': read_caps + list(write_caps.values()),
                 'state_version': self.version(context, target),
             }))
             states.append(CanonicalState(
-                id=f'{entity.id}:{capability}', value=sample.value if sample else None,
-                quality='healthy' if sample else 'unknown',
-                reasons=['mijia_lan_property_read' if sample else 'mijia_lan_read_unavailable'],
-                selected_source=entity.physical_source_id if sample else None,
+                id=f'{entity.id}:{capability}', value=value,
+                quality='healthy' if healthy else 'unknown',
+                reasons=['mijia_lan_property_read' if healthy else 'mijia_lan_read_unavailable'],
+                selected_source=entity.physical_source_id if healthy else None,
                 as_of=sample.received_at if sample else now,
                 valid_until=sample.received_at + timedelta(seconds=SAMPLE_TTL) if sample else None,
             ))
             if sample:
                 observations.append(Observation(
-                    entity_id=entity.id, capability=capability, value=sample.value,
+                    entity_id=entity.id, capability=capability, value=value,
                     physical_source_id=entity.physical_source_id, ingest_source=MODE,
                     received_at=sample.received_at, freshness_basis='upstream_report',
                     semantics='latched_state', transport_health='online',
@@ -775,6 +906,9 @@ class MijiaPowerHome:
             target = targets.get(entity_id)
         if target is None:
             return None
+        if isinstance(target, CoverTarget):
+            return self.cover_writer(context, target, operation=operation, desired=desired,
+                                     deadline=deadline, revision=revision, guard=guard)
         if desired and not power_intent(desired):
             setting = self.resolve_setting(context, target, operation, desired, require_sample=not reconcile)
             if setting is None:
@@ -815,6 +949,34 @@ class MijiaPowerHome:
         version = (previous.version if previous and previous.expires > now and previous.comparison == comparison
                    else uuid4().hex)
         self.samples[key] = Sample(value, datetime.now(UTC), now + SAMPLE_TTL, version, comparison)
+
+    def cover_writer(self, context, target, *, operation, desired, deadline, revision, guard):
+        family, grant = context
+        did = target.identity.split('_', 1)[1]
+        binding = {'registered_cover': cover_digest(target), 'did': did, 'grant': grant}
+        if not self.power.lan.ready(family, did):
+            return None
+
+        def current():
+            refreshed, targets = self.active()
+            selected = targets.get(target.entity.id)
+            return (refreshed == context and selected is not None and selected.reference == target.reference
+                    and self.power.lan.ready(family, did))
+
+        async def request(fields):
+            if not current():
+                raise ValueError('mijia_permission_changed')
+            if not fields:
+                return await self.power.lan.request(binding, family=family)
+            if deadline is None or revision is None or guard is None:
+                raise ValueError('mijia_permission_changed')
+            return await self.power.lan.request(
+                {**binding, **fields, 'authority_revision': revision, 'deadline': deadline}, family=family,
+                guard=lambda: current() and guard(),
+            )
+
+        return CoverWriter(target, request, current, lambda row: self.record((context, target.reference), row, current),
+                           family, operation, desired)
 
     def setting_writer(self, context, target, setting, *, deadline=None, revision=None, guard=None):
         family, grant = context
@@ -870,7 +1032,12 @@ class MijiaPowerHome:
         for reference, target, setting in entries:
             did = target.identity.split('_', 1)[1]
             if self.power.lan.ready(context[0], did):
-                refs[(did, target.siid, setting.piid if setting else target.piid)] = reference
+                piids = (target.position_piid, target.status_piid, target.fault_piid,
+                         target.target_piid if target.target_readable else None) if isinstance(target, CoverTarget) else (
+                             setting.piid if setting else target.piid,)
+                for piid in piids:
+                    if piid is not None:
+                        refs[(did, target.siid, piid)] = reference
         # 已登记开关优先订阅。超过预算的设备仍按普通周期读取。
         selected = dict(list(refs.items())[:48])
         self.hints.intersection_update(selected.values())
@@ -942,7 +1109,8 @@ class MijiaPowerHome:
                     await self.read_sensor(context, target)
                 else:
                     writer = self.writer(target.entity.id, context=context, target=target)
-                    await writer.readback()
+                    if writer is not None:
+                        await writer.readback()
             except (OSError, ValueError, TimeoutError, httpx.HTTPError):
                 self.samples.pop(key, None)
             break

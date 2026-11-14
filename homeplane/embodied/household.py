@@ -206,7 +206,9 @@ class DeviceCommands:
                 return 'cover.position', {'position': int(action[9:])}
             raise ValueError('unsupported_parameters')
         if kind == "cover":
-            if action=="stop" and "cover.stop" in item.get("capabilities",[]):return "cover.state", {"state":"stopped"}
+            if action == 'stop' and ('cover.stop' in item.get('capabilities', ()) or 'stopped' in (
+                    item.get('capability_specs', {}).get('cover.state', {}).get('choices') or ())):
+                return 'cover.state', {'state': 'stopped'}
             if action in {"on", "off", "open", "close"}:
                 if 'cover.state' in item.get('capabilities', []):
                     return 'cover.state', {'state': 'open' if action in {'on','open'} else 'closed'}
@@ -246,16 +248,14 @@ class DeviceCommands:
                       dispatch_guard=None, dispatch_deadline=None):
         from homeplane.action_contracts import DevicePlanRequest
 
-        local_cover = False
         if target == 'friday:configured-cover':
             cover = self.configured_cover()
             items = [cover] if cover else []
-            local_cover = True
-        elif target is None and query and '帘' in query and self._local_home_only():
-            # HA 断线后只接受已有米家绑定确定匹配的房间或明确名称。
+        elif (target is None and query and '帘' in query and self._local_home_only()
+              and not getattr(self.core.actions.mijia_power_home, 'covers', None)):
+            # 尚无已迁移的注册窗帘时，手工绑定不依赖家庭快照。
             cover = self.configured_cover()
             items = [cover] if cover else []
-            local_cover = True
         else:
             items = await self.inventory()
         targets = [i for i in items if i["id"] == target and i["controllable"]] if target else resolve_targets(query, items, room=room)
@@ -284,7 +284,7 @@ class DeviceCommands:
                       and target.startswith('ha:') and len(targets) == 1
                       and targets[0].get('source_kind') in {'light', 'switch', 'fan', 'climate', 'cover'})
         # 固定米家窗帘由其独立发送锁保护。HA 查询不能阻塞已配对的窗帘手势。
-        standalone_cover = local_cover and targets[0].get('source_kind') == 'miot'
+        standalone_cover = len(targets) == 1 and targets[0].get('source_kind') == 'miot'
         async with nullcontext() if ha_gesture or standalone_cover else self.lock:
             for item in targets:
                 if dispatch_guard is not None and dispatch_guard() is not True:
@@ -363,7 +363,9 @@ class DeviceCommands:
                         code=trace.code,
                         action_id=trace.action_id,
                         write_attempted=trace.real_write_attempted,
-                        acknowledged=any(e.payload.get('code') in {'ha_service_accepted', 'mijia_property_accepted'} for e in trace.events),
+                        acknowledged=any(e.payload.get('code') in {
+                            'ha_service_accepted', 'mijia_property_accepted', 'mijia_cover_acknowledged'
+                        } for e in trace.events),
                         physical_confirmation=trace.physically_confirmed,
                     )
                 )
@@ -396,7 +398,10 @@ def supported_actions(item):
     if kind == 'cover':
         state_caps = {'cover.state'} if item.get('source_kind') == 'miot' else {'cover.state','cover.position','cover.open'}
         actions = ['open','close'] if caps & state_caps else []
-        return actions + (['stop'] if 'cover.stop' in caps else []) + (['position:'+str(p) for p in (0,25,50,75,100)] if 'cover.position' in caps else [])
+        stop = 'cover.stop' in caps or 'stopped' in (item.get('capability_specs', {}).get('cover.state', {}).get('choices') or ())
+        step = item.get('capability_specs', {}).get('cover.position', {}).get('step') or 1
+        return actions + (['stop'] if stop else []) + (['position:'+str(p) for p in (0,25,50,75,100)
+                                                        if p % step == 0] if 'cover.position' in caps else [])
     if kind == 'climate':
         choices = item.get('capability_specs', {}).get('climate.mode', {}).get('choices', [])
         return (['on','off'] if 'climate.power' in caps else []) + ['off' if c == 'off' else 'mode:'+c for c in choices if c!='off' or 'climate.power' not in caps]

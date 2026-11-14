@@ -20,7 +20,7 @@ const api=async(path,body,options={})=>{const r=await fetch(path,{...options,...
 const names={humidifier:'除湿与加湿',water_heater:'热水',trigger:'动作按键',light:'灯光',switch:'开关',cover:'窗帘',climate:'空调',camera:'摄像头',fan:'风扇',vacuum:'清洁',sensor:'环境',binary_sensor:'传感器',media_player:'影音',lock:'门锁'};
 const marks={humidifier:'temperature',water_heater:'temperature',trigger:'adjustments-horizontal',light:'bulb',switch:'plug',cover:'adjustments-horizontal',climate:'air-conditioning',camera:'video',fan:'devices',vacuum:'devices',sensor:'temperature',binary_sensor:'devices',media_player:'player-play',lock:'door'};
 const visualMark=d=>({ceiling_vent:'ceiling-vent',power_supply:'plug',led_strip:'light-strip',pendant:'pendant',downlight:'downlight',spotlight:'spotlight'}[d.presentation?.fixture]||marks[d.kind]||'devices');
-const modeNames={off:'关闭',cool:'制冷',heat:'制热',auto:'自动',heat_cool:'自动冷暖',dry:'除湿',fan_only:'送风',on:'开启',open:'打开',closed:'关闭',opening:'正在打开',closing:'正在关闭',locked:'已上锁',unlocked:'未上锁',playing:'正在播放',paused:'已暂停',idle:'待机',buffering:'正在缓冲'};
+const modeNames={off:'关闭',cool:'制冷',heat:'制热',auto:'自动',heat_cool:'自动冷暖',dry:'除湿',fan_only:'送风',on:'开启',open:'打开',closed:'关闭',opening:'正在打开',closing:'正在关闭',stopped:'已停止',position_unavailable:'行程待确认',locked:'已上锁',unlocked:'未上锁',playing:'正在播放',paused:'已暂停',idle:'待机',buffering:'正在缓冲'};
 const messageNames={reported_match:'已更新',accepted:'已发送，正在等待设备返回',unknown_outcome:'已发送，设备尚未回报结果',unauthorized:'设备连接状态已变化，请刷新后重试',stale_input:'正在更新设备状态，请稍后再试',source_conflict:'设备状态刚刚变化，请重试',unsupported:'设备不支持这项操作',offline_dependency:'家庭连接已中断',expired_request:'操作已过期'};
 const stateText=c=>!c.available?'设备离线':modeNames[c.value]??String(c.value??'未返回状态');
 export function mountExperience(root,{page,go,legacyConnections,legacyRules,snapshot,openEvidenceRecording,archiveSettings=()=>{},requestArchiveSettings=false,onArchiveSettingsOpened=()=>{},developerMode=false,setDeveloperMode=()=>{},attentionId=null,recordingCamera=null,onOpenArchiveSettings}){
@@ -53,7 +53,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   if(d.kind==='trigger')return d.triggers?.some(t=>t.role==='unknown')?'按键模式待确认':`${d.triggers?.length||0} 个动作按键`;
   if(d.kind==='lock'){const r=d.readings.find(r=>r.available!==false&&(/门状态|锁定状态/.test(r.name)||r.device_class==='lock'));return r?readingValue(r):'锁定状态未知';}
   if(d.controls.length&&d.triggers?.length)return `${d.controls.filter(c=>c.available&&c.value==='on').length} 路开启 · ${d.triggers.length} 个动作按键`;
-  if(d.controls.length===1){const c=d.controls[0];if(c.attributes?.feedback_quality==='unreliable')return '叶片角度待确认';const state=stateText(c);if(c.kind==='cover'&&c.attributes.current_position!=null)return `${state} · ${c.attributes.current_position}%`;if(['climate','water_heater'].includes(c.kind)&&c.attributes.current_temperature!=null)return `${state} · 室温 ${c.attributes.current_temperature}°`;return state;}
+  if(d.controls.length===1){const c=d.controls[0];if(c.attributes?.feedback_quality==='unreliable')return '叶片角度待确认';const state=stateText(c);if(c.kind==='cover'&&c.attributes.current_position!=null)return `${state} · ${c.attributes.current_position}%`;if(c.kind==='cover'&&c.attributes.target_position!=null)return `${state} · 目标 ${c.attributes.target_position}%`;if(['climate','water_heater'].includes(c.kind)&&c.attributes.current_temperature!=null)return `${state} · 室温 ${c.attributes.current_temperature}°`;return state;}
   if(d.controls.length)return `${d.controls.filter(c=>c.available&&c.value==='on').length} 路开启`+(d.triggers?.length?` · ${d.triggers.length} 个动作按键`:'');
   const rank=r=>/电池|电量|battery|异常|故障/i.test(r.name)||r.device_class==='battery'?80:({occupancy:0,motion:0,moisture:0,door:0,opening:0,smoke:0,temperature:1,humidity:2,illuminance:3,carbon_dioxide:3,pm25:3}[r.device_class]??({'°C':1,'%':2,'lx':3,'ppm':3,'µg/m³':3,'dB':4,'B/s':5}[r.unit]??(/有人无人|门状态|漏水/.test(r.name)?0:50)));
   const seen=new Set(),readings=d.readings.filter(r=>r.available!==false&&r.value!=null).sort((a,b)=>rank(a)-rank(b)).filter(r=>{const key=String(r.value)+':'+r.unit;if(seen.has(key))return false;seen.add(key);return true;});
@@ -111,7 +111,13 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   if(caps.has('light.color_temperature')&&c.value==='on')slider('色温',caps.get('light.color_temperature'),c.attributes.color_temp_kelvin,'light.color_temperature','color_temp_kelvin',v=>v+' K');
   const angular=c.attributes?.position_semantics==='slat_angle';if(angular)block.append(mainDeviceControls({id:c.id,name:c.name,kind:c.kind,controls:[c]},{send:control,busy}));
   if(caps.has('cover.position')&&!angular){
-   const row=h('div',null,{class:'segmented'});for(const[v,label]of [[0,'关闭'],[50,'半开'],[100,'打开']]){const b=btn(label,()=>control(c,'cover.position',{position:v},b));b.disabled=!c.available;row.append(b);}block.append(row);slider('开合程度',caps.get('cover.position'),c.attributes.current_position,'cover.position','position',v=>v+'%');
+   const position=caps.get('cover.position'),row=h('div',null,{class:'segmented'});
+   for(const[v,label]of [[0,'关闭'],[50,'半开'],[100,'打开']]){
+    if(v % (position.step||1)!==0)continue;
+    const b=btn(label,()=>control(c,'cover.position',{position:v},b));b.disabled=!c.available;row.append(b);
+   }
+   block.append(row);const current=c.attributes.current_position,target=c.attributes.target_position;
+   slider(current==null&&target!=null?'目标开合程度':'开合程度',position,current??target,'cover.position','position',v=>v+'%');
   }
   if(caps.has('cover.state')&&!caps.has('cover.position')){const row=h('div',null,{class:'segmented'});for(const[state,label]of [['closed','关闭'],['open','打开']]){const b=btn(label,()=>control(c,'cover.state',{state},b));b.disabled=!c.available;row.append(b);}block.append(row);}
   if(!angular&&caps.get('cover.state')?.choices?.includes('stopped')){const stop=btn('停止',()=>control(c,'cover.state',{state:'stopped'},stop));stop.disabled=!c.available;block.append(stop);}

@@ -568,7 +568,8 @@ class ActionController:
                             writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
                                                              quick=quick)
                         if writer is not None:
-                            observed = await writer.readback()
+                            preflight = getattr(writer, 'preflight', writer.readback)
+                            observed = await preflight()
                             # 已锁定到原计划时的状态版本，再核对一次实际开关。
                             # 避免 HA 尚未收到上游变化时继续覆盖新状态。
                             if (writer.channel == 'lan' and 'power' in observed
@@ -604,6 +605,7 @@ class ActionController:
             trace = self._stage(trace, "sent", "send_claim_recorded",
                                 mijia_binding=writer.fingerprint() if mijia else None,
                                 mijia_channel=writer.channel if mijia else None)
+            acknowledgement_only = False
             try:
                 if not mijia:
                     writer = HADeviceWriter(adapter, entity, operation)
@@ -613,7 +615,12 @@ class ActionController:
                     return self._stage(
                         trace, "failed" if outcome == "rejected_by_ha" else "unknown_outcome", outcome
                     )
-                trace = self._stage(trace, "accepted", "mijia_property_accepted" if mijia else "ha_service_accepted")
+                confirms_arrival = getattr(writer, 'confirms_arrival', None)
+                acknowledgement_only = confirms_arrival is not None and not confirms_arrival(trace.request.desired)
+                if acknowledgement_only:
+                    trace = self._stage(trace, 'accepted', 'mijia_cover_acknowledged')
+                else:
+                    trace = self._stage(trace, "accepted", "mijia_property_accepted" if mijia else "ha_service_accepted")
             except asyncio.CancelledError:
                 self._stage(trace, "unknown_outcome", "request_cancelled_after_send")
                 raise
@@ -622,6 +629,14 @@ class ActionController:
 
         # 慢设备的只读到位检查不应占住发送队列，让下一次手势在等待时过期。
         # 上方仍按顺序校验发送占用、权限和时效，再发送请求；回读不会重发。
+        if acknowledgement_only:
+            # 有的窗帘只回报目标值。刷新显示状态，送达回执不升级为到位。
+            try:
+                async with asyncio.timeout(.65):
+                    reported = await writer.readback()
+            except (httpx.HTTPError, ValueError, TimeoutError, OSError):
+                return trace
+            return self._stage(trace, 'accepted', trace.code, reported=reported)
         try:
             reported = await self._settle(writer, trace.request.desired)
             matches = writer.matches(trace.request.desired, reported)
