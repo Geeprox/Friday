@@ -27,6 +27,7 @@ from homeplane.store import TraceStore
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_core_rules import enable
 from tests.test_mijia_power_home import provision
+from tests.test_mijia_registered_cover import DID as COVER_DID, setup as provision_cover
 
 ROOT = Path(__file__).resolve().parents[1]
 ORIGIN = 'http://127.0.0.1:8740'
@@ -213,22 +214,27 @@ async def test_saved_mijia_choice_skips_ha_on_cold_boot(fresh, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('case', ['normal', 'lost_ack', 'changed_ha_binding', 'changed_lan_binding'])
+@pytest.mark.parametrize('case', ['normal', 'lost_ack', 'changed_ha_binding', 'changed_lan_binding', 'cover'])
 async def test_mijia_switch_keeps_existing_timer_and_dispatches_once_after_cold_start(fresh, tmp_path, monkeypatch, case):
     backend, desktop = fresh
     backend.persistent = True
     desktop.STATE.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr('homeplane.embodied.service.mijia_runtime_configured', lambda _path: True)
-    core, baseline, gateway, ha_writes = await provision(tmp_path)
+    cover = case == 'cover'
+    kind, operation, desired = ('cover', 'cover.position', {'position': 55}) if cover else (
+        'switch', 'switch.set', {'power': 'on'})
+    core, baseline, gateway, ha_writes = await (provision_cover(tmp_path) if cover else provision(tmp_path))
     legacy = core.adapter
     legacy.household_timezone = AsyncMock(return_value='Asia/Shanghai')
     stream = HAStream(legacy)
     stream.ready = True
     stream.connection_id = 'synthetic-test'
     stream.first_attempt.set()
-    stream.rows = {'switch.simulated': {'entity_id': 'switch.simulated', 'state': 'off', 'attributes': {}}}
+    external = kind + '.simulated'
+    attrs = dict(supported_features=15, current_position=0) if cover else {}
+    stream.rows = {external: dict(entity_id=external, state='closed' if cover else 'off', attributes=attrs)}
     stream.published_rows = stream.rows
-    stream.published_receipts = stream.receipts = {'switch.simulated': datetime.now(UTC)}
+    stream.published_receipts = stream.receipts = {external: datetime.now(UTC)}
     legacy._stream = stream
     owner = RuleManager(core)
     manager = CoreRules(core, owner)
@@ -250,12 +256,12 @@ async def test_mijia_switch_keeps_existing_timer_and_dispatches_once_after_cold_
         return legacy, await core.snapshot()
 
     backend.inner.state.attach_mijia = attach_mijia
-    target = next(e for e in baseline.entities if e.kind == 'switch')
+    target = next(e for e in baseline.entities if e.kind == kind)
     due = datetime.now(UTC).replace(microsecond=0) + timedelta(seconds=10)
     trigger = dict(type='once', timezone='UTC', at=due.strftime('%Y-%m-%dT%H:%M:%S'))
-    rule = RuleIR(id='synthetic-clock', revision=1, intent='合成插座定时', trigger=trigger,
-                  actions=[dict(id='power', type='device.set', operation='switch.set',
-                                target=target.id, desired={'power': 'on'})],
+    rule = RuleIR(id='synthetic-clock', revision=1, intent='合成设备定时', trigger=trigger,
+                  actions=[dict(id='power', type='device.set', operation=operation,
+                                target=target.id, desired=desired)],
                   execution={'preferred_backend': 'home_core', 'max_event_age_ms': 10000})
     original = (await enable(manager, CoreRuleProposal(
         rule=rule, expected_context=manager.context()['fingerprint'], idempotency_key='synthetic-switch-timer',
@@ -322,6 +328,9 @@ async def test_mijia_switch_keeps_existing_timer_and_dispatches_once_after_cold_
         trace = core.store.light_action(runs[0]['effects'][0]['action_id'])
         assert isinstance(trace.request, CoreRuleEffect) and trace.route == 'mijia-scoped-power'
         assert trace.real_write_attempted and not trace.physically_confirmed
+        if cover:
+            gateway.manager.set_prop_async.assert_awaited_once_with(COVER_DID, 2, 2, 55)
+            assert trace.reported['position'] == 55
         if case == 'lost_ack':
             assert (await core.actions.reconcile(trace.action_id)).status == 'reported_match'
         assert gateway.manager.set_prop_async.await_count == 1
