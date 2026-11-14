@@ -8,6 +8,7 @@ import asyncio
 import fcntl
 import hashlib
 import os
+import stat
 import tempfile
 import time
 from datetime import UTC, datetime, timedelta
@@ -18,7 +19,7 @@ from weakref import WeakValueDictionary
 import httpx
 from pydantic import TypeAdapter
 
-from .action_contracts import CoreRuleEffect, HomeDeviceAuthority, LightAuthority, LightExecutionTrace
+from .action_contracts import CoreRuleEffect, HomeDeviceAuthority, LightAuthority, LightExecutionTrace, MijiaCoverAuthority
 from .contracts import Capability, Event
 from .ha import HAReadOnlyAdapter
 from .ha_control import (
@@ -34,6 +35,49 @@ from .runtime_log import observe
 from .event_provenance import entity_source_context
 
 AUTHORITY = TypeAdapter(LightAuthority | HomeDeviceAuthority)
+
+
+def _read_authority_file(path):
+    if any(parent.is_symlink() for parent in path.parents):
+        raise ValueError('authority_symlink_rejected')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size > 16384):
+            raise ValueError('invalid_authority_file')
+        body = stream.read(16385)
+        if len(body) > 16384:
+            raise ValueError('invalid_authority_file')
+    stamp = f'{info.st_dev}:{info.st_ino}:{info.st_mtime_ns}'.encode()
+    return body, stamp
+
+
+def read_device_authority(path, *, include_inactive=False, include_generation=False):
+    try:
+        body, stamp = _read_authority_file(path)
+        authority = AUTHORITY.validate_json(body)
+        if (not include_inactive and not authority.enabled) or (
+            authority.expires_at is not None and authority.expires_at <= datetime.now(UTC)
+        ):
+            return None, None
+        return authority, hashlib.sha256(body + stamp if include_generation else body).hexdigest()
+    except (OSError, ValueError):
+        return None, None
+
+
+def cover_authority_path(directory):
+    return directory / 'mijia-cover-authority.json'
+
+
+def cover_approval(authority):
+    # 暂停只改变即时许可。授权范围、实例或有效期的变更撤销原迁移。
+    return hashlib.sha256(authority.model_dump_json(exclude={'enabled'}).encode()).hexdigest()
+
+
+def read_cover_authority(directory):
+    body, _ = _read_authority_file(cover_authority_path(directory))
+    return MijiaCoverAuthority.model_validate_json(body)
 
 
 class ActionController:
@@ -70,17 +114,17 @@ class ActionController:
         authority, revision = self.authority(include_inactive=True)
         if authority is None:
             return {"status": "paused", "action_targets": []}
-        self._set_enabled(authority, revision, False)
+        self._save_authority(authority.model_copy(update={'enabled': False}), revision)
         return {"status": "paused", "action_targets": [], "external_rules_changed": False}
 
-    def _set_enabled(self, authority, revision, enabled):
-        if hashlib.sha256(self.authority_path.read_bytes()).hexdigest() != revision:
+    def _save_authority(self, authority, revision):
+        if self.authority(include_inactive=True)[1] != revision:
             raise ValueError("source_conflict")
         fd, name = tempfile.mkstemp(prefix=".authority-", dir=self.authority_path.parent)
         try:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w") as stream:
-                stream.write(authority.model_copy(update={"enabled": enabled}).model_dump_json())
+                stream.write(authority.model_dump_json())
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(name, self.authority_path)
@@ -91,15 +135,11 @@ class ActionController:
     def resume(self, expected_revision):
         authority, revision = self.authority(include_inactive=True)
         adapter = self.core.adapter
-        if (
-            not authority
-            or revision != expected_revision
-            or not isinstance(adapter, HAReadOnlyAdapter)
-            or authority.ha_url.rstrip("/") != adapter.url
-            or authority.ha_instance != adapter.instance_id
-        ):
+        matching_ha = (authority and isinstance(adapter, HAReadOnlyAdapter)
+                       and authority.ha_url.rstrip("/") == adapter.url and authority.ha_instance == adapter.instance_id)
+        if not authority or revision != expected_revision or not (matching_ha or self._cover_scope(authority)):
             raise ValueError("source_conflict")
-        self._set_enabled(authority, revision, True)
+        self._save_authority(authority.model_copy(update={'enabled': True}), revision)
         # Restoring the existing grant never renews an old action plan.
         self._deadlines.clear()
 
@@ -123,25 +163,68 @@ class ActionController:
             "device_write_attempted": False,
         }
 
-    def authority(self, *, include_inactive=False):
+    def authority(self, *, include_inactive=False, include_generation=False):
         if not self._owner_owned:
             return None, None
-        path = self.authority_path
+        return read_device_authority(self.authority_path, include_inactive=include_inactive,
+                                     include_generation=include_generation)
+
+    def _cover_scope(self, authority, cover=None):
+        if self.mijia is None or not isinstance(authority, HomeDeviceAuthority) or authority.external_entity_ids is not None:
+            return None
+        from .embodied.miot_spec import optional_cover
+
+        cover = optional_cover() if cover is None else cover
+        if cover is None:
+            return None
+        context = self.mijia.cover_context(cover, self.authority_path.parent)
+        if context is None:
+            return None
         try:
-            if path.is_symlink() or any(p.is_symlink() for p in path.parents):
-                return None, None
-            metadata = path.stat()
-            if metadata.st_size > 16384 or metadata.st_mode & 0o077 or not path.is_file():
-                return None, None
-            body = path.read_bytes()
-            authority = AUTHORITY.validate_json(body)
-            if (not include_inactive and not authority.enabled) or (
-                authority.expires_at is not None and authority.expires_at <= datetime.now(UTC)
-            ):
-                return None, None
-            return authority, hashlib.sha256(body).hexdigest()
+            grant = read_cover_authority(self.authority_path.parent)
         except (OSError, ValueError):
-            return None, None
+            return None
+        if (grant.legacy_approval != cover_approval(authority)
+                or grant.household != context['household'] or grant.binding != context['binding']):
+            return None
+        return context
+
+    def migrate_cover_authority(self):
+        from .embodied.miot_spec import optional_cover
+        from .embodied.ptz_control import atomic
+
+        authority, revision = self.authority()
+        adapter = self.core.adapter
+        if (self.mijia is None or not isinstance(authority, HomeDeviceAuthority)
+                or authority.external_entity_ids is not None
+                or not {'cover.state', 'cover.position'}.intersection(authority.operations)
+                or not isinstance(adapter, HAReadOnlyAdapter) or authority.ha_url.rstrip('/') != adapter.url
+                or authority.ha_instance != adapter.instance_id or adapter.health().get('transport') != 'online'):
+            return
+        directory = self.authority_path.parent
+        try:
+            read_cover_authority(directory)
+        except FileNotFoundError:
+            pass
+        else:
+            return
+        cover = optional_cover()
+        context = self.mijia.cover_context(cover, directory) if cover else None
+        if context is not None and self.authority()[1] == revision:
+            grant = MijiaCoverAuthority(household=context['household'], binding=context['binding'],
+                                        legacy_approval=cover_approval(authority))
+            atomic(cover_authority_path(directory), grant.model_dump())
+
+    def cover_permission(self, cover=None):
+        authority, revision = self.authority(include_generation=True)
+        context = self._cover_scope(authority, cover)
+        if not context:
+            return None
+        operations = sorted(set(authority.operations) & {'cover.state', 'cover.position'})
+        return dict(context, authority_revision=revision, operations=operations) if operations else None
+
+    def cover_read_context(self, cover):
+        return self.mijia.cover_context(cover, self.authority_path.parent) if self.mijia else None
 
     def targets(self, snapshot):
         authority, _ = self.authority()

@@ -1,7 +1,7 @@
 {
   "schema": 2,
-  "version": "0.6.27",
-  "build": "83",
+  "version": "0.6.28",
+  "build": "84",
   "bundle_identifier": "com.friday.home.desktop",
   "artifact_root": ".artifacts",
   "signing_identity": "-",

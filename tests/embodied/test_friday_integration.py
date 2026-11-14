@@ -197,6 +197,7 @@ async def test_home_command_logs_success_failure_without_household_payload(tmp_p
 
     service = object.__new__(HomeService)
     service.state = {}
+    service.camera_id = 'cam_1111111111'
     service.runtime_log = RuntimeLog(tmp_path / "logs")
     monkeypatch.setattr(bridge, "command", AsyncMock(return_value={"status": "accepted"}))
     await service.command("open", "private-event-id", "private-device-description")

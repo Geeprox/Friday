@@ -123,6 +123,21 @@ class DeviceCommands:
     def __init__(self, core, lock, service=None):
         self.core, self.lock, self.service = core, lock, service
 
+    def configured_cover(self, cover=None):
+        from .miot_spec import cover_revision, optional_cover
+
+        cover = optional_cover() if cover is None else cover
+        if not self.service or not cover:
+            return None
+        permission = self.core.actions.cover_permission(cover)
+        operations = (permission or {}).get('operations', [])
+        item = dict(id='friday:configured-cover', name=cover['name'], room=cover['room'], kind='cover',
+                    source_kind='miot', controllable=bool(operations),
+                    capabilities=[*operations, *(['cover.stop'] if 'cover.state' in operations else [])],
+                    binding_revision=cover_revision(cover))
+        item['actions'] = supported_actions(item)
+        return item
+
     async def inventory(self):
         snapshot = await self.core.snapshot()
         targets = set(self.core.actions.targets(snapshot))
@@ -134,7 +149,7 @@ class DeviceCommands:
             aliases = {}
         result = []
         from .miot_spec import optional_cover
-        cover = optional_cover() if self.service and self.service.configured() else None
+        cover = optional_cover() if self.service else None
         selected_functions={fid for d in snapshot.devices if cover and any(b.source=='xiaomi-identity' and b.external_id=='cn_'+str(cover['did']) for b in d.bindings) for fid in d.function_ids}
         for entity in snapshot.entities:
             if entity.id in selected_functions:
@@ -166,29 +181,10 @@ class DeviceCommands:
                     current=next((o.value for o in snapshot.observations if o.entity_id == entity.id), None),
                 )
             )
-        if cover:
-            authority, _ = self.core.actions.authority()
-            bound = bool(
-                authority
-                and self.core.actions.policy_report().get("enabled")
-                and authority.external_entity_ids is None
-                and authority.ha_url.rstrip("/") == getattr(self.core.adapter, "url", None)
-                and authority.ha_instance == getattr(self.core.adapter, "instance_id", None)
-            )
-            result.append(
-                dict(
-                    id="friday:configured-cover",
-                    name=cover['name'],
-                    room=cover['room'],
-                    kind="cover",
-                    source_kind="miot",
-                    controllable=bound,
-                    capabilities=["cover.open", "cover.close", "cover.position", "cover.stop"],
-                    binding_revision=__import__("homeplane.embodied.miot_spec",fromlist=["cover_revision"]).cover_revision(cover),
-                )
-            )
         for item in result:
             item["actions"] = supported_actions(item)
+        if configured_cover := self.configured_cover(cover):
+            result.append(configured_cover)
         return result
 
     @staticmethod
@@ -206,6 +202,15 @@ class DeviceCommands:
                 if not 1 <= percent <= 100:
                     raise ValueError("invalid_percentage")
                 return "light.set", {"power": "on", "brightness": max(1, round(percent * 255 / 100))}
+        if kind == 'cover' and item.get('source_kind') == 'miot':
+            caps = item.get('capabilities', [])
+            if 'cover.state' in caps and action in {'on', 'off', 'open', 'close', 'stop'}:
+                state = 'open' if action in {'on', 'open'} else 'stopped' if action == 'stop' else 'closed'
+                return 'cover.state', {'state': state}
+            if ('cover.position' in caps and action.startswith('position:') and len(action) <= 12
+                    and action[9:].isascii() and action[9:].isdigit() and int(action[9:]) <= 100):
+                return 'cover.position', {'position': int(action[9:])}
+            raise ValueError('unsupported_parameters')
         if kind == "cover":
             if action=="stop" and "cover.stop" in item.get("capabilities",[]):return "cover.state", {"state":"stopped"}
             if action in {"on", "off", "open", "close"}:
@@ -233,10 +238,21 @@ class DeviceCommands:
                 return "climate.temperature", {"temperature": float(action.split(":")[1])}
         raise ValueError("unsupported_parameters")
 
-    async def command(self, query, action, event_id, *, room=None, preview=False, target=None, dispatch_guard=None):
+    async def command(self, query, action, event_id, *, room=None, preview=False, target=None,
+                      dispatch_guard=None, dispatch_deadline=None):
         from homeplane.action_contracts import DevicePlanRequest
 
-        items = await self.inventory()
+        if target == 'friday:configured-cover':
+            cover = self.configured_cover()
+            if cover:
+                items = [cover]
+            elif query:
+                items = await self.inventory()
+                target = None
+            else:
+                items = []
+        else:
+            items = await self.inventory()
         targets = [i for i in items if i["id"] == target and i["controllable"]] if target else resolve_targets(query, items, room=room)
         if not targets or len(targets) > 128:
             return dict(
@@ -262,7 +278,9 @@ class DeviceCommands:
         ha_gesture = (dispatch_guard is not None and target is not None
                       and target.startswith('ha:') and len(targets) == 1
                       and targets[0].get('source_kind') in {'light', 'switch', 'fan', 'climate', 'cover'})
-        async with nullcontext() if ha_gesture else self.lock:
+        # 固定米家窗帘由其独立发送锁保护。HA 查询不能阻塞已配对的窗帘手势。
+        standalone_cover = target == 'friday:configured-cover' and targets[0].get('source_kind') == 'miot'
+        async with nullcontext() if ha_gesture or standalone_cover else self.lock:
             for item in targets:
                 if dispatch_guard is not None and dispatch_guard() is not True:
                     outcomes.append(dict(target=item['id'],status='rejected',code='stale_interaction',
@@ -275,18 +293,15 @@ class DeviceCommands:
                                          write_attempted=False, acknowledged=False))
                     continue
                 if item.get("source_kind") == "miot":
-                    if action not in {"on", "off", "open", "close", "stop"} and not (action.startswith("position:") and action[9:].isdigit() and 0<=int(action[9:])<=100):
-                        outcomes.append(
-                            dict(
-                                target=item["id"],
-                                status="rejected",
-                                code="unsupported_parameters",
-                                write_attempted=False,
-                            )
-                        )
+                    permission = self.core.actions.cover_permission()
+                    if operation not in (permission or {}).get('operations', ()):
+                        outcomes.append(dict(target=item['id'], status='rejected', code='unauthorized',
+                                             write_attempted=False, acknowledged=False))
                         continue
                     result = await self.service.miot_cover(
-                        "open" if action in {"on", "open"} else "close" if action in {"off", "close"} else action, event_id, expected_revision=item.get("binding_revision")
+                        "open" if action in {"on", "open"} else "close" if action in {"off", "close"} else action,
+                        event_id, expected_revision=item.get("binding_revision"), permission=permission,
+                        dispatch_deadline=dispatch_deadline, lan=self.core.actions.mijia.lan,
                     )
                     outcomes.append(
                         dict(
@@ -295,8 +310,8 @@ class DeviceCommands:
                             if result.get("reached_target")
                             else "accepted"
                             if result.get("acknowledged")
-                            else "unknown_outcome",
-                            code="miot_ack" if result.get("acknowledged") else "readback_unavailable",
+                            else "unknown_outcome" if result.get('write_attempted') else 'rejected',
+                            code=result.get('code') or ('miot_ack' if result.get('acknowledged') else 'readback_unavailable'),
                             write_attempted=result.get("write_attempted", result.get("acknowledged")) is True,
                             acknowledged=result.get("acknowledged") is True,
                             physical_confirmation=False,
@@ -373,7 +388,8 @@ def supported_actions(item):
     if kind in {'light','switch','fan'}:
         return ['on','off'] if caps & {'light.set','switch.set','fan.set'} else []
     if kind == 'cover':
-        actions = ['open','close'] if caps & {'cover.state','cover.position','cover.open'} else []
+        state_caps = {'cover.state'} if item.get('source_kind') == 'miot' else {'cover.state','cover.position','cover.open'}
+        actions = ['open','close'] if caps & state_caps else []
         return actions + (['stop'] if 'cover.stop' in caps else []) + (['position:'+str(p) for p in (0,25,50,75,100)] if 'cover.position' in caps else [])
     if kind == 'climate' and 'climate.mode' in caps:
         choices = item.get('capability_specs', {}).get('climate.mode', {}).get('choices', [])

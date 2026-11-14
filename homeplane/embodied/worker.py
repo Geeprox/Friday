@@ -1546,44 +1546,6 @@ async def speech_audio(token: str):
     return FileResponse(path, media_type="audio/mp4")
 
 
-@app.post("/api/internal/cover")
-async def internal_cover(request: Request):
-    if request.client.host not in {"127.0.0.1", "::1"} or not secrets.compare_digest(
-        request.headers.get("x-friday-worker", ""), (PRIVATE / "control-key").read_text().strip()
-    ):
-        raise HTTPException(403)
-    from datetime import UTC, datetime
-
-    from homeplane.action_contracts import HomeDeviceAuthority
-
-    policy = HomeDeviceAuthority.model_validate_json((PRIVATE / "action-authority.json").read_bytes())
-    if not policy.enabled or policy.expires_at is not None and policy.expires_at <= datetime.now(UTC):
-        raise HTTPException(403)
-    data = await request.json()
-    action = data.get("action")
-    event = data.get("event_id")
-    if action not in ("open", "close") or not isinstance(event, str) or not 1 <= len(event) <= 160:
-        raise HTTPException(400)
-    # Durable event claim prevents voice retries after restart from sending twice.
-    import hashlib
-
-    ledger = PRIVATE / "cover-ledger.json"
-    entries = json.loads(ledger.read_text()) if ledger.exists() else {}
-    key = hashlib.sha256(event.encode()).hexdigest()
-    if key in entries:
-        return entries[key]
-    if home.curtain.api is None:
-        await home.curtain.connect()
-    entries[key] = {"status": "unknown_outcome", "acknowledged": False, "reached_target": False}
-    from homeplane.embodied.ptz_control import atomic
-
-    atomic(ledger, dict(list(entries.items())[-128:]))
-    result = await home.curtain.act(action, event)
-    entries[key] = {k: result.get(k) for k in ("status", "acknowledged", "reached_target")}
-    atomic(ledger, dict(list(entries.items())[-128:]))
-    return result
-
-
 @app.post("/api/voice")
 async def voice_control(request: Request):
     if request.client.host not in {"127.0.0.1", "::1"}:

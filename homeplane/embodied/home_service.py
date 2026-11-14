@@ -212,7 +212,8 @@ class HomeService:
 
     @observe("embodied.command")
     async def command(self, action, event_id, source):
-        receipt = await bridge.command("窗帘", action, event_id, camera_id=getattr(self,'camera_id',None))
+        receipt = await bridge.command("窗帘", action, event_id, target='friday:configured-cover',
+                                       camera_id=self.camera_id)
         self.state["last_event"] = {"source": source, "action": action, "receipt": receipt, "at": time.time()}
         return receipt
 

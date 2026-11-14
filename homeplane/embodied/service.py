@@ -776,7 +776,8 @@ class EmbodiedService:
         return await self._identity_request("/api/internal/identity/register",
                                            dict(camera=camera_id, session=session, track=track, person=person))
 
-    async def miot_cover(self, action, event_id, expected_revision=None):
+    async def miot_cover(self, action, event_id, expected_revision=None, *, permission=None,
+                         dispatch_deadline=None, lan=None):
         # Curtain control does not require camera capture or recognition.
         import time
 
@@ -784,15 +785,42 @@ class EmbodiedService:
         binding=optional_cover()
         if binding is None:raise ValueError('cover_unavailable')
         revision=cover_revision(binding)
-        if action!='read' and expected_revision!=revision:raise ValueError('cover_binding_changed')
+        if action != 'read' and (expected_revision != revision or (permission or {}).get('binding') != revision):
+            return dict(status='rejected', code='cover_binding_changed', write_attempted=False)
         cache=getattr(self,'_cover_cache',None)
         if action=='read' and cache and cache[0]==revision and time.monotonic()-cache[1]<15:return cache[2]
         if action!='read':self._cover_cache=None
+        if lan and permission and lan.ready(permission['family'], permission['did']):
+            from .cover_worker import run
+
+            async def local(payload):
+                return await lan.request({**payload, 'did': permission['did'], 'binding': revision,
+                                          'grant': permission['grant']}, family=permission['family'])
+
+            request = dict(action=action, event_id=event_id, expected_revision=expected_revision,
+                           permission=permission, dispatch_deadline=dispatch_deadline)
+            try:
+                result = await run(request, directory=PRIVATE, local=local)
+            except (OSError, ValueError, TimeoutError, RuntimeError):
+                if action != 'read':
+                    return dict(status='unknown_outcome', write_attempted=True)
+            else:
+                if result.get('status') != 'local_preflight_unavailable':
+                    if action == 'read':
+                        self._cover_cache = (revision, time.monotonic(), result)
+                    return result
         process=await asyncio.create_subprocess_exec(str(PYTHON),'-B','-m','homeplane.embodied.cover_worker',
             cwd=str(PROJECT),env=dict(os.environ,PYTHONPATH=str(PROJECT),FRIDAY_EMBODIED_DATA=str(DATA)),
             stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL)
         try:
-            output,_=await asyncio.wait_for(process.communicate(json.dumps(dict(action=action,event_id=event_id,expected_revision=expected_revision)).encode()),30)
+            request = dict(action=action, event_id=event_id, expected_revision=expected_revision,
+                           permission=permission, dispatch_deadline=dispatch_deadline)
+            try:
+                output, _ = await asyncio.wait_for(process.communicate(json.dumps(request).encode()), 30)
+            except TimeoutError:
+                if action == 'read':
+                    raise
+                return dict(status='unknown_outcome', write_attempted=True)
             if len(output)>8192:raise ValueError('curtain_output_limit')
             result=json.loads(output)
             if action=='read':self._cover_cache=(revision,time.monotonic(),result)

@@ -10,9 +10,10 @@ import secrets
 import stat
 import sys
 
-from .mijia_inventory import home_devices, home_scope
+from .mijia_inventory import home_devices, home_inputs, home_scope
 from .mijia_power import family_binding, grant_binding, property_request
 from .miot_session import MiSession
+from .miot_spec import cover_binding, cover_revision
 from .paths import configuration
 from .ptz_control import atomic, read_lease
 
@@ -22,8 +23,7 @@ def home_input(directory):
     membership_path = directory / 'home-room-membership.json'
     cfg = configuration(config_path) if config_path.exists() else {}
     membership = read_lease(membership_path) if membership_path.exists() else {}
-    dids = sorted(str(c['device']['did']) for c in cfg.get('cameras', []))
-    return cfg, membership, (dids, str(membership.get('home_id') or ''))
+    return cfg, membership, home_inputs(cfg, membership)
 
 
 def private_directory(root, key):
@@ -81,6 +81,50 @@ async def property_operation(manager, request, grant, group, dids, scope_current
         manager.note_local_failure(did)
         raise
     return local_result(row, did, siid, piid, write=power is not None)
+
+
+async def cover_operation(manager, request, grant, group, dids, scope_current, directory):
+    from .cover_worker import authorized
+
+    config, _, _ = home_input(directory)
+    binding = cover_binding(config)
+    revision = cover_revision(binding)
+    did = str(binding['did'])
+    if (not scope_current() or request.get('grant') != grant or request.get('did') != did
+            or request.get('binding') != revision or did not in dids or not manager.can_control(did)
+            or manager.in_local_cooldown(did) or (manager.local_device(did) or {}).get('group_id') != group):
+        raise ValueError('mijia_lan_unavailable')
+    refs = binding['refs']
+    if request['cover'] == 'read':
+        unreliable = binding.get('feedback_quality') == 'unreliable'
+        names = ('current-position', 'fault') if unreliable else ('current-position', 'target-position', 'fault')
+        async with asyncio.timeout(1.0), asyncio.TaskGroup() as tasks:
+            readers = {name: tasks.create_task(manager.get_prop_async(did, *refs[name])) for name in names}
+        rows = {name: reader.result() for name, reader in readers.items()}
+        if (not scope_current() or any(not isinstance(r, dict) or type(r.get('code')) is not int
+                                       or r['code'] != 0 or type(r.get('value')) is not int for r in rows.values())):
+            raise ValueError('mijia_property_unconfirmed')
+        # 该设备的角度回报已标为不可靠。保留缺失值，仍要求当前位置和故障实读。
+        return {'values': [rows.get(name, {}).get('value') for name in
+                           ('current-position', 'target-position', 'fault')]}
+    value = request.get('value')
+    parameter = request['cover']
+    if parameter == 'target-position' and type(value) is int and 0 <= value <= 100:
+        operation = 'cover.position'
+    elif parameter == 'motor-control' and type(value) is int and value in binding['commands'].values():
+        operation = 'cover.state'
+    else:
+        raise ValueError('mijia_invalid_binding')
+    if not authorized(request.get('permission'), revision, operation, request.get('deadline'), directory):
+        raise ValueError('mijia_lan_unavailable')
+    siid, piid = refs[parameter]
+    try:
+        async with asyncio.timeout(4.0):
+            row = await manager.set_prop_async(did, siid, piid, value)
+    except TimeoutError:
+        manager.note_local_failure(did)
+        raise
+    return local_result(row, did, siid, piid, write=True)
 
 
 async def serve(reader, session):
@@ -142,9 +186,11 @@ async def serve(reader, session):
                                     and (hub.local_device(did) or {}).get('group_id') == home.group_id)
                     reply = {'connected': hub.is_ready, 'routes': routes,
                              'push': sum(hub.can_push(did) for did in routes)}
+                elif 'cover' in request:
+                    reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
                 else:
                     reply = await property_operation(hub, request, grant, home.group_id, allowed, current)
-            except (OSError, ValueError, TimeoutError, TypeError, KeyError):
+            except (OSError, ValueError, RuntimeError, TimeoutError, TypeError, KeyError, ExceptionGroup):
                 pass
             print(json.dumps({'id': ident, **reply}), flush=True)
     finally:

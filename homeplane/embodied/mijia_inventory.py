@@ -19,6 +19,19 @@ def home_devices(home):
     }
 
 
+def home_inputs(config, membership):
+    return hashlib.sha256(json.dumps([
+        sorted(str(camera['device']['did']) for camera in config.get('cameras', [])),
+        str(membership.get('home_id') or ''),
+    ]).encode()).hexdigest()
+
+
+def account_household(saved, home_id):
+    return hashlib.sha256(json.dumps([
+        saved['cloud_server'], saved['user_info']['uid'], str(home_id),
+    ]).encode()).hexdigest()
+
+
 def home_scope(homes, config, membership):
     cameras = {str(camera['device']['did']) for camera in config.get('cameras', [])}
     matches = [home for home in homes if cameras and cameras <= home_devices(home)]
@@ -250,7 +263,8 @@ async def run(request, directory=PRIVATE):
         if action == 'inventory':
             from .mijia_power import family_binding, grant_binding
 
-            grant = grant_binding(await session.current())
+            saved = await session.current()
+            grant = grant_binding(saved)
             region, home_id, rows = await read_inventory(session, config, membership)
             if grant != grant_binding(await session.current()):
                 raise ValueError('inventory_changed')
@@ -260,7 +274,8 @@ async def run(request, directory=PRIVATE):
             }
             devices = public_inventory(region, rows)
             return {'state': 'ready', 'region': region, 'devices': devices, 'models': models,
-                    'grant': grant, 'family': family_binding(grant, home_id)}
+                    'grant': grant, 'family': family_binding(grant, home_id),
+                    'household': account_household(saved, home_id), 'inputs': home_inputs(config, membership)}
         if action == 'connect' and re.fullmatch(r'[a-f0-9]{64}', request.get('candidate') or ''):
             return await connect_camera(request['candidate'], session, directory, config, membership)
         if action == 'upgrade':

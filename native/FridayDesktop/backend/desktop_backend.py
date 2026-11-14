@@ -766,10 +766,10 @@ class DesktopService:
                 local_failure = None
                 try:
                     settings, adapter, snapshot = await real_adapter(self.renewal)
-                except (ValueError, RuntimeError) as error:
+                except (OSError, ValueError, RuntimeError) as error:
                     if not self.persistent or not integration.configured():
                         raise
-                    settings, adapter = config(), LocalCameraHome()
+                    settings, adapter = self.setup_settings().config, LocalCameraHome()
                     snapshot = await adapter.snapshot()
                     local_failure = failure_code(error)
                 finally:_device_control.reset(grant_context)

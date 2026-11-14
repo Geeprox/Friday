@@ -110,6 +110,29 @@ class MijiaPower:
             return family
         return None
 
+    def cover_context(self, cover, directory):
+        from .embodied.mijia_lan import home_input
+        from .embodied.mijia_power import grant_binding
+        from .embodied.miot_spec import cover_revision
+        from .embodied.ptz_control import read_lease
+
+        report = self.service.discovery_report
+        family = self.current_family()
+        identity = f"{cover.get('region', 'cn')}_{cover['did']}"
+        household = report.get('household')
+        if (not family or not isinstance(household, str) or not FAMILY.fullmatch(household)
+                or identity not in report.get('models', {})):
+            return None
+        try:
+            grant = grant_binding(read_lease(directory / 'miot-session.json'))
+            _, _, inputs = home_input(directory)
+        except (OSError, TypeError, ValueError, KeyError):
+            return None
+        if grant != report.get('grant') or inputs != report.get('inputs'):
+            return None
+        return dict(household=household, binding=cover_revision(cover), grant=grant, inputs=inputs,
+                    family=family, did=str(cover['did']))
+
     def start(self, core):
         self.lan.start()
         self.warming = asyncio.create_task(self._warm(core), name='friday-mijia-specs')
@@ -141,6 +164,11 @@ class MijiaPower:
                 retry[urn] = time.monotonic() + 60
 
         while True:
+            try:
+                core.actions.migrate_cover_authority()
+            except (OSError, ValueError):
+                # 下一轮重新读取授权，保留已有的暂停或权限变更。
+                pass
             family = self.current_family()
             snapshot = getattr(core.adapter, '_last', None)
             if family and snapshot is not None and self.lan.ready(family):

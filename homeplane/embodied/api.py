@@ -14,6 +14,7 @@ from .catalog import RECOGNIZERS, TennisVariant, catalog, get_app
 from .camera_follow_picker import FollowCommand
 from .game_difficulty import DifficultyId, difficulty_options
 from .household import DeviceCommands, basic_command
+from .local_intent import household_plan
 from .paths import PRIVATE
 from .quest import QuestRouteId, quest_route_options
 from .ski_route import SkiTrailId, ski_trail_options
@@ -426,12 +427,14 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
                 raise HTTPException(403) from None
             if not secrets.compare_digest(expected, worker_key):
                 raise HTTPException(403)
-        plan = basic_command(request.text, attending=True) if request.text else None
+        plan = (household_plan(request.text, attending=True) or basic_command(request.text, attending=True)
+                if request.text else None)
         if plan and plan["route"] == "no_op":
             return dict(status="no_op", write_attempted=False, reply=plan["reply"])
         query = plan.get("device") if plan else request.device
         action = plan.get("action") if plan else request.action
-        if (not query and not request.target) or not action:
+        target = 'friday:configured-cover' if plan and plan.get('route') == 'curtain' else request.target
+        if (not query and not target) or not action:
             return dict(status="clarify", write_attempted=False, reply="请说明房间、设备和动作。")
         def current_gesture():
             if request.camera:
@@ -448,15 +451,16 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
                 config = load()
                 binding = next((b for b in config.bindings if b.id == request.gesture.binding), None)
                 return bool(config.enabled and config.revision == request.gesture.revision and binding
-                    and binding.enabled and binding.target == request.target and binding.action == action
+                    and binding.enabled and binding.target == target and binding.action == action
                     and 0 <= time.monotonic() - request.gesture.observed_mono <= 1.5
                     and (infrastructure is None or infrastructure.policy.enabled
                          and infrastructure.policy.recognition and infrastructure.policy.interaction))
             except (OSError, ValueError):
                 return False
         return await devices.command(
-            query, action, request.event_id, room=request.room, preview=request.preview, target=request.target,
+            query, action, request.event_id, room=request.room, preview=request.preview, target=target,
             dispatch_guard=current_gesture if request.gesture is not None or request.camera else None,
+            dispatch_deadline=request.gesture.observed_mono + 1.5 if request.gesture is not None else None,
         )
 
     return router
