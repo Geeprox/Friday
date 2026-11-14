@@ -611,7 +611,9 @@ class ActionController:
                 quick = dispatch_guard is not None
                 try:
                     remaining = deadline - time.monotonic()
-                    async with asyncio.timeout(min(.22 if quick else 1.2, max(0, remaining))):
+                    # 有采集时限的手势保留快速探测。带场景撤销条件的局域网调光使用正常读回时限。
+                    preflight_budget = .22 if quick and (not local or dispatch_deadline is not None) else 1.2
+                    async with asyncio.timeout(min(preflight_budget, max(0, remaining))):
                         if local:
                             writer = home.writer(entity.id, deadline=deadline, revision=revision, guard=current_dispatch,
                                                  operation=operation, desired=trace.request.desired)
