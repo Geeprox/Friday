@@ -1,4 +1,5 @@
 """Current desktop login/recovery consumers, synthetic private records only."""
+import asyncio
 import importlib.util
 import json
 import os
@@ -6,7 +7,7 @@ from pathlib import Path
 import sys
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 APP = Path(sys.argv[sys.argv.index('--app') + 1]).resolve() if '--app' in sys.argv else None
 fixture_path = Path(__file__).with_name('check_local_consumers.py')
@@ -42,6 +43,47 @@ else:
 backend = fixture.backend
 
 class ConnectionChecks(fixture.LocalConsumerChecks):
+    async def test_ha_outage_starts_the_camera_owner_and_recovery_keeps_it(self):
+        from homeplane.embodied.service import EmbodiedService
+
+        good_adapter = backend.real_adapter
+        settings = fixture.SettingsConfig(ha_url='http://synthetic.invalid:8123')
+        unavailable = AsyncMock(side_effect=backend.RealHomeFailure('ha_unreachable', []))
+        self.wrapper.persistent = True
+        fixture.backend.STATE.mkdir(mode=0o700)
+        (fixture.backend.STATE / 'infrastructure.json').write_text('{"enabled":true}')
+        with (patch.object(backend, 'config', return_value=settings),
+              patch.object(backend, 'real_adapter', unavailable),
+              patch.object(EmbodiedService, 'configured', return_value=True),
+              patch.object(EmbodiedService, 'cameras', return_value=[]),
+              patch.object(EmbodiedService, 'sync_people', new_callable=AsyncMock),
+              patch.object(EmbodiedService, 'ensure_background', new_callable=AsyncMock) as activate,
+              patch.object(EmbodiedService, 'start_mijia_discovery')):
+            response = await self.client.post('/desktop/connect')
+            self.assertEqual(response.json()['source'], 'local-cameras')
+            self.assertFalse(response.json()['homeReadable'])
+            owner = self.wrapper.inner.state.embodied
+            owner._recover_pending = AsyncMock()
+            self.assertIsNotNone(self.wrapper.inner.state.infrastructure.task)
+            supervisor = self.wrapper.inner.state.infrastructure
+            self.assertTrue(supervisor.admitted())
+            async with asyncio.timeout(2):
+                while not activate.await_count:
+                    await asyncio.sleep(0.01)
+            activate.assert_awaited_with(interaction=True, open_privacy=False)
+            supervisor.policy = supervisor.policy.model_copy(update={'enabled': False})
+            self.assertEqual((await self.client.get('/api/snapshot')).json()['mode'], 'local-cameras')
+        candidate = await good_adapter(self.wrapper.renewal)
+        candidate[1].subscribe = AsyncMock()
+        with (patch.object(backend, 'config', return_value=settings),
+              patch.object(backend, 'real_adapter', AsyncMock(return_value=candidate))):
+            response = await self.client.post('/desktop/connect')
+            self.assertEqual(response.json()['source'], 'ha-read-only')
+            self.assertTrue(response.json()['homeReadable'])
+            self.assertIs(self.wrapper.inner.state.embodied, owner)
+            self.assertIs(self.wrapper.inner.state.core.adapter, candidate[1])
+            candidate[1].subscribe.assert_awaited_once()
+
     def saved(self, path, **change):
         record = {'ha_url':'http://synthetic.invalid:8123', 'access_token':'SYNTHETIC-ACCESS',
                   'refresh_token':'SYNTHETIC-REFRESH', 'client_id':'SYNTHETIC-CLIENT', 'expires_at':time.time()+3600}
@@ -140,6 +182,7 @@ class ConnectionChecks(fixture.LocalConsumerChecks):
 
 if __name__ == '__main__':
     names = ['test_workspace_symlink_never_tightens_a_foreign_target',
+             'test_ha_outage_starts_the_camera_owner_and_recovery_keeps_it',
              'test_existing_app_workspace_is_tightened_without_changing_user_files',
              'test_native_and_settings_use_same_selected_saved_login',
              'test_incomplete_or_invalid_new_record_does_not_fall_back_or_claim_ready',

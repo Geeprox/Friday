@@ -15,7 +15,7 @@ def readiness(adapter=None, actions=None):
     import importlib.metadata
     targets = actions.targets(adapter._last) if actions and getattr(adapter, "_last", None) else []
     return {
-        "schema_version": 1, "mode": "simulator" if adapter is None or isinstance(adapter, Simulator) else "ha-read-only",
+        "schema_version": 1, "mode": "simulator" if adapter is None or isinstance(adapter, Simulator) else adapter.health()["mode"],
         "real_writes": "scoped_explicit_execution_only" if targets else "disabled",
         "authorized_target_count": len(targets), "python": platform.python_version(), "platform": platform.system(),
         "dependencies": {n: importlib.metadata.version(n) for n in ("fastapi", "pydantic", "httpx", "websockets")},

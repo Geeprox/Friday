@@ -17,6 +17,7 @@ from miot.types import MIoTCameraInfo, MIoTCameraStatus
 
 from homeplane.embodied.local_motor import LocalMotor, check_motor_deadline
 from homeplane.embodied.frame_sampling import CAPTURE_IDLE_TIMEOUT, LatestFrameEncoder
+from homeplane.embodied.vision_cadence import MotionSample
 from homeplane.embodied.capture_decoder import install_decoder
 from homeplane.embodied.camera_provenance import bind_capture_packet
 from homeplane.embodied.camera_audio import PCMFramer, voice_window_deadlines
@@ -123,7 +124,8 @@ async def main():
             packet.update(decoders[0].friday_status())
         emit(bind_capture_packet(packet, selected))
 
-    sampler = LatestFrameEncoder(encoded, quality=quality,
+    adaptive_vision = request.get('audio') is True and os.environ.get('FRIDAY_FULL_VISION') != '1'
+    sampler = LatestFrameEncoder(encoded, quality=quality, motion=MotionSample() if adaptive_vision else None,
         face_enabled=lambda: time.monotonic()<attention_until or request.get('identity') is True)
     sampler_task = asyncio.create_task(sampler.run())
 

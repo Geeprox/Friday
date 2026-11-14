@@ -714,7 +714,9 @@ function renderTrace(content,trace) {
   add(block,el('h3',qualityNames[trace.status] ?? trace.status),el('p',trace.status === 'rejected' ? ({source_conflict:'家庭状态已更新，请刷新后重试。',ambiguous_target:'设备目标需要重新确认。',unsupported:'设备不支持这项调整。',unsupported_parameters:'调整超出设备支持范围。',stale_input:'设备状态需要更新，请刷新后重试。',unsupported_ttl:'预览时间设置无效，请重试。'}[trace.code] ?? '暂时无法预览，请检查设备状态。') : trace.real_write_attempted ? '设备操作已提交' : '预览已记录，设备未改变。',{class:'muted'}),detail('操作记录',trace));
   block.append(button('刷新记录',async () => {try {lastTrace = await api('/api/traces/'+encodeURIComponent(trace.action_id));render();}catch(error){$('notification').textContent = error.message;}},{class:'text-button'}));content.append(block);
   if (['ha-scoped-light','ha-scoped-device'].includes(trace.route)) {
-    block.append(el('p',trace.status === 'planned' ? '点击执行才会操作这台设备；计划有时限。' : 'HA返回未确认实物效果，结果未知不重试。返回状态来自 HA，尚未独立确认物理效果。结果未知时不会自动重试。',{class:'muted'}));
+    if(trace.status === 'planned')block.append(el('p','点击执行才会操作这台设备。',{class:'muted'}));
+    if(trace.status === 'reported_match')block.append(el('p','设备回报符合目标，尚未独立确认物理效果。',{class:'muted'}));
+    if(trace.status === 'unknown_outcome')block.append(el('p','设备状态待确认。',{class:'muted'}));
     const submit = async (endpoint, control) => {
       control.disabled = true;
       try {

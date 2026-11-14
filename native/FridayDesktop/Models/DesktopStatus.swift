@@ -135,11 +135,13 @@ struct HomeConnectionPresentation {
     var needsAuthorization: Bool { failure == "ha_authorization_rejected" }
     var header: String {
         if unknown { return "连接状态待核对" }
+        if status?.source == "local-cameras" { return "可查看本机摄像头" }
         if status?.connection == "connected" { return "家庭已连接" }
         return needsAuthorization ? "需要授权" : "家庭未连接"
     }
     var headerDetail: String? {
         if unknown { return "历史家庭状态不能证明当前连接。" }
+        if status?.source == "local-cameras" { return "家电连接暂不可用" }
         if let report = status, report.connection == "connected" {
             if report.deviceWrites == "scoped" {
                 return "家庭已连接 · 家居按授权控制 · \(report.entityCount) 个设备条目"

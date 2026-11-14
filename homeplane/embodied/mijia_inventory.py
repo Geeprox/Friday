@@ -87,13 +87,12 @@ def display_name(device):
     return ''.join(char for char in device.name if char.isprintable()).strip()[:80] or device.model[:80]
 
 
-async def camera_spec(device):
-    # 只访问公开的设备规格，用型号 URN 校验权限和布尔隐私开关。
+async def public_spec(urn):
+    # 用官方目录提供的型号 URN 查询公开规格，不传设备身份或账号。
     import httpx
 
-    urn = device.urn
     if not re.fullmatch(r'urn:miot-spec(?:-v2)?:device:[a-z0-9-]+:[A-Fa-f0-9]+:[A-Za-z0-9.:-]{1,144}', urn):
-        raise ValueError('camera_spec_unavailable')
+        raise ValueError('mijia_spec_unavailable')
     try:
         async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as client:
             async with client.stream('GET', 'https://miot-spec.org/miot-spec-v2/instance',
@@ -106,7 +105,15 @@ async def camera_spec(device):
                         raise ValueError('camera_spec_too_large')
         raw = json.loads(data)
         if not isinstance(raw, dict) or raw.get('type') != urn:
-            raise ValueError('camera_spec_mismatch')
+            raise ValueError('mijia_spec_unavailable')
+        return raw
+    except (httpx.HTTPError, OSError, ValueError, TimeoutError):
+        raise ValueError('mijia_spec_unavailable') from None
+
+
+async def camera_spec(device):
+    try:
+        raw = await public_spec(device.urn)
         ref = camera_property({'spec': raw}, 'camera_power', 'read')
         service = next(service for service in raw['services'] if service['iid'] == ref[0])
         prop = next(prop for prop in service['properties'] if prop['iid'] == ref[1])
@@ -122,8 +129,8 @@ async def camera_spec(device):
                         and p['type'].split(':')[3] in wanted]
             if relevant:
                 services.append(dict(iid=entry['iid'], type=entry['type'], properties=relevant))
-        return {'type': urn, 'services': services}
-    except (httpx.HTTPError, OSError, ValueError, TimeoutError, StopIteration, KeyError, IndexError):
+        return {'type': device.urn, 'services': services}
+    except (ValueError, TypeError, StopIteration, KeyError, IndexError):
         raise ValueError('camera_spec_unavailable') from None
 
 
@@ -241,8 +248,18 @@ async def run(request, directory=PRIVATE):
         membership = read_lease(membership_path) if membership_path.exists() else {}
         session = MiSession(directory)
         if action == 'inventory':
+            from .mijia_power import grant_binding
+
+            grant = grant_binding(await session.current())
             region, rows = await read_inventory(session, config, membership)
-            return {'state': 'ready', 'region': region, 'devices': public_inventory(region, rows)}
+            if grant != grant_binding(await session.current()):
+                raise ValueError('inventory_changed')
+            models = {
+                f'{region}_{device.did}': device.urn for physical in rows.values()
+                for device in (physical, *physical.sub_devices.values())
+            }
+            devices = public_inventory(region, rows)
+            return {'state': 'ready', 'region': region, 'devices': devices, 'models': models, 'grant': grant}
         if action == 'connect' and re.fullmatch(r'[a-f0-9]{64}', request.get('candidate') or ''):
             return await connect_camera(request['candidate'], session, directory, config, membership)
         if action == 'upgrade':

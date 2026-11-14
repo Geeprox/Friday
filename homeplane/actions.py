@@ -44,6 +44,7 @@ class ActionController:
         self._deadlines = {}
         self._lock = asyncio.Lock()
         self._execution_locks = WeakValueDictionary()
+        self.mijia = None
         self.authority_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if any(p.is_symlink() for p in self.authority_path.parents):
             raise ValueError("authority_symlink_rejected")
@@ -275,7 +276,7 @@ class ActionController:
         return None
 
     @observe('action.transition', upstream='local')
-    def _stage(self, trace, status, code, *, reported=None):
+    def _stage(self, trace, status, code, *, reported=None, mijia_binding=None):
         event = Event(
             source="action-gateway",
             source_context=trace.events[0].source_context if trace.events else None,
@@ -291,6 +292,7 @@ class ActionController:
                 "code": code,
                 "write_attempted": trace.real_write_attempted or status == "sent",
                 "physical_verification": "NOT_RUN",
+                **({"mijia_binding": mijia_binding} if mijia_binding else {}),
             },
         )
         updated = trace.model_copy(
@@ -409,23 +411,55 @@ class ActionController:
                 code = managed_guard(snapshot) or code
             if code:
                 return self._stage(trace, "expired" if code == "expired_request" else "rejected", code)
+            adapter = self.core.adapter
+            entity = next(e for e in snapshot.entities if e.id == trace.request.target)
+            if trace.target_binding_fingerprint != self.binding_fingerprint(entity):
+                return self._stage(trace, "rejected", "source_conflict")
+            operation = getattr(trace.request, "operation", "light.set")
+            writer = None
+            # 手势和镜头语音有自己的短时效，云端预检不能挤占这些输入的派发预算。
+            if self.mijia is not None and dispatch_guard is None and isinstance(authority, HomeDeviceAuthority):
+                try:
+                    remaining = self._deadlines[action_id] - time.monotonic()
+                    async with asyncio.timeout(min(1.2, max(0, remaining))):
+                        writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired)
+                        if writer is not None:
+                            await writer.readback()
+                except (httpx.HTTPError, ValueError, TimeoutError, OSError):
+                    writer = None
+                if self.core.adapter is not adapter or self.authority()[1] != revision:
+                    return self._stage(trace, "rejected", "authority_changed")
+                if writer is not None:
+                    if not writer.current():
+                        return self._stage(trace, "rejected", "source_conflict")
+                    current_snapshot = await self.core.snapshot()
+                    changed = self._policy(trace.request, current_snapshot, authority)
+                    if isinstance(trace.request, CoreRuleEffect):
+                        changed = managed_guard(current_snapshot) or changed
+                    if changed:
+                        return self._stage(trace, "expired" if changed == "expired_request" else "rejected", changed)
+                if self.core.adapter is not adapter or self.authority()[1] != revision:
+                    return self._stage(trace, "rejected", "authority_changed")
+                if writer is not None and not writer.current():
+                    return self._stage(trace, "rejected", "source_conflict")
+                if time.monotonic() >= self._deadlines[action_id]:
+                    return self._stage(trace, "expired", "expired_request")
+            mijia = writer is not None
             if dispatch_guard is not None and dispatch_guard() is not True:
                 raise ValueError("dispatch_guard_rejected")
             # 访问网络前先持久化发送占用记录，写库或状态比较失败则不发送。
             # 其他 Core 也不能重复领取同一计划。
-            trace = self._stage(trace, "sent", "send_claim_recorded")
+            trace = self._stage(trace, "sent", "send_claim_recorded", mijia_binding=writer.fingerprint() if mijia else None)
             try:
-                entity = next(e for e in snapshot.entities if e.id == trace.request.target)
-                writer = HADeviceWriter(
-                    self.core.adapter, entity, getattr(trace.request, "operation", "light.set")
-                )
+                if not mijia:
+                    writer = HADeviceWriter(adapter, entity, operation)
                 async with asyncio.timeout(max(0, self._deadlines[action_id] - time.monotonic())):
                     outcome = await writer.send(trace.request.desired)
                 if outcome != "accepted":
                     return self._stage(
                         trace, "failed" if outcome == "rejected_by_ha" else "unknown_outcome", outcome
                     )
-                trace = self._stage(trace, "accepted", "ha_service_accepted")
+                trace = self._stage(trace, "accepted", "mijia_property_accepted" if mijia else "ha_service_accepted")
             except asyncio.CancelledError:
                 self._stage(trace, "unknown_outcome", "request_cancelled_after_send")
                 raise
@@ -440,7 +474,7 @@ class ActionController:
             return self._stage(
                 trace,
                 "reported_match" if matches else "unknown_outcome",
-                "ha_reported_match" if matches else "reported_state_mismatch",
+                ("mijia_reported_match" if mijia else "ha_reported_match") if matches else "reported_state_mismatch",
                 reported=reported,
             )
         except asyncio.CancelledError:
@@ -450,7 +484,7 @@ class ActionController:
             return self._stage(trace, "unknown_outcome", "readback_or_transport_unavailable")
 
     async def _settle(self, writer, desired):
-        """在有界时间内等待 HA 异步回报，设备请求只发送一次。
+        """在有界时间内等待设备状态回报，设备请求只发送一次。
 
         延迟重试仅用于读取；发送失败或结果不明时直接标记 unknown_outcome，
         不进入此流程，也不重发设备请求。
@@ -488,9 +522,18 @@ class ActionController:
             if not binding or trace.target_binding_fingerprint != self.binding_fingerprint(entity):
                 return trace
             try:
-                reported = await HADeviceWriter(
-                    adapter, entity, getattr(trace.request, "operation", "light.set")
-                ).readback()
+                operation = getattr(trace.request, "operation", "light.set")
+                mijia_binding = next((item.payload.get("mijia_binding") for item in trace.events
+                                      if item.payload.get("status") == "sent"), None)
+                if mijia_binding:
+                    if self.mijia is None:
+                        return trace
+                    writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired)
+                    if writer is None or writer.fingerprint() != mijia_binding or not writer.current():
+                        return trace
+                else:
+                    writer = HADeviceWriter(adapter, entity, operation)
+                reported = await writer.readback()
             except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                 return trace
             matches = reported_matches(trace.request.desired, reported)

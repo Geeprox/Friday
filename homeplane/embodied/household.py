@@ -342,7 +342,7 @@ class DeviceCommands:
                         code=trace.code,
                         action_id=trace.action_id,
                         write_attempted=trace.real_write_attempted,
-                        acknowledged=any(e.payload.get('code') == 'ha_service_accepted' for e in trace.events),
+                        acknowledged=any(e.payload.get('code') in {'ha_service_accepted', 'mijia_property_accepted'} for e in trace.events),
                         physical_confirmation=trace.physically_confirmed,
                     )
                 )

@@ -53,12 +53,20 @@ def encode_frame(packet, *, face, quality):
 
 
 class LatestFrameEncoder:
-    def __init__(self, emit, *, quality=3, face_enabled=lambda:True, encode=encode_frame):
+    def __init__(self, emit, *, quality=3, face_enabled=lambda:True, encode=encode_frame, motion=None):
         self.emit, self.quality, self.face_enabled, self.encode = emit, quality, face_enabled, encode
         self.latest = None
         self.available = asyncio.Event()
         self.last_encoded = self.last_face = -100.0
         self.offered = self.replaced = self.sent = 0
+        self.motion = motion
+
+    def _encode(self, packet, face):
+        quiet = self.motion.quiet_ms(packet[0], packet[1]) if self.motion is not None else None
+        result = self.encode(packet, face=face, quality=self.quality)
+        if result is not None and quiet is not None:
+            result['scene_quiet_ms'] = quiet
+        return result
 
     def offer(self, frame, received_at, decoded_at):
         self.offered += 1
@@ -80,7 +88,7 @@ class LatestFrameEncoder:
                 face = self.face_enabled() and now-self.last_face >= .5
                 self.last_encoded = now
                 if face:self.last_face = now
-                result = await asyncio.to_thread(self.encode, packet, face=face, quality=self.quality)
+                result = await asyncio.to_thread(self._encode, packet, face)
                 if result is not None and 0 <= time.time()-packet[1] <= 1:
                     self.sent += 1
                     result['sampling'] = dict(offered=self.offered,replaced=self.replaced,sent=self.sent)

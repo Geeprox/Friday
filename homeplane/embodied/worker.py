@@ -354,11 +354,21 @@ async def secondary_audio(camera_id, packet):
         await deliver_audio(service, packet)
 
 
+def needs_full_vision(camera_id, session):
+    service = home if camera_id == SELECTED['id'] else secondary_homes.get(camera_id)
+    policy = safety.policy_cache
+    return (practice.suppresses(camera_id)
+            or bool(service and (service.wake_camera or service.speaking or service.voice_busy))
+            or bool(policy.enabled and policy.visual_review and policy.posture_source
+                    and policy.posture_source.camera == camera_id)
+            or safety.review_pending(camera_id, session) or safety.fall_pending(camera_id, session))
+
+
 previews = PreviewPool(identity_store=identity_store, continuous=True, recognize=True, wall=wall,
     on_observation=secondary_observation,on_audio=secondary_audio,on_clear=clear_camera,
     on_motion=clear_camera_view, on_view_lost=clear_camera_observation, on_capture_frame=safety.capture_frame,
     review_pending=safety.review_pending, fall_pending=safety.fall_pending,
-    sound_cue=camera_motion_cue, sound_view=safety.offer_sound_search_frame,
+    sound_cue=camera_motion_cue, sound_view=safety.offer_sound_search_frame, needs_full_vision=needs_full_vision,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
     occupied_elsewhere=lambda cid: (cid!=SELECTED['id'] and bool(view().get('people')))
         or any(other!=cid and previews.status(other)['state']=='live' and item.get('people',0)
@@ -658,6 +668,7 @@ def view():
     result['recognition'] = recognition
     primary = dict(camera=SELECTED['id'], state=primary_state, frames=state['processed_frames'],
                    recognition=recognition,
+                   vision_cadence=state.get('vision_cadence'),
                    latency_ms=state.get('pipeline_ms') if recognizing else None)
     result['camera_sessions'] = [primary, *[previews.status(c['id'])
         for c in configuration()['cameras'] if c['id'] != SELECTED['id']]]
@@ -711,6 +722,8 @@ async def reap(process):
 
 
 async def run_source(my_generation):
+    from homeplane.embodied.vision_cadence import VisionCadence
+
     global capture, latest, last_frame, tracks, pet_tracks, last_jpeg, room, primary_wall_epoch
     global last_preview, last_preview_at
     primary_wall_epoch = wall.begin(SELECTED['id'])
@@ -734,9 +747,12 @@ async def run_source(my_generation):
     pet_tracks = PetTracks()
     processed_times.clear()
     captured_times.clear()
+    cadence = VisionCadence()
+    gate_generation = motion_generation
     state.update(
         status="connecting",
         recognition="waiting",
+        vision_cadence=cadence.public(),
         reason=None,
         frame=None,
         people=[],
@@ -756,6 +772,7 @@ async def run_source(my_generation):
         if (my_generation != generation or primary_wall_epoch != wall_epoch
                 or state['status'] not in {'connecting', 'live'}):
             return
+        cadence.reset()
         if state.get('recognition') != 'recovering':
             # 撤销依赖识别的旧画面、跟踪和动作。原采集继续更新未标注预览。
             invalidate_calibration()
@@ -822,6 +839,7 @@ async def run_source(my_generation):
             nonlocal scene_data
             detector = SceneProcess(MODELS / "yolov8n.onnx")
             processed_at = None
+            quiet_check_at = -100.0
             try:
                 while my_generation == generation:
                     item = latest_item
@@ -830,8 +848,17 @@ async def run_source(my_generation):
                         my_generation, wall_epoch, i, m, latest_item)
                     key = ((item['received_at'], item['capture_session'],
                             item['camera_source_context'], frame_generation) if current() else None)
+                    quiet = (key is not None and type(item.get('scene_quiet_ms')) is int
+                             and item['scene_quiet_ms'] >= cadence.minimum_quiet_ms
+                             and not state.get('people') and not state.get('animals')
+                             and games.mode in {'home','off'} and not party_camera.window(time.monotonic())[2]
+                             and (camera_planner is None or camera_planner.mode in {'auto','hold','patrol'})
+                             and not needs_full_vision(SELECTED['id'], identities.session))
+                    if quiet and time.monotonic()-quiet_check_at < 2:
+                        key = None
                     if key is not None and key != processed_at:
                         processed_at = key
+                        quiet_check_at = time.monotonic()
                         try:
                             result = await detector.analyze(base64.b64decode(item['jpeg'], validate=True),
                                 context=dict(generation=my_generation, wall_epoch=wall_epoch,
@@ -964,6 +991,19 @@ async def run_source(my_generation):
                     continue
                 if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
                     continue
+                # 旧采集或测试入口未携带运动证据时，沿用原识别节奏。
+                if 'scene_quiet_ms' in item:
+                    if gate_generation != frame_motion_generation:
+                        cadence.reset()
+                        gate_generation = frame_motion_generation
+                    mode = camera_planner.mode if camera_planner else 'hold'
+                    force = (games.mode not in {'off', 'home'} or party_camera.window(time.monotonic())[2]
+                             or mode not in {'hold', 'auto', 'patrol'}
+                             or needs_full_vision(SELECTED['id'], identities.session))
+                    process_frame = cadence.due(item, time.monotonic(), force=force)
+                    state['vision_cadence'] = cadence.public()
+                    if not process_frame:
+                        continue
                 phase_at = time.monotonic()
                 timings = dict(queue_age_ms=round((time.time()-item['received_at'])*1000,1))
                 # Pixel data remains exclusively in local process pipes and memory.
@@ -990,6 +1030,7 @@ async def run_source(my_generation):
                     "animals_enabled": pet_revision is not None,
                 }, on_failure=recognition_failed)
                 if detection is None:
+                    cadence.reset()
                     continue
                 timings['vision_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 phase_at = time.monotonic()
@@ -1060,6 +1101,11 @@ async def run_source(my_generation):
                 timings['identity_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 phase_at = time.monotonic()
                 scene_visible = frame_room.scene_visible
+                if 'scene_quiet_ms' in item:
+                    cadence.observed(now, clear=not (people or hands or animals or detection.get('boxes'))
+                        and scene_visible and layout['registration'].get('status') == 'locked'
+                        and not any(row.get('class') in {'person', 'cat', 'dog'}
+                                    for row in current_scene.get('objects', ())))
                 timings['visibility_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 state['pipeline_timing'] = dict(timings)
                 if state.get('status')=='shutter_closed':return

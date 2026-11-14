@@ -211,7 +211,7 @@ class ActionTrace(Contract):
 
 
 class Snapshot(Contract):
-    mode: Literal["simulator", "ha-read-only"]
+    mode: Literal["simulator", "ha-read-only", "local-cameras"]
     version: str
     generated_at: AwareDatetime
     entities: list[Entity]

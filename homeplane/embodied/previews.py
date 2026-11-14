@@ -51,7 +51,8 @@ class PreviewPool:
     def __init__(self, identity_store=None, continuous=False, *, recognize=False, control_camera=False,
                  on_observation=None, on_audio=None, on_clear=None, on_motion=None, on_capture_frame=None,
                  on_view_lost=None, focus=None, occupied_elsewhere=None,
-                 review_pending=None, fall_pending=None, sound_cue=None, sound_view=None, wall=None, intent_factory=None):
+                 review_pending=None, fall_pending=None, sound_cue=None, sound_view=None, wall=None, intent_factory=None,
+                 needs_full_vision=None):
         self.wall = wall
         self.sessions = {}
         self.focus = focus or (lambda camera: None)
@@ -60,6 +61,7 @@ class PreviewPool:
         self.fall_pending = fall_pending or (lambda camera, session: False)
         self.sound_cue = sound_cue or (lambda camera, sample, active: None)
         self.sound_view = sound_view
+        self.needs_full_vision = needs_full_vision or (lambda camera, session: False)
         self.runtime_log = RuntimeLog(DATA / "logs" / "camera-motion")
         self.lock = asyncio.Lock()
         self.identity_store = identity_store
@@ -139,6 +141,7 @@ class PreviewPool:
             error_class=item.get('error_class'),error_stage=item.get('error_stage'),
             timing=item.get('timing',{}),dropped_frames=item.get('dropped_frames',0),
             room_service=item.get('room_service'),
+            vision_cadence=item.get('vision_cadence'),
             capture=item.get('capture',{}),
             camera_control=control,
             manual_control=bool(item.get('control')),
@@ -242,6 +245,7 @@ class PreviewPool:
         process = None
         pipeline = None
         recognizer = None
+        cadence = None
         lease = None
         io = None
         receiver = None
@@ -335,7 +339,9 @@ class PreviewPool:
                         await asyncio.sleep(5)
             if self.recognize:
                 from .camera_recognition import CameraRecognition
+                from .vision_cadence import VisionCadence
                 recognizer = CameraRecognition(selected['id'], self.identity_store)
+                cadence = VisionCadence()
                 item['recognizer'] = recognizer
             elif self.identity_store is not None:
                 from homeplane.people.identity_session import IdentitySession
@@ -604,6 +610,18 @@ class PreviewPool:
                     if recognizer is not None:
                         stage='recognition'
                         motor_sent = item.get('last_motor_sent')
+                        use_cadence = cadence is not None and 'scene_quiet_ms' in packet
+                        if use_cadence:
+                            now = time.monotonic()
+                            moving = motor_sent is not None and now - motor_sent < cadence.settle_seconds
+                            force = (item['mode'] not in {'auto', 'hold', 'patrol'}
+                                or director.mode == 'survey' or moving or item['recognition_recovering']
+                                or self.needs_full_vision(selected['id'], recognizer.session))
+                            process_frame = cadence.due(packet, now, force=force)
+                            item['vision_cadence'] = cadence.public()
+                            if not process_frame:
+                                # 视频和输入时钟由采集路径更新，跳帧不发布新的识别结果。
+                                continue
                         recognizer.animals_enabled = item['mode'] in PET_MODES
                         recognizer.animals_intent = item.get('mode_revision')
                         observation = await recognizer.observe(packet,
@@ -613,12 +631,18 @@ class PreviewPool:
                         # Inference finishing after a stale input cannot trigger.
                         item['timing'] = recognizer.timing
                         if observation is None or not 0 <= time.time()-packet['received_at'] <= 1.5:
+                            if use_cadence:
+                                cadence.reset()
                             item['dropped_frames'] = item.get('dropped_frames',0)+1
                             if (self.on_view_lost and not item['recognition_recovering']
                                     and motor_sent == item.get('last_motor_sent')):
                                 self.on_view_lost(selected['id'])
                             continue
                         latest = observation
+                        if use_cadence:
+                            cadence.observed(now, clear=not (observation['people'] or observation['hands']
+                                or observation.get('animals')) and observation['registration'].get('status') == 'locked'
+                                and observation.get('scene_visible') is True)
                         if self.on_observation:
                             await self.on_observation(observation, process)
                         if not self.source_current(selected['id'], process):break

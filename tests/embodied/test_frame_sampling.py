@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from homeplane.embodied.frame_sampling import LatestFrameEncoder, encode_frame
+from homeplane.embodied.vision_cadence import MotionSample, VisionCadence
 
 
 def test_burst_replaces_pending_frame_without_blocking_control_loop():
@@ -93,3 +94,40 @@ def test_encoder_preserves_native_face_size_and_original_arrival():
     assert result['received_at'] == result['preview_at'] == received
     assert result['host_decode_ms'] == 8
     assert 'face_jpeg' not in encode_frame((frame, received, received*1000),face=False,quality=3)
+
+
+def test_empty_view_skips_inference_but_detects_local_motion_and_refreshes_regularly():
+    frame = np.full((480, 960, 3), 60, dtype=np.uint8)
+    moved = frame.copy()
+    moved[251:286, 142:177] = 105
+    motion, cadence = MotionSample(), VisionCadence()
+    processed = []
+    for index in range(101):
+        now = index / 5
+        pixels = moved if index >= 70 else frame
+        quiet = motion.quiet_ms(pixels, now)
+        if cadence.due({'scene_quiet_ms': quiet}, now, force=False):
+            processed.append(index)
+            cadence.observed(now, clear=True)
+    during_quiet = [n for n in processed if 25 <= n < 70]
+    assert 8 <= len(during_quiet) <= 16
+    assert all(b - a <= 4 for a, b in zip(during_quiet, during_quiet[1:]))
+    assert all(n in processed for n in range(70, 91))
+    # 断流后的首帧不能沿用旧的静止窗口。
+    assert motion.quiet_ms(moved, 22) == 0
+
+
+def test_activity_safety_or_lost_evidence_gets_full_inference():
+    cadence = VisionCadence()
+    still = {'scene_quiet_ms': 10000}
+    cadence.observed(10, clear=True)
+    assert not cadence.due(still, 10.2, force=False)
+    assert cadence.due(still, 10.2, force=True)
+    assert cadence.due({}, 10.2, force=False)
+    cadence.observed(10.3, clear=False)
+    for now in (10.4, 11, 12, 13, 14.2):
+        assert cadence.due(still, now, force=False)
+        cadence.observed(now, clear=True)
+    assert not cadence.due(still, 14.4, force=False)
+    cadence.reset()
+    assert cadence.due(still, 14.4, force=False)

@@ -24,6 +24,14 @@ from . import camera_interaction
 from .ski_route import get_ski_trail
 
 
+def camera_runtime_configured():
+    try:
+        config = configuration()
+        return bool(config.get("enabled") and PYTHON.is_file() and VISION.is_file())
+    except (OSError, ValueError, KeyError):
+        return False
+
+
 class EmbodiedService:
     def __init__(self):
         self.process = None
@@ -50,6 +58,7 @@ class EmbodiedService:
         self.registration_lock = asyncio.Lock()
         self.camera_sync_pending = False
         self.discovery_report = dict(state='not_checked', devices=[])
+        self.discovery_checked_at = None
 
     async def ensure_background(self, *, interaction=True, open_privacy=False):
         # Background recovery must never override Mi Home's newer shutter state.
@@ -115,11 +124,7 @@ class EmbodiedService:
             db.close()
 
     def configured(self):
-        try:
-            config = configuration()
-            return bool(config.get("enabled") and PYTHON.is_file() and VISION.is_file())
-        except (OSError, ValueError, KeyError):
-            return False
+        return camera_runtime_configured()
 
     def _url(self, path, **query):
         config = configuration()
@@ -661,6 +666,7 @@ class EmbodiedService:
                         await self.stop_preview(camera_id)
                     await self._sync_registered_cameras()
                 self.discovery_report = await self._mijia_inventory('inventory')
+                self.discovery_checked_at = time.monotonic()
             except (OSError, ValueError, TimeoutError, httpx.HTTPError):
                 self.discovery_report = dict(state='unavailable', devices=[])
             await asyncio.sleep(300)

@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -14,6 +16,7 @@ from homeplane.actions import ActionController
 from homeplane.core import HomeCore
 from homeplane.ha import HAReadOnlyAdapter
 from homeplane.ha_control import OPERATIONS
+from homeplane.mijia_control import MijiaPower
 from homeplane.store import TraceStore
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_ha import Socket
@@ -208,6 +211,69 @@ async def plan(core, operation, desired):
             idempotency_key=str(uuid4()),
         )
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['readback', 'unknown_send', 'different_device', 'read_failed', 'binding_changed', 'gesture_deadline'])
+async def test_existing_device_plan_uses_exact_mijia_power_binding_or_one_ha_write(tmp_path, case):
+    core, _, ha_calls, *_ = rig(tmp_path)
+    did = '999' if case == 'different_device' else '200000001'
+    urn = 'urn:miot-spec-v2:device:switch:00000001:fixture.switch.channel:1'
+    spec = {'type': urn, 'services': [{'iid': 2, 'type': 'urn:miot-spec-v2:service:switch:00000000',
+        'properties': [{'iid': 1, 'type': 'urn:miot-spec-v2:property:on:00000000',
+                        'format': 'bool', 'access': ['read', 'write']}]}]}
+    report = {'state': 'ready', 'models': {'cn_200000001': urn}, 'grant': 'a'*64}
+    service = SimpleNamespace(discovery_report=report, discovery_checked_at=time.monotonic())
+    inventory = core.adapter._inventory
+    mi_calls = []
+
+    async def registry():
+        await inventory()
+        core.adapter._registry['switch.simulated'].update(
+            platform='xiaomi_home', unique_id=f'xiaomi_home.fixture_cn_{did}_channel_on_p_2_1')
+        core.adapter._devices['device-switch.simulated']['identifiers'] = [['xiaomi_home', 'cn_200000001']]
+
+    async def public_spec(urn_arg):
+        assert urn_arg == urn
+        return spec
+
+    async def send(request):
+        mi_calls.append(request)
+        assert (request['did'], request['siid'], request['piid']) == ('200000001', 2, 1)
+        if request.get('power'):
+            if case == 'unknown_send':
+                raise httpx.ReadTimeout('synthetic')
+            return {'accepted': True}
+        if case == 'binding_changed':
+            core.adapter._registry['switch.simulated']['unique_id'] += '_changed'
+        if case == 'read_failed':
+            raise ValueError('synthetic')
+        return {'power': 'on' if len(mi_calls) > 1 else 'off'}
+
+    core.adapter._inventory = registry
+    core.actions.mijia = MijiaPower(service, spec=public_spec, request=send)
+    try:
+        intent = await plan(core, 'switch.set', {'power': 'on'})
+        assert intent.status == 'planned'
+        trace = await core.actions.execute(intent.action_id, dispatch_guard=(lambda: True) if case == 'gesture_deadline' else None)
+        assert await core.actions.execute(intent.action_id) == trace
+        if case == 'binding_changed':
+            assert trace.status == 'rejected' and trace.code == 'source_conflict'
+            assert not ha_calls and len(mi_calls) == 1 and 'power' not in mi_calls[0]
+        elif case in {'different_device', 'read_failed', 'gesture_deadline'}:
+            assert len(ha_calls) == 1 and not any('power' in request for request in mi_calls)
+            assert trace.route == 'ha-scoped-device' and trace.status == 'reported_match'
+        else:
+            assert not ha_calls and sum('power' in request for request in mi_calls) == 1
+            assert trace.route == 'ha-scoped-device'
+            assert any(item.payload.get('mijia_binding') for item in trace.events if item.payload['status'] == 'sent')
+            assert trace.status == ('unknown_outcome' if case == 'unknown_send' else 'reported_match')
+            if case == 'unknown_send':
+                settled = await core.actions.reconcile(intent.action_id)
+                assert settled.status == 'reported_match' and not ha_calls
+                assert sum('power' in request for request in mi_calls) == 1
+    finally:
+        await close(core)
 
 
 @pytest.mark.asyncio

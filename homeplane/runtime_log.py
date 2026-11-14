@@ -60,6 +60,7 @@ flow_session_unavailable flow_operation_unavailable flow_operation_budget flow_o
 flow_operation_in_progress flow_context_changed flow_lane_changed flow_cancelled
 flow_live_write_held flow_report_unavailable flow_backend_unavailable
 awaiting_explicit_execution send_claim_recorded ha_service_accepted ha_reported_match
+mijia_property_accepted mijia_reported_match
 rejected_by_ha reported_state_mismatch readback_or_transport_unavailable
 request_cancelled_after_send expired_request restart_requires_new_plan authority_changed
 dispatch_guard_rejected managed_guard_required source_conflict readback_match_causality_unconfirmed
@@ -89,6 +90,7 @@ REFUSALS = frozenset({'refused', 'rejected', 'expired', 'unavailable', 'failed',
                       'cancelled', 'paused', 'backoff', 'not_configured', 'not_connected',
                       'not_running', 'sdk_missing', 'unauthorized', 'disabled'})
 SUCCESS_CODES = frozenset({'none', 'awaiting_explicit_execution', 'send_claim_recorded',
+                           'mijia_property_accepted', 'mijia_reported_match',
                            'ha_service_accepted', 'ha_reported_match', 'readback_match_causality_unconfirmed'})
 _journal = contextvars.ContextVar('friday_runtime_journal', default=None)
 _correlation = contextvars.ContextVar('friday_runtime_correlation', default=None)
