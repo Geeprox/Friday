@@ -23,7 +23,11 @@ class MotionSample:
         import cv2
 
         sample = cv2.cvtColor(cv2.resize(frame, (96, 48), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
-        if (self.previous_at is None or not 0 < at - self.previous_at <= .6
+        # 画面过暗、全黑或过曝都不能用于推断空场。空间配准有独立的准入条件。
+        sample_range = int(sample.max()) - int(sample.min())
+        gray = float(sample.mean())
+        usable = 12 <= gray <= 243 and sample_range >= 22
+        if (not usable or self.previous_at is None or not 0 < at - self.previous_at <= .8
                 or self.changed(sample, self.previous) or self.changed(sample, self.anchor)):
             self.anchor = sample
             self.quiet_since = at
@@ -42,15 +46,23 @@ class VisionCadence:
         self.checked_at = -math.inf
         self.active_until = -math.inf
         self.processed = self.skipped = 0
+        self.active_frames = self.unclear_frames = self.recent_motion_frames = 0
+        self.quiet_ms = None
 
     def due(self, packet, now, *, force):
         quiet = packet.get('scene_quiet_ms')
-        if (force or type(quiet) is not int or quiet < self.minimum_quiet_ms
-                or now >= self.checked_at + self.interval or now < self.active_until):
-            self.processed += 1
-            return True
-        self.skipped += 1
-        return False
+        self.quiet_ms = quiet if type(quiet) is int else None
+        if force:
+            self.active_frames += 1
+        elif self.quiet_ms is None or self.quiet_ms < self.minimum_quiet_ms:
+            self.recent_motion_frames += 1
+        elif now < self.active_until or self.checked_at == -math.inf:
+            self.unclear_frames += 1
+        elif now < self.checked_at + self.interval:
+            self.skipped += 1
+            return False
+        self.processed += 1
+        return True
 
     def observed(self, now, *, clear):
         self.checked_at = now
@@ -61,4 +73,6 @@ class VisionCadence:
         self.checked_at = self.active_until = -math.inf
 
     def public(self):
-        return {'processed': self.processed, 'skipped_static': self.skipped}
+        return {'processed': self.processed, 'skipped_static': self.skipped,
+                'active_path': self.active_frames, 'recent_motion': self.recent_motion_frames,
+                'unclear': self.unclear_frames, 'quiet_ms': self.quiet_ms}

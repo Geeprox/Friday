@@ -640,9 +640,10 @@ class PreviewPool:
                             continue
                         latest = observation
                         if use_cadence:
-                            cadence.observed(now, clear=not (observation['people'] or observation['hands']
-                                or observation.get('animals')) and observation['registration'].get('status') == 'locked'
-                                and observation.get('scene_visible') is True)
+                            stable = observation['registration'].get('status') in {
+                                'locked', 'background_unavailable', 'camera_moved'}
+                            cadence.observed(now, clear=stable and observation.get('_empty_detection') is True
+                                and not (observation['people'] or observation['hands'] or observation.get('animals')))
                         if self.on_observation:
                             await self.on_observation(observation, process)
                         if not self.source_current(selected['id'], process):break

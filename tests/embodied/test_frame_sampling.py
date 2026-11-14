@@ -98,6 +98,7 @@ def test_encoder_preserves_native_face_size_and_original_arrival():
 
 def test_empty_view_skips_inference_but_detects_local_motion_and_refreshes_regularly():
     frame = np.full((480, 960, 3), 60, dtype=np.uint8)
+    frame[:, 500:] = 110
     moved = frame.copy()
     moved[251:286, 142:177] = 105
     motion, cadence = MotionSample(), VisionCadence()
@@ -115,6 +116,9 @@ def test_empty_view_skips_inference_but_detects_local_motion_and_refreshes_regul
     assert all(n in processed for n in range(70, 91))
     # 断流后的首帧不能沿用旧的静止窗口。
     assert motion.quiet_ms(moved, 22) == 0
+    # 深黑、遮挡或没有亮度信息的画面，不能因连续静止跳过推理。
+    blank = np.zeros_like(frame)
+    assert all(motion.quiet_ms(blank, 23 + i / 5) == 0 for i in range(30))
 
 
 def test_activity_safety_or_lost_evidence_gets_full_inference():

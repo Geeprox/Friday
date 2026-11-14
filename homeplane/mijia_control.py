@@ -37,36 +37,48 @@ async def request_property(request):
             await process.wait()
 
 
-def power_property(spec, unique_id, kind, device_urn):
+def power_property(spec, unique_id, kind, device_urn, device_model):
     """按 Xiaomi Home 的属性或服务注册标识精确绑定，不解析用户改过的实体名。"""
     from .embodied.miot_spec import properties
 
-    parts = device_urn.split(':') if isinstance(device_urn, str) else []
-    model = parts[5].split('.') if len(parts) >= 6 else []
-    if len(model) < 3 or spec.get('type') != device_urn:
+    model = device_model.split('.') if isinstance(device_model, str) else []
+    if (len(model) < 2 or not all(re.fullmatch(r'[a-z0-9-]{1,40}', part) for part in model)
+            or spec.get('type') != device_urn):
         return None
     vendor, product = re.escape(model[0][:9]), re.escape(model[-1][:20])
-    matches = re.fullmatch(rf'(?:xiaomi_home|{re.escape(kind)})\.{vendor}_(.+)_{product}_(?:on_p_(\d+)_(\d+)|s_(\d+)(?:_[a-z0-9_-]+)?)',
-                           unique_id)
+    prefix = rf'(?:xiaomi_home|{re.escape(kind)})\.{vendor}_([a-z]{{2}}_(?:\d{{1,32}}|blt[._]\d[._][a-z0-9]{{1,64}}))_{product}'
+    # 规格 URN 仅确定型号的能力；厂商和型号段来自米家目录独立的 model 字段。
+    # 支持注册表中的设备、服务和 on 属性；服务描述是显示文本，不参与绑定。
+    matches = re.fullmatch(prefix + r'(?:_on_p_(\d+)_(\d+)|_s_(\d+)(?:_[^\r\n]{0,128})?)?', unique_id)
     if not matches:
         return None
     identity, property_siid, property_iid, service_siid = matches.groups()
-    siid = int(property_siid or service_siid)
+    siid = int(property_siid or service_siid) if (property_siid or service_siid) else None
     properties(spec)
-    relevant = [service for service in spec['services'] if service.get('iid') == siid]
-    if len(relevant) != 1:
-        return None
-    service = relevant[0]
     allowed_services = {'light': {'light'}, 'switch': {'switch', 'outlet'}, 'fan': {'fan'},
                         'climate': {'air-conditioner', 'heater', 'thermostat'},
                         'humidifier': {'humidifier', 'dehumidifier'}, 'water_heater': {'water-heater'}}
-    service_urn = service.get('type', '').split(':')
-    if len(service_urn) < 4 or service_urn[2] != 'service' or service_urn[3] not in allowed_services.get(kind, set()):
+    urn_parts = device_urn.split(':')
+    device_kind = urn_parts[3] if len(urn_parts) > 3 and urn_parts[2] == 'device' else None
+    expected = allowed_services.get(kind, set())
+    if siid is None and device_kind not in expected:
         return None
-    on = [row for row in service['properties'] if row['type'].split(':')[3:4] == ['on']
-          and (property_iid is None or int(property_iid) == row['iid'])]
-    if len(on) == 1 and on[0].get('format') == 'bool' and {'read', 'write'} <= set(on[0]['access']):
-        return xiaomi_identifier(identity), siid, on[0]['iid']
+    candidates = []
+    for service in spec['services']:
+        if siid is not None and service['iid'] != siid:
+            continue
+        service_urn = service.get('type', '').split(':')
+        if len(service_urn) < 4 or service_urn[2] != 'service' or service_urn[3] not in expected:
+            continue
+        for row in service.get('properties', []):
+            if (row['type'].split(':')[2:4] == ['property', 'on']
+                    and (property_iid is None or int(property_iid) == row['iid'])):
+                candidates.append((service['iid'], row))
+    if len(candidates) != 1:
+        return None
+    service_id, prop = candidates[0]
+    if prop.get('format') == 'bool' and {'read', 'write'} <= set(prop['access']):
+        return xiaomi_identifier(identity), service_id, prop['iid']
     return None
 
 
@@ -105,22 +117,23 @@ class MijiaPower:
         if len(ids) != 1 or not isinstance(grant, str) or not re.fullmatch(r'[a-f0-9]{64}', grant):
             return None
         identity = next(iter(ids))
-        urn = models.get(identity)
-        if not isinstance(urn, str):
+        catalog = models.get(identity)
+        if not isinstance(catalog, dict) or not isinstance(catalog.get('urn'), str):
             return None
+        urn = catalog['urn']
         try:
             if urn not in self.specs:
                 self.specs[urn] = await self.spec(urn)
                 if len(self.specs) > 128:
                     self.specs.pop(next(iter(self.specs)))
-            match = power_property(self.specs[urn], row['unique_id'], entity.kind, urn)
+            match = power_property(self.specs[urn], row['unique_id'], entity.kind, urn, catalog.get('model'))
         except (OSError, ValueError, KeyError, TypeError, IndexError):
             return None
         def current():
             refreshed = self.service.discovery_report
             device = adapter._devices.get(row['device_id'], {})
             return (refreshed.get('state') == 'ready' and refreshed.get('grant') == grant
-                    and refreshed.get('models', {}).get(identity) == urn and adapter._registry.get(external) == row
+                    and refreshed.get('models', {}).get(identity) == catalog and adapter._registry.get(external) == row
                     and any(namespace == 'xiaomi_home' and xiaomi_identifier(value) == identity
                             for entry in device.get('identifiers', []) if isinstance(entry, (list, tuple)) and len(entry) == 2
                             for namespace, value in [entry]))

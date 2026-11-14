@@ -214,23 +214,24 @@ async def plan(core, operation, desired):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('case', ['readback', 'unknown_send', 'different_device', 'read_failed', 'binding_changed', 'gesture_deadline'])
+@pytest.mark.parametrize('case', ['readback', 'unknown_send', 'different_device', 'read_failed', 'binding_changed', 'gesture_deadline', 'service_label', 'device_level'])
 async def test_existing_device_plan_uses_exact_mijia_power_binding_or_one_ha_write(tmp_path, case):
     core, _, ha_calls, *_ = rig(tmp_path)
     did = '999' if case == 'different_device' else '200000001'
-    urn = 'urn:miot-spec-v2:device:switch:00000001:fixture.switch.channel:1'
+    urn = 'urn:miot-spec-v2:device:switch:00000001:fixture-channel:1'
     spec = {'type': urn, 'services': [{'iid': 2, 'type': 'urn:miot-spec-v2:service:switch:00000000',
         'properties': [{'iid': 1, 'type': 'urn:miot-spec-v2:property:on:00000000',
                         'format': 'bool', 'access': ['read', 'write']}]}]}
-    report = {'state': 'ready', 'models': {'cn_200000001': urn}, 'grant': 'a'*64}
+    report = {'state': 'ready', 'models': {'cn_200000001': {'urn': urn, 'model': 'fixture.switch.channel'}}, 'grant': 'a'*64}
     service = SimpleNamespace(discovery_report=report, discovery_checked_at=time.monotonic())
     inventory = core.adapter._inventory
     mi_calls = []
 
     async def registry():
         await inventory()
+        suffix = {'service_label': '_s_2_First Channel 开关', 'device_level': ''}.get(case, '_on_p_2_1')
         core.adapter._registry['switch.simulated'].update(
-            platform='xiaomi_home', unique_id=f'xiaomi_home.fixture_cn_{did}_channel_on_p_2_1')
+            platform='xiaomi_home', unique_id=f'xiaomi_home.fixture_cn_{did}_channel{suffix}')
         core.adapter._devices['device-switch.simulated']['identifiers'] = [['xiaomi_home', 'cn_200000001']]
 
     async def public_spec(urn_arg):

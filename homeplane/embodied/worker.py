@@ -998,6 +998,7 @@ async def run_source(my_generation):
                         gate_generation = frame_motion_generation
                     mode = camera_planner.mode if camera_planner else 'hold'
                     force = (games.mode not in {'off', 'home'} or party_camera.window(time.monotonic())[2]
+                             or time.monotonic() < motor_last_sent + cadence.settle_seconds
                              or mode not in {'hold', 'auto', 'patrol'}
                              or needs_full_vision(SELECTED['id'], identities.session))
                     process_frame = cadence.due(item, time.monotonic(), force=force)
@@ -1102,8 +1103,9 @@ async def run_source(my_generation):
                 phase_at = time.monotonic()
                 scene_visible = frame_room.scene_visible
                 if 'scene_quiet_ms' in item:
-                    cadence.observed(now, clear=not (people or hands or animals or detection.get('boxes'))
-                        and scene_visible and layout['registration'].get('status') == 'locked'
+                    stable = layout['registration'].get('status') in {'locked', 'background_unavailable', 'camera_moved'}
+                    cadence.observed(now, clear=stable and not (people or hands or animals)
+                        and not any(detection.get(k) for k in ('boxes', 'poses', 'hands', 'faces'))
                         and not any(row.get('class') in {'person', 'cat', 'dog'}
                                     for row in current_scene.get('objects', ())))
                 timings['visibility_ms'] = round((time.monotonic()-phase_at)*1000,1)

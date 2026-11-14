@@ -151,6 +151,7 @@ class CameraRecognition:
                          captured_mono=time.monotonic()-(time.time()-packet['received_at']),
                          safety_jpeg=picture, aspect=packet['width'] / max(1, packet['height']),
                          scene_visible=scene_visible,
+                         _empty_detection=not any(detection.get(k) for k in ('boxes', 'poses', 'hands', 'faces')),
                          _patrol_view=getattr(self.room, 'patrol_view', None) if registered else None)
         return self.last
 

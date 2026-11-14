@@ -255,7 +255,7 @@ async def run(request, directory=PRIVATE):
             if grant != grant_binding(await session.current()):
                 raise ValueError('inventory_changed')
             models = {
-                f'{region}_{device.did}': device.urn for physical in rows.values()
+                f'{region}_{device.did}': {'urn': device.urn, 'model': device.model} for physical in rows.values()
                 for device in (physical, *physical.sub_devices.values())
             }
             devices = public_inventory(region, rows)
