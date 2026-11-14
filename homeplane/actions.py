@@ -481,6 +481,7 @@ class ActionController:
                     "status": trace.status,
                     "code": trace.code,
                     "write_attempted": False,
+                    **({"device_route": MIJIA_POWER_ROUTE} if local else {}),
                 },
             )
             trace.events.append(event)

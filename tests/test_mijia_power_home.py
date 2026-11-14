@@ -1,6 +1,7 @@
 """使用现有控制入口验证米家中枢接管。不连接家庭或硬件。"""
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -207,6 +208,12 @@ async def test_migrated_plan_cannot_change_source_or_retry_send(tmp_path, case):
         assert result == await core.actions.execute(intent.action_id)
         if case == 'lost_reply':
             assert result.status == 'unknown_outcome'
+            # 旧桌面版能读入同一发送记录，回滚时因已领取而不会重新发送。
+            stored = json.loads(core.store.connection.execute(
+                'SELECT body FROM light_actions WHERE id = ?', (intent.action_id,),
+            ).fetchone()[0])
+            assert stored['route'] == 'ha-scoped-device' and stored['real_write_attempted']
+            assert core.store.light_action(intent.action_id).route == 'mijia-scoped-power'
             result = await core.actions.reconcile(intent.action_id)
             assert result.status == 'reported_match' and result.reported['evidence'] == 'mijia_lan_readback'
             assert gateway.manager.set_prop_async.await_count == 1
