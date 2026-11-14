@@ -1,4 +1,4 @@
-"""把本机复核的近期结果和资源状态归纳为界面可读的状态。"""
+"""把复核进度及受限原因归纳为首页状态。"""
 
 
 def review_progress(windows, now, budget):
@@ -20,6 +20,10 @@ def review_health(status):
     if error in {'daily_visual_review_reached', 'daily_requests_reached', 'daily_text_tokens_reached',
                  'api_quota_exhausted'}:
         return 'quota_limited'
+    if error in {'api_timeout', 'api_rate_limited', 'api_unavailable'}:
+        return error
+    if error in {'api_key_rejected', 'api_model_unavailable', 'api_request_rejected'}:
+        return 'unavailable'
     if error:
         return 'recovering'
     return status['progress']

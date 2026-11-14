@@ -27,6 +27,8 @@ from homeplane.embodied.intent import (
 from homeplane.embodied.local_asr import LocalASR
 from homeplane.embodied.local_intent import household_plan
 from homeplane.embodied.voice_preferences import read_preferences
+from homeplane.home_questions import is_home_question
+from homeplane.task_composition import is_task_request
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
@@ -89,7 +91,8 @@ def main():
                     quality_reason = "wake_word_required"
                     route = {"admitted": False, "reason": quality_reason}
                 semantic = None
-                if route["admitted"]:
+                # 已识别的问答和草稿由各自的入口核对意图，转写无需等待 Laya。
+                if route["admitted"] and not (is_task_request(route["body"]) or is_home_question(route["body"])):
                     if household_plan(text, request.get("attending") is True, wake_word=policy.wake_word) or basic_command(
                         text, request.get("attending") is True, wake_word=policy.wake_word
                     ):

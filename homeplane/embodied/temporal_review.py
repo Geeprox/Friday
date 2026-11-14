@@ -88,8 +88,7 @@ class TemporalReviewer:
             self.clear(camera)
             return
         cloud_source = getattr(self.policy(), 'visual_cloud_source', None)
-        if cloud_source is not None and (not regions or (cloud_source.camera, cloud_source.source_context) != (
-                camera, source_context)):
+        if cloud_source is not None and (cloud_source.camera, cloud_source.source_context) != (camera, source_context):
             self.clear(camera)
             return
         state = self.windows.get(camera)
@@ -99,6 +98,7 @@ class TemporalReviewer:
             or state.source_context != source_context
             or captured <= state.seen
             or captured - state.seen > 1.75
+            or cloud_source is not None and not regions and state.frames
         ):
             self.clear(camera)
             state = None
@@ -112,6 +112,8 @@ class TemporalReviewer:
                 session, revision, source_context, opened_at=captured, submitted=self.served.get(camera, -math.inf))
         state.seen = captured
         if cloud_source is not None:
+            if not regions:
+                return
             state.regions.append((captured, regions))
             if visual_cue:
                 state.visual_cue_at = captured
@@ -378,8 +380,17 @@ class TemporalReviewer:
             frames = tuple(state.frames)
             if len(frames) == 4 and state.posture_subject(frames) and self._current(posture.camera, state, frames):
                 posture_camera = posture.camera
-        live = [state for camera, state in self.windows.items()
-                if state.frames and self._current(camera, state, state.frames)]
+        if cloud:
+            # API 只在出现本机线索时调用。静候触发不计作复核延迟。
+            reviewing = self.task is not None and not self.task.done() and not self.task.cancelling()
+            source = self.windows.get(cloud.camera)
+            fresh = (source is not None and source.revision == policy.revision
+                     and source.source_context == cloud.source_context and 0 <= self.clock() - source.seen <= 1.5)
+            progress = 'waiting_input' if not fresh else 'reviewing' if reviewing else 'standby'
+        else:
+            live = [state for camera, state in self.windows.items()
+                    if state.frames and self._current(camera, state, state.frames)]
+            progress = review_progress(live, self.clock(), self._corroboration_limit())
         return dict(
             **ready,
             enabled=bool(policy.enabled and policy.visual_review),
@@ -390,7 +401,7 @@ class TemporalReviewer:
             resident=bool(getattr(self.engine, "process", None)),
             peak_mlx_mib=round(getattr(self.engine, "peak_mlx_bytes", 0) / 1024**2),
             camera_count=len(self.windows),
-            progress=review_progress(live, self.clock(), self._corroboration_limit()),
+            progress=progress,
             posture_ready_camera=posture_camera,
             posture_revision=policy.revision if posture_camera else None,
         )

@@ -286,7 +286,7 @@ def create_app(
     geek.prune()
     from .embodied.service import EmbodiedService
     from .embodied.api import create_router as embodied_router
-    embodied = embodied_service or EmbodiedService()
+    embodied = embodied_service or EmbodiedService(intelligence_directory=intelligence.settings.directory)
     if background_enabled:
         from .mijia_control import MijiaPower
         core.actions.mijia = MijiaPower(embodied)
@@ -440,7 +440,7 @@ def create_app(
             return await infrastructure.configure(request)
         except ValueError:
             raise HTTPException(409, detail="source_conflict") from None
-    app.include_router(embodied_router(embodied, core, lock, infrastructure, arl_runtime=intelligence, archive=archive,
+    app.include_router(embodied_router(embodied, core, lock, infrastructure, intelligence=intelligence, archive=archive,
                                      home_flow=home_flow))
     from .werewolf_api import create_router as werewolf_router
     party_router = werewolf_router(core, lock, embodied, settings.path.parent)

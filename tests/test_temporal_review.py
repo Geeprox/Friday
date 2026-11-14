@@ -111,6 +111,9 @@ async def test_cloud_result_uses_current_selected_camera_and_never_loads_local_e
     other = 'cam_'+'3'*10
 
     class Cloud:
+        def readiness(self):
+            return {'available': True, 'provider': 'decisions'}
+
         async def analyze_scoped(self, window, *, current, regions_for):
             frames, _ = window()
             assert current() and all(regions_for(t) for t, _ in frames)
@@ -137,6 +140,19 @@ async def test_cloud_result_uses_current_selected_camera_and_never_loads_local_e
         assert observed == ['cloud', 'cloud'] and not local.calls
         assert len(receipts) == 1 and receipts[0][0][0] == active
         assert len(receipts[0][0][2]) == 8 and receipts[0][1] == {'provider': 'decisions'}
+        for n in range(10, 40):
+            clock.value = 100.0 + n
+            reviewer.offer(active, 'synthetic', 0, clock(), b'fixture', stable=True,
+                           source_context='2'*64, regions=((.2, .2, .5, .8),))
+            await asyncio.sleep(0)
+        assert reviewer.status()['progress'] == 'standby'
+        assert reviewer.task is None and len(observed) == 2
+        clock.value += 1
+        reviewer.offer(active, 'synthetic', 0, clock(), b'fixture', stable=True, source_context='2'*64)
+        assert reviewer.status()['progress'] == 'standby'
+        assert not reviewer.windows[active].frames
+        clock.value += 2
+        assert reviewer.status()['progress'] == 'waiting_input'
     finally:
         await reviewer.close()
 
@@ -147,10 +163,11 @@ async def test_cloud_camera_selection_is_explicit_and_round_trips_without_policy
     monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
     monkeypatch.setattr(safety_api, 'configured_camera_sources',
                         lambda: [{'id': cam, 'name': '测试镜头', 'source_context': context}])
-    monkeypatch.setattr(DecisionsWindowReviewer, 'readiness', lambda _: {'available': True})
     app = FastAPI()
     router = APIRouter()
-    runtime = safety_api.install(router, SimpleNamespace(process=None))
+    intelligence = IntelligenceRuntime(None, tmp_path/'intel', key_resolver=lambda: 'synthetic-value-only')
+    intelligence.settings.update({'provider': 'local'})
+    runtime = safety_api.install(router, SimpleNamespace(process=None), intelligence=intelligence)
     app.include_router(router)
     url = 'http://127.0.0.1:8740'
     command = {'camera': cam, 'expected_revision': 0}
@@ -161,12 +178,16 @@ async def test_cloud_camera_selection_is_explicit_and_round_trips_without_policy
             assert (await client.post(endpoint, json={**command, 'allow_upload': True})).status_code == 403
             headers = {'Origin': url}
             assert (await client.post(endpoint, json=command, headers=headers)).status_code == 422
+            declined = await client.post(endpoint, json={**command, 'allow_upload': True}, headers=headers)
+            assert declined.status_code == 409 and declined.json()['detail'] == 'cloud_capability_disabled'
+            intelligence.settings.update({'provider': 'auto'})
             confirmed = await client.post(endpoint, json={**command, 'allow_upload': True}, headers=headers)
             assert confirmed.json() == {'camera': cam, 'revision': 1}
             state = (await client.get('/api/embodied/safety')).json()
             assert state['visual_cloud']['camera'] == cam and state['visual_cloud']['source_changed'] is False
             assert 'visual_cloud_source' not in state['policy']
             assert state['policy']['visual_review'] is False
+            assert state['visual_review']['provider'] == 'decisions'
             result = await client.post(endpoint, json={'camera': None, 'expected_revision': 1}, headers=headers)
             assert result.json() == {'camera': None, 'revision': 2}
     finally:

@@ -146,14 +146,15 @@ class CameraInteractionSettings(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
-def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None, archive=None, home_flow=None):
+def create_router(service, core, lock, infrastructure=None, *, intelligence=None, archive=None, home_flow=None):
     router = APIRouter()
     from .voice_preferences import install as install_voice_preferences
     voice_preferences=install_voice_preferences(router,private=PRIVATE)
     from .audio_output import install as install_speech_output
     install_speech_output(router)
     from .safety_api import install as install_safety
-    service.safety_output = install_safety(router, service, archive=archive,infrastructure=infrastructure)
+    service.safety_output = install_safety(router, service, archive=archive, infrastructure=infrastructure,
+                                           intelligence=intelligence)
     devices = DeviceCommands(core, lock, service)
     if home_flow is not None:
         from .voice_questions import install as install_voice_questions
@@ -170,7 +171,7 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         supplied = incoming.headers.get('x-friday-worker', '')
         if not 32 <= len(expected) <= 512 or not secrets.compare_digest(expected, supplied):
             raise HTTPException(403)
-        if arl_runtime is None:
+        if intelligence is None:
             raise HTTPException(503, detail='application_model_unavailable')
         try:voice_revision=voice_preferences.read().revision
         except (ValueError,OSError):raise HTTPException(409,detail='voice_preferences_unavailable')from None
@@ -189,7 +190,7 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         deadline = time.monotonic() + 30
         try:
             with model_task('household.voice.intent', 'interactive', deadline=deadline, current=current):
-                result=await prepare_for_viewer(incoming, lambda: arl_runtime.complete_scenario(
+                result=await prepare_for_viewer(incoming, lambda: intelligence.complete_scenario(
                     'voice_intent', request.input, request_id=request.request_id, deadline=deadline), timeout=32)
                 if not current():raise HTTPException(409,detail='model_input_changed')
                 return result

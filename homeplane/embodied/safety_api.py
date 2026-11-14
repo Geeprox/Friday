@@ -48,6 +48,8 @@ def posture_status(policy, sources, visual):
             state = 'source_changed'
         elif not policy.enabled or not policy.visual_review:
             state = 'paused'
+        elif policy.visual_cloud_source and policy.visual_cloud_source != source:
+            state = 'different_api_camera'
         elif not visual.get('available'):
             state = 'unavailable'
         elif visual.get('error'):
@@ -59,9 +61,9 @@ def posture_status(policy, sources, visual):
     return dict(camera=camera, state=state, cameras=[dict(id=row['id'], name=row['name']) for row in sources])
 
 
-def install(router, service, *, archive=None, infrastructure=None):
+def install(router, service, *, archive=None, infrastructure=None, intelligence=None):
     store = SafetyStore(PRIVATE / "safety.sqlite")
-    runtime = SafetyRuntime(store)
+    runtime = SafetyRuntime(store, intelligence=intelligence)
     from .safety_archive import SafetyArchive
     recordings = SafetyArchive(store, archive)
 

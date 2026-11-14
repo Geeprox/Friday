@@ -78,6 +78,8 @@ def test_settings_are_same_origin_masked_and_do_not_make_billable_requests(tmp_p
     )
     with TestClient(app, base_url="http://127.0.0.1:8740", client=("127.0.0.1", 47000)) as client:
         endpoint = "/api/settings/intelligence"
+        assert app.state.embodied.safety_output.visual.cloud.runtime is owner
+        assert app.state.embodied.intelligence_directory == owner.settings.directory
         assert (
             client.put(
                 endpoint, json={"daily_requests": 1}, headers={"origin": "https://evil.invalid"}

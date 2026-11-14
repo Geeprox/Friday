@@ -89,7 +89,7 @@ CAPABILITIES = [
         basis="需要照护人与婴儿的交互时序证据；骨骼不能判断力度或意图",
     ),
     dict(
-        id="visual_review", name="本机画面复核", status="experimental",
+        id="visual_review", name="画面复核", status="experimental",
         basis="有限时间窗口识别可见变化；两段一致后留作人工复核，不自动播报",
     ),
     dict(id="sound_review", name="声音复核", status="experimental",
@@ -805,7 +805,8 @@ class SafetyRuntime:
     SOUND_VIEW_MAX_PENDING = 4
     SOUND_VIEW_SAVE_AGE = 5
 
-    def __init__(self, store, *, labels=lambda: {}, speaker=None, visual_engine=None, sound_engine=None):
+    def __init__(self, store, *, labels=lambda: {}, speaker=None, visual_engine=None, sound_engine=None,
+                 intelligence=None):
         self.store, self.labels, self.speaker = store, labels, speaker
         self.io = SafetyIO()
         self.policy_io = SafetyIO(max_pending=1, thread_name_prefix='friday-safety-policy-read')
@@ -841,7 +842,8 @@ class SafetyRuntime:
                                         clock=lambda: time.monotonic())
         from .temporal_review import TemporalReviewer
         self.visual = TemporalReviewer(policy=self._cached_policy, deliver=self._visual_event, engine=visual_engine,
-                                        cloud=DecisionsWindowReviewer(), cloud_current=self._visual_cloud_current)
+                                        cloud=DecisionsWindowReviewer(runtime=intelligence),
+                                        cloud_current=self._visual_cloud_current)
         from .sound_review import SoundReviewer
         self.sound = SoundReviewer(policy=self._cached_policy, current=self._sound_current,
                                    deliver=self._sound_event, keyframe=self._sound_keyframe, engine=sound_engine)
@@ -1654,6 +1656,8 @@ class SafetyRuntime:
                                             ('sound', policy.sound_review, self.sound)):
             if not configured:
                 continue
+            if kind == 'visual' and current:
+                result['visual_provider'] = 'decisions' if policy.visual_cloud_source else 'local'
             if not current:
                 result[kind] = 'recovering'
             elif not policy.enabled or kind == 'sound' and not self._sound_input_open():

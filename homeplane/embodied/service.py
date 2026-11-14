@@ -48,7 +48,8 @@ def mijia_runtime_configured(directory=PRIVATE):
 
 
 class EmbodiedService:
-    def __init__(self):
+    def __init__(self, *, intelligence_directory=None):
+        self.intelligence_directory = intelligence_directory
         self.process = None
         self._game_lifecycle = secrets.token_hex(16)
         self.lock = asyncio.Lock()
@@ -399,6 +400,8 @@ class EmbodiedService:
                     PYTHONPATH=str(PROJECT),
                     PYTHONDONTWRITEBYTECODE="1",
                 )
+                if self.intelligence_directory is not None:
+                    environment['FRIDAY_INTELLIGENCE_DIRECTORY'] = str(self.intelligence_directory)
                 await self._spawn_guarded_worker(environment)
                 self.selected = selected["id"]
                 self.open_privacy = open_privacy
