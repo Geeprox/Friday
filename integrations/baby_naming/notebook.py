@@ -263,15 +263,15 @@ class Notebook:
                 "model": {key: job[key] for key in ("state", "outcome", "profile")} if job else None,
                 "model_profile": self.selected_profile(db, role), "simulation": self.setting(db, "simulation", False)}
 
-    def state(self, role, direction, *, daily=None):
+    def state(self, role, direction, *, auto_refill=False, daily=None):
         self.check(role, direction)
         with self.transaction(write=False) as db:
             report = self.snapshot(db, role, direction, daily=daily)
         model = report["model"] or {}
         can_resume = not model or (model["state"] == "complete" and model["outcome"] == "ready")
-        if (daily is not None and can_resume and not report["task"] and not report["refill_wait"]
+        if (auto_refill and can_resume and not report["task"] and not report["refill_wait"]
                 and not report["paused"] and not report["simulation"] and report["available_names"] == 0):
-            return self.assign(role, direction, daily=daily)
+            return self.assign(role, direction, auto_refill=True, daily=daily)
         return report
 
     def review_candidate(self, role, names, opinions, denied, *, skip=None):
@@ -396,11 +396,12 @@ class Notebook:
             return choices[0]
         return None
 
-    def assign(self, role, direction, *, daily=None):
+    def assign(self, role, direction, *, auto_refill=False, daily=None):
         self.check(role, direction)
         with self.transaction() as db:
             self.assign_task(db, role, direction)
-            self.refill(db, role, direction, daily)
+            if auto_refill:
+                self.refill(db, role, direction, daily)
             return self.snapshot(db, role, direction, daily=daily)
 
     def assign_task(self, db, role, direction, *, prepared=None):
@@ -424,7 +425,7 @@ class Notebook:
             db.execute("INSERT INTO tasks(role,direction,kind,first,second,axis,created) VALUES(?,?,?,?,?,?,?)",
                        (role, direction, kind, first, second, axis, self.now()))
 
-    def answer(self, role, direction, task_id, value, *, advance=False, prepared=None, daily=None):
+    def answer(self, role, direction, task_id, value, *, advance=False, prepared=None, auto_refill=False, daily=None):
         self.check(role, direction)
         if (type(task_id) is not int or not isinstance(value, str) or
                 (prepared is not None and type(prepared) is not int)):
@@ -437,7 +438,8 @@ class Notebook:
             if task["state"] == "done" and task["answer"] == value:
                 if advance:
                     self.assign_task(db, role, direction)
-                    self.refill(db, role, direction, daily)
+                    if auto_refill:
+                        self.refill(db, role, direction, daily)
                 return self.snapshot(db, role, direction, daily=daily)
             if task["state"] != "open" or self.setting(db, KEY_PAUSE + direction):
                 raise Rejected("task_not_current")
@@ -466,7 +468,8 @@ class Notebook:
             db.execute("UPDATE tasks SET state='done',answer=?,done=? WHERE id=?", (value, now, task_id))
             if advance:
                 self.assign_task(db, role, direction, prepared=prepared)
-                self.refill(db, role, direction, daily)
+                if auto_refill:
+                    self.refill(db, role, direction, daily)
             return self.snapshot(db, role, direction, daily=daily)
 
     def undo(self, role, direction):
@@ -604,6 +607,8 @@ class Notebook:
                           (direction, self.now(), profile)).lastrowid
 
     def generation_budget_available(self, db, daily):
+        if daily is None:
+            return True
         day = beijing_day(self.now())
         active = db.execute("""
             SELECT sum(max(0, 3 - (SELECT count(*) FROM receipts r
@@ -613,7 +618,7 @@ class Notebook:
         return self.used_budget(db, day) + active + 3 <= daily
 
     def refill(self, db, role, direction, daily):
-        if daily is None or not self.setting(db, "seed") or self.setting(db, "simulation", False):
+        if not self.setting(db, "seed") or self.setting(db, "simulation", False):
             return
         if self.setting(db, KEY_PAUSE + direction):
             return
@@ -646,7 +651,7 @@ class Notebook:
             latest = self.latest_generation(db, direction)
             if latest and latest["state"] in ("queued", "running"):
                 return latest["id"]
-            if daily is not None and not self.generation_budget_available(db, daily):
+            if not self.generation_budget_available(db, daily):
                 raise Rejected("budget_or_stale")
             return self.enqueue_generation(db, direction, profile)
 
@@ -677,6 +682,8 @@ class Notebook:
                        (state, outcome, self.now(), job))
 
     def enough_budget(self, date, daily, needed):
+        if daily is None:
+            return True
         with self.transaction(write=False) as db:
             return self.used_budget(db, date) + needed <= daily
 
@@ -688,7 +695,7 @@ class Notebook:
     def reserve(self, job, stage, date, daily):
         with self.transaction() as db:
             row = db.execute("SELECT state FROM jobs WHERE id=?", (job,)).fetchone()
-            if not row or row["state"] != "running" or self.used_budget(db, date) >= daily:
+            if not row or row["state"] != "running" or (daily is not None and self.used_budget(db, date) >= daily):
                 return None
             return db.execute("INSERT INTO receipts(job,stage,date,status) VALUES(?,?,?,'pending')",
                               (job, stage, date)).lastrowid
@@ -801,7 +808,7 @@ class Notebook:
     def analysis_state(self, direction, day, daily):
         with self.transaction(write=False) as db:
             if (self.setting(db, KEY_PAUSE + direction) or self.setting(db, "simulation", False) or
-                    self.used_budget(db, day) + 4 > daily or
+                    (daily is not None and self.used_budget(db, day) + 4 > daily) or
                     db.execute("SELECT 1 FROM jobs WHERE state IN ('queued','running') LIMIT 1").fetchone() or
                     db.execute("SELECT 1 FROM preference_runs WHERE direction=? AND day=?", (direction, day)).fetchone()):
                 return None
@@ -811,7 +818,8 @@ class Notebook:
 
     def reserve_analysis(self, direction, day, daily, evidence):
         with self.transaction() as db:
-            if (self.setting(db, KEY_PAUSE + direction) or self.used_budget(db, day) + 1 + 3 > daily or
+            if (self.setting(db, KEY_PAUSE + direction) or
+                    (daily is not None and self.used_budget(db, day) + 4 > daily) or
                     db.execute("SELECT 1 FROM jobs WHERE state IN ('queued','running') LIMIT 1").fetchone()):
                 return None
             result = db.execute("""INSERT INTO preference_runs(direction,day,started,status,evidence)

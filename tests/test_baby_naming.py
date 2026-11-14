@@ -77,44 +77,46 @@ def test_next_group_can_be_buffered_before_the_current_group_runs_out(book):
 
 
 def test_refill_begins_with_cards_left_and_can_recover_from_provider_failure(book):
+    refill = {"daily": 6, "auto_refill": True}
     add(book, "沈知春", "沈星阑")
-    opened = book.assign("husband", "girl", daily=6)
+    opened = book.assign("husband", "girl", **refill)
     first, direction = book.claim()
     assert direction == "girl" and opened["model"]["state"] == "queued"
     assert opened["available_names"] == 2
-    assert book.assign("wife", "girl", daily=6)["model"]["state"] == "running"
+    assert book.assign("wife", "girl", **refill)["model"]["state"] == "running"
     assert book.claim() is None
 
     first_task = opened["task"]["id"]
-    remaining = book.answer("husband", "girl", first_task, "later", advance=True, daily=6)
-    last = book.answer("husband", "girl", remaining["task"]["id"], "dislike", advance=True, daily=6)
+    remaining = book.answer("husband", "girl", first_task, "later", advance=True, **refill)
+    last = book.answer("husband", "girl", remaining["task"]["id"], "dislike", advance=True, **refill)
     assert last["task"] is None and last["model"]["state"] == "running"
     book.finish_job(first, "failed", "provider_connection")
-    assert book.state("husband", "girl", daily=6)["model"]["state"] == "failed"
+    assert book.state("husband", "girl", **refill)["model"]["state"] == "failed"
     assert book.claim() is None
     second = book.request_generation("husband", "girl", daily=6)
     assert second != first and book.claim() == (second, direction)
     book.clock[0] += 1
     add(book, "沈知云")
     book.finish_job(second, "complete", "ready")
-    assert book.state("husband", "girl", daily=6)["available_names"] == 1
-    assert book.assign("husband", "girl", daily=6)["task"]["names"][0]["name"] == "沈知云"
+    assert book.state("husband", "girl", **refill)["available_names"] == 1
+    assert book.assign("husband", "girl", **refill)["task"]["names"][0]["name"] == "沈知云"
     assert book.claim() is None
 
 
 def test_empty_deck_reports_budget_and_automatically_resumes_next_day(book):
+    refill = {"daily": 3, "auto_refill": True}
     add(book, "沈知春")
-    opened = book.assign("husband", "girl", daily=3)
+    opened = book.assign("husband", "girl", **refill)
     job, direction = book.claim()
     for stage in ("plan", "generate", "audit"):
         assert book.reserve(job, stage, "1970-01-01", 3)
     book.finish_job(job, "complete", "ready")
     book.clock[0] += 1
-    exhausted = book.answer("husband", direction, opened["task"]["id"], "dislike", advance=True, daily=3)
+    exhausted = book.answer("husband", direction, opened["task"]["id"], "dislike", advance=True, **refill)
     assert exhausted["task"] is None and exhausted["refill_wait"] == "budget"
     assert book.claim() is None
     book.clock[0] += 86400
-    reopening = book.state("husband", direction, daily=3)
+    reopening = book.state("husband", direction, **refill)
     assert reopening["refill_wait"] is None and reopening["model"]["state"] == "queued"
 
 
@@ -291,6 +293,39 @@ class MockProvider:
                 obj["reviews"].pop()
         return {"status": "completed", "output": [{"type": "message", "content": [
             {"type": "output_text", "text": json.dumps(obj)}]}], "usage": {"total_tokens": 20}}, "fake_req"
+
+
+def test_switching_to_unlimited_resumes_a_depleted_deck_after_the_old_daily_limit(book):
+    direction, day = "girl", "1970-01-01"
+    add(book, "沈知春")
+    for _ in range(8):
+        old_job = book.request_generation("husband", direction, daily=24)
+        assert book.claim() == (old_job, direction)
+        for stage in ("plan", "generate", "audit"):
+            receipt = book.reserve(old_job, stage, day, 24)
+            book.receipt(receipt, "complete", 1, {"model": "fixture", "tokens": 10})
+        book.finish_job(old_job, "complete", "ready")
+    book.clock[0] += 1
+    respond(book, "husband", "dislike", direction)
+
+    assert book.state("husband", direction, auto_refill=True, daily=24)["refill_wait"] == "budget"
+    assert book.assign("husband", direction)["model"]["state"] == "complete"
+    assert book.claim() is None
+    resumed = book.state("husband", direction, auto_refill=True)
+    assert resumed["refill_wait"] is None and resumed["model"]["state"] == "queued"
+    job, _ = book.claim()
+    assert job != old_job
+    assert book.assign("wife", direction, auto_refill=True)["model"]["state"] == "running"
+    assert book.claim() is None
+    provider = MockProvider()
+    Pipeline(book, None, high_client=OpenAI("mock-key", transport=provider)).execute(job, direction)
+    book.finish_job(job, "complete", "ready")
+    assert [(row["stage"], row["status"]) for row in book.proof(job)["receipts"]] == [
+        ("plan", "complete"), ("generate", "complete"), ("audit", "complete"),
+    ]
+    assert book.assign("husband", direction, auto_refill=True)["task"]["names"][0]["name"] in {"沈音晴", "沈清林"}
+    with book.transaction(write=False) as db:
+        assert book.used_budget(db, day) == 27
 
 
 def test_generation_filters_exact_denials_and_audit_does_not_see_sales_pitch(book):

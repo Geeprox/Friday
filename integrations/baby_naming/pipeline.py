@@ -422,7 +422,7 @@ def clean_reviews(result, candidates):
 
 
 class Pipeline:
-    def __init__(self, notebook, client, *, high_client=None, daily=24, decisions_shadow=False):
+    def __init__(self, notebook, client, *, high_client=None, daily=None, decisions_shadow=False):
         self.book, self.client, self.high_client = notebook, client, high_client
         self.daily, self.shadow = daily, decisions_shadow
 

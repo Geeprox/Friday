@@ -209,16 +209,17 @@ class Handler(BaseHTTPRequestHandler):
             self.app.book.check(role, direction)
             book = self.app.book
             daily = self.app.pipeline.daily if self.app.worker else None
+            refill = {"auto_refill": bool(self.app.worker), "daily": daily}
             if key == "api/state":
-                result = book.state(role, direction, daily=daily)
+                result = book.state(role, direction, **refill)
             elif key == "api/next":
-                result = book.assign(role, direction, daily=daily)
+                result = book.assign(role, direction, **refill)
             elif key == "api/answer":
                 advance = data.get("advance", False)
                 if type(advance) is not bool:
                     raise Rejected("invalid_request")
                 result = book.answer(role, direction, data.get("task"), data.get("value"), advance=advance,
-                                     prepared=data.get("prepared"), daily=daily)
+                                     prepared=data.get("prepared"), **refill)
                 result["advanced"] = advance
             elif key == "api/undo":
                 result = book.undo(role, direction)
@@ -282,6 +283,18 @@ def api_proxy(raw):
     return raw
 
 
+def daily_requests(raw):
+    if raw == "unlimited":
+        return None
+    try:
+        value = int(raw)
+        if 3 <= value <= 200:
+            return value
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("填写 unlimited 或 3–200 的整数")
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description="Friday 宝宝起名工作台")
@@ -293,15 +306,14 @@ def main():
     parser.add_argument("--port", type=int, default=19146)
     parser.add_argument("--origins")
     parser.add_argument("--proxy-proof")
-    parser.add_argument("--daily-requests", type=int, default=24)
+    parser.add_argument("--daily-requests", type=daily_requests, default=None, metavar="unlimited|3–200",
+                        help="跨模型的每日请求上限，默认不限")
     parser.add_argument("--decisions-shadow", action="store_true")
     parser.add_argument("--smoke", choices=DIRECTIONS)
     parser.add_argument("--smoke-profile", default=DEFAULT_PROFILE, choices=MODEL_PROFILES)
     parser.add_argument("--replay", action="store_true")
     parser.add_argument("--demo", action="store_true")
     args = parser.parse_args()
-    if not 3 <= args.daily_requests <= 200:
-        parser.error("daily request limit must be between 3 and 200")
     book = Notebook(Path(args.data).absolute())
     lock = (book.root / "service.lock").open("a")
     try:
@@ -343,7 +355,7 @@ def main():
         if not pipeline:
             parser.error("smoke requires a real API client")
         book.interrupt_running()
-        job = book.request_generation("husband", args.smoke, args.smoke_profile)
+        job = book.request_generation("husband", args.smoke, args.smoke_profile, daily=pipeline.daily)
         if book.claim() != (job, args.smoke):
             parser.error("queued job mismatch")
         try:

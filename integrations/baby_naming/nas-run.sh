@@ -10,7 +10,7 @@ SEED="$ROOT/history.json"
 PROOF="$ROOT/proxy-proof"
 PORT="${NAMING_PORT:-19146}"
 MODEL="${NAMING_MODEL:-gpt-6-luna}"
-DAY_LIMIT="${NAMING_DAILY_REQUESTS:-24}"
+DAY_LIMIT="${NAMING_DAILY_REQUESTS:-unlimited}"
 ACTION="${1:-}"
 DIRECTION="${2:-}"
 [ "$(id -u)" -ne 0 ]
