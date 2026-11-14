@@ -8,13 +8,12 @@ import re
 import time
 import unicodedata
 from collections import Counter
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .notebook import as_json
-from .search import AXES, BRANCHES, DIRECTIONS, FORMS, MODEL_PROFILES, clusters, exclusion, full_name, model_task
+from .search import AXES, BRANCHES, DIRECTIONS, FORMS, MODEL_PROFILES, beijing_day, clusters, exclusion, full_name, model_task
 
 API = "https://api.openai.com/v1/"
 REASONING_MODEL = MODEL_PROFILES["luna-low"][0]
@@ -420,10 +419,6 @@ def clean_reviews(result, candidates):
     if seen != keys:
         raise APIError("incomplete_audit")
     return reviews
-
-
-def beijing_day(now):
-    return datetime.fromtimestamp(now, timezone(timedelta(hours=8))).date().isoformat()
 
 
 class Pipeline:

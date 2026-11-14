@@ -63,6 +63,45 @@ def test_answer_returns_confirmed_next_and_retry_reuses_it(book):
     assert book.undo("husband", "girl")["task"]["names"] == first["task"]["names"]
 
 
+def test_next_group_can_be_buffered_before_the_current_group_runs_out(book):
+    ids = add(book, "沈知春", "沈春水", "沈日禾", "沈禾风", "沈风言", "沈言清", "沈清词", "沈词月")
+    current = book.assign("husband", "girl")
+    for _ in range(5):
+        current = book.answer("husband", "girl", current["task"]["id"], "later", advance=True)
+    assert current["task"]["names"][0]["id"] in ids[:6]
+    assert current["preview"]["id"] in ids[6:]
+    following = book.answer("husband", "girl", current["task"]["id"], "like", advance=True,
+                            prepared=current["preview"]["id"])
+    assert following["task"]["names"][0] == current["preview"]
+    assert following["preview"]["id"] != current["preview"]["id"]
+
+
+def test_refill_begins_with_cards_left_and_can_recover_from_provider_failure(book):
+    add(book, "沈知春", "沈星阑")
+    opened = book.assign("husband", "girl", daily=6)
+    first, direction = book.claim()
+    assert direction == "girl" and opened["model"]["state"] == "queued"
+    assert opened["available_names"] == 2
+    assert book.assign("wife", "girl", daily=6)["model"]["state"] == "running"
+    assert book.claim() is None
+
+    first_task = opened["task"]["id"]
+    remaining = book.answer("husband", "girl", first_task, "later", advance=True, daily=6)
+    last = book.answer("husband", "girl", remaining["task"]["id"], "dislike", advance=True, daily=6)
+    assert last["task"] is None and last["model"]["state"] == "running"
+    book.finish_job(first, "failed", "provider_connection")
+    assert book.state("husband", "girl", daily=6)["model"]["state"] == "failed"
+    assert book.claim() is None
+    second = book.request_generation("husband", "girl", daily=6)
+    assert second != first and book.claim() == (second, direction)
+    book.clock[0] += 1
+    add(book, "沈知云")
+    book.finish_job(second, "complete", "ready")
+    assert book.state("husband", "girl", daily=6)["available_names"] == 1
+    assert book.assign("husband", "girl", daily=6)["task"]["names"][0]["name"] == "沈知云"
+    assert book.claim() is None
+
+
 def test_preference_analysis_uses_shared_evidence_without_locking_a_card_save(book):
     add(book, "沈星阑", "沈知临", "沈雪初", "沈从容")
     book.clock[0] += 100

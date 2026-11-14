@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .search import (
-    AXES, DEFAULT_PROFILE, DIRECTIONS, MODEL_PROFILES, RATINGS, ROLES, combined_rating, exclusion, rank,
+    AXES, DEFAULT_PROFILE, DIRECTIONS, MODEL_PROFILES, RATINGS, ROLES, beijing_day, combined_rating, exclusion, rank,
 )
 
 SCHEMA = """
@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS preference_runs (
 """
 REVIEW_DELAY = 24 * 60 * 60
 KEY_PAUSE = "paused_"
+REFILL_STOCK = 6
 
 
 class Rejected(ValueError):
@@ -212,42 +213,66 @@ class Notebook:
             result["question"] = AXES[task["axis"]]
         return result
 
+    def preview_card(self, db, role, direction, task, names, opinions, denied, completed):
+        # 到期复看和明确的对照题优先于备用名字。
+        if self.review_candidate(role, names, opinions, denied, skip=task["first"]):
+            return None
+        is_flash = task["kind"] == "flash"
+        skip = task["first"] if is_flash else None
+        if self.compare_choice(db, role, direction, names, opinions, denied, completed + int(is_flash)):
+            return None
+        prepared = self.batch_card(db, role, direction, names, opinions, denied, skip=skip)
+        if prepared:
+            return prepared
+        # 跨组时按同一套排序先算下一张；这里只读，正式派卡仍在保存事务内。
+        choices = self.rank_flash(db, role, direction, names, opinions, denied, completed + int(is_flash),
+                                  skip=skip, limit=1)
+        return next(iter(choices), None)
+
     def snapshot(self, db, role, direction):
         names = self.names(db, direction)
         opinions = self.opinions(db, direction)
         personal, common = self.projected_names(role, names, opinions)
         task = db.execute("SELECT * FROM tasks WHERE role=? AND direction=? AND state='open'",
                           (role, direction)).fetchone()
-        job = db.execute("SELECT state,outcome,profile FROM jobs WHERE direction=? ORDER BY id DESC LIMIT 1",
-                         (direction,)).fetchone()
+        job = self.latest_generation(db, direction)
         paused = self.setting(db, KEY_PAUSE + direction)
         count = db.execute("SELECT count(*) FROM tasks WHERE role=? AND direction=? AND state='done'",
                            (role, direction)).fetchone()[0]
         last = db.execute("SELECT 1 FROM tasks WHERE role=? AND direction=? AND state='done' LIMIT 1",
                           (role, direction)).fetchone()
+        denied = self.vetoes(opinions, role)
         review_available = not task and not paused and self.review_candidate(
-            role, names, opinions, self.vetoes(opinions, role)) is not None
+            role, names, opinions, denied) is not None
+        inventory = sum(self.unseen_card(key, role, names, opinions, denied) for key in names)
         preview = None
-        if task and task["kind"] == "flash" and not paused:
-            next_name = self.batch_card(db, role, direction, names, opinions, self.vetoes(opinions, role),
-                                        skip=task["first"])
+        if task and task["kind"] != "compare" and not paused:
+            flash_count = self.completed_flashes(db, role, direction)
+            next_name = self.preview_card(db, role, direction, task, names, opinions, denied, flash_count)
             if next_name:
                 preview = self.task_payload({"id": None, "kind": "flash", "first": next_name}, names)["names"][0]
         return {"role": role, "direction": direction, "task": self.task_payload(task, names),
-                "preview": preview,
+                "preview": preview, "available_names": inventory,
                 "personal": personal, "common": common, "paused": paused, "completed": count,
                 "can_undo": bool(last), "review_available": review_available,
-                "model": dict(job) if job else None, "model_profile": self.selected_profile(db, role), "simulation": self.setting(db, "simulation", False)}
+                "model": {key: job[key] for key in ("state", "outcome", "profile")} if job else None,
+                "model_profile": self.selected_profile(db, role), "simulation": self.setting(db, "simulation", False)}
 
-    def state(self, role, direction):
+    def state(self, role, direction, *, daily=None):
         self.check(role, direction)
         with self.transaction(write=False) as db:
-            return self.snapshot(db, role, direction)
+            report = self.snapshot(db, role, direction)
+        model = report["model"] or {}
+        can_resume = not model or (model["state"] == "complete" and model["outcome"] == "ready")
+        if (daily is not None and can_resume and not report["task"] and
+                not report["paused"] and not report["simulation"] and report["available_names"] == 0):
+            return self.assign(role, direction, daily=daily)
+        return report
 
-    def review_candidate(self, role, names, opinions, denied):
+    def review_candidate(self, role, names, opinions, denied, *, skip=None):
         ready = []
         for key, state in opinions.items():
-            if key in denied or not self.shared(state) or key not in names:
+            if key == skip or key in denied or not self.shared(state) or key not in names:
                 continue
             own = state[role]
             if "review" in own or "ready" in own:
@@ -326,10 +351,12 @@ class Notebook:
         return (names[key]["visibility"] == "approved" and key not in denied
                 and "first" not in opinions.get(key, {}).get(role, {}))
 
-    def flash_candidate(self, db, role, direction, names, opinions, denied, completed):
-        prepared = self.batch_card(db, role, direction, names, opinions, denied)
-        if prepared:
-            return prepared
+    @staticmethod
+    def completed_flashes(db, role, direction):
+        return db.execute("SELECT count(*) FROM tasks WHERE role=? AND direction=? AND kind='flash' AND state='done'",
+                          (role, direction)).fetchone()[0]
+
+    def rank_flash(self, db, role, direction, names, opinions, denied, completed, *, skip=None, limit=6, first=None):
         other = next(person for person in ROLES if person != role)
         recent = [row[0] for row in db.execute(
             """SELECT n.branch FROM tasks t JOIN names n ON t.first=n.id
@@ -338,34 +365,47 @@ class Notebook:
         mine = self.preferences(names, opinions, role)
         partner = self.preferences(names, opinions, other, shared_only=True)
         bonus = self.preference_bonus(db, role, direction, names)
-        candidates = [item for key, item in names.items() if self.unseen_card(key, role, names, opinions, denied)]
+        candidates = [item for key, item in names.items()
+                      if key != skip and self.unseen_card(key, role, names, opinions, denied)]
         choices = []
-        while candidates and len(choices) < 6:
-            card = rank(candidates, mine, partner, recent, bonus, completed + len(choices))
+        while candidates and len(choices) < limit:
+            if first is not None and not choices:
+                card = names[first]
+            else:
+                card = rank(candidates, mine, partner, recent, bonus, completed + len(choices))
             choices.append(card["id"])
             recent = (recent + [card["branch"]])[-4:]
             candidates.remove(card)
+        return choices
+
+    def flash_candidate(self, db, role, direction, names, opinions, denied, completed, *, prepared=None):
+        batched = self.batch_card(db, role, direction, names, opinions, denied)
+        if batched:
+            return batched
+        if prepared not in names or not self.unseen_card(prepared, role, names, opinions, denied):
+            prepared = None
+        choices = self.rank_flash(db, role, direction, names, opinions, denied, completed, first=prepared)
         if choices:
             db.execute("INSERT INTO batches(role,direction,names,created) VALUES(?,?,?,?)",
                        (role, direction, as_json(choices), self.now()))
             return choices[0]
         return None
 
-    def assign(self, role, direction):
+    def assign(self, role, direction, *, daily=None):
         self.check(role, direction)
         with self.transaction() as db:
             self.assign_task(db, role, direction)
+            self.refill(db, role, direction, daily)
             return self.snapshot(db, role, direction)
 
-    def assign_task(self, db, role, direction):
+    def assign_task(self, db, role, direction, *, prepared=None):
         if (self.setting(db, KEY_PAUSE + direction) or
                 db.execute("SELECT 1 FROM tasks WHERE role=? AND direction=? AND state='open'",
                            (role, direction)).fetchone()):
             return
         names, opinions = self.names(db, direction), self.opinions(db, direction)
         denied = self.vetoes(opinions, role)
-        completed = db.execute("SELECT count(*) FROM tasks WHERE role=? AND direction=? AND kind='flash' AND state='done'",
-                               (role, direction)).fetchone()[0]
+        completed = self.completed_flashes(db, role, direction)
         review = self.review_candidate(role, names, opinions, denied)
         second = axis = None
         if review:
@@ -374,14 +414,15 @@ class Notebook:
             kind, (first, second, axis) = "compare", pair
         else:
             kind = "flash"
-            first = self.flash_candidate(db, role, direction, names, opinions, denied, completed)
+            first = self.flash_candidate(db, role, direction, names, opinions, denied, completed, prepared=prepared)
         if first:
             db.execute("INSERT INTO tasks(role,direction,kind,first,second,axis,created) VALUES(?,?,?,?,?,?,?)",
                        (role, direction, kind, first, second, axis, self.now()))
 
-    def answer(self, role, direction, task_id, value, *, advance=False):
+    def answer(self, role, direction, task_id, value, *, advance=False, prepared=None, daily=None):
         self.check(role, direction)
-        if type(task_id) is not int or not isinstance(value, str):
+        if (type(task_id) is not int or not isinstance(value, str) or
+                (prepared is not None and type(prepared) is not int)):
             raise Rejected("invalid_answer")
         with self.transaction() as db:
             task = db.execute("SELECT * FROM tasks WHERE id=? AND role=? AND direction=?",
@@ -391,9 +432,18 @@ class Notebook:
             if task["state"] == "done" and task["answer"] == value:
                 if advance:
                     self.assign_task(db, role, direction)
+                    self.refill(db, role, direction, daily)
                 return self.snapshot(db, role, direction)
             if task["state"] != "open" or self.setting(db, KEY_PAUSE + direction):
                 raise Rejected("task_not_current")
+            if advance and prepared is not None and task["kind"] != "compare":
+                names, opinions = self.names(db, direction), self.opinions(db, direction)
+                preview = self.preview_card(db, role, direction, task, names, opinions,
+                                            self.vetoes(opinions, role), self.completed_flashes(db, role, direction))
+                if prepared != preview:
+                    prepared = None
+            else:
+                prepared = None
             now = self.now()
             if task["kind"] == "compare":
                 valid = ("both", "neither", "later", str(task["first"]), str(task["second"]))
@@ -410,7 +460,8 @@ class Notebook:
                                (role, task["first"], "ready", "unready", now))
             db.execute("UPDATE tasks SET state='done',answer=?,done=? WHERE id=?", (value, now, task_id))
             if advance:
-                self.assign_task(db, role, direction)
+                self.assign_task(db, role, direction, prepared=prepared)
+                self.refill(db, role, direction, daily)
             return self.snapshot(db, role, direction)
 
     def undo(self, role, direction):
@@ -538,7 +589,48 @@ class Notebook:
             self.put_setting(db, "model_profile_" + role, profile)
             return self.snapshot(db, role, direction)
 
-    def request_generation(self, role, direction, profile=None):
+    @staticmethod
+    def latest_generation(db, direction):
+        return db.execute("SELECT * FROM jobs WHERE direction=? ORDER BY id DESC LIMIT 1", (direction,)).fetchone()
+
+    def enqueue_generation(self, db, direction, profile):
+        # 入队固定档位，同方向只需一轮，双方可以接着看。
+        return db.execute("INSERT INTO jobs(direction,state,created,profile) VALUES(?,'queued',?,?)",
+                          (direction, self.now(), profile)).lastrowid
+
+    def generation_budget_available(self, db, daily):
+        day = beijing_day(self.now())
+        active = db.execute("""
+            SELECT sum(max(0, 3 - (SELECT count(*) FROM receipts r
+                       WHERE r.job=j.id AND r.date=? AND r.stage IN ('plan','generate','audit'))))
+            FROM jobs j WHERE state IN ('queued','running')
+        """, (day,)).fetchone()[0] or 0
+        return self.used_budget(db, day) + active + 3 <= daily
+
+    def refill(self, db, role, direction, daily):
+        if daily is None or not self.setting(db, "seed") or self.setting(db, "simulation", False):
+            return
+        if self.setting(db, KEY_PAUSE + direction):
+            return
+        latest = self.latest_generation(db, direction)
+        if latest:
+            if latest["state"] in ("queued", "running", "failed"):
+                return
+            if latest["outcome"] == "no_approved":
+                return
+            if latest["state"] != "cancelled" and not db.execute(
+                    "SELECT 1 FROM tasks WHERE direction=? AND kind='flash' AND done>? LIMIT 1",
+                    (direction, latest["created"])).fetchone():
+                return
+        names, opinions = self.names(db, direction), self.opinions(db, direction)
+        denied = self.vetoes(opinions, role)
+        remaining = sum(self.unseen_card(key, role, names, opinions, denied) for key in names)
+        if remaining > REFILL_STOCK:
+            return
+        if self.generation_budget_available(db, daily):
+            self.enqueue_generation(db, direction, self.selected_profile(db, role))
+
+    def request_generation(self, role, direction, profile=None, *, daily=None):
         self.check(role, direction)
         if profile is not None and (not isinstance(profile, str) or profile not in MODEL_PROFILES):
             raise Rejected("invalid_model_profile")
@@ -548,15 +640,12 @@ class Notebook:
                 raise Rejected("seed_missing")
             if self.setting(db, KEY_PAUSE + direction):
                 raise Rejected("paused")
-            latest = db.execute("SELECT * FROM jobs WHERE direction=? ORDER BY id DESC LIMIT 1",
-                                (direction,)).fetchone()
+            latest = self.latest_generation(db, direction)
             if latest and latest["state"] in ("queued", "running"):
                 return latest["id"]
-            if latest and latest["ended"] and self.now() - latest["ended"] < 12:
-                raise Rejected("try_later")
-            # 首次排队时固定档位。另一人同时点击时沿用同一任务。
-            return db.execute("INSERT INTO jobs(direction,state,created,profile) VALUES(?,'queued',?,?)",
-                              (direction, self.now(), profile)).lastrowid
+            if daily is not None and not self.generation_budget_available(db, daily):
+                raise Rejected("budget_or_stale")
+            return self.enqueue_generation(db, direction, profile)
 
     def generation_profile(self, job):
         with self.transaction(write=False) as db:

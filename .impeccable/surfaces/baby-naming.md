@@ -13,7 +13,7 @@ related_targets: ["integrations/baby_naming/web/app.js","integrations/baby_namin
 
 THESIS: 每次只处理当前最值得判断的任务，随时可以关掉，换个时间接着做。
 
-OWN-WORLD: 暖白纸面、墨灰文字，松墨绿给「老公」，胭脂红给「老婆」。两枚同笔触人物头像辅助辨识。两套三幅的卡面参考玉雕与中式雕漆，松岩、远山、秋水归青玉系，荷汀、归鹤、疏梅归胭脂系，均用烫金卡边与宋体。暖白纸面让卡片成为焦点。
+OWN-WORLD: 暖白纸面、墨灰文字，松墨绿和胭脂红区分身份控件。两套各三幅的卡面参考玉雕与中式雕漆，男孩用松岩、远山、秋水的青玉系，女孩用荷汀、归鹤、疏梅的胭脂系。两人看同一个名字时卡面一致，均用烫金卡边与宋体。
 
 STORY: 选择身份和男孩或女孩方向，再做一张闪卡、一组有明确目的的对照或一次复看。意见同步后显示共同备选，最终分别确认。
 
@@ -21,6 +21,6 @@ FIRST VIEWPORT: 顶栏返回 Friday，右侧显示当前身份。工作区右上
 
 FORM: 纸面桌面上的墨玉收藏卡。玉雕与雕漆底纹使用生成素材，Three.js 绘制卡身、斜切边与移动光源；名字与状态是 HTML。素材来源见工作台的 `ARTWORK.md`。
 
-SIGNATURE INTERACTION: 卡边随手指露出厚度，短划或拖回原位后松手会回位。左划淘汰当前名字、下划待定、双击盖下爱心；离场和保存同时开始，先备好下一张，保存后接档，失败恢复原卡。减少动态效果与无 WebGL 时可使用静态卡和同样的按钮。
+SIGNATURE INTERACTION: 名字和卡身共用透视。划动露出真实的下一张名字卡，保存后原位接档。短划或拖回后回位，保存失败也可恢复原卡。左划淘汰、下划待定、双击盖下爱心。名字少时在后台自动补牌，前台继续看卡。减少动态效果或无 WebGL 时仍可用静态卡和按钮。
 
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance

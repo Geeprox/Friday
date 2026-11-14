@@ -16,57 +16,17 @@ let openSettingsFromWorkbench = false;
 let gestureGuideRead = false;
 let deckModule;
 let cardMotion;
-let enteringCard = false;
-let preparedCard;
-let prepareFrame = 0;
+let cardStack;
+const sessionRenewals = new Map();
 const deckPalettes = {
-  husband: ["relief", "pine", "marsh"],
-  wife: ["lotus", "cranes", "plum"],
+  boy: ["relief", "pine", "marsh"],
+  girl: ["lotus", "cranes", "plum"],
 };
-const deckDraws = new Map();
 
-// 只在本机保存图案映射；号码不含姓名，也不改变派卡或偏好。
-function cardArtwork(candidate) {
-  const role = state.role;
-  const palette = deckPalettes[role];
-  const key = "friday-naming-artwork-1:" + role + ":" + state.direction;
-  let deck = deckDraws.get(key);
-  if (!deck) {
-    let stored;
-    try { stored = JSON.parse(localStorage.getItem(key)); } catch {}
-    const entries = Array.isArray(stored?.entries) ? stored.entries : [];
-    const last = palette.includes(stored?.last) ? stored.last : null;
-    const remaining = Array.isArray(stored?.remaining)
-      ? [...new Set(stored.remaining.filter((item) => palette.includes(item) && item !== last))] : [];
-    deck = {
-      entries: new Map(entries.slice(-96).filter((item) =>
-        Array.isArray(item) && Number.isSafeInteger(item[0]) && palette.includes(item[1]))),
-      last, remaining,
-    };
-    deckDraws.set(key, deck);
-  }
-  if (deck.entries.has(candidate)) return deck.entries.get(candidate);
-
-  // 每轮先发齐全部底纹，再抽下一轮；两轮衔接也不连续发同一张。
-  if (!deck.remaining.length) deck.remaining = [...palette];
-  const choices = deck.remaining.filter((art) => art !== deck.last);
-  const art = choices[Math.floor(Math.random() * choices.length)];
-  deck.remaining = deck.remaining.filter((item) => item !== art);
-  deck.entries.set(candidate, art);
-  deck.last = art;
-  if (deck.entries.size > 96) deck.entries.delete(deck.entries.keys().next().value);
-  // 写入卡面记录让出这一帧，连续换卡只保存最新映射。
-  if (!deck.save) {
-    deck.save = setTimeout(() => {
-      deck.save = 0;
-      try {
-        localStorage.setItem(key, JSON.stringify({
-          entries: [...deck.entries], last: deck.last, remaining: deck.remaining,
-        }));
-      } catch {}
-    }, 100);
-  }
-  return art;
+function cardArtwork(candidate, direction) {
+  const palette = deckPalettes[direction];
+  // 同一候选在双方设备上用同一纹样，包括复看。
+  return palette[(candidate - 1) % palette.length];
 }
 
 function showDeck(face, motion) {
@@ -80,7 +40,8 @@ function showDeck(face, motion) {
       if (cardMotion !== motion || !face.isConnected || showingSettings ||
           reducedMotion.matches || motion.leaving || motion.scene || !module) return;
       const stage = face.querySelector(".jade-stage");
-      motion.scene = module.attachCard(stage, state.role, stage.dataset.artwork, portraitCard.matches);
+      motion.scene = module.attachCard(stage, face.closest(".card-stack").dataset.direction,
+        stage.dataset.artwork, portraitCard.matches);
       motion.paint(motion.x, motion.y);
     });
   });
@@ -93,7 +54,7 @@ reducedMotion.addEventListener("change", () => {
     cardMotion.scene = null;
     cardMotion.paint(0, 0);
   } else {
-    const face = document.querySelector(".face.tap");
+    const face = cardStack?.front?.face;
     if (face) showDeck(face, cardMotion);
   }
 });
@@ -102,7 +63,7 @@ portraitCard.addEventListener("change", () => {
   if (showingSettings || !cardMotion) return;
   cardMotion.scene?.dispose();
   cardMotion.scene = null;
-  const face = document.querySelector(".face.tap");
+  const face = cardStack?.front?.face;
   if (face) showDeck(face, cardMotion);
 });
 
@@ -113,6 +74,11 @@ function releaseDeck() {
   cardMotion.scene?.dispose();
   cardMotion = null;
 }
+
+function clearStack() {
+  releaseDeck();
+  cardStack = null;
+}
 const knownErrors = {
   key_unavailable: "模型服务还没配置好。已保存的记录可以继续查看。",
   key_rejected: "模型服务未接受当前凭据。可以先看已有名字。",
@@ -120,7 +86,7 @@ const knownErrors = {
   permission: "当前模型权限不足。可以先看已有名字。",
   model_access: "当前档位不可用。可以改选另一档，或继续看已有名字。",
   invalid_model_profile: "请选择可用的搜索档位。",
-  budget_or_stale: "今天的搜索次数已用完，或者这次搜索已结束。",
+  budget_or_stale: "现在的搜索额度不足。可以先看已有名字，稍后再试。",
   rate_limit: "模型服务正在限流。稍后可以重试。",
   provider_connection: "模型服务连接失败。稍后可以重试。",
   provider_output: "模型没有给出完整结果。稍后可以重试。",
@@ -185,18 +151,30 @@ function focusTask() {
   byId("desk-title").focus({ preventScroll: true });
 }
 
-async function api(route, data = {}, signal) {
+async function api(route, data = {}, signal, recoverSession = true) {
+  const scope = { direction: state.direction, role: state.role, ...data };
   let response;
   try {
     response = await fetch("./api/" + route, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ direction: state.direction, role: state.role, ...data }),
+      body: JSON.stringify(scope),
       signal,
     });
   } catch {
     throw new Error("connection");
   }
   const result = await response.json().catch(() => { throw new Error("connection"); });
+  if (response.status === 401 && result.error === "choose_role" &&
+      recoverSession && route !== "join" && Object.hasOwn(roles, scope.role)) {
+    // 内网服务更新后，使用这个页面已经选过的身份恢复会话。
+    const role = scope.role;
+    if (!sessionRenewals.has(role)) {
+      const renewal = api("join", { role }, undefined, false).finally(() => sessionRenewals.delete(role));
+      sessionRenewals.set(role, renewal);
+    }
+    await sessionRenewals.get(role);
+    return api(route, scope, signal, false);
+  }
   if (!response.ok) throw new Error(result.error || "connection");
   return result;
 }
@@ -213,7 +191,7 @@ function selectView() {
   byId("work").hidden = !loaded || nextSettings;
   byId("settings-panel").hidden = !nextSettings;
   if (nextSettings && !showingSettings) {
-    releaseDeck();
+    clearStack();
     byId("settings-result").hidden = true;
     byId("settings-title").focus({ preventScroll: true });
   }
@@ -333,7 +311,7 @@ function search() {
   return work(async () => {
     state.book = await api("search");
     announce("AI 正在找名字。你可以离开，回来接着看。");
-  });
+  }, true);
 }
 
 async function update() {
@@ -357,14 +335,15 @@ async function update() {
     return;
   }
   const taskChanged = result.task?.id !== previous.task?.id;
+  const previewChanged = JSON.stringify(result.preview) !== JSON.stringify(previous.preview);
   const settingsChanged = result.model_profile !== previous.model_profile;
   if (settingsChanged) {
     state.book = result;
     renderSettings();
   }
   const modelChanged = JSON.stringify(result.model) !== JSON.stringify(previous.model);
-  if (!result.paused && !result.task && (result.review_available ||
-      (modelChanged && result.model?.state === "complete" && result.model?.outcome === "ready"))) {
+  if (!result.paused && !result.task && (result.review_available || result.available_names > 0 ||
+      (result.model?.state === "complete" && result.model?.outcome === "ready" && modelChanged))) {
     await work(next);
     return;
   }
@@ -377,6 +356,10 @@ async function update() {
     state.book = result;
     if (!showingSettings) renderLists();
   }
+  if (previewChanged && !taskChanged && cardStack && !showingSettings) {
+    state.book = result;
+    prepareNext(result);
+  }
   schedule();
 }
 
@@ -388,24 +371,28 @@ function schedule() {
 }
 
 function submissionEffect(face, value) {
-  if (!face || reducedMotion.matches || typeof face.animate !== "function") return null;
-  const stack = face.parentElement;
+  if (!face) return null;
   delete face.dataset.dragging;
   delete face.dataset.intent;
   cardMotion?.clear();
+  if (reducedMotion.matches || typeof face.animate !== "function") return null;
   const mark = value === "like" ? make("span", "heart-feedback") : null;
   if (mark) {
     mark.setAttribute("aria-hidden", "true");
     mark.append(icon("heart"));
     face.append(mark);
   }
-  const delta = value === "dislike" ? "translate3d(-110%,0,0) rotate(-9deg)"
-    : value === "later" ? "translate3d(0,82%,0) scale(.93)" : "scale(.97) translateY(-8px)";
+  const backed = Boolean(cardStack?.under);
+  const delta = value === "dislike" ? (backed ? "translate3d(-122%,-3%,0) rotate(-12deg)" : "translateX(-10%) rotate(-3deg)")
+    : value === "later" ? (backed ? "translate3d(4%,110%,0) rotate(5deg)" : "translateY(8%)")
+      : "scale(.974) translateY(-6px)";
   const frames = [{ opacity: 1, transform: "none" }];
-  if (mark) frames.push({ opacity: 1, transform: "scale(1.012)", offset: .42 });
-  frames.push({ opacity: 0, transform: delta });
-  const anim = stack.animate(frames, {
-    duration: value === "like" ? 340 : 215,
+  if (mark) frames.push({ opacity: 1, transform: "scale(1.008)", offset: .54 });
+  else if (backed) frames.push({ opacity: 1, offset: .76,
+    transform: value === "dislike" ? "translate3d(-111%,-3%,0) rotate(-11deg)" : "translate3d(3%,101%,0) rotate(4deg)" });
+  frames.push({ opacity: backed ? 0 : 1, transform: delta });
+  const anim = face.animate(frames, {
+    duration: value === "like" ? 295 : 215,
     easing: "cubic-bezier(.22,.8,.26,1)",
     fill: "forwards",
   });
@@ -436,7 +423,9 @@ function submit(task, value, face) {
     }, 360);
     let answer;
     try {
-      answer = await api("answer", { task: task.id, value, advance: true }, controller.signal);
+      answer = await api("answer", {
+        task: task.id, value, advance: true, prepared: state.book.preview?.id,
+      }, controller.signal);
     } catch (error) {
       saved("");
       effect?.restore();
@@ -461,13 +450,12 @@ function submit(task, value, face) {
       await Promise.all([effect?.finished, answer.advanced ? null : next()]);
     } finally {
       if (face) clearGestureGuide();
-      enteringCard = Boolean(state.book?.task && !reducedMotion.matches);
     }
   }, keepFocus);
 }
 
 function gesture(face, task) {
-  let start, lastTap = 0, frame = 0, hoverArea, shownIntent;
+  let start, lastTap, frame = 0, hoverArea, shownIntent;
   const sticker = face.querySelector(".gesture-sticker");
   const foil = face.querySelector(".card-foil");
   const motion = {
@@ -489,9 +477,10 @@ function gesture(face, task) {
       const tiltX = Math.max(-1, Math.min(1, y / 95));
       const tiltY = Math.max(-1, Math.min(1, x / 120));
       const still = reducedMotion.matches;
-      foil.style.translate = still ? "" : `${Math.max(-67, Math.min(67, x * .41))}px ${Math.max(-55, Math.min(55, y * .36))}px`;
-      foil.style.setProperty("--tilt", still ? "none" :
-        `perspective(610px) rotateX(${tiltX * 14}deg) rotateY(${tiltY * 17}deg) rotate(${tiltY * -6.8}deg)`);
+      const dragX = Math.max(-130, Math.min(100, x * .70));
+      const dragY = Math.max(-64, Math.min(110, y * .62));
+      foil.style.setProperty("--pose", still || (!x && !y) ? "none" :
+        `translate3d(${dragX}px,${dragY}px,0) perspective(610px) rotateX(${tiltX * 13}deg) rotateY(${tiltY * 16}deg) rotateZ(${tiltY * 8}deg)`);
       this.scene?.pose(still ? 0 : tiltX, still ? 0 : tiltY);
     },
   };
@@ -545,7 +534,7 @@ function gesture(face, task) {
   });
   function cancelGesture(event) {
     if (start?.pointer !== event.pointerId) return;
-    lastTap = 0;
+    lastTap = null;
     reset();
   }
   face.addEventListener("pointercancel", cancelGesture);
@@ -557,64 +546,64 @@ function gesture(face, task) {
     const swipe = intent(dx, dy, 59);
     if (swipe && start.armed === swipe) {
       start = null;
-      lastTap = 0;
+      lastTap = null;
       return void submit(task, swipe, face);
     }
     reset();
     if (moved || Math.hypot(dx, dy) >= 13) {
-      lastTap = 0;
+      lastTap = null;
       return;
     }
     const now = performance.now();
-    if (lastTap && now - lastTap < 350) {
-      lastTap = 0;
+    if (lastTap && now - lastTap.time < 350 && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) < 38) {
+      lastTap = null;
       void submit(task, "like", face);
-    } else lastTap = now;
+    } else lastTap = { time: now, x: event.clientX, y: event.clientY };
   });
   showDeck(face, motion);
 }
 
-function buildCard(item) {
-  const stack = make("div", "card-stack");
+function buildCard(item, direction) {
   const face = make("div", "face tap");
   const foil = make("div", "card-foil");
   const stage = make("div", "jade-stage");
   stage.setAttribute("aria-hidden", "true");
-  stage.dataset.artwork = cardArtwork(item.id);
+  stage.dataset.artwork = cardArtwork(item.id, direction);
   foil.append(stage);
   const inner = make("div", "card-text");
   inner.append(make("div", "name", item.name));
   if (item.pinyin) inner.append(make("div", "pinyin", item.pinyin));
   foil.append(inner);
   face.append(foil, make("span", "gesture-sticker"));
-  stack.append(face);
   let caption;
   if (item.card_note || item.card_source) {
     caption = make("div", "card-caption");
     if (item.card_note) caption.append(make("p", "", item.card_note));
     if (item.card_source) caption.append(make("p", "card-source", item.card_source));
   }
-  return { stack, face, caption };
+  return { signature: JSON.stringify(item), face, caption };
 }
 
 function prepareNext(book) {
-  cancelAnimationFrame(prepareFrame);
-  preparedCard = null;
+  if (!cardStack) return;
+  if (book.preview && cardStack.under?.signature === JSON.stringify(book.preview)) return;
+  cardStack.under?.face.remove();
+  cardStack.under = null;
   if (!book.preview) return;
-  prepareFrame = requestAnimationFrame(() => {
-    if (state.busy || showingSettings || state.book !== book) return;
-    preparedCard = {
-      role: book.role, direction: book.direction, id: book.preview.id,
-      signature: JSON.stringify(book.preview), view: buildCard(book.preview),
-    };
-  });
+  const under = buildCard(book.preview, book.direction);
+  under.face.classList.add("card-under");
+  under.face.inert = true;
+  under.face.setAttribute("aria-hidden", "true");
+  cardStack.under = under;
+  cardStack.element.prepend(under.face);
 }
 
-function renderTask(task) {
-  releaseDeck();
+function renderTask(book) {
+  const task = book.task;
   const box = byId("task");
-  box.replaceChildren();
   if (task.kind === "compare") {
+    clearStack();
+    box.replaceChildren();
     box.append(make("p", "question", task.question));
     const pair = make("div", "pair");
     for (const item of task.names) pair.append(button(item.name, () => submit(task, String(item.id)), ""));
@@ -626,14 +615,39 @@ function renderTask(task) {
     box.append(more, make("p", "hint", "选你现在更愿意留下的名字。"));
     return;
   }
+  const sameScope = cardStack?.role === book.role && cardStack.direction === book.direction;
+  if (sameScope && cardStack.task === task.id && !cardStack.element.classList.contains("card-waiting")) {
+    prepareNext(book);
+    return;
+  }
+  releaseDeck();
+  if (!sameScope) {
+    const element = make("div", "card-stack");
+    element.dataset.direction = book.direction;
+    cardStack = { element, direction: book.direction, role: book.role };
+    box.replaceChildren(element);
+  }
   const item = task.names[0];
-  const buffered = task.kind === "flash" && preparedCard?.role === state.role &&
-    preparedCard.direction === state.direction && preparedCard.id === item.id &&
-    preparedCard.signature === JSON.stringify(item);
-  const { stack, face, caption } = buffered ? preparedCard.view : buildCard(item);
-  if (enteringCard) stack.classList.add("arrive");
-  enteringCard = false;
-  box.append(stack);
+  const { element, under, front } = cardStack;
+  element.classList.remove("card-waiting");
+  const promoted = under?.signature === JSON.stringify(item);
+  const current = promoted ? under : buildCard(item, book.direction);
+  const { face, caption } = current;
+  // 已经露出的底卡直接成为面卡，DOM 节点留在原卡堆里。
+  if (promoted) {
+    face.classList.remove("card-under");
+    face.inert = false;
+    face.removeAttribute("aria-hidden");
+  } else {
+    element.append(face);
+    under?.face.remove();
+  }
+  front?.face.remove();
+  cardStack.task = task.id;
+  cardStack.front = current;
+  cardStack.under = null;
+  prepareNext(book);
+  while (element.nextSibling) element.nextSibling.remove();
   gesture(face, task);
   if (caption) box.append(caption);
   const actions = make("div", "actions verdict-actions");
@@ -646,7 +660,6 @@ function renderTask(task) {
 }
 
 function renderEmpty(book) {
-  releaseDeck();
   const box = byId("task");
   const panel = make("div", "empty");
   let title = "从一组新名字开始";
@@ -667,9 +680,8 @@ function renderEmpty(book) {
       await next();
     }));
   } else if (["queued", "running"].includes(book.model?.state)) {
-    title = "AI 正在找名字";
-    const profile = modelLabels.get(book.model?.profile);
-    copy = profile ? "这轮用 " + profile + "。你可以先退出，回来接着看。" : "你可以先退出，回来接着看。";
+    title = book.completed ? "正在准备下一张" : "正在找名字";
+    copy = "审核通过后会自动显示。";
     searchLabel = null;
   } else if (book.model?.state === "failed") {
     title = "这轮搜索没完成";
@@ -680,16 +692,35 @@ function renderEmpty(book) {
     copy = "AI 可以换一条思路，继续找一组。";
     searchLabel = "换个方向找";
   } else if (book.completed) {
-    title = "这组名字看完了";
-    copy = "可以等对方看完，过一天回来复看，或者先找一组新的。";
-    searchLabel = book.simulation ? null : "再找一组";
+    title = "准备下一张名字卡";
+    copy = "可以先看你的记录和共同备选。";
+    searchLabel = "继续找名字";
   }
   panel.append(make("h3", titleClass, title));
   if (confirmation) panel.append(make("p", "confirmation", confirmation));
   panel.append(make("p", "", copy));
   if (action) panel.append(action);
   else if (searchLabel && !book.simulation) panel.append(button(searchLabel, search, "action primary"));
-  box.replaceChildren(panel);
+  const keepCard = !book.paused && cardStack?.role === book.role &&
+    cardStack.direction === book.direction && cardStack.front;
+  if (keepCard) {
+    releaseDeck();
+    const { element, front } = cardStack;
+    cardStack.under?.face.remove();
+    cardStack.under = null;
+    for (const animation of front.face.getAnimations()) animation.cancel();
+    front.face.querySelector(".heart-feedback")?.remove();
+    front.face.inert = true;
+    front.face.setAttribute("aria-hidden", "true");
+    element.classList.add("card-waiting");
+    while (element.nextSibling) element.nextSibling.remove();
+    panel.classList.add("refill-status");
+    if (["queued", "running"].includes(book.model?.state)) panel.setAttribute("role", "status");
+    box.append(panel);
+  } else {
+    clearStack();
+    box.replaceChildren(panel);
+  }
 }
 
 function nameAction(item, action, common) {
@@ -788,8 +819,7 @@ byId("personal-fold").addEventListener("toggle", () => {
 function render() {
   selectView();
   if (!state.role || state.book?.role !== state.role) {
-    releaseDeck();
-    preparedCard = null;
+    clearStack();
     for (const id of ["task", "common", "personal"]) byId(id).replaceChildren();
     return;
   }
@@ -804,11 +834,19 @@ function render() {
   document.querySelectorAll("[data-direction]").forEach((b) => {
     b.setAttribute("aria-pressed", String(b.dataset.direction === state.direction));
   });
-  if (book.task && !book.paused) renderTask(book.task);
+  if (book.task && !book.paused) renderTask(book);
   else renderEmpty(book);
-  prepareNext(book);
   renderLists();
 }
+
+// 卡面处理自己的双击，页面其他区域仍可滚动和缩放。
+byId("task").addEventListener("touchend", (event) => {
+  if (event.target.closest(".card-stack") && event.cancelable &&
+      event.touches.length === 0 && event.changedTouches.length === 1) event.preventDefault();
+}, { passive: false });
+byId("task").addEventListener("dblclick", (event) => {
+  if (event.target.closest(".card-stack")) event.preventDefault();
+});
 
 document.querySelectorAll("[data-join]").forEach((b) => {
   b.addEventListener("click", () => join(b.dataset.join));

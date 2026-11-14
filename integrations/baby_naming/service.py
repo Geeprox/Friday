@@ -43,8 +43,8 @@ class App:
         self.sessions_lock = threading.Lock()
         self.wake = threading.Event()
         self.stop = threading.Event()
-        self.worker = threading.Thread(target=self.run, daemon=True) if worker else None
-        self.preference_worker = threading.Thread(target=self.analyze_preferences, daemon=True) if worker else None
+        self.worker = threading.Thread(target=self.run, daemon=True) if worker and pipeline else None
+        self.preference_worker = threading.Thread(target=self.analyze_preferences, daemon=True) if self.worker else None
         if self.worker:
             self.book.interrupt_running()
             self.worker.start()
@@ -208,15 +208,17 @@ class Handler(BaseHTTPRequestHandler):
             direction = data.get("direction")
             self.app.book.check(role, direction)
             book = self.app.book
+            daily = self.app.pipeline.daily if self.app.worker else None
             if key == "api/state":
-                result = book.state(role, direction)
+                result = book.state(role, direction, daily=daily)
             elif key == "api/next":
-                result = book.assign(role, direction)
+                result = book.assign(role, direction, daily=daily)
             elif key == "api/answer":
                 advance = data.get("advance", False)
                 if type(advance) is not bool:
                     raise Rejected("invalid_request")
-                result = book.answer(role, direction, data.get("task"), data.get("value"), advance=advance)
+                result = book.answer(role, direction, data.get("task"), data.get("value"), advance=advance,
+                                     prepared=data.get("prepared"), daily=daily)
                 result["advanced"] = advance
             elif key == "api/undo":
                 result = book.undo(role, direction)
@@ -231,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif operation == "enqueue":
                     if not self.app.pipeline:
                         raise Rejected("key_unavailable")
-                    book.request_generation(role, direction)
+                    book.request_generation(role, direction, daily=daily)
                     self.app.wake.set()
                     result = book.state(role, direction)
                 else:
@@ -239,6 +241,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.respond(404, {"error": "not_found"})
                 return
+            if (result.get("model") or {}).get("state") == "queued":
+                self.app.wake.set()
             self.respond(200, result)
         except Rejected as error:
             self.respond(409, {"error": str(error)})

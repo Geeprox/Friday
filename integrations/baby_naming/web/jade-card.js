@@ -50,7 +50,7 @@ function build(portrait) {
   });
   card.add(new THREE.Mesh(edge, [core, brass]));
 
-  // 从圆角的实际坐标取图。移动的是实体卡，姓名由可缩放的网页文字绘制。
+  // 从圆角的实际坐标取图。卡身与姓名共用网页上的透视层。
   const face = new THREE.ShapeGeometry(shape, 12);
   const vertices = face.getAttribute("position");
   const uv = face.getAttribute("uv");
@@ -111,7 +111,7 @@ function selectTile(layer, artwork) {
   texture.offset.set(tile % 3 / 3 + .5 / width, (base + (1 - Math.floor(tile / 3)) * slice + .5) / height);
 }
 
-export function attachCard(stage, role, artwork, portrait) {
+export function attachCard(stage, direction, artwork, portrait) {
   if (!stage) return null;
   try {
     if (view && view.portrait !== portrait) {
@@ -125,10 +125,10 @@ export function attachCard(stage, role, artwork, portrait) {
   }
   clearTimeout(settleTimer);
   const layer = view;
-  const { renderer, scene, card, camera, brass, outer, light, core, glaze, rim } = layer;
+  const { renderer, scene, camera, brass, outer, light, core, glaze, rim } = layer;
   layer.active?.dispose();
   clearTimeout(settleTimer);
-  const rose = role === "wife";
+  const rose = direction === "girl";
   brass.color.setHex(rose ? 0xd7a585 : 0xc4a46c);
   outer.material.color.setHex(rose ? 0xe1b096 : 0xba9d65);
   core.color.setHex(rose ? 0x432023 : 0x16362f);
@@ -146,7 +146,7 @@ export function attachCard(stage, role, artwork, portrait) {
     y += (wantY - y) * .31;
     const changing = Math.abs(x - wantX) + Math.abs(y - wantY) > .008;
     if (!changing) { x = wantX; y = wantY; }
-    card.rotation.set(x * .255, y * .30, y * -.12);
+    // 手势只改变材质受光。透视由名字与图案的共同容器绘制，文字不会滑动。
     light.position.set(-1.55 + y * 3.55, 3.35 - x * 2.8, 4.8);
     try {
       renderer.render(scene, camera);

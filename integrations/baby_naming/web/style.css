@@ -10,11 +10,6 @@
   --accent-hover: #204339;
   --tint: #e6eee6;
   --error: #933b42;
-  --foil: #bc9c5e;
-  --case: #294139;
-  --card-dark: #102b24;
-  --card-edge: #715b35;
-  --card-rim: #d0ac6754;
   --lacquer: #17352d;
   --rule: #bdb29a;
   --art-size: 300% 650%;
@@ -25,11 +20,6 @@
 }
 body[data-role="wife"], .role.wife { --accent: #803e49; --accent-hover: #67303b; --tint: #f3e5e5; }
 body[data-role="wife"] {
-  --foil: #c39973;
-  --case: #482623;
-  --card-dark: #2b0f16;
-  --card-edge: #77503d;
-  --card-rim: #e7b29462;
   --lacquer: #47222a;
   --rule: #c2ada0;
 }
@@ -141,21 +131,30 @@ p { max-width: 68ch; }
 }
 .desk-top h2 { font: 700 1.03rem/1.4 var(--names); letter-spacing: .09em; }
 #progress { font-size: .8rem; color: var(--subtle); font-variant-numeric: tabular-nums; }
-.card-stack { position: relative; width: min(calc(100% - 42px), 576px); margin: 19px auto 26px; isolation: isolate; container-type: inline-size; }
-.card-stack::before {
-  content: ""; position: absolute; z-index: -1; inset: 8% 5% 2.9%;
-  background: var(--case); border: 1px solid var(--foil); border-radius: 13px;
-  transform: translateY(6px) rotate(1.8deg);
-  box-shadow: 0 13px 23px -7px #233e3580;
+.card-stack {
+  position: relative; width: min(calc(100% - 42px), 576px); margin: 19px auto 26px;
+  isolation: isolate; container-type: inline-size; touch-action: none;
+  --foil: #bc9c5e; --card-dark: #102b24; --card-edge: #715b35; --card-rim: #d0ac6754;
 }
-.card-stack.arrive { animation: deal-in .34s cubic-bezier(.19,.78,.3,1) both; }
-@keyframes deal-in { from { transform: translateY(13px) scale(.975); opacity: .3; } to { transform: none; opacity: 1; } }
+.card-stack[data-direction="girl"] {
+  --foil: #d6ae86; --card-dark: #331820; --card-edge: #77503d; --card-rim: #efc5a06a;
+}
 .face {
-  position: relative; width: 100%; aspect-ratio: 1.61; text-align: center;
+  position: relative; z-index: 1; width: 100%; aspect-ratio: 1.61; text-align: center;
   touch-action: none; user-select: none; cursor: grab; -webkit-touch-callout: none;
+  transform: none; transition: transform .19s cubic-bezier(.2,.79,.22,1);
 }
+.face.card-under {
+  position: absolute; inset: 0; z-index: 0;
+  transform: translate3d(4px,6px,0) rotate(2deg) scale(.988); pointer-events: none;
+}
+.card-waiting { opacity: .82; }
+.card-waiting .card-foil { transform: none; }
 .face[data-dragging] { cursor: grabbing; }
-.card-foil { pointer-events: none; position: absolute; inset: 0; transition: translate .34s cubic-bezier(.2,.79,.22,1); }
+.card-foil {
+  pointer-events: none; position: absolute; inset: 0;
+  transform: var(--pose, none); transition: transform .26s cubic-bezier(.2,.79,.22,1);
+}
 .face[data-dragging] .card-foil { transition: none; }
 .jade-stage { position: absolute; inset: 0; --art-x: 0%; --art-y: var(--art-first); }
 .jade-stage:is([data-artwork="pine"], [data-artwork="cranes"]) { --art-x: 50%; }
@@ -164,19 +163,18 @@ p { max-width: 68ch; }
 .jade-stage::before {
   content: ""; position: absolute; inset: 3.9% 3.15%; border-radius: 12px; border: 1px solid var(--foil);
   background: var(--card-dark) url("./jade-relief.webp") var(--art-x) var(--art-y) / var(--art-size);
-  box-shadow: inset 0 0 0 5px #14100eb8, inset 0 0 0 6px var(--card-rim), 0 3px 0 var(--card-edge);
-  transform: var(--tilt, none); transition: transform .29s cubic-bezier(.15,.8,.23,1);
+  box-shadow: inset 0 0 0 5px #14100eb8, inset 0 0 0 6px var(--card-rim), 0 3px 0 var(--card-edge),
+    0 11px 22px -8px #21191070;
 }
-.face[data-dragging] .jade-stage::before { transition: none; }
-.jade-stage[data-rendered]::before { visibility: hidden; }
-.jade-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; visibility: hidden; }
-.jade-stage[data-rendered] canvas { visibility: visible; }
+.jade-stage canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+  opacity: 0; transition: opacity .14s ease;
+}
+.jade-stage[data-rendered] canvas { opacity: 1; }
 .card-text {
   position: absolute; inset: 16% 8% 27%; display: grid; align-content: center; gap: 7px; justify-items: center;
   color: #fff2d4; text-shadow: 0 1px 2px #53401b, 0 3px 13px #000c;
-  transform: var(--tilt, none); transition: transform .29s cubic-bezier(.15,.8,.23,1);
 }
-.face[data-dragging] .card-text { transition: none; }
 .name { font-family: var(--names); font-size: clamp(2.9rem, 16cqw, 5.7rem); line-height: 1.1; letter-spacing: .055em; padding-left: .055em; font-weight: 700; }
 .pinyin { color: #f0dfb9; font: 500 clamp(.91rem, 3.3cqw, 1.18rem)/1.2 var(--font); letter-spacing: .065em; }
 .gesture-sticker {
@@ -230,6 +228,9 @@ p { max-width: 68ch; }
 .empty .confirmed-name { font-size: 3.45rem; line-height: 1.16; }
 .empty .confirmation { color: var(--accent); font-weight: 600; }
 .empty .action { margin-top: 4px; }
+.empty.refill-status { min-height: 0; padding: 5px 20px 0; gap: 3px; }
+.refill-status h3 { font: 700 1rem/1.4 var(--names); }
+.refill-status p { font-size: .85rem; }
 .settings-page { width: min(100%, 630px); margin: 0 auto; padding-bottom: 48px; }
 .settings-back {
   display: inline-flex; align-items: center; gap: 4px; min-height: 44px; color: var(--accent);
@@ -303,8 +304,6 @@ p { max-width: 68ch; }
   .desk-top h2 { font-size: .91rem; }
   .card-stack { width: min(calc(100% - 38px), 245px, calc(48svh * .685)); margin: 4px auto 15px; }
   .face { aspect-ratio: .685; }
-  .card-stack::before { inset: 5% 4% 3.5%; transform: translateY(5px) rotate(2.4deg);
-    box-shadow: 1px 12px 24px -10px #283c3680; }
   .jade-stage::before { inset: 2.3% 3.5%; }
   .card-text { inset: 14% 6% 31%; }
   .name { font-size: clamp(2.45rem, 18cqw, 3.58rem); }
@@ -318,7 +317,7 @@ p { max-width: 68ch; }
   .pair button { min-height: 104px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .role, .card-foil, .jade-stage::before, .card-text { transition: none; }
+  .role, .face, .card-foil, .jade-stage canvas { transition: none; }
   .role:active { transform: none; }
-  .card-stack.arrive, .heart-feedback { animation: none; }
+  .heart-feedback { animation: none; }
 }

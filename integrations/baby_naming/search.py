@@ -3,6 +3,7 @@
 import re
 import unicodedata
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from math import comb, sqrt
 
 DIRECTIONS = ("girl", "boy")
@@ -29,6 +30,10 @@ AXES = {
     "form": "哪个搭配更像你会用的名字？",
 }
 HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\U00020000-\U000323af]")
+
+
+def beijing_day(now):
+    return datetime.fromtimestamp(now, timezone(timedelta(hours=8))).date().isoformat()
 
 
 def full_name(value, surname):
