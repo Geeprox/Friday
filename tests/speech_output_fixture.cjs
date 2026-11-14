@@ -10,7 +10,8 @@ class Element{
 (async()=>{
  const root=new Element('main'),head=new Element('head');root.root=head.root=true;
  const all=n=>[n,...n.children.flatMap(all)],find=(tag,text)=>all(root).find(n=>n.tagName===tag&&n.textContent===text),label=text=>all(root).find(n=>n.attrs['aria-label']===text);
- const base='/api/embodied/speech-output',calls=[];let current={output:'panel',quiet:true,homepod:{configured:false}},found=[];
+ const base='/api/embodied/speech-output',calls=[];
+ let current={output:'panel',configured:true,mac_available:true,quiet:true,homepod:{configured:false}},found=[];
  const api=async(path,body)=>{calls.push({path,body});if(path===base&&body){current={...current,output:body.output,homepod:{configured:true,name:'客厅 HomePod'}};return current;}if(path===base)return current;if(path.startsWith(base+'/devices'))return {devices:found};if(path===base+'/test')return {status:'accepted'};if(path===base+'/probe')return {status:'ready'};throw Error(path);};
  const document={head,createElement:t=>new Element(t),getElementById:id=>all(head).find(n=>n.attrs.id===id)};
  const context=vm.createContext({document,URLSearchParams,console});context.root=root;context.options={api};
@@ -30,6 +31,12 @@ class Element{
  assert.equal(head.children.length,1,'stylesheet is inserted only once');
  assert.equal(find('button','试听播报').disabled,false);await find('button','试听播报').onclick();
  assert.equal(calls.filter(c=>c.path===base+'/test').length,1);
+ const mac = label('播报到');mac.value='mac';await mac.onchange();await settle();
+ assert.equal(current.output,'mac');assert.equal(find('button','检查连接'),undefined);
+ assert.equal(calls.filter(c=>c.path===base+'/test').length,1,'选择本机会等待用户明确试听');
+ await find('button','试听播报').onclick();
+ assert.equal(calls.at(-1).body.output,'mac');
+ assert.ok(all(root).some(n=>n.textContent==='试听已完成。'));
  assert.ok(calls.every(c=>c.path.startsWith(base)),'speech settings never restart cameras or change a system audio route');
  owner.dispose();assert.equal(root.children.length,0);
  console.log('Speech output: silent settings, actual receiver selection, preserved quiet mode, explicit test and camera-independent lifecycle: OK');

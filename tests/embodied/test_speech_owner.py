@@ -33,6 +33,7 @@ def rig(tmp_path, monkeypatch):
     )
     for module in (speech, synthesis, airplay):
         monkeypatch.setattr(module, "PRIVATE", tmp_path)
+    for module in (speech, synthesis):
         monkeypatch.setattr(module, "configuration", lambda: dict(config))
     monkeypatch.setattr(speech, "VOICE_PAUSED", tmp_path / "voice-paused")
     monkeypatch.setattr(synthesis, "DATA", tmp_path)
