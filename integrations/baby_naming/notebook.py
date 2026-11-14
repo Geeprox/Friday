@@ -48,7 +48,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_active_job ON jobs(direction) WHERE state 
 CREATE TABLE IF NOT EXISTS receipts (
     id INTEGER PRIMARY KEY, job INTEGER NOT NULL REFERENCES jobs(id), stage TEXT NOT NULL,
     date TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1, tokens INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL, model TEXT, latency_ms INTEGER, provider_request TEXT, result TEXT
+    status TEXT NOT NULL, model TEXT, latency_ms INTEGER, provider_request TEXT, result TEXT, checkpoint TEXT
 );
 CREATE INDEX IF NOT EXISTS receipts_job ON receipts(job,id);
 CREATE TABLE IF NOT EXISTS preference_runs (
@@ -61,6 +61,8 @@ REVIEW_DELAY = 24 * 60 * 60
 KEY_PAUSE = "paused_"
 # 每轮最多有六个新名字，库存降到两轮的量就开始补牌。
 REFILL_STOCK = 12
+CONTINUE_WINDOW = 30 * 60
+CONTINUE_OUTCOMES = ("provider_connection", "provider_timeout", "interrupted")
 
 
 class Rejected(ValueError):
@@ -93,6 +95,8 @@ class Notebook:
                 db.execute("ALTER TABLE jobs ADD COLUMN profile TEXT NOT NULL DEFAULT 'luna-low'")
             if "card_note" not in {row["name"] for row in db.execute("PRAGMA table_info(names)")}:
                 db.execute("ALTER TABLE names ADD COLUMN card_note TEXT")
+            if "checkpoint" not in {row["name"] for row in db.execute("PRAGMA table_info(receipts)")}:
+                db.execute("ALTER TABLE receipts ADD COLUMN checkpoint TEXT")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -618,8 +622,9 @@ class Notebook:
             return True
         day = beijing_day(self.now())
         active = db.execute("""
-            SELECT sum(max(0, 3 - (SELECT count(*) FROM receipts r
-                       WHERE r.job=j.id AND r.date=? AND r.stage IN ('plan','generate','audit'))))
+            SELECT sum(max(0, 3 - (SELECT count(DISTINCT stage) FROM receipts r
+                       WHERE r.job=j.id AND (r.status='complete' OR (r.status='pending' AND r.date=?))
+                       AND r.stage IN ('plan','generate','audit'))))
             FROM jobs j WHERE state IN ('queued','running')
         """, (day,)).fetchone()[0] or 0
         return self.used_budget(db, day) + active + 3 <= daily
@@ -661,6 +666,18 @@ class Notebook:
                 return latest["id"]
             if not self.generation_budget_available(db, daily):
                 raise Rejected("budget_or_stale")
+            if (latest and latest["state"] == "failed" and latest["outcome"] in CONTINUE_OUTCOMES
+                    and profile == latest["profile"] and self.now() - latest["created"] <= CONTINUE_WINDOW
+                    and db.execute("""SELECT 1 FROM receipts WHERE job=? AND stage='plan' AND status='complete'
+                                      AND (checkpoint IS NOT NULL OR result IS NOT NULL) LIMIT 1""",
+                                   (latest["id"],)).fetchone()):
+                # 保留失败回执和阶段结果。只有明确点击继续时，才再次提交未完成的阶段。
+                db.execute("UPDATE jobs SET state='queued',started=NULL,ended=NULL,outcome=NULL WHERE id=?",
+                           (latest["id"],))
+                return latest["id"]
+            db.execute("""UPDATE receipts SET checkpoint=NULL
+                          WHERE checkpoint IS NOT NULL AND job IN (SELECT id FROM jobs WHERE direction=?)""",
+                       (direction,))
             return self.enqueue_generation(db, direction, profile)
 
     def generation_profile(self, job):
@@ -685,6 +702,8 @@ class Notebook:
 
     def interrupt_running(self):
         with self.transaction() as db:
+            db.execute("""UPDATE receipts SET status='interrupted' WHERE status='pending'
+                          AND job IN (SELECT id FROM jobs WHERE state='running')""")
             db.execute("UPDATE jobs SET state='failed',ended=?,outcome='interrupted' WHERE state='running'",
                        (self.now(),))
             db.execute("UPDATE preference_runs SET status='interrupted' WHERE status='pending'")
@@ -693,6 +712,8 @@ class Notebook:
         with self.transaction() as db:
             db.execute("UPDATE jobs SET state=?,outcome=?,ended=? WHERE id=? AND state='running'",
                        (state, outcome, self.now(), job))
+            if state == "complete" or outcome not in CONTINUE_OUTCOMES:
+                db.execute("UPDATE receipts SET checkpoint=NULL WHERE job=? AND checkpoint IS NOT NULL", (job,))
 
     def enough_budget(self, date, daily, needed):
         if daily is None:
@@ -713,15 +734,24 @@ class Notebook:
             return db.execute("INSERT INTO receipts(job,stage,date,status) VALUES(?,?,?,'pending')",
                               (job, stage, date)).lastrowid
 
-    def receipt(self, receipt, status, latency, meta, result=None):
+    def receipt(self, receipt, status, latency, meta, result=None, *, checkpoint=None):
         with self.transaction() as db:
-            db.execute("""UPDATE receipts SET status=?,latency_ms=?,model=?,tokens=?,provider_request=?,result=?
+            db.execute("""UPDATE receipts SET status=?,latency_ms=?,model=?,tokens=?,provider_request=?,result=?,checkpoint=?
                           WHERE id=?""", (status, latency, meta.get("model"), meta.get("tokens", 0),
-                                         meta.get("request_id"), as_json(result) if result else None, receipt))
+                                         meta.get("request_id"), as_json(result) if result else None,
+                                         as_json(checkpoint) if checkpoint else None, receipt))
+
+    def completed_stage(self, job, stage):
+        with self.transaction(write=False) as db:
+            row = db.execute("""SELECT checkpoint,result FROM receipts
+                                WHERE job=? AND stage=? AND status='complete' ORDER BY id DESC LIMIT 1""",
+                             (job, stage)).fetchone()
+            return (decode(row["checkpoint"]), decode(row["result"])) if row else (None, None)
 
     def set_receipt_result(self, job, stage, value):
         with self.transaction() as db:
-            db.execute("UPDATE receipts SET result=? WHERE job=? AND stage=?",
+            db.execute("""UPDATE receipts SET result=? WHERE id=(
+                          SELECT max(id) FROM receipts WHERE job=? AND stage=? AND status='complete')""",
                        (as_json(value), job, stage))
 
     def publish(self, job, direction, candidates, pair, plan):
@@ -752,7 +782,7 @@ class Notebook:
             self.put_setting(db, "last_published_" + direction, {"count": len(inserted), "time": self.now()})
             return len(inserted)
 
-    def model_context(self, direction):
+    def model_context(self, direction, *, current_job=None):
         from .search import estimate
 
         with self.transaction(write=False) as db:
@@ -800,9 +830,15 @@ class Notebook:
                                           "names": [names[first]["name"], names[second]["name"]],
                                           "answers": {role: names[int(value)]["name"] if value.isdecimal() else value
                                                       for role, (value, _) in answers.items()}})
-            plans = [decode(row["result"], {}) for row in db.execute(
-                """SELECT r.result FROM receipts r JOIN jobs j ON j.id=r.job WHERE j.direction=? AND r.stage='plan'
-                   AND r.result IS NOT NULL ORDER BY r.id DESC LIMIT 2""", (direction,))]
+            plans = [decode(row["result"], {}) for row in db.execute("""
+                SELECT r.result FROM receipts r
+                WHERE r.id IN (
+                    SELECT max(r.id) FROM receipts r JOIN jobs j ON j.id=r.job
+                    WHERE j.direction=? AND (? IS NULL OR j.id!=?) AND r.stage='plan'
+                    AND r.status='complete' AND r.result IS NOT NULL GROUP BY r.job
+                )
+                ORDER BY r.id DESC LIMIT 2
+                """, (direction, current_job, current_job))]
             context = self.setting(db, "context", {})
             stats = {}
             for role in ROLES:

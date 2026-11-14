@@ -2,16 +2,18 @@
 
 import hashlib
 import json
-import socket
 import math
 import os
 import re
+import socket
+import ssl
 import time
 import unicodedata
 from collections import Counter
+from http.client import HTTPException, HTTPSConnection
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 from .notebook import as_json
 from .search import AXES, BRANCHES, DIRECTIONS, FORMS, MODEL_PROFILES, beijing_day, clusters, exclusion, full_name, model_task
@@ -24,6 +26,8 @@ MANDARIN = dict(row.split("\t") for row in Path(__file__).with_name("mandarin.ts
                 if not row.startswith("#"))
 CODE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 CHOICES = ("flash", "compare", "review", "wait")
+RESPONSE_BYTES = 1_000_000
+STREAM_BYTES = 8_000_000
 PLAN = """你负责安排中文起名的搜索。严格按全名为指定姓氏加两个汉字来搜索。
 工作台采用《左传》取名五法作为取材启发：出生或生活情境、品格、取象、借物、家庭关联。
 将古籍词句作为可核对的素材。并行考虑原词、两意相承、修饰、动作对象、借象成意，以及从全名连读找构词。
@@ -112,6 +116,59 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+class BeforePost(OSError):
+    """TCP、代理 CONNECT 或 TLS 在发送请求正文前失败。"""
+
+
+class ResponseConnection(HTTPSConnection):
+    def connect(self):
+        try:
+            super().connect()
+        except ssl.SSLCertVerificationError:
+            raise
+        except (OSError, HTTPException) as error:
+            raise BeforePost() from error
+
+
+class ResponsesHTTPSHandler(HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(ResponseConnection, request, context=self._context)
+
+
+def read_event_stream(response, request_id, deadline):
+    terminal = {"response.completed", "response.incomplete", "response.failed"}
+    event_data = []
+    event_size = received = 0
+    while time.monotonic() < deadline:
+        line = response.readline(RESPONSE_BYTES + 1)
+        if not line:
+            raise APIError("provider_connection", request_id=request_id, reason="stream_interrupted")
+        received += len(line)
+        if len(line) > RESPONSE_BYTES or received > STREAM_BYTES:
+            raise APIError("provider_reply_too_large", request_id=request_id)
+        line = line.rstrip(b"\r\n")
+        if line.startswith(b"data:"):
+            data = line[6:] if line.startswith(b"data: ") else line[5:]
+            event_size += len(data) + 1
+            if event_size > RESPONSE_BYTES:
+                raise APIError("provider_reply_too_large", request_id=request_id)
+            event_data.append(data)
+        elif not line and event_data:
+            try:
+                event = json.loads(b"\n".join(event_data))
+            except (ValueError, UnicodeError):
+                raise APIError("provider_output", request_id=request_id, reason="invalid_stream_event") from None
+            event_data.clear()
+            event_size = 0
+            if not isinstance(event, dict):
+                raise APIError("provider_output", request_id=request_id, reason="invalid_stream_event")
+            if event.get("type") in terminal and isinstance(event.get("response"), dict):
+                return event["response"]
+            if event.get("type") == "error":
+                raise APIError("provider_output", request_id=request_id, reason="stream_error")
+    raise APIError("provider_timeout", request_id=request_id, reason="stream_deadline")
+
+
 def credential(path=None):
     key = os.environ.get("OPENAI_API_KEY", "").strip() if path is None else ""
     if not key and path:
@@ -141,38 +198,57 @@ class OpenAI:
             raise ValueError("invalid_effort")
         self.key, self.model, self.timeout, self.effort = key, model, timeout, effort
         self.transport = transport or self.post
-        self.opener = build_opener(ProxyHandler({"https": proxy} if proxy else {}), NoRedirect())
+        self.opener = build_opener(ProxyHandler({"https": proxy} if proxy else {}), ResponsesHTTPSHandler(), NoRedirect())
+
+    def open_request(self, request):
+        try:
+            return self.opener.open(request, timeout=self.timeout)
+        except URLError as error:
+            if not isinstance(error.reason, BeforePost):
+                raise
+        # 仅重连尚未发送的请求。已经开始发送或收到响应的异常由上层处理。
+        time.sleep(1)
+        return self.opener.open(request, timeout=self.timeout)
 
     def post(self, route, body):
+        stream = route == "responses" and body.get("stream") is True
         request = Request(API + route, data=as_json(body).encode(), method="POST",
                           headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json",
-                                   "Accept": "application/json"})
+                                   "Accept": "text/event-stream" if stream else "application/json"})
+        request_id = None
         try:
-            with self.opener.open(request, timeout=self.timeout) as response:
-                raw = response.read(1_000_001)
-                if len(raw) > 1_000_000:
+            with self.open_request(request) as response:
+                request_id = response.headers.get("x-request-id")
+                if stream:
+                    if response.headers.get_content_type() != "text/event-stream":
+                        raise APIError("provider_output", request_id=request_id, reason="expected_stream")
+                    return read_event_stream(response, request_id, time.monotonic() + self.timeout + 120), request_id
+                raw = response.read(RESPONSE_BYTES + 1)
+                if len(raw) > RESPONSE_BYTES:
                     raise APIError("provider_reply_too_large")
-                return json.loads(raw), response.headers.get("x-request-id")
+                return json.loads(raw), request_id
         except HTTPError as error:
             try:
                 payload = json.loads(error.read(8192))
                 detail = payload.get("error", {}).get("code")
-            except (ValueError, AttributeError):
+            except (ValueError, AttributeError, OSError, HTTPException):
                 detail = None
             code = {"insufficient_quota": "quota", "model_not_found": "model_access"}.get(
                 detail if isinstance(detail, str) else None, {
                     401: "key_rejected", 403: "permission", 429: "rate_limit",
                 }.get(error.code, "provider_http"))
             raise APIError(code, error.code, error.headers.get("x-request-id")) from None
-        except (URLError, OSError, ValueError) as error:
+        except (OSError, HTTPException) as error:
             cause = error.reason if isinstance(error, URLError) else error
             if isinstance(cause, (socket.timeout, TimeoutError)):
-                # 读取超时可能发生在上游已经接收请求之后，保留回执，由用户决定是否开始新一轮。
-                raise APIError("provider_timeout") from None
-            raise APIError("provider_connection") from None
+                raise APIError("provider_timeout", request_id=request_id, reason="response_timeout") from None
+            reason = "before_post" if isinstance(cause, BeforePost) else "transport_interrupted"
+            raise APIError("provider_connection", request_id=request_id, reason=reason) from None
+        except (ValueError, UnicodeError):
+            raise APIError("provider_output", request_id=request_id, reason="invalid_response") from None
 
     def respond(self, stage, instructions, data, schema, ceiling):
-        body = {"model": self.model, "store": False, "instructions": instructions,
+        body = {"model": self.model, "store": False, "stream": True, "instructions": instructions,
                 "input": as_json(data), "max_output_tokens": ceiling, "text": {"format": {
                     "type": "json_schema", "name": "naming_" + stage, "strict": True, "schema": schema}}}
         if self.model.startswith("gpt-6"):
@@ -462,20 +538,38 @@ class Pipeline:
                 self.book.finish_analysis(run, "complete", meta, result)
             return
 
-    def run_call(self, job, stage, action):
+    def run_call(self, job, stage, action, *, fingerprint=None, validate=None):
         receipt = self.book.reserve(job, stage, beijing_day(self.book.now()), self.daily)
         if not receipt:
             raise APIError("budget_or_stale")
         start = time.monotonic()
         try:
             value, meta = action()
+            if validate is not None:
+                value = validate(value)
         except APIError as error:
             self.book.receipt(receipt, error.code, round((time.monotonic()-start)*1000), {
                 **error.usage, "request_id": error.request_id},
                 {"http_status": error.status, "reason": error.reason})
             raise
-        self.book.receipt(receipt, "complete", round((time.monotonic()-start)*1000), meta)
+        checkpoint = {"fingerprint": fingerprint, "value": value} if fingerprint is not None else None
+        self.book.receipt(receipt, "complete", round((time.monotonic()-start)*1000), meta,
+                          checkpoint=checkpoint)
         return value
+
+    def checkpointed_call(self, job, stage, client, instructions, data, schema, ceiling, validate):
+        fingerprint = hashlib.sha256(as_json([instructions, data, schema]).encode()).hexdigest()
+        checkpoint, legacy = self.book.completed_stage(job, stage)
+        if checkpoint and checkpoint["fingerprint"] == fingerprint:
+            return checkpoint["value"]
+        # 旧版已经保存了清洗后的计划，可以接续一次现有失败任务。
+        if checkpoint is None and stage == "plan" and isinstance(legacy, dict) and "hypotheses" in legacy:
+            try:
+                return validate(legacy)
+            except APIError:
+                pass
+        return self.run_call(job, stage, lambda: client.respond(stage, instructions, data, schema, ceiling),
+                             fingerprint=fingerprint, validate=validate)
 
     def execute(self, job, direction):
         deep = self.book.generation_profile(job) == "sol-high"
@@ -483,11 +577,9 @@ class Pipeline:
         if client is None:
             raise APIError("model_access")
         caps = (13000, 21000, 15000) if deep else (4300, 9500, 6500)
-        context = self.book.model_context(direction)
+        context = self.book.model_context(direction, current_job=job)
         if not context:
             raise APIError("seed_missing")
-        if not self.book.enough_budget(beijing_day(self.book.now()), self.daily, 3):
-            raise APIError("budget_or_stale")
         evidence = evidence_for(context)
         prior, insight = self.book.latest_analysis(direction)
         learning = current_analysis(prior, insight, evidence_versions(evidence))
@@ -496,8 +588,9 @@ class Pipeline:
                         "previous_plans": context["previous_plans"], "branch_stats": context["branch_stats"],
                         "preference_analysis": learning,
                         "evidence": list(evidence.values())}
-        plan = clean_plan(self.run_call(job, "plan", lambda: client.respond(
-            "plan", PLAN, common_input, PLAN_SCHEMA, caps[0])), set(evidence))
+        plan = self.checkpointed_call(
+            job, "plan", client, PLAN, common_input, PLAN_SCHEMA, caps[0],
+            lambda value: clean_plan(value, set(evidence)))
         if learning and learning.get("next_interaction") == "name":
             plan["compare_axis"] = "none"
         self.book.set_receipt_result(job, "plan", plan)
@@ -507,11 +600,17 @@ class Pipeline:
                             "known_nominations": sorted(set(mentioned_names(context))),
                             "plan": plan, "forms": FORMS, "corpus": list(corpus.values()),
                             "preference_analysis": learning, "signals": context["signals"]}
-        proposal = self.run_call(job, "generate", lambda: client.respond(
-            "generate", GENERATE, generation_input, generation_schema(plan, corpus), caps[1]))
-        candidates, excluded = clean_candidates(proposal, plan, corpus, context)
-        self.book.set_receipt_result(job, "generate", {"submitted": len(proposal["candidates"]),
-                                                       "eligible": len(candidates), "excluded": dict(excluded)})
+        def prepare_candidates(proposal):
+            candidates, excluded = clean_candidates(proposal, plan, corpus, context)
+            return {"candidates": candidates, "excluded": dict(excluded),
+                    "submitted": len(proposal["candidates"]), "pair": proposal.get("pair")}
+
+        generated = self.checkpointed_call(
+            job, "generate", client, GENERATE, generation_input, generation_schema(plan, corpus), caps[1],
+            prepare_candidates)
+        candidates = generated["candidates"]
+        self.book.set_receipt_result(job, "generate", {"submitted": generated["submitted"],
+                                                       "eligible": len(candidates), "excluded": generated["excluded"]})
         if not candidates:
             return self.book.publish(job, direction, [], [], plan)
         # 盲审只见姓名、音读和资料；轮次换位降低顺序影响。
@@ -520,12 +619,12 @@ class Pipeline:
             {"id": row["audit_id"], "name": row["name"], "pinyin": row["pinyin"], "evidence": row["evidence"],
              "pronunciation": row["pronunciation"]}
             for row in ordered]}
-        result = self.run_call(job, "audit", lambda: client.respond(
-            "audit", AUDIT, audit_input, AUDIT_SCHEMA, caps[2]))
-        reviews = clean_reviews(result, candidates)
+        reviews = self.checkpointed_call(
+            job, "audit", client, AUDIT, audit_input, AUDIT_SCHEMA, caps[2],
+            lambda value: {str(key): review for key, review in clean_reviews(value, candidates).items()})
         approved = []
         for row in candidates:
-            review = reviews[row["audit_id"]]
+            review = reviews[str(row["audit_id"])]
             if review["verdict"] != "pass" or review["natural"] < 1 or row["pronunciation"]["needs_check"]:
                 continue
             row["quality"] = review["natural"]
@@ -537,7 +636,7 @@ class Pipeline:
                                                    "pronunciation_unconfirmed": sum(
                                                        bool(x["pronunciation"]["needs_check"]) for x in candidates),
                                                    "verdicts": dict(Counter(x["verdict"] for x in reviews.values()))})
-        pair = proposal.get("pair")
+        pair = generated["pair"]
         published = self.book.publish(job, direction, selected, pair if isinstance(pair, list) else [], plan)
         if self.shadow:
             features = self.book.decision_features(direction)

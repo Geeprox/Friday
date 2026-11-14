@@ -88,8 +88,8 @@ const knownErrors = {
   invalid_model_profile: "请选择可用的搜索档位。",
   budget_or_stale: "现在的搜索额度不足。可以先看已有名字，稍后再试。",
   rate_limit: "模型服务正在限流。稍后可以重试。",
-  provider_connection: "模型服务连接失败。稍后可以重试。",
-  provider_timeout: "这轮搜索等模型响应太久了，可以重新搜索。",
+  provider_connection: "连接中断了。可以接着搜索。",
+  provider_timeout: "模型响应超时了。可以接着搜索。",
   provider_output: "模型没有给出完整结果。稍后可以重试。",
   invalid_plan: "这次没形成可用的搜索计划，可以再试一次。",
   incomplete_audit: "盲审还缺结果。可以稍后再找一组。",
@@ -699,7 +699,8 @@ function renderEmpty(book) {
   } else if (book.model?.state === "failed") {
     title = "这轮搜索没完成";
     copy = knownErrors[book.model.outcome] || "可以稍后再试，之前的判断都还在。";
-    searchLabel = "重新搜索";
+    searchLabel = ["provider_connection", "provider_timeout", "interrupted"].includes(book.model.outcome)
+      ? "继续搜索" : "重新搜索";
   } else if (book.model?.outcome === "no_approved") {
     title = "这轮没有合适的名字";
     copy = "AI 可以换一条思路，继续找一组。";

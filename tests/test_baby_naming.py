@@ -1,12 +1,16 @@
 import json
 import socket
 import threading
+from email.message import Message
+from io import BytesIO
 from urllib.error import URLError
 
 import pytest
 
 from integrations.baby_naming.notebook import Notebook, Rejected
-from integrations.baby_naming.pipeline import APIError, OpenAI, Pipeline, current_analysis, evidence_for, evidence_versions
+from integrations.baby_naming.pipeline import (
+    APIError, BeforePost, OpenAI, Pipeline, current_analysis, evidence_for, evidence_versions,
+)
 from integrations.baby_naming.search import estimate
 from integrations.baby_naming.service import App
 
@@ -322,6 +326,57 @@ def test_connection_failure_reports_timeout_separately_and_makes_one_attempt(mon
     assert len(calls) == 1
 
 
+def test_stream_returns_only_completed_result_and_does_not_replay_a_dropped_post(monkeypatch):
+    api = OpenAI("mock-key")
+    headers = Message()
+    headers["Content-Type"] = "text/event-stream"
+    headers["x-request-id"] = "fixture"
+
+    class StreamResponse(BytesIO):
+        pass
+
+    incomplete = b': keep-alive\r\n\r\nevent: response.in_progress\r\ndata: {"type":"response.in_progress"}\r\n\r\n'
+    reply = {"status": "completed", "output": [{"type": "message", "content": [
+        {"type": "output_text", "text": '{"ok":true}'}]}], "usage": {"total_tokens": 42}}
+    completed = b'data: ' + json.dumps({"type": "response.completed", "response": reply}).encode() + b'\n\n'
+    requests = []
+    responses = iter((incomplete + completed, incomplete))
+
+    def open_stream(request, timeout):
+        requests.append(json.loads(request.data))
+        response = StreamResponse(next(responses))
+        response.headers = headers
+        return response
+
+    monkeypatch.setattr(api.opener, "open", open_stream)
+    value, meta = api.respond("plan", "", {}, {}, 100)
+    assert value == {"ok": True} and meta["tokens"] == 42
+    assert requests[0]["stream"] and requests[0]["store"] is False
+    with pytest.raises(APIError) as failure:
+        api.respond("plan", "", {}, {}, 100)
+    assert (failure.value.code, failure.value.reason, failure.value.request_id) == (
+        "provider_connection", "stream_interrupted", "fixture")
+    assert len(requests) == 2
+
+
+def test_retry_only_reconnects_a_request_that_was_not_sent(monkeypatch):
+    api = OpenAI("mock-key")
+    attempts = []
+
+    def fail_then_receive(request, timeout):
+        attempts.append(request)
+        if len(attempts) == 1:
+            raise URLError(BeforePost())
+        raise URLError(ConnectionResetError())
+
+    monkeypatch.setattr(api.opener, "open", fail_then_receive)
+    monkeypatch.setattr("integrations.baby_naming.pipeline.time.sleep", lambda seconds: None)
+    with pytest.raises(APIError) as failure:
+        api.post("responses", {})
+    assert failure.value.reason == "transport_interrupted"
+    assert len(attempts) == 2
+
+
 class MockProvider:
     def __init__(self, *, incomplete=False):
         self.calls = []
@@ -359,6 +414,39 @@ class MockProvider:
                 obj["reviews"].pop()
         return {"status": "completed", "output": [{"type": "message", "content": [
             {"type": "output_text", "text": json.dumps(obj)}]}], "usage": {"total_tokens": 20}}, "fake_req"
+
+
+def test_continue_search_reuses_validated_stages_after_audit_connection_loss(book):
+    provider = MockProvider()
+    stages = []
+
+    def disconnect_once(route, body):
+        stage = body["text"]["format"]["name"]
+        stages.append(stage)
+        if stages == ["naming_plan", "naming_generate", "naming_audit"]:
+            raise APIError("provider_connection", reason="stream_interrupted")
+        return provider(route, body)
+
+    job = book.request_generation("husband", "girl", "luna-low")
+    assert book.claim("girl") == (job, "girl")
+    client = OpenAI("fixture-key", transport=disconnect_once)
+    with pytest.raises(APIError, match="provider_connection"):
+        Pipeline(book, client).execute(job, "girl")
+    book.finish_job(job, "failed", "provider_connection")
+    assert book.state("wife", "girl", auto_refill=True)["available_names"] == 0
+    assert book.claim("girl") is None
+
+    reopened = Notebook(book.root, now=book.now)
+    assert reopened.request_generation("husband", "girl", "luna-low") == job
+    assert reopened.claim("girl") == (job, "girl")
+    count = Pipeline(reopened, client).execute(job, "girl")
+    reopened.finish_job(job, "complete", "ready")
+    assert count == 2 and reopened.assign("husband", "girl")["task"]
+    assert stages == ["naming_plan", "naming_generate", "naming_audit", "naming_audit"]
+    proof = reopened.proof(job)
+    assert proof["receipts"][2]["status"] == "provider_connection"
+    assert proof["receipts"][2]["result"]["reason"] == "stream_interrupted"
+    assert reopened.completed_stage(job, "generate")[0] is None
 
 
 def test_switching_to_unlimited_resumes_a_depleted_deck_after_the_old_daily_limit(book):
