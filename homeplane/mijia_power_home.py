@@ -33,6 +33,14 @@ from .mijia_numeric import (
     setting_bindings,
 )
 from .quality import resolve
+from .rule_compiler import digest
+from .rule_contracts import (
+    CLOCK_TRIGGERS,
+    ClimateInstruction,
+    DeviceInstruction,
+    LightInstruction,
+    NumericCondition,
+)
 
 CATALOG = 'mijia-power-catalog.json'
 NUMERIC_CATALOG = 'mijia-numeric-catalog.json'
@@ -493,6 +501,92 @@ class MijiaPowerHome:
         return context, {t.entity.id: t for t in (*targets.values(), *self.active_sensors().values())
                          if self.power.lan.ready(context[0], t.identity.split('_', 1)[1])}
 
+    def schedule_bindings(self, rule, authority):
+        """只解析规则所用的精确属性。瞬时读数和网关连通性不改变绑定。"""
+        if (not isinstance(rule.trigger, CLOCK_TRIGGERS) or not isinstance(authority, HomeDeviceAuthority)
+                or rule.execution.require_wan_independent):
+            return None
+        context, targets = self.active(authority)
+        if context is None:
+            return None
+        # SDK 读数没有设备采样时刻，仍可展示，但不能接替有质量要求的规则条件。
+        if any(isinstance(condition, NumericCondition) for condition in rule.conditions):
+            return None
+        references = {}
+        for action in rule.actions:
+            if isinstance(action, DeviceInstruction):
+                operation, desired = action.operation, action.desired
+            elif isinstance(action, (LightInstruction, ClimateInstruction)):
+                if isinstance(action, LightInstruction) and (action.brightness is not None or action.require_no_bright_flash):
+                    return None
+                operation = 'light.set' if isinstance(action, LightInstruction) else 'climate.power'
+                desired = {'power': action.power}
+            else:
+                continue
+            target = targets.get(action.target)
+            if target is None or operation not in authority.operations:
+                return None
+            references[target.reference] = (target, None)
+            if target.operation == operation and power_intent(desired):
+                continue
+            # HA 调光和设色温可同时开灯。直连的灯光属性写入依赖灯已打开，不能替代原动作。
+            if target.entity.kind == 'light':
+                return None
+            setting = self.resolve_setting(context, target, operation, desired, require_sample=False)
+            if setting is None:
+                return None
+            try:
+                setting.wire_value(desired[setting.key])
+            except ValueError:
+                return None
+            references[self.setting_key(target, setting)] = (target, setting)
+        return (context, references) if references else None
+
+    @staticmethod
+    def schedule_scope(bindings):
+        context, references = bindings
+        return digest(['mijia-clock/1', context, sorted(references, key=repr)])
+
+    def schedule_matches_ha(self, schedule_bindings, adapter, snapshot):
+        """注册 ID 可保留，仍需核对当前小米设备、型号和属性注册键。"""
+        _, references = schedule_bindings
+        entities = {entity.id: entity for entity in snapshot.entities}
+        devices = {device.id: device for device in snapshot.devices}
+        for target, setting in references.values():
+            if setting is not None:
+                continue
+            entity = entities.get(target.entity.id)
+            device = devices.get(target.device.id)
+            if entity is None or device is None or entity.id not in device.function_ids:
+                return False
+            source = self.power.registry_source(adapter, entity, device)
+            if (source is None or bindings(entity) != bindings(target.entity)
+                    or source.identity != target.identity or source.registry['unique_id'] != target.registry_uid
+                    or source.catalog.get('model') != target.model or source.catalog['urn'] != target.urn):
+                return False
+        return True
+
+    def schedule_routable(self, bindings):
+        context, references = bindings
+        return all(self.power.lan.ready(context[0], target.identity.split('_', 1)[1])
+                   for target, _ in references.values())
+
+    def schedule_fresh(self, bindings):
+        context, references = bindings
+        return all(self._sample(context, reference, target.identity) is not None
+                   for reference, (target, _) in references.items())
+
+    async def read_schedule(self, bindings, *, refresh=False):
+        context, references = bindings
+        for reference, (target, setting) in references.items():
+            if not refresh and self._sample(context, reference, target.identity) is not None:
+                continue
+            writer = (self.setting_writer(context, target, setting) if setting else
+                      self.writer(target.entity.id, context=context, target=target))
+            if writer is None:
+                raise ValueError('mijia_lan_unavailable')
+            await writer.readback()
+
     def unqualified_references(self, targets):
         # 保留现有手势目标，并检查本地通道能表达它实际绑定的动作。
         from .embodied.household import supported_actions
@@ -789,7 +883,9 @@ class MijiaPowerHome:
 
     async def sample_once(self):
         if not self.uses_lan_home(self.core.adapter):
-            self.samples.clear()
+            # 正在评估直连切换时保留刚实读的短期证据，避免定时清理打断逐设备核验。
+            now = time.monotonic()
+            self.samples = {key: sample for key, sample in self.samples.items() if sample.expires > now}
             self.last_poll.clear()
             if self.watch_context is not None:
                 fetch = getattr(self.power.lan, 'property_notifications', None)

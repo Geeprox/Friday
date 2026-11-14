@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,6 +12,7 @@ from fastapi import FastAPI
 
 from homeplane.actions import ActionController
 from homeplane.core import HomeCore
+from homeplane.core_rules import CoreRuleProposal, CoreRules
 from homeplane.embodied.household import DeviceCommands, basic_command
 from homeplane.embodied.mijia_inventory import account_household
 from homeplane.embodied.mijia_lan import home_input
@@ -20,10 +22,13 @@ from homeplane.home_experience import create_router
 from homeplane.local_camera_home import LocalCameraHome
 from homeplane.mijia_control import MijiaPower
 from homeplane.mijia_power_home import MijiaPowerHome
+from homeplane.rule_contracts import RuleIR
+from homeplane.rule_deployment import RuleManager
 from homeplane.settings import SettingsService
 from homeplane.store import TraceStore
 from tests.test_home_experience import Embodied, Runtime
 from tests.test_homeplane_actions import close
+from tests.test_homeplane_core_rules import enable
 from tests.test_homeplane_device_controls import plan, rig
 from tests.test_mijia_power_home import Gateway
 
@@ -105,6 +110,42 @@ async def setup_home(tmp_path, *, label='temperature', bad_setting=None):
 async def warm(home):
     for _ in range(9):
         await home.sample_once()
+
+
+@pytest.mark.asyncio
+async def test_can_create_weekly_temperature_task_on_mijia_but_requires_real_sample_for_condition(tmp_path):
+    core, baseline, gateway, ha_calls = await setup_home(tmp_path)
+    await core.adapter.close()
+    core.adapter = LocalCameraHome(mijia_selected=True)
+    owner = RuleManager(core)
+    manager = CoreRules(core, owner)
+    by_kind = {entity.kind: entity.id for entity in baseline.entities}
+    rule = RuleIR(
+        id='synthetic-weekly-temperature', revision=1, intent='合成空调设温',
+        trigger={'type': 'schedule', 'at': '11:30', 'weekdays': [1, 5], 'timezone': 'Asia/Shanghai'},
+        actions=[{'type': 'device.set', 'id': 'adjust', 'operation': 'climate.temperature',
+                  'target': by_kind['climate'], 'desired': {'temperature': 24}}],
+        execution={'preferred_backend': 'home_core'},
+    )
+    request = CoreRuleProposal(
+        rule=rule, expected_context=manager.context()['fingerprint'], idempotency_key='synthetic-temperature',
+        expires_at=datetime.now(UTC)+timedelta(seconds=15),
+    )
+    try:
+        plan = await enable(manager, request)
+        assert plan.new.enabled and plan.new.rule.trigger == rule.trigger
+        assert plan.trial and plan.trial.commands[0]['desired'] == {'temperature': 24}
+        assert manager.matches_scope(plan.new, await core.snapshot())
+        condition = {'type': 'numeric', 'entity': by_kind['sensor'], 'capability': 'temperature',
+                     'operator': 'gt', 'value': 20, 'unit': '°C'}
+        blocked = RuleIR.model_validate({**rule.model_dump(), 'id': 'synthetic-condition', 'conditions': [condition]})
+        with pytest.raises(ValueError, match='core_rule_source_or_authority_unavailable'):
+            await manager.plan(request.model_copy(update={'rule': blocked}))
+        assert not gateway.manager.set_prop_async.await_count and not ha_calls
+    finally:
+        owner.close()
+        await close(core)
+        core.store.connection.close()
 
 
 @pytest.mark.asyncio

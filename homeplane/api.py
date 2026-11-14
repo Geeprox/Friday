@@ -340,8 +340,8 @@ def create_app(
             raise ValueError("ha_unavailable")
         return await switch_home(candidate, initial, current=current, commit=commit)
 
-    async def attach_mijia(*, current, commit):
-        candidate = LocalCameraHome()
+    async def attach_mijia(*, current, commit, timezone=None):
+        candidate = LocalCameraHome(mijia_selected=True, timezone=timezone)
         return await switch_home(candidate, await candidate.snapshot(), current=current, commit=commit)
 
     @asynccontextmanager

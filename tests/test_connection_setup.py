@@ -1,6 +1,8 @@
 """Fresh setup uses only temporary settings; no HA, camera, audio or model starts."""
+import asyncio
 import importlib.util
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,10 +10,23 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from homeplane.action_contracts import CoreRuleEffect
+from homeplane.actions import ActionController
+from homeplane.core import HomeCore
+from homeplane.core_rules import CoreRuleProposal, CoreRuleRuntime, CoreRules
 from homeplane.ha import HAReadOnlyAdapter
+from homeplane.ha_stream import HAStream
+from homeplane.household_mode import HouseholdMode
 from homeplane.local_camera_home import LocalCameraHome
+from homeplane.mijia_power_home import MijiaPowerHome
 from homeplane.onboarding import SetupConfiguration, setup_report
+from homeplane.rule_contracts import RuleIR
+from homeplane.rule_deployment import RuleManager
 from homeplane.settings import SettingsService
+from homeplane.store import TraceStore
+from tests.test_homeplane_actions import close
+from tests.test_homeplane_core_rules import enable
+from tests.test_mijia_power_home import provision
 
 ROOT = Path(__file__).resolve().parents[1]
 ORIGIN = 'http://127.0.0.1:8740'
@@ -128,17 +143,19 @@ async def test_mijia_source_requires_local_origin_and_preserves_active_ha_until_
                            policy_report=lambda: {'enabled': False}))
     embodied = SimpleNamespace(configured=lambda: True, discovery_report={'state': 'ready'})
 
-    async def attach_mijia(*, current, commit):
+    async def attach_mijia(*, current, commit, timezone):
         assert current()
         commit()
-        core.adapter = LocalCameraHome()
+        core.adapter = LocalCameraHome(mijia_selected=True, timezone=timezone)
         return old, None
 
     backend.connection = 'connected'
     backend.adapter = old
     backend.inner = SimpleNamespace(state=SimpleNamespace(core=core, embodied=embodied,
         home_experience=SimpleNamespace(connection_health=lambda: core.adapter.health()),
-        core_rules=SimpleNamespace(records=lambda: rules), attach_mijia=attach_mijia))
+        core_rules=SimpleNamespace(records=lambda: rules, event_available=lambda: False,
+            mijia_migration=lambda **kwargs: (['fixture'] if rules else [], {}, None),
+            mijia_context=lambda: None, save_mijia_migration=lambda _: None), attach_mijia=attach_mijia))
     monkeypatch.setattr(module, 'real_adapter', AsyncMock(side_effect=AssertionError('HA must not be contacted')))
     transport = httpx.ASGITransport(backend)
     path = '/desktop/home-source'
@@ -189,6 +206,127 @@ async def test_saved_mijia_choice_skips_ha_on_cold_boot(fresh, monkeypatch):
         assert report['providerReads'] == [] and report['failure'] is None
         assert isinstance(backend.adapter, LocalCameraHome)
         assert isinstance(backend.inner.state.core.adapter, LocalCameraHome)
+        assert backend.inner.state.core.adapter.mijia_selected
         assert not module.real_adapter.await_count
     finally:
         await backend.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['normal', 'lost_ack', 'changed_ha_binding', 'changed_lan_binding'])
+async def test_mijia_switch_keeps_existing_timer_and_dispatches_once_after_cold_start(fresh, tmp_path, monkeypatch, case):
+    backend, desktop = fresh
+    backend.persistent = True
+    desktop.STATE.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr('homeplane.embodied.service.mijia_runtime_configured', lambda _path: True)
+    core, baseline, gateway, ha_writes = await provision(tmp_path)
+    legacy = core.adapter
+    legacy.household_timezone = AsyncMock(return_value='Asia/Shanghai')
+    stream = HAStream(legacy)
+    stream.ready = True
+    stream.connection_id = 'synthetic-test'
+    stream.first_attempt.set()
+    stream.rows = {'switch.simulated': {'entity_id': 'switch.simulated', 'state': 'off', 'attributes': {}}}
+    stream.published_rows = stream.rows
+    stream.published_receipts = stream.receipts = {'switch.simulated': datetime.now(UTC)}
+    legacy._stream = stream
+    owner = RuleManager(core)
+    manager = CoreRules(core, owner)
+    runtime = CoreRuleRuntime(manager)
+    runtime.start = lambda: None
+    home = core.actions.mijia_power_home
+    monkeypatch.setattr(home, 'unqualified_references', lambda _targets: set())
+    backend.adapter = legacy
+    backend.connection = 'connected'
+    backend.inner = SimpleNamespace(state=SimpleNamespace(
+        core=core, core_rules=manager, embodied=SimpleNamespace(discovery_report={}),
+    ))
+
+    async def attach_mijia(*, current, commit, timezone):
+        await runtime.invalidate('source_changed')
+        assert current()
+        commit()
+        core.adapter = LocalCameraHome(mijia_selected=True, timezone=timezone)
+        return legacy, await core.snapshot()
+
+    backend.inner.state.attach_mijia = attach_mijia
+    target = next(e for e in baseline.entities if e.kind == 'switch')
+    due = datetime.now(UTC).replace(microsecond=0) + timedelta(seconds=10)
+    trigger = dict(type='once', timezone='UTC', at=due.strftime('%Y-%m-%dT%H:%M:%S'))
+    rule = RuleIR(id='synthetic-clock', revision=1, intent='合成插座定时', trigger=trigger,
+                  actions=[dict(id='power', type='device.set', operation='switch.set',
+                                target=target.id, desired={'power': 'on'})],
+                  execution={'preferred_backend': 'home_core', 'max_event_age_ms': 10000})
+    original = (await enable(manager, CoreRuleProposal(
+        rule=rule, expected_context=manager.context()['fingerprint'], idempotency_key='synthetic-switch-timer',
+        expires_at=datetime.now(UTC)+timedelta(seconds=30),
+    ))).new
+    try:
+        if case == 'changed_ha_binding':
+            legacy._registry['switch.simulated']['unique_id'] += '_changed'
+            with pytest.raises(ValueError, match='ha_rules_in_use'):
+                await backend.use_mijia(tmp_path, None)
+            assert backend.adapter is legacy and desktop.home_source() is None
+            assert not gateway.calls and not ha_writes
+            return
+        gateway.online = False
+        with pytest.raises(ValueError, match='mijia_readback_required'):
+            await backend.use_mijia(tmp_path, None)
+        assert backend.adapter is legacy and desktop.home_source() is None
+        gateway.online = True
+        await backend.use_mijia(tmp_path, None)
+        assert backend.adapter.mijia_selected and await backend.adapter.household_timezone() == 'Asia/Shanghai'
+        assert manager.read(original.id) == original and manager.matches_scope(original, await core.snapshot())
+        assert gateway.manager.set_prop_async.await_count == 0 and not ha_writes
+    finally:
+        await runtime.close()
+        owner.close()
+        await close(core)
+        store_path = core.store.path
+        core.store.connection.close()
+
+    core = HomeCore(LocalCameraHome(mijia_selected=True), TraceStore(store_path))
+    core.actions = ActionController(core, tmp_path / 'action-authority.json')
+    core.actions.mijia = home.power
+    core.actions.mijia.home = MijiaPowerHome(core, home.power)
+    owner = RuleManager(core)
+    manager = CoreRules(core, owner)
+    runtime = CoreRuleRuntime(manager)
+    runtime.start = lambda: None
+    modes = HouseholdMode(core, runtime)
+    try:
+        await modes.select('awake')
+        assert manager.read(original.id) == original and not manager.event_available()
+        if case == 'changed_lan_binding':
+            current_home = core.actions.mijia_power_home
+            catalog = current_home.catalog
+            changed = catalog.targets[0].model_copy(update={'piid': 7})
+            current_home.catalog = catalog.model_copy(update={'targets': [changed]})
+        gateway.calls.clear()
+        assert runtime.status()['clock']['one_off_tasks'][original.id]['state'] == 'scheduled'
+        # 用真实时钟到期，避免混用假时钟与写回读时间。
+        await asyncio.sleep(max(0, (due - datetime.now(UTC)).total_seconds()) + .01)
+        gateway.lose_response = case == 'lost_ack'
+        await runtime.tick()
+        await runtime.tick()
+        runs = runtime.status()['runs']
+        if case == 'changed_lan_binding':
+            assert [(run['status'], run['code']) for run in runs] == [('suppressed', 'source_binding_changed')]
+            assert not gateway.calls and not ha_writes
+            return
+        assert [(run['status'], run['code']) for run in runs] == [
+            ('unknown_outcome', 'effect_not_verified_no_retry') if case == 'lost_ack' else
+            ('completed', 'mijia_reported_sequence_complete_not_physical')
+        ]
+        assert gateway.manager.set_prop_async.await_count == 1 and not ha_writes
+        trace = core.store.light_action(runs[0]['effects'][0]['action_id'])
+        assert isinstance(trace.request, CoreRuleEffect) and trace.route == 'mijia-scoped-power'
+        assert trace.real_write_attempted and not trace.physically_confirmed
+        if case == 'lost_ack':
+            assert (await core.actions.reconcile(trace.action_id)).status == 'reported_match'
+        assert gateway.manager.set_prop_async.await_count == 1
+    finally:
+        await runtime.close()
+        owner.close()
+        await close(core)
+        core.store.connection.close()

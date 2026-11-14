@@ -57,7 +57,12 @@ class HouseholdMode:
 
     def binding(self):
         manager, adapter = self.runtime.manager, self.core.adapter
-        if not isinstance(adapter, HAReadOnlyAdapter) or not manager.available():
+        if not manager.available():
+            return None
+        if (home := manager.mijia_home()) is not None:
+            context, _ = home.active()
+            return digest(['household-mode/mijia/1', context, self.core.actions.policy_report()['revision']])
+        if not isinstance(adapter, HAReadOnlyAdapter):
             return None
         return digest(['household-mode/1', adapter.url, adapter.instance_id,
                        self.core.actions.policy_report()['revision']])

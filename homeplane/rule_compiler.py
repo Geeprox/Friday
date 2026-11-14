@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from .mijia_control import MIJIA_POWER_MODE
 from .rule_contracts import (
     ClimateInstruction,
     DecisionCondition,
@@ -79,6 +80,8 @@ def compile_rule(rule, snapshot):
         trigger_cap = (rule.trigger.capability if isinstance(rule.trigger, EventTrigger)
                        else rule.trigger.capability + '.transition')
         trigger = capability(rule.trigger.entity, trigger_cap, 'event')
+        if snapshot.mode == MIJIA_POWER_MODE:
+            errors.append('mijia_clock_trigger_required')
     wan_known = True
     for condition in rule.conditions:
         if isinstance(condition, NumericCondition):
@@ -104,6 +107,8 @@ def compile_rule(rule, snapshot):
             if action.target in rule.safety.prohibited_targets:
                 errors.append("prohibited_target:" + action.target)
             operation = action.operation if isinstance(action, DeviceInstruction) else action.type
+            if snapshot.mode == MIJIA_POWER_MODE and isinstance(action, ClimateInstruction):
+                operation = 'climate.power'
             cap = capability(action.target, operation, "write")
             wan_known &= bool(cap and cap.wan_dependency == "no")
             desired = action.desired if isinstance(action, DeviceInstruction) else {"power": action.power}
@@ -144,7 +149,7 @@ def compile_rule(rule, snapshot):
                 {
                     "id": action.id,
                     "type": action.type,
-                    **({"operation": operation} if isinstance(action, DeviceInstruction) else {}),
+                    **({"operation": operation} if operation != action.type else {}),
                     "target": action.target,
                     "desired": desired,
                     "after_ms": elapsed,
@@ -216,7 +221,7 @@ def remove_instruction(rule, action_id, expected_fingerprint):
     return type(rule).model_validate(body)
 
 
-def evaluate_rule(rule, snapshot, trial, *, now, allow_core=False, preview=False):
+def evaluate_rule(rule, snapshot, trial, *, now, allow_core=False, preview=False, clock_boot=None):
     event = trial.event
     compilation = compile_rule(rule, snapshot)
 
@@ -230,9 +235,10 @@ def evaluate_rule(rule, snapshot, trial, *, now, allow_core=False, preview=False
             simulated=not allow_core or preview,
         )
 
+    scheduled = isinstance(rule.trigger, CLOCK_TRIGGERS)
     core_scope = (
         allow_core
-        and snapshot.mode == "ha-read-only"
+        and (snapshot.mode == "ha-read-only" or scheduled and snapshot.mode == MIJIA_POWER_MODE)
         and not rule.simulated
         and rule.execution.preferred_backend == "home_core"
         and compilation.status == "requires_core"
@@ -246,13 +252,17 @@ def evaluate_rule(rule, snapshot, trial, *, now, allow_core=False, preview=False
     if trial.replay:
         return result("suppressed", ["replay_never_actuates"])
     age = (now - event.wall_time).total_seconds() * 1000
+    same_boot = (
+        scheduled and core_scope and clock_boot is not None and event.boot_id == clock_boot
+        if snapshot.mode == MIJIA_POWER_MODE
+        else event.boot_id in {e.boot_id for e in snapshot.events}
+    )
     if (
         age < 0
         or age > rule.execution.max_event_age_ms
-        or event.boot_id not in {e.boot_id for e in snapshot.events}
+        or not same_boot
     ):
         return result("suppressed", ["expired_future_or_foreign_boot_event"])
-    scheduled = isinstance(rule.trigger, CLOCK_TRIGGERS)
     expected_kind = "source-report" if isinstance(rule.trigger, (EventTrigger, *CLOCK_TRIGGERS)) else "state-transition"
     if event.kind != expected_kind:
         return result("not_triggered", ["snapshot_and_data_edges_are_not_triggers"])

@@ -1,9 +1,4 @@
-"""Project-owned S1-B rules on Core; no HA YAML/Geek/foreign-rule mutation.
-
-Reviewed local configuration uses atomic SQLite CAS. Only live HA ingress can
-schedule work, with leases, source bindings and the existing Action Gateway.
-Native/core-independent deployment is a separate, still unqualified backend.
-"""
+"""Friday 自有规则使用受控的 HA 事件或本机定时器，设备操作共用动作网关。"""
 
 import asyncio
 import json
@@ -12,13 +7,17 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
 
+import httpx
 from pydantic import AwareDatetime, Field, StrictBool, model_validator
 
 from .action_contracts import CoreRuleEffect
 from .automation_catalog import CatalogOrigin, CatalogSelection
 from .contracts import Contract, Event
 from .ha import HAReadOnlyAdapter
+from .local_camera_home import LocalCameraHome
+from .mijia_control import MIJIA_POWER_MODE
 from .rule_compiler import compile_rule, digest, evaluate_rule
+from .rule_schedule import once_occurrence
 from .rule_contracts import (
     CancelInstruction,
     DecisionCondition,
@@ -27,6 +26,7 @@ from .rule_contracts import (
     FeedbackInstruction,
     ModeLease,
     NumericCondition,
+    OnceTrigger,
     RuleCompilation,
     RuleEvaluation,
     RuleIR,
@@ -141,6 +141,9 @@ class CoreRules:
             self.store.connection.execute(
                 "CREATE TABLE IF NOT EXISTS core_rule_plans (id TEXT PRIMARY KEY, key TEXT UNIQUE, digest TEXT, created TEXT, body TEXT)"
             )
+            self.store.connection.execute(
+                "CREATE TABLE IF NOT EXISTS core_rule_mijia (id TEXT PRIMARY KEY, record_scope TEXT, mijia_scope TEXT)"
+            )
         if self.owner.owned:
             self.prune()
 
@@ -161,7 +164,7 @@ class CoreRules:
                     self.store.connection.execute("DELETE FROM core_rule_plans WHERE id=?", (identifier,))
                     self.deadlines.pop(identifier, None)
 
-    def available(self):
+    def event_available(self):
         adapter = self.core.adapter
         authority, _ = self.core.actions.authority() if self.core.actions else (None, None)
         return bool(
@@ -177,11 +180,56 @@ class CoreRules:
             and not adapter.health().get("observation_gap")
         )
 
+    def mijia_home(self):
+        adapter = self.core.adapter
+        if isinstance(adapter, LocalCameraHome) and adapter.mijia_selected and self.core.actions:
+            return self.core.actions.mijia_power_home
+        return None
+
+    def mijia_context(self):
+        home = self.core.actions.mijia_power_home
+        context = home.context() if home is not None else None
+        # 时区属于已核对的家庭与账号，长期规则的属性证明另行绑定授权。
+        return [context[1], context[2]] if context is not None else None
+
+    def available(self, rule=None):
+        if not self.owner.owned:
+            return False
+        if (home := self.mijia_home()) is None:
+            return self.event_available()
+        authority, _ = self.core.actions.authority()
+        if rule is not None:
+            bindings = home.schedule_bindings(rule, authority)
+            return bindings is not None and home.schedule_routable(bindings)
+        context, targets = home.active(authority) if authority else (None, {})
+        return bool(context and any(home.power.lan.ready(context[0], t.identity.split('_', 1)[1])
+                                    for t in targets.values()))
+
+    async def refresh_schedule(self, rule, *, record=None):
+        home = self.mijia_home()
+        if home is None:
+            return
+        bindings = home.schedule_bindings(rule, self.core.actions.authority()[0])
+        if bindings is None:
+            raise ValueError("core_rule_source_or_authority_unavailable")
+        if record is not None and home.schedule_scope(bindings) not in (
+            record.source_scope, self._saved_mijia_scope(record)
+        ):
+            raise ValueError('source_binding_changed')
+        try:
+            async with asyncio.timeout(2):
+                await home.read_schedule(bindings)
+        except (OSError, ValueError, TimeoutError, httpx.HTTPError):
+            raise ValueError("core_rule_source_or_authority_unavailable") from None
+
     def context(self):
         a = self.core.adapter
         _, revision = self.core.actions.authority() if self.core.actions else (None, None)
+        home = self.mijia_home()
+        local_context = home.active()[0] if home else None
         return {
             "available": self.available(),
+            "event_available": self.event_available(),
             "owner_available": self.owner.owned,
             "boot_id": self.boot_id,
             "fingerprint": digest(
@@ -191,6 +239,7 @@ class CoreRules:
                     getattr(a, "_boot", None),
                     getattr(a, "url", None),
                     getattr(a, "instance_id", None),
+                    local_context,
                     revision,
                     [(r.id, r.fingerprint) for r in self.records()],
                 ]
@@ -216,6 +265,13 @@ class CoreRules:
         return CoreRuleRecord.model_validate_json(row[0]) if row else None
 
     def scope(self, rule, snapshot):
+        if snapshot.mode == MIJIA_POWER_MODE:
+            home = self.mijia_home()
+            if home is not None:
+                bindings = home.schedule_bindings(rule, self.core.actions.authority()[0])
+                if bindings is not None:
+                    return home.schedule_scope(bindings)
+            return None
         a = self.core.adapter
         ids = (
             (set() if isinstance(rule.trigger, CLOCK_TRIGGERS) else {rule.trigger.entity})
@@ -240,8 +296,76 @@ class CoreRules:
             ]
         )
 
-    def _allowed(self):
-        if not self.available():
+    @staticmethod
+    def _record_scope(record):
+        return digest([record.id, record.source_scope, record.authority_revision, record.rule.model_dump(mode='json')])
+
+    def _saved_mijia_scope(self, record):
+        row = self.store.connection.execute(
+            "SELECT record_scope,mijia_scope FROM core_rule_mijia WHERE id=?", (record.id,)
+        ).fetchone()
+        return row[1] if row is not None and row[0] == self._record_scope(record) else None
+
+    def matches_scope(self, record, snapshot):
+        scope = self.scope(record.rule, snapshot)
+        if scope == record.source_scope:
+            return True
+        return scope is not None and snapshot.mode == MIJIA_POWER_MODE and scope == self._saved_mijia_scope(record)
+
+    def mijia_migration(self, *, check_routes=False):
+        """沿用旧规则与触发回执，用独立证明绑定到本地租约下的米家属性。"""
+        home = self.core.actions.mijia_power_home
+        authority, revision = self.core.actions.authority()
+        excluded, migrations, required = [], {}, None
+        ha_online = self.event_available()
+        cached = self.core._diagnostic_snapshot
+        legacy_snapshot = (cached[1] if cached and cached[0] is self.core.adapter
+                           and cached[1].mode == 'ha-read-only' and ha_online else None)
+        now = datetime.now(UTC)
+        for record in self.records():
+            if isinstance(record.rule.trigger, OnceTrigger):
+                occurrence = once_occurrence(record.rule.trigger)
+                consumed = self.store.connection.execute(
+                    "SELECT 1 FROM core_clock_slots WHERE rule_id=? AND schedule=? AND day=?",
+                    (record.rule.id, digest(record.rule.trigger), occurrence.day),
+                ).fetchone()
+                if consumed or now > occurrence.at + timedelta(milliseconds=record.rule.execution.max_event_age_ms):
+                    continue
+            bindings = (home.schedule_bindings(record.rule, authority)
+                        if home and revision == record.authority_revision else None)
+            if bindings is not None:
+                scope = home.schedule_scope(bindings)
+                saved = self._saved_mijia_scope(record)
+                legacy_matches = (legacy_snapshot is not None and
+                                  self.scope(record.rule, legacy_snapshot) == record.source_scope and
+                                  home.schedule_matches_ha(bindings, self.core.adapter, legacy_snapshot))
+                qualified = (scope == record.source_scope
+                             or (saved is None or saved == scope) and legacy_matches
+                             or not ha_online and saved == scope)
+                if qualified and (not check_routes or not record.enabled or home.schedule_routable(bindings)):
+                    if scope != record.source_scope:
+                        migrations[record.id] = (record.id, self._record_scope(record), scope)
+                    if record.enabled:
+                        if required is None:
+                            required = (bindings[0], {})
+                        required[1].update(bindings[1])
+                    continue
+            if record.enabled:
+                excluded.append(record.id)
+        return excluded, migrations, required
+
+    def save_mijia_migration(self, migrations):
+        if not migrations:
+            return
+        if not self.owner.owned:
+            raise ValueError('core_rule_owner_unavailable')
+        with self.store.connection:
+            self.store.connection.executemany(
+                "INSERT OR REPLACE INTO core_rule_mijia VALUES (?,?,?)", migrations.values()
+            )
+
+    def _allowed(self, rule=None):
+        if not self.available(rule):
             raise ValueError("core_rule_source_or_authority_unavailable")
 
     def _catalog_origin(self, selection):
@@ -256,6 +380,7 @@ class CoreRules:
             or compilation.simulated
             or any(isinstance(c, DecisionCondition) for c in rule.conditions)
             or any(isinstance(a, FeedbackInstruction) for a in rule.actions)
+            or snapshot.mode == MIJIA_POWER_MODE and self.scope(rule, snapshot) is None
         ):
             raise ValueError("unsupported_core_compilation")
         return compilation
@@ -312,7 +437,7 @@ class CoreRules:
         return updated
 
     def _live(self, plan):
-        self._allowed()
+        self._allowed(plan.new.rule)
         if (
             plan.boot_id != self.boot_id
             or time.monotonic() >= self.deadlines.get(plan.id, 0)
@@ -322,7 +447,7 @@ class CoreRules:
 
     async def plan(self, request):
         async with self.lock:
-            self._allowed()
+            self._allowed(request.rule)
             self.prune()
             if request.expected_context != self.context()["fingerprint"]:
                 raise ValueError("source_conflict")
@@ -352,12 +477,13 @@ class CoreRules:
             if not old and any(r.rule.id == request.rule.id for r in self.records()):
                 raise ValueError("rule_identity_exists")
             adapter = self.core.adapter
+            await self.refresh_schedule(request.rule)
             snapshot = await self.core.snapshot()
             if adapter is not self.core.adapter or request.expected_context != self.context()["fingerprint"]:
                 raise ValueError("source_conflict")
             if time.monotonic() >= deadline or datetime.now(UTC) >= request.expires_at:
                 raise ValueError("expired_core_request")
-            self._allowed()
+            self._allowed(request.rule)
             compilation = self._compilation(request.rule, snapshot)
             self._acyclic(request.rule, old)
             origin = old.catalog_origin if old else None
@@ -408,6 +534,7 @@ class CoreRules:
         if plan.context_fingerprint != self.context()["fingerprint"]:
             raise ValueError("source_conflict")
         adapter = self.core.adapter
+        await self.refresh_schedule(plan.new.rule, record=plan.new)
         snapshot = await self.core.snapshot()
         self._live(plan)
         require_future_once(plan.new.rule.trigger, datetime.now(UTC))
@@ -473,6 +600,7 @@ class CoreRules:
                 now=now,
                 allow_core=True,
                 preview=True,
+                clock_boot=self.core.adapter._boot,
             )
             known_false=bool(result.reasons) and all(reason.startswith('condition_false:') or reason=='outside_time_window' for reason in result.reasons)
             return self._stage(
@@ -894,14 +1022,15 @@ class CoreRuleRuntime:
             self.closed
             or self.failure
             or item.get("cancelled")
-            or not self.manager.available()
+            or not self.manager.available(record.rule)
             or item["adapter"] is not self.core.adapter
         ):
             return "source_or_runtime_unavailable"
-        if not self._current_connection(item["adapter"], item["event"]):
+        if self.manager.mijia_home() is None and not self._current_connection(item["adapter"], item["event"]):
             return "old_connection_event_no_replay"
-        if isinstance(record.rule.trigger, CLOCK_TRIGGERS) and not self.clock.current(item):
-            return 'unregistered_clock_occurrence'
+        if isinstance(record.rule.trigger, CLOCK_TRIGGERS):
+            if item["event"].boot_id != item["adapter"]._boot or not self.clock.current(item):
+                return 'unregistered_clock_occurrence'
         if mono >= item["deadline"] or now < run.created_at or now >= run.expires_at:
             return "expired_event_no_replay"
         if not self.execution_enabled or mono < self.manual_until:
@@ -940,7 +1069,7 @@ class CoreRuleRuntime:
             if (
                 self.closed
                 or self.failure
-                or not self.manager.available()
+                or not self.manager.event_available()
                 or adapter is not self.core.adapter
                 or event.simulated
                 or event.kind != "state-transition"
@@ -1009,7 +1138,7 @@ class CoreRuleRuntime:
                         "due": mono,
                     }
                     code = self._guard(item)
-                    if code or self.manager.scope(record.rule, snapshot) != record.source_scope:
+                    if code or not self.manager.matches_scope(record, snapshot):
                         self._stage(run, "suppressed", code or "source_binding_changed")
                     else:
                         self.pending[record.rule.id] = item
@@ -1028,7 +1157,7 @@ class CoreRuleRuntime:
                 if code := self._guard(item):
                     self._cancel(key, code)
                     continue
-                if self.manager.scope(item["record"].rule, snapshot) != item["record"].source_scope:
+                if not self.manager.matches_scope(item["record"], snapshot):
                     self._cancel(key, "source_binding_changed")
                     continue
                 guarded_rule = item["record"].rule.model_copy(
@@ -1046,6 +1175,7 @@ class CoreRuleRuntime:
                     RuleTrial(event=item["event"], modes=self.modes),
                     now=datetime.now(UTC),
                     allow_core=True,
+                    clock_boot=item["adapter"]._boot,
                 )
                 if checked.outcome != "matched":
                     self._cancel(key, "revalidation:" + checked.reasons[0])
@@ -1067,7 +1197,7 @@ class CoreRuleRuntime:
                     if code := self._guard(item):
                         self._cancel(key, code)
                         break
-                    if self.manager.scope(item["record"].rule, fresh) != item["record"].source_scope:
+                    if not self.manager.matches_scope(item["record"], fresh):
                         self._cancel(key, "source_binding_changed")
                         break
                     result = evaluate_rule(
@@ -1076,13 +1206,14 @@ class CoreRuleRuntime:
                         RuleTrial(event=item["event"], modes=self.modes),
                         now=datetime.now(UTC),
                         allow_core=True,
+                        clock_boot=item["adapter"]._boot,
                     )
                     if result.outcome != "matched":
                         self._cancel(key, "send_guard:" + result.reasons[0])
                         break
                     command = result.commands[0]
                     entity = next(e for e in fresh.entities if e.id == command["target"])
-                    operation = action.operation if isinstance(action, DeviceInstruction) else action.type
+                    operation = command.get("operation", action.type)
                     request = CoreRuleEffect(
                         target=entity.id,
                         operation=operation,
@@ -1100,10 +1231,7 @@ class CoreRuleRuntime:
                     def guard(current_snapshot):
                         if failure := self._guard(item):
                             return failure
-                        if (
-                            self.manager.scope(item["record"].rule, current_snapshot)
-                            != item["record"].source_scope
-                        ):
+                        if not self.manager.matches_scope(item["record"], current_snapshot):
                             return "source_binding_changed"
                         evaluated = evaluate_rule(
                             item["record"].rule.model_copy(update={"actions": [action]}),
@@ -1111,6 +1239,7 @@ class CoreRuleRuntime:
                             RuleTrial(event=item["event"], modes=self.modes),
                             now=datetime.now(UTC),
                             allow_core=True,
+                            clock_boot=item["adapter"]._boot,
                         )
                         return None if evaluated.outcome == "matched" else "guard:" + evaluated.reasons[0]
 
@@ -1157,7 +1286,9 @@ class CoreRuleRuntime:
                         break
                 else:
                     self.pending.pop(key, None)
-                    self._stage(item["run"], "completed", "ha_reported_sequence_complete_not_physical")
+                    code = ("mijia_reported_sequence_complete_not_physical" if self.manager.mijia_home()
+                            else "ha_reported_sequence_complete_not_physical")
+                    self._stage(item["run"], "completed", code)
 
     async def _worker(self):
         while not self.closed and not self.failure:

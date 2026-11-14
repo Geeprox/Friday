@@ -46,9 +46,16 @@ class AutomationActions:
         return record
 
     async def qualify(self,record):
-        self.manager._allowed();snapshot=await self.core.snapshot()
+        self.manager._allowed(record.rule)
+        try:
+            await self.manager.refresh_schedule(record.rule, record=record)
+        except ValueError as error:
+            if str(error) == 'source_binding_changed':
+                raise ValueError('rule_needs_review') from None
+            raise
+        snapshot=await self.core.snapshot()
         _,revision=self.core.actions.authority()
-        if record.authority_revision!=revision or self.manager.scope(record.rule,snapshot)!=record.source_scope:
+        if record.authority_revision!=revision or not self.manager.matches_scope(record,snapshot):
             raise ValueError('rule_needs_review')
         self.manager._compilation(record.rule,snapshot)
         return snapshot

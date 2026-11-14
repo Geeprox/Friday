@@ -331,8 +331,6 @@ class ActionController:
         entity = next(e for e in snapshot.entities if e.id == request.target)
         operation = getattr(request, "operation", "light.set")
         if snapshot.mode == MIJIA_POWER_MODE:
-            if isinstance(request, CoreRuleEffect):
-                return "identity_unavailable"
             if entity.state_version != request.expected_state_version:
                 return "source_conflict"
             return self.mijia_power_home.intent_error(entity.id, operation, request.desired, authority)
@@ -546,11 +544,16 @@ class ActionController:
                 deadline = min(deadline, dispatch_deadline)
 
             def current_dispatch():
-                return (self.core.adapter is adapter and home.uses_lan_home(adapter)
+                if not (self.core.adapter is adapter and home.uses_lan_home(adapter)
                         and time.monotonic() < deadline and self.authority(include_generation=True)[1] == revision
                         and home.fingerprint(entity.id) == fingerprint
                         and home.state_version(entity.id) == entity.state_version
-                        and (dispatch_guard is None or dispatch_guard() is True))
+                        and (dispatch_guard is None or dispatch_guard() is True)):
+                    return False
+                if managed_guard is not None:
+                    current_snapshot = home.snapshot(adapter)
+                    return current_snapshot is not None and managed_guard(current_snapshot) is None
+                return True
 
             # 镜头指令只尝试已经就绪的局域网路径，给原有手势有效期保留派发余量。
             if self.mijia is not None and isinstance(authority, HomeDeviceAuthority):

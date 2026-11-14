@@ -152,23 +152,42 @@ def authorization_revision():
 
 
 def home_source():
+    value = home_source_config().get('source')
+    return value if value in ('mijia-lan', 'ha-read-only') else None
+
+
+def home_source_config():
     from homeplane.embodied.ptz_control import read_lease
 
     try:
-        value = read_lease(STATE / 'home-source.json').get('source')
-        return value if value in ('mijia-lan', 'ha-read-only') else None
+        return read_lease(STATE / 'home-source.json')
     except (OSError, ValueError):
+        return {}
+
+
+def mijia_timezone(context):
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    saved = home_source_config()
+    timezone = saved.get('timezone')
+    if (saved.get('source') != 'mijia-lan' or not isinstance(context, list)
+            or saved.get('mijia_context') != context or not isinstance(timezone, str)
+            or not 1 <= len(timezone) <= 64):
         return None
+    try:
+        ZoneInfo(timezone)
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
+    return timezone
 
 
-def save_home_source(source):
+def save_home_source(source, *, timezone=None, mijia_context=None):
     from homeplane.embodied.ptz_control import atomic
 
-    atomic(STATE / 'home-source.json', {'source': source})
-
-
-def enabled_ha_rules(rules):
-    return sum(rule.enabled for rule in rules.records())
+    value = {'source': source}
+    if timezone and mijia_context:
+        value.update(timezone=timezone, mijia_context=mijia_context)
+    atomic(STATE / 'home-source.json', value)
 
 
 def failure_code(error):
@@ -559,7 +578,7 @@ class DesktopService:
                         missing = None
                     mijia.update(routable=len(connected), ready=power.ready_count(), missing_interaction_targets=missing)
                     mijia['inventory_state'] = state.embodied.discovery_report.get('state')
-                mijia['ha_rules'] = enabled_ha_rules(state.core_rules)
+                mijia['ha_rules'] = len(state.core_rules.mijia_migration()[0])
                 if isinstance(state.core.adapter, LocalCameraHome):
                     health = dict(mode='mijia-lan' if selected == 'mijia-lan' or mijia['ready'] else 'local-cameras',
                                   transport='online' if mijia['ready'] else 'offline')
@@ -865,7 +884,8 @@ class DesktopService:
                     finally:
                         _device_control.reset(grant_context)
                 if adapter is None:
-                    settings, adapter = self.setup_settings().config, LocalCameraHome()
+                    settings = self.setup_settings().config
+                    adapter = LocalCameraHome(mijia_selected=explicit_source == 'mijia-lan')
                     snapshot = await adapter.snapshot()
                 phase = 'workspace'
                 from homeplane.api import create_app
@@ -901,11 +921,11 @@ class DesktopService:
                 phase = 'startup'
                 await lifespan.__aenter__()
                 lifespan_entered = True
+                if isinstance(adapter, LocalCameraHome) and adapter.mijia_selected:
+                    adapter.timezone = lambda: mijia_timezone(inner.state.core_rules.mijia_context())
                 if source is not None:
-                    if source == 'mijia-lan' and enabled_ha_rules(inner.state.core_rules):
-                        await lifespan.__aexit__(None, None, None)
-                        self.connection, self.failure = 'not_connected', None
-                        return JSONResponse({'code': 'ha_rules_in_use'}, status_code=409)
+                    if source == 'mijia-lan' and inner.state.core_rules.mijia_migration()[0]:
+                        raise ValueError('ha_rules_in_use')
                     save_home_source(source)
                     (STATE / 'connection-paused').unlink(missing_ok=True)
                 self.inner, self.lifespan, self.adapter = inner, lifespan, adapter
@@ -934,8 +954,13 @@ class DesktopService:
                 if isinstance(error, asyncio.CancelledError):
                     raise
                 if source is not None:
-                    return JSONResponse({'code': 'ha_unavailable' if source == 'ha-read-only'
-                                         else 'home_source_unavailable'}, status_code=409)
+                    if source == 'ha-read-only':
+                        code = 'ha_unavailable'
+                    elif isinstance(error, ValueError) and str(error) == 'ha_rules_in_use':
+                        code = 'ha_rules_in_use'
+                    else:
+                        code = 'home_source_unavailable'
+                    return JSONResponse({'code': code}, status_code=409)
             return await self.status()
 
     async def use_mijia(self, directory, selected):
@@ -945,36 +970,70 @@ class DesktopService:
         if not mijia_runtime_configured(directory):
             raise ValueError('mijia_setup_required')
         state = self.inner.state
-        if enabled_ha_rules(state.core_rules):
+        rules = state.core_rules
+        if rules.event_available() and rules.records():
+            # 核对当前 HA 绑定和已有规则版本，禁止凭旧目录迁移已变更的设备。
+            try:
+                async with asyncio.timeout(2):
+                    await state.core.snapshot()
+            except (OSError, TimeoutError, ValueError, httpx.HTTPError):
+                raise ValueError('source_conflict') from None
+        excluded, migrations, required = rules.mijia_migration()
+        if excluded:
             raise ValueError('ha_rules_in_use')
         power = state.core.actions.mijia_power_home
+        context = rules.mijia_context()
+        zone = mijia_timezone(context)
+        if context and isinstance(self.adapter, HAReadOnlyAdapter):
+            try:
+                candidate = await asyncio.wait_for(self.adapter.household_timezone(), 2)
+                if isinstance(candidate, str) and 1 <= len(candidate) <= 64:
+                    zone = candidate
+            except TimeoutError:
+                pass
 
         def check_bindings():
             if power is not None and power.unqualified_references(power.connected_targets()[1]):
                 raise ValueError('mijia_interaction_targets_missing')
 
         check_bindings()
-        if isinstance(self.adapter, LocalCameraHome):
-            if selected != 'mijia-lan':
-                if catalog_available(directory) and (power is None or not await power.qualify_source()):
-                    raise ValueError('mijia_readback_required')
-                if enabled_ha_rules(state.core_rules):
-                    raise ValueError('ha_rules_in_use')
-                check_bindings()
-                save_home_source('mijia-lan')
+        local = isinstance(self.adapter, LocalCameraHome)
+        if local and selected == 'mijia-lan':
             self.failure = self.failure_evidence = None
             return
-        current = await power.qualify_source() if power is not None else None
-        if current is None:
-            raise ValueError('mijia_readback_required')
+        if required is not None:
+            try:
+                async with asyncio.timeout(12):
+                    await power.read_schedule(required, refresh=True)
+            except (OSError, TimeoutError, ValueError, httpx.HTTPError):
+                raise ValueError('mijia_readback_required') from None
+
+            def current():
+                return power.schedule_fresh(required)
+        elif not local or catalog_available(directory):
+            current = await power.qualify_source() if power is not None else None
+            if current is None:
+                raise ValueError('mijia_readback_required')
+        else:
+            current = lambda: True
+
+        if rules.event_available() and migrations:
+            try:
+                async with asyncio.timeout(2):
+                    await state.core.snapshot()
+            except (OSError, TimeoutError, ValueError, httpx.HTTPError):
+                raise ValueError('source_conflict') from None
 
         def commit():
-            if enabled_ha_rules(state.core_rules):
-                raise ValueError('ha_rules_in_use')
+            checked, proofs, bindings = rules.mijia_migration(check_routes=True)
+            if not current() or rules.mijia_context() != context or checked or proofs != migrations or bindings != required:
+                raise ValueError('source_conflict')
             check_bindings()
-            save_home_source('mijia-lan')
+            rules.save_mijia_migration(proofs)
+            save_home_source('mijia-lan', timezone=zone, mijia_context=context)
 
-        old, _ = await state.attach_mijia(current=current, commit=commit)
+        old, _ = await state.attach_mijia(current=current, commit=commit,
+                                          timezone=lambda: mijia_timezone(rules.mijia_context()))
         self.adapter = state.core.adapter
         self.entity_count = 0
         self.provider_reads = []
