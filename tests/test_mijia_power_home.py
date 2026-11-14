@@ -15,8 +15,10 @@ from homeplane.core import HomeCore
 from homeplane.embodied.household import DeviceCommands, basic_command
 from homeplane.embodied.mijia_inventory import account_household
 from homeplane.embodied.mijia_lan import (
+    PropertyNotifications,
     home_input,
     migrated_power_operation,
+    migrated_property_read,
     numeric_operation,
     property_operation,
 )
@@ -36,6 +38,47 @@ DID = '200000001'
 IDENTITY = f'cn_{DID}'
 URN = 'urn:miot-spec-v2:device:switch:00000001:fixture-channel:1'
 MODEL = 'fixture.switch.channel'
+
+
+@pytest.mark.asyncio
+async def test_lan_notifications_discard_old_callbacks_and_return_property_keys_only():
+    callbacks = {}
+    denied = {'200000000'}
+    visible = {'200000000', DID}
+    groups = {}
+
+    async def subscribe(did, callback):
+        if did in denied:
+            raise ValueError('synthetic_rejection')
+        callbacks[did] = callback
+        groups[did] = {'synthetic-group'}
+
+    manager = SimpleNamespace(can_control=lambda did: did in visible, can_push=lambda _did: True,
+                              in_local_cooldown=lambda _did: False,
+                              local_device=lambda _did: {'group_id': 'synthetic-group'},
+                              props_sub_groups=lambda did: groups.get(did, set()),
+                              sub_device_props_async=subscribe, unsub_device_props=lambda did: groups.pop(did, None))
+    watch = [[did, 2, 1] for did in sorted(visible)]
+    notifications = PropertyNotifications(manager, 'synthetic-group', set(visible))
+    await notifications.fetch(watch)  # 第一个设备被拒绝。
+    await notifications.fetch(watch)
+    callback = callbacks[DID]
+    event = SimpleNamespace(did=DID, changes=[SimpleNamespace(siid=2, piid=1, value=True),
+                                              SimpleNamespace(siid=2, piid=3, value=False)])
+    callback(event)
+    callback(event)
+    await asyncio.sleep(0)
+    assert (await notifications.fetch(watch))['changes'] == [(DID, 2, 1)]
+    assert (await notifications.fetch(watch))['changes'] == []
+    visible.remove(DID)
+    await notifications.fetch(watch)
+    visible.add(DID)
+    await notifications.fetch(watch)
+    callback(event)
+    await asyncio.sleep(0)
+    assert (await notifications.fetch(watch))['changes'] == []
+    with pytest.raises(ValueError, match='mijia_push_invalid'):
+        await notifications.fetch([['300000000', 2, 1]])
 
 
 class Gateway:
@@ -90,6 +133,10 @@ class Gateway:
                 )
             if guard is not None:
                 return await migrated_power_operation(
+                    *args, family, 'cn', 'synthetic-group', self.dids, lambda: True, self.path,
+                )
+            if payload.get('registered_power') is True:
+                return await migrated_property_read(
                     *args, family, 'cn', 'synthetic-group', self.dids, lambda: True, self.path,
                 )
             return await property_operation(*args, 'synthetic-group', self.dids, lambda: True)

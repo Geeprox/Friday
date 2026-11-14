@@ -107,7 +107,8 @@ async def test_saved_pause_fences_direct_starts_even_if_cleanup_fails(tmp_path):
 
 @pytest.mark.asyncio
 async def test_readback_waits_for_async_report_without_resending():
-    writer=SimpleNamespace(readback=AsyncMock(side_effect=[{'power':'off'},{'power':'on'}]))
+    writer=SimpleNamespace(readback=AsyncMock(side_effect=[{'power':'off'},{'power':'on'}]),
+                           matches=lambda desired, reported: desired == reported)
     result=await ActionController._settle(None,writer,{'power':'on'})
     assert result=={'power':'on'} and writer.readback.await_count==2
 

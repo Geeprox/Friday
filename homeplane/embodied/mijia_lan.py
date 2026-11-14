@@ -9,8 +9,10 @@ import re
 import secrets
 import stat
 import sys
+from collections import defaultdict
 
 from homeplane.mijia_numeric import finite_numeric
+from homeplane.mijia_lan_client import DID
 
 from .mijia_inventory import home_devices, home_inputs, home_scope
 from .mijia_power import family_binding, grant_binding, property_request
@@ -133,6 +135,86 @@ async def numeric_operation(manager, request, grant, family, region, group, dids
     return {'value': row['value']}
 
 
+async def migrated_property_read(manager, request, grant, family, region, group, dids, current, directory):
+    from homeplane.mijia_power_home import authorize_power_read
+
+    request = dict(request)
+    request.pop('registered_power')
+    did, siid, piid, desired = property_request(request)
+    if desired is not None or not authorize_power_read(directory, family, region, did, siid, piid):
+        raise ValueError('mijia_permission_changed')
+    return await property_operation(manager, request, grant, group, dids, current)
+
+
+class PropertyNotifications:
+    """合并同一属性的推送，仅提供触发读取的线索。"""
+
+    def __init__(self, manager, group, allowed):
+        self.manager, self.group, self.allowed = manager, group, allowed
+        self.subscriptions = {}
+        self.fields = {}
+        self.dirty = set()
+        self.after = None
+
+    def visible(self, did):
+        mgr = self.manager
+        return (mgr.can_control(did) and not mgr.in_local_cooldown(did) and mgr.can_push(did)
+                and (mgr.local_device(did) or {}).get('group_id') == self.group)
+
+    def remove(self, did):
+        self.subscriptions.pop(did, None)
+        self.dirty.difference_update(row for row in tuple(self.dirty) if row[0] == did)
+        self.manager.unsub_device_props(did)
+
+    def receive(self, did, cookie, event):
+        if self.subscriptions.get(did) is not cookie or event.did != did or not self.visible(did):
+            return
+        fields = self.fields.get(did, ())
+        for change in event.changes:
+            if (change.siid, change.piid) in fields:
+                self.dirty.add((did, change.siid, change.piid))
+
+    async def fetch(self, watches):
+        if not isinstance(watches, list) or len(watches) > 48:
+            raise ValueError('mijia_push_invalid')
+        fields = defaultdict(set)
+        for row in watches:
+            if not (isinstance(row, list) and len(row) == 3
+                    and isinstance(row[0], str) and DID.fullmatch(row[0])
+                    and row[0] in self.allowed and all(type(i) is int and 1 <= i <= 65535 for i in row[1:])):
+                raise ValueError('mijia_push_invalid')
+            fields[row[0]].add(tuple(row[1:]))
+        self.fields = {did: items for did, items in fields.items() if self.visible(did)}
+        for did in list(self.subscriptions):
+            if did not in self.fields or self.manager.props_sub_groups(did) != {self.group}:
+                self.remove(did)
+
+        loop = asyncio.get_running_loop()
+        pending = self.fields.keys() - self.subscriptions.keys()
+        if pending:
+            did = min(pending, key=lambda item: (self.after is not None and item <= self.after, item))
+            self.after = did
+            cookie = object()
+
+            def callback(event, device=did, generation=cookie):
+                # 有些 SDK 版本在 MQTT 线程派发。所有队列操作统一在事件循环。
+                loop.call_soon_threadsafe(self.receive, device, generation, event)
+
+            try:
+                async with asyncio.timeout(.55):
+                    await self.manager.sub_device_props_async(did, callback)
+                if self.visible(did) and self.manager.props_sub_groups(did) == {self.group}:
+                    self.subscriptions[did] = cookie
+                else:
+                    self.remove(did)
+            except (OSError, RuntimeError, TimeoutError, ValueError):
+                self.remove(did)
+        changed = sorted((did, siid, piid) for did, siid, piid in self.dirty
+                         if did in self.subscriptions and (siid, piid) in self.fields.get(did, ()))
+        self.dirty.clear()
+        return {'changes': changed}
+
+
 async def cover_operation(manager, request, grant, group, dids, scope_current, directory):
     from .cover_worker import authorized
 
@@ -208,6 +290,7 @@ async def serve(reader, session):
             if not hub.enabled:
                 return
             await hub.init_async()
+        notifications = PropertyNotifications(hub, home.group_id, allowed)
         print(json.dumps({'ready': True, 'family': family}), flush=True)
 
         def current():
@@ -236,10 +319,16 @@ async def serve(reader, session):
                                     and (hub.local_device(did) or {}).get('group_id') == home.group_id)
                     reply = {'connected': hub.is_ready, 'routes': routes,
                              'push': sum(hub.can_push(did) for did in routes)}
+                elif request.keys() == {'property_watches'}:
+                    reply = await notifications.fetch(request['property_watches'])
                 elif 'cover' in request:
                     reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
                 elif 'numeric' in request:
                     reply = await numeric_operation(
+                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
+                    )
+                elif request.get('registered_power') is True:
+                    reply = await migrated_property_read(
                         hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
                     )
                 elif 'authority_revision' in request or 'deadline' in request:

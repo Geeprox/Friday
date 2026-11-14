@@ -111,6 +111,16 @@ class MijiaLanClient:
             raise ValueError('mijia_lan_unavailable')
         return reply
 
+    async def property_notifications(self, family, watched):
+        if not self.ready(family) or self.io.locked():
+            return []
+        async with asyncio.timeout(.85):
+            reply = await self._call({'property_watches': watched}, family)
+        changes = reply.get('changes')
+        if not isinstance(changes, list) or len(changes) > len(watched):
+            return []
+        return [tuple(row) for row in changes if isinstance(row, list) and row in watched]
+
     async def _watch(self):
         try:
             while True:

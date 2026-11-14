@@ -112,6 +112,12 @@ def target_digest(target):
     return hashlib.sha256(repr(target.reference).encode()).hexdigest()
 
 
+def authorize_power_read(directory, family, region, did, siid, piid):
+    authority, _ = read_device_authority(directory / 'action-authority.json', include_inactive=True)
+    return isinstance(authority, HomeDeviceAuthority) and power_binding_allowed(
+        directory, authority, family, (f'{region}_{did}', siid, piid))
+
+
 def authorize_send(directory, revision, deadline, family, region, did, siid, piid):
     remaining = deadline - time.monotonic() if type(deadline) in (int, float) else -1
     if not math.isfinite(remaining) or not 0 < remaining <= 60:
@@ -119,10 +125,17 @@ def authorize_send(directory, revision, deadline, family, region, did, siid, pii
     authority, version = read_device_authority(directory / 'action-authority.json', include_generation=True)
     if not isinstance(authority, HomeDeviceAuthority) or version != revision:
         return False
-    catalog = read_catalog(directory)
+    return power_binding_allowed(directory, authority, family, (f'{region}_{did}', siid, piid))
+
+
+def power_binding_allowed(directory, authority, family, property_key):
+    try:
+        catalog = read_catalog(directory)
+    except (OSError, ValueError):
+        return False
     if catalog.family != family or catalog.legacy_approval != cover_approval(authority):
         return False
-    targets = [target for target in catalog.targets if target.property_key == (f'{region}_{did}', siid, piid)]
+    targets = [target for target in catalog.targets if target.property_key == property_key]
     if len(targets) != 1 or targets[0].operation not in authority.operations:
         return False
     scope = authority.external_entity_ids
@@ -234,6 +247,9 @@ class MijiaPowerHome:
             self.numeric = None
         self.samples = {}
         self.last_poll = {}
+        self.last_hint_check = 0.0
+        self.hints = set()
+        self.watch_context = None
 
     def context(self):
         from .embodied.mijia_lan import home_input
@@ -470,6 +486,61 @@ class MijiaPowerHome:
         sensors = self.active_sensors().values() if include_sensors else ()
         return sum(self.sample_for(context, t) is not None for t in (*targets.values(), *sensors))
 
+    def connected_targets(self):
+        context, targets = self.active()
+        if context is None:
+            return None, {}
+        return context, {t.entity.id: t for t in (*targets.values(), *self.active_sensors().values())
+                         if self.power.lan.ready(context[0], t.identity.split('_', 1)[1])}
+
+    def unqualified_references(self, targets):
+        # 保留现有手势目标，并检查本地通道能表达它实际绑定的动作。
+        from .embodied.household import supported_actions
+        from .embodied.interaction import load
+
+        interactions = load()
+        if not interactions.enabled:
+            return set()
+        missing = set()
+        for binding in interactions.bindings:
+            if not binding.enabled:
+                continue
+            if binding.target == 'friday:configured-cover':
+                permission = self.core.actions.cover_permission() or {}
+                actions = supported_actions({'kind': 'cover', 'source_kind': 'miot',
+                                             'capabilities': permission.get('operations', [])})
+            elif isinstance(target := targets.get(binding.target), PowerTarget):
+                actions = supported_actions({'kind': target.entity.kind, 'capabilities': [target.operation]})
+            else:
+                actions = ()
+            if binding.action not in actions:
+                missing.add(binding.target)
+        return missing
+
+    async def qualify_source(self):
+        # 切换先实读一个准确绑定的属性。网关在线或缓存里有设备都不能代替读回。
+        context, targets = self.connected_targets()
+        for target in list(targets.values())[:4]:
+            try:
+                if isinstance(target, Sensor):
+                    await self.read_sensor(context, target)
+                else:
+                    writer = self.writer(target.entity.id, context=context, target=target)
+                    if writer is None:
+                        continue
+                    await writer.readback()
+            except (OSError, ValueError, TimeoutError, httpx.HTTPError):
+                continue
+
+            def current():
+                live, connected = self.connected_targets()
+                return (live == context and connected.get(target.entity.id) == target
+                        and self.sample_for(context, target) is not None)
+
+            if current():
+                return current
+        return None
+
     def active_setting(self, context, target, setting):
         if (sample := self.sample_for(context, target)) is None:
             return None
@@ -628,7 +699,7 @@ class MijiaPowerHome:
 
         async def request(payload):
             if 'power' not in payload:
-                return await self.power.lan.request(payload, family=family)
+                return await self.power.lan.request({**payload, 'registered_power': True}, family=family)
             if deadline is None or revision is None or guard is None:
                 raise ValueError('mijia_permission_changed')
             return await self.power.lan.request(
@@ -694,10 +765,41 @@ class MijiaPowerHome:
 
         self.record((context, sensor.reference), value, current)
 
+    async def refresh_hints(self, context, entries, now):
+        fetch = getattr(self.power.lan, 'property_notifications', None)
+        if fetch is None or now - self.last_hint_check < 3:
+            return
+        if context != self.watch_context:
+            self.hints.clear()
+            self.watch_context = context
+        refs = {}
+        for reference, target, setting in entries:
+            did = target.identity.split('_', 1)[1]
+            if self.power.lan.ready(context[0], did):
+                refs[(did, target.siid, setting.piid if setting else target.piid)] = reference
+        # 已登记开关优先订阅。超过预算的设备仍按普通周期读取。
+        selected = dict(list(refs.items())[:48])
+        self.hints.intersection_update(selected.values())
+        self.last_hint_check = now
+        try:
+            changes = await fetch(context[0], [list(row) for row in selected])
+        except (OSError, TimeoutError, ValueError):
+            return
+        self.hints.update(selected[row] for row in changes if row in selected)
+
     async def sample_once(self):
         if not self.uses_lan_home(self.core.adapter):
             self.samples.clear()
             self.last_poll.clear()
+            if self.watch_context is not None:
+                fetch = getattr(self.power.lan, 'property_notifications', None)
+                try:
+                    if fetch is not None:
+                        await fetch(self.watch_context[0], [])
+                except (OSError, TimeoutError, ValueError):
+                    pass
+                self.watch_context = None
+                self.hints.clear()
             return
         # 操作与路由探测优先，后台每轮只占用一个局域网读取。
         if self.core.actions._lock.locked() or self.power.lan.io.locked():
@@ -713,9 +815,19 @@ class MijiaPowerHome:
         self.samples = {k: v for k, v in self.samples.items() if k[0] == context and k[1] in keys}
         self.last_poll = {k: v for k, v in self.last_poll.items() if k[0] == context and k[1] in keys}
         now = time.monotonic()
-        for reference, target, setting in sorted(entries, key=lambda entry: self.last_poll.get((context, entry[0]), 0)):
+        adapter = self.core.adapter
+        await self.refresh_hints(context, entries, now)
+        if adapter is not self.core.adapter or not self.uses_lan_home(adapter) or self.core.actions._lock.locked():
+            return
+        # 优先补足周期读回，避免频繁变化的设备挤掉其他设备。
+        def order(entry):
+            recent = self.last_poll.get((context, entry[0]), 0)
+            return now - recent < 20, entry[0] not in self.hints, recent
+
+        for reference, target, setting in sorted(entries, key=order):
             key = context, reference
-            if now - self.last_poll.get(key, now - 20) < 20:
+            elapsed = now - self.last_poll.get(key, now - 20)
+            if elapsed < 20 and (reference not in self.hints or elapsed < 2):
                 continue
             did = target.identity.split('_', 1)[1]
             if not self.power.lan.ready(context[0], did):
@@ -725,6 +837,7 @@ class MijiaPowerHome:
                 if power is None or power.value != 'on':
                     self.samples.pop(key, None)
                     continue
+            self.hints.discard(reference)
             self.last_poll[key] = now
             try:
                 if setting:

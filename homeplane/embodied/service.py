@@ -32,6 +32,21 @@ def camera_runtime_configured():
         return False
 
 
+def mijia_runtime_configured(directory=PRIVATE):
+    # 读取已保存的授权只用于决定能否启动米家目录，不尝试续期或拉流。
+    from .mijia_power import grant_binding
+    from .ptz_control import read_lease
+
+    try:
+        if not PYTHON.is_file():
+            return False
+        saved = read_lease(directory / 'miot-session.json')
+        grant_binding(saved)
+        return bool(saved.get('access_token') or saved.get('refresh_token'))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return False
+
+
 class EmbodiedService:
     def __init__(self):
         self.process = None

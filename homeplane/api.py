@@ -313,24 +313,36 @@ def create_app(
             store.append_events(events)
             core_rule_runtime.enqueue(active, events)
 
-    async def attach_ha(candidate, initial=None, *, current=lambda: True):
-        # 接回家电来源时保留已经运行的镜头会话。来源切换要撤销待执行的旧计划。
+    async def switch_home(candidate, initial, *, current, commit):
+        # 保留镜头会话，在同一个切换点撤销旧来源的待办并保存新的选择。
+        async with lock:
+            if not current():
+                raise ValueError("source_conflict")
+            home_flow.invalidate()
+            await core_rule_runtime.invalidate("source_changed")
+            await rule_runtime.invalidate("source_changed", reset_modes=True)
+            if not current():
+                raise ValueError("source_conflict")
+            # 保存与替换之间没有网络等待。
+            store.append_events(initial.events)
+            if commit is not None:
+                commit()
+            old = core.adapter
+            core.adapter = candidate
+            return old, initial
+
+    async def attach_ha(candidate, initial=None, *, current=lambda: True, commit=None):
         if isinstance(candidate, HAReadOnlyAdapter):
             await candidate.subscribe(event_sink=lambda events: ingress(candidate, events))
         if initial is None:
             initial = await candidate.snapshot()
         if candidate.health().get("transport") != "online":
             raise ValueError("ha_unavailable")
-        async with lock:
-            if not current():
-                raise ValueError("source_conflict")
-            store.append_events(initial.events)
-            old = core.adapter
-            home_flow.invalidate()
-            await core_rule_runtime.invalidate("source_changed")
-            await rule_runtime.invalidate("source_changed", reset_modes=True)
-            core.adapter = candidate
-            return old, initial
+        return await switch_home(candidate, initial, current=current, commit=commit)
+
+    async def attach_mijia(*, current, commit):
+        candidate = LocalCameraHome()
+        return await switch_home(candidate, await candidate.snapshot(), current=current, commit=commit)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -403,6 +415,7 @@ def create_app(
     app.state.embodied = embodied
     app.state.infrastructure = infrastructure
     app.state.attach_ha = attach_ha
+    app.state.attach_mijia = attach_mijia
 
     @app.get("/api/embodied/mijia-lan")
     async def mijia_lan_status():
