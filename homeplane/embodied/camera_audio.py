@@ -6,10 +6,11 @@ packet retains its oldest input receipt time and a capture-bound sequence.
 
 import base64
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import math
 import re
+import secrets
 
 from .camera_provenance import bind_capture_packet, camera_source_context
 
@@ -28,6 +29,7 @@ class WakeCameraCue:
     session: str
     source: tuple[str, str]
     voice_revision: int
+    correlation: str = field(default_factory=lambda: secrets.token_hex(16), compare=False)
 
 
 @dataclass(frozen=True)
@@ -243,7 +245,11 @@ async def deliver_audio(service, admission):
         return False
     service.state['audio_input'] = admission.diagnostics
     service.audio_input_at = admission.received_mono
-    if admission.reset:service.reset_audio()
+    if admission.reset:
+        if admission.packet is not None:
+            service.finish_gap(admission.packet)
+        service.reset_audio(
+            'voice_audio_discontinuity' if admission.packet is not None else 'voice_audio_rejected')
     if admission.packet is None:return False
     await service.audio(admission.packet)
     return True

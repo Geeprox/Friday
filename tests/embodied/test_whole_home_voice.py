@@ -50,7 +50,7 @@ def voice_at(camera, session, routing, *, owner=None, text='Friday'):
     def measure(pcm):
         samples = np.frombuffer(pcm, dtype='<i2').astype(float) / 32768
         rms = float(np.sqrt(np.mean(samples ** 2)))
-        return rms > .003, 1.0 if rms > .003 else 0.0, rms
+        return voice_activity.SpeechActivity(rms > .003, 1.0 if rms > .003 else 0.0, rms, 0.0)
 
     service.activity = SimpleNamespace(probability=.9, measure=measure)
     return service
@@ -186,6 +186,50 @@ async def test_short_cue_only_deduplicates_complete_audio_after_confirmed_wake(s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('problem', ['same_source_gap', 'stale_video', 'disabled'])
+async def test_brief_wake_closes_at_the_audio_gap_only_with_current_authority(tmp_path, monkeypatch, problem):
+    clock = clock_at()
+    monkeypatch.setattr(home_service, 'time', clock)
+    monkeypatch.setattr(home_service, 'VOICE_INPUT_PAUSED', tmp_path / 'paused')
+    route = VoiceRouting(lambda: True, clock=clock.monotonic)
+    route.COLLECT_SECONDS = 0
+    service = voice_at(CAMERA, SESSION, route)
+    gate = AudioIngress(CAMERA, 'a'*32)
+    framer = PCMFramer(CAMERA, 'a'*32)
+    speech = np.full(3200, 360, dtype='<i2').tobytes()
+    quiet = bytes(6400)
+    service.activity.measure = Mock(side_effect=[
+        voice_activity.SpeechActivity(False, .25, .001, .128),
+        voice_activity.SpeechActivity(False, 0, 0, 0),
+    ])
+
+    async def deliver(at, pcm, *, fresh=True, enabled=True):
+        clock.at = at
+        if fresh:
+            service.last_video = at
+            assert gate.observe_frame(dict(type='frame', received_at=clock.time(),
+                capture_session=gate.session, camera_source_context=gate.context),
+                wall=clock.time(), mono=at)
+        service.audio_allowed = enabled
+        packet, = framer.push(pcm, received=clock.time(), decoded=clock.time(), wall=clock.time(), mono=at)
+        await deliver_audio(service, gate.accept(packet, wall=clock.time(), mono=at))
+
+    await deliver(1, speech)
+    assert service.speaking and route.task is None
+    await deliver(3 if problem == 'stale_video' else 1.7, quiet,
+                  fresh=problem != 'stale_video', enabled=problem != 'disabled')
+    if route.task:
+        await route.task
+    if problem == 'same_source_gap':
+        assert service.request.await_args.kwargs['wake_only'] is True
+        assert service.wake_camera is not None
+        assert len(service.request.await_args.kwargs['pcm']) == (6400 + 2) // 3 * 4
+    else:
+        service.request.assert_not_awaited()
+        assert service.wake_camera is None
+
+
+@pytest.mark.asyncio
 async def test_short_fragment_does_not_replace_a_pending_full_utterance_from_the_same_camera():
     clock = clock_at(10)
     route = VoiceRouting(lambda: True, clock=clock.monotonic)
@@ -287,7 +331,7 @@ def test_cameras_share_model_weights_with_independent_voice_state_and_reload_aft
         block = np.full(512, 1800, dtype='<i2').tobytes()
         with pytest.raises(RuntimeError, match='SYNTHETIC-inference-fault'):
             first.measure(block)
-        assert second.measure(block)[0]
+        assert second.measure(block).speech
         assert build.call_count == 2
         assert not first.state.any() and (second.state == 1).all()
     finally:

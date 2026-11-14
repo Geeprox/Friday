@@ -134,6 +134,11 @@ class ModelIntent(BaseModel):
     voice_revision:int|None=Field(default=None,ge=0,strict=True)
 
 
+class MiHomeCandidate(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    candidate: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
 def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None, archive=None, home_flow=None):
     router = APIRouter()
     from .voice_preferences import install as install_voice_preferences
@@ -252,6 +257,13 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     @router.post('/api/embodied/connection')
     async def mijia_connection(request:MiHomeConnection):
         return await service.connection(request.action,request.return_url)
+
+    @router.post('/api/embodied/discovery/connect')
+    async def mijia_connect(request: MiHomeCandidate):
+        try:
+            return await service.connect_discovered_camera(request.candidate)
+        except (OSError, ValueError, TimeoutError):
+            return {'state': 'unavailable'}
 
     @router.get("/api/embodied/cameras")
     async def cameras():

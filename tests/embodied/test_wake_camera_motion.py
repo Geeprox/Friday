@@ -15,6 +15,7 @@ from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, WakeCameraC
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.intent import address
 from homeplane.embodied.party_camera import PartyCamera
+from homeplane.embodied.voice_activity import SpeechActivity
 from tests.embodied.test_camera_audio import CAMERA, audio, video, voice_service
 from tests.embodied.test_camera_director import patrol_view, person, sample
 from tests.embodied.test_camera_follow_appearance import picture
@@ -54,7 +55,8 @@ async def hear_wake(tmp_path, monkeypatch, clock, word, *, text=None, voiced_fra
         text=text, voice_revision=7, address=address(text, False, wake_word=word)))
     h.command = AsyncMock()
     # 先给出完整的语音活动，再用连续的静音帧关闭语音段。
-    measurements = [(True, 1.0, .03)] * voiced_frames + [(False, 0.0, .004)] * 4
+    measurements = [SpeechActivity(True, 1.0, .03, 0.0)] * voiced_frames
+    measurements += [SpeechActivity(False, 0.0, .004, 0.0)] * 4
     h.activity = SimpleNamespace(probability=.9, measure=Mock(side_effect=measurements))
     capture = 'a' * 32
     gate = AudioIngress(CAMERA, capture)
@@ -66,7 +68,7 @@ async def hear_wake(tmp_path, monkeypatch, clock, word, *, text=None, voiced_fra
         admitted = gate.accept(audio(clock.at, framer=framer), wall=clock.time(), mono=clock.at)
         assert await deliver_audio(h, admitted)
     await asyncio.gather(*jobs)
-    assert h.request.await_count == int(voiced_frames >= 2)
+    assert h.request.await_count == int(voiced_frames >= 1)
     h.command.assert_not_awaited()
     return h, (gate.session, gate.context)
 
@@ -94,7 +96,8 @@ def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, recogn
         async def send(direction):
             scope.update(last_frame=state['_local_received'], direction=direction)
             await scope['motor_step'](direction, state['_local_received'], expected_intent='original',
-                                      decision_current=scope['decision_current'])
+                                      decision_current=scope['decision_current'],
+                                      wake=(director.pending_decision or {}).get('sound_cue'))
             director.sent(clock.at, direction)
     else:
         sent = []
@@ -165,6 +168,10 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(
     assert observe(1.8) == 'right'
     await send('right')
     assert [(row['action'], row['direction']) for row in sent] == [('motor_step', 'right')]
+    receipts = [(args, kwargs) for args, kwargs in home.runtime_log.record.call_args_list
+                if kwargs.get('correlation') == home.wake_camera.correlation]
+    assert [kwargs['code'] for _, kwargs in receipts] == [
+        'wake_confirmed', 'wake_motor_right', 'wake_motor_acknowledged']
 
     found = subject(7, target_x)
     assert observe(3.9, offset=.05, people=[found]) is None
@@ -692,7 +699,7 @@ async def test_ordinary_transcript_never_requests_camera_motion(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('frames, text', [(1, 'Friday'), (2, 'Friday，打开玄关灯'), (2, '打开玄关灯')])
+@pytest.mark.parametrize('frames, text', [(0, 'Friday'), (1, 'Monday'), (2, 'Friday，打开玄关灯'), (2, '打开玄关灯')])
 async def test_short_input_reaches_neither_motor_nor_device_commands_without_exact_wake(
         tmp_path, monkeypatch, frames, text):
     clock = SimpleNamespace(at=0.0)

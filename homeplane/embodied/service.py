@@ -45,6 +45,9 @@ class EmbodiedService:
         self._practice_requests = PracticeRequests(self)
         from .manual_preview import ManualPreview
         self.manual_previews=ManualPreview()
+        self.discovery_task = None
+        self.registration_lock = asyncio.Lock()
+        self.discovery_report = dict(state='not_checked', devices=[])
 
     async def ensure_background(self, *, interaction=True, open_privacy=False):
         # Background recovery must never override Mi Home's newer shutter state.
@@ -288,6 +291,7 @@ class EmbodiedService:
                 model=c["model"],
                 can_takeover=bool(c.get("takeover")),
                 preserve_shutter=not c.get("allow_open"),
+                preview_only=c.get("preview_only") is True,
                 selected=c["id"] == self.selected,
             )
             for c in configuration()["cameras"]
@@ -333,6 +337,8 @@ class EmbodiedService:
             # Viewer selection never replaces the household camera owner. Games
             # use its primary feed; other views subscribe to their existing feed.
             selected = camera(self.selected if self.background and self.selected else camera_id)
+            if selected.get('preview_only') is True:
+                raise ValueError('camera_preview_only')
             if self.process is not None and (
                 self.process.returncode is not None or self.selected != selected["id"]
                 or open_privacy and not self.open_privacy and not self.background
@@ -527,8 +533,9 @@ class EmbodiedService:
         manual_active=self.manual_previews.has(camera_id)
         if not self.capture_enabled and not manual_active and not (explicit and start):
             raise ValueError('camera_capture_paused')
-        camera(camera_id)
-        if manual_active or explicit and start and (not self.capture_enabled or not self.process or self.process.returncode is not None):
+        selected = camera(camera_id)
+        if manual_active or explicit and start and (selected.get('preview_only') is True
+                or not self.capture_enabled or not self.process or self.process.returncode is not None):
             if self.closed or not self.configured():raise ValueError('embodied_not_configured')
             report=await self.manual_previews.command('start' if start else 'frame' if frame else 'status',camera_id)
             if frame:
@@ -556,7 +563,8 @@ class EmbodiedService:
         return dict(state='stopped')
 
     async def camera_control(self,camera_id,*,direction=None,mode=None,survey_revision=None):
-        camera(camera_id)
+        if camera(camera_id).get('preview_only') is True:
+            raise ValueError('camera_control_unavailable')
         if self.manual_previews.has(camera_id):
             if survey_revision is not None or mode in {'auto','pets','survey','patrol'}:raise ValueError('recognition_required')
             return await self.manual_previews.command('control',camera_id,direction=direction,mode=mode)
@@ -579,7 +587,9 @@ class EmbodiedService:
         return result
 
     async def camera_power(self,camera_id,*,enabled=None,revision=None,event_id=None):
-        camera(camera_id)
+        selected = camera(camera_id)
+        if enabled is not None and selected.get('preview_only') is True:
+            raise ValueError('camera_power_unavailable')
         if self.closed or not self.configured():raise ValueError('embodied_not_configured')
         if enabled is False:await self.stop_preview(camera_id)
         request=dict(camera=camera_id,action='read' if enabled is None else 'set')
@@ -610,6 +620,64 @@ class EmbodiedService:
             return json.loads(output)
         finally:
             if process.returncode is None:process.kill();await process.wait()
+
+    def start_mijia_discovery(self):
+        if self.discovery_task is None and not self.closed:
+            self.discovery_task = asyncio.create_task(self._discover_mijia(), name='friday-mijia-inventory')
+
+    async def _discover_mijia(self):
+        while not self.closed:
+            try:
+                self.discovery_report = await self._mijia_inventory('inventory')
+            except (OSError, ValueError, TimeoutError):
+                self.discovery_report = dict(state='unavailable', devices=[])
+            await asyncio.sleep(300)
+
+    def mijia_discovery(self, known=()):
+        try:
+            config = configuration()
+            # 摄像头待接入与 HA 里的通用开关是不同能力，已登记镜头由摄像头列表去重。
+            cameras = {str(c.get('region', 'cn')) + '_' + str(c['device']['did']) for c in config['cameras']}
+        except (OSError, ValueError, KeyError):
+            config, cameras = {}, set()
+        can_connect = bool(config.get('enabled') and self.discovery_report.get('region') == 'cn' and self.configured())
+        known = set(known)
+        rows = [
+            {**{key: row[key] for key in ('id', 'name', 'room', 'kind', 'online')},
+             'can_connect': row['kind'] == 'camera' and can_connect}
+            for row in self.discovery_report.get('devices', [])
+            if row['identity'] not in (cameras if row['kind'] == 'camera' else known | cameras)
+        ]
+        return dict(state=self.discovery_report['state'], devices=rows)
+
+    async def connect_discovered_camera(self, candidate):
+        row = next((row for row in self.mijia_discovery()['devices'] if row['id'] == candidate), None)
+        if self.discovery_task is None or row is None or not row['can_connect']:
+            return dict(state='inventory_changed')
+        async with self.registration_lock:
+            return await self._mijia_inventory('connect', candidate)
+
+    async def _mijia_inventory(self, action, candidate=None):
+        if self.closed or not PYTHON.is_file() or not (PRIVATE/'miot-session.json').is_file():
+            return dict(state='not_configured', devices=[])
+        cmd = (str(PYTHON), '-B', '-m', 'homeplane.embodied.mijia_inventory')
+        process = await asyncio.create_subprocess_exec(*cmd, cwd=str(PROJECT),
+            env=dict(os.environ, PYTHONPATH=str(PROJECT), FRIDAY_EMBODIED_DATA=str(DATA)),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL)
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(
+                json.dumps(dict(action=action, candidate=candidate)).encode()), 40)
+            if process.returncode or len(output) > 384000:
+                raise ValueError('mijia_inventory_unavailable')
+            return json.loads(output)
+        finally:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
 
     async def scenes(self,*,scene=None,revision=None,event_id=None):
         if self.closed or not PYTHON.is_file() or not (PRIVATE/'miot-session.json').is_file():
@@ -699,6 +767,11 @@ class EmbodiedService:
         self.closed = True
         try:
             try:
+                if self.discovery_task is not None:
+                    self.discovery_task.cancel()
+                    await asyncio.gather(self.discovery_task, return_exceptions=True)
+                async with self.registration_lock:
+                    pass
                 await self.manual_previews.close()
             finally:
                 try:

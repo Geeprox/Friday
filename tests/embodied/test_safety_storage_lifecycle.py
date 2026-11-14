@@ -626,6 +626,8 @@ async def test_original_service_always_stops_worker_and_closes_client_after_opti
 
     service = EmbodiedService.__new__(EmbodiedService)
     service.closed = False
+    service.discovery_task = None
+    service.registration_lock = asyncio.Lock()
     service.manual_previews = SimpleNamespace(close=AsyncMock())
     service.safety_output = SimpleNamespace(close=AsyncMock())
     service.stop = AsyncMock()

@@ -17,6 +17,27 @@ are derived from the current user; it does not embed an author's repository path
 login session or signing identity. NAS and People content stay local. Optional
 ARL provides the model-runtime boundary and is not a prerequisite for simulation.
 
+## 语音唤醒与设备发现
+
+连续有效的摄像头音频同时累计逐帧唤醒证据和原有的完整语句证据。短唤醒仍需本机转写
+准确匹配配置的唤醒词。音频分片打断时，若同一来源和新鲜画面仍通过检查，可将已收到的
+片段单独提交，且仅用于复核唤醒词。云台沿原权限和跟随条件执行，日志关联唤醒、发送和 SDK 结果。
+
+桌面后台在已连接家庭中定时运行只读米家清单进程。它核对现有摄像头或家庭登记，再将
+最小展示字段交给控制面。HA 快照用于去除已接入的普通设备。镜头登记需用户确认、重新
+核对米家标识和读取公开隐私规格，原子保存为手动预览。
+
+```mermaid
+flowchart LR
+  A[同源摄像头收音与有效画面] --> B[分帧判断与本地转写]
+  B --> C[匹配唤醒词]
+  C --> D[当前画面核对及云台发送]
+  M[米家家庭目录] --> F[待接入设备]
+  H[HA 设备登记] --> F
+  F --> G[确认登记摄像头]
+  G --> V[手动打开预览]
+```
+
 ## 重建其他平台的自动化
 
 自动化目录在读取时为每条盘点记录生成摘要。重建页将原记录与当前家庭设备选择放在一起。新规则使用当前注册设备和能力标识，数值条件使用读数能力绑定的单位。

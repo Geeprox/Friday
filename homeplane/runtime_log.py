@@ -29,6 +29,7 @@ MEMORY_ROWS = 256
 EXPORT_ROWS = 64
 STAGES = frozenset('''service.construct service.start service.stop http.request
 embodied.start embodied.stop embodied.command embodied.preview embodied.voice
+embodied.voice_ingress embodied.wake_motion
 people.collect people.enroll
 infrastructure.reconcile infrastructure.configure
 automation.catalog.read automation.catalog.import
@@ -68,6 +69,11 @@ nas_revision_changed nas_invalid_request nas_budget_exceeded nas_cursor_expired 
 nas_busy nas_source_changed nas_timeout nas_transport_failed nas_unavailable nas_not_configured
 nas_credential_unavailable nas_credentials_unavailable nas_connection_required
 not_ready logging_unavailable transport_error authentication_rejected
+voice_audio_discontinuity voice_audio_rejected voice_input_gate_closed voice_frame_or_source_changed
+voice_segment_short voice_source_missing voice_route_rejected voice_asr_rejected voice_not_addressed
+voice_wake_after_audio_gap
+wake_confirmed wake_motor_left wake_motor_right wake_motor_up wake_motor_down
+wake_motor_acknowledged wake_motor_rejected wake_motor_result_unknown wake_motor_not_sent
 service_unavailable
 archive_privacy_unavailable archive_privacy_busy archive_privacy_budget
 archive_source_changed_or_unavailable archive_context_changed archive_playback_expired

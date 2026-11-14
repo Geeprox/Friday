@@ -64,6 +64,8 @@ KEY_PATH = PRIVATE / "viewer-key"
 KEY = KEY_PATH.read_text().strip()
 ALLOWED_IPS = set(configuration()["viewer_hosts"])
 SELECTED = dict(camera())
+if SELECTED.get('preview_only') is True:
+    raise ValueError('camera_preview_only')
 wall = CameraWall(configuration()['cameras'])
 primary_wall_epoch = 0
 primary_retired_scope = None
@@ -361,7 +363,9 @@ bindings = ActionBindings(registry)
 configure(registry, bindings, games, home)
 
 
-async def motor_step(direction, observed=None, expected_intent=None, decision_current=None):
+async def motor_step(direction, observed=None, expected_intent=None, decision_current=None, wake=None):
+    from homeplane.embodied.wake_diagnostics import record_wake_motor
+
     global motor_sequence, motion_generation, motor_last_sent
     if direction not in ("left", "right", "up", "down"):
         raise ValueError("invalid_motor_direction")
@@ -435,6 +439,8 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             capture.stdin.write((json.dumps(dict(action='motor_step', direction=direction,
                 request_id=request_id, expires_mono=expires))+'\n').encode())
             sent = True
+            if wake is not None:
+                record_wake_motor(home.runtime_log, wake, direction)
         await capture.stdin.drain()
         result = await asyncio.wait_for(future, 3)
         if result.get('error_code') == 'motor_request_expired':
@@ -444,15 +450,22 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
         state["local_motor"] = dict(result, at=time.time())
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             elapsed_ms=round((time.monotonic()-began)*1000))
+        if wake is not None:
+            record_wake_motor(home.runtime_log, wake, direction, result='ok')
         return result
     except asyncio.CancelledError:
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             result='cancelled',code='control_cancelled_after_send' if sent else 'control_cancelled_before_dispatch',
             elapsed_ms=round((time.monotonic()-began)*1000))
+        if wake is not None:
+            record_wake_motor(home.runtime_log, wake, direction, result='cancelled', sent=sent)
         raise
-    except Exception:
+    except Exception as error:
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             result='unavailable',code='runtime_error',elapsed_ms=round((time.monotonic()-began)*1000))
+        if wake is not None:
+            record_wake_motor(home.runtime_log, wake, direction, result='unavailable', sent=sent,
+                              rejected=str(error) in {'local_motor_rejected', 'motor_request_expired'} and sent)
         raise
     finally:
         motor_waiters.pop(request_id, None)
@@ -460,6 +473,8 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
 
 
 async def camera_search():
+    from homeplane.embodied.camera_audio import WakeCameraCue
+
     global camera_lease, camera_planner
     io = Transport()
     lease = CameraLease(io, open_privacy=False, restore_native=True)
@@ -523,8 +538,10 @@ async def camera_search():
                             review_pending=safety.review_pending(SELECTED['id'], current.get('session_id')),
                             fall_pending=safety.fall_pending(SELECTED['id'], current.get('session_id')),
                             sound_cue=camera_motion_cue(SELECTED['id'], current, director.sound_search_cue))
+                    wake = (director.pending_decision or {}).get('sound_cue')
+                    diagnostics = {'wake': wake} if isinstance(wake, WakeCameraCue) else {}
                     await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
-                                     decision_current=decision_current)
+                                     decision_current=decision_current, **diagnostics)
                     director.sent(time.monotonic())
                     lease.event('local_follow_impulse', direction=direction)
                 except (RuntimeError, OSError, TimeoutError) as error:
@@ -587,7 +604,13 @@ def view():
     result["recording"] = recorder.public()
     result['safety_recording'] = safety.recording_status()
     result["home"] = home.public()
-    result["voice_sessions"] = [dict(camera=cid,**{key:service.public().get(key) for key in ("enabled","voice","reason","last_transcript","last_event","voice_command","audio_input","audio_analysis")}) for cid,service in [(SELECTED["id"],home),*secondary_homes.items()]]
+    voice_fields = ("enabled", "voice", "reason", "last_transcript", "last_event", "voice_command",
+                    "audio_input", "audio_analysis", "voice_ingress")
+    result["voice_sessions"] = [
+        dict(camera=cid, **{key: report.get(key) for key in voice_fields})
+        for cid, report in [(SELECTED["id"], result["home"]),
+                            *((cid, service.public()) for cid, service in secondary_homes.items())]
+    ]
     result['interactions'] = fleet.public(now)
     result['voice_input'] = not (PRIVATE/'voice-input-paused').exists()
     if camera_planner and result.get('camera_control'):
@@ -1248,7 +1271,7 @@ async def start():
     last_frame = 0
     task = asyncio.create_task(supervised_source(generation))
     for selected in configuration()["cameras"]:
-        if selected["id"] != SELECTED["id"]:
+        if selected["id"] != SELECTED["id"] and selected.get('preview_only') is not True:
             await previews.start(selected["id"])
 
 

@@ -39,6 +39,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  let listSlot=null,inspectorSlot=null,statsSlot=null,modelSlot=null,spatialScene=null,spacePanel=null,spatialRoom=null,spatialDevice=null,placementNotice=null,placementSaving=false;
  let spatialTrigger=null,inspectorTrigger=null;
  let previewStop=null;
+ let discoverySlot=null, connectingCamera=null;
  const cameraStates=new Map(),requestedPositions=new Map();
  async function readCamera(id,fresh=false){const saved=cameraStates.get(id);if(!fresh&&saved&&Date.now()-saved.at<15000)return saved.value;const value=await api(`/api/embodied/cameras/${id}/power`);cameraStates.set(id,{value,at:Date.now()});return value;}
  async function wakeCamera(id){const state=await readCamera(id,true);if(state.enabled)return {...state,status:'reported_match'};const value=await api(`/api/embodied/cameras/${id}/power`,{enabled:true,revision:state.revision,event_id:crypto.randomUUID()});cameraStates.delete(id);if(value.status==='reported_match')cameraStates.set(id,{value,at:Date.now()});return value;}
@@ -66,6 +67,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  }
  function drawCameras(){
   recognitionDebug?.dispose();cameraPrivacy?.dispose();view.replaceChildren();
+  discoverySlot=h('div');view.append(discoverySlot);drawDiscovery();
   const layout=h('div',null,{class:'product-device-layout camera-device-layout'});listSlot=h('div');inspectorSlot=h('aside',null,{class:'product-inspector',id:'device-detail-panel',hidden:''});add(layout,listSlot,inspectorSlot);view.append(layout);const cameras=data.devices.filter(d=>d.kind==='camera');listSlot.append(tiles(cameras));if(!cameras.length)listSlot.append(add(h('div',null,{class:'product-empty'}),ico('video'),h('h2','还没有接入摄像头'),h('p','接入后可以查看画面、使用语音与动作控制。'),btn('接入摄像头',()=>go('Settings'))));
   view.append(add(h('section',null,{class:'camera-teaching-link'}),ico('hand'),add(h('div'),h('h2','手势与动作教学'),h('p','看动作示意，走到镜头前试一试。')),btn('开始体验',()=>{try{sessionStorage.setItem('Friday.interactionMode','gestures');}catch(_){}go('Interaction');})));
   cameraPrivacy=mountCameraPrivacy(view);
@@ -216,15 +218,16 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    cameraControl=previousIntent=null;
   }
   function syncControls(){
+   const previewOnly=d.camera?.preview_only===true;
    workspace.setAttribute('data-viewing',String(viewing));
    workspace.setAttribute('data-picking',String(!!picker));
-   liveControls.hidden=!viewing||!!picker;
-   watch.textContent=viewing?'停止查看':power?.enabled===false?'打开镜头并查看':'查看实时画面';
+   liveControls.hidden=previewOnly||!viewing||!!picker;
+   watch.textContent=viewing?'停止查看':!previewOnly&&power?.enabled===false?'打开镜头并查看':'查看实时画面';
    watch.classList.toggle('primary',!viewing);
-   watch.disabled=!viewing&&(pending||!power);
-   close.hidden=power?.enabled!==true;
+   watch.disabled=!viewing&&(pending||!power||previewOnly&&!power.enabled);
+   close.hidden=previewOnly||power?.enabled!==true;
    close.disabled=pending;
-   refresh.hidden=Boolean(power);
+   refresh.hidden=Boolean(power)&&(power.enabled||!previewOnly);
    refresh.disabled=pending;
    powerStatus.textContent=power?.enabled===true?'镜头已开启':power?.enabled===false?'镜头已关闭':pending?'正在读取…':'镜头状态待确认';
    const frameCurrent=live();
@@ -298,7 +301,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     const result=await api(endpoint+'/power');
     if(!owns())return;
     power=result;
-    if(!viewing)setStatus(power.enabled?'尚未查看':'镜头已关闭');
+    if(!viewing)setStatus(power.enabled?'尚未查看':d.camera?.preview_only?'请在米家打开镜头，再刷新状态':'镜头已关闭');
    }catch(_){
     if(owns()){power=null;setStatus('暂时无法读取镜头状态');}
    }finally{
@@ -313,7 +316,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     void poll();
     return;
    }
-   if(pending||!power)return;
+   if(pending||!power||d.camera?.preview_only&&!power.enabled)return;
    const epoch=++previewEpoch;
    pending=true;syncControls();
    try{
@@ -593,7 +596,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const picture=add(h('div',null,{class:'camera-picture'}),pickerTools,frame,targetPhoto,targetChoices,viewBar,surveyRow);
   add(liveControls,add(h('div'),h('h3','镜头模式'),followControls),add(h('div'),h('h3','调整视角'),cameraControls));
   const powerRow=add(h('div',null,{class:'camera-power-row'}),add(h('div'),ico('power'),powerStatus),close,refresh,
-    btn('人物识别',()=>go('People'),{class:'text-button'}));
+    d.camera?.preview_only?null:btn('人物识别',()=>go('People'),{class:'text-button'}));
   add(workspace,picture,liveControls,powerRow);slot.append(workspace);
   previewStop=dispose;
   void readPower().then(()=>{if(start&&owns()&&power?.enabled)watch.click();});
@@ -711,6 +714,49 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   }
   return list;
  }
+ function drawDiscovery(force=false){
+  if(!discoverySlot?.isConnected||connectingCamera||!force&&discoverySlot.contains(document.activeElement))return;
+  const rows=(data.discovery?.devices||[]).filter(d=>page!=='Cameras'||d.kind==='camera');
+  if(!rows.length){discoverySlot.replaceChildren();return;}
+  const section=add(h('section',null,{class:'mijia-discovery','aria-label':'米家待接入设备'}),
+   add(h('div',null,{class:'product-section-head'}),h('h2','米家待接入'),h('span',rows.length+' 台',{class:'caption'})));
+  const list=h('ul');
+  for(const d of rows){
+   const summary=[d.room,d.online?'在线':'离线'].filter(Boolean).join(' · ');
+   const label=add(h('div',null,{class:'mijia-discovery-label'}),h('strong',d.name),h('span',summary,{class:'caption'}));
+   const row=add(h('li'),ico(d.kind==='camera'?'video':'devices'),label);
+   if(d.can_connect){
+    const addCamera=btn('接入预览',async()=>{
+     if(connectingCamera)return;
+     connectingCamera=d.id;
+     addCamera.disabled=true;
+     try{
+      const result=await api('/api/embodied/discovery/connect',{candidate:d.id});
+      if(result.state!=='connected'){
+       toast(({camera_spec_unavailable:'暂时无法确认镜头的隐私状态，请稍后重试。',
+        camera_limit:'摄像头已达接入上限。',inventory_changed:'设备刚刚变化，请刷新后重试。'})[result.state]||'暂时无法接入这台摄像头。',true);
+       return;
+      }
+      if(!alive)return;
+      if(page!=='Cameras')try{sessionStorage.setItem('Friday.cameraFocus',result.camera);}catch(_){}
+      toast('已接入，可手动查看画面');
+      if(page==='Cameras'){
+       await load();
+       const camera=data?.devices.find(item=>item.id===result.camera);if(camera)inspect(camera);
+      }else go('Cameras');
+     }catch(_){toast('暂时无法接入这台摄像头。',true);}
+     finally{connectingCamera=null;addCamera.disabled=false;drawDiscovery(true);}
+    },{'aria-label':'接入预览 '+d.name});
+    row.append(addCamera);
+   }else{
+    if(d.kind==='camera')row.append(btn('查看连接',()=>go('Settings'),{class:'text-button'}));
+    else row.append(h('span','等待 Home Assistant 接入',{class:'caption'}));
+   }
+   list.append(row);
+  }
+  section.append(list);
+  discoverySlot.replaceChildren(section);
+ }
  function drawHome(){
   stopPreview();model?.dispose();model=null;spacePanel=null;spatialScene=null;listSlot=null;inspectorSlot=null;statsSlot=null;
   homeStatus?.dispose();homeStatus=null;view.replaceChildren();connectionSetup?.dispose();connectionSetup=null;
@@ -738,6 +784,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    });
    return;
   }
+  discoverySlot=h('div');view.append(discoverySlot);drawDiscovery();
   const browser=h('div',null,{class:'device-browser'});view.append(browser);roomDirectory(browser);
   const main=h('section',null,{class:'device-browser-main','aria-label':'设备列表'});browser.append(main);
   const toolbar=add(h('div',null,{class:'product-section-head device-list-heading'}),h('span',data.devices.length+' 个设备',{'data-device-count':'',class:'device-list-count'}));
@@ -784,7 +831,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  async function drawAutomations(){automationView?.dispose();view.replaceChildren();automationView=mountAutomations(view,{api,data,snapshot,go,toast,legacyRules,attentionId});}
  async function drawInteraction(){const {mountInteractions}=await import('./interactions.js');if(alive){interactions?.dispose();view.replaceChildren();interactions=mountInteractions(view,{data,go,toast});}}
  function draw(){if(['Home','Devices'].includes(page))drawHome();else if(page==='Cameras')drawCameras();else if(page==='Activity')void drawRecordings();else if(page==='Settings')void drawConnections();else if(page==='Automations')void drawAutomations();else if(page==='Interaction')void drawInteraction();}
- function update(){homeStatus?.update(data.devices);if(page==='Cameras')updateTiles();if(['Home','Devices'].includes(page)){model?.updateDevices(data.devices);updateTiles();drawStats();if(spatialRoom&&!busy&&data.devices.find(d=>d.id===spatialDevice)?.kind!=='camera'&&!spacePanel?.contains(document.activeElement))drawSpatialPanel();if(selected&&!busy&&inspectorSlot?.isConnected){const d=data.devices.find(x=>x.id===selected);if(d&&d.kind!=='camera'&&!inspectorSlot.contains(document.activeElement))inspect(d);}}}
+ function update(){homeStatus?.update(data.devices);drawDiscovery();if(page==='Cameras')updateTiles();if(['Home','Devices'].includes(page)){model?.updateDevices(data.devices);updateTiles();drawStats();if(spatialRoom&&!busy&&data.devices.find(d=>d.id===spatialDevice)?.kind!=='camera'&&!spacePanel?.contains(document.activeElement))drawSpatialPanel();if(selected&&!busy&&inspectorSlot?.isConnected){const d=data.devices.find(x=>x.id===selected);if(d&&d.kind!=='camera'&&!inspectorSlot.contains(document.activeElement))inspect(d);}}}
  void load(true);if(['Home','Devices','Cameras'].includes(page))timer=setInterval(()=>{if(!loadAbort)void load();},10000);
  return{selectTaskAttention(id){attentionId=id;automationView?.selectAttention(id);},refresh:()=>{if(homeStatus)void homeStatus.refresh();return recordingsView?recordingsView.refresh():page==='Settings'?drawConnections():load();},dispose(){alive=false;++loadVersion;loadAbort?.abort();loadAbort=null;homeStatus?.dispose();connectionSetup?.dispose();clearInterval(timer);stopPreview();recordingsView?.dispose();cameraPrivacy?.dispose();cameraConnection?.dispose();recognitionDebug?.dispose();automationView?.dispose();model?.dispose();thumbnails?.dispose();interactions?.dispose();view.replaceChildren();}};
 }

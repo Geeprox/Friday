@@ -343,7 +343,11 @@ class HomeExperience:
         except (OSError,ValueError):
             layout,membership=None,None
         devices=home_spatial.project(devices,layout,membership)
-        return dict(home_name=HOME_NAME,devices=devices,preferences=self.preferences,presentation=profile.model_dump(),
+        known_mijia = {b.external_id for device in snapshot.devices for b in device.bindings
+                       if b.source == 'xiaomi-identity'}
+        discover = getattr(self.embodied, 'mijia_discovery', None)
+        discovery = discover(known_mijia) if discover and snapshot.mode != 'simulator' else None
+        return dict(home_name=HOME_NAME,devices=devices,discovery=discovery,preferences=self.preferences,presentation=profile.model_dump(),
                     rooms=sorted({d['room']for d in devices if d['room']!='其他'} | {r.name for r in layout.rooms} if layout else {d['room']for d in devices if d['room']!='其他'}),
                     connected=self.connection_health().get('transport')=='online',
                     generated_at=snapshot.generated_at,simulated=snapshot.mode=='simulator',

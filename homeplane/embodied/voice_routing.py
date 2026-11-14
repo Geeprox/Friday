@@ -67,16 +67,17 @@ class VoiceRouting:
     def offer(self, service, item):
         now = self.clock()
         if not self._eligible(service, item, now):
-            return
+            return False
         camera = service.camera_id
         previous = self.pending.get(camera)
         if item.wake_only and previous and not previous[1].wake_only and self._eligible(*previous, now):
-            return
+            return False
         self.pending[camera] = (service, item)
         asyncio.get_running_loop().call_later(
             self.START_LIMIT - (now - item.captured), self._expire, camera, item.captured)
         if self.task is None:
             self.task = asyncio.create_task(self._dispatch(), name='friday-voice-routing')
+        return True
 
     def _expire(self, camera, captured):
         candidate = self.pending.get(camera)

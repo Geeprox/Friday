@@ -327,6 +327,8 @@ def create_app(
             core_rule_runtime.start()
             await app.state.home_experience.start()
             await infrastructure.start()
+            if background_enabled and isinstance(core.adapter, HAReadOnlyAdapter):
+                embodied.start_mijia_discovery()
             embodied.safety_output.start_retention()
             if query_adoption:
                 query_adoption.bind_loop()

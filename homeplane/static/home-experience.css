@@ -300,3 +300,41 @@
     flex: 1;
   }
 }
+
+.mijia-discovery {
+  margin-block-end: 24px;
+  padding: 16px 20px;
+  border: 1px solid var(--hairline, #d9d9d6);
+  border-radius: 14px;
+  background: var(--surface, #f9f9f7);
+}
+
+.mijia-discovery h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.mijia-discovery ul {
+  padding: 0;
+  margin: 10px 0 0;
+  list-style: none;
+}
+
+.mijia-discovery li {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding-block: 10px;
+  border-block-start: 1px solid var(--hairline, #d9d9d6);
+}
+
+.mijia-discovery li:last-child {
+  padding-block-end: 0;
+}
+
+.mijia-discovery-label {
+  display: grid;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}

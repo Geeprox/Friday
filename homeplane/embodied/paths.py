@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent
@@ -32,11 +33,14 @@ def capture_environment():
     return environment
 
 
-def configuration():
-    path = PRIVATE / "config.json"
-    if path.is_symlink() or path.stat().st_mode & 0o077:
-        raise ValueError("invalid_config")
-    value = json.loads(path.read_text())
+def configuration(path=None):
+    path = PRIVATE / "config.json" if path is None else path
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)) as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size > 2 * 1024 * 1024):
+            raise ValueError("invalid_config")
+        value = json.load(stream)
     if value.get("version") != 1 or not 1 <= len(value.get("cameras", [])) <= 8:
         raise ValueError("invalid_config")
     return value

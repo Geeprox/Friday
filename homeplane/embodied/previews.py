@@ -74,6 +74,8 @@ class PreviewPool:
 
     async def start(self, camera_id):
         selected = camera(camera_id)
+        if self.recognize and selected.get('preview_only') is True:
+            raise ValueError('camera_preview_only')
         async with self.lock:
             old = self.sessions.get(camera_id)
             if old and not old["task"].done():
@@ -445,6 +447,8 @@ class PreviewPool:
                 item['follow_picker'] = CameraFollowPicker(director, follow_sample,
                     lambda: (item['mode'], item['mode_revision']), lambda mode: self._set_mode(selected['id'], item, mode))
             async def send_motion(direction, observed=None, expected_epoch=None):
+                from homeplane.embodied.wake_diagnostics import record_wake_motor
+
                 if direction not in {'left','right','up','down'}:raise ValueError('invalid_motor_direction')
                 if item['privacy_closed']:raise RuntimeError('privacy_shutter_closed')
                 if not item.get('source_active'):raise RuntimeError('capture_source_changed')
@@ -457,6 +461,7 @@ class PreviewPool:
                     future = asyncio.get_running_loop().create_future()
                     waiters[request_id] = future
                     sent = False
+                    wake = (director.pending_decision or {}).get('sound_cue') if observed is not None else None
                     self.runtime_log.record('embodied.command','start',correlation=correlation)
                     try:
                         if process.returncode is not None:raise RuntimeError('camera_not_owned')
@@ -490,6 +495,8 @@ class PreviewPool:
                             process.stdin.write((json.dumps(dict(action='motor_step',direction=direction,
                                 request_id=request_id,expires_mono=expires))+'\n').encode())
                             sent = True
+                            if wake is not None:
+                                record_wake_motor(self.runtime_log, wake, direction)
                         await process.stdin.drain()
                         result = await asyncio.wait_for(future,3)
                         if result.get('error_code') == 'motor_request_expired':
@@ -499,11 +506,15 @@ class PreviewPool:
                         director.sent(time.monotonic(), direction, automatic=observed is not None)
                         self.runtime_log.record('embodied.command','result',correlation=correlation,
                             elapsed_ms=round((time.monotonic()-began)*1000))
+                        if wake is not None:
+                            record_wake_motor(self.runtime_log, wake, direction, result='ok')
                         return result
                     except asyncio.CancelledError:
                         self.runtime_log.record('embodied.command','result',correlation=correlation,
                             result='cancelled',code='control_cancelled_after_send' if sent else 'control_cancelled_before_dispatch',
                             elapsed_ms=round((time.monotonic()-began)*1000))
+                        if wake is not None:
+                            record_wake_motor(self.runtime_log, wake, direction, result='cancelled', sent=sent)
                         raise
                     except Exception as error:
                         if str(error) not in {'stale_input', 'camera_intent_changed', 'motor_request_expired',
@@ -512,6 +523,9 @@ class PreviewPool:
                             director.failed(time.monotonic())
                         self.runtime_log.record('embodied.command','result',correlation=correlation,
                             result='unavailable',code='runtime_error',elapsed_ms=round((time.monotonic()-began)*1000))
+                        if wake is not None:
+                            record_wake_motor(self.runtime_log, wake, direction, result='unavailable', sent=sent,
+                                              rejected=str(error) in {'local_motor_rejected', 'motor_request_expired'} and sent)
                         raise
                     finally:
                         waiters.pop(request_id,None)
