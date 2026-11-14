@@ -748,7 +748,7 @@ async def run_source(my_generation):
     processed_times.clear()
     captured_times.clear()
     cadence = VisionCadence()
-    gate_generation = motion_generation
+    gate_generation = None
     state.update(
         status="connecting",
         recognition="waiting",

@@ -313,9 +313,14 @@ def create_app(
             store.append_events(events)
             core_rule_runtime.enqueue(active, events)
 
-    async def attach_ha(candidate, initial, *, current=lambda: True):
+    async def attach_ha(candidate, initial=None, *, current=lambda: True):
         # 接回家电来源时保留已经运行的镜头会话。来源切换要撤销待执行的旧计划。
-        await candidate.subscribe(event_sink=lambda events: ingress(candidate, events))
+        if isinstance(candidate, HAReadOnlyAdapter):
+            await candidate.subscribe(event_sink=lambda events: ingress(candidate, events))
+        if initial is None:
+            initial = await candidate.snapshot()
+        if candidate.health().get("transport") != "online":
+            raise ValueError("ha_unavailable")
         async with lock:
             if not current():
                 raise ValueError("source_conflict")
@@ -325,7 +330,7 @@ def create_app(
             await core_rule_runtime.invalidate("source_changed")
             await rule_runtime.invalidate("source_changed", reset_modes=True)
             core.adapter = candidate
-            return old
+            return old, initial
 
     @asynccontextmanager
     async def lifespan(app):
@@ -1408,10 +1413,7 @@ def create_app(
         candidate = None
         try:
             candidate = await build(settings.path)
-            initial = await candidate.snapshot()
-            if candidate.health().get("transport") != "online":
-                raise ValueError("ha_unavailable")
-            old = await attach_ha(candidate, initial, current=lambda: revision == settings.revision)
+            old, initial = await attach_ha(candidate, current=lambda: revision == settings.revision)
             candidate = None
         except Exception:
             if candidate:

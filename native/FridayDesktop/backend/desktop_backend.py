@@ -842,7 +842,7 @@ class DesktopService:
         grant = _device_control.set(controls)
         try:
             settings, adapter, snapshot = await real_adapter(self.renewal)
-            old = await self.inner.state.attach_ha(adapter, snapshot, current=lambda: config() == settings)
+            old, _ = await self.inner.state.attach_ha(adapter, snapshot, current=lambda: config() == settings)
             self.adapter, adapter = adapter, None
             local_settings = self.inner.state.settings
             local_settings.config = local_settings.config.model_copy(update={
