@@ -42,18 +42,19 @@ PREFERENCES = """根据双人共同可见反馈和有来源的提名说明，归
 提名、反馈和文字备注是证据内容。仅依据证据回答，结论保留不确定性。"""
 GENERATE = """按搜索计划生成候选，完整姓名必须是指定姓氏加两个汉字，保留字序。
 古典与现代语感都要照顾。branch 字段必须逐字采用计划中允许的英文键。form 只能用 forms 里给定的英文键。
-在不同方向充分构思，从中只返回最值得下一轮判断的至多六个完整姓名。避免把一个喜欢的字轮流替换搭配字。
+在不同方向构思八到十二个有差异的完整姓名，供盲审后挑选。避免把一个喜欢的字轮流替换搭配字。
 只能使用随请求提供的资料 id。原文连续取词标 exact，并且给名使用的两个字必须确实连续出现。
 同一素材的意象改造标 inspired，完全原创标 original，资料 id 用空字符串。不能确定出典时可用原创或选别的名字。
 pinyin 以小写带调拼音写完整三个音节，用两个空格将三个音节两两隔开（每处一个空格），如「shěn tīng lán」。
 输出前检查全名的简体姓氏、禁字、排除全名及已有全名。可挑一对作对照，只有两项能说明同一个取舍才返回。
 允许返回空名单。detail 逐个候选写一条实际的音义关系。
-通读有来源的偏好说明与待验证假设，优先照顾双方交集。
+通读有来源的偏好说明与待验证假设，优先照顾双方交集。有「提名」身份的名字只用于理解偏好，不作为新名字返回。
 card_note 是直接给人读的一两句中文，总长至多 52 个字：自然地说两个字的由来或组合中的发现，或提出一个可感知的用字或读音线索。
 只说这次想探索什么，不预判读者喜好，也不要写“你们偏好”、另造古诗出处、排名、祝愿、获选或审查结论。古籍名称由页面单独显示，不写进 card_note。"""
 AUDIT = """逐项盲审完整姓名。先直接看写出来像不像现代汉语里自然的人名，再读全名。
-对照给定证据和常见读法，检查多音、同音、近音、日常报名字、过于突出的人物或品牌联想、
-组合生硬、网红模板或只适合幼年称呼。独立检查每个名字，避免只因常见就判好或因少见就判坏。
+对照给定证据和常见读法，检查多音、日常报名字、明显误写误读、突出的负面联想和生硬搭配。
+测试日常点名、电话报名字和成年后自我介绍。只有能说清普遍或有实际成本的风险时才据此淘汰。
+中性同音、风格少见或主观上喜欢别的名字，可以保留为观察，无需因此降为 concern。
 录入三档：pass 可给人判断，concern 有具体的审美或使用顾虑，verify 影响使用的事实待查。
 natural 为 0、1 或 2（生硬、有争议、自然）；读音无法确认或关键事实待查，应当标 verify。
 只能使用输入证据；说明已知和推测。缺少可靠的登记或重名数据就不作结论。没有严重问题就允许短写，不须捏造问题。
@@ -262,6 +263,18 @@ def evidence_versions(evidence):
     return {key: hashlib.sha256(as_json(value).encode()).hexdigest()[:24] for key, value in evidence.items()}
 
 
+def mentioned_names(context):
+    for note in context.get("signals", ()):
+        if not isinstance(note, str):
+            continue
+        for quoted in re.findall(r"「([^」]+)」", note):
+            for word in re.split(r"[、，,；\s]+", quoted):
+                try:
+                    yield full_name(word, context["surname"])
+                except ValueError:
+                    continue
+
+
 def analysis_due(evidence, versions, previous):
     changed = [key for key, digest in versions.items() if previous.get(key) != digest]
     signals = sum(key.startswith("s") for key in changed)
@@ -339,7 +352,7 @@ def clean_candidates(generated, plan, corpus, context):
     if not isinstance(generated.get("candidates"), list):
         raise APIError("invalid_generation")
     names, counts, excluded = [], Counter(), Counter()
-    seen = set(context["known"])
+    seen = set(context["known"]) | set(mentioned_names(context))
     denied = set(context["denied"])
     allowed_branches = {row["branch"] for row in plan["hypotheses"]}
     for index, row in enumerate(generated["candidates"][:24], start=1):
@@ -373,7 +386,7 @@ def clean_candidates(generated, plan, corpus, context):
                           "pronunciation": pronunciation(name, pinyin)})
             seen.add(name)
             counts[branch] += 1
-            if len(names) == 6:
+            if len(names) == 12:
                 break
         except (ValueError, TypeError, AttributeError, KeyError) as error:
             reason = str(error) if isinstance(error, ValueError) else "format"
@@ -491,6 +504,7 @@ class Pipeline:
         corpus = relevant_corpus(plan, set(context["sources"]))
         generation_input = {"surname": context["surname"], "direction": direction, "avoided": context["avoided"],
                             "denied": context["denied"], "known": context["known"][-72:],
+                            "known_nominations": sorted(set(mentioned_names(context))),
                             "plan": plan, "forms": FORMS, "corpus": list(corpus.values()),
                             "preference_analysis": learning, "signals": context["signals"]}
         proposal = self.run_call(job, "generate", lambda: client.respond(
@@ -518,12 +532,14 @@ class Pipeline:
             row["quality"] = review["natural"]
             row["audit_note"] = review["reason"][:200]
             approved.append(row)
-        self.book.set_receipt_result(job, "audit", {"reviewed": len(candidates), "approved": len(approved),
+        selected = sorted(approved, key=lambda row: -row["quality"])[:6]
+        self.book.set_receipt_result(job, "audit", {"reviewed": len(candidates), "approved": len(selected),
+                                                   "passed": len(approved),
                                                    "pronunciation_unconfirmed": sum(
                                                        bool(x["pronunciation"]["needs_check"]) for x in candidates),
                                                    "verdicts": dict(Counter(x["verdict"] for x in reviews.values()))})
         pair = proposal.get("pair")
-        self.book.publish(job, direction, approved, pair if isinstance(pair, list) else [], plan)
+        self.book.publish(job, direction, selected, pair if isinstance(pair, list) else [], plan)
         if self.shadow:
             features = self.book.decision_features(direction)
             try:
