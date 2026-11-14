@@ -101,6 +101,9 @@ class VoiceQuestions:
         selected = [camera for camera in configuration()['cameras'] if camera.get('id') == request.camera]
         if len(selected) != 1 or camera_source_context(selected[0]) != request.camera_source_context:
             raise FlowAbort('voice_question_camera_changed')
+        from .camera_interaction import allowed
+        if not allowed(request.camera, directory=self.private):
+            raise FlowAbort('voice_question_camera_changed')
         room = selected[0].get('room')
         if not isinstance(room, str) or not 1 <= len(room) <= 128 or any(ord(c)<32 or ord(c)==127 for c in room):
             raise FlowAbort('voice_question_room_unavailable')

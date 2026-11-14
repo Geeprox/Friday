@@ -85,6 +85,9 @@ async def recover_owned(owner_token, cameras, *, root=PRIVATE, repair=restore_ca
 
 
 async def monitor_owner(fd, owner_token, cameras, *, root=PRIVATE, repair=restore_camera, interval=5):
+    def current_cameras():
+        return cameras() if callable(cameras) else cameras
+
     exited = asyncio.create_task(wait_for_exit(fd))
     try:
         while not exited.done():
@@ -92,22 +95,33 @@ async def monitor_owner(fd, owner_token, cameras, *, root=PRIVATE, repair=restor
             except asyncio.TimeoutError:
                 # A single camera can fail cleanup while the rest of the worker
                 # stays live. Retry only released leases; locks fence in-flight cleanup.
-                await recover_owned(owner_token, cameras, root=root, repair=repair,
+                await recover_owned(owner_token, current_cameras(), root=root, repair=repair,
                                     interval=interval, once=True, released_only=True)
         await exited
         # Capture helpers have an independent parent-death thread as well, so
         # their SDK/executor cleanup cannot strand a motor connection.
         await asyncio.sleep(.3)
-        await recover_owned(owner_token, cameras, root=root, repair=repair, interval=interval)
+        await recover_owned(owner_token, current_cameras(), root=root, repair=repair, interval=interval)
     finally:
         if not exited.done():exited.cancel()
         await asyncio.gather(exited, return_exceptions=True)
 
 
 async def main(fd, owner_token):
-    cameras = [c['id'] for c in configuration()['cameras']]
+    cameras = {c['id'] for c in configuration()['cameras']}
+
+    def registered():
+        # 包含后台运行期间接入的新机位，读配置失败时保留上一次机位记录。
+        try:
+            updated = {c['id'] for c in configuration()['cameras']
+                       if re.fullmatch(r'cam_[a-f0-9]{10}', c['id'])}
+        except (OSError, ValueError, TypeError, KeyError):
+            return cameras
+        cameras.update(updated)
+        return cameras
+
     print('ready', flush=True)
-    await monitor_owner(fd, owner_token, cameras)
+    await monitor_owner(fd, owner_token, registered)
 
 
 if __name__ == '__main__':

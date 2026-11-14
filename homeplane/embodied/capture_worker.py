@@ -179,7 +179,7 @@ async def main():
             enable_record=False,
         )
         emit({"type": "diagnostic", "stage": "camera_start_returned"})
-        motor = LocalMotor(camera)
+        motor = LocalMotor(camera) if request.get("motor") is True else None
 
         async def controls():
             nonlocal audio_until, sound_until, attention_until, video_until
@@ -204,7 +204,7 @@ async def main():
                         continue
                     if command.get("action") != "motor_step":
                         continue
-                    if request.get("motor") is not True:
+                    if motor is None:
                         raise ValueError("motor_not_owned")
                     check_motor_deadline(command.get('expires_mono'))
                     result = await asyncio.to_thread(motor.step, command.get("direction"),

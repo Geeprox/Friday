@@ -54,6 +54,7 @@ from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.embodied.camera_audio import AudioIngress, WakeCameraCue, deliver_audio
+from homeplane.embodied import camera_interaction
 from homeplane.embodied.voice_routing import VoiceRouting
 from homeplane.embodied.vision_pipe import VisionProcess
 from homeplane.people.live import IdentityStore, analyze, close_identity
@@ -116,7 +117,8 @@ party_camera = PartyCamera()
 recorder = PageRecording(DATA / "recordings")
 record_lock = asyncio.Lock()
 voice_routing = VoiceRouting(lambda: interaction_enabled and not (PRIVATE / 'voice-input-paused').exists())
-home = HomeService(SELECTED['id'], voice_routing=voice_routing)
+home = HomeService(SELECTED['id'], voice_routing=voice_routing,
+                   input_allowed=lambda: camera_interaction.allowed(SELECTED['id'], directory=PRIVATE))
 from homeplane.embodied.interaction import InteractionEngine
 from homeplane.embodied.interaction_fleet import InteractionFleet
 from homeplane.embodied.practice import RecognitionPractice
@@ -155,7 +157,9 @@ async def dispatch_interactions(events):
                 party=party_camera.window(time.monotonic())
                 if party[2]or party[:2]!=expected_party:return
             service = home if e['camera'] == SELECTED['id'] else secondary_homes.get(e['camera'])
-            if not (interaction_enabled and service and service.armed and interaction_source_current(e)
+            if not (interaction_enabled and service and service.armed
+                    and getattr(service, 'input_allowed', lambda: True)()
+                    and interaction_source_current(e)
                     and fleet.current(e,time.monotonic())) or practice.suppresses(e['camera']):return
             from homeplane.embodied.bridge import command
             receipt = await command(None,e['action'],e['event_id'],target=e['target'],camera_id=e['camera'],
@@ -319,14 +323,15 @@ async def secondary_observation(observation, process):
         time.time()-(time.monotonic()-observation['captured_mono']),
         hands=observation['hands'],
         moving=observation['registration'].get('status') in {'moving','settling','lost','stale'})
-    active=interaction_enabled
+    if camera_id not in secondary_homes:
+        secondary_homes[camera_id] = HomeService(camera_id, voice_provider=home, voice_routing=voice_routing,
+            input_allowed=lambda: camera_interaction.allowed(camera_id, directory=PRIVATE))
+    service=secondary_homes[camera_id]
+    active=interaction_enabled and getattr(service, 'input_allowed', lambda: True)()
     events=fleet.update(camera_id,observation['session'],observation['people'],observation['hands'],
         observation['registration'],active,observation['now'],captured_mono=observation['captured_mono'])
     await dispatch_interactions(events)
     if not secondary_frame_current(observation, process):return
-    if camera_id not in secondary_homes:
-        secondary_homes[camera_id] = HomeService(camera_id, voice_provider=home, voice_routing=voice_routing)
-    service=secondary_homes[camera_id]
     if active and not service.enabled:await service.enable()
     if not secondary_frame_current(observation, process):return
     service.armed=active
@@ -656,6 +661,10 @@ def view():
                    latency_ms=state.get('pipeline_ms') if recognizing else None)
     result['camera_sessions'] = [primary, *[previews.status(c['id'])
         for c in configuration()['cameras'] if c['id'] != SELECTED['id']]]
+    for session in result['camera_sessions']:
+        service = home if session['camera'] == SELECTED['id'] else secondary_homes.get(session['camera'])
+        if service is not None:
+            session['interaction_enabled'] = getattr(service, 'input_allowed', lambda: True)()
     return result
 
 
@@ -1116,9 +1125,10 @@ async def run_source(my_generation):
                     )
                 state["extension_events"] = [e.model_dump() for e in extension_events]
                 phase_at = time.monotonic()
-                if interaction_enabled:
+                camera_input = interaction_enabled and getattr(home, 'input_allowed', lambda: True)()
+                if camera_input:
                     await home.enable()
-                elif not interaction_enabled:
+                else:
                     home.armed = False
                 if state.get('status')=='shutter_closed':return
                 if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
@@ -1128,7 +1138,7 @@ async def run_source(my_generation):
                 last_selection = games.selected_mode
                 game_window = (games.control_context, games.control_revision)
                 party_window=party_camera.window(time.monotonic())
-                gesture_active = interaction_enabled and games.mode in {'off', 'home'}and not party_window[2]
+                gesture_active = camera_input and games.mode in {'off', 'home'}and not party_window[2]
                 practice.observe(SELECTED['id'], identities.session, people, hands,
                     layout['registration'], now, now-(time.time()-item['received_at']))
                 interaction_events=fleet.update(SELECTED['id'],identities.session,people,hands,
@@ -1141,7 +1151,7 @@ async def run_source(my_generation):
                 voice_now = time.monotonic()
                 voice_captured_mono = voice_now - (time.time() - item['received_at'])
                 home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,session=identities.session,
-                    enabled=interaction_enabled and home.armed and 0 <= voice_now-now <= 1.5
+                    enabled=camera_input and home.armed and 0 <= voice_now-now <= 1.5
                         and not (PRIVATE/'voice-input-paused').exists())
                 await home.observe(
                     people,
@@ -1272,6 +1282,7 @@ async def start():
     task = asyncio.create_task(supervised_source(generation))
     for selected in configuration()["cameras"]:
         if selected["id"] != SELECTED["id"] and selected.get('preview_only') is not True:
+            wall.register(selected)
             await previews.start(selected["id"])
 
 
@@ -1529,7 +1540,23 @@ async def start_preview(camera_id: str, request: Request):
         raise HTTPException(403)
     if camera_id == SELECTED["id"]:
         return {"state": view()["status"], "camera": camera_id, "primary": True}
+    wall.register(camera(camera_id))
     return await previews.start(camera_id)
+
+
+@app.post('/api/camera-registration')
+async def reconcile_registered_cameras(request: Request):
+    if request.client.host not in {'127.0.0.1', '::1'}:
+        raise HTTPException(403)
+    if task is None or task.done():
+        return {'active': False}
+    for selected in configuration()['cameras']:
+        if (selected['id'] != SELECTED['id']
+                and selected.get('mijia_enrolled') is True and selected.get('preview_only') is not True
+                and task is not None and not task.done()):
+            wall.register(selected)
+            await previews.start(selected['id'])
+    return {'active': True}
 
 
 def primary_recovery_frame():

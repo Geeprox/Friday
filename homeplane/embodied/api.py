@@ -112,6 +112,7 @@ class GestureContext(BaseModel):
 
 class Command(BaseModel):
     gesture: GestureContext | None = None
+    camera: str | None = Field(default=None, pattern=r'^cam_[a-f0-9]{10}$')
     target: str | None = Field(default=None, min_length=1, max_length=256)
     model_config = ConfigDict(extra="forbid")
     text: str | None = Field(default=None, min_length=1, max_length=1000)
@@ -137,6 +138,12 @@ class ModelIntent(BaseModel):
 class MiHomeCandidate(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     candidate: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class CameraInteractionSettings(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    enabled: bool
+    expected_revision: int = Field(ge=0)
 
 
 def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None, archive=None, home_flow=None):
@@ -269,6 +276,21 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     async def cameras():
         return dict(cameras=service.cameras())
 
+    @router.get('/api/embodied/cameras/{camera_id}/interaction')
+    async def camera_interaction_status(camera_id: str):
+        try:
+            return service.camera_interaction_settings(camera_id)
+        except (OSError, ValueError):
+            raise HTTPException(409, detail='camera_interaction_unavailable') from None
+
+    @router.post('/api/embodied/cameras/{camera_id}/interaction')
+    async def camera_interaction_set(camera_id: str, request: CameraInteractionSettings):
+        try:
+            return service.camera_interaction_settings(camera_id, enabled=request.enabled,
+                                                       expected_revision=request.expected_revision)
+        except (OSError, ValueError):
+            raise HTTPException(409, detail='camera_interaction_unavailable') from None
+
     @router.get('/api/embodied/cameras/{camera_id}/power')
     async def camera_power_status(camera_id:str):
         try:return await service.camera_power(camera_id)
@@ -394,12 +416,15 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     async def command(request: Command, incoming: Request):
         # Both Console same-origin and process-scoped capability calls pass the
         # main API origin gate. A capability does not create device authority.
-        if incoming.headers.get("x-friday-worker"):
+        worker_key = incoming.headers.get("x-friday-worker")
+        if request.camera and not worker_key:
+            raise HTTPException(403)
+        if worker_key:
             try:
                 expected = (PRIVATE / "control-key").read_text().strip()
             except OSError:
                 raise HTTPException(403) from None
-            if not secrets.compare_digest(expected, incoming.headers["x-friday-worker"]):
+            if not secrets.compare_digest(expected, worker_key):
                 raise HTTPException(403)
         plan = basic_command(request.text, attending=True) if request.text else None
         if plan and plan["route"] == "no_op":
@@ -409,6 +434,10 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         if (not query and not request.target) or not action:
             return dict(status="clarify", write_attempted=False, reply="请说明房间、设备和动作。")
         def current_gesture():
+            if request.camera:
+                from .camera_interaction import allowed
+                if not allowed(request.camera, directory=PRIVATE):
+                    return False
             if request.gesture is None:
                 return True
             import time
@@ -427,7 +456,7 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
                 return False
         return await devices.command(
             query, action, request.event_id, room=request.room, preview=request.preview, target=request.target,
-            dispatch_guard=current_gesture if request.gesture is not None else None,
+            dispatch_guard=current_gesture if request.gesture is not None or request.camera else None,
         )
 
     return router

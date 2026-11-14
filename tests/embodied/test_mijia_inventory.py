@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from homeplane.embodied import camera_interaction, mijia_inventory
 from homeplane.embodied.mijia_inventory import connect_camera, home_scope, public_inventory, read_inventory
 from homeplane.embodied.service import EmbodiedService
 
@@ -46,14 +47,17 @@ async def test_discovery_uses_configured_home_and_does_not_register_until_confir
     assert path.read_text() == before
     spec = {'services': []}
     read_spec = AsyncMock(return_value=spec)
-    report = await connect_camera(row['id'], login, tmp_path, config, {}, read_spec)
+    read_ptz = AsyncMock(return_value=True)
+    report = await connect_camera(row['id'], login, tmp_path, config, {}, read_spec, read_ptz)
     assert report['state'] == 'connected'
     saved = json.loads(path.read_text())
     assert saved['cameras'][0] == config['cameras'][0]
     camera = saved['cameras'][1]
-    assert camera['preview_only'] is True and not camera['allow_open'] and not camera['takeover']
+    assert camera['mijia_enrolled'] is True and camera['ptz_supported'] is True
+    assert not camera.get('preview_only') and not camera['allow_open'] and not camera['takeover']
+    assert camera_interaction.allowed(camera['id'], directory=tmp_path)
     assert camera['device']['did'] == row['identity'].removeprefix('cn_')
-    assert await connect_camera(row['id'], login, tmp_path, config, {}, read_spec) == report
+    assert await connect_camera(row['id'], login, tmp_path, saved, {}, read_spec, read_ptz) == report
     assert len(json.loads(path.read_text())['cameras']) == 2
 
     from homeplane.embodied import service as service_module
@@ -64,6 +68,44 @@ async def test_discovery_uses_configured_home_and_does_not_register_until_confir
         assert service.mijia_discovery()['devices'] == []
     finally:
         await service.close()
+
+
+@pytest.mark.asyncio
+async def test_previously_connected_camera_keeps_identity_and_gets_interaction(tmp_path, monkeypatch):
+    config, _, login, devices = fixture()
+    camera = next(iter((await devices.get_devices_async()).values()))
+    legacy = dict(id='cam_2222222222', device={'did': camera.did}, region='cn',
+                  room='自定义房间', preview_only=True, allow_open=False, takeover=False)
+    config['cameras'].append(legacy)
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps(config))
+    path.chmod(0o600)
+    monkeypatch.setattr(mijia_inventory, 'camera_spec', AsyncMock(return_value={'services': []}))
+    monkeypatch.setattr(mijia_inventory, 'ptz_readback', AsyncMock(return_value=False))
+
+    result = await mijia_inventory.upgrade_registered_cameras(login, tmp_path, config, {})
+
+    assert result == {'state': 'ready', 'upgraded': [legacy['id']]}
+    saved = json.loads(path.read_text())
+    upgraded = saved['cameras'][1]
+    assert upgraded['id'] == legacy['id'] and upgraded['room'] == legacy['room']
+    assert upgraded['mijia_enrolled'] is True and not upgraded['allow_open']
+    assert 'preview_only' not in upgraded
+    assert camera_interaction.allowed(legacy['id'], directory=tmp_path) is True
+
+
+def test_camera_interaction_defaults_on_and_preserves_user_preference(tmp_path, monkeypatch):
+    camera_id = 'cam_2222222222'
+    folder = tmp_path / 'cameras' / camera_id
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(camera_interaction, 'camera_storage', lambda _: folder)
+    assert camera_interaction.allowed(camera_id, directory=tmp_path)
+    assert camera_interaction.save(camera_id, False, 0).revision == 1
+    assert camera_interaction.allowed(camera_id, directory=tmp_path) is False
+    with pytest.raises(ValueError, match='camera_interaction_changed'):
+        camera_interaction.save(camera_id, True, 0)
+    assert camera_interaction.save(camera_id, True, 1).revision == 2
+    assert camera_interaction.allowed(camera_id, directory=tmp_path)
 
 
 def test_discovery_rejects_ambiguous_homes():

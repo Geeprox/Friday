@@ -7,6 +7,7 @@ import secrets
 import time
 
 from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage, capture_environment
+from .miot_spec import camera_can_take_motor
 from .camera_director import CameraDirector
 from .camera_follow_picker import CameraFollowPicker
 from .camera_intent import (
@@ -81,7 +82,9 @@ class PreviewPool:
             if old and not old["task"].done():
                 old["expires"] = time.monotonic() + 60
                 return self.status(camera_id)
-            intent = self.intent_factory(selected).load(default='auto' if self.recognize else 'hold')
+            # 新机位从当前视角开始，用户可在详情选自动跟随。
+            default = 'auto' if self.recognize and not selected.get('mijia_enrolled') else 'hold'
+            intent = self.intent_factory(selected).load(default=default)
             entry = dict(
                 state="connecting",
                 frame=None,
@@ -308,16 +311,28 @@ class PreviewPool:
             if not is_open:
                 item['state'] = 'shutter_closed'
                 return
-            if self.recognize or (self.control_camera and selected.get('takeover') is True):
+            if camera_can_take_motor(selected) and (self.recognize or (
+                    self.control_camera and selected.get('takeover') is True)):
                 stage='camera_lease'
                 from .ptz_control import CameraLease, Transport
                 io = Transport(selected['id'])
                 lease = CameraLease(io, camera_storage(selected['id'])/'ptz-lease.json',
                     open_privacy=False, restore_native=True)
-                await lease.acquire()
-                item['shutter_changed'] = lease.snapshot['before'].get('camera_power') is False
-                if item['shutter_changed']:
-                    await asyncio.sleep(5)
+                try:
+                    await lease.acquire()
+                except Exception:
+                    if not selected.get('mijia_enrolled'):
+                        raise
+                    # 云台资源恢复或读取失败时，保留这一路识别。
+                    await io.close()
+                    io = lease = None
+                    if not await camera_is_open(selected):
+                        item['state'] = 'shutter_closed'
+                        return
+                else:
+                    item['shutter_changed'] = lease.snapshot['before'].get('camera_power') is False
+                    if item['shutter_changed']:
+                        await asyncio.sleep(5)
             if self.recognize:
                 from .camera_recognition import CameraRecognition
                 recognizer = CameraRecognition(selected['id'], self.identity_store)

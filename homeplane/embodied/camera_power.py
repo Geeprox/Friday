@@ -21,8 +21,6 @@ class PowerTransport:
         from .miot_spec import camera_property
         self.selected=selected
         self.ref=camera_property(selected,'camera_power','read')
-        if selected.get('preview_only') is not True and camera_property(selected,'camera_power','write')!=self.ref:
-            raise ValueError('camera_power_unavailable')
         props=[p for s in selected.get('spec',{}).get('services',[]) if s.get('iid')==self.ref[0]
                for p in s.get('properties',[]) if p.get('iid')==self.ref[1]]
         if len(props)!=1 or props[0].get('format')!='bool':raise ValueError('camera_power_unavailable')
@@ -40,7 +38,8 @@ class PowerTransport:
         return rows[0]['value']
 
     async def write(self,value):
-        if self.selected.get('preview_only') is True:
+        from .miot_spec import camera_power_writable
+        if not camera_power_writable(self.selected):
             raise ValueError('camera_power_unavailable')
         from miot.types import MIoTSetPropertyParam
         result=await asyncio.wait_for(self.api.set_prop_async(MIoTSetPropertyParam(

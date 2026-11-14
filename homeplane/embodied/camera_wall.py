@@ -7,17 +7,27 @@ from .video_relay import VideoRelay
 
 class CameraWall:
     def __init__(self, cameras, *, clock=time.time):
-        self.cameras = tuple(dict(id=c['id'], name=c['name'], room=c['room']) for c in cameras)
+        self.cameras = ()
         self.clock = clock
         self.frames = {}
         self.stills = {}
-        self.epochs = {c['id']: 0 for c in cameras}
-        self.video = {c['id']: VideoRelay(clock=clock) for c in cameras}
+        self.epochs = {}
+        self.video = {}
         self.observations = {}
         self.labels = {}
         self.toasts = {}
         self.gestures = {}
         self.toast_sequence=0
+        for camera in cameras:
+            self.register(camera)
+
+    def register(self, camera):
+        camera_id = camera['id']
+        if camera_id in self.epochs:
+            return
+        self.cameras += (dict(id=camera_id, name=camera['name'], room=camera['room']),)
+        self.epochs[camera_id] = 0
+        self.video[camera_id] = VideoRelay(clock=self.clock)
 
     def begin(self, camera):
         self.epochs[camera] += 1

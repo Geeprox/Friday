@@ -1,4 +1,4 @@
-"""列出同一家庭的米家设备，用户确认后可保存只供手动预览的摄像头。"""
+"""列出同一家庭的米家设备，并接入用户选定的摄像头。"""
 
 import asyncio
 import fcntl
@@ -8,7 +8,7 @@ import os
 import re
 
 from .miot_session import MiSession, authorization_error
-from .miot_spec import camera_property
+from .miot_spec import _CAMERA_CAPABILITIES, camera_property
 from .paths import PRIVATE, configuration
 from .ptz_control import atomic, read_lease
 
@@ -112,14 +112,48 @@ async def camera_spec(device):
         prop = next(prop for prop in service['properties'] if prop['iid'] == ref[1])
         if prop.get('format') != 'bool':
             raise ValueError('camera_power_missing')
-        # 手动预览只保留确认隐私挡板所需的只读规格。
-        return {'type': urn, 'services': [{'iid': ref[0], 'type': service['type'],
-            'properties': [{'iid': ref[1], 'type': prop['type'], 'format': 'bool', 'access': ['read']}]}]}
-    except (httpx.HTTPError, OSError, ValueError, TimeoutError, StopIteration):
+        services = []
+        for entry in raw['services']:
+            name = entry['type'].split(':')[3:4]
+            wanted = {property_name for service_name, property_name in _CAMERA_CAPABILITIES
+                      if name == [service_name]}
+            relevant = [{key: p[key] for key in ('iid', 'type', 'format', 'access')}
+                        for p in entry.get('properties', []) if p['type'].split(':')[3] in wanted]
+            if relevant:
+                services.append(dict(iid=entry['iid'], type=entry['type'], properties=relevant))
+        return {'type': urn, 'services': services}
+    except (httpx.HTTPError, OSError, ValueError, TimeoutError, StopIteration, KeyError, IndexError):
         raise ValueError('camera_spec_unavailable') from None
 
 
-async def connect_camera(candidate, session, directory, config, membership, read_spec=camera_spec):
+async def ptz_readback(session, region, did, spec):
+    try:
+        siid, piid = camera_property({'spec': spec}, 'ptz_supported', 'read')
+    except ValueError:
+        return False
+    from miot.types import MIoTGetPropertyParam
+    saved = await session.current()
+    if saved['cloud_server'] != region:
+        return False
+    api = session.http(cloud_server=region, access_token=saved['access_token'])
+    try:
+        rows = await asyncio.wait_for(api.get_props_async(
+            [MIoTGetPropertyParam(did=did, siid=siid, piid=piid)]), 7)
+        matches = [row for row in rows if str(row.get('did')) == did
+                   and (row.get('siid'), row.get('piid')) == (siid, piid)]
+        return len(matches) == 1 and matches[0].get('code') == 0 and matches[0].get('value') is True
+    except (OSError, ValueError, TimeoutError):
+        return False
+    finally:
+        await api.deinit_async()
+
+
+def registration_device(device):
+    return dict(device.model_dump(mode='json', exclude={'sub_devices'}), sub_devices={})
+
+
+async def connect_camera(candidate, session, directory, config, membership, read_spec=camera_spec,
+                         read_ptz=ptz_readback):
     if not config.get('enabled') or not config.get('main_origin') or not config.get('viewer_port'):
         raise ValueError('camera_setup_required')
     region, rows = await read_inventory(session, config, membership)
@@ -134,6 +168,7 @@ async def connect_camera(candidate, session, directory, config, membership, read
         raise ValueError('camera_limit')
     camera_id = 'cam_' + candidate[:10]
     spec = await read_spec(device)
+    ptz_supported = await read_ptz(session, region, device.did, spec)
     config_path = directory / 'config.json'
     lock_path = directory / 'camera-registration.lock'
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -150,11 +185,48 @@ async def connect_camera(candidate, session, directory, config, membership, read
         current['cameras'].append(dict(id=camera_id, name=display_name(device),
                                        room=(device.room_name or '其他')[:80] if device.room_id != device.home_id else '其他',
                                        model=device.model,
-                                       region=region, device=device.model_dump(mode='json', exclude={'sub_devices'}),
-                                       spec=spec, preview_only=True, allow_open=False, takeover=False))
-        current['cameras'][-1]['device']['sub_devices'] = {}
+                                       region=region, device=registration_device(device),
+                                       spec=spec, mijia_enrolled=True, ptz_supported=ptz_supported,
+                                       allow_open=False, takeover=False))
         atomic(config_path, current)
         return {'state': 'connected', 'camera': camera_id}
+    finally:
+        os.close(fd)
+
+
+async def upgrade_registered_cameras(session, directory, config, membership):
+    legacy = [camera for camera in config.get('cameras', []) if camera.get('preview_only') is True]
+    if not legacy:
+        return {'state': 'ready', 'upgraded': []}
+    region, rows = await read_inventory(session, config, membership)
+    devices = {device.did: device for device in rows.values() if is_camera(device)}
+    updates = {}
+    for camera in legacy:
+        device = devices.get(camera['device']['did'])
+        if device is None or camera.get('region', 'cn') != region:
+            continue
+        try:
+            spec = await camera_spec(device)
+            ptz = await ptz_readback(session, region, device.did, spec)
+        except (OSError, ValueError, TimeoutError):
+            continue
+        updates[camera['id']] = dict(spec=spec, device=registration_device(device),
+                                     mijia_enrolled=True, ptz_supported=ptz)
+    if not updates:
+        return {'state': 'unavailable', 'upgraded': []}
+    config_path = directory / 'config.json'
+    fd = os.open(directory/'camera-registration.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        current = configuration(config_path)
+        if current != config:
+            raise ValueError('inventory_changed')
+        for camera in current['cameras']:
+            if camera['id'] in updates:
+                camera.update(updates[camera['id']])
+                camera.pop('preview_only')
+        atomic(config_path, current)
+        return {'state': 'ready', 'upgraded': list(updates)}
     finally:
         os.close(fd)
 
@@ -172,6 +244,8 @@ async def run(request, directory=PRIVATE):
             return {'state': 'ready', 'region': region, 'devices': public_inventory(region, rows)}
         if action == 'connect' and re.fullmatch(r'[a-f0-9]{64}', request.get('candidate') or ''):
             return await connect_camera(request['candidate'], session, directory, config, membership)
+        if action == 'upgrade':
+            return await upgrade_registered_cameras(session, directory, config, membership)
         raise ValueError('invalid_request')
     except Exception as error:
         allowed = {'home_selection_required', 'mijia_authorization_required', 'camera_setup_required',

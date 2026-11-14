@@ -47,7 +47,7 @@ export function mainDeviceControls(d,{send,wake,readCamera,viewCamera,details,bu
   if(limit){const steps=h('div',null,{class:'temperature-steps'});for(const[delta,label]of [[-1,'调低 1°'],[1,'调高 1°']]){const desired=temperatureStep(c,delta),b=button(label,'temperature:'+delta+':'+c.id,b=>send(c,'climate.temperature',{temperature:desired},b),{icon:delta<0?'minus':'plus'});b.disabled||=c.available===false||desired===null;steps.append(b);}root.append(steps);}
  }
  if(d.kind==='camera'){
-  if(d.camera?.preview_only){
+  if(d.camera?.preview_only||d.camera?.power_writable===false){
    root.append(button('查看画面','camera',()=>viewCamera(d),{icon:'video'}));
    return root;
   }

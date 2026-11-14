@@ -24,6 +24,7 @@ export function mountInteractions(root,{data,go,toast}){
  const field=(label,input)=>add(h('label',null,{class:'product-field'}),h('span',label),input);
  function cameraInputStatus(id){
   const session=report.camera_sessions?.find(s=>s.camera===id),live=['live','ready'].includes(session?.state),physical={text:states[session?.state]||'未开启',available:live};
+  if(session?.interaction_enabled===false)return{text:'互动已关闭',available:false};
   if(session?.recognition==='recovering')return{text:'感知恢复中',available:false};
   if(mode==='voice'||!live)return physical;
   const view=report.interactions?.cameras?.find(c=>c.camera===id);if(!view)return physical;

@@ -49,10 +49,12 @@ def voice_command_outcome(receipt):
 
 
 class HomeService:
-    def __init__(self, camera_id=None, voice_provider=None, *, voice_preferences=None, voice_routing=None):
+    def __init__(self, camera_id=None, voice_provider=None, *, voice_preferences=None, voice_routing=None,
+                 input_allowed=None):
         self.camera_id = camera_id
         self.voice_provider = voice_provider
         self.voice_routing = voice_routing
+        self.input_allowed = input_allowed or (lambda: True)
         self.voice_preferences=voice_preferences or read_preferences
         self.audio_allowed = True
         self.runtime_log = RuntimeLog(DATA / "logs")
@@ -211,7 +213,7 @@ class HomeService:
         session_id=None, captured_mono=None,
     ):
         session = session_id if type(session_id) is str and 0 < len(session_id) <= 128 else None
-        selected = bool(selected and self.enabled and self.armed and session is not None)
+        selected = bool(selected and self.enabled and self.armed and session is not None and self.input_allowed())
         continuous = 0 <= time.monotonic() - self.last_video < CAMERA_INPUT_MAX_AGE
         source_changed = session != self.camera_session or not continuous
         if selected != self.selected or source_changed:
@@ -288,7 +290,7 @@ class HomeService:
             self.state['audio_analysis'] = dict(status='unavailable',code='local_audio_model_unavailable')
 
     def listening(self, now):
-        return (self.selected and self.audio_allowed and not VOICE_INPUT_PAUSED.exists()
+        return (self.selected and self.audio_allowed and self.input_allowed() and not VOICE_INPUT_PAUSED.exists()
                 and self.voice_status() in ("ready", "transcribing") and now >= self.reply_until
                 and (self.voice_routing is None or self.voice_routing.listening(now))
                 and 0 <= now - self.last_video < CAMERA_INPUT_MAX_AGE)
@@ -420,6 +422,7 @@ class HomeService:
         return bool(
             self.selected
             and self.armed
+            and self.input_allowed()
             and epoch == self.epoch
             and 0 <= now - captured < 45
             and 0 <= now - self.last_video < CAMERA_INPUT_MAX_AGE
@@ -465,7 +468,8 @@ class HomeService:
         cue = self.wake_camera
         if cue is None:
             return None
-        if not 0 <= now - cue.captured < WAKE_CAMERA_SECONDS or VOICE_INPUT_PAUSED.exists():
+        if (not 0 <= now - cue.captured < WAKE_CAMERA_SECONDS or VOICE_INPUT_PAUSED.exists()
+                or not self.input_allowed()):
             self.wake_camera = None
             return None
         # 短时缺少识别帧不代表采集已换源；真正停止或恢复识别时由采集所有者撤销。

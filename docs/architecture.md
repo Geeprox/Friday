@@ -10,7 +10,7 @@ The browser renders source-backed state and optional imported geometry.
 `home_layout.py` validates and privately persists Mi Home imports.
 `home_presentation.py` maps discovered functions to generic display styles.
 `embodied/` owns optional camera workers, speech, gestures and bounded recognition;
-it is not required to run the Console. Device discovery does not enable gestures.
+it is not required to run the Console.
 
 The macOS shell is a client of a user-owned household service. Its private paths
 are derived from the current user; it does not embed an author's repository path,
@@ -25,7 +25,10 @@ ARL provides the model-runtime boundary and is not a prerequisite for simulation
 
 桌面后台在已连接家庭中定时运行只读米家清单进程。它核对现有摄像头或家庭登记，再将
 最小展示字段交给控制面。HA 快照用于去除已接入的普通设备。镜头登记需用户确认、重新
-核对米家标识和读取公开隐私规格，原子保存为手动预览。
+核对米家标识及镜头规格，原子保存后将新机位加入后台会话。隐私开关已开启的镜头
+默认参与语音和手势，镜头级设置可关闭互动。语音、手势在派发时再次核对当前机位设置。
+原有手动预览登记按同一米家区域和设备标识升级，保留机位标识和房间。云台切换独立于
+互动设置；新增机位从当前视角开始。镜头规格与回读决定可显示的隐私和云台控制。
 
 ```mermaid
 flowchart LR
@@ -35,7 +38,9 @@ flowchart LR
   M[米家家庭目录] --> F[待接入设备]
   H[HA 设备登记] --> F
   F --> G[确认登记摄像头]
-  G --> V[手动打开预览]
+  G --> V[校验隐私状态并启动会话]
+  V --> I[按镜头设置接收语音和手势]
+  V --> P[按镜头能力查看并控制]
 ```
 
 ## 重建其他平台的自动化

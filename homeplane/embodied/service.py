@@ -20,6 +20,7 @@ from .catalog import MOTION_GAME_MODES, TENNIS_VARIANTS, get_app
 from .game_difficulty import game_difficulty
 from .quest import get_quest_route
 from .paths import DATA, PRIVATE, PROJECT, PYTHON, VISION, camera, configuration
+from . import camera_interaction
 from .ski_route import get_ski_trail
 
 
@@ -47,6 +48,7 @@ class EmbodiedService:
         self.manual_previews=ManualPreview()
         self.discovery_task = None
         self.registration_lock = asyncio.Lock()
+        self.camera_sync_pending = False
         self.discovery_report = dict(state='not_checked', devices=[])
 
     async def ensure_background(self, *, interaction=True, open_privacy=False):
@@ -64,6 +66,8 @@ class EmbodiedService:
             await self.start(open_privacy=open_privacy)
         try:
             await self.set_interaction(interaction)
+            if self.camera_sync_pending:
+                await self._sync_registered_cameras()
             self.health_failures = 0
         except (httpx.HTTPError, OSError, ValueError):
             self.health_failures += 1
@@ -281,6 +285,8 @@ class EmbodiedService:
         return base
 
     def cameras(self):
+        from .miot_spec import camera_can_take_motor, camera_power_writable
+
         if not self.configured():
             return []
         return [
@@ -289,13 +295,23 @@ class EmbodiedService:
                 name=c["name"],
                 room=c["room"],
                 model=c["model"],
-                can_takeover=bool(c.get("takeover")),
+                can_takeover=camera_can_take_motor(c),
+                power_writable=(c.get('preview_only') is not True and (
+                    c.get('mijia_enrolled') is not True or camera_power_writable(c))),
                 preserve_shutter=not c.get("allow_open"),
                 preview_only=c.get("preview_only") is True,
                 selected=c["id"] == self.selected,
             )
             for c in configuration()["cameras"]
         ]
+
+    def camera_interaction_settings(self, camera_id, *, enabled=None, expected_revision=None):
+        selected = camera(camera_id)
+        if selected.get('preview_only') is True:
+            raise ValueError('camera_setup_required')
+        if enabled is None:
+            return vars(camera_interaction.read(camera_id))
+        return vars(camera_interaction.save(camera_id, enabled, expected_revision))
 
     @observe("embodied.start")
     async def start(self, camera_id=None, app_id=None, *, open_privacy=False, expected_intent=None,
@@ -563,7 +579,10 @@ class EmbodiedService:
         return dict(state='stopped')
 
     async def camera_control(self,camera_id,*,direction=None,mode=None,survey_revision=None):
-        if camera(camera_id).get('preview_only') is True:
+        from .miot_spec import camera_can_take_motor
+
+        selected = camera(camera_id)
+        if selected.get('preview_only') is True or not camera_can_take_motor(selected):
             raise ValueError('camera_control_unavailable')
         if self.manual_previews.has(camera_id):
             if survey_revision is not None or mode in {'auto','pets','survey','patrol'}:raise ValueError('recognition_required')
@@ -587,8 +606,11 @@ class EmbodiedService:
         return result
 
     async def camera_power(self,camera_id,*,enabled=None,revision=None,event_id=None):
+        from .miot_spec import camera_power_writable
+
         selected = camera(camera_id)
-        if enabled is not None and selected.get('preview_only') is True:
+        if enabled is not None and (selected.get('preview_only') is True or (
+                selected.get('mijia_enrolled') is True and not camera_power_writable(selected))):
             raise ValueError('camera_power_unavailable')
         if self.closed or not self.configured():raise ValueError('embodied_not_configured')
         if enabled is False:await self.stop_preview(camera_id)
@@ -628,8 +650,18 @@ class EmbodiedService:
     async def _discover_mijia(self):
         while not self.closed:
             try:
+                upgraded = []
+                if self.configured() and any(c.get('preview_only') is True for c in configuration()['cameras']):
+                    async with self.registration_lock:
+                        result = await self._mijia_inventory('upgrade')
+                        upgraded = result.get('upgraded', [])
+                if upgraded:
+                    self.camera_sync_pending = True
+                    for camera_id in upgraded:
+                        await self.stop_preview(camera_id)
+                    await self._sync_registered_cameras()
                 self.discovery_report = await self._mijia_inventory('inventory')
-            except (OSError, ValueError, TimeoutError):
+            except (OSError, ValueError, TimeoutError, httpx.HTTPError):
                 self.discovery_report = dict(state='unavailable', devices=[])
             await asyncio.sleep(300)
 
@@ -655,7 +687,23 @@ class EmbodiedService:
         if self.discovery_task is None or row is None or not row['can_connect']:
             return dict(state='inventory_changed')
         async with self.registration_lock:
-            return await self._mijia_inventory('connect', candidate)
+            result = await self._mijia_inventory('connect', candidate)
+            if result.get('state') == 'connected':
+                await self.stop_preview(result['camera'])
+                self.camera_sync_pending = True
+                try:
+                    await self._sync_registered_cameras()
+                except (OSError, ValueError, TimeoutError, httpx.HTTPError):
+                    # 已经保存的摄像头保留，由后台下一次检查接续。
+                    pass
+            return result
+
+    async def _sync_registered_cameras(self):
+        if self.process is None or self.process.returncode is not None or not self.capture_enabled:
+            return
+        report = await self.request('/api/camera-registration', {}, timeout=8)
+        if report.get('active') is True:
+            self.camera_sync_pending = False
 
     async def _mijia_inventory(self, action, candidate=None):
         if self.closed or not PYTHON.is_file() or not (PRIVATE/'miot-session.json').is_file():
