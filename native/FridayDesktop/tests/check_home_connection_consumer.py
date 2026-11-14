@@ -73,16 +73,18 @@ class ConnectionChecks(fixture.LocalConsumerChecks):
             activate.assert_awaited_with(interaction=True, open_privacy=False)
             supervisor.policy = supervisor.policy.model_copy(update={'enabled': False})
             self.assertEqual((await self.client.get('/api/snapshot')).json()['mode'], 'local-cameras')
-        candidate = await good_adapter(self.wrapper.renewal)
-        candidate[1].subscribe = AsyncMock()
+        settings, _, snapshot = await good_adapter(self.wrapper.renewal)
+        adapter = backend.HAReadOnlyAdapter(settings.ha_url, 'SYNTHETIC-TOKEN', 'synthetic-home')
+        adapter._online = True
+        adapter.subscribe = AsyncMock(return_value={'status': 'connected'})
         with (patch.object(backend, 'config', return_value=settings),
-              patch.object(backend, 'real_adapter', AsyncMock(return_value=candidate))):
+              patch.object(backend, 'real_adapter', AsyncMock(return_value=(settings, adapter, snapshot)))):
             response = await self.client.post('/desktop/connect')
             self.assertEqual(response.json()['source'], 'ha-read-only')
             self.assertTrue(response.json()['homeReadable'])
             self.assertIs(self.wrapper.inner.state.embodied, owner)
-            self.assertIs(self.wrapper.inner.state.core.adapter, candidate[1])
-            candidate[1].subscribe.assert_awaited_once()
+            self.assertIs(self.wrapper.inner.state.core.adapter, adapter)
+            adapter.subscribe.assert_awaited_once()
 
     def saved(self, path, **change):
         record = {'ha_url':'http://synthetic.invalid:8123', 'access_token':'SYNTHETIC-ACCESS',
