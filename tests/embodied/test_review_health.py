@@ -69,8 +69,9 @@ async def test_sound_readback_reports_pressure_and_revokes_old_worker_status(tmp
     owner.configured = lambda: True
     owner.process = SimpleNamespace(returncode=None)
     owner.capture_enabled = True
-    scope = dict(view=lambda: {'status': 'live', 'frame': 'SYNTHETIC', 'people': []}, safety=runtime)
-    actual_worker_functions({'status'}, scope)
+    scope = dict(view=lambda: {'status': 'live', 'frame': 'SYNTHETIC', 'people': []}, safety=runtime,
+                 time=SimpleNamespace(monotonic=lambda: journey.clock), full_vision_deadline=0.0)
+    actual_worker_functions({'status', 'benchmark_full_vision'}, scope)
 
     async def request(path):
         assert path == '/api/status'
@@ -84,9 +85,13 @@ async def test_sound_readback_reports_pressure_and_revokes_old_worker_status(tmp
     owner.request = request
     try:
         await runtime.sync_policy()
+        assert (await request('/api/status'))['full_vision_benchmark'] is False
+        scope['full_vision_deadline'] = journey.clock + 1
+        assert (await request('/api/status'))['full_vision_benchmark'] is True
         assert await state() == {'sound': 'waiting_input'}
         for index in range(9):
             await journey.tick(index)
+        assert (await request('/api/status'))['full_vision_benchmark'] is False
         assert await state() == {'sound': 'waiting'}
         await journey.tick(9)
         assert await state() == {'sound': 'running'}

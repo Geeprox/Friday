@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .action_contracts import LightExecutionTrace
 from .contracts import ActionTrace, Event
+from .mijia_control import MIJIA_POWER_ROUTE
 
 
 def local_database_path(path: Path):
@@ -39,6 +40,13 @@ def local_database_path(path: Path):
     if flag is not None and not os.statvfs(existing).f_flag & flag:
         raise ValueError("network_database_unsupported")
     return path
+
+
+def load_light_action(body):
+    trace = LightExecutionTrace.model_validate_json(body)
+    if trace.events and trace.events[0].payload.get('device_route') == MIJIA_POWER_ROUTE:
+        trace.route = MIJIA_POWER_ROUTE
+    return trace
 
 
 class TraceStore:
@@ -73,10 +81,13 @@ class TraceStore:
         self.prune()
         column, value = ("key", key) if key is not None else ("id", action_id)
         row = self.connection.execute(f"SELECT body FROM light_actions WHERE {column}=?", (value,)).fetchone()
-        return LightExecutionTrace.model_validate_json(row[0]) if row else None
+        return load_light_action(row[0]) if row else None
 
     def save_light_action(self, trace, *, expected_status=None):
-        body = trace.model_dump_json()
+        # 旧版本必须能读取中断的发送记录，才能安全回滚桌面包。
+        # 米家通道记在首个事件内，回读时恢复 API 的实际通道。
+        stored = trace.model_copy(update={'route': 'ha-scoped-device'}) if trace.route == MIJIA_POWER_ROUTE else trace
+        body = stored.model_dump_json()
         if len(body.encode()) > 32768:
             raise ValueError("trace_budget_exceeded")
         with self.connection:
@@ -99,7 +110,7 @@ class TraceStore:
                     event.event_id, event.wall_time.isoformat(), event_body))
 
     def unresolved_light_actions(self):
-        return [LightExecutionTrace.model_validate_json(row[0]) for row in self.connection.execute(
+        return [load_light_action(row[0]) for row in self.connection.execute(
             "SELECT body FROM light_actions WHERE status IN ('sent','accepted')")]
 
     def get(self, action_id: str) -> ActionTrace | None:

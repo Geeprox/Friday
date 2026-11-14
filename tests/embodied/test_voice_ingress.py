@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import numpy as np
 from homeplane.embodied.home_service import HomeService
 from homeplane.embodied.intent import transcript_quality
-from homeplane.embodied.voice_activity import VoiceActivity
+from homeplane.embodied.voice_activity import SpeechActivity, VoiceActivity
 from homeplane.embodied.voice_worker import normalize_audio
 from homeplane.embodied.speech import Speaker
 
@@ -72,7 +72,7 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
         h.voice_status = lambda: 'ready'
         h.last_video = time.monotonic()
         h.voice_owner = 7
-        h.activity = SimpleNamespace(measure=lambda raw: (True, 1.0, 0.02))
+        h.activity = SimpleNamespace(measure=lambda raw: SpeechActivity(True, 1.0, 0.02, 0.0))
         h.transcribe = AsyncMock()
         return h
 
@@ -80,7 +80,7 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
         return {"pcm": base64.b64encode(np.full(3200, 650, dtype="<i2").tobytes()).decode()}
 
     async def end(self, h):
-        h.activity.measure = lambda raw: (False, 0.0, 0.001)
+        h.activity.measure = lambda raw: SpeechActivity(False, 0.0, 0.001, 0.0)
         for _ in range(4):
             await h.audio(self.packet())
 
@@ -92,13 +92,15 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
             await h.audio(self.packet())
         await self.end(h)
         self.assertIsNotNone(h.pending_audio)
-        pcm, owner, _, attending, epoch = h.pending_audio
+        pcm, owner, _, attending, epoch, source, wake_only = h.pending_audio
+        self.assertIsNone(source)
+        self.assertFalse(wake_only)
         self.assertEqual(len(pcm), 10 * 6400)
         self.assertEqual(owner, 7)
         self.assertTrue(attending)
         h.transcribe.assert_not_awaited()
         previous = pcm
-        h.activity.measure = lambda raw: (True, 1.0, 0.02)
+        h.activity.measure = lambda raw: SpeechActivity(True, 1.0, 0.02, 0.0)
         for _ in range(4):
             await h.audio(self.packet())
         await self.end(h)
@@ -124,8 +126,8 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertFalse(h.speaking)
         h.transcribe.assert_not_awaited()
-        h.activity.measure = lambda raw: (True, 0.3, 0.02)
-        for _ in range(4):
+        h.activity.measure = lambda raw: SpeechActivity(True, 0.3, 0.02, 0.0)
+        for _ in range(2):
             await h.audio(self.packet())
         await self.end(h)
         await asyncio.sleep(0)
@@ -136,7 +138,7 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
         h.transcribe = HomeService.transcribe.__get__(h)
         h.request = AsyncMock(
             return_value={
-                "text": "",
+                "text": "synthetic-transcription-marker",
                 "address": {"admitted": False, "reason": "unsupported_script"},
                 "asr_quality": {"filter": "unsupported_script"},
             }
@@ -148,6 +150,9 @@ class AudioIngressTests(unittest.IsolatedAsyncioTestCase):
         h.speaker.say.assert_not_awaited()
         self.assertIsNone(h.state["last_transcript"])
         self.assertEqual(h.state["asr_quality"]["filter"], "unsupported_script")
+        journal = h.runtime_log.export()
+        self.assertEqual(journal['events'][-1]['code'], 'voice_asr_language_mismatch')
+        self.assertNotIn('synthetic-transcription-marker', str(journal))
 
     async def test_unaddressed_background_text_does_not_replace_last_command(self):
         h = self.service()

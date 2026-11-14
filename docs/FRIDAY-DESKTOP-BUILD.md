@@ -22,6 +22,10 @@ SwiftPM、中间文件和模块缓存使用
 临时安装候选也可通过 `--output` 放在该项目的缓存命名空间内；不允许写入其他项目的缓存。
 构建前后核对源码摘要，安装前使用 `check_registry_package_pins.py` 检查包内来源绑定。
 
+同一次构建将 `SoundWorker.swift` 编译到桌面包的 `Contents/Helpers/friday-sound`。
+包内导入检查确认后端选中该程序，并核对可执行状态。先签包内程序，将签名后的 SHA-256
+纳入来源清单，再签外层 App。声音复核启用后才会按需启动分类器。
+
 `--arl-sdk-input` 需要包含经审核的 `ARL-SDK-MANIFEST.json`、对应源码和许可文件。
 其清单摘要必须与 `homeplane/arl_sdk_requirements.json` 中的固定值一致；构建不下载 SDK，
 也不覆盖所选 Python 环境。缺文件、摘要变化、额外文件或符号链接会在编译前拒绝。
@@ -48,11 +52,13 @@ flowchart LR
   A[公开固定提交与锁清单] --> B[显式准备及逐文件摘要校验]
   B --> C[独占短目录下公开 SDK 消费者合成回归]
   B --> D[强制 arl-sdk-input 封包]
-  D --> E[独立导入门禁与签名]
+  D --> E[独立导入检查]
+  S[编译声音复核程序] --> E
+  E --> G[先签包内程序，再签外层 App]
   C --> V[回读固定输入完整性]
   E --> V
   V --> F[核对所有权后清理输入]
-  E --> F
+  G --> F
 ```
 
 签名前分别在所选 Python 的新进程中检查后端源码导入及 ARL SDK 兼容性。

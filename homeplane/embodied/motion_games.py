@@ -797,12 +797,28 @@ class MotionGames:
                     source_recovery=self.recovery_public(),
                     presentation=self.presentation.public(self.presentation_scope()) if self.presentation and self.selected_mode != 'home' else dict(required=False, ready=True))
 
+    def television_state(self):
+        """电视舞台只接收绘制和操作当前体感局所需的信息。"""
+        if not self.game_input_enabled or self.selected_mode not in MOTION_GAME_MODES:
+            return None
+        game = self.viewer_state()
+        fields = ('mode', 'round_id', 'control_context', 'control_revision', 'selected_mode', 'status',
+                  'difficulty', 'ski_trail', 'ski_trails', 'tennis_variant', 'quest_route', 'quest_routes', 'gesture_control',
+                  'framing', 'manually_paused', 'source_recovery', 'resume_seconds', 'presentation',
+                  'game_input_enabled', 'reason', 'elapsed', 'active_seconds', self.selected_mode)
+        view = {field: game[field] for field in fields}
+        view['players'] = [
+            {field: player[field] for field in ('lateral', 'swings', 'observation') if field in player}
+            for player in game['players']
+        ]
+        return view
+
     def require_game_view(self, mode):
         if self.presentation and mode in MOTION_GAME_MODES:
             if mode != self.selected_mode or not self.presentation.ready(self.presentation_scope()):
                 raise ValueError('game_presentation_not_ready')
 
-    def observe_presentation(self, data):
+    def observe_presentation(self, data, *, host=None):
         from .game_presentation import GameViewReport
         report = GameViewReport.model_validate(data)
         if not self.presentation or (report.expected_context, report.expected_round, report.mode) != self.presentation_scope()[:3]:
@@ -810,7 +826,7 @@ class MotionGames:
         self.presentation.synchronize(self.presentation_scope())
         if report.expected_view != self.presentation.context:
             raise ValueError('game_view_changed')
-        return self.presentation.observe(self.presentation_scope(), report)
+        return self.presentation.observe(self.presentation_scope(), report, host=host)
 
     def _hold_for_presentation(self):
         if not self.presentation or self.selected_mode == 'home' or not self.game_input_enabled or self.complete:
@@ -907,6 +923,20 @@ class MotionGames:
             self.preferred_track = candidate[0]
             self.gesture_event = "started"
 
+    def _waiting_framing(self, people, observed, eligible):
+        """按当前画面提示入镜，已占用的站位只检查原玩家。"""
+        required = self.required_players
+        if required == 2 and not self.slots and len(eligible) > required:
+            return 'space'
+        tracks = self.slots
+        if not tracks and required == 1 and self.preferred_track is not None:
+            tracks = (self.preferred_track,)
+        visible = {p['id'] for p in people if not tracks or p['id'] in tracks}
+        if len(visible) < required:
+            return 'players'
+        clear = sum(p['id'] in visible and p['observation'] == 'fresh' for p in observed)
+        return 'body' if clear < required else 'feet'
+
     def update(self, people, registration, now, hands=(), *, captured_at=None, aspect=BOARD_ASPECT):
         if self._hold_for_presentation():
             return self.public
@@ -933,7 +963,7 @@ class MotionGames:
                 self.beam.interrupt(remeasure=True)
             for reader in self.readers.values():
                 reader.invalidate_motion()
-            return self.publish([], "paused", "镜头转动或背景未对齐")
+            return self.publish([], "paused", "镜头转动或背景未对齐", framing='camera')
         if self.beam is not None:
             return self._update_beam(people, registration, now, now if captured_at is None else captured_at, aspect, dt)
         warmup = self.ski_warmup
@@ -951,6 +981,8 @@ class MotionGames:
         by_id = {p["id"]: p for p in observed}
         eligible = [p for p in observed if p["located"]]
         if not self.slots:
+            # 缓存脚部位置可补续原局，首次分配站位需要当帧双脚。
+            eligible = [p for p in eligible if p['observation'] == 'fresh' and p['foot_observation'] == 'fresh']
             if required == 1 and eligible:
                 choice = (
                     next((p for p in eligible if p["id"] == self.preferred_track), None)
@@ -979,22 +1011,30 @@ class MotionGames:
                 self.suspend_source()
                 self.recovery_previous_slots = previous_slots
                 return self._recover_source(people, registration, now, captured, hands)
-            return self.publish(selected, "waiting", f"需要 {required} 位可见玩家；当前 {len(selected)} 位")
+            framing = self._waiting_framing(people, observed, eligible)
+            return self.publish(selected, "waiting", f"需要 {required} 位可见玩家；当前 {len(selected)} 位",
+                                framing=framing)
         self.missing_since = None
         if any(not p["located"] for p in selected):
-            return self.publish(selected, "paused", "请让双脚完整入镜")
+            return self.publish(selected, "paused", "请让双脚完整入镜", framing='feet')
         if any(not p["calibrated"] for p in selected):
-            return self.publish(selected, "calibrating", "站定约 1 秒，记录左右移动原点")
+            return self.publish(selected, "calibrating", "站定约 1 秒，记录左右移动原点", framing='still')
         if warmup:
             player = selected[0]
-            if (player['observation'] != 'fresh' or player['foot_observation'] != 'fresh'
-                    or player['observed_wrists'] < 2):
-                return self.publish(selected, 'paused', '请让手和双脚入镜')
+            framing = None
+            if player['observation'] != 'fresh':
+                framing = 'body'
+            elif player['foot_observation'] != 'fresh':
+                framing = 'feet'
+            elif player['observed_wrists'] < 2:
+                framing = 'hands'
+            if framing is not None:
+                return self.publish(selected, 'paused', '请让手和双脚入镜', framing=framing)
         elif self.mode == 'tennis':
             receiver = self.ball['toward'] if self.tennis_variant == 'match' else 0
             if receiver is not None and (gap := tennis_visibility_gap(selected[receiver])):
                 reason = '请让双脚完整入镜' if gap == 'feet' else '请让手和双脚入镜'
-                return self.publish(selected, 'paused', reason)
+                return self.publish(selected, 'paused', reason, framing=gap)
         if self.resume_seconds > 0:
             self.resume_seconds = max(0.0, self.resume_seconds-dt)
             if self.resume_seconds < 1e-6:
@@ -1468,7 +1508,7 @@ class MotionGames:
                     event=event, flight=self.tennis_flight, lineup=lineup, serve=serve, practice=drill,
                     opponent=dict(x=round(self.tennis_opponent.x, 4)) if solo else None)
 
-    def publish(self, players, status, reason):
+    def publish(self, players, status, reason, *, framing=None):
         if self.mode == 'quest' and status not in {'playing', 'complete'}:
             self._invalidate_quest_motion()
         if self.mode == 'hiit' and status not in {'playing', 'complete'}:
@@ -1507,6 +1547,7 @@ class MotionGames:
                 "last_event": self.gesture_event,
             },
             "status": status,
+            "framing": framing,
             "manually_paused": self.manually_paused,
             "source_recovery": self.recovery_public(),
             "resume_seconds": round(self.resume_seconds, 2),

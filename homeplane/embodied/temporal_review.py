@@ -33,9 +33,10 @@ class WindowState:
     candidate: tuple | None = None
     followup: bool = False
     recorded: dict = field(default_factory=dict)
-    posture_track: int | None = None
+    posture_track: tuple[int, int] | None = None
     posture_since: float = math.inf
     rapid: RapidReviewWindow = field(default_factory=RapidReviewWindow)
+    visual_cue_at: float = -math.inf
 
     def posture_subject(self, frames):
         if self.posture_track is not None and frames and frames[0][0] >= self.posture_since:
@@ -78,7 +79,7 @@ class TemporalReviewer:
             self.last_camera = None
 
     def offer(self, camera, session, revision, captured, jpeg, *, stable, posture_track=None,
-              rapid_people=None, aspect=16/9, source_context=None, regions=()):
+              rapid_people=None, aspect=16/9, source_context=None, regions=(), visual_cue=False):
         now = self.clock()
         if self.closed or not stable or not math.isfinite(captured) or not 0 <= now - captured <= 1.5:
             self.clear(camera)
@@ -112,6 +113,8 @@ class TemporalReviewer:
         state.seen = captured
         if cloud_source is not None:
             state.regions.append((captured, regions))
+            if visual_cue:
+                state.visual_cue_at = captured
         if posture_track != state.posture_track:
             state.posture_track, state.posture_since = posture_track, captured
             if state.candidate and state.candidate[0] == 'prone_posture':
@@ -139,8 +142,12 @@ class TemporalReviewer:
             for index, (cid, other) in enumerate(self.windows.items())
             if 0 <= now - other.seen <= 1.5 and now - other.submitted >= 6
         ]
-        eligible = [(other.submitted, index, cid) for index, cid, other in live if len(other.frames) == 4]
+        eligible = [(other.submitted, index, cid) for index, cid, other in live
+                    if len(other.frames) == 4 and (cloud_source is None or
+                       other.visual_cue_at >= other.frames[0][0] or self._followup_ready(other))]
         rapid = [(frames[-1][0], index, cid) for index, cid, other in live if (frames := other.rapid.pending(now))]
+        if not eligible and not rapid:
+            return
         # One timely confirmation prevents a slower shared model from
         # expiring every camera's candidate before its second ordinary turn.
         # It cannot chain more follow-ups ahead of the other eligible feeds.
@@ -313,6 +320,8 @@ class TemporalReviewer:
                 state.followup = allow_followup
                 return
             await self._deliver(camera, state, previous[2] + frames, result, provider=provider)
+            if provider == 'decisions':
+                state.candidate, state.followup = None, False
         except asyncio.CancelledError:
             raise
         except VisualSourceChanged:

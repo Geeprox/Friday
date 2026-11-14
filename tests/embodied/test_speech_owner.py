@@ -109,6 +109,59 @@ async def test_notify_uses_cancellable_transport_and_never_executor_sends(rig, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('fault, expected_attempts', [('temporary', 2), ('persistent', 3), ('after_send', 1)])
+async def test_werewolf_recovers_only_proven_unsent_prompts(rig, fault, expected_attempts):
+    session = json.loads(rig.session.read_text())
+    rig.session.write_text(json.dumps(dict(session, expires_at=0)))
+    now = [100.]
+    refreshes = 0
+    notifications = []
+
+    async def interrupt(request):
+        nonlocal refreshes
+        if request.url.path == '/auth/token':
+            refreshes += 1
+            if fault == 'persistent' or fault == 'temporary' and refreshes == 1:
+                raise httpx.ConnectError('合成连接中断', request=request)
+        if request.url.path == '/api/services/notify/send_message':
+            notifications.append(json.loads(request.content))
+            if fault == 'after_send':
+                raise httpx.ReadTimeout('合成回执丢失', request=request)
+
+    rig.hook = interrupt
+    effects = HostEffects(SilentLights(), speak=rig.speaker().say,
+                          speech_status=lambda: dict(quiet=False, configured=True))
+    service = WerewolfService(effects, clock=lambda: now[0])
+    try:
+        await service.create(6, narration=True)
+        service.pump.cancel()
+        await asyncio.gather(service.pump, return_exceptions=True)
+        service.pump = None
+        await service.step()
+        await service.effect_task
+        script = service.game.host_script.copy()
+        assert effects.voice_state == ('unconfirmed' if fault == 'after_send' else 'unavailable')
+
+        now[0] += .5
+        await service.step()
+        assert refreshes == 1
+        for _ in range(4):
+            now[0] += 3
+            await service.step()
+            await service.effect_task
+        assert refreshes == expected_attempts
+        assert service.game.host_script == script
+        if fault == 'persistent':
+            assert notifications == [] and effects.voice_state == 'unavailable'
+        else:
+            expected = dict(entity_id='notify.synthetic', message=json.dumps([script['text']], ensure_ascii=False))
+            assert notifications == [expected]
+            assert effects.voice_state == ('unconfirmed' if fault == 'after_send' else 'requested')
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_expired_scope_never_starts_an_output(rig):
     assert (await rig.speaker().say("合成主持语句", current=lambda: False))["status"] == "expired"
     assert not rig.calls

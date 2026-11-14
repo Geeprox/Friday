@@ -1,11 +1,15 @@
 """Fresh setup uses only temporary settings; no HA, camera, audio or model starts."""
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
+from homeplane.ha import HAReadOnlyAdapter
+from homeplane.local_camera_home import LocalCameraHome
 from homeplane.onboarding import SetupConfiguration, setup_report
 from homeplane.settings import SettingsService
 
@@ -103,3 +107,88 @@ async def test_changed_address_is_not_reported_as_readable(fresh):
         embodied=SimpleNamespace(configured=lambda: False)))
     report = await backend.setup_status()
     assert b'"home_readable":false' in report.body
+
+
+@pytest.mark.asyncio
+async def test_mijia_source_requires_local_origin_and_preserves_active_ha_until_readback(fresh, monkeypatch):
+    backend, module = fresh
+    backend.persistent = True
+    backend.setup_settings().update({'ha_url': 'http://synthetic-ha.example:8123'})
+    module.STATE.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr('homeplane.embodied.service.mijia_runtime_configured', lambda path: True)
+    old = HAReadOnlyAdapter('http://synthetic-ha.example:8123', 'synthetic-token', 'fixture')
+    old.health = lambda: {'mode': 'ha-read-only', 'transport': 'online', 'authentication_available': True,
+                          'observation_gap': False}
+    missing_targets = set()
+    power = SimpleNamespace(qualify_source=AsyncMock(return_value=None), connected_targets=lambda: (None, {}),
+                            unqualified_references=lambda _targets: missing_targets,
+                            uses_lan_home=lambda source: source is not old, ready_count=lambda: 1)
+    rules = [SimpleNamespace(enabled=True)]
+    core = SimpleNamespace(adapter=old, actions=SimpleNamespace(mijia_power_home=power,
+                           policy_report=lambda: {'enabled': False}))
+    embodied = SimpleNamespace(configured=lambda: True, discovery_report={'state': 'ready'})
+
+    async def attach_mijia(*, current, commit):
+        assert current()
+        commit()
+        core.adapter = LocalCameraHome()
+        return old, None
+
+    backend.connection = 'connected'
+    backend.adapter = old
+    backend.inner = SimpleNamespace(state=SimpleNamespace(core=core, embodied=embodied,
+        home_experience=SimpleNamespace(connection_health=lambda: core.adapter.health()),
+        core_rules=SimpleNamespace(records=lambda: rules), attach_mijia=attach_mijia))
+    monkeypatch.setattr(module, 'real_adapter', AsyncMock(side_effect=AssertionError('HA must not be contacted')))
+    transport = httpx.ASGITransport(backend)
+    path = '/desktop/home-source'
+    command = {'source': 'mijia-lan'}
+    async with httpx.AsyncClient(transport=transport, base_url=ORIGIN) as client:
+        assert (await client.post(path, json=command)).status_code == 403
+        blocked = await client.post(path, json=command, headers={'Origin': ORIGIN})
+        assert blocked.json()['code'] == 'ha_rules_in_use'
+        assert power.qualify_source.await_count == 0
+        rules.clear()
+        missing_targets.add('synthetic-target')
+        blocked = await client.post(path, json=command, headers={'Origin': ORIGIN})
+        assert blocked.json()['code'] == 'mijia_interaction_targets_missing'
+        missing_targets.clear()
+        missing = await client.post(path, json=command, headers={'Origin': ORIGIN})
+        assert missing.json()['code'] == 'mijia_readback_required'
+        assert module.home_source() is None and backend.adapter is old
+        power.qualify_source.return_value = lambda: True
+        result = await client.post(path, json=command, headers={'Origin': ORIGIN})
+        assert result.is_success and result.json()['source'] == 'mijia-lan'
+        report = (await client.get('/api/settings/setup')).json()
+        assert report['active_source'] == 'mijia-lan' and report['home_readable']
+        assert report['mijia']['ready'] == 1
+        assert backend.inner.state.embodied is embodied
+    assert json.loads((module.STATE / 'home-source.json').read_text()) == command
+    assert backend.setup_settings().config.ha_url == 'http://synthetic-ha.example:8123'
+    assert (await backend.connect())['homeSource'] == 'mijia-lan'
+    assert not module.real_adapter.await_count
+
+
+@pytest.mark.asyncio
+async def test_saved_mijia_choice_skips_ha_on_cold_boot(fresh, monkeypatch):
+    backend, module = fresh
+    backend.persistent = True
+    module.STATE.mkdir(parents=True, exist_ok=True)
+    backend.setup_settings().update({'ha_url': 'http://synthetic-ha.example:8123'})
+    module.save_home_source('mijia-lan')
+    monkeypatch.setattr(module, 'real_adapter', AsyncMock(side_effect=AssertionError('HA must not be contacted')))
+    monkeypatch.setattr(module, 'local_people_catalog', lambda: None)
+    monkeypatch.setattr(module, 'prepare_private_workspace', lambda: None)
+    from homeplane.embodied.service import EmbodiedService
+
+    monkeypatch.setattr(EmbodiedService, 'configured', lambda _: False)
+    monkeypatch.setattr(EmbodiedService, 'start_mijia_discovery', lambda _: None)
+    try:
+        report = await backend._connect()
+        assert report['connection'] == 'connected' and report['homeSource'] == 'mijia-lan'
+        assert report['providerReads'] == [] and report['failure'] is None
+        assert isinstance(backend.adapter, LocalCameraHome)
+        assert isinstance(backend.inner.state.core.adapter, LocalCameraHome)
+        assert not module.real_adapter.await_count
+    finally:
+        await backend.close()

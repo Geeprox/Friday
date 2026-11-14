@@ -9,6 +9,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import numpy as np
+
+from homeplane.embodied.voice_activity import SpeechActivity
 import pytest
 from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, deliver_audio, voice_window_deadlines
 from homeplane.embodied.camera_provenance import camera_source_context
@@ -31,7 +33,7 @@ def actual(path, name, scope):
 @pytest.mark.asyncio
 async def test_capture_does_not_relabel_audio_left_before_a_gap_as_current():
     output=[];clock=[10.0]
-    scope=dict(audio_observed=True,audio_pending=bytearray(),audio_until=20,
+    scope=dict(audio_observed=True,audio_until=20,sound_until=0,
                time=SimpleNamespace(monotonic=lambda:clock[0],time=lambda:1000+clock[0]),
                base64=base64,emit=output.append)
     scope['audio_framer']=PCMFramer(CAMERA,'a'*32)
@@ -52,7 +54,7 @@ async def test_video_observation_survives_pipe_pressure_and_capture_cannot_reope
     paused = tmp_path / 'paused'
     monkeypatch.setattr(module, 'VOICE_INPUT_PAUSED', paused)
     service = voice_service(module)
-    service.enabled = service.armed = False
+    service.ensure_voice = Mock()
     service.attention = SimpleNamespace(update=Mock(), candidate=lambda *_: None)
     buffered = [32]
     writer = SimpleNamespace(write=Mock(), drain=AsyncMock(), is_closing=lambda: False,
@@ -60,8 +62,8 @@ async def test_video_observation_survives_pipe_pressure_and_capture_cannot_reope
     process = SimpleNamespace(stdin=writer)
 
     async def observe(captured):
-        await service.observe([dict(id=1)], [], {'status': 'locked'}, clock[0], process, False,
-                              sound_review=True, session_id='camera-session', captured_mono=captured)
+        await service.observe([dict(id=1)], [], {'status': 'locked'}, clock[0], process, True,
+                              session_id='camera-session', captured_mono=captured)
 
     for tick in (10.0, 10.5, 11.0):
         clock[0] = tick
@@ -100,7 +102,7 @@ async def test_video_observation_survives_pipe_pressure_and_capture_cannot_reope
     framer = PCMFramer(CAMERA, 'a' * 32)
     assert framer.push(bytes(3200), received=1012.5, decoded=1012.5, wall=1012.5, mono=12.5) == []
     epoch = framer.epoch
-    scope = dict(reader=SimpleNamespace(readline=readline), json=json, audio_until=12.6, attention_until=12.6,
+    scope = dict(reader=SimpleNamespace(readline=readline), json=json, audio_until=12.6, sound_until=0, attention_until=12.6,
                  time=monotonic, audio_framer=framer, voice_window_deadlines=voice_window_deadlines, emit=Mock())
     await actual('homeplane/embodied/capture_worker.py', 'controls', scope)()
     assert deadlines[1] == (0.0, 0.0)
@@ -108,6 +110,69 @@ async def test_video_observation_survives_pipe_pressure_and_capture_cannot_reope
     assert deadlines[3] == pytest.approx((0.0, 14.3))
     assert not framer.pending and framer.epoch > epoch
     scope['emit'].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fresh_recognition_renews_audio_before_a_delayed_frame_expires(tmp_path, monkeypatch):
+    from homeplane.embodied import home_service as module
+
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(module, 'VOICE_INPUT_PAUSED', tmp_path / 'paused')
+    service = voice_service(module)
+    service.ensure_voice = Mock()
+    writer = SimpleNamespace(write=Mock(), is_closing=lambda: False,
+                             transport=SimpleNamespace(get_write_buffer_size=lambda: 0))
+    capture = SimpleNamespace(stdin=writer)
+
+    await service.observe([], [], {'status': 'locked'}, clock.now, capture, True,
+                          session_id='camera-session', captured_mono=8.7)
+    clock.now = 10.15
+    await service.observe([], [], {'status': 'locked'}, clock.now, capture, True,
+                          session_id='camera-session', captured_mono=10.0)
+    first, second = [json.loads(call.args[0]) for call in writer.write.call_args_list]
+    assert voice_window_deadlines(first, 10.21) == (0.0, 0.0)
+    assert voice_window_deadlines(second, 10.21) == (pytest.approx(11.45), 0.0)
+    assert service.listening(10.21)
+    assert voice_window_deadlines(second, 11.51) == (0.0, 0.0)
+    assert not service.listening(11.51)
+
+
+@pytest.mark.asyncio
+async def test_audio_capture_preserves_sound_window_when_voice_is_revoked():
+    clock = [10.0]
+    frames = []
+    framer = PCMFramer(CAMERA, 'a' * 32)
+    assert framer.push(bytes(3200), received=1010, decoded=1010, wall=1010, mono=10) == []
+    initial_epoch = framer.epoch
+    commands = iter([
+        (10.1, dict(action='sound_window', enabled=True, attention=True, expires_mono=11.2)),
+        (10.2, dict(action='voice_window', enabled=False, attention=False, expires_mono=11.2)),
+        (10.3, dict(action='sound_window', enabled=False, expires_mono=11.2)),
+    ])
+    time = SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1000 + clock[0])
+    scope = dict(time=time, json=json, audio_framer=framer, audio_until=10.8, attention_until=10.8,
+                 sound_until=0, voice_window_deadlines=voice_window_deadlines, emit=frames.append, audio_observed=True)
+    decode = actual('homeplane/embodied/capture_worker.py', 'decoded_audio', scope)
+
+    async def readline():
+        item = next(commands, None)
+        if item is None:
+            assert framer.epoch > initial_epoch and not framer.pending
+            await decode('synthetic', np.ones(3200, dtype=np.int16), 0, 0, 1010300, 1010300)
+            return b''
+        clock[0], command = item
+        if command['action'] == 'voice_window':
+            assert scope['attention_until'] == 10.8
+        if clock[0] == 10.3:
+            assert framer.epoch == initial_epoch
+            assert scope['audio_until'] == scope['attention_until'] == 0
+            await decode('synthetic', np.ones(1600, dtype=np.int16), 0, 0, 1010300, 1010300)
+        return json.dumps(command).encode()
+
+    scope['reader'] = SimpleNamespace(readline=readline)
+    await actual('homeplane/embodied/capture_worker.py', 'controls', scope)()
+    assert len(frames) == 1 and frames[0]['audio_epoch'] == initial_epoch
 
 
 @pytest.mark.parametrize('deadline', [None, True, float('nan'), 10, 11.31])
@@ -118,7 +183,7 @@ def test_capture_rejects_invalid_or_stale_voice_window_deadlines(deadline):
 
 @pytest.mark.asyncio
 async def test_secondary_old_audio_cannot_reach_voice_recognition():
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),finish_gap=Mock(),state={})
     scope=dict(secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
                time=__import__('time'),deliver_audio=deliver_audio,safety=SimpleNamespace(observe_audio=Mock()))
     callback=actual('homeplane/embodied/worker.py','secondary_audio',scope)
@@ -192,7 +257,7 @@ def test_packet_replay_sample_overlap_source_epoch_and_video_freshness_are_indep
 @pytest.mark.asyncio
 async def test_qualified_secondary_packet_reaches_original_voice_consumer_and_reports_gap():
     g=AudioIngress(CAMERA,'a'*32);f=PCMFramer(CAMERA,'a'*32);assert video(g,0)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),finish_gap=Mock(),state={})
     scope=dict(secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
                time=__import__('time'),deliver_audio=deliver_audio,safety=SimpleNamespace(observe_audio=Mock()))
     callback=actual('homeplane/embodied/worker.py','secondary_audio',scope)
@@ -210,7 +275,7 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
     frame=dict(type='frame',capture_session='a'*32,camera_source_context=camera_source_context(CAMERA),
                received_at=1000,jpeg='SYNTHETIC')
     packet=audio(framer=framer)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),finish_gap=Mock(),state={})
     time=SimpleNamespace(monotonic=lambda:0,time=lambda:1000)
     callback=actual('homeplane/embodied/worker.py','secondary_audio',dict(
         secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
@@ -237,7 +302,7 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
 async def test_original_primary_receiver_gates_pcm_and_stops_an_obsolete_generation():
     g=AudioIngress(CAMERA,'a'*32);assert video(g,0)
     p=audio();old=dict(p,received_at=998)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),finish_gap=Mock(),state={})
     for obsolete in (False,True):
         scope=dict(capture=SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(side_effect=[json.dumps(old).encode(),b'']))),
             state={'status':'live'},audio_ingress=g,home=service,deliver_audio=deliver_audio,
@@ -267,7 +332,8 @@ async def test_real_voice_buffer_reaches_asr_only_with_a_complete_fresh_segment(
         def __init__(self):self.count=0
         def reset(self):pass
         def measure(self,_):
-            self.count+=1;return self.count<=6,1.0 if self.count<=6 else 0.0,.03
+            self.count += 1
+            return SpeechActivity(self.count <= 6, 1.0 if self.count <= 6 else 0.0, .03, 0.0)
     s=voice_service(module)
     s.state={'voice':'ready'};s.activity=VAD();s.last_audio=None;s.selected=s.audio_allowed=True;s.audio_retry_at=0
     s.reply_until=0;s.last_video=0;s.noise=.004;s.voice_owner=None;s.voice_busy=False;s.epoch=1
@@ -334,7 +400,7 @@ async def test_local_audio_model_failure_does_not_stop_primary_frames_or_motor_r
     await deliver_audio(s,g.accept(audio(1,framer=framer),wall=1001,mono=1))
     assert model.call_count==initial_calls and s.state['audio_analysis']['retry_ms']==4000
     class HealthyVAD:
-        def measure(self,_):return False,0,.01
+        def measure(self,_):return SpeechActivity(False, 0, .01, 0.0)
         def reset(self):pass
     model.side_effect=None;model.return_value=HealthyVAD()
     clock[0]=5.1;s.last_video=5.1;assert video(g,5.1)

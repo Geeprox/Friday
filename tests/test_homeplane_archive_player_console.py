@@ -41,7 +41,7 @@ def test_player_mute_seek_receipt_preservation_stop_and_late_source_guards(tmp_p
     script = r"""
 const fs=require('fs'),vm=require('vm'),assert=require('assert/strict'),nodes=new Map();
 class Element{
- constructor(tag){this.tag=tag;this.children=[];this.handlers={};this.attrs={};this._text='';this.value='';this.isConnected=true;this.duration=60;this.currentTime=0;this.pauseCount=0;}
+ constructor(tag){this.tag=tag;this.children=[];this.handlers={};this.attrs={};this._text='';this.value='';this.isConnected=true;this.duration=60;this.currentTime=0;this.readyState=2;this.paused=true;this.pauseCount=0;}
  set textContent(v){this._text=String(v);this.children=[];}
  get textContent(){return this._text+this.children.map(c=>c.textContent??'').join('');}
  set innerHTML(_){throw Error('Unsafe source HTML');}
@@ -63,8 +63,8 @@ const segment={media_ref:'b'.repeat(64),time_range:source,status:'ready',audio_t
 let segments=[segment];
 const report=()=>({context_fingerprint:context.fingerprint,simulated:true,camera_id:'SIMULATED-camera',time_range:range,status:'ready',segments,gaps:[]});
 const actualPlan=JSON.parse(process.argv[1]);
-const plan=()=>({...actualPlan,plan_id:'c'.repeat(64),context_fingerprint:context.fingerprint,simulated:true,stream_url:'/api/archive/media/'+'c'.repeat(64),start_offset_seconds:30.3,end_offset_seconds:40,duration_seconds:60,clock_uncertainty_seconds:0,previous_keyframe_seconds:30,expires_at:new Date(Date.now()+(expired?-1000:300000)).toISOString()});
-let calls=[],pending=null,late=false,foreign=false,tick=null,contextFailure=false,contextWaiting=false,waitingContext=null,unprotected=false,expired=false;
+const plan=body=>({...actualPlan,plan_id:'c'.repeat(64),context_fingerprint:context.fingerprint,simulated:true,stream_url:'/api/archive/media/'+'c'.repeat(64),camera_id:body.camera_id,media_ref:body.media_ref,time_range:body.time_range,source_time_range:source,start_offset_seconds:30.3,end_offset_seconds:40,duration_seconds:60,clock_uncertainty_seconds:0,previous_keyframe_seconds:30,expires_at:new Date(Date.now()+(expired?-1000:300000)).toISOString()});
+let calls=[],pending=null,late=false,foreign=false,tick=null,contextFailure=false,contextWaiting=false,waitingContext=null,unprotected=false,expired=false,badBinding=null,overlap=false;
 const response=v=>({ok:true,json:async()=>v});
 const fetch=async(path,options={})=>{
  if(path==='/api/archive/context'){
@@ -74,10 +74,11 @@ const fetch=async(path,options={})=>{
  }
  if(options.method==='POST'){
   const body=JSON.parse(options.body);calls.push([path,body]);
-  if(path==='/api/archive/resolve')return response(report());
+  if(path==='/api/archive/resolve')return response({...report(),...(overlap?{reason:'archive_overlapping_segments_ambiguous'}:{})});
   if(path==='/api/archive/playback'){
    assert.equal(body.media_ref,'b'.repeat(64));assert.equal(body.camera_id,'SIMULATED-camera');assert(!('path' in body));
-   const p=plan();if(foreign)p.stream_url='https://foreign.example/media';if(unprotected)delete p.privacy_preview_generated;
+   const p=plan(body);if(foreign)p.stream_url='https://foreign.example/media';if(unprotected)delete p.privacy_preview_generated;
+   if(badBinding)Object.assign(p,badBinding);
    if(late)return await new Promise(resolve=>pending=()=>resolve(response(p)));
    return response(p);
   }
@@ -117,6 +118,7 @@ const open=()=>all(content).find(n=>n.attrs['data-archive-playback-ref']).handle
  assert(all(content).some(n=>n.tag==='video'),'an actual versioned ArchiveResolveRequest opens protected event playback');
  vm.runInContext('stopArchivePlayer()',env);
  vm.runInContext("page='Safety'",env);
+ actualLookup.time_range=range;
  const edge={...segment,media_ref:'d'.repeat(64),clock_uncertainty_seconds:.5,
   time_range:{start:source.start,end:'2026-10-01T00:00:31.400Z'}};
  const anchor_at='2026-10-01T00:00:31.100Z';
@@ -134,8 +136,42 @@ const open=()=>all(content).find(n=>n.attrs['data-archive-playback-ref']).handle
  await env.openEventRecording(content,{request:actualLookup,anchor_at});
  assert(all(content).some(n=>n.tag==='video'),'safety event details reuse the same protected player');
  const safetyVideo=all(content).find(n=>n.tag==='video');
+ safetyVideo.readyState=1;
+ safetyVideo.handlers.loadedmetadata();
+ assert.equal(safetyVideo.currentTime,31.1,'open at the selected evidence timestamp, preserving the pre-roll');
+ assert.equal(safetyVideo.controls,false);
+ safetyVideo.handlers.seeking();
+ safetyVideo.currentTime=0;safetyVideo.readyState=4;safetyVideo.handlers.seeked();
+ assert.equal(safetyVideo.currentTime,31.1,'the early seek may reset before decoding and is retried once');
+ assert.equal(safetyVideo.controls,false,'the wrong frame stays covered');
+ safetyVideo.handlers.seeking();safetyVideo.handlers.seeked();safetyVideo.frame(0,{mediaTime:31.1});
+ assert.equal(safetyVideo.controls,true);
+ assert.equal(nodes.get('archive-seek-evidence').attrs['data-seek-target'],'31.1');
+ const returnToAnchor=all(content).find(n=>n.tag==='button'&&n.textContent==='回到所选时刻');
+ assert(returnToAnchor&&!returnToAnchor.disabled);
+ safetyVideo.currentTime=30.5;safetyVideo.handlers.seeking();safetyVideo.handlers.seeked();
+ assert.equal(safetyVideo.currentTime,30.5,'the original pre-roll remains available');
+ const pauses=safetyVideo.pauseCount;returnToAnchor.handlers.click();
+ assert.equal(safetyVideo.currentTime,31.1);assert(safetyVideo.pauseCount>pauses);
+ safetyVideo.currentTime=40.1;safetyVideo.handlers.timeupdate();safetyVideo.handlers.play();
+ assert.equal(safetyVideo.currentTime,31.1,'replay returns to the selected time');
+ for(const mismatch of [{source_time_range:{...source,start:range.start}},{media_ref:'f'.repeat(64)},{start_offset_seconds:31.5}]){
+  badBinding=mismatch;cancels=calls.filter(([p])=>p.endsWith('/cancel')).length;
+  await env.openEventRecording(content,{request:actualLookup,anchor_at});
+  assert(!all(content).some(n=>n.tag==='video'),'mismatched plan cannot present the wrong time');
+  assert(calls.filter(([p])=>p.endsWith('/cancel')).length>cancels);
+ }
+ badBinding=null;overlap=true;
+ await env.openEventRecording(content,{request:actualLookup,anchor_at});
+ assert(!all(content).some(n=>n.tag==='video'),'overlapping references are never opened automatically');
+ overlap=false;
+ const beforeInvalid=calls.filter(([p])=>p.endsWith('/playback')).length;
+ await env.openEventRecording(content,{request:actualLookup,anchor_at:'invalid'});
+ assert.equal(calls.filter(([p])=>p.endsWith('/playback')).length,beforeInvalid);
+ await env.openEventRecording(content,{request:actualLookup,anchor_at});
+ const reopened=all(content).find(n=>n.tag==='video');
  vm.runInContext("page='Home';stopArchivePlayer()",env);await settle();
- assert(safetyVideo.pauseCount>0&&!safetyVideo.attrs.src,'leaving safety stops and revokes playback');
+ assert(reopened.pauseCount>0&&!reopened.attrs.src,'leaving safety stops and revokes playback');
  assert(calls.every(([p])=>p.startsWith('/api/archive/')),'viewing and stopping only touches readonly archive');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """

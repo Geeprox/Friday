@@ -106,11 +106,14 @@ def closed_scope():
         state=dict(status='live',frame='private pixels',people=[{'id':1}],hands=[{}],
                    animals=[{}],animals_current=True,room={'private':'position'}),
         home=SimpleNamespace(armed=True,selected=True,epoch=2,vad=[b'private audio'],pending_audio=object()),
-        secondary_homes={},safety=SimpleNamespace(clear=Mock(), capture_frame=Mock()),fleet=SimpleNamespace(clear=Mock()),
+        secondary_homes={},safety=SimpleNamespace(clear=Mock(), clear_view=Mock(), capture_frame=Mock()),
+        fleet=SimpleNamespace(clear=Mock()),
         pet_tracks=SimpleNamespace(clear=Mock()),wall=wall,identities=SimpleNamespace(discard=Mock()),
         motor_waiters={3:pending,4:acknowledged},notify=AsyncMock(),games=MotionGames(),
     )
     actual('homeplane/embodied/worker.py','clear_interactions',scope)
+    actual('homeplane/embodied/worker.py','clear_camera_view',scope)
+    actual('homeplane/embodied/worker.py','clear_camera_observation',scope)
     scope['clear_camera']=actual('homeplane/embodied/worker.py','clear_camera',scope)
     close=actual('homeplane/embodied/worker.py','primary_capture_closed',scope)
     return scope,close,epoch,pending,acknowledged
@@ -279,6 +282,7 @@ async def test_original_supervisor_retries_after_fault_and_a_replacement_receive
             assert not receiver.done()
             scope['safety'].capture_frame.assert_called_once_with(
                 CAMERA['id'], frame['capture_session'], frame['camera_source_context'], 10,
+                source_name=None, audio_writer=getattr(scope['capture'], 'stdin', None),
             )
             assert isinstance(pending.exception(),RuntimeError),'An old ACK cannot replace the retired outcome'
             supervisor['generation']=2

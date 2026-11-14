@@ -37,6 +37,9 @@ def candidate(tmp_path, monkeypatch):
         item = native / name
         item.parent.mkdir(parents=True, exist_ok=True)
         item.write_text("# SYNTHETIC BUILD INPUT\n")
+    sound_source = native.parent / "EmbodiedVision/SoundWorker.swift"
+    sound_source.parent.mkdir()
+    sound_source.write_text("// 合成声音分类程序源码\n")
     value = dict(version="0.0.0", build="0", bundle_identifier="com.friday.home.desktop")
     (native / "Resources/product-inputs.json").write_text(json.dumps(value))
     sdk = tmp_path / "reviewed-sdk-input"
@@ -84,11 +87,19 @@ def candidate(tmp_path, monkeypatch):
 
     def run(command, **options):
         result.calls.append(command)
+        if command[:2] == ["xcrun", "swiftc"]:
+            executable = Path(command[-1])
+            executable.write_bytes(b"SYNTHETIC SOUND WORKER")
+            executable.chmod(0o755)
+            return subprocess.CompletedProcess(command, 0, "")
         if command[0] == "xcrun":
             return subprocess.CompletedProcess(
                 command, 0, str(binary.parent) + "\n" if "--show-bin-path" in command else ""
             )
         if command[0] == "codesign":
+            if "--sign" in command and Path(command[-1]).name == "friday-sound":
+                helper = Path(command[-1])
+                helper.write_bytes(helper.read_bytes() + b" SIGNED")
             return subprocess.CompletedProcess(command, 0, "")
         assert command[:3] == ["/synthetic/python", "-I", "-B"]
         if command[3] == "-c":
@@ -151,6 +162,14 @@ def test_package_binds_the_runtime_check_before_signing(candidate):
     binding = json.loads((candidate.app / "Contents/Resources/FRIDAY-SOURCE-INTEGRATION.json").read_text())
     assert "native/FridayDesktop/tests/check_packaged_import.py" in binding["build_inputs"]
     assert "native/FridayDesktop/tests/check_packaged_application_sdk.py" in binding["build_inputs"]
+    helper_path = "Helpers/friday-sound"
+    helper = candidate.app / "Contents" / helper_path
+    assert helper.read_bytes() == b"SYNTHETIC SOUND WORKER SIGNED"
+    assert commands[signing][-1] == str(helper)
+    assert commands[signing + 1][-1] == str(candidate.app)
+    assert "--deep" not in commands[signing + 1]
+    assert "native/EmbodiedVision/SoundWorker.swift" in binding["native_inputs"]
+    assert binding["packaged_inputs"][helper_path] == hashlib.sha256(helper.read_bytes()).hexdigest()
 
 
 def test_package_carries_frozen_sdk_and_license_with_exact_hash_bindings(candidate):

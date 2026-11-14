@@ -407,11 +407,13 @@ def original_voice_projection(home, secondary_homes=None):
     for statement in view.body:
         if isinstance(statement, ast.Assign):
             target = statement.targets[0]
+            if isinstance(target, ast.Name) and target.id == 'voice_fields':
+                selected.append(statement)
             if (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)
                     and target.value.id == 'result' and isinstance(target.slice, ast.Constant)
                     and target.slice.value in {'home', 'voice_sessions', 'voice_input'}):
                 selected.append(statement)
-    assert len(selected) == 3
+    assert len(selected) == 4
     scope = dict(result={'status': 'live', 'camera_id': 'cam_1111111111',
                          'game': MotionGames().viewer_state()},
                  home=home, secondary_homes=secondary_homes or {}, SELECTED={'id': 'cam_1111111111'}, PRIVATE=home_service.VOICE_INPUT_PAUSED.parent)

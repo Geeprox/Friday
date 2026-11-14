@@ -5,7 +5,11 @@
 .setup-intro { margin-block-end: 24px; }
 .setup-intro :is(h1,h2) { margin: 0 0 8px; font-size: 1.5rem; line-height: 1.35; letter-spacing: -.025em; }
 .setup-intro p { color: var(--muted); max-width: 65ch; margin: 8px 0; font-size: .875rem; }
-.setup-progress { color: var(--accent); font-size: .8125rem; margin-block-start: 12px; }
+.setup-provider { padding-block: 16px; border-block-start: 1px solid var(--line); }
+.setup-provider h3 { font-size: 1rem; margin: 0; }
+.setup-provider > p { color: var(--muted); font-size: .875rem; margin: 8px 0 12px; }
+.setup-provider > h3 + button { margin-block-start: 12px; }
+.setup-provider > summary { color: var(--ink); padding: 0; line-height: 40px; }
 .setup-steps { list-style: none; padding: 0; margin: 0; display: grid; }
 .setup-step { display: grid; grid-template-columns: 28px minmax(0,1fr); gap: 16px; padding: 24px 0; border-block-start: 1px solid var(--line); }
 .setup-number { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: .8125rem; font-variant-numeric: tabular-nums; }
@@ -17,6 +21,7 @@
 .connection-setup button, .connection-setup .setup-link { min-height: 40px; padding: 9px 13px; font: inherit; font-size: .875rem; border-radius: 8px; }
 .connection-setup .setup-link { display: inline-flex; align-items: center; border: 1px solid var(--line); color: var(--accent); text-decoration: none; background: var(--surface); margin: 4px 8px 4px 0; }
 .connection-setup button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.connection-setup button:disabled { cursor: default; opacity: .58; }
 .setup-form { display: grid; gap: 16px; max-width: 540px; margin-block-start: 20px; }
 .setup-form label { display: grid; gap: 8px; font-size: .875rem; }
 .setup-form input { width: 100%; min-height: 44px; font: inherit; border: 1px solid #b8bab4; padding: 10px 12px; border-radius: 8px; color: var(--ink); background: var(--surface); }

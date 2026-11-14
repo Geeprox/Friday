@@ -128,7 +128,11 @@ class Speaker:
                 with output_lock(PRIVATE) as acquired:
                     if not acquired:
                         return dict(status="busy", physical_audio_verified=False)
-                    return await perform(guard)
+                    receipt = await perform(guard)
+                    if receipt["status"] == "unavailable":
+                        # 只有持有输出权限的任务能确认故障是否发生在发送前。
+                        return dict(receipt, dispatch_attempted=guard.dispatched)
+                    return receipt
 
             self.state = {**await run_output(exclusive, valid, revalidate=revalidate), "physical_audio_verified": False}
             if self.state["status"] == "expired" and VOICE_PAUSED.exists():

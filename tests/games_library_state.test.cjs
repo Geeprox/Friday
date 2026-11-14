@@ -1,6 +1,19 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const{library}=require('./games_library_harness.cjs');
 
+test('电视墙在线时，只有当前游戏舞台的就绪回执才点亮电视状态',async()=>{
+ const h=library();
+ h.service.tv_viewer={mode:'native_video_wall',reported_at:100};
+ await h.settle();h.button('体感闯关').onclick();
+ const status=()=>h.all().find(n=>n.className==='game-tv-status').textContent;
+ assert.match(status(),/在电视的 Friday/);
+ h.service.game.presentation={television_ready:true};h.tick();await h.settle();
+ assert.equal(status(),'电视游戏画面已就绪');
+ h.service.game.selected_mode='ski';h.tick();await h.settle();
+ assert.match(status(),/在电视的 Friday/);
+ h.owner.dispose();
+});
+
 test('one slow library read owns its slot until it settles',async()=>{
  const h=library();await h.settle();const pending=h.defer();h.tick();await h.settle();
  const before=h.requests.filter(r=>r.path==='/api/games').length;

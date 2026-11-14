@@ -22,12 +22,17 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .pose_rules import iou
+from .camera_audio import offer_sound_window
+from .pose_rules import body_track_revision, iou
 from .safety_storage import SafetyIO, SafetyStorageBusy
 from .decisions_review import DecisionsWindowReviewer, visible_people
 
 
 class SafetyAdmissionChanged(ValueError):
+    pass
+
+
+class SafetyRecordMissing(ValueError):
     pass
 
 
@@ -138,22 +143,36 @@ class SafetyStore:
             self._prune_if_due(db)
             return self._read_policy(db)
 
-    def read_policy(self):
-        """读同一事务中的策略字段，兼容尚未建立新设置表的数据库。"""
+    @contextmanager
+    def _read_snapshot(self):
+        """只读已提交的数据。缺少数据库时返回空快照，不创建文件或目录。"""
         try:
             metadata = self.path.lstat()
         except FileNotFoundError:
-            return SafetyPolicy()
+            yield None
+            return
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError('safety_private_path_required')
         uri = self.path.absolute().as_uri() + '?mode=ro'
         with closing(sqlite3.connect(uri, uri=True, timeout=.25)) as db:
             db.execute('BEGIN')
+            yield db
+
+    @staticmethod
+    def _tables(db, names):
+        if db is None:
+            return set()
+        parameters = ','.join('?' for _ in names)
+        return {name for name, in db.execute(
+            f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({parameters})", names)}
+
+    def read_policy(self):
+        """读同一事务中的策略字段，兼容尚未建立新设置表的数据库。"""
+        with self._read_snapshot() as db:
+            if db is None:
+                return SafetyPolicy()
             names = tuple(table for table, _ in self.POLICY_FIELDS)
-            placeholders = ','.join('?' for _ in names)
-            tables = {name for name, in db.execute(
-                f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})", names)}
-            return self._read_policy(db, tables=tables)
+            return self._read_policy(db, tables=self._tables(db, names))
 
     def prune_expired(self):
         if self.path.exists():
@@ -329,16 +348,24 @@ class SafetyStore:
 
     def recording_target(self, event_id, ordinal=None):
         """从同一条记录读取事件及指定关键帧的时间。"""
-        with self.connect() as db:
-            row = db.execute(
-                """SELECT e.value, f.at FROM safety_events e
-                   LEFT JOIN safety_frames f ON f.event=e.id AND f.ordinal=?
-                   WHERE e.id=? AND e.at>=?""",
-                (ordinal, event_id, time.time()-self.RETENTION),
-            ).fetchone()
-        if row is None:
-            raise ValueError('safety_event_unavailable')
-        return json.loads(row[0]), row[1]
+        cutoff = time.time() - self.RETENTION
+        with self._read_snapshot() as db:
+            tables = self._tables(db, ('safety_events', 'safety_frames'))
+            if 'safety_events' not in tables:
+                raise SafetyRecordMissing('safety_event_unavailable')
+            if ordinal is not None and 'safety_frames' in tables:
+                row = db.execute(
+                    """SELECT e.value, f.at FROM safety_events e
+                       LEFT JOIN safety_frames f ON f.event=e.id AND f.ordinal=?
+                       WHERE e.id=? AND e.at>=?""",
+                    (ordinal, event_id, cutoff),
+                ).fetchone()
+            else:
+                row = db.execute("SELECT value, NULL FROM safety_events WHERE id=? AND at>=?",
+                                 (event_id, cutoff)).fetchone()
+            if row is None:
+                raise SafetyRecordMissing('safety_event_unavailable')
+            return json.loads(row[0]), row[1]
 
     def recording_receipt(self, event_id):
         """Read only this incident's metadata; no keyframe pixels or NAS access."""
@@ -451,34 +478,37 @@ class SafetyStore:
         return True
 
     def events(self):
-        with self.connect() as db:
-            self._prune(db)
+        cutoff = time.time() - self.RETENTION
+        with self._read_snapshot() as db:
+            tables = self._tables(db, ('safety_events', 'safety_frames'))
+            if 'safety_events' not in tables:
+                return []
             rows = db.execute(
-                "SELECT value FROM safety_events ORDER BY at DESC LIMIT ?", (self.MAX_EVENTS,)
-            ).fetchall()
-            return [
-                dict(
-                    json.loads(row[0]),
-                    frames=[
-                        dict(ordinal=n, at=stamp)
-                        for n, stamp in db.execute(
-                            "SELECT ordinal,at FROM safety_frames WHERE event=? ORDER BY ordinal",
-                            (json.loads(row[0])["id"],),
-                        )
-                    ],
-                )
-                for row in rows
-            ]
+                "SELECT id,value FROM safety_events WHERE at>=? ORDER BY at DESC LIMIT ?",
+                (cutoff, self.MAX_EVENTS),
+            )
+            events = {key: dict(json.loads(value), frames=[]) for key, value in rows}
+            if events and 'safety_frames' in tables:
+                placeholders = ','.join('?' for _ in events)
+                for key, ordinal, stamp in db.execute(
+                    f"SELECT event,ordinal,at FROM safety_frames WHERE event IN ({placeholders}) ORDER BY event,ordinal",
+                    tuple(events),
+                ):
+                    events[key]['frames'].append(dict(ordinal=ordinal, at=stamp))
+            return list(events.values())
 
     def frame(self, event_id, ordinal):
-        with self.connect() as db:
-            self._prune(db)
-            row = db.execute(
-                "SELECT jpeg FROM safety_frames WHERE event=? AND ordinal=?", (event_id, ordinal)
-            ).fetchone()
-        if not row:
-            raise ValueError("safety_frame_unavailable")
-        return row[0]
+        with self._read_snapshot() as db:
+            tables = ('safety_events', 'safety_frames')
+            if self._tables(db, tables) == set(tables):
+                row = db.execute(
+                    """SELECT f.jpeg FROM safety_frames f JOIN safety_events e ON e.id=f.event
+                       WHERE f.event=? AND f.ordinal=? AND e.at>=?""",
+                    (event_id, ordinal, time.time() - self.RETENTION),
+                ).fetchone()
+                if row is not None:
+                    return row[0]
+        raise SafetyRecordMissing('safety_frame_unavailable')
 
 
 class FallDetector:
@@ -587,7 +617,8 @@ class FallDetector:
             return False
         for person in people[:self.MAX_TRACKS]:
             track = state["tracks"].get(self._track_key(person))
-            if track is None or track["fired"] or not 0 < captured - track["last"] <= self.MAX_FRAME_GAP:
+            if (track is None or track["fired"] or body_track_revision(person) != track["revision"]
+                    or not 0 < captured - track["last"] <= self.MAX_FRAME_GAP):
                 continue
             if not self._identity_matches(track, self.current_identity(person, evaluated)):
                 continue
@@ -596,10 +627,11 @@ class FallDetector:
                 return True
         return False
 
-    def confirmed_down(self, camera, session, track):
+    def confirmed_down(self, camera, session, track, started):
         state = self.cameras.get(camera)
         current = state["tracks"].get(str(track)) if state and state["session"] == session else None
-        return bool(current and current["fired"] and current["down"] and not current["down"]["partial"])
+        return bool(current and current["fired"] and current["down"] and not current["down"]["partial"]
+                    and current["anchor"] is not None and current["anchor"]["at"] == started)
 
     def observe(self, camera, session, people, now, captured, *, stable, aspect=16 / 9, evaluated_mono=None,
                 coalesced=False):
@@ -626,16 +658,16 @@ class FallDetector:
             if track is None:
                 continue
             present.add(track)
-            geometry = self.geometry(person, aspect)
-            if geometry is None:
+            revision = body_track_revision(person)
+            if revision is None or (geometry := self.geometry(person, aspect)) is None:
                 state["tracks"].pop(track, None)
                 continue
             person_id = self.current_identity(person, evaluated_mono)
             old = state["tracks"].get(track)
-            if (old is None or not 0 < captured - old["last"] <= self.MAX_FRAME_GAP
+            if (old is None or revision != old["revision"] or not 0 < captured - old["last"] <= self.MAX_FRAME_GAP
                     or not self._identity_matches(old, person_id)):
                 old = dict(last=captured, upright_since=None, anchor=None, down=None, fired=False,
-                           person_id=person_id)
+                           person_id=person_id, revision=revision)
                 state["tracks"][track] = old
             elif person_id is not None:
                 old["person_id"] = person_id
@@ -698,7 +730,8 @@ def _posture_track(people):
         return None
     person = people[0]
     track, box = person.get('id'), person.get('box')
-    if type(track) is not int or track < 1 or not isinstance(box, dict):
+    revision = body_track_revision(person)
+    if type(track) is not int or track < 1 or not isinstance(box, dict) or revision is None:
         return None
     values = [box.get(key) for key in ('x', 'y', 'w', 'h', 'confidence')]
     if not all(type(value) in (int, float) and math.isfinite(value) for value in values):
@@ -706,7 +739,7 @@ def _posture_track(people):
     x, y, w, h, confidence = values
     if (.65 <= confidence <= 1 and min(w, h) >= .06 and max(w, h) >= .16
             and .01 <= x <= x+w <= .99 and .01 <= y <= y+h <= .99):
-        return track
+        return track, revision
     return None
 
 
@@ -722,7 +755,7 @@ def _scalar_fields(row, fields):
 
 
 def _snapshot_people(people):
-    """给异步检测队列保留独立的人体坐标和身份时戳。"""
+    """给异步检测队列保留独立的人体坐标、追踪版本和身份时戳。"""
     # 跌倒检测最多读取十人。单人趴卧和双人快速搬动仍能区分人数是否超限。
     snapshot = []
     for person in people[:FallDetector.MAX_TRACKS]:
@@ -731,6 +764,11 @@ def _snapshot_people(people):
             continue
         row = _scalar_fields(person, ('id', 'motion'))
         row['box'] = _scalar_fields(person.get('box'), ('x', 'y', 'w', 'h', 'confidence'))
+        if 'tracking' in person:
+            tracking = person['tracking']
+            revision = body_track_revision(person, allow_overlap=True)
+            row['tracking'] = (dict(overlapping=tracking.get('overlapping', False), follow_revision=revision)
+                               if revision is not None else None)
         row['identity'] = _scalar_fields(person.get('identity'), (
             'state', 'person_id', 'observed_monotonic', 'face_observed_monotonic'))
         row['joints'] = {}
@@ -743,11 +781,20 @@ def _snapshot_people(people):
     return snapshot
 
 
+def _source_name(value):
+    if (isinstance(value, str) and 1 <= len(value) <= 80
+            and all(ord(char) >= 32 and not 127 <= ord(char) <= 159 for char in value)):
+        return value
+    return None
+
+
 @dataclass(eq=False)
 class _CaptureSource:
     session: str
     context: str
     seen: float
+    name: str | None = None
+    sound_gate_at: float = -math.inf
 
 
 class SafetyRuntime:
@@ -762,6 +809,7 @@ class SafetyRuntime:
         self.store, self.labels, self.speaker = store, labels, speaker
         self.io = SafetyIO()
         self.policy_io = SafetyIO(max_pending=1, thread_name_prefix='friday-safety-policy-read')
+        self.evidence_io = SafetyIO(max_pending=32, thread_name_prefix='friday-safety-evidence-read')
         self.closed = False
         self.close_task = None
         self.detector = FallDetector()
@@ -825,8 +873,8 @@ class SafetyRuntime:
     def _context(value):
         return value if isinstance(value, str) and re.fullmatch(r'[a-f0-9]{64}', value) else None
 
-    def capture_frame(self, camera, session, context, captured):
-        """接收采集进程已核对来源的视频帧时戳。"""
+    def capture_frame(self, camera, session, context, captured, *, source_name=None, audio_writer=None):
+        """同一镜头的新鲜采集帧可续期声音复核。"""
         if self.closed:
             return
         now = time.monotonic()
@@ -841,14 +889,22 @@ class SafetyRuntime:
             if (source.session == session and source.context == context
                     and 0 <= now - source.seen <= self.FRAME_TTL):
                 source.seen = max(source.seen, captured)
+            else:
+                self.clear(camera)
+                source = None
+        if source is None:
+            if len(self.capture_sources) >= self.MAX_CAMERAS:
+                for previous in tuple(self.capture_sources):
+                    if self._capture_source(previous) is None:
+                        self.clear(previous)
+            if len(self.capture_sources) >= self.MAX_CAMERAS:
                 return
-            self.clear(camera)
-        if len(self.capture_sources) >= self.MAX_CAMERAS:
-            for previous in tuple(self.capture_sources):
-                if self._capture_source(previous) is None:
-                    self.clear(previous)
-        if len(self.capture_sources) < self.MAX_CAMERAS:
-            self.capture_sources[camera] = _CaptureSource(session, context, captured)
+            source = self.capture_sources[camera] = _CaptureSource(session, context, captured)
+        if name := _source_name(source_name):
+            source.name = name
+        if audio_writer is not None and now - source.sound_gate_at >= .4:
+            source.sound_gate_at = now
+            offer_sound_window(audio_writer, now=now, captured=source.seen, enabled=self.sound_requested(camera))
 
     def _capture_source(self, camera):
         source = self.capture_sources.get(camera)
@@ -960,16 +1016,21 @@ class SafetyRuntime:
         await self.io.drain()
 
     def _sound_current(self, camera, session, context):
-        ring = self.frames.get(camera, {})
-        return (self._sound_input_open() and ring.get('session') == session
-                and ring.get('source_context') == context and context is not None
-                and 0 <= time.monotonic()-self.last_seen.get(camera, -100) <= 1.5)
+        source = self._sound_source(camera)
+        return source is not None and (source['session'], source['source_context']) == (session, context)
 
     def _sound_source(self, camera):
-        ring = self.frames.get(camera)
         policy = self._cached_policy()
-        if (ring is not None and policy.enabled and policy.sound_review
-                and self._sound_current(camera, ring['session'], ring['source_context'])):
+        if not policy.enabled or not policy.sound_review or not self._sound_input_open():
+            return None
+        capture = self._capture_source(camera)
+        ring = self.frames.get(camera)
+        if capture is not None:
+            name = capture.name or (ring.get('source_name') if ring is not None and ring['capture'] is capture else None)
+            return dict(session=capture.session, source_context=capture.context, capture=capture,
+                        source_name=name)
+        if (camera not in self.capture_sources and ring is not None and ring['capture'] is None
+                and self._current_review_source(camera, ring['session'])):
             return ring
         return None
 
@@ -979,8 +1040,10 @@ class SafetyRuntime:
     def sound_search_cue(self, camera, session, active=None):
         if not self._cached_policy().sound_search or not self._current_review_source(camera, session):
             return None
-        cue = self.sound.search_cue(camera, session, active)
-        return cue if cue is not None and self.sources.get(camera) == (session, cue.context) else None
+        source = self._sound_source(camera)
+        if source is None or self.sources.get(camera) != (session, source['source_context']):
+            return None
+        return self.sound.search_cue(camera, source['session'], active)
 
     def offer_sound_search_frame(self, camera, proof, jpeg, *, source_current):
         cue, step, captured = proof
@@ -988,12 +1051,13 @@ class SafetyRuntime:
             return False
         event_id = cue.receipt.event_id
         key = (event_id, step)
+        session = self.sources.get(camera, (None, None))[0]
         if (event_id is None or key in self.sound_view_tasks
                 or len(self.sound_view_tasks) >= self.SOUND_VIEW_MAX_PENDING
                 or not isinstance(jpeg, bytes) or not 0 < len(jpeg) <= self.store.MAX_FRAME
                 or not 0 <= time.monotonic() - captured <= 1.5
                 or captured <= cue.captured
-                or self.sound_search_cue(camera, cue.session, cue) is not cue):
+                or self.sound_search_cue(camera, session, cue) is not cue):
             return False
         stamp = cue.captured_at + (captured - cue.captured)
 
@@ -1028,10 +1092,14 @@ class SafetyRuntime:
         return True
 
     def _sound_keyframe(self, camera, session, context, start, end):
-        if not self._sound_current(camera, session, context):
+        source = self._sound_source(camera)
+        ring = self.frames.get(camera)
+        if (source is None or (source['session'], source['source_context']) != (session, context)
+                or ring is None or ring['source_context'] != context or ring['capture'] is not source['capture']
+                or not self._current_review_source(camera, ring['session'])):
             return None
         midpoint = (start + end) / 2
-        matches = ((captured, jpeg) for captured, jpeg in self.frames[camera]['items']
+        matches = ((captured, jpeg) for captured, jpeg in ring['items']
                    if start <= captured <= end)
         return min(matches, key=lambda frame: abs(frame[0] - midpoint), default=None)
 
@@ -1071,18 +1139,20 @@ class SafetyRuntime:
         ring = self.frames.get(camera, {})
         current = (policy.enabled and self._current_review_source(camera, session)
                    and self.sources.get(camera) == (ring.get('session'), ring.get('source_context')))
+        source = self._sound_source(camera) if current else None
         return bool(current and (
             policy.visual_review and self.visual.stability_pending(camera, session, policy.revision)
-            or policy.sound_review and self.sound.stability_pending(camera, session, policy.revision)
-            or self.recording.pending_review(camera, self.source_tokens.get(camera), policy.revision)))
+            or source is not None and self.sound.stability_pending(camera, source['session'], policy.revision)
+            or self.recording.pending_review(camera, self.source_tokens.get(camera), policy.revision)
+            or source is not None and source['capture'] is not None
+            and self.recording.pending_review(camera, source['capture'], policy.revision)))
 
     def observe_audio(self, camera, admission):
         from .camera_audio import AdmittedAudio
         if not isinstance(admission, AdmittedAudio):
             self.sound.clear(camera)
             return
-        ring = self._sound_source(camera)
-        capture = self._capture_source(camera)
+        source = self._sound_source(camera)
         packet = admission.packet
         if packet is None:
             # 采样间断结束本次分析，已经交给留档的同源回执仍可使用。
@@ -1090,27 +1160,20 @@ class SafetyRuntime:
             audio_only = reason in {
                 'audio_stale', 'sequence_replayed', 'sequence_invalid', 'format_invalid',
             }
-            keep_search = ((audio_only or reason == 'video_stale') and (ring is not None or capture is not None)
-                           and self._sound_input_open())
-            self.sound.clear(camera, keep_qualified=audio_only and ring is not None, keep_search=keep_search)
+            keep_search = source is not None and (audio_only or reason == 'video_stale')
+            self.sound.clear(camera, keep_qualified=audio_only and source is not None, keep_search=keep_search)
             return
-        source = packet.get('camera_source_context')
-        same_capture = capture is not None and (packet.get('capture_session'), source) == (
-            capture.session, capture.context)
-        if ring is None:
-            # 转向期间只有采集进程仍可证明来源，等待新视角的识别画面。
-            self.sound.clear(camera, keep_search=same_capture and self._sound_input_open())
-            return
-        if source != ring['source_context'] or ring['capture'] is not None and not same_capture:
+        if (source is None or packet.get('camera_source_context') != source['source_context']
+                or source['capture'] is not None and packet.get('capture_session') != source['session']):
             self.sound.clear(camera)
             return
-        self.sound.offer(camera, ring['session'], ring['source_context'], self.policy_cache.revision, admission)
+        self.sound.offer(camera, source['session'], source['source_context'], self.policy_cache.revision, admission)
 
     def _sound_event(self, camera, session, context, result):
         from .sound_model import MESSAGES
-        if not self._sound_current(camera, session, context):
+        source = self._sound_source(camera)
+        if source is None or (source['session'], source['source_context']) != (session, context):
             return False
-        ring = self.frames[camera]
         evidence = {k:result[k] for k in ('confidence','corroborating_windows','audio_seconds','age_basis')}
         sustained = (result['kind'] == 'crying' and result.get('pattern') == 'sustained_infant_cry'
                      and evidence['corroborating_windows'] == 3 and evidence['audio_seconds'] == 6)
@@ -1120,24 +1183,33 @@ class SafetyRuntime:
             status='pending_review', simulated=False, camera=camera, session=session, track=None,
             person_id=None, person_name=None, message=(
                 '约 6 秒的声音符合婴儿哭声特征。' if sustained else MESSAGES[result['kind']]),
-            camera_source_context=context, camera_name=ring.get('source_name'),
+            camera_source_context=context, camera_name=source.get('source_name'),
             captured_at=result['captured_at'], detector='apple-soundanalysis-version1/1',
             basis='three_local_infant_cry_windows' if sustained else 'two_disjoint_local_audio_windows',
             sound_evidence=evidence,
             raw_audio_stored=False, directional_audio=False),
             result.get('keyframes', ()),
-            captured=result['captured_mono'], revision=result['policy_revision'], max_age=6)
+            captured=result['captured_mono'], revision=result['policy_revision'], max_age=6, capture=source['capture'])
 
-    def _submit_review(self, event, frames, *, captured, revision, max_age, require_complete=False):
+    def _submit_review(self, event, frames, *, captured, revision, max_age, require_complete=False, capture=None):
         camera, session, context = event['camera'], event['session'], event['camera_source_context']
         feature = event['kind']
         policy = self._cached_policy()
-        if (not policy.enabled or policy.revision != revision or not getattr(policy, feature)
-                or not self._guard(camera, session, context, captured, max_age=max_age)()):
+        if not policy.enabled or policy.revision != revision or not getattr(policy, feature):
             return False
-        job = self.recording.submit(camera=camera, session=session, context=context, token=self.source_tokens[camera],
+        if capture is None:
+            if not self._guard(camera, session, context, captured, max_age=max_age)():
+                return False
+            token = self.source_tokens[camera]
+            capture = self.frames[camera].get('capture')
+        else:
+            if (self._capture_source(camera) is not capture or not self._sound_input_open()
+                    or not 0 <= time.monotonic() - captured <= max_age):
+                return False
+            token = capture
+        job = self.recording.submit(camera=camera, session=session, context=context, token=token,
             captured=captured, revision=revision, event=event, frames=frames, feature=feature,
-            capture_source=self.frames[camera].get('capture'), require_complete=require_complete)
+            capture_source=capture, require_complete=require_complete)
         return job.receipt if job is not None else False
 
     async def pause_sound(self):
@@ -1208,7 +1280,11 @@ class SafetyRuntime:
                 await sync_safely()
                 await asyncio.sleep(interval)
         self.policy_task = asyncio.create_task(watch(), name='friday-safety-policy')
-        self.retention_task = asyncio.create_task(self._maintain_retention(), name='friday-safety-retention')
+        self.start_retention()
+
+    def start_retention(self):
+        if self.retention_task is None and not self.closed:
+            self.retention_task = asyncio.create_task(self._maintain_retention(), name='friday-safety-retention')
 
     async def _maintain_retention(self):
         while True:
@@ -1221,7 +1297,7 @@ class SafetyRuntime:
                 self.retention_failed = False
                 await asyncio.sleep(self.store.PRUNE_INTERVAL)
 
-    def _clear_view(self, camera, *, keep_sound_search=False):
+    def _clear_view(self, camera, *, keep_sound=False):
         token = self.source_tokens.pop(camera, None)
         if token is not None:
             token.set()
@@ -1229,7 +1305,8 @@ class SafetyRuntime:
         self.sources.pop(camera, None)
         self.source_epochs[camera] = self.source_epochs.get(camera, 0) + 1
         self.visual.clear(camera)
-        self.sound.clear(camera, keep_search=keep_sound_search)
+        if not keep_sound:
+            self.sound.clear(camera)
         self.detector.clear(camera)
         self.frames.pop(camera, None)
         self.post_frames.pop(camera, None)
@@ -1240,7 +1317,7 @@ class SafetyRuntime:
         if self._capture_source(camera) is None:
             self.clear(camera)
             return
-        self._clear_view(camera, keep_sound_search=True)
+        self._clear_view(camera, keep_sound=True)
         self.recording.maintain()
         self.recording.wake()
 
@@ -1307,16 +1384,19 @@ class SafetyRuntime:
             if self.last_seen.get(camera, -math.inf) <= captured:
                 self.clear_view(camera)
             return
-        if (not isinstance(source_name, str) or not 1 <= len(source_name) <= 80
-                or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in source_name)):
-            source_name = None
+        source_name = _source_name(source_name)
         self.last_seen[camera] = max(captured, self.last_seen.get(camera, -math.inf))
         if policy.visual_review:
             track = _posture_track(people) if policy.admits_posture(camera, source_context) else None
+            regions = visible_people(people) if policy.visual_cloud_source else ()
+            # 普通静止画面和走动留在本机。持续快速搬动由独立双人线索入队。
+            cue = bool(regions and any(
+                (geometry := FallDetector.geometry(person, aspect)) is not None and geometry['horizontal']
+                for person in people
+            ))
             self.visual.offer(camera, session, policy.revision, captured, jpeg, stable=stable, posture_track=track,
                               rapid_people=people if source_context is not None else None, aspect=aspect,
-                              source_context=source_context,
-                              regions=visible_people(people) if policy.visual_cloud_source else ())
+                              source_context=source_context, regions=regions, visual_cue=cue)
         else:
             self.visual.clear(camera)
         ring = self.frames.setdefault(camera, dict(session=session, source_context=source_context, capture=capture,
@@ -1397,7 +1477,8 @@ class SafetyRuntime:
         if not job.output_considered:
             job.output_considered = True
             if (job.announce and not job.token.is_set() and 0 <= time.monotonic() - job.captured <= 1.5
-                    and self.detector.confirmed_down(job.camera, job.session, job.event.get('track'))):
+                    and self.detector.confirmed_down(
+                        job.camera, job.session, job.event.get('track'), job.event.get('started_mono'))):
                 await self.schedule(job.saved, revision=job.revision)
         while job.appended < len(job.following) and self._recording_current(job):
             stamp, jpeg = job.following[job.appended]
@@ -1643,7 +1724,8 @@ class SafetyRuntime:
                 task.cancel()
             failures.extend(await asyncio.gather(*outputs, return_exceptions=True))
         finally:
-            failures.extend(await asyncio.gather(self.io.close(), self.policy_io.close(), return_exceptions=True))
+            failures.extend(await asyncio.gather(self.io.close(), self.evidence_io.close(), self.policy_io.close(),
+                                                 return_exceptions=True))
         if any(isinstance(result, Exception) for result in failures):
             self.error = 'safety_cleanup_unavailable'
             raise RuntimeError(self.error)

@@ -17,6 +17,7 @@ from miot.types import MIoTCameraInfo, MIoTCameraStatus
 
 from homeplane.embodied.local_motor import LocalMotor, check_motor_deadline
 from homeplane.embodied.frame_sampling import CAPTURE_IDLE_TIMEOUT, LatestFrameEncoder
+from homeplane.embodied.vision_cadence import MotionSample
 from homeplane.embodied.capture_decoder import install_decoder
 from homeplane.embodied.camera_provenance import bind_capture_packet
 from homeplane.embodied.camera_audio import PCMFramer, voice_window_deadlines
@@ -93,6 +94,7 @@ async def main():
     last = 0.0
     attention_until = 0.0
     audio_until = 0.0
+    sound_until = 0.0
     video_until = 0.0
     audio_framer = PCMFramer(selected, capture_session)
     audio_observed = False
@@ -122,7 +124,8 @@ async def main():
             packet.update(decoders[0].friday_status())
         emit(bind_capture_packet(packet, selected))
 
-    sampler = LatestFrameEncoder(encoded, quality=quality,
+    adaptive_vision = request.get('audio') is True and os.environ.get('FRIDAY_FULL_VISION') != '1'
+    sampler = LatestFrameEncoder(encoded, quality=quality, motion=MotionSample() if adaptive_vision else None,
         face_enabled=lambda: time.monotonic()<attention_until or request.get('identity') is True)
     sampler_task = asyncio.create_task(sampler.run())
 
@@ -141,7 +144,7 @@ async def main():
         if not audio_observed:
             emit({"type": "diagnostic", "stage": "first_decoded_audio"})
             audio_observed = True
-        if channel != 0 or time.monotonic() >= audio_until:
+        if channel != 0 or time.monotonic() >= max(audio_until, sound_until):
             audio_framer.reset()
             return
         for packet in audio_framer.push(pcm.astype('<i2', copy=False).tobytes(),
@@ -178,10 +181,10 @@ async def main():
             enable_record=False,
         )
         emit({"type": "diagnostic", "stage": "camera_start_returned"})
-        motor = LocalMotor(camera)
+        motor = LocalMotor(camera) if request.get("motor") is True else None
 
         async def controls():
-            nonlocal audio_until, attention_until, video_until
+            nonlocal audio_until, sound_until, attention_until, video_until
             while raw := await reader.readline():
                 command = {}
                 try:
@@ -189,16 +192,21 @@ async def main():
                     if command.get('action')=='video_window':
                         video_until=time.monotonic()+1.5 if command.get('enabled') is True else 0.0
                         continue
-                    if command.get("action") == "voice_window":
+                    action = command.get('action')
+                    if action in {'voice_window', 'sound_window'}:
                         now = time.monotonic()
-                        next_audio, attention_until = voice_window_deadlines(command, now)
-                        if not next_audio or audio_until <= now:
+                        previous = max(audio_until, sound_until)
+                        deadline, attention = voice_window_deadlines(command, now)
+                        if action == 'voice_window':
+                            audio_until, attention_until = deadline, attention
+                        else:
+                            sound_until = deadline
+                        if previous <= now or max(audio_until, sound_until) <= now:
                             audio_framer.reset()
-                        audio_until = next_audio
                         continue
                     if command.get("action") != "motor_step":
                         continue
-                    if request.get("motor") is not True:
+                    if motor is None:
                         raise ValueError("motor_not_owned")
                     check_motor_deadline(command.get('expires_mono'))
                     result = await asyncio.to_thread(motor.step, command.get("direction"),

@@ -17,7 +17,7 @@ from homeplane.embodied.safety import SafetyAdmissionChanged
 from homeplane.embodied.sound_review import SoundReviewer
 from tests.embodied.test_camera_director import patrol_view, person, sample
 from tests.embodied.test_camera_follow_appearance import picture, subject
-from tests.embodied.test_review_motion import source_function
+from tests.embodied.test_review_motion import recorded_sound_only, source_function
 from tests.embodied.test_sound_followup import Home, SlowEngine
 from tests.embodied.test_sound_review import CAMERA, CONTEXT, Engine, Journey, settle
 
@@ -162,6 +162,7 @@ class SoundPatrol:
                 games=MotionGames(), party_camera=PartyCamera(),
                 previews=SimpleNamespace(sessions=other, status=lambda _: {"state": "live"}),
                 home=SimpleNamespace(camera_focus=None), safety=self.j.runtime,
+                camera_motion_cue=recorded_sound_only(self.j.runtime),
                 motor_step=self.motor, camera_lease=None, camera_planner=None,
                 reap=reap, capture=self.process, generation=1,
                 camera_intent_readback=camera_intent_readback, finish_camera_survey=finish_camera_survey)
@@ -172,7 +173,7 @@ class SoundPatrol:
                 self=SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: self.occupied_elsewhere,
                                      review_pending=self.j.runtime.review_pending,
                                      fall_pending=self.j.runtime.fall_pending,
-                                     sound_cue=self.j.runtime.sound_search_cue,
+                                     sound_cue=recorded_sound_only(self.j.runtime),
                                      sound_view=self.j.runtime.offer_sound_search_frame,
                                      source_current=lambda _, process: process is self.process),
                 current_sample=lambda: dict(self.state), privacy_closed=lambda: None,
@@ -462,10 +463,12 @@ async def test_sound_search_requires_a_saved_receipt_and_rechecks_the_active_sou
             await patrol.advance()
         assert len(runtime.recording.jobs) == 1 and not patrol.j.store.events()
         assert runtime.sound_search_cue(camera, session) is None
+        window = runtime.sound.windows[camera]
         runtime.clear_view(camera)
         patrol.moving_until = patrol.j.clock + .35
         await patrol.advance()
-        assert len(runtime.recording.jobs) == 1 and not runtime.sound.windows
+        assert len(runtime.recording.jobs) == 1 and runtime.sound.windows[camera] is window
+        assert runtime.sound_search_cue(camera, session) is None
         await patrol.advance()
         monkeypatch.setattr(runtime.recording, 'wake', wake)
         wake()

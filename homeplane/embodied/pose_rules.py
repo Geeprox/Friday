@@ -3,6 +3,18 @@
 import math
 
 
+def body_track_revision(person, *, allow_overlap=False):
+    """读取当前人体轨迹的连续性版本，兼容旧观测未附带追踪信息的情况。"""
+    tracking = person.get('tracking', {}) if isinstance(person, dict) else None
+    if not isinstance(tracking, dict):
+        return None
+    overlapping = tracking.get('overlapping', False)
+    if type(overlapping) is not bool or overlapping and not allow_overlap:
+        return None
+    revision = tracking.get('follow_revision', 0)
+    return revision if type(revision) is int and revision >= 0 else None
+
+
 def iou(a, b):
     x = max(a["x"], b["x"])
     y = max(a["y"], b["y"])
