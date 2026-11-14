@@ -1388,17 +1388,23 @@ class SafetyRuntime:
             return
         source_name = _source_name(source_name)
         self.last_seen[camera] = max(captured, self.last_seen.get(camera, -math.inf))
-        if policy.visual_review:
+        cloud = policy.visual_cloud_source
+        if policy.visual_review and (cloud is None or (cloud.camera, cloud.source_context) == (camera, source_context)):
             track = _posture_track(people) if policy.admits_posture(camera, source_context) else None
-            regions = visible_people(people) if policy.visual_cloud_source else ()
+            regions = visible_people(people) if cloud is not None else ()
             # 普通静止画面和走动留在本机。持续快速搬动由独立双人线索入队。
-            cue = bool(regions and any(
-                (geometry := FallDetector.geometry(person, aspect)) is not None and geometry['horizontal']
-                for person in people
-            ))
+            cues = []
+            if regions:
+                for person in people:
+                    track_id = person.get('id')
+                    revision = body_track_revision(person)
+                    if type(track_id) is int and track_id > 0 and revision is not None:
+                        geometry = FallDetector.geometry(person, aspect)
+                        if geometry is not None and geometry['horizontal']:
+                            cues.append((track_id, revision))
             self.visual.offer(camera, session, policy.revision, captured, jpeg, stable=stable, posture_track=track,
                               rapid_people=people if source_context is not None else None, aspect=aspect,
-                              source_context=source_context, regions=regions, visual_cue=cue)
+                              source_context=source_context, regions=regions, visual_cues=cues)
         else:
             self.visual.clear(camera)
         ring = self.frames.setdefault(camera, dict(session=session, source_context=source_context, capture=capture,

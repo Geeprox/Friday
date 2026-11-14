@@ -133,7 +133,7 @@ async def test_cloud_result_uses_current_selected_camera_and_never_loads_local_e
             for camera in (other, active):
                 reviewer.offer(camera, 'synthetic', 0, clock(), b'fixture', stable=True,
                                source_context='2'*64, regions=((.2, .2, .5, .8),),
-                               visual_cue=n == 3)
+                               visual_cues=((1, 0),) if n == 3 else ())
             await asyncio.sleep(0)
             if reviewer.task:
                 await reviewer.task
@@ -155,6 +155,64 @@ async def test_cloud_result_uses_current_selected_camera_and_never_loads_local_e
         assert reviewer.status()['progress'] == 'waiting_input'
     finally:
         await reviewer.close()
+
+
+@pytest.mark.parametrize('first', ['unclear', 'face_obscured'])
+async def test_cloud_review_uses_one_budget_per_continuous_pose_and_rearms(tmp_path, monkeypatch, first):
+    clock = Clock()
+    camera = 'cam_'+'1'*10
+    context = '2'*64
+    monkeypatch.setattr(safety, 'time', SimpleNamespace(monotonic=clock, time=lambda: 1800000000 + clock()))
+    monkeypatch.setattr('homeplane.embodied.camera_provenance.configured_camera_sources',
+                        lambda: [{'id': camera, 'source_context': context}])
+    store = SafetyStore(tmp_path/'safety.sqlite')
+    saved = store.configure(safety.SafetyControls(enabled=True, visual_review=True))
+    store.configure_visual_cloud(saved.revision, safety.PostureSource(camera=camera, source_context=context))
+    local = Engine()
+    runtime = SafetyRuntime(store, visual_engine=local)
+    runtime.visual.clock = clock
+    requests = []
+
+    class Cloud:
+        async def analyze_scoped(self, window, *, current, regions_for):
+            frames, _ = window()
+            assert current() and all(regions_for(stamp) for stamp, _ in frames)
+            requests.append(frames)
+            return VisualResult(event=first, observation='合成判断')
+
+    runtime.visual.cloud = Cloud()
+    point = lambda x, y: dict(x=x, y=y, confidence=.98)
+    horizontal = {'id': 1, 'tracking': {'follow_revision': 1},
+                  'box': dict(x=.21, y=.46, w=.52, h=.22, confidence=.98),
+                  'joints': {'leftShoulder': point(.32, .55), 'rightShoulder': point(.32, .59),
+                             'leftHip': point(.55, .55), 'rightHip': point(.55, .59)}}
+    upright = {'id': 1, 'tracking': horizontal['tracking'],
+               'box': dict(x=.44, y=.16, w=.14, h=.65, confidence=.98),
+               'joints': {'leftShoulder': point(.47, .32), 'rightShoulder': point(.54, .32),
+                          'leftHip': point(.47, .54), 'rightHip': point(.54, .54)}}
+
+    async def frames(start, stop, people):
+        for index in range(start, stop):
+            clock.value = 100 + index
+            await runtime.observe(camera, 'session', people, clock(), clock(), stable=True,
+                                  jpeg=b'fixture', source_context=context)
+            if runtime.visual.task:
+                await runtime.visual.task
+                await asyncio.sleep(0)
+
+    per_pose = 1 if first == 'unclear' else 2
+    try:
+        await frames(0, 30, [horizontal])
+        await frames(30, 31, [])
+        await frames(31, 32, [upright])
+        await frames(32, 83, [horizontal])
+        assert len(requests) == per_pose
+        await frames(83, 90, [upright])
+        await frames(90, 104, [horizontal])
+        assert len(requests) == 2 * per_pose
+        assert not local.calls
+    finally:
+        await runtime.close()
 
 
 async def test_cloud_camera_selection_is_explicit_and_round_trips_without_policy_schema_change(tmp_path, monkeypatch):
