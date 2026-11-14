@@ -640,11 +640,6 @@ class PreviewPool:
                                 self.on_view_lost(selected['id'])
                             continue
                         latest = observation
-                        if use_cadence:
-                            stable = observation['registration'].get('status') in {
-                                'locked', 'background_unavailable', 'camera_moved'}
-                            cadence.observed(now, clear=stable and observation.get('_empty_detection') is True
-                                and not (observation['people'] or observation['hands'] or observation.get('animals')))
                         if self.on_observation:
                             await self.on_observation(observation, process)
                         if not self.source_current(selected['id'], process):break
@@ -661,6 +656,12 @@ class PreviewPool:
                     frame = base64.b64decode(packet.get("preview") or packet["jpeg"])
                     # 只记录这张已处理画面的耗时，丢弃的识别结果不能覆盖上次读数。
                     age = time.time() - packet["received_at"]
+                    if recognizer is not None and use_cadence:
+                        stable = observation['registration'].get('status') in {
+                            'locked', 'background_unavailable', 'camera_moved'}
+                        cadence.observed(time.monotonic(), captured_at=observation['captured_mono'],
+                            clear=stable and observation.get('_empty_detection') is True
+                            and not (observation['people'] or observation['hands'] or observation.get('animals')))
                     item.update(
                         state="live",
                         recognition_recovering=False,

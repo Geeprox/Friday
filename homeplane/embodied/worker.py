@@ -856,9 +856,11 @@ async def run_source(my_generation):
                         my_generation, wall_epoch, i, m, latest_item)
                     key = ((item['received_at'], item['capture_session'],
                             item['camera_source_context'], frame_generation) if current() else None)
+                    now = time.monotonic()
                     quiet = (key is not None and type(item.get('scene_quiet_ms')) is int
                              and item['scene_quiet_ms'] >= cadence.minimum_quiet_ms
                              and not benchmark_full_vision()
+                             and cadence.latest_capture is not None and now - cadence.latest_capture <= 1
                              and not state.get('people') and not state.get('animals')
                              and games.mode in {'home','off'} and not party_camera.window(time.monotonic())[2]
                              and (camera_planner is None or camera_planner.mode in {'auto','hold','patrol'})
@@ -1111,12 +1113,6 @@ async def run_source(my_generation):
                 timings['identity_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 phase_at = time.monotonic()
                 scene_visible = frame_room.scene_visible
-                if 'scene_quiet_ms' in item:
-                    stable = layout['registration'].get('status') in {'locked', 'background_unavailable', 'camera_moved'}
-                    cadence.observed(now, clear=stable and not (people or hands or animals)
-                        and not any(detection.get(k) for k in ('boxes', 'poses', 'hands', 'faces'))
-                        and not any(row.get('class') in {'person', 'cat', 'dog'}
-                                    for row in current_scene.get('objects', ())))
                 timings['visibility_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 state['pipeline_timing'] = dict(timings)
                 if state.get('status')=='shutter_closed':return
@@ -1283,6 +1279,13 @@ async def run_source(my_generation):
                     hardware_decoding=item.get("hardware_decoding"),
                     pipeline_ms=round((time.time() - item["received_at"]) * 1000, 1),
                 )
+                if 'scene_quiet_ms' in item:
+                    stable = layout['registration'].get('status') in {'locked', 'background_unavailable', 'camera_moved'}
+                    cadence.observed(time.monotonic(), captured_at=last_frame,
+                        clear=stable and not (people or hands or animals)
+                        and not any(detection.get(k) for k in ('boxes', 'poses', 'hands', 'faces'))
+                        and not any(row.get('class') in {'person', 'cat', 'dog'}
+                                    for row in current_scene.get('objects', ())))
                 latest = now
                 await notify()
         finally:

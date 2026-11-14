@@ -1,6 +1,9 @@
 """静止空镜头的推理节奏。只使用本次采集的运动证据。"""
 
 import math
+from collections import deque
+
+from .camera_audio import MAX_AGE
 
 
 class MotionSample:
@@ -41,6 +44,8 @@ class VisionCadence:
     interval = .58
     minimum_quiet_ms = 4500
     settle_seconds = 4
+    # 限频决策需给候选帧等待下一次调度及下游发布留出余量。
+    publishing_margin = .25
 
     def __init__(self, *, full_rate=None):
         self.full_rate = full_rate or (lambda: False)
@@ -48,7 +53,10 @@ class VisionCadence:
         self.active_until = -math.inf
         self.processed = self.skipped = 0
         self.active_frames = self.unclear_frames = self.recent_motion_frames = 0
+        self.deadline_frames = 0
         self.quiet_ms = None
+        self.latest_capture = None
+        self.latencies = deque(maxlen=5)
 
     def due(self, packet, now, *, force):
         quiet = packet.get('scene_quiet_ms')
@@ -60,20 +68,29 @@ class VisionCadence:
         elif now < self.active_until or self.checked_at == -math.inf:
             self.unclear_frames += 1
         elif now < self.checked_at + self.interval:
-            self.skipped += 1
-            return False
+            observed_age = now - self.latest_capture if self.latest_capture is not None else -1
+            required = self.publishing_margin + max(self.latencies, default=MAX_AGE)
+            if 0 <= observed_age and observed_age + required < MAX_AGE:
+                self.skipped += 1
+                return False
+            self.deadline_frames += 1
         self.processed += 1
         return True
 
-    def observed(self, now, *, clear):
+    def observed(self, now, *, clear, captured_at):
         self.checked_at = now
         if not clear:
             self.active_until = now + self.settle_seconds
+        self.latest_capture = captured_at
+        age = now - captured_at
+        self.latencies.append(age if 0 <= age < MAX_AGE else MAX_AGE)
 
     def reset(self):
         self.checked_at = self.active_until = -math.inf
+        self.latest_capture = None
+        self.latencies.clear()
 
     def public(self):
         return {'processed': self.processed, 'skipped_static': self.skipped,
                 'active_path': self.active_frames, 'recent_motion': self.recent_motion_frames,
-                'unclear': self.unclear_frames, 'quiet_ms': self.quiet_ms}
+                'unclear': self.unclear_frames, 'deadline': self.deadline_frames, 'quiet_ms': self.quiet_ms}

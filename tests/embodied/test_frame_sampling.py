@@ -109,7 +109,7 @@ def test_empty_view_skips_inference_but_detects_local_motion_and_refreshes_regul
         quiet = motion.quiet_ms(pixels, now)
         if cadence.due({'scene_quiet_ms': quiet}, now, force=False):
             processed.append(index)
-            cadence.observed(now, clear=True)
+            cadence.observed(now, clear=True, captured_at=now - .18)
     during_quiet = [n for n in processed if 25 <= n < 70]
     assert 8 <= len(during_quiet) <= 16
     assert all(b - a <= 4 for a, b in zip(during_quiet, during_quiet[1:]))
@@ -124,14 +124,28 @@ def test_empty_view_skips_inference_but_detects_local_motion_and_refreshes_regul
 def test_activity_safety_or_lost_evidence_gets_full_inference():
     cadence = VisionCadence()
     still = {'scene_quiet_ms': 10000}
-    cadence.observed(10, clear=True)
+    cadence.observed(10, clear=True, captured_at=9.82)
     assert not cadence.due(still, 10.2, force=False)
     assert cadence.due(still, 10.2, force=True)
     assert cadence.due({}, 10.2, force=False)
-    cadence.observed(10.3, clear=False)
+    cadence.observed(10.3, clear=False, captured_at=10.12)
     for now in (10.4, 11, 12, 13, 14.2):
         assert cadence.due(still, now, force=False)
-        cadence.observed(now, clear=True)
+        cadence.observed(now, clear=True, captured_at=now - .18)
     assert not cadence.due(still, 14.4, force=False)
     cadence.reset()
     assert cadence.due(still, 14.4, force=False)
+
+
+def test_long_inference_keeps_static_frames_at_full_rate_until_deadline_slack_recovers():
+    cadence = VisionCadence()
+    quiet = {'scene_quiet_ms': 12000}
+    # 旧结果即将过期，即使画面静止也立刻识别下一帧。
+    cadence.observed(10, clear=True, captured_at=9.05)
+    assert cadence.due(quiet, 10.2, force=False)
+    assert cadence.public()['deadline'] == 1
+    for done in (10.4, 10.8, 11.2, 11.6, 12):
+        cadence.observed(done, clear=True, captured_at=done - .2)
+    assert not cadence.due(quiet, 12.2, force=False)
+    cadence.reset()
+    assert cadence.due(quiet, 12.3, force=False)
