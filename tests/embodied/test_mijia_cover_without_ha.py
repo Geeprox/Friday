@@ -43,7 +43,8 @@ def cover_config():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('case', ['accepted', 'lan_accepted', 'lan_lost_response', 'lan_read_failure',
-                                  'expired_in_worker', 'paused_in_worker', 'paused_and_resumed', 'voice', 'manual',
+                                  'expired_in_worker', 'paused_in_worker', 'paused_and_resumed',
+                                  'voice', 'voice_after_ha_gap', 'voice_other_room', 'manual',
                                   'lost_response', 'moved_home', 'other_account', 'restricted_grant'])
 async def test_saved_curtain_gesture_uses_mijia_without_ha(tmp_path, monkeypatch, case):
     core, _, ha_calls, _, _, authority = rig(tmp_path)
@@ -138,7 +139,10 @@ async def test_saved_curtain_gesture_uses_mijia_without_ha(tmp_path, monkeypatch
         core.actions.migrate_cover_authority()
         assert (directory / 'mijia-cover-authority.json').exists() is (case != 'restricted_grant')
         assert core.actions.authority_path.read_bytes() == approved_bytes
-        core.adapter = LocalCameraHome()
+        if case == 'voice_after_ha_gap':
+            ha._gap = True
+        else:
+            core.adapter = LocalCameraHome()
         ha_calls.clear()
         if case == 'moved_home':
             atomic(directory / 'home-room-membership.json', {'home_id': 'other-home'})
@@ -163,9 +167,9 @@ async def test_saved_curtain_gesture_uses_mijia_without_ha(tmp_path, monkeypatch
                  'camera': 'cam_1111111111', 'gesture': {
                      'binding': binding_id, 'revision': 3, 'observed_mono': time.monotonic()}}
         endpoint = '/api/embodied/command'
-        if case == 'voice':
-            # 已配置的简单语音由本地规则选择同一固定目标。
-            event = {'text': '打开窗帘', 'event_id': 'synthetic-voice', 'camera': 'cam_1111111111'}
+        if case in {'voice', 'voice_after_ha_gap', 'voice_other_room'}:
+            event = {'text': '打开窗帘', 'event_id': 'synthetic-voice', 'camera': 'cam_1111111111',
+                     'room': '另一间房' if case == 'voice_other_room' else '测试房间'}
         if case == 'manual':
             endpoint = '/api/home/control'
             event = dict(target=target, operation='cover.state', desired={'state': 'open'},
@@ -179,12 +183,12 @@ async def test_saved_curtain_gesture_uses_mijia_without_ha(tmp_path, monkeypatch
             if case == 'manual':
                 result = result['result']
             if case in {'accepted', 'lost_response', 'lan_accepted', 'lan_lost_response',
-                        'lan_read_failure', 'voice', 'manual'}:
+                        'lan_read_failure', 'voice', 'voice_after_ha_gap', 'manual'}:
                 assert result['write_attempted'] and not result['reached_target'], result
                 assert result['status'] == ('unknown_outcome' if 'lost_response' in case else 'accepted')
                 retry = await client.post(endpoint, json=event)
                 assert retry.json()['status'] == result['status']
-                if case in {'accepted', 'voice', 'manual'}:
+                if case in {'accepted', 'voice', 'voice_after_ha_gap', 'manual'}:
                     assert len(delegated.writes) == 1
                     core.actions.pause()
                     assert not core.actions.cover_permission()

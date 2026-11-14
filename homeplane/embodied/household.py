@@ -238,19 +238,30 @@ class DeviceCommands:
                 return "climate.temperature", {"temperature": float(action.split(":")[1])}
         raise ValueError("unsupported_parameters")
 
+    def _local_home_only(self):
+        from homeplane.ha import HAReadOnlyAdapter
+        from homeplane.local_camera_home import LocalCameraHome
+
+        adapter = self.core.adapter
+        if isinstance(adapter, HAReadOnlyAdapter):
+            health = adapter.health()
+            return health.get('transport') != 'online' or health.get('observation_gap') is True
+        return isinstance(adapter, LocalCameraHome)
+
     async def command(self, query, action, event_id, *, room=None, preview=False, target=None,
                       dispatch_guard=None, dispatch_deadline=None):
         from homeplane.action_contracts import DevicePlanRequest
 
+        local_cover = False
         if target == 'friday:configured-cover':
             cover = self.configured_cover()
-            if cover:
-                items = [cover]
-            elif query:
-                items = await self.inventory()
-                target = None
-            else:
-                items = []
+            items = [cover] if cover else []
+            local_cover = True
+        elif target is None and query and '帘' in query and self._local_home_only():
+            # HA 断线后只接受已有米家绑定确定匹配的房间或明确名称。
+            cover = self.configured_cover()
+            items = [cover] if cover else []
+            local_cover = True
         else:
             items = await self.inventory()
         targets = [i for i in items if i["id"] == target and i["controllable"]] if target else resolve_targets(query, items, room=room)
@@ -279,7 +290,7 @@ class DeviceCommands:
                       and target.startswith('ha:') and len(targets) == 1
                       and targets[0].get('source_kind') in {'light', 'switch', 'fan', 'climate', 'cover'})
         # 固定米家窗帘由其独立发送锁保护。HA 查询不能阻塞已配对的窗帘手势。
-        standalone_cover = target == 'friday:configured-cover' and targets[0].get('source_kind') == 'miot'
+        standalone_cover = local_cover and targets[0].get('source_kind') == 'miot'
         async with nullcontext() if ha_gesture or standalone_cover else self.lock:
             for item in targets:
                 if dispatch_guard is not None and dispatch_guard() is not True:

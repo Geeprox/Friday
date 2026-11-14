@@ -14,7 +14,6 @@ from .catalog import RECOGNIZERS, TennisVariant, catalog, get_app
 from .camera_follow_picker import FollowCommand
 from .game_difficulty import DifficultyId, difficulty_options
 from .household import DeviceCommands, basic_command
-from .local_intent import household_plan
 from .paths import PRIVATE
 from .quest import QuestRouteId, quest_route_options
 from .ski_route import SkiTrailId, ski_trail_options
@@ -427,13 +426,12 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
                 raise HTTPException(403) from None
             if not secrets.compare_digest(expected, worker_key):
                 raise HTTPException(403)
-        plan = (household_plan(request.text, attending=True) or basic_command(request.text, attending=True)
-                if request.text else None)
+        plan = basic_command(request.text, attending=True) if request.text else None
         if plan and plan["route"] == "no_op":
             return dict(status="no_op", write_attempted=False, reply=plan["reply"])
         query = plan.get("device") if plan else request.device
         action = plan.get("action") if plan else request.action
-        target = 'friday:configured-cover' if plan and plan.get('route') == 'curtain' else request.target
+        target = request.target
         if (not query and not target) or not action:
             return dict(status="clarify", write_attempted=False, reply="请说明房间、设备和动作。")
         def current_gesture():
