@@ -20,6 +20,16 @@ from .contracts import CanonicalState, Capability, Contract, Entity, Observation
 from .ha import HAReadOnlyAdapter
 from .ha_control import admitted_capabilities, bindings
 from .local_camera_home import LocalCameraHome
+from .mijia_climate_mode import (
+    CLIMATE_MODE_CATALOG,
+    MODE_OPERATION,
+    ClimateMode,
+    ClimateModeCatalog,
+    ClimateModeWriter,
+    climate_mode_binding,
+    mode_revision,
+    read_climate_catalog,
+)
 from .mijia_control import MIJIA_POWER_MODE as MODE
 from .mijia_control import POWER_BY_KIND, MijiaPowerWriter, power_intent, power_property
 from .mijia_lan_client import FAMILY
@@ -221,7 +231,7 @@ class Sample:
     received_at: datetime
     expires: float
     version: str
-    comparison: str | int | float | CoverReading
+    comparison: str | int | float | CoverReading | tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -274,6 +284,10 @@ class MijiaPowerHome:
             self.covers = read_cover_catalog(self.path.parent)
         except (OSError, ValueError):
             self.covers = None
+        try:
+            self.climate_modes = read_climate_catalog(self.path.parent)
+        except (OSError, ValueError):
+            self.climate_modes = None
         self.samples = {}
         self.last_poll = {}
         self.last_hint_check = 0.0
@@ -346,6 +360,10 @@ class MijiaPowerHome:
                         else {})
         reserved = reserved_covers(configuration)
         numeric_devices = {}
+        climate_modes = {}
+        previous_modes = self.climate_modes
+        if previous_modes and (previous_modes.family, previous_modes.legacy_approval) != (family, approval):
+            previous_modes = None
         for entity in snapshot.entities:
             device = devices.get(entity.id)
             operation = POWER_BY_KIND.get(entity.kind)
@@ -451,6 +469,20 @@ class MijiaPowerHome:
                 settings = []
             if settings:
                 numeric_devices[entity.id] = DeviceSettings(binding=target_digest(target), settings=settings)
+            try:
+                if spec is not None:
+                    mode = climate_mode_binding(spec, target, capabilities, target_digest(target))
+                else:
+                    mode = previous_modes.devices.get(entity.id) if previous_modes else None
+                    if mode and (mode.binding != target_digest(target) or not any(
+                        cap.name == MODE_OPERATION and set(mode.capability().choices) <= set(cap.choices or [])
+                        for cap in capabilities
+                    )):
+                        mode = None
+            except (KeyError, TypeError, ValueError, StopIteration):
+                mode = None
+            if mode is not None:
+                climate_modes[entity.id] = mode
         targets = sorted((t for t in candidates if duplicates[t.property_key] == 1), key=lambda t: t.entity.id)
         new = PowerCatalog(household=household, family=family, legacy_approval=approval,
                            targets=targets[:MAX_TARGETS])
@@ -467,6 +499,8 @@ class MijiaPowerHome:
         claimed.update(s.property_key for s in sensors)
         claimed.update((t.identity, t.siid, s.piid) for t in new.targets if t.entity.id in numeric_devices
                        for s in numeric_devices[t.entity.id].settings)
+        claimed.update((t.identity, t.siid, climate_modes[t.entity.id].piid) for t in new.targets
+                       if t.entity.id in climate_modes)
         # 同一属性若又有独立实体或其他控制解释，只保留已经确认的电源端口。
         devices_with_settings = {}
         for target in new.targets:
@@ -484,6 +518,13 @@ class MijiaPowerHome:
                 raise ValueError('mijia_numeric_catalog_size')
             atomic(self.path.with_name(NUMERIC_CATALOG), body)
             self.numeric = numeric
+        modes = ClimateModeCatalog(family=family, legacy_approval=approval, devices={
+            t.entity.id: climate_modes[t.entity.id] for t in new.targets
+            if t.entity.id in climate_modes and claimed[(t.identity, t.siid, climate_modes[t.entity.id].piid)] == 1
+        })
+        if modes != self.climate_modes and (modes.devices or self.climate_modes is not None):
+            atomic(self.path.with_name(CLIMATE_MODE_CATALOG), modes.model_dump(mode='json'))
+            self.climate_modes = modes
         covers = CoverCatalog(family=family, household=household, legacy_approval=approval,
                               targets=sorted((t for t in cover_candidates if cover_claims[t.service_key] == 1),
                                              key=lambda t: t.entity.id)[:MAX_TARGETS])
@@ -550,11 +591,21 @@ class MijiaPowerHome:
 
     def settings_for(self, target):
         numeric, catalog = self.numeric, self.catalog
-        if (not isinstance(target, PowerTarget) or numeric is None or catalog is None
-                or (numeric.family, numeric.legacy_approval) != (catalog.family, catalog.legacy_approval)):
+        if not isinstance(target, PowerTarget) or catalog is None:
             return []
-        bound = numeric.devices.get(target.entity.id)
-        return [s for s in bound.settings if s.piid != target.piid] if bound and bound.binding == target_digest(target) else []
+        scope = catalog.family, catalog.legacy_approval
+        fingerprint = target_digest(target)
+        settings = []
+        if numeric is not None and (numeric.family, numeric.legacy_approval) == scope:
+            bound = numeric.devices.get(target.entity.id)
+            if bound and bound.binding == fingerprint:
+                settings.extend(s for s in bound.settings if s.piid != target.piid)
+        modes = self.climate_modes
+        if modes is not None and (modes.family, modes.legacy_approval) == scope:
+            mode = modes.devices.get(target.entity.id)
+            if mode and mode.binding == fingerprint and mode.piid != target.piid:
+                settings.append(mode)
+        return settings
 
     def uses_lan_home(self, adapter):
         return isinstance(adapter, LocalCameraHome) or (
@@ -666,15 +717,18 @@ class MijiaPowerHome:
 
     def schedule_fresh(self, bindings):
         context, references = bindings
-        return all((self.version(context, target) is not None if isinstance(target, CoverTarget)
-                    else self._sample(context, reference, target.identity) is not None)
-                   for reference, (target, _) in references.items())
+        return all(self.schedule_read_current(context, target, setting) for target, setting in references.values())
+
+    def schedule_read_current(self, context, target, setting):
+        if isinstance(target, CoverTarget):
+            return self.version(context, target) is not None
+        reading = self.setting_sample(context, target, setting) if setting else self.sample_for(context, target)
+        return reading is not None
 
     async def read_schedule(self, bindings, *, refresh=False):
         context, references = bindings
-        for reference, (target, setting) in references.items():
-            if not refresh and (self.version(context, target) is not None if isinstance(target, CoverTarget)
-                                else self._sample(context, reference, target.identity) is not None):
+        for target, setting in references.values():
+            if not refresh and self.schedule_read_current(context, target, setting):
                 continue
             writer = (self.setting_writer(context, target, setting) if setting else
                       self.writer(target.entity.id, context=context, target=target))
@@ -708,7 +762,9 @@ class MijiaPowerHome:
                     missing.add(binding.target)
                 continue
             elif isinstance(target, PowerTarget):
-                actions = supported_actions({'kind': target.entity.kind, 'capabilities': [target.operation]})
+                settings = {setting.operation: setting.capability().model_dump() for setting in self.settings_for(target)}
+                actions = supported_actions({'kind': target.entity.kind, 'capabilities': [target.operation, *settings],
+                                             'capability_specs': settings})
             else:
                 actions = ()
             if binding.action not in actions:
@@ -747,7 +803,12 @@ class MijiaPowerHome:
         return setting if self.setting_sample(context, target, setting) else None
 
     def setting_sample(self, context, target, setting):
-        return self._sample(context, self.setting_key(target, setting), target.identity)
+        reading = self._sample(context, self.setting_key(target, setting), target.identity)
+        if reading is not None and isinstance(setting, ClimateMode):
+            power = self.sample_for(context, target)
+            if power is None or reading.comparison != (reading.value, power.version):
+                return None
+        return reading
 
     def setting_key(self, target, setting):
         return target.reference, setting.model_dump_json()
@@ -981,7 +1042,10 @@ class MijiaPowerHome:
     def setting_writer(self, context, target, setting, *, deadline=None, revision=None, guard=None):
         family, grant = context
         did = target.identity.split('_', 1)[1]
-        binding = {'numeric': True, 'did': did, 'siid': target.siid, 'piid': setting.piid, 'grant': grant}
+        climate_mode = isinstance(setting, ClimateMode)
+        keys = ({'registered_climate_mode': mode_revision(setting)} if climate_mode
+                else {'numeric': True, 'siid': target.siid, 'piid': setting.piid})
+        binding = {'did': did, 'grant': grant, **keys}
 
         def current():
             refreshed, targets = self.active()
@@ -992,7 +1056,7 @@ class MijiaPowerHome:
         async def request(payload):
             if not current():
                 raise ValueError('mijia_permission_changed')
-            if 'value' not in payload:
+            if 'value' not in payload and 'hvac_mode' not in payload:
                 return await self.power.lan.request(payload, family=family)
             if deadline is None or revision is None or guard is None:
                 raise ValueError('mijia_permission_changed')
@@ -1001,6 +1065,26 @@ class MijiaPowerHome:
                 guard=lambda: current() and guard(),
             )
 
+        if climate_mode:
+            setting_key = context, self.setting_key(target, setting)
+            power_key = context, target.reference
+
+            def record_mode(power, mode):
+                self.record(power_key, power, current)
+                self.last_poll[power_key] = time.monotonic()
+                if mode is None:
+                    self.samples.pop(setting_key, None)
+                else:
+                    self.record(setting_key, mode, current, comparison=(mode, self.samples[power_key].version))
+
+            def invalidate():
+                self.samples.pop(power_key, None)
+                self.samples.pop(setting_key, None)
+                self.hints.add(setting_key[1])
+                self.last_poll.pop(setting_key, None)
+
+            return ClimateModeWriter(setting, lambda payload: request({**binding, **payload}),
+                                     current, record_mode, invalidate)
         return SettingWriter(setting, binding, family, request, current,
                              lambda value, raw: self.record((context, self.setting_key(target, setting)), value, current,
                                                             comparison=raw))

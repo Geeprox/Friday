@@ -329,6 +329,12 @@ async def serve(reader, session):
                     reply = await registered_cover_operation(
                         hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
                     )
+                elif 'registered_climate_mode' in request:
+                    from homeplane.mijia_climate_mode import climate_mode_operation
+
+                    reply = await climate_mode_operation(
+                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
+                    )
                 elif 'numeric' in request:
                     reply = await numeric_operation(
                         hub, request, grant, family, region, home.group_id, allowed, current, session.directory,

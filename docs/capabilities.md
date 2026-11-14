@@ -7,7 +7,8 @@
 | 首页复核状态 | 已选用的画面复核和声音复核各显示一行。点击画面复核可更改计算方式及选择 API 摄像头。API 模式区分待命、复核、超时和额度受限 | 合成画面、声音与 HTTP 回执覆盖状态、复核来源和配置读回。真实 API 延迟、资源用量和设备效果待验收 |
 | Home Assistant | Registry discovery, OAuth, readback and scoped device operations | Your instance, permissions and physical effects |
 | 米家窗帘直连 | 标准行程设备沿用原房间和设备，按规格提供打开、关闭、停止和行程控制。设备报出的实际位置用于回显和核对。已手动绑定的叶片角度仍以原设置为准 | 合成中枢覆盖按钮、语音、手势、冷启动和未知写入只读对账。真实窗帘属性和实物动作待验收 |
-| 米家直连定时任务 | 一次和重复定时沿用原时间与规则，支持已经绑定的电源、空调设定温度与窗帘绝对位置或开合。切换时检查设备和属性读回 | 合成中枢覆盖切换、冷启动、绑定变化和回执丢失。真实设备运行及外部事件迁移待验收 |
+| 米家空调直连 | 已登记空调可用原设备详情及语音切换设备支持的工作模式。关机时选择工作模式会先开机，读回电源和模式后更新页面 | 合成中枢覆盖冷启动、按钮、语音和中途失败后只读对账。实机模式及风速待验收 |
+| 米家直连定时任务 | 一次和重复定时沿用原时间与规则，支持已经绑定的电源、空调模式与设温及窗帘绝对位置或开合。切换时检查设备和属性读回 | 合成中枢覆盖切换、冷启动、绑定变化和回执丢失。真实设备运行及外部事件迁移待验收 |
 | 外部自动化重建 | 在同一页对照盘点记录并选择当前家庭的触发设备、条件及动作。核对后先保存为暂停。启用外部自动化的重建版本时，用户确认已在原应用暂停原规则 | 合成目录和模拟 HA 验证保存、丢失回执后读回、来源变更拒绝，以及新事件按数值条件触发。实际家庭读数、原平台停用和设备效果待验收 |
 | Mi Home layout | BakeData/floormap validation, preview, revisioned import, 3D rendering | Your export, accessible files and device positions |
 | Cameras | Optional Miloco media/SDK adapters, worker lifetime, bounded frame pipelines | Supported SDK/platform/device and actual video/audio |

@@ -26,6 +26,7 @@ from homeplane.embodied.mijia_power import family_binding, grant_binding
 from homeplane.embodied.ptz_control import atomic
 from homeplane.home_experience import create_router
 from homeplane.local_camera_home import LocalCameraHome
+from homeplane.mijia_climate_mode import climate_mode_operation
 from homeplane.mijia_control import MijiaPower
 from homeplane.mijia_power_home import MijiaPowerHome, catalog_available
 from homeplane.settings import SettingsService
@@ -129,6 +130,10 @@ class Gateway:
                 self.before_dispatch()
             if payload.get('numeric') is True:
                 return await numeric_operation(
+                    *args, family, 'cn', 'synthetic-group', self.dids, lambda: True, self.path,
+                )
+            if 'registered_climate_mode' in payload:
+                return await climate_mode_operation(
                     *args, family, 'cn', 'synthetic-group', self.dids, lambda: True, self.path,
                 )
             if guard is not None:

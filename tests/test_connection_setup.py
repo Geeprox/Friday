@@ -214,7 +214,7 @@ async def test_saved_mijia_choice_skips_ha_on_cold_boot(fresh, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('case', ['normal', 'lost_ack', 'changed_ha_binding', 'changed_lan_binding', 'cover'])
+@pytest.mark.parametrize('case', ['normal', 'lost_ack', 'changed_ha_binding', 'changed_lan_binding', 'cover', 'climate'])
 async def test_mijia_switch_keeps_existing_timer_and_dispatches_once_after_cold_start(fresh, tmp_path, monkeypatch, case):
     backend, desktop = fresh
     backend.persistent = True
@@ -223,7 +223,14 @@ async def test_mijia_switch_keeps_existing_timer_and_dispatches_once_after_cold_
     cover = case == 'cover'
     kind, operation, desired = ('cover', 'cover.position', {'position': 55}) if cover else (
         'switch', 'switch.set', {'power': 'on'})
-    core, baseline, gateway, ha_writes = await (provision_cover(tmp_path) if cover else provision(tmp_path))
+    if case == 'climate':
+        from tests.test_mijia_numeric_home import CLIMATE, CLIMATE_MODES, setup_home
+
+        kind, operation, desired = 'climate', 'climate.mode', {'hvac_mode': 'cool'}
+        core, baseline, gateway, ha_writes = await setup_home(tmp_path, modes=CLIMATE_MODES, disconnect_ha=False)
+        gateway.fields[CLIMATE, 2, 1] = False
+    else:
+        core, baseline, gateway, ha_writes = await (provision_cover(tmp_path) if cover else provision(tmp_path))
     legacy = core.adapter
     legacy.household_timezone = AsyncMock(return_value='Asia/Shanghai')
     stream = HAStream(legacy)
@@ -232,6 +239,8 @@ async def test_mijia_switch_keeps_existing_timer_and_dispatches_once_after_cold_
     stream.first_attempt.set()
     external = kind + '.simulated'
     attrs = dict(supported_features=15, current_position=0) if cover else {}
+    if case == 'climate':
+        attrs = legacy._control_attributes[external]
     stream.rows = {external: dict(entity_id=external, state='closed' if cover else 'off', attributes=attrs)}
     stream.published_rows = stream.rows
     stream.published_receipts = stream.receipts = {external: datetime.now(UTC)}
@@ -324,16 +333,22 @@ async def test_mijia_switch_keeps_existing_timer_and_dispatches_once_after_cold_
             ('unknown_outcome', 'effect_not_verified_no_retry') if case == 'lost_ack' else
             ('completed', 'mijia_reported_sequence_complete_not_physical')
         ]
-        assert gateway.manager.set_prop_async.await_count == 1 and not ha_writes
+        writes = 2 if case == 'climate' else 1
+        assert gateway.manager.set_prop_async.await_count == writes and not ha_writes
         trace = core.store.light_action(runs[0]['effects'][0]['action_id'])
         assert isinstance(trace.request, CoreRuleEffect) and trace.route == 'mijia-scoped-power'
         assert trace.real_write_attempted and not trace.physically_confirmed
         if cover:
             gateway.manager.set_prop_async.assert_awaited_once_with(COVER_DID, 2, 2, 55)
             assert trace.reported['position'] == 55
+        if case == 'climate':
+            assert [call.args for call in gateway.manager.set_prop_async.await_args_list] == [
+                (CLIMATE, 2, 1, True), (CLIMATE, 2, 9, 7),
+            ]
+            assert trace.reported['power'] == 'on' and trace.reported['hvac_mode'] == 'cool'
         if case == 'lost_ack':
             assert (await core.actions.reconcile(trace.action_id)).status == 'reported_match'
-        assert gateway.manager.set_prop_async.await_count == 1
+        assert gateway.manager.set_prop_async.await_count == writes
     finally:
         await runtime.close()
         owner.close()

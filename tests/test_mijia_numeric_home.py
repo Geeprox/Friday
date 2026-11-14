@@ -44,7 +44,7 @@ def property_spec(iid, name, fmt, access, unit=None, limits=None):
     return row
 
 
-async def setup_home(tmp_path, *, label='temperature', bad_setting=None):
+async def setup_home(tmp_path, *, label='temperature', bad_setting=None, modes=None, disconnect_ha=True):
     core, rows, ha_calls, _, path, authority = rig(tmp_path)
     legacy = authority.model_copy(update={'external_entity_ids': ['light.simulated', 'climate.simulated']})
     core.actions.authority_path = path.with_name('action-authority.json')
@@ -73,7 +73,10 @@ async def setup_home(tmp_path, *, label='temperature', bad_setting=None):
     temp = property_spec(2, 'target-temperature', 'float', both, 'fahrenheit' if bad_setting == 'unit' else 'celsius',
                          [16, 30, .5])
     device('light', LIGHT, 'light', [on, brightness, color], '_s_2_lamp')
-    device('climate', CLIMATE, 'air-conditioner', [on, temp], '_s_2_climate')
+    climate_props = [on, temp]
+    if modes is not None:
+        climate_props.append(property_spec(9, 'mode', 'uint8', both) | {'value-list': modes})
+    device('climate', CLIMATE, 'air-conditioner', climate_props, '_s_2_climate')
     device('sensor', SENSOR, 'environment', [property_spec(2, 'temperature', 'float', ['read'], 'celsius')],
            f'_{label}_p_2_2')
     next(r for r in rows if r['entity_id'] == 'light.simulated')['attributes']['friendly_name'] = '客厅灯'
@@ -93,7 +96,7 @@ async def setup_home(tmp_path, *, label='temperature', bad_setting=None):
     ), discovery_checked_at=time.monotonic())
     gateway = Gateway(tmp_path, service, fields={
         (LIGHT, 2, 1): True, (LIGHT, 2, 2): 40, (LIGHT, 2, 3): 3000,
-        (CLIMATE, 2, 1): True, (CLIMATE, 2, 2): 23.0, (SENSOR, 2, 2): 22.7,
+        (CLIMATE, 2, 1): True, (CLIMATE, 2, 2): 23.0, (CLIMATE, 2, 9): 4, (SENSOR, 2, 2): 22.7,
     })
     power = MijiaPower(service, spec=AsyncMock(side_effect=specs.get),
                        request=AsyncMock(side_effect=AssertionError('不应走云端')), lan=gateway)
@@ -102,9 +105,17 @@ async def setup_home(tmp_path, *, label='temperature', bad_setting=None):
     power.home = MijiaPowerHome(core, power)
     baseline = await core.snapshot()
     power.home.migrate()
-    await core.adapter._stream_gap('synthetic')
-    core.adapter.snapshot = AsyncMock(side_effect=AssertionError('不应回查 HA'))
+    if disconnect_ha:
+        await core.adapter._stream_gap('synthetic')
+        core.adapter.snapshot = AsyncMock(side_effect=AssertionError('不应回查 HA'))
     return core, baseline, gateway, ha_calls
+
+
+CLIMATE_MODES = [
+    {'value': 4, 'name': 'heat', 'description': '制热'},
+    {'value': 7, 'description': 'Cool'},
+    {'value': 9, 'description': 'Dry'},
+]
 
 
 async def warm(home):
@@ -113,8 +124,11 @@ async def warm(home):
 
 
 @pytest.mark.asyncio
-async def test_can_create_weekly_temperature_task_on_mijia_but_requires_real_sample_for_condition(tmp_path):
-    core, baseline, gateway, ha_calls = await setup_home(tmp_path)
+@pytest.mark.parametrize(('operation', 'desired'), [
+    ('climate.temperature', {'temperature': 24}), ('climate.mode', {'hvac_mode': 'cool'}),
+])
+async def test_can_create_weekly_climate_task_on_mijia_but_requires_real_sample_for_condition(tmp_path, operation, desired):
+    core, baseline, gateway, ha_calls = await setup_home(tmp_path, modes=CLIMATE_MODES)
     await core.adapter.close()
     core.adapter = LocalCameraHome(mijia_selected=True)
     owner = RuleManager(core)
@@ -123,8 +137,8 @@ async def test_can_create_weekly_temperature_task_on_mijia_but_requires_real_sam
     rule = RuleIR(
         id='synthetic-weekly-temperature', revision=1, intent='合成空调设温',
         trigger={'type': 'schedule', 'at': '11:30', 'weekdays': [1, 5], 'timezone': 'Asia/Shanghai'},
-        actions=[{'type': 'device.set', 'id': 'adjust', 'operation': 'climate.temperature',
-                  'target': by_kind['climate'], 'desired': {'temperature': 24}}],
+        actions=[{'type': 'device.set', 'id': 'adjust', 'operation': operation,
+                  'target': by_kind['climate'], 'desired': desired}],
         execution={'preferred_backend': 'home_core'},
     )
     request = CoreRuleProposal(
@@ -134,7 +148,7 @@ async def test_can_create_weekly_temperature_task_on_mijia_but_requires_real_sam
     try:
         plan = await enable(manager, request)
         assert plan.new.enabled and plan.new.rule.trigger == rule.trigger
-        assert plan.trial and plan.trial.commands[0]['desired'] == {'temperature': 24}
+        assert plan.trial and plan.trial.commands[0]['desired'] == desired
         assert manager.matches_scope(plan.new, await core.snapshot())
         condition = {'type': 'numeric', 'entity': by_kind['sensor'], 'capability': 'temperature',
                      'operator': 'gt', 'value': 20, 'unit': '°C'}
@@ -268,5 +282,108 @@ async def test_mismatched_sensor_and_temperature_units_are_excluded(tmp_path):
         assert not any(e.kind == 'sensor' for e in snapshot.entities)
         climate = next(e for e in snapshot.entities if e.kind == 'climate')
         assert {c.name for c in climate.capabilities} == {'climate.state', 'climate.power'}
+    finally:
+        await close(core)
+
+
+@pytest.mark.asyncio
+async def test_cold_start_restores_air_conditioner_modes_in_device_controls(tmp_path, monkeypatch):
+    core, baseline, gateway, ha_calls = await setup_home(tmp_path, modes=CLIMATE_MODES)
+    power = core.actions.mijia
+    await close(core)
+    core = HomeCore(LocalCameraHome(mijia_selected=True), TraceStore(tmp_path / 'cold-mode.sqlite'))
+    core.actions = ActionController(core, tmp_path / 'action-authority.json')
+    core.actions.mijia = power
+    power.home = MijiaPowerHome(core, power)
+    gateway.fields[CLIMATE, 2, 1] = False
+    app = FastAPI()
+    lock = asyncio.Lock()
+    app.include_router(create_router(core, lock, SettingsService(tmp_path / 'web.json'), Embodied(), None,
+                                     Runtime()))
+    try:
+        await warm(power.home)
+        target = next(e.id for e in baseline.entities if e.kind == 'climate')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            async def control():
+                overview = (await client.get('/api/home/overview')).json()
+                device = next(d for d in overview['devices'] if d['kind'] == 'climate')
+                return next(c for c in device['controls'] if c['id'] == target)
+
+            for before, after in [('off', 'cool'), ('cool', 'heat'), ('heat', 'off')]:
+                item = await control()
+                assert item['value'] == before and item['available']
+                mode = next(c for c in item['capabilities'] if c['name'] == 'climate.mode')
+                assert mode['choices'] == ['off', 'cool', 'heat']
+                request = dict(target=target, operation='climate.mode', desired={'hvac_mode': after},
+                               event_id='synthetic-mode-' + after, expected_state_version=item['state_version'])
+                result = (await client.post('/api/home/control', json=request)).json()
+                assert result['status'] == 'reported_match' and not result['physically_confirmed']
+                assert result['reported']['hvac_mode'] == after
+                assert (await client.post('/api/home/control', json=request)).json() == result
+                assert (await control())['value'] == after
+            command = basic_command('Friday，把客厅空调切换到制冷')
+            commands = DeviceCommands(core, lock)
+            response = await commands.command(command['device'], command['action'], 'synthetic-mode-voice')
+            assert response['status'] == 'reported_match' and (await control())['value'] == 'cool'
+            rules = SimpleNamespace(enabled=True, bindings=[
+                SimpleNamespace(target=target, enabled=True, action='mode:heat'),
+            ])
+            monkeypatch.setattr('homeplane.embodied.interaction.load', lambda: rules)
+            assert power.home.unqualified_references(power.home.connected_targets()[1]) == set()
+            response = await commands.command(None, 'mode:heat', 'synthetic-mode-gesture', target=target,
+                                              dispatch_guard=lambda: True, dispatch_deadline=time.monotonic()+2)
+            assert response['status'] == 'reported_match' and (await control())['value'] == 'heat'
+            rules.bindings[0].action = 'mode:dry'
+            assert power.home.unqualified_references(power.home.connected_targets()[1]) == {target}
+        assert [call.args for call in gateway.manager.set_prop_async.await_args_list] == [
+            (CLIMATE, 2, 1, True), (CLIMATE, 2, 9, 7), (CLIMATE, 2, 9, 4), (CLIMATE, 2, 1, False),
+            (CLIMATE, 2, 1, True), (CLIMATE, 2, 9, 7),
+            (CLIMATE, 2, 9, 4),
+        ]
+        assert not ha_calls
+        power.request.assert_not_called()
+    finally:
+        await close(core)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['lost_power_reply', 'revoked_after_power', 'unconfirmed_power'])
+async def test_climate_mode_does_not_continue_or_replay_a_failed_power_step(tmp_path, failure):
+    core, _, gateway, ha_calls = await setup_home(tmp_path, modes=CLIMATE_MODES)
+    gateway.fields[CLIMATE, 2, 1] = False
+    try:
+        await warm(core.actions.mijia.home)
+        trace = await plan(core, 'climate.mode', {'hvac_mode': 'cool'})
+        assert trace.status == 'planned'
+
+        def write(*args):
+            result = gateway.write(*args)
+            if failure == 'revoked_after_power':
+                core.actions.pause()
+            elif failure == 'unconfirmed_power':
+                gateway.fields[CLIMATE, 2, 1] = False
+            return result
+
+        gateway.lose_response = failure == 'lost_power_reply'
+        gateway.manager.set_prop_async.side_effect = write
+        result = await core.actions.execute(trace.action_id)
+        assert result.status == 'unknown_outcome'
+        assert (await core.actions.execute(trace.action_id)).status == 'unknown_outcome'
+        assert (await core.actions.reconcile(trace.action_id)).status == 'unknown_outcome'
+        gateway.manager.set_prop_async.assert_awaited_once_with(CLIMATE, 2, 1, True)
+        assert not ha_calls
+    finally:
+        await close(core)
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_climate_modes_preserve_preexisting_power_and_temperature_controls(tmp_path):
+    modes = CLIMATE_MODES + [{'value': 10, 'name': 'cool'}]
+    core, _, gateway, _ = await setup_home(tmp_path, modes=modes)
+    try:
+        await warm(core.actions.mijia.home)
+        climate = next(e for e in (await core.snapshot()).entities if e.kind == 'climate')
+        assert {cap.name for cap in climate.capabilities} == {'climate.state', 'climate.power', 'climate.temperature'}
+        gateway.manager.set_prop_async.assert_not_awaited()
     finally:
         await close(core)
