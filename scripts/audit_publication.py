@@ -23,6 +23,8 @@ FORBIDDEN_SUFFIXES = {'.sqlite', '.sqlite3', '.db', '.pem', '.key', '.p12', '.mp
                       '.m4a', '.aiff', '.zip', '.tar', '.gz', '.bundle', '.patch', '.ses', '.onnx', '.safetensors'}
 # Exact reviewed artwork and synthetic assets; household photos and changed bytes still fail closed.
 SYNTHETIC_MEDIA = {
+    'integrations/baby_naming/web/jade-relief.webp':
+        '42f35fe3694d6cb3969164a5c143aeaa2ce1a4940e287c5c75469489bcc00211',
     # Reviewed Godot XR CC0 hand target frames, exact approved runtime pose.
     'homeplane/static/motion-art/godot-xr/targets/hand-ok.png':
         'b7e7822447c8fe2c20dbbdbb04aedd6e8b307a1387f22e97a28cea6678bc025a',

@@ -92,3 +92,8 @@ are recorded in `homeplane/static/motion-art/body/CLOTHING-LICENSES.md` and
 own source geometry and the existing skeleton. Three additional motion clips
 are explicitly Friday-authored MIT adaptations, identified in
 `authored-poses.json`; they are not attributed to Desk Break.
+
+## 宝宝起名工作台字音数据
+
+`integrations/baby_naming/mandarin.tsv` 来自 Unicode 17.0.0 Unihan 的 `kMandarin` 字段。
+适用 [Unicode License V3](integrations/baby_naming/UNICODE-LICENSE.txt)。
