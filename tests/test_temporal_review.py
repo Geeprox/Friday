@@ -1,6 +1,8 @@
 """Scheduling, evidence freshness and process ownership; no real models/devices."""
 
 import asyncio
+import base64
+import io
 import json
 import sqlite3
 import time
@@ -9,13 +11,16 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import APIRouter, FastAPI
+from PIL import Image
 
 from homeplane.embodied import paths, safety, safety_api
+from homeplane.embodied.decisions_review import DecisionsWindowReviewer, visible_people
 from homeplane.embodied import temporal_model as model
 from homeplane.embodied.rapid_review import RapidReviewWindow
 from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
 from homeplane.embodied.temporal_model import GIB, HostBudget, MlxWindowProcess, VisualResult
 from homeplane.embodied.temporal_review import TemporalReviewer
+from homeplane.intelligence.runtime import IntelligenceRuntime
 
 
 class Clock:
@@ -41,6 +46,129 @@ class Engine:
 
     async def close(self):
         self.closed = True
+
+
+async def test_decisions_review_sends_cropped_fresh_frames_and_honors_daily_cap(tmp_path):
+    calls = []
+    widths = []
+    admission = True
+
+    async def send(request):
+        calls.append(request.url.path)
+        body = json.loads(request.content)
+        content = body['input'][0]['content']
+        assert body['model'] == 'gpt-6-luna' and len(content) == 5
+        for value in content[1:]:
+            raw = base64.b64decode(value['image_url'].split(',', 1)[1])
+            with Image.open(io.BytesIO(raw)) as image:
+                assert image.width < image.height <= 256
+                assert 'exif' not in image.info
+                widths.append(image.width)
+        question = body['questions'][0]
+        return httpx.Response(200, json={
+            'answers': [{'type': 'choice', 'name': question['name'], 'choice': 'face_obscured',
+                         'probabilities': [{'value': x['value'], 'probability': .92 if x['value'] == 'face_obscured' else .02}
+                                           for x in question['choices']]}],
+            'usage': {'input_tokens': 200, 'output_tokens': 1},
+        })
+
+    owner = IntelligenceRuntime(None, tmp_path / 'intel', transport=httpx.MockTransport(send),
+                                key_resolver=lambda: 'synthetic-value-only')
+    owner.settings.update({'daily_visual_review': 1})
+    client = DecisionsWindowReviewer(runtime=owner)
+    box = visible_people([{'box': dict(x=.12, y=.12, w=.18, h=.72, confidence=.81)}])
+    assert box and not visible_people([])
+    stamp = time.monotonic()
+    with io.BytesIO() as buffer:
+        Image.new('RGB', (640, 360), 'gray').save(buffer, 'JPEG')
+        frames = [(stamp-n, buffer.getvalue()) for n in (3, 2, 1, 0)]
+    async def review():
+        return await client.analyze_scoped(lambda: (frames, False),
+                                           current=lambda: admission, regions_for=lambda _: box)
+
+    admission = False
+    with pytest.raises(model.VisualSourceChanged):
+        await review()
+    assert not calls
+    admission = True
+    assert (await review()).event == 'face_obscured'
+    assert calls == ['/v1/decisions'] and len(widths) == 4
+    with pytest.raises(ValueError, match='daily_visual_review_reached'):
+        await review()
+    usage = owner.ledger.status(owner.settings.read())
+    assert usage['visual_review'] == {'used': 1, 'limit': 1}
+    assert usage['used']['images'] == 0 and len(calls) == 1
+
+
+async def test_cloud_result_uses_current_selected_camera_and_never_loads_local_engine():
+    clock = Clock()
+    local = Engine()
+    observed = []
+    policy = SafetyPolicy(enabled=True, visual_review=True,
+                          visual_cloud_source=safety.PostureSource(camera='cam_'+'1'*10, source_context='2'*64))
+    active = policy.visual_cloud_source.camera
+    other = 'cam_'+'3'*10
+
+    class Cloud:
+        async def analyze_scoped(self, window, *, current, regions_for):
+            frames, _ = window()
+            assert current() and all(regions_for(t) for t, _ in frames)
+            observed.append('cloud')
+            return VisualResult(event='face_obscured', observation='合成判断')
+
+    receipts = []
+
+    def deliver(*args, **meta):
+        receipts.append((args, meta))
+
+    reviewer = TemporalReviewer(policy=lambda: policy, deliver=deliver, engine=local, cloud=Cloud(),
+                                cloud_current=lambda cid, *_: cid == active, clock=clock)
+    try:
+        for n in range(10):
+            clock.value = 100.0 + n
+            for camera in (other, active):
+                reviewer.offer(camera, 'synthetic', 0, clock(), b'fixture', stable=True,
+                               source_context='2'*64, regions=((.2, .2, .5, .8),))
+            await asyncio.sleep(0)
+            if reviewer.task:
+                await reviewer.task
+        assert observed == ['cloud', 'cloud'] and not local.calls
+        assert len(receipts) == 1 and receipts[0][0][0] == active
+        assert len(receipts[0][0][2]) == 8 and receipts[0][1] == {'provider': 'decisions'}
+    finally:
+        await reviewer.close()
+
+
+async def test_cloud_camera_selection_is_explicit_and_round_trips_without_policy_schema_change(tmp_path, monkeypatch):
+    cam = 'cam_' + '1'*10
+    context = '2'*64
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
+    monkeypatch.setattr(safety_api, 'configured_camera_sources',
+                        lambda: [{'id': cam, 'name': '测试镜头', 'source_context': context}])
+    monkeypatch.setattr(DecisionsWindowReviewer, 'readiness', lambda _: {'available': True})
+    app = FastAPI()
+    router = APIRouter()
+    runtime = safety_api.install(router, SimpleNamespace(process=None))
+    app.include_router(router)
+    url = 'http://127.0.0.1:8740'
+    command = {'camera': cam, 'expected_revision': 0}
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url=url) as client:
+            endpoint = '/api/embodied/safety/visual-cloud'
+            assert (await client.post(endpoint, json={**command, 'allow_upload': True})).status_code == 403
+            headers = {'Origin': url}
+            assert (await client.post(endpoint, json=command, headers=headers)).status_code == 422
+            confirmed = await client.post(endpoint, json={**command, 'allow_upload': True}, headers=headers)
+            assert confirmed.json() == {'camera': cam, 'revision': 1}
+            state = (await client.get('/api/embodied/safety')).json()
+            assert state['visual_cloud']['camera'] == cam and state['visual_cloud']['source_changed'] is False
+            assert 'visual_cloud_source' not in state['policy']
+            assert state['policy']['visual_review'] is False
+            result = await client.post(endpoint, json={'camera': None, 'expected_revision': 1}, headers=headers)
+            assert result.json() == {'camera': None, 'revision': 2}
+    finally:
+        await runtime.close()
 
 
 class PostureEngine(Engine):

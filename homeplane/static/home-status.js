@@ -14,7 +14,7 @@ function reviewServices(worker){
   const states={
    waiting_input:['waiting',review==='visual'?'等待画面':'等待声音'],
    waiting:['waiting','等待复核'],running:['on','运行中'],paused:['off','已暂停'],
-   delayed:['degraded','复核延迟'],resource_limited:['degraded','资源不足'],
+   delayed:['degraded','复核延迟'],resource_limited:['degraded','资源不足'],quota_limited:['degraded','用量受限'],
    recovering:['degraded','正在恢复'],unavailable:['warning','暂不可用'],
   };
   return Object.hasOwn(states,value)?[{...service(label,...states[value]),review}]:[];

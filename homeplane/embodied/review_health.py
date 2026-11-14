@@ -17,6 +17,9 @@ def review_health(status):
         return 'unavailable'
     if error in {'memory_capacity', 'memory_pressure', 'cpu_busy', 'sound_memory_pressure', 'sound_cpu_busy'}:
         return 'resource_limited'
+    if error in {'daily_visual_review_reached', 'daily_requests_reached', 'daily_text_tokens_reached',
+                 'api_quota_exhausted'}:
+        return 'quota_limited'
     if error:
         return 'recovering'
     return status['progress']

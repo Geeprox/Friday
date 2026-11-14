@@ -16,16 +16,28 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  const intro=add(el('section',null,{class:'safety-intro'}),el('h2','家中提醒'),el('p','发现疑似跌倒时记录事件，按需通过选定音箱提醒家人。'),status,
    add(el('div',null,{class:'safety-actions'}),enable,announce,test,button('选择播报音箱',()=>go('Settings'))),
    el('p','此功能仍在试用，可能漏报或误报。请保持日常照护。事件画面仅保存在本机，保留 30 天。',{class:'caption'}));
- const visualStatus=el('p','正在检查本机画面复核…',{role:'status','aria-live':'polite'});
+ const visualStatus=el('p','正在读取画面复核状态…',{role:'status','aria-live':'polite'});
  const visualToggle=button('开启画面复核',()=>change('visual_review'));visualToggle.setAttribute('role','switch');visualToggle.setAttribute('aria-checked','false');visualToggle.disabled=true;
  const postureSelect=el('select',null,{id:'safety-posture-camera','aria-describedby':'safety-posture-status'});
  const postureNote=el('p','',{id:'safety-posture-status',role:'status',class:'caption'});
  const postureField=add(el('div',null,{class:'safety-posture'}),el('label','趴卧复核镜头',{for:'safety-posture-camera'}),postureSelect,postureNote);
  postureField.hidden=true;postureSelect.disabled=true;let postureOptions='';
  postureSelect.onchange=()=>void selectPostureCamera();
- const visualTitle=el('h2','本机画面复核',{tabindex:'-1'}),soundTitle=el('h2','声音复核',{tabindex:'-1'});
+ const visualTitle=el('h2','画面复核',{tabindex:'-1'}),soundTitle=el('h2','声音复核',{tabindex:'-1'});
+ const cloudField=el('div',null,{class:'safety-posture'});
+ const cloudCamera=el('select',null,{id:'safety-cloud-camera'});
+ const cloudNote=el('p','',{class:'caption',role:'status'});
+ const cloudSave=button('启用 API 复核',()=>{if(cloudCamera.value)void saveVisualCloud(cloudCamera.value);});
+ cloudSave.className='primary';
+ const cloudOff=button('改用本机复核',()=>saveVisualCloud(null));
+ const cloudPrivacy=el('p','API 模式只复核所选镜头。人物附近的裁剪关键帧将发送给 OpenAI。',{class:'caption'});
+ const cloudSettings=button('查看 API 设置',()=>go('Settings'));
+ cloudField.append(el('label','API 复核镜头',{for:'safety-cloud-camera'}),cloudCamera,cloudPrivacy,cloudNote,
+   add(el('div',null,{class:'safety-actions'}),cloudSave,cloudOff,cloudSettings));
+ cloudField.hidden=true;let cloudOptions='',cloudChoice=null;
+ cloudCamera.onchange=()=>{cloudChoice=cloudCamera.value;availability();};
  const visual=add(el('section',null,{class:'safety-visual'}),visualTitle,el('p','查看面部遮挡、快速搬动等画面线索。'),visualStatus,
-   add(el('div',null,{class:'safety-actions'}),visualToggle),postureField);
+   add(el('div',null,{class:'safety-actions'}),visualToggle),cloudField,postureField);
  const soundStatus=el('p','正在读取声音复核状态…',{role:'status','aria-live':'polite'});
  const soundToggle=button('开启声音复核',()=>change('sound_review'));soundToggle.setAttribute('role','switch');soundToggle.setAttribute('aria-checked','false');soundToggle.disabled=true;
  const soundSearch=button('开启异响后环视',()=>change('sound_search'));
@@ -61,6 +73,44 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
   reconnect.disabled=disabled||retrying||!report?.supervision?.recovery?.can_retry;
   soundSearch.disabled=disabled||!report?.sound_search&&!report?.policy?.enabled;
   const posture=report?.posture_review;postureSelect.disabled=disabled||(!posture?.camera&&!posture?.cameras?.length);
+  const cloud=report?.visual_cloud;
+  cloudCamera.disabled=disabled||!cloud?.available;
+  cloudSave.disabled=disabled||!cloud?.available||!cloudCamera.value||
+    cloudCamera.value===cloud?.camera&&!cloud?.source_changed;
+  cloudOff.disabled=disabled||!cloud?.camera;
+ }
+ function renderVisualCloud(){
+  const cloud=report?.visual_cloud;
+  cloudField.hidden=!cloud;
+  if(!cloud)return;
+  const fingerprint=JSON.stringify(cloud.cameras);
+  if(fingerprint!==cloudOptions){
+   cloudOptions=fingerprint;
+   cloudCamera.replaceChildren(el('option','选择摄像头',{value:''}),
+     ...cloud.cameras.map(item=>el('option',item.name,{value:item.id})));
+  }
+  const selected=cloud.cameras.find(row=>row.id===cloud.camera);
+  if(cloudChoice===null||!cloud.cameras.some(row=>row.id===cloudChoice))cloudCamera.value=selected?.id||'';
+  else cloudCamera.value=cloudChoice;
+  cloudOff.hidden=!cloud.camera;
+  cloudSave.hidden=!cloud.available;
+  cloudSettings.hidden=cloud.available;
+  const summary=cloud.source_changed?'镜头来源已变化，请重新选择。'
+   :cloud.camera?'当前使用 Decisions API'+(selected?' · '+selected.name:''):'';
+  if(cloudNote.textContent!==summary)cloudNote.textContent=summary;
+  cloudNote.hidden=!summary;
+ }
+ async function saveVisualCloud(camera){
+  if(!alive||busy||!statusFresh||!report)return;
+  if(camera&&!report.visual_cloud?.cameras.some(row=>row.id===camera))return;
+  busy=true;availability();
+  try{
+   await api('/visual-cloud',{camera,expected_revision:report.policy.revision,allow_upload:camera!==null});
+   cloudChoice=null;await refreshStatus(true);
+  }catch{
+   await refreshStatus(true);
+   if(alive){cloudNote.textContent='复核来源未更新，请刷新后重试。';cloudNote.hidden=false;}
+  }finally{busy=false;if(alive)availability();}
  }
  function renderPosture(){
   const posture=report?.posture_review;postureField.hidden=!posture;if(!posture)return;
@@ -118,8 +168,11 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    announce.textContent=next.policy.announce?'关闭语音提醒':'开启语音提醒';announce.setAttribute('role','switch');announce.setAttribute('aria-checked',String(next.policy.announce));
    const model=next.visual_review||{};visualToggle.textContent=next.policy.visual_review?'关闭画面复核':'开启画面复核';visualToggle.setAttribute('aria-checked',String(Boolean(next.policy.visual_review)));visualToggle.disabled=busy||(!next.policy.visual_review&&(!next.policy.enabled||!model.available));
    renderPosture();
+   renderVisualCloud();
    const modelReasons={model_not_installed:'本机模型尚未安装，完成本地模型配置后可开启。',model_pin_mismatch:'本机模型需要核对，重新检查模型文件后重试。',local_runtime_missing:'本机运行环境尚未就绪，完成本地模型配置后重试。',apple_silicon_required:'当前主机不支持这套本地模型。',memory_pressure:'本机内存紧张，画面复核已暂缓。',memory_capacity:'本机可用内存容量不足，画面复核已暂缓。',memory_unknown:'暂时无法检查本机内存，稍后自动重试。',cpu_busy:'本机正在忙，稍后继续复核。',model_busy:'本机模型正在处理其他请求，稍后重试。',visual_review_deferred:'画面复核暂不可用，请检查本机模型后重试。'};
-   const visualMessage=!model.available?(modelReasons[model.reason]||'本机模型尚未就绪，完成配置后可开启。'):!next.policy.enabled?'先开启监测。':next.policy.visual_review?(model.error?(modelReasons[model.error]||'画面复核已暂缓，稍后重试。'):({waiting_input:'等待摄像头画面。',waiting:'等待首轮画面复核。',delayed:'画面复核延迟较高。'}[model.progress]||'')):'';
+   const cloudReasons={api_key_missing:'请先在智能服务配置 API Key。',api_key_rejected:'请在智能服务核对 API Key。',cloud_capability_disabled:'当前智能服务设为仅本地。',api_quota_exhausted:'API 额度不足。',daily_visual_review_reached:'已达到今日画面复核上限。',daily_requests_reached:'已达到今日 API 请求上限。',daily_text_tokens_reached:'已达到今日 Token 上限。',api_model_unavailable:'当前项目无法使用 Decisions API。',api_rate_limited:'API 暂时限流。',api_timeout:'API 响应超时。'};
+   const modelMessage={...modelReasons,...cloudReasons};
+   const visualMessage=!model.available?(modelMessage[model.reason]||'画面复核暂不可用。'):!next.policy.enabled?'先开启监测。':next.policy.visual_review?(model.error?(modelMessage[model.error]||'画面复核已暂缓，稍后重试。'):({waiting_input:'等待可复核的画面。',waiting:'等待首轮画面复核。',delayed:'画面复核延迟较高。'}[model.progress]||'')):'';
    if(visualStatus.textContent!==visualMessage)visualStatus.textContent=visualMessage;visualStatus.hidden=!visualMessage;
    const soundModel=next.sound_review||{};soundToggle.textContent=next.policy.sound_review?'关闭声音复核':'开启声音复核';soundToggle.setAttribute('aria-checked',String(Boolean(next.policy.sound_review)));availability();
    soundSearch.hidden=soundSearchNote.hidden=typeof next.sound_search!=='boolean'||
@@ -250,7 +303,8 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    const searchFrames=event.frames.filter(frame=>searchOrdinals.has(frame.ordinal)).sort((a,b)=>a.at-b.at);
    const eventFrames=event.frames.filter(frame=>!searchOrdinals.has(frame.ordinal));
    const compared=event.kind==='visual_review'&&eventFrames.length===8&&
-     ['two_disjoint_local_windows','same_track_two_local_windows'].includes(event.basis);
+     ['two_disjoint_local_windows','same_track_two_local_windows','two_disjoint_decisions_windows',
+      'same_track_two_decisions_windows'].includes(event.basis);
    const compact=rapid||sustained||compared||searchFrames.length>0||followFrame;
    detailBody.replaceChildren(heading);
    if(compact)detailBody.append(el('p',[source,review].filter(Boolean).join(' · '),{class:'caption'}));

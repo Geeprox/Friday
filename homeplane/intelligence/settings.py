@@ -42,6 +42,7 @@ class IntelligenceConfig(BaseModel):
     daily_text_tokens: int = Field(default=100000, ge=0, le=100000000)
     daily_images: int = Field(default=5, ge=0, le=1000)
     daily_voice_seconds: int = Field(default=300, ge=0, le=86400)
+    daily_visual_review: int = Field(default=24, ge=0, le=10000)
     max_output_tokens: int = Field(default=2048, ge=128, le=8192)
     timezone: str = Field(default="Asia/Shanghai", max_length=64)
 

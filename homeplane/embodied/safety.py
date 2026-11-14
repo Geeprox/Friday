@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .pose_rules import iou
 from .safety_storage import SafetyIO, SafetyStorageBusy
+from .decisions_review import DecisionsWindowReviewer, visible_people
 
 
 class SafetyAdmissionChanged(ValueError):
@@ -52,6 +53,7 @@ class PostureSource(BaseModel):
 class SafetyPolicy(SafetyControls):
     posture_source: PostureSource | None = Field(default=None, exclude=True)
     sound_search: bool = Field(default=False, exclude=True)
+    visual_cloud_source: PostureSource | None = Field(default=None, exclude=True)
 
     def admits_posture(self, camera, source_context):
         source = self.posture_source
@@ -97,7 +99,8 @@ class SafetyStore:
     MAX_FRAMES = 22
     RETENTION = 30 * 86400
     PRUNE_INTERVAL = 60
-    POLICY_FIELDS = (('safety_policy', 'value'), ('safety_posture', 'value'), ('safety_sound_search', 'enabled'))
+    POLICY_FIELDS = (('safety_policy', 'value'), ('safety_posture', 'value'), ('safety_sound_search', 'enabled'),
+                     ('safety_visual_cloud', 'value'))
 
     def __init__(self, path):
         self.path = Path(path)
@@ -116,6 +119,7 @@ class SafetyStore:
             CREATE TABLE IF NOT EXISTS safety_policy (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS safety_posture (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS safety_sound_search (id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS safety_visual_cloud (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS safety_events
               (id TEXT PRIMARY KEY, at REAL NOT NULL, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS safety_frames
@@ -146,8 +150,9 @@ class SafetyStore:
         with closing(sqlite3.connect(uri, uri=True, timeout=.25)) as db:
             db.execute('BEGIN')
             names = tuple(table for table, _ in self.POLICY_FIELDS)
+            placeholders = ','.join('?' for _ in names)
             tables = {name for name, in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?)", names)}
+                f"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({placeholders})", names)}
             return self._read_policy(db, tables=tables)
 
     def prune_expired(self):
@@ -166,10 +171,12 @@ class SafetyStore:
         # 表和列来自固定字段列表。旧库中缺失的扩展开关使用关闭默认值。
         fields = [f'(SELECT {column} FROM {table} WHERE id=1)' if tables is None or table in tables else 'NULL'
                   for table, column in cls.POLICY_FIELDS]
-        controls, posture, sound_search = db.execute('SELECT ' + ', '.join(fields)).fetchone()
+        controls, posture, sound_search, visual_cloud = db.execute('SELECT ' + ', '.join(fields)).fetchone()
         policy = SafetyPolicy.model_validate_json(controls) if controls else SafetyPolicy()
         source = PostureSource.model_validate_json(posture) if posture else None
-        return policy.model_copy(update={'posture_source': source, 'sound_search': sound_search == 1})
+        cloud = PostureSource.model_validate_json(visual_cloud) if visual_cloud else None
+        return policy.model_copy(update={'posture_source': source, 'sound_search': sound_search == 1,
+                                         'visual_cloud_source': cloud})
 
     def configure(self, policy):
         return self._configure(policy.revision, policy.model_dump(exclude={'revision'}))
@@ -179,6 +186,9 @@ class SafetyStore:
 
     def configure_sound_search(self, expected_revision, enabled):
         return self._configure(expected_revision, {'sound_search': enabled})
+
+    def configure_visual_cloud(self, expected_revision, source):
+        return self._configure(expected_revision, {'visual_cloud_source': source})
 
     def _configure(self, expected_revision, updates):
         with self.connect() as db:
@@ -204,6 +214,12 @@ class SafetyStore:
                     db.execute('INSERT OR REPLACE INTO safety_sound_search VALUES (1,1)')
                 else:
                     db.execute('DELETE FROM safety_sound_search WHERE id=1')
+            if 'visual_cloud_source' in updates:
+                if value.visual_cloud_source is None:
+                    db.execute('DELETE FROM safety_visual_cloud WHERE id=1')
+                else:
+                    db.execute('INSERT OR REPLACE INTO safety_visual_cloud VALUES (1,?)',
+                               (value.visual_cloud_source.model_dump_json(),))
         return value
 
     def _prune(self, db):
@@ -776,7 +792,8 @@ class SafetyRuntime:
                                         current=self._recording_current,
                                         clock=lambda: time.monotonic())
         from .temporal_review import TemporalReviewer
-        self.visual = TemporalReviewer(policy=self._cached_policy, deliver=self._visual_event, engine=visual_engine)
+        self.visual = TemporalReviewer(policy=self._cached_policy, deliver=self._visual_event, engine=visual_engine,
+                                        cloud=DecisionsWindowReviewer(), cloud_current=self._visual_cloud_current)
         from .sound_review import SoundReviewer
         self.sound = SoundReviewer(policy=self._cached_policy, current=self._sound_current,
                                    deliver=self._sound_event, keyframe=self._sound_keyframe, engine=sound_engine)
@@ -789,6 +806,21 @@ class SafetyRuntime:
             return SafetyPolicy(revision=self.policy_cache.revision)
         return self.policy_cache
 
+    def _visual_cloud_current(self, camera, session, context, revision):
+        from .camera_provenance import configured_camera_sources
+
+        if (not self._current_review_source(camera, session) or self.sources.get(camera) != (session, context)):
+            return False
+        try:
+            # 在请求发送点读取刚提交的权限，且校验当前登记镜头。
+            policy = self.store.read_policy()
+            source = policy.visual_cloud_source
+            return (policy.enabled and policy.visual_review and policy.revision == revision
+                    and source is not None and (source.camera, source.source_context) == (camera, context)
+                    and any(row['id'] == camera and row['source_context'] == context
+                            for row in configured_camera_sources()))
+        except (OSError, ValueError, sqlite3.Error):
+            return False
     @staticmethod
     def _context(value):
         return value if isinstance(value, str) and re.fullmatch(r'[a-f0-9]{64}', value) else None
@@ -1282,7 +1314,9 @@ class SafetyRuntime:
         if policy.visual_review:
             track = _posture_track(people) if policy.admits_posture(camera, source_context) else None
             self.visual.offer(camera, session, policy.revision, captured, jpeg, stable=stable, posture_track=track,
-                              rapid_people=people if source_context is not None else None, aspect=aspect)
+                              rapid_people=people if source_context is not None else None, aspect=aspect,
+                              source_context=source_context,
+                              regions=visible_people(people) if policy.visual_cloud_source else ())
         else:
             self.visual.clear(camera)
         ring = self.frames.setdefault(camera, dict(session=session, source_context=source_context, capture=capture,
@@ -1377,7 +1411,7 @@ class SafetyRuntime:
             raise SafetyAdmissionChanged('safety_event_changed')
         return receipt
 
-    def _visual_event(self, camera, session, frames, result, captured_at, *, rapid=False):
+    def _visual_event(self, camera, session, frames, result, captured_at, *, rapid=False, provider='local'):
         if len(frames) != (4 if rapid else 8):
             return False
         previous = -math.inf
@@ -1407,6 +1441,11 @@ class SafetyRuntime:
         elif rapid:
             message = '请核对动作前后的画面。'
             basis, detector = 'same_pair_rapid_window', 'pose-pair/qwen3.5-2b-window/1'
+        if provider == 'decisions':
+            detector = 'decisions-visible-cue/1'
+            basis = {'two_disjoint_local_windows': 'two_disjoint_decisions_windows',
+                     'same_track_two_local_windows': 'same_track_two_decisions_windows',
+                     'same_pair_rapid_window': 'same_pair_rapid_decisions_window'}[basis]
         return self._submit_review(
             dict(
                 kind="visual_review", visual_kind=result.event, severity="review",

@@ -9,6 +9,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from .decisions_review import API_ERRORS
 from .rapid_review import MAX_CANDIDATE_AGE, RapidReviewWindow
 from .review_health import review_progress
 from .safety_recording import ReviewReceipt
@@ -22,7 +23,9 @@ POSTURE_CORROBORATION_SECONDS = 18
 class WindowState:
     session: str
     revision: int
+    source_context: str | None = None
     frames: deque = field(default_factory=lambda: deque(maxlen=4))
+    regions: deque = field(default_factory=lambda: deque(maxlen=48))
     seen: float = 0
     opened_at: float = 0
     last_result_at: float | None = None
@@ -41,9 +44,11 @@ class WindowState:
 
 
 class TemporalReviewer:
-    def __init__(self, *, policy, deliver, engine=None, clock=time.monotonic, wall=time.time):
+    def __init__(self, *, policy, deliver, engine=None, cloud=None, cloud_current=None,
+                 clock=time.monotonic, wall=time.time):
         self.policy, self.deliver = policy, deliver
         self.engine = engine or MlxWindowProcess()
+        self.cloud, self.cloud_current = cloud, cloud_current
         self.clock, self.wall = clock, wall
         self.windows = {}
         self.served = {}
@@ -73,7 +78,7 @@ class TemporalReviewer:
             self.last_camera = None
 
     def offer(self, camera, session, revision, captured, jpeg, *, stable, posture_track=None,
-              rapid_people=None, aspect=16/9):
+              rapid_people=None, aspect=16/9, source_context=None, regions=()):
         now = self.clock()
         if self.closed or not stable or not math.isfinite(captured) or not 0 <= now - captured <= 1.5:
             self.clear(camera)
@@ -81,10 +86,16 @@ class TemporalReviewer:
         if not isinstance(jpeg, bytes) or not 0 < len(jpeg) <= 512 * 1024:
             self.clear(camera)
             return
+        cloud_source = getattr(self.policy(), 'visual_cloud_source', None)
+        if cloud_source is not None and (not regions or (cloud_source.camera, cloud_source.source_context) != (
+                camera, source_context)):
+            self.clear(camera)
+            return
         state = self.windows.get(camera)
         if state and (
             state.session != session
             or state.revision != revision
+            or state.source_context != source_context
             or captured <= state.seen
             or captured - state.seen > 1.75
         ):
@@ -97,8 +108,10 @@ class TemporalReviewer:
             # View changes retire every pixel/candidate, but must not erase
             # scheduling debt and repeatedly put this camera before its peers.
             state = self.windows[camera] = WindowState(
-                session, revision, opened_at=captured, submitted=self.served.get(camera, -math.inf))
+                session, revision, source_context, opened_at=captured, submitted=self.served.get(camera, -math.inf))
         state.seen = captured
+        if cloud_source is not None:
+            state.regions.append((captured, regions))
         if posture_track != state.posture_track:
             state.posture_track, state.posture_since = posture_track, captured
             if state.candidate and state.candidate[0] == 'prone_posture':
@@ -217,6 +230,14 @@ class TemporalReviewer:
                 return
             selected = False
             subject = None
+            policy = self.policy()
+            cloud_source = getattr(policy, 'visual_cloud_source', None)
+            provider = 'decisions' if cloud_source is not None else 'local'
+
+            def cloud_current():
+                return (self._current(camera, state, frames)
+                        and self.cloud_current is not None
+                        and self.cloud_current(camera, state.session, state.source_context, state.revision))
 
             def current_window():
                 nonlocal frames, selected, subject
@@ -241,7 +262,16 @@ class TemporalReviewer:
 
             scoped = getattr(self.engine, 'analyze_scoped', None)
             latest = getattr(self.engine, 'analyze_latest', None)
-            if callable(scoped):
+            if cloud_source is not None:
+                if self.cloud is None or (cloud_source.camera, cloud_source.source_context) != (
+                        camera, state.source_context):
+                    return
+                self.phase = 'preparing'
+                result = await self.cloud.analyze_scoped(
+                    scoped_window, current=cloud_current,
+                    regions_for=lambda stamp: next((rects for at, rects in state.regions if at == stamp), ()),
+                )
+            elif callable(scoped):
                 self.phase = 'preparing'
                 result = await scoped(scoped_window)
             elif callable(latest):
@@ -261,7 +291,7 @@ class TemporalReviewer:
             self.failures = 0
             if rapid:
                 if result.event == 'rapid_movement':
-                    await self._deliver(camera, state, frames, result, rapid=True)
+                    await self._deliver(camera, state, frames, result, rapid=True, provider=provider)
                 return
             posture_invalid = (result.event == 'prone_posture'
                                and (subject is None or subject != state.posture_subject(frames)))
@@ -282,7 +312,7 @@ class TemporalReviewer:
             ):
                 state.followup = allow_followup
                 return
-            await self._deliver(camera, state, previous[2] + frames, result)
+            await self._deliver(camera, state, previous[2] + frames, result, provider=provider)
         except asyncio.CancelledError:
             raise
         except VisualSourceChanged:
@@ -295,7 +325,7 @@ class TemporalReviewer:
             self.error = (
                 reason
                 if reason
-                in {
+                in API_ERRORS | {
                     "memory_pressure",
                     "memory_unknown",
                     "memory_capacity",
@@ -308,10 +338,13 @@ class TemporalReviewer:
                 else "visual_review_deferred"
             )
 
-    async def _deliver(self, camera, state, frames, result, *, rapid=False):
+    async def _deliver(self, camera, state, frames, result, *, rapid=False, provider='local'):
         captured_at = self.wall() - (self.clock() - frames[-1][0])
         arguments = (camera, state.session, frames, result, captured_at)
-        delivered = self.deliver(*arguments, rapid=True) if rapid else self.deliver(*arguments)
+        options = {'rapid': True} if rapid else {}
+        if provider != 'local':
+            options['provider'] = provider
+        delivered = self.deliver(*arguments, **options)
         if inspect.isawaitable(delivered):
             delivered = await delivered
         if delivered is not False:
@@ -326,7 +359,10 @@ class TemporalReviewer:
         if not policy.enabled or not policy.visual_review:
             for camera in list(self.windows):
                 self.clear(camera)
-        ready = model_readiness()
+        cloud = getattr(policy, 'visual_cloud_source', None)
+        ready = self.cloud.readiness() if cloud and self.cloud is not None else model_readiness()
+        if not cloud:
+            ready['provider'] = 'local'
         posture = getattr(policy, 'posture_source', None)
         posture_camera = None
         if posture is not None and (state := self.windows.get(posture.camera)) is not None:
@@ -354,6 +390,8 @@ class TemporalReviewer:
         self.windows.clear()
         self.served.clear()
         self.last_rapid = False
+        self.last_submit, self.retry_after = -math.inf, 0
+        self.error, self.failures = None, 0
         if self.task:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
