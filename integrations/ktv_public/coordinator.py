@@ -27,6 +27,7 @@ import uuid
 import wave
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 
 UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
@@ -186,9 +187,9 @@ class Coordinator:
     def authenticate(self, value):
         return isinstance(value, str) and len(value) <= 128 and hmac.compare_digest(value, self.tv_key)
 
-    def active(self):
-        with self.store.connection() as db:
-            row = db.execute("SELECT s.*,r.closed FROM coordinator_session s JOIN rooms r ON r.id=s.room WHERE s.id=1").fetchone()
+    def active(self, db=None):
+        with (self.store.connection() if db is None else nullcontext(db)) as connection:
+            row = connection.execute("SELECT s.*,r.closed FROM coordinator_session s JOIN rooms r ON r.id=s.room WHERE s.id=1").fetchone()
         return dict(row) if row and not row["closed"] else None
 
     def direct_room(self, room_id):

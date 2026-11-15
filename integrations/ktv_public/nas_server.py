@@ -726,7 +726,8 @@ class Store:
         return {"closed": True}
 
     def online(self, db):
-        if self.coordinator is not None and self.coordinator.active():
+        # 会话查询复用当前事务，避免持有手机状态快照时与电视心跳提交互相阻塞。
+        if self.coordinator is not None and self.coordinator.active(db):
             return self.coordinator.worker_healthy()
         value = db.execute("SELECT at FROM heartbeat WHERE id=1").fetchone()
         return bool(value and time.time() - value[0] < 30)

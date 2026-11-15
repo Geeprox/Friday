@@ -30,6 +30,15 @@ test('short clock probes are independent of a waiting event connection and both 
  const f=fixture({events:({signal})=>{eventSignal=signal;return event.promise;},probe:({signal})=>{probeSignal=signal;return probe.promise;},visible:()=>visible});f.feed.start();await f.advance(2500);assert.ok(probeSignal);assert.equal(eventSignal.aborted,false);
  visible=false;f.feed.stop();assert.equal(eventSignal.aborted,true);assert.equal(probeSignal.aborted,true);event.resolve({cursor:1,status:{server_time_ms:5}});probe.resolve();await flush();assert.equal(f.statuses.length,0);f.feed.start();assert.equal(f.feed.active,false);
 });
+test('unsuccessful snapshots retry without waiting for a stalled event stream',async()=>{
+ const probes=[];let f;
+ f=fixture({probe:async()=>{probes.push(f.clock());return probes.length>=3;}});
+ f.feed.start();
+ await f.advance(750);assert.deepEqual(probes,[0,250,750]);
+ await f.advance(2499);assert.equal(probes.length,3);
+ await f.advance(1);assert.deepEqual(probes,[0,250,750,3250]);
+ f.feed.stop();await f.advance(2500);assert.equal(probes.length,4);
+});
 test('a legitimate server restart cursor regression re-synchronizes instead of retrying forever',async()=>{
  const replies=[{cursor:100,status:{server_time_ms:1000}},{cursor:2,status:{server_time_ms:2000}}],requested=[];
  const f=fixture({events:async({cursor})=>{requested.push(cursor);return replies.shift()||new Promise(()=>{});}});f.feed.start();await f.advance(200);assert.deepEqual(requested,[0,100,2]);assert.equal(f.statuses.length,2);assert.equal(f.feed.cursor,2);f.feed.close();

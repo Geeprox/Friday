@@ -101,7 +101,7 @@ function saveIdentity({prefer=false}={}){
 function connectionError(error){return ["network_error","request_timeout","service_unavailable"].includes(error?.code)||(!error?.code&&error?.status>=500);}
 function connectionNotice(text){const node=$("connection-status");node.textContent=text;node.hidden=!text;}
 const usableStatus=value=>Array.isArray(value?.songs)&&value.songs.every(song=>song&&typeof song.id==="string")&&(!value.playback||Array.isArray(value.playback.played));
-const requestBudgets={status:7500,events:10000,search:7000,discover:5500,join:7500,profile:6000,controls:5500,command:5500};
+const requestBudgets={status:3000,events:10000,search:7000,discover:5500,join:7500,profile:6000,controls:5500,command:5500};
 async function api(operation,body,query="",{signal,timeoutMs=requestBudgets[operation]||15000,priority="auto",guestKey=identity?.key}={}){
  const controller=new AbortController(),abort=()=>controller.abort();let timedOut=false;
  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);signal?.addEventListener("abort",abort,{once:true});if(signal?.aborted)abort();
@@ -228,8 +228,9 @@ function refresh({signal}={}){
   if(statusRequest!==request||document.hidden||request.controller.signal.aborted)return false;
   applyStatus(value);return true;
  },error=>{
-  if(statusRequest===request&&!document.hidden&&!request.controller.signal.aborted)statusFailure(error);
-  return false;
+  if(statusRequest!==request||document.hidden||request.controller.signal.aborted)return false;
+  statusFailure(error);
+  return error.code==="stale_status";
  }).catch(()=>{message("房间状态无法显示，请刷新重试。");return false;}).finally(()=>{if(statusRequest===request)statusRequest=null;});
  return request.task;
 }

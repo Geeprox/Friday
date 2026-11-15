@@ -4,12 +4,14 @@ import copy
 import hashlib
 import io
 import re
+import sqlite3
 import struct
 import threading
 import time
 import uuid
 import wave
 import zlib
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -54,6 +56,28 @@ def admitted(store, party):
     key = parse_qs(urlsplit(party["join_url"]).fragment)["k"][0]
     room = store.room(party["room_id"], key)
     return room, key, store.join(room)
+
+
+def test_guest_status_keeps_reading_while_tv_heartbeat_commit_waits(store, monkeypatch):
+    store.coordinator.register_worker(registration())
+    _, party = started(store)
+    room, _, _ = admitted(store, party)
+    heartbeat = int(time.time())
+    original_online = store.online
+    with closing(sqlite3.connect(store.db, timeout=0)) as writer:
+        def online_with_pending_commit(snapshot):
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE coordinator_session SET tv_at=? WHERE id=1", (heartbeat,))
+            # 模拟电视心跳在手机持有快照时进入提交，阻止其他连接新建读事务。
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                writer.commit()
+            return original_online(snapshot)
+
+        monkeypatch.setattr(store, "online", online_with_pending_commit)
+        result = store.status(room)
+        assert result["mac_online"] and result["songs"] == []
+        writer.commit()
+    assert store.coordinator.active()["tv_at"] == heartbeat
 
 
 def wav_bytes(seconds=2, level=0):
