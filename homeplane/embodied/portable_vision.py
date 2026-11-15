@@ -143,6 +143,7 @@ class PortableVision:
         array = decode_image(request.get('jpeg'))
         image = self.image(array)
         boxes, poses = body_rows(self.pose.detect(image).pose_landmarks)
+        body_rescue_passes = 0
         if not poses:
             rois = request.get('person_rois', [])
             if not isinstance(rois, list) or len(rois) > 10:
@@ -154,9 +155,12 @@ class PortableVision:
                         or not 0 < row['w'] <= 1 or not 0 < row['h'] <= 1):
                     raise ValueError('invalid_person_rois')
                 regions.append((row['x']-.04, row['y']-.05, row['w']+.08, row['h']+.1))
-            for region in regions or [(0, 0, .6, 1), (.4, 0, .6, 1)]:
+            if not regions and (request.get('allow_wide_pose_rescue') is not False or boxes):
+                regions = [(0, 0, .6, 1), (.4, 0, .6, 1)]
+            for region in regions:
                 crop = self.crop(array, region)
                 if crop:
+                    body_rescue_passes += 1
                     found_boxes, found_poses = body_rows(self.pose.detect(crop[0]).pose_landmarks, crop[1])
                     for box, pose in zip(found_boxes, found_poses):
                         root = pose['joints'].get('root') or pose['joints']['neck']
@@ -214,7 +218,7 @@ class PortableVision:
             animal_status = 'ready'
         # 同一缓存的 sample_id 不变，既有稳定器不能将缓存计作新证据。
         return dict(boxes=boxes, poses=poses, hands=hands, faces=faces,
-                    body_ms=body_ms, hand_ms=hand_ms,
+                    body_ms=body_ms, body_rescue_passes=body_rescue_passes, hand_ms=hand_ms,
                     hands_sampled=sampled, inference_ms=(time.monotonic()-started)*1000,
                     backend='onnx_cpu', attention_supported=getattr(self, 'face', None) is not None,
                     attention_status='unsupported_onnx_iris_geometry',

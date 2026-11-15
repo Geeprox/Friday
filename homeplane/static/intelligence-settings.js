@@ -50,6 +50,7 @@ export async function mountIntelligenceSettings(container,{api,onOpenConversatio
     if(detail)detail.textContent=(reasons[value.last_route?.reason]??'')
       +(value.last_route?.reason?(value.last_route.provider==='arl'?' 已改用 ARL。':' 当前保留本地功能。'):'')
       +(usage.uncertain_requests?' 有 '+usage.uncertain_requests+' 次调用的预留用量待核对。':'')
+      +(usage.visual_review?' 云端画面复核 '+usage.visual_review.used+' / '+usage.visual_review.limit+' 次。':'')
       +' 下一次重置：'+new Date(usage.resets_at).toLocaleString()+'。';
   }
   let initial;
@@ -66,6 +67,7 @@ export async function mountIntelligenceSettings(container,{api,onOpenConversatio
   field(form,'cloud_voice','开启云端语音输入',config.cloud_voice,{type:'checkbox',help:'主动点击后录音，最长 8 秒。转写先放入输入框，由你发送。'});
   const limits=node('fieldset',null);limits.append(node('legend','每日上限'));
   for(const [key,label] of [['daily_requests','API 请求次数'],['daily_text_tokens','文本 Token'],['daily_images','歌曲背景张数'],['daily_voice_seconds','语音会话秒数']])field(limits,key,label,config[key],{type:'number'});
+  if(Number.isInteger(config.daily_visual_review))field(limits,'daily_visual_review','API 画面复核次数',config.daily_visual_review,{type:'number'});
   field(limits,'timezone','每日重置时区',config.timezone);
   limits.append(node('p','上限为 0 时暂停对应调用。用量先预留，未知结果保留预留；这里统计本应用用量，不代表账户余额。',{class:'meta'}));
   const advanced=node('details',null);advanced.append(node('summary','模型配置'));

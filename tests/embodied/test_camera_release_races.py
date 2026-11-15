@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -35,7 +35,7 @@ async def test_exited_capture_race_cannot_skip_native_restore_or_retain_lock(tmp
     capture=SimpleNamespace(returncode=None,terminate=exited,wait=AsyncMock())
     scope=dict(asyncio=asyncio,time=time,os=os,Transport=lambda:io,CameraLease=lambda *_,**__:lease,
                SearchPlanner=SearchPlanner,CameraDirector=lambda:None,camera_is_open=AsyncMock(return_value=False),
-               SELECTED={'id':'synthetic'},close_primary_view=lambda:None,capture=capture,state={},
+               SELECTED={'id':'synthetic'},close_primary_view=lambda:None,capture=capture,state={'status':'live'},
                camera_intents=SimpleNamespace(load=lambda:CameraIntent('auto','initial','default')),
                camera_lease=None,camera_planner=None)
     functions({'camera_search','reap'},scope)
@@ -62,7 +62,7 @@ async def test_primary_search_recreation_loads_intent_and_still_restores_vendor(
         planner=SearchPlanner(*args);planners.append(planner);return planner
     scope=dict(asyncio=asyncio,time=time,os=os,Transport=lambda:io,CameraLease=lambda *_,**__:lease,
                SearchPlanner=make_planner,CameraDirector=lambda:None,camera_is_open=AsyncMock(return_value=False),
-               SELECTED=selected,close_primary_view=lambda:None,capture=None,state={},
+               SELECTED=selected,close_primary_view=lambda:None,capture=None,state={'status':'live'},
                camera_intents=intents,camera_lease=None,camera_planner=None)
     functions({'camera_search','reap'},scope)
     await scope['camera_search']()
@@ -87,7 +87,7 @@ async def test_manual_close_during_room_wait_blocks_motor_send():
         def write(self,data):sent.append(data)
         async def drain(self):raise AssertionError('closed camera cannot send')
     noop=lambda *_,**__:None
-    scope=dict(asyncio=asyncio,time=time,secrets=secrets,json=json,capture=SimpleNamespace(stdin=Stdin()),
+    scope=dict(asyncio=asyncio,time=time,secrets=secrets,json=json,capture=SimpleNamespace(returncode=None,stdin=Stdin()),
         camera_lease=SimpleNamespace(snapshot={'status':'owned'}),camera_planner=None,state={'status':'live'},
         SELECTED={'id':'synthetic'},camera_is_open=is_open,close_primary_view=noop,motor_sequence=0,
         motion_generation=0,motor_waiters={},identities=SimpleNamespace(discard=noop),fleet=SimpleNamespace(clear=noop),
@@ -95,7 +95,34 @@ async def test_manual_close_during_room_wait_blocks_motor_send():
         room_lock=RoomLock(),room=SimpleNamespace(expect_motion=noop))
     functions({'motor_step'},scope)
     with pytest.raises(RuntimeError,match='privacy_shutter_closed'):await scope['motor_step']('left',time.monotonic())
-    assert reads==2 and not sent
+    assert reads==1 and not sent
+
+
+@pytest.mark.asyncio
+async def test_ended_capture_cannot_republish_privacy_from_an_inflight_read():
+    state = {'status': 'live'}
+    capture = SimpleNamespace(returncode=None)
+    release = AsyncMock(return_value=True)
+
+    async def read_privacy(_):
+        state['status'] = 'unavailable'
+        return False
+
+    scope = dict(asyncio=asyncio, time=time, os=os, state=state, capture=capture, last_frame=0,
+                 Transport=lambda: SimpleNamespace(close=AsyncMock()),
+                 CameraLease=lambda *_, **__: SimpleNamespace(acquire=AsyncMock(), release=release,
+                                                              presets=[], active=None),
+                 SearchPlanner=SearchPlanner, CameraDirector=SimpleNamespace,
+                 SELECTED={'id': 'synthetic'}, close_primary_view=Mock(), camera_is_open=read_privacy,
+                 camera_intents=SimpleNamespace(load=lambda: CameraIntent('auto', 'initial', 'default')),
+                 camera_lease=None, camera_planner=None, reap=AsyncMock())
+    functions({'camera_search'}, scope)
+    await scope['camera_search']()
+    scope['close_primary_view'].assert_not_called()
+    assert state['status'] == 'unavailable'
+    assert state['camera_control']['owner'] == 'none'
+    scope['reap'].assert_awaited_once_with(capture)
+    release.assert_awaited_once()
 
 
 @pytest.mark.asyncio

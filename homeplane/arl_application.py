@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from contextvars import ContextVar
 import hashlib
 import json
 import math
@@ -27,6 +28,7 @@ SCENARIOS = (
          priority='interactive', package_id='high', deadline_ms=30000, max_output_bytes=8192),
 )
 TERMINAL = {'succeeded', 'failed', 'cancelled', 'needs_review', 'needs_unlock'}
+_submission_guard = ContextVar('friday_arl_submission_guard', default=None)
 
 
 def sdk_compatibility(*, vendor_root=None, expected_manifest_sha256=None):
@@ -52,6 +54,15 @@ def sdk_session(home):
         icon, icon_error = application_icon(), None
     except (OSError, ValueError, KeyError):
         icon, icon_error = None, 'application_icon_unavailable'
+
+    class GuardedClient(Client):
+        def rpc(self, method, params=None):
+            if method == 'application.tasks.submit.v1':
+                # SDK 可能先等待会话锁或重新握手，实际发送前再检查本次请求。
+                guard = _submission_guard.get()
+                if guard is not None:
+                    guard()
+            return super().rpc(method, params)
 
     class SupportedSession(ApplicationSession):
         def register(self):
@@ -88,7 +99,7 @@ def sdk_session(home):
 
     return SupportedSession(home, APP_ID, 'Friday', copy.deepcopy(SCENARIOS),
                             icon_ref='sf:house.fill', version='0.6.0', icon=icon,
-                            client_factory=lambda h, a: Client(h, a, max_frame_bytes=65536))
+                            client_factory=lambda h, a: GuardedClient(h, a, max_frame_bytes=65536))
 
 
 class RequestReceipts:
@@ -308,7 +319,11 @@ class FridayApplication:
                 admission = receipts.prepare(request_id, fingerprint)
                 check()
                 if admission is None:
-                    job = session.submit(scenario_id, text, request_id=request_id)
+                    token = _submission_guard.set(check)
+                    try:
+                        job = session.submit(scenario_id, text, request_id=request_id)
+                    finally:
+                        _submission_guard.reset(token)
                     admission = self._admission(job, scenario)
                     receipts.admit(request_id, admission)
                 else:

@@ -10,6 +10,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from .decisions_review import API_ERRORS
 from .rapid_review import MAX_CANDIDATE_AGE, RapidReviewWindow
 from .review_health import review_progress
 from .safety_recording import ReviewReceipt
@@ -17,6 +18,13 @@ from .temporal_model import WINDOW_SPAN, MlxWindowProcess, VisualResult, VisualS
 
 MAX_CORROBORATION_SECONDS = 60
 POSTURE_CORROBORATION_SECONDS = 18
+CLOUD_CUE_GAP = 5
+
+
+@dataclass(slots=True)
+class CloudCue:
+    last_seen: float
+    pending: bool = True
 
 # 仅按平台选择离线后端；导入不加载模型，也不增加窗口结果的时效。
 if sys.platform.startswith('linux'):
@@ -29,7 +37,9 @@ else:
 class WindowState:
     session: str
     revision: int
+    source_context: str | None = None
     frames: deque = field(default_factory=lambda: deque(maxlen=4))
+    regions: deque = field(default_factory=lambda: deque(maxlen=48))
     seen: float = 0
     opened_at: float = 0
     last_result_at: float | None = None
@@ -37,20 +47,44 @@ class WindowState:
     candidate: tuple | None = None
     followup: bool = False
     recorded: dict = field(default_factory=dict)
-    posture_track: int | None = None
+    posture_track: tuple[int, int] | None = None
     posture_since: float = math.inf
     rapid: RapidReviewWindow = field(default_factory=RapidReviewWindow)
+    cloud_cues: dict[tuple[int, int], CloudCue] = field(default_factory=dict)
+    cloud_activity_revision: int = 0
 
     def posture_subject(self, frames):
         if self.posture_track is not None and frames and frames[0][0] >= self.posture_since:
             return self.posture_track, self.posture_since
         return None
 
+    def observe_cloud_cues(self, tracks, captured):
+        # 骨骼短暂丢失或姿态轻微抖动时，沿用原来的复核记录。
+        next_activity = False
+        for track, cue in list(self.cloud_cues.items()):
+            if captured - cue.last_seen > CLOUD_CUE_GAP:
+                del self.cloud_cues[track]
+        for track in tracks:
+            if track in self.cloud_cues:
+                self.cloud_cues[track].last_seen = captured
+            else:
+                self.cloud_cues[track] = CloudCue(captured)
+                next_activity = True
+        if next_activity:
+            self.cloud_activity_revision += 1
+        if next_activity:
+            self.candidate, self.followup = None, False
+
+    def pending_cloud_cues(self, since):
+        return [cue for cue in self.cloud_cues.values() if cue.pending and cue.last_seen >= since]
+
 
 class TemporalReviewer:
-    def __init__(self, *, policy, deliver, engine=None, clock=time.monotonic, wall=time.time):
+    def __init__(self, *, policy, deliver, engine=None, cloud=None, cloud_current=None,
+                 clock=time.monotonic, wall=time.time):
         self.policy, self.deliver = policy, deliver
         self.engine = engine or WindowProcess()
+        self.cloud, self.cloud_current = cloud, cloud_current
         self.clock, self.wall = clock, wall
         self.windows = {}
         self.served = {}
@@ -80,7 +114,7 @@ class TemporalReviewer:
             self.last_camera = None
 
     def offer(self, camera, session, revision, captured, jpeg, *, stable, posture_track=None,
-              rapid_people=None, aspect=16/9):
+              rapid_people=None, aspect=16/9, source_context=None, regions=(), visual_cues=()):
         now = self.clock()
         if self.closed or not stable or not math.isfinite(captured) or not 0 <= now - captured <= 1.5:
             self.clear(camera)
@@ -88,15 +122,26 @@ class TemporalReviewer:
         if not isinstance(jpeg, bytes) or not 0 < len(jpeg) <= 512 * 1024:
             self.clear(camera)
             return
+        cloud_source = getattr(self.policy(), 'visual_cloud_source', None)
+        if cloud_source is not None and (cloud_source.camera, cloud_source.source_context) != (camera, source_context):
+            self.clear(camera)
+            return
         state = self.windows.get(camera)
         if state and (
             state.session != session
             or state.revision != revision
+            or state.source_context != source_context
             or captured <= state.seen
             or captured - state.seen > 1.75
         ):
             self.clear(camera)
             state = None
+        if cloud_source is not None and not regions and state and state.frames:
+            # 遮挡立即撤销帧和复核，但短暂遮挡不能让同一姿态重新上传。
+            cues, submitted = state.cloud_cues, state.submitted
+            self.clear(camera)
+            state = self.windows[camera] = WindowState(
+                session, revision, source_context, opened_at=captured, submitted=submitted, cloud_cues=cues)
         if state is None:
             if len(self.windows) >= 8:
                 self.skipped += 1
@@ -104,8 +149,15 @@ class TemporalReviewer:
             # View changes retire every pixel/candidate, but must not erase
             # scheduling debt and repeatedly put this camera before its peers.
             state = self.windows[camera] = WindowState(
-                session, revision, opened_at=captured, submitted=self.served.get(camera, -math.inf))
+                session, revision, source_context, opened_at=captured, submitted=self.served.get(camera, -math.inf))
         state.seen = captured
+        if cloud_source is not None:
+            state.observe_cloud_cues(visual_cues, captured)
+            if not regions:
+                return
+            state.regions.append((captured, regions))
+            if state.candidate and captured - state.candidate[1] > self._corroboration_limit(state.candidate[0]):
+                state.candidate, state.followup = None, False
         if posture_track != state.posture_track:
             state.posture_track, state.posture_since = posture_track, captured
             if state.candidate and state.candidate[0] == 'prone_posture':
@@ -133,8 +185,12 @@ class TemporalReviewer:
             for index, (cid, other) in enumerate(self.windows.items())
             if 0 <= now - other.seen <= 1.5 and now - other.submitted >= 6
         ]
-        eligible = [(other.submitted, index, cid) for index, cid, other in live if len(other.frames) == 4]
+        eligible = [(other.submitted, index, cid) for index, cid, other in live
+                    if len(other.frames) == 4 and (cloud_source is None or
+                       other.pending_cloud_cues(other.frames[0][0]) or self._followup_ready(other))]
         rapid = [(frames[-1][0], index, cid) for index, cid, other in live if (frames := other.rapid.pending(now))]
+        if not eligible and not rapid:
+            return
         # One timely confirmation prevents a slower shared model from
         # expiring every camera's candidate before its second ordinary turn.
         # It cannot chain more follow-ups ahead of the other eligible feeds.
@@ -224,9 +280,18 @@ class TemporalReviewer:
                 return
             selected = False
             subject = None
+            cloud_activity_revision = None
+            policy = self.policy()
+            cloud_source = getattr(policy, 'visual_cloud_source', None)
+            provider = 'decisions' if cloud_source is not None else 'local'
+
+            def cloud_current():
+                return (self._current(camera, state, frames)
+                        and self.cloud_current is not None
+                        and self.cloud_current(camera, state.session, state.source_context, state.revision))
 
             def current_window():
-                nonlocal frames, selected, subject
+                nonlocal frames, selected, subject, cloud_activity_revision
                 latest = frames if rapid else tuple(state.frames)
                 if (selected or len(latest) != 4 or not self._current(camera, state, latest)
                         or rapid and self.clock()-latest[-1][0] > MAX_CANDIDATE_AGE):
@@ -234,6 +299,11 @@ class TemporalReviewer:
                 frames = latest
                 subject = None if rapid else state.posture_subject(frames)
                 selected = True
+                if cloud_source is not None and not rapid:
+                    # 一段连续的姿态只使用一轮额度，阳性结果再等待独立画面印证。
+                    cloud_activity_revision = state.cloud_activity_revision
+                    for cue in state.pending_cloud_cues(frames[0][0]):
+                        cue.pending = False
                 # Reserve cadence at image submission, after any startup or
                 # host-budget wait, rather than at the earlier queue admission.
                 submitted = self.clock()
@@ -248,7 +318,16 @@ class TemporalReviewer:
 
             scoped = getattr(self.engine, 'analyze_scoped', None)
             latest = getattr(self.engine, 'analyze_latest', None)
-            if callable(scoped):
+            if cloud_source is not None:
+                if self.cloud is None or (cloud_source.camera, cloud_source.source_context) != (
+                        camera, state.source_context):
+                    return
+                self.phase = 'preparing'
+                result = await self.cloud.analyze_scoped(
+                    scoped_window, current=cloud_current,
+                    regions_for=lambda stamp: next((rects for at, rects in state.regions if at == stamp), ()),
+                )
+            elif callable(scoped):
                 self.phase = 'preparing'
                 result = await scoped(scoped_window)
             elif callable(latest):
@@ -268,7 +347,9 @@ class TemporalReviewer:
             self.failures = 0
             if rapid:
                 if result.event == 'rapid_movement':
-                    await self._deliver(camera, state, frames, result, rapid=True)
+                    await self._deliver(camera, state, frames, result, rapid=True, provider=provider)
+                return
+            if cloud_activity_revision is not None and cloud_activity_revision != state.cloud_activity_revision:
                 return
             posture_invalid = (result.event == 'prone_posture'
                                and (subject is None or subject != state.posture_subject(frames)))
@@ -287,9 +368,13 @@ class TemporalReviewer:
                 or frames[0][0] <= previous[1]
                 or frames[-1][0] - previous[1] > self._corroboration_limit(result.event)
             ):
+                if provider == 'decisions' and not allow_followup:
+                    state.candidate = None
                 state.followup = allow_followup
                 return
-            await self._deliver(camera, state, previous[2] + frames, result)
+            await self._deliver(camera, state, previous[2] + frames, result, provider=provider)
+            if provider == 'decisions':
+                state.candidate, state.followup = None, False
         except asyncio.CancelledError:
             raise
         except VisualSourceChanged:
@@ -302,7 +387,7 @@ class TemporalReviewer:
             self.error = (
                 reason
                 if reason
-                in {
+                in API_ERRORS | {
                     "memory_pressure",
                     "memory_unknown",
                     "memory_capacity",
@@ -315,10 +400,13 @@ class TemporalReviewer:
                 else "visual_review_deferred"
             )
 
-    async def _deliver(self, camera, state, frames, result, *, rapid=False):
+    async def _deliver(self, camera, state, frames, result, *, rapid=False, provider='local'):
         captured_at = self.wall() - (self.clock() - frames[-1][0])
         arguments = (camera, state.session, frames, result, captured_at)
-        delivered = self.deliver(*arguments, rapid=True) if rapid else self.deliver(*arguments)
+        options = {'rapid': True} if rapid else {}
+        if provider != 'local':
+            options['provider'] = provider
+        delivered = self.deliver(*arguments, **options)
         if inspect.isawaitable(delivered):
             delivered = await delivered
         if delivered is not False:
@@ -333,15 +421,27 @@ class TemporalReviewer:
         if not policy.enabled or not policy.visual_review:
             for camera in list(self.windows):
                 self.clear(camera)
-        ready = review_readiness()
+        cloud = getattr(policy, 'visual_cloud_source', None)
+        ready = self.cloud.readiness() if cloud and self.cloud is not None else review_readiness()
+        if not cloud:
+            ready['provider'] = 'local'
         posture = getattr(policy, 'posture_source', None)
         posture_camera = None
         if posture is not None and (state := self.windows.get(posture.camera)) is not None:
             frames = tuple(state.frames)
             if len(frames) == 4 and state.posture_subject(frames) and self._current(posture.camera, state, frames):
                 posture_camera = posture.camera
-        live = [state for camera, state in self.windows.items()
-                if state.frames and self._current(camera, state, state.frames)]
+        if cloud:
+            # API 只在出现本机线索时调用。静候触发不计作复核延迟。
+            reviewing = self.task is not None and not self.task.done() and not self.task.cancelling()
+            source = self.windows.get(cloud.camera)
+            fresh = (source is not None and source.revision == policy.revision
+                     and source.source_context == cloud.source_context and 0 <= self.clock() - source.seen <= 1.5)
+            progress = 'waiting_input' if not fresh else 'reviewing' if reviewing else 'standby'
+        else:
+            live = [state for camera, state in self.windows.items()
+                    if state.frames and self._current(camera, state, state.frames)]
+            progress = review_progress(live, self.clock(), self._corroboration_limit())
         return dict(
             **ready,
             enabled=bool(policy.enabled and policy.visual_review),
@@ -353,7 +453,7 @@ class TemporalReviewer:
             peak_mlx_mib=round(getattr(self.engine, "peak_mlx_bytes", 0) / 1024**2),
             peak_rss_mib=round(getattr(self.engine, "peak_rss_bytes", 0) / 1024**2),
             camera_count=len(self.windows),
-            progress=review_progress(live, self.clock(), self._corroboration_limit()),
+            progress=progress,
             posture_ready_camera=posture_camera,
             posture_revision=policy.revision if posture_camera else None,
         )
@@ -362,6 +462,8 @@ class TemporalReviewer:
         self.windows.clear()
         self.served.clear()
         self.last_rapid = False
+        self.last_submit, self.retry_after = -math.inf, 0
+        self.error, self.failures = None, 0
         if self.task:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)

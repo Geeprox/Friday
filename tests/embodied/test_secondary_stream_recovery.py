@@ -104,15 +104,15 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
 
     pool = previews.PreviewPool(continuous=False, recognize=True, wall=wall,
                                on_observation=observation, on_clear=cleared.append,
-                               on_capture_frame=lambda *args: capture_frames.append(args))
+                               on_capture_frame=lambda *args, **_: capture_frames.append(args))
     item = dict(state='connecting', recognizer=None, process=None, shutter_changed=False,
                 expires=time.monotonic()+60, frames=0, frame=None, received_at=0)
     pool.sessions[CAMERA['id']] = item
 
-    def frame(session):
+    def frame(session, picture=jpeg):
         at = time.time()
-        return json.dumps(dict(type='frame', jpeg=base64.b64encode(jpeg).decode(),
-            preview=base64.b64encode(jpeg).decode(), preview_at=at, received_at=at,
+        return json.dumps(dict(type='frame', jpeg=base64.b64encode(picture).decode(),
+            preview=base64.b64encode(picture).decode(), preview_at=at, received_at=at,
             capture_session=session, camera_source_context=context,
             width=640, height=360)).encode()
 
@@ -129,9 +129,12 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         assert item['state'] == 'live' and item['frames'] == 1
         status = pool.status(CAMERA['id'])
         assert status['recognition'] == 'running' and 0 <= status['latency_ms'] < 500
-        reads.put_nowait(frame(capture['capture_session']))
+        new_preview = b'\xff\xd8SYNTHETIC-UNPROCESSED\xff\xd9'
+        reads.put_nowait(frame(capture['capture_session'], new_preview))
         await asyncio.wait_for(entered.wait(), .5)
         assert not task.done() and wall.frame(CAMERA['id'])
+        assert pool.frame(CAMERA['id']) == new_preview
+        assert pool.status(CAMERA['id'])['received_at'] == status['received_at']
         assert len(capture_frames) == 2
         assert all(row[:3] == (CAMERA['id'], capture['capture_session'], context) for row in capture_frames)
         assert 0 <= time.monotonic() - capture_frames[1][3] < .5
@@ -141,6 +144,7 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         assert item['state'] == 'unavailable', 'EOF/fault remained queued behind inference'
         assert item['frame'] is None and item['received_at'] == 0
         assert wall.frame(CAMERA['id']) is None
+        assert pool.frame(CAMERA['id']) is None
         assert cleared == [CAMERA['id']]
         assert item.get('control') is None
         status = pool.status(CAMERA['id'])
@@ -321,8 +325,9 @@ async def test_background_owner_waits_for_native_stream_recovery(tmp_path, monke
                             release=AsyncMock(return_value=True))
     read_shutter = AsyncMock(side_effect=lambda _: shutter_open)
 
-    async def recognize(packet, *, source_current, on_vision_failure):
+    async def recognize(packet, *, source_current, on_vision_failure, room_lock, allow_wide_pose_rescue):
         assert source_current()
+        assert allow_wide_pose_rescue is True
         return dict(camera=CAMERA['id'], session='synthetic-stream', people=[], hands=[],
                     now=now, captured_mono=packet['received_at'])
 
@@ -446,6 +451,7 @@ async def test_actual_worker_callback_cannot_rearm_or_dispatch_after_source_reti
     service = SimpleNamespace(enabled=False, armed=True, selected=True, epoch=1, vad=[b'private'],
         pending_audio=object(), speaking=False, last_audio=None, audio_allowed=True,
         attention=SimpleNamespace(candidate=lambda: None), observe=AsyncMock())
+    service.discard_audio = Mock(side_effect=service.vad.clear)
     scope = dict(previews=pool, time=SimpleNamespace(monotonic=lambda: 10, time=lambda: 1000),
         practice=SimpleNamespace(observe=Mock()),
         safety=SimpleNamespace(offer=None, clear=Mock(), sound_requested=lambda _: False),

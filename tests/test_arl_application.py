@@ -2,7 +2,9 @@
 import asyncio
 import copy
 import hashlib
+import os
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 import time
 
@@ -99,6 +101,70 @@ def application(tmp_path, *, allow_simulated=True):
     app = FridayApplication(lambda: tmp_path.resolve(), lambda: tmp_path.resolve(),
                             session_factory=lambda _: session, allow_simulated=allow_simulated)
     return app, session
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['deadline', 'cancelled', 'source_changed', 'current'])
+async def test_sdk_rechecks_task_at_send_after_waiting_for_session(outcome, tmp_path, monkeypatch):
+    source = os.environ.get('FRIDAY_TEST_ARL_SDK_INPUT')
+    if not source:
+        pytest.skip('需要显式提供冻结的 ARL SDK 输入')
+    client = pytest.importorskip('arl.client')
+    application_session = pytest.importorskip('arl.application_session')
+    assert Path(client.__file__).resolve().is_relative_to(Path(source).resolve())
+    assert Path(application_session.__file__).resolve().is_relative_to(Path(source).resolve())
+
+    def start(session):
+        session.connected = True
+        session.accepted = ['codex.text.plan.v1']
+
+    host = Session(tmp_path)
+    def rpc(_, method, params=None):
+        if method == 'application.tasks.submit.v1':
+            return host.submit(params['scenario_id'], params['input'], request_id=params['request_id'])
+        if method == 'application.tasks.get.v1':
+            return host.get(params['job_id'])
+        raise AssertionError(method)
+
+    monkeypatch.setattr(application_session.ApplicationSession, 'start', start)
+    monkeypatch.setattr(client.Client, 'rpc', rpc)
+    app = FridayApplication(lambda: tmp_path, lambda: tmp_path, allow_simulated=True)
+    app.start()
+    assert app.session is not None, app.error
+    submit = app.session.submit
+    entered = threading.Event()
+
+    def wait_for_session(*args, **kwargs):
+        entered.set()
+        return submit(*args, **kwargs)
+
+    monkeypatch.setattr(app.session, 'submit', wait_for_session)
+    current = threading.Event()
+    current.set()
+    try:
+        with app.session._lock:
+            task = asyncio.create_task(app.complete('voice_intent', 'synthetic input', request_id='guarded',
+                deadline=time.monotonic() + (2 if outcome == 'deadline' else 8), current=current.is_set))
+            assert await asyncio.to_thread(entered.wait, 1)
+            assert not host.submissions
+            if outcome == 'deadline':
+                with pytest.raises(ARLError, match='deadline_exceeded'):
+                    await task
+            if outcome == 'cancelled':
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            if outcome == 'source_changed':
+                current.clear()
+        if outcome == 'source_changed':
+            with pytest.raises(ARLError, match='discarded_model_task_changed'):
+                await task
+        if outcome == 'current':
+            result = await task
+            assert result['native_acknowledgements_verified'] and not result['device_authority']
+    finally:
+        await app.close()
+    assert host.submissions == (['guarded'] if outcome == 'current' else [])
 
 
 @pytest.mark.asyncio

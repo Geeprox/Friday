@@ -96,6 +96,9 @@ test('review services surface only the current worker report and distinguish pre
  for(const patch of [{owned:false},{capture_enabled:false},{state:'unavailable'}])
   assert.equal(check({sound:'running'},patch).rows.some(row=>row.review),false);
  assert.equal(check({visual:'constructor'}).rows.some(row=>row.review),false);
+ for(const [value,label] of [['standby','待命'],['reviewing','复核中'],['api_timeout','响应超时'],['quota_limited','额度受限']]){
+  assert.equal(check({visual:value,visual_provider:'decisions'}).rows.at(-1).text,'API · '+label);
+ }
 });
 
 test('attention prioritizes unreviewed incidents and excludes simulated/reviewed events',()=>{

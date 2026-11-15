@@ -52,10 +52,12 @@ class GamePresentation:
             self.views.clear()
             self.windows.clear()
 
-    def ready(self, scope):
+    def ready(self, scope, *, television=False, host=None):
         self.synchronize(scope)
         now = self.clock()
         return any(value['visible'] and value['ready'] and not value['closed'] and 0 <= now-value['at'] <= self.TTL
+                   and (not television or value['host'] is not None)
+                   and (host is None or value['host'] == host)
                    for value in self.views.values())
 
     def visible(self, scope):
@@ -72,11 +74,14 @@ class GamePresentation:
         now = self.clock()
         if not self.windows or not 0 <= now-self.windows[-1][1] < 1:
             self.windows.append((secrets.token_hex(16), now))
-        return dict(required=True, ready=self.ready(scope), context=self.context, window=self.windows[-1][0])
+        return dict(required=True, ready=self.ready(scope), television_ready=self.ready(scope, television=True),
+                    context=self.context, window=self.windows[-1][0])
 
-    def observe(self, scope, report):
+    def observe(self, scope, report, *, host=None):
         self.synchronize(scope)
         now, old = self.clock(), self.views.get(report.view_id)
+        if old and old['host'] != host:
+            raise ValueError('game_view_changed')
         if report.visible:
             if not any(token == report.window and 0 <= now-at <= self.WINDOW for token, at in self.windows):
                 raise ValueError('game_view_expired')
@@ -98,7 +103,8 @@ class GamePresentation:
                    for value in self.views.values()) >= self.MAX_LIVE:
                 raise ValueError('game_view_capacity')
         self.views[report.view_id] = dict(at=now, sequence=report.sequence, signature=signature,
-                                         visible=report.visible, ready=report.ready, closed=not report.visible)
+                                         visible=report.visible, ready=report.ready, closed=not report.visible,
+                                         host=host)
         self.handoff_at = None
         return self.reply(scope, report)
 

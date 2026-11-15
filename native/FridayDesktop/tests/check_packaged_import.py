@@ -9,6 +9,7 @@ import hashlib
 import importlib.abc
 import importlib.util
 import json
+import os
 import socket
 import sys
 from pathlib import Path
@@ -89,6 +90,9 @@ assert not any(isinstance(n, (ast.Assign, ast.AnnAssign)) and 'DesktopService(' 
 from starlette.responses import JSONResponse  # noqa: E402
 
 import homeplane.runtime_log as log  # noqa: E402
+from homeplane.embodied.paths import VISION  # noqa: E402
+from homeplane.embodied.sound_model import AppleSoundProcess  # noqa: E402
+from homeplane.embodied.vision_pipe import VisionProcess  # noqa: E402
 
 assert Path(log.__file__).resolve() == (PRODUCT / 'app/homeplane/runtime_log.py').resolve()
 checks = []
@@ -100,6 +104,24 @@ for code in ['control_cancelled_after_send', 'flow_operation_invalidated', 'rule
 assert log.fixed_code('generated-private-body-must-not-be-code') == 'unclassified'
 assert log.result_projection(JSONResponse({'code': 'generated-private-body-must-not-be-code'}, status_code=503)) == ('unavailable', 'unclassified')
 qr_check = qr_runtime_check()
+sound = AppleSoundProcess()
+sound_helper = APP / 'Contents/Helpers/friday-sound'
+sound_status = sound.readiness()
+assert sound.binary == sound_helper and sound_status['available']
+assert sound.process is None and not sound_status['labels_verified']
+vision_helper = APP / 'Contents/Helpers/friday-vision'
+assert vision_helper.is_file() and not vision_helper.is_symlink() and os.access(vision_helper, os.X_OK)
+vision = VisionProcess(VISION)
+assert Path(vision.executable) == vision_helper and vision.process is None
+# 视觉依赖为可选项。检查主、辅镜头的实际调用点，保留其运行模块的导入边界。
+for entry in ('worker.py', 'camera_recognition.py'):
+    source_tree = ast.parse((PRODUCT / 'app/homeplane/embodied' / entry).read_text())
+    assert any(isinstance(node, ast.ImportFrom) and (node.module or '').split('.')[-1] == 'paths'
+               and any(alias.name == 'VISION' and alias.asname is None for alias in node.names)
+               for node in ast.walk(source_tree))
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'VisionProcess'
+               and len(node.args) == 1 and isinstance(node.args[0], ast.Name) and node.args[0].id == 'VISION'
+               for node in ast.walk(source_tree))
 modules = {}
 for name, module in list(sys.modules.items()):
     path = getattr(module, '__file__', None)
@@ -116,6 +138,9 @@ result = {'phase': 'LOCAL_DEVELOPMENT_APP_SOURCE_IMPORT_BINDING_PASS',
           'python_version': sys.version.split()[0], 'backend_imported_only': True,
           'module_count': len(modules), 'modules': modules, 'generated_pure_projection_checks': checks,
           'game_qr_dependency': qr_check,
+          'sound_classifier': {'bundled': True, 'executable': True, 'process_started': False},
+          'vision_worker': {'bundled': True, 'primary_and_secondary': True,
+                            'executable': True, 'process_started': False},
           'external_project_source_fallback': False, 'external_python_environment': True,
           'service_app_ARL_or_ASGI_lifespan_constructed_or_started': 0,
           'private_config_credential_model_nativeSDK_childprocess_network_reads_or_calls': 0,

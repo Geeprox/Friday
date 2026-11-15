@@ -27,16 +27,23 @@ class Element{
  const find=(tag,text)=>all(root).find(n=>n.tagName===tag&&n.textContent===text),calls=[];
  const fakeEvent={id:'a'.repeat(32),at:1800000000,kind:'fall',simulated:true,status:'test',message:'测试播报',review:'unreviewed',announcement:{status:'paused'},frames:[],camera:null};
  let policy={enabled:false,announce:false,visual_review:false,sound_review:false,revision:0},soundSearch=false,events=[],interval,opened=[],setups=0,sound={available:true,state:'idle',supported_types:['crying']};
+ const camera='cam_1111111111';
+ let cloud={camera:null,available:true,cameras:[{id:camera,name:'示例摄像头'}]},loseReceipt=false;
  let reference={event_id:fakeEvent.id,code:'archive_capture_mapping_required',recordings:[]};
  const fetch=async(path,options)=>{const body=options.body&&JSON.parse(options.body);calls.push({path,body});
    let value;
    if(path.endsWith('/policy')){policy={...body,revision:policy.revision+1};if(!policy.sound_review)soundSearch=false;value=policy;}
    else if(path.endsWith('/sound-search')){assert.equal(body.expected_revision,policy.revision);soundSearch=body.enabled;value={enabled:soundSearch,revision:++policy.revision};}
+   else if(path.endsWith('/visual-cloud')){
+    assert.equal(body.expected_revision,policy.revision);assert.equal(body.allow_upload,body.camera!==null);
+    cloud={...cloud,camera:body.camera};value={camera:cloud.camera,revision:++policy.revision};
+    if(loseReceipt)throw Error('response_lost');
+   }
    else if(path.endsWith('/review')){events[0]={...events[0],review:body.review};value=events[0];}
    else if(path.endsWith('/test')){events=[fakeEvent];value=fakeEvent;}
    else if(path.endsWith('/events'))value={events};
    else if(path.endsWith('/recordings'))value=reference;
-   else value={policy,worker:{cameras:[]},visual_review:{available:true,state:'idle'},sound_review:sound,sound_search:soundSearch,capabilities:[{name:'疑似跌倒',status:'experimental',basis:'骨骼时序'},{name:'粗暴照护',status:'unavailable',basis:'尚未接入'}]};
+   else value={policy,worker:{cameras:[]},visual_review:{available:true,state:'idle',progress:cloud.camera?'standby':'waiting_input'},visual_cloud:cloud,sound_review:sound,sound_search:soundSearch,capabilities:[{name:'疑似跌倒',status:'experimental',basis:'骨骼时序'},{name:'粗暴照护',status:'unavailable',basis:'尚未接入'}]};
    return {ok:true,json:async()=>value};
  };
  const document={head,createElement:t=>new Element(t),getElementById:id=>all(head).find(n=>n.attrs.id===id),get activeElement(){return focusedElement;}};
@@ -54,6 +61,23 @@ class Element{
  const visualOn=find('button','开启画面复核');
  assert(visualOn);assert.equal(visualOn.disabled,false);assert.equal(visualOn.attrs['aria-checked'],'false');
  await visualOn.onclick();assert.equal(policy.visual_review,true);
+ const cloudField=all(root).find(n=>n.attrs.id==='safety-cloud-camera-options');
+ const cloudSelect=all(root).find(n=>n.attrs.id==='safety-cloud-camera');
+ const cloudApply=find('button','启用 API 复核');
+ assert.equal(cloudField.hidden,true);
+ find('button','改用 API').click();
+ assert.equal(focusedElement,cloudSelect);
+ assert.equal(cloudField.hidden,false);
+ assert.equal(cloudApply.disabled,true);
+ cloudSelect.value=camera;cloudSelect.onchange();assert.equal(cloudApply.disabled,false);
+ assert(!calls.some(c=>c.path.endsWith('/visual-cloud')));
+ loseReceipt=true;cloudApply.focus();await cloudApply.onclick();loseReceipt=false;
+ assert.equal(cloudField.hidden,true);assert.equal(focusedElement.textContent,'更换摄像头');
+ assert(find('span','API 复核 · 示例摄像头'));assert(find('p','等待异常线索。'));
+ assert.equal(policy.visual_review,true);
+ assert.equal(calls.filter(c=>c.path.endsWith('/visual-cloud')).length,1);
+ await find('button','改用本机').onclick();assert(find('span','本机复核'));
+ assert.equal(policy.visual_review,true);
  await find('button','开启声音复核').onclick();assert.equal(policy.sound_review,true);
  assert.equal(find('button','关闭声音复核').attrs['aria-checked'],'true');assert(find('p','已开启 · 疑似哭声'));
  const search=find('button','开启异响后环视');assert.equal(search.hidden,false);assert.equal(search.attrs['aria-checked'],'false');

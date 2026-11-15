@@ -1,9 +1,11 @@
 """Build only this ordinary TV viewer with the existing local Android toolchain."""
 from pathlib import Path
-import argparse,hashlib,json,os,subprocess,zipfile
+import argparse,hashlib,json,os,subprocess,zipfile,xml.etree.ElementTree as ET
 
 ROOT=Path(__file__).resolve().parents[2]
 SOURCE=ROOT/'native/FridayTV/android'
+manifest=SOURCE/'AndroidManifest.xml'
+version=ET.parse(manifest).getroot().attrib['{http://schemas.android.com/apk/res/android}versionName']
 HERE=ROOT/'.artifacts/embodied-migration/tv'
 SDK=ROOT/'.artifacts/embodied-toolchain/android'
 JAVA=ROOT/'.artifacts/embodied-toolchain/jdk'
@@ -38,17 +40,18 @@ for name in ['classes','dex']:
     if folder.is_symlink():raise RuntimeError('build_symlink_refused')
     if folder.exists():shutil.rmtree(folder)
     folder.mkdir()
+run(aapt,'compile','--dir',SOURCE/'res','-o',BUILD/'resources.zip')
+run(aapt,'link','--auto-add-overlay','-o',BUILD/'resources.apk','-I',android,'--manifest',manifest,
+    '--java',GENERATED,'-R',BUILD/'resources.zip')
 run(JAVA/'bin/javac','--release','8','-classpath',android,'-d',BUILD/'classes',*sorted(GENERATED.rglob('*.java')))
 run(d8,'--min-api','23','--lib',android,'--output',BUILD/'dex',*sorted((BUILD/'classes').rglob('*.class')))
-run(aapt,'compile','--dir',SOURCE/'res','-o',BUILD/'resources.zip')
-run(aapt,'link','--auto-add-overlay','-o',BUILD/'resources.apk','-I',android,'--manifest',SOURCE/'AndroidManifest.xml','-R',BUILD/'resources.zip')
 with zipfile.ZipFile(BUILD/'resources.apk') as source,zipfile.ZipFile(BUILD/'unsigned.apk','w',zipfile.ZIP_DEFLATED) as out:
     for item in source.infolist():out.writestr(item,source.read(item.filename))
     out.write(BUILD/'dex/classes.dex','classes.dex')
 run(align,'-f','4',BUILD/'unsigned.apk',BUILD/'aligned.apk')
 store=PRIVATE/'camera-signing.p12'
 if not store.exists():raise RuntimeError('existing_viewer_signing_key_required')
-apk=HERE/'friday-tv-3.2.apk'
+apk=HERE/f'friday-tv-{version}.apk'
 run(signer,'sign','--ks',store,'--ks-pass','pass:local-camera-demo','--key-pass','pass:local-camera-demo','--out',apk,BUILD/'aligned.apk')
 verify=run(signer,'verify','--verbose',apk)
 apk.chmod(0o600)
@@ -57,7 +60,7 @@ badging=run(aapt,'dump','badging',apk)
 assert "name='local.tv.camera'" in badging
 assert "name='android.permission.INTERNET'" in permissions
 assert permissions.count('uses-permission:')==1
-report={'package':'local.tv.camera','version':'3.2','permissions':['android.permission.INTERNET'],
+report={'package':'local.tv.camera','version':version,'permissions':['android.permission.INTERNET'],
     'sha256':hashlib.sha256(apk.read_bytes()).hexdigest(),'bytes':apk.stat().st_size,'signature_verified':True,
     'installed':False,'real_camera_detection_verified':False,
     'source_sha256':{str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest()

@@ -62,7 +62,8 @@ class PetTracks:
             boxes = [{key: row['box'][key] for key in ('x', 'y', 'w', 'h', 'confidence')}
                      for row in rows if row['species'] == species]
             tracks = tracker.update(dict(boxes=boxes, poses=[]), now, transform=transform,
-                                    camera_moving=camera_moving)
+                                    camera_moving=camera_moving,
+                                    occluders=[row['box'] for row in rows if row['species'] != species])
             result.extend(dict(id=f"{species}:{self.generation}:{track['id']}", species=species,
                                box=dict(track['box']), motion=track['motion'],
                                tracking=dict(track['tracking'])) for track in tracks)

@@ -7,17 +7,29 @@ from .video_relay import VideoRelay
 
 class CameraWall:
     def __init__(self, cameras, *, clock=time.time):
-        self.cameras = tuple(dict(id=c['id'], name=c['name'], room=c['room']) for c in cameras)
+        self.cameras = ()
         self.clock = clock
         self.frames = {}
+        self.preview_counts = {}
         self.stills = {}
-        self.epochs = {c['id']: 0 for c in cameras}
-        self.video = {c['id']: VideoRelay(clock=clock) for c in cameras}
+        self.epochs = {}
+        self.video = {}
         self.observations = {}
         self.labels = {}
         self.toasts = {}
         self.gestures = {}
         self.toast_sequence=0
+        for camera in cameras:
+            self.register(camera)
+
+    def register(self, camera):
+        camera_id = camera['id']
+        if camera_id in self.epochs:
+            return
+        self.cameras += (dict(id=camera_id, name=camera['name'], room=camera['room']),)
+        self.epochs[camera_id] = 0
+        self.preview_counts[camera_id] = 0
+        self.video[camera_id] = VideoRelay(clock=self.clock)
 
     def begin(self, camera):
         self.epochs[camera] += 1
@@ -61,6 +73,7 @@ class CameraWall:
         old = self.frames.get(camera)
         if old and old[1] >= at:return
         self.frames[camera] = (jpeg, at)
+        self.preview_counts[camera] += 1
         # Reuse the JPEG already encoded for perception. This fallback needs
         # no extra encoder, source connection or recognition delay.
         full=packet.get('jpeg');captured=packet.get('received_at')
@@ -111,6 +124,11 @@ class CameraWall:
         value = self.frames.get(camera)
         if not value or not 0 <= self.clock()-value[1] < 2:return None
         return value
+
+    def preview_metrics(self, camera, *, source_current=True):
+        return dict(capture_epoch=self.epochs.get(camera) if source_current else None,
+                    preview_frames=self.preview_counts.get(camera),
+                    preview_fresh=source_current and self.frame(camera) is not None)
 
     def still(self,camera):
         value=self.stills.get(camera)

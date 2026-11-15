@@ -1,0 +1,214 @@
+"""桌面后台与独立米家局域网进程之间的有界管道。"""
+
+import asyncio
+import json
+import os
+import re
+import time
+
+FAMILY = re.compile(r'[a-f0-9]{64}')
+DID = re.compile(r'(?:[0-9]{1,32}|blt\.[0-9]\.[a-z0-9]{1,64})')
+
+
+class MijiaLanClient:
+    def __init__(self, current_family, *, current_inventory=lambda: None):
+        self.current_family = current_family
+        self.current_inventory = current_inventory
+        self.task = None
+        self.process = None
+        self.family = None
+        self.inventory = None
+        self.routes = frozenset()
+        self._route_tokens = {}
+        self.connected = False
+        self.push = 0
+        self.updated_at = None
+        self.transport_generation = None
+        self.sequence = 0
+        self.io = asyncio.Lock()
+
+    def start(self):
+        if self.task is None:
+            self.task = asyncio.create_task(self._watch(), name='friday-mijia-lan')
+
+    def ready(self, family, did=None):
+        return (self.family == family == self.current_family() and self.inventory == self.current_inventory()
+                and self.process is not None
+                and self.process.returncode is None and self.connected
+                and self.updated_at is not None and 0 <= time.monotonic() - self.updated_at <= 12
+                and (did is None or did in self.routes))
+
+    def status(self):
+        live = self.ready(self.current_family())
+        return {'connected': live, 'control_devices': len(self.routes) if live else 0,
+                'push_capable': self.push if live else 0}
+
+    def route_token(self, family, did):
+        return self._route_tokens.get(did) if self.ready(family, did) else None
+
+    def _update_routes(self, routes, connected, push):
+        # 仅延续仍在线且路径未消失的设备，重连不复用断线前的读回。
+        previous = self._route_tokens if self.ready(self.family) else {}
+        self._route_tokens = {did: previous.get(did) or object() for did in routes} if connected else {}
+        self.routes = frozenset(routes)
+        self.connected, self.push, self.updated_at = connected, push, time.monotonic()
+
+    async def _open(self, family, inventory=None):
+        from .embodied.paths import DATA, PROJECT, PYTHON
+
+        self.process = await asyncio.create_subprocess_exec(
+            str(PYTHON), '-B', '-m', 'homeplane.embodied.mijia_lan', cwd=PROJECT,
+            env=dict(os.environ, PYTHONPATH=str(PROJECT), FRIDAY_EMBODIED_DATA=str(DATA)),
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, limit=64 * 1024,
+        )
+        async with asyncio.timeout(20):
+            reply = json.loads(await self.process.stdout.readline())
+        if reply != {'ready': True, 'family': family}:
+            raise ValueError('mijia_lan_unavailable')
+        self.family = family
+        self.inventory = inventory
+
+    async def _close_process(self):
+        proc, self.process = self.process, None
+        self.family = self.updated_at = None
+        self.inventory = None
+        self.transport_generation = None
+        self.routes, self.connected, self.push = frozenset(), False, 0
+        self._route_tokens.clear()
+        if proc is None or proc.returncode is not None:
+            return
+        proc.stdin.close()
+        try:
+            await asyncio.wait_for(proc.wait(), 3)
+        except TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+
+    async def _call(self, request, family, *, guard=None):
+        async with self.io:
+            proc = self.process
+            if (proc is None or proc.returncode is not None or self.family != family
+                    or family != self.current_family() or self.inventory != self.current_inventory()):
+                raise ValueError('mijia_lan_unavailable')
+            if guard is not None and not guard():
+                raise ValueError('mijia_permission_changed')
+            health = request == {'routes': True}
+            expected_generation = self.transport_generation
+            if not health and expected_generation is None:
+                raise ValueError('mijia_lan_unavailable')
+            self.sequence += 1
+            ident = self.sequence
+            try:
+                packet = {**request, 'id': ident, 'family': family,
+                          'transport_generation': None if health else expected_generation}
+                proc.stdin.write(json.dumps(packet).encode() + b'\n')
+                await proc.stdin.drain()
+                # 若上一条读取被上层超时取消，它的迟到回包只按编号丢弃。
+                for _ in range(16):
+                    raw = await proc.stdout.readline()
+                    if not raw or len(raw) > 64 * 1024:
+                        break
+                    reply = json.loads(raw)
+                    if reply.get('id') == ident:
+                        if self.process is not proc:
+                            break
+                        generation = reply.pop('transport_generation', None)
+                        if (type(generation) is not int or generation < 0
+                                or expected_generation is not None and generation < expected_generation):
+                            break
+                        if generation != expected_generation:
+                            self.transport_generation = generation
+                            self._route_tokens.clear()
+                            self.connected = False
+                            if not health:
+                                break
+                        return reply
+                    if type(reply.get('id')) is not int or reply['id'] >= ident:
+                        break
+            except (OSError, ValueError, AttributeError):
+                pass
+            if self.process is proc:
+                self.connected = False
+            raise ValueError('mijia_lan_unavailable')
+
+    async def request(self, request, *, family, guard=None):
+        did = request.get('did')
+        route = self.route_token(family, did)
+        if route is None:
+            raise ValueError('mijia_lan_unavailable')
+
+        def current():
+            return self.route_token(family, did) is route and (guard is None or guard())
+
+        read_only = request.get('cover') == 'read' or not {'cover', 'power', 'value', 'hvac_mode'}.intersection(request)
+        async with asyncio.timeout(1.6 if read_only else 5):
+            reply = await self._call(request, family, guard=current)
+        if self.route_token(family, did) is not route:
+            raise ValueError('mijia_lan_unavailable')
+        if 'error' in reply:
+            if reply['error'] in ('mijia_property_unsupported', 'mijia_permission_changed'):
+                raise ValueError(reply['error'])
+            # 本地候选失效后，让下一次用户操作重新选择仍可用的渠道。
+            self.routes = self.routes.difference({did})
+            self._route_tokens.pop(did, None)
+            raise ValueError('mijia_lan_unavailable')
+        return reply
+
+    async def property_notifications(self, family, watched):
+        if not self.ready(family) or self.io.locked():
+            return []
+        async with asyncio.timeout(.85):
+            reply = await self._call({'property_watches': watched}, family)
+        changes = reply.get('changes')
+        if not isinstance(changes, list) or len(changes) > len(watched):
+            return []
+        return [tuple(row) for row in changes if isinstance(row, list) and row in watched]
+
+    async def _refresh_routes(self, family):
+        async with asyncio.timeout(2.0):
+            row = await self._call({'routes': True}, family)
+        ids = row.get('routes')
+        if (not isinstance(ids, list) or len(ids) > 512
+                or not all(isinstance(did, str) and DID.fullmatch(did) for did in ids)
+                or len(set(ids)) != len(ids)
+                or type(row.get('push')) is not int or not 0 <= row['push'] <= len(ids)
+                or type(row.get('connected')) is not bool):
+            raise ValueError('mijia_lan_unavailable')
+        self._update_routes(ids, row['connected'], row['push'])
+
+    async def _watch(self):
+        try:
+            while True:
+                family = self.current_family()
+                if not isinstance(family, str) or not FAMILY.fullmatch(family):
+                    if self.process is not None:
+                        await self._close_process()
+                    await asyncio.sleep(2)
+                    continue
+                try:
+                    # 健康查询不占用正在等待设备回执的管道，也不因操作繁忙重启进程。
+                    if self.io.locked():
+                        await asyncio.sleep(.25)
+                        continue
+                    inventory = self.current_inventory()
+                    if (self.family != family or self.process is None or self.process.returncode is not None
+                            or self.inventory != inventory):
+                        await self._close_process()
+                        await self._open(family, inventory)
+                    await self._refresh_routes(family)
+                    await asyncio.sleep(3)
+                except (OSError, ValueError, TimeoutError):
+                    await self._close_process()
+                    await asyncio.sleep(8)
+        finally:
+            await self._close_process()
+
+    async def close(self):
+        if self.task is not None:
+            self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)
+            self.task = None

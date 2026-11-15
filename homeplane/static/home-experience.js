@@ -20,7 +20,7 @@ const api=async(path,body,options={})=>{const r=await fetch(path,{...options,...
 const names={humidifier:'除湿与加湿',water_heater:'热水',trigger:'动作按键',light:'灯光',switch:'开关',cover:'窗帘',climate:'空调',camera:'摄像头',fan:'风扇',vacuum:'清洁',sensor:'环境',binary_sensor:'传感器',media_player:'影音',lock:'门锁'};
 const marks={humidifier:'temperature',water_heater:'temperature',trigger:'adjustments-horizontal',light:'bulb',switch:'plug',cover:'adjustments-horizontal',climate:'air-conditioning',camera:'video',fan:'devices',vacuum:'devices',sensor:'temperature',binary_sensor:'devices',media_player:'player-play',lock:'door'};
 const visualMark=d=>({ceiling_vent:'ceiling-vent',power_supply:'plug',led_strip:'light-strip',pendant:'pendant',downlight:'downlight',spotlight:'spotlight'}[d.presentation?.fixture]||marks[d.kind]||'devices');
-const modeNames={off:'关闭',cool:'制冷',heat:'制热',auto:'自动',heat_cool:'自动冷暖',dry:'除湿',fan_only:'送风',on:'开启',open:'打开',closed:'关闭',opening:'正在打开',closing:'正在关闭',locked:'已上锁',unlocked:'未上锁',playing:'正在播放',paused:'已暂停',idle:'待机',buffering:'正在缓冲'};
+const modeNames={off:'关闭',cool:'制冷',heat:'制热',auto:'自动',heat_cool:'自动冷暖',dry:'除湿',fan_only:'送风',on:'开启',open:'打开',closed:'关闭',opening:'正在打开',closing:'正在关闭',stopped:'已停止',position_unavailable:'行程待确认',locked:'已上锁',unlocked:'未上锁',playing:'正在播放',paused:'已暂停',idle:'待机',buffering:'正在缓冲'};
 const messageNames={reported_match:'已更新',accepted:'已发送，正在等待设备返回',unknown_outcome:'已发送，设备尚未回报结果',unauthorized:'设备连接状态已变化，请刷新后重试',stale_input:'正在更新设备状态，请稍后再试',source_conflict:'设备状态刚刚变化，请重试',unsupported:'设备不支持这项操作',offline_dependency:'家庭连接已中断',expired_request:'操作已过期'};
 const stateText=c=>!c.available?'设备离线':modeNames[c.value]??String(c.value??'未返回状态');
 export function mountExperience(root,{page,go,legacyConnections,legacyRules,snapshot,openEvidenceRecording,archiveSettings=()=>{},requestArchiveSettings=false,onArchiveSettingsOpened=()=>{},developerMode=false,setDeveloperMode=()=>{},attentionId=null,recordingCamera=null,onOpenArchiveSettings}){
@@ -36,9 +36,10 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  let alive=true,data=null,room='全部',category='全部',query='',selected=null,model=null,timer=null,busy=false,recordings=null,recordingFolder='',recordingDate='',interactions=null;
  let loadVersion=0,loadAbort=null,hasDrawn=false;
  const view=add(h('div',null,{class:'experience','data-page':page}));root.append(view);
- let listSlot=null,inspectorSlot=null,statsSlot=null,modelSlot=null,spatialScene=null,spacePanel=null,spatialRoom=null,spatialDevice=null,placementNotice=null,placementSaving=false;
+ let listSlot=null,inspectorSlot=null,modelSlot=null,spatialScene=null,spacePanel=null,spatialRoom=null,spatialDevice=null,placementNotice=null,placementSaving=false,sourceBanner=null;
  let spatialTrigger=null,inspectorTrigger=null;
  let previewStop=null;
+ let discoverySlot=null, connectingCamera=null;
  const cameraStates=new Map(),requestedPositions=new Map();
  async function readCamera(id,fresh=false){const saved=cameraStates.get(id);if(!fresh&&saved&&Date.now()-saved.at<15000)return saved.value;const value=await api(`/api/embodied/cameras/${id}/power`);cameraStates.set(id,{value,at:Date.now()});return value;}
  async function wakeCamera(id){const state=await readCamera(id,true);if(state.enabled)return {...state,status:'reported_match'};const value=await api(`/api/embodied/cameras/${id}/power`,{enabled:true,revision:state.revision,event_id:crypto.randomUUID()});cameraStates.delete(id);if(value.status==='reported_match')cameraStates.set(id,{value,at:Date.now()});return value;}
@@ -52,7 +53,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   if(d.kind==='trigger')return d.triggers?.some(t=>t.role==='unknown')?'按键模式待确认':`${d.triggers?.length||0} 个动作按键`;
   if(d.kind==='lock'){const r=d.readings.find(r=>r.available!==false&&(/门状态|锁定状态/.test(r.name)||r.device_class==='lock'));return r?readingValue(r):'锁定状态未知';}
   if(d.controls.length&&d.triggers?.length)return `${d.controls.filter(c=>c.available&&c.value==='on').length} 路开启 · ${d.triggers.length} 个动作按键`;
-  if(d.controls.length===1){const c=d.controls[0];if(c.attributes?.feedback_quality==='unreliable')return '叶片角度待确认';const state=stateText(c);if(c.kind==='cover'&&c.attributes.current_position!=null)return `${state} · ${c.attributes.current_position}%`;if(['climate','water_heater'].includes(c.kind)&&c.attributes.current_temperature!=null)return `${state} · 室温 ${c.attributes.current_temperature}°`;return state;}
+  if(d.controls.length===1){const c=d.controls[0];if(c.attributes?.feedback_quality==='unreliable')return '叶片角度待确认';const state=stateText(c);if(c.kind==='cover'&&c.attributes.current_position!=null)return `${state} · ${c.attributes.current_position}%`;if(c.kind==='cover'&&c.attributes.target_position!=null)return `${state} · 目标 ${c.attributes.target_position}%`;if(['climate','water_heater'].includes(c.kind)&&c.attributes.current_temperature!=null)return `${state} · 室温 ${c.attributes.current_temperature}°`;return state;}
   if(d.controls.length)return `${d.controls.filter(c=>c.available&&c.value==='on').length} 路开启`+(d.triggers?.length?` · ${d.triggers.length} 个动作按键`:'');
   const rank=r=>/电池|电量|battery|异常|故障/i.test(r.name)||r.device_class==='battery'?80:({occupancy:0,motion:0,moisture:0,door:0,opening:0,smoke:0,temperature:1,humidity:2,illuminance:3,carbon_dioxide:3,pm25:3}[r.device_class]??({'°C':1,'%':2,'lx':3,'ppm':3,'µg/m³':3,'dB':4,'B/s':5}[r.unit]??(/有人无人|门状态|漏水/.test(r.name)?0:50)));
   const seen=new Set(),readings=d.readings.filter(r=>r.available!==false&&r.value!=null).sort((a,b)=>rank(a)-rank(b)).filter(r=>{const key=String(r.value)+':'+r.unit;if(seen.has(key))return false;seen.add(key);return true;});
@@ -66,6 +67,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  }
  function drawCameras(){
   recognitionDebug?.dispose();cameraPrivacy?.dispose();view.replaceChildren();
+  discoverySlot=h('div');view.append(discoverySlot);drawDiscovery();
   const layout=h('div',null,{class:'product-device-layout camera-device-layout'});listSlot=h('div');inspectorSlot=h('aside',null,{class:'product-inspector',id:'device-detail-panel',hidden:''});add(layout,listSlot,inspectorSlot);view.append(layout);const cameras=data.devices.filter(d=>d.kind==='camera');listSlot.append(tiles(cameras));if(!cameras.length)listSlot.append(add(h('div',null,{class:'product-empty'}),ico('video'),h('h2','还没有接入摄像头'),h('p','接入后可以查看画面、使用语音与动作控制。'),btn('接入摄像头',()=>go('Settings'))));
   view.append(add(h('section',null,{class:'camera-teaching-link'}),ico('hand'),add(h('div'),h('h2','手势与动作教学'),h('p','看动作示意，走到镜头前试一试。')),btn('开始体验',()=>{try{sessionStorage.setItem('Friday.interactionMode','gestures');}catch(_){}go('Interaction');})));
   cameraPrivacy=mountCameraPrivacy(view);
@@ -87,7 +89,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    if(!alive||version!==loadVersion)return;
    data=next;
    for(const d of data.devices)for(const c of d.controls)if(requestedPositions.has(c.id))c.attributes.requested_position=requestedPositions.get(c.id);
-   document.dispatchEvent(new CustomEvent('Friday.homeStatus',{detail:{generated_at:next.generated_at,connected:next.connected,simulated:next.simulated,control_count:next.control_count}}));
+   document.dispatchEvent(new CustomEvent('Friday.homeStatus',{detail:{generated_at:next.generated_at,connected:next.connected,simulated:next.simulated,control_count:next.control_count,source:next.source}}));
    if(initial||!hasDrawn){draw();hasDrawn=true;if(page==='Devices'){try{const id=sessionStorage.getItem('Friday.deviceFocus');sessionStorage.removeItem('Friday.deviceFocus');const target=data.devices.find(d=>d.id===id);if(target)inspect(target);}catch(_){}}}else update();
   }catch(e){
    if(!alive||version!==loadVersion)return;
@@ -109,7 +111,13 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   if(caps.has('light.color_temperature')&&c.value==='on')slider('色温',caps.get('light.color_temperature'),c.attributes.color_temp_kelvin,'light.color_temperature','color_temp_kelvin',v=>v+' K');
   const angular=c.attributes?.position_semantics==='slat_angle';if(angular)block.append(mainDeviceControls({id:c.id,name:c.name,kind:c.kind,controls:[c]},{send:control,busy}));
   if(caps.has('cover.position')&&!angular){
-   const row=h('div',null,{class:'segmented'});for(const[v,label]of [[0,'关闭'],[50,'半开'],[100,'打开']]){const b=btn(label,()=>control(c,'cover.position',{position:v},b));b.disabled=!c.available;row.append(b);}block.append(row);slider('开合程度',caps.get('cover.position'),c.attributes.current_position,'cover.position','position',v=>v+'%');
+   const position=caps.get('cover.position'),row=h('div',null,{class:'segmented'});
+   for(const[v,label]of [[0,'关闭'],[50,'半开'],[100,'打开']]){
+    if(v % (position.step||1)!==0)continue;
+    const b=btn(label,()=>control(c,'cover.position',{position:v},b));b.disabled=!c.available;row.append(b);
+   }
+   block.append(row);const current=c.attributes.current_position,target=c.attributes.target_position;
+   slider(current==null&&target!=null?'目标开合程度':'开合程度',position,current??target,'cover.position','position',v=>v+'%');
   }
   if(caps.has('cover.state')&&!caps.has('cover.position')){const row=h('div',null,{class:'segmented'});for(const[state,label]of [['closed','关闭'],['open','打开']]){const b=btn(label,()=>control(c,'cover.state',{state},b));b.disabled=!c.available;row.append(b);}block.append(row);}
   if(!angular&&caps.get('cover.state')?.choices?.includes('stopped')){const stop=btn('停止',()=>control(c,'cover.state',{state:'stopped'},stop));stop.disabled=!c.available;block.append(stop);}
@@ -136,6 +144,9 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  function cameraPanel(d,slot,{start=false}={}){
   stopPreview();
   const endpoint='/api/embodied/cameras/'+d.id;
+  const canSetPower=d.camera?.power_writable!==false&&!d.camera?.preview_only;
+  const canAim=d.camera?.can_takeover!==false;
+  let interactionSetting=null;
   let power=null,pending=false,viewing=false,previewEpoch=0,previewTimer=null,previewToken=null;
   let modePending=false,directionPending=false,followReport=null,cameraControl=null,previousIntent=null;
   let modeVersion=0,pollSequence=0,appliedPoll=0;
@@ -168,6 +179,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const live=()=>viewing&&hasLiveFrame();
   const surveyControl=()=>cameraControl?.mode==='survey'?cameraControl:null;
   const surveying=()=>!!surveyControl()&&!cameraControl.survey_result&&cameraControl.phase!=='survey_finished';
+  const patrolControl=()=>cameraControl?.mode==='patrol'?cameraControl:null;
   const selectingMode=()=>['person_target','pet_target'].includes(cameraControl?.mode);
   const setStatus=value=>{if(status.textContent!==value)status.textContent=value;};
   const release=token=>{if(token)void api(endpoint+'/preview/stop',{token}).catch(()=>{});};
@@ -215,21 +227,23 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    cameraControl=previousIntent=null;
   }
   function syncControls(){
+   const previewOnly=d.camera?.preview_only===true;
    workspace.setAttribute('data-viewing',String(viewing));
    workspace.setAttribute('data-picking',String(!!picker));
-   liveControls.hidden=!viewing||!!picker;
-   watch.textContent=viewing?'停止查看':power?.enabled===false?'打开镜头并查看':'查看实时画面';
+   liveControls.hidden=previewOnly||!viewing||!!picker;
+   watch.textContent=viewing?'停止查看':canSetPower&&power?.enabled===false?'打开镜头并查看':'查看实时画面';
    watch.classList.toggle('primary',!viewing);
-   watch.disabled=!viewing&&(pending||!power);
-   close.hidden=power?.enabled!==true;
+   watch.disabled=!viewing&&(pending||!power||!canSetPower&&!power.enabled);
+   close.hidden=!canSetPower||power?.enabled!==true;
    close.disabled=pending;
-   refresh.hidden=Boolean(power);
+   refresh.hidden=Boolean(power)&&(power.enabled||canSetPower);
    refresh.disabled=pending;
    powerStatus.textContent=power?.enabled===true?'镜头已开启':power?.enabled===false?'镜头已关闭':pending?'正在读取…':'镜头状态待确认';
    const frameCurrent=live();
    const recovering=followReport?.recognition==='recovering';
    const focused=globalThis.document?.activeElement;
-   const canStart=frameCurrent&&!recovering&&followReport?.recognition_enabled!==false;
+   const canStart=canAim&&frameCurrent&&!recovering&&followReport?.recognition_enabled!==false
+    &&(followReport?.primary||followReport?.manual_control!==false);
    const canPick=canStart&&followReport?.follow_target_available===true;
    targetToggle.hidden=!canPick;
    targetToggle.disabled=modePending||directionPending||!!picker;
@@ -254,17 +268,22 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     b.title=recovering?'感知恢复中':!frameCurrent?'等待实时画面':followReport?.recognition_enabled===false?'当前镜头未开启识别':unsupported?'当前识别服务暂不支持宠物跟随':'';
     b.setAttribute('aria-pressed',String(active&&!retry));
    }
-   const report=surveyControl(),running=surveying();
+   const patrol=patrolControl(),report=surveyControl()||patrol,running=surveying();
+   const sweeping=running||patrol?.scheduled_survey_active===true;
+   const canSurvey=canStart&&cameraControl?.owner==='friday'&&cameraControl.phase!=='game_held';
    const total=report?.survey_total_steps,confirmed=report?.survey_confirmed_moves;
-   const hasProgress=Number.isSafeInteger(total)&&total>0&&Number.isSafeInteger(confirmed)&&confirmed>=0&&confirmed<=total;
-   const surveyHadFocus=globalThis.document?.activeElement===survey;
-   surveyRow.hidden=!!picker||(!report&&(!viewing||followReport?.recognition_enabled===false));
+   const hasProgress=(!patrol||sweeping||!!patrol.survey_result)&&Number.isSafeInteger(total)&&total>0
+    &&Number.isSafeInteger(confirmed)&&confirmed>=0&&confirmed<=total;
+   surveyRow.hidden=!canAim||!!picker||(!report&&(!viewing||followReport?.recognition_enabled===false
+    ||!followReport?.primary&&followReport?.manual_control===false));
    surveyReadback.hidden=!report;
    const interrupted=report?.survey_interruption==='sound'?'本轮因异响结束':'本轮巡视未完成';
    let surveyText=({complete:'本轮巡视完成',interrupted}[report?.survey_result])||report?.reason||'';
-   if(running&&statusReadFailed)surveyText='巡视状态待更新';
-   else if(running&&recovering)surveyText='等待感知恢复';
-   else if(running&&followReport&&!hasLiveFrame())surveyText='等待画面恢复';
+   if(patrol&&!sweeping)surveyText=patrol.survey_result?surveyText+' · 每 30 分钟':'已开启 · 每 30 分钟';
+   if(report&&statusReadFailed)surveyText='巡视状态待更新';
+   else if((sweeping||patrol)&&recovering)surveyText='等待感知恢复';
+   else if((sweeping||patrol)&&followReport&&!hasLiveFrame())surveyText='等待画面恢复';
+   else if(patrol&&sweeping&&patrol.phase!=='review_held'&&patrol.survey_interruption!=='sound')surveyText='定时巡视中';
    if(surveyStatus.textContent!==surveyText)surveyStatus.textContent=surveyText;
    surveyTrack.hidden=!hasProgress;
    if(hasProgress){
@@ -273,11 +292,16 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     surveyCount.textContent=confirmed+' / '+total;
     surveyProgress.setAttribute('aria-valuetext',confirmed+' / '+total+' 个视角已确认');
    }
-   survey.hidden=!viewing&&!running;
+   survey.hidden=!!patrol||!viewing&&!running;
    survey.textContent=running?'停止巡视':'巡视一轮';
-   modeAvailability(survey,running?!!report.intent_revision:canStart&&cameraControl?.owner==='friday'&&cameraControl.phase!=='game_held');
-   if(surveyHadFocus&&(surveyRow.hidden||survey.hidden))watch.focus({preventScroll:true});
+   modeAvailability(survey,!patrol&&(running?!!report.intent_revision:canSurvey));
+   scheduledSurvey.hidden=!patrol&&(!viewing||running);
+   scheduledSurvey.textContent=patrol?'停止定时巡视':'每 30 分钟巡视';
+   modeAvailability(scheduledSurvey,patrol?!!patrol.intent_revision:canSurvey&&!running);
+   if((focused===survey&&(surveyRow.hidden||survey.hidden))
+      ||(focused===scheduledSurvey&&(surveyRow.hidden||scheduledSurvey.hidden)))watch.focus({preventScroll:true});
    if(recovering&&(focused===targetToggle||focused===survey&&survey.disabled
+      ||focused===scheduledSurvey&&scheduledSurvey.disabled
       ||followButtons.some(([,control])=>control===focused)))watch.focus({preventScroll:true});
    for(const b of directions)b.disabled=directionPending||!!picker||!frameCurrent||!(followReport?.primary||followReport?.manual_control);
   }
@@ -288,7 +312,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     const result=await api(endpoint+'/power');
     if(!owns())return;
     power=result;
-    if(!viewing)setStatus(power.enabled?'尚未查看':'镜头已关闭');
+    if(!viewing)setStatus(power.enabled?'尚未查看':!canSetPower?'请在米家打开镜头，再刷新状态':'镜头已关闭');
    }catch(_){
     if(owns()){power=null;setStatus('暂时无法读取镜头状态');}
    }finally{
@@ -303,7 +327,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     void poll();
     return;
    }
-   if(pending||!power)return;
+   if(pending||!power||!canSetPower&&!power.enabled)return;
    const epoch=++previewEpoch;
    pending=true;syncControls();
    try{
@@ -491,7 +515,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     if(!current(epoch))return;
     if(result.mode!==mode)throw Error('camera_mode_unconfirmed');
     modeVersion++;
-    const reason={auto:'等待人物',pets:'等待宠物',survey:'准备巡视',hold:'巡视已停止'}[mode];
+    const reason={auto:'等待人物',pets:'等待宠物',survey:'准备巡视',patrol:'定时巡视已开启',hold:'巡视已停止'}[mode];
     previousIntent=result.intent_revision&&prior&&result.intent_revision!==prior?prior:null;
     cameraControl={mode,reason,intent_revision:result.intent_revision};
     statusReadFailed=false;
@@ -500,7 +524,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    }catch(_){
     if(current(epoch)&&surveyRevision)await poll();
     if(current(epoch)&&(!surveyRevision||cameraControl?.intent_revision===surveyRevision)){
-     setStatus(mode==='survey'?'巡视状态待确认':mode==='hold'?'停止状态待确认':'暂时无法切换跟随');
+     setStatus(mode==='survey'||mode==='patrol'?'巡视状态待确认':mode==='hold'?'停止状态待确认':'暂时无法切换跟随');
     }
    }finally{modePending=false;if(owns())syncControls();}
   }
@@ -512,7 +536,11 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const survey=btn('巡视一轮',()=>surveying()
    ? changeMode('hold',surveyControl().intent_revision)
    : changeMode('survey'));
-  const surveyRow=add(h('div',null,{class:'camera-survey'}),surveyReadback,survey);
+  const scheduledSurvey=btn('每 30 分钟巡视',()=>patrolControl()
+   ? changeMode('hold',patrolControl().intent_revision)
+   : changeMode('patrol'));
+  const surveyActions=add(h('div',null,{class:'camera-survey-actions',role:'group','aria-label':'巡视操作'}),survey,scheduledSurvey);
+  const surveyRow=add(h('div',null,{class:'camera-survey'}),surveyReadback,surveyActions);
   for(const [direction,label]of [['up','向上'],['left','向左'],['right','向右'],['down','向下']]){
    const control=btn(null,async()=>{
     if(!owns()||directionPending||!live()||picker)return;
@@ -553,7 +581,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
      if(picker?.revision&&(!selectingMode()||cameraControl?.intent_revision!==picker.revision||!report.follow_target_available))leavePicker();
      if(picker)void readTargetPhoto(picker);
      else setStatus(recovering?'实时画面 · 感知恢复中':
-      report.recognition_enabled===false||surveyControl()?'实时画面':cameraControl?.reason||'实时画面');
+      report.recognition_enabled===false||surveyControl()||patrolControl()?.scheduled_survey_active
+       ?'实时画面':cameraControl?.reason||'实时画面');
     }else{
      leavePicker();
      clearFrame();
@@ -576,11 +605,33 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const viewActions=add(h('div',null,{class:'camera-view-actions'}),watch,recordings);
   const viewBar=add(h('div',null,{class:'camera-view-bar'}),status,viewActions);
   const picture=add(h('div',null,{class:'camera-picture'}),pickerTools,frame,targetPhoto,targetChoices,viewBar,surveyRow);
-  add(liveControls,add(h('div'),h('h3','镜头模式'),followControls),add(h('div'),h('h3','调整视角'),cameraControls));
+  if(canAim)add(liveControls,add(h('div'),h('h3','镜头模式'),followControls),add(h('div'),h('h3','调整视角'),cameraControls));
+  const interaction=btn('正在读取…',async()=>{
+   if(!owns()||!interactionSetting)return;
+   interaction.disabled=true;
+   try{
+    interactionSetting=await api(endpoint+'/interaction',{enabled:!interactionSetting.enabled,
+     expected_revision:interactionSetting.revision});
+    if(owns())toast(interactionSetting.enabled?'已开启这台镜头的互动':'已关闭这台镜头的互动');
+   }catch(_){if(owns())toast('设置未保存，请重试。',true);}
+   finally{if(owns())await refreshInteraction();}
+  },{role:'switch','aria-label':'允许这台镜头接收语音和手势','aria-checked':'false'});
+  interaction.disabled=true;
+  async function refreshInteraction(){
+   try{const report=await api(endpoint+'/interaction');if(owns())interactionSetting=report;}
+   catch(_){if(owns())interactionSetting=null;}
+   if(owns()){
+    interaction.textContent=interactionSetting?.enabled?'已开启':interactionSetting?.enabled===false?'已关闭':'状态待确认';
+    interaction.setAttribute('aria-checked',String(interactionSetting?.enabled===true));
+    interaction.disabled=!interactionSetting;
+   }
+  }
+  const inputRow=add(h('div',null,{class:'camera-power-row'}),add(h('div'),ico('microphone'),h('span','语音与手势')),interaction);
   const powerRow=add(h('div',null,{class:'camera-power-row'}),add(h('div'),ico('power'),powerStatus),close,refresh,
-    btn('人物识别',()=>go('People'),{class:'text-button'}));
-  add(workspace,picture,liveControls,powerRow);slot.append(workspace);
+    d.camera?.preview_only?null:btn('人物识别',()=>go('People'),{class:'text-button'}));
+  add(workspace,picture,liveControls,powerRow,d.camera?.preview_only?null:inputRow);slot.append(workspace);
   previewStop=dispose;
+  if(!d.camera?.preview_only)void refreshInteraction();
   void readPower().then(()=>{if(start&&owns()&&power?.enabled)watch.click();});
   void poll();
   previewTimer=setInterval(()=>{
@@ -598,6 +649,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   else inspectorSlot.append(h('p',deviceSummary(d),{class:'device-state-summary'}));
   if(d.triggers?.length)inspectorSlot.append(mainDeviceControls({...d,controls:[]},{send:control,busy}));
   deviceReadings(d,inspectorSlot);
+  if(d.lighting_enrollment)inspectorSlot.append(btn('补充灯光控制',()=>enrollDevice(d.lighting_enrollment)));
   const details=add(h('details',null,{class:'device-diagnostics'}),h('summary','设备信息'),h('p',d.presentation?.label||names[d.kind]||'设备'),h('p',`房间：${d.room}`));inspectorSlot.append(details);
   inspectorSlot.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();close.click();}};updateTiles();if(!wasOpen){inspectorSlot.focus?.({preventScroll:true});if(globalThis.matchMedia?.('(max-width:1200px)').matches)inspectorSlot.scrollIntoView?.({block:'start'});}
  }
@@ -696,10 +748,107 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   }
   return list;
  }
+ function enrollDevice(device){
+  const readOnly=device.enrollment_access==='readings';
+  const lighting=device.enrollment_access==='lighting',upgrading=device.enrollment_upgrade===true;
+  const confirmTitle=readOnly?'接入传感器':upgrading?'允许调节':lighting?'接入灯具':'接入并允许控制';
+  const permissionText=readOnly?'允许 Friday 读取这台传感器的读数。':lighting
+   ?(upgrading?'允许 Friday 调节这盏灯支持的亮度和色温。':'允许 Friday 开关灯具，以及调节设备支持的亮度和色温。')
+   :'允许 Friday 控制这台设备的开关。';
+  const dialog=h('dialog',null,{class:'product-dialog','aria-labelledby':'mijia-enrollment-title'});
+  const status=h('p',null,{role:'status','aria-live':'polite',hidden:''});
+  const cancel=btn('取消',()=>dialog.close());
+  const enroll=btn(confirmTitle,async()=>{
+   enroll.disabled=true;cancel.disabled=true;enroll.textContent=upgrading?'正在更新…':'正在接入…';status.hidden=true;
+   try{
+    const result=await api('/api/embodied/discovery/enroll-device',{
+     candidate:device.id,expected_revision:device.enrollment_revision,
+     ...(readOnly?{allow_readings:true}:{allow_power:true}),...(lighting?{allow_light_settings:true}:{})});
+    dialog.close();
+    if(!alive)return;
+    await load();
+    const added=data.devices.find(item=>item.id===result.device);
+    if(added){
+     inspect(added);
+     if(upgrading)inspectorSlot?.focus({preventScroll:true});
+    }
+    toast(upgrading?'灯光控制已更新':'已接入 '+device.name);
+   }catch(error){
+    status.hidden=false;status.textContent=({
+     mijia_enrollment_changed:'设备信息有变化，请关闭后重新选择。',
+     mijia_enrollment_offline:'米家中枢还没读到设备，请稍后重试。',
+     mijia_enrollment_unsupported:'这台设备暂不支持直连。',
+     mijia_enrollment_limit:'已达到接入上限。',
+    })[error.message]||'暂时无法接入，请稍后重试。';
+   }finally{enroll.disabled=false;cancel.disabled=false;enroll.textContent=confirmTitle;}
+  },{class:'primary'});
+  add(dialog,h('h2',device.name,{id:'mijia-enrollment-title'}),h('p',permissionText),
+      status,add(h('div',null,{class:'button-row'}),cancel,enroll));
+  dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+  dialog.addEventListener('cancel',event=>{if(enroll.disabled)event.preventDefault();});
+  view.append(dialog);dialog.showModal();
+ }
+ function drawDiscovery(force=false){
+  if(!discoverySlot?.isConnected||connectingCamera||!force&&discoverySlot.contains(document.activeElement))return;
+  const rows=(data.discovery?.devices||[]).filter(d=>page!=='Cameras'||d.kind==='camera');
+  if(!rows.length){discoverySlot.replaceChildren();return;}
+  const section=add(h('section',null,{class:'mijia-discovery','aria-label':'米家待接入设备'}),
+   add(h('div',null,{class:'product-section-head'}),h('h2','米家待接入'),h('span',rows.length+' 台',{class:'caption'})));
+  const list=h('ul');
+  for(const d of rows){
+   const summary=[d.room,d.online?'在线':'离线'].filter(Boolean).join(' · ');
+   const label=add(h('div',null,{class:'mijia-discovery-label'}),h('strong',d.name),h('span',summary,{class:'caption'}));
+   const row=add(h('li'),ico(d.kind==='camera'?'video':'devices'),label);
+   if(d.can_connect){
+    const addCamera=btn('接入摄像头',async()=>{
+     if(connectingCamera)return;
+     connectingCamera=d.id;
+     addCamera.disabled=true;
+     try{
+      const result=await api('/api/embodied/discovery/connect',{candidate:d.id});
+      if(result.state!=='connected'){
+       toast(({camera_spec_unavailable:'暂时无法确认镜头的隐私状态，请稍后重试。',
+        camera_limit:'摄像头已达接入上限。',inventory_changed:'设备刚刚变化，请刷新后重试。'})[result.state]||'暂时无法接入这台摄像头。',true);
+       return;
+      }
+      if(!alive)return;
+      if(page!=='Cameras')try{sessionStorage.setItem('Friday.cameraFocus',result.camera);}catch(_){}
+      toast('已接入摄像头');
+      if(page==='Cameras'){
+       await load();
+       const camera=data?.devices.find(item=>item.id===result.camera);if(camera)inspect(camera);
+      }else go('Cameras');
+     }catch(_){toast('暂时无法接入这台摄像头。',true);}
+     finally{connectingCamera=null;addCamera.disabled=false;drawDiscovery(true);}
+    },{'aria-label':'接入摄像头 '+d.name});
+    row.append(addCamera);
+   }else{
+    if(d.kind==='camera')row.append(btn('查看连接',()=>go('Settings'),{class:'text-button'}));
+    else if(d.enrollment_revision){
+     const label=d.enrollment_access==='lighting'?'接入灯具':'接入设备';
+     row.append(btn(label,()=>enrollDevice(d),{'aria-label':label+' '+d.name}));
+    }
+    else row.append(h('span',data.discovery.direct_enrollment?'暂不支持直连':'等待 Home Assistant 接入',{class:'caption'}));
+   }
+   list.append(row);
+  }
+  section.append(list);
+  discoverySlot.replaceChildren(section);
+ }
+ function updateSourceBanner(){
+  if(!sourceBanner)return;
+  const firstMijiaDevice=data.source==='local-cameras'&&data.discovery?.direct_enrollment&&data.discovery.devices.length;
+  const show=!data.connected&&!data.simulated&&!firstMijiaDevice;
+  const local=data.source==='mijia-lan';
+  const title=local?'正在读取米家设备':'家庭连接已中断';
+  if(!show){sourceBanner.replaceChildren();return;}
+  if(sourceBanner.firstElementChild?.getAttribute('data-title')===title)return;
+  sourceBanner.replaceChildren(add(h('section',null,{class:'home-source-banner source-offline',role:'status','data-title':title}),ico('alert-circle'),add(h('div'),h('strong',title),h('p',local?'读到当前状态后即可操作。':'连接恢复后可继续查看和操作。')),btn('连接设置',()=>go('Settings'))));
+ }
  function drawHome(){
-  stopPreview();model?.dispose();model=null;spacePanel=null;spatialScene=null;listSlot=null;inspectorSlot=null;statsSlot=null;
+  stopPreview();model?.dispose();model=null;spacePanel=null;spatialScene=null;listSlot=null;inspectorSlot=null;
   homeStatus?.dispose();homeStatus=null;view.replaceChildren();connectionSetup?.dispose();connectionSetup=null;
-  if(!data.connected&&!data.simulated)view.append(add(h('section',null,{class:'home-source-banner source-offline',role:'status'}),ico('alert-circle'),add(h('div'),h('strong','家庭连接已中断'),h('p','显示上次记录，请恢复连接后再操作。')),btn('恢复连接',()=>go('Settings'))));
+  sourceBanner=h('div');view.append(sourceBanner);updateSourceBanner();
   const dashboard=page==='Home'?h('div',null,{class:'home-dashboard'}):null;const space=dashboard?h('section',null,{class:'home-space','aria-label':'家庭空间'}):null;if(dashboard){const tools=add(h('div',null,{class:'home-space-tools'}),h('h2','家庭空间'),btn('户型与位置',editHouse,{class:'text-button'}));space.append(tools);filters(space);dashboard.append(space);view.append(dashboard);}
   if(page==='Home'&&data.layout?.rooms?.length){
    const scene=h('section',null,{class:'house-scene','aria-label':'家庭空间控制'});spatialScene=scene;modelSlot=h('div',null,{class:'house-canvas'});scene.append(modelSlot);
@@ -723,6 +872,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    });
    return;
   }
+  discoverySlot=h('div');view.append(discoverySlot);drawDiscovery();
   const browser=h('div',null,{class:'device-browser'});view.append(browser);roomDirectory(browser);
   const main=h('section',null,{class:'device-browser-main','aria-label':'设备列表'});browser.append(main);
   const toolbar=add(h('div',null,{class:'product-section-head device-list-heading'}),h('span',data.devices.length+' 个设备',{'data-device-count':'',class:'device-list-count'}));
@@ -732,7 +882,6 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const layout=h('div',null,{class:'product-device-layout'});listSlot=h('div');inspectorSlot=h('aside',null,{class:'product-inspector',id:'device-detail-panel',hidden:''});add(layout,listSlot,inspectorSlot);main.append(layout);
   updateTiles();if(selected){const d=data.devices.find(x=>x.id===selected);if(d)inspect(d);}
  }
- function drawStats(){}
  async function savePlacement(device,placedRoom,position){if(placementSaving)return;placementSaving=true;model?.place(null);try{data.layout=await api('/api/home/layout/device-position',{expected_revision:data.layout.revision,device_id:device.bindings?.find(b=>b.source==='xiaomi-identity')?.external_id||device.id,room_id:placedRoom.id,position});cancelPlacement();toast(device.name+'的位置已保存');drawHome();}catch(_){toast('位置未保存，请刷新户型后重试',true);cancelPlacement();}finally{placementSaving=false;}}
  function editHouse(){const dialog=h('dialog',null,{class:'product-dialog'});add(dialog,h('h2','家庭空间档案'),h('p','导入米家房间轮廓或完整户型。更新时按房间与设备 ID 对齐，已有设备位置会保留。'));const file=h('input',null,{type:'file',accept:'.json,application/json','aria-label':'导入家庭空间档案'}),out=h('div',null,{role:'status'});file.onchange=async()=>{const f=file.files[0];if(!f)return;if(f.size>2*1024*1024){out.textContent='文件过大，请选择家庭空间 JSON。';return;}try{const incoming=JSON.parse(await f.text()),report=await api('/api/home/layout/preview',{layout:incoming});out.replaceChildren(h('p',`房间：新增 ${report.rooms?.added?.length||0}，更新 ${report.rooms?.changed?.length||0}；设备点位：新增 ${report.devices?.added?.length||0}`));if(report.conflicts?.some(c=>c.kind!=='device_position_changed')){out.append(h('p','发现房间或设备归属冲突，请检查导入档案后重试。'));return;}if(report.conflicts?.length)out.append(h('p',`${report.conflicts.length} 个设备位置发生变化，导入会同步到新位置。`));out.append(btn('导入更新',async()=>{data.layout=await api('/api/home/layout/import',{layout:incoming,expected_revision:report.base_revision,accept_device_changes:Boolean(report.conflicts?.length)});dialog.close();drawHome();},{class:'primary'}));}catch(_){out.textContent='文件格式不正确，请使用 Friday 空间档案或米家 FloorMapV3 数据。';}};dialog.append(field('选择档案',file),out);if(data.layout){dialog.append(btn('撤销上次导入',async()=>{try{data.layout=await api('/api/home/layout/restore',{expected_revision:data.layout.revision});dialog.close();drawHome();}catch(_){toast('没有可恢复的上一版户型',true);}}));dialog.append(btn('导出当前档案',()=>{const blob=new Blob([JSON.stringify(data.layout,null,2)],{type:'application/json'}),a=h('a',null,{href:URL.createObjectURL(blob),download:'Friday-home-layout.json'});a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}));const target=choices([['','选择需要定位的设备'],...data.devices.map(d=>[d.id,d.room+' · '+d.name])],'定位设备');dialog.append(field('设备位置',target),btn('在户型中定位',()=>{const d=data.devices.find(d=>d.id===target.value);if(!d)return;dialog.close();beginPlacement(d);}));const placed=new Set(data.layout.devices.map(d=>d.id)),unplaced=data.devices.filter(d=>!placed.has(d.id)&&!d.bindings?.some(b=>placed.has(b.external_id)));dialog.append(h('p',`${unplaced.length} 个设备尚未定位。未定位设备可以在列表中正常控制。`));}presentationEditor(dialog);dialog.append(btn('完成',()=>dialog.close()));document.body.append(dialog);dialog.onclose=()=>dialog.remove();dialog.showModal();}
  function presentationEditor(dialog){
@@ -752,7 +901,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  }
  async function drawConnections(){const generation=++connectionDraw;connectionSetup?.dispose();cameraConnection?.dispose();cameraPrivacy?.dispose();view.replaceChildren();connectionSetup=mountConnectionSetup(view,{includeCamera:false,onCameraSetup:slot=>mountCameraSetup(slot)});const statusSlot=h('div');view.append(statusSlot);statusSlot.append(h('p','正在检查可选服务…'));let connections,desktop,worker;try{[connections,desktop,worker]=await Promise.all([api('/api/home/connections'),api('/desktop/status').catch(async()=>({arl:await api('/api/settings/arl/status').then(v=>({...v,metadataFreshness:v.metadata_freshness,refreshPending:v.metadata_refresh_pending})).catch(()=>null)})),api('/api/embodied/status')]);}catch(_){if(alive&&generation===connectionDraw)statusSlot.replaceChildren(h('p','可选服务状态暂不可用，家庭连接仍可在上方设置。'),btn('重试',drawConnections));return;}if(!alive||generation!==connectionDraw)return;statusSlot.remove();
   const arl=desktop?.arl?.metadata_freshness!==undefined?arlRuntimePresentation(desktop.arl):arlPresentation(desktop?.arl);const arlLabel=({connected:'已连接',registering:'正在连接',handshake_required:'尚未连接',upgrade_required:'需要更新'}[arl.state]||arl.label);
-  const rows=[['家庭设备',connections.home.simulated?'Simulator · 示例家庭':'Home Assistant',connections.home.transport==='online',connections.home.simulated?'合成示例 · 未连接真实家庭':'房间、状态与设备控制'],['录像存储','系统共享目录',connections.nas.connected,connections.nas.connected?'已连接 · 可准备隐私预览':'连接后可查看录像'],['智能服务','ARL',arl.connected,arl.description,arlLabel,arl.recovery]];
+  const localPower=connections.home.mode==='mijia-lan';
+  const rows=[['家庭设备',localPower?'米家中枢':connections.home.simulated?'Simulator · 示例家庭':'Home Assistant',connections.home.transport==='online',localPower?'设备电源与状态':connections.home.simulated?'合成示例 · 未连接真实家庭':'房间、状态与设备控制'],['录像存储','系统共享目录',connections.nas.connected,connections.nas.connected?'已连接 · 可准备隐私预览':'连接后可查看录像'],['智能服务','ARL',arl.connected,arl.description,arlLabel,arl.recovery]];
   const direct=connections.file_source;if(direct){const online=direct.state==='online'&&direct.reachable===true&&direct.authenticated===true&&direct.readable===true;rows.splice(2,0,['家庭资料','NAS 直连',online,online?'资料目录可读取':'连接后可查看家庭资料目录']);}
   const list=h('section',null,{class:'connection-list'});rows.forEach(([title,source,on,description,label,recovery])=>{const info=add(h('div'),h('h2',title));if(recovery)info.append(add(h('details',null,{class:'connection-state-details'}),h('summary','连接详情'),h('p',description),h('p',recovery)));else info.append(h('p',description));const row=add(h('article',null,{class:'connection-row'}),add(h('span',null,{class:'connection-dot'+(on?' online':'')})),info,h('span',source,{class:'caption'}),h('strong',label||(on?'已连接':'需要连接')));if(title==='录像存储')info.append(btn('录像对应',()=>void openArchiveMapping(),{class:'text-button'}));list.append(row);});view.append(list);cameraConnection?.dispose();cameraConnection=mountCameraConnection(list,{api,go,legacyConnections,worker,isAlive:()=>alive});
   const intelligenceSlot=h('section',null,{'aria-label':'智能服务设置'});view.append(intelligenceSlot);
@@ -769,7 +919,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  async function drawAutomations(){automationView?.dispose();view.replaceChildren();automationView=mountAutomations(view,{api,data,snapshot,go,toast,legacyRules,attentionId});}
  async function drawInteraction(){const {mountInteractions}=await import('./interactions.js');if(alive){interactions?.dispose();view.replaceChildren();interactions=mountInteractions(view,{data,go,toast});}}
  function draw(){if(['Home','Devices'].includes(page))drawHome();else if(page==='Cameras')drawCameras();else if(page==='Activity')void drawRecordings();else if(page==='Settings')void drawConnections();else if(page==='Automations')void drawAutomations();else if(page==='Interaction')void drawInteraction();}
- function update(){homeStatus?.update(data.devices);if(page==='Cameras')updateTiles();if(['Home','Devices'].includes(page)){model?.updateDevices(data.devices);updateTiles();drawStats();if(spatialRoom&&!busy&&data.devices.find(d=>d.id===spatialDevice)?.kind!=='camera'&&!spacePanel?.contains(document.activeElement))drawSpatialPanel();if(selected&&!busy&&inspectorSlot?.isConnected){const d=data.devices.find(x=>x.id===selected);if(d&&d.kind!=='camera'&&!inspectorSlot.contains(document.activeElement))inspect(d);}}}
+ function update(){homeStatus?.update(data.devices);drawDiscovery();if(page==='Cameras')updateTiles();if(['Home','Devices'].includes(page)){updateSourceBanner();model?.updateDevices(data.devices);updateTiles();if(spatialRoom&&!busy&&data.devices.find(d=>d.id===spatialDevice)?.kind!=='camera'&&!spacePanel?.contains(document.activeElement))drawSpatialPanel();if(selected&&!busy&&inspectorSlot?.isConnected){const d=data.devices.find(x=>x.id===selected);if(d&&d.kind!=='camera'&&!inspectorSlot.contains(document.activeElement))inspect(d);}}}
  void load(true);if(['Home','Devices','Cameras'].includes(page))timer=setInterval(()=>{if(!loadAbort)void load();},10000);
  return{selectTaskAttention(id){attentionId=id;automationView?.selectAttention(id);},refresh:()=>{if(homeStatus)void homeStatus.refresh();return recordingsView?recordingsView.refresh():page==='Settings'?drawConnections():load();},dispose(){alive=false;++loadVersion;loadAbort?.abort();loadAbort=null;homeStatus?.dispose();connectionSetup?.dispose();clearInterval(timer);stopPreview();recordingsView?.dispose();cameraPrivacy?.dispose();cameraConnection?.dispose();recognitionDebug?.dispose();automationView?.dispose();model?.dispose();thumbnails?.dispose();interactions?.dispose();view.replaceChildren();}};
 }

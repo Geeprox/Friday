@@ -62,7 +62,8 @@ export function mountSeatCamera(section,{heading,session,phase,round,api,isCurre
    if(!open)return fallback;
    const observed=source||fallback[0];
    if(picture&&observed&&(observed.camera!==picture.camera||observed.session!==picture.session))clear('镜头已切换，正在读取画面…');
-   return picture&&performance.now()<until?picture.people.map(p=>({camera:picture.camera,session:picture.session,track:p.track})):[];
+   return picture&&performance.now()<until?picture.people.map(p=>({camera:picture.camera,session:picture.session,
+    track:p.track,track_revision:p.track_revision??0})):[];
   },
   dispose(){alive=false;open=false;retire();headerSize?.disconnect();section.dataset.viewing='false';document.removeEventListener('visibilitychange',visibility);view.remove();actions.remove();}
  };

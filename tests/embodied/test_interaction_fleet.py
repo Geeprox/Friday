@@ -219,133 +219,89 @@ def microphones(configured):
     return fleet
 
 
-def voice(fleet,camera,t,**kwargs):
-    return fleet.voice(camera,t,kwargs.pop('attending',False),session=kwargs.pop('session','session'),**kwargs)
+def voice(fleet, camera, at, *, enabled=True, session='session'):
+    return fleet.voice(camera, at, enabled=enabled, session=session)
 
 
-def test_occupied_secondary_immediately_preempts_empty_primary(microphones):
-    fleet=microphones
-    assert voice(fleet,CAMERAS[0],10,people=0)
-    assert voice(fleet,CAMERAS[1],10.1,people=1)
-    for t in (10.2,11,12,13,14.2,15,16,17,18.3):
-        assert not voice(fleet,CAMERAS[0],t,people=0)
-        assert voice(fleet,CAMERAS[1],t+.01,people=1)
+def test_occupied_view_and_empty_view_both_keep_current_microphones(microphones):
+    empty, occupied, other = CAMERAS
+    bind(microphones, occupied)
+    for camera in (empty, occupied, other):
+        assert voice(microphones, camera, 10)
+    assert microphones.cameras[occupied]['owner'] == 7
+    assert all(microphones.voice_current(camera, 10.1) for camera in CAMERAS)
 
 
-def test_gaze_preempts_presence_but_empty_face_flag_cannot_gain_priority(microphones):
-    fleet=microphones
-    assert voice(fleet,CAMERAS[0],10,people=1)
-    assert not voice(fleet,CAMERAS[1],10.1,people=0,attending=True)
-    assert voice(fleet,CAMERAS[2],10.2,people=1,attending=True)
-    assert not voice(fleet,CAMERAS[0],10.3,people=1)
-
-
-def test_utterance_keeps_source_across_deadline_and_new_gaze_then_releases(microphones):
-    fleet=microphones
-    assert voice(fleet,CAMERAS[0],10,people=1)
-    assert voice(fleet,CAMERAS[0],10.1,people=1,speaking=True)
-    for t in (11,12,13,14,15):
-        assert voice(fleet,CAMERAS[0],t,people=1,speaking=True)
-        assert not voice(fleet,CAMERAS[1],t+.01,people=1,attending=True)
-    assert not voice(fleet,CAMERAS[0],15.1,people=1,speaking=False)
-    assert voice(fleet,CAMERAS[1],15.2,people=1,attending=True)
-
-
-def test_stuck_speaking_flag_cannot_hold_source_forever(microphones):
-    fleet=microphones
-    assert voice(fleet,CAMERAS[0],10,people=1)
-    voice(fleet,CAMERAS[0],10.1,people=1,speaking=True)
-    for t in range(11,19):
-        assert voice(fleet,CAMERAS[0],t,people=1,speaking=True)
-        assert not voice(fleet,CAMERAS[1],t+.01,people=1,attending=True)
-    assert voice(fleet,CAMERAS[1],18.7,people=1,attending=True)
-
-
-def test_empty_views_take_fair_turns_despite_primary_callback_always_first(microphones):
-    fleet=microphones
-    chosen=[]
-    for tick in range(100,191):
-        t=tick/10
-        for index,camera in enumerate(CAMERAS):
-            voice(fleet,camera,t+index*.001,people=0)
-        if not chosen or chosen[-1]!=fleet.voice_camera:chosen.append(fleet.voice_camera)
-    assert chosen[:3]==CAMERAS
-
-
-def test_stale_source_loses_even_an_active_utterance(microphones):
-    fleet=microphones
-    assert voice(fleet,CAMERAS[0],10,people=1)
-    voice(fleet,CAMERAS[0],10.1,people=1,speaking=True)
-    assert voice(fleet,CAMERAS[1],11.7,people=0)
-
-
-def test_source_clear_and_session_restart_release_microphone(microphones):
-    fleet=microphones
-    assert voice(fleet,CAMERAS[0],10,people=1)
-    voice(fleet,CAMERAS[0],10.1,people=1,speaking=True)
-    fleet.clear(CAMERAS[0])
-    assert voice(fleet,CAMERAS[1],10.2,people=0)
-    fleet.session(CAMERAS[1],'replacement')
-    assert fleet.voice_camera is None
-    assert not voice(fleet,CAMERAS[1],10.3,people=1,session='session')
-    assert fleet.cameras[CAMERAS[1]]['session']=='replacement'
-    assert voice(fleet,CAMERAS[2],10.4,people=0)
+def test_source_clear_and_session_restart_only_revoke_their_own_microphones(microphones):
+    cleared, replaced, other = CAMERAS
+    revoked = []
+    microphones.voice_revoked = revoked.append
+    for camera in CAMERAS:
+        assert voice(microphones, camera, 10)
+    microphones.clear(cleared)
+    microphones.session(replaced, 'replacement')
+    assert revoked == [cleared, replaced]
+    assert not voice(microphones, replaced, 10.3)
+    assert not microphones.voice_current(cleared, 10.3)
+    assert not microphones.voice_current(replaced, 10.3)
+    assert microphones.voice_current(other, 10.3)
+    assert voice(microphones, replaced, 10.4, session='replacement')
 
 
 def test_input_pause_revokes_speech_without_changing_gesture_operator(microphones):
-    fleet=microphones
-    bind(fleet,CAMERAS[0])
-    assert voice(fleet,CAMERAS[0],12,people=1)
-    voice(fleet,CAMERAS[0],12.1,people=1,speaking=True)
-    assert not voice(fleet,CAMERAS[0],12.2,people=1,speaking=True,enabled=False)
-    assert fleet.voice_camera is None
-    assert fleet.cameras[CAMERAS[0]]['owner']==7
-    assert voice(fleet,CAMERAS[1],12.3,people=0)
+    camera = CAMERAS[0]
+    bind(microphones, camera)
+    assert voice(microphones, camera, 12)
+    assert not voice(microphones, camera, 12.2, enabled=False)
+    assert not microphones.voice_current(camera, 12.3)
+    assert microphones.cameras[camera]['owner'] == 7
 
 
-def test_game_gesture_pause_preserves_active_microphone_utterance(microphones):
-    fleet=microphones
-    assert voice(fleet,CAMERAS[0],10,people=1)
-    voice(fleet,CAMERAS[0],10.1,people=1,speaking=True)
-    assert not fleet.update(CAMERAS[0],'session',people(),[],{},False,10.2)
-    assert fleet.voice_camera==CAMERAS[0]
-    assert not voice(fleet,CAMERAS[1],10.3,people=1,attending=True)
+def test_game_gesture_pause_preserves_current_microphone(microphones):
+    camera, other = CAMERAS[:2]
+    assert voice(microphones, camera, 10.1)
+    assert not microphones.update(camera, 'session', people(), [], {}, False, 10.2, game_active=True)
+    assert voice(microphones, other, 10.3)
+    assert microphones.voice_current(camera, 10.3)
+    assert microphones.voice_current(other, 10.3)
+
+
+def test_uncalibrated_view_keeps_current_voice_until_the_source_closes(microphones):
+    camera = CAMERAS[0]
+    revoked = []
+    microphones.voice_revoked = revoked.append
+    assert voice(microphones, camera, 10.1)
+    assert not microphones.update(camera, 'session', [], [], {'status': 'lost'}, True, 10.2)
+    assert microphones.voice_current(camera, 10.2) and not revoked
+    microphones.clear(camera)
+    assert not microphones.voice_current(camera, 10.2) and revoked == [camera]
 
 
 @pytest.mark.parametrize('invalid_time',[float('nan'),float('inf'),float('-inf'),9.9])
 def test_invalid_or_old_callback_cannot_rewind_voice_lease(microphones,invalid_time):
-    fleet=microphones
-    assert voice(fleet,CAMERAS[0],10,people=0)
-    assert not voice(fleet,CAMERAS[1],invalid_time,people=1,attending=True)
-    assert fleet.voice_camera==CAMERAS[0] and fleet.voice_until==14
+    camera = CAMERAS[0]
+    assert voice(microphones, camera, 10)
+    assert not voice(microphones, camera, invalid_time, enabled=False)
+    assert microphones.voice_current(camera, 10.1)
+    assert microphones.cameras[camera]['voice_seen'] == 10
 
 
-def test_unknown_or_late_old_session_cannot_enter_arbitration(microphones):
-    fleet=microphones
-    assert not voice(fleet,'unknown',10,people=1,attending=True)
-    assert voice(fleet,CAMERAS[0],10,people=0)
-    assert not voice(fleet,CAMERAS[1],20,people=1,attending=True,session='old')
-    assert voice(fleet,CAMERAS[1],10.1,people=1)
+def test_unknown_or_late_old_session_cannot_extend_the_current_microphone(microphones):
+    camera = CAMERAS[0]
+    assert not voice(microphones, 'unknown', 10)
+    assert voice(microphones, camera, 10)
+    assert not voice(microphones, camera, 20, session='old')
+    assert not microphones.voice_current(camera, 20)
+    assert voice(microphones, camera, 10.1)
 
 
-def test_audio_packet_query_revokes_previous_source_immediately(microphones):
-    fleet=microphones
-    assert voice(fleet,CAMERAS[0],10,people=0)
-    assert fleet.voice_current(CAMERAS[0],10.01)
-    assert voice(fleet,CAMERAS[1],10.1,people=1)
-    # The primary has not received its next video callback yet.
-    assert not fleet.voice_current(CAMERAS[0],10.11)
-    assert fleet.voice_current(CAMERAS[1],10.11)
-    assert not fleet.voice_current(CAMERAS[1],9.9)
-    assert not fleet.voice_current(CAMERAS[1],float('nan'))
-    fleet.session(CAMERAS[1],'replacement')
-    assert not fleet.voice_current(CAMERAS[1],10.2)
-
-
-def test_audio_packets_do_not_renew_the_video_lease_or_change_fairness(microphones):
-    fleet=microphones
-    assert voice(fleet,CAMERAS[0],10,people=1)
-    before=(fleet.voice_now,fleet.voice_until,fleet.voice_sequence,dict(fleet.voice_order))
-    for t in (10.1,10.5,11,11.5):assert fleet.voice_current(CAMERAS[0],t)
-    assert not fleet.voice_current(CAMERAS[0],11.5001)
-    assert before==(fleet.voice_now,fleet.voice_until,fleet.voice_sequence,fleet.voice_order)
+def test_audio_packets_do_not_renew_the_video_lease(microphones):
+    camera, other = CAMERAS[:2]
+    assert voice(microphones, camera, 10)
+    assert voice(microphones, other, 11)
+    for at in (10.1, 10.5, 11, 11.5):
+        assert microphones.voice_current(camera, at)
+    assert not microphones.voice_current(camera, 11.5001)
+    assert not microphones.voice_current(camera, float('nan'))
+    assert microphones.voice_current(other, 11.5001)
+    assert microphones.cameras[camera]['voice_seen'] == 10

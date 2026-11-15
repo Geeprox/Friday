@@ -31,20 +31,29 @@ class Curtain:
             "last_action": None,
         }
 
-    async def connect(self):
+    async def connect(self, *, binding=None, session=None, expected_grant=None, preflight=True):
         from miot.cloud import MIoTHttpClient
         from miot.types import MIoTGetPropertyParam, MIoTSetPropertyParam
         from .miot_spec import cover_binding
 
-        binding = cover_binding()
-        self.binding = binding
-        self.get_parameter, self.set_parameter = MIoTGetPropertyParam, MIoTSetPropertyParam
-        self.state.update(name=binding['name'], model=binding.get('model'))
-        self.did = str(binding["did"])
+        binding = cover_binding() if binding is None else binding
         from .miot_session import MiSession
-        token = (await MiSession(PRIVATE).current())["access_token"]
-        self.api = MIoTHttpClient(cloud_server=binding.get('region', 'cn'), access_token=token)
-        await self.read()
+        from .mijia_power import grant_binding
+
+        saved = await (session or MiSession(PRIVATE)).current()
+        region = binding.get('region', 'cn')
+        if expected_grant is not None and (grant_binding(saved) != expected_grant or saved['cloud_server'] != region):
+            raise ValueError('mijia_authorization_required')
+        api = MIoTHttpClient(cloud_server=region, access_token=saved["access_token"])
+        self.bind(binding, api, MIoTGetPropertyParam, MIoTSetPropertyParam, 'MiOT HTTP')
+        if preflight:
+            await self.read()
+
+    def bind(self, binding, api, get_parameter, set_parameter, transport):
+        self.binding, self.api = binding, api
+        self.get_parameter, self.set_parameter = get_parameter, set_parameter
+        self.did = str(binding['did'])
+        self.state.update(name=binding['name'], model=binding.get('model'), transport=transport)
 
     async def close(self):
         if self.monitor:
@@ -69,17 +78,18 @@ class Curtain:
         refs = self.binding['refs']
         if any(refs[name] not in values for name in ('current-position', 'target-position', 'fault')):
             raise RuntimeError("curtain_incomplete_readback")
-        if (any(type(values[refs[name]]) is not int or not 0 <= values[refs[name]] <= 100
-                for name in ('current-position', 'target-position'))
-                or type(values[refs['fault']]) is not int or values[refs['fault']] < 0):
+        position, target, fault = (values[refs[name]] for name in ('current-position', 'target-position', 'fault'))
+        target_unknown = target is None and self.binding.get('feedback_quality') == 'unreliable'
+        if (type(position) is not int or not 0 <= position <= 100
+                or (not target_unknown and (type(target) is not int or not 0 <= target <= 100))
+                or type(fault) is not int or fault < 0):
             raise RuntimeError('curtain_invalid_readback')
-        self.state.update(position=values[refs['current-position']], target=values[refs['target-position']],
-                          fault=values[refs['fault']], observed_at=time.time())
+        self.state.update(position=position, target=target, fault=fault, observed_at=time.time())
         if not self.busy and (not self.monitor or self.monitor.done()):
             self.state["status"] = "ready" if self.state['fault'] == 0 else 'fault'
         return dict(self.state)
 
-    async def act(self, action, event_id):
+    async def act(self, action, event_id, *, claim=lambda: True, preflight=None):
         if action not in ("open", "close", "stop") and not (isinstance(action,str) and action.startswith("position:") and action[9:].isdigit() and 0<=int(action[9:])<=100):
             raise ValueError("curtain_action_not_allowed")
         if not isinstance(event_id, str) or not 1 <= len(event_id) <= 160:
@@ -95,12 +105,16 @@ class Curtain:
             "event_id": event_id,
             "requested_at": time.time(),
             "acknowledged": False,
+            "write_attempted": False,
             "position_changed": False,
             "reached_target": False,
         }
         self.state.update(status="checking", last_action=receipt)
         try:
-            await self.read()
+            if preflight is None:
+                await self.read()
+            else:
+                self.state.update(preflight)
             before = self.state["position"]
             target = int(action[9:]) if action.startswith("position:") else 100 if action == "open" else 0 if action=="close" else before
             if self.state["fault"] != 0:
@@ -109,16 +123,17 @@ class Curtain:
                 receipt.update(status="already_at_target", reached_target=True)
                 self.state["status"] = "ready"
                 return receipt
-            r = await asyncio.wait_for(
-                self.api.set_prop_async(
-                    self.set_parameter(did=self.did,
-                        siid=self.binding['refs']['target-position' if action.startswith('position:') else 'motor-control'][0],
-                        piid=self.binding['refs']['target-position' if action.startswith('position:') else 'motor-control'][1],
-                        value=target if action.startswith('position:') else self.binding['commands'][action])
-                ),
-                8,
-            )
-            if r.get("code") != 0:
+            if not claim():
+                return dict(receipt, status='rejected', code='source_conflict')
+            receipt['write_attempted'] = True
+            reference = self.binding['refs']['target-position' if action.startswith('position:') else 'motor-control']
+            parameter = self.set_parameter(did=self.did, siid=reference[0], piid=reference[1],
+                                           value=target if action.startswith('position:') else self.binding['commands'][action])
+            async with asyncio.timeout(8):
+                r = await self.api.set_prop_async(parameter)
+            if (type(r.get('code')) is not int or r['code'] != 0
+                    or str(r.get('did', self.did)) != self.did
+                    or (r.get('siid', reference[0]), r.get('piid', reference[1])) != reference):
                 raise RuntimeError("curtain_command_rejected")
             receipt["acknowledged"] = True
             receipt["status"] = "accepted"
@@ -134,7 +149,8 @@ class Curtain:
             self.monitor = asyncio.create_task(self.observe_motion(receipt, before, target))
             return receipt
         except Exception as e:
-            receipt.update(status="error", error_class=type(e).__name__)
+            receipt.update(status='unknown_outcome' if receipt['write_attempted'] else 'error',
+                           error_class=type(e).__name__)
             self.state["status"] = "unavailable"
             return dict(receipt)
         finally:
@@ -142,15 +158,16 @@ class Curtain:
 
     async def observe_motion(self, receipt, before, target):
         try:
-            deadline = time.monotonic() + 12
-            while time.monotonic() < deadline:
-                await asyncio.sleep(0.7)
-                await self.read()
-                receipt["position_changed"] |= self.state["position"] != before
-                if abs(self.state["position"] - target) <= 2:
-                    receipt.update(status="observed_at_target", reached_target=True, finished_at=time.time())
-                    self.state["status"] = "ready"
-                    return
+            async with asyncio.timeout(12):
+                while True:
+                    await asyncio.sleep(0.7)
+                    await self.read()
+                    receipt["position_changed"] |= self.state["position"] != before
+                    if abs(self.state["position"] - target) <= 2:
+                        receipt.update(status="observed_at_target", reached_target=True, finished_at=time.time())
+                        self.state["status"] = "ready"
+                        return
+        except TimeoutError:
             receipt["status"] = "position_readback_delayed"
             self.state["status"] = "unconfirmed"
         except asyncio.CancelledError:

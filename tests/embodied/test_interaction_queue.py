@@ -9,8 +9,10 @@ from homeplane.embodied.household import DeviceCommands
 @pytest.mark.asyncio
 async def test_gesture_expiring_behind_another_command_never_reaches_miot():
     lock=asyncio.Lock();service=SimpleNamespace(miot_cover=AsyncMock(return_value=dict(acknowledged=True,reached_target=False)))
-    commands=DeviceCommands(None,lock,service)
-    commands.inventory=AsyncMock(return_value=[dict(id='curtain',kind='cover',source_kind='miot',controllable=True,capabilities=['cover.position'],binding_revision='synthetic-binding')])
+    permission={'operations':['cover.state']}
+    core=SimpleNamespace(actions=SimpleNamespace(cover_permission=lambda:permission,mijia=SimpleNamespace(lan=None)))
+    commands=DeviceCommands(core,lock,service)
+    commands.inventory=AsyncMock(return_value=[dict(id='curtain',kind='cover',source_kind='miot',controllable=True,capabilities=['cover.state'],binding_revision='synthetic-binding')])
     admitted=[True]
     await lock.acquire()
     task=asyncio.create_task(commands.command(None,'open','synthetic-gesture',target='curtain',dispatch_guard=lambda:admitted[0]))
@@ -22,7 +24,8 @@ async def test_gesture_expiring_behind_another_command_never_reaches_miot():
     # 手动界面命令不受摄像头事件短有效期的约束。
     manual=await commands.command(None,'open','synthetic-manual',target='curtain')
     assert manual['acknowledged']
-    service.miot_cover.assert_awaited_once_with('open','synthetic-manual',expected_revision='synthetic-binding')
+    service.miot_cover.assert_awaited_once_with('open','synthetic-manual',expected_revision='synthetic-binding',
+                                              permission=permission,dispatch_deadline=None,lan=None)
 
 @pytest.mark.asyncio
 async def test_actual_ha_send_boundary_rechecks_event_after_plan(tmp_path):

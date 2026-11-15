@@ -4,6 +4,7 @@ import asyncio
 import base64
 import collections
 import copy
+import hmac
 import json
 import os
 import secrets
@@ -17,6 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from homeplane.embodied.extensions import ActionBindings, RecognizerRegistry
 from homeplane.embodied.home_service import HomeService
+from homeplane.embodied.voice_decisions import VoiceDecisions
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.page_recording import PageRecording
 from homeplane.embodied.paths import (
@@ -52,8 +54,11 @@ from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_fra
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
-from homeplane.embodied.camera_audio import AudioIngress, deliver_audio
+from homeplane.embodied.camera_audio import AudioIngress, WakeCameraCue
+from homeplane.embodied import camera_interaction
+from homeplane.embodied.voice_routing import VoiceRouting
 from homeplane.embodied.vision_pipe import VisionProcess
+from homeplane.embodied.vision_benchmark import VisionBenchmark, camera_sample, valid_token
 from homeplane.people.live import IdentityStore, analyze, close_identity
 from homeplane.people.identity_session import IdentitySession
 
@@ -62,6 +67,8 @@ KEY_PATH = PRIVATE / "viewer-key"
 KEY = KEY_PATH.read_text().strip()
 ALLOWED_IPS = set(configuration()["viewer_hosts"])
 SELECTED = dict(camera())
+if SELECTED.get('preview_only') is True:
+    raise ValueError('camera_preview_only')
 wall = CameraWall(configuration()['cameras'])
 primary_wall_epoch = 0
 primary_retired_scope = None
@@ -111,13 +118,15 @@ games = MotionGames(require_presentation=True)
 party_camera = PartyCamera()
 recorder = PageRecording(DATA / "recordings")
 record_lock = asyncio.Lock()
-home = HomeService(SELECTED['id'])
+voice_routing = VoiceRouting(lambda: interaction_enabled and not (PRIVATE / 'voice-input-paused').exists())
+home = HomeService(SELECTED['id'], voice_routing=voice_routing, voice_decisions=VoiceDecisions(),
+                   input_allowed=lambda: camera_interaction.allowed(SELECTED['id'], directory=PRIVATE))
 from homeplane.embodied.interaction import InteractionEngine
 from homeplane.embodied.interaction_fleet import InteractionFleet
 from homeplane.embodied.practice import RecognitionPractice
 practice = RecognitionPractice()
 interaction = InteractionEngine(SELECTED["id"], SESSION)
-fleet = InteractionFleet()
+fleet = InteractionFleet(voice_revoked=voice_routing.discard)
 secondary_homes = {}
 identity_store = IdentityStore(PRIVATE / "identities.sqlite")
 from homeplane.embodied.safety import SafetyRuntime, SafetyStore
@@ -150,7 +159,9 @@ async def dispatch_interactions(events):
                 party=party_camera.window(time.monotonic())
                 if party[2]or party[:2]!=expected_party:return
             service = home if e['camera'] == SELECTED['id'] else secondary_homes.get(e['camera'])
-            if not (interaction_enabled and service and service.armed and interaction_source_current(e)
+            if not (interaction_enabled and service and service.armed
+                    and getattr(service, 'input_allowed', lambda: True)()
+                    and interaction_source_current(e)
                     and fleet.current(e,time.monotonic())) or practice.suppresses(e['camera']):return
             from homeplane.embodied.bridge import command
             receipt = await command(None,e['action'],e['event_id'],target=e['target'],camera_id=e['camera'],
@@ -166,13 +177,16 @@ async def dispatch_interactions(events):
         home.spawn(dispatch())
 
 
-def clear_interactions(camera_id):
+def clear_interactions(camera_id, *, keep_wake=False):
     fleet.clear(camera_id)
     service=home if camera_id==SELECTED['id'] else secondary_homes.get(camera_id)
     if service:
-        service.selected=False;service.epoch+=1;service.vad=[];service.pending_audio=None
-        service.armed=False;service.audio_allowed=False;service.speaking=False;service.last_audio=None
+        service.selected=False;service.epoch+=1;service.pending_audio=None
+        service.armed=False;service.audio_allowed=False
+        service.discard_audio()
         service.camera_session=None;service.camera_focus=None
+        if not keep_wake:
+            service.wake_camera = None
 
 
 def clear_camera(camera_id):
@@ -180,9 +194,22 @@ def clear_camera(camera_id):
     clear_interactions(camera_id)
 
 
-def clear_camera_view(camera_id):
+def clear_camera_view(camera_id, *, keep_wake=True):
     safety.clear_view(camera_id)
-    clear_interactions(camera_id)
+    clear_interactions(camera_id, keep_wake=keep_wake)
+
+
+def clear_camera_observation(camera_id):
+    clear_camera_view(camera_id, keep_wake=False)
+
+
+def camera_motion_cue(camera_id, sample, active):
+    safety_active = None if isinstance(active, WakeCameraCue) else active
+    cue = safety.sound_search_cue(camera_id, sample.get('session_id'), safety_active)
+    if cue is not None or not interaction_enabled:
+        return cue
+    service = home if camera_id == SELECTED['id'] else secondary_homes.get(camera_id)
+    return service.wake_motion_cue(sample, time.monotonic()) if service else None
 
 
 def calibration_source():
@@ -201,7 +228,7 @@ def invalidate_calibration():
     tracks.invalidate()
     pet_tracks.clear()
     identities.discard()
-    clear_camera(SELECTED['id'])
+    clear_camera_observation(SELECTED['id'])
     wall.clear_observation(SELECTED['id'])
     if camera_planner:
         camera_planner.views.clear()
@@ -223,8 +250,9 @@ def close_primary_view():
     global motion_generation
     motion_generation += 1
     calibration_frames.clear()
-    state.update(status='shutter_closed',recognition='waiting',reason='privacy_shutter_closed',people=[],hands=[],frame=None,
-                 animals=[],animals_current=False,scene={'objects': []},_patrol_view=None)
+    state.update(status='shutter_closed', recognition='waiting', reason='privacy_shutter_closed',
+                 error_stage='shutter_readback', error_class=None, people=[], hands=[], frame=None,
+                 animals=[], animals_current=False, tracking_current=False, scene={'objects': []}, _patrol_view=None)
     pet_tracks.clear()
     wall.clear(SELECTED['id'], primary_wall_epoch)
     clear_camera(SELECTED['id'])
@@ -245,7 +273,7 @@ async def primary_capture_closed(my_generation, wall_epoch, reason, error_class=
     motion_generation += 1
     latest, last_frame, last_jpeg, last_preview, last_preview_at = None, 0, b'', b'', 0.0
     state.update(frame=None, recognition='waiting', people=[], hands=[], animals=[], animals_current=False, room=None,
-                 scene={'objects': []}, _patrol_view=None)
+                 tracking_current=False, scene={'objects': []}, _patrol_view=None)
     if state.get('status') != 'shutter_closed':
         state.update(status='unavailable', reason=reason, error_class=error_class, error_stage=stage)
     home.armed = False
@@ -299,26 +327,26 @@ async def secondary_observation(observation, process):
         time.time()-(time.monotonic()-observation['captured_mono']),
         hands=observation['hands'],
         moving=observation['registration'].get('status') in {'moving','settling','lost','stale'})
-    active=interaction_enabled
+    if camera_id not in secondary_homes:
+        secondary_homes[camera_id] = HomeService(camera_id, voice_provider=home, voice_routing=voice_routing,
+            input_allowed=lambda: camera_interaction.allowed(camera_id, directory=PRIVATE))
+    service=secondary_homes[camera_id]
+    active=interaction_enabled and getattr(service, 'input_allowed', lambda: True)()
     events=fleet.update(camera_id,observation['session'],observation['people'],observation['hands'],
         observation['registration'],active,observation['now'],captured_mono=observation['captured_mono'])
     await dispatch_interactions(events)
     if not secondary_frame_current(observation, process):return
-    if camera_id not in secondary_homes:secondary_homes[camera_id]=HomeService(camera_id,voice_provider=home)
-    service=secondary_homes[camera_id]
     if active and not service.enabled:await service.enable()
     if not secondary_frame_current(observation, process):return
     service.armed=active
     item=fleet.cameras.get(camera_id,{})
     now = time.monotonic()
-    service.audio_allowed=fleet.voice(camera_id, now, service.attention.candidate() is not None,
-        people=len(observation['people']), session=observation['session'],
-        speaking=bool(service.speaking and service.last_audio is not None and 0 <= now-service.last_audio <= .6),
+    service.audio_allowed=fleet.voice(camera_id, now, session=observation['session'],
         enabled=active and service.armed and 0 <= now-observation['now'] <= 1.5
             and not (PRIVATE/'voice-input-paused').exists())
     await service.observe(observation['people'],observation['faces'],observation['registration'],
         observation['now'],process,active,item.get('owner'),gestures_enabled=False,
-        sound_review=safety.sound_requested(camera_id),session_id=observation['session'],
+        session_id=observation['session'],
         captured_mono=observation['captured_mono'])
 
 
@@ -327,14 +355,32 @@ async def secondary_audio(camera_id, packet):
     service=secondary_homes.get(camera_id)
     if service:
         service.audio_allowed = service.audio_allowed and fleet.voice_current(camera_id, time.monotonic())
-        await deliver_audio(service, packet)
+        service.offer_audio(packet)
+
+
+vision_measurement = VisionBenchmark()
+
+
+def benchmark_full_vision():
+    return (vision_measurement.active()
+            and vision_measurement.status(vision_measurement_sample())['full_rate'])
+
+
+def needs_full_vision(camera_id, session):
+    service = home if camera_id == SELECTED['id'] else secondary_homes.get(camera_id)
+    wake = service.current_wake(time.monotonic()) if service else None
+    return (practice.suppresses(camera_id)
+            or bool(service and (service.speaking or service.voice_busy))
+            or bool(wake and wake.session == session)
+            or safety.review_pending(camera_id, session) or safety.fall_pending(camera_id, session))
 
 
 previews = PreviewPool(identity_store=identity_store, continuous=True, recognize=True, wall=wall,
     on_observation=secondary_observation,on_audio=secondary_audio,on_clear=clear_camera,
-    on_motion=clear_camera_view, on_capture_frame=safety.capture_frame,
+    on_motion=clear_camera_view, on_view_lost=clear_camera_observation, on_capture_frame=safety.capture_frame,
     review_pending=safety.review_pending, fall_pending=safety.fall_pending,
-    sound_cue=safety.sound_search_cue, sound_view=safety.offer_sound_search_frame,
+    sound_cue=camera_motion_cue, sound_view=safety.offer_sound_search_frame, needs_full_vision=needs_full_vision,
+    full_vision=benchmark_full_vision,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
     occupied_elsewhere=lambda cid: (cid!=SELECTED['id'] and bool(view().get('people')))
         or any(other!=cid and previews.status(other)['state']=='live' and item.get('people',0)
@@ -344,13 +390,19 @@ bindings = ActionBindings(registry)
 configure(registry, bindings, games, home)
 
 
-async def motor_step(direction, observed=None, expected_intent=None, decision_current=None):
+async def motor_step(direction, observed=None, expected_intent=None, decision_current=None, wake=None):
+    from homeplane.embodied.ptz_control import motor_dispatch_window
+    from homeplane.embodied.wake_diagnostics import record_wake_motor
+
     global motor_sequence, motion_generation, motor_last_sent
     if direction not in ("left", "right", "up", "down"):
         raise ValueError("invalid_motor_direction")
     if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
+    if state.get('status') not in {'connecting', 'live'}:
+        raise RuntimeError('capture_source_changed')
     if (
         not capture
+        or capture.returncode is not None
         or not capture.stdin
         or not camera_lease
         or not camera_lease.snapshot
@@ -372,23 +424,22 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
     began = time.monotonic()
     expires = min(began+1.5, observed+1.5) if observed is not None else began+1.5
     sent = False
+    wake_submitted_at = None
     home.runtime_log.record('embodied.command','start',correlation=correlation)
     try:
-        if not await camera_is_open(SELECTED):
-            close_primary_view()
-            raise RuntimeError('privacy_shutter_closed')
-        async with room_lock:
-            if not await camera_is_open(SELECTED):
-                close_primary_view()
-                raise RuntimeError('privacy_shutter_closed')
-            # Registration and privacy reads may have waited. No await separates
-            # the final authority/observation check from reserving and writing.
+        async with motor_dispatch_window(room_lock, expires, lambda: camera_is_open(SELECTED),
+                                         monotonic=time.monotonic) as opened:
+            # 等待隐私读回时采集可能已结束，旧读回不能修改当前状态或放行转向。
             if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
             if (capture is not owned_capture or camera_lease is not owned_lease
+                    or owned_capture.returncode is not None
                     or not camera_lease.snapshot or camera_lease.snapshot.get('status')!='owned'):
                 raise RuntimeError('camera_not_owned')
-            if motion_generation != owned_motion_generation:
+            if motion_generation != owned_motion_generation or state.get('status') not in {'connecting', 'live'}:
                 raise RuntimeError('capture_source_changed')
+            if not opened:
+                close_primary_view()
+                raise RuntimeError('privacy_shutter_closed')
             if expected_intent is not None and (camera_planner is not owned_planner
                     or not camera_planner or camera_planner.intent_revision != expected_intent):
                 raise RuntimeError('camera_intent_changed')
@@ -411,15 +462,19 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             fleet.clear(SELECTED['id'])
             home.selected = False
             home.epoch += 1
-            home.vad = []
+            home.discard_audio()
             home.pending_audio = None
             if room:
                 room.expect_motion(now, 2)
             capture.stdin.write((json.dumps(dict(action='motor_step', direction=direction,
                 request_id=request_id, expires_mono=expires))+'\n').encode())
             sent = True
+            if wake is not None:
+                wake_submitted_at = record_wake_motor(home.runtime_log, wake, direction, counts=home.wake_motion_counts,
+                                                     submitted_at=time.monotonic())
         await capture.stdin.drain()
         result = await asyncio.wait_for(future, 3)
+        wake_reply_at = time.monotonic() if wake is not None else None
         if result.get('error_code') == 'motor_request_expired':
             raise RuntimeError('motor_request_expired')
         if result.get("error_class") or result.get("native_code") != 0:
@@ -427,15 +482,25 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
         state["local_motor"] = dict(result, at=time.time())
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             elapsed_ms=round((time.monotonic()-began)*1000))
+        if wake is not None:
+            record_wake_motor(home.runtime_log, wake, direction, result='ok', counts=home.wake_motion_counts,
+                              submitted_at=wake_submitted_at, acknowledged_at=wake_reply_at)
         return result
     except asyncio.CancelledError:
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             result='cancelled',code='control_cancelled_after_send' if sent else 'control_cancelled_before_dispatch',
             elapsed_ms=round((time.monotonic()-began)*1000))
+        if wake is not None:
+            record_wake_motor(home.runtime_log, wake, direction, result='cancelled', sent=sent)
         raise
-    except Exception:
+    except Exception as error:
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             result='unavailable',code='runtime_error',elapsed_ms=round((time.monotonic()-began)*1000))
+        if wake is not None:
+            code = str(error)
+            record_wake_motor(home.runtime_log, wake, direction, result='unavailable', sent=sent,
+                              rejected=code in {'local_motor_rejected', 'motor_request_expired'} and sent,
+                              blocked=code)
         raise
     finally:
         motor_waiters.pop(request_id, None)
@@ -443,33 +508,52 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
 
 
 async def camera_search():
+    from homeplane.embodied.camera_audio import WakeCameraCue
+
     global camera_lease, camera_planner
-    io = Transport()
-    lease = CameraLease(io, open_privacy=False, restore_native=True)
-    camera_lease = lease
-    planner = None
+    owner = capture
+    io = lease = planner = None
+    published = retry = False
+
+    def owns_source():
+        return (capture is owner and state.get('status') in {'connecting', 'live'}
+                and (owner is None or owner.returncode is None))
+
     try:
+        io = Transport()
+        lease = CameraLease(io, open_privacy=False, restore_native=True)
         await lease.acquire()
+        if not owns_source():
+            return False
+        acquired_at = time.monotonic()
         planner = SearchPlanner(lease.presets, time.monotonic(), lease.active)
         intent = camera_intents.load()
         planner.mode, planner.intent_revision = intent.mode, intent.revision
         planner.intent_status = intent.status
         if os.environ.get("FRIDAY_CAMERA_HOLD")=="1":planner.mode="hold"
-        camera_planner = planner
         director = CameraDirector()
         from homeplane.embodied.camera_follow_picker import CameraFollowPicker
 
+        planner.director = director
         planner.follow_picker = CameraFollowPicker(director, lambda: primary_follow_sample(),
             lambda: (planner.mode, planner.intent_revision), lambda mode: set_primary_camera_mode(mode))
+        camera_lease, camera_planner = lease, planner
+        published = True
         checked = 0.0
-        while True:
+        while owns_source():
             now = time.monotonic()
             if now-checked >= 10:
                 checked = now
-                if not await camera_is_open(SELECTED):
+                opened = await camera_is_open(SELECTED)
+                if not owns_source():
+                    return False
+                if not opened:
                     close_primary_view()
                     return
             now = time.monotonic()
+            if owner is not None and last_frame <= acquired_at:
+                await asyncio.sleep(.3)
+                continue
             sample = dict(state, _local_received=last_frame, game=games.public,
                 party_camera=party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
                     frame_mono=last_frame,now=now))
@@ -480,8 +564,8 @@ async def camera_search():
                                         occupied_elsewhere=elsewhere,
                                         review_pending=safety.review_pending(SELECTED['id'], sample.get('session_id')),
                                         fall_pending=safety.fall_pending(SELECTED['id'], sample.get('session_id')),
-                                        sound_cue=safety.sound_search_cue(SELECTED['id'], sample.get('session_id'),
-                                                                         director.sound_search_cue)) if planner.mode!='hold' else None
+                                        sound_cue=camera_motion_cue(SELECTED['id'], sample,
+                                                                    director.sound_search_cue)) if planner.mode!='hold' else None
             if planner.mode == 'hold':director.hold()
             if proof := director.take_sound_view():
                 def source_current(owner=capture, source_generation=generation,
@@ -489,7 +573,7 @@ async def camera_search():
                     return (owner is not None and owner is capture and owner.returncode is None
                             and source_generation == generation and state.get('status') == 'live'
                             and state.get('session_id') == session and camera_planner is planner
-                            and planner.mode in {'auto', 'survey'} and planner.intent_revision == revision)
+                            and planner.mode in {'auto', 'survey', 'patrol'} and planner.intent_revision == revision)
 
                 safety.offer_sound_search_frame(SELECTED['id'], proof, last_jpeg, source_current=source_current)
             state['camera_control'] = dict(planner.public(lease.presets), **director.public())
@@ -505,48 +589,98 @@ async def camera_search():
                             focus=getattr(home,'camera_focus',None), occupied_elsewhere=occupied,
                             review_pending=safety.review_pending(SELECTED['id'], current.get('session_id')),
                             fall_pending=safety.fall_pending(SELECTED['id'], current.get('session_id')),
-                            sound_cue=safety.sound_search_cue(SELECTED['id'], current.get('session_id'),
-                                                             director.sound_search_cue))
+                            sound_cue=camera_motion_cue(SELECTED['id'], current, director.sound_search_cue))
+                    wake = (director.pending_decision or {}).get('sound_cue')
+                    diagnostics = {'wake': wake} if isinstance(wake, WakeCameraCue) else {}
                     await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
-                                     decision_current=decision_current)
+                                     decision_current=decision_current, **diagnostics)
                     director.sent(time.monotonic())
                     lease.event('local_follow_impulse', direction=direction)
                 except (RuntimeError, OSError, TimeoutError) as error:
                     # Capture connection is not ready during startup; retry only
                     # after a new fresh observation, with no queued motor commands.
-                    if str(error) not in {'stale_input', 'camera_intent_changed', 'motor_busy', 'motor_request_expired', 'capture_source_changed'}:
+                    if str(error) not in {'stale_input', 'camera_intent_changed', 'motor_busy',
+                                          'motor_request_expired', 'motor_privacy_timeout', 'capture_source_changed'}:
                         state['camera_control']['phase'] = 'motor_unavailable'
                         director.failed(time.monotonic())
             await asyncio.sleep(.3)
     except asyncio.CancelledError:
         raise
     except Exception as error:
+        retry = not published and str(error) != 'privacy_shutter_closed'
+        if not published and not retry and owner is not None:
+            try:
+                await primary_capture_closed(generation, primary_wall_epoch, 'camera_state_unavailable',
+                                             type(error).__name__, stage='shutter_readback')
+            finally:
+                await reap(owner)
         if planner is None or planner.mode != 'survey':
             state["camera_control"] = {
                 "owner": "none",
                 "phase": "unavailable",
-                "reason": "接管失败",
+                "reason": "暂时无法转向",
                 "error_class": type(error).__name__,
             }
     finally:
-        survey_ended = planner is not None and planner.mode == 'survey'
+        survey_ended = published and planner.mode == 'survey'
         if survey_ended:
             readback = camera_intent_readback(state.get('camera_control') or {}, mode='survey',
                                              revision=planner.intent_revision, status=planner.intent_status)
             state['camera_control'] = finish_camera_survey(dict(readback, owner='none'))
-        camera_planner = None
+        if published:
+            camera_lease = camera_planner = None
         try:
-            # No queued motor command may run after vendor tracking is restored.
+            # 曾经发放控制权时，采集进程须退出，之后才能恢复厂商的跟随设置。
             try:
-                await reap(capture)
+                if published:
+                    await reap(owner)
             finally:
-                restored = await lease.release()
-                released = dict(owner='none', phase='restored' if restored else 'restore_pending',
-                                reason='镜头已释放' if restored else '镜头待释放')
-                state['camera_control'] = dict(state['camera_control'], **released) if survey_ended else released
+                restored = lease is None or await lease.release()
+                if published or not restored:
+                    released = dict(owner='none', phase='restored' if restored else 'restore_pending',
+                                    reason='镜头已释放' if restored else '镜头待释放')
+                    state['camera_control'] = dict(state['camera_control'], **released) if survey_ended else released
         finally:
-            try:await io.close()
-            finally:camera_lease = None
+            if io is not None:
+                await io.close()
+    return retry
+
+
+async def supervise_primary_motion(owner):
+    while capture is owner and owner.returncode is None and state.get('status') in {'connecting', 'live'}:
+        if not await camera_search():
+            return
+        await asyncio.sleep(5)
+
+
+async def watch_primary_privacy(owner, my_generation, wall_epoch):
+    def current():
+        return (capture is owner and owner.returncode is None and my_generation == generation
+                and wall_epoch == primary_wall_epoch and state.get('status') in {'connecting', 'live'})
+
+    while current():
+        await asyncio.sleep(10)
+        if not current():
+            return
+        if camera_lease is not None:
+            continue
+        try:
+            opened = await camera_is_open(SELECTED)
+            error_class = None
+        except Exception as error:
+            opened, error_class = None, type(error).__name__
+        if not current():
+            return
+        if opened is True:
+            continue
+        try:
+            if opened is False:
+                close_primary_view()
+            reason = 'privacy_shutter_closed' if opened is False else 'camera_state_unavailable'
+            await primary_capture_closed(my_generation, wall_epoch, reason, error_class, stage='shutter_readback')
+        finally:
+            await reap(owner)
+        return
 
 
 def rate(times):
@@ -564,13 +698,20 @@ def view():
     now = time.monotonic()
     result = dict(state)
     result.pop('_patrol_view', None)
+    result.pop('_wake_source', None)
     result['party_camera'] = party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
         frame_mono=last_frame,now=now)
     result["game"] = games.viewer_state()
     result["recording"] = recorder.public()
     result['safety_recording'] = safety.recording_status()
     result["home"] = home.public()
-    result["voice_sessions"] = [dict(camera=cid,**{key:service.public().get(key) for key in ("enabled","voice","reason","last_transcript","last_event","voice_command","audio_input","audio_analysis")}) for cid,service in [(SELECTED["id"],home),*secondary_homes.items()]]
+    voice_fields = ("enabled", "voice", "reason", "last_transcript", "last_event", "voice_command",
+                    "audio_input", "audio_analysis", "voice_ingress")
+    result["voice_sessions"] = [
+        dict(camera=cid, **{key: report.get(key) for key in voice_fields})
+        for cid, report in [(SELECTED["id"], result["home"]),
+                            *((cid, service.public()) for cid, service in secondary_homes.items())]
+    ]
     result['interactions'] = fleet.public(now)
     result['voice_input'] = not (PRIVATE/'voice-input-paused').exists()
     if camera_planner and result.get('camera_control'):
@@ -589,8 +730,14 @@ def view():
             room=None,
             game=dict(result['game'], status="paused", reason="实时画面已过期", players=[]),
         )
-    if result['status'] != 'live' and result.get('camera_control'):
-        result['camera_control'] = dict(result['camera_control'], view_usable=False, target_locked=False)
+    if control := result.get('camera_control'):
+        retired = control.get('owner') == 'friday' and (
+            state['status'] not in {'connecting', 'live'} or capture is None or capture.returncode is not None)
+        if retired or result['status'] != 'live':
+            control = dict(control, view_usable=False, target_locked=False, scheduled_survey_active=False)
+            if retired:
+                control.update(owner='none', phase='restore_pending', reason='镜头待释放')
+            result['camera_control'] = control
     if result['status'] != 'live':
         result['game'] = dict(result['game'], players=[])
         if result['game'].get('mode') != 'off' and result['game'].get('status') != 'complete':
@@ -612,14 +759,45 @@ def view():
     result['recognition'] = recognition
     primary = dict(camera=SELECTED['id'], state=primary_state, frames=state['processed_frames'],
                    recognition=recognition,
+                   vision_cadence=state.get('vision_cadence'),
                    latency_ms=state.get('pipeline_ms') if recognizing else None)
     result['camera_sessions'] = [primary, *[previews.status(c['id'])
         for c in configuration()['cameras'] if c['id'] != SELECTED['id']]]
+    for session in result['camera_sessions']:
+        service = home if session['camera'] == SELECTED['id'] else secondary_homes.get(session['camera'])
+        if service is not None:
+            session['interaction_enabled'] = getattr(service, 'input_allowed', lambda: True)()
     return result
 
 
 def authorized(client, key):
     return bool(client and client.host in ALLOWED_IPS and secrets.compare_digest(key or "", KEY))
+
+
+def television_host(client):
+    return bool(client and client.host in ALLOWED_IPS and client.host in configuration().get('tv_viewer_hosts', []))
+
+
+def television_key(host):
+    """将电视舞台凭据绑定已登记的电视地址。"""
+    return hmac.digest(KEY.encode(), f'friday-motion-tv-v1:{host}'.encode(), 'sha256').hex()
+
+
+def television_access(request):
+    key = request.query_params.get('k', '')
+    return (len(key) == 64 and key.isascii() and television_host(request.client)
+            and secrets.compare_digest(key, television_key(request.client.host)))
+
+
+def television_packet():
+    game = games.television_state()
+    mode = {'simulated': True} if state.get('simulated') is True else {}
+    if game is None:
+        return dict(television_idle=True, **mode)
+    status = state['status']
+    if status == 'live' and not (last_frame and 0 <= time.monotonic()-last_frame <= 1.5):
+        status = 'unavailable'
+    return dict(game=game, status=status, **mode)
 
 
 async def reap(process):
@@ -635,6 +813,9 @@ async def reap(process):
 
 
 async def run_source(my_generation):
+    from homeplane.embodied.miot_spec import camera_can_take_motor
+    from homeplane.embodied.vision_cadence import VisionCadence
+
     global capture, latest, last_frame, tracks, pet_tracks, last_jpeg, room, primary_wall_epoch
     global last_preview, last_preview_at
     primary_wall_epoch = wall.begin(SELECTED['id'])
@@ -649,18 +830,25 @@ async def run_source(my_generation):
     home.armed = False
     home.selected = False
     home.epoch += 1
-    home.vad = []
+    home.discard_audio()
     home.pending_audio = None
+    home.wake_camera = None
     fleet.clear(SELECTED['id'])
     home.gesture.reset()
     tracks = Tracks()
     pet_tracks = PetTracks()
     processed_times.clear()
     captured_times.clear()
+    cadence = VisionCadence(full_rate=lambda: benchmark_full_vision())
+    gate_generation = None
     state.update(
         status="connecting",
         recognition="waiting",
+        camera_control=None,
+        vision_cadence=cadence.public(),
         reason=None,
+        error_stage=None,
+        error_class=None,
         frame=None,
         people=[],
         hands=[],
@@ -669,9 +857,9 @@ async def run_source(my_generation):
         _patrol_view=None,
         game={"mode": games.mode, "status": "paused", "reason": "实时画面已过期", "players": []},
     )
-    camera_task = None
+    camera_task = privacy_task = None
     vision = None
-    stage = "source_start"
+    stage = 'shutter_readback'
 
     def recognition_failed(error_class):
         global latest, last_frame, last_jpeg, last_preview, last_preview_at
@@ -679,6 +867,7 @@ async def run_source(my_generation):
         if (my_generation != generation or primary_wall_epoch != wall_epoch
                 or state['status'] not in {'connecting', 'live'}):
             return
+        cadence.reset()
         if state.get('recognition') != 'recovering':
             # 撤销依赖识别的旧画面、跟踪和动作。原采集继续更新未标注预览。
             invalidate_calibration()
@@ -688,30 +877,15 @@ async def run_source(my_generation):
         state.update(status='connecting', recognition='recovering', session_id=identities.session, frame=None,
                      reason='recognition_recovering', error_stage='vision_request', error_class=error_class)
     try:
-        if not await camera_is_open(SELECTED):
-            state.update(status='shutter_closed', reason='privacy_shutter_closed')
-            await notify()
+        opened = await camera_is_open(SELECTED)
+        if my_generation != generation:
             return
-        camera_task = asyncio.create_task(camera_search()) if SELECTED.get('takeover') else None
-        # Preview may have been physically shuttered before this lease. Wait
-        # for its read-back-confirmed takeover before asking the SDK for video.
-        ready_by = time.monotonic() + 30
-        while camera_task and not (
-            camera_lease and camera_lease.snapshot and camera_lease.snapshot.get("status") == "owned"
-        ):
-            if camera_task.done() or time.monotonic() > ready_by:
-                raise RuntimeError("camera_takeover_not_ready")
-            await asyncio.sleep(0.1)
-        if camera_lease and camera_lease.snapshot.get("before", {}).get("camera_power") is False:
-            # Property ACK precedes the C700's physical privacy shutter. Allow
-            # hardware to wake before starting the local SDK handshake.
-            await asyncio.sleep(5)
-        stage = 'shutter_readback'
-        if not await camera_is_open(SELECTED):
-            state.update(status='shutter_closed', reason='privacy_shutter_closed')
+        if not opened:
+            state.update(status='shutter_closed', reason='privacy_shutter_closed', error_stage='shutter_readback')
             await notify()
             return
         stage = 'source_start'
+        motor_enabled = bool(SELECTED.get('takeover')) and camera_can_take_motor(SELECTED)
         capture_session = secrets.token_hex(16)
         audio_ingress = AudioIngress(SELECTED, capture_session)
         capture = await asyncio.create_subprocess_exec(
@@ -726,16 +900,21 @@ async def run_source(my_generation):
             limit=6_000_000,
         )
         vision = VisionProcess(VISION)
+        state['body_rescue_total'] = None
+        vision_measurement.primary_timings = vision.timings
         capture.stdin.write(
             (
                 json.dumps(
-                    {"source": "miloco", "camera": SELECTED["id"], "motor": bool(camera_task),
+                    {"source": "miloco", "camera": SELECTED["id"], "motor": motor_enabled,
                      "audio": True, "identity": False, "capture_session": capture_session}
                 )
                 + "\n"
             ).encode()
         )
         await capture.stdin.drain()
+        privacy_task = asyncio.create_task(watch_primary_privacy(capture, my_generation, wall_epoch))
+        if motor_enabled:
+            camera_task = asyncio.create_task(supervise_primary_motion(capture))
         queue = asyncio.Queue(maxsize=1)
         latest_item = None
         last_selection = None
@@ -745,6 +924,7 @@ async def run_source(my_generation):
             nonlocal scene_data
             detector = SceneProcess(MODELS / "yolov8n.onnx")
             processed_at = None
+            quiet_check_at = -100.0
             try:
                 while my_generation == generation:
                     item = latest_item
@@ -753,8 +933,24 @@ async def run_source(my_generation):
                         my_generation, wall_epoch, i, m, latest_item)
                     key = ((item['received_at'], item['capture_session'],
                             item['camera_source_context'], frame_generation) if current() else None)
+                    now = time.monotonic()
+                    planner = camera_planner
+                    intent = (planner.mode, planner.intent_revision) if planner else None
+                    quiet = (key is not None and type(item.get('scene_quiet_ms')) is int
+                             and item['scene_quiet_ms'] >= cadence.minimum_quiet_ms
+                             and not benchmark_full_vision()
+                             and cadence.intent == intent and now >= cadence.active_until
+                             and cadence.latest_capture is not None and 0 <= now - cadence.latest_capture <= 1
+                             and not state.get('people') and not state.get('animals')
+                             and games.mode in {'home','off'} and not party_camera.window(now)[2]
+                             and not (planner and (planner.director.intent != intent
+                                                   or planner.director.needs_full_vision(now)))
+                             and not needs_full_vision(SELECTED['id'], identities.session))
+                    if quiet and time.monotonic()-quiet_check_at < 2:
+                        key = None
                     if key is not None and key != processed_at:
                         processed_at = key
+                        quiet_check_at = time.monotonic()
                         try:
                             result = await detector.analyze(base64.b64decode(item['jpeg'], validate=True),
                                 context=dict(generation=my_generation, wall_epoch=wall_epoch,
@@ -805,7 +1001,7 @@ async def run_source(my_generation):
                         admission = (audio_ingress.reject('camera_paused') if state.get('status') == 'shutter_closed'
                             else audio_ingress.accept(item,wall=time.time(),mono=time.monotonic()))
                         safety.observe_audio(SELECTED['id'], admission)
-                        await deliver_audio(home,admission)
+                        home.offer_audio(admission)
                         continue
                     if item.get("type") == "motor_result":
                         future = motor_waiters.get(item.get("request_id"))
@@ -820,10 +1016,11 @@ async def run_source(my_generation):
                         item['_motion_generation'] = motion_generation
                     latest_item = item
                     if item.get("type") == "frame":
-                        audio_ingress.observe_frame(item,wall=time.time(),mono=time.monotonic())
+                        fresh_frame = audio_ingress.observe_frame(item, wall=time.time(), mono=time.monotonic())
                         if state.get('status') in {'connecting', 'live'}:
                             safety.capture_frame(SELECTED['id'], audio_ingress.session, audio_ingress.context,
-                                                 audio_ingress.frame_at)
+                                audio_ingress.frame_at, source_name=item.get('camera_source_name'),
+                                audio_writer=getattr(capture, 'stdin', None) if fresh_frame else None)
                         if time.monotonic()-last_video_lease>.7:
                             last_video_lease=time.monotonic()
                             capture.stdin.write((json.dumps(dict(action='video_window',enabled=wall.video[SELECTED['id']].subscribers>0))+'\n').encode())
@@ -878,14 +1075,32 @@ async def run_source(my_generation):
                 if frame_motion_generation != motion_generation:
                     continue
                 if not 0 <= time.time() - item['received_at'] <= 1.5:
-                    safety.clear(SELECTED['id'])
+                    safety.clear_view(SELECTED['id'])
                     fleet.clear(SELECTED['id'])
                     home.selected = False
                     home.epoch += 1
+                    home.discard_audio()
                     identities.discard()
                     continue
                 if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
                     continue
+                # 旧采集或测试入口未携带运动证据时，沿用原识别节奏。
+                if 'scene_quiet_ms' in item:
+                    if gate_generation != frame_motion_generation:
+                        cadence.reset()
+                        gate_generation = frame_motion_generation
+                    now = time.monotonic()
+                    planner = camera_planner
+                    intent = (planner.mode, planner.intent_revision) if planner else None
+                    force = (games.mode not in {'off', 'home'} or party_camera.window(now)[2]
+                             or now < motor_last_sent + cadence.settle_seconds
+                             or (planner and (planner.director.intent != intent
+                                              or planner.director.needs_full_vision(now)))
+                             or needs_full_vision(SELECTED['id'], identities.session))
+                    process_frame = cadence.due(item, now, force=force, intent=intent)
+                    state['vision_cadence'] = cadence.public()
+                    if not process_frame:
+                        continue
                 phase_at = time.monotonic()
                 timings = dict(queue_age_ms=round((time.time()-item['received_at'])*1000,1))
                 # Pixel data remains exclusively in local process pipes and memory.
@@ -907,12 +1122,15 @@ async def run_source(my_generation):
                     "jpeg": item["jpeg"],
                     "face_jpeg": item.get("face_jpeg"),
                     "person_rois": rois,
+                    "allow_wide_pose_rescue": 'scene_quiet_ms' not in item or cadence.wide_pose_rescue,
                     "hand_interval_ms": 140 if games.mode not in ("off", "home") else 80,
                     "attention_enabled": True,
                     "animals_enabled": pet_revision is not None,
                 }, on_failure=recognition_failed)
                 if detection is None:
+                    cadence.reset()
                     continue
+                state['body_rescue_total'] = vision.body_rescue_passes
                 timings['vision_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 phase_at = time.monotonic()
                 if my_generation != generation:
@@ -921,21 +1139,26 @@ async def run_source(my_generation):
                 if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
                     state['pipeline_timing'] = dict(timings, dropped_stage='after_vision')
                     if frame_motion_generation == motion_generation:
-                        safety.clear(SELECTED['id'])
-                        fleet.clear(SELECTED['id']);home.selected=False;home.epoch+=1;identities.discard()
+                        safety.clear_view(SELECTED['id'])
+                        fleet.clear(SELECTED['id'])
+                        home.selected = False
+                        home.epoch += 1
+                        home.discard_audio()
+                        identities.discard()
                     continue
                 now = time.monotonic()
                 picture = base64.b64decode(item["jpeg"])
                 if room is None:
                     room = RoomSession(CAMERA_STORAGE, scope=source_scope)
                 hands = detection.get("hands", [])
+                pet_rows = PetTracks.read_rows(detection)
                 async with room_lock:
                     frame_room = room
                     frame_current = lambda: primary_frame_current(my_generation, frame_motion_generation, item['received_at'])
                     if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
                         continue
                     masks = [{"box": b} for b in detection.get("boxes", [])]
-                    masks.extend({'box': row['box']} for row in PetTracks.read_rows(detection) or [])
+                    masks.extend({'box': row['box']} for row in pet_rows or [])
                     registered = await frame_room.register(picture, masks, now, current=frame_current,
                         active=lambda: scene_frame_current(my_generation, wall_epoch, item,
                             frame_motion_generation, latest_item, warming=True))
@@ -989,10 +1212,11 @@ async def run_source(my_generation):
                     if my_generation != generation:return
                     state['pipeline_timing']['dropped_stage'] = 'after_identity'
                     if frame_motion_generation == motion_generation:
-                        safety.clear(SELECTED['id'])
+                        safety.clear_view(SELECTED['id'])
                         fleet.clear(SELECTED['id'])
                         home.selected = False
                         home.epoch += 1
+                        home.discard_audio()
                         identities.discard()
                     continue
                 by_track = {r["track"]: r for r in identity_rows}
@@ -1047,9 +1271,10 @@ async def run_source(my_generation):
                     )
                 state["extension_events"] = [e.model_dump() for e in extension_events]
                 phase_at = time.monotonic()
-                if interaction_enabled:
+                camera_input = interaction_enabled and getattr(home, 'input_allowed', lambda: True)()
+                if camera_input:
                     await home.enable()
-                elif not interaction_enabled:
+                else:
                     home.armed = False
                 if state.get('status')=='shutter_closed':return
                 if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
@@ -1059,7 +1284,7 @@ async def run_source(my_generation):
                 last_selection = games.selected_mode
                 game_window = (games.control_context, games.control_revision)
                 party_window=party_camera.window(time.monotonic())
-                gesture_active = interaction_enabled and games.mode in {'off', 'home'}and not party_window[2]
+                gesture_active = camera_input and games.mode in {'off', 'home'}and not party_window[2]
                 practice.observe(SELECTED['id'], identities.session, people, hands,
                     layout['registration'], now, now-(time.time()-item['received_at']))
                 interaction_events=fleet.update(SELECTED['id'],identities.session,people,hands,
@@ -1071,10 +1296,8 @@ async def run_source(my_generation):
                     event['_party_window'] = party_window[:2]
                 voice_now = time.monotonic()
                 voice_captured_mono = voice_now - (time.time() - item['received_at'])
-                home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,home.attention.candidate() is not None,
-                    people=len(people), session=identities.session,
-                    speaking=bool(home.speaking and home.last_audio is not None and 0 <= voice_now-home.last_audio <= .6),
-                    enabled=interaction_enabled and home.armed and 0 <= voice_now-now <= 1.5
+                home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,session=identities.session,
+                    enabled=camera_input and home.armed and 0 <= voice_now-now <= 1.5
                         and not (PRIVATE/'voice-input-paused').exists())
                 await home.observe(
                     people,
@@ -1085,7 +1308,6 @@ async def run_source(my_generation):
                     interaction_enabled and home.armed,
                     fleet.cameras.get(SELECTED['id'], {}).get('owner'),
                     gestures_enabled=False,
-                    sound_review=safety.sound_requested(SELECTED['id']),
                     session_id=identities.session,
                     captured_mono=voice_captured_mono,
                 )
@@ -1116,11 +1338,13 @@ async def run_source(my_generation):
                 state.update(
                     status="live",
                     recognition="running",
+                    reconnect_attempt=0,
                     tracking_current=tracks.input_valid,
                     animals=animals,animals_current=pet_tracks.current,
                     animals_intent=pet_revision if pet_active else None,pet_tracking=pet_tracks.public(),
                     scene_visible=scene_visible,
                     _patrol_view=getattr(frame_room, 'patrol_view', None) if registered else None,
+                    _wake_source=(item.get('capture_session'), item.get('camera_source_context')),
                     reason=None,
                     frame=item["jpeg"],
                     width=item["width"],
@@ -1136,6 +1360,7 @@ async def run_source(my_generation):
                     scene=current_scene,
                     inference_ms=round(detection.get("inference_ms", 0), 1),
                     body_ms=round(detection.get("body_ms", 0), 1),
+                    body_rescue_passes=detection.get("body_rescue_passes"),
                     hand_ms=round(detection.get("hand_ms", 0), 1),
                     animal_ms=round(detection.get("animal_ms", 0), 1),
                     capture_fps=rate(captured_times),
@@ -1149,6 +1374,14 @@ async def run_source(my_generation):
                     hardware_decoding=item.get("hardware_decoding"),
                     pipeline_ms=round((time.time() - item["received_at"]) * 1000, 1),
                 )
+                if 'scene_quiet_ms' in item:
+                    stable = layout['registration'].get('status') in {'locked', 'background_unavailable', 'camera_moved'}
+                    cadence.observed(time.monotonic(), captured_at=last_frame,
+                        clear=stable and not (people or hands or animals)
+                        and not any(detection.get(k) for k in ('boxes', 'poses', 'hands', 'faces'))
+                        and (pet_revision is None or pet_rows == [])
+                        and not any(row.get('class') in {'person', 'cat', 'dog'}
+                                    for row in current_scene.get('objects', ())))
                 latest = now
                 await notify()
         finally:
@@ -1174,9 +1407,10 @@ async def run_source(my_generation):
                     try:
                         await close_rooms(source_scope)
                     finally:
-                        if camera_task:
-                            camera_task.cancel()
-                            await asyncio.gather(camera_task, return_exceptions=True)
+                        background = [task for task in (camera_task, privacy_task) if task is not None]
+                        for task in background:
+                            task.cancel()
+                        await asyncio.gather(*background, return_exceptions=True)
                 finally:
                     try:await reap(capture)
                     finally:
@@ -1188,12 +1422,19 @@ async def run_source(my_generation):
 async def supervised_source(my_generation):
     retry = 0
     while my_generation == generation:
+        previous_frames = state.get('processed_frames', 0)
         await run_source(my_generation)
         if my_generation != generation:
             return
-        retry += 1
-        state["reconnect_attempt"] = retry
-        await asyncio.sleep(15 if state['status'] == 'shutter_closed' else min(30, 2 ** min(retry, 5)))
+        if state['status'] == 'shutter_closed':
+            retry, delay = 0, 15
+        else:
+            # 只有这一轮发布了新的识别帧，才算从上一轮故障中恢复。
+            recovered = state.get('processed_frames', 0) > previous_frames
+            retry = 1 if recovered else retry + 1
+            delay = min(30, 2 ** min(retry, 5))
+        state['reconnect_attempt'] = retry
+        await asyncio.sleep(delay)
 
 
 async def start():
@@ -1204,7 +1445,8 @@ async def start():
     last_frame = 0
     task = asyncio.create_task(supervised_source(generation))
     for selected in configuration()["cameras"]:
-        if selected["id"] != SELECTED["id"]:
+        if selected["id"] != SELECTED["id"] and selected.get('preview_only') is not True:
+            wall.register(selected)
             await previews.start(selected["id"])
 
 
@@ -1212,9 +1454,10 @@ async def stop():
     global task, generation, last_frame
     home.selected = False
     home.armed = False
-    home.vad = []
+    home.discard_audio()
     home.pending_audio = None
     home.gesture.reset()
+    state.update(status='stopped', tracking_current=False)
     generation += 1
     if task:
         task.cancel()
@@ -1275,10 +1518,89 @@ async def safety_policy_changed():
 
 
 def identity_authorized(request):
-    if request.client.host not in {"127.0.0.1", "::1"} or not secrets.compare_digest(
-        request.headers.get("x-friday-worker", ""), (PRIVATE / "control-key").read_text().strip()
-    ):
+    if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
         raise HTTPException(403)
+    try:
+        expected = (PRIVATE / "control-key").read_text().strip()
+    except (OSError, UnicodeError):
+        raise HTTPException(403) from None
+    supplied = request.headers.get("x-friday-worker", "")
+    if (not expected.isascii() or not supplied.isascii() or not 32 <= len(expected) <= 512
+            or not secrets.compare_digest(supplied, expected)):
+        raise HTTPException(403)
+
+
+def vision_measurement_sample(*, include_timings=False):
+    now = time.monotonic()
+    primary_source = (state['status'] in {'connecting', 'live'}
+                      and capture is not None and capture.returncode is None)
+    primary_open = primary_source and state['status'] == 'live' and 0 <= now-last_frame <= 1.5
+    primary_state = ('live' if primary_open else 'stale' if state['status'] == 'live' else state['status'])
+    primary_recognition = 'running' if primary_open else (
+        'recovering' if primary_source and state.get('recognition') == 'recovering' else 'waiting')
+    primary_timings = (vision_measurement.primary_timings | home.voice_timings | home.wake_motion_counts.timings
+                       if include_timings else None)
+    rows = [camera_sample(1, primary_state, primary_recognition, identities.session,
+                          str(camera_planner.intent_revision) if camera_planner else 'fixed',
+                          state.get('vision_cadence'), state['processed_frames'],
+                          state.get('pipeline_ms') if primary_open else None,
+                          home.vision_benchmark_voice() | home.wake_motion_counts.public(), timings=primary_timings,
+                          body_rescue_passes=state.get('body_rescue_total'))]
+    rows[0].update(wall.preview_metrics(SELECTED['id'], source_current=primary_source))
+    for camera_id in (camera['id'] for camera in wall.cameras if camera['id'] != SELECTED['id']):
+        item = previews.sessions.get(camera_id, {})
+        report = previews.status(camera_id)
+        recognizer = item.get('recognizer')
+        service = secondary_homes.get(camera_id)
+        counts = item.get('wake_motion_counts')
+        voice = service.vision_benchmark_voice() if service else {}
+        if counts is not None:
+            voice.update(counts.public())
+        timings = None
+        if include_timings:
+            timings = {} if recognizer is None else recognizer.vision.timings
+            if service is not None:
+                timings = timings | service.voice_timings
+            if counts is not None:
+                timings = timings | counts.timings
+        rows.append(camera_sample(len(rows)+1, report['state'], report.get('recognition', 'waiting'),
+                                  recognizer.session if recognizer else None, item.get('mode_revision'),
+                                  report.get('vision_cadence'), report['frames'], report.get('latency_ms'),
+                                  voice, timings=timings,
+                                  body_rescue_passes=recognizer.vision.body_rescue_passes if recognizer else None))
+        rows[-1].update(wall.preview_metrics(
+            camera_id, source_current=previews.source_current(camera_id, item.get('process'))))
+    interactive = (games.mode not in {'off', 'home'} or party_camera.window(now)[2]
+                   or practice.active() is not None)
+    return dict(worker=SESSION, sampled_mono=now, interactive_session=interactive, cameras=rows)
+
+
+@app.get("/api/internal/vision-benchmark")
+async def vision_benchmark_status(request: Request):
+    identity_authorized(request)
+    return vision_measurement.status(vision_measurement_sample(include_timings=True))
+
+
+@app.post("/api/internal/vision-benchmark")
+async def vision_benchmark(request: Request):
+    identity_authorized(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(422, 'vision_benchmark_invalid')
+    try:
+        if set(body) == {'full_rate_seconds', 'scope'} and isinstance(body['scope'], list):
+            token = vision_measurement.begin(body['full_rate_seconds'], vision_measurement_sample(),
+                                             tuple(body['scope']))
+            return {'token': token}
+        if set(body) == {'cancel'} and valid_token(body['cancel']):
+            vision_measurement.cancel(body['cancel'])
+            return {'full_rate': False}
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    raise HTTPException(422, 'vision_benchmark_invalid')
 
 
 @app.get("/api/internal/identity")
@@ -1315,17 +1637,18 @@ async def identity_register(request: Request):
 
 @app.middleware("http")
 async def privacy(request, call_next):
+    path = request.url.path
     audio_access = (
-        request.url.path.startswith("/audio/")
+        path.startswith("/audio/")
         and request.client.host in configuration().get("speaker_hosts", [])
         and secrets.compare_digest(request.query_params.get("k", ""), KEY)
     )
-    if (
-        request.url.path not in {"/health", "/", "/games"}
-        and not request.url.path.startswith("/assets/")
-        and not audio_access
-        and not authorized(request.client, request.query_params.get("k"))
-    ):
+    tv_route = path in {'/api/game/tv', '/api/game/tv/presentation'} or (
+        path == '/games' and request.query_params.get('tv') == '1')
+    public = path in {'/health', '/', '/games'} or path.startswith('/assets/')
+    permitted = (television_access(request) if tv_route else
+                 public or audio_access or authorized(request.client, request.query_params.get('k')))
+    if not permitted:
         return JSONResponse({"error": "viewer_access_required"}, status_code=403)
     limit = (
         8 * 1024 * 1024
@@ -1367,8 +1690,9 @@ async def interaction_policy(request: Request):
         for service in [home, *secondary_homes.values()]:
             service.armed = service.selected = False
             service.epoch += 1
-            service.vad = []
+            service.discard_audio()
             service.pending_audio = None
+            service.wake_camera = None
     return dict(enabled=interaction_enabled)
 
 
@@ -1391,44 +1715,6 @@ async def speech_audio(token: str):
     if not path.is_file() or time.time() - path.stat().st_mtime > 180:
         raise HTTPException(404)
     return FileResponse(path, media_type="audio/mp4")
-
-
-@app.post("/api/internal/cover")
-async def internal_cover(request: Request):
-    if request.client.host not in {"127.0.0.1", "::1"} or not secrets.compare_digest(
-        request.headers.get("x-friday-worker", ""), (PRIVATE / "control-key").read_text().strip()
-    ):
-        raise HTTPException(403)
-    from datetime import UTC, datetime
-
-    from homeplane.action_contracts import HomeDeviceAuthority
-
-    policy = HomeDeviceAuthority.model_validate_json((PRIVATE / "action-authority.json").read_bytes())
-    if not policy.enabled or policy.expires_at is not None and policy.expires_at <= datetime.now(UTC):
-        raise HTTPException(403)
-    data = await request.json()
-    action = data.get("action")
-    event = data.get("event_id")
-    if action not in ("open", "close") or not isinstance(event, str) or not 1 <= len(event) <= 160:
-        raise HTTPException(400)
-    # Durable event claim prevents voice retries after restart from sending twice.
-    import hashlib
-
-    ledger = PRIVATE / "cover-ledger.json"
-    entries = json.loads(ledger.read_text()) if ledger.exists() else {}
-    key = hashlib.sha256(event.encode()).hexdigest()
-    if key in entries:
-        return entries[key]
-    if home.curtain.api is None:
-        await home.curtain.connect()
-    entries[key] = {"status": "unknown_outcome", "acknowledged": False, "reached_target": False}
-    from homeplane.embodied.ptz_control import atomic
-
-    atomic(ledger, dict(list(entries.items())[-128:]))
-    result = await home.curtain.act(action, event)
-    entries[key] = {k: result.get(k) for k in ("status", "acknowledged", "reached_target")}
-    atomic(ledger, dict(list(entries.items())[-128:]))
-    return result
 
 
 @app.post("/api/voice")
@@ -1460,11 +1746,27 @@ async def start_preview(camera_id: str, request: Request):
         raise HTTPException(403)
     if camera_id == SELECTED["id"]:
         return {"state": view()["status"], "camera": camera_id, "primary": True}
+    wall.register(camera(camera_id))
     return await previews.start(camera_id)
 
 
-def primary_recovery_frame():
-    if (state.get('status') == 'connecting' and state.get('recognition') == 'recovering'
+@app.post('/api/camera-registration')
+async def reconcile_registered_cameras(request: Request):
+    if request.client.host not in {'127.0.0.1', '::1'}:
+        raise HTTPException(403)
+    if task is None or task.done():
+        return {'active': False}
+    for selected in configuration()['cameras']:
+        if (selected['id'] != SELECTED['id']
+                and selected.get('mijia_enrolled') is True and selected.get('preview_only') is not True
+                and task is not None and not task.done()):
+            wall.register(selected)
+            await previews.start(selected['id'])
+    return {'active': True}
+
+
+def primary_capture_preview():
+    if (state.get('status') in {'connecting', 'live'}
             and capture is not None and capture.returncode is None):
         return wall.frame(SELECTED['id'])
     return None
@@ -1477,14 +1779,20 @@ async def preview_status(camera_id: str, request: Request):
     if camera_id == SELECTED["id"]:
         report = view()
         session = report['camera_sessions'][0]
+        control = report.get('camera_control')
+        if camera_planner is None:
+            intent = camera_intents.load()
+            if intent.mode == 'patrol' or control and control.get('mode') == 'patrol':
+                control = camera_intent_readback(control or {}, mode=intent.mode,
+                                                 revision=intent.revision, status=intent.status)
         return {
             "state": report["status"],
             "camera": camera_id,
             "frames": state["processed_frames"],
             "primary": True,
             "recognition": session['recognition'],
-            "frame_available": session['recognition'] == 'recovering' and bool(primary_recovery_frame()),
-            "camera_control": report.get('camera_control'),
+            "frame_available": bool(primary_capture_preview()),
+            "camera_control": control,
             "pet_tracking": report.get('pet_tracking'),
             "follow_target_available": report['status'] == 'live' and (report.get('camera_control') or {}).get('owner') == 'friday',
         }
@@ -1496,8 +1804,8 @@ async def preview_frame(camera_id: str, request: Request):
     if request.client.host not in {"127.0.0.1", "::1"}:
         raise HTTPException(403)
     if camera_id == SELECTED['id']:
-        recovery_frame = primary_recovery_frame()
-        frame = recovery_frame[0] if recovery_frame else last_preview if view()['status'] == 'live' else None
+        capture_frame = primary_capture_preview()
+        frame = capture_frame[0] if capture_frame else last_preview if view()['status'] == 'live' else None
     else:
         frame = previews.frame(camera_id)
     if not frame:
@@ -1603,13 +1911,15 @@ async def practice_stop(request: Request):
 
 
 @app.get('/api/wall')
-async def camera_wall_status():
+async def camera_wall_status(request: Request):
     primary = view()
     states = {c['id']: previews.status(c['id']) for c in configuration()['cameras'] if c['id'] != SELECTED['id']}
     states[SELECTED['id']] = dict(state=primary['status'],
         recognition='running' if primary['status']=='live' else 'waiting',
         people=len(primary.get('people', [])), hands=len(primary.get('hands', [])))
-    result=wall.view(states)
+    result=dict(wall.view(states))
+    if television_host(request.client):
+        result['game_display_key'] = television_key(request.client.host)
     names=identity_store.labels()
     for camera in result['cameras']:
         observation=camera.get('overlay')
@@ -1683,28 +1993,55 @@ async def game_page():
     return HTMLResponse(static_page(HERE / 'static/games.html'),headers={'Cache-Control':'no-cache'})
 
 
-@app.post('/api/game/presentation')
-async def game_presentation(request: Request):
+async def game_presentation(request: Request, *, display_host=None):
     origin = request.headers.get('origin')
     if origin and origin != 'http://' + request.headers.get('host', ''):
         raise HTTPException(403)
     try:
+        if display_host is not None:
+            if not games.game_input_enabled:
+                raise ValueError('game_view_changed')
+            return games.observe_presentation(await request.json(), host=display_host)
         return games.observe_presentation(await request.json())
     except (TypeError, ValueError):
         raise HTTPException(409, detail='game_view_changed') from None
 
 
-@app.post("/api/game")
-async def game_control(request: Request):
+@app.post('/api/game/presentation')
+async def local_game_presentation(request: Request):
+    return await game_presentation(request)
+
+
+@app.post('/api/game/tv/presentation')
+async def television_presentation(request: Request):
+    return await game_presentation(request, display_host=request.client.host)
+
+
+async def game_control(request: Request, *, display_host=None):
     origin = request.headers.get("origin")
     if origin and origin != "http://" + request.headers.get("host", ""):
         raise HTTPException(403)
     data = await request.json()
+    television = display_host is not None
     if not isinstance(data, dict):
         raise HTTPException(400, detail='invalid_game_request')
     action = data.get('action')
     if action is not None and (not isinstance(action, str) or action not in {'select','prepare','start','pause','resume'}):
         raise HTTPException(400, detail='invalid_game_action')
+    if television:
+        fields = {'action', 'mode', 'expected_context', 'expected_revision'}
+        actions = {'start', 'pause', 'resume'}
+        if data.get('mode') == 'ski':
+            if action == 'select':
+                actions.add('select')
+                fields.add('ski_trail')
+            if action == 'start' and 'ski_warmup' in data:
+                fields.add('ski_warmup')
+        if (not games.game_input_enabled or data.get('mode') != games.selected_mode
+                or action not in actions or set(data) != fields):
+            raise HTTPException(409, detail='game_state_changed')
+        if action == 'select' and games.mode != 'off' and not games.complete:
+            raise HTTPException(409, detail='game_state_changed')
     if set(data)-{'mode','action','difficulty','ski_trail','ski_warmup','tennis_variant','quest_route',
                   'expected_context','expected_revision'}:
         raise HTTPException(400, detail='invalid_game_request')
@@ -1728,6 +2065,9 @@ async def game_control(request: Request):
         raise HTTPException(400, detail='invalid_quest_route')
     if not games.control_current(data.get('expected_context'),data.get('expected_revision')):
         raise HTTPException(409, detail='game_state_changed')
+    if television and action in ('select', 'start', 'resume') and not games.presentation.ready(
+            games.presentation_scope(), host=display_host):
+        raise HTTPException(409, detail='game_presentation_not_ready')
     if practice.active() and action != 'pause' and data.get("mode", "quest") not in {"off", "home"}:
         raise HTTPException(409, detail="practice_active")
     try:
@@ -1742,11 +2082,13 @@ async def game_control(request: Request):
             games.select(data.get("mode", "quest"), **options)
         else:
             games.require_game_view(data.get('mode', 'off'))
+            if television and games.mode != 'off' and not games.complete and games.ski_warmup is None:
+                raise ValueError('game_presentation_not_ready')
             if data.get('ski_warmup') and games.mode != 'off' and not games.complete:
                 raise ValueError('game_changed')
             options = {key: data[key] for key in ('difficulty', 'ski_warmup') if key in data}
             games.reset(data.get("mode", "off"), **options)
-        if data.get("action") == "start" and games.mode != "off":
+        if not television and data.get("action") == "start" and games.mode != "off":
             await start()
         if action not in {'pause','resume'} and games.selected_mode == "home" and data.get("mode") != "off":
             await home.enable()
@@ -1755,7 +2097,17 @@ async def game_control(request: Request):
         if str(error) in {'game_input_not_ready','game_presentation_not_ready'}:
             raise HTTPException(409, detail=str(error))
         raise HTTPException(400)
-    return games.public
+    return games.television_state() if television else games.public
+
+
+@app.post('/api/game')
+async def local_game_control(request: Request):
+    return await game_control(request)
+
+
+@app.post('/api/game/tv')
+async def television_game_control(request: Request):
+    return await game_control(request, display_host=request.client.host)
 
 
 @app.post("/api/home/curtain")
@@ -1844,6 +2196,7 @@ async def status():
     result = view()
     result.pop("frame", None)
     result['safety_review'] = safety.review_status()
+    result['full_vision_benchmark'] = benchmark_full_vision()
     return result
 
 
@@ -1952,17 +2305,24 @@ async def camera_control(request: Request):
     if not isinstance(data, dict):raise HTTPException(400)
     mode = data.get("mode")
     survey_revision = data.get('survey_revision')
-    if mode not in ("auto", "pets", "hold", "survey") or survey_revision is not None and mode != 'hold':
+    if mode not in ("auto", "pets", "hold", "survey", "patrol") or survey_revision is not None and mode != 'hold':
         raise HTTPException(400)
     if not camera_planner:
+        if survey_revision is not None:
+            intent = camera_intents.load()
+            if intent.mode == 'patrol' and intent.revision == survey_revision:
+                try:
+                    stopped = camera_intents.save('hold')
+                except (OSError, ValueError, RuntimeError):
+                    raise HTTPException(409, detail='camera_control_unavailable') from None
+                return {'mode': stopped.mode, 'intent_revision': stopped.revision}
         raise HTTPException(409, detail="camera_not_owned")
-    if survey_revision is not None and (camera_planner.mode != 'survey'
-                                       or camera_planner.intent_revision != survey_revision):
-        raise HTTPException(409, detail='camera_intent_changed')
     try:
-        set_primary_camera_mode(mode)
-    except (OSError, ValueError, RuntimeError):
-        raise HTTPException(409, detail='camera_control_unavailable') from None
+        set_primary_camera_mode(mode, survey_revision=survey_revision)
+    except (OSError, ValueError, RuntimeError) as error:
+        code = str(error)
+        detail = code if code in {'camera_not_owned', 'camera_intent_changed'} else 'camera_control_unavailable'
+        raise HTTPException(409, detail=detail) from None
     if mode == "survey":
         camera_planner.visited.clear()
         camera_planner.last_person = time.monotonic() - 8
@@ -1970,10 +2330,16 @@ async def camera_control(request: Request):
     return {"mode": mode, "intent_revision": camera_planner.intent_revision}
 
 
-def set_primary_camera_mode(mode):
+def set_primary_camera_mode(mode, *, survey_revision=None):
     if mode not in CAMERA_MODES:
         raise ValueError('invalid_camera_mode')
     if not camera_planner:
+        raise RuntimeError('camera_not_owned')
+    if survey_revision is not None:
+        if (mode != 'hold' or camera_planner.mode not in {'survey', 'patrol'}
+                or camera_planner.intent_revision != survey_revision):
+            raise RuntimeError('camera_intent_changed')
+    elif capture is None or capture.returncode is not None or state.get('status') not in {'connecting', 'live'}:
         raise RuntimeError('camera_not_owned')
     camera_planner.mode = 'hold'
     camera_planner.intent_revision = secrets.token_hex(16)
@@ -2022,7 +2388,9 @@ async def control(action: str, request: Request):
 
 @app.websocket("/ws")
 async def websocket(ws: WebSocket):
-    if not authorized(ws.client, ws.query_params.get("k")):
+    display = ws.query_params.get('view')
+    television = display == 'television'
+    if not (television_access(ws) if television else authorized(ws.client, ws.query_params.get('k'))):
         await ws.close(code=1008)
         return
     origin = ws.headers.get("origin")
@@ -2033,6 +2401,7 @@ async def websocket(ws: WebSocket):
     try:
         previous = -1
         preview_sent = 0.0
+        tv_checked = time.monotonic()
         while True:
             if previous == state["processed_frames"]:
                 async with changed:
@@ -2040,12 +2409,22 @@ async def websocket(ws: WebSocket):
                         await asyncio.wait_for(changed.wait(), 1)
                     except asyncio.TimeoutError:
                         pass
-            meta = view()
-            meta.pop("frame", None)
-            meta["sent_at"] = time.time()
-            previous = meta["processed_frames"]
-            jpeg = last_jpeg if meta["status"] == "live" else b""
-            if ws.query_params.get("view") == "game":
+            if television:
+                now = time.monotonic()
+                if now - tv_checked >= 1:
+                    if not television_access(ws):
+                        await ws.close(code=1008)
+                        return
+                    tv_checked = now
+                meta = television_packet()
+                jpeg = b''
+            else:
+                meta = view()
+                meta.pop('frame', None)
+                meta['sent_at'] = time.time()
+                jpeg = last_jpeg if meta['status'] == 'live' else b''
+            previous = state['processed_frames']
+            if display == "game":
                 jpeg = (
                     last_preview
                     if meta["status"] == "live"

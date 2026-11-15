@@ -7,6 +7,16 @@ import base64
 import binascii
 import math
 import re
+from typing import NamedTuple
+
+from .embodied.pose_rules import body_track_revision
+
+
+class CameraTrack(NamedTuple):
+    camera: str
+    session: str
+    track: int
+    track_revision: int
 
 
 def unit(value):
@@ -49,7 +59,11 @@ def observation(report):
                 or box['x'] + box['w'] > 1.000001 or box['y'] + box['h'] > 1.000001):
             return None
         tracks[track] = person
-    return dict(camera=camera, session=session, age_ms=age, people=tracks, seats=seats, pointing=pointing)
+    current = {track: CameraTrack(camera, session, track, revision)
+               for track, person in tracks.items()
+               if (revision := body_track_revision(person)) is not None}
+    return dict(camera=camera, session=session, age_ms=age, people=tracks, tracks=current,
+                seats=seats, seat_mode=room.get('seat_mode'), pointing=pointing)
 
 
 def picture(report):
@@ -70,14 +84,29 @@ def picture(report):
         return None
     return dict(camera=sample['camera'], session=sample['session'], age_ms=sample['age_ms'],
                 width=width, height=height, jpeg=jpeg,
-                people=[dict(track=track, box={k: person['box'][k] for k in ('x', 'y', 'w', 'h')})
-                        for track, person in sample['people'].items()])
+                people=[dict(track=track, track_revision=ref.track_revision,
+                             box={k: sample['people'][track]['box'][k] for k in ('x', 'y', 'w', 'h')})
+                        for track, ref in sample['tracks'].items()])
+
+
+def _seat_tracks(sample):
+    """把空间视图里的位置对应到实际入镜的人体。"""
+    occupied = {}
+    if sample['seat_mode'] == 'manual':
+        for track, person in sample['people'].items():
+            if type(seat := person.get('seat')) is int:
+                occupied.setdefault(seat, []).append(track)
+    else:
+        for seat in sample['seats']:
+            if isinstance(seat, dict) and type(seat.get('id')) is int and seat.get('active') is True:
+                occupied.setdefault(seat['id'], []).append(seat.get('track'))
+    return occupied
 
 
 def hints(sample, bindings, players):
-    mapped = {value[2]: seat for seat, value in bindings.items()
-              if value[:2] == (sample['camera'], sample['session'])
-              and value[2] in sample['people'] and seat in players and players[seat].alive}
+    mapped = {ref.track: seat for seat, ref in bindings.items()
+              if sample['tracks'].get(ref.track) == ref and seat in players and players[seat].alive}
+    occupied = _seat_tracks(sample)
     result = []
     for track, seat in mapped.items():
         joints = sample['people'][track].get('joints')
@@ -91,11 +120,11 @@ def hints(sample, bindings, players):
                     or ray['person_id'] != track or ray.get('confirmed') is not True
                     or ray.get('ambiguous') is not False):
                 continue
-            matches = [row for row in sample['seats'] if isinstance(row, dict)
-                       and type(row.get('id')) is int and type(ray.get('target')) is int
-                       and row['id'] == ray['target'] and row.get('active') is True]
-            if len(matches) == 1 and type(matches[0].get('track')) is int:
-                target = mapped.get(matches[0]['track'])
+            if type(ray.get('target')) is not int:
+                continue
+            matches = occupied.get(ray['target'], [])
+            if len(matches) == 1 and type(matches[0]) is int:
+                target = mapped.get(matches[0])
                 if target is not None:
                     targets.add(target)
         result.append(dict(seat=seat, hand_raised=raised, pointing_at=next(iter(targets)) if len(targets) == 1 else None,

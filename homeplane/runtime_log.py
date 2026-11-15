@@ -29,6 +29,7 @@ MEMORY_ROWS = 256
 EXPORT_ROWS = 64
 STAGES = frozenset('''service.construct service.start service.stop http.request
 embodied.start embodied.stop embodied.command embodied.preview embodied.voice
+embodied.voice_ingress embodied.wake_motion
 people.collect people.enroll
 infrastructure.reconcile infrastructure.configure
 automation.catalog.read automation.catalog.import
@@ -59,6 +60,7 @@ flow_session_unavailable flow_operation_unavailable flow_operation_budget flow_o
 flow_operation_in_progress flow_context_changed flow_lane_changed flow_cancelled
 flow_live_write_held flow_report_unavailable flow_backend_unavailable
 awaiting_explicit_execution send_claim_recorded ha_service_accepted ha_reported_match
+mijia_property_accepted mijia_reported_match
 rejected_by_ha reported_state_mismatch readback_or_transport_unavailable
 request_cancelled_after_send expired_request restart_requires_new_plan authority_changed
 dispatch_guard_rejected managed_guard_required source_conflict readback_match_causality_unconfirmed
@@ -68,6 +70,16 @@ nas_revision_changed nas_invalid_request nas_budget_exceeded nas_cursor_expired 
 nas_busy nas_source_changed nas_timeout nas_transport_failed nas_unavailable nas_not_configured
 nas_credential_unavailable nas_credentials_unavailable nas_connection_required
 not_ready logging_unavailable transport_error authentication_rejected
+voice_audio_discontinuity voice_audio_rejected voice_input_gate_closed voice_frame_or_source_changed
+voice_audio_backlog voice_audio_stale
+voice_segment_short voice_source_missing voice_route_rejected voice_asr_rejected voice_not_addressed
+voice_asr_empty voice_asr_language_mismatch voice_asr_low_confidence
+voice_asr_likely_no_speech voice_asr_wake_word_missing
+voice_wake_after_audio_gap
+wake_confirmed wake_motor_left wake_motor_right wake_motor_up wake_motor_down
+wake_motor_acknowledged wake_motor_rejected wake_motor_result_unknown wake_motor_not_sent
+wake_motor_privacy_closed wake_motor_privacy_unavailable wake_motor_privacy_timeout
+wake_motor_dispatch_expired wake_motor_observation_changed
 service_unavailable
 archive_privacy_unavailable archive_privacy_busy archive_privacy_budget
 archive_source_changed_or_unavailable archive_context_changed archive_playback_expired
@@ -83,6 +95,7 @@ REFUSALS = frozenset({'refused', 'rejected', 'expired', 'unavailable', 'failed',
                       'cancelled', 'paused', 'backoff', 'not_configured', 'not_connected',
                       'not_running', 'sdk_missing', 'unauthorized', 'disabled'})
 SUCCESS_CODES = frozenset({'none', 'awaiting_explicit_execution', 'send_claim_recorded',
+                           'mijia_property_accepted', 'mijia_reported_match',
                            'ha_service_accepted', 'ha_reported_match', 'readback_match_causality_unconfirmed'})
 _journal = contextvars.ContextVar('friday_runtime_journal', default=None)
 _correlation = contextvars.ContextVar('friday_runtime_correlation', default=None)

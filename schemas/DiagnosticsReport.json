@@ -421,6 +421,7 @@
           "enum": [
             "simulator",
             "ha-read-only",
+            "mijia-lan",
             "unavailable"
           ],
           "title": "Mode",

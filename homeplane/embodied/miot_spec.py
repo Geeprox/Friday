@@ -104,6 +104,7 @@ _CAMERA_CAPABILITIES = {
     'pet_tracking': ('ai-detection', 'pet-tracking'),
     'human_close_up': ('ai-detection', 'human-close-up'),
     'camera_power': ('camera-control', 'on'),
+    'ptz_supported': ('camera-control', 'ptz-camera'),
     'presets': ('camera-fav-area', 'fav-area'),
     'active_preset': ('camera-fav-area', 'active-fav-area'),
 }
@@ -130,11 +131,38 @@ def camera_property(camera, capability, access):
 
 
 def camera_properties(camera):
-    reads = {key: camera_property(camera, key, 'read') for key in _CAMERA_CAPABILITIES}
-    for key in _CAMERA_CAPABILITIES:
+    keys = [key for key in _CAMERA_CAPABILITIES if key != 'ptz_supported']
+    if camera.get('mijia_enrolled') is True and not any(
+            prop['type'].split(':')[3:4] == ['human-close-up']
+            for service in camera.get('spec', {}).get('services', [])
+            for prop in service.get('properties', [])):
+        # 部分机型没有人物特写。云台接管只会关闭与恢复该机型已有的能力。
+        keys.remove('human_close_up')
+    reads = {key: camera_property(camera, key, 'read') for key in keys}
+    for key in keys:
         if key != 'presets':
-            camera_property(camera, key, 'write')
+            if camera_property(camera, key, 'write') != reads[key]:
+                raise ValueError('miot_capability_unavailable')
     return reads
+
+
+def camera_power_writable(camera):
+    try:
+        return camera_property(camera, 'camera_power', 'read') == camera_property(camera, 'camera_power', 'write')
+    except ValueError:
+        return False
+
+
+def camera_can_take_motor(camera):
+    if camera.get('mijia_enrolled') is not True:
+        return True
+    if camera.get('ptz_supported') is not True:
+        return False
+    try:
+        camera_properties(camera)
+    except ValueError:
+        return False
+    return True
 
 
 def cover_revision(binding):
