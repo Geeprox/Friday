@@ -1,5 +1,7 @@
 # 部署自己的 Friday
 
+Linux x86_64 CPU 适配的独立环境、ARL 入口、验证范围和平台边界见[Linux CPU 运行时](linux-runtime.md)。
+
 ## 1. 基础控制面
 
 安装 Python 3.11+、uv，克隆后运行 `./scripts/install-home.sh`。基础环境仅包含

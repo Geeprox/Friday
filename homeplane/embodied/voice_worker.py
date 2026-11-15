@@ -44,20 +44,25 @@ def normalize_audio(samples):
 
 
 def main():
-    from homeplane.shared_laya import SharedLaya
-
     asr = LocalASR(os.environ.get("FRIDAY_ASR", "sensevoice"))
-    agent = SharedLaya()
+    agent = None
+    if sys.platform == 'darwin':
+        from homeplane.shared_laya import SharedLaya
+        agent = SharedLaya()
     intent_runtime = None
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     # Load/warm only the existing local checkpoint. Silence never becomes a command.
     with contextlib.redirect_stdout(sys.stderr):
         asr.transcribe(np.zeros(16000, dtype=np.float32))
     try:
-        laya_status = agent.status()
+        laya_status = agent.status() if agent else {'state': 'not_used_on_linux'}
     except Exception:
         laya_status = {"state": "unavailable"}
-    emit({"type": "ready", "asr": asr.label, "semantic": "shared_laya_command_gate", "audio_persisted": False, "intelligence": {"laya": "arl_shared", "laya_state": laya_status.get("state"), "laya_via_shared_arl": True, "codex": "on_demand_scoped_text", "agent_tools": False}})
+    emit({"type": "ready", "asr": asr.label,
+          "semantic": "shared_laya_command_gate" if agent else "local_rules_and_arl_intent",
+          "audio_persisted": False, "intelligence": {"laya": "arl_shared" if agent else "not_used",
+          "laya_state": laya_status.get("state"), "laya_via_shared_arl": agent is not None,
+          "codex": "on_demand_scoped_text", "agent_tools": False}})
     for line in sys.stdin:
         request = {}
         try:
@@ -93,13 +98,16 @@ def main():
                             "confidence": 1.0,
                             "method": "strict_local_grammar",
                         }
-                    else:
+                    elif agent is not None:
                         try:
                             semantic = agent.predict(classify_input(text, route), LAYA_QUESTIONS)["answers"][
                                 "command"
                             ]
                         except Exception:
                             semantic = {"status": "unavailable"}
+                    else:
+                        # Linux 由既有 ARL 意图请求判断复杂语句；此处不猜测指令或置信度。
+                        semantic = {'status': 'deferred_to_arl_intent'}
                 emit(
                     {
                         "id": request["id"],

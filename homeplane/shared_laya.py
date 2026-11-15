@@ -13,7 +13,9 @@ from pathlib import Path
 from arl.client import Client
 from arl.contracts import Fault
 
-HOME = Path.home() / "Library/Application Support/ARL/laya-v1"
+from .platform_paths import arl_home
+
+HOME = arl_home() / 'laya-v1'
 PREDICT = "laya.predict.v1"
 STATUS = "laya.status.v1"
 VERSION = "0.5.0"

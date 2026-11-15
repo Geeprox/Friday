@@ -20,7 +20,9 @@ from typing import Callable
 
 from .runtime_log import observe, stage_span
 
-DEFAULT_HOME = Path.home() / "Library/Application Support/ARL"
+from .platform_paths import arl_home
+
+DEFAULT_HOME = arl_home()
 TERMINAL = {"succeeded", "failed", "cancelled", "needs_review", "needs_unlock"}
 
 

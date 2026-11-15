@@ -19,7 +19,7 @@ class SceneDetector:
         )
         self.input = self.session.get_inputs()[0].name
 
-    def detect(self, jpeg):
+    def detect(self, jpeg, *, animals=False):
         began = time.monotonic()
         image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
@@ -34,14 +34,17 @@ class SceneDetector:
         blob = np.ascontiguousarray(canvas[:, :, ::-1].transpose(2, 0, 1)[None], dtype=np.float32) / 255
         prediction = self.session.run(None, {self.input: blob})[0][0].T
         objects = []
-        for class_id, name, label in [
+        classes = [
             (0, "person", "人体"),
             (56, "chair", "椅子"),
             (57, "sofa", "沙发"),
             (59, "soft_furniture", "软体家具"),
             (60, "table", "桌子"),
-        ]:
-            threshold = 0.45 if class_id == 0 else 0.20
+        ]
+        if animals:
+            classes += [(15, 'cat', '猫'), (16, 'dog', '狗')]
+        for class_id, name, label in classes:
+            threshold = .75 if class_id in (15, 16) else 0.45 if class_id == 0 else 0.20
             rows = prediction[prediction[:, 4 + class_id] > threshold]
             boxes = []
             scores = []

@@ -41,7 +41,7 @@ def sdk_host():
 
     class Host:
         def __init__(self):
-            self.temp = tempfile.TemporaryDirectory(prefix='friday-arl-sdk-', dir='/private/tmp')
+            self.temp = tempfile.TemporaryDirectory(prefix='friday-arl-sdk-', dir='/var/tmp' if sys.platform.startswith('linux') else '/private/tmp')
             self.home = Path(self.temp.name)
             self.start()
         def start(self):

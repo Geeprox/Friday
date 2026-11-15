@@ -205,7 +205,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         PetTracks=PetTracks, PET_MODES=set(), processed_times=deque(), captured_times=deque(),
         PYTHON='synthetic-capture', VISION='synthetic-vision', MODELS=tmp_path, PRIVATE=tmp_path,
         offer_frame=offer_frame, CAPTURE_RECEIVE_TIMEOUT=CAPTURE_RECEIVE_TIMEOUT, AudioIngress=AudioIngress,
-        close_identity=close_identity, camera_is_open=AsyncMock(return_value=True), capture_environment=lambda:{},
+        close_identity=close_identity, camera_is_open=AsyncMock(return_value=True), capture_environment=lambda *_:{},
         VisionProcess=vision_pipe.VisionProcess, RoomSession=lambda *_,**__:room_port(), room=None,
         CAMERA_STORAGE=tmp_path, room_lock=asyncio.Lock(), close_rooms=AsyncMock(),
         SceneProcess=lambda _:SimpleNamespace(analyze=AsyncMock(return_value=None),
@@ -317,7 +317,7 @@ async def test_secondary_vision_failure_keeps_preview_and_privacy_gate_on_same_c
     identities = SimpleNamespace(discard=Mock(), close=Mock())
     monkeypatch.setattr(previews,'DATA',tmp_path)
     monkeypatch.setattr(previews,'camera_storage',lambda _:tmp_path)
-    monkeypatch.setattr(previews,'capture_environment',lambda:{})
+    monkeypatch.setattr(previews,'capture_environment',lambda *_:{})
     monkeypatch.setattr(previews,'camera_is_open',AsyncMock(return_value=True))
     monkeypatch.setattr(ptz_control,'Transport',lambda _:io)
     monkeypatch.setattr(ptz_control,'CameraLease',lambda *_,**__:lease)

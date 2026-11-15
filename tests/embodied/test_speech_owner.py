@@ -263,6 +263,8 @@ async def test_homepod_stream_is_owned_and_revoked_without_optional_runtime(rig,
 
 @pytest.mark.asyncio
 async def test_late_native_spawn_is_reaped_before_its_temporary_files_are_removed(rig, monkeypatch):
+    # 此处固定原生命令布局，Linux 合成命令在专属用例中验证。
+    monkeypatch.setattr(synthesis, "SPEECH_PLATFORM", "darwin")
     original = asyncio.create_subprocess_exec
     entered, release = asyncio.Event(), asyncio.Event()
     processes = []
@@ -352,7 +354,11 @@ async def test_another_process_holds_the_same_speech_output_slot(rig):
 
 
 @pytest.mark.asyncio
-async def test_native_tts_gil_stall_is_killed_reaped_and_does_not_block_parent(rig, monkeypatch):
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+async def test_native_tts_gil_stall_is_killed_reaped_and_does_not_block_parent(rig, monkeypatch, platform):
+    # 子进程由下方无声桩替代；引擎发现不能依赖 CI 宿主是否安装语音工具。
+    monkeypatch.setattr(synthesis, "SPEECH_PLATFORM", platform)
+    monkeypatch.setattr(synthesis.shutil, "which", lambda name: "/synthetic/bin/" + name)
     original = asyncio.create_subprocess_exec
     marker = rig.private / "native-entered"
     processes = []
