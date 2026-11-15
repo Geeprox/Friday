@@ -102,12 +102,14 @@ async def test_changed_preference_drops_old_asr_and_late_model_without_effect(tm
     async def request(op,**kwargs):
         if op=='transcribe':
             return {'text':'小福，请看看家里再帮我处理一下','voice_revision':1,'address':{'admitted':True,'wake_word':True},'laya':{'choice':'指令或任务请求'}}
+        if op=='classify':
+            return {'type':'classification','laya':{'choice':'指令或任务请求','confidence':.92}}
         owner.save(VoiceEdit(expected_revision=1,wake_word='小管家'))
         return {'type':'task_result','simulated':False,'provider':'synthetic-model','plan':{
             'is_command':True,'route':'home','device':'客厅灯','action':'on','reply':'正在尝试。'}}
     h.request=AsyncMock(side_effect=request)
     await h.transcribe(b'SYNTHETIC',None,time.monotonic(),False)
-    assert [call.args[0] for call in h.request.call_args_list]==['transcribe','delegate']
+    assert [call.args[0] for call in h.request.call_args_list]==['transcribe','classify','delegate']
     command.assert_not_awaited();h.command.assert_not_awaited();h.speaker.say.assert_not_awaited()
     h.request=AsyncMock(return_value={'text':'小福，打开客厅灯','voice_revision':1,'address':{'admitted':True,'wake_word':True}})
     await h.transcribe(b'SYNTHETIC',None,time.monotonic(),False)
@@ -119,11 +121,12 @@ async def test_optional_classifier_outage_does_not_block_an_addressed_complex_re
     owner=VoicePreferencesStore(tmp_path);owner.save(VoiceEdit(expected_revision=0,wake_word='小福'))
     h=service(owner);command=AsyncMock();monkeypatch.setattr('homeplane.embodied.home_service.bridge.command',command)
     h.request=AsyncMock(side_effect=[{'text':'小福，为什么天空是蓝色的','voice_revision':1,
-        'address':{'admitted':True,'wake_word':True},'laya':{'status':'unavailable'}},
+        'address':{'admitted':True,'wake_word':True}},
+        {'type':'classification','laya':{'status':'unavailable'}},
         {'type':'task_result','simulated':False,'provider':'synthetic-codex','plan':{
             'is_command':True,'route':'reply','device':None,'action':None,'reply':'合成知识回答。'}}])
     await h.transcribe(b'SYNTHETIC question',None,time.monotonic(),False)
-    assert [call.args[0] for call in h.request.call_args_list]==['transcribe','delegate']
+    assert [call.args[0] for call in h.request.call_args_list]==['transcribe','classify','delegate']
     assert h.request.call_args.kwargs['voice_revision']==1
     command.assert_not_awaited();h.command.assert_not_awaited()
     h.speaker.say.assert_awaited_once()

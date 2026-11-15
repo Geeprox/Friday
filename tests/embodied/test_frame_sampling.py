@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from homeplane.embodied.frame_sampling import LatestFrameEncoder, encode_frame
+from homeplane.embodied.vision_cadence import MotionSample, VisionCadence
 
 
 def test_burst_replaces_pending_frame_without_blocking_control_loop():
@@ -93,3 +94,90 @@ def test_encoder_preserves_native_face_size_and_original_arrival():
     assert result['received_at'] == result['preview_at'] == received
     assert result['host_decode_ms'] == 8
     assert 'face_jpeg' not in encode_frame((frame, received, received*1000),face=False,quality=3)
+
+
+def test_empty_view_skips_inference_but_detects_local_motion_and_refreshes_regularly():
+    frame = np.full((480, 960, 3), 60, dtype=np.uint8)
+    frame[:, 500:] = 110
+    moved = frame.copy()
+    moved[251:286, 142:177] = 105
+    motion, cadence = MotionSample(), VisionCadence()
+    processed = []
+    for index in range(101):
+        now = index / 5
+        pixels = moved if index >= 70 else frame
+        quiet = motion.quiet_ms(pixels, now)
+        if cadence.due({'scene_quiet_ms': quiet}, now, force=False):
+            processed.append(index)
+            cadence.observed(now, clear=True, captured_at=now - .18)
+    during_quiet = [n for n in processed if 25 <= n < 70]
+    assert 8 <= len(during_quiet) <= 16
+    assert all(b - a <= 4 for a, b in zip(during_quiet, during_quiet[1:]))
+    assert all(n in processed for n in range(70, 91))
+    # 断流后的首帧不能沿用旧的静止窗口。
+    assert motion.quiet_ms(moved, 22) == 0
+    # 深黑、遮挡或没有亮度信息的画面，不能因连续静止跳过推理。
+    blank = np.zeros_like(frame)
+    assert all(motion.quiet_ms(blank, 23 + i / 5) == 0 for i in range(30))
+
+
+def test_activity_safety_or_lost_evidence_gets_full_inference():
+    cadence = VisionCadence()
+    still = {'scene_quiet_ms': 10000}
+    cadence.observed(10, clear=True, captured_at=9.82)
+    assert not cadence.due(still, 10.2, force=False)
+    assert cadence.due(still, 10.2, force=True)
+    assert cadence.due({}, 10.2, force=False)
+    cadence.observed(10.3, clear=False, captured_at=10.12)
+    for now in (10.4, 11, 12, 13, 14.2):
+        assert cadence.due(still, now, force=False)
+        cadence.observed(now, clear=True, captured_at=now - .18)
+    assert not cadence.due(still, 14.4, force=False)
+    cadence.reset()
+    assert cadence.due(still, 14.4, force=False)
+
+
+def test_long_inference_keeps_static_frames_at_full_rate_until_deadline_slack_recovers():
+    cadence = VisionCadence()
+    quiet = {'scene_quiet_ms': 12000}
+    # 旧结果即将过期，即使画面静止也立刻识别下一帧。
+    cadence.observed(10, clear=True, captured_at=9.05)
+    assert cadence.due(quiet, 10.2, force=False)
+    assert cadence.public()['deadline'] == 1
+    for done in (10.4, 10.8, 11.2, 11.6, 12):
+        cadence.observed(done, clear=True, captured_at=done - .2)
+    assert not cadence.due(quiet, 12.2, force=False)
+    cadence.reset()
+    assert cadence.due(quiet, 12.3, force=False)
+
+
+def test_switching_camera_intent_requires_a_new_complete_observation():
+    cadence = VisionCadence()
+    still = {'scene_quiet_ms': 10000}
+    before, after = ('person_target', 'before'), ('pet_target', 'after')
+    assert cadence.due(still, 10, force=False, intent=before)
+    cadence.observed(10, clear=True, captured_at=9.8)
+    assert not cadence.due(still, 10.1, force=False, intent=before)
+    assert cadence.due(still, 10.1, force=False, intent=after)
+    assert cadence.latest_capture is None
+    assert cadence.due(still, 10.2, force=False, intent=after)
+
+
+def test_quiet_empty_camera_limits_only_untargeted_pose_rescues():
+    cadence = VisionCadence()
+    still = {'scene_quiet_ms': 6000}
+    cadence.observed(10, clear=True, captured_at=9.8)
+    requested = []
+    for now in (10.6, 11.21, 11.82, 12.43, 13.04):
+        assert cadence.due(still, now, force=False)
+        requested.append(cadence.wide_pose_rescue)
+        cadence.observed(now, clear=True, captured_at=now - .18)
+    assert requested == [True, False, False, False, True]
+    assert cadence.public()['wide_rescue_deferred'] == 3
+    assert cadence.due(still, 13.06, force=True)
+    assert cadence.wide_pose_rescue
+    assert cadence.due({'scene_quiet_ms': 0}, 13.07, force=False)
+    assert cadence.wide_pose_rescue
+    cadence.reset()
+    assert cadence.due(still, 13.08, force=False)
+    assert cadence.wide_pose_rescue

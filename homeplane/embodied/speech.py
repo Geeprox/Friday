@@ -1,4 +1,4 @@
-"""Task-private HA transport and the explicitly selected living-room speaker."""
+"""通过当前选定的输出播报，并在发送前核对授权。"""
 
 import asyncio
 import json
@@ -11,6 +11,7 @@ import urllib.request
 from homeplane.embodied.paths import PRIVATE, configuration
 from homeplane.embodied.speech_http import AsyncHA
 from homeplane.embodied.speech_lifecycle import SpeechExpired, output_lock, run_output
+from homeplane.embodied.speech_selection import output_configuration
 
 VOICE_PAUSED = PRIVATE / "voice-paused"
 
@@ -70,7 +71,7 @@ class Speaker:
             self.state = dict(status="paused", physical_audio_verified=False)
             return dict(self.state)
         try:
-            config = configuration()
+            config = output_configuration(PRIVATE, configuration)
             keys = ("speech_output", "speaker_entity", "speaker_notify", "viewer_host", "viewer_port")
             selection = {k: config.get(k) for k in keys}
             homepod = None
@@ -82,7 +83,7 @@ class Speaker:
             def valid():
                 if VOICE_PAUSED.exists() or current is not None and current() is not True:
                     return False
-                now = configuration()
+                now = output_configuration(PRIVATE, configuration)
                 if {k: now.get(k) for k in keys} != selection:
                     return False
                 if homepod is not None:
@@ -95,6 +96,10 @@ class Speaker:
             async def perform(guard):
                 try:
                     await guard.checkpoint()
+                    if config.get("speech_output") == "mac":
+                        from .speech_mac import play
+
+                        return await play(text, guard=guard)
                     if config.get("speech_output") == "homepod":
                         from .airplay import play
 
@@ -128,7 +133,11 @@ class Speaker:
                 with output_lock(PRIVATE) as acquired:
                     if not acquired:
                         return dict(status="busy", physical_audio_verified=False)
-                    return await perform(guard)
+                    receipt = await perform(guard)
+                    if receipt["status"] == "unavailable":
+                        # 只有持有输出权限的任务能确认故障是否发生在发送前。
+                        return dict(receipt, dispatch_attempted=guard.dispatched)
+                    return receipt
 
             self.state = {**await run_output(exclusive, valid, revalidate=revalidate), "physical_audio_verified": False}
             if self.state["status"] == "expired" and VOICE_PAUSED.exists():

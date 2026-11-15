@@ -16,6 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
 from .action_contracts import DevicePlanRequest
+from .mijia_control import MIJIA_POWER_MODE
+from .mijia_numeric import OBSERVATION_PREFIX, SETTINGS
 from .recordings import Recordings
 from .preview_request import prepare_for_viewer
 from . import home_presentation
@@ -37,7 +39,7 @@ def control_name(entity_name,device_name):
 
 def household_function(entity, alias, functions):
     """Select the physical function for the product view, independently of authority."""
-    if alias:
+    if alias or getattr(entity, 'id', '').startswith('mijia:property:'):
         return True
     name = entity.name.lower()
     if any(word in name for word in ('指示灯', 'indicator', '凌动', '延时', '防闪烁',
@@ -131,6 +133,12 @@ class HomeExperience:
                     'registry_available': False}
         return self.core.adapter.health()
 
+    def appliance_health(self):
+        power = self.core.actions.mijia_power_home
+        if power is not None and power.uses_lan_home(self.core.adapter) and power.ready_count():
+            return {'mode': MIJIA_POWER_MODE, 'transport': 'online', 'simulated': False}
+        return self.connection_health()
+
     async def start(self):
         await self.runtime.set_execution(bool(self.preferences.get("automatic_running")))
         if self.household_mode is not None:await self.household_mode.maintain()
@@ -223,6 +231,7 @@ class HomeExperience:
         entities = {e.id:e for e in snapshot.entities}
         states = {s.id:s for s in snapshot.states}
         observations = {(o.entity_id,o.capability):o for o in snapshot.observations}
+        local = snapshot.mode == MIJIA_POWER_MODE
         authorized = set(snapshot.action_targets)
         try:
             from .embodied.paths import PRIVATE
@@ -245,7 +254,7 @@ class HomeExperience:
             for e in functions:
                 binding=next((b.external_id for b in e.bindings if b.source=='ha'),'')
                 alias=aliases.get(binding,{})
-                channel=getattr(self.core.adapter,'_switch_channels',{}).get(binding,{})
+                channel={} if local else getattr(self.core.adapter,'_switch_channels',{}).get(binding,{})
                 if e.kind=='event' and getattr(self.core.adapter,'_control_attributes',{}).get(binding,{}).get('device_class')=='button' and not any(f.kind in {'switch','light','climate','fan','cover','humidifier','water_heater'} for f in functions):
                     triggers.append(dict(id=e.id,name=control_name(e.name,device.name),role='event',basis='ha_event_button',mode=None,mode_entity=None))
                 if e.kind=='switch' and channel.get('role') in {'wireless','unknown'}:
@@ -253,14 +262,19 @@ class HomeExperience:
                 caps=[c.model_dump(mode='json') for c in e.capabilities if c.access=='write' and c.support=='supported' and c.name in {'humidifier.power','humidifier.humidity','humidifier.mode','water_heater.power','water_heater.mode','light.set','light.color_temperature','switch.set','fan.set','fan.percentage','climate.mode','climate.power','climate.temperature','climate.fan_mode','cover.position','cover.tilt','cover.state','lock.set','media_player.power','media_player.volume','media_player.mute','media_player.playback'}] if e.id in authorized else []
                 if not household_function(e,alias,functions):caps=[]
                 if caps:
-                    attrs=getattr(self.core.adapter,'_control_attributes',{}).get(binding,{})
-                    o=next((v for (id,_),v in observations.items() if id==e.id),None)
+                    if local:
+                        attrs={key: state.value for key in (*SETTINGS, 'current_position', 'target_position', 'hvac_mode')
+                               if (state := observations.get((e.id, OBSERVATION_PREFIX + key))) is not None}
+                        o=observations.get((e.id, f'{e.kind}.state'))
+                    else:
+                        attrs=getattr(self.core.adapter,'_control_attributes',{}).get(binding,{})
+                        o=next((v for (id,_),v in observations.items() if id==e.id),None)
                     state=next((s for id,s in states.items() if id.startswith(e.id+':')),None)
                     controls.append(dict(id=e.id,name=alias.get('name') or control_name(e.name,device.name),
                         kind=alias.get('kind')or e.kind,capabilities=caps,state_version=e.state_version,
-                        value=o.value if o else None,available=bool(o and o.transport_health=='online' and o.value not in (None,'unknown','unavailable')),
+                        value=attrs.get('hvac_mode', o.value) if o else None,available=bool(o and o.transport_health=='online' and o.value not in (None,'unknown','unavailable')),
                         quality=state.quality if state else 'unknown',
-                        attributes={k:attrs[k]for k in ('brightness','color_temp_kelvin','color_temp','temperature','current_temperature','current_position','current_tilt_position','percentage','hvac_modes','fan_modes','fan_mode','hvac_action','unit_of_measurement','volume_level','is_volume_muted','media_title','source','humidity','current_humidity','mode','operation_mode','operation_list')if k in attrs}))
+                        attributes={k:attrs[k]for k in ('brightness','color_temp_kelvin','color_temp','temperature','current_temperature','current_position','target_position','current_tilt_position','percentage','hvac_modes','fan_modes','fan_mode','hvac_action','unit_of_measurement','volume_level','is_volume_muted','media_title','source','humidity','current_humidity','mode','operation_mode','operation_list')if k in attrs}))
                 for cap in e.capabilities:
                     if cap.access!='read' or cap.name not in ('temperature','humidity','sensor.state','binary_sensor.state','media_player.state'):
                         continue
@@ -274,6 +288,9 @@ class HomeExperience:
                         if isinstance(value,str) and (len(value)>128 or value.lstrip().startswith(('[','{','http:','https:'))):continue
                         if any(word in e.name for word in ('ui支持控制的品类','搭配appconfig','接入设备列表','外部 IP')):continue
                         device_class=attrs.get('device_class')
+                        if local:
+                            device_class={'temperature':'temperature','humidity':'humidity',
+                                          '%':'battery','lx':'illuminance'}.get(cap.name if cap.name != 'sensor.state' else o.unit)
                         if e.kind=='binary_sensor' and value in ('on','off'):
                             labels={'moisture':('未检测到漏水','检测到漏水'),'motion':('无人移动','检测到移动'),
                                     'occupancy':('无人','有人'),'door':('已关闭','已打开'),'opening':('已关闭','已打开'),
@@ -288,7 +305,7 @@ class HomeExperience:
                                    'off':'已关闭','on':'已开启','standby':'待机'}.get(value,value)
                             device_class='media_player'
                         readings.append(dict(id=e.id,name=label,value=value if available else None,available=available,
-                            unit=o.unit,device_class=device_class,reported_at=o.integration_written_at,
+                            unit=o.unit,device_class=device_class,reported_at=o.received_at if local and available else o.integration_written_at,
                             measured_at=o.measured_at,basis='reported',transport=o.transport_health))
             kind=controls[0]['kind'] if controls else ('lock' if '门锁' in device.name else primary[0].kind if primary else device.kind)
             if triggers:kind='switch' if controls else 'trigger'
@@ -308,7 +325,7 @@ class HomeExperience:
                 readings=readings,triggers=triggers,available=available,bindings=[b.model_dump(mode='json')for b in device.bindings]))
         devices.sort(key=lambda d: ({'light':0,'cover':1,'climate':2,'camera':3,'sensor':4,'binary_sensor':5,'media_player':6}.get(d['kind'],9),d['room'],d['name']))
         from .embodied.miot_spec import optional_cover
-        cover = optional_cover() if self.embodied.configured() else None
+        cover = optional_cover()
         if cover:
             # One registered DID has one household card. The explicitly imported
             # binding owns its semantics, including unreliable slat feedback;
@@ -316,16 +333,25 @@ class HomeExperience:
             identity='cn_'+str(cover['did'])
             devices=[d for d in devices if not any(b.get('source')=='xiaomi-identity' and b.get('external_id')==identity for b in d.get('bindings',[]))]
             from .embodied.miot_spec import cover_revision
-            try:readback=await self.embodied.miot_cover('read',None)
+            context = self.core.actions.cover_read_context(cover)
+            lan = self.core.actions.mijia.lan if context else None
+            try:readback=await self.embodied.miot_cover('read',None,permission=context,lan=lan)
             except (OSError,ValueError,TimeoutError):readback={}
             available=readback.get('fault')==0 and readback.get('status')not in {'unavailable','connecting'}
             unreliable=cover.get('feedback_quality')=='unreliable'
+            permission = self.core.actions.cover_permission(cover)
+            operations = (permission or {}).get('operations', [])
+            controls = []
+            if 'cover.position' in operations:
+                controls.append(dict(name='cover.position', minimum=0, maximum=100, step=1, unit='%'))
+            if 'cover.state' in operations:
+                controls.append(dict(name='cover.state', choices=['open', 'closed', 'stopped']))
             devices.append(dict(id='friday:configured-cover',name=cover['name'],room=cover['room'],kind='cover',readings=[],available=available,
                 bindings=[dict(source='xiaomi-identity',external_id='cn_'+str(cover['did']))],
                 controls=[dict(id='friday:configured-cover',name=cover['name'],kind='cover',state_version=cover_revision(cover),
-                    value='unconfirmed' if unreliable else 'closed' if readback.get('position')==0 else 'open',available=available,quality='unknown' if unreliable else 'reported',
+                    value='unconfirmed' if unreliable or not available else 'closed' if readback.get('position')==0 else 'open',available=available,quality='unknown' if unreliable or not available else 'reported',
                     attributes=dict(current_position=None if unreliable else readback.get('position'),position_semantics=cover.get('position_semantics','travel'),feedback_quality=cover.get('feedback_quality','reported')),
-                    capabilities=[dict(name='cover.position',minimum=0,maximum=100,step=1,unit='%'),dict(name='cover.state',choices=['open','closed','stopped'])] if self.core.actions.policy_report().get('enabled') else [])]))
+                    capabilities=controls)]))
         cameras=self.embodied.cameras()
         camera_sessions={}
         if cameras and callable(getattr(self.embodied,'status',None)):
@@ -349,9 +375,39 @@ class HomeExperience:
         except (OSError,ValueError):
             layout,membership=None,None
         devices=home_spatial.project(devices,layout,membership)
-        return dict(home_name=HOME_NAME,devices=devices,preferences=self.preferences,presentation=profile.model_dump(),
+        known_mijia = {b.external_id for device in snapshot.devices for b in device.bindings
+                       if b.source == 'xiaomi-identity'}
+        discover = getattr(self.embodied, 'mijia_discovery', None)
+        discovery = discover(known_mijia) if discover and snapshot.mode != 'simulator' else None
+        if discovery and (home := self.core.actions.mijia_power_home) is not None:
+            from .local_camera_home import LocalCameraHome
+            from .mijia_enrollment import enrollment_candidates
+
+            if isinstance(self.core.adapter, LocalCameraHome) and (context := home.discovery_context()) is not None:
+                discovery['direct_enrollment'] = True
+                candidates = enrollment_candidates(home, context)
+                for row in discovery['devices']:
+                    if candidate := candidates.get(row['id']):
+                        row['enrollment_revision'] = candidate.revision
+                        row['enrollment_access'] = ('readings' if candidate.read_only else
+                                                    'lighting' if candidate.lighting else 'power')
+                if native := home.native_catalog(context)[0]:
+                    pending_lighting = {target.device.id for target in native.targets
+                                        if target.entity.kind == 'light'
+                                        and target.entity.id not in native.light_settings}
+                    lighting_candidates = {c.device_id: (key, c) for key, c in candidates.items()
+                                           if c.lighting and c.device_id in pending_lighting}
+                    for device in devices:
+                        if entry := lighting_candidates.get(device['id']):
+                            key, candidate = entry
+                            device['lighting_enrollment'] = dict(id=key, name=device['name'],
+                                enrollment_revision=candidate.revision, enrollment_access='lighting',
+                                enrollment_upgrade=True)
+        connected = (any(o.transport_health == 'online' for o in snapshot.observations) if local
+                     else self.connection_health().get('transport') == 'online')
+        return dict(home_name=HOME_NAME,devices=devices,discovery=discovery,preferences=self.preferences,presentation=profile.model_dump(),
                     rooms=sorted({d['room']for d in devices if d['room']!='其他'} | {r.name for r in layout.rooms} if layout else {d['room']for d in devices if d['room']!='其他'}),
-                    connected=self.connection_health().get('transport')=='online',
+                    connected=connected, source=snapshot.mode,
                     generated_at=snapshot.generated_at,simulated=snapshot.mode=='simulator',
                     control_count=len(authorized))
 
@@ -500,7 +556,7 @@ def create_router(core, lock, settings, embodied, archive, runtime, *, file_sour
         except (ValueError,OSError,TimeoutError):
             pass
         direct=file_source_status() if file_source_status is not None else None
-        return dict(home=owner.connection_health(),cameras=dict(configured=embodied.configured(),count=len(embodied.cameras())),
+        return dict(home=owner.appliance_health(),cameras=dict(configured=embodied.configured(),count=len(embodied.cameras())),
                     nas=nas,file_source=direct.model_dump(mode='json') if hasattr(direct,'model_dump') else direct)
 
     @router.get('/automatic-status')

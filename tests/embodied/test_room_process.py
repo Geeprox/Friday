@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import sys
 import time
 from types import SimpleNamespace
@@ -112,8 +113,35 @@ async def test_real_room_child_preserves_registration_draft_and_unconfigured_lay
     assert process.returncode is not None and not session.owner.slot
 
 
+def test_registration_decodes_once_and_still_checks_view_between_matches(image, monkeypatch):
+    from homeplane.embodied.room_engine import DEFAULT, Room
+
+    room = Room(DEFAULT, image)
+    cover = cv2.imencode(".jpg", np.full((360, 640), 36, dtype=np.uint8))[1].tobytes()
+    original = cv2.imdecode
+    decode = Mock(side_effect=original)
+    monkeypatch.setattr(cv2, "imdecode", decode)
+    assert room.register(image, [], 10.0, check_visibility=True) is True
+    assert decode.call_count == 1 and room.reg_info["status"] == "locked"
+    assert room.register(cover, [], 10.1, check_visibility=True) is False
+    assert decode.call_count == 2 and room.reg_checked == 10.0
+    room.register(cover, [], 10.2)
+    assert decode.call_count == 2
+
+
 @pytest.mark.asyncio
-async def test_real_room_child_confirms_patrol_from_background_with_moving_foreground(tmp_path, image):
+@pytest.mark.parametrize("legacy_reference", [False, True])
+async def test_real_room_child_confirms_patrol_from_background_with_moving_foreground(
+    tmp_path, image, legacy_reference
+):
+    if legacy_reference:
+        from homeplane.embodied.room_engine import DEFAULT, calibration_draft
+
+        older_config = dict(calibration_draft(DEFAULT), mode="approximate")
+        (tmp_path / "room-calibration.json").write_text(json.dumps(older_config))
+        unrelated = cv2.imencode(".jpg", np.full((360, 640, 3), 110, dtype=np.uint8))[1].tobytes()
+        (tmp_path / "room-reference.jpg").write_bytes(unrelated)
+    saved_files = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     session = RoomSession(tmp_path)
     director = CameraDirector()
     director.apply_mode("survey", "synthetic-intent")
@@ -129,7 +157,7 @@ async def test_real_room_child_confirms_patrol_from_background_with_moving_foreg
         frame[70:250, left:left + 80] = foreground
         masked_person = dict(id=1, box=dict(x=left / 640, y=70 / 360, w=80 / 640, h=180 / 360))
         encoded = cv2.imencode(".jpg", frame)[1].tobytes()
-        assert await session.register(encoded, [masked_person], now + at)
+        assert await session.register(encoded, [masked_person], now + at), session.status()
         return director.choose(dict(status="live", session_id="synthetic-capture", people=[masked_person],
             _local_received=now + at, scene_visible=session.scene_visible,
             _patrol_view=session.patrol_view), now + at)
@@ -172,9 +200,9 @@ async def test_real_room_child_confirms_patrol_from_background_with_moving_foreg
             assert director.survey_confirmed_moves == step + 1
         assert director.public()['survey_result'] == 'complete' and director.position == (0, 0)
         assert director.public()["physical_motion_verified"] is False
-        assert not list(tmp_path.iterdir())
     finally:
         assert await session.close()
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == saved_files
     assert session.patrol_view is None
 
 
@@ -196,15 +224,14 @@ class Room:
         self.reg_info={'status':'locked'}
         self.registration=SimpleNamespace(tolist=lambda:[[1,0,0],[0,1,0],[0,0,1]])
     def expect_motion(self,now,seconds):self.command_until=now+seconds
-    def register(self,*_):
+    def register(self,*_,check_visibility=False):
         if mode=='register':stall()
+        if check_visibility and mode=='visible':stall()
+        return True if check_visibility else None
     def update(self,*_):
         if mode=='layout':stall()
         return dict(unavailable_layout(),registration={'status':'locked'})
-def visible(_):
-    if mode=='visible':stall()
-    return True
-serve(sys.stdin.buffer,sys.stdout.buffer,Path(sys.argv[1]),factory=Room,visibility=visible,draft_factory=lambda _:None)
+serve(sys.stdin.buffer,sys.stdout.buffer,Path(sys.argv[1]),factory=Room,draft_factory=lambda _:None)
 """
 
 

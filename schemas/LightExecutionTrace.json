@@ -447,7 +447,8 @@
       "default": "ha-scoped-light",
       "enum": [
         "ha-scoped-light",
-        "ha-scoped-device"
+        "ha-scoped-device",
+        "mijia-scoped-power"
       ],
       "title": "Route",
       "type": "string"

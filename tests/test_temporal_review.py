@@ -1,6 +1,8 @@
 """Scheduling, evidence freshness and process ownership; no real models/devices."""
 
 import asyncio
+import base64
+import io
 import json
 import sqlite3
 import time
@@ -9,13 +11,17 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import APIRouter, FastAPI
+from PIL import Image
 
 from homeplane.embodied import paths, safety, safety_api
+from homeplane.embodied.decisions_review import DecisionsWindowReviewer, visible_people
 from homeplane.embodied import temporal_model as model
 from homeplane.embodied.rapid_review import RapidReviewWindow
 from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
+from homeplane.embodied.stable_tracks import StableTracks
 from homeplane.embodied.temporal_model import GIB, HostBudget, MlxWindowProcess, VisualResult
 from homeplane.embodied.temporal_review import TemporalReviewer
+from homeplane.intelligence.runtime import IntelligenceRuntime
 
 
 class Clock:
@@ -41,6 +47,209 @@ class Engine:
 
     async def close(self):
         self.closed = True
+
+
+async def test_decisions_review_sends_cropped_fresh_frames_and_honors_daily_cap(tmp_path):
+    calls = []
+    widths = []
+    admission = True
+
+    async def send(request):
+        calls.append(request.url.path)
+        body = json.loads(request.content)
+        content = body['input'][0]['content']
+        assert body['model'] == 'gpt-6-luna' and len(content) == 5
+        for value in content[1:]:
+            raw = base64.b64decode(value['image_url'].split(',', 1)[1])
+            with Image.open(io.BytesIO(raw)) as image:
+                assert image.width < image.height <= 256
+                assert 'exif' not in image.info
+                widths.append(image.width)
+        question = body['questions'][0]
+        return httpx.Response(200, json={
+            'answers': [{'type': 'choice', 'name': question['name'], 'choice': 'face_obscured',
+                         'probabilities': [{'value': x['value'], 'probability': .92 if x['value'] == 'face_obscured' else .02}
+                                           for x in question['choices']]}],
+            'usage': {'input_tokens': 200, 'output_tokens': 1},
+        })
+
+    owner = IntelligenceRuntime(None, tmp_path / 'intel', transport=httpx.MockTransport(send),
+                                key_resolver=lambda: 'synthetic-value-only')
+    owner.settings.update({'daily_visual_review': 1})
+    client = DecisionsWindowReviewer(runtime=owner)
+    box = visible_people([{'box': dict(x=.12, y=.12, w=.18, h=.72, confidence=.81)}])
+    assert box and not visible_people([])
+    stamp = time.monotonic()
+    with io.BytesIO() as buffer:
+        Image.new('RGB', (640, 360), 'gray').save(buffer, 'JPEG')
+        frames = [(stamp-n, buffer.getvalue()) for n in (3, 2, 1, 0)]
+    async def review():
+        return await client.analyze_scoped(lambda: (frames, False),
+                                           current=lambda: admission, regions_for=lambda _: box)
+
+    admission = False
+    with pytest.raises(model.VisualSourceChanged):
+        await review()
+    assert not calls
+    admission = True
+    assert (await review()).event == 'face_obscured'
+    assert calls == ['/v1/decisions'] and len(widths) == 4
+    with pytest.raises(ValueError, match='daily_visual_review_reached'):
+        await review()
+    usage = owner.ledger.status(owner.settings.read())
+    assert usage['visual_review'] == {'used': 1, 'limit': 1}
+    assert usage['used']['images'] == 0 and len(calls) == 1
+
+
+async def test_cloud_result_uses_current_selected_camera_and_never_loads_local_engine():
+    clock = Clock()
+    local = Engine()
+    observed = []
+    policy = SafetyPolicy(enabled=True, visual_review=True,
+                          visual_cloud_source=safety.PostureSource(camera='cam_'+'1'*10, source_context='2'*64))
+    active = policy.visual_cloud_source.camera
+    other = 'cam_'+'3'*10
+
+    class Cloud:
+        def readiness(self):
+            return {'available': True, 'provider': 'decisions'}
+
+        async def analyze_scoped(self, window, *, current, regions_for):
+            frames, _ = window()
+            assert current() and all(regions_for(t) for t, _ in frames)
+            observed.append('cloud')
+            return VisualResult(event='face_obscured', observation='合成判断')
+
+    receipts = []
+
+    def deliver(*args, **meta):
+        receipts.append((args, meta))
+
+    reviewer = TemporalReviewer(policy=lambda: policy, deliver=deliver, engine=local, cloud=Cloud(),
+                                cloud_current=lambda cid, *_: cid == active, clock=clock)
+    try:
+        for n in range(10):
+            clock.value = 100.0 + n
+            for camera in (other, active):
+                reviewer.offer(camera, 'synthetic', 0, clock(), b'fixture', stable=True,
+                               source_context='2'*64, regions=((.2, .2, .5, .8),),
+                               visual_cues=((1, 0),) if n == 3 else ())
+            await asyncio.sleep(0)
+            if reviewer.task:
+                await reviewer.task
+        assert observed == ['cloud', 'cloud'] and not local.calls
+        assert len(receipts) == 1 and receipts[0][0][0] == active
+        assert len(receipts[0][0][2]) == 8 and receipts[0][1] == {'provider': 'decisions'}
+        for n in range(10, 40):
+            clock.value = 100.0 + n
+            reviewer.offer(active, 'synthetic', 0, clock(), b'fixture', stable=True,
+                           source_context='2'*64, regions=((.2, .2, .5, .8),))
+            await asyncio.sleep(0)
+        assert reviewer.status()['progress'] == 'standby'
+        assert reviewer.task is None and len(observed) == 2
+        clock.value += 1
+        reviewer.offer(active, 'synthetic', 0, clock(), b'fixture', stable=True, source_context='2'*64)
+        assert reviewer.status()['progress'] == 'standby'
+        assert not reviewer.windows[active].frames
+        clock.value += 2
+        assert reviewer.status()['progress'] == 'waiting_input'
+    finally:
+        await reviewer.close()
+
+
+@pytest.mark.parametrize('first', ['unclear', 'face_obscured'])
+async def test_cloud_review_uses_one_budget_per_continuous_pose_and_rearms(tmp_path, monkeypatch, first):
+    clock = Clock()
+    camera = 'cam_'+'1'*10
+    context = '2'*64
+    monkeypatch.setattr(safety, 'time', SimpleNamespace(monotonic=clock, time=lambda: 1800000000 + clock()))
+    monkeypatch.setattr('homeplane.embodied.camera_provenance.configured_camera_sources',
+                        lambda: [{'id': camera, 'source_context': context}])
+    store = SafetyStore(tmp_path/'safety.sqlite')
+    saved = store.configure(safety.SafetyControls(enabled=True, visual_review=True))
+    store.configure_visual_cloud(saved.revision, safety.PostureSource(camera=camera, source_context=context))
+    local = Engine()
+    runtime = SafetyRuntime(store, visual_engine=local)
+    runtime.visual.clock = clock
+    requests = []
+
+    class Cloud:
+        async def analyze_scoped(self, window, *, current, regions_for):
+            frames, _ = window()
+            assert current() and all(regions_for(stamp) for stamp, _ in frames)
+            requests.append(frames)
+            return VisualResult(event=first, observation='合成判断')
+
+    runtime.visual.cloud = Cloud()
+    point = lambda x, y: dict(x=x, y=y, confidence=.98)
+    horizontal = {'id': 1, 'tracking': {'follow_revision': 1},
+                  'box': dict(x=.21, y=.46, w=.52, h=.22, confidence=.98),
+                  'joints': {'leftShoulder': point(.32, .55), 'rightShoulder': point(.32, .59),
+                             'leftHip': point(.55, .55), 'rightHip': point(.55, .59)}}
+    upright = {'id': 1, 'tracking': horizontal['tracking'],
+               'box': dict(x=.44, y=.16, w=.14, h=.65, confidence=.98),
+               'joints': {'leftShoulder': point(.47, .32), 'rightShoulder': point(.54, .32),
+                          'leftHip': point(.47, .54), 'rightHip': point(.54, .54)}}
+
+    async def frames(start, stop, people):
+        for index in range(start, stop):
+            clock.value = 100 + index
+            await runtime.observe(camera, 'session', people, clock(), clock(), stable=True,
+                                  jpeg=b'fixture', source_context=context)
+            if runtime.visual.task:
+                await runtime.visual.task
+                await asyncio.sleep(0)
+
+    per_pose = 1 if first == 'unclear' else 2
+    try:
+        await frames(0, 30, [horizontal])
+        await frames(30, 31, [])
+        await frames(31, 32, [upright])
+        await frames(32, 83, [horizontal])
+        assert len(requests) == per_pose
+        await frames(83, 90, [upright])
+        await frames(90, 104, [horizontal])
+        assert len(requests) == 2 * per_pose
+        assert not local.calls
+    finally:
+        await runtime.close()
+
+
+async def test_cloud_camera_selection_is_explicit_and_round_trips_without_policy_schema_change(tmp_path, monkeypatch):
+    cam = 'cam_' + '1'*10
+    context = '2'*64
+    monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
+    monkeypatch.setattr(safety_api, 'configured_camera_sources',
+                        lambda: [{'id': cam, 'name': '测试镜头', 'source_context': context}])
+    app = FastAPI()
+    router = APIRouter()
+    intelligence = IntelligenceRuntime(None, tmp_path/'intel', key_resolver=lambda: 'synthetic-value-only')
+    intelligence.settings.update({'provider': 'local'})
+    runtime = safety_api.install(router, SimpleNamespace(process=None), intelligence=intelligence)
+    app.include_router(router)
+    url = 'http://127.0.0.1:8740'
+    command = {'camera': cam, 'expected_revision': 0}
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url=url) as client:
+            endpoint = '/api/embodied/safety/visual-cloud'
+            assert (await client.post(endpoint, json={**command, 'allow_upload': True})).status_code == 403
+            headers = {'Origin': url}
+            assert (await client.post(endpoint, json=command, headers=headers)).status_code == 422
+            declined = await client.post(endpoint, json={**command, 'allow_upload': True}, headers=headers)
+            assert declined.status_code == 409 and declined.json()['detail'] == 'cloud_capability_disabled'
+            intelligence.settings.update({'provider': 'auto'})
+            confirmed = await client.post(endpoint, json={**command, 'allow_upload': True}, headers=headers)
+            assert confirmed.json() == {'camera': cam, 'revision': 1}
+            state = (await client.get('/api/embodied/safety')).json()
+            assert state['visual_cloud']['camera'] == cam and state['visual_cloud']['source_changed'] is False
+            assert 'visual_cloud_source' not in state['policy']
+            assert state['policy']['visual_review'] is False
+            assert state['visual_review']['provider'] == 'decisions'
+            result = await client.post(endpoint, json={'camera': None, 'expected_revision': 1}, headers=headers)
+            assert result.json() == {'camera': None, 'revision': 2}
+    finally:
+        await runtime.close()
 
 
 class PostureEngine(Engine):
@@ -93,6 +302,25 @@ def paired_poses(offset, *, anchor_offset=0, near=True, track=2):
     ]
 
 
+def paired_detection(offset, *, overlapping=True, ambiguous=False):
+    # 靠近的两人可各有独立骨架，错误归属的根关节则可能落在两个检测框的容差内。
+    anchor, subject = paired_poses(offset)
+    anchor['box'].update(x=.12, w=.35)
+    x, width = (.40, .23) if overlapping else (.446, .20)
+    subject['box'].update(x=x, w=width)
+    for name, point in anchor['joints'].items():
+        if not name.endswith('Wrist'):
+            point['x'] -= .06
+    anchor['joints']['leftWrist']['x'] = .455
+    anchor['joints']['rightWrist']['x'] = .465
+    anchor['joints']['root'] = dict(x=.30, y=.49, confidence=.96)
+    subject['joints']['root'] = dict(x=.45 if ambiguous else .53, y=.59+offset, confidence=.96)
+    subject['joints']['neck'] = dict(x=.53, y=.51+offset, confidence=.96)
+    return dict(boxes=[anchor['box'], subject['box']], poses=[
+        dict(joints=anchor['joints']), dict(joints=subject['joints']),
+    ])
+
+
 @pytest.mark.parametrize('scenario', ['no_contact', 'shared_motion', 'new_track', 'occluded', 'three_people',
                                       'jumped_sample', 'slow', 'new_aspect', 'valid'])
 def test_rapid_window_requires_visible_pair_and_two_continuous_motion_steps(scenario):
@@ -117,12 +345,15 @@ def test_rapid_window_requires_visible_pair_and_two_continuous_motion_steps(scen
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(('event_kind','capacity','should_save'), [
-    ('rapid_movement', None, True), ('none', None, False), ('possible_fall', None, False),
-    ('rapid_movement', 3, False),
+@pytest.mark.parametrize(('event_kind', 'capacity', 'hidden_pose', 'should_save'), [
+    ('rapid_movement', None, None, True), ('none', None, None, False),
+    ('possible_fall', None, None, False), ('rapid_movement', 3, None, False),
+    ('rapid_movement', None, 'overlapping_boxes', False),
+    ('rapid_movement', None, 'ambiguous_roots', False),
 ])
 async def test_single_rapid_window_reaches_real_private_event_and_frames(tmp_path, monkeypatch,
-                                                                       event_kind, capacity, should_save):
+                                                                       event_kind, capacity, hidden_pose,
+                                                                       should_save):
     clock = Clock()
 
     def wall():
@@ -140,20 +371,40 @@ async def test_single_rapid_window_reaches_real_private_event_and_frames(tmp_pat
     app = FastAPI()
     app.include_router(router)
     base = '/api/embodied/safety'
+    tracker = StableTracks()
+    camera = 'cam_' + 'a'*10
+    overlapping = hidden_pose != 'ambiguous_roots'
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
             configured = await client.post(base+'/policy', json=dict(enabled=True, visual_review=True, announce=True))
             assert configured.status_code == 200
+            for stamp in (99.75, 99.875):
+                tracker.update(paired_detection(0, overlapping=overlapping), stamp)
+            tracks = None
             for index, offset in enumerate((0, 0, -.07, -.15)):
                 clock.value = 100 + index*.25
-                assert runtime.offer('cam_'+'a'*10, 'session', paired_poses(offset), clock(), clock(), stable=True,
+                if hidden_pose and index == 2:
+                    at = clock() - .125
+                    obscured = tracker.update(paired_detection(0, overlapping=overlapping, ambiguous=True), at)
+                    assert {row['id'] for row in obscured} == tracks and all(not row['joints'] for row in obscured)
+                    assert runtime.offer(camera, 'session', obscured, at, at, stable=True,
+                                         jpeg=b'obscured', source_context='b'*64)
+                people = tracker.update(paired_detection(offset, overlapping=overlapping), clock())
+                assert len(people) == 2 and all(
+                    row['tracking']['overlapping'] is overlapping and row['joints'] for row in people)
+                if tracks is None:
+                    tracks = {row['id'] for row in people}
+                assert {row['id'] for row in people} == tracks
+                assert runtime.offer(camera, 'session', people, clock(), clock(), stable=True,
                                      jpeg=bytes([index]), source_context='b'*64, source_name='合成镜头')
                 await runtime.drain()
                 if runtime.visual.task is not None:
                     await runtime.visual.task
                     await asyncio.sleep(0)
             await runtime.drain()
-            assert engine.calls == [tuple((100+i*.25, bytes([i])) for i in range(4))]
+            expected = [] if hidden_pose else [tuple((100+i*.25, bytes([i])) for i in range(4))]
+            assert engine.calls == expected
+            assert runtime.coalesced == int(hidden_pose is not None)
             events = (await client.get(base+'/events')).json()['events']
             assert bool(events) == should_save
             assert not runtime.tasks
@@ -289,7 +540,8 @@ async def test_prone_corroboration_cannot_bridge_lost_or_replaced_subjects(repla
     for index in range(16):
         clock.value = 100 + index
         track = replacement if index == 4 else (2 if replacement == 2 and index > 4 else 1)
-        r.offer('camera', 'session', 1, clock(), b'frame', stable=True, posture_track=track)
+        subject = (track, 0) if track is not None else None
+        r.offer('camera', 'session', 1, clock(), b'frame', stable=True, posture_track=subject)
         if r.task:
             await r.task
             await asyncio.sleep(0)
@@ -310,7 +562,13 @@ async def test_unscoped_model_suggestions_cannot_create_posture_reviews():
 
 
 @pytest.mark.asyncio
-async def test_bound_posture_policy_routes_same_subject_frames_into_the_actual_review_api(tmp_path, monkeypatch):
+@pytest.mark.parametrize(('change', 'frame_indices', 'expected_calls'), [
+    ('none', (0, 1, 2, 3, 6, 7, 8, 9), 2),
+    ('after_first', (6, 7, 8, 9, 12, 13, 14, 15), 3),
+    ('while_second_waits', (12, 13, 14, 15, 18, 19, 20, 21), 4),
+])
+async def test_bound_posture_policy_routes_same_subject_frames_into_the_actual_review_api(
+        tmp_path, monkeypatch, change, frame_indices, expected_calls):
     clock = Clock()
 
     def wall():
@@ -367,17 +625,30 @@ async def test_bound_posture_policy_routes_same_subject_frames_into_the_actual_r
             assert (await client.get(base)).json()['posture_review']['state'] == 'waiting'
             stale = await client.post(base+'/posture', json=dict(camera=None, expected_revision=1))
             assert stale.status_code == 409
-            for index in range(10):
+            discontinuity = {'after_first': 4, 'while_second_waits': 10}.get(change, 100)
+            for index in range(frame_indices[-1] + 1):
                 clock.value = 100 + index
-                await runtime.observe(chosen, 'session', [person], clock(), clock(), stable=True,
-                                      jpeg=bytes([index]), source_context=source, source_name='合成照护镜头')
+                await runtime.sync_policy()
+                actor = dict(person, tracking=dict(overlapping=False, follow_revision=int(index >= discontinuity)))
+                if change == 'while_second_waits' and index == 9:
+                    engine.ready.clear()
+                assert runtime.offer(chosen, 'session', [actor], clock(), clock(), stable=True,
+                                     jpeg=bytes([index]), source_context=source, source_name='合成照护镜头')
+                await runtime.observation_task
+                if change == 'while_second_waits':
+                    if index == 9:
+                        assert runtime.visual.task and len(engine.calls) == 2
+                        continue
+                    if index == 10:
+                        engine.ready.set()
                 if runtime.visual.task:
                     await runtime.visual.task
                     await asyncio.sleep(0)
-                if index < 9:
+                if index < frame_indices[-1]:
                     assert not runtime.recording.jobs
+                    assert not runtime.store.events()
             await runtime.drain()
-            assert engine.scopes == [True, True]
+            assert engine.scopes == [True] * expected_calls
             assert (await client.get(base)).json()['posture_review']['state'] == 'observing'
             event, = (await client.get(base+'/events')).json()['events']
             assert event['visual_kind'] == 'prone_posture' and event['camera'] == chosen
@@ -385,7 +656,7 @@ async def test_bound_posture_policy_routes_same_subject_frames_into_the_actual_r
             assert event['track'] is None and event['person_name'] is None and not runtime.tasks
             assert event['announcement']['status'] == 'not_requested'
             frames = [(await client.get(base+'/events/'+event['id']+'/frames/'+str(i))).content for i in range(8)]
-            assert frames == [bytes([i]) for i in (0,1,2,3,6,7,8,9)]
+            assert frames == [bytes([i]) for i in frame_indices]
             done = await client.post(base+'/events/'+event['id']+'/review', json=dict(review='acknowledged'))
             assert done.json()['review'] == 'acknowledged'
             config['cameras'][0]['device']['did'] = 'synthetic-replacement'

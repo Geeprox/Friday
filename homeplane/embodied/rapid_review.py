@@ -4,6 +4,8 @@ import math
 from collections import deque
 from dataclasses import dataclass
 
+from .pose_rules import body_track_revision
+
 SAMPLE_INTERVAL = .15
 MAX_FRAME_GAP = .55
 MAX_CANDIDATE_AGE = 6
@@ -12,6 +14,7 @@ MAX_CANDIDATE_AGE = 6
 @dataclass(frozen=True)
 class _Body:
     track: int
+    revision: int
     center: tuple[float, float]
     torso: float
     wrists: tuple[tuple[float, float], ...]
@@ -25,7 +28,10 @@ def _body(person, aspect):
     if not isinstance(person, dict) or person.get('motion') == 'camera_moving':
         return None
     track, box, joints = person.get('id'), person.get('box'), person.get('joints')
-    if type(track) is not int or track < 1 or not isinstance(box, dict) or not isinstance(joints, dict):
+    # 人物靠近时检测框可以部分重叠，仍需有各自独立归属的完整躯干关节。
+    revision = body_track_revision(person, allow_overlap=True)
+    if (type(track) is not int or track < 1 or revision is None
+            or not isinstance(box, dict) or not isinstance(joints, dict)):
         return None
     x, y, w, h = (box.get(key) for key in ('x', 'y', 'w', 'h'))
     if (not _number(box.get('confidence'), .65, 1)
@@ -52,7 +58,7 @@ def _body(person, aspect):
         return None
     center = tuple((a+b)/2 for a,b in zip(shoulder, hip))
     wrists = tuple(joint for side in ('left', 'right') if (joint := point(side+'Wrist')) is not None)
-    return _Body(track, center, length, wrists)
+    return _Body(track, revision, center, length, wrists)
 
 
 def _relative(subject, anchor):
@@ -123,7 +129,8 @@ class RapidReviewWindow:
         pair.sort(key=lambda body: body.track)
         if self.samples:
             previous, _, previous_pair = self.samples[-1]
-            if [body.track for body in pair] != [body.track for body in previous_pair] or captured-previous > MAX_FRAME_GAP:
+            same_pair = all((a.track, a.revision) == (b.track, b.revision) for a, b in zip(pair, previous_pair))
+            if not same_pair or captured-previous > MAX_FRAME_GAP:
                 self.samples.clear()
             elif captured-previous < SAMPLE_INTERVAL:
                 return

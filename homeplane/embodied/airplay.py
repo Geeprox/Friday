@@ -6,8 +6,9 @@ import importlib.util
 import ipaddress
 import json
 
-from .paths import PRIVATE, configuration
+from .paths import PRIVATE
 from .speech_lifecycle import SpeechGuard, SpeechExpired
+from .speech_selection import save_output
 
 _play_lock = asyncio.Lock()
 
@@ -77,9 +78,8 @@ async def select(identifier, *, host=None):
             target['credentials'] = old.get('credentials', {})
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    config = configuration()
     private_json(PRIVATE / 'homepod.json', target)
-    private_json(PRIVATE / 'config.json', {**config, 'speech_output':'homepod'})
+    save_output(PRIVATE, 'homepod')
     return dict(name=device['name'], configured=True, quiet=(PRIVATE / 'voice-paused').exists())
 
 

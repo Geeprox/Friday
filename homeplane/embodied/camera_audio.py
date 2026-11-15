@@ -6,10 +6,11 @@ packet retains its oldest input receipt time and a capture-bound sequence.
 
 import base64
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import math
 import re
+import secrets
 
 from .camera_provenance import bind_capture_packet, camera_source_context
 
@@ -18,6 +19,25 @@ SAMPLE_RATE = 16000
 MAX_AGE = 1.5
 MAX_GAP = .6
 VOICE_WINDOW_SECONDS = 1.3
+
+
+@dataclass(frozen=True)
+class WakeCameraCue:
+    """同一路摄像头的临时唤醒事件，只提供搜寻起点。"""
+
+    captured: float
+    session: str
+    source: tuple[str, str]
+    voice_revision: int
+    correlation: str = field(default_factory=lambda: secrets.token_hex(16), compare=False)
+    confirmed_mono: float | None = field(default=None, compare=False, repr=False, kw_only=True)
+
+
+@dataclass(frozen=True)
+class WakeCameraPause:
+    """语音仍在采集或处理时，保留原唤醒凭据，暂缓新的云台动作。"""
+
+    cue: WakeCameraCue
 
 
 def number(value):
@@ -30,13 +50,21 @@ def fresh(received, decoded, wall):
 
 
 def offer_voice_window(writer, *, now, captured, enabled, attention):
+    _offer_audio_window(writer, 'voice_window', now, captured, enabled, attention)
+
+
+def offer_sound_window(writer, *, now, captured, enabled):
+    _offer_audio_window(writer, 'sound_window', now, captured, enabled, False)
+
+
+def _offer_audio_window(writer, action, now, captured, enabled, attention):
     """仅在控制管道可写时提交本帧授权，后续由新鲜帧续期。"""
     if writer.is_closing() or writer.transport.get_write_buffer_size():
         return
     deadline = now
     if number(captured) and 0 <= now - captured < MAX_AGE:
         deadline = min(now + VOICE_WINDOW_SECONDS, captured + MAX_AGE)
-    command = dict(action='voice_window', expires_mono=deadline,
+    command = dict(action=action, expires_mono=deadline,
                    enabled=enabled and deadline > now, attention=attention and deadline > now)
     try:
         writer.write((json.dumps(command, separators=(',', ':')) + '\n').encode())
@@ -211,14 +239,25 @@ class AudioIngress:
         return AdmittedAudio(dict(packet), changed, self.status(), mono-(wall-packet['received_at']))
 
 
-async def deliver_audio(service, admission):
+def prepare_voice_packet(service, admission):
+    """在同一路语音消费者上应用音频间断和诊断。"""
     if not isinstance(admission, AdmittedAudio):
         service.reset_audio()
         service.audio_input_at = None
-        return False
+        return None
     service.state['audio_input'] = admission.diagnostics
     service.audio_input_at = admission.received_mono
-    if admission.reset:service.reset_audio()
-    if admission.packet is None:return False
-    await service.audio(admission.packet)
+    if admission.reset:
+        if admission.packet is not None:
+            service.finish_gap(admission.packet)
+        service.reset_audio(
+            'voice_audio_discontinuity' if admission.packet is not None else 'voice_audio_rejected')
+    return admission.packet
+
+
+async def deliver_audio(service, admission):
+    packet = prepare_voice_packet(service, admission)
+    if packet is None:
+        return False
+    await service.audio(packet)
     return True

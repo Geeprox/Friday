@@ -231,7 +231,8 @@ async def test_secondary_camera_rechecks_the_live_tilt_before_writing_to_its_wor
         waiters[command['request_id']].set_result({'native_code': 0})
 
     scope = dict(director=director, latest=latest, item=item, selected={'id': 'synthetic-camera'},
-        motion_lock=asyncio.Lock(), waiters=waiters, camera_is_open=camera_is_open, recognizer=None,
+        motion_lock=asyncio.Lock(), room_lock=asyncio.Lock(), waiters=waiters,
+        camera_is_open=camera_is_open, recognizer=None,
         process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock())),
         self=SimpleNamespace(focus=Mock(return_value=None), occupied_elsewhere=Mock(return_value=False),
                              review_pending=Mock(return_value=False), fall_pending=Mock(return_value=False),
@@ -301,6 +302,7 @@ def test_fall_has_a_short_independent_window_and_respects_camera_ownership():
 
 def test_two_level_survey_is_finite_and_repeated_intent_does_not_restart_it():
     d=CameraDirector();d.apply_mode('survey',7)
+    assert d.needs_full_vision(0)
     attempts=[]
     x = y = 0.0
     for at in range(300):
@@ -312,6 +314,7 @@ def test_two_level_survey_is_finite_and_repeated_intent_does_not_restart_it():
     assert d.phase=='survey_finished' and d.public()['survey_result'] == 'complete'
     assert d.public()['survey_confirmed_moves'] == len(attempts)
     assert d.public()['physical_motion_verified'] is False
+    assert not d.needs_full_vision(300)
     d.apply_mode('survey',7)
     assert d.choose(sample(301,x=x),301) is None
     d.apply_mode('survey',8)
@@ -322,6 +325,98 @@ def test_two_level_survey_is_finite_and_repeated_intent_does_not_restart_it():
     d.apply_mode('hold',9)
     assert d.choose(sample(320,visible=False),320) is None
     assert d.phase=='held'
+
+def patrol_sample(at, **changes):
+    return dict(sample(at, people=[person(1, .42)], **changes), tracking_current=True)
+
+
+def test_scheduled_survey_uses_full_route_and_rearms_after_completion():
+    director = CameraDirector()
+    director.apply_mode('patrol', 'synthetic-schedule')
+    due = director.SCHEDULE_INTERVAL
+    assert director.choose(patrol_sample(0), 0) is None
+    assert director.choose(patrol_sample(due-1), due-1) is None
+    assert not director.public()['scheduled_survey_active']
+    attempted = []
+    x = y = 0.0
+    for at in range(due, due+director.SCHEDULE_SWEEP_LIMIT):
+        director.apply_mode('patrol', 'synthetic-schedule')
+        view = patrol_sample(at, x=x, y=y)
+        if direction := director.choose(view, at, occupied_elsewhere=True):
+            assert director.decision_current(view, at, direction, occupied_elsewhere=True)
+            attempted.append(direction)
+            director.sent(at)
+            x += .05 * ((direction == 'right') - (direction == 'left'))
+            y += .05 * ((direction == 'down') - (direction == 'up'))
+        if director.public()['survey_result'] == 'complete' and not director.public()['scheduled_survey_active']:
+            break
+    assert tuple(attempted) == director.SURVEY_ROUTE
+    assert director.public()['survey_confirmed_moves'] == len(attempted)
+    assert not director.public()['physical_motion_verified']
+    due = at+director.SCHEDULE_INTERVAL
+    assert director.choose(patrol_sample(due-1), due-1) is None
+    assert not director.public()['scheduled_survey_active']
+    assert director.choose(patrol_sample(due), due) is None
+    assert director.public()['scheduled_survey_active']
+    assert director.public()['survey_confirmed_moves'] == 0
+
+
+def test_scheduled_survey_waits_for_clear_input_and_does_not_catch_up_on_a_new_source():
+    director = CameraDirector()
+    director.apply_mode('patrol', 'synthetic-schedule')
+    due = director.SCHEDULE_INTERVAL
+    director.choose(patrol_sample(0), 0)
+    assert director.choose(patrol_sample(due, session='replacement'), due) is None
+    assert not director.public()['scheduled_survey_active']
+    due *= 2
+    assert director.choose(patrol_sample(due-2, session='replacement'), due) is None
+    assert director.choose(patrol_sample(due, session='replacement'), due, review_pending=True) is None
+    assert not director.public()['scheduled_survey_active']
+    view = patrol_sample(due+1, session='replacement')
+    assert director.choose(dict(view, game={'mode': 'ski'}), due+1) is None
+    assert not director.public()['scheduled_survey_active']
+    assert director.choose(patrol_sample(due+2, session='replacement'), due+2) is None
+    assert director.public()['scheduled_survey_active']
+
+
+@pytest.mark.parametrize('interruption', ['wake', 'game', 'motor', 'deadline', 'source', 'hold'])
+def test_scheduled_survey_interruptions_fence_a_pending_motor_step(interruption):
+    from homeplane.embodied.camera_audio import WakeCameraCue
+
+    director = CameraDirector()
+    director.apply_mode('patrol', 'synthetic-schedule')
+    due = director.SCHEDULE_INTERVAL
+    director.choose(patrol_sample(0), 0)
+    director.choose(patrol_sample(due), due)
+    assert director.choose(patrol_sample(due+.5), due+.5) is None
+    at = due+16
+    direction = director.choose(patrol_sample(at), at)
+    assert direction == 'right'
+    view = patrol_sample(at+.1)
+    cue = None
+    if interruption == 'wake':
+        source = ('synthetic-capture', 'synthetic-context')
+        cue = WakeCameraCue(at, 'first', source, 1)
+        view['_wake_source'] = source
+    elif interruption == 'game':
+        view['game'] = {'mode':'ski'}
+    elif interruption == 'motor':
+        director.failed(at)
+    elif interruption == 'deadline':
+        at = due+director.SCHEDULE_SWEEP_LIMIT
+        view = patrol_sample(at+.1)
+    elif interruption == 'source':
+        view = patrol_sample(at+.1, session='replacement')
+    else:
+        director.apply_mode('hold', 'manual')
+    assert not director.decision_current(view, at+.1, direction, sound_cue=cue)
+    assert director.choose(view, at+.1, sound_cue=cue) is None
+    report = director.public()
+    assert not report.get('scheduled_survey_active')
+    assert report['survey_result'] == (None if interruption == 'hold' else 'interrupted')
+    assert report['survey_confirmed_moves'] == 0
+    if interruption == 'wake':
+        assert director.sound_search_cue is cue
 
 
 def test_explicit_survey_uses_its_route_when_people_or_speech_focus_change():
@@ -400,6 +495,7 @@ def test_patrol_motor_ack_does_not_count_an_unchanged_view():
     clear(director)
     assert director.choose(sample(16), 16) == 'right'
     director.sent(16.1)
+    assert director.needs_full_vision(16.2)
     for at in (18.3, 19.4, 20.5, 22):
         assert director.choose(sample(at), at) is None
     assert director.scan_steps == 0 and director.position == (0, 0)

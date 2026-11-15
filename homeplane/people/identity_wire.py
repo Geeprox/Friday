@@ -6,6 +6,8 @@ import socket
 import struct
 import time
 
+from homeplane.embodied.pose_rules import body_track_revision
+
 PACKET_LIMIT = 8 * 1024 * 1024
 REPLY_LIMIT = 128 * 1024
 UNAVAILABLE_REASONS = frozenset(
@@ -23,6 +25,17 @@ UNAVAILABLE_REASONS = frozenset(
         "native_initialization_failed",
     }
 )
+
+def body_track_revisions(people):
+    """从同一识别帧中取得可用于身份计算的人体轨迹。"""
+    if people is None:
+        return None
+    current = {}
+    for person in people:
+        revision = body_track_revision(person)
+        if revision is not None:
+            current[str(person['id'])] = revision
+    return current
 
 
 def _nonfinite(_):

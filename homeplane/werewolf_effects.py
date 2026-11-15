@@ -16,6 +16,8 @@ import httpx
 
 from .action_contracts import DevicePlanRequest
 from .ha_control import HADeviceWriter
+from .mijia_control import MIJIA_POWER_MODE
+from .rule_compiler import digest
 
 
 def lighting_scene(phase, paused):
@@ -110,7 +112,12 @@ class SceneLights:
         return result
 
     async def _read(self, target, fingerprint=None):
+        adapter = self.core.adapter
         snapshot = await self.core.snapshot()
+        if self.core.adapter is not adapter:
+            raise ValueError("scene_light_unavailable")
+        if snapshot.mode == MIJIA_POWER_MODE:
+            return await self._read_mijia(adapter, target, fingerprint)
         entity = next((e for e in snapshot.entities if e.id == target), None)
         if entity is None or target not in self.core.actions.targets(snapshot):
             raise ValueError("scene_light_unavailable")
@@ -118,12 +125,57 @@ class SceneLights:
         if fingerprint is not None and binding != fingerprint:
             raise ValueError("scene_light_binding_changed")
         async with asyncio.timeout(4):
-            value = await HADeviceWriter(self.core.adapter, entity, "light.set").readback()
+            value = await HADeviceWriter(adapter, entity, "light.set").readback()
+        if self.core.adapter is not adapter:
+            raise ValueError("scene_light_unavailable")
         if value.get("power") not in {"on", "off"}:
             raise ValueError("scene_light_readback_unavailable")
         if value["power"] == "on" and (type(value.get("brightness")) is not int or not 1 <= value["brightness"] <= 255):
             raise ValueError("scene_light_brightness_unavailable")
-        return entity, binding, {k: v for k, v in value.items() if k == "power" or k == "brightness" and value["power"] == "on"}
+        reported = {"power": value["power"]}
+        if value["power"] == "on":
+            reported["brightness"] = value["brightness"]
+        return entity.state_version, binding, reported, None
+
+    async def _read_mijia(self, adapter, target, fingerprint):
+        actions = self.core.actions
+        home = actions.mijia_power_home
+        authority, revision = actions.dispatch_authority(target, True)
+        if home is None or 'light.set' not in getattr(authority, 'operations', ()):
+            raise ValueError('scene_light_unavailable')
+        context, targets = home.connected_targets()
+        lamp = targets.get(target)
+        if lamp is None or lamp.entity.kind != 'light':
+            raise ValueError('scene_light_unavailable')
+        setting = next((item for item in home.settings_for(lamp) if item.key == 'brightness'), None)
+        if setting is None:
+            raise ValueError('scene_light_brightness_unavailable')
+        power = home.writer(target, context=context, target=lamp)
+        brightness = home.setting_writer(context, lamp, setting)
+        if power is None or brightness is None:
+            raise ValueError('scene_light_unavailable')
+        binding = digest(['werewolf-lan-light/1', power.fingerprint(), brightness.fingerprint()])
+        if fingerprint is not None and binding != fingerprint:
+            raise ValueError('scene_light_binding_changed')
+
+        async with asyncio.timeout(4):
+            reported = {'power': (await power.readback())['power']}
+            dimmed = await brightness.readback() if reported['power'] == 'on' else None
+        if (self.core.adapter is not adapter or not home.uses_lan_home(adapter)
+                or actions.dispatch_authority(target, True)[1] != revision
+                or not power.current() or not brightness.current()):
+            raise ValueError('scene_light_unavailable')
+
+        # 两次只读请求之间可能有另一路读回，计划必须绑定当前这组电源和亮度。
+        primary = home.sample_for(context, lamp)
+        if primary is None or primary.value != reported['power']:
+            raise ValueError('scene_light_readback_unavailable')
+        if dimmed is not None:
+            sample = home.setting_sample(context, lamp, setting)
+            if sample is None or sample.comparison != dimmed['wire_value']:
+                raise ValueError('scene_light_readback_unavailable')
+            reported['brightness'] = dimmed['brightness']
+        return home.version(context, lamp), binding, reported, setting
 
     async def select(self, session, targets, *, bindings=None):
         async with self.operation_lock:
@@ -137,7 +189,9 @@ class SceneLights:
             raise ValueError("scene_selection_invalid")
         records = {}
         for target in targets:
-            _, binding, value = await self._read(target, bindings[target] if bindings is not None else None)
+            _, binding, value, setting = await self._read(target, bindings[target] if bindings is not None else None)
+            if setting is not None and value['power'] != 'on':
+                raise ValueError('scene_light_unavailable')
             records[target] = dict(binding=binding, original=value, expected=value, status="selected")
         previous = self.records, self.session
         self.records, self.session = records, session
@@ -151,16 +205,19 @@ class SceneLights:
 
     async def _write(self, target, record, desired, event, current):
         async with self.lock:
-            entity, _, reported = await self._read(target, record["binding"])
+            state_version, _, reported, setting = await self._read(target, record["binding"])
             if reported != record["expected"]:
                 raise ValueError("scene_light_manually_changed")
             if current() is not True:
                 raise ValueError("scene_expired")
+            if setting is not None and 'brightness' in desired:
+                # 先换算成设备能报告的档位，恢复时按同一档位比对。
+                desired = {**desired, 'brightness': setting.view_value(setting.wire_value(desired['brightness']))}
             if reported == desired:
                 return dict(target=target, status='reported_match', physical_effect_verified=False)
             attempt = record.get('attempt', 0) + 1
             request = DevicePlanRequest(target=target, operation="light.set", desired=desired,
-                                        expected_state_version=entity.state_version,
+                                        expected_state_version=state_version,
                                         expires_at=datetime.now(UTC) + timedelta(seconds=15),
                                         idempotency_key=hashlib.sha256(f"{self.session}:{event}:{attempt}:{target}".encode()).hexdigest())
             trace = await self.core.actions.plan(request)
@@ -251,7 +308,7 @@ class SceneLights:
                 self._release(target)
                 continue
             try:
-                _, _, value = await self._read(target, record["binding"])
+                _, _, value, _ = await self._read(target, record["binding"])
                 if current() is not True:
                     raise ValueError('scene_expired')
                 if record.get('status') in {'sending', 'unknown_outcome'} and value == record.get('previous'):
@@ -282,17 +339,23 @@ class SceneLights:
 
 
 class HostEffects:
+    PRE_SEND_RETRIES = 2
+
     def __init__(self, lights: SceneLights, *, speak=None, speech_status=None):
         self.lights = lights
         self.speak = speak
         self.speech_status = speech_status
-        self.narration = False
+        self.reset_narration(False)
         self.lights_active = False
-        self.voice_state = "off"
-        self.last_announcement = 0
         self.last_scene = None
         self._lighting_lock = asyncio.Lock()
         self._narration_lock = asyncio.Lock()
+
+    def reset_narration(self, enabled):
+        self.narration = enabled
+        self.voice_state = "off"
+        self.last_announcement = 0
+        self._unsent_cue, self._unsent_retries = None, 0
 
     async def apply(self, public, current):
         # 两路输出各自串行，上一阶段的灯光与播报只阻塞自己的后续操作。
@@ -370,6 +433,16 @@ class HostEffects:
                 self.last_announcement = previous
                 self.voice_state = "quiet" if result == "muted" else "unavailable"
                 return True
+            if result == "unavailable" and receipt.get("dispatch_attempted") is False:
+                # 无截止时间的入座和身份提示也要限制连接重试次数。
+                if self._unsent_cue != latest["id"]:
+                    self._unsent_cue = latest["id"]
+                    self._unsent_retries = 0
+                if self._unsent_retries < self.PRE_SEND_RETRIES:
+                    self._unsent_retries += 1
+                    self.last_announcement = previous
+                    self.voice_state = "unavailable"
+                    return True
             self.voice_state = ("requested" if result in ("accepted", "playing", "sent")
                                 else "quiet" if result == "paused"
                                 else "unconfirmed" if result == "unconfirmed" else "unavailable")

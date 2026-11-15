@@ -89,7 +89,9 @@ class VoiceProcess:
             while line := await process.stdout.readline():
                 item = _reply(line)
                 seq = item.get('id')
-                if type(seq) is not int or seq <= 0 or item.get('type') not in {'transcript', 'task_result', 'error'}:
+                if type(seq) is not int or seq <= 0 or item.get('type') not in {
+                    'transcript', 'classification', 'task_result', 'error',
+                }:
                     raise ValueError('invalid_voice_reply')
                 future = self.futures.get(seq)
                 if future and not future.done():
@@ -109,7 +111,7 @@ class VoiceProcess:
             child.retire()
 
     async def request(self, op, **payload):
-        expected = {'transcribe': 'transcript', 'delegate': 'task_result'}.get(op)
+        expected = {'transcribe': 'transcript', 'classify': 'classification', 'delegate': 'task_result'}.get(op)
         if expected is None:
             raise ValueError('operation_not_allowed')
         child = future = seq = None

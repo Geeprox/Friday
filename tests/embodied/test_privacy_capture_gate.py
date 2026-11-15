@@ -90,6 +90,7 @@ async def test_closed_primary_uses_real_source_function_without_capture(monkeypa
     identities = SimpleNamespace(session=None, close=lambda:None)
     reset = SimpleNamespace(reset=lambda *_:None)
     home = SimpleNamespace(armed=True, selected=True, epoch=0, vad=[], pending_audio=None, gesture=reset)
+    home.discard_audio = home.vad.clear
     scope = dict(asyncio=asyncio, time=__import__('time'), secrets=__import__('secrets'),
         os=__import__('os'), generation=1, close_identity=close_identity,
         SELECTED={'id':'cam_test','takeover':False}, SESSION='synthetic', identities=identities,

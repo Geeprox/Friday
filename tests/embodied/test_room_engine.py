@@ -1,9 +1,20 @@
 import copy, unittest
 import cv2, numpy as np
-from homeplane.embodied.room_engine import Room, DEFAULT, validate
+from homeplane.embodied.room_engine import Room, DEFAULT, _reprojection_residual, project, validate
 
 
 class GeometryTests(unittest.TestCase):
+    def test_registration_residual_matches_point_projection_and_rejects_horizon(self):
+        points = np.float32([[.1, .2], [.2, .8], [.9, .3], [.7, .8]])
+        matrix = np.array([[1, .03, .02], [.04, 1, -.01], [.15, -.07, 1]])
+        target = np.array([project(matrix, point) for point in points])
+        target += [[0, 0], [.001, -.003], [.003, .001], [-.005, .006]]
+        expected = np.median([np.linalg.norm(project(matrix, point) - match)
+                              for point, match in zip(points, target)])
+        self.assertAlmostEqual(_reprojection_residual(matrix, points, target), expected, places=12)
+        matrix[2] = [1, 0, -points[0, 0]]
+        self.assertIsNone(_reprojection_residual(matrix, points, target))
+
     def fixture(self):
         c = copy.deepcopy(DEFAULT)
         c["mode"] = "relative_calibrated"

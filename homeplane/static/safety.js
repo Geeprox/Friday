@@ -16,16 +16,41 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  const intro=add(el('section',null,{class:'safety-intro'}),el('h2','家中提醒'),el('p','发现疑似跌倒时记录事件，按需通过选定音箱提醒家人。'),status,
    add(el('div',null,{class:'safety-actions'}),enable,announce,test,button('选择播报音箱',()=>go('Settings'))),
    el('p','此功能仍在试用，可能漏报或误报。请保持日常照护。事件画面仅保存在本机，保留 30 天。',{class:'caption'}));
- const visualStatus=el('p','正在检查本机画面复核…',{role:'status','aria-live':'polite'});
+ const visualStatus=el('p','正在读取画面复核状态…',{role:'status','aria-live':'polite'});
  const visualToggle=button('开启画面复核',()=>change('visual_review'));visualToggle.setAttribute('role','switch');visualToggle.setAttribute('aria-checked','false');visualToggle.disabled=true;
  const postureSelect=el('select',null,{id:'safety-posture-camera','aria-describedby':'safety-posture-status'});
  const postureNote=el('p','',{id:'safety-posture-status',role:'status',class:'caption'});
  const postureField=add(el('div',null,{class:'safety-posture'}),el('label','趴卧复核镜头',{for:'safety-posture-camera'}),postureSelect,postureNote);
  postureField.hidden=true;postureSelect.disabled=true;let postureOptions='';
  postureSelect.onchange=()=>void selectPostureCamera();
- const visualTitle=el('h2','本机画面复核',{tabindex:'-1'}),soundTitle=el('h2','声音复核',{tabindex:'-1'});
- const visual=add(el('section',null,{class:'safety-visual'}),visualTitle,el('p','查看面部遮挡、快速搬动等画面线索。'),visualStatus,
-   add(el('div',null,{class:'safety-actions'}),visualToggle),postureField);
+ const visualTitle=el('h2','画面复核',{tabindex:'-1'}),soundTitle=el('h2','声音复核',{tabindex:'-1'});
+ const cloudCamera=el('select',null,{id:'safety-cloud-camera','aria-describedby':'safety-cloud-privacy'});
+ const cloudNote=el('p','',{class:'caption',role:'status'});
+ const cloudProvider=el('span','',{class:'caption'});
+ const cloudEdit=button('改用 API',()=>{
+  cloudEditing=true;renderVisualCloud();availability();cloudCamera.focus();
+ });
+ const cloudSave=button('启用 API 复核',()=>saveVisualCloud(cloudCamera.value));
+ cloudSave.className='primary';
+ const cloudOff=button('改用本机',()=>saveVisualCloud(null));
+ const cloudSettings=button('查看 API 设置',()=>go('Settings'));
+ const cloudCancel=button('取消',()=>{
+  cloudEditing=false;cloudCamera.value='';cloudNote.hidden=true;renderVisualCloud();availability();
+  (cloudEdit.hidden?visualTitle:cloudEdit).focus();
+ });
+ const cloudPrivacy=el('p','有异常线索时，会把这台镜头中人物附近的裁剪图发送给 OpenAI。',
+  {id:'safety-cloud-privacy',class:'caption'});
+ const cloudField=add(el('div',null,{class:'safety-posture safety-api-camera',id:'safety-cloud-camera-options'}),
+   el('label','复核摄像头',{for:'safety-cloud-camera'}),cloudCamera,cloudPrivacy,
+   add(el('div',null,{class:'safety-actions'}),cloudSave,cloudCancel));
+ cloudEdit.setAttribute('aria-controls','safety-cloud-camera-options');
+ cloudProvider.hidden=cloudEdit.hidden=cloudOff.hidden=cloudSettings.hidden=true;
+ cloudField.hidden=cloudNote.hidden=true;
+ let cloudOptions='',cloudEditing=false;
+ cloudCamera.onchange=availability;
+ const visual=add(el('section',null,{class:'safety-visual'}),visualTitle,visualStatus,
+   add(el('div',null,{class:'safety-actions'}),cloudProvider,cloudEdit,cloudOff,cloudSettings,visualToggle),
+   cloudField,cloudNote,postureField);
  const soundStatus=el('p','正在读取声音复核状态…',{role:'status','aria-live':'polite'});
  const soundToggle=button('开启声音复核',()=>change('sound_review'));soundToggle.setAttribute('role','switch');soundToggle.setAttribute('aria-checked','false');soundToggle.disabled=true;
  const soundSearch=button('开启异响后环视',()=>change('sound_search'));
@@ -61,6 +86,70 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
   reconnect.disabled=disabled||retrying||!report?.supervision?.recovery?.can_retry;
   soundSearch.disabled=disabled||!report?.sound_search&&!report?.policy?.enabled;
   const posture=report?.posture_review;postureSelect.disabled=disabled||(!posture?.camera&&!posture?.cameras?.length);
+  const cloud=report?.visual_cloud;
+  cloudEdit.disabled=disabled||!cloud?.available||!cloud?.cameras?.length;
+  cloudCamera.disabled=disabled||!cloud?.available;
+  cloudCancel.disabled=busy;
+  cloudSave.disabled=disabled||!cloudEditing||!cloud?.available||!cloudCamera.value||
+    cloudCamera.value===cloud?.camera&&!cloud?.source_changed;
+  cloudOff.disabled=disabled||!cloud?.camera;
+ }
+ function renderVisualCloud(){
+  const cloud=report?.visual_cloud;
+  cloudProvider.hidden=!cloud;
+  cloudField.hidden=!cloud||!cloudEditing;
+  if(!cloud)return;
+  const fingerprint=JSON.stringify(cloud.cameras);
+  if(fingerprint!==cloudOptions){
+   cloudOptions=fingerprint;
+   const choice=cloudCamera.value;
+   cloudCamera.replaceChildren(el('option','选择摄像头',{value:''}),
+     ...cloud.cameras.map(item=>el('option',item.name,{value:item.id})));
+   cloudCamera.value=cloud.cameras.some(row=>row.id===choice)?choice:'';
+  }
+  const selected=cloud.cameras.find(row=>row.id===cloud.camera);
+  const provider=cloud.camera?(selected?'API 复核 · '+selected.name:'API 复核'):'本机复核';
+  if(cloudProvider.textContent!==provider)cloudProvider.textContent=provider;
+  cloudOff.hidden=!cloud.camera||cloudEditing;
+  cloudEdit.hidden=cloudEditing||!cloud.available||!cloud.cameras.length;
+  cloudEdit.setAttribute('aria-expanded',String(cloudEditing));
+  cloudEdit.textContent=cloud.camera?'更换摄像头':'改用 API';
+  cloudSettings.hidden=cloud.available;
+ }
+ async function saveVisualCloud(camera){
+  if(!alive||busy||!statusFresh||!report)return;
+  if(camera==='')return;
+  if(camera&&!report.visual_cloud?.cameras.some(row=>row.id===camera))return;
+  const revision=report.policy.revision;
+  const action=camera?cloudSave:cloudOff;
+  const focused=document.activeElement===action;
+  busy=true;cloudNote.textContent='';cloudNote.hidden=true;availability();
+  let accepted=false;
+  try{
+   const receipt=await api('/visual-cloud',{camera,expected_revision:revision,allow_upload:camera!==null});
+   accepted=receipt?.camera===camera&&receipt.revision===revision+1;
+  }catch{
+   // 请求可能已经落盘。先读回最新状态，再决定是否提示重试。
+  }
+  try{
+   await refreshStatus(true);
+   if(!alive)return;
+   if(statusFresh&&report?.policy.revision>revision&&report.visual_cloud?.camera===camera&&!report.visual_cloud.source_changed){
+    cloudEditing=false;cloudCamera.value='';renderVisualCloud();
+   }else{
+    cloudNote.textContent=accepted?'正在等待复核方式更新。':'复核方式未确认，请重试。';
+    cloudNote.hidden=false;
+   }
+  }finally{
+   busy=false;
+   if(alive){
+    availability();
+    if(focused&&(document.activeElement===action||document.activeElement===document.body)){
+     const target=cloudEditing?(cloudSave.disabled?cloudCamera:cloudSave):cloudEdit.hidden?visualTitle:cloudEdit;
+     target.focus({preventScroll:true});
+    }
+   }
+  }
  }
  function renderPosture(){
   const posture=report?.posture_review;postureField.hidden=!posture;if(!posture)return;
@@ -73,7 +162,10 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    postureSelect.replaceChildren(...nodes);
   }
   if(postureSelect.value!==value)postureSelect.value=value;
-  const message=({source_changed:'摄像头来源已变化，请重新选择。',paused:'开启画面复核后继续。',unavailable:'等待本机画面复核就绪。',deferred:'暂缓复核，稍后自动重试。',observing:'已收到清晰画面。',waiting:'等待这台摄像头的清晰画面。'})[posture.state]||
+  const message=({source_changed:'摄像头来源已变化，请重新选择。',paused:'开启画面复核后继续。',
+    different_api_camera:'请选用和 API 复核相同的摄像头。',unavailable:'画面复核暂未就绪。',
+    deferred:'暂缓复核，稍后自动重试。',observing:'已收到清晰画面。',
+    waiting:'等待这台摄像头的清晰画面。'})[posture.state]||
     (posture.cameras.length?'试用。出现疑似趴卧时保存关键帧。':'添加摄像头后可选择。');
   if(postureNote.textContent!==message)postureNote.textContent=message;
  }
@@ -118,8 +210,15 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    announce.textContent=next.policy.announce?'关闭语音提醒':'开启语音提醒';announce.setAttribute('role','switch');announce.setAttribute('aria-checked',String(next.policy.announce));
    const model=next.visual_review||{};visualToggle.textContent=next.policy.visual_review?'关闭画面复核':'开启画面复核';visualToggle.setAttribute('aria-checked',String(Boolean(next.policy.visual_review)));visualToggle.disabled=busy||(!next.policy.visual_review&&(!next.policy.enabled||!model.available));
    renderPosture();
+   renderVisualCloud();
    const modelReasons={model_not_installed:'本机模型尚未安装，完成本地模型配置后可开启。',model_pin_mismatch:'本机模型需要核对，重新检查模型文件后重试。',local_runtime_missing:'本机运行环境尚未就绪，完成本地模型配置后重试。',apple_silicon_required:'当前主机不支持这套本地模型。',memory_pressure:'本机内存紧张，画面复核已暂缓。',memory_capacity:'本机可用内存容量不足，画面复核已暂缓。',memory_unknown:'暂时无法检查本机内存，稍后自动重试。',cpu_busy:'本机正在忙，稍后继续复核。',model_busy:'本机模型正在处理其他请求，稍后重试。',visual_review_deferred:'画面复核暂不可用，请检查本机模型后重试。'};
-   const visualMessage=!model.available?(modelReasons[model.reason]||'本机模型尚未就绪，完成配置后可开启。'):!next.policy.enabled?'先开启监测。':next.policy.visual_review?(model.error?(modelReasons[model.error]||'画面复核已暂缓，稍后重试。'):({waiting_input:'等待摄像头画面。',waiting:'等待首轮画面复核。',delayed:'画面复核延迟较高。'}[model.progress]||'')):'';
+   const cloudReasons={api_key_missing:'请先在智能服务配置 API Key。',api_key_rejected:'请在智能服务核对 API Key。',cloud_capability_disabled:'当前智能服务设为仅本地。',api_quota_exhausted:'API 额度不足。',daily_visual_review_reached:'已达到今日画面复核上限。',daily_requests_reached:'已达到今日 API 请求上限。',daily_text_tokens_reached:'已达到今日 Token 上限。',api_model_unavailable:'当前项目无法使用 Decisions API。',api_rate_limited:'API 暂时限流。',api_timeout:'API 响应超时。',api_unavailable:'API 暂时无法连接。'};
+   const modelMessage={...modelReasons,...cloudReasons};
+   const visualMessage=next.visual_cloud?.source_changed?'镜头来源已变化，请重新选择。':
+    !model.available?(modelMessage[model.reason]||'画面复核暂不可用。'):!next.policy.enabled?'先开启监测。':
+    next.policy.visual_review?(model.error?(modelMessage[model.error]||'画面复核已暂缓，稍后重试。'):
+      ({waiting_input:'等待可复核的画面。',waiting:'等待首轮画面复核。',delayed:'画面复核延迟较高。',
+        standby:'等待异常线索。',reviewing:'正在复核画面。'}[model.progress]||'')):'';
    if(visualStatus.textContent!==visualMessage)visualStatus.textContent=visualMessage;visualStatus.hidden=!visualMessage;
    const soundModel=next.sound_review||{};soundToggle.textContent=next.policy.sound_review?'关闭声音复核':'开启声音复核';soundToggle.setAttribute('aria-checked',String(Boolean(next.policy.sound_review)));availability();
    soundSearch.hidden=soundSearchNote.hidden=typeof next.sound_search!=='boolean'||
@@ -234,7 +333,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    if(selected===event.id&&lastDetail===fingerprint){if(focus)focusDetail(detailBody.querySelector('h2'));return;}
    lastDetail=fingerprint;
    const focusedReview=selected===event.id&&document.activeElement&&detailBody.contains(document.activeElement)?document.activeElement.getAttribute('data-review'):null;
-   const focusedRecording=selected===event.id&&document.activeElement===detailBody.querySelector('.primary');
+   const focusedRecording=selected===event.id&&document.activeElement===detailBody.querySelector('.safety-event-recording');
    const focusedFrame=selected===event.id&&detailBody.contains(document.activeElement)?document.activeElement.getAttribute('data-recording-frame'):null;
    const extraOpen=selected===event.id&&detailBody.querySelector('.safety-extra-frames')?.open;
    if(selected!==event.id){selectionVersion++;stopRecording();recordings.replaceChildren();}
@@ -250,7 +349,8 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    const searchFrames=event.frames.filter(frame=>searchOrdinals.has(frame.ordinal)).sort((a,b)=>a.at-b.at);
    const eventFrames=event.frames.filter(frame=>!searchOrdinals.has(frame.ordinal));
    const compared=event.kind==='visual_review'&&eventFrames.length===8&&
-     ['two_disjoint_local_windows','same_track_two_local_windows'].includes(event.basis);
+     ['two_disjoint_local_windows','same_track_two_local_windows','two_disjoint_decisions_windows',
+      'same_track_two_decisions_windows'].includes(event.basis);
    const compact=rapid||sustained||compared||searchFrames.length>0||followFrame;
    detailBody.replaceChildren(heading);
    if(compact)detailBody.append(el('p',[source,review].filter(Boolean).join(' · '),{class:'caption'}));
@@ -262,7 +362,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    if(source&&!compact)detailBody.append(el('p',source,{class:'caption'}));
    const actions=el('div',null,{class:'safety-actions'});
    let restoreFocus;
-   if(!event.simulated&&event.camera){const recording=button('查看附近录像',()=>void openRecordings(event));recording.className='primary';actions.append(recording);if(focusedRecording)restoreFocus=recording;}
+   if(!event.simulated&&event.camera){const recording=button('查看附近录像',()=>void openRecordings(event));recording.className='primary safety-event-recording';actions.append(recording);if(focusedRecording)restoreFocus=recording;}
    for(const[value,label]of [['acknowledged',event.review==='acknowledged'?'已查看':'我已查看'],['false_alarm','标记误报']]){const action=button(label,async()=>{try{await api('/events/'+event.id+'/review',{review:value});await refreshHistory(true);}catch{if(alive){historyStatus.hidden=false;historyStatus.textContent='标记未保存，请重试。';}}});action.setAttribute('data-review',value);action.setAttribute('aria-pressed',String(event.review===value));if(value===focusedReview)restoreFocus=action;actions.append(action);}
    if(!rapid&&!compared)detailBody.append(actions);
    if(followFrame){
@@ -291,17 +391,31 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    if(focus)focusDetail(heading);else (restoreFocus||frameButtons.get(focusedFrame))?.focus({preventScroll:true});
  }
  async function openRecordings(event,frame=null){
-  if(!alive||selected!==event.id)return;
+  if(!alive||!event||selected!==event.id)return;
   const token=++selectionVersion,owns=()=>alive&&selected===event.id&&token===selectionVersion;
   const moment=frame?frameTime(frame):null;
   stopRecording();selectRecordingFrame(frame?.ordinal);
-  recordings.setAttribute('aria-label',moment?moment+' 附近录像':'事件附近录像');
-  recordings.replaceChildren(el('p',moment?'正在查找 '+moment+' 附近的录像…':'正在查找对应录像…',{role:'status'}));
+  recordings.setAttribute('aria-label',moment?'录像回看 '+moment:'事件录像');
+  recordings.replaceChildren(el('p','正在查找录像…',{role:'status'}));
   recordings.focus({preventScroll:true});recordings.scrollIntoView?.({block:'nearest',behavior:'instant'});
-  const unavailable=()=>{
-   if(owns())recordings.replaceChildren(el('p','暂时无法读取录像。',{role:'status'}),button('重试回看',()=>void openRecordings(event,frame)));
+  const retry=()=>{
+   if(!owns())return;
+   const latest=events.find(row=>row.id===event.id);
+   const latestFrame=frame&&latest?.frames.find(row=>row.ordinal===frame.ordinal&&row.recording_anchor===true);
+   if(latest&&(!frame||latestFrame))void openRecordings(latest,latestFrame);
+   else if(latest)close();
+   else missingEvent(event.id,{focus:true});
   };
-  const play=async item=>{if(owns())try{await onOpenRecording(recordings,item);}catch{unavailable();}};
+  const close=()=>{
+   if(!owns())return;
+   selectionVersion++;stopRecording();
+   const target=(frame&&frameButtons.get(String(frame.ordinal)))||detailBody.querySelector('.safety-event-recording')||detailBody.querySelector('h2');
+   target?.focus?.();
+  };
+  const unavailable=()=>{
+   if(owns())recordings.replaceChildren(el('p','暂时无法读取录像。',{role:'status'}),button('重试回看',retry));
+  };
+  const play=async item=>{if(owns())try{await onOpenRecording(recordings,item,{retry,close});}catch{unavailable();}};
   try{
    const found=await api('/events/'+event.id+'/recordings'+(frame?'?ordinal='+frame.ordinal:''));if(!owns())return;
    if(found.event_id!==event.id||frame&&found.frame_ordinal!==frame.ordinal)throw Error('unavailable');

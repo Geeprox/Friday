@@ -17,6 +17,8 @@ OWN-WORLD: The approved Friday icon is the visual authority: charcoal matte meta
 
 STORY: Read the 3D household state and operate in place; inspect quiet service/resource summaries; follow a specific attention item to its device, task or incident. Internal processes and raw errors stay inside disclosure controls. Existing jobs run autonomously; only decisions and failed recovery ask for intervention.
 
+米家设备接入从「设备」页的待接入列表开始。确认框只显示设备名和开关授权。中枢读回后打开原有设备详情，房间和各通道沿用设备列表。窄屏使用同一顺序。
+
 FIRST VIEWPORT: A compact navigation rail, a 56px source toolbar and a 28px title. An imported 3D home takes the main work area; a narrower right column holds service states, measured CPU/memory/latency and prioritized attention rows. Without imported geometry, an honest import state occupies the space with a direct device-list escape. Devices use room navigation, grouped rows, immediate controls and an adjacent or inline detail pane. Mobile stacks the same work areas with labelled navigation. Safety opens on recent incidents; monitoring configuration is a disclosure.
 
 FORM: User-pinned approved Friday identity and user-confirmed background-steward architecture override the earlier rejected blue/card direction. seed:0bbe4960b462f190 remains the session reference, not aesthetic authority. Code-first application screen. The existing Friday icon is copied unchanged with origin metadata. Games is a consumer storefront with individually authored illustrative covers, browse/filter/detail/play flow, honest player counts and prototype labels. Interaction and Games are primary navigation destinations.
@@ -45,9 +47,13 @@ Werewolf phone join recovery: persist only the exact pending join intent in curr
 
 主持端在对局控制里提供「找回座位」。弹窗用玩家姓名与座位编号确认对象，生成的二维码居中显示，主持人可以扫码交接或复制链接。手机只显示座位和「继续对局」，完成后回到当前环节。身份仍通过按住查看。原手机在下一次同步时看到「座位已断开」。
 
+狼人杀换网后，主持端在原连接状态区域显示尚未返回的座位及「找回座位」。座位更新留在原位置。全员返回后，同一处提供「继续对局」，计时和当前环节继续。主持人选择「直接继续」时在原处确认。电视可独立连接，窄屏先显示状态再显示操作。
+
 狼人杀沿用现有纸面与深灰控件。大厅的「显示画面」和发言侧栏的「调整座位」读取已运行的镜头，将同一画面的人物编号叠在预览上。发言时显示对应进度，并以座位、人物编号和确认按钮完成调整。窄屏将调整区域排在座位列表前。画面与编号在过期、隐藏或切换阶段时一同收起。预览仅供本机主持端查看。
 
 同一阶段刷新画面时保留当前选项和键盘焦点。已对应的编号显示所属座位并禁用。新会话清除旧画面的举手和指向提示，主持人确认新编号后恢复提示。局中调整只更新镜头对应，发言座位和计时继续推进。可移除已有对应，玩家的座位及准备状态继续由对局保管。
+
+人物重叠后轨迹变化时，在「镜头座位」原进度位置显示需要重新对应的座位。「调整座位」优先定位到其中一席，原选择框就地显示「请重新对应」。确认后同一位置回到进度，只有有效的举手与指向出现在座位旁。
 
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
 
@@ -57,7 +63,11 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
 画面复核和声音复核启用后，首页在 Friday 栏显示当前阶段。暂时延迟、资源不足或恢复的状态放在原服务行，点击状态可打开「家中提醒」中对应的设置，焦点落在该项标题。监测配置收起时，提醒列表仍可独立查看。
 
+画面复核在原设置位置显示本机或 API，点击「改用 API」才展开摄像头选择和发送范围。确认后在原位置显示所选镜头，首页复核行显示 API 的待命、复核和暂缓原因。关闭或更改选择后焦点落回设置区，手机与桌面沿用同一动线。
+
 摄像头详情以画面为主体。同一个按钮查看和结束预览，「回看录像」在旁边打开当前镜头的录像。实时查看时显示跟随和方向键，物理开关单独放在底部。巡视进度与「停止巡视」放在画面操作下方，停止预览后仍可在同一位置查看当轮进度与结果。窄屏先显示画面、查看与回看，再显示巡视、跟随和方向键。
+
+同一个巡视区域提供「巡视一轮」和「每 30 分钟巡视」。启用定时巡视后保留停止入口，并在同处显示状态和已确认视角。结束预览后也能停止，连接中断时在原位置提示等待画面恢复。
 
 感知单独恢复时，仍有效的实时画面留在原位，下方显示「实时画面 · 感知恢复中」。等待识别的控件暂停，手动方向键仍可随可用画面使用。原目标选择撤下后，键盘焦点回到「停止查看」。首页沿用已有镜头行显示恢复状态。
 
@@ -73,7 +83,7 @@ Synthetic preview only. No live camera/microphone/model/TV/device activation. De
 
 取得跟随画面后，同一提醒用一组「关键画面」按时间呈现三个阶段，在图下标明「异响时」「环视」或「跟随」。各画面继续打开对应时点的录像。后到的跟随画面与当前键盘焦点、所选时段同时保留。桌面每行最多三张，窄屏每行最多两张。
 
-提醒的关键帧只有在留档含可核对的采集时间时显示「回看」。两段画面按「首次观察」「再次观察」并排，窄屏按时间上下排列，其余关键帧可展开。选择画面后，保护预览只自动打开覆盖所选时刻的唯一片段。只有相邻片段时，详情提示时间缺口并保留手动查看入口。
+提醒的关键帧只有在留档含可核对的采集时间时显示「回看」。两段画面按「首次观察」「再次观察」并排，窄屏按时间上下排列，其余关键帧可展开。覆盖所选时刻的唯一保护片段定位就绪后，以暂停画面和采集时间出现在当前提醒内。可以拖动查看前后画面或回到所选时刻。停止后回到原入口。只有相邻片段时，详情显示时间缺口和可手动查看的片段。
 
 「趴卧复核镜头」使用本机画面复核内的一项选择。默认关闭，保留用户选定的镜头和暂停状态。镜头来源变化时，请使用者重新选定。首页和提醒详情共用「疑似趴卧」标题，显示镜头、时间和两段画面各一张关键帧，其余画面按需查看。窄屏使用同一套选择与返回动线。
 

@@ -7,6 +7,7 @@ frames are recorded, and no home floor-plan coordinates are invented here.
 import base64
 import secrets
 import time
+from contextlib import nullcontext
 
 from .paths import MODELS, VISION, camera_storage
 from .room_session import RoomSession
@@ -42,7 +43,8 @@ class CameraRecognition:
         self.last = None
         if self.room is not None:self.room.expect_motion(now, 2)
 
-    async def observe(self, packet, *, source_current=None, on_vision_failure=None):
+    async def observe(self, packet, *, source_current=None, on_vision_failure=None, room_lock=None,
+                      allow_wide_pose_rescue=True):
         motion_generation = self.motion_generation
         def current():
             return (motion_generation == self.motion_generation
@@ -54,7 +56,8 @@ class CameraRecognition:
             self.last = None
             return None
         began = time.monotonic()
-        animal_intent = self.animals_intent if self.animals_enabled else None
+        animals_enabled = self.animals_enabled
+        animal_intent = self.animals_intent if animals_enabled else None
         def vision_failed(error):
             self.identities.discard()
             self.session = self.identities.session = secrets.token_hex(12)
@@ -66,6 +69,7 @@ class CameraRecognition:
                 on_vision_failure(error)
 
         detection = await self.vision.detect(dict(jpeg=packet['jpeg'], face_jpeg=packet.get('face_jpeg'),
+            allow_wide_pose_rescue=allow_wide_pose_rescue,
             hand_interval_ms=100, attention_enabled=True, animals_enabled=animal_intent is not None),
             on_failure=vision_failed)
         if detection is None:
@@ -77,27 +81,33 @@ class CameraRecognition:
         now = time.monotonic()
         vision_done = now
         picture = base64.b64decode(packet['jpeg'])
-        if self.room is None:
-            self.room = RoomSession(camera_storage(self.camera))
-        if now < self.motion_until:
-            self.room.expect_motion(now, self.motion_until-now)
-        masks = [{'box': b} for b in detection.get('boxes', [])]
-        masks.extend({'box': row['box']} for row in PetTracks.read_rows(detection) or [])
-        registered = await self.room.register(picture, masks, now, current=current,
-            active=lambda: motion_generation == self.motion_generation
-                and (source_current is None or source_current()))
-        if not current():
-            self.identities.discard()
-            self.last = None
-            return None
-        moving = (not registered or now < self.motion_until or now < self.room.command_until
-                  or self.room.reg_info.get('status') in {'moving','settling'})
-        people = self.tracks.update(detection, now, transform=self.room.registration, camera_moving=moving)
-        animals = self.pet_tracks.update(detection, now, intent=animal_intent,
-                                        transform=self.room.registration, camera_moving=moving)
-        hands = detection.get('hands', [])
-        layout = (await self.room.update(picture, people, hands, now,
-                                        packet['width'], packet['height'], [], current=current)) if registered else None
+        pet_rows = PetTracks.read_rows(detection)
+        async with room_lock or nullcontext():
+            if not current():
+                self.identities.discard()
+                self.last = None
+                return None
+            if self.room is None:
+                self.room = RoomSession(camera_storage(self.camera))
+            if now < self.motion_until:
+                self.room.expect_motion(now, self.motion_until-now)
+            masks = [{'box': b} for b in detection.get('boxes', [])]
+            masks.extend({'box': row['box']} for row in pet_rows or [])
+            registered = await self.room.register(picture, masks, now, current=current,
+                active=lambda: motion_generation == self.motion_generation
+                    and (source_current is None or source_current()))
+            if not current():
+                self.identities.discard()
+                self.last = None
+                return None
+            moving = (not registered or now < self.motion_until or now < self.room.command_until
+                      or self.room.reg_info.get('status') in {'moving','settling'})
+            people = self.tracks.update(detection, now, transform=self.room.registration, camera_moving=moving)
+            animals = self.pet_tracks.update(detection, now, intent=animal_intent,
+                                            transform=self.room.registration, camera_moving=moving)
+            hands = detection.get('hands', [])
+            layout = (await self.room.update(picture, people, hands, now,
+                                            packet['width'], packet['height'], [], current=current)) if registered else None
         if layout is None:
             self.tracks.invalidate();self.pet_tracks.clear();self.identities.discard()
             people,hands,animals=[],[],[]
@@ -122,6 +132,7 @@ class CameraRecognition:
             return None
         self.timing = dict(vision_ms=round((vision_done-began)*1000),
             animal_ms=detection.get('animal_ms', 0),
+            body_rescue_passes=detection.get('body_rescue_passes'),
             layout_ms=round((layout_done-vision_done)*1000),
             identity_ms=round((time.monotonic()-layout_done)*1000),
             pipeline_ms=round((time.time()-packet['received_at'])*1000))
@@ -145,6 +156,8 @@ class CameraRecognition:
                          captured_mono=time.monotonic()-(time.time()-packet['received_at']),
                          safety_jpeg=picture, aspect=packet['width'] / max(1, packet['height']),
                          scene_visible=scene_visible,
+                         _empty_detection=(not any(detection.get(k) for k in ('boxes', 'poses', 'hands', 'faces'))
+                                           and (not animals_enabled or pet_rows == [])),
                          _patrol_view=getattr(self.room, 'patrol_view', None) if registered else None)
         return self.last
 

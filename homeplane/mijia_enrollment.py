@@ -1,0 +1,297 @@
+"""在当前米家家庭中登记规格与中枢读回均匹配的设备。"""
+
+import asyncio
+import math
+import time
+from dataclasses import dataclass
+from uuid import uuid4
+
+from .contracts import Binding, Entity, PhysicalDevice
+from .devices import _digest, xiaomi_identifier
+from .embodied.miot_spec import properties
+from .local_camera_home import LocalCameraHome
+from .mijia_control import POWER_BY_KIND
+from .mijia_numeric import SENSORS, DeviceSettings, Sensor, numeric_scale, setting_bindings
+from .rule_compiler import digest
+
+
+KINDS = {
+    'switch': ('switch', {'switch'}),
+    'outlet': ('switch', {'switch', 'outlet'}),
+    'light': ('light', {'light'}),
+    'fan': ('fan', {'fan'}),
+}
+SENSOR_TYPES = {'sensor', 'temperature-humidity-sensor', 'illumination-sensor', 'light-sensor'}
+SENSOR_LABELS = {'temperature': '温度', 'humidity': '湿度', 'battery': '电量', 'illuminance': '照度'}
+MODE_PROPERTIES = {'mode', 'switch-mode', 'wireless-mode', 'relay-mode', 'operation-mode'}
+
+
+def miot_name(urn, category):
+    parts = urn.split(':') if isinstance(urn, str) else []
+    return parts[3] if len(parts) >= 5 and parts[0] == 'urn' and parts[2] == category else None
+
+
+def power_ports(urn, spec):
+    category = KINDS.get(miot_name(urn, 'device'))
+    if category is None or not isinstance(spec, dict) or spec.get('type') != urn:
+        return None
+    kind, services = category
+    properties(spec)
+    ports = []
+    for service in spec['services']:
+        names = [miot_name(p['type'], 'property') for p in service.get('properties', [])]
+        if kind == 'switch' and MODE_PROPERTIES.intersection(names):
+            return None
+        if miot_name(service.get('type'), 'service') not in services:
+            continue
+        on = [prop for prop, name in zip(service.get('properties', []), names) if name == 'on']
+        if not on:
+            continue
+        if len(on) != 1 or on[0].get('format') != 'bool' or not {'read', 'write'} <= set(on[0]['access']):
+            return None
+        ports.append((service['iid'], on[0]['iid']))
+    return (kind, sorted(ports)) if 1 <= len(ports) <= 8 else None
+
+
+@dataclass(frozen=True)
+class EnrollmentCandidate:
+    identity: str
+    name: str
+    room: str
+    urn: str
+    model: str
+    context: tuple[str, str, str]
+
+    @property
+    def revision(self):
+        return digest([self.identity, self.name, self.room, self.urn, self.model, self.context])
+
+    @property
+    def device_id(self):
+        return 'device:xiaomi:' + _digest(self.identity)
+
+    @property
+    def did(self):
+        return self.identity.split('_', 1)[1]
+
+    @property
+    def read_only(self):
+        return miot_name(self.urn, 'device') in SENSOR_TYPES
+
+    @property
+    def lighting(self):
+        return miot_name(self.urn, 'device') == 'light'
+
+    def targets(self, kind, ports):
+        from .mijia_power_home import PowerTarget
+
+        physical = Binding(source='xiaomi-identity', external_id=self.identity)
+        device = PhysicalDevice(id=self.device_id, name=self.name, room=self.room, kind=kind,
+                                function_ids=[], bindings=[physical], identity_basis='xiaomi_identifier')
+        result = []
+        for index, (siid, piid) in enumerate(ports, 1):
+            reference = digest([self.context[1], self.identity, siid, piid])
+            entity = Entity(id='mijia:property:' + reference, name=self.name if len(ports) == 1 else f'{self.name} 通道 {index}',
+                            room=self.room, kind=kind, physical_source_id=device.id,
+                            bindings=[Binding(source='mijia-property', external_id=reference)])
+            result.append(PowerTarget(entity=entity, device=device, identity=self.identity, model=self.model, urn=self.urn,
+                                      registry_uid=reference, siid=siid, piid=piid, operation=POWER_BY_KIND[kind]))
+        return result
+
+    def sensors(self, spec):
+        if not isinstance(spec, dict) or spec.get('type') != self.urn:
+            return []
+        properties(spec)
+        physical = Binding(source='xiaomi-identity', external_id=self.identity)
+        device = PhysicalDevice(id=self.device_id, name=self.name, room=self.room, kind='sensor',
+                                function_ids=[], bindings=[physical], identity_basis='xiaomi_identifier')
+        result = []
+        for device_class, (name, unit, _, low, high, _) in SENSORS.items():
+            matches = [(s['iid'], p) for s in spec.get('services', []) for p in s.get('properties', [])
+                       if miot_name(p.get('type'), 'property') == name and 'write' not in p['access']]
+            if len(matches) != 1:
+                continue
+            siid, prop = matches[0]
+            scale = numeric_scale(prop, {unit}, (low, high), setting=False)
+            if scale is None:
+                continue
+            piid = prop['iid']
+            reference = digest([self.context[1], self.identity, siid, piid])
+            entity = Entity(id='mijia:sensor:' + reference, name=f'{self.name} {SENSOR_LABELS[device_class]}',
+                            room=self.room, kind='sensor', physical_source_id=device.id,
+                            bindings=[Binding(source='mijia-property', external_id=reference)])
+            result.append(Sensor(entity=entity, device=device, identity=self.identity, model=self.model, urn=self.urn,
+                                 registry_uid=reference, siid=siid, piid=piid, device_class=device_class, scale=scale))
+        return result
+
+
+def enrollment_candidates(home, context=None):
+    if not isinstance(home.core.adapter, LocalCameraHome) or not home.core.actions._owner_owned:
+        return {}
+    context = context if context is not None else home.discovery_context()
+    if context is None:
+        return {}
+    rows = home.power.service.discovery_report.get('devices', ())
+    if not isinstance(rows, list):
+        return {}
+    models = context[3]
+    existing = home.enrollment_identities(context)
+    devices = {}
+    for row in rows:
+        identity = xiaomi_identifier(row.get('identity'))
+        if identity is None or identity in existing or row.get('kind') != 'device':
+            continue
+        entry = models.get(identity) or {}
+        urn, model = entry.get('urn'), entry.get('model')
+        name, room = row.get('name'), row.get('room')
+        if (miot_name(urn, 'device') not in (KINDS.keys() | SENSOR_TYPES)
+                or not isinstance(model, str) or not 1 <= len(model) <= 96
+                or not isinstance(name, str) or not 1 <= len(name) <= 80 or not isinstance(room, str) or len(room) > 80):
+            continue
+        devices[row['id']] = EnrollmentCandidate(identity, name, room, urn, model, context[:3])
+    return devices
+
+
+def native_fingerprint(context, target):
+    return digest(['mijia-enrolled-property/1', context, target.reference])
+
+
+def native_light_fingerprint(context, target, setting):
+    return digest([native_fingerprint(context, target), setting.model_dump(mode='json')])
+
+
+async def enroll(home, identifier, revision, *, allow_power, allow_readings, allow_light_settings=False):
+    from .mijia_power_home import MAX_TARGETS, NativeDeviceCatalog, NativeSensorCatalog, target_digest
+
+    candidate = enrollment_candidates(home).get(identifier)
+    if candidate is None or candidate.revision != revision:
+        raise ValueError('mijia_enrollment_changed')
+    if (allow_power, allow_readings) != (not candidate.read_only, candidate.read_only) or (
+            allow_light_settings and not candidate.lighting):
+        raise ValueError('mijia_enrollment_consent_required')
+    family, household, grant = candidate.context
+    route = home.power.lan.route_token(family, candidate.did)
+    if route is None:
+        raise ValueError('mijia_enrollment_offline')
+
+    settings = {}
+    async with asyncio.timeout(15):
+        spec = await home.power._spec(candidate.urn)
+        if candidate.read_only:
+            targets = candidate.sensors(spec)
+        else:
+            match = power_ports(candidate.urn, spec)
+            targets = candidate.targets(*match) if match is not None else []
+        if not targets:
+            raise ValueError('mijia_enrollment_unsupported')
+        if allow_light_settings:
+            settings = {target.entity.id: DeviceSettings(binding=target_digest(target),
+                         settings=setting_bindings(spec, target)) for target in targets}
+        readings = {}
+        for target in targets:
+            request = {'did': candidate.did, 'siid': target.siid, 'piid': target.piid, 'grant': grant}
+            if candidate.read_only:
+                request.update(numeric=True, sensor_read='probe')
+            row = await home.power.lan.request(request, family=family)
+            value = row.get('value' if candidate.read_only else 'power')
+            confirmed = target.scale.accepts(value, exact_step=False) if candidate.read_only else value in ('on', 'off')
+            if not confirmed:
+                raise ValueError('mijia_enrollment_offline')
+            readings[target.entity.id] = value
+
+    async with home.core.actions._lock:
+        if (candidate != enrollment_candidates(home).get(identifier)
+                or home.power.lan.route_token(family, candidate.did) is not route):
+            raise ValueError('mijia_enrollment_changed')
+        if candidate.read_only:
+            previous = home.native_sensors(candidate.context)
+            stored = previous.sensors if previous else []
+            updated = [s for s in stored if s.identity != candidate.identity] + targets
+            if len(updated) > MAX_TARGETS:
+                raise ValueError('mijia_enrollment_limit')
+            catalog = NativeSensorCatalog(family=family, household=household,
+                                          sensors=sorted(updated, key=lambda t: t.entity.id))
+            if catalog != previous:
+                home.save_native_sensors(catalog)
+        else:
+            previous, _ = home.native_catalog()
+            if previous is None:
+                legacy, _ = home.core.actions.legacy_authority(include_inactive=True)
+                previous = NativeDeviceCatalog(family=family, household=household, epoch=uuid4().hex,
+                                               enabled=legacy is None or legacy.enabled, targets=[])
+            updated = [t for t in previous.targets if t.identity != candidate.identity] + targets
+            if len(updated) > MAX_TARGETS:
+                raise ValueError('mijia_enrollment_limit')
+            retained = {t.entity.id: item for t in updated
+                        if (item := previous.light_settings.get(t.entity.id)) is not None
+                        and item.binding == target_digest(t)}
+            catalog = NativeDeviceCatalog(family=family, household=household, epoch=previous.epoch,
+                                          enabled=previous.enabled, targets=sorted(updated, key=lambda t: t.entity.id),
+                                          light_settings=retained | settings)
+            if catalog != previous:
+                home.save_native_catalog(catalog)
+        context = (family, grant)
+        for target in targets:
+            home.record((context, target.reference), readings[target.entity.id], lambda: True, route)
+        return candidate.device_id
+
+
+def authorize_native_light_setting(directory, family, grant, region, did, siid, piid, request):
+    from .mijia_power_home import read_native_catalog
+
+    try:
+        catalog, generation = read_native_catalog(directory)
+    except (OSError, ValueError):
+        raise ValueError('mijia_permission_changed') from None
+    write = 'value' in request
+    if catalog.family != family or (write and (
+            not catalog.enabled or request['authority_revision'] != generation
+            or not valid_native_deadline(request['deadline']))):
+        raise ValueError('mijia_permission_changed')
+    for target in catalog.targets:
+        if target.identity != f'{region}_{did}' or target.siid != siid:
+            continue
+        bound = catalog.light_settings.get(target.entity.id)
+        for setting in bound.settings if bound else ():
+            if setting.piid == piid and (
+                    native_light_fingerprint((family, grant), target, setting) == request['native_light_setting']):
+                if write and not setting.scale.accepts(request['value'], exact_step=True):
+                    break
+                return target.piid
+    raise ValueError('mijia_permission_changed')
+
+
+def valid_native_deadline(deadline):
+    remaining = deadline - time.monotonic() if type(deadline) in (int, float) else -1
+    return math.isfinite(remaining) and 0 < remaining <= 60
+
+
+async def native_power_operation(manager, request, grant, family, region, group, dids, current, directory):
+    from .embodied.mijia_lan import property_operation
+    from .embodied.mijia_power import property_request
+    from .mijia_power_home import read_native_catalog
+
+    payload = dict(request)
+    fingerprint = payload.pop('native_power')
+    expected, deadline = payload.pop('authority_revision', None), payload.pop('deadline', None)
+    did, siid, piid, desired = property_request(payload)
+    write = desired is not None
+
+    def qualified():
+        if not current():
+            return False
+        if write and not valid_native_deadline(deadline):
+            return False
+        try:
+            catalog, revision = read_native_catalog(directory)
+        except (OSError, ValueError):
+            return False
+        if catalog.family != family or (write and (not catalog.enabled or revision != expected)):
+            return False
+        key = (f'{region}_{did}', siid, piid)
+        return any(t.property_key == key and native_fingerprint((family, grant), t) == fingerprint
+                   for t in catalog.targets)
+
+    if not qualified():
+        raise ValueError('mijia_permission_changed')
+    return await property_operation(manager, payload, grant, group, dids, qualified)

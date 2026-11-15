@@ -34,6 +34,13 @@ class HostProof(BaseModel):
 
 class Control(HostProof):
     action: Literal["start", "advance", "pause", "resume", "end", "remove", "reseat", "close", "speaker", "rematch"]
+    continue_without_phones: bool = False
+
+
+class Reconnect(HostProof):
+    action: Literal['reconnect'] = 'reconnect'
+    address: str = Field(min_length=1, max_length=45)
+    network_revision: int = Field(ge=0)
 
 
 class SeatRecovery(HostProof):
@@ -53,8 +60,10 @@ class Binding(BaseModel):
     camera: str = Field(pattern=r"^cam_[a-f0-9]{10}$")
     session: str = Field(min_length=1, max_length=128)
     track: int = Field(ge=0)
+    track_revision: int = Field(default=0, ge=0, le=2**53 - 1)
     game_session: str = Field(min_length=1, max_length=128)
     revision: int = Field(ge=0)
+    lobby_revision: int | None = Field(default=None, ge=0)
     binding_revision: int | None = Field(default=None, ge=0)
     event_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{12,64}$")
 
@@ -92,7 +101,7 @@ def create_router(core, lock, embodied, directory, *, owner=None):
     async def context():
         from .embodied.audio_output import report
         addresses, lights = await asyncio.gather(asyncio.to_thread(owner.addresses), owner.effects.lights.choices())
-        return dict(addresses=addresses, lights=lights, speech=report(),
+        return dict(addresses=addresses or [], lights=lights, speech=report(),
                     recovery=owner.effects.lights.status(), current=owner.host(),
                     rules=list(RULES), speaker_seconds=SPEAKER_SECONDS,
                     qr_available=importlib.util.find_spec("qrcode") is not None)
@@ -121,9 +130,15 @@ def create_router(core, lock, embodied, directory, *, owner=None):
 
     @router.post("/control")
     async def control(payload: Control):
+        if payload.continue_without_phones and payload.action != 'resume':
+            raise HTTPException(422, detail='host_action_invalid')
         if payload.action == "close":
             return await guarded(owner.close_game(proof=payload))
         return await guarded(owner.control(payload.action, seat=payload.seat, proof=payload))
+
+    @router.post('/reconnect')
+    async def reconnect(payload: Reconnect):
+        return JSONResponse(await guarded(owner.reconnect(payload)), headers={'Cache-Control': 'no-store'})
 
     @router.post('/display-pairing')
     async def display_pairing(payload: DisplayApproval):
@@ -145,11 +160,13 @@ def create_router(core, lock, embodied, directory, *, owner=None):
 
     @router.post("/camera-bind")
     async def bind(payload: Binding):
-        return await guarded(owner.bind(payload.seat, payload.camera, payload.session, payload.track, proof=payload))
+        return await guarded(owner.bind(payload.seat, payload.camera, payload.session, payload.track,
+                                        track_revision=payload.track_revision, proof=payload))
 
     @router.post("/camera-unbind")
     async def unbind(payload: Binding):
-        return await guarded(owner.unbind(payload.seat, payload.camera, payload.session, payload.track, proof=payload))
+        return await guarded(owner.unbind(payload.seat, payload.camera, payload.session, payload.track,
+                                          track_revision=payload.track_revision, proof=payload))
 
     @router.post("/camera-view")
     async def camera_view(payload: CameraView):

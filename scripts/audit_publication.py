@@ -132,6 +132,9 @@ SYNTHETIC_MEDIA = {
         '7e4399ee70e6a8bd69b4409fdd5e77b310dd5f541b3d94e53b5a44523b94802d',
     'homeplane/embodied/static/game-art/beam-fluff.webp':
         '10dfe79fb36ff7dc13b12eef413b7c8cfaa230f5306e7c0239e4baabfeb1100c',
+    # 米家灯光说明使用隔离浏览器渲染的合成数据。
+    'docs/images/mijia-light-controls.webp':
+        'e3191553ca527ef8ab295c0f40db3e3d130fc8bdc4044c27d5d6b06976b82e81',
     # Approved Friday Icon, unchanged pixels with embedded origin metadata.
     'homeplane/static/brand/friday.png':
         'dba243be53573b3b2ec7572852cf23075c6b851c72c417d2c4d9a7396cca2d6e',

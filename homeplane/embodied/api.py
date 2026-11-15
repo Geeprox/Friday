@@ -6,7 +6,7 @@ import time
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from homeplane.runtime_log import observe
 
@@ -45,7 +45,7 @@ class MiHomeConnection(BaseModel):
 class CameraControl(BaseModel):
     model_config = ConfigDict(extra="forbid")
     direction: str | None = Field(default=None,pattern="^(left|right|up|down)$")
-    mode: str | None = Field(default=None,pattern="^(hold|auto|pets|survey)$")
+    mode: str | None = Field(default=None,pattern="^(hold|auto|pets|survey|patrol)$")
     survey_revision: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
 
 
@@ -112,6 +112,7 @@ class GestureContext(BaseModel):
 
 class Command(BaseModel):
     gesture: GestureContext | None = None
+    camera: str | None = Field(default=None, pattern=r'^cam_[a-f0-9]{10}$')
     target: str | None = Field(default=None, min_length=1, max_length=256)
     model_config = ConfigDict(extra="forbid")
     text: str | None = Field(default=None, min_length=1, max_length=1000)
@@ -134,14 +135,33 @@ class ModelIntent(BaseModel):
     voice_revision:int|None=Field(default=None,ge=0,strict=True)
 
 
-def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None, archive=None, home_flow=None):
+class MiHomeCandidate(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    candidate: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class MiHomeDeviceEnrollment(MiHomeCandidate):
+    expected_revision: str = Field(pattern=r'^[a-f0-9]{64}$')
+    allow_power: StrictBool = False
+    allow_readings: StrictBool = False
+    allow_light_settings: StrictBool = False
+
+
+class CameraInteractionSettings(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    enabled: bool
+    expected_revision: int = Field(ge=0)
+
+
+def create_router(service, core, lock, infrastructure=None, *, intelligence=None, archive=None, home_flow=None):
     router = APIRouter()
     from .voice_preferences import install as install_voice_preferences
     voice_preferences=install_voice_preferences(router,private=PRIVATE)
     from .audio_output import install as install_speech_output
     install_speech_output(router)
     from .safety_api import install as install_safety
-    service.safety_output = install_safety(router, service, archive=archive,infrastructure=infrastructure)
+    service.safety_output = install_safety(router, service, archive=archive, infrastructure=infrastructure,
+                                           intelligence=intelligence)
     devices = DeviceCommands(core, lock, service)
     if home_flow is not None:
         from .voice_questions import install as install_voice_questions
@@ -158,7 +178,7 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         supplied = incoming.headers.get('x-friday-worker', '')
         if not 32 <= len(expected) <= 512 or not secrets.compare_digest(expected, supplied):
             raise HTTPException(403)
-        if arl_runtime is None:
+        if intelligence is None:
             raise HTTPException(503, detail='application_model_unavailable')
         try:voice_revision=voice_preferences.read().revision
         except (ValueError,OSError):raise HTTPException(409,detail='voice_preferences_unavailable')from None
@@ -177,7 +197,7 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         deadline = time.monotonic() + 30
         try:
             with model_task('household.voice.intent', 'interactive', deadline=deadline, current=current):
-                result=await prepare_for_viewer(incoming, lambda: arl_runtime.complete_scenario(
+                result=await prepare_for_viewer(incoming, lambda: intelligence.complete_scenario(
                     'voice_intent', request.input, request_id=request.request_id, deadline=deadline), timeout=32)
                 if not current():raise HTTPException(409,detail='model_input_changed')
                 return result
@@ -253,9 +273,56 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     async def mijia_connection(request:MiHomeConnection):
         return await service.connection(request.action,request.return_url)
 
+    @router.post('/api/embodied/discovery/connect')
+    async def mijia_connect(request: MiHomeCandidate):
+        try:
+            return await service.connect_discovered_camera(request.candidate)
+        except (OSError, ValueError, TimeoutError):
+            return {'state': 'unavailable'}
+
+    @router.post('/api/embodied/discovery/enroll-device')
+    async def mijia_enroll_device(request: MiHomeDeviceEnrollment, http_request: Request):
+        from homeplane.mijia_enrollment import enroll
+
+        if (http_request.client is None or http_request.client.host not in {'127.0.0.1', '::1'}
+                or http_request.headers.get('origin') != str(http_request.base_url).rstrip('/')):
+            raise HTTPException(403, detail='invalid_local_origin')
+        if request.allow_power == request.allow_readings or (request.allow_light_settings and not request.allow_power):
+            raise HTTPException(422, detail='mijia_enrollment_consent_required')
+        home = core.actions.mijia_power_home
+        if home is None:
+            raise HTTPException(409, detail='mijia_enrollment_changed')
+        try:
+            device = await enroll(home, request.candidate, request.expected_revision,
+                                  allow_power=request.allow_power, allow_readings=request.allow_readings,
+                                  allow_light_settings=request.allow_light_settings)
+        except (OSError, ValueError, TimeoutError, httpx.HTTPError) as error:
+            accepted = {'mijia_enrollment_changed', 'mijia_enrollment_offline', 'mijia_enrollment_unsupported',
+                        'mijia_enrollment_limit'}
+            code = str(error)
+            if code == 'mijia_enrollment_consent_required':
+                raise HTTPException(422, detail=code) from None
+            raise HTTPException(409, detail=code if code in accepted else 'mijia_enrollment_unavailable') from None
+        return {'state': 'connected', 'device': device}
+
     @router.get("/api/embodied/cameras")
     async def cameras():
         return dict(cameras=service.cameras())
+
+    @router.get('/api/embodied/cameras/{camera_id}/interaction')
+    async def camera_interaction_status(camera_id: str):
+        try:
+            return service.camera_interaction_settings(camera_id)
+        except (OSError, ValueError):
+            raise HTTPException(409, detail='camera_interaction_unavailable') from None
+
+    @router.post('/api/embodied/cameras/{camera_id}/interaction')
+    async def camera_interaction_set(camera_id: str, request: CameraInteractionSettings):
+        try:
+            return service.camera_interaction_settings(camera_id, enabled=request.enabled,
+                                                       expected_revision=request.expected_revision)
+        except (OSError, ValueError):
+            raise HTTPException(409, detail='camera_interaction_unavailable') from None
 
     @router.get('/api/embodied/cameras/{camera_id}/power')
     async def camera_power_status(camera_id:str):
@@ -382,21 +449,29 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     async def command(request: Command, incoming: Request):
         # Both Console same-origin and process-scoped capability calls pass the
         # main API origin gate. A capability does not create device authority.
-        if incoming.headers.get("x-friday-worker"):
+        worker_key = incoming.headers.get("x-friday-worker")
+        if request.camera and not worker_key:
+            raise HTTPException(403)
+        if worker_key:
             try:
                 expected = (PRIVATE / "control-key").read_text().strip()
             except OSError:
                 raise HTTPException(403) from None
-            if not secrets.compare_digest(expected, incoming.headers["x-friday-worker"]):
+            if not secrets.compare_digest(expected, worker_key):
                 raise HTTPException(403)
         plan = basic_command(request.text, attending=True) if request.text else None
         if plan and plan["route"] == "no_op":
             return dict(status="no_op", write_attempted=False, reply=plan["reply"])
         query = plan.get("device") if plan else request.device
         action = plan.get("action") if plan else request.action
-        if (not query and not request.target) or not action:
+        target = request.target
+        if (not query and not target) or not action:
             return dict(status="clarify", write_attempted=False, reply="请说明房间、设备和动作。")
         def current_gesture():
+            if request.camera:
+                from .camera_interaction import allowed
+                if not allowed(request.camera, directory=PRIVATE):
+                    return False
             if request.gesture is None:
                 return True
             import time
@@ -407,15 +482,16 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
                 config = load()
                 binding = next((b for b in config.bindings if b.id == request.gesture.binding), None)
                 return bool(config.enabled and config.revision == request.gesture.revision and binding
-                    and binding.enabled and binding.target == request.target and binding.action == action
+                    and binding.enabled and binding.target == target and binding.action == action
                     and 0 <= time.monotonic() - request.gesture.observed_mono <= 1.5
                     and (infrastructure is None or infrastructure.policy.enabled
                          and infrastructure.policy.recognition and infrastructure.policy.interaction))
             except (OSError, ValueError):
                 return False
         return await devices.command(
-            query, action, request.event_id, room=request.room, preview=request.preview, target=request.target,
-            dispatch_guard=current_gesture if request.gesture is not None else None,
+            query, action, request.event_id, room=request.room, preview=request.preview, target=target,
+            dispatch_guard=current_gesture if request.gesture is not None or request.camera else None,
+            dispatch_deadline=request.gesture.observed_mono + 1.5 if request.gesture is not None else None,
         )
 
     return router

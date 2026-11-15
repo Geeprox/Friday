@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from homeplane.embodied.vision_pipe import PIPE_LIMIT, request_vision
+from homeplane.embodied.vision_benchmark import VisionBenchmark, summarize_timing
 from homeplane.embodied import camera_recognition, previews, ptz_control, vision_pipe
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.camera_intent import camera_intent_readback
@@ -154,6 +155,34 @@ def owned_port():
     return process
 
 
+@pytest.mark.asyncio
+async def test_recognizer_records_request_round_trip_and_separate_native_processing(monkeypatch):
+    clock = [20.0]
+    monkeypatch.setattr(vision_pipe, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    owner = vision_pipe.VisionProcess('synthetic-vision')
+    owner.process = owned_port()
+    on_failure = Mock()
+
+    async def respond(_process, payload):
+        if payload['jpeg'] == 'synthetic-timeout':
+            clock[0] += .22
+            raise TimeoutError()
+        clock[0] += .055
+        return {'inference_ms': 41.0, 'body_rescue_passes': 2}
+
+    monkeypatch.setattr(vision_pipe, 'request_vision', respond)
+    assert (await owner.detect({'jpeg': 'synthetic-frame'}, on_failure=on_failure))['inference_ms'] == 41
+    assert await owner.detect({'jpeg': 'synthetic-timeout'}, on_failure=on_failure) is None
+    assert owner.body_rescue_passes == 2
+    on_failure.assert_called_once_with('TimeoutError')
+    assert summarize_timing(owner.timings['vision_request'].bins) == {
+        'samples': 2, 'p95_upper_ms': 300, 'above_range': 0,
+    }
+    assert summarize_timing(owner.timings['native_processing'].bins) == {
+        'samples': 1, 'p95_upper_ms': 50, 'above_range': 0,
+    }
+
+
 def camera_ports(monkeypatch, fault):
     capture, failed, replacement = owned_port(), owned_port(), owned_port()
     queue = asyncio.Queue()
@@ -178,25 +207,29 @@ def camera_ports(monkeypatch, fault):
     failed.stdin.drain.side_effect = drain
     failed.stdout.readline.side_effect = read
 
-    def frame(marker):
+    def frame(marker, *, quiet_ms=None):
         at = time.time()
         jpeg = b'\xff\xd8' + marker + b'\xff\xd9'
         encoded = base64.b64encode(jpeg).decode()
         scope = json.loads(capture.stdin.write.call_args_list[0].args[0])
-        queue.put_nowait(json.dumps(dict(type='frame', received_at=at, preview_at=at, jpeg=encoded,
+        packet = dict(type='frame', received_at=at, preview_at=at, jpeg=encoded,
             preview=encoded, capture_session=scope['capture_session'], camera_source_context='a'*64,
-            width=640, height=360)).encode())
+            width=640, height=360)
+        if quiet_ms is not None:
+            packet['scene_quiet_ms'] = quiet_ms
+        queue.put_nowait(json.dumps(packet).encode())
         return jpeg
 
     return capture, failed, replacement, clock, queue, frame, spawn
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(('fault', 'motor_recovery'), [
-    ('write_stall', False), ('read_stall', False), ('bad_reply', False), ('bad_reply', True),
+@pytest.mark.parametrize(('fault', 'scenario'), [
+    ('write_stall', 'standard'), ('read_stall', 'standard'), ('bad_reply', 'standard'),
+    ('bad_reply', 'idle_follow'), ('bad_reply', 'motor_recovery'),
 ])
 async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fresh_frame(
-        tmp_path, monkeypatch, fault, motor_recovery):
+        tmp_path, monkeypatch, fault, scenario):
     from fastapi import HTTPException, Request
     from starlette.responses import Response
 
@@ -204,6 +237,8 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
     pending.cancel()
     capture, failed, replacement, clock, queue, frame, spawn = camera_ports(monkeypatch, fault)
     camera = owner['SELECTED']
+    idle_follow = scenario == 'idle_follow'
+    motor_recovery = scenario == 'motor_recovery'
     owner['state']['processed_frames'] = 0
     owner.update(asyncio=asyncio, time=time, secrets=secrets, base64=base64, json=json, HTTPException=HTTPException,
         Request=Request, Response=Response, SESSION='synthetic', camera_lease=None, camera_planner=None, motor_waiters={},
@@ -213,6 +248,8 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         offer_frame=offer_frame, CAPTURE_RECEIVE_TIMEOUT=CAPTURE_RECEIVE_TIMEOUT, AudioIngress=AudioIngress,
         close_identity=close_identity, camera_is_open=AsyncMock(return_value=True), capture_environment=lambda *_:{},
         VisionProcess=vision_pipe.VisionProcess, RoomSession=lambda *_,**__:room_port(), room=None,
+        vision_measurement=VisionBenchmark(), benchmark_full_vision=lambda:False,
+        needs_full_vision=lambda *_:False, motor_last_sent=-100.,
         CAMERA_STORAGE=tmp_path, room_lock=asyncio.Lock(), close_rooms=AsyncMock(),
         SceneProcess=lambda _:SimpleNamespace(analyze=AsyncMock(return_value=None),
             close=AsyncMock(return_value=True), status=lambda:dict(state='idle')),
@@ -236,7 +273,14 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
     owner['safety'].offer = Mock()
     owner['safety'].sound_requested = lambda _:False
     owner['safety'].recording_status = lambda:{'state':'ready'}
-    owner['games'].reset('ski')
+    owner['camera_intents'] = SimpleNamespace(load=lambda:SimpleNamespace(mode='auto'))
+    if idle_follow:
+        planner = ptz_control.SearchPlanner([], time.monotonic(), None)
+        planner.mode, planner.intent_revision = 'person_target', 'synthetic-intent'
+        planner.director = CameraDirector()
+        planner.director.apply_mode(planner.mode, planner.intent_revision)
+        owner['camera_planner'] = planner
+    owner['games'].reset('off' if idle_follow else 'ski')
     if motor_recovery:
         camera['takeover'] = True
         may_retry = asyncio.Event()
@@ -257,7 +301,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
             CameraDirector=CameraDirector, motor_step=AsyncMock(),
             camera_intents=SimpleNamespace(load=lambda:SimpleNamespace(mode='auto', revision='initial', status='saved')))
     for name in ('reap','invalidate_calibration','calibration_source','primary_frame_current','scene_frame_current',
-                 'primary_recovery_frame','view','preview_status','preview_frame','run_source',
+                 'primary_capture_preview','view','preview_status','preview_frame','run_source',
                  'watch_primary_privacy','supervise_primary_motion','camera_search'):
         actual('homeplane/embodied/worker.py', name, owner)
     task = asyncio.create_task(owner['run_source'](1))
@@ -265,7 +309,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
     request = SimpleNamespace(client=SimpleNamespace(host='127.0.0.1'))
     try:
         await until(lambda:capture.stdin.write.called)
-        frame(b'SYNTHETIC-FIRST')
+        frame(b'SYNTHETIC-FIRST', quiet_ms=6000 if idle_follow else None)
         await until(lambda:state['processed_frames']==1 or task.done() or state.get('recognition')=='recovering')
         assert state['processed_frames']==1, (state.get('error_class'),state.get('error_stage'))
         if motor_recovery:
@@ -278,11 +322,24 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
             lease.acquire.assert_awaited()
             assert lease.acquire.await_count == 2
             owner['motor_step'].assert_not_awaited()
+        preview_only = b'\xff\xd8SYNTHETIC-FROM-CAPTURE\xff\xd9'
+        owner['wall'].offer(camera['id'], owner['primary_wall_epoch'], dict(
+            type='frame', preview=base64.b64encode(preview_only).decode(), preview_at=time.time()))
+        assert (await owner['preview_frame'](camera['id'], request)).body == preview_only
+        assert state['processed_frames'] == 1
+        if idle_follow:
+            quiet_preview = frame(b'SYNTHETIC-IDLE-FOLLOW', quiet_ms=6000)
+            await until(lambda: state['vision_cadence']['skipped_static'] == 1 or task.done())
+            assert state['vision_cadence']['skipped_static'] == 1
+            assert (await owner['preview_frame'](camera['id'], request)).body == quiet_preview
+            assert state['processed_frames'] == 1
+            owner['games'].reset('ski')
         previous = state['session_id']
-        frame(b'SYNTHETIC-FAILED')
+        frame(b'SYNTHETIC-FAILED', quiet_ms=6000 if idle_follow else None)
         await until(lambda:failed.wait.await_count==1)
         raw = frame(b'SYNTHETIC-RAW-DURING-RECOVERY')
-        await until(lambda:(owner['wall'].frame(camera['id']) or (None,))[0]==raw)
+        await until(lambda: (owner['wall'].frame(camera['id']) or (None,))[0] == raw or task.done())
+        assert not task.done(), (state.get('error_class'), state.get('error_stage'))
         assert capture.returncode is None and owner['capture'] is capture and spawn.await_count==2
         assert state['status']=='connecting' and state['recognition']=='recovering'
         assert state['error_class']==('ValueError' if fault=='bad_reply' else 'TimeoutError')
@@ -303,7 +360,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         assert capture.returncode is None and failed.returncode==0
         queue.put_nowait(b'')
         await asyncio.wait_for(task, 1)
-        assert owner['primary_recovery_frame']() is None and owner['capture'] is None
+        assert owner['primary_capture_preview']() is None and owner['capture'] is None
         assert capture.returncode==replacement.returncode==0
         failed.wait.assert_awaited_once()
         capture.wait.assert_awaited_once()
@@ -343,13 +400,20 @@ async def test_unreaped_vision_child_cannot_be_replaced_or_receive_another_frame
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('fault', ['write_stall', 'read_stall', 'bad_reply'])
+@pytest.mark.parametrize(('fault', 'pets'), [
+    ('write_stall', None), ('read_stall', None), ('bad_reply', None),
+    ('bad_reply', 'ready'), ('bad_reply', 'unavailable'),
+])
 @pytest.mark.parametrize('close_during_recovery', [False, True])
 async def test_secondary_vision_failure_keeps_preview_and_privacy_gate_on_same_capture(
-        tmp_path, monkeypatch, fault, close_during_recovery):
+        tmp_path, monkeypatch, fault, pets, close_during_recovery):
     from tests.embodied.test_secondary_stream_recovery import CAMERA
 
     capture, failed, replacement, clock, queue, frame, spawn = camera_ports(monkeypatch, fault)
+    if pets:
+        reply = json.loads(replacement.stdout.readline.return_value)
+        reply.update(animals_supported=True, animals_status=pets, animals=[])
+        replacement.stdout.readline.return_value = (json.dumps(reply)+'\n').encode()
     lease = SimpleNamespace(snapshot={'before': {'camera_power': True}},
                             acquire=AsyncMock(),release=AsyncMock(return_value=True))
     io = SimpleNamespace(close=AsyncMock())
@@ -366,20 +430,31 @@ async def test_secondary_vision_failure_keeps_preview_and_privacy_gate_on_same_c
     monkeypatch.setattr(camera_recognition,'analyze',AsyncMock(return_value=[]))
     wall = CameraWall([CAMERA])
     observation, clear = AsyncMock(), Mock()
+    wake = Mock(return_value=False)
     pool = previews.PreviewPool(continuous=True, recognize=True, wall=wall,
-                                on_observation=observation, on_clear=clear)
+                                on_observation=observation, on_clear=clear, needs_full_vision=wake)
     camera = CAMERA['id']
     item = dict(state='connecting',frames=0,frame=None,received_at=0,
                 expires=time.monotonic()+60,shutter_changed=False)
+    if pets:
+        item.update(mode='pets', mode_revision='synthetic-intent')
     pool.sessions[camera] = item
     task = asyncio.create_task(pool._run(CAMERA,item))
     try:
         await until(lambda:capture.stdin.write.called)
-        frame(b'SYNTHETIC-FIRST')
+        frame(b'SYNTHETIC-FIRST', quiet_ms=6000 if pets else None)
         await until(lambda:pool.status(camera)['recognition'] in {'running','recovering'} or task.done())
         assert pool.status(camera)['recognition']=='running', (item.get('error_class'),item.get('error_stage'))
+        if pets:
+            assert observation.await_args.args[0]['_empty_detection'] is (pets == 'ready')
+        if pets == 'ready':
+            quiet_preview = frame(b'SYNTHETIC-IDLE-PET-FOLLOW', quiet_ms=6000)
+            await until(lambda: item['vision_cadence']['skipped_static'] == 1 or task.done())
+            assert item['vision_cadence']['skipped_static'] == 1
+            assert pool.frame(camera) == quiet_preview and observation.await_count == 1
+            wake.return_value = True
         previous = observation.await_args.args[0]['session']
-        frame(b'SYNTHETIC-FAILED')
+        frame(b'SYNTHETIC-FAILED', quiet_ms=6000 if pets else None)
         await until(lambda:failed.wait.await_count==1)
         raw = frame(b'SYNTHETIC-RAW-DURING-RECOVERY')
         await until(lambda:pool.frame(camera)==raw)

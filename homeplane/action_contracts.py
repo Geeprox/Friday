@@ -128,6 +128,12 @@ class DevicePlanRequest(Contract):
         return self
 
 
+class MijiaCoverAuthority(Contract):
+    household: str = Field(pattern=r"^[a-f0-9]{64}$")
+    binding: str = Field(pattern=r"^[a-f0-9]{64}$")
+    legacy_approval: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class HomeDeviceAuthority(Contract):
     """Private operator grant. Runtime peers do not inherit Console device authority."""
 
@@ -180,7 +186,7 @@ class LightExecutionTrace(Contract):
         "planned", "rejected", "expired", "sent", "accepted", "reported_match", "failed", "unknown_outcome"
     ]
     code: str
-    route: Literal["ha-scoped-light", "ha-scoped-device"] = "ha-scoped-light"
+    route: Literal["ha-scoped-light", "ha-scoped-device", "mijia-scoped-power"] = "ha-scoped-light"
     reasons: list[str]
     events: list[Event] = Field(default_factory=list)
     real_write_attempted: bool = False

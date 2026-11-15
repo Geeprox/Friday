@@ -128,12 +128,15 @@ class CoreSchedule:
                 snapshot, code = None, None
                 if missed:
                     code = "expired_event_no_replay"
-                elif not self.manager.available():
+                elif not self.manager.available(record.rule):
                     code = "source_or_runtime_unavailable"
                 else:
                     try:
                         async with asyncio.timeout(2):
+                            await self.manager.refresh_schedule(record.rule, record=record)
                             snapshot = await self.manager.core.snapshot()
+                    except ValueError as exc:
+                        code = 'source_binding_changed' if str(exc) == 'source_binding_changed' else 'source_or_runtime_unavailable'
                     except Exception:
                         code = "source_or_runtime_unavailable"
                 current, steady = datetime.now(UTC), time.monotonic()
@@ -150,6 +153,7 @@ class CoreSchedule:
                         RuleTrial(event=event, modes=runtime.modes),
                         now=current,
                         allow_core=True,
+                        clock_boot=adapter._boot,
                     )
                     if snapshot is not None and code is None
                     else None
@@ -191,7 +195,7 @@ class CoreSchedule:
                     clock_owner=self.epoch,
                 )
                 failure = runtime._guard(item)
-                if failure or self.manager.scope(record.rule, snapshot) != record.source_scope:
+                if failure or not self.manager.matches_scope(record, snapshot):
                     runtime._stage(run, "suppressed", failure or "source_binding_changed")
                 else:
                     runtime.pending[record.rule.id] = item

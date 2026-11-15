@@ -7,7 +7,7 @@ from pathlib import Path
 import secrets
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -15,6 +15,7 @@ from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.local_motor import LocalMotor
 from homeplane.embodied.local_motor import check_motor_deadline
 from tests.embodied.test_camera_director import patrol_view
+from tests.embodied.test_review_motion import recorded_sound_only
 
 
 def view(at, *, x=.78, visible=True, tracking=True, session='source', people=None):
@@ -145,7 +146,7 @@ def primary_scope():
                  safety=SimpleNamespace(clear_view=noop),
                  fleet=SimpleNamespace(clear=noop),
                  home=SimpleNamespace(selected=True, epoch=0, vad=[], pending_audio=None,
-                                      runtime_log=SimpleNamespace(record=noop)))
+                                      discard_audio=noop, runtime_log=SimpleNamespace(record=noop)))
     def write(data):
         command = json.loads(data)
         sent.append(command)
@@ -198,6 +199,26 @@ async def test_primary_reserves_motion_before_first_await_and_bounds_child_comma
 
 
 @pytest.mark.asyncio
+async def test_primary_dispatches_with_one_privacy_read_inside_remaining_frame_window():
+    scope, sent = primary_scope()
+    observed = 60.
+    now = observed + .55
+    reads = []
+    scope.update(last_frame=observed, time=SimpleNamespace(monotonic=lambda: now, time=time.time))
+
+    async def read_power(_):
+        nonlocal now
+        reads.append((now, scope['room_lock'].locked()))
+        now += .60
+        return True
+
+    scope['camera_is_open'] = read_power
+    await scope['motor_step']('right', observed, expected_intent='original', decision_current=lambda: True)
+    assert reads == [(observed + .55, True)]
+    assert sent[0]['direction'] == 'right' and sent[0]['expires_mono'] == observed + 1.5
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['direction', 'tracking', 'post_move', 'epoch', 'privacy', 'source', 'review', 'fall'])
 async def test_secondary_checks_latest_observation_after_privacy_read(change):
     director = CameraDirector()
@@ -208,7 +229,7 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
     sent = []
     scope = dict(asyncio=asyncio, time=time, secrets=secrets, json=json, director=director,
                  item=dict(privacy_closed=False, control_epoch=1, last_motor_sent=-100, source_active=True),
-                 motion_lock=asyncio.Lock(), selected=dict(id='synthetic'),
+                 motion_lock=asyncio.Lock(), room_lock=asyncio.Lock(), selected=dict(id='synthetic'),
                  process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=sent.append, drain=AsyncMock())),
                  waiters={}, recognizer=None, privacy_closed=noop,
                  self=SimpleNamespace(on_motion=None, focus=lambda _: None, occupied_elsewhere=lambda _: False,
@@ -240,6 +261,63 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['none', 'new_target', 'expired', 'shutter_closed', 'source_closed'])
+async def test_secondary_rechecks_motor_authority_after_waiting_for_room(change):
+    from tests.embodied.test_camera_audio import actual
+
+    now = 40.0
+    clock = SimpleNamespace(monotonic=lambda: now)
+    director = CameraDirector()
+    director.choose(view(now-.2), now-.2)
+    assert director.choose(view(now), now) == 'right'
+    waiters, sent = {}, []
+    lock = asyncio.Lock()
+
+    def write(data):
+        packet = json.loads(data)
+        sent.append(packet)
+        waiters[packet['request_id']].set_result({'native_code': 0})
+
+    item = dict(privacy_closed=False, source_active=True, control_epoch=1)
+    state = dict(view(now), now=now, captured_mono=now, session='source')
+    sample_scope = dict(latest=state, item=item)
+    current_sample = actual('homeplane/embodied/previews.py', 'current_sample', sample_scope)
+    scope = dict(asyncio=asyncio, time=clock, secrets=secrets, json=json, waiters=waiters, director=director,
+                 item=item, motion_lock=asyncio.Lock(), room_lock=lock, selected={'id': 'synthetic'},
+                 recognizer=None, current_sample=current_sample, privacy_closed=Mock(),
+                 process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock())),
+                 camera_is_open=AsyncMock(return_value=True),
+                 self=SimpleNamespace(on_motion=None, focus=lambda _: None, occupied_elsewhere=lambda _: False,
+                     review_pending=lambda *_: False, fall_pending=lambda *_: False, sound_cue=lambda *_: None,
+                     runtime_log=SimpleNamespace(record=Mock())))
+    send = actual('homeplane/embodied/previews.py', 'send_motion', scope)
+    async with lock:
+        job = asyncio.create_task(send('right', now, 1))
+        await asyncio.sleep(0)
+        assert not job.done() and not sent
+        if change == 'new_target':
+            state['people'] = view(now, x=.05)['people']
+        elif change == 'expired':
+            now += 1.51
+        elif change == 'shutter_closed':
+            scope['camera_is_open'].return_value = False
+        elif change == 'source_closed':
+            item['source_active'] = False
+    if change == 'none':
+        await job
+        assert [row['direction'] for row in sent] == ['right']
+    else:
+        error = {'source_closed': 'capture_source_changed', 'expired': 'motor_request_expired',
+                 'shutter_closed': 'privacy_shutter_closed'}.get(change, 'stale_input')
+        with pytest.raises(RuntimeError, match=error):
+            await job
+        assert not sent
+        if change == 'expired':
+            scope['camera_is_open'].assert_not_awaited()
+    assert not waiters
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('change',[None,'target','review','fall'])
 async def test_primary_search_original_guard_rechecks_the_current_target(change):
     from homeplane.embodied.party_camera import PartyCamera
@@ -257,6 +335,7 @@ async def test_primary_search_original_guard_rechecks_the_current_target(change)
                  previews=SimpleNamespace(sessions={}),
                  safety=SimpleNamespace(clear_view=lambda _:None, review_pending=lambda *_:False,fall_pending=lambda *_:False,
                                         sound_search_cue=lambda *_:None))
+    scope['camera_motion_cue'] = recorded_sound_only(scope['safety'])
     extract('homeplane/embodied/worker.py', {'decision_current'}, scope)
     class Wait:
         async def __aenter__(self):
@@ -290,6 +369,7 @@ async def test_primary_expired_manual_wait_preserves_current_observation():
     scope['room_lock'] = Wait()
     with pytest.raises(RuntimeError, match='motor_request_expired'):
         await scope['motor_step']('left')
+    scope['camera_is_open'].assert_not_awaited()
     assert not sent and not scope['motor_waiters'] and scope['motion_generation'] == 0
 
 
@@ -379,7 +459,7 @@ async def test_capture_controls_pass_expiry_through_the_actual_child_and_native_
                  asyncio=SimpleNamespace(to_thread=delayed_thread), time=time)
     source = ast.parse(Path('homeplane/embodied/capture_worker.py').read_text())
     controls = next(node for node in ast.walk(source) if isinstance(node, ast.AsyncFunctionDef) and node.name == 'controls')
-    factory = ast.parse('async def factory():\n    audio_until = attention_until = video_until = 0\n    return controls').body[0]
+    factory = ast.parse('async def factory():\n    audio_until = sound_until = attention_until = video_until = 0\n    return controls').body[0]
     factory.body.insert(1, controls)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[factory], type_ignores=[])), '<actual capture controls>', 'exec'), scope)
     await (await scope['factory']())()

@@ -14,6 +14,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus, WebSocketException
 
 from .budget import EnhancementUnavailable
+from .openai import is_quota_error
 
 MAX_INPUT_BYTES = 8 * 24000 * 2
 MAX_SESSION_SECONDS = 25
@@ -104,9 +105,9 @@ class RealtimeVoice:
                         if event.get("type") == "error":
                             error = event.get("error")
                             code = error.get("code") if isinstance(error, dict) else None
-                            if code in {"insufficient_quota", "rate_limit_exceeded"}:
+                            if is_quota_error(error) or code == "rate_limit_exceeded":
                                 await asyncio.to_thread(
-                                    client.http_failure, "realtime", 429, {"error": {"code": code}}
+                                    client.http_failure, "realtime", 429, event
                                 )
                             raise EnhancementUnavailable("voice_api_unavailable")
                         if event.get("type") == "response.output_text.delta":
@@ -116,6 +117,10 @@ class RealtimeVoice:
                             text += delta
                         if event.get("type") == "response.done":
                             response = event.get("response")
+                            if isinstance(response, dict) and response.get("status") == "failed":
+                                details = response.get("status_details")
+                                if isinstance(details, dict) and is_quota_error(details.get("error")):
+                                    await asyncio.to_thread(client.http_failure, "realtime", 429, details)
                             if (
                                 not isinstance(response, dict)
                                 or response.get("status") != "completed"

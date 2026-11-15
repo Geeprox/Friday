@@ -15,11 +15,12 @@ import os
 import platform
 from pathlib import Path
 
-from .paths import DATA, PRIVATE
+from .paths import APP_CONTENTS, DATA, PRIVATE
 from .review_child import ReviewChild
 from .temporal_model import host_budget
 
-SOUND = DATA / 'bin/friday-sound'
+BUNDLED_SOUND = APP_CONTENTS / 'Helpers/friday-sound' if APP_CONTENTS is not None else None
+SOUND = BUNDLED_SOUND or DATA / 'bin/friday-sound'
 INFANT_CRY_LABEL = 'baby_crying'
 IDENTIFIERS = {
     'crying': (INFANT_CRY_LABEL, 'crying', 'sobbing'),
@@ -42,7 +43,10 @@ def sound_readiness(binary=SOUND):
     reason = None
     try:
         mode = binary.stat()
-        if (binary.is_symlink() or not binary.is_file() or mode.st_uid != os.getuid()
+        bundled = binary == BUNDLED_SOUND
+        trusted_owner = mode.st_uid == os.getuid() or bundled and mode.st_uid == 0
+        if (binary.is_symlink() or bundled and binary.parent.is_symlink()
+                or not binary.is_file() or not trusted_owner
                 or mode.st_mode & 0o022 or not os.access(binary, os.X_OK)):
             reason = 'sound_runtime_missing'
     except OSError:
