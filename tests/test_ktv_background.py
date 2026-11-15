@@ -419,7 +419,7 @@ def test_tv_background_generation_fence_and_media_credential_scope():
         classes.mkdir()
         files = [
             source / "src/local/friday/ktv" / name
-            for name in ("SongBackdrop.java", "MediaRoute.java", "KtvEndpoint.java")
+            for name in ("SongBackdrop.java", "BackdropImagePolicy.java", "MediaRoute.java", "KtvEndpoint.java")
         ]
         files.append(source / "tests/SongBackdropTest.java")
         command = [str(javac), "--release", "8", "-d", str(classes), *[str(p) for p in files]]
@@ -427,7 +427,7 @@ def test_tv_background_generation_fence_and_media_credential_scope():
         compiled = subprocess.run(command, capture_output=True, text=True, timeout=30)
         assert compiled.returncode == 0, compiled.stderr
         checked = subprocess.run(
-            [str(java), "-cp", str(classes), "SongBackdropTest"], capture_output=True, text=True, timeout=10
+            [str(java), "-cp", str(classes), "local.friday.ktv.SongBackdropTest"], capture_output=True, text=True, timeout=10
         )
         assert checked.returncode == 0, checked.stderr
         assert "passed" in checked.stdout
