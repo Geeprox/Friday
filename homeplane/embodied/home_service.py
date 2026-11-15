@@ -23,7 +23,7 @@ from homeplane.embodied.voice_activity import VoiceActivity
 from homeplane.embodied.voice_preferences import read_preferences
 from homeplane.embodied.voice_process import VoiceProcess
 from homeplane.embodied.voice_routing import RETRY_OTHER_MIC, Utterance
-from homeplane.embodied.vision_benchmark import WakeMotionCounts
+from homeplane.embodied.vision_benchmark import LatencyHistogram, WakeMotionCounts
 from homeplane.runtime_log import RuntimeLog, observe
 from homeplane.home_questions import is_home_question
 from homeplane.task_composition import is_task_request
@@ -87,7 +87,9 @@ class HomeService:
         self.duration = 0.0
         self.voiced_duration = self.wake_duration = 0.0
         self.voice_events = {}
-        self.asr_attempts = 0
+        self.voice_segments = self.asr_attempts = self.asr_results = 0
+        self.voice_timings = {stage: LatencyHistogram()
+                              for stage in ('asr_request', 'voice_segment_to_wake_confirm')}
         self.wake_motion_counts = WakeMotionCounts()
         self.noise = 0.004
         self.last_audio = None
@@ -145,7 +147,9 @@ class HomeService:
         }
 
     def vision_benchmark_voice(self):
-        return {'asr_attempts': self.asr_attempts, 'wake_confirmed': self.voice_events.get('wake_confirmed', 0)}
+        return dict(voice_packets=self.state.get('audio_packets', 0), voice_segments=self.voice_segments,
+                    asr_attempts=self.asr_attempts, asr_results=self.asr_results,
+                    wake_confirmed=self.voice_events.get('wake_confirmed', 0))
 
     def voice_status(self):
         if not self.enabled:
@@ -408,6 +412,7 @@ class HomeService:
             if not self.voice_busy:
                 self.state["reason"] = "等待清晰的语音指令"
             return
+        self.voice_segments += 1
         owner, attending = utterance_focus(self.utterance_attention)
         source = self.utterance_source
         if source is not None and not all(isinstance(value, str) and value for value in source):
@@ -466,8 +471,10 @@ class HomeService:
             return False
         if source is not None:
             self.camera_focus = None
+            confirmed = time.monotonic()
             self.wake_camera = WakeCameraCue(captured, self.camera_session, source, policy.revision,
-                                            confirmed_mono=time.monotonic())
+                                            confirmed_mono=confirmed)
+            self.voice_timings['voice_segment_to_wake_confirm'].record_ms((confirmed - captured) * 1000)
             self.note_voice("wake_confirmed", correlation=self.wake_camera.correlation)
             return True
         # 没有采集凭据时只保留原有的单人构图提示。
@@ -553,9 +560,15 @@ class HomeService:
         try:
             self.state["voice"] = "transcribing"
             policy=self.voice_preferences()
+            audio = base64.b64encode(pcm).decode()
             self.asr_attempts += 1
-            result = await self.request("transcribe", pcm=base64.b64encode(pcm).decode(), attending=attending,
-                                        voice_revision=policy.revision, wake_only=wake_only)
+            asr_started = time.monotonic()
+            try:
+                result = await self.request("transcribe", pcm=audio, attending=attending,
+                                            voice_revision=policy.revision, wake_only=wake_only)
+            finally:
+                self.voice_timings['asr_request'].record_ms((time.monotonic() - asr_started) * 1000)
+            self.asr_results += 1
             if result.get('voice_revision',0)!=policy.revision or self.voice_preferences()!=policy:
                 self.state['reason']='唤醒词已更新，请重新说一次'
                 return

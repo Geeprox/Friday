@@ -19,8 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from homeplane.embodied.vision_benchmark import comparison_scope, summarize_timing, timing_deltas, valid_token
 
 ENDPOINT = '/api/internal/vision-benchmark'
-WAKE_COUNTS = ('asr_attempts', 'wake_confirmed', 'wake_motor_sent', 'wake_motor_acknowledged')
+WAKE_COUNTS = ('voice_packets', 'voice_segments', 'asr_attempts', 'asr_results', 'wake_confirmed',
+               'wake_motor_sent', 'wake_motor_acknowledged')
 COUNTERS = ('inference', 'skipped', 'frames')
+SAMPLE_INTERVAL = 2
 
 
 class NoRedirects(HTTPRedirectHandler):
@@ -80,30 +82,49 @@ class LocalPort:
         return self.read(self.console + '/api/home/resources', {})
 
 
+def counter_delta(previous, current, key):
+    before, after = previous.get(key), current.get(key)
+    if before is None and after is None:
+        return None
+    if type(before) is not int or type(after) is not int:
+        raise ValueError('measurement_counter_unavailable')
+    if after < before:
+        raise ValueError('measurement_counter_reset')
+    return after - before
+
+
 def summarize(rows):
     cameras = []
     for lane in zip(*(sample['cameras'] for sample, _ in rows)):
         start, end = lane[0], lane[-1]
         latency = sorted(row['latency_ms'] for row in lane if row['latency_ms'] is not None)
         timings = timing_deltas(start.get('timings'), end.get('timings'))
+        preview_frames = counter_delta(start, end, 'preview_frames')
         cameras.append(dict(slot=end['slot'],
             inference_submitted=end['inference']-start['inference'],
             skipped_static=end['skipped']-start['skipped'],
             recognized_frames=end['frames']-start['frames'],
+            preview_frames=preview_frames,
+            preview_fresh_samples=(sum(row.get('preview_fresh') is True for row in lane)
+                                   if preview_frames is not None else None),
             quiet_samples=sum(row['quiet_ms'] is not None and row['quiet_ms'] >= 4500 for row in lane),
             sampled_frame_age_median_ms=statistics.median(latency) if latency else None,
             sampled_frame_age_p95_ms=latency[math.ceil(len(latency)*.95)-1] if latency else None,
-            voice={key: end['voice'].get(key, 0)-start['voice'].get(key, 0) for key in WAKE_COUNTS},
+            voice={key: counter_delta(start['voice'], end['voice'], key) for key in WAKE_COUNTS},
             timings={key: summarize_timing(counts) for key, counts in timings.items()}))
-    hosts = {sample['sampled_at']: sample for _, sample in rows if sample.get('available')}
+    # 资源接口会缓存最新读数两秒。第二次读取已在本阶段内，之后只用更新的读数，
+    # 使 CPU 使用率的前后两个系统计数都来自本阶段。
+    baselines = {sample['sampled_at'] for _, sample in rows[:2]}
+    hosts = {sample['sampled_at']: sample for _, sample in rows[2:]
+             if sample.get('available') and sample['sampled_at'] not in baselines}
     cpu = [row['cpu_percent'] for row in hosts.values() if row.get('cpu_percent') is not None]
     memory = [row['memory_used_bytes'] for row in hosts.values() if row.get('memory_used_bytes') is not None]
-    if len(cpu) < 2 or len(memory) < 2 or any(
-            min(row['inference_submitted'], row['skipped_static'], row['recognized_frames'], *row['voice'].values()) < 0
-            or row['recognized_frames'] == 0 for row in cameras):
+    if len(cpu) < 2 or len(memory) < 2:
+        raise ValueError('measurement_host_samples_unavailable')
+    if any(row['recognized_frames'] <= 0 for row in cameras):
         raise ValueError('measurement_discontinuous')
     return dict(seconds=round(rows[-1][0]['sampled_mono']-rows[0][0]['sampled_mono'], 2), samples=len(rows),
-                host_cpu_percent_median=statistics.median(cpu), host_samples=len(hosts),
+                host_cpu_percent_median=statistics.median(cpu), host_cpu_samples=len(cpu), host_samples=len(hosts),
                 host_memory_used_bytes_median=statistics.median(memory), host_memory_used_bytes_peak=max(memory),
                 cameras=cameras)
 
@@ -111,7 +132,7 @@ def summarize(rows):
 def measure(port, pool, seconds, scope, *, full_rate):
     rows = []
     start = time.monotonic()
-    for offset in range(0, seconds+1, 2):
+    for offset in range(0, seconds+1, SAMPLE_INTERVAL):
         time.sleep(max(0, start+offset-time.monotonic()))
         host = pool.submit(port.resources)
         sample = port.worker()
@@ -121,9 +142,10 @@ def measure(port, pool, seconds, scope, *, full_rate):
             if sample['sampled_mono'] <= rows[-1][0]['sampled_mono']:
                 raise ValueError('measurement_clock_discontinuous')
             for previous, row in zip(rows[-1][0]['cameras'], sample['cameras']):
-                if (any(row[k] < previous[k] for k in COUNTERS)
-                        or any(row['voice'].get(k, 0) < previous['voice'].get(k, 0) for k in WAKE_COUNTS)):
-                    raise ValueError('measurement_counter_reset')
+                for key in (*COUNTERS, 'preview_frames'):
+                    counter_delta(previous, row, key)
+                for key in WAKE_COUNTS:
+                    counter_delta(previous['voice'], row['voice'], key)
                 timing_deltas(previous.get('timings'), row.get('timings'))
         rows.append((sample, host.result()))
     return summarize(rows)
@@ -145,7 +167,7 @@ def run(port, seconds, compare):
             raise ValueError('benchmark_token_unconfirmed')
         try:
             print('正在采样同四路的全速推理。', file=sys.stderr, flush=True)
-            # 等待完整的两个资源采样间隔，避免把前一阶段计入全速 CPU。
+            # 让切换后的推理流水线先稳定，系统资源另在采样阶段内建立基线。
             time.sleep(5)
             result['full_rate'] = measure(port, pool, seconds, scope, full_rate=True)
         finally:

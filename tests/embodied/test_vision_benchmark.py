@@ -75,8 +75,12 @@ def test_worker_copies_separate_per_camera_timings_only_for_diagnostic_queries()
     measurement = VisionBenchmark()
     primary = LatencyHistogram()
     secondary = LatencyHistogram()
+    primary_asr = LatencyHistogram()
+    secondary_asr = LatencyHistogram()
     primary.record_ms(39)
     secondary.record_ms(129)
+    primary_asr.record_ms(420)
+    secondary_asr.record_ms(110)
     measurement.primary_timings = {'vision_request': primary}
     cameras = [{'id': 'synthetic-primary'}, {'id': 'synthetic-secondary'}]
     chosen = cameras[0]
@@ -93,8 +97,13 @@ def test_worker_copies_separate_per_camera_timings_only_for_diagnostic_queries()
     scope = dict(
         time=SimpleNamespace(monotonic=lambda: 10), state=dict(status='live', processed_frames=2),
         last_frame=9.9, capture=capture, camera_sample=camera_sample, identities=SimpleNamespace(session='primary-run'),
-        camera_planner=None, home=SimpleNamespace(vision_benchmark_voice=lambda: {}, wake_motion_counts=WakeMotionCounts()),
-        wall=SimpleNamespace(cameras=cameras), SELECTED=chosen, secondary_homes={}, vision_measurement=measurement,
+        camera_planner=None, home=SimpleNamespace(vision_benchmark_voice=lambda: {},
+            voice_timings={'asr_request': primary_asr}, wake_motion_counts=WakeMotionCounts()),
+        wall=SimpleNamespace(cameras=cameras, preview_metrics=lambda camera: dict(
+            preview_frames=9 if camera == chosen['id'] else 15, preview_fresh=True)),
+        SELECTED=chosen, secondary_homes={cameras[1]['id']: SimpleNamespace(
+            vision_benchmark_voice=lambda: {'voice_packets': 24}, voice_timings={'asr_request': secondary_asr})},
+        vision_measurement=measurement,
         previews=SimpleNamespace(sessions={cameras[1]['id']: item}, status=lambda _: report),
         games=SimpleNamespace(mode='home'), party_camera=SimpleNamespace(window=lambda _: (None, None, False)),
         practice=SimpleNamespace(active=lambda: None), SESSION='worker-synthetic',
@@ -104,10 +113,15 @@ def test_worker_copies_separate_per_camera_timings_only_for_diagnostic_queries()
     assert all('timings' not in lane for lane in sample()['cameras'])
     lanes = sample(include_timings=True)['cameras']
     primary.record_ms(1000)
+    secondary_asr.record_ms(1000)
     assert [summarize_timing(lane['timings']['vision_request']) for lane in lanes] == [
         {'samples': 1, 'p95_upper_ms': 50, 'above_range': 0},
         {'samples': 1, 'p95_upper_ms': 150, 'above_range': 0},
     ]
+    assert [summarize_timing(lane['timings']['asr_request'])['p95_upper_ms'] for lane in lanes] == [500, 150]
+    assert all(summarize_timing(lane['timings']['asr_request'])['samples'] == 1 for lane in lanes)
+    assert [lane['preview_frames'] for lane in lanes] == [9, 15]
+    assert [lane['voice'].get('voice_packets') for lane in lanes] == [None, 24]
 
 
 class SyntheticPort:
@@ -174,6 +188,9 @@ def test_compare_script_pairs_same_four_streams_and_restores_on_source_change(mo
         assert [row['inference_submitted'] for row in result['adaptive']['cameras']] == [5]*4
         assert [row['inference_submitted'] for row in result['full_rate']['cameras']] == [20]*4
         assert result['full_rate']['cameras'][0]['voice']['wake_confirmed'] == 5
+        assert result['full_rate']['cameras'][0]['voice']['voice_packets'] is None
+        assert result['full_rate']['cameras'][0]['preview_frames'] is None
+        assert result['full_rate']['host_cpu_samples'] == result['adaptive']['host_cpu_samples'] == 4
         for mode, upper in [('adaptive', 75), ('full_rate', 300)]:
             for row in result[mode]['cameras']:
                 assert row['timings']['vision_request'] == {'samples': 5, 'p95_upper_ms': upper, 'above_range': 0}
@@ -181,6 +198,26 @@ def test_compare_script_pairs_same_four_streams_and_restores_on_source_change(mo
         assert 'synthetic-worker' not in str(result) and 'source-' not in str(result)
     assert port.writes[0]['full_rate_seconds'] == 24 and len(port.writes) == 2
     assert 'cancel' in port.writes[1] and not port.owner.active()
+
+
+def test_host_summary_excludes_pre_phase_and_cached_baselines_without_losing_preview_frames():
+    rows = []
+    for index, (sample_id, cpu) in enumerate([('stale', 100), ('mixed', 95), ('mixed', 95),
+                                             ('in-phase-1', 25), ('in-phase-2', 35)]):
+        worker = new_report(sample=index * 2)
+        for camera in worker['cameras']:
+            camera['frames'] += index
+            camera.update(preview_frames=index * 5, preview_fresh=index != 2)
+            camera['voice'].update(voice_packets=index * 3, voice_segments=index // 2, asr_results=index // 2)
+        rows.append((worker, dict(available=True, sampled_at=sample_id, cpu_percent=cpu, memory_used_bytes=cpu * 100)))
+    summary = compare_vision.summarize(rows)
+    assert summary['host_cpu_percent_median'] == 30 and summary['host_cpu_samples'] == 2
+    assert summary['host_memory_used_bytes_median'] == 3000 and summary['host_samples'] == 2
+    for camera in summary['cameras']:
+        assert (camera['preview_frames'], camera['preview_fresh_samples'], camera['recognized_frames']) == (20, 4, 4)
+        assert (camera['voice']['voice_packets'], camera['voice']['voice_segments'], camera['voice']['asr_results']) == (12, 2, 2)
+    with pytest.raises(ValueError, match='measurement_host_samples_unavailable'):
+        compare_vision.summarize(rows[:-1])
 
 
 def test_timing_bounds_and_legacy_worker_reports():

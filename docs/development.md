@@ -74,7 +74,9 @@ Git、类型和打开句柄再回收，保留外部小型 JSON 回执。引用�
 python3 -B scripts/embodied/compare_vision.py --seconds 24 --compare
 ```
 
-省略 `--compare` 只读取降频状态。默认使用本机桌面版目录和 8740 端口，隔离环境可指定 `--data` 和 `--console-port`。先确认没有其他高负载任务改变主机条件。比较两段每台镜头的推理提交、静帧跳过、识别帧，以及主机 CPU 和内存。`sampled_frame_age_p95_ms` 使用每两秒读取的一次最新画面年龄。
+省略 `--compare` 只读取降频状态。默认使用本机桌面版目录和 8740 端口，隔离环境可指定 `--data` 和 `--console-port`。先确认没有其他高负载任务改变主机条件。比较两段每台镜头的推理提交、静帧跳过、识别帧，以及主机 CPU 和内存。每段前两次系统资源读取用于建立本段基线，后续使用不同读数的采样计算汇总。`host_cpu_samples` 给出实际纳入的 CPU 样本数。
+
+`preview_frames` 是预览入口接收的新 JPEG 帧数，`preview_fresh_samples` 是采样时仍有新鲜预览的次数。按路与识别帧对照即可发现降频时的预览停滞。实际观看流畅度由现场确认。`sampled_frame_age_p95_ms` 使用每两秒读取时最近一帧完成识别的管线耗时。
 
 每路的 `timings` 使用本段开始和结束的累计计数差，列出样本数、p95 所在档位上限和超出量程的样本数。空样本和落在最高档之外的 p95 显示为 `null`。旧版 worker 没有时延计数时，`timings` 为空。
 
@@ -82,10 +84,12 @@ python3 -B scripts/embodied/compare_vision.py --seconds 24 --compare
 | --- | --- |
 | `vision_request` | Python 开始原生识别请求，到管道返回或请求结束。含序列化与管道等待，失败也计入 |
 | `native_processing` | 原生识别返回的单帧处理时间 |
+| `asr_request` | 调用转写进程，到收到结果或请求结束。失败也计入 |
+| `voice_segment_to_wake_confirm` | 有效语音段就绪，到确认明确唤醒词。包括收音仲裁与转写等待 |
 | `wake_confirm_to_motor_submit` | 确认唤醒词，到向采集进程提交相关云台命令 |
 | `motor_submit_to_ack` | 云台命令提交，到接收成功回执 |
 
-转写发起、确认唤醒、云台提交和成功回执另有计数。报告保留按路汇总，实体转动与对准由现场观察确认。镜头关闭、重连、计数回退或游戏占用时结束对照。
+报告按收音镜头区分收到的音频包、达到语音分段门槛、转写发起、收到转写结果、确认唤醒、云台提交和成功回执。旧版 worker 缺少的计数显示为 `null`。实体转动与对准由现场观察确认。镜头关闭、重连、计数回退或游戏占用时结束对照。
 
 私有运行日志通过同一个唤醒编号关联转写确认、派发和回执。`wake_motor_privacy_timeout` 表示发送时限内没有等到隐私读回，`wake_motor_dispatch_expired` 表示派发前期限已过，`wake_motor_observation_changed` 表示当前画面或目标已使原决定失效。这些状态均未发送云台命令。`wake_motor_rejected` 表示已提交但采集进程或设备明确拒绝。日志只保留固定状态码。
 

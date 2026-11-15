@@ -10,7 +10,8 @@ from secrets import token_hex
 
 LATENCY_LIMITS_MS = (5, 10, 20, 30, 50, 75, 100, 150, 200, 300, 500, 750, 1000,
                      1500, 2000, 3000, 5000, 10000, 20000, 45000)
-TIMING_KEYS = {'vision_request', 'native_processing', 'wake_confirm_to_motor_submit', 'motor_submit_to_ack'}
+TIMING_KEYS = {'vision_request', 'native_processing', 'asr_request', 'voice_segment_to_wake_confirm',
+               'wake_confirm_to_motor_submit', 'motor_submit_to_ack'}
 
 
 class LatencyHistogram:

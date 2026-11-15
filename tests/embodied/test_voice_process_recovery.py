@@ -90,6 +90,10 @@ async def test_dead_reader_cannot_be_reported_ready_by_transcription_finally(tmp
         home.request = AsyncMock(side_effect=RuntimeError('synthetic_closed_pipe'))
         await home.transcribe(b'synthetic-pcm', None, time.monotonic())
         assert home.public()['voice'] == 'unavailable'
+        assert home.vision_benchmark_voice() == dict(voice_packets=0, voice_segments=0,
+            asr_attempts=1, asr_results=0, wake_confirmed=0)
+        assert sum(home.voice_timings['asr_request'].bins) == 1
+        assert sum(home.voice_timings['voice_segment_to_wake_confirm'].bins) == 0
     finally:
         await home.close()
 

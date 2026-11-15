@@ -1449,13 +1449,14 @@ def vision_measurement_sample(*, include_timings=False):
     primary_open = (state['status'] == 'live' and 0 <= now-last_frame <= 1.5
                     and capture is not None and capture.returncode is None)
     primary_state = ('live' if primary_open else 'stale' if state['status'] == 'live' else state['status'])
-    primary_timings = (vision_measurement.primary_timings | home.wake_motion_counts.timings
+    primary_timings = (vision_measurement.primary_timings | home.voice_timings | home.wake_motion_counts.timings
                        if include_timings else None)
     rows = [camera_sample(1, primary_state, 'running' if primary_open else 'waiting', identities.session,
                           str(camera_planner.intent_revision) if camera_planner else 'fixed',
                           state.get('vision_cadence'), state['processed_frames'],
                           state.get('pipeline_ms') if primary_open else None,
                           home.vision_benchmark_voice() | home.wake_motion_counts.public(), timings=primary_timings)]
+    rows[0].update(wall.preview_metrics(SELECTED['id']))
     for camera_id in (camera['id'] for camera in wall.cameras if camera['id'] != SELECTED['id']):
         item = previews.sessions.get(camera_id, {})
         report = previews.status(camera_id)
@@ -1468,12 +1469,15 @@ def vision_measurement_sample(*, include_timings=False):
         timings = None
         if include_timings:
             timings = {} if recognizer is None else recognizer.vision.timings
+            if service is not None:
+                timings = timings | service.voice_timings
             if counts is not None:
                 timings = timings | counts.timings
         rows.append(camera_sample(len(rows)+1, report['state'], report.get('recognition', 'waiting'),
                                   recognizer.session if recognizer else None, item.get('mode_revision'),
                                   report.get('vision_cadence'), report['frames'], report.get('latency_ms'),
                                   voice, timings=timings))
+        rows[-1].update(wall.preview_metrics(camera_id))
     interactive = (games.mode not in {'off', 'home'} or party_camera.window(now)[2]
                    or practice.active() is not None)
     return dict(worker=SESSION, sampled_mono=now, interactive_session=interactive, cameras=rows)

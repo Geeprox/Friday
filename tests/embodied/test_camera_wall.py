@@ -13,8 +13,11 @@ def test_video_does_not_wait_for_recognition_and_closed_cameras_are_absent():
  assert len(view['cameras'])==1
  assert view['cameras'][0]['state']=='live' and view['cameras'][0]['people']==0
  assert wall.frame(CAMERAS[0]['id'])[0]==JPEG
+ assert wall.preview_metrics(CAMERAS[0]['id'])=={'preview_frames':1,'preview_fresh':True}
+ assert wall.preview_metrics(CAMERAS[1]['id'])=={'preview_frames':0,'preview_fresh':False}
  now[0]=11.7
  assert wall.frame(CAMERAS[0]['id']) is None
+ assert wall.preview_metrics(CAMERAS[0]['id'])=={'preview_frames':1,'preview_fresh':False}
 
 def test_close_fences_inflight_frames_and_prior_session_cleanup():
  wall=CameraWall(CAMERAS,clock=lambda:10.);cid=CAMERAS[0]['id'];old=wall.begin(cid)
@@ -33,6 +36,7 @@ def test_duplicate_or_malformed_frame_does_not_extend_freshness():
  wall.offer(cid,epoch,packet(9.8));wall.offer(cid,epoch,packet(9.7))
  broken=packet(9.9);broken['preview']='invalid';wall.offer(cid,epoch,broken)
  assert wall.frame(cid)[1]==9.8
+ assert wall.preview_metrics(cid)['preview_frames']==1
 
 def test_hd_fallback_reuses_source_jpeg_and_expires_at_original_capture_time():
  now=[10.];wall=CameraWall(CAMERAS,clock=lambda:now[0]);cid=CAMERAS[0]['id'];epoch=wall.begin(cid)

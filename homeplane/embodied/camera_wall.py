@@ -10,6 +10,7 @@ class CameraWall:
         self.cameras = ()
         self.clock = clock
         self.frames = {}
+        self.preview_counts = {}
         self.stills = {}
         self.epochs = {}
         self.video = {}
@@ -27,6 +28,7 @@ class CameraWall:
             return
         self.cameras += (dict(id=camera_id, name=camera['name'], room=camera['room']),)
         self.epochs[camera_id] = 0
+        self.preview_counts[camera_id] = 0
         self.video[camera_id] = VideoRelay(clock=self.clock)
 
     def begin(self, camera):
@@ -71,6 +73,7 @@ class CameraWall:
         old = self.frames.get(camera)
         if old and old[1] >= at:return
         self.frames[camera] = (jpeg, at)
+        self.preview_counts[camera] += 1
         # Reuse the JPEG already encoded for perception. This fallback needs
         # no extra encoder, source connection or recognition delay.
         full=packet.get('jpeg');captured=packet.get('received_at')
@@ -121,6 +124,9 @@ class CameraWall:
         value = self.frames.get(camera)
         if not value or not 0 <= self.clock()-value[1] < 2:return None
         return value
+
+    def preview_metrics(self, camera):
+        return dict(preview_frames=self.preview_counts.get(camera), preview_fresh=self.frame(camera) is not None)
 
     def still(self,camera):
         value=self.stills.get(camera)

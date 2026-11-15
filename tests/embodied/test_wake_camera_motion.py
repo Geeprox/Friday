@@ -15,6 +15,7 @@ from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, WakeCameraC
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.intent import address
 from homeplane.embodied.party_camera import PartyCamera
+from homeplane.embodied.vision_benchmark import summarize_timing
 from homeplane.embodied.vision_cadence import VisionCadence
 from homeplane.embodied.voice_activity import SpeechActivity
 from tests.embodied.test_camera_audio import CAMERA, audio, video, voice_service
@@ -145,6 +146,9 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(
     clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
     home, source = await hear_wake(tmp_path, monkeypatch, clock, word)
     assert home.wake_camera.source == source and not home.camera_focus
+    assert home.vision_benchmark_voice() == dict(voice_packets=10, voice_segments=1,
+        asr_attempts=1, asr_results=1, wake_confirmed=1)
+    assert all(summarize_timing(stage.bins)['samples'] == 1 for stage in home.voice_timings.values())
     cue, safety = cue_source(home, clock, owner)
     director = CameraDirector()
     director.apply_mode('auto', 'original')
