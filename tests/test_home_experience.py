@@ -236,3 +236,27 @@ async def test_synced_selected_cover_keeps_one_card_and_unreliable_slat_semantic
         assert selected['controls'][0]['value']=='unconfirmed'
     finally:
         core.actions.close();await core.adapter.close();core.store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state,label,available',[
+    ('idle','待机',True),('playing','正在播放',True),('paused','已暂停',True),
+    ('unavailable',None,False),('unknown',None,False),
+])
+async def test_media_state_remains_visible_without_control_authority(tmp_path,state,label,available):
+    """只读设备状态不得依赖控制授权，也不能把离线读数显示为正常。"""
+    core,rows,calls,*_=rig(tmp_path)
+    core.actions.pause()
+    media=next(row for row in rows if row['entity_id'].startswith('media_player.'))
+    media['state']=state
+    owner=HomeExperience(core,SimpleNamespace(path=tmp_path/'settings.json'),Embodied(),None,Runtime())
+    try:
+        result=await owner.overview()
+        device=next(d for d in result['devices'] if d['kind']=='media_player')
+        reading=next(r for r in device['readings'] if r['name']=='播放状态')
+        assert reading['value']==label and reading['available'] is available
+        assert device['available'] is available
+        assert device['controls']==[] and result['control_count']==0
+        assert calls==[]
+    finally:
+        core.actions.close();await core.adapter.close();core.store.close()

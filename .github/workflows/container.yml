@@ -1,0 +1,155 @@
+name: CPU container
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      image_id: ${{ steps.identity.outputs.image_id }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: 读取固定 ARL 输入
+        id: lock
+        run: |
+          python3 - <<'PY'
+          import json,os,re
+          lock=json.load(open('docker/runtime-lock.json'))
+          row=lock['arl']
+          assert re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',row['repository'])
+          assert re.fullmatch(r'[a-f0-9]{40}',row['revision'])
+          with open(os.environ['GITHUB_OUTPUT'],'a') as stream:
+              stream.write('repository='+row['repository']+'\nrevision='+row['revision']+'\n')
+          PY
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ steps.lock.outputs.repository }}
+          ref: ${{ steps.lock.outputs.revision }}
+          path: .artifacts/arl-runtime
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9
+        with:
+          version: '0.13.7'
+      - name: 检查 ARL Linux 宿主与服务边界
+        working-directory: .artifacts/arl-runtime
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/arl-container-tests"
+          uv pip install --python "$RUNNER_TEMP/arl-container-tests/bin/python" '.[linux]'
+          "$RUNNER_TEMP/arl-container-tests/bin/python" -B script/check.py --profile portable --output build/container-review
+      - name: 导出并审计固定构建上下文
+        run: python3 scripts/build_linux_container.py --arl .artifacts/arl-runtime --release --output .artifacts/container-context
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .artifacts/container-context
+          platforms: linux/amd64
+          load: true
+          tags: friday-ci:verified
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.friday.arl.revision=${{ steps.lock.outputs.revision }}
+          cache-from: type=gha,scope=linux-amd64
+          cache-to: type=gha,scope=linux-amd64,mode=max
+      - name: 隔离启动、权限边界、正常重启和持久化
+        run: python3 scripts/verify_linux_container.py --image friday-ci:verified --output .artifacts/container-verification.json
+      - name: 记录已验收镜像 ID
+        id: identity
+        run: echo "image_id=$(docker image inspect --format '{{.Id}}' friday-ci:verified)" >> "$GITHUB_OUTPUT"
+      - name: 保存同一份已验收镜像供发布
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save friday-ci:verified | zstd -T0 -3 -o "$RUNNER_TEMP/friday-image.tar.zst"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: cpu-image-${{ github.sha }}
+          path: ${{ runner.temp }}/friday-image.tar.zst
+          retention-days: 1
+          compression-level: 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cpu-verification-${{ github.sha }}
+          path: |
+            .artifacts/container-verification.json
+            .artifacts/container-context/build-inputs.json
+          include-hidden-files: true
+          retention-days: 14
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: cpu-image-${{ github.sha }}
+          path: ${{ runner.temp }}
+      - name: 回读已验收镜像，禁止重新构建
+        env:
+          EXPECTED_IMAGE: ${{ needs.image.outputs.image_id }}
+        run: |
+          zstd -dc "$RUNNER_TEMP/friday-image.tar.zst" | docker load
+          test "$(docker image inspect --format '{{.Id}}' friday-ci:verified)" = "$EXPECTED_IMAGE"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 发布本次运行的不可变引用并记录摘要
+        id: publish
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+          RUN: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          image="ghcr.io/${REPOSITORY,,}-cpu"
+          tag="sha-${REVISION}-run-${RUN}-${ATTEMPT}"
+          docker tag friday-ci:verified "$image:$tag"
+          docker push "$image:$tag"
+          digest=$(docker buildx imagetools inspect "$image:$tag" --format '{{json .Manifest}}' | jq -er '.digest')
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "已验收镜像：\`$image@$digest\`（\`$tag\`）" >> "$GITHUB_STEP_SUMMARY"
+  promote:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: cpu-main-tag
+      cancel-in-progress: false
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 仅当前主干允许推进 main 标签
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+          IMAGE: ${{ needs.publish.outputs.image }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          current=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
+          if [ "$current" != "$REVISION" ]; then
+            echo '主干已前进，仅保留本提交的不可变镜像。' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          docker buildx imagetools create --prefer-index=false --tag "$IMAGE:main" "$IMAGE@$DIGEST"

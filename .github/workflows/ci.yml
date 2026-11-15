@@ -71,3 +71,10 @@ jobs:
           echo "$expected  /tmp/gitleaks.tar.gz" | sha256sum --check
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
       - run: /tmp/gitleaks git --redact --no-banner --log-opts='--all'
+
+  container:
+    needs: [regression, secrets]
+    uses: ./.github/workflows/container.yml
+    permissions:
+      contents: read
+      packages: write

@@ -11,6 +11,7 @@ from homeplane.embodied import synthesis
 @pytest.fixture
 def producer(tmp_path,monkeypatch):
     monkeypatch.setattr(synthesis,'DATA',tmp_path)
+    monkeypatch.setattr(synthesis,'SPEECH_PLATFORM','darwin')
     state=SimpleNamespace(mode='valid',calls=[],processes=[])
     async def spawn(*command,**kwargs):
         state.calls.append(command)

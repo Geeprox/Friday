@@ -8,6 +8,9 @@ from homeplane.embodied.capture_decoder import install_decoder
 
 
 def setup(monkeypatch, *, failing=False):
+    # 此组用例覆盖 Apple 硬件解码失败后的回退，不读取宿主平台。
+    from homeplane.embodied import capture_decoder
+    monkeypatch.setattr(capture_decoder, 'sys', SimpleNamespace(platform='darwin'))
     clock=SimpleNamespace(now=100.)
     image=object()
     frame=SimpleNamespace(to_ndarray=Mock(return_value=image),pts=None)

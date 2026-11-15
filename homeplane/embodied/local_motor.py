@@ -1,8 +1,7 @@
-"""Hash-pinned ARM64 adapter for the SDK's existing authenticated MISS session.
+"""固定发行摘要的本地云台接口；macOS 与 Linux ABI 分别核验。
 
-REA recovered the four-argument miss_cmd_send ABI, camera.session at +0x38,
-and camera.state at +0x40. Only directional motor opcode 0x112 is exposed.
-This is an experimental internal ABI, never a generic command interface.
+只复用摄像头已有授权会话，暴露四个方向的短步进，不提供通用命令入口。
+Linux 地址来自对应 x86_64 ELF 的静态调用链，不能移用于其他版本。
 """
 
 import ctypes as c
@@ -16,6 +15,29 @@ from pathlib import Path
 SHA256 = "df4610cae665ec2f4dbc40f203d0a59d6161f18fbd551219bdf853ab101bf4f0"
 NEW = 0x1B10
 SEND = 0x6F570
+LINUX_SHA256 = "fde805072a663d975da26e1b91836acad2da9c9e19038e382ad4118871c65ecc"
+LINUX_NEW = 0x86DE0
+LINUX_SEND = 0x895A0
+
+
+def abi_profile(system=None, machine=None):
+    """没有精确匹配的架构与发行包时拒绝调用，不猜测函数地址。"""
+    target = (system or platform.system(), machine or platform.machine())
+    if target == ('Darwin', 'arm64'):
+        return SHA256, NEW, SEND
+    if target == ('Linux', 'x86_64'):
+        return LINUX_SHA256, LINUX_NEW, LINUX_SEND
+    raise RuntimeError('unsupported_motor_host')
+
+
+def verify_binary(data, system=None, machine=None):
+    digest, anchor, send = abi_profile(system, machine)
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise RuntimeError('motor_sdk_hash_changed')
+    if (system or platform.system()) == 'Linux':
+        if data[:6] != b'\x7fELF\x02\x01' or data[18:20] != b'\x3e\x00':
+            raise RuntimeError('motor_sdk_format_changed')
+    return anchor, send
 
 
 def check_motor_deadline(expires_mono):
@@ -31,18 +53,16 @@ def check_motor_deadline(expires_mono):
 
 class LocalMotor:
     def __init__(self, camera):
-        if platform.system() != "Darwin" or platform.machine() != "arm64":
-            raise RuntimeError("unsupported_motor_host")
+        abi_profile()
         self.camera = camera
         lib = camera._lib_miot_camera
         path = Path(lib._name)
         data = path.read_bytes()
-        if hashlib.sha256(data).hexdigest() != SHA256:
-            raise RuntimeError("motor_sdk_hash_changed")
-        self.base = c.cast(lib.miot_camera_new, c.c_void_p).value - NEW
-        if self.base % 4096 or c.string_at(self.base + SEND, 16) != data[SEND : SEND + 16]:
+        anchor, send = verify_binary(data)
+        self.base = c.cast(lib.miot_camera_new, c.c_void_p).value - anchor
+        if self.base <= 0 or self.base % 4096 or c.string_at(self.base + send, 32) != data[send : send + 32]:
             raise RuntimeError("motor_address_verification_failed")
-        self.send = c.CFUNCTYPE(c.c_int, c.c_void_p, c.c_uint32, c.c_char_p, c.c_size_t)(self.base + SEND)
+        self.send = c.CFUNCTYPE(c.c_int, c.c_void_p, c.c_uint32, c.c_char_p, c.c_uint32)(self.base + send)
         self.last = -10.0
 
     def step(self, direction, *, expires_mono):

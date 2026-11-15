@@ -3,6 +3,7 @@
 import asyncio
 import re
 import secrets
+import shutil
 import sys
 import threading
 import wave
@@ -14,6 +15,7 @@ from .paths import DATA, PRIVATE, configuration
 from .speech_lifecycle import SpeechGuard, finish_cancelled
 
 _SLOTS = threading.BoundedSemaphore(1)
+SPEECH_PLATFORM = sys.platform
 
 
 def _validate_wav(path):
@@ -96,15 +98,30 @@ async def _synthesize(text, *, voice, file_format, guard):
                 await asyncio.shield(child.reaper)
 
     try:
-        await run("/usr/bin/say", "-v", voice, "-o", str(raw), "--", text)
-        await run("/usr/bin/afconvert", "-f", "WAVE", "-d", "LEI16@44100", str(raw), str(pcm))
+        if SPEECH_PLATFORM.startswith('linux'):
+            engine, converter = shutil.which('espeak-ng'), shutil.which('ffmpeg')
+            if not engine or not converter:
+                raise ValueError('speech_synthesis_unavailable')
+            # 保留既有声音选项兼容性；Linux 使用本地普通话语音，不能声称复刻 Apple 音色。
+            await run(engine, '-v', 'cmn', '-s', '160', '-w', str(raw), '--', text)
+            await run(converter, '-nostdin', '-loglevel', 'error', '-i', str(raw),
+                      '-ar', '44100', '-ac', '1', '-c:a', 'pcm_s16le', '-f', 'wav', str(pcm))
+        elif SPEECH_PLATFORM == 'darwin':
+            await run("/usr/bin/say", "-v", voice, "-o", str(raw), "--", text)
+            await run("/usr/bin/afconvert", "-f", "WAVE", "-d", "LEI16@44100", str(raw), str(pcm))
+        else:
+            raise ValueError('speech_synthesis_unavailable')
         if not pcm.is_file() or pcm.stat().st_size > 8_000_000:
             raise ValueError("speech_synthesis_unavailable")
         _validate_wav(pcm)
         # Validate one common PCM payload before encoding either destination.
         # A valid-but-empty AIFF must never become an accepted M4A container.
         if file_format == "m4a":
-            await run("/usr/bin/afconvert", "-f", "m4af", "-d", "aac", str(pcm), str(audio))
+            if SPEECH_PLATFORM.startswith('linux'):
+                await run(converter, '-nostdin', '-loglevel', 'error', '-i', str(pcm),
+                          '-c:a', 'aac', '-f', 'ipod', str(audio))
+            else:
+                await run("/usr/bin/afconvert", "-f", "m4af", "-d", "aac", str(pcm), str(audio))
         if not audio.is_file() or audio.stat().st_size > 8_000_000:
             raise ValueError("speech_synthesis_unavailable")
         guard.check()

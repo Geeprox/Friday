@@ -319,7 +319,7 @@ async def test_bound_posture_policy_routes_same_subject_frames_into_the_actual_r
     monkeypatch.setattr(safety, 'time', SimpleNamespace(monotonic=clock, time=wall))
     monkeypatch.setattr(paths, 'PRIVATE', tmp_path)
     monkeypatch.setattr(safety_api, 'PRIVATE', tmp_path)
-    monkeypatch.setattr('homeplane.embodied.temporal_review.model_readiness', lambda: dict(available=True))
+    monkeypatch.setattr('homeplane.embodied.temporal_review.review_readiness', lambda: dict(available=True))
     chosen, other = 'cam_' + 'a'*10, 'cam_' + 'b'*10
     config = dict(version=1, cameras=[dict(id=chosen, name='合成照护镜头', device=dict(did='synthetic-a')),
                                       dict(id=other, name='合成客厅镜头', device=dict(did='synthetic-b'))])

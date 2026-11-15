@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -16,6 +17,12 @@ from .temporal_model import WINDOW_SPAN, MlxWindowProcess, VisualResult, VisualS
 
 MAX_CORROBORATION_SECONDS = 60
 POSTURE_CORROBORATION_SECONDS = 18
+
+# 仅按平台选择离线后端；导入不加载模型，也不增加窗口结果的时效。
+if sys.platform.startswith('linux'):
+    from .cpu_review import CpuWindowProcess as WindowProcess, readiness as review_readiness
+else:
+    WindowProcess, review_readiness = MlxWindowProcess, model_readiness
 
 
 @dataclass
@@ -43,7 +50,7 @@ class WindowState:
 class TemporalReviewer:
     def __init__(self, *, policy, deliver, engine=None, clock=time.monotonic, wall=time.time):
         self.policy, self.deliver = policy, deliver
-        self.engine = engine or MlxWindowProcess()
+        self.engine = engine or WindowProcess()
         self.clock, self.wall = clock, wall
         self.windows = {}
         self.served = {}
@@ -326,7 +333,7 @@ class TemporalReviewer:
         if not policy.enabled or not policy.visual_review:
             for camera in list(self.windows):
                 self.clear(camera)
-        ready = model_readiness()
+        ready = review_readiness()
         posture = getattr(policy, 'posture_source', None)
         posture_camera = None
         if posture is not None and (state := self.windows.get(posture.camera)) is not None:
@@ -344,6 +351,7 @@ class TemporalReviewer:
             error=self.error,
             resident=bool(getattr(self.engine, "process", None)),
             peak_mlx_mib=round(getattr(self.engine, "peak_mlx_bytes", 0) / 1024**2),
+            peak_rss_mib=round(getattr(self.engine, "peak_rss_bytes", 0) / 1024**2),
             camera_count=len(self.windows),
             progress=review_progress(live, self.clock(), self._corroboration_limit()),
             posture_ready_camera=posture_camera,

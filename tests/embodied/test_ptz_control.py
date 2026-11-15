@@ -1,5 +1,6 @@
 import copy, json, os, tempfile, unittest
 from pathlib import Path
+from unittest.mock import patch
 from homeplane.embodied.ptz_control import CameraLease, SearchPlanner
 
 
@@ -69,8 +70,9 @@ class LeaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.io.writes), count)
 
     async def test_live_other_owner_is_not_overwritten(self):
-        self.path.write_text(json.dumps({"status": "owned", "pid": os.getppid()}))
-        with self.assertRaises(RuntimeError):
+        # docker exec 的父进程可能是 0；使用明确的合成存活检查验证租约拒绝。
+        self.path.write_text(json.dumps({"status": "owned", "pid": os.getpid()+10000}))
+        with patch("homeplane.embodied.ptz_control.alive", return_value=True), self.assertRaises(RuntimeError):
             await self.lease.acquire()
         self.assertEqual(self.io.writes, [])
 

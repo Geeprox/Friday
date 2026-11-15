@@ -263,6 +263,8 @@ async def test_homepod_stream_is_owned_and_revoked_without_optional_runtime(rig,
 
 @pytest.mark.asyncio
 async def test_late_native_spawn_is_reaped_before_its_temporary_files_are_removed(rig, monkeypatch):
+    # 此处固定原生命令布局，Linux 合成命令在专属用例中验证。
+    monkeypatch.setattr(synthesis, "SPEECH_PLATFORM", "darwin")
     original = asyncio.create_subprocess_exec
     entered, release = asyncio.Event(), asyncio.Event()
     processes = []

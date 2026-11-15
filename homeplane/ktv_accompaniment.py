@@ -15,13 +15,12 @@ import secrets
 import shutil
 import signal
 import stat
+import sys
 import subprocess
 import tempfile
 import threading
 import time
 from pathlib import Path
-
-from .runtime_log import RuntimeLog
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / ".artifacts/ktv-audio/separation/runtime/bin/python"
@@ -39,6 +38,14 @@ PINNED_MODEL_ASSETS = {
         "sha256": "ef4aa052845a868cfaff93611477bd8f54d8081bc32f2742a9b3c738f0821191",
     },
 }
+SEPARATION_PLATFORM = sys.platform
+if SEPARATION_PLATFORM.startswith('linux'):
+    from .ktv_cpu import MODEL, FILE, SHA256, SIZE
+    RUNTIME = ROOT / ".artifacts/ktv-audio/separation/cpu-runtime/bin/python"
+    PACKAGE, PACKAGE_VERSION = 'onnxruntime', '1.30.0'
+    MODEL_REVISION = SHA256
+    PINNED_MODEL_ASSETS = {FILE: {'bytes': SIZE, 'sha256': SHA256}}
+
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024
 MAX_DURATION_SECONDS = 1800
@@ -209,6 +216,9 @@ def _run_worker(request: Path, runtime: Path, cancel: threading.Event, timeout: 
             "HF_HOME": str(request.parent.parent.parent / "hf-cache"),
             "XDG_CACHE_HOME": str(temporary / "cache"),
             "PYTHONUNBUFFERED": "1",
+            "FRIDAY_SEPARATION_CHILD": "1",
+            "OMP_NUM_THREADS": "2",
+            "OPENBLAS_NUM_THREADS": "2",
         }
     )
     process = subprocess.Popen(
@@ -320,6 +330,8 @@ def prepare(
     lock = None
     song_lock = None
     try:
+        # 日志仅由主进程持有，独立分离环境不依赖 Web 的 httpx/Starlette。
+        from .runtime_log import RuntimeLog
         if type(timeout) not in {int, float} or not math.isfinite(timeout) or not 0 < timeout <= 3600:
             raise PreparationError("invalid_request")
         cache = _private_directory(cache_dir)
@@ -458,6 +470,11 @@ def _load_runtime():
     from importlib import import_module
 
     try:
+        if SEPARATION_PLATFORM.startswith('linux'):
+            import_module('onnxruntime')
+            import_module('soundfile')
+            from .ktv_cpu import audio_info, Separator
+            return audio_info, Separator
         import_module("mlx.core")
         audio = import_module("mlx_audio_io")
         separator = import_module("mlx_audio_separator")
@@ -471,11 +488,15 @@ def _load_runtime():
 
 
 def worker(request_path: Path) -> int:
-    """Isolated MLX worker. Raw library output is discarded by its owner."""
+    """平台隔离的分离进程；原始库输出由所有者丢弃。"""
     outcome = {"code": "model_or_separation_failed"}
     output = request_path.parent
     try:
         from importlib.metadata import version
+        if SEPARATION_PLATFORM.startswith('linux') and os.environ.get('FRIDAY_SEPARATION_CHILD') == '1':
+            import resource
+            resource.setrlimit(resource.RLIMIT_AS, (4*1024**3, 4*1024**3))
+            resource.setrlimit(resource.RLIMIT_FSIZE, (2*1024**3, 2*1024**3))
 
         if version(PACKAGE) != PACKAGE_VERSION:
             raise PreparationError("runtime_version_mismatch")
