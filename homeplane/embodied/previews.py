@@ -134,7 +134,7 @@ class PreviewPool:
             follow_target_available=bool(item.get('follow_picker') and fresh and item['state'] == 'live'),
             audio_enabled=bool(self.recognize and self.on_audio),
             recognition='running' if recognizing else 'recovering' if recovering else 'waiting',
-            frame_available=bool(self._recovery_frame(camera_id, item)),
+            frame_available=bool(self._capture_frame(camera_id, item)),
             latency_ms=item.get('latency_ms') if recognizing else None,
             people=item.get('people',0) if fresh else 0,
             hands=item.get('hands',0) if fresh else 0,
@@ -150,9 +150,8 @@ class PreviewPool:
             manual_control=bool(item.get('control')),
         )
 
-    def _recovery_frame(self, camera_id, item):
-        if (item.get('recognition_recovering') and self.wall
-                and self.source_current(camera_id, item.get('process'))):
+    def _capture_frame(self, camera_id, item):
+        if self.wall and self.source_current(camera_id, item.get('process')):
             return self.wall.frame(camera_id)
         return None
 
@@ -160,11 +159,11 @@ class PreviewPool:
         item = self.sessions.get(camera_id)
         if not item:
             return None
-        recovery_frame = self._recovery_frame(camera_id, item)
-        if not recovery_frame and self.status(camera_id)["state"] != "live":
+        capture_frame = self._capture_frame(camera_id, item)
+        if not capture_frame and self.status(camera_id)["state"] != "live":
             return None
         item["expires"] = time.monotonic() + 60
-        return recovery_frame[0] if recovery_frame else item["frame"]
+        return capture_frame[0] if capture_frame else item["frame"]
 
     def source_current(self, camera_id, process):
         item = self.sessions.get(camera_id)

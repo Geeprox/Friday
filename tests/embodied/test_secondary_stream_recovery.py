@@ -109,10 +109,10 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
                 expires=time.monotonic()+60, frames=0, frame=None, received_at=0)
     pool.sessions[CAMERA['id']] = item
 
-    def frame(session):
+    def frame(session, picture=jpeg):
         at = time.time()
-        return json.dumps(dict(type='frame', jpeg=base64.b64encode(jpeg).decode(),
-            preview=base64.b64encode(jpeg).decode(), preview_at=at, received_at=at,
+        return json.dumps(dict(type='frame', jpeg=base64.b64encode(picture).decode(),
+            preview=base64.b64encode(picture).decode(), preview_at=at, received_at=at,
             capture_session=session, camera_source_context=context,
             width=640, height=360)).encode()
 
@@ -129,9 +129,12 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         assert item['state'] == 'live' and item['frames'] == 1
         status = pool.status(CAMERA['id'])
         assert status['recognition'] == 'running' and 0 <= status['latency_ms'] < 500
-        reads.put_nowait(frame(capture['capture_session']))
+        new_preview = b'\xff\xd8SYNTHETIC-UNPROCESSED\xff\xd9'
+        reads.put_nowait(frame(capture['capture_session'], new_preview))
         await asyncio.wait_for(entered.wait(), .5)
         assert not task.done() and wall.frame(CAMERA['id'])
+        assert pool.frame(CAMERA['id']) == new_preview
+        assert pool.status(CAMERA['id'])['received_at'] == status['received_at']
         assert len(capture_frames) == 2
         assert all(row[:3] == (CAMERA['id'], capture['capture_session'], context) for row in capture_frames)
         assert 0 <= time.monotonic() - capture_frames[1][3] < .5
@@ -141,6 +144,7 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
         assert item['state'] == 'unavailable', 'EOF/fault remained queued behind inference'
         assert item['frame'] is None and item['received_at'] == 0
         assert wall.frame(CAMERA['id']) is None
+        assert pool.frame(CAMERA['id']) is None
         assert cleared == [CAMERA['id']]
         assert item.get('control') is None
         status = pool.status(CAMERA['id'])

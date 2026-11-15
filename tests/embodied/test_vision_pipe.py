@@ -262,7 +262,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
     owner['camera_intents'] = SimpleNamespace(load=lambda:SimpleNamespace(mode='auto'))
     owner['games'].reset('ski')
     for name in ('reap','invalidate_calibration','calibration_source','primary_frame_current','scene_frame_current',
-                 'primary_recovery_frame','view','preview_status','preview_frame','run_source'):
+                 'primary_capture_preview','view','preview_status','preview_frame','run_source'):
         actual('homeplane/embodied/worker.py', name, owner)
     task = asyncio.create_task(owner['run_source'](1))
     state = owner['state']
@@ -272,6 +272,11 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         frame(b'SYNTHETIC-FIRST')
         await until(lambda:state['processed_frames']==1 or task.done() or state.get('recognition')=='recovering')
         assert state['processed_frames']==1, (state.get('error_class'),state.get('error_stage'))
+        preview_only = b'\xff\xd8SYNTHETIC-FROM-CAPTURE\xff\xd9'
+        owner['wall'].offer(camera['id'], owner['primary_wall_epoch'], dict(
+            type='frame', preview=base64.b64encode(preview_only).decode(), preview_at=time.time()))
+        assert (await owner['preview_frame'](camera['id'], request)).body == preview_only
+        assert state['processed_frames'] == 1
         previous = state['session_id']
         frame(b'SYNTHETIC-FAILED')
         await until(lambda:failed.wait.await_count==1)
@@ -297,7 +302,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         assert capture.returncode is None and failed.returncode==0
         queue.put_nowait(b'')
         await asyncio.wait_for(task, 1)
-        assert owner['primary_recovery_frame']() is None and owner['capture'] is None
+        assert owner['primary_capture_preview']() is None and owner['capture'] is None
         assert capture.returncode==replacement.returncode==0
         failed.wait.assert_awaited_once()
         capture.wait.assert_awaited_once()
