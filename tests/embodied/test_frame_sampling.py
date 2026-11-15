@@ -149,3 +149,15 @@ def test_long_inference_keeps_static_frames_at_full_rate_until_deadline_slack_re
     assert not cadence.due(quiet, 12.2, force=False)
     cadence.reset()
     assert cadence.due(quiet, 12.3, force=False)
+
+
+def test_switching_camera_intent_requires_a_new_complete_observation():
+    cadence = VisionCadence()
+    still = {'scene_quiet_ms': 10000}
+    before, after = ('person_target', 'before'), ('pet_target', 'after')
+    assert cadence.due(still, 10, force=False, intent=before)
+    cadence.observed(10, clear=True, captured_at=9.8)
+    assert not cadence.due(still, 10.1, force=False, intent=before)
+    assert cadence.due(still, 10.1, force=False, intent=after)
+    assert cadence.latest_capture is None
+    assert cadence.due(still, 10.2, force=False, intent=after)

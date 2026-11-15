@@ -622,10 +622,11 @@ class PreviewPool:
                         if use_cadence:
                             now = time.monotonic()
                             moving = motor_sent is not None and now - motor_sent < cadence.settle_seconds
-                            force = (item['mode'] not in {'auto', 'hold', 'patrol'}
-                                or director.mode == 'survey' or moving or item['recognition_recovering']
+                            intent = (item['mode'], item.get('mode_revision', 0))
+                            force = (intent != director.intent or director.needs_full_vision(now)
+                                or moving or item['recognition_recovering']
                                 or self.needs_full_vision(selected['id'], recognizer.session))
-                            process_frame = cadence.due(packet, now, force=force)
+                            process_frame = cadence.due(packet, now, force=force, intent=intent)
                             item['vision_cadence'] = cadence.public()
                             if not process_frame:
                                 # 视频和输入时钟由采集路径更新，跳帧不发布新的识别结果。

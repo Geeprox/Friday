@@ -302,6 +302,7 @@ def test_fall_has_a_short_independent_window_and_respects_camera_ownership():
 
 def test_two_level_survey_is_finite_and_repeated_intent_does_not_restart_it():
     d=CameraDirector();d.apply_mode('survey',7)
+    assert d.needs_full_vision(0)
     attempts=[]
     x = y = 0.0
     for at in range(300):
@@ -313,6 +314,7 @@ def test_two_level_survey_is_finite_and_repeated_intent_does_not_restart_it():
     assert d.phase=='survey_finished' and d.public()['survey_result'] == 'complete'
     assert d.public()['survey_confirmed_moves'] == len(attempts)
     assert d.public()['physical_motion_verified'] is False
+    assert not d.needs_full_vision(300)
     d.apply_mode('survey',7)
     assert d.choose(sample(301,x=x),301) is None
     d.apply_mode('survey',8)
@@ -493,6 +495,7 @@ def test_patrol_motor_ack_does_not_count_an_unchanged_view():
     clear(director)
     assert director.choose(sample(16), 16) == 'right'
     director.sent(16.1)
+    assert director.needs_full_vision(16.2)
     for at in (18.3, 19.4, 20.5, 22):
         assert director.choose(sample(at), at) is None
     assert director.scan_steps == 0 and director.position == (0, 0)

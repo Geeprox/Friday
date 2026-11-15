@@ -49,6 +49,7 @@ class VisionCadence:
 
     def __init__(self, *, full_rate=None):
         self.full_rate = full_rate or (lambda: False)
+        self.intent = None
         self.checked_at = -math.inf
         self.active_until = -math.inf
         self.processed = self.skipped = 0
@@ -58,7 +59,10 @@ class VisionCadence:
         self.latest_capture = None
         self.latencies = deque(maxlen=5)
 
-    def due(self, packet, now, *, force):
+    def due(self, packet, now, *, force, intent=None):
+        if intent != self.intent:
+            self.reset()
+            self.intent = intent
         quiet = packet.get('scene_quiet_ms')
         self.quiet_ms = quiet if type(quiet) is int else None
         if self.full_rate() or force:

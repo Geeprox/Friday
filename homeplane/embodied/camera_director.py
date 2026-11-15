@@ -253,6 +253,14 @@ class CameraDirector:
             self.survey_interrupted or self.survey_attempts >= self.SURVEY_ATTEMPT_LIMIT
             or self.survey_confirmed_moves >= len(self.SURVEY_ROUTE))
 
+    def needs_full_vision(self, now):
+        """为仍在确认视角或找回目标的动作保留每帧识别。"""
+        return (self.mode == 'survey' and not self._survey_done()
+                or self.patrol_confirmation is not None
+                or self.sound_search_cue is not None
+                or self.reframe_started is not None
+                and 0 <= now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS)
+
     def _survey_source_current(self, sample):
         session, view = sample.get('session_id'), sample.get('_patrol_view')
         basis = view[0] if view is not None else None

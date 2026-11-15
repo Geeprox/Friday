@@ -55,7 +55,8 @@ class CameraRecognition:
             self.last = None
             return None
         began = time.monotonic()
-        animal_intent = self.animals_intent if self.animals_enabled else None
+        animals_enabled = self.animals_enabled
+        animal_intent = self.animals_intent if animals_enabled else None
         def vision_failed(error):
             self.identities.discard()
             self.session = self.identities.session = secrets.token_hex(12)
@@ -78,6 +79,7 @@ class CameraRecognition:
         now = time.monotonic()
         vision_done = now
         picture = base64.b64decode(packet['jpeg'])
+        pet_rows = PetTracks.read_rows(detection)
         async with room_lock or nullcontext():
             if not current():
                 self.identities.discard()
@@ -88,7 +90,7 @@ class CameraRecognition:
             if now < self.motion_until:
                 self.room.expect_motion(now, self.motion_until-now)
             masks = [{'box': b} for b in detection.get('boxes', [])]
-            masks.extend({'box': row['box']} for row in PetTracks.read_rows(detection) or [])
+            masks.extend({'box': row['box']} for row in pet_rows or [])
             registered = await self.room.register(picture, masks, now, current=current,
                 active=lambda: motion_generation == self.motion_generation
                     and (source_current is None or source_current()))
@@ -151,7 +153,8 @@ class CameraRecognition:
                          captured_mono=time.monotonic()-(time.time()-packet['received_at']),
                          safety_jpeg=picture, aspect=packet['width'] / max(1, packet['height']),
                          scene_visible=scene_visible,
-                         _empty_detection=not any(detection.get(k) for k in ('boxes', 'poses', 'hands', 'faces')),
+                         _empty_detection=(not any(detection.get(k) for k in ('boxes', 'poses', 'hands', 'faces'))
+                                           and (not animals_enabled or pet_rows == [])),
                          _patrol_view=getattr(self.room, 'patrol_view', None) if registered else None)
         return self.last
 

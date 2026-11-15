@@ -516,12 +516,13 @@ async def camera_search():
         planner.mode, planner.intent_revision = intent.mode, intent.revision
         planner.intent_status = intent.status
         if os.environ.get("FRIDAY_CAMERA_HOLD")=="1":planner.mode="hold"
-        camera_planner = planner
         director = CameraDirector()
         from homeplane.embodied.camera_follow_picker import CameraFollowPicker
 
+        planner.director = director
         planner.follow_picker = CameraFollowPicker(director, lambda: primary_follow_sample(),
             lambda: (planner.mode, planner.intent_revision), lambda mode: set_primary_camera_mode(mode))
+        camera_planner = planner
         checked = 0.0
         while True:
             now = time.monotonic()
@@ -864,13 +865,17 @@ async def run_source(my_generation):
                     key = ((item['received_at'], item['capture_session'],
                             item['camera_source_context'], frame_generation) if current() else None)
                     now = time.monotonic()
+                    planner = camera_planner
+                    intent = (planner.mode, planner.intent_revision) if planner else None
                     quiet = (key is not None and type(item.get('scene_quiet_ms')) is int
                              and item['scene_quiet_ms'] >= cadence.minimum_quiet_ms
                              and not benchmark_full_vision()
-                             and cadence.latest_capture is not None and now - cadence.latest_capture <= 1
+                             and cadence.intent == intent and now >= cadence.active_until
+                             and cadence.latest_capture is not None and 0 <= now - cadence.latest_capture <= 1
                              and not state.get('people') and not state.get('animals')
-                             and games.mode in {'home','off'} and not party_camera.window(time.monotonic())[2]
-                             and (camera_planner is None or camera_planner.mode in {'auto','hold','patrol'})
+                             and games.mode in {'home','off'} and not party_camera.window(now)[2]
+                             and not (planner and (planner.director.intent != intent
+                                                   or planner.director.needs_full_vision(now)))
                              and not needs_full_vision(SELECTED['id'], identities.session))
                     if quiet and time.monotonic()-quiet_check_at < 2:
                         key = None
@@ -1014,12 +1019,15 @@ async def run_source(my_generation):
                     if gate_generation != frame_motion_generation:
                         cadence.reset()
                         gate_generation = frame_motion_generation
-                    mode = camera_planner.mode if camera_planner else 'hold'
-                    force = (games.mode not in {'off', 'home'} or party_camera.window(time.monotonic())[2]
-                             or time.monotonic() < motor_last_sent + cadence.settle_seconds
-                             or mode not in {'hold', 'auto', 'patrol'}
+                    now = time.monotonic()
+                    planner = camera_planner
+                    intent = (planner.mode, planner.intent_revision) if planner else None
+                    force = (games.mode not in {'off', 'home'} or party_camera.window(now)[2]
+                             or now < motor_last_sent + cadence.settle_seconds
+                             or (planner and (planner.director.intent != intent
+                                              or planner.director.needs_full_vision(now)))
                              or needs_full_vision(SELECTED['id'], identities.session))
-                    process_frame = cadence.due(item, time.monotonic(), force=force)
+                    process_frame = cadence.due(item, now, force=force, intent=intent)
                     state['vision_cadence'] = cadence.public()
                     if not process_frame:
                         continue
@@ -1067,13 +1075,14 @@ async def run_source(my_generation):
                 if room is None:
                     room = RoomSession(CAMERA_STORAGE, scope=source_scope)
                 hands = detection.get("hands", [])
+                pet_rows = PetTracks.read_rows(detection)
                 async with room_lock:
                     frame_room = room
                     frame_current = lambda: primary_frame_current(my_generation, frame_motion_generation, item['received_at'])
                     if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
                         continue
                     masks = [{"box": b} for b in detection.get("boxes", [])]
-                    masks.extend({'box': row['box']} for row in PetTracks.read_rows(detection) or [])
+                    masks.extend({'box': row['box']} for row in pet_rows or [])
                     registered = await frame_room.register(picture, masks, now, current=frame_current,
                         active=lambda: scene_frame_current(my_generation, wall_epoch, item,
                             frame_motion_generation, latest_item, warming=True))
@@ -1291,6 +1300,7 @@ async def run_source(my_generation):
                     cadence.observed(time.monotonic(), captured_at=last_frame,
                         clear=stable and not (people or hands or animals)
                         and not any(detection.get(k) for k in ('boxes', 'poses', 'hands', 'faces'))
+                        and (pet_revision is None or pet_rows == [])
                         and not any(row.get('class') in {'person', 'cat', 'dog'}
                                     for row in current_scene.get('objects', ())))
                 latest = now
