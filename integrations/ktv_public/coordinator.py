@@ -986,7 +986,7 @@ class Coordinator:
             db.execute("BEGIN")
             songs = [dict(r) for r in db.execute(
                 "SELECT s.id,s.song_id,s.title,s.state,s.code,s.created,s.source,m.version,m.job,m.timeline,m.origin,m.ticket,m.expires,"
-                "coalesce(ls.ready=1,0) AS synced_lyrics "
+                "coalesce(ls.ready,0) AS lyric_state "
                 "FROM songs s LEFT JOIN coordinator_manifests m ON m.song=s.id AND s.state='ready' "
                 "LEFT JOIN coordinator_lyric_status ls ON ls.song=m.song AND ls.version=m.version "
                 "WHERE s.room=? AND s.removed=0 ORDER BY s.position,s.rowid LIMIT 80", (active["room"],))]
@@ -1028,7 +1028,7 @@ class Coordinator:
             all_local = all(present[(spec["sha256"], spec["bytes"])] for spec in specs.values())
             archive = "ready" if states and all(s == "ready" for s in states) and all_local else "failed" if "failed" in states else "pending"
             job.update(version=row["version"], timeline=json.loads(row["timeline"]), archive=archive,
-                       synced_lyrics=bool(row["synced_lyrics"]))
+                       lyric_state=row["lyric_state"], synced_lyrics=row["lyric_state"] == 1)
             for kind, spec in specs.items():
                 if kind.startswith("guide_"):
                     continue

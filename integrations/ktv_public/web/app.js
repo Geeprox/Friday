@@ -142,7 +142,7 @@ function render(){tabs();for(const [node]of pendingActions)if(!node.isConnected)
    queueGroup=resultGroupCache.get(group);
    if(!queueGroup){queueGroup=document.createElement(collapsible?"details":"section");queueGroup.className="queue-group "+group;if(group==="history")queueGroup.open=historyOpen;resultGroupCache.set(group,queueGroup);}
    usedGroups.add(group);const heading=queueGroup.children[0]||document.createElement(collapsible?"summary":"h3");
-   heading.textContent=({current:"正在唱",pending:"接下来",preparing:"正在准备",failed:"准备失败",history:"唱过了"})[group];
+   heading.textContent=({current:"正在唱",pending:"接下来",preparing:"正在准备",failed:"暂不可唱",history:"唱过了"})[group];
    const count=document.createElement("span");count.textContent=String(rows.filter(s=>queueGroupName(s)===group).length);
    heading.append(count);groupRows.set(queueGroup,[heading]);rootRows.push(queueGroup);lastQueueGroup=group;
   }
@@ -459,20 +459,27 @@ $("music-mute-button").onclick=toggleMusic;
 let playbackSignature="";
 function queuePlaybackSignature(){return JSON.stringify([playback.current,playback.played,playback.state]);}
 function isUpcoming(song){return song.id!==playback.current&&!playback.played.includes(song.id)&&!["failed","cancelled"].includes(song.state);}
-function isPlayable(song){return song.state==="ready"&&(playableOrder?playableOrder.includes(song.id):!song.lyrics_pending);}
+function isPlayable(song){return song.state==="ready"&&song.lyric_state!==-1&&(playableOrder?playableOrder.includes(song.id):!song.lyrics_pending);}
 function nextPlayable(){return selected.find(s=>isUpcoming(s)&&isPlayable(s));}
 function queueGroupName(song){
  if(song.id===playback.current)return "current";
  if(playback.played.includes(song.id)||song.state==="cancelled")return "history";
- if(song.state==="failed")return "failed";
+ if(song.state==="failed"||song.lyric_state===-1)return "failed";
  return isPlayable(song)?"pending":"preparing";
 }
 function queueRank(song){return ["current","pending","preparing","failed","history"].indexOf(queueGroupName(song));}
 function updatePlayer(){updateGuide();updatePartyAudio();
- $("player").hidden=!identity;document.body.classList.toggle("has-player",!!identity);const current=selected.find(s=>s.id===playback.current);const queued=selected.some(isUpcoming),next=nextPlayable();$("now-title").textContent=current?.title||(next?"接下来："+next.title:queued?"正在准备下一首":playback.state==="playing"&&playback.online?"暖场":"准备好，唱下一首");
+ $("player").hidden=!identity;document.body.classList.toggle("has-player",!!identity);
+ const current=selected.find(s=>s.id===playback.current),queued=selected.filter(isUpcoming),next=nextPlayable();
+ const onlyUnavailable=queued.length>0&&queued.every(song=>song.lyric_state===-1);
+ $("now-title").textContent=current?.title||(next?"接下来："+next.title:onlyUnavailable?"暂无同步歌词":queued.length?"正在准备下一首":playback.state==="playing"&&playback.online?"暖场":"准备好，唱下一首");
  $("player-status").textContent=!playback.online?(statusFailures?"正在连接房间":"等待电视连接"):playback.state==="playing"?(current?(current.nickname||"朋友")+" 正在唱":"暖场播放中"):playback.state==="preparing"?"正在加载音源":"已暂停";
  const transportReady=playback.online&&playbackAvailable;
- const playing=playback.state==="playing"||playback.state==="preparing";$("play-toggle").textContent=playing?"Ⅱ":"▶";$("play-toggle").setAttribute("aria-label",playing?"暂停播放":"开始播放");$("play-toggle").disabled=!transportReady||commandBusy;$("skip-button").disabled=!transportReady||(!playback.current&&(!queued||playback.state==="preparing"))||commandBusy;$("restart-button").disabled=!transportReady||!playback.current||commandBusy;
+ const playing=playback.state==="playing"||playback.state==="preparing";
+ $("play-toggle").textContent=playing?"Ⅱ":"▶";$("play-toggle").setAttribute("aria-label",playing?"暂停播放":"开始播放");
+ $("play-toggle").disabled=!transportReady||commandBusy||(!playback.current&&!playing&&onlyUnavailable);
+ $("skip-button").disabled=!transportReady||commandBusy||(!playback.current&&(!queued.length||onlyUnavailable||playback.state==="preparing"));
+ $("restart-button").disabled=!transportReady||!playback.current||commandBusy;
  for(const [id,value]of[["mode-instrumental",0],["mode-original",1]]){$(id).setAttribute("aria-pressed",String((controls.original||0)===value));$(id).disabled=!playback.online;}
 
  for(const [id,key]of volumeControls){const input=$(`${id}-volume`);input.disabled=!playback.online||(id==="sfx"&&playback.audio_capabilities?.sfx!==true);const level=pendingControls[key]??controls[key];updateVolumeButtons(id,level);if(document.activeElement!==input){input.value=level;$(`${id}-value`).textContent=`${level}%`;}}
