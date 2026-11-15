@@ -1,6 +1,7 @@
 """从桌面设备页登记米家设备并读回控制状态，无需启动真实设备或 HA。"""
 
 import asyncio
+import json
 import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -30,6 +31,7 @@ IDENTITY = f'cn_{NEW_DID}'
 URN = 'urn:miot-spec-v2:device:outlet:00000001:fixture-dual:1'
 MODEL = 'fixture.outlet.dual'
 SENSOR_URN = 'urn:miot-spec-v2:device:temperature-humidity-sensor:0000A00A:fixture-sensor:1'
+LIGHT_URN = 'urn:miot-spec-v2:device:light:0000A001:fixture-light:1'
 HOME = 'synthetic-home'
 CANDIDATE = reference('cn', HOME, NEW_DID)
 HEADERS = {'Origin': ORIGIN}
@@ -57,26 +59,42 @@ def sensor_spec():
     }]}
 
 
-def fixture_home(module, tmp_path, monkeypatch, *, sensor=False):
+def light_spec():
+    return {'type': LIGHT_URN, 'services': [{
+        'iid': 2, 'type': 'urn:miot-spec-v2:service:light:00007802:fixture:1',
+        'properties': [
+            {'iid': 1, 'type': 'urn:miot-spec-v2:property:on:00000001', 'access': ['read', 'write'], 'format': 'bool'},
+            {'iid': 2, 'type': 'urn:miot-spec-v2:property:brightness:0000000D', 'access': ['read', 'write'],
+             'format': 'uint8', 'unit': 'percentage', 'value-range': [1, 100, 1]},
+            {'iid': 3, 'type': 'urn:miot-spec-v2:property:color-temperature:0000000F', 'access': ['read', 'write'],
+             'format': 'uint16', 'unit': 'kelvin', 'value-range': [2700, 6500, 100]},
+        ],
+    }]}
+
+
+def fixture_home(module, tmp_path, monkeypatch, *, sensor=False, light=False):
     directory = tmp_path / 'embodied' / 'private'
     directory.mkdir(parents=True, mode=0o700)
     saved = {'cloud_server': 'cn', 'user_info': {'uid': 'synthetic-account'}, 'oauth_uuid': 'synthetic-mi-grant'}
     atomic(directory / 'miot-session.json', saved)
     atomic(directory / 'home-room-membership.json', {'home_id': HOME})
     grant = grant_binding(saved)
-    specification = sensor_spec() if sensor else spec(3, 7)
-    model = 'fixture.temperature.humidity' if sensor else MODEL
+    specification = sensor_spec() if sensor else light_spec() if light else spec(3, 7)
+    model = 'fixture.temperature.humidity' if sensor else 'fixture.light' if light else MODEL
     report = {
         'state': 'ready', 'region': 'cn', 'models': {IDENTITY: {'urn': specification['type'], 'model': model}},
         'grant': grant, 'family': family_binding(grant, HOME), 'household': account_household(saved, HOME),
         'inputs': home_input(directory)[2], 'devices': [
-            {'id': CANDIDATE, 'identity': IDENTITY, 'name': '示例温湿度计' if sensor else '示例双路插座', 'room': '书房',
+            {'id': CANDIDATE, 'identity': IDENTITY,
+             'name': '示例温湿度计' if sensor else '示例灯' if light else '示例双路插座', 'room': '书房',
              'kind': 'device', 'online': True},
         ],
     }
     gateways = []
     fields = ({(NEW_DID, 2, 1): 22.4, (NEW_DID, 2, 2): 0, (NEW_DID, 2, 3): 5} if sensor
               else {(NEW_DID, 5, 3): False, (NEW_DID, 9, 7): True})
+    if light:
+        fields = {(NEW_DID, 2, 1): True, (NEW_DID, 2, 2): 30, (NEW_DID, 2, 3): 3800}
 
     def discovery(service):
         service.discovery_report = report
@@ -100,6 +118,88 @@ def fixture_home(module, tmp_path, monkeypatch, *, sensor=False):
 
 def client_for(backend, address='127.0.0.1'):
     return httpx.AsyncClient(transport=httpx.ASGITransport(backend, client=(address, 25000)), base_url=ORIGIN)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('upgrade', [False, True])
+async def test_native_lighting_is_opt_in_and_reads_back_without_ha(fresh, tmp_path, monkeypatch, upgrade):
+    backend, module = fresh
+    backend.persistent = True
+    directory, _, gateways = fixture_home(module, tmp_path, monkeypatch, light=True)
+    endpoint = '/api/embodied/discovery/enroll-device'
+    try:
+        await backend._connect()
+        gateway, = gateways
+        home = backend.inner.state.core.actions.mijia_power_home
+        async with client_for(backend) as client:
+            async def overview():
+                return (await client.get('/api/home/overview')).json()
+
+            item, = (await overview())['discovery']['devices']
+            assert item['enrollment_access'] == 'lighting'
+            enrollment = dict(candidate=item['id'], expected_revision=item['enrollment_revision'], allow_power=True)
+            if upgrade:
+                power_only = await client.post(endpoint, json=enrollment, headers=HEADERS)
+                assert power_only.status_code == 200
+                # 真实旧目录没有调光字段，补充授权时仍沿用开关和设备编号。
+                prior = json.loads((directory / NATIVE_CATALOG).read_text())
+                assert 'light_settings' not in prior
+                device, = (await overview())['devices']
+                original_control, = device['controls']
+                assert device['lighting_enrollment']['enrollment_upgrade'] is True
+                power_cap, = original_control['capabilities']
+                assert power_cap['name'] == 'light.set' and power_cap['maximum'] is None
+                assert not home.settings_for(next(iter(home.active()[1].values())))
+            response = await client.post(endpoint, json=enrollment | {'allow_light_settings': True}, headers=HEADERS)
+            assert response.status_code == 200, response.text
+            if upgrade:
+                assert response.json()['device'] == power_only.json()['device']
+            gateway.manager.set_prop_async.assert_not_awaited()
+            for _ in range(4):
+                await home.sample_once()
+            connected = await overview()
+            assert connected['source'] == 'mijia-lan' and not connected['discovery']['devices']
+            device, = connected['devices']
+            assert device['room'] == '书房' and 'lighting_enrollment' not in device
+            control, = device['controls']
+            if upgrade:
+                assert control['id'] == original_control['id']
+            assert control['attributes']['color_temp_kelvin'] == 3800
+
+            async def send(operation, desired, key):
+                active, = (await overview())['devices'][0]['controls']
+                request = dict(target=active['id'], operation=operation, desired=desired,
+                               expected_state_version=active['state_version'], event_id=key)
+                response = await client.post('/api/home/control', json=request, headers=HEADERS)
+                return request, response.json()
+
+            _, result = await send('light.set', {'power': 'on', 'brightness': 128}, 'synthetic-native-dimmer')
+            assert result['status'] == 'reported_match' and not result['physically_confirmed']
+            assert result['reported']['wire_value'] == 51
+            _, result = await send('light.color_temperature', {'color_temp_kelvin': 4200}, 'synthetic-native-color')
+            assert result['status'] == 'reported_match' and result['reported']['color_temp_kelvin'] == 4200
+            gateway.lose_response = True
+            request, lost = await send('light.color_temperature', {'color_temp_kelvin': 4400}, 'synthetic-native-no-replay')
+            assert lost['status'] == 'unknown_outcome'
+            assert (await client.post('/api/home/control', json=request, headers=HEADERS)).json() == lost
+            assert [tuple(call.args) for call in gateway.manager.set_prop_async.await_args_list] == [
+                (NEW_DID, 2, 2, 51), (NEW_DID, 2, 3, 4200), (NEW_DID, 2, 3, 4400),
+            ]
+            packet = next(call for call in reversed(gateway.calls) if 'value' in call)
+            for patch in ({'piid': 1}, {'value': 4210}, {'authority_revision': 'unqualified'},
+                          {'deadline': time.monotonic() - 1}):
+                with pytest.raises(ValueError, match='mijia_permission_changed'):
+                    await gateway.request(packet | patch, family=gateway.service.discovery_report['family'])
+            gateway.fields[NEW_DID, 2, 1] = False
+            with pytest.raises(ValueError, match='mijia_permission_changed'):
+                await gateway.request(packet, family=gateway.service.discovery_report['family'])
+            assert gateway.manager.set_prop_async.await_count == 3
+            power_only = await client.post(endpoint, json=enrollment, headers=HEADERS)
+            assert power_only.status_code == 200
+            assert len(home.settings_for(next(iter(home.active()[1].values())))) == 2
+        module.real_adapter.assert_not_awaited()
+    finally:
+        await backend.close()
 
 
 def control_request(entity, event_id, power):

@@ -12,7 +12,7 @@ from typing import Awaitable, Callable, ClassVar
 from uuid import uuid4
 
 import httpx
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
 from .action_contracts import HomeDeviceAuthority
 from .actions import _read_authority_file, cover_approval, read_device_authority
@@ -83,6 +83,7 @@ class PowerTarget(Contract):
     siid: int = Field(strict=True, ge=1, le=65535)
     piid: int = Field(strict=True, ge=1, le=65535)
     operation: str
+    _native_light_settings: tuple[Setting, ...] = PrivateAttr(default=())
 
     @property
     def property_key(self):
@@ -129,6 +130,7 @@ class NativeDeviceCatalog(Contract):
     epoch: str = Field(pattern=r'^[a-f0-9]{32}$')
     enabled: bool
     targets: list[PowerTarget] = Field(max_length=MAX_TARGETS)
+    light_settings: dict[str, DeviceSettings] = Field(default_factory=dict, max_length=MAX_TARGETS)
     scope: ClassVar[str] = 'mijia_selected_devices'
     expires_at: ClassVar[None] = None
 
@@ -142,11 +144,17 @@ class NativeDeviceCatalog(Contract):
             if (target.entity.id != 'mijia:property:' + key or target.registry_uid != key
                     or [(b.source, b.external_id) for b in target.entity.bindings] != [('mijia-property', key)]):
                 raise ValueError('mijia_invalid_enrollment')
+        lights = {t.entity.id: t for t in self.targets if t.entity.kind == 'light'}
+        if any((target := lights.get(identifier)) is None or item.binding != target_digest(target)
+               or any(s.key not in ('brightness', 'color_temp_kelvin') or s.piid == target.piid
+                      for s in item.settings) for identifier, item in self.light_settings.items()):
+            raise ValueError('mijia_invalid_enrollment')
         return self
 
     @property
     def operations(self):
-        return sorted({t.operation for t in self.targets})
+        return sorted({t.operation for t in self.targets}
+                      | {s.operation for row in self.light_settings.values() for s in row.settings})
 
     @property
     def revision(self):
@@ -382,16 +390,16 @@ class MijiaPowerHome:
             return None, None
         return catalog, generation
 
-    def _save_enrollment(self, name, catalog):
+    def _save_enrollment(self, name, catalog, *, exclude=None):
         from .embodied.ptz_control import atomic
 
-        body = catalog.model_dump(mode='json')
+        body = catalog.model_dump(mode='json', exclude=exclude)
         if len(json.dumps(body, ensure_ascii=False, indent=2).encode()) > MAX_CATALOG_BYTES:
             raise ValueError('mijia_enrollment_limit')
         atomic(self.path.with_name(name), body)
 
     def save_native_catalog(self, catalog):
-        self._save_enrollment(NATIVE_CATALOG, catalog)
+        self._save_enrollment(NATIVE_CATALOG, catalog, exclude=None if catalog.light_settings else {'light_settings'})
 
     def native_sensors(self, context):
         if context is None:
@@ -711,10 +719,13 @@ class MijiaPowerHome:
                     continue
                 name, room = row['name'], row['room']
                 suffix = target.entity.name.removeprefix(target.device.name)
-                targets[target.entity.id] = target.model_copy(update={
+                projected = target.model_copy(update={
                     'entity': target.entity.model_copy(update={'name': name + suffix, 'room': room}),
                     'device': target.device.model_copy(update={'name': name, 'room': room}),
                 })
+                if item := native.light_settings.get(target.entity.id):
+                    projected._native_light_settings = tuple(item.settings)
+                targets[target.entity.id] = projected
         return (family, grant), targets
 
     def numeric_active(self, context=None):
@@ -755,6 +766,8 @@ class MijiaPowerHome:
         return sensors
 
     def settings_for(self, target):
+        if isinstance(target, PowerTarget) and target.native:
+            return target._native_light_settings
         numeric, catalog = self.numeric, self.catalog
         if not isinstance(target, PowerTarget) or catalog is None:
             return []
@@ -1231,6 +1244,10 @@ class MijiaPowerHome:
         climate_mode = isinstance(setting, ClimateMode)
         keys = ({'registered_climate_mode': mode_revision(setting)} if climate_mode
                 else {'numeric': True, 'siid': target.siid, 'piid': setting.piid})
+        if target.native:
+            from .mijia_enrollment import native_light_fingerprint
+
+            keys['native_light_setting'] = native_light_fingerprint(context, target, setting)
         binding = {'did': did, 'grant': grant, **keys}
 
         def current():

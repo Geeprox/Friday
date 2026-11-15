@@ -383,7 +383,20 @@ class HomeExperience:
                 for row in discovery['devices']:
                     if candidate := candidates.get(row['id']):
                         row['enrollment_revision'] = candidate.revision
-                        row['enrollment_access'] = 'readings' if candidate.read_only else 'power'
+                        row['enrollment_access'] = ('readings' if candidate.read_only else
+                                                    'lighting' if candidate.lighting else 'power')
+                if native := home.native_catalog(context)[0]:
+                    pending_lighting = {target.device.id for target in native.targets
+                                        if target.entity.kind == 'light'
+                                        and target.entity.id not in native.light_settings}
+                    lighting_candidates = {c.device_id: (key, c) for key, c in candidates.items()
+                                           if c.lighting and c.device_id in pending_lighting}
+                    for device in devices:
+                        if entry := lighting_candidates.get(device['id']):
+                            key, candidate = entry
+                            device['lighting_enrollment'] = dict(id=key, name=device['name'],
+                                enrollment_revision=candidate.revision, enrollment_access='lighting',
+                                enrollment_upgrade=True)
         connected = (any(o.transport_health == 'online' for o in snapshot.observations) if local
                      else self.connection_health().get('transport') == 'online')
         return dict(home_name=HOME_NAME,devices=devices,discovery=discovery,preferences=self.preferences,presentation=profile.model_dump(),

@@ -198,13 +198,18 @@ def numeric_scale(prop, units, bounds, *, setting, integer_only=False):
     return NumericRange(minimum=low, maximum=high, step=step, integer=integer)
 
 
-def setting_bindings(spec, target, capabilities):
+def setting_bindings(spec, target, capabilities=None):
     # 电源的绑定已验证过官方规格，其他设置只能来自同一个服务。
     service = next(row for row in spec['services'] if row['iid'] == target.siid)
     matches = []
     for key, (operation, kind, name, units, low, high) in SETTINGS.items():
-        cap = next((cap for cap in capabilities if cap.name == operation), None)
-        if target.entity.kind != kind or cap is None or cap.minimum is None or cap.maximum is None:
+        if target.entity.kind != kind:
+            continue
+        cap = next((cap for cap in capabilities or () if cap.name == operation), None)
+        if capabilities is None:
+            if not target.native or kind != 'light':
+                continue
+        elif cap is None or cap.minimum is None or cap.maximum is None:
             continue
         props = [p for p in service.get('properties', []) if p['type'].split(':')[2:4] == ['property', name]]
         if len(props) != 1 or props[0]['iid'] == target.piid:
@@ -216,7 +221,7 @@ def setting_bindings(spec, target, capabilities):
         if key == 'temperature' and (cap.unit not in (None, '°C') or
                 (cap.minimum, cap.maximum, cap.step) != (scale.minimum, scale.maximum, scale.step)):
             continue
-        if key == 'color_temp_kelvin' and not cap.minimum <= scale.minimum < scale.maximum <= cap.maximum:
+        if key == 'color_temp_kelvin' and cap is not None and not cap.minimum <= scale.minimum < scale.maximum <= cap.maximum:
             continue
         matches.append(Setting(key=key, piid=prop['iid'], scale=scale))
     return matches

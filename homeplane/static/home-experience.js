@@ -649,6 +649,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   else inspectorSlot.append(h('p',deviceSummary(d),{class:'device-state-summary'}));
   if(d.triggers?.length)inspectorSlot.append(mainDeviceControls({...d,controls:[]},{send:control,busy}));
   deviceReadings(d,inspectorSlot);
+  if(d.lighting_enrollment)inspectorSlot.append(btn('补充灯光控制',()=>enrollDevice(d.lighting_enrollment)));
   const details=add(h('details',null,{class:'device-diagnostics'}),h('summary','设备信息'),h('p',d.presentation?.label||names[d.kind]||'设备'),h('p',`房间：${d.room}`));inspectorSlot.append(details);
   inspectorSlot.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();close.click();}};updateTiles();if(!wasOpen){inspectorSlot.focus?.({preventScroll:true});if(globalThis.matchMedia?.('(max-width:1200px)').matches)inspectorSlot.scrollIntoView?.({block:'start'});}
  }
@@ -749,22 +750,29 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  }
  function enrollDevice(device){
   const readOnly=device.enrollment_access==='readings';
-  const confirmTitle=readOnly?'接入传感器':'接入并允许控制';
+  const lighting=device.enrollment_access==='lighting',upgrading=device.enrollment_upgrade===true;
+  const confirmTitle=readOnly?'接入传感器':upgrading?'允许调节':lighting?'接入灯具':'接入并允许控制';
+  const permissionText=readOnly?'允许 Friday 读取这台传感器的读数。':lighting
+   ?(upgrading?'允许 Friday 调节这盏灯支持的亮度和色温。':'允许 Friday 开关灯具，以及调节设备支持的亮度和色温。')
+   :'允许 Friday 控制这台设备的开关。';
   const dialog=h('dialog',null,{class:'product-dialog','aria-labelledby':'mijia-enrollment-title'});
   const status=h('p',null,{role:'status','aria-live':'polite',hidden:''});
   const cancel=btn('取消',()=>dialog.close());
   const enroll=btn(confirmTitle,async()=>{
-   enroll.disabled=true;cancel.disabled=true;enroll.textContent='正在接入…';status.hidden=true;
+   enroll.disabled=true;cancel.disabled=true;enroll.textContent=upgrading?'正在更新…':'正在接入…';status.hidden=true;
    try{
     const result=await api('/api/embodied/discovery/enroll-device',{
      candidate:device.id,expected_revision:device.enrollment_revision,
-     ...(readOnly?{allow_readings:true}:{allow_power:true})});
+     ...(readOnly?{allow_readings:true}:{allow_power:true}),...(lighting?{allow_light_settings:true}:{})});
     dialog.close();
     if(!alive)return;
     await load();
     const added=data.devices.find(item=>item.id===result.device);
-    if(added)inspect(added);
-    toast('已接入 '+device.name);
+    if(added){
+     inspect(added);
+     if(upgrading)inspectorSlot?.focus({preventScroll:true});
+    }
+    toast(upgrading?'灯光控制已更新':'已接入 '+device.name);
    }catch(error){
     status.hidden=false;status.textContent=({
      mijia_enrollment_changed:'设备信息有变化，请关闭后重新选择。',
@@ -774,8 +782,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     })[error.message]||'暂时无法接入，请稍后重试。';
    }finally{enroll.disabled=false;cancel.disabled=false;enroll.textContent=confirmTitle;}
   },{class:'primary'});
-  add(dialog,h('h2',device.name,{id:'mijia-enrollment-title'}),
-      h('p',readOnly?'允许 Friday 读取这台传感器的读数。':'允许 Friday 控制这台设备的开关。'),
+  add(dialog,h('h2',device.name,{id:'mijia-enrollment-title'}),h('p',permissionText),
       status,add(h('div',null,{class:'button-row'}),cancel,enroll));
   dialog.addEventListener('close',()=>dialog.remove(),{once:true});
   dialog.addEventListener('cancel',event=>{if(enroll.disabled)event.preventDefault();});
@@ -817,7 +824,10 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     row.append(addCamera);
    }else{
     if(d.kind==='camera')row.append(btn('查看连接',()=>go('Settings'),{class:'text-button'}));
-    else if(d.enrollment_revision)row.append(btn('接入设备',()=>enrollDevice(d),{'aria-label':'接入设备 '+d.name}));
+    else if(d.enrollment_revision){
+     const label=d.enrollment_access==='lighting'?'接入灯具':'接入设备';
+     row.append(btn(label,()=>enrollDevice(d),{'aria-label':label+' '+d.name}));
+    }
     else row.append(h('span',data.discovery.direct_enrollment?'暂不支持直连':'等待 Home Assistant 接入',{class:'caption'}));
    }
    list.append(row);

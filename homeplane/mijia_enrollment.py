@@ -11,7 +11,7 @@ from .devices import _digest, xiaomi_identifier
 from .embodied.miot_spec import properties
 from .local_camera_home import LocalCameraHome
 from .mijia_control import POWER_BY_KIND
-from .mijia_numeric import SENSORS, Sensor, numeric_scale
+from .mijia_numeric import SENSORS, DeviceSettings, Sensor, numeric_scale, setting_bindings
 from .rule_compiler import digest
 
 
@@ -77,6 +77,10 @@ class EnrollmentCandidate:
     @property
     def read_only(self):
         return miot_name(self.urn, 'device') in SENSOR_TYPES
+
+    @property
+    def lighting(self):
+        return miot_name(self.urn, 'device') == 'light'
 
     def targets(self, kind, ports):
         from .mijia_power_home import PowerTarget
@@ -152,19 +156,25 @@ def native_fingerprint(context, target):
     return digest(['mijia-enrolled-property/1', context, target.reference])
 
 
-async def enroll(home, identifier, revision, *, allow_power, allow_readings):
-    from .mijia_power_home import MAX_TARGETS, NativeDeviceCatalog, NativeSensorCatalog
+def native_light_fingerprint(context, target, setting):
+    return digest([native_fingerprint(context, target), setting.model_dump(mode='json')])
+
+
+async def enroll(home, identifier, revision, *, allow_power, allow_readings, allow_light_settings=False):
+    from .mijia_power_home import MAX_TARGETS, NativeDeviceCatalog, NativeSensorCatalog, target_digest
 
     candidate = enrollment_candidates(home).get(identifier)
     if candidate is None or candidate.revision != revision:
         raise ValueError('mijia_enrollment_changed')
-    if (allow_power, allow_readings) != (not candidate.read_only, candidate.read_only):
+    if (allow_power, allow_readings) != (not candidate.read_only, candidate.read_only) or (
+            allow_light_settings and not candidate.lighting):
         raise ValueError('mijia_enrollment_consent_required')
     family, household, grant = candidate.context
     route = home.power.lan.route_token(family, candidate.did)
     if route is None:
         raise ValueError('mijia_enrollment_offline')
 
+    settings = {}
     async with asyncio.timeout(15):
         spec = await home.power._spec(candidate.urn)
         if candidate.read_only:
@@ -174,6 +184,9 @@ async def enroll(home, identifier, revision, *, allow_power, allow_readings):
             targets = candidate.targets(*match) if match is not None else []
         if not targets:
             raise ValueError('mijia_enrollment_unsupported')
+        if allow_light_settings:
+            settings = {target.entity.id: DeviceSettings(binding=target_digest(target),
+                         settings=setting_bindings(spec, target)) for target in targets}
         readings = {}
         for target in targets:
             request = {'did': candidate.did, 'siid': target.siid, 'piid': target.piid, 'grant': grant}
@@ -209,14 +222,48 @@ async def enroll(home, identifier, revision, *, allow_power, allow_readings):
             updated = [t for t in previous.targets if t.identity != candidate.identity] + targets
             if len(updated) > MAX_TARGETS:
                 raise ValueError('mijia_enrollment_limit')
+            retained = {t.entity.id: item for t in updated
+                        if (item := previous.light_settings.get(t.entity.id)) is not None
+                        and item.binding == target_digest(t)}
             catalog = NativeDeviceCatalog(family=family, household=household, epoch=previous.epoch,
-                                          enabled=previous.enabled, targets=sorted(updated, key=lambda t: t.entity.id))
+                                          enabled=previous.enabled, targets=sorted(updated, key=lambda t: t.entity.id),
+                                          light_settings=retained | settings)
             if catalog != previous:
                 home.save_native_catalog(catalog)
         context = (family, grant)
         for target in targets:
             home.record((context, target.reference), readings[target.entity.id], lambda: True, route)
         return candidate.device_id
+
+
+def authorize_native_light_setting(directory, family, grant, region, did, siid, piid, request):
+    from .mijia_power_home import read_native_catalog
+
+    try:
+        catalog, generation = read_native_catalog(directory)
+    except (OSError, ValueError):
+        raise ValueError('mijia_permission_changed') from None
+    write = 'value' in request
+    if catalog.family != family or (write and (
+            not catalog.enabled or request['authority_revision'] != generation
+            or not valid_native_deadline(request['deadline']))):
+        raise ValueError('mijia_permission_changed')
+    for target in catalog.targets:
+        if target.identity != f'{region}_{did}' or target.siid != siid:
+            continue
+        bound = catalog.light_settings.get(target.entity.id)
+        for setting in bound.settings if bound else ():
+            if setting.piid == piid and (
+                    native_light_fingerprint((family, grant), target, setting) == request['native_light_setting']):
+                if write and not setting.scale.accepts(request['value'], exact_step=True):
+                    break
+                return target.piid
+    raise ValueError('mijia_permission_changed')
+
+
+def valid_native_deadline(deadline):
+    remaining = deadline - time.monotonic() if type(deadline) in (int, float) else -1
+    return math.isfinite(remaining) and 0 < remaining <= 60
 
 
 async def native_power_operation(manager, request, grant, family, region, group, dids, current, directory):
@@ -233,10 +280,8 @@ async def native_power_operation(manager, request, grant, family, region, group,
     def qualified():
         if not current():
             return False
-        if write:
-            remaining = deadline - time.monotonic() if type(deadline) in (int, float) else -1
-            if not math.isfinite(remaining) or not 0 < remaining <= 60:
-                return False
+        if write and not valid_native_deadline(deadline):
+            return False
         try:
             catalog, revision = read_native_catalog(directory)
         except (OSError, ValueError):

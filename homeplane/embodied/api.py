@@ -144,6 +144,7 @@ class MiHomeDeviceEnrollment(MiHomeCandidate):
     expected_revision: str = Field(pattern=r'^[a-f0-9]{64}$')
     allow_power: StrictBool = False
     allow_readings: StrictBool = False
+    allow_light_settings: StrictBool = False
 
 
 class CameraInteractionSettings(BaseModel):
@@ -286,14 +287,15 @@ def create_router(service, core, lock, infrastructure=None, *, intelligence=None
         if (http_request.client is None or http_request.client.host not in {'127.0.0.1', '::1'}
                 or http_request.headers.get('origin') != str(http_request.base_url).rstrip('/')):
             raise HTTPException(403, detail='invalid_local_origin')
-        if request.allow_power == request.allow_readings:
+        if request.allow_power == request.allow_readings or (request.allow_light_settings and not request.allow_power):
             raise HTTPException(422, detail='mijia_enrollment_consent_required')
         home = core.actions.mijia_power_home
         if home is None:
             raise HTTPException(409, detail='mijia_enrollment_changed')
         try:
             device = await enroll(home, request.candidate, request.expected_revision,
-                                  allow_power=request.allow_power, allow_readings=request.allow_readings)
+                                  allow_power=request.allow_power, allow_readings=request.allow_readings,
+                                  allow_light_settings=request.allow_light_settings)
         except (OSError, ValueError, TimeoutError, httpx.HTTPError) as error:
             accepted = {'mijia_enrollment_changed', 'mijia_enrollment_offline', 'mijia_enrollment_unsupported',
                         'mijia_enrollment_limit'}

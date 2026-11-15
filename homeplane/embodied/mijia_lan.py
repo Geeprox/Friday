@@ -55,13 +55,19 @@ def private_directory(root, key):
         raise
 
 
+def matching_address(row, did, siid, piid):
+    return (('did' not in row or str(row['did']) == did)
+            and row.get('siid', siid) == siid and row.get('piid', piid) == piid)
+
+
 def local_result(row, did, siid, piid, *, write):
     if not isinstance(row, dict) or type(row.get('code')) is not int or row['code'] not in {0, 1}:
         raise ValueError('mijia_property_unconfirmed')
+    if not matching_address(row, did, siid, piid):
+        raise ValueError('mijia_property_unconfirmed')
     if write:
         # 本地写响应由 SDK 关联至本次 RPC。返回明确属性时仍逐项核对。
-        if (str(row.get('did')) != did or row.get('siid', siid) != siid
-                or row.get('piid', piid) != piid):
+        if 'did' not in row:
             raise ValueError('mijia_property_unconfirmed')
         return {'accepted': True}
     if type(row.get('value')) is not bool:
@@ -100,15 +106,19 @@ async def migrated_power_operation(manager, request, grant, family, region, grou
 
 async def numeric_operation(manager, request, grant, family, region, group, dids, current, directory):
     from homeplane.mijia_power_home import authorize_numeric, read_native_sensors
+    from homeplane.mijia_enrollment import authorize_native_light_setting
 
     write = 'value' in request
     required = {'numeric', 'did', 'siid', 'piid', 'grant'}
+    native_light = 'native_light_setting' in request
+    if native_light:
+        required.add('native_light_setting')
     if write:
         required |= {'value', 'authority_revision', 'deadline'}
     sensor_read = request.get('sensor_read')
     if 'sensor_read' in request:
         required.add('sensor_read')
-        if write or sensor_read not in ('probe', 'registered'):
+        if write or native_light or sensor_read not in ('probe', 'registered'):
             raise ValueError('mijia_property_unsupported')
     if request.keys() != required or request['numeric'] is not True:
         raise ValueError('mijia_property_unsupported')
@@ -116,6 +126,11 @@ async def numeric_operation(manager, request, grant, family, region, group, dids
     if (not current() or request['grant'] != grant or did not in dids or not manager.can_control(did)
             or manager.in_local_cooldown(did) or (manager.local_device(did) or {}).get('group_id') != group):
         raise ValueError('mijia_lan_unavailable')
+    def authorize():
+        if native_light:
+            return authorize_native_light_setting(directory, family, grant, region, did, siid, piid, request)
+        return authorize_numeric(directory, family, region, did, siid, piid, request)
+
     guard = None
     if sensor_read == 'registered':
         catalog = read_native_sensors(directory)
@@ -123,7 +138,7 @@ async def numeric_operation(manager, request, grant, family, region, group, dids
                                                for s in catalog.sensors):
             raise ValueError('mijia_permission_changed')
     elif sensor_read != 'probe':
-        guard = authorize_numeric(directory, family, region, did, siid, piid, request)
+        guard = authorize()
     try:
         async with asyncio.timeout(1.0 if not write else 4.0):
             if write:
@@ -134,7 +149,7 @@ async def numeric_operation(manager, request, grant, family, region, group, dids
                         raise ValueError('mijia_permission_changed')
                     if not current():
                         raise ValueError('mijia_permission_changed')
-                    authorize_numeric(directory, family, region, did, siid, piid, request)
+                    authorize()
                 row = await manager.set_prop_async(did, siid, piid, request['value'])
                 return local_result(row, did, siid, piid, write=True)
             row = await manager.get_prop_async(did, siid, piid)
@@ -142,6 +157,7 @@ async def numeric_operation(manager, request, grant, family, region, group, dids
         manager.note_local_failure(did)
         raise
     if (not current() or not isinstance(row, dict) or type(row.get('code')) is not int or row['code'] != 0
+            or not matching_address(row, did, siid, piid)
             or not finite_numeric(row.get('value')) or abs(row['value']) > 1000000):
         raise ValueError('mijia_property_unsupported')
     return {'value': row['value']}
