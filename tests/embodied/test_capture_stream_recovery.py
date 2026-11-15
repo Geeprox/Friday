@@ -111,6 +111,7 @@ def closed_scope():
         pet_tracks=SimpleNamespace(clear=Mock()),wall=wall,identities=SimpleNamespace(discard=Mock()),
         motor_waiters={3:pending,4:acknowledged},notify=AsyncMock(),games=MotionGames(),
     )
+    scope['home'].discard_audio = Mock(side_effect=lambda: scope['home'].vad.clear())
     actual('homeplane/embodied/worker.py','clear_interactions',scope)
     actual('homeplane/embodied/worker.py','clear_camera_view',scope)
     actual('homeplane/embodied/worker.py','clear_camera_observation',scope)

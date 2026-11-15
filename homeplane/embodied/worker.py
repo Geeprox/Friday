@@ -54,7 +54,7 @@ from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_fra
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
-from homeplane.embodied.camera_audio import AudioIngress, WakeCameraCue, deliver_audio
+from homeplane.embodied.camera_audio import AudioIngress, WakeCameraCue
 from homeplane.embodied import camera_interaction
 from homeplane.embodied.voice_routing import VoiceRouting
 from homeplane.embodied.vision_pipe import VisionProcess
@@ -181,8 +181,9 @@ def clear_interactions(camera_id, *, keep_wake=False):
     fleet.clear(camera_id)
     service=home if camera_id==SELECTED['id'] else secondary_homes.get(camera_id)
     if service:
-        service.selected=False;service.epoch+=1;service.vad=[];service.pending_audio=None
-        service.armed=False;service.audio_allowed=False;service.speaking=False;service.last_audio=None
+        service.selected=False;service.epoch+=1;service.pending_audio=None
+        service.armed=False;service.audio_allowed=False
+        service.discard_audio()
         service.camera_session=None;service.camera_focus=None
         if not keep_wake:
             service.wake_camera = None
@@ -353,7 +354,7 @@ async def secondary_audio(camera_id, packet):
     service=secondary_homes.get(camera_id)
     if service:
         service.audio_allowed = service.audio_allowed and fleet.voice_current(camera_id, time.monotonic())
-        await deliver_audio(service, packet)
+        service.offer_audio(packet)
 
 
 vision_measurement = VisionBenchmark()
@@ -457,7 +458,7 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             fleet.clear(SELECTED['id'])
             home.selected = False
             home.epoch += 1
-            home.vad = []
+            home.discard_audio()
             home.pending_audio = None
             if room:
                 room.expect_motion(now, 2)
@@ -755,7 +756,7 @@ async def run_source(my_generation):
     home.armed = False
     home.selected = False
     home.epoch += 1
-    home.vad = []
+    home.discard_audio()
     home.pending_audio = None
     home.wake_camera = None
     fleet.clear(SELECTED['id'])
@@ -934,7 +935,7 @@ async def run_source(my_generation):
                         admission = (audio_ingress.reject('camera_paused') if state.get('status') == 'shutter_closed'
                             else audio_ingress.accept(item,wall=time.time(),mono=time.monotonic()))
                         safety.observe_audio(SELECTED['id'], admission)
-                        await deliver_audio(home,admission)
+                        home.offer_audio(admission)
                         continue
                     if item.get("type") == "motor_result":
                         future = motor_waiters.get(item.get("request_id"))
@@ -1012,6 +1013,7 @@ async def run_source(my_generation):
                     fleet.clear(SELECTED['id'])
                     home.selected = False
                     home.epoch += 1
+                    home.discard_audio()
                     identities.discard()
                     continue
                 if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
@@ -1070,7 +1072,11 @@ async def run_source(my_generation):
                     state['pipeline_timing'] = dict(timings, dropped_stage='after_vision')
                     if frame_motion_generation == motion_generation:
                         safety.clear_view(SELECTED['id'])
-                        fleet.clear(SELECTED['id']);home.selected=False;home.epoch+=1;identities.discard()
+                        fleet.clear(SELECTED['id'])
+                        home.selected = False
+                        home.epoch += 1
+                        home.discard_audio()
+                        identities.discard()
                     continue
                 now = time.monotonic()
                 picture = base64.b64decode(item["jpeg"])
@@ -1142,6 +1148,7 @@ async def run_source(my_generation):
                         fleet.clear(SELECTED['id'])
                         home.selected = False
                         home.epoch += 1
+                        home.discard_audio()
                         identities.discard()
                     continue
                 by_track = {r["track"]: r for r in identity_rows}
@@ -1369,7 +1376,7 @@ async def stop():
     global task, generation, last_frame
     home.selected = False
     home.armed = False
-    home.vad = []
+    home.discard_audio()
     home.pending_audio = None
     home.gesture.reset()
     generation += 1
@@ -1598,7 +1605,7 @@ async def interaction_policy(request: Request):
         for service in [home, *secondary_homes.values()]:
             service.armed = service.selected = False
             service.epoch += 1
-            service.vad = []
+            service.discard_audio()
             service.pending_audio = None
             service.wake_camera = None
     return dict(enabled=interaction_enabled)

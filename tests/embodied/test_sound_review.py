@@ -587,7 +587,6 @@ async def test_original_camera_pipe_delivers_sound_without_an_active_voice_owner
     from collections import deque
     from tests.embodied.test_camera_audio import actual,voice_service
     from homeplane.embodied import home_service as home_module
-    from homeplane.embodied.camera_audio import deliver_audio
     j=Journey(tmp_path,monkeypatch);index=0;frame_pending=True
     if vision != 'stable':
         j.store.configure_sound_search(j.store.policy().revision, True)
@@ -624,7 +623,7 @@ async def test_original_camera_pipe_delivers_sound_without_an_active_voice_owner
     try:
         if source=='primary':
             scope=dict(capture=process,state={'status':'live'},home=home,audio_ingress=j.gate,
-                safety=j.runtime,deliver_audio=deliver_audio,SELECTED=CAMERA,generation=1,my_generation=1,
+                safety=j.runtime,SELECTED=CAMERA,generation=1,my_generation=1,
                 fleet=SimpleNamespace(voice_current=lambda *_:False),time=time,json=json,queue=object(),
                 wall=SimpleNamespace(offer=Mock(),video={CAMERA['id']:SimpleNamespace(subscribers=0)}),
                 wall_epoch=1,primary_wall_epoch=1,primary_capture_closed=AsyncMock(),
@@ -634,13 +633,15 @@ async def test_original_camera_pipe_delivers_sound_without_an_active_voice_owner
         else:
             # Background sound review does not need a HomeService/voice owner.
             callback=actual('homeplane/embodied/worker.py','secondary_audio',dict(
-                safety=j.runtime,secondary_homes={},time=time,deliver_audio=deliver_audio))
+                safety=j.runtime,secondary_homes={},time=time))
             scope=dict(process=process,self=SimpleNamespace(on_audio=callback,on_capture_frame=j.runtime.capture_frame,
                 source_current=lambda *_:True,wall=None),
                 selected=CAMERA,audio_ingress=j.gate,item={'privacy_closed':False},waiters={},
                 queue=asyncio.Queue(maxsize=1),last_video_lease=0,wall_epoch=1,time=time,json=json,
                 offer_frame=lambda *_:None,retire_source=Mock())
             await actual('homeplane/embodied/previews.py','receive',scope)()
+        if home.audio_task is not None:
+            await home.audio_task
         await j.runtime.drain()
         assert j.engine.analyze.await_count >= (2 if vision == 'stable' else 3)
         event, = j.store.events()

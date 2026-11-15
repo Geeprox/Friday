@@ -121,6 +121,8 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
             packet, = framer[cid].push(raw, received=clock.time(), decoded=clock.time(),
                                        wall=clock.time(), mono=clock.at)
             await receivers[cid](packet, lambda: gate.accept(packet, wall=clock.time(), mono=clock.at))
+            if home.audio_task is not None:
+                await home.audio_task
 
     assert routing.task is not None
     await routing.task

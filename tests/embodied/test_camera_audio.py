@@ -4,6 +4,8 @@ import ast
 import asyncio
 import base64
 import json
+import threading
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -182,10 +184,10 @@ def test_capture_rejects_invalid_or_stale_voice_window_deadlines(deadline):
 
 
 @pytest.mark.asyncio
-async def test_secondary_old_audio_cannot_reach_voice_recognition():
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),finish_gap=Mock(),state={})
+async def test_secondary_old_audio_cannot_reach_voice_recognition(monkeypatch):
+    service=queued_voice_service(monkeypatch, SimpleNamespace(monotonic=lambda: 0))
     scope=dict(secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
-               time=__import__('time'),deliver_audio=deliver_audio,safety=SimpleNamespace(observe_audio=Mock()))
+               time=__import__('time'),safety=SimpleNamespace(observe_audio=Mock()))
     callback=actual('homeplane/embodied/worker.py','secondary_audio',scope)
     await callback(CAMERA['id'],dict(type='audio',sample_rate=16000,received_at=1,
                    pcm=base64.b64encode(bytes(6400)).decode()))
@@ -255,14 +257,16 @@ def test_packet_replay_sample_overlap_source_epoch_and_video_freshness_are_indep
 
 
 @pytest.mark.asyncio
-async def test_qualified_secondary_packet_reaches_original_voice_consumer_and_reports_gap():
+async def test_qualified_secondary_packet_reaches_original_voice_consumer_and_reports_gap(monkeypatch):
     g=AudioIngress(CAMERA,'a'*32);f=PCMFramer(CAMERA,'a'*32);assert video(g,0)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),finish_gap=Mock(),state={})
+    time=SimpleNamespace(monotonic=lambda:0)
+    service=queued_voice_service(monkeypatch, time)
     scope=dict(secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
-               time=__import__('time'),deliver_audio=deliver_audio,safety=SimpleNamespace(observe_audio=Mock()))
+               time=time,safety=SimpleNamespace(observe_audio=Mock()))
     callback=actual('homeplane/embodied/worker.py','secondary_audio',scope)
     p=audio(framer=f);await callback(CAMERA['id'],g.accept(p,wall=1000,mono=0))
-    service.audio.assert_awaited_once_with(p)
+    await service.audio_task
+    service.audio.assert_awaited_once_with(p, observed_owner=None)
     await callback(CAMERA['id'],g.accept(p,wall=1000.1,mono=.1))
     assert service.audio.await_count==1 and service.reset_audio.call_count==2
     assert service.state['audio_input']['audio_persisted'] is False
@@ -270,16 +274,16 @@ async def test_qualified_secondary_packet_reaches_original_voice_consumer_and_re
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('closed',[False,True])
-async def test_secondary_receiver_preserves_source_admission_and_privacy_before_voice(closed):
+async def test_secondary_receiver_preserves_source_admission_and_privacy_before_voice(closed, monkeypatch):
     g=AudioIngress(CAMERA,'a'*32);framer=PCMFramer(CAMERA,'a'*32)
     frame=dict(type='frame',capture_session='a'*32,camera_source_context=camera_source_context(CAMERA),
                received_at=1000,jpeg='SYNTHETIC')
     packet=audio(framer=framer)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),finish_gap=Mock(),state={})
     time=SimpleNamespace(monotonic=lambda:0,time=lambda:1000)
+    service=queued_voice_service(monkeypatch, time)
     callback=actual('homeplane/embodied/worker.py','secondary_audio',dict(
         secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
-        time=time,deliver_audio=deliver_audio,safety=SimpleNamespace(observe_audio=Mock())))
+        time=time,safety=SimpleNamespace(observe_audio=Mock())))
     future=asyncio.get_running_loop().create_future();offered=[];queue=asyncio.Queue(maxsize=2)
     stream=[frame,dict(packet,received_at=998),packet,
             dict(type='motor_result',request_id=7,native_code=0)]
@@ -294,22 +298,24 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
         service.audio.assert_not_awaited()
         assert service.state['audio_input']['reason']=='camera_paused'
     else:
-        service.audio.assert_awaited_once_with(packet)
+        await service.audio_task
+        service.audio.assert_awaited_once_with(packet, observed_owner=None)
         assert service.state['audio_input']['dropped_packets']==1
 
 
 @pytest.mark.asyncio
-async def test_original_primary_receiver_gates_pcm_and_stops_an_obsolete_generation():
+async def test_original_primary_receiver_gates_pcm_and_stops_an_obsolete_generation(monkeypatch):
     g=AudioIngress(CAMERA,'a'*32);assert video(g,0)
     p=audio();old=dict(p,received_at=998)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),finish_gap=Mock(),state={})
+    time=SimpleNamespace(time=lambda:1000,monotonic=lambda:0)
+    service=queued_voice_service(monkeypatch, time)
     for obsolete in (False,True):
         scope=dict(capture=SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(side_effect=[json.dumps(old).encode(),b'']))),
-            state={'status':'live'},audio_ingress=g,home=service,deliver_audio=deliver_audio,
+            state={'status':'live'},audio_ingress=g,home=service,
             safety=SimpleNamespace(observe_audio=Mock()),
             generation=2 if obsolete else 1,my_generation=1,
             SELECTED=CAMERA,fleet=SimpleNamespace(voice_current=lambda *_:True),
-            time=SimpleNamespace(time=lambda:1000,monotonic=lambda:0),json=json,
+            time=time,json=json,
             offer_frame=lambda *_:None,queue=object(),wall_epoch=1,primary_wall_epoch=1,
             primary_capture_closed=AsyncMock())
         receiver=actual('homeplane/embodied/worker.py','receive',scope)
@@ -317,7 +323,8 @@ async def test_original_primary_receiver_gates_pcm_and_stops_an_obsolete_generat
         service.audio.assert_not_awaited()
     scope['generation']=1;scope['capture'].stdout.readline=AsyncMock(side_effect=[json.dumps(p).encode(),b''])
     receiver=actual('homeplane/embodied/worker.py','receive',scope);await receiver()
-    service.audio.assert_awaited_once_with(p)
+    await service.audio_task
+    service.audio.assert_awaited_once_with(p, observed_owner=None)
 
 
 @pytest.mark.asyncio
@@ -340,13 +347,18 @@ async def test_real_voice_buffer_reaches_asr_only_with_a_complete_fresh_segment(
     s.pending_audio=None;s.transcribe=AsyncMock();s.spawn=lambda coro:jobs.append(asyncio.create_task(coro))
     s.reset_audio();g=AudioIngress(CAMERA,'a'*32);f=PCMFramer(CAMERA,'a'*32)
     for i in range(10):
-        clock[0]=i*.2;s.last_video=clock[0];assert video(g,clock[0])
-        p=audio(clock[0],framer=f)
+        at = i * .2
+        s.last_video = at
+        assert video(g, at)
+        p = audio(at, framer=f)
         if break_stream and i==6:p['received_at']=900
-        await deliver_audio(s,g.accept(p,wall=1000+clock[0],mono=clock[0]))
+        clock[0] = at + .25
+        await deliver_audio(s, g.accept(p, wall=1000+at, mono=at))
     await asyncio.gather(*jobs)
     assert s.transcribe.await_count==(0 if break_stream else 1)
-    if not break_stream:assert len(s.transcribe.call_args.args[0])==64000
+    if not break_stream:
+        assert len(s.transcribe.call_args.args[0]) == 64000
+        assert s.transcribe.call_args.args[2] == pytest.approx(1.8)
 
 
 def voice_service(module):
@@ -363,10 +375,192 @@ def voice_service(module):
     return s
 
 
+def queued_voice_service(monkeypatch, clock):
+    from homeplane.embodied import home_service as module
+
+    monkeypatch.setattr(module, 'time', clock)
+    service = voice_service(module)
+    service.audio = AsyncMock()
+    service.reset_audio = Mock(wraps=service.reset_audio)
+    return service
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('slow_lane', [0, 3])
+async def test_slow_voice_model_keeps_all_four_receivers_live_and_drops_audio_backlog(
+        tmp_path, monkeypatch, slow_lane):
+    from homeplane.embodied import home_service as module
+
+    clock = SimpleNamespace(at=10.0)
+    time = SimpleNamespace(monotonic=lambda: clock.at, time=lambda: 1000 + clock.at)
+    monkeypatch.setattr(module, 'time', time)
+    monkeypatch.setattr(module, 'VOICE_INPUT_PAUSED', tmp_path / 'paused')
+    loop = asyncio.get_running_loop()
+    started, release = asyncio.Event(), threading.Event()
+    silence = SpeechActivity(False, 0, .01, 0)
+    healthy = Mock(return_value=silence)
+    monkeypatch.setattr(module, 'VoiceActivity', lambda: SimpleNamespace(measure=healthy))
+
+    def slow(_):
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(5)
+        return SpeechActivity(True, 1.0, .03, .2)
+
+    primary = voice_service(module)
+    lanes = []
+    for index in range(4):
+        camera = dict(CAMERA, id=f'cam_{index + 1:010x}')
+        service = primary if index == 0 else module.HomeService(camera['id'], voice_provider=primary)
+        service.enabled = service.selected = service.armed = service.audio_allowed = True
+        service.last_video = clock.at
+        service.transcribe = AsyncMock()
+        if index == slow_lane:
+            service.activity = SimpleNamespace(measure=slow, probability=1.0)
+        session = str(index + 1) * 32
+        gate, framer = AudioIngress(camera, session), PCMFramer(camera, session)
+        wire, offered, motor = asyncio.Queue(), [], {}
+        process = SimpleNamespace(stdout=SimpleNamespace(readline=wire.get))
+        safety = SimpleNamespace(observe_audio=Mock(), capture_frame=Mock())
+        fleet = SimpleNamespace(voice_current=lambda *_: True)
+        scope = dict(time=time, json=json, SELECTED=camera, home=service, fleet=fleet, audio_ingress=gate,
+                     safety=safety, capture=process, state={'status': 'live'}, generation=1, my_generation=1,
+                     primary_wall_epoch=1, primary_capture_closed=AsyncMock(), motor_waiters=motor,
+                     last_video_lease=clock.at, captured_times=deque(), motion_generation=1, asyncio=asyncio,
+                     wall=SimpleNamespace(offer=Mock()), wall_epoch=1, queue=asyncio.Queue(maxsize=1),
+                     offer_frame=lambda _, item, out=offered: out.append(item))
+        if index == 0:
+            receive = actual('homeplane/embodied/worker.py', 'receive', scope)
+        else:
+            callback = actual('homeplane/embodied/worker.py', 'secondary_audio',
+                              dict(secondary_homes={camera['id']: service}, time=time, fleet=fleet, safety=safety))
+            scope.update(process=process, selected=camera, waiters=motor, item={'privacy_closed': False},
+                         self=SimpleNamespace(on_audio=callback, on_capture_frame=None, wall=None),
+                         retire_source=Mock())
+            receive = actual('homeplane/embodied/previews.py', 'receive', scope)
+        lanes.append(SimpleNamespace(service=service, ingress=gate, framer=framer, wire=wire,
+                                     frames=offered, motor=motor, safety=safety,
+                                     receiver=asyncio.create_task(receive())))
+
+    def send(lane, sequence, *, ack=True):
+        lane.service.last_video = clock.at
+        frame = dict(type='frame', received_at=time.time(), capture_session=lane.ingress.session,
+                     camera_source_context=lane.ingress.context, jpeg='SYNTHETIC')
+        packet, = lane.framer.push(bytes(6400), received=time.time(), decoded=time.time(),
+                                   wall=time.time(), mono=clock.at)
+        for message in (frame, packet):
+            lane.wire.put_nowait(json.dumps(message).encode())
+        if ack:
+            future = lane.motor[sequence] = loop.create_future()
+            lane.wire.put_nowait(json.dumps(dict(type='motor_result', request_id=sequence, native_code=0)).encode())
+            return future
+
+    try:
+        send(lanes[slow_lane], 0, ack=False)
+        await asyncio.wait_for(started.wait(), 2)
+        clock.at += .2
+        receipts = await asyncio.wait_for(asyncio.gather(*(send(lane, 1) for lane in lanes)), 2)
+        assert all(receipt['native_code'] == 0 for receipt in receipts)
+        assert all(lane.frames[-1]['received_at'] == time.time() for lane in lanes)
+        assert all(lane.safety.observe_audio.called for lane in lanes)
+        healthy.assert_not_called()
+        for sequence in (2, 3):
+            clock.at += .2
+            await asyncio.wait_for(send(lanes[slow_lane], sequence), 2)
+        slow_service = lanes[slow_lane].service
+        assert len(slow_service.audio_backlog) == 1
+        assert slow_service.voice_events['voice_audio_backlog'] == 1
+        assert not slow_service.speaking
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*(lane.service.audio_task for lane in lanes)), 2)
+        assert healthy.call_count == 4
+        assert all(not lane.service.speaking and lane.service.transcribe.await_count == 0 for lane in lanes)
+    finally:
+        release.set()
+        for lane in lanes:
+            lane.wire.put_nowait(b'')
+        await asyncio.gather(*(lane.receiver for lane in lanes), return_exceptions=True)
+        pending = [lane.service.audio_task for lane in lanes if lane.service.audio_task is not None]
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_revoked_audio_owner_keeps_the_slot_until_its_thread_exits(tmp_path, monkeypatch):
+    from homeplane.embodied import home_service as module
+
+    time = SimpleNamespace(monotonic=lambda: 0)
+    monkeypatch.setattr(module, 'time', time)
+    monkeypatch.setattr(module, 'VOICE_INPUT_PAUSED', tmp_path / 'paused')
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def slow(_):
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(5)
+        return SpeechActivity(True, 1.0, .03, .2)
+
+    old = voice_service(module)
+    old.activity = SimpleNamespace(measure=slow, probability=1.0)
+    new = module.HomeService('cam_2222222222', voice_provider=old)
+    new.enabled = new.armed = new.selected = True
+    new.last_video = 0
+    healthy = Mock(return_value=SpeechActivity(False, 0, .01, 0))
+    new.activity = SimpleNamespace(measure=healthy)
+    gate = AudioIngress(CAMERA, 'a' * 32)
+    assert video(gate, 0)
+    pending = gate.accept(audio(), wall=1000, mono=0)
+    old.offer_audio(pending)
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        clear = actual('homeplane/embodied/worker.py', 'clear_interactions', dict(
+            home=old, SELECTED=CAMERA, secondary_homes={}, fleet=SimpleNamespace(clear=Mock())))
+        clear(CAMERA['id'])
+        task = old.audio_task
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert old.activity_gate.locked()
+        replacement = dict(CAMERA, id=new.camera_id)
+        gate = AudioIngress(replacement, 'b' * 32)
+        frame = dict(type='frame', received_at=1000, capture_session=gate.session, camera_source_context=gate.context)
+        assert gate.observe_frame(frame, wall=1000, mono=0)
+        packet = audio(framer=PCMFramer(replacement, gate.session))
+        new.offer_audio(gate.accept(packet, wall=1000, mono=0))
+        await asyncio.sleep(0)
+        healthy.assert_not_called()
+        release.set()
+        await asyncio.wait_for(new.audio_task, 2)
+        assert not old.speaking and old.activity is None and not old.audio_backlog
+        old.transcribe.assert_not_awaited()
+        healthy.assert_called_once()
+    finally:
+        release.set()
+        tasks = [service.audio_task for service in (old, new) if service.audio_task is not None]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_revocation_before_the_audio_task_starts_allows_the_next_input(monkeypatch):
+    clock = SimpleNamespace(monotonic=lambda: 0)
+    service = queued_voice_service(monkeypatch, clock)
+    gate = AudioIngress(CAMERA, 'a' * 32)
+    assert video(gate, 0)
+    framer = PCMFramer(CAMERA, gate.session)
+    service.offer_audio(gate.accept(audio(framer=framer), wall=1000, mono=0))
+    previous = service.audio_task
+    service.epoch += 1
+    service.discard_audio()
+    previous.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await previous
+    new_packet = audio(framer=framer)
+    service.offer_audio(gate.accept(new_packet, wall=1000, mono=0))
+    await service.audio_task
+    service.audio.assert_awaited_once_with(new_packet, observed_owner=None)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fault',['load','measure','reset'])
 async def test_local_audio_model_failure_does_not_stop_primary_frames_or_motor_results(tmp_path,monkeypatch,fault):
-    from collections import deque
     from homeplane.embodied import home_service as module
     clock=[0.0];time=SimpleNamespace(monotonic=lambda:clock[0],time=lambda:1000+clock[0])
     monkeypatch.setattr(module,'time',time);monkeypatch.setattr(module,'VOICE_INPUT_PAUSED',tmp_path/'paused')
@@ -384,7 +578,7 @@ async def test_local_audio_model_failure_does_not_stop_primary_frames_or_motor_r
     scope=dict(capture=SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(side_effect=[
         json.dumps(audio(framer=framer)).encode(),json.dumps(frame).encode(),
         json.dumps(dict(type='motor_result',request_id=7,native_code=0)).encode(),b'']))),
-        state={'status':'live'},audio_ingress=g,home=s,deliver_audio=deliver_audio,generation=1,my_generation=1,
+        state={'status':'live'},audio_ingress=g,home=s,generation=1,my_generation=1,
         safety=SimpleNamespace(observe_audio=Mock(),capture_frame=Mock()),
         SELECTED=CAMERA,fleet=SimpleNamespace(voice_current=lambda *_:True),time=time,json=json,
         offer_frame=lambda _,item:offered.append(item),queue=object(),last_video_lease=0,
@@ -393,6 +587,7 @@ async def test_local_audio_model_failure_does_not_stop_primary_frames_or_motor_r
     await actual('homeplane/embodied/worker.py','receive',scope)()
     assert offered[0]==dict(frame,_motion_generation=4)
     assert future.result()=={'type':'motor_result','request_id':7,'native_code':0}
+    await s.audio_task
     initial_calls=1 if fault=='load' else 0
     assert s.state['audio_analysis']['status']=='unavailable' and model.call_count==initial_calls
     assert 'private-' not in json.dumps(s.state)

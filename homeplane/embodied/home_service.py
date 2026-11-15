@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import time
+from collections import deque
 from contextlib import nullcontext
 from datetime import UTC, datetime
 
@@ -12,7 +13,9 @@ import numpy as np
 
 from homeplane.embodied import bridge
 from homeplane.embodied.camera_audio import MAX_AGE as CAMERA_INPUT_MAX_AGE
-from homeplane.embodied.camera_audio import WakeCameraCue, WakeCameraPause, offer_voice_window
+from homeplane.embodied.camera_audio import (
+    AdmittedAudio, WakeCameraCue, WakeCameraPause, offer_voice_window, prepare_voice_packet,
+)
 from homeplane.embodied.household import basic_command
 from homeplane.embodied.intent import address, parse_plan, utterance_focus
 from homeplane.embodied.local_intent import household_plan
@@ -34,6 +37,8 @@ VOICE_INPUT_PAUSED = PRIVATE / 'voice-input-paused'
 WAKE_CAMERA_SECONDS = 16.0
 WAKE_VOICED_SECONDS = .128
 COMMAND_VOICED_SECONDS = .45
+VOICE_PACKET_BACKLOG = 2
+CURRENT_ATTENTION = object()
 ASR_REFUSALS = {
     'no_speech': 'voice_asr_empty',
     'unsupported_script': 'voice_asr_language_mismatch',
@@ -94,6 +99,10 @@ class HomeService:
         self.noise = 0.004
         self.last_audio = None
         self.audio_input_at = None
+        self.audio_backlog = deque(maxlen=VOICE_PACKET_BACKLOG)
+        self.audio_task = None
+        self.audio_revision = 0
+        self.activity_gate = voice_provider.activity_gate if voice_provider else asyncio.Lock()
         self.audio_retry_at = 0.0
         self.voice_busy = False
         self.last_video = -100.0
@@ -192,7 +201,7 @@ class HomeService:
         self.ensure_voice()
         # Muting Friday's replies must not silently turn off gaze/voice input.
         if VOICE_INPUT_PAUSED.exists():
-            self.reset_audio()
+            self.discard_audio()
             self.pending_audio = None
             self.refresh_voice()
             return
@@ -237,7 +246,7 @@ class HomeService:
         source_changed = session != self.camera_session or not continuous
         if selected != self.selected or source_changed:
             self.epoch += 1
-            self.reset_audio("voice_frame_or_source_changed")
+            self.discard_audio("voice_frame_or_source_changed")
             self.pending_audio = None
             self.camera_focus = None
             if self.voice_routing is not None:
@@ -288,6 +297,7 @@ class HomeService:
 
     def reset_audio(self, reason=None):
         """丢弃未完成语音，已提交请求使用自己的来源凭据。"""
+        self.audio_revision += 1
         if reason and self.speaking:
             self.note_voice(reason, refused=True)
         self.vad = []
@@ -305,6 +315,66 @@ class HomeService:
             self.audio_retry_at = time.monotonic()+5
             self.state['audio_analysis'] = dict(status='unavailable',code='local_audio_model_unavailable')
 
+    def discard_audio(self, reason=None):
+        self.audio_backlog.clear()
+        self.last_audio = self.audio_input_at = None
+        self.reset_audio(reason)
+
+    def offer_audio(self, admission):
+        """接收循环只提交待处理音频，声音复核由原来源独立接收。"""
+        if not isinstance(admission, AdmittedAudio) or admission.packet is None:
+            self.audio_backlog.clear()
+            prepare_voice_packet(self, admission)
+            return
+        if len(self.audio_backlog) == VOICE_PACKET_BACKLOG:
+            self.discard_audio()
+            self.note_voice('voice_audio_backlog', refused=True)
+        self.audio_backlog.append((self.epoch, self.voice_owner, admission))
+        if self.audio_task is None or self.audio_task.done():
+            self.audio_task = asyncio.create_task(self._drain_audio(), name='friday-voice-packets')
+
+    async def _drain_audio(self):
+        try:
+            while self.audio_backlog:
+                epoch, owner, admission = self.audio_backlog.popleft()
+                if epoch != self.epoch:
+                    continue
+                received = admission.received_mono
+                if received is None or not 0 <= time.monotonic() - received <= CAMERA_INPUT_MAX_AGE:
+                    self.reset_audio()
+                    self.note_voice('voice_audio_stale', refused=True)
+                    continue
+                packet = prepare_voice_packet(self, admission)
+                await self.audio(packet, observed_owner=owner)
+        finally:
+            self.audio_task = None
+
+    async def _measure_audio(self, raw, current):
+        await self.activity_gate.acquire()
+        def finished(job):
+            self.activity_gate.release()
+            if not job.cancelled():
+                job.exception()
+
+        try:
+            if not current():
+                self.activity_gate.release()
+                return None
+            # 推理线程独占循环状态。换源或停用撤销结果，避免并发修改。
+            previous, self.activity = self.activity, None
+
+            def measure():
+                model = previous if previous is not None else VoiceActivity()
+                return model, model.measure(raw)
+
+            job = asyncio.get_running_loop().run_in_executor(None, measure)
+        except BaseException:
+            self.activity_gate.release()
+            raise
+        job.add_done_callback(finished)
+        # 取消调用方不能让新镜头抢占仍在运行的本机模型会话。
+        return await asyncio.shield(job)
+
     def listening(self, now):
         return (self.selected and self.audio_allowed and self.input_allowed() and not VOICE_INPUT_PAUSED.exists()
                 and self.voice_status() in ("ready", "transcribing") and now >= self.reply_until
@@ -321,8 +391,10 @@ class HomeService:
                 and self.listening(now)):
             self.finish_audio(now, interrupted=True)
 
-    async def audio(self, item):
+    async def audio(self, item, *, observed_owner=CURRENT_ATTENTION):
         now = time.monotonic()
+        if observed_owner is CURRENT_ATTENTION:
+            observed_owner = self.voice_owner
         if self.audio_input_at is None and self.last_audio is not None and now - self.last_audio > 0.6:
             self.reset_audio("voice_audio_discontinuity")
         self.last_audio = now
@@ -339,20 +411,37 @@ class HomeService:
             self.state['audio_analysis'] = dict(status='unavailable',code='local_audio_model_unavailable',
                                               retry_ms=round((self.audio_retry_at-now)*1000))
             return
+        epoch, revision, received = self.epoch, self.audio_revision, self.audio_input_at
+
+        def current():
+            stamp = time.monotonic()
+            return (self.epoch == epoch and self.audio_revision == revision and self.listening(stamp)
+                    and (received is None or 0 <= stamp - received <= CAMERA_INPUT_MAX_AGE))
+
+        model_failed = False
         try:
-            if self.activity is None:
-                self.activity = VoiceActivity()
-            activity = self.activity.measure(raw)
-            speech, ratio, rms = activity.speech, activity.ratio, activity.rms
+            measured = await self._measure_audio(raw, current)
         except Exception:
-            # Optional audio inference must not terminate the camera receiver,
-            # which also carries video and motor acknowledgements. No raw model
-            # error, PCM or transcript is added to status/diagnostic output.
-            self.activity = None
+            measured, model_failed = None, True
+        if not current():
+            if self.epoch == epoch and self.audio_revision == revision:
+                if not self.listening(time.monotonic()):
+                    self.reset_audio('voice_input_gate_closed')
+                else:
+                    self.reset_audio()
+                    self.note_voice('voice_audio_stale', refused=True)
+            return
+        if model_failed:
             self.reset_audio()
-            self.audio_retry_at = now+5
+            self.audio_retry_at = time.monotonic() + 5
             self.state['audio_analysis'] = dict(status='unavailable',code='local_audio_model_unavailable',retry_ms=5000)
             return
+        if measured is None:
+            self.reset_audio()
+            return
+        self.activity, activity = measured
+        owner = observed_owner if observed_owner == self.voice_owner else None
+        speech, ratio, rms = activity.speech, activity.ratio, activity.rms
         self.audio_retry_at = 0.0
         self.state['audio_analysis'] = dict(status='ready',retry_ms=0)
         probability = getattr(self.activity, "probability", 0)
@@ -365,7 +454,7 @@ class HomeService:
         speech = speech and rms > (0.00025 if probability >= 0.65 else max(0.001, self.noise * 1.3))
         active = speech or activity.wake_seconds > 0
         self.state["voice_activity"] = active
-        sample_at = now if self.audio_input_at is None else self.audio_input_at
+        sample_at = now if received is None else received
         voiced = duration * ratio
         level = rms * max(voiced if speech else 0.0, activity.wake_seconds)
         if not self.speaking:
@@ -377,8 +466,8 @@ class HomeService:
             self.speaking = True
             self.duration = sum(len(p) for p in self.vad) / 32000.0
             self.silence = 0.0
-            self.utterance_owner = self.voice_owner
-            self.utterance_attention = [(self.voice_owner, duration)] if speech else []
+            self.utterance_owner = owner
+            self.utterance_attention = [(owner, duration)] if speech else []
             self.voiced_duration = voiced if speech else 0.0
             self.wake_duration = activity.wake_seconds
             self.utterance_started = sample_at
@@ -395,10 +484,10 @@ class HomeService:
             self.utterance_ended = min(now, sample_at + duration)
             self.utterance_level += level
         if speech:
-            self.utterance_attention.append((self.voice_owner, duration))
+            self.utterance_attention.append((owner, duration))
             self.voiced_duration += voiced
         if self.duration >= 8 or self.silence >= 0.65:
-            self.finish_audio(now)
+            self.finish_audio(sample_at)
 
     def finish_audio(self, now, *, interrupted=False):
         pcm = b"".join(self.vad)
@@ -797,12 +886,12 @@ class HomeService:
         self.camera_focus = None
         self.wake_camera = None
         self.pending_audio = None
-        self.reset_audio()
+        self.discard_audio()
         if self.voice_routing is not None:
             self.voice_routing.discard(self.camera_id)
         if self.voice_process:
             self.voice_process.stop()
-        tasks = [t for t in [self.poller, *self.jobs] if t]
+        tasks = [t for t in [self.poller, self.audio_task, *self.jobs] if t]
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

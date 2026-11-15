@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -244,7 +244,8 @@ async def test_disabling_interactions_leaves_the_camera_monitoring_and_its_queue
     try:
         assert await asyncio.to_thread(entered.wait, 1)
         token = runtime.source_tokens[camera]
-        home = SimpleNamespace(armed=True, selected=True, epoch=0, vad=[1], pending_audio=b'SYNTHETIC')
+        home = SimpleNamespace(armed=True, selected=True, epoch=0, discard_audio=Mock(),
+                               pending_audio=b'SYNTHETIC')
         scope = dict(safety=runtime, home=home, SELECTED={'id': camera}, Request=object,
                      interaction_enabled=True, secondary_homes={},
                      fleet=SimpleNamespace(cameras={camera: {}}, clear=lambda _: None))

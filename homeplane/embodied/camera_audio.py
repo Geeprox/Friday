@@ -239,11 +239,12 @@ class AudioIngress:
         return AdmittedAudio(dict(packet), changed, self.status(), mono-(wall-packet['received_at']))
 
 
-async def deliver_audio(service, admission):
+def prepare_voice_packet(service, admission):
+    """在同一路语音消费者上应用音频间断和诊断。"""
     if not isinstance(admission, AdmittedAudio):
         service.reset_audio()
         service.audio_input_at = None
-        return False
+        return None
     service.state['audio_input'] = admission.diagnostics
     service.audio_input_at = admission.received_mono
     if admission.reset:
@@ -251,6 +252,12 @@ async def deliver_audio(service, admission):
             service.finish_gap(admission.packet)
         service.reset_audio(
             'voice_audio_discontinuity' if admission.packet is not None else 'voice_audio_rejected')
-    if admission.packet is None:return False
-    await service.audio(admission.packet)
+    return admission.packet
+
+
+async def deliver_audio(service, admission):
+    packet = prepare_voice_packet(service, admission)
+    if packet is None:
+        return False
+    await service.audio(packet)
     return True

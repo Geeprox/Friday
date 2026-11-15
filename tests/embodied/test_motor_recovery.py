@@ -146,7 +146,7 @@ def primary_scope():
                  safety=SimpleNamespace(clear_view=noop),
                  fleet=SimpleNamespace(clear=noop),
                  home=SimpleNamespace(selected=True, epoch=0, vad=[], pending_audio=None,
-                                      runtime_log=SimpleNamespace(record=noop)))
+                                      discard_audio=noop, runtime_log=SimpleNamespace(record=noop)))
     def write(data):
         command = json.loads(data)
         sent.append(command)
