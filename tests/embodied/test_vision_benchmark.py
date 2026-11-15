@@ -93,18 +93,21 @@ def test_worker_copies_separate_per_camera_timings_only_for_diagnostic_queries()
         'recognizer': SimpleNamespace(session='secondary-run', vision=SimpleNamespace(
             timings={'vision_request': secondary}, body_rescue_passes=11)),
         'mode_revision': 'secondary-mode', 'wake_motion_counts': WakeMotionCounts(),
+        'process': SimpleNamespace(returncode=None),
     }
     scope = dict(
         time=SimpleNamespace(monotonic=lambda: 10), state=dict(status='live', processed_frames=2),
         last_frame=9.9, capture=capture, camera_sample=camera_sample, identities=SimpleNamespace(session='primary-run'),
         camera_planner=None, home=SimpleNamespace(vision_benchmark_voice=lambda: {},
             voice_timings={'asr_request': primary_asr}, wake_motion_counts=WakeMotionCounts()),
-        wall=SimpleNamespace(cameras=cameras, preview_metrics=lambda camera: dict(
-            preview_frames=9 if camera == chosen['id'] else 15, preview_fresh=True)),
+        wall=SimpleNamespace(cameras=cameras, preview_metrics=lambda camera, *, source_current: dict(
+            preview_frames=9 if camera == chosen['id'] else 15, preview_fresh=source_current,
+            capture_epoch=7 if source_current else None)),
         SELECTED=chosen, secondary_homes={cameras[1]['id']: SimpleNamespace(
             vision_benchmark_voice=lambda: {'voice_packets': 24}, voice_timings={'asr_request': secondary_asr})},
         vision_measurement=measurement,
-        previews=SimpleNamespace(sessions={cameras[1]['id']: item}, status=lambda _: report),
+        previews=SimpleNamespace(sessions={cameras[1]['id']: item}, status=lambda _: report,
+                                 source_current=lambda _camera, process: process.returncode is None),
         games=SimpleNamespace(mode='home'), party_camera=SimpleNamespace(window=lambda _: (None, None, False)),
         practice=SimpleNamespace(active=lambda: None), SESSION='worker-synthetic',
     )
@@ -120,15 +123,24 @@ def test_worker_copies_separate_per_camera_timings_only_for_diagnostic_queries()
     ]
     assert [summarize_timing(lane['timings']['asr_request'])['p95_upper_ms'] for lane in lanes] == [500, 150]
     assert all(summarize_timing(lane['timings']['asr_request'])['samples'] == 1 for lane in lanes)
+    scope['last_frame'] = 7
+    item['process'].returncode = 1
+    primary_sample, secondary_sample = sample()['cameras']
+    assert primary_sample['recognition'] == 'waiting' and primary_sample['capture_epoch'] == 7
+    assert primary_sample['preview_fresh'] is True
+    assert secondary_sample['capture_epoch'] is None and secondary_sample['preview_fresh'] is False
     assert [lane['preview_frames'] for lane in lanes] == [9, 15]
     assert [lane['voice'].get('voice_packets') for lane in lanes] == [None, 24]
 
 
 class SyntheticPort:
-    def __init__(self, clock, fault=None):
+    def __init__(self, clock, fault=None, *, capture_evidence=False):
         self.clock = clock
         self.fault = fault
         self.report = new_report()
+        if capture_evidence:
+            for row in self.report['cameras']:
+                row.update(capture_epoch=1, preview_frames=0, preview_fresh=True)
         self.owner = VisionBenchmark(clock=lambda: clock.at)
         self.writes = []
         self.full_start = None
@@ -145,19 +157,31 @@ class SyntheticPort:
             self.full_start = self.clock.at
             return {'token': self.owner.begin(body['full_rate_seconds'], self.report, body['scope'])}
         self.report['sampled_mono'] = self.clock.at
+        is_full_rate = self.owner.active()
         for row, histogram in zip(self.report['cameras'], self.timings):
             physical_slot = row['slot']
-            row['inference'] += 4 if self.owner.active() else 1
-            row['skipped'] += 0 if self.owner.active() else 2
-            row['frames'] += 3
+            row['inference'] += 4 if is_full_rate else 1
+            row['skipped'] += 0 if is_full_rate else 2
+            if 'capture_epoch' in row:
+                row.update(preview_frames=row['preview_frames'] + 4, preview_fresh=True)
+            if self.fault == 'recognition_stalls' and is_full_rate and physical_slot == 4:
+                row.update(state='connecting', recognition='recovering')
+            else:
+                row['frames'] += 3
             row['latency_ms'] = 325 + physical_slot*20
-            histogram.record_ms(230 if self.owner.active() else 64)
+            histogram.record_ms(230 if is_full_rate else 64)
             row['timings'] = {'vision_request': histogram.bins.copy()}
-        if self.owner.active() and self.clock.at - self.full_start >= 7:
+        if is_full_rate and self.clock.at - self.full_start >= 7:
             if self.fault == 'reconnected':
                 self.report['cameras'][3]['session'] = 'different-session'
             if self.fault == 'timing_reset':
                 self.report['cameras'][3]['timings']['vision_request'] = LatencyHistogram().bins
+            if self.fault == 'capture_replaced':
+                self.report['cameras'][3]['capture_epoch'] = 2
+            if self.fault == 'source_retired':
+                self.report['cameras'][3]['capture_epoch'] = None
+            if self.fault == 'recognition_stalls' and self.clock.at - self.full_start == 7:
+                self.report['cameras'][1]['preview_fresh'] = False
             self.report['cameras'][0]['voice']['wake_confirmed'] += 1
         return self.owner.status(deepcopy(self.report))
 
@@ -166,17 +190,22 @@ class SyntheticPort:
                     memory_used_bytes=16_000 if self.owner.active() else 12_000)
 
 
-@pytest.mark.parametrize('fault', [None, 'reconnected', 'timing_reset'])
-def test_compare_script_pairs_same_four_streams_and_restores_on_source_change(monkeypatch, fault):
+@pytest.mark.parametrize('fault, reason', [
+    (None, None),
+    ('reconnected', 'comparison_source_or_rate_changed'),
+    ('timing_reset', 'measurement_counter_reset'),
+    ('capture_replaced', 'comparison_source_or_rate_changed'),
+    ('source_retired', 'four_live_cameras_required'),
+])
+def test_compare_script_pairs_same_four_streams_and_restores_on_source_change(monkeypatch, fault, reason):
     clock = SimpleNamespace(at=10)
 
     def sleep(seconds):
         clock.at += seconds
 
     monkeypatch.setattr(compare_vision, 'time', SimpleNamespace(monotonic=lambda: clock.at, sleep=sleep))
-    port = SyntheticPort(clock, fault)
+    port = SyntheticPort(clock, fault, capture_evidence=fault in {'capture_replaced', 'source_retired'})
     if fault:
-        reason = 'measurement_counter_reset' if fault == 'timing_reset' else 'comparison_source_or_rate_changed'
         with pytest.raises(ValueError, match=reason):
             compare_vision.run(port, 10, compare=True)
     else:
@@ -198,6 +227,37 @@ def test_compare_script_pairs_same_four_streams_and_restores_on_source_change(mo
         assert 'synthetic-worker' not in str(result) and 'source-' not in str(result)
     assert port.writes[0]['full_rate_seconds'] == 24 and len(port.writes) == 2
     assert 'cancel' in port.writes[1] and not port.owner.active()
+
+
+def test_same_capture_records_preview_gap_and_full_phase_recognition_stall(monkeypatch):
+    clock = SimpleNamespace(at=10)
+
+    def sleep(seconds):
+        clock.at += seconds
+
+    monkeypatch.setattr(compare_vision, 'time', SimpleNamespace(monotonic=lambda: clock.at, sleep=sleep))
+    port = SyntheticPort(clock, 'recognition_stalls', capture_evidence=True)
+    result = compare_vision.run(port, 10, compare=True)
+    _, preview_gap, _, recognition_gap = result['full_rate']['cameras']
+    assert preview_gap['preview_fresh_samples'] == 5 and preview_gap['recognition_samples']['running'] == 6
+    assert recognition_gap['preview_frames'] == 20 and recognition_gap['recognized_frames'] == 0
+    assert recognition_gap['preview_fresh_without_recognition_samples'] == 6
+    assert recognition_gap['recognition_samples'] == {'running': 0, 'waiting': 0, 'recovering': 6}
+    assert recognition_gap['sampled_frame_age_p95_ms'] is None
+    assert result['restored_adaptive'] is True and not port.owner.active()
+
+
+def test_full_rate_requires_current_previews_at_start():
+    report = new_report()
+    for camera in report['cameras']:
+        camera.update(capture_epoch=1, preview_fresh=True)
+    measurement = VisionBenchmark()
+    scope = comparison_scope(report)
+    report['cameras'][0]['preview_fresh'] = False
+    assert comparison_scope(report) == scope
+    with pytest.raises(ValueError, match='four_live_cameras_required'):
+        measurement.begin(10, report, scope)
+    assert not measurement.active()
 
 
 def test_host_summary_excludes_pre_phase_and_cached_baselines_without_losing_preview_frames():

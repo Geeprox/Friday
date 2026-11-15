@@ -59,15 +59,27 @@ def summarize_timing(buckets):
     return {'samples': samples, 'p95_upper_ms': p95, 'above_range': buckets[-1]}
 
 
-def comparison_scope(report):
+def comparison_scope(report, *, require_fresh_preview=False):
     cameras = report['cameras']
-    if len(cameras) != 4 or any(row['state'] != 'live' or row['recognition'] != 'running' for row in cameras):
+    if len(cameras) != 4:
+        raise ValueError('four_live_cameras_required')
+    # 新样本以采集来源为准。识别和预览的短时停滞都是对照结果。
+    has_capture = any('capture_epoch' in row for row in cameras)
+    if has_capture:
+        if any(type(row.get('capture_epoch')) is not int or row['capture_epoch'] < 1
+               or row['state'] in {'stopped', 'shutter_closed'}
+               or require_fresh_preview and row.get('preview_fresh') is not True for row in cameras):
+            raise ValueError('four_live_cameras_required')
+    elif any(row['state'] != 'live' or row['recognition'] != 'running' for row in cameras):
         raise ValueError('four_live_cameras_required')
     if report['interactive_session']:
         raise ValueError('interactive_session_active')
     if any(not isinstance(row['session'], str) or not isinstance(row['mode_revision'], str)
            or type(row['inference']) is not int for row in cameras):
         raise ValueError('vision_measurements_unavailable')
+    if has_capture:
+        return (report['worker'], *(f"{row['capture_epoch']}:{row['session']}:{row['mode_revision']}"
+                                    for row in cameras))
     return (report['worker'], *(row['session'] + ':' + row['mode_revision'] for row in cameras))
 
 
@@ -116,7 +128,7 @@ class VisionBenchmark:
             raise ValueError('vision_benchmark_busy')
         if type(seconds) is not int or not 1 <= seconds <= 75:
             raise ValueError('invalid_benchmark_duration')
-        current = comparison_scope(report)
+        current = comparison_scope(report, require_fresh_preview=True)
         if current != scope:
             raise ValueError('vision_benchmark_source_changed')
         self.window = FullVisionWindow(token_hex(16), current, self.clock() + seconds)

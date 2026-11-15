@@ -125,8 +125,10 @@ class CameraWall:
         if not value or not 0 <= self.clock()-value[1] < 2:return None
         return value
 
-    def preview_metrics(self, camera):
-        return dict(preview_frames=self.preview_counts.get(camera), preview_fresh=self.frame(camera) is not None)
+    def preview_metrics(self, camera, *, source_current=True):
+        return dict(capture_epoch=self.epochs.get(camera) if source_current else None,
+                    preview_frames=self.preview_counts.get(camera),
+                    preview_fresh=source_current and self.frame(camera) is not None)
 
     def still(self,camera):
         value=self.stills.get(camera)

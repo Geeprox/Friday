@@ -97,7 +97,8 @@ def summarize(rows):
     cameras = []
     for lane in zip(*(sample['cameras'] for sample, _ in rows)):
         start, end = lane[0], lane[-1]
-        latency = sorted(row['latency_ms'] for row in lane if row['latency_ms'] is not None)
+        latency = sorted(row['latency_ms'] for row in lane
+                         if row['recognition'] == 'running' and row['latency_ms'] is not None)
         timings = timing_deltas(start.get('timings'), end.get('timings'))
         preview_frames = counter_delta(start, end, 'preview_frames')
         cameras.append(dict(slot=end['slot'],
@@ -108,6 +109,11 @@ def summarize(rows):
             preview_frames=preview_frames,
             preview_fresh_samples=(sum(row.get('preview_fresh') is True for row in lane)
                                    if preview_frames is not None else None),
+            recognition_samples={phase: sum(row['recognition'] == phase for row in lane)
+                                 for phase in ('running', 'waiting', 'recovering')},
+            preview_fresh_without_recognition_samples=(
+                sum(row.get('preview_fresh') is True and row['recognition'] != 'running' for row in lane)
+                if preview_frames is not None else None),
             quiet_samples=sum(row['quiet_ms'] is not None and row['quiet_ms'] >= 4500 for row in lane),
             sampled_frame_age_median_ms=statistics.median(latency) if latency else None,
             sampled_frame_age_p95_ms=latency[math.ceil(len(latency)*.95)-1] if latency else None,
@@ -122,7 +128,9 @@ def summarize(rows):
     memory = [row['memory_used_bytes'] for row in hosts.values() if row.get('memory_used_bytes') is not None]
     if len(cpu) < 2 or len(memory) < 2:
         raise ValueError('measurement_host_samples_unavailable')
-    if any(row['recognized_frames'] <= 0 for row in cameras):
+    # 只要采集继续，整段没有产出识别也是可计量的结果。
+    if any((row['preview_frames'] if row['preview_frames'] is not None else row['recognized_frames']) <= 0
+           for row in cameras):
         raise ValueError('measurement_discontinuous')
     return dict(seconds=round(rows[-1][0]['sampled_mono']-rows[0][0]['sampled_mono'], 2), samples=len(rows),
                 host_cpu_percent_median=statistics.median(cpu), host_cpu_samples=len(cpu), host_samples=len(hosts),
@@ -154,7 +162,7 @@ def measure(port, pool, seconds, scope, *, full_rate):
 
 def run(port, seconds, compare):
     sample = port.worker()
-    scope = comparison_scope(sample)
+    scope = comparison_scope(sample, require_fresh_preview=compare)
     if sample['full_rate']:
         raise ValueError('vision_benchmark_busy')
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:

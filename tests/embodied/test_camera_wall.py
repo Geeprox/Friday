@@ -13,11 +13,13 @@ def test_video_does_not_wait_for_recognition_and_closed_cameras_are_absent():
  assert len(view['cameras'])==1
  assert view['cameras'][0]['state']=='live' and view['cameras'][0]['people']==0
  assert wall.frame(CAMERAS[0]['id'])[0]==JPEG
- assert wall.preview_metrics(CAMERAS[0]['id'])=={'preview_frames':1,'preview_fresh':True}
- assert wall.preview_metrics(CAMERAS[1]['id'])=={'preview_frames':0,'preview_fresh':False}
+ assert wall.preview_metrics(CAMERAS[0]['id'])=={'capture_epoch':epoch,'preview_frames':1,'preview_fresh':True}
+ assert wall.preview_metrics(CAMERAS[1]['id'])=={'capture_epoch':0,'preview_frames':0,'preview_fresh':False}
+ assert wall.preview_metrics(CAMERAS[0]['id'],source_current=False)==dict(
+     capture_epoch=None,preview_frames=1,preview_fresh=False)
  now[0]=11.7
  assert wall.frame(CAMERAS[0]['id']) is None
- assert wall.preview_metrics(CAMERAS[0]['id'])=={'preview_frames':1,'preview_fresh':False}
+ assert wall.preview_metrics(CAMERAS[0]['id'])=={'capture_epoch':epoch,'preview_frames':1,'preview_fresh':False}
 
 def test_close_fences_inflight_frames_and_prior_session_cleanup():
  wall=CameraWall(CAMERAS,clock=lambda:10.);cid=CAMERAS[0]['id'];old=wall.begin(cid)
@@ -25,6 +27,7 @@ def test_close_fences_inflight_frames_and_prior_session_cleanup():
  assert wall.frame(cid) is None
  new=wall.begin(cid);wall.offer(cid,new,packet(9.9));wall.clear(cid,old)
  assert wall.frame(cid)[1]==9.9
+ assert wall.preview_metrics(cid)['capture_epoch']==new and new!=old
 
 @pytest.mark.parametrize('at',[True,None,'10',float('nan'),float('inf'),11,8])
 def test_invalid_or_stale_timestamp_never_publishes(at):

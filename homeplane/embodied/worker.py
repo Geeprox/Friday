@@ -1457,18 +1457,21 @@ def identity_authorized(request):
 
 def vision_measurement_sample(*, include_timings=False):
     now = time.monotonic()
-    primary_open = (state['status'] == 'live' and 0 <= now-last_frame <= 1.5
-                    and capture is not None and capture.returncode is None)
+    primary_source = (state['status'] in {'connecting', 'live'}
+                      and capture is not None and capture.returncode is None)
+    primary_open = primary_source and state['status'] == 'live' and 0 <= now-last_frame <= 1.5
     primary_state = ('live' if primary_open else 'stale' if state['status'] == 'live' else state['status'])
+    primary_recognition = 'running' if primary_open else (
+        'recovering' if primary_source and state.get('recognition') == 'recovering' else 'waiting')
     primary_timings = (vision_measurement.primary_timings | home.voice_timings | home.wake_motion_counts.timings
                        if include_timings else None)
-    rows = [camera_sample(1, primary_state, 'running' if primary_open else 'waiting', identities.session,
+    rows = [camera_sample(1, primary_state, primary_recognition, identities.session,
                           str(camera_planner.intent_revision) if camera_planner else 'fixed',
                           state.get('vision_cadence'), state['processed_frames'],
                           state.get('pipeline_ms') if primary_open else None,
                           home.vision_benchmark_voice() | home.wake_motion_counts.public(), timings=primary_timings,
                           body_rescue_passes=state.get('body_rescue_total'))]
-    rows[0].update(wall.preview_metrics(SELECTED['id']))
+    rows[0].update(wall.preview_metrics(SELECTED['id'], source_current=primary_source))
     for camera_id in (camera['id'] for camera in wall.cameras if camera['id'] != SELECTED['id']):
         item = previews.sessions.get(camera_id, {})
         report = previews.status(camera_id)
@@ -1490,7 +1493,8 @@ def vision_measurement_sample(*, include_timings=False):
                                   report.get('vision_cadence'), report['frames'], report.get('latency_ms'),
                                   voice, timings=timings,
                                   body_rescue_passes=recognizer.vision.body_rescue_passes if recognizer else None))
-        rows[-1].update(wall.preview_metrics(camera_id))
+        rows[-1].update(wall.preview_metrics(
+            camera_id, source_current=previews.source_current(camera_id, item.get('process'))))
     interactive = (games.mode not in {'off', 'home'} or party_camera.window(now)[2]
                    or practice.active() is not None)
     return dict(worker=SESSION, sampled_mono=now, interactive_session=interactive, cameras=rows)
