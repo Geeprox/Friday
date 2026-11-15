@@ -1930,10 +1930,20 @@ async def game_control(request: Request, *, display_host=None):
     action = data.get('action')
     if action is not None and (not isinstance(action, str) or action not in {'select','prepare','start','pause','resume'}):
         raise HTTPException(400, detail='invalid_game_action')
-    if television and (not games.game_input_enabled or data.get('mode') != games.selected_mode
-                       or action not in ('start', 'pause', 'resume')
-                       or set(data) != {'action', 'mode', 'expected_context', 'expected_revision'}):
-        raise HTTPException(409, detail='game_state_changed')
+    if television:
+        fields = {'action', 'mode', 'expected_context', 'expected_revision'}
+        actions = {'start', 'pause', 'resume'}
+        if data.get('mode') == 'ski':
+            if action == 'select':
+                actions.add('select')
+                fields.add('ski_trail')
+            if action == 'start' and 'ski_warmup' in data:
+                fields.add('ski_warmup')
+        if (not games.game_input_enabled or data.get('mode') != games.selected_mode
+                or action not in actions or set(data) != fields):
+            raise HTTPException(409, detail='game_state_changed')
+        if action == 'select' and games.mode != 'off' and not games.complete:
+            raise HTTPException(409, detail='game_state_changed')
     if set(data)-{'mode','action','difficulty','ski_trail','ski_warmup','tennis_variant','quest_route',
                   'expected_context','expected_revision'}:
         raise HTTPException(400, detail='invalid_game_request')
@@ -1957,15 +1967,15 @@ async def game_control(request: Request, *, display_host=None):
         raise HTTPException(400, detail='invalid_quest_route')
     if not games.control_current(data.get('expected_context'),data.get('expected_revision')):
         raise HTTPException(409, detail='game_state_changed')
+    if television and action in ('select', 'start', 'resume') and not games.presentation.ready(
+            games.presentation_scope(), host=display_host):
+        raise HTTPException(409, detail='game_presentation_not_ready')
     if practice.active() and action != 'pause' and data.get("mode", "quest") not in {"off", "home"}:
         raise HTTPException(409, detail="practice_active")
     try:
         if action in {'pause', 'resume'}:
             if data.get('mode') != games.mode:
                 raise ValueError('game_changed')
-            if television and action == 'resume' and not games.presentation.ready(
-                    games.presentation_scope(), host=display_host):
-                raise ValueError('game_presentation_not_ready')
             games.set_paused(action == 'pause')
         elif action in {'select', 'prepare'}:
             options = {key: data[key] for key in ('difficulty', 'ski_trail', 'tennis_variant', 'quest_route') if key in data}
@@ -1974,8 +1984,7 @@ async def game_control(request: Request, *, display_host=None):
             games.select(data.get("mode", "quest"), **options)
         else:
             games.require_game_view(data.get('mode', 'off'))
-            if television and (games.mode != 'off' and not games.complete and games.ski_warmup is None
-                               or not games.presentation.ready(games.presentation_scope(), host=display_host)):
+            if television and games.mode != 'off' and not games.complete and games.ski_warmup is None:
                 raise ValueError('game_presentation_not_ready')
             if data.get('ski_warmup') and games.mode != 'off' and not games.complete:
                 raise ValueError('game_changed')

@@ -38,8 +38,9 @@ function syncGameControls(){
  const controls=['startGame','startSkiWarmup','stopGame','pauseGame','resumeGame','toggleSkiChooser','chooseSkiTrail',
   'chooseTennisVariant','toggleQuestChooser','chooseQuestRoute'];
  for(const n of document.querySelectorAll('[data-mode],'+controls.map(name=>'[data-click="'+name+'()"]').join(','))){
-  const call=n.getAttribute('data-click'),starts=['startGame()','startSkiWarmup()'].includes(call);
-  n.disabled=disabled||starts&&!gameDisplayReady()||call==='resumeGame()'&&(!resumeInputReady()||!gameDisplayReady());
+  const call=n.getAttribute('data-click');
+  const needsView=['startGame()','startSkiWarmup()'].includes(call)||television&&call==='chooseSkiTrail()';
+  n.disabled=disabled||needsView&&!gameDisplayReady()||call==='resumeGame()'&&(!resumeInputReady()||!gameDisplayReady());
  }
  document.querySelector('.actions')?.setAttribute('aria-busy',String(!!commandPending));
  syncGameDifficulty(disabled);
@@ -56,6 +57,12 @@ function showOverlay(markup){
  renderedOverlay=markup;
  const overlay=$('overlay');overlay.innerHTML=markup;overlay.querySelector('h2')?.setAttribute('tabindex','-1');
 }
+function overlayButton(overlay){
+ const replay=television&&overlay.querySelector('.ski-result-actions .primary');
+ if(replay)return replay.disabled?null:replay;
+ return overlay.querySelector(':is([data-ski-trail],[data-tennis-variant],[data-quest-route])[aria-pressed="true"]:not([disabled])')||
+  overlay.querySelector('button:not([disabled])');
+}
 function restoreStageFocus(previous){
  if(!previous)return;
  const focused=document.activeElement;
@@ -64,8 +71,8 @@ function restoreStageFocus(previous){
  if(available(previous)){if(focused!==previous)previous.focus({preventScroll:true});return;}
  const overlay=$('overlay'),pause=$('pauseToggle');
  const warmupTitle=$('skiWarmupTitle');
- const next=(available(warmupTitle)?warmupTitle:null)||overlay.querySelector(':is([data-ski-trail],[data-tennis-variant],[data-quest-route])[aria-pressed="true"]:not([disabled])')||
-  overlay.querySelector('button:not([disabled])')||(available(pause)?pause:null)||overlay.querySelector('h2')||document.querySelector('[data-mode="'+selected+'"]');
+ const next=(available(warmupTitle)?warmupTitle:null)||overlayButton(overlay)||
+  (available(pause)?pause:null)||overlay.querySelector('h2')||document.querySelector('[data-mode="'+selected+'"]');
  next?.focus?.({preventScroll:true});
 }
 function televisionLobby(){
@@ -80,7 +87,7 @@ function televisionLobby(){
   if(changed||connected&&document.activeElement===retry)title.focus({preventScroll:true});
  }else if(changed){
   const overlay=$('overlay'),pause=$('pauseToggle');
-  const target=overlay.querySelector('button:not([disabled])')||overlay.querySelector('h2')||(!pause.hidden?pause:$('world'));
+  const target=overlayButton(overlay)||overlay.querySelector('h2')||(!pause.hidden?pause:$('world'));
   target.focus({preventScroll:true});
  }
  return show;
@@ -198,8 +205,9 @@ const presentationClient=createGamePresentation({
  onChange:()=>{
   if(stageClosed)return;
   syncGameControls();
-  if(television&&document.activeElement===$('overlay').querySelector('h2'))
-   $('overlay').querySelector('button:not([disabled])')?.focus({preventScroll:true});
+  const overlay=$('overlay');
+  if(television&&document.activeElement===overlay.querySelector('h2'))
+   overlayButton(overlay)?.focus({preventScroll:true});
  },
  send:async(body,options)=>{
   const response=await fetch(url(television?'/api/game/tv/presentation':'/api/game/presentation'),
@@ -484,6 +492,7 @@ function toggleSkiChooser(){
 async function chooseSkiTrail(id){
  const g=meta?.game;
  if(!gameViewCurrent()||selected!=='ski'||!skiTrails(g).some(trail=>trail.id===id))return false;
+ if(television&&!gameDisplayReady())return false;
  if(g.mode==='off'?g.ski_trail===id:g.status!=='complete'||skiChooserRound!==stageRound(g))return false;
  return commandGame({mode:'ski',action:'select',ski_trail:id},'暂时无法更换雪道，请重试。');
 }
@@ -576,10 +585,10 @@ function stageOverlayMarkup(g,current,playing){
  if((!playing||finished||control.gesture==='yeah')&&control.progress>0&&!control.latched)return'<h2>'+(control.gesture==='yeah'?'保持剪刀手，切换游戏':'保持 OK，开始本局')+'</h2><p>'+Math.round(control.progress*100)+'%</p>';
  if(selected==='home'||playing&&g.status==='playing')return'';
  if(!playing){
-  if(television&&selected!=='beam'){
-   const [,title,description]=modeDescription(selected,g),trail=selected==='ski'&&skiTrails(g).find(item=>item.id===g.ski_trail);
+  if(television&&!['beam','ski'].includes(selected)){
+   const [,title,description]=modeDescription(selected,g);
    const route=selected==='quest'&&questRoutes(g).find(item=>item.id===g.quest_route);
-   const detail=trail?.name||route?.name||tennisModes[g.tennis_variant]?.[0];
+   const detail=route?.name||tennisModes[g.tennis_variant]?.[0];
    return '<h2>'+(selected==='tennis'?'体感网球':title)+'</h2><p>'+escapeStageText(detail||description)+'</p>'+
     '<button class="primary" data-click="startGame()">开始本局</button>';
   }
@@ -601,8 +610,9 @@ function stageOverlayMarkup(g,current,playing){
   if(selected==='tennis'&&!television)return '<h2>'+title+'</h2><p>'+detail+'</p><div class="tennis-result-actions">'+
    '<button class="primary" data-click="startGame()">'+action+'</button>'+
    Object.keys(tennisModes).filter(id=>id!==(g.tennis_variant||'match')).map(id=>tennisVariantButton(id)).join('')+'</div>';
-  if(selected==='ski'&&!television&&skiTrails(g).length>1){
-   if(skiChooserRound===stageRound(g))return '<h2>更换雪道</h2>'+skiTrailPicker(g)+'<button data-click="toggleSkiChooser()">返回成绩</button>';
+  if(selected==='ski'&&skiTrails(g).length>1){
+   if(skiChooserRound===stageRound(g))return '<h2>更换雪道</h2>'+skiTrailPicker(g)+
+    '<div class="ski-lobby-actions"><button data-click="toggleSkiChooser()">返回成绩</button></div>';
    return '<h2>'+title+'</h2>'+(result||'<p>'+detail+'</p>')+'<div class="ski-result-actions"><button class="primary" data-click="startGame()">'+action+'</button><button data-click="toggleSkiChooser()">换雪道</button></div>';
   }
   return'<h2>'+title+'</h2>'+(result||'<p>'+detail+'</p>')+'<button class="primary" data-click="startGame()">'+action+'</button>';
@@ -814,12 +824,25 @@ case 'toggleGameSound()': toggleGameSound(); break;}}
 const stageOptions=document.querySelector('.stage-options');
 if(television)document.addEventListener('keydown',event=>{
  if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;
- const controls=[...document.querySelectorAll('#televisionLobby button,#overlay button,#pauseToggle,.stage-options summary,.stage-options button')]
+ const controls=[...document.querySelectorAll('#televisionLobby button,#overlay button,#skiWarmupContinue,#pauseToggle,.stage-options summary,.stage-options button')]
   .filter(node=>!node.disabled&&node.getClientRects().length>0&&getComputedStyle(node).visibility==='visible');
  if(!controls.length)return;
- const current=controls.indexOf(document.activeElement),step=['ArrowLeft','ArrowUp'].includes(event.key)?-1:1;
+ const focused=document.activeElement;
+ const step=['ArrowLeft','ArrowUp'].includes(event.key)?-1:1;
+ const row=focused?.closest('.ski-trail-picker,.ski-lobby-actions,.ski-result-actions');
+ if(row&&['ArrowLeft','ArrowRight'].includes(event.key)){
+  const options=controls.filter(node=>row.contains(node));
+  event.preventDefault();
+  (options[options.indexOf(focused)+step]||focused).focus({preventScroll:true});
+  return;
+ }
+ const rowTarget=event.key==='ArrowDown'&&focused?.closest('.ski-trail-picker')?
+  controls.find(node=>node.closest('.ski-lobby-actions')):
+  event.key==='ArrowUp'&&focused?.closest('.ski-lobby-actions')?
+   controls.find(node=>node.matches('[data-ski-trail][aria-pressed="true"]')):null;
+ const current=controls.indexOf(focused);
  const next=current<0?(step>0?0:controls.length-1):(current+step+controls.length)%controls.length;
- event.preventDefault();controls[next].focus({preventScroll:true});
+ event.preventDefault();(rowTarget||controls[next]).focus({preventScroll:true});
 });
 for(const kind of ['click','change','input'])document.addEventListener(kind,e=>{if(kind==='click'&&stageOptions?.open&&!stageOptions.contains(e.target))stageOptions.open=false;const node=e.target.closest('[data-'+kind+']');if(node)delegatedCall(node,node.getAttribute('data-'+kind));});
 stageOptions?.addEventListener('keydown',e=>{if(e.key==='Escape'&&stageOptions.open){e.preventDefault();stageOptions.open=false;stageOptions.querySelector('summary')?.focus();}});

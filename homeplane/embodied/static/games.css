@@ -357,6 +357,25 @@ body.television{display:grid;height:100vh;height:100svh;grid-template-rows:auto 
 .television .overlay>button{display:block;margin-inline-start:0}
 .television :is(button,summary){font-size:clamp(16px,1.25vw,24px);min-height:48px}
 .television :is(button,summary):focus{outline:3px solid var(--ink);outline-offset:5px}
+.television[data-mode=ski]{--ski-tv-inset:clamp(24px,4vw,76px)}
+.television[data-mode=ski] .overlay:has(.ski-trail-picker,.ski-result-actions){
+ left:var(--ski-tv-inset);transform:translateY(-50%);width:clamp(330px,44vw,620px);padding:clamp(20px,2.2vw,34px);
+}
+.television[data-mode=ski] .workspace:has(.ski-trail-picker,.ski-result-actions) .hud{visibility:hidden}
+.television .ski-trail-picker{gap:12px;margin-block:16px 22px}
+.television .overlay .ski-trail-picker button{min-height:clamp(66px,5vw,96px);padding:9px 6px}
+.television .ski-trail-picker strong{font-size:clamp(16px,1.15vw,22px)}
+.television .ski-trail-picker span{font-size:clamp(13px,.95vw,18px)}
+.television :is(.ski-lobby-actions,.ski-result-actions){justify-content:flex-start;gap:12px}
+.television .overlay :is(.ski-lobby-actions,.ski-result-actions) button{min-height:48px}
+.television .ski-splits,.television .ski-warmup-steps li{font-size:clamp(15px,1.05vw,20px)}
+.television .ski-splits>div{padding-block:8px}
+.television .ski-warmup{
+ inset-inline:var(--ski-tv-inset) auto;width:clamp(290px,28vw,440px);
+ padding:clamp(16px,1.8vw,28px);
+}
+.television .ski-warmup h2{font-size:clamp(24px,2.1vw,38px)}
+.television .ski-warmup-prompt p{font-size:clamp(15px,1.13vw,20px);min-height:0}
 .television .stage-options>div{width:max-content;min-width:170px}
 .television .television-lobby{position:absolute;inset:0;display:grid;align-content:center;justify-items:center;gap:20px;padding:24px;text-align:center;background:var(--paper)}
 .television-lobby h2{margin:0;font-size:clamp(34px,3.2vw,58px);line-height:1.2;font-weight:650}

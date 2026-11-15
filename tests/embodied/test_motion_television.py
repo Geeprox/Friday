@@ -115,12 +115,64 @@ async def test_wall_and_television_credentials_have_different_authority():
         assert (await tv.post(path+'/presentation', params=tv_params, json=view(game))).status_code == 200
         assert (await tv.post(path, params=tv_params, json=motion_command(game, 'resume'))).status_code == 200
         assert (await tv.post(path, params=tv_params, json=motion_command(game, 'start'))).status_code == 409
-        game.reset('ski', ski_warmup=True)
-        assert (await tv.post(path+'/presentation', params=tv_params, json=view(game))).status_code == 200
-        ready = await tv.post(path, params=tv_params, json=motion_command(game, 'start'))
-        assert ready.status_code == 200 and ready.json()['ski']['warmup'] is None
         ports['configuration']()['tv_viewer_hosts'].remove(TV)
         assert (await tv.post(path, params=tv_params, json=motion_command(game, 'pause'))).status_code == 403
+    ports['start'].assert_not_awaited()
+    ports['home'].enable.assert_not_awaited()
+
+
+def test_ski_television_owns_its_current_selection_practice_and_next_race():
+    app, game, ports = television_app()
+    game.select('ski', ski_trail='first-snow', difficulty='easy')
+    path = '/api/game/tv'
+    with TestClient(app, client=(TV, 0)) as client:
+        key = client.get('/api/wall', params={'k': WALL_KEY}).json()['game_display_key']
+
+        def game_post(command):
+            return client.post(path, params={'k': key}, json=command)
+
+        def ready():
+            response = client.post(path+'/presentation', params={'k': key}, json=view(game))
+            assert response.status_code == 200
+            assert response.json()['view_ready']
+
+        choose = motion_command(game, 'select', ski_trail='pine-slalom')
+        assert game_post(choose).json()['detail'] == 'game_presentation_not_ready'
+        ready()
+        assert game_post({**choose, 'mode': 'tennis', 'tennis_variant': 'solo'}).status_code == 409
+        assert game_post({**choose, 'difficulty': 'challenge'}).status_code == 409
+        selected = game_post(choose)
+        assert selected.status_code == 200
+        assert selected.json()['ski_trail'] == 'pine-slalom'
+        assert selected.json()['mode'] == 'off'
+        assert not selected.json()['presentation']['television_ready']
+        assert game_post(choose).status_code == 409
+        trial = motion_command(game, 'start', ski_warmup=True)
+        assert game_post(trial).json()['detail'] == 'game_presentation_not_ready'
+        ready()
+        assert game_post({**trial, 'ski_warmup': 'true'}).status_code == 400
+        started = game_post(trial)
+        assert started.status_code == 200
+        assert started.json()['ski']['warmup'] == {'step': 'left', 'fraction': 0}
+        assert started.json()['ski_trail'] == 'pine-slalom'
+        assert started.json()['difficulty'] == 'easy'
+        assert game_post(motion_command(game, 'select', ski_trail='summit')).status_code == 409
+
+        ready()
+        crossed = game_post(motion_command(game, 'start'))
+        assert crossed.status_code == 200
+        assert crossed.json()['ski']['warmup'] is None
+        assert crossed.json()['round_id'] > started.json()['round_id']
+        assert crossed.json()['ski']['distance'] == 0
+        assert crossed.json()['ski_trail'] == 'pine-slalom'
+        ready()
+        assert game_post(motion_command(game, 'select', ski_trail='summit')).status_code == 409
+        assert game.ski_trail.id == 'pine-slalom'
+        game.distance = game.ski_trail.length
+        game.publish([], 'complete', '')
+        complete = game_post(motion_command(game, 'select', ski_trail='summit'))
+        assert complete.status_code == 200
+        assert complete.json()['ski_trail'] == 'summit' and complete.json()['mode'] == 'off'
     ports['start'].assert_not_awaited()
     ports['home'].enable.assert_not_awaited()
 
