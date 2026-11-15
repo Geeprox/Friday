@@ -23,6 +23,7 @@ class MijiaLanClient:
         self.connected = False
         self.push = 0
         self.updated_at = None
+        self.transport_generation = None
         self.sequence = 0
         self.io = asyncio.Lock()
 
@@ -72,6 +73,7 @@ class MijiaLanClient:
         proc, self.process = self.process, None
         self.family = self.updated_at = None
         self.inventory = None
+        self.transport_generation = None
         self.routes, self.connected, self.push = frozenset(), False, 0
         self._route_tokens.clear()
         if proc is None or proc.returncode is not None:
@@ -94,10 +96,16 @@ class MijiaLanClient:
                 raise ValueError('mijia_lan_unavailable')
             if guard is not None and not guard():
                 raise ValueError('mijia_permission_changed')
+            health = request == {'routes': True}
+            expected_generation = self.transport_generation
+            if not health and expected_generation is None:
+                raise ValueError('mijia_lan_unavailable')
             self.sequence += 1
             ident = self.sequence
             try:
-                proc.stdin.write(json.dumps({**request, 'id': ident, 'family': family}).encode() + b'\n')
+                packet = {**request, 'id': ident, 'family': family,
+                          'transport_generation': None if health else expected_generation}
+                proc.stdin.write(json.dumps(packet).encode() + b'\n')
                 await proc.stdin.drain()
                 # 若上一条读取被上层超时取消，它的迟到回包只按编号丢弃。
                 for _ in range(16):
@@ -106,12 +114,25 @@ class MijiaLanClient:
                         break
                     reply = json.loads(raw)
                     if reply.get('id') == ident:
+                        if self.process is not proc:
+                            break
+                        generation = reply.pop('transport_generation', None)
+                        if (type(generation) is not int or generation < 0
+                                or expected_generation is not None and generation < expected_generation):
+                            break
+                        if generation != expected_generation:
+                            self.transport_generation = generation
+                            self._route_tokens.clear()
+                            self.connected = False
+                            if not health:
+                                break
                         return reply
                     if type(reply.get('id')) is not int or reply['id'] >= ident:
                         break
             except (OSError, ValueError, AttributeError):
                 pass
-            self.connected = False
+            if self.process is proc:
+                self.connected = False
             raise ValueError('mijia_lan_unavailable')
 
     async def request(self, request, *, family, guard=None):
@@ -147,6 +168,18 @@ class MijiaLanClient:
             return []
         return [tuple(row) for row in changes if isinstance(row, list) and row in watched]
 
+    async def _refresh_routes(self, family):
+        async with asyncio.timeout(2.0):
+            row = await self._call({'routes': True}, family)
+        ids = row.get('routes')
+        if (not isinstance(ids, list) or len(ids) > 512
+                or not all(isinstance(did, str) and DID.fullmatch(did) for did in ids)
+                or len(set(ids)) != len(ids)
+                or type(row.get('push')) is not int or not 0 <= row['push'] <= len(ids)
+                or type(row.get('connected')) is not bool):
+            raise ValueError('mijia_lan_unavailable')
+        self._update_routes(ids, row['connected'], row['push'])
+
     async def _watch(self):
         try:
             while True:
@@ -166,16 +199,7 @@ class MijiaLanClient:
                             or self.inventory != inventory):
                         await self._close_process()
                         await self._open(family, inventory)
-                    async with asyncio.timeout(2.0):
-                        row = await self._call({'routes': True}, family)
-                    ids = row.get('routes')
-                    if (not isinstance(ids, list) or len(ids) > 512
-                            or not all(isinstance(did, str) and DID.fullmatch(did) for did in ids)
-                            or len(set(ids)) != len(ids)
-                            or type(row.get('push')) is not int or not 0 <= row['push'] <= len(ids)
-                            or type(row.get('connected')) is not bool):
-                        raise ValueError('mijia_lan_unavailable')
-                    self._update_routes(ids, row['connected'], row['push'])
+                    await self._refresh_routes(family)
                     await asyncio.sleep(3)
                 except (OSError, ValueError, TimeoutError):
                     await self._close_process()

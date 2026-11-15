@@ -167,6 +167,17 @@ class PropertyNotifications:
         self.fields = {}
         self.dirty = set()
         self.after = None
+        self.generation = 0
+
+    def transport_reset(self):
+        # SDK 更换了连接实例，设备清单相同也需要重新订阅和读回。
+        self.generation += 1
+        previous = tuple(self.subscriptions)
+        self.subscriptions.clear()
+        self.dirty.clear()
+        self.after = None
+        for did in previous:
+            self.manager.unsub_device_props(did)
 
     def visible(self, did):
         mgr = self.manager
@@ -207,6 +218,7 @@ class PropertyNotifications:
             did = min(pending, key=lambda item: (self.after is not None and item <= self.after, item))
             self.after = did
             cookie = object()
+            generation = self.generation
 
             def callback(event, device=did, generation=cookie):
                 # 有些 SDK 版本在 MQTT 线程派发。所有队列操作统一在事件循环。
@@ -215,7 +227,8 @@ class PropertyNotifications:
             try:
                 async with asyncio.timeout(.55):
                     await self.manager.sub_device_props_async(did, callback)
-                if self.visible(did) and self.manager.props_sub_groups(did) == {self.group}:
+                if (generation == self.generation and self.visible(did)
+                        and self.manager.props_sub_groups(did) == {self.group}):
                     self.subscriptions[did] = cookie
                 else:
                     self.remove(did)
@@ -271,6 +284,83 @@ async def cover_operation(manager, request, grant, group, dids, scope_current, d
     return local_result(row, did, siid, piid, write=True)
 
 
+async def lan_replies(reader, notifications, *, family, region, grant, directory, current):
+    hub, group, allowed = notifications.manager, notifications.group, notifications.allowed
+    while packet := await reader.readline():
+        reply = {'error': 'mijia_lan_unavailable'}
+        ident = expected = None
+        health = False
+        try:
+            request = json.loads(packet)
+            ident = request.pop('id')
+            if type(ident) is not int or not current():
+                return
+            if request.pop('family') != family:
+                raise ValueError('mijia_lan_unavailable')
+            expected = request.pop('transport_generation')
+            health = request == {'routes': True} and expected is None
+            if health:
+                routes = sorted(did for did in allowed if hub.can_control(did)
+                                and not hub.in_local_cooldown(did)
+                                and (hub.local_device(did) or {}).get('group_id') == group)
+                reply = {'connected': hub.is_ready, 'routes': routes,
+                         'push': sum(hub.can_push(did) for did in routes)}
+            else:
+                if type(expected) is not int or expected != notifications.generation:
+                    raise ValueError('mijia_lan_unavailable')
+
+                def operation_current():
+                    # 多步控制在发下一条命令前也须使用原来的连接。
+                    return expected == notifications.generation and current()
+
+                if request.keys() == {'property_watches'}:
+                    reply = await notifications.fetch(request['property_watches'])
+                elif 'native_power' in request:
+                    from homeplane.mijia_enrollment import native_power_operation
+
+                    reply = await native_power_operation(
+                        hub, request, grant, family, region, group, allowed, operation_current, directory,
+                    )
+                elif 'cover' in request:
+                    reply = await cover_operation(hub, request, grant, group, allowed, operation_current, directory)
+                elif 'registered_cover' in request:
+                    from homeplane.mijia_registered_cover import registered_cover_operation
+
+                    reply = await registered_cover_operation(
+                        hub, request, grant, family, region, group, allowed, operation_current, directory,
+                    )
+                elif 'registered_climate_mode' in request:
+                    from homeplane.mijia_climate_mode import climate_mode_operation
+
+                    reply = await climate_mode_operation(
+                        hub, request, grant, family, region, group, allowed, operation_current, directory,
+                    )
+                elif 'numeric' in request:
+                    reply = await numeric_operation(
+                        hub, request, grant, family, region, group, allowed, operation_current, directory,
+                    )
+                elif request.get('registered_power') is True:
+                    reply = await migrated_property_read(
+                        hub, request, grant, family, region, group, allowed, operation_current, directory,
+                    )
+                elif 'authority_revision' in request or 'deadline' in request:
+                    reply = await migrated_power_operation(
+                        hub, request, grant, family, region, group, allowed, operation_current, directory,
+                    )
+                else:
+                    reply = await property_operation(hub, request, grant, group, allowed, operation_current)
+        except ValueError as error:
+            code = str(error)
+            if code in {'mijia_property_unsupported', 'mijia_permission_changed'}:
+                reply = {'error': code}
+        except (OSError, RuntimeError, TimeoutError, TypeError, KeyError, ExceptionGroup):
+            pass
+        generation = notifications.generation
+        if not health and expected != generation:
+            reply = {'error': 'mijia_lan_unavailable'}
+        yield {'id': ident, 'transport_generation': generation, **reply}
+
+
 async def serve(reader, session):
     from miot.central_hub import CentralHubManager
     from miot.network import MIoTNetwork
@@ -301,8 +391,9 @@ async def serve(reader, session):
             )
             if not hub.enabled:
                 return
+            notifications = PropertyNotifications(hub, home.group_id, allowed)
+            hub.on_local_transport_reset = notifications.transport_reset
             await hub.init_async()
-        notifications = PropertyNotifications(hub, home.group_id, allowed)
         print(json.dumps({'ready': True, 'family': family}), flush=True)
 
         def current():
@@ -315,65 +406,9 @@ async def serve(reader, session):
             except (OSError, ValueError, TypeError, KeyError):
                 return False
 
-        while packet := await reader.readline():
-            reply = {'error': 'mijia_lan_unavailable'}
-            ident = None
-            try:
-                request = json.loads(packet)
-                ident = request.pop('id')
-                if type(ident) is not int or not current():
-                    return
-                if request.pop('family') != family:
-                    raise ValueError('mijia_lan_unavailable')
-                if request == {'routes': True}:
-                    routes = sorted(did for did in allowed if hub.can_control(did)
-                                    and not hub.in_local_cooldown(did)
-                                    and (hub.local_device(did) or {}).get('group_id') == home.group_id)
-                    reply = {'connected': hub.is_ready, 'routes': routes,
-                             'push': sum(hub.can_push(did) for did in routes)}
-                elif request.keys() == {'property_watches'}:
-                    reply = await notifications.fetch(request['property_watches'])
-                elif 'native_power' in request:
-                    from homeplane.mijia_enrollment import native_power_operation
-
-                    reply = await native_power_operation(
-                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
-                    )
-                elif 'cover' in request:
-                    reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
-                elif 'registered_cover' in request:
-                    from homeplane.mijia_registered_cover import registered_cover_operation
-
-                    reply = await registered_cover_operation(
-                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
-                    )
-                elif 'registered_climate_mode' in request:
-                    from homeplane.mijia_climate_mode import climate_mode_operation
-
-                    reply = await climate_mode_operation(
-                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
-                    )
-                elif 'numeric' in request:
-                    reply = await numeric_operation(
-                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
-                    )
-                elif request.get('registered_power') is True:
-                    reply = await migrated_property_read(
-                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
-                    )
-                elif 'authority_revision' in request or 'deadline' in request:
-                    reply = await migrated_power_operation(
-                        hub, request, grant, family, region, home.group_id, allowed, current, session.directory,
-                    )
-                else:
-                    reply = await property_operation(hub, request, grant, home.group_id, allowed, current)
-            except ValueError as error:
-                code = str(error)
-                if code in {'mijia_property_unsupported', 'mijia_permission_changed'}:
-                    reply = {'error': code}
-            except (OSError, RuntimeError, TimeoutError, TypeError, KeyError, ExceptionGroup):
-                pass
-            print(json.dumps({'id': ident, **reply}), flush=True)
+        async for reply in lan_replies(reader, notifications, family=family, region=region, grant=grant,
+                                       directory=session.directory, current=current):
+            print(json.dumps(reply), flush=True)
     finally:
         try:
             if hub is not None:

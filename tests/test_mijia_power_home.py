@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -17,6 +18,7 @@ from homeplane.embodied.mijia_inventory import account_household
 from homeplane.embodied.mijia_lan import (
     PropertyNotifications,
     home_input,
+    lan_replies,
     migrated_power_operation,
     migrated_property_read,
     numeric_operation,
@@ -80,6 +82,22 @@ async def test_lan_notifications_discard_old_callbacks_and_return_property_keys_
     callback(event)
     await asyncio.sleep(0)
     assert (await notifications.fetch(watch))['changes'] == []
+    only_device = [[DID, 2, 1]]
+    assert (await notifications.fetch(only_device))['changes'] == []
+    old_transport = callbacks[DID]
+    assert old_transport is not callback
+    old_transport(event)
+    await asyncio.sleep(0)
+    notifications.transport_reset()
+    assert notifications.generation == 1
+    assert not notifications.dirty
+    assert (await notifications.fetch(only_device))['changes'] == []
+    old_transport(event)
+    await asyncio.sleep(0)
+    assert (await notifications.fetch(only_device))['changes'] == []
+    callbacks[DID](event)
+    await asyncio.sleep(0)
+    assert (await notifications.fetch(only_device))['changes'] == [(DID, 2, 1)]
     with pytest.raises(ValueError, match='mijia_push_invalid'):
         await notifications.fetch([['300000000', 2, 1]])
 
@@ -348,6 +366,105 @@ async def test_mijia_direct_requires_fresh_state_and_a_new_plan_after_reconnect(
         assert executed.status == 'reported_match'
         gateway.manager.set_prop_async.assert_awaited_once()
         assert not ha_calls
+    finally:
+        await original_adapter.close()
+        await close(core)
+
+
+@asynccontextmanager
+async def local_transport(gateway):
+    """用内存管道连接实际父进程协议与中枢命令处理器。"""
+    family = gateway.service.discovery_report['family']
+    grant = gateway.service.discovery_report['grant']
+    incoming, outgoing = asyncio.StreamReader(), asyncio.StreamReader()
+    lan = MijiaLanClient(lambda: family)
+    lan.family = family
+    lan.process = SimpleNamespace(returncode=None, stdout=outgoing,
+                                  stdin=SimpleNamespace(write=incoming.feed_data, drain=AsyncMock()))
+    gateway.manager.is_ready = True
+    gateway.manager.can_push = lambda _: False
+    notifications = PropertyNotifications(gateway.manager, 'synthetic-group', gateway.dids)
+
+    async def run():
+        async for reply in lan_replies(incoming, notifications, family=family, region='cn',
+                                       grant=grant, directory=gateway.path, current=lambda: True):
+            outgoing.feed_data(json.dumps(reply).encode() + b'\n')
+        outgoing.feed_eof()
+
+    worker = asyncio.create_task(run())
+    try:
+        await lan._refresh_routes(family)
+        yield lan, notifications
+    finally:
+        incoming.feed_eof()
+        await asyncio.wait_for(worker, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reset', ['health_readback', 'before_preflight', 'after_preflight', 'during_write'])
+async def test_sdk_replacement_with_same_devices_revokes_readings_and_never_replays_a_write(tmp_path, reset):
+    core, _, gateway, ha_calls = await provision(tmp_path)
+    original_adapter = core.adapter
+    core.adapter = LocalCameraHome(mijia_selected=True)
+    try:
+        async with local_transport(gateway) as (lan, notifications):
+            core.actions.mijia.lan = lan
+            home = core.actions.mijia.home
+            await home.sample_once()
+            context, targets = home.active()
+            target = next(iter(targets.values()))
+            family = context[0]
+            route = lan.route_token(family, DID)
+            await lan._refresh_routes(family)
+            assert lan.route_token(family, DID) is route
+            reading = home.sample_for(context, target)
+            assert reading is not None and reading.value == 'off'
+            intent = await plan(core, 'switch.set', {'power': 'on'})
+            assert intent.status == 'planned'
+            if reset == 'during_write':
+                def send_with_reset(did, siid, piid, value):
+                    response = gateway.write(did, siid, piid, value)
+                    notifications.transport_reset()
+                    return response
+                gateway.manager.set_prop_async.side_effect = send_with_reset
+            elif reset == 'after_preflight':
+                request = lan.request
+
+                async def request_with_reset(payload, **kwargs):
+                    if 'power' in payload and notifications.generation == 0:
+                        notifications.transport_reset()
+                    return await request(payload, **kwargs)
+
+                lan.request = request_with_reset
+            else:
+                notifications.transport_reset()
+            if reset == 'health_readback':
+                await lan._refresh_routes(family)
+            else:
+                assert lan.route_token(family, DID) is route
+            result = await core.actions.execute(intent.action_id)
+            assert result.status == ('unknown_outcome' if reset in ('after_preflight', 'during_write') else 'rejected')
+            assert result == await core.actions.execute(intent.action_id)
+            assert gateway.manager.set_prop_async.await_count == int(reset == 'during_write')
+            assert home.sample_for(context, target) is None
+
+            await lan._refresh_routes(family)
+            assert lan.routes == frozenset({DID})
+            assert lan.route_token(family, DID) is not route
+            await home.sample_once()
+            refreshed = home.sample_for(context, target)
+            assert refreshed is not None and refreshed.version != reading.version
+            if reset == 'during_write':
+                assert refreshed.value == 'on'
+                confirmed = await core.actions.reconcile(intent.action_id)
+                assert confirmed.status == 'reported_match'
+            else:
+                assert refreshed.value == 'off'
+                fresh = await plan(core, 'switch.set', {'power': 'on'})
+                assert (await core.actions.execute(fresh.action_id)).status == 'reported_match'
+            gateway.manager.set_prop_async.assert_awaited_once_with(DID, 2, 1, True)
+            core.actions.mijia.request.assert_not_called()
+            assert not ha_calls
     finally:
         await original_adapter.close()
         await close(core)
