@@ -47,6 +47,34 @@ test('trial and scored start require their corresponding worker readback',async(
  assert.equal(c.meta.game.ski.warmup,null);
  assert(!Object.hasOwn(writes.at(-1),'ski_warmup'));
 });
+test('the television ski lobby sends only its own ready round and waits for the selected trail',async()=>{
+ const {makeClient,game:stageGame}=require('./game_stage_harness.cjs');
+ const lobby=stageGame({mode:'off',selected_mode:'ski',status:'off',ski_trail:'first-snow',
+  ski_trails:[{id:'first-snow',name:'初雪坡',distance:54,gate_count:5},
+   {id:'pine-slalom',name:'松林回转',distance:92,gate_count:8}],
+  ski:{warmup:null},presentation:{required:true,ready:false,context:'b'.repeat(32),window:'c'.repeat(32)}});
+ const changed={...lobby,ski_trail:'pine-slalom',round_id:2,control_revision:2};
+ const trial={...changed,mode:'ski',status:'waiting',round_id:3,control_revision:3,
+  ski:{warmup:{step:'left',fraction:0}}};
+ let ready=false,reply=changed;const writes=[];
+ const {c}=makeClient({television:true,selected:'ski',meta:{game:lobby},presentationClient:{ready:()=>ready},
+  fetch:async(path,request)=>{writes.push({path,body:JSON.parse(request.body)});return{ok:true,json:async()=>reply};}});
+ const initial=c.stageOverlayMarkup(lobby,true,false);
+ assert.match(initial,/选择雪道.*初雪坡.*松林回转.*开始本局.*先试滑/);
+ assert.equal(await c.chooseSkiTrail('pine-slalom'),false);
+ assert.equal(await c.startGame(true),false);
+ assert.equal(writes.length,0);
+ ready=true;
+ assert.equal(await c.chooseSkiTrail('pine-slalom'),true);
+ assert.equal(c.meta.game.ski_trail,'pine-slalom');
+ assert.deepEqual(writes[0],{path:'/api/game/tv',body:{mode:'ski',action:'select',ski_trail:'pine-slalom',
+  expected_context:lobby.control_context,expected_revision:lobby.control_revision}});
+ reply=trial;
+ assert.equal(await c.startGame(true),true);
+ assert.deepEqual(writes[1],{path:'/api/game/tv',body:{mode:'ski',action:'start',ski_warmup:true,
+  expected_context:changed.control_context,expected_revision:changed.control_revision}});
+ assert.equal(c.stageOverlayMarkup(trial,true,true),'');
+});
 test('the completed overlay uses the real section results and keeps the original replay control',()=>{
  const {makeClient,part,game:stageGame}=require('./game_stage_harness.cjs');
  const {c}=makeClient({selected:'ski',artError:false});

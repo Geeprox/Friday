@@ -90,6 +90,10 @@ async def test_dead_reader_cannot_be_reported_ready_by_transcription_finally(tmp
         home.request = AsyncMock(side_effect=RuntimeError('synthetic_closed_pipe'))
         await home.transcribe(b'synthetic-pcm', None, time.monotonic())
         assert home.public()['voice'] == 'unavailable'
+        assert home.vision_benchmark_voice() == dict(voice_packets=0, voice_segments=0,
+            asr_attempts=1, asr_results=0, wake_confirmed=0)
+        assert sum(home.voice_timings['asr_request'].bins) == 1
+        assert sum(home.voice_timings['voice_segment_to_wake_confirm'].bins) == 0
     finally:
         await home.close()
 
@@ -407,11 +411,13 @@ def original_voice_projection(home, secondary_homes=None):
     for statement in view.body:
         if isinstance(statement, ast.Assign):
             target = statement.targets[0]
+            if isinstance(target, ast.Name) and target.id == 'voice_fields':
+                selected.append(statement)
             if (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)
                     and target.value.id == 'result' and isinstance(target.slice, ast.Constant)
                     and target.slice.value in {'home', 'voice_sessions', 'voice_input'}):
                 selected.append(statement)
-    assert len(selected) == 3
+    assert len(selected) == 4
     scope = dict(result={'status': 'live', 'camera_id': 'cam_1111111111',
                          'game': MotionGames().viewer_state()},
                  home=home, secondary_homes=secondary_homes or {}, SELECTED={'id': 'cam_1111111111'}, PRIVATE=home_service.VOICE_INPUT_PAUSED.parent)

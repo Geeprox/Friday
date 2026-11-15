@@ -12,15 +12,13 @@ from .room_protocol import MAX_JPEG, MAX_REPLY, MAX_REQUEST, packet
 
 def open_room(folder, picture):
     os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(4096 * 4096)
+    import cv2
+
     from .room_engine import load_room
 
+    # 每个镜头有自己的子进程，镜头之间并行，避免每个子进程各开一组工作线程。
+    cv2.setNumThreads(1)
     return load_room(folder, picture)
-
-
-def visible(picture):
-    from .camera_director import visible_scene
-
-    return bool(visible_scene(picture))
 
 
 def draft(room):
@@ -39,7 +37,7 @@ def draft(room):
     return result
 
 
-def serve(reader, writer, folder, *, factory=open_room, visibility=visible, draft_factory=draft):
+def serve(reader, writer, folder, *, factory=open_room, draft_factory=draft):
     room = None
     nonce, sequence, frame = None, 0, None
     scene_visible = False
@@ -95,8 +93,7 @@ def serve(reader, writer, folder, *, factory=open_room, visibility=visible, draf
                     room.next_seat = 1
                 if value["now"] < value["motion_until"]:
                     room.expect_motion(value["now"], value["motion_until"] - value["now"])
-                room.register(picture, value["masks"], value["now"])
-                scene_visible = visibility(picture)
+                scene_visible = room.register(picture, value["masks"], value["now"], check_visibility=True)
                 frame = request["frame"]
                 result = dict(
                     matrix=room.registration.tolist() if room.registration is not None else None,

@@ -156,6 +156,16 @@ test('recovery guidance distinguishes camera loss, player confirmation and a del
  g=game({status:'calibrating',resume_seconds:3});assert.equal(c.gamePhaseMessage(g),'准备继续本局');
  g.manually_paused=true;assert.equal(c.gamePhaseMessage(g),'');
 });
+test('站位提示采用当前规则回读，并让位给手动暂停和重新确认',()=>{
+ const {c}=makeClient({selected:'ski'});
+ vm.runInContext(part('function gamePhaseMessage(', '\nconst artRoot'),c);
+ const g=game({mode:'ski',selected_mode:'ski',status:'waiting',framing:'feet'});
+ assert.match(c.stageOverlayMarkup(g,true,true),/让双脚入镜.*选好站位/);
+ assert.match(c.stageOverlayMarkup({...g,elapsed:3,status:'paused'},true,true),/自动继续/);
+ assert.doesNotMatch(c.stageOverlayMarkup(g,false,true),/让双脚入镜/);
+ assert.doesNotMatch(c.stageOverlayMarkup({...g,status:'paused',manually_paused:true},true,true),/让双脚入镜/);
+ assert.doesNotMatch(c.stageOverlayMarkup({...g,source_recovery:{required:true,phase:'camera'}},true,true),/让双脚入镜/);
+});
 test('重新确认站位保留一处继续入口，OK 保持进度不会盖住入口',()=>{
  const h=makeClient(),c=h.c;vm.runInContext(part('function gamePhaseMessage(', '\nconst artRoot'),c);
  c.selected='tennis';c.meta.status='live';

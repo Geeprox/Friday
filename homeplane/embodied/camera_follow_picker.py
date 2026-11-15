@@ -76,7 +76,8 @@ class CameraFollowPicker:
         tracks = [row for row in subjects if isinstance(row, dict) and type(row.get('id')) in (int, str)]
         if len({row['id'] for row in tracks}) != len(tracks):
             return []
-        return [row for row in tracks if valid_box(row.get('box')) and row['box']['confidence'] >= .65]
+        return [row for row in tracks if valid_box(row.get('box')) and row['box']['confidence'] >= .65
+                and self.director.follow_key(row) is not None]
 
     def _window(self, sample):
         view = sample.get('_patrol_view')
@@ -111,7 +112,8 @@ class CameraFollowPicker:
             return waiting
         frame = FollowSnapshot(secrets.token_hex(16), revision, sample['session_id'], sample['_local_received'],
                                now + self.TTL, self._window(sample),
-                               tuple((row['id'], row.get('species'), self.director.identity(row)) for row in subjects))
+                               tuple((self.director.follow_key(row), row.get('species'),
+                                      self.director.identity(row)) for row in subjects))
         self.frame = frame
         choices = [dict(choice=index, species=row.get('species'), box={key: row['box'][key] for key in ('x', 'y', 'w', 'h')})
                    for index, row in enumerate(subjects, 1)]
@@ -137,8 +139,8 @@ class CameraFollowPicker:
                 or sample['session_id'] != frame.session or sample['_local_received'] < frame.stamp
                 or self._window(sample) != frame.window):
             raise ValueError('follow_target_changed')
-        track, species, identity = frame.choices[request.choice - 1]
-        matches = [row for row in self._subjects(sample) if row['id'] == track and row.get('species') == species
+        key, species, identity = frame.choices[request.choice - 1]
+        matches = [row for row in self._subjects(sample) if self.director.follow_key(row) == key and row.get('species') == species
                    and (identity is None or self.director.identity(row) == identity)]
         if len(matches) != 1:
             raise ValueError('follow_target_changed')

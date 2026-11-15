@@ -15,11 +15,31 @@ import secrets
 import stat
 import tempfile
 import time
+from contextlib import asynccontextmanager
 
 from homeplane.embodied.paths import PRIVATE, camera, camera_storage
 
 FLAGS = dict.fromkeys(('cruise', 'human_tracking', 'pet_tracking', 'human_close_up'))
 logging.getLogger("miot").setLevel(logging.CRITICAL)
+
+
+@asynccontextmanager
+async def motor_dispatch_window(lock, expires, read_privacy, *, monotonic=time.monotonic):
+    """等画面状态可锁定后读一次隐私状态，沿用原始云台命令时限。"""
+    remaining = expires - monotonic()
+    if remaining <= 0:
+        raise RuntimeError('motor_request_expired')
+    reason = 'motor_request_expired'
+    try:
+        async with asyncio.timeout(remaining), lock:
+            if monotonic() >= expires:
+                raise RuntimeError(reason)
+            reason = 'motor_privacy_timeout'
+            opened = await read_privacy()
+            reason = 'motor_request_expired'
+            yield opened
+    except TimeoutError:
+        raise RuntimeError(reason) from None
 
 
 def atomic(path, data):
@@ -65,6 +85,7 @@ class Transport:
 
         selected = camera(camera_id)
         self.refs = camera_properties(selected)
+        self.flags = tuple(name for name in FLAGS if name in self.refs)
         self.did = selected["device"]["did"]
         self.region = selected.get('region', 'cn')
         if session is None:
@@ -205,7 +226,8 @@ class CameraLease:
         before = await self.io.read()
         if not self.open_privacy and before.get('camera_power') is not True:
             raise RuntimeError('privacy_shutter_closed')
-        original = {k: before[k] for k in FLAGS}
+        flags = self._flags()
+        original = {k: before[k] for k in flags}
         if any(type(value) is not bool for value in original.values()):
             raise RuntimeError('incomplete_camera_readback')
         if "camera_power" in before:
@@ -220,7 +242,7 @@ class CameraLease:
             "status": "acquiring",
             "acquired_at": time.time(),
             "before": original,
-            "observed_before": {k: before[k] for k in FLAGS},
+            "observed_before": {k: before[k] for k in flags},
             "return_preset": before["active_preset"],
             "restore_native": True,
         }
@@ -229,10 +251,10 @@ class CameraLease:
         try:
             if before.get("camera_power") is False:
                 await self.io.write("camera_power", True)
-            for name in FLAGS:
+            for name in flags:
                 if before[name] is not False:
                     await self.io.write(name, False)
-            expected = {name: False for name in FLAGS}
+            expected = {name: False for name in flags}
             if "camera_power" in before:
                 expected["camera_power"] = True
             after = await self.read_until(expected)
@@ -247,7 +269,7 @@ class CameraLease:
                 self.presets.append(p)
             self.active = after["active_preset"]
             self.snapshot["status"] = "owned"
-            self.event("acquired", disabled=list(FLAGS))
+            self.event("acquired", disabled=list(flags))
         except BaseException:
             await self._restore()
             raise
@@ -279,13 +301,19 @@ class CameraLease:
         finally:
             self.unclaim()
 
+    def _flags(self):
+        flags = getattr(self.io, 'flags', None)
+        return flags if isinstance(flags, tuple) else tuple(FLAGS)
+
     async def _restore(self):
         if not self.snapshot or self.snapshot.get("status") == "restored":
             return True
         # Old in-progress leases also restore the original flags, even if an old
         # worker saved restore_native=False. Never replace the baseline on retry.
         before = self.snapshot.get('before', {})
-        if any(type(before.get(name)) is not bool for name in FLAGS):
+        flags = self._flags()
+        if {name for name in FLAGS if name in before} != set(flags) or any(
+                type(before.get(name)) is not bool for name in flags):
             raise ValueError('invalid_camera_lease')
         self.snapshot['restore_native'] = True
         self.snapshot["status"] = "restoring"
@@ -310,12 +338,14 @@ class CameraLease:
                 returned_preset = True
         except Exception as e:
             errors.append(type(e).__name__)
-        for name in ("human_close_up", "pet_tracking", "human_tracking", "cruise"):
+        for name in ('human_close_up', 'pet_tracking', 'human_tracking', 'cruise'):
+            if name not in flags:
+                continue
             try:
                 await self.io.write(name, before[name])
             except Exception as e:
                 errors.append(name + ":" + type(e).__name__)
-        expected = {name: before[name] for name in FLAGS}
+        expected = {name: before[name] for name in flags}
         if returned_preset:expected['active_preset'] = self.snapshot['return_preset']
         if 'camera_power' in before:
             try:

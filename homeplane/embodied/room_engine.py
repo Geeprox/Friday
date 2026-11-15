@@ -39,6 +39,13 @@ def calibration_draft(config):
     return draft
 
 
+def uses_saved_reference(config):
+    if not isinstance(config, dict):
+        raise ValueError("invalid_config")
+    mode = config.get("mode")
+    return mode == "relative_calibrated" or (mode == "approximate" and config.get("calibration_source") == "manual")
+
+
 def load_room(folder, picture, *, factory=None):
     """Load existing calibration offloop; an ordinary frame never saves one."""
     config_path, reference_path = folder / "room-calibration.json", folder / "room-reference.jpg"
@@ -55,14 +62,15 @@ def load_room(folder, picture, *, factory=None):
         try:
             config, reference, _ = CalibrationStore(folder).read()
         except FileNotFoundError:
-            pass
-        else:
-            return make(config, reference)
-        config = json.loads(read(config_path, 64 * 1024)) if config_path.exists() else copy.deepcopy(DEFAULT)
-        reference = read(reference_path, 2_000_000) if reference_path.exists() else picture
-        if not reference_path.exists():
-            config = dict(config, mode="unconfigured")
-        return make(config, reference)
+            config = json.loads(read(config_path, 64 * 1024)) if config_path.exists() else DEFAULT
+            reference = None
+        if uses_saved_reference(config):
+            if reference is None and reference_path.exists():
+                reference = read(reference_path, 2_000_000)
+            if reference is not None:
+                return make(config, reference)
+        # 未标定镜头用本次会话的画面比较视角。历史自动估算可能来自完全不同的朝向。
+        return make(copy.deepcopy(DEFAULT), picture)
     except (OSError, ValueError, TypeError, KeyError, RecursionError, cv2.error):
         # Calibration is optional. Preserve its files, and keep the actual body
         # and gesture path available on an unprojected, current reference.
@@ -76,6 +84,16 @@ def project(matrix, p):
     if not np.all(np.isfinite(q)) or abs(q[2]) < 1e-7:
         return None
     return [float(q[0] / q[2]), float(q[1] / q[2])]
+
+
+def _reprojection_residual(matrix, source, target):
+    projected = source @ matrix[:, :2].T + matrix[:, 2]
+    scale = projected[:, 2]
+    if not np.isfinite(projected).all() or np.any(np.abs(scale) < 1e-7):
+        return None
+    offsets = projected[:, :2] / scale[:, None] - target
+    residual = float(np.median(np.hypot(offsets[:, 0], offsets[:, 1])))
+    return residual if math.isfinite(residual) else None
 
 
 def validate(config):
@@ -110,23 +128,22 @@ def validate(config):
     return matrix
 
 
+def decode_luma(picture):
+    return cv2.imdecode(np.frombuffer(picture, np.uint8), cv2.IMREAD_GRAYSCALE)
+
+
 class Room:
     def __init__(self, config, reference):
-        if not isinstance(config, dict):
-            raise ValueError("invalid_config")
+        calibrated = uses_saved_reference(config)
         self.calibration_candidate = dict(copy.deepcopy(DEFAULT), **copy.deepcopy(config))
         self.config = copy.deepcopy(self.calibration_candidate)
-        # Older automatic "approximate" files carry no manual calibration
-        # evidence. Preserve them for the editor, but do not publish their map.
-        calibrated = (config.get("mode") == "relative_calibrated"
-                      or config.get("mode") == "approximate" and config.get("calibration_source") == "manual")
-        self.floor = validate(config) if calibrated and config.get("mode") != "unconfigured" else None
+        self.floor = validate(config) if calibrated else None
         if self.floor is None:
             self.config.update(copy.deepcopy(DEFAULT))
         self.reference = reference
         self.orb = cv2.ORB_create(nfeatures=1000, fastThreshold=12)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
-        self.ref_points, self.ref_desc = self.features(reference, [])
+        self.ref_points, self.ref_desc = self.features(decode_luma(reference), [])
         self.registration = None
         self.reg_checked = 0.0
         self.reg_info = {"status": "checking"}
@@ -225,8 +242,7 @@ class Room:
             ))
         return result
 
-    def features(self, picture, people):
-        image = cv2.imdecode(np.frombuffer(picture, np.uint8), cv2.IMREAD_GRAYSCALE)
+    def features(self, image, people):
         if image is None:
             raise ValueError("invalid_reference")
         image = cv2.resize(image, (640, 360))
@@ -241,12 +257,23 @@ class Room:
         kp, desc = self.orb.detectAndCompute(image, mask)
         return np.float32([[q.pt[0] / 640, q.pt[1] / 360] for q in kp]), desc
 
-    def register(self, picture, people, now):
-        if now - self.reg_checked < 0.3:
+    def register(self, picture, people, now, *, check_visibility=False):
+        due = now - self.reg_checked >= 0.3
+        if not due and not check_visibility:
             return
+        image = decode_luma(picture)
+        if due:
+            self._register_luma(image, people, now)
+        if check_visibility:
+            from .camera_director import visible_scene_luma
+
+            return visible_scene_luma(image)
+
+    def _register_luma(self, image, people, now):
+        # 同一张灰度图参与配准和当帧视野判断，视野判断仍逐帧更新。
         self.reg_checked = now
         self.registration = None
-        pts, desc = self.features(picture, people)
+        pts, desc = self.features(image, people)
         motion = 0.0
         if self.previous_features is not None and now - self.previous_at < 1:
             previous = self.estimate(pts, desc, *self.previous_features)
@@ -263,10 +290,12 @@ class Room:
             self.reg_info = {"status": "background_unavailable"}
             return
         best = None
+        residual = None
         for ref_pts, ref_desc in [(self.ref_points, self.ref_desc)] + list(reversed(self.keyframes)):
             candidate = self.estimate(pts, desc, ref_pts, ref_desc)
             if candidate is not None and (best is None or candidate[0] > best[0]):
                 best = candidate
+                residual = None
                 n, m, inside, a, b = candidate
                 selected = inside.ravel().astype(bool)
                 # A distributed, low-residual fit is sufficient. Avoid searching every stored
@@ -277,12 +306,8 @@ class Room:
                     and cv2.contourArea(cv2.convexHull(a[selected])) > 0.08
                     and np.linalg.cond(m) < 1e5
                 ):
-                    residuals = [
-                        math.dist(project(m, p), q)
-                        for p, q in zip(a[selected], b[selected])
-                        if project(m, p) is not None
-                    ]
-                    if residuals and np.median(residuals) < 0.002:
+                    residual = _reprojection_residual(m, a[selected], b[selected])
+                    if residual is not None and residual < 0.002:
                         break
         if best is None:
             self.reg_info = {
@@ -294,11 +319,11 @@ class Room:
             return
         count, h, inliers, src, dst = best
         selected = inliers.ravel().astype(bool)
-        residual = float(
-            np.median(
-                [np.linalg.norm(np.array(project(h, p)) - q) for p, q in zip(src[selected], dst[selected])]
-            )
-        )
+        if residual is None:
+            residual = _reprojection_residual(h, src[selected], dst[selected])
+        if residual is None:
+            self.reg_info = {"status": "background_unavailable"}
+            return
         spread = cv2.contourArea(cv2.convexHull(src[selected]))
         drift = max(np.linalg.norm(np.array(project(h, p)) - p) for p in ([0, 0], [1, 0], [1, 1], [0, 1]))
         # Rotation of a fixed PTZ can be compensated with background correspondences.

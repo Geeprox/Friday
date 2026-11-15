@@ -4,12 +4,12 @@ import asyncio
 import sqlite3
 from typing import Literal
 
-from fastapi import HTTPException, Query, Response
+from fastapi import HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .camera_provenance import configured_camera_sources
 from .paths import PRIVATE
-from .safety import CAPABILITIES, PostureSource, SafetyControls, SafetyRuntime, SafetyStore
+from .safety import CAPABILITIES, PostureSource, SafetyControls, SafetyRecordMissing, SafetyRuntime, SafetyStore
 from .safety_storage import SafetyStorageBusy
 
 
@@ -29,6 +29,10 @@ class PostureSelection(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
+class VisualCloudSelection(PostureSelection):
+    allow_upload: bool = False
+
+
 class SoundSearchSelection(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     enabled: bool
@@ -44,6 +48,8 @@ def posture_status(policy, sources, visual):
             state = 'source_changed'
         elif not policy.enabled or not policy.visual_review:
             state = 'paused'
+        elif policy.visual_cloud_source and policy.visual_cloud_source != source:
+            state = 'different_api_camera'
         elif not visual.get('available'):
             state = 'unavailable'
         elif visual.get('error'):
@@ -55,9 +61,9 @@ def posture_status(policy, sources, visual):
     return dict(camera=camera, state=state, cameras=[dict(id=row['id'], name=row['name']) for row in sources])
 
 
-def install(router, service, *, archive=None, infrastructure=None):
+def install(router, service, *, archive=None, infrastructure=None, intelligence=None):
     store = SafetyStore(PRIVATE / "safety.sqlite")
-    runtime = SafetyRuntime(store)
+    runtime = SafetyRuntime(store, intelligence=intelligence)
     from .safety_archive import SafetyArchive
     recordings = SafetyArchive(store, archive)
 
@@ -69,6 +75,14 @@ def install(router, service, *, archive=None, infrastructure=None):
 
     async def stored(operation, *args, **kwargs):
         return await protected(runtime.io.call(operation, *args, **kwargs))
+
+    async def evidence(operation, *args):
+        try:
+            return await protected(runtime.evidence_io.call(operation, *args))
+        except SafetyRecordMissing as error:
+            raise HTTPException(404, detail=str(error)) from None
+        except (ValueError, TypeError, KeyError):
+            raise HTTPException(503, detail='safety_storage_unavailable') from None
 
     async def refresh_policy():
         try:
@@ -92,7 +106,9 @@ def install(router, service, *, archive=None, infrastructure=None):
                 worker = dict(status="unavailable", cameras=[])
         sound_review = worker.get('sound_review') or runtime.sound.status()
         visual_review = worker.get('visual_review') or runtime.visual.status()
-        sources = await stored(configured_camera_sources)
+        sources = await evidence(configured_camera_sources)
+        cloud = runtime.policy_cache.visual_cloud_source
+        cloud_status = await asyncio.to_thread(runtime.visual.cloud.readiness)
         crying_available = (sound_review.get('available') is True and 'infant_cry_supported' in sound_review
                             and sound_review['infant_cry_supported'] is not False)
         capabilities = [dict(row, status='unavailable') if row['id'] == 'crying' and not crying_available else row
@@ -111,6 +127,12 @@ def install(router, service, *, archive=None, infrastructure=None):
             sound_review=sound_review,
             sound_search=runtime.policy_cache.sound_search,
             posture_review=posture_status(runtime.policy_cache, sources, visual_review),
+            visual_cloud=dict(camera=cloud.camera if cloud else None,
+                              source_changed=bool(cloud and not any(
+                                  row['id'] == cloud.camera and row['source_context'] == cloud.source_context
+                                  for row in sources)),
+                              cameras=[dict(id=row['id'], name=row['name']) for row in sources],
+                              **cloud_status),
         )
 
     @router.post('/api/embodied/safety/retry')
@@ -143,6 +165,30 @@ def install(router, service, *, archive=None, infrastructure=None):
         await refresh_policy()
         return dict(enabled=saved.sound_search, revision=saved.revision)
 
+    @router.post('/api/embodied/safety/visual-cloud')
+    async def configure_visual_cloud(selection: VisualCloudSelection, request: Request):
+        if (request.client is None or request.client.host not in {'127.0.0.1', '::1'}
+                or request.headers.get('origin') != str(request.base_url).rstrip('/')):
+            raise HTTPException(403, detail='invalid_local_origin')
+        source = None
+        if selection.camera is not None:
+            if not selection.allow_upload:
+                raise HTTPException(422, detail='visual_upload_consent_required')
+            readiness = await asyncio.to_thread(runtime.visual.cloud.readiness)
+            if not readiness['available']:
+                raise HTTPException(409, detail=readiness['reason'])
+            cameras = await stored(configured_camera_sources)
+            match = next((row for row in cameras if row['id'] == selection.camera), None)
+            if match is None:
+                raise HTTPException(409, detail='safety_source_changed')
+            source = PostureSource(camera=match['id'], source_context=match['source_context'])
+        try:
+            saved = await stored(store.configure_visual_cloud, selection.expected_revision, source)
+        except ValueError:
+            raise HTTPException(409, detail='safety_policy_changed') from None
+        await refresh_policy()
+        return dict(camera=source.camera if source else None, revision=saved.revision)
+
     @router.post('/api/embodied/safety/posture')
     async def configure_posture(request: PostureSelection):
         source = None
@@ -161,25 +207,19 @@ def install(router, service, *, archive=None, infrastructure=None):
 
     @router.get("/api/embodied/safety/events")
     async def events():
-        return dict(events=await stored(recordings.events))
+        return dict(events=await evidence(recordings.events))
 
     @router.get('/api/embodied/safety/events/{event_id}/recordings')
     async def event_recordings(event_id: str, ordinal: int | None = Query(None, ge=0, lt=SafetyStore.MAX_FRAMES)):
-        try:
-            return await stored(recordings.references, event_id, ordinal)
-        except ValueError:
-            raise HTTPException(404, detail='safety_event_unavailable') from None
+        return await evidence(recordings.references, event_id, ordinal)
 
     @router.get("/api/embodied/safety/events/{event_id}/frames/{ordinal}")
     async def frame(event_id: str, ordinal: int):
-        try:
-            return Response(
-                await stored(store.frame, event_id, ordinal),
-                media_type="image/jpeg",
-                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-            )
-        except ValueError:
-            raise HTTPException(404, detail="safety_frame_unavailable") from None
+        return Response(
+            await evidence(store.frame, event_id, ordinal),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     @router.post("/api/embodied/safety/events/{event_id}/review")
     async def review(event_id: str, request: Review):

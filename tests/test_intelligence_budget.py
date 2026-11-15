@@ -1,7 +1,9 @@
 """合成账本覆盖并发、重启、跨日、未知消耗及配额收紧。"""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
+import sqlite3
 
 import pytest
 
@@ -41,6 +43,31 @@ def test_settlement_is_once_and_unknown_keeps_reservation(tmp_path):
         ledger.reserve("c", "responses", config, text_tokens=11)
     with pytest.raises(EnhancementUnavailable, match="request_already_attempted"):
         ledger.reserve("a", "responses", config)
+
+
+@pytest.mark.parametrize('legacy_column', ['images INTEGER DEFAULT 0', 'capability TEXT'])
+def test_upgrade_preserves_visual_review_and_image_settlement(tmp_path, legacy_column):
+    path = tmp_path / 'usage.sqlite'
+    day = datetime(2026, 11, 15, tzinfo=UTC)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute('CREATE TABLE attempts(id TEXT PRIMARY KEY, window REAL, text_tokens INTEGER, '
+                   'status TEXT, voice_seconds INTEGER DEFAULT 0, ' + legacy_column + ')')
+        db.execute("INSERT INTO attempts(id,window,text_tokens,status) VALUES('previous',?,0,'uncertain')",
+                   (day.timestamp(),))
+    path.chmod(0o600)
+    config = IntelligenceConfig(timezone='UTC', daily_images=5, daily_visual_review=1)
+    ledger = UsageLedger(path, now=lambda: day)
+
+    ledger.reserve('review', 'visual_review', config, images=4)
+    ledger.reserve('artwork', 'images', config, images=1)
+    ledger.settle('artwork', images=0)
+    report = ledger.status(config)
+    assert report['used']['images'] == 4
+    assert report['visual_review'] == {'used': 1, 'limit': 1}
+    with pytest.raises(EnhancementUnavailable, match='request_already_attempted'):
+        ledger.reserve('previous', 'responses', config)
+    with pytest.raises(EnhancementUnavailable, match='daily_visual_review_reached'):
+        ledger.reserve('review-two', 'visual_review', config, images=1)
 
 
 def test_day_rollover_and_timezone_change_do_not_free_existing_usage(tmp_path):

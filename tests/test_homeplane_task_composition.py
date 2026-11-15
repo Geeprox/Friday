@@ -66,7 +66,7 @@ class TaskRuntime(OfflineARL):
 
 
 @asynccontextmanager
-async def task_app(tmp_path, runtime=None, *, household_timezone="Asia/Shanghai"):
+async def task_app(tmp_path, runtime=None, *, household_timezone="Asia/Shanghai", intelligence=None):
     core, _, calls, _, path, _, owner, _, old_runtime = await fixture(tmp_path)
     adapter = core.adapter
     await old_runtime.close()
@@ -79,6 +79,7 @@ async def task_app(tmp_path, runtime=None, *, household_timezone="Asia/Shanghai"
         db_path=tmp_path.resolve() / "task.sqlite",
         settings_path=tmp_path.resolve() / "settings.json",
         arl_runtime=runtime or TaskRuntime(),
+        intelligence_runtime=intelligence,
         flow_household_timezone=household_timezone,
         background_enabled=False,
     )

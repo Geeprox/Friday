@@ -106,11 +106,15 @@ def closed_scope():
         state=dict(status='live',frame='private pixels',people=[{'id':1}],hands=[{}],
                    animals=[{}],animals_current=True,room={'private':'position'}),
         home=SimpleNamespace(armed=True,selected=True,epoch=2,vad=[b'private audio'],pending_audio=object()),
-        secondary_homes={},safety=SimpleNamespace(clear=Mock(), capture_frame=Mock()),fleet=SimpleNamespace(clear=Mock()),
+        secondary_homes={},safety=SimpleNamespace(clear=Mock(), clear_view=Mock(), capture_frame=Mock()),
+        fleet=SimpleNamespace(clear=Mock()),
         pet_tracks=SimpleNamespace(clear=Mock()),wall=wall,identities=SimpleNamespace(discard=Mock()),
         motor_waiters={3:pending,4:acknowledged},notify=AsyncMock(),games=MotionGames(),
     )
+    scope['home'].discard_audio = Mock(side_effect=lambda: scope['home'].vad.clear())
     actual('homeplane/embodied/worker.py','clear_interactions',scope)
+    actual('homeplane/embodied/worker.py','clear_camera_view',scope)
+    actual('homeplane/embodied/worker.py','clear_camera_observation',scope)
     scope['clear_camera']=actual('homeplane/embodied/worker.py','clear_camera',scope)
     close=actual('homeplane/embodied/worker.py','primary_capture_closed',scope)
     return scope,close,epoch,pending,acknowledged
@@ -198,11 +202,13 @@ async def test_original_queue_consumer_publishes_fault_and_preserves_a_closed_sh
 
 
 @pytest.mark.parametrize('source_status',['unavailable','stopped','shutter_closed'])
-def test_live_status_view_cannot_publish_old_game_players_while_source_is_down(tmp_path,source_status):
+def test_live_status_view_cannot_publish_old_game_or_motor_state_while_source_is_down(tmp_path,source_status):
     home=SimpleNamespace(public=lambda:{})
     game=MotionGames();game.reset('ski');game.publish([{'id':1}],'playing','')
+    control = dict(owner='friday', mode='patrol', phase='patrolling',
+                   view_usable=True, target_locked=True, scheduled_survey_active=True)
     scope=dict(
-        state=dict(status=source_status,processed_frames=5,people=[],hands=[],room=None),
+        state=dict(status=source_status,processed_frames=5,people=[],hands=[],room=None,camera_control=control),
         games=game,party_camera=PartyCamera(),
         home=home,recorder=SimpleNamespace(public=lambda:{}),secondary_homes={},
         safety=SimpleNamespace(recording_status=lambda:{'state':'off'}),
@@ -215,6 +221,11 @@ def test_live_status_view_cannot_publish_old_game_players_while_source_is_down(t
     assert result['game']['control_context']==game.control_context
     assert game.public['players']==[{'id':1}]
     assert scope['games'].public['status']=='playing','Presentation must not rewrite game progress'
+    assert result['camera_control']['owner'] == 'none'
+    assert result['camera_control']['phase'] == 'restore_pending'
+    assert result['camera_control']['mode'] == 'patrol'
+    assert not result['camera_control']['scheduled_survey_active']
+    assert control['owner'] == 'friday' and control['scheduled_survey_active']
 
 
 @pytest.mark.asyncio
@@ -236,6 +247,66 @@ async def test_capture_loss_while_waiting_for_room_lock_cannot_send_a_manual_or_
         await scope['motor_step']('right',scope['last_frame']if automatic else None,
                                   expected_intent='original')
     assert not sent and not scope['motor_waiters']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['closed', 'unknown', 'obsolete'])
+async def test_primary_checks_privacy_during_motor_recovery_and_rejects_obsolete_results(case):
+    scope, _, epoch, pending, acknowledged = closed_scope()
+    owner = SimpleNamespace(returncode=None)
+
+    async def read_privacy(_):
+        if case == 'obsolete':
+            scope['generation'] = 2
+        if case == 'unknown':
+            raise OSError('synthetic_readback_failed')
+        return False
+
+    scope.update(capture=owner, camera_lease=None, camera_is_open=read_privacy,
+                 asyncio=SimpleNamespace(sleep=AsyncMock()), reap=AsyncMock())
+    actual('homeplane/embodied/worker.py', 'close_primary_view', scope)
+    await actual('homeplane/embodied/worker.py', 'watch_primary_privacy', scope)(owner, 1, epoch)
+
+    if case == 'obsolete':
+        assert scope['state']['status'] == 'live' and not pending.done()
+        scope['reap'].assert_not_awaited()
+        pending.cancel()
+    else:
+        assert scope['state']['status'] == ('shutter_closed' if case == 'closed' else 'unavailable')
+        assert scope['state']['frame'] is None and not scope['home'].armed
+        assert isinstance(pending.exception(), RuntimeError)
+        scope['reap'].assert_awaited_once_with(owner)
+    assert acknowledged.result() == {'native_code': 0}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('outcomes', 'expected'), [
+    ([('shutter_closed', False)] * 6 + [('unavailable', False)],
+     [(15, 0)] * 6 + [(2, 1)]),
+    ([('unavailable', False)] * 6 + [('unavailable', True), ('unavailable', False)],
+     [(2, 1), (4, 2), (8, 3), (16, 4), (30, 5), (30, 6), (2, 1), (4, 2)]),
+    ([('unavailable', False)] * 2 + [('shutter_closed', False), ('unavailable', False)],
+     [(2, 1), (4, 2), (15, 0), (2, 1)]),
+])
+async def test_primary_backoff_counts_only_consecutive_capture_failures(outcomes, expected):
+    retries = []
+    pending = iter(outcomes)
+    state = dict(status='unavailable', processed_frames=12)
+    scope = dict(generation=1, state=state)
+
+    async def run_source(_):
+        status, recovered = next(pending)
+        state['processed_frames'] += int(recovered)
+        state['status'] = status
+
+    async def sleep(delay):
+        retries.append((delay, state['reconnect_attempt']))
+        if len(retries) == len(outcomes):
+            scope['generation'] = 2
+
+    scope.update(run_source=run_source, asyncio=SimpleNamespace(sleep=sleep))
+    await actual('homeplane/embodied/worker.py', 'supervised_source', scope)(1)
+    assert retries == expected
 
 
 @pytest.mark.asyncio
@@ -279,6 +350,7 @@ async def test_original_supervisor_retries_after_fault_and_a_replacement_receive
             assert not receiver.done()
             scope['safety'].capture_frame.assert_called_once_with(
                 CAMERA['id'], frame['capture_session'], frame['camera_source_context'], 10,
+                source_name=None, audio_writer=getattr(scope['capture'], 'stdin', None),
             )
             assert isinstance(pending.exception(),RuntimeError),'An old ACK cannot replace the retired outcome'
             supervisor['generation']=2

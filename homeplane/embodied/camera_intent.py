@@ -17,7 +17,7 @@ import stat
 
 TARGET_MODES = {'person_target', 'pet_target'}
 PET_MODES = {'pets', 'pet_target'}
-CAMERA_MODES = {'auto', 'pets', 'hold', 'survey'} | TARGET_MODES
+CAMERA_MODES = {'auto', 'pets', 'hold', 'survey', 'patrol'} | TARGET_MODES
 
 
 def camera_intent_readback(snapshot, *, mode, revision, status):
@@ -26,10 +26,11 @@ def camera_intent_readback(snapshot, *, mode, revision, status):
     if snapshot.get('intent_revision') != revision or snapshot.get('mode') != mode:
         held = mode == 'hold'
         report.update(intent_revision=revision, phase='held' if held else 'waiting_video',
-                      reason={'hold': '停留当前视角', 'survey': '准备巡视'}.get(mode, '等待画面'),
+                      reason={'hold': '停留当前视角', 'survey': '准备巡视',
+                              'patrol': '等待下次巡视'}.get(mode, '等待画面'),
                       view_usable=False, target_locked=False, survey_attempts=0,
                       survey_confirmed_moves=0, survey_total_steps=None, survey_result=None, survey_interruption=None,
-                      patrol_view_state='idle')
+                      patrol_view_state='idle', scheduled_survey_active=False)
     return report
 
 
@@ -124,7 +125,7 @@ class CameraIntentStore:
                     or set(value) != {'version', 'camera', 'binding', 'mode', 'revision'}
                     or type(value['version']) is not int or value['version'] != 1
                     or value['camera'] != self.camera or value['binding'] != self.binding
-                    or value['mode'] not in ('auto', 'pets', 'hold')
+                    or value['mode'] not in ('auto', 'pets', 'hold', 'patrol')
                     or not isinstance(value['revision'], str)
                     or not re.fullmatch(r'[a-f0-9]{32}', value['revision'])):
                 raise ValueError('invalid_camera_intent')

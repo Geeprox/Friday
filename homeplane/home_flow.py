@@ -329,9 +329,13 @@ class HomeFlow:
 
     def _live_mode_permitted(self, context, operation):
         from .ha import HAReadOnlyAdapter
+        from .local_camera_home import LocalCameraHome
         scope=context.read_scope()
+        adapter = self.core.adapter
+        real_home = isinstance(adapter, HAReadOnlyAdapter) or (
+            isinstance(adapter, LocalCameraHome) and adapter.mijia_selected)
         return bool(scope.boundary=='loopback_console' and scope.subject=='console' and scope.all_home
-                    and isinstance(self.core.adapter,HAReadOnlyAdapter) and self.household_mode is not None
+                    and real_home and self.household_mode is not None
                     and (self.pause_automatic is not None if operation=='pause' else self.household_mode.binding() is not None))
 
     def _live_mode_status(self, context):

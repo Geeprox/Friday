@@ -80,3 +80,31 @@ test('an initial outage has a usable retry and a failed refresh retains the last
  assert.equal(f.context.data.generated_at,2);assert.equal(f.view.children[0].text,'家庭空间');
  assert.equal(f.toasts.length,1);assert.equal(f.toasts[0][0],'家庭状态同步暂时中断');
 });
+
+test('传感器、电源和灯光接入分别使用对应授权，已有灯光可以补充授权',async()=>{
+ const enrollment=source.slice(source.indexOf(' function enrollDevice('),source.indexOf(' function drawDiscovery('));
+ for(const [access,upgrading,title] of [['readings',false,'接入传感器'],['power',false,'接入并允许控制'],
+   ['lighting',false,'接入灯具'],['lighting',true,'允许调节']]){
+  const calls=[],opened=[],dialogs=[],focused=[];
+  const h=(tag,text,attrs={})=>({tag,text,textContent:text,attrs,children:[],append(...children){this.children.push(...children);},
+   addEventListener(){},showModal(){dialogs.push(this);},close(){}});
+  const device={id:'synthetic-device',name:'示例设备',enrollment_revision:'fixture',enrollment_access:access,
+   enrollment_upgrade:upgrading};
+  const context=vm.createContext({h,add:(node,...children)=>{node.append(...children);return node;},
+   btn:(text,run)=>({...h('button',text),run}),view:h('section'),alive:true,load:async()=>{},
+   inspect:item=>opened.push(item),inspectorSlot:{focus:()=>focused.push(true)},toast(){},data:{devices:[device]},
+   api:async(path,body)=>{calls.push([path,JSON.parse(JSON.stringify(body))]);return{device:device.id};}});
+  vm.runInContext(enrollment,context);
+  context.enrollDevice(device);
+  const [dialog]=dialogs,confirm=dialog.children.at(-1).children.at(-1);
+  assert.equal(confirm.text,title);
+  if(access==='lighting')assert.match(dialog.children[1].text,/亮度和色温/);
+  await confirm.run();
+  assert.deepEqual(calls,[['/api/embodied/discovery/enroll-device',{
+   candidate:device.id, expected_revision:'fixture', [access==='readings'?'allow_readings':'allow_power']:true,
+   ...(access==='lighting'?{allow_light_settings:true}:{}),
+  }]]);
+  assert.deepEqual(opened,[device]);
+  assert.equal(focused.length,upgrading?1:0);
+ }
+});

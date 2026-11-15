@@ -109,13 +109,13 @@ def test_live_player_slots_and_pointing_do_not_require_a_floor_plan(jpeg):
     assert all(s["active"] and not s["located"] and s["map"] is None for s in result["seats"])
     assert all(p["position"] is None for p in people)
     assert result["pointing"][0]["confirmed"] and result["pointing"][0]["target"] == 2
-    from homeplane.werewolf_camera import hints, observation
+    from homeplane.werewolf_camera import CameraTrack, hints, observation
     camera, session = "cam_1111111111", "synthetic-session"
     sample = observation(dict(status="live", tracking_current=True, scene_visible=True,
                               frame_age_ms=50, camera_id=camera, session_id=session,
                               room=result, people=people))
     assert sample is not None
-    suggestions = hints(sample, {1: (camera, session, 1), 2: (camera, session, 2)},
+    suggestions = hints(sample, {1: CameraTrack(camera, session, 1, 0), 2: CameraTrack(camera, session, 2, 0)},
                         {1: SimpleNamespace(alive=True), 2: SimpleNamespace(alive=True)})
     assert suggestions[0]["pointing_at"] == 2
     assert suggestions[0]["advisory"] and not suggestions[0]["vote_submitted"]

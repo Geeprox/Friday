@@ -43,7 +43,7 @@ def basic_command(text, attending=False, *, wake_word='Friday'):
     match = next((m for p in patterns if (m := re.fullmatch(p, body))), None)
     if match:
         target = match["object"].removesuffix("一下").removesuffix("吧").removesuffix("谢谢")
-        if not any(t in target for t in ("灯", "窗帘", "梦幻帘", "空调")):
+        if not any(t in target for t in ("灯", "窗帘", "梦幻帘", "空调", "风扇", "插座", "开关")):
             return None
         return {
             "route": "home",
@@ -86,15 +86,8 @@ def resolve_targets(query, items, *, room=None):
     value = normalize(query)
     group = value.startswith(("所有", "全部", "全屋"))
     value = re.sub(r"^(?:所有|全部|全屋)", "", value)
-    kind = (
-        "cover"
-        if any(k in value for k in ("帘", "窗帘"))
-        else "climate"
-        if "空调" in value
-        else "light"
-        if "灯" in value
-        else None
-    )
+    kinds = {"帘": "cover", "空调": "climate", "灯": "light", "风扇": "fan", "插座": "switch", "开关": "switch"}
+    kind = next((kind for keyword, kind in kinds.items() if keyword in value), None)
     if kind is None:
         return []
     candidates = [item for item in items if item["kind"] == kind and item["controllable"]]
@@ -113,7 +106,8 @@ def resolve_targets(query, items, *, room=None):
     if selected_room:
         candidates = [i for i in candidates if normalize(i["room"]) == selected_room]
         value = value.replace(selected_room, "", 1)
-    generic = {"light": {"灯", "所有灯"}, "cover": {"窗帘", "帘"}, "climate": {"空调"}}[kind]
+    generic = {"light": {"灯"}, "cover": {"窗帘", "帘"}, "climate": {"空调"},
+               "fan": {"风扇"}, "switch": {"开关"}}[kind]
     if value not in generic:
         candidates = [i for i in candidates if value in normalize(i["name"])]
     return candidates if group or len(candidates) == 1 else []
@@ -122,6 +116,21 @@ def resolve_targets(query, items, *, room=None):
 class DeviceCommands:
     def __init__(self, core, lock, service=None):
         self.core, self.lock, self.service = core, lock, service
+
+    def configured_cover(self, cover=None):
+        from .miot_spec import cover_revision, optional_cover
+
+        cover = optional_cover() if cover is None else cover
+        if not self.service or not cover:
+            return None
+        permission = self.core.actions.cover_permission(cover)
+        operations = (permission or {}).get('operations', [])
+        item = dict(id='friday:configured-cover', name=cover['name'], room=cover['room'], kind='cover',
+                    source_kind='miot', controllable=bool(operations),
+                    capabilities=[*operations, *(['cover.stop'] if 'cover.state' in operations else [])],
+                    binding_revision=cover_revision(cover))
+        item['actions'] = supported_actions(item)
+        return item
 
     async def inventory(self):
         snapshot = await self.core.snapshot()
@@ -134,7 +143,7 @@ class DeviceCommands:
             aliases = {}
         result = []
         from .miot_spec import optional_cover
-        cover = optional_cover() if self.service and self.service.configured() else None
+        cover = optional_cover() if self.service else None
         selected_functions={fid for d in snapshot.devices if cover and any(b.source=='xiaomi-identity' and b.external_id=='cn_'+str(cover['did']) for b in d.bindings) for fid in d.function_ids}
         for entity in snapshot.entities:
             if entity.id in selected_functions:
@@ -166,29 +175,10 @@ class DeviceCommands:
                     current=next((o.value for o in snapshot.observations if o.entity_id == entity.id), None),
                 )
             )
-        if cover:
-            authority, _ = self.core.actions.authority()
-            bound = bool(
-                authority
-                and self.core.actions.policy_report().get("enabled")
-                and authority.external_entity_ids is None
-                and authority.ha_url.rstrip("/") == getattr(self.core.adapter, "url", None)
-                and authority.ha_instance == getattr(self.core.adapter, "instance_id", None)
-            )
-            result.append(
-                dict(
-                    id="friday:configured-cover",
-                    name=cover['name'],
-                    room=cover['room'],
-                    kind="cover",
-                    source_kind="miot",
-                    controllable=bound,
-                    capabilities=["cover.open", "cover.close", "cover.position", "cover.stop"],
-                    binding_revision=__import__("homeplane.embodied.miot_spec",fromlist=["cover_revision"]).cover_revision(cover),
-                )
-            )
         for item in result:
             item["actions"] = supported_actions(item)
+        if configured_cover := self.configured_cover(cover):
+            result.append(configured_cover)
         return result
 
     @staticmethod
@@ -206,8 +196,19 @@ class DeviceCommands:
                 if not 1 <= percent <= 100:
                     raise ValueError("invalid_percentage")
                 return "light.set", {"power": "on", "brightness": max(1, round(percent * 255 / 100))}
+        if kind == 'cover' and item.get('source_kind') == 'miot':
+            caps = item.get('capabilities', [])
+            if 'cover.state' in caps and action in {'on', 'off', 'open', 'close', 'stop'}:
+                state = 'open' if action in {'on', 'open'} else 'stopped' if action == 'stop' else 'closed'
+                return 'cover.state', {'state': state}
+            if ('cover.position' in caps and action.startswith('position:') and len(action) <= 12
+                    and action[9:].isascii() and action[9:].isdigit() and int(action[9:]) <= 100):
+                return 'cover.position', {'position': int(action[9:])}
+            raise ValueError('unsupported_parameters')
         if kind == "cover":
-            if action=="stop" and "cover.stop" in item.get("capabilities",[]):return "cover.state", {"state":"stopped"}
+            if action == 'stop' and ('cover.stop' in item.get('capabilities', ()) or 'stopped' in (
+                    item.get('capability_specs', {}).get('cover.state', {}).get('choices') or ())):
+                return 'cover.state', {'state': 'stopped'}
             if action in {"on", "off", "open", "close"}:
                 if 'cover.state' in item.get('capabilities', []):
                     return 'cover.state', {'state': 'open' if action in {'on','open'} else 'closed'}
@@ -233,10 +234,30 @@ class DeviceCommands:
                 return "climate.temperature", {"temperature": float(action.split(":")[1])}
         raise ValueError("unsupported_parameters")
 
-    async def command(self, query, action, event_id, *, room=None, preview=False, target=None, dispatch_guard=None):
+    def _local_home_only(self):
+        from homeplane.ha import HAReadOnlyAdapter
+        from homeplane.local_camera_home import LocalCameraHome
+
+        adapter = self.core.adapter
+        if isinstance(adapter, HAReadOnlyAdapter):
+            health = adapter.health()
+            return health.get('transport') != 'online' or health.get('observation_gap') is True
+        return isinstance(adapter, LocalCameraHome)
+
+    async def command(self, query, action, event_id, *, room=None, preview=False, target=None,
+                      dispatch_guard=None, dispatch_deadline=None):
         from homeplane.action_contracts import DevicePlanRequest
 
-        items = await self.inventory()
+        if target == 'friday:configured-cover':
+            cover = self.configured_cover()
+            items = [cover] if cover else []
+        elif (target is None and query and '帘' in query and self._local_home_only()
+              and not getattr(self.core.actions.mijia_power_home, 'covers', None)):
+            # 尚无已迁移的注册窗帘时，手工绑定不依赖家庭快照。
+            cover = self.configured_cover()
+            items = [cover] if cover else []
+        else:
+            items = await self.inventory()
         targets = [i for i in items if i["id"] == target and i["controllable"]] if target else resolve_targets(query, items, room=room)
         if not targets or len(targets) > 128:
             return dict(
@@ -262,7 +283,10 @@ class DeviceCommands:
         ha_gesture = (dispatch_guard is not None and target is not None
                       and target.startswith('ha:') and len(targets) == 1
                       and targets[0].get('source_kind') in {'light', 'switch', 'fan', 'climate', 'cover'})
-        async with nullcontext() if ha_gesture else self.lock:
+        # 固定米家窗帘由其独立发送锁保护。HA 查询不能阻塞已配对的窗帘手势。
+        standalone_cover = (len(targets) == 1 and targets[0]['id'] == 'friday:configured-cover'
+                            and targets[0].get('source_kind') == 'miot')
+        async with nullcontext() if ha_gesture or standalone_cover else self.lock:
             for item in targets:
                 if dispatch_guard is not None and dispatch_guard() is not True:
                     outcomes.append(dict(target=item['id'],status='rejected',code='stale_interaction',
@@ -275,18 +299,15 @@ class DeviceCommands:
                                          write_attempted=False, acknowledged=False))
                     continue
                 if item.get("source_kind") == "miot":
-                    if action not in {"on", "off", "open", "close", "stop"} and not (action.startswith("position:") and action[9:].isdigit() and 0<=int(action[9:])<=100):
-                        outcomes.append(
-                            dict(
-                                target=item["id"],
-                                status="rejected",
-                                code="unsupported_parameters",
-                                write_attempted=False,
-                            )
-                        )
+                    permission = self.core.actions.cover_permission()
+                    if operation not in (permission or {}).get('operations', ()):
+                        outcomes.append(dict(target=item['id'], status='rejected', code='unauthorized',
+                                             write_attempted=False, acknowledged=False))
                         continue
                     result = await self.service.miot_cover(
-                        "open" if action in {"on", "open"} else "close" if action in {"off", "close"} else action, event_id, expected_revision=item.get("binding_revision")
+                        "open" if action in {"on", "open"} else "close" if action in {"off", "close"} else action,
+                        event_id, expected_revision=item.get("binding_revision"), permission=permission,
+                        dispatch_deadline=dispatch_deadline, lan=self.core.actions.mijia.lan,
                     )
                     outcomes.append(
                         dict(
@@ -295,8 +316,8 @@ class DeviceCommands:
                             if result.get("reached_target")
                             else "accepted"
                             if result.get("acknowledged")
-                            else "unknown_outcome",
-                            code="miot_ack" if result.get("acknowledged") else "readback_unavailable",
+                            else "unknown_outcome" if result.get('write_attempted') else 'rejected',
+                            code=result.get('code') or ('miot_ack' if result.get('acknowledged') else 'readback_unavailable'),
                             write_attempted=result.get("write_attempted", result.get("acknowledged")) is True,
                             acknowledged=result.get("acknowledged") is True,
                             physical_confirmation=False,
@@ -330,7 +351,8 @@ class DeviceCommands:
                     )
                     trace = await self.core.actions.plan(request)
                 try:
-                    trace = await self.core.actions.execute(trace.action_id, dispatch_guard=dispatch_guard)
+                    trace = await self.core.actions.execute(trace.action_id, dispatch_guard=dispatch_guard,
+                                                            dispatch_deadline=dispatch_deadline)
                 except ValueError:
                     outcomes.append(dict(target=item['id'],status='rejected',code='stale_interaction',
                                          write_attempted=False,acknowledged=False))
@@ -342,7 +364,9 @@ class DeviceCommands:
                         code=trace.code,
                         action_id=trace.action_id,
                         write_attempted=trace.real_write_attempted,
-                        acknowledged=any(e.payload.get('code') == 'ha_service_accepted' for e in trace.events),
+                        acknowledged=any(e.payload.get('code') in {
+                            'ha_service_accepted', 'mijia_property_accepted', 'mijia_cover_acknowledged'
+                        } for e in trace.events),
                         physical_confirmation=trace.physically_confirmed,
                     )
                 )
@@ -373,9 +397,13 @@ def supported_actions(item):
     if kind in {'light','switch','fan'}:
         return ['on','off'] if caps & {'light.set','switch.set','fan.set'} else []
     if kind == 'cover':
-        actions = ['open','close'] if caps & {'cover.state','cover.position','cover.open'} else []
-        return actions + (['stop'] if 'cover.stop' in caps else []) + (['position:'+str(p) for p in (0,25,50,75,100)] if 'cover.position' in caps else [])
-    if kind == 'climate' and 'climate.mode' in caps:
+        state_caps = {'cover.state'} if item.get('source_kind') == 'miot' else {'cover.state','cover.position','cover.open'}
+        actions = ['open','close'] if caps & state_caps else []
+        stop = 'cover.stop' in caps or 'stopped' in (item.get('capability_specs', {}).get('cover.state', {}).get('choices') or ())
+        step = item.get('capability_specs', {}).get('cover.position', {}).get('step') or 1
+        return actions + (['stop'] if stop else []) + (['position:'+str(p) for p in (0,25,50,75,100)
+                                                        if p % step == 0] if 'cover.position' in caps else [])
+    if kind == 'climate':
         choices = item.get('capability_specs', {}).get('climate.mode', {}).get('choices', [])
         return (['on','off'] if 'climate.power' in caps else []) + ['off' if c == 'off' else 'mode:'+c for c in choices if c!='off' or 'climate.power' not in caps]
     return []

@@ -52,14 +52,14 @@ def test_missing_preference_is_read_only_and_uses_the_callers_default(tmp_path):
 def test_explicit_choices_survive_new_instances_and_survey_never_replays(tmp_path):
     path = tmp_path / 'camera'
     revisions = []
-    for mode in ('hold', 'auto', 'pets', 'survey'):
+    for mode in ('hold', 'auto', 'pets', 'survey', 'patrol'):
         saved = store_at(path).save(mode)
         revisions.append(saved.revision)
         assert saved.mode == mode and saved.status == 'saved'
         loaded = store_at(path).load()
         assert loaded.mode == ('hold' if mode == 'survey' else mode)
         assert loaded.revision == saved.revision and loaded.status == 'saved'
-    assert len(set(revisions)) == 4
+    assert len(set(revisions)) == 5
     assert stat.S_IMODE(path.stat().st_mode) == 0o700
     assert stat.S_IMODE((path / 'director-intent.json').stat().st_mode) == 0o600
     assert CAMERA['device']['did'] not in (path / 'director-intent.json').read_text()
@@ -209,15 +209,15 @@ async def test_secondary_new_session_restores_choice_before_any_motor_dispatch(t
 @pytest.mark.asyncio
 async def test_secondary_save_failure_holds_locally_and_does_not_dispatch(monkeypatch):
     monkeypatch.setattr(previews, 'camera', lambda _: CAMERA)
-    pool = previews.PreviewPool.__new__(previews.PreviewPool)
-    pool.intent_factory = lambda _: SimpleNamespace(save=lambda _: (_ for _ in ()).throw(OSError()))
+    pool = previews.PreviewPool(
+        recognize=True,
+        intent_factory=lambda _: SimpleNamespace(save=lambda _: (_ for _ in ()).throw(OSError())),
+    )
     send = AsyncMock()
     item = dict(control=send, mode='auto', mode_revision='old', control_epoch=4, manual_tasks=set(),
                 camera_control={'mode': 'auto'}, received_at=time.time(), state='live', frames=1,
                 shutter_changed=False)
     pool.sessions = {CAMERA['id']: item}
-    pool.recognize = True
-    pool.on_audio = None
     with pytest.raises(RuntimeError, match='camera_intent_unavailable'):
         await pool.control(CAMERA['id'], direction='left')
     assert item['mode'] == 'hold' and item['control_epoch'] == 5
@@ -230,6 +230,7 @@ async def test_secondary_save_failure_holds_locally_and_does_not_dispatch(monkey
 def primary_scope(tmp_path):
     scope = dict(Request=Request, HTTPException=HTTPException, secrets=secrets, time=time, CAMERA_MODES=CAMERA_MODES,
                  SELECTED=CAMERA, camera_intents=store_at(tmp_path / 'camera'),
+                 state={'status': 'live'}, capture=SimpleNamespace(returncode=None),
                  camera_planner=SimpleNamespace(mode='auto', intent_revision='old', intent_status='default',
                                                visited=set(), last_person=0, last_move=0),
                  motor_step=AsyncMock(return_value={'native_code': 0}),
@@ -264,6 +265,24 @@ async def test_primary_public_and_legacy_manual_paths_save_hold_before_send(tmp_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['shutter_closed', 'unavailable', 'stopped', 'exited'])
+async def test_retired_capture_cannot_save_a_new_manual_or_automatic_mode(tmp_path, state):
+    scope = primary_scope(tmp_path)
+    original = scope['camera_intents'].save('auto')
+    if state == 'exited':
+        scope['capture'].returncode = 0
+    else:
+        scope['state']['status'] = state
+    with pytest.raises(HTTPException) as manual:
+        await scope['manual_motor'](request({'direction': 'left'}))
+    with pytest.raises(HTTPException) as automatic:
+        await scope['camera_control'](request({'mode': 'survey'}))
+    assert manual.value.status_code == automatic.value.status_code == 409
+    assert scope['camera_intents'].load() == original
+    scope['motor_step'].assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_primary_mode_resume_and_survey_restart_preference(tmp_path):
     scope = primary_scope(tmp_path)
     for mode in ('hold', 'auto', 'pets', 'survey'):
@@ -276,7 +295,8 @@ async def test_primary_mode_resume_and_survey_restart_preference(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('primary', [True, False])
-async def test_survey_readback_and_stop_are_bound_to_the_current_round(tmp_path, monkeypatch, primary):
+@pytest.mark.parametrize('mode', ['survey', 'patrol'])
+async def test_survey_readback_and_stop_are_bound_to_the_current_intent(tmp_path, monkeypatch, primary, mode):
     other = {'id': 'cam_2222222222', 'region': 'cn', 'device': {'did': 'synthetic-secondary'}}
     selected = CAMERA if primary else other
     registered = {entry['id']: entry for entry in (CAMERA, other)}
@@ -297,8 +317,9 @@ async def test_survey_readback_and_stop_are_bound_to_the_current_round(tmp_path,
                  recorder=SimpleNamespace(public=lambda: {}), safety=SimpleNamespace(recording_status=lambda: {}),
                  home=SimpleNamespace(public=lambda: {}), secondary_homes={}, fleet=SimpleNamespace(public=lambda _: {}),
                  PRIVATE=tmp_path, previews=pool, configuration=config, PET_MODES=PET_MODES,
+                 wall=SimpleNamespace(frame=lambda _: None),
                  camera_intent_readback=camera_intent_readback)
-    actual_worker_functions({'view', 'preview_status'}, scope)
+    actual_worker_functions({'view', 'preview_status', 'primary_capture_preview'}, scope)
     worker = FastAPI()
     worker.get('/api/previews/{camera_id}')(scope['preview_status'])
     worker.post('/api/previews/{camera_id}/control')(scope['preview_control'])
@@ -314,28 +335,32 @@ async def test_survey_readback_and_stop_are_bound_to_the_current_round(tmp_path,
         httpx.AsyncClient(transport=httpx.ASGITransport(app=worker)) as service.client,
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://console.invalid') as client,
     ):
-        first = await client.post(base+'/control', json={'mode': 'survey'})
+        first = await client.post(base+'/control', json={'mode': mode})
         assert first.status_code == 200
         old = first.json()['intent_revision']
         director = CameraDirector()
-        director.apply_mode('survey', old)
+        director.apply_mode(mode, old)
         director.survey_confirmed_moves = director.survey_attempts = len(director.SURVEY_ROUTE)
         director.phase = 'survey_finished'
-        snapshot = dict(director.public(), mode='survey')
+        snapshot = dict(director.public(), mode=mode)
         (state if primary else item)['camera_control'] = snapshot
         assert (await client.get(base+'/preview')).json()['camera_control']['survey_result'] == 'complete'
 
-        restarted = await client.post(base+'/control', json={'mode': 'survey'})
+        restarted = await client.post(base+'/control', json={'mode': mode})
         assert restarted.status_code == 200
         current = restarted.json()['intent_revision']
         assert current != old
         pending = (await client.get(base+'/preview')).json()['camera_control']
-        assert pending['intent_revision'] == current and pending['reason'] == '准备巡视'
+        assert pending['intent_revision'] == current
+        assert pending['reason'] == ('准备巡视' if mode == 'survey' else '等待下次巡视')
         assert pending['survey_result'] is None and pending['survey_confirmed_moves'] == pending['survey_attempts'] == 0
         assert snapshot['survey_result'] == 'complete' and snapshot['intent_revision'] == old
 
         state['status'] = item['state'] = 'unavailable'
         item['control'] = None
+        if mode == 'patrol' and primary:
+            scope['camera_planner'] = None
+            state['camera_control'] = {'owner': 'none'}
         invalid = await client.post(base+'/control', json={'mode': 'auto', 'survey_revision': current})
         assert invalid.status_code == 422
         stale = await client.post(base+'/control', json={'mode': 'hold', 'survey_revision': old})
@@ -344,8 +369,12 @@ async def test_survey_readback_and_stop_are_bound_to_the_current_round(tmp_path,
         stopped = await client.post(base+'/control', json={'mode': 'hold', 'survey_revision': current})
         assert stopped.status_code == 200 and stopped.json()['mode'] == 'hold'
         readback = (await client.get(base+'/preview')).json()['camera_control']
-        assert readback['mode'] == 'hold' and readback['intent_revision'] == stopped.json()['intent_revision']
-        assert readback['survey_result'] is None and not readback['view_usable']
+        if mode == 'patrol' and primary:
+            assert readback.get('mode') != 'patrol'
+            assert scope['camera_intents'].load().revision == stopped.json()['intent_revision']
+        else:
+            assert readback['mode'] == 'hold' and readback['intent_revision'] == stopped.json()['intent_revision']
+            assert readback['survey_result'] is None and not readback['view_usable']
     motor.assert_not_awaited()
     scope['motor_step'].assert_not_awaited()
     service.manual_previews.command.assert_not_awaited()
@@ -396,7 +425,7 @@ async def test_pending_primary_auto_decision_is_cancelled_after_intent_changes(c
     noop = lambda *_, **__: None
     planner = SimpleNamespace(mode='auto', intent_revision='original')
     scope = dict(asyncio=asyncio, time=time, secrets=secrets, json=json,
-                 capture=SimpleNamespace(stdin=SimpleNamespace(write=sent.append, drain=AsyncMock())),
+                 capture=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=sent.append, drain=AsyncMock())),
                  camera_lease=SimpleNamespace(snapshot={'status': 'owned'}), camera_planner=planner,
                  state={'status': 'live'}, SELECTED=CAMERA, camera_is_open=AsyncMock(return_value=True),
                  close_primary_view=noop, motor_sequence=0, motion_generation=0, motor_waiters={},

@@ -34,6 +34,52 @@ LOCK = {"status": "locked"}
 
 
 class MotionTests(unittest.TestCase):
+    def test_framing_distinguishes_missing_body_feet_and_standing_still(self):
+        for mode in ('ski', 'quest', 'hiit', 'tennis'):
+            with self.subTest(mode=mode):
+                g = MotionGames()
+                if mode == 'tennis':
+                    g.select(mode, tennis_variant='solo')
+                g.reset(mode)
+                round_id = g.round_id
+                self.assertEqual(g.update([], LOCK, 0)['framing'], 'players')
+                incomplete = human()
+                incomplete['joints'].pop('leftHip')
+                self.assertEqual(g.update([incomplete], LOCK, .05)['framing'], 'body')
+                clipped = human()
+                clipped.pop('motion_anchor')
+                self.assertEqual(g.update([clipped], LOCK, .1)['framing'], 'feet')
+                self.assertEqual(g.update([human()], LOCK, .15)['framing'], 'still')
+                self.assertEqual(g.update([human()], {'status': 'moving'}, .2)['framing'], 'camera')
+                self.assertEqual(g.elapsed, 0)
+                for i in range(25):
+                    current = g.update([human()], LOCK, .25 + i*.05)
+                self.assertEqual((current['status'], current['framing']), ('playing', None))
+                elapsed = g.elapsed
+                lost = g.update([clipped], LOCK, 2)
+                self.assertEqual((lost['status'], lost['framing']), ('paused', 'feet'))
+                self.assertEqual((g.round_id, g.elapsed), (round_id, elapsed))
+
+    def test_doubles_reports_extra_players_before_seats_and_keeps_existing_slots(self):
+        g = MotionGames()
+        g.reset('tennis')
+        pair = [human(1, x=.3), human(2, x=.7)]
+        crowd = pair + [human(3)]
+        waiting = g.update(crowd, LOCK, 0)
+        self.assertEqual((waiting['status'], waiting['framing']), ('waiting', 'space'))
+        self.assertEqual(g.slots, [])
+        clipped = human(2, x=.7)
+        clipped.pop('motion_anchor')
+        self.assertEqual(g.update([pair[0], clipped], LOCK, .05)['framing'], 'feet')
+        self.assertEqual(g.slots, [])
+        for i in range(25):
+            current = g.update(pair, LOCK, .1+i*.05)
+        self.assertEqual((current['status'], g.slots), ('playing', [2, 1]))
+        missing = g.update([pair[0], human(3)], LOCK, 2)
+        self.assertEqual((missing['status'], missing['framing']), ('waiting', 'players'))
+        self.assertEqual(missing['tennis']['lineup'], ['missing', 'ready'])
+        self.assertEqual(g.slots, [2, 1])
+
     def test_stationary_arms_never_drive(self):
         g = MotionGames()
         g.reset("ski")

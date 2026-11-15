@@ -1,9 +1,4 @@
-"""Friday desktop service: existing Console over explicit real read-only ingress.
-
-No Simulator fallback, credential export, new grant, device control or runtime bootstrap.
-Only the current saved grant can renew its access token at the configured HA token endpoint.
-The login agent owns persistent mode. Compatibility callers may still use stdin EOF.
-"""
+"""桌面后台提供已授权的家庭连接，保留独立的本机摄像头会话。"""
 import argparse
 import contextvars
 import asyncio
@@ -36,6 +31,8 @@ from starlette.responses import JSONResponse, HTMLResponse, FileResponse, Redire
 from homeplane.arl import ARLRuntime
 from homeplane.ha import HAReadOnlyAdapter
 from homeplane.ktv_game_api import OWNER_PREFIX, accepts_owner_operation, create_router as ktv_owner_router
+from homeplane.local_camera_home import LocalCameraHome
+from homeplane.onboarding import HomeSourceSelection
 from homeplane.settings import SettingsConfig, SettingsService
 from friday.home import Credentials
 
@@ -147,6 +144,45 @@ def authorization_revision():
         return f'{info.st_mtime_ns:x}-{info.st_ino:x}'
     except OSError:
         return None
+
+
+def home_source():
+    value = home_source_config().get('source')
+    return value if value in ('mijia-lan', 'ha-read-only') else None
+
+
+def home_source_config():
+    from homeplane.embodied.ptz_control import read_lease
+
+    try:
+        return read_lease(STATE / 'home-source.json')
+    except (OSError, ValueError):
+        return {}
+
+
+def mijia_timezone(context):
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    saved = home_source_config()
+    timezone = saved.get('timezone')
+    if (saved.get('source') != 'mijia-lan' or not isinstance(context, list)
+            or saved.get('mijia_context') != context or not isinstance(timezone, str)
+            or not 1 <= len(timezone) <= 64):
+        return None
+    try:
+        ZoneInfo(timezone)
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
+    return timezone
+
+
+def save_home_source(source, *, timezone=None, mijia_context=None):
+    from homeplane.embodied.ptz_control import atomic
+
+    value = {'source': source}
+    if timezone and mijia_context:
+        value.update(timezone=timezone, mijia_context=mijia_context)
+    atomic(STATE / 'home-source.json', value)
 
 
 def failure_code(error):
@@ -476,6 +512,7 @@ class DesktopService:
         self.metadata.add_api_route('/desktop/capabilities', self.capabilities, methods=['GET'])
         self.metadata.add_api_route('/desktop/connect', self.connect, methods=['POST'])
         self.metadata.add_api_route('/desktop/disconnect', self.disconnect, methods=['POST'])
+        self.metadata.add_api_route('/desktop/home-source', self.select_home_source, methods=['POST'])
         self.metadata.add_api_route('/desktop/authorization', self.authorization_page, methods=['GET'])
         self.metadata.add_api_route('/desktop/setup', self.setup_page, methods=['GET'])
         self.metadata.add_api_route('/desktop/setup/assets/{name}', self.setup_asset, methods=['GET'])
@@ -510,17 +547,41 @@ class DesktopService:
         return SettingsService(CONFIG, token_path=BASE / 'data/miloco/config.json')
 
     async def setup_status(self):
+        from homeplane.embodied.service import mijia_runtime_configured
         from homeplane.onboarding import setup_report
+
         settings = self.setup_settings()
+        selected = home_source()
         health = {'transport': 'offline'}
         camera = False
+        directory = Path(os.environ['FRIDAY_EMBODIED_DATA']) / 'private'
+        mijia = (dict(configured=mijia_runtime_configured(directory), routable=0, ready=0, ha_rules=0,
+                      missing_interaction_targets=0, inventory_state=None)
+                 if self.persistent else None)
         if self.inner:
-            health = self.inner.state.home_experience.connection_health()
-            if getattr(self.inner.state.core.adapter, 'url', None) != (settings.config.ha_url or '').rstrip('/'):
+            state = self.inner.state
+            health = state.home_experience.connection_health()
+            if (not isinstance(state.core.adapter, LocalCameraHome)
+                    and getattr(state.core.adapter, 'url', None) != (settings.config.ha_url or '').rstrip('/')):
                 health = {'transport': 'configuration_changed'}
-            camera = self.inner.state.embodied.configured()
+            camera = state.embodied.configured()
+            if mijia is not None:
+                power = state.core.actions.mijia_power_home
+                if power is not None:
+                    _, connected = power.connected_targets()
+                    try:
+                        missing = len(power.unqualified_references(connected))
+                    except (OSError, ValueError):
+                        missing = None
+                    mijia.update(routable=len(connected), ready=power.ready_count(), missing_interaction_targets=missing)
+                    mijia['inventory_state'] = state.embodied.discovery_report.get('state')
+                mijia['ha_rules'] = len(state.core_rules.mijia_migration()[0])
+                if isinstance(state.core.adapter, LocalCameraHome):
+                    health = dict(mode='mijia-lan' if selected == 'mijia-lan' or mijia['ready'] else 'local-cameras',
+                                  transport='online' if mijia['ready'] else 'offline')
         return JSONResponse(setup_report(settings, health, camera_configured=camera, desktop=True,
-                            control_enabled=bool(self.inner and self.inner.state.core.actions.policy_report()['enabled'])),
+                            control_enabled=bool(self.inner and self.inner.state.core.actions.policy_report()['enabled']),
+                            home_source=selected, mijia=mijia),
                             headers={'Cache-Control': 'no-store'})
 
     async def setup_save(self, request: Request):
@@ -593,7 +654,8 @@ class DesktopService:
             'configured': facts['configurationAvailable'],
             'credential_available': facts['credentialAvailable'],
             'authorization_state': facts['authorizationState'],
-            'home_readable': self.inner is not None and self.connection_failure() is None and self.connection == 'connected',
+            'home_readable': self.inner is not None and not isinstance(self.adapter, LocalCameraHome)
+                and self.connection_failure() is None and self.connection == 'connected',
             'connection_phase': self.failure_evidence.get('phase') if isinstance(self.failure_evidence, dict) and self.failure_evidence.get('phase') in CONNECTION_PHASES else None,
             'server_acceptance': 'unavailable' if (
                 self.connection_failure() or self.failure) == 'ha_authorization_rejected' else (
@@ -639,7 +701,7 @@ class DesktopService:
 
     def connection_failure(self):
         """Project already-observed health; status never probes or renews HA."""
-        if self.inner is None:
+        if self.inner is None or isinstance(self.adapter, LocalCameraHome):
             return None
         try:
             health = self.adapter.health()
@@ -660,21 +722,31 @@ class DesktopService:
 
     async def status(self):
         facts = connection_configuration()
+        selected = home_source()
         observed_failure = self.connection_failure()
-        connection = 'failed' if observed_failure else self.connection
-        failure = observed_failure or self.failure
+        power = self.inner.state.core.actions.mijia_power_home if self.inner else None
+        local_devices = power.ready_count() if power and power.uses_lan_home(self.adapter) else 0
+        local_home = (isinstance(self.adapter, LocalCameraHome)
+                      or bool(observed_failure and self.persistent and self.inner and (
+                              local_devices or self.inner.state.embodied.configured())))
+        connection = 'connected' if local_home else 'failed' if observed_failure else self.connection
+        failure = (observed_failure or self.failure) if selected != 'mijia-lan' or not local_home else None
         health_result = (connection, failure)
         if health_result != self._last_health_result:
             self._last_health_result = health_result
             self.runtime_log.record('desktop.health', 'result',
                                     result='unavailable' if failure else 'ok',
-                                    code=failure or 'none', upstream='ha' if self.inner else 'local')
+                                    code=failure or 'none',
+                                    upstream='ha' if isinstance(self.adapter, HAReadOnlyAdapter) else 'local')
         return {**facts, 'service': 'running', 'connection': connection,
-                'failure': failure, 'source': 'ha-read-only' if self.inner else 'not_connected',
+                'failure': failure, 'source': ('mijia-lan' if local_devices else 'local-cameras'
+                                               if local_home else 'ha-read-only' if self.inner else 'not_connected'),
+                'homeSource': selected,
                 'failureEvidence': self.failure_evidence,
-                'homeReadable': self.inner is not None and not observed_failure and self.connection == 'connected',
+                'homeReadable': bool(local_devices or (self.inner is not None and not local_home
+                                                       and not observed_failure and self.connection == 'connected')),
                 'providerReads': self.provider_reads,
-                'entityCount': self.entity_count, 'deviceWrites': 'scoped' if self.inner and self.inner.state.core.actions.policy_report()['enabled'] else 'disabled',
+                'entityCount': local_devices or self.entity_count, 'deviceWrites': 'scoped' if self.inner and self.inner.state.core.actions.policy_report()['enabled'] else 'disabled',
                 'arl': self.arl, 'simulated': False, 'pid': os.getpid(),
                 'lifetime': 'persistent' if self.persistent else 'parent'}
 
@@ -684,10 +756,24 @@ class DesktopService:
             await asyncio.sleep(3)
             self.arl = await arl_status(self.arl_runtime)
 
-    @observe('desktop.connect', upstream='ha')
+    @observe('desktop.connect', upstream='local')
     async def connect(self):
         (STATE / 'connection-paused').unlink(missing_ok=True)
         return await self._connect()
+
+    async def select_home_source(self, command: HomeSourceSelection):
+        if not self.persistent:
+            return JSONResponse({'code': 'desktop_source_unavailable'}, status_code=409)
+        try:
+            return await self._connect(source=command.source)
+        except ValueError as error:
+            code = str(error)
+            return JSONResponse({'code': code if code in {
+                'mijia_readback_required', 'mijia_setup_required', 'ha_rules_in_use', 'source_conflict',
+                'mijia_interaction_targets_missing',
+            } else 'home_source_unavailable'}, status_code=409)
+        except OSError:
+            return JSONResponse({'code': 'home_source_unavailable'}, status_code=409)
 
     async def restore_home(self):
         """Restore saved intent without a UI; failed authentication waits for change.
@@ -695,13 +781,23 @@ class DesktopService:
         Existing HA streams own their reconnect. Never churn camera sessions or
         replay commands to recover an upstream transport gap.
         """
+        from homeplane.embodied.service import camera_runtime_configured, mijia_runtime_configured
+        from homeplane.mijia_power_home import catalog_available
+
         attempt = 0
         rejected_revision = None
         while True:
+            selected = home_source()
+            directory = Path(os.environ['FRIDAY_EMBODIED_DATA']) / 'private'
             facts = connection_configuration()
             revision = facts.get('authorizationRevision')
-            if (self.inner is None and not (STATE / 'connection-paused').exists()
-                    and facts.get('configurationAvailable') and facts.get('credentialAvailable')
+            local = isinstance(self.adapter, LocalCameraHome)
+            saved_ha = facts.get('configurationAvailable') and facts.get('credentialAvailable')
+            if (not (STATE / 'connection-paused').exists()
+                    and (self.inner is None and (selected == 'mijia-lan' or saved_ha
+                         or camera_runtime_configured() or mijia_runtime_configured(directory)
+                         or catalog_available(directory))
+                         or local and selected != 'mijia-lan' and saved_ha)
                     and (rejected_revision is None or revision != rejected_revision)):
                 try:
                     await self._connect()
@@ -711,17 +807,36 @@ class DesktopService:
                     self.runtime_log.record('desktop.health', 'result', result='unavailable', code='service_unavailable')
                 if self.failure == 'ha_authorization_rejected':
                     rejected_revision = revision
-                attempt = 0 if self.inner is not None else min(attempt + 1, 6)
+                attempt = min(attempt + 1, 6) if self.inner is None or isinstance(self.adapter, LocalCameraHome) else 0
             await asyncio.sleep(min(60, 2 ** attempt) if attempt else 5)
 
-    async def _connect(self):
+    async def _connect(self, *, source=None):
         if self.gate.locked() or self._cleanup_state in {'running', 'failed'}:
             return JSONResponse({'code': 'connection_in_progress'}, status_code=409)
         async with self.gate:
+            selected = home_source()
+            directory = Path(os.environ['FRIDAY_EMBODIED_DATA']) / 'private'
+            if source == 'mijia-lan' and self.inner is not None:
+                await self.use_mijia(directory, selected)
+                (STATE / 'connection-paused').unlink(missing_ok=True)
+                return await self.status()
+            if isinstance(self.adapter, LocalCameraHome):
+                if source == 'ha-read-only' or selected != 'mijia-lan':
+                    await self.recover_ha(select=source == 'ha-read-only')
+                    if source == 'ha-read-only' and isinstance(self.adapter, LocalCameraHome):
+                        return JSONResponse({'code': 'ha_unavailable'}, status_code=409)
+                return await self.status()
             if self.inner is not None:
                 selected_url = (self.setup_settings().config.ha_url or '').rstrip('/')
                 current_url = getattr(self.adapter, 'url', None)
                 if self.connection_failure() is None and current_url == selected_url:
+                    if source == 'ha-read-only' and selected != source:
+                        save_home_source(source)
+                    return await self.status()
+                if self.persistent and (source == 'ha-read-only' or self.inner.state.embodied.configured()):
+                    await self.recover_ha(select=source == 'ha-read-only')
+                    if source == 'ha-read-only' and self.failure is not None:
+                        return JSONResponse({'code': 'ha_unavailable'}, status_code=409)
                     return await self.status()
                 # Only the explicit connect request replaces an unhealthy owner.
                 # A passive status read never closes or reconnects it.
@@ -740,13 +855,35 @@ class DesktopService:
             phase = 'configuration'
             lifespan_entered = False
             try:
-                from homeplane.embodied.service import EmbodiedService
+                from homeplane.embodied.service import EmbodiedService, mijia_runtime_configured
+                from homeplane.mijia_power_home import catalog_available
                 integration=EmbodiedService()
                 # Household control is independent from optional camera/ML setup.
-                controls=(Path(os.environ['FRIDAY_EMBODIED_DATA'])/'private/action-authority.json').is_file()
-                grant_context=_device_control.set(controls)
-                try:settings, adapter, snapshot = await real_adapter(self.renewal)
-                finally:_device_control.reset(grant_context)
+                controls = (directory / 'action-authority.json').is_file()
+                local_failure = None
+                direct_configured = self.persistent and mijia_runtime_configured(directory)
+                explicit_source = source or selected
+                prefer_mijia = self.persistent and (explicit_source == 'mijia-lan' or (
+                    explicit_source is None and direct_configured and not connection_configuration()['configurationAvailable']))
+                if source == 'mijia-lan' and not direct_configured:
+                    await integration.close()
+                    return JSONResponse({'code': 'mijia_setup_required'}, status_code=409)
+                if not prefer_mijia:
+                    grant_context = _device_control.set(controls)
+                    try:
+                        settings, adapter, snapshot = await real_adapter(self.renewal)
+                    except (OSError, ValueError, RuntimeError) as error:
+                        if source is not None or not self.persistent or not (
+                            integration.configured() or direct_configured or catalog_available(directory)
+                        ):
+                            raise
+                        local_failure = failure_code(error)
+                    finally:
+                        _device_control.reset(grant_context)
+                if adapter is None:
+                    settings = self.setup_settings().config
+                    adapter = LocalCameraHome(mijia_selected=prefer_mijia)
+                    snapshot = await adapter.snapshot()
                 phase = 'workspace'
                 from homeplane.api import create_app
                 prepare_private_workspace()
@@ -766,7 +903,8 @@ class DesktopService:
                 from homeplane.intelligence.settings import default_directory
                 inner = create_app(adapter, db_path=STATE / 'traces.sqlite', settings_service=local_settings,
                                    intelligence_directory=default_directory(),
-                                   authority_path=Path(os.environ['FRIDAY_EMBODIED_DATA'])/'private/action-authority.json' if controls else STATE/'no-device-authority.json', geek_launcher=closed_geek,
+                                   authority_path=directory/'action-authority.json' if controls or direct_configured else STATE/'no-device-authority.json',
+                                   geek_launcher=closed_geek,
                                    geek_readonly_directory=Path(os.environ['FRIDAY_EMBODIED_DATA']).parent/'homeplane',
                                    arl_runtime=self.arl_runtime,
                                    arl_planning_authorizer=self.planning_authorizer,
@@ -782,11 +920,19 @@ class DesktopService:
                 phase = 'startup'
                 await lifespan.__aenter__()
                 lifespan_entered = True
+                if isinstance(adapter, LocalCameraHome) and adapter.mijia_selected:
+                    adapter.timezone = lambda: mijia_timezone(inner.state.core_rules.mijia_context())
+                if source is not None:
+                    if source == 'mijia-lan' and inner.state.core_rules.mijia_migration()[0]:
+                        raise ValueError('ha_rules_in_use')
+                    save_home_source(source)
+                    (STATE / 'connection-paused').unlink(missing_ok=True)
                 self.inner, self.lifespan, self.adapter = inner, lifespan, adapter
                 self._cleanup_task, self._cleanup_state = None, 'idle'
                 self.entity_count = len(snapshot.entities)
                 self.provider_reads = getattr(adapter, '_desktop_http_reads', [])
                 self.connection = 'connected'
+                self.failure = local_failure
             except BaseException as error:
                 if lifespan_entered:
                     await lifespan.__aexit__(type(error), error, error.__traceback__)
@@ -806,7 +952,125 @@ class DesktopService:
                                           'credentialRefreshSuppressed': self.renewal.refresh_suppressed}
                 if isinstance(error, asyncio.CancelledError):
                     raise
+                if source is not None:
+                    if source == 'ha-read-only':
+                        code = 'ha_unavailable'
+                    elif isinstance(error, ValueError) and str(error) == 'ha_rules_in_use':
+                        code = 'ha_rules_in_use'
+                    else:
+                        code = 'home_source_unavailable'
+                    return JSONResponse({'code': code}, status_code=409)
             return await self.status()
+
+    async def use_mijia(self, directory, selected):
+        from homeplane.mijia_power_home import catalog_available
+        from homeplane.embodied.service import mijia_runtime_configured
+
+        if not mijia_runtime_configured(directory):
+            raise ValueError('mijia_setup_required')
+        state = self.inner.state
+        rules = state.core_rules
+        if rules.event_available() and rules.records():
+            # 核对当前 HA 绑定和已有规则版本，禁止凭旧目录迁移已变更的设备。
+            try:
+                async with asyncio.timeout(2):
+                    await state.core.snapshot()
+            except (OSError, TimeoutError, ValueError, httpx.HTTPError):
+                raise ValueError('source_conflict') from None
+        excluded, migrations, required = rules.mijia_migration()
+        if excluded:
+            raise ValueError('ha_rules_in_use')
+        power = state.core.actions.mijia_power_home
+        context = rules.mijia_context()
+        zone = mijia_timezone(context)
+        if context and isinstance(self.adapter, HAReadOnlyAdapter):
+            try:
+                candidate = await asyncio.wait_for(self.adapter.household_timezone(), 2)
+                if isinstance(candidate, str) and 1 <= len(candidate) <= 64:
+                    zone = candidate
+            except TimeoutError:
+                pass
+
+        def check_bindings():
+            if power is not None and power.unqualified_references(power.connected_targets()[1]):
+                raise ValueError('mijia_interaction_targets_missing')
+
+        check_bindings()
+        local = isinstance(self.adapter, LocalCameraHome)
+        if local and selected == 'mijia-lan':
+            self.failure = self.failure_evidence = None
+            return
+        if required is not None:
+            try:
+                async with asyncio.timeout(12):
+                    await power.read_schedule(required, refresh=True)
+            except (OSError, TimeoutError, ValueError, httpx.HTTPError):
+                raise ValueError('mijia_readback_required') from None
+
+            def current():
+                return power.schedule_fresh(required)
+        elif not local or catalog_available(directory):
+            current = await power.qualify_source() if power is not None else None
+            if current is None:
+                raise ValueError('mijia_readback_required')
+        else:
+            current = lambda: True
+
+        if rules.event_available() and migrations:
+            try:
+                async with asyncio.timeout(2):
+                    await state.core.snapshot()
+            except (OSError, TimeoutError, ValueError, httpx.HTTPError):
+                raise ValueError('source_conflict') from None
+
+        def commit():
+            checked, proofs, bindings = rules.mijia_migration(check_routes=True)
+            if not current() or rules.mijia_context() != context or checked or proofs != migrations or bindings != required:
+                raise ValueError('source_conflict')
+            check_bindings()
+            rules.save_mijia_migration(proofs)
+            save_home_source('mijia-lan', timezone=zone, mijia_context=context)
+
+        old, _ = await state.attach_mijia(current=current, commit=commit,
+                                          timezone=lambda: mijia_timezone(rules.mijia_context()))
+        self.adapter = state.core.adapter
+        self.entity_count = 0
+        self.provider_reads = []
+        self.failure = self.failure_evidence = None
+        await old.close()
+
+    async def recover_ha(self, *, select=False):
+        if not self.inner:
+            return
+        adapter = None
+        controls = self.inner.state.core.actions.authority_path.name == 'action-authority.json'
+        grant = _device_control.set(controls)
+        try:
+            settings, adapter, snapshot = await real_adapter(self.renewal)
+            old, _ = await self.inner.state.attach_ha(
+                adapter, snapshot, current=lambda: config() == settings,
+                commit=(lambda: save_home_source('ha-read-only')) if select else None,
+            )
+            self.adapter, adapter = adapter, None
+            local_settings = self.inner.state.settings
+            local_settings.config = local_settings.config.model_copy(update={
+                'ha_url': settings.ha_url, 'ha_instance': settings.ha_instance})
+            self.entity_count = len(snapshot.entities)
+            self.provider_reads = getattr(self.adapter, '_desktop_http_reads', [])
+            self.failure = self.failure_evidence = None
+            if select:
+                (STATE / 'connection-paused').unlink(missing_ok=True)
+            await old.close()
+        except (OSError, ValueError, RuntimeError) as error:
+            self.failure = failure_code(error)
+            if isinstance(error, RealHomeFailure):
+                self.provider_reads = error.http_reads
+                self.failure_evidence = {'source': 'provider_http', 'httpReads': error.http_reads,
+                                         'phase': error.connection_phase}
+        finally:
+            _device_control.reset(grant)
+            if adapter is not None:
+                await adapter.close()
 
     @observe('desktop.close', upstream='local')
     async def close(self):
@@ -1057,6 +1321,9 @@ class DesktopService:
                 return
             if headers.get(b'host') != b'127.0.0.1:8740' or origin not in {None, ORIGIN.encode()}:
                 await JSONResponse({'code': 'invalid_local_origin'}, status_code=403)(scope, receive, send)
+                return
+            if path == '/desktop/home-source' and (scope.get('client') or ('',))[0] not in {'127.0.0.1', '::1'}:
+                await JSONResponse({'code': 'invalid_local_client'}, status_code=403)(scope, receive, send)
                 return
             if path == '/' and self.inner is None:
                 await RedirectResponse('/desktop/setup' + ('?ha=failed' if b'ha=failed' in scope.get('query_string', b'') else ''))(scope, receive, send)

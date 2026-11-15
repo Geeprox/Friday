@@ -191,16 +191,19 @@ async def test_task_cancellation_closes_owned_connection_and_removes_file(receiv
 
 
 @pytest.mark.asyncio
-async def test_selection_uses_discovered_identity_and_keeps_quiet_and_existing_pairing(receiver,monkeypatch):
+async def test_selection_uses_discovered_identity_and_keeps_quiet_and_existing_pairing(receiver):
     saved=json.loads(receiver.target.read_text());saved['credentials']={'AirPlay':'SYNTHETIC'}
     receiver.target.write_text(json.dumps(saved));(receiver.private/'voice-paused').touch()
-    monkeypatch.setattr(airplay,'configuration',lambda:{'version':1,'speech_output':'panel','cameras':['SYNTHETIC']})
+    from friday.home import private_json
+    config_path = receiver.private / 'config.json'
+    private_json(config_path, {'version':1,'speech_output':'panel','cameras':['SYNTHETIC']})
+    before = config_path.read_bytes()
     result=await airplay.select('HOME-POD',host='192.168.50.123')
     stored=json.loads(receiver.target.read_text())
     assert stored['identifier']=='HOME-POD' and stored['credentials']==saved['credentials']
     assert receiver.target.stat().st_mode & 0o777 == 0o600
-    config=json.loads((receiver.private/'config.json').read_text())
-    assert config['speech_output']=='homepod' and config['cameras']==['SYNTHETIC'] and result['quiet']
+    preference = json.loads((receiver.private / 'speech-output.json').read_text())
+    assert preference == {'output':'homepod'} and config_path.read_bytes() == before and result['quiet']
     receiver.connect.assert_not_awaited();receiver.device.stream.stream_file.assert_not_awaited()
 
 

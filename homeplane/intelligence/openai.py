@@ -12,6 +12,24 @@ import httpx
 from .budget import EnhancementUnavailable
 
 
+QUOTA_ERROR_CODES = frozenset({
+    "insufficient_quota",
+    "billing_hard_limit_reached",
+    "billing_not_active",
+    "credit_balance_exhausted",
+    "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded",
+    "organization_usage_limit_exceeded",
+})
+
+
+def is_quota_error(error):
+    if not isinstance(error, dict):
+        return False
+    code = error.get("code")
+    return error.get("type") == "insufficient_quota" or isinstance(code, str) and code in QUOTA_ERROR_CODES
+
+
 def token_usage(payload):
     usage = payload.get("usage")
     if not isinstance(usage, dict):
@@ -35,11 +53,12 @@ class OpenAIClient:
     def __init__(self, settings, ledger, *, transport=None):
         self.settings, self.ledger, self.transport = settings, ledger, transport
 
-    def authorize(self, capability):
+    def authorize(self, capability, *, admitted=True):
         config = self.settings.read()
         enabled = {
             "responses": config.cloud_text and config.provider in {"openai", "auto"},
             "decisions": config.cloud_text and config.provider in {"openai", "auto"},
+            "visual_review": admitted and config.provider != "local",
             "images": config.cloud_images and config.provider != "local",
             "realtime": config.cloud_voice and config.provider != "local",
         }
@@ -56,17 +75,19 @@ class OpenAIClient:
     def configuration_current(self, config, key):
         return self.settings.read() == config and self.settings.key() == key
 
-    async def post(self, capability, path, body, *, request_id, deadline, text_tokens=0, images=0):
-        config, key = self.authorize(capability)
+    async def post(self, capability, path, body, *, request_id, deadline, text_tokens=0, images=0,
+                   current=None):
+        config, key = self.authorize(capability, admitted=current is not None)
         encoded = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
-        if len(encoded) > 65536 or time.monotonic() >= deadline:
+        limit = 192 * 1024 if capability == "visual_review" else 65536
+        if len(encoded) > limit or time.monotonic() >= deadline:
             raise EnhancementUnavailable("request_budget_exceeded")
         identifier = hashlib.sha256(capability.encode() + request_id.encode() + encoded).hexdigest()
         await asyncio.to_thread(
             self.ledger.reserve, identifier, capability, config, text_tokens=text_tokens, images=images
         )
         try:
-            if not self.configuration_current(config, key):
+            if not self.configuration_current(config, key) or current is not None and not current():
                 await asyncio.to_thread(self.ledger.settle, identifier, text_tokens=0)
                 raise EnhancementUnavailable("intelligence_configuration_changed")
             async with asyncio.timeout_at(deadline):
@@ -108,7 +129,7 @@ class OpenAIClient:
                             )
                         if not payload:
                             raise EnhancementUnavailable("api_response_invalid")
-            actual = token_usage(payload) if capability in {"responses", "decisions"} else 0
+            actual = token_usage(payload) if capability in {"responses", "decisions", "visual_review"} else 0
             await asyncio.to_thread(self.ledger.settle, identifier, text_tokens=actual)
             if not self.configuration_current(config, key):
                 raise EnhancementUnavailable("intelligence_configuration_changed")
@@ -123,9 +144,7 @@ class OpenAIClient:
             await asyncio.to_thread(self.ledger.settle, identifier)
 
     def http_failure(self, capability, status, payload):
-        error = payload.get("error")
-        code = error.get("code") if isinstance(error, dict) else None
-        if code in {"insufficient_quota", "billing_hard_limit_reached", "billing_not_active"}:
+        if is_quota_error(payload.get("error")):
             reason, scope, delay = "api_quota_exhausted", "all", 900
         elif status == 401:
             reason, scope, delay = "api_key_rejected", "all", 900

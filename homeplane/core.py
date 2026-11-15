@@ -15,7 +15,12 @@ class HomeCore:
         self._diagnostic_snapshot = None
 
     async def snapshot(self):
-        snapshot = await self.adapter.snapshot()
+        home = self.actions.mijia_power_home if self.actions else None
+        snapshot = home.snapshot(self.adapter) if home else None
+        if snapshot is None:
+            snapshot = await self.adapter.snapshot()
+            if home is not None:
+                snapshot = home.snapshot(self.adapter) or snapshot
         if self.measurements:
             snapshot = self.measurements.apply(self.adapter, snapshot)
         self.store.append_events(snapshot.events)

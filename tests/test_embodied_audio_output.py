@@ -53,11 +53,16 @@ async def test_selection_requires_exact_identity_and_known_output_schema(endpoin
 
 @pytest.mark.asyncio
 async def test_return_to_existing_panel_preserves_cameras_and_quiet(endpoint):
-    app,_,private=endpoint;(private/'voice-paused').touch()
+    from friday.home import private_json
+
+    app,config,private=endpoint;(private/'voice-paused').touch()
+    private_json(private / 'config.json', config)
+    before = (private / 'config.json').read_bytes()
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://local') as client:
         assert (await client.post('/api/embodied/speech-output',json={'output':'panel'})).status_code==200
     assert (private/'voice-paused').exists()
-    assert json.loads((private/'config.json').read_text())['cameras']==['SYNTHETIC']
+    assert (private / 'config.json').read_bytes() == before
+    assert json.loads((private / 'speech-output.json').read_text()) == {'output':'panel'}
 
 
 @pytest.mark.asyncio

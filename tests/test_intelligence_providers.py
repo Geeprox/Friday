@@ -57,23 +57,28 @@ async def test_responses_contract_and_distinct_receipt(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "status,code,reason",
+    "status,error,reason,scope",
     [
-        (429, "insufficient_quota", "api_quota_exhausted"),
-        (429, "rate_limit_exceeded", "api_rate_limited"),
-        (401, "invalid_api_key", "api_key_rejected"),
-        (403, "permission_denied", "api_model_unavailable"),
-        (404, "model_not_found", "api_model_unavailable"),
-        (503, "unknown", "api_unavailable"),
+        (429, {"code": "insufficient_quota"}, "api_quota_exhausted", "all"),
+        (429, {"code": "credit_balance_exhausted"}, "api_quota_exhausted", "all"),
+        (429, {"code": "project_spend_limit_exceeded"}, "api_quota_exhausted", "all"),
+        (429, {"code": "organization_spend_limit_exceeded"}, "api_quota_exhausted", "all"),
+        (429, {"code": "organization_usage_limit_exceeded"}, "api_quota_exhausted", "all"),
+        (429, {"type": "insufficient_quota", "code": None}, "api_quota_exhausted", "all"),
+        (429, {"code": "rate_limit_exceeded"}, "api_rate_limited", "responses"),
+        (401, {"code": "invalid_api_key"}, "api_key_rejected", "all"),
+        (403, {"code": "permission_denied"}, "api_model_unavailable", "responses"),
+        (404, {"code": "model_not_found"}, "api_model_unavailable", "responses"),
+        (503, {"code": "unknown"}, "api_unavailable", "responses"),
     ],
 )
-async def test_api_failures_are_redacted_bounded_and_fall_back(tmp_path, status, code, reason):
+async def test_api_failures_are_redacted_bounded_and_fall_back(tmp_path, status, error, reason, scope):
     calls = []
 
     def handler(request):
         calls.append(request)
         return httpx.Response(
-            status, json={"error": {"code": code, "message": "SIMULATED-sensitive-upstream-error"}}
+            status, json={"error": {**error, "message": "SIMULATED-sensitive-upstream-error"}}
         )
 
     arl = AsyncMock()
@@ -90,7 +95,9 @@ async def test_api_failures_are_redacted_bounded_and_fall_back(tmp_path, status,
     assert len(calls) == 1
     assert arl.complete_scenario.await_count == 2
     assert owner.last_route == {"provider": "arl", "reason": reason}
-    assert "sensitive" not in json.dumps(owner.status())
+    report = owner.status()
+    assert [(entry["capability"], entry["code"]) for entry in report["usage"]["blocks"]] == [(scope, reason)]
+    assert "sensitive" not in json.dumps(report)
 
 
 async def test_budget_blocks_before_network_and_arl_is_optional(tmp_path):

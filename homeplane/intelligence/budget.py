@@ -31,7 +31,7 @@ class UsageLedger:
                     requests INTEGER, text_tokens INTEGER, images INTEGER, voice_seconds INTEGER);
                 CREATE TABLE IF NOT EXISTS attempts (
                     id TEXT PRIMARY KEY, window REAL, text_tokens INTEGER, status TEXT,
-                    voice_seconds INTEGER DEFAULT 0, images INTEGER DEFAULT 0);
+                    voice_seconds INTEGER DEFAULT 0, images INTEGER DEFAULT 0, capability TEXT);
                 CREATE TABLE IF NOT EXISTS cooldown (
                     capability TEXT PRIMARY KEY, code TEXT, until REAL);
             """
@@ -43,6 +43,8 @@ class UsageLedger:
                 db.execute("ALTER TABLE attempts ADD COLUMN voice_seconds INTEGER DEFAULT 0")
             if "images" not in columns:
                 db.execute("ALTER TABLE attempts ADD COLUMN images INTEGER DEFAULT 0")
+            if "capability" not in columns:
+                db.execute("ALTER TABLE attempts ADD COLUMN capability TEXT")
         path.chmod(0o600)
 
     @contextmanager
@@ -83,13 +85,17 @@ class UsageLedger:
         with self.transaction() as db:
             window = self._window(db, config)
             block = db.execute(
-                "SELECT code FROM cooldown WHERE capability IN (?, 'all') AND until > ? LIMIT 1",
+                "SELECT code FROM cooldown WHERE capability IN (?, 'all') AND until > ? "
+                "ORDER BY (capability = 'all') DESC LIMIT 1",
                 (capability, self.now().timestamp()),
             ).fetchone()
             if block:
                 raise EnhancementUnavailable(block["code"])
             if db.execute("SELECT 1 FROM attempts WHERE id=?", (identifier,)).fetchone():
                 raise EnhancementUnavailable("request_already_attempted")
+            if (capability == "visual_review"
+                    and self._visual_count(db, window) >= config.daily_visual_review):
+                raise EnhancementUnavailable("daily_visual_review_reached")
             for name in COUNTERS:
                 if amounts[name] and window[name] + amounts[name] > getattr(config, "daily_" + name):
                     raise EnhancementUnavailable("daily_" + name + "_reached")
@@ -99,9 +105,15 @@ class UsageLedger:
                 (text_tokens, images, voice_seconds),
             )
             db.execute(
-                "INSERT INTO attempts(id,window,text_tokens,status,voice_seconds,images) VALUES(?,?,?,'reserved',?,?)",
-                (identifier, window["start"], text_tokens, voice_seconds, images),
+                "INSERT INTO attempts(id,window,text_tokens,status,voice_seconds,images,capability) "
+                "VALUES(?,?,?,'reserved',?,?,?)",
+                (identifier, window["start"], text_tokens, voice_seconds, images, capability),
             )
+
+    @staticmethod
+    def _visual_count(db, window):
+        return db.execute("SELECT count(*) FROM attempts WHERE window=? AND capability='visual_review'",
+                          (window["start"],)).fetchone()[0]
 
     def settle(self, identifier, *, text_tokens=None, voice_seconds=None, images=None):
         with self.transaction() as db:
@@ -148,6 +160,7 @@ class UsageLedger:
             return {
                 "used": {name: row[name] for name in COUNTERS},
                 "limits": {name: getattr(config, "daily_" + name) for name in COUNTERS},
+                "visual_review": {"used": self._visual_count(db, row), "limit": config.daily_visual_review},
                 "resets_at": datetime.fromtimestamp(row["end"], UTC).isoformat(),
                 "uncertain_requests": db.execute(
                     "SELECT count(*) FROM attempts WHERE window=? AND status!='accounted'", (row["start"],)

@@ -11,6 +11,8 @@ from homeplane.embodied.pose_rules import classify
 IDENTITY = np.eye(3)
 TRACK_GAP_SECONDS = 3.0
 POSE_GAP_SECONDS = .75
+FOLLOW_GAP_SECONDS = 1.5
+MAX_TRACKED_PEOPLE = 12
 
 
 def valid_point(point):
@@ -26,16 +28,18 @@ def valid_box(box):
             and box['w'] > 0 and box['h'] > 0 and box['x']+box['w'] <= 1.000001
             and box['y']+box['h'] <= 1.000001)
 
+def _overlapping(a, b):
+    width = min(a['x']+a['w'], b['x']+b['w']) - max(a['x'], b['x'])
+    height = min(a['y']+a['h'], b['y']+b['h']) - max(a['y'], b['y'])
+    # 以较小框为准，保留成人经过婴儿或宠物前方这类大小差异明显的情况。
+    return width > 0 and height > 0 and width*height >= .30*min(a['w']*a['h'], b['w']*b['h'])
+
 
 def assign_poses(detection, boxes):
-    """Only a supported pose whose root belongs to one box may supply actions.
-
-    More joints do not resolve two overlapping people. Multiple qualifying
-    poses in one box also stay ambiguous; no detector-order choice is made.
-    """
+    """只分配归属唯一的骨架，同时保留归属不明确的检测框。"""
     assignments = {i:[] for i in range(len(boxes))}
     ambiguous = set()
-    for pose in detection.get('poses',[])[:10]:
+    for pose in detection.get('poses', [])[:MAX_TRACKED_PEOPLE]:
         raw = pose.get('joints',{}) if isinstance(pose,dict) else {}
         if not isinstance(raw,dict):
             continue
@@ -50,7 +54,9 @@ def assign_poses(detection, boxes):
             assignments[candidates[0]].append(joints)
         else:
             ambiguous.update(candidates)
-    return {i:values[0] for i,values in assignments.items() if len(values)==1 and i not in ambiguous}
+    ambiguous.update(i for i, values in assignments.items() if len(values) > 1)
+    confirmed = {i: values[0] for i, values in assignments.items() if values and i not in ambiguous}
+    return confirmed, ambiguous
 
 
 def warp_box(box, transform):
@@ -94,7 +100,7 @@ class StableTracks:
         self.last_update = None
         self.input_valid = False
 
-    def update(self, detection, now, transform=IDENTITY, *, camera_moving=False):
+    def update(self, detection, now, transform=IDENTITY, *, camera_moving=False, occluders=()):
         self.input_valid = False
         if (not isinstance(detection,dict) or not isinstance(detection.get('boxes',[]),list)
                 or not isinstance(detection.get('poses',[]),list)):
@@ -128,7 +134,7 @@ class StableTracks:
             return []
         boxes = []
         xy = []
-        for box in detection.get("boxes", [])[:10]:
+        for box in detection.get("boxes", [])[:MAX_TRACKED_PEOPLE]:
             if not valid_box(box):
                 self.invalidate()
                 return []
@@ -150,7 +156,7 @@ class StableTracks:
             data={"source_index": np.arange(len(boxes))},
         )
         tracked = self.tracker.update(ds, timestamp=now)
-        poses = assign_poses(detection,boxes)
+        poses, ambiguous_pose_boxes = assign_poses(detection, boxes)
         people = []
         for n, track_id in enumerate(tracked.tracker_id if tracked.tracker_id is not None else []):
             if int(track_id) < 0:
@@ -160,6 +166,18 @@ class StableTracks:
             box = boxes[index]
             joints = poses.get(index,{})
             prev = self.items.get(track_id)
+            # 使用当帧检测框，包括尚未被追踪器确认为新轨迹的框。
+            overlapping = (any(i != index and _overlapping(box, other) for i, other in enumerate(boxes))
+                           or any(_overlapping(box, other) for other in occluders))
+            follow_revision = 0
+            follow_changed_at = now if overlapping else None
+            if prev:
+                # 骨架归属断续也要留痕，后续消费者可能跳过这一帧。
+                pose_interrupted = prev['pose_assigned'] and not joints and (overlapping or index in ambiguous_pose_boxes)
+                broken = (prev['last'] != self.last_update or now-prev['last'] > FOLLOW_GAP_SECONDS
+                          or overlapping and not prev['overlapping'] or pose_interrupted)
+                follow_revision = prev['follow_revision'] + int(broken)
+                follow_changed_at = now if broken or overlapping else prev['follow_changed_at']
             if prev and now-prev['last'] > POSE_GAP_SECONDS:
                 prev = None
             labels = classify(joints)
@@ -184,6 +202,10 @@ class StableTracks:
                 "candidate": tuple(labels),
                 "anchor": anchor,
                 "first": first,
+                "overlapping": overlapping,
+                "pose_assigned": bool(joints),
+                "follow_revision": follow_revision,
+                "follow_changed_at": follow_changed_at,
             }
             people.append(
                 {
@@ -192,7 +214,9 @@ class StableTracks:
                     "joints": joints,
                     "actions": labels if streak >= 3 else ["pose_unknown"],
                     "motion": motion,
-                    "tracking": {"backend": "ByteTrack", "space": space, "session_id": True},
+                    "tracking": {"backend": "ByteTrack", "space": space, "session_id": True,
+                                 "overlapping": overlapping, "follow_revision": follow_revision,
+                                 "follow_changed_at": follow_changed_at},
                 }
             )
         self.items = {k: v for k, v in self.items.items() if now - v["last"] <= TRACK_GAP_SECONDS}

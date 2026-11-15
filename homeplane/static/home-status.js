@@ -14,10 +14,15 @@ function reviewServices(worker){
   const states={
    waiting_input:['waiting',review==='visual'?'等待画面':'等待声音'],
    waiting:['waiting','等待复核'],running:['on','运行中'],paused:['off','已暂停'],
-   delayed:['degraded','复核延迟'],resource_limited:['degraded','资源不足'],
+   standby:['on','待命'],reviewing:['on','复核中'],
+   delayed:['degraded','复核延迟'],resource_limited:['degraded','资源不足'],quota_limited:['degraded','额度受限'],
+   api_timeout:['degraded','响应超时'],api_rate_limited:['degraded','暂时限流'],api_unavailable:['degraded','连接中断'],
    recovering:['degraded','正在恢复'],unavailable:['warning','暂不可用'],
   };
-  return Object.hasOwn(states,value)?[{...service(label,...states[value]),review}]:[];
+  if(!Object.hasOwn(states,value))return [];
+  const [state,message]=states[value];
+  const text=review==='visual'&&worker.safety_review?.visual_provider==='decisions'?'API · '+message:message;
+  return [{...service(label,state,text),review}];
  });
 }
 
