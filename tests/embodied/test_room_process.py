@@ -129,7 +129,7 @@ async def test_real_room_child_confirms_patrol_from_background_with_moving_foreg
         frame[70:250, left:left + 80] = foreground
         masked_person = dict(id=1, box=dict(x=left / 640, y=70 / 360, w=80 / 640, h=180 / 360))
         encoded = cv2.imencode(".jpg", frame)[1].tobytes()
-        assert await session.register(encoded, [masked_person], now + at)
+        assert await session.register(encoded, [masked_person], now + at), session.status()
         return director.choose(dict(status="live", session_id="synthetic-capture", people=[masked_person],
             _local_received=now + at, scene_visible=session.scene_visible,
             _patrol_view=session.patrol_view), now + at)

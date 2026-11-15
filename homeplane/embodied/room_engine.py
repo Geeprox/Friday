@@ -78,6 +78,16 @@ def project(matrix, p):
     return [float(q[0] / q[2]), float(q[1] / q[2])]
 
 
+def _reprojection_residual(matrix, source, target):
+    projected = source @ matrix[:, :2].T + matrix[:, 2]
+    scale = projected[:, 2]
+    if not np.isfinite(projected).all() or np.any(np.abs(scale) < 1e-7):
+        return None
+    offsets = projected[:, :2] / scale[:, None] - target
+    residual = float(np.median(np.hypot(offsets[:, 0], offsets[:, 1])))
+    return residual if math.isfinite(residual) else None
+
+
 def validate(config):
     if not isinstance(config, dict):
         raise ValueError("invalid_config")
@@ -263,10 +273,12 @@ class Room:
             self.reg_info = {"status": "background_unavailable"}
             return
         best = None
+        residual = None
         for ref_pts, ref_desc in [(self.ref_points, self.ref_desc)] + list(reversed(self.keyframes)):
             candidate = self.estimate(pts, desc, ref_pts, ref_desc)
             if candidate is not None and (best is None or candidate[0] > best[0]):
                 best = candidate
+                residual = None
                 n, m, inside, a, b = candidate
                 selected = inside.ravel().astype(bool)
                 # A distributed, low-residual fit is sufficient. Avoid searching every stored
@@ -277,12 +289,8 @@ class Room:
                     and cv2.contourArea(cv2.convexHull(a[selected])) > 0.08
                     and np.linalg.cond(m) < 1e5
                 ):
-                    residuals = [
-                        math.dist(project(m, p), q)
-                        for p, q in zip(a[selected], b[selected])
-                        if project(m, p) is not None
-                    ]
-                    if residuals and np.median(residuals) < 0.002:
+                    residual = _reprojection_residual(m, a[selected], b[selected])
+                    if residual is not None and residual < 0.002:
                         break
         if best is None:
             self.reg_info = {
@@ -294,11 +302,11 @@ class Room:
             return
         count, h, inliers, src, dst = best
         selected = inliers.ravel().astype(bool)
-        residual = float(
-            np.median(
-                [np.linalg.norm(np.array(project(h, p)) - q) for p, q in zip(src[selected], dst[selected])]
-            )
-        )
+        if residual is None:
+            residual = _reprojection_residual(h, src[selected], dst[selected])
+        if residual is None:
+            self.reg_info = {"status": "background_unavailable"}
+            return
         spread = cv2.contourArea(cv2.convexHull(src[selected]))
         drift = max(np.linalg.norm(np.array(project(h, p)) - p) for p in ([0, 0], [1, 0], [1, 1], [0, 1]))
         # Rotation of a fixed PTZ can be compensated with background correspondences.

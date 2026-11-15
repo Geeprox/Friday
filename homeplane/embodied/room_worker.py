@@ -12,8 +12,12 @@ from .room_protocol import MAX_JPEG, MAX_REPLY, MAX_REQUEST, packet
 
 def open_room(folder, picture):
     os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(4096 * 4096)
+    import cv2
+
     from .room_engine import load_room
 
+    # 每个镜头有自己的子进程，镜头之间并行，避免每个子进程各开一组工作线程。
+    cv2.setNumThreads(1)
     return load_room(folder, picture)
 
 
