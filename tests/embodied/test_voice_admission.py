@@ -4,16 +4,20 @@ No camera, microphone, model, household control or audible output is started.
 The existing speech fixture exercises the real cancellable HTTP/output owner.
 """
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from homeplane.embodied import home_service
 from homeplane.embodied.intent import address
 from homeplane.embodied.interaction_fleet import InteractionFleet
+from homeplane.embodied.voice_decisions import VoiceDecisions
+from homeplane.intelligence.runtime import IntelligenceRuntime
 from tests.embodied.test_speech_owner import rig as rig
 
 
@@ -58,7 +62,9 @@ def voice(tmp_path, monkeypatch, rig):
                 state.text, state.attending, wake_word=policy.wake_word
             )
             state.after_asr()
-            return dict(text=state.text, voice_revision=policy.revision, address=admitted, laya={})
+            return dict(text=state.text, voice_revision=policy.revision, address=admitted)
+        if kind == "classify":
+            return dict(type="classification", laya={"choice": "指令或任务请求", "confidence": .92})
         assert kind == "delegate", "Only the synthetic ASR and intent ports are allowed"
         state.after_plan()
         curtain = "窗帘" in state.text
@@ -75,11 +81,78 @@ def voice(tmp_path, monkeypatch, rig):
     return state
 
 
-async def speak(voice):
+async def speak(voice, *, source=None):
     await voice.home.transcribe(
-        b"SYNTHETIC-admitted-utterance", voice.owner, time.monotonic(), voice.attending
+        b"SYNTHETIC-admitted-utterance", voice.owner, time.monotonic(), voice.attending, source=source,
     )
     return voice.home.state["voice_command"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', [
+    'casual', 'command', 'uncertain', 'timeout', 'frozen', 'quota', 'gaze', 'disabled', 'revoked', 'wake', 'routine',
+])
+async def test_decisions_classifies_only_current_explicit_wake_and_does_not_grant_action(voice, tmp_path, case):
+    source = ('a' * 32, 'synthetic-camera-source')
+    text = '把玄关灯处理一下'
+    voice.text = {'gaze': text, 'wake': 'Friday', 'routine': 'Friday，打开玄关灯'}.get(case, 'Friday，' + text)
+    api_calls = []
+
+    async def reply(request):
+        api_calls.append(request)
+        assert request.url.path == '/v1/decisions'
+        payload = json.loads(request.content)
+        assert set(payload) == {'model', 'input', 'questions'} and payload['input'] == text
+        assert voice.home.wake_camera.source == source
+        assert voice.requests == ['transcribe']
+        voice.device.assert_not_awaited()
+        if case == 'timeout':
+            # 服务超时期间继续收到同一镜头的新画面。
+            while True:
+                voice.home.last_video = time.monotonic()
+                await asyncio.sleep(.05)
+        if case == 'frozen':
+            await asyncio.Event().wait()
+        if case == 'revoked':
+            voice.home.epoch += 1
+        labels = [choice['value'] for choice in payload['questions'][0]['choices']]
+        winner = '闲聊或转述' if case in {'casual', 'revoked'} else '指令或任务请求'
+        score = .7 if case == 'uncertain' else .94
+        return httpx.Response(200, json={
+            'answers': [{'type': 'choice', 'name': 'command', 'choice': winner,
+                         'probabilities': [{'value': label, 'probability': score if label == winner else (1 - score) / 2}
+                                           for label in labels]}],
+            'usage': {'input_tokens': 25, 'output_tokens': 0},
+        })
+
+    runtime = IntelligenceRuntime(None, tmp_path / 'intelligence', transport=httpx.MockTransport(reply),
+                                  key_resolver=lambda: 'synthetic-key')
+    config = runtime.settings.update({'provider': 'auto', 'cloud_text': case != 'disabled',
+                                      'daily_requests': 0 if case == 'quota' else 10})
+    voice.home.voice_decisions = VoiceDecisions(runtime)
+    command = await asyncio.wait_for(speak(voice, source=source), 3)
+    attempted = case in {'casual', 'command', 'uncertain', 'timeout', 'frozen', 'revoked'}
+    assert len(api_calls) == int(attempted)
+    assert runtime.ledger.status(config)['used']['requests'] == int(attempted)
+    if case in {'wake', 'routine'}:
+        assert voice.requests == ['transcribe'] and voice.home.wake_camera.source == source
+        if case == 'wake':
+            assert command is None
+            voice.device.assert_not_awaited()
+        else:
+            assert command['state'] == 'accepted'
+            voice.device.assert_awaited_once()
+        return
+    if case in {'casual', 'frozen', 'revoked'}:
+        assert command['state'] == ('ignored' if case == 'casual' else 'expired')
+        assert voice.requests == ['transcribe']
+        voice.device.assert_not_awaited()
+        assert not voice.audio.calls
+    else:
+        assert command['state'] == 'accepted'
+        assert voice.requests == (['transcribe', 'delegate'] if case == 'command'
+                                  else ['transcribe', 'classify', 'delegate'])
+        voice.device.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -99,7 +172,7 @@ async def test_explicit_wake_survives_optional_visual_track_loss(voice, wake, ta
     assert voice.home.speaker.state["physical_audio_verified"] is False
     assert [str(r.url.path) for r in voice.audio.calls] == ["/api/services/notify/send_message"]
     assert json.loads(voice.audio.calls[0].content)["entity_id"] == "notify.synthetic"
-    assert voice.requests == (["transcribe"] if phase == "asr" else ["transcribe", "delegate"])
+    assert voice.requests == (["transcribe"] if phase == "asr" else ["transcribe", "classify", "delegate"])
 
 
 @pytest.mark.asyncio
@@ -124,7 +197,7 @@ async def test_gaze_only_request_still_expires_after_track_loss(voice, phase):
     voice.device.assert_not_awaited()
     voice.home.command.assert_not_awaited()
     assert not voice.audio.calls
-    assert voice.requests == (["transcribe"] if phase == "asr" else ["transcribe", "delegate"])
+    assert voice.requests == (["transcribe"] if phase == "asr" else ["transcribe", "classify", "delegate"])
 
 
 @pytest.mark.asyncio

@@ -742,27 +742,33 @@ def test_voice_worker_accepts_only_the_exact_configured_wake_on_short_input(monk
     classify.assert_not_called()
 
 
-def test_voice_worker_passes_recognized_questions_and_tasks_without_waiting_for_laya(monkeypatch):
+def test_voice_worker_reports_transcripts_before_a_separate_classification(monkeypatch):
     texts = ['', 'Friday，客厅温度多少', 'Friday，每晚十点关客厅灯', 'Friday，你喜欢哪本书']
     transcribe = Mock(side_effect=[(text, {}) for text in texts])
     classification = {'choice': '指令或任务请求', 'confidence': .9}
-    classify = Mock(return_value={'answers': {'command': classification}})
     output = []
+
+    def classify_after_transcripts(*args):
+        assert [row['type'] for row in output] == ['ready', 'transcript', 'transcript', 'transcript']
+        return {'answers': {'command': classification}}
+
+    classify = Mock(side_effect=classify_after_transcripts)
     request = dict(op='transcribe', voice_revision=7, pcm=base64.b64encode(bytes(16000)).decode())
+    messages = [json.dumps(dict(request, id=i)) for i in range(1, len(texts))]
+    messages.append(json.dumps(dict(id=len(texts), op='classify', voice_revision=7, text=texts[-1])))
     monkeypatch.setattr(voice_worker, 'LocalASR', lambda _: SimpleNamespace(label='synthetic', transcribe=transcribe))
     monkeypatch.setattr(voice_worker, 'read_preferences', lambda: SimpleNamespace(wake_word='Friday', revision=7))
     monkeypatch.setattr(voice_worker, 'signal', SimpleNamespace(signal=Mock(), SIGTERM=15))
-    monkeypatch.setattr(voice_worker, 'sys', SimpleNamespace(
-        stdin=[json.dumps(dict(request, id=i)) for i in range(1, len(texts))], stderr=sys.stderr))
+    monkeypatch.setattr(voice_worker, 'sys', SimpleNamespace(stdin=messages, stderr=sys.stderr))
     monkeypatch.setattr(voice_worker, 'emit', output.append)
     monkeypatch.setitem(sys.modules, 'homeplane.shared_laya', SimpleNamespace(
         SharedLaya=lambda: SimpleNamespace(status=lambda: {'state': 'synthetic'}, predict=classify)))
 
     voice_worker.main()
 
-    _, question, task, other = output
+    _, question, task, other, answer = output
     assert [question['text'], task['text'], other['text']] == texts[1:]
     assert all(row['address']['admitted'] for row in (question, task, other))
-    assert question['laya'] is None and task['laya'] is None
-    assert other['laya'] == classification
+    assert all('laya' not in row for row in (question, task, other))
+    assert answer == {'id': len(texts), 'type': 'classification', 'laya': classification}
     classify.assert_called_once()

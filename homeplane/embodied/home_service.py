@@ -60,10 +60,11 @@ def voice_command_outcome(receipt):
 
 class HomeService:
     def __init__(self, camera_id=None, voice_provider=None, *, voice_preferences=None, voice_routing=None,
-                 input_allowed=None):
+                 input_allowed=None, voice_decisions=None):
         self.camera_id = camera_id
         self.voice_provider = voice_provider
         self.voice_routing = voice_routing
+        self.voice_decisions = voice_decisions if voice_provider is None else voice_provider.voice_decisions
         self.input_allowed = input_allowed or (lambda: True)
         self.voice_preferences=voice_preferences or read_preferences
         self.audio_allowed = True
@@ -558,7 +559,7 @@ class HomeService:
                 self.state['reason']='唤醒词已更新，请重新说一次'
                 return
             self.state["asr_ms"] = result.get("latency_ms")
-            self.state["laya_result"] = result.get("laya")
+            self.state["laya_result"] = None
             self.state["asr_quality"] = result.get("asr_quality")
             route = result.get("address", {})
             self.state["last_address"] = route
@@ -608,8 +609,8 @@ class HomeService:
                 return
             self._wake_focus(result['text'], captured, epoch, policy, source)
             decision_started = time.monotonic()
-            laya = result.get("laya") or {}
-            body = address(result['text'],attending,wake_word=policy.wake_word).get('body','')
+            addressed = address(result['text'], attending, wake_word=policy.wake_word)
+            body = addressed.get('body', '')
             if is_task_request(body):
                 await self.prepare_task(result['text'],event,captured,epoch,attending,policy,command,owner=owner)
                 return
@@ -638,14 +639,29 @@ class HomeService:
                     "latency_ms": round((time.monotonic() - decision_started) * 1000, 2),
                 }
             else:
+                request_id = hashlib.sha256(f'voice-intent:{self.camera_id}:{event}:{epoch}:{captured}'.encode()).hexdigest()
+                laya = None
+                if self.voice_decisions is not None and source is not None and addressed.get('wake_word') is True:
+                    laya = await self.voice_decisions.classify(
+                        body, request_id=request_id, current=current, deadline=min(time.monotonic() + 1.6, captured + 10),
+                    )
+                if current() and laya is None:
+                    classified = await self.request('classify', text=result['text'], attending=attending,
+                                                    voice_revision=policy.revision)
+                    laya = classified.get('laya') or {}
+                if not current():
+                    command.update(state='expired', updated_at=time.time())
+                    self.state['reason'] = '指令已过期或操作者变化'
+                    return
+                self.state['laya_result'] = laya
                 if laya.get("choice") == "闲聊或转述" and laya.get("confidence", 0) >= 0.75:
                     command.update(state="ignored", updated_at=time.time())
                     self.state["reason"] = "闲聊，未触发任务"
                     return
-                self.state["reason"] = "ARL Codex 正在理解指令"
+                self.state["reason"] = "正在理解指令"
                 task = await self.request(
                     "delegate", text=result["text"], context=dict(route, person_id=owner), laya=laya,
-                    request_id=hashlib.sha256(f'voice-intent:{self.camera_id}:{event}:{epoch}:{captured}'.encode()).hexdigest(),
+                    request_id=request_id,
                     voice_revision=policy.revision,
                 )
                 self.state["codex_runtime"] = task.get("runtime")

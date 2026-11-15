@@ -1,8 +1,4 @@
-"""Local PCM -> Whisper -> addressing + Laya; complex tasks use ARL Codex.
-
-Friday writes no audio/transcript files or downloads. Explicit model text/results
-use ARL's shared durable queue and its retention policy.
-"""
+"""本机转写先回报唤醒，语句分类和任务理解由各自的请求接续。"""
 
 import base64
 import contextlib
@@ -15,7 +11,6 @@ import warnings
 
 import numpy as np
 
-from homeplane.embodied.household import basic_command
 from homeplane.embodied.intent import (
     LAYA_QUESTIONS,
     PLAN_INSTRUCTIONS,
@@ -25,10 +20,7 @@ from homeplane.embodied.intent import (
     transcript_quality,
 )
 from homeplane.embodied.local_asr import LocalASR
-from homeplane.embodied.local_intent import household_plan
 from homeplane.embodied.voice_preferences import read_preferences
-from homeplane.home_questions import is_home_question
-from homeplane.task_composition import is_task_request
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
@@ -49,17 +41,15 @@ def main():
     from homeplane.shared_laya import SharedLaya
 
     asr = LocalASR(os.environ.get("FRIDAY_ASR", "sensevoice"))
-    agent = SharedLaya()
+    agent = None
     intent_runtime = None
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     # Load/warm only the existing local checkpoint. Silence never becomes a command.
     with contextlib.redirect_stdout(sys.stderr):
         asr.transcribe(np.zeros(16000, dtype=np.float32))
-    try:
-        laya_status = agent.status()
-    except Exception:
-        laya_status = {"state": "unavailable"}
-    emit({"type": "ready", "asr": asr.label, "semantic": "shared_laya_command_gate", "audio_persisted": False, "intelligence": {"laya": "arl_shared", "laya_state": laya_status.get("state"), "laya_via_shared_arl": True, "codex": "on_demand_scoped_text", "agent_tools": False}})
+    emit({"type": "ready", "asr": asr.label, "semantic": "separate_command_gate", "audio_persisted": False,
+          "intelligence": {"laya": "arl_shared", "laya_state": "on_demand", "laya_via_shared_arl": True,
+                           "codex": "on_demand_scoped_text", "agent_tools": False}})
     for line in sys.stdin:
         request = {}
         try:
@@ -90,37 +80,30 @@ def main():
                     valid = False
                     quality_reason = "wake_word_required"
                     route = {"admitted": False, "reason": quality_reason}
-                semantic = None
-                # 已识别的问答和草稿由各自的入口核对意图，转写无需等待 Laya。
-                if route["admitted"] and not (is_task_request(route["body"]) or is_home_question(route["body"])):
-                    if household_plan(text, request.get("attending") is True, wake_word=policy.wake_word) or basic_command(
-                        text, request.get("attending") is True, wake_word=policy.wake_word
-                    ):
-                        semantic = {
-                            "choice": "指令或任务请求",
-                            "confidence": 1.0,
-                            "method": "strict_local_grammar",
-                        }
-                    else:
-                        try:
-                            semantic = agent.predict(classify_input(text, route), LAYA_QUESTIONS)["answers"][
-                                "command"
-                            ]
-                        except Exception:
-                            semantic = {"status": "unavailable"}
                 emit(
                     {
                         "id": request["id"],
                         "type": "transcript",
                         "text": text if valid else "",
                         "address": route,
-                        "laya": semantic,
                         "asr_quality": dict(quality, filter=quality_reason),
                         "voice_revision":policy.revision,
                         "signal": {"input_rms": round(rms, 4), "gain": round(gain, 2)},
                         "latency_ms": round((time.monotonic() - began) * 1000, 1),
                     }
                 )
+            elif op == "classify":
+                text = request.get("text")
+                route = address(text, request.get("attending") is True, wake_word=policy.wake_word)
+                if not route.get("admitted"):
+                    raise ValueError("invalid_task")
+                try:
+                    if agent is None:
+                        agent = SharedLaya()
+                    semantic = agent.predict(classify_input(text, route), LAYA_QUESTIONS)["answers"]["command"]
+                except Exception:
+                    semantic = {"status": "unavailable"}
+                emit({"id": request["id"], "type": "classification", "laya": semantic})
             elif op == "delegate":
                 text = request.get("text", "")
                 if not isinstance(text, str) or not 1 <= len(text) <= 1000:

@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from homeplane.embodied.extensions import ActionBindings, RecognizerRegistry
 from homeplane.embodied.home_service import HomeService
+from homeplane.embodied.voice_decisions import VoiceDecisions
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.page_recording import PageRecording
 from homeplane.embodied.paths import (
@@ -118,7 +119,7 @@ party_camera = PartyCamera()
 recorder = PageRecording(DATA / "recordings")
 record_lock = asyncio.Lock()
 voice_routing = VoiceRouting(lambda: interaction_enabled and not (PRIVATE / 'voice-input-paused').exists())
-home = HomeService(SELECTED['id'], voice_routing=voice_routing,
+home = HomeService(SELECTED['id'], voice_routing=voice_routing, voice_decisions=VoiceDecisions(),
                    input_allowed=lambda: camera_interaction.allowed(SELECTED['id'], directory=PRIVATE))
 from homeplane.embodied.interaction import InteractionEngine
 from homeplane.embodied.interaction_fleet import InteractionFleet

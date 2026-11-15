@@ -14,6 +14,31 @@ from .budget import EnhancementUnavailable
 from .openai import token_usage
 
 
+def choice_scores(payload, name, choices):
+    answers = payload.get("answers")
+    if not isinstance(answers, list) or len(answers) != 1:
+        raise EnhancementUnavailable("api_decision_invalid")
+    answer = answers[0]
+    if (
+        not isinstance(answer, dict)
+        or answer.get("type") != "choice"
+        or answer.get("name") != name
+        or answer.get("choice") not in choices
+    ):
+        raise EnhancementUnavailable("api_decision_invalid")
+    probabilities = answer.get("probabilities", [])
+    if (
+        not isinstance(probabilities, list)
+        or len(probabilities) != len(choices)
+        or any(not isinstance(item, dict) or type(item.get("value")) is not str for item in probabilities)
+    ):
+        raise EnhancementUnavailable("api_decision_invalid")
+    scores = {item["value"]: item.get("probability") for item in probabilities}
+    if len(scores) != len(choices):
+        raise EnhancementUnavailable("api_decision_invalid")
+    return answer["choice"], scores
+
+
 class OpenAIDecisionProvider:
     def __init__(self, runtime, *, profiles=None):
         self.runtime, self.profiles = runtime, profiles
@@ -57,29 +82,7 @@ class OpenAIDecisionProvider:
                 text_tokens=len(json.dumps(body).encode()) + 4096,
             )
             result.latency_ms = (time.monotonic() - started) * 1000
-            answers = payload.get("answers")
-            if not isinstance(answers, list) or len(answers) != 1:
-                raise EnhancementUnavailable("api_decision_invalid")
-            answer = answers[0]
-            if (
-                not isinstance(answer, dict)
-                or answer.get("type") != "choice"
-                or answer.get("name") != request.task_id
-                or answer.get("choice") not in labels
-            ):
-                raise EnhancementUnavailable("api_decision_invalid")
-            probabilities = answer.get("probabilities", [])
-            if (
-                not isinstance(probabilities, list)
-                or len(probabilities) != len(labels)
-                or any(
-                    not isinstance(item, dict) or type(item.get("value")) is not str for item in probabilities
-                )
-            ):
-                raise EnhancementUnavailable("api_decision_invalid")
-            scores = {item["value"]: item.get("probability") for item in probabilities}
-            if len(scores) != len(labels):
-                raise EnhancementUnavailable("api_decision_invalid")
+            _, scores = choice_scores(payload, request.task_id, labels)
             result.token_count = token_usage(payload)
             result.metrics = {"runtime": "openai", "inference_attempted": True}
             return ConservativeDecisionGate("openai_decisions", config.decisions_model, self.profiles).apply(
