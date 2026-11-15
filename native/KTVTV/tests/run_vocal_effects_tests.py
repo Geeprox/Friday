@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compile production Java and run pure wet/control lifecycle tests; no devices."""
 from pathlib import Path
+import argparse
 import json
 import re
 import shutil
@@ -17,8 +18,12 @@ from ktv_build_workspace import build_workspace
 
 def main() -> None:
     root = ROOT
-    jdk = root / ".artifacts/embodied-toolchain/jdk/bin"
-    jar = root / ".artifacts/embodied-toolchain/android/android-35/android.jar"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--java", type=Path, default=root / ".artifacts/embodied-toolchain/jdk")
+    parser.add_argument("--sdk", type=Path, default=root / ".artifacts/embodied-toolchain/android")
+    args = parser.parse_args()
+    jdk = args.java.absolute() / "bin"
+    jar = args.sdk.absolute() / "android-35/android.jar"
     test_root = root / "native/KTVTV/tests"
     source_root = root / "native/KTVTV/android/src"
     compiler = shutil.which("c++")
@@ -58,9 +63,9 @@ def main() -> None:
         production = output / "production"
         production.mkdir()
         tests = [test_root / (name + ".java") for name in (
-            "MicrophoneIntentTest", "ImmediateControlTest", "LyricWindowTest",
-            "QueueRefreshContinuityTest", "BackingStartupIntentTest", "MicMuteConfirmationTest", "CoordinatorClientTest",
-            "CompatVocalEffectsTest", "PcmContractTest", "FeedbackNotchTest", "AudioBackendSelectionTest", "CompatMuteReadbackTest", "NativeVendorContractTest", "AudioEngineReleaseTest")]
+            "PlaybackOnlyContractTest", "PartyPlaybackTest", "ImmediateControlTest", "LyricWindowTest",
+            "QueueRefreshContinuityTest", "QueuePlaybackIntentTest", "SourceStateTest", "BackingStartupIntentTest", "MicMuteConfirmationTest", "CoordinatorClientTest",
+            "CompatVocalEffectsTest", "PcmContractTest", "FeedbackNotchTest", "CompatMuteReadbackTest", "NativeVendorContractTest", "AudioEngineReleaseTest")]
         run([str(jdk / "javac"), "--release", "8", "-cp", str(jar),
                         "-d", str(production), *map(str, sorted(source_root.rglob("*.java")) + tests)], check=True)
         for test in tests:

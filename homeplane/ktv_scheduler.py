@@ -17,7 +17,7 @@ class PriorityPool:
         self.resize(workers)
 
     def resize(self, workers):
-        if type(workers) is not int or not 1 <= workers <= 4:
+        if type(workers) is not int or not 1 <= workers <= 10:
             raise ValueError("invalid_workers")
         with self.condition:
             self.desired = workers

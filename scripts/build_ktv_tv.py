@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 # Set this before local imports so direct invocation creates no source-tree pyc.
-from build_ktv_audio_guard import source_snapshot  # noqa: E402
+from build_ktv_audio_guard import NS, manifest_identity, source_snapshot  # noqa: E402
 from ktv_build_tools import (  # noqa: E402
     build_environment,
     isolated_command,
@@ -34,6 +34,19 @@ from prepare_ktv_coordinator import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+PACKAGE = "local.friday.ktv"
+MAIN_PERMISSIONS = {"android.permission.INTERNET"}
+
+
+def validate_main_manifest(source):
+    """正式包只注册点歌播放入口，音频诊断留在源码中。"""
+    identity = manifest_identity(source, PACKAGE)
+    app = ET.parse(source / "AndroidManifest.xml").getroot().find("application")
+    if (set(identity["permissions"]) != MAIN_PERMISSIONS or identity["min_api"] != 26 or identity["target_api"] != 35
+            or app is None or [node.get(NS + "name") for node in app.findall("activity")] != [".MainActivity"]
+            or app.findall("service")):
+        raise ValueError("main_playback_only_contract_required")
+    return identity
 
 
 def connection_profile(connection_config=None, nas_connection_config=None, host=None, *, root=ROOT):
@@ -101,8 +114,8 @@ def main():
     before = source_snapshot(source)
     bridge_source = ROOT / "native/KTVTV/strict-cache"
     bridge_before = source_snapshot(bridge_source)
-    manifest = ET.parse(source / "AndroidManifest.xml").getroot()
-    version = manifest.attrib["{http://schemas.android.com/apk/res/android}versionName"]
+    identity = validate_main_manifest(source)
+    version = identity["version"]
     if not re.fullmatch(r"[0-9]+\.[0-9]+", version):
         raise ValueError("invalid_version")
     output = ROOT / ".artifacts/ktv-tv"
@@ -133,13 +146,14 @@ def main():
         classes, dex = build / "classes", build / "dex"
         classes.mkdir()
         dex.mkdir()
-        sources = sorted((source / "src").rglob("*.java"))
+        java_source = source / "src"
+        sources = [java_source / "local/friday/ktv/MainActivity.java"]
         if profile is not None:
             generated = build / "SetupDefaults.java"
             generated.write_text(generated_setup_defaults(profile))
             generated.chmod(0o600)
-            sources = [generated if p.name == "SetupDefaults.java" else p for p in sources]
-        run(args.java / "bin/javac", "--release", "8", "-classpath", android, "-d", classes, *sources)
+            sources.append(generated)
+        run(args.java / "bin/javac", "--release", "8", "-classpath", android, "-sourcepath", java_source, "-d", classes, *sources)
         run(d8, "--min-api", "26", "--lib", android, "--output", dex, *sorted(classes.rglob("*.class")))
         resource_args = []
         resources = source / "res"
@@ -196,14 +210,6 @@ def main():
                     source / "cpp/NativeDuplexIO.cpp", *oboe_objects,
                     "-laaudio", "-lOpenSLES", "-llog", "-ldl", "-o", library)
                 libraries.append((abi, "libktv_probe.so", library))
-                # Optional wet effects run in their own process. Keeping this library
-                # separate prevents its JNI/DSP lifetime from owning the dry monitor.
-                wet_library = build / (abi + "-libfriday_wet.so")
-                wet_target = "aarch64-linux-android34" if abi == "arm64-v8a" else "armv7a-linux-androideabi34"
-                run(clang, "--target=" + wet_target, "-shared", "-O2", "-fPIC", "-std=c++17",
-                    "-fno-exceptions", "-fno-rtti", "-static-libstdc++", "-Wl,-z,max-page-size=16384",
-                    source / "cpp/wet/NativeWet.cpp", "-lOpenSLES", "-llog", "-o", wet_library)
-                libraries.append((abi, "libfriday_wet.so", wet_library))
         with zipfile.ZipFile(build / "resources.apk") as resources, zipfile.ZipFile(build / "unsigned.apk", "w",
                                                                                       zipfile.ZIP_DEFLATED) as apk:
             for item in resources.infolist():
@@ -237,24 +243,21 @@ def main():
         badging = run(aapt, "dump", "badging", apk_path)
         assert "name='local.friday.ktv'" in badging
         actual_permissions = set(re.findall(r"uses-permission: name='([^']+)'", permissions))
-        assert actual_permissions == {"android.permission.INTERNET", "android.permission.RECORD_AUDIO", "android.permission.MODIFY_AUDIO_SETTINGS", "local.friday.ktv.audio.CONTROL"}
+        if actual_permissions != MAIN_PERMISSIONS:
+            raise ValueError("main_playback_only_permissions_required")
         if source_snapshot(source) != before or source_snapshot(bridge_source) != bridge_before:
             raise ValueError("source_changed_during_build")
         private_input = args.nas_connection_config or args.connection_config
         if private_input and hashlib.sha256(read_regular(private_input)).hexdigest() != profile["input_sha256"]:
             raise ValueError("private_profile_changed_during_build")
         apk_path.chmod(0o600)
-        receipt = {"package": "local.friday.ktv", "version": version, "min_api": 26, "target_api": 35,
+        receipt = {**identity, "playback_only": True,
                    "household_provisioned": profile is not None, "role": profile["role"] if profile else "portable",
                    "signing_identity_reused": signing_reused,
                    "sha256": hashlib.sha256(apk_path.read_bytes()).hexdigest(), "bytes": apk_path.stat().st_size,
                    "signature_verified": True, "permissions_verified": True, "installed": False, "native_audio": args.native_probe,
                    "audio_started": False, "microphone_started": False, "device_latency_verified": False,
-                   "wet_effects_built": args.native_probe, "wet_effects_native_min_api": 34,
-                   "wet_effects_device_verified": False,
-                   "source_sha256": {**before, **bridge_before}, "source_stable_verified": True,
-                   "strict_platform_bridge_required_for_vendor_dry": True,
-                   "compat_vocal_presets": 7, "effects_add_dry_fifo_frames": 0}
+                   "source_sha256": {**before, **bridge_before}, "source_stable_verified": True}
         if profile is not None:
             receipt["connection_profile"] = {"role": profile["role"], "fingerprint": profile["fingerprint"],
                                              "input_sha256": profile["input_sha256"],

@@ -2,6 +2,7 @@
 
 import shutil
 import threading
+import time
 import uuid
 import wave
 
@@ -214,11 +215,16 @@ def test_pool_resize_and_scheduler_settings_persist_without_interrupting_active_
         simulated=True,
     )
     try:
+        assert queue.scheduler_status()["settings"]["model"] == 3
+        assert queue.scheduler_status()["limits"]["model"] == 10
         assert (
             queue.configure({"mode": "manual", "download": 3, "model": 2, "encode": 1})["settings"]["model"]
             == 2
         )
         assert queue.pools["acquire"].desired == 3 and queue.pools["separate"].desired == 2
+        assert queue.configure({"mode": "manual", "download": 2, "model": 10, "encode": 2})["settings"]["model"] == 10
+        with pytest.raises(HTTPException):
+            queue.configure({"mode": "manual", "download": 2, "model": 11, "encode": 2})
         assert not queue.scheduler_status()["optimal_measured"]
         with pytest.raises(HTTPException):
             queue.configure({"mode": "manual", "download": 4, "model": 1, "encode": 1})
@@ -227,7 +233,7 @@ def test_pool_resize_and_scheduler_settings_persist_without_interrupting_active_
         assert queue.configure({"mode": "auto", "download": 3, "model": 2, "encode": 4})["settings"] == {
             "mode": "auto",
             "download": 2,
-            "model": 1,
+            "model": 3,
             "encode": 2,
         }
     finally:
@@ -243,6 +249,118 @@ def test_pool_resize_and_scheduler_settings_persist_without_interrupting_active_
         assert restarted.scheduler_status()["settings"]["mode"] == "auto"
     finally:
         restarted.close()
+
+
+def test_default_pool_runs_three_separations_with_headroom(tmp_path):
+    source = tmp_path / "source.wav"
+    wav(source)
+    release, started = threading.Event(), threading.Event()
+    running = set()
+    lock = threading.Lock()
+
+    def separate(source, folder, event):
+        with lock:
+            running.add(folder.name)
+            if len(running) == 3:
+                started.set()
+        assert release.wait(2)
+        return source
+
+    queue = Queue(tmp_path / "runtime", acquire=lambda *a: source, separate=separate,
+                  transcode=lambda s, o, c: shutil.copyfile(s, o), simulated=True,
+                  memory_available=lambda: 16 * 1024**3)
+    try:
+        jobs = [queue.submit(request(str(i))) for i in range(100, 103)]
+        assert started.wait(1)
+        assert queue.scheduler_status()["active_models"] == 3
+        release.set()
+        assert all(wait(queue, item)["state"] == "ready" for item in jobs)
+    finally:
+        release.set()
+        queue.close()
+
+
+def test_storage_wait_leaves_download_slot_free_and_resumes(tmp_path, monkeypatch):
+    from homeplane import ktv_service
+
+    source = tmp_path / "source.wav"
+    wav(source)
+    real = shutil.disk_usage(tmp_path)
+    available = [100]
+    monkeypatch.setattr(ktv_service.shutil, "disk_usage", lambda path: real._replace(free=available[0]))
+    monkeypatch.setattr(ktv_service, "STORAGE_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(ktv_service, "STORAGE_WAIT_SECONDS", 1)
+    monkeypatch.setattr(ktv_service, "PREPARATION_RESERVE_BYTES", 1024)
+    monkeypatch.setattr(ktv_service, "MAX_STORAGE", 1)
+    called = []
+    trim_requests = []
+
+    def acquire(song_id, *_):
+        assert trim_requests[-1] == 0
+        called.append(song_id)
+        return source
+
+    class Manager:
+        def request_trim(self, amount=0):
+            trim_requests.append(amount)
+
+    class Archive:
+        def restore_job(self, song_id, folder, binding, *, audio_origin, reserve):
+            if song_id != "101":
+                return None
+            reserve(50)
+            value = {"media": {}, "video": {"status": "unavailable"}, "cache_hit": True}
+            for kind in ("instrumental", "original"):
+                path = folder / (kind + ".wav")
+                shutil.copyfile(source, path)
+                value["media"][kind] = {"sha256": "a" * 64, "duration_seconds": 0.01,
+                                         "filename": path.name, "bytes": path.stat().st_size}
+            return value
+
+    queue = Queue(tmp_path / "runtime", acquire=acquire, separate=lambda s, *a: s,
+                  transcode=lambda s, o, c: shutil.copyfile(s, o), simulated=True, download_workers=1)
+    queue.storage_manager, queue.archive = Manager(), Archive()
+    try:
+        pending = queue.submit(request("100"))
+        deadline = time.monotonic() + 0.8
+        while queue.get(pending["id"])["progress"]["stage"] != "waiting_storage" and time.monotonic() < deadline:
+            threading.Event().wait(0.01)
+        assert queue.get(pending["id"])["progress"]["stage"] == "waiting_storage"
+        assert trim_requests[0] > 0
+        assert wait(queue, queue.submit(request("101")))["cache_hit"]
+        assert not called
+        available[0] = 4096
+        assert wait(queue, pending)["state"] == "ready"
+        assert called == ["100"] and queue.storage_reservations == {}
+    finally:
+        queue.close()
+
+def test_ready_queue_publishes_final_stems_and_discards_owned_intermediates(tmp_path):
+    original = tmp_path / "original.wav"
+    wav(original)
+
+    def acquire(song, folder, event):
+        staged = folder / "downloaded-input.wav"
+        shutil.copyfile(original, staged)
+        return staged
+
+    def separate(source, folder, event):
+        temporary = folder / ".separation"
+        temporary.mkdir()
+        staged = temporary / "instrumental.wav"
+        shutil.copyfile(source, staged)
+        return staged
+
+    queue = Queue(tmp_path / "runtime", acquire=acquire, separate=separate,
+                  transcode=lambda s, o, c: shutil.copyfile(s, o), simulated=True)
+    try:
+        item = queue.submit(request())
+        assert wait(queue, item)["state"] == "ready"
+        folder = queue.jobs_dir / item["id"]
+        assert sorted(p.name for p in folder.iterdir()) == ["instrumental.wav", "original.wav", "state.json"]
+        assert original.is_file()
+    finally:
+        queue.close()
 
 
 def test_explicit_mv_cache_stays_separate_and_auto_reuses_song_audio(tmp_path):

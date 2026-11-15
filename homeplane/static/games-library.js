@@ -298,7 +298,8 @@ export function mountGames(root,{go=()=>{}}={}){
   const stamp=generation;screen.append(h('p','正在连接家庭 KTV…','games-connection'));
   try{
    if(!document.querySelector('link[data-ktv-styles]')){const css=h('link');css.rel='stylesheet';css.href='/static/ktv-console/style.css';css.setAttribute('data-ktv-styles','');document.head.append(css);}
-   if(!globalThis.FridayPartyAudio)await import('/api/games/ktv/party-audio.js');
+   // 附加音效未加载时仍可点歌和管理缓存。
+   if(!globalThis.FridayPartyAudio)await import('/api/games/ktv/party-audio.js').catch(()=>{});
    if(!alive||stamp!==generation||selection?.id!=='ktv')return;screen.replaceChildren();
    ktv=mountKtv(screen,{endpoint:'/api/games/ktv',embedded:true,partyAudio:globalThis.FridayPartyAudio,readOnly:document.body.dataset.consoleReadOnly==='true',onBack:()=>{selection=null;generation++;draw();screen.querySelector('button[aria-label="查看家庭 KTV"]')?.focus?.();}});
   }catch{if(alive&&stamp===generation){screen.replaceChildren(h('h2','家庭 KTV'),h('p','页面暂时无法载入，请重试。','games-empty'),button('重新载入',()=>{screen.replaceChildren();void openKtv();}),button('返回游戏库',()=>{selection=null;generation++;draw();}));}}

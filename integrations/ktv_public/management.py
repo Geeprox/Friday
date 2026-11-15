@@ -39,6 +39,9 @@ class Management:
               CREATE TABLE IF NOT EXISTS owner_settings(name TEXT PRIMARY KEY,value TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS owner_receipts(request_id TEXT PRIMARY KEY,body_sha TEXT NOT NULL,
                 result TEXT NOT NULL,created INTEGER NOT NULL);
+              CREATE TABLE IF NOT EXISTS managed_editions(song_id TEXT NOT NULL,source TEXT NOT NULL,
+                version TEXT NOT NULL,timeline TEXT NOT NULL,job TEXT NOT NULL,lyrics TEXT NOT NULL,
+                updated INTEGER NOT NULL,PRIMARY KEY(song_id,source,version));
             """)
             # Retain song/content associations separately from expiring scene metadata.
             for row in db.execute("SELECT * FROM coordinator_manifests").fetchall():
@@ -49,6 +52,55 @@ class Management:
         for spec in self.coordinator._specs(row).values():
             db.execute("INSERT INTO managed_media VALUES(?,?,?,?,?) ON CONFLICT(song_id,sha) DO UPDATE SET title=excluded.title,bytes=excluded.bytes,last_used=max(last_used,excluded.last_used)",
                        (job["song_id"], spec["sha256"], job["title"], spec["bytes"], row["updated"]))
+        source = db.execute("SELECT source FROM songs WHERE id=?", (row["song"],)).fetchone()
+        if source is not None:
+            db.execute("INSERT OR REPLACE INTO managed_editions VALUES(?,?,?,?,?,?,?)",
+                       (job["song_id"], source[0], row["version"], row["timeline"], row["job"], row["lyrics"], row["updated"]))
+            db.execute("DELETE FROM managed_editions WHERE song_id=? AND source=? AND version NOT IN "
+                       "(SELECT version FROM managed_editions WHERE song_id=? AND source=? ORDER BY updated DESC,rowid DESC LIMIT 3)",
+                       (job["song_id"], source[0], job["song_id"], source[0]))
+
+    def verified_edition(self, song_id, source, db):
+        for row in db.execute("SELECT * FROM managed_editions WHERE song_id=? AND source=? "
+                              "ORDER BY updated DESC,rowid DESC LIMIT 3",
+                              (song_id, source)):
+            specs = json.loads(row["job"])["media"]
+            if all(self._verified_asset(spec, db) for spec in specs.values()):
+                return row
+        return None
+
+    def _verified_asset(self, spec, db):
+        record = db.execute("SELECT * FROM coordinator_cache WHERE sha=?", (spec["sha256"],)).fetchone()
+        return bool(record and record["state"] == "ready" and record["bytes"] == spec["bytes"]
+                    and self.coordinator._identity(self.coordinator.media_root / spec["sha256"])
+                    == self.coordinator._verified_identity(record))
+
+    def attach_edition(self, row, queue_id, title, source, requester, db):
+        job = json.loads(row["job"])
+        job.update(id=queue_id, title=title, requester=requester, source=source)
+        for key in ("video", "background"):
+            spec = job.get(key)
+            if spec and spec.get("status") == "ready" and not self._verified_asset(spec, db):
+                job.pop(key)
+        if "guide" in job and not all(self._verified_asset(spec, db) for spec in (job["guide"], job["guide"]["reference"])):
+            job.pop("guide")
+        guide = job.get("guide")
+        if guide:
+            reference = guide["reference"]
+            db.execute("UPDATE songs SET guide_sha=?,guide_bytes=?,guide_duration=?,guide_reference_sha=?,guide_reference_bytes=?,"
+                       "guide_reference_duration=?,guide_reference_kind=? WHERE id=?",
+                       (guide["sha256"], guide["bytes"], guide["duration_ms"], reference["sha256"], reference["bytes"],
+                        reference["duration_ms"], reference["kind"], queue_id))
+        version = fingerprint([row["version"], queue_id])
+        lyrics = json.loads(row["lyrics"])
+        if lyrics.get("retry_exhausted") is True:
+            # 上一场尝试耗尽不应阻止新场重新查找同一版本。
+            lyrics = {"status": "unavailable", "lines": []}
+        db.execute("INSERT INTO coordinator_manifests VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (queue_id, version, "", row["timeline"], json.dumps(job, sort_keys=True),
+                    json.dumps(lyrics, sort_keys=True), "", "", 0, int(time.time())))
+        db.execute("INSERT OR IGNORE INTO coordinator_manifest_versions VALUES(?,?)", (queue_id, version))
+        self.coordinator.index_lyrics(db, queue_id, version, lyrics, json.loads(row["timeline"]))
 
     def touch(self, song_id):
         with self.store.connection() as db:
@@ -75,31 +127,52 @@ class Management:
     def preferences(self, value=None):
         current = self.settings("room", DEFAULTS)
         if value is not None:
-            if (not value or set(value) - set(DEFAULTS)
+            if (not value or set(value) - {"theme", "music_gain", "sfx_gain", "original"}
                     or any(type(v) is not int or not 0 <= v <= (1 if k == "original" else 100)
                            for k, v in value.items() if k not in {"theme", "vocal_preset"})
-                    or "theme" in value and (not isinstance(value["theme"], str) or value["theme"] not in {"content", "festival", "live"})
-                    or "vocal_preset" in value and (not isinstance(value["vocal_preset"], str) or value["vocal_preset"] not in {"dry", "pop", "ktv", "power", "opera", "studio", "echo"})):
+                    or "theme" in value and (not isinstance(value["theme"], str) or value["theme"] not in {"content", "festival", "live"})):
                 raise self.error(400, "invalid_preferences")
             current.update(value)
             self.save("room", current)
         return current
 
     def protected(self):
-        result = set()
+        return self._protected_media()[0]
+
+    def _protected_media(self):
+        songs, guides = set(), set()
+
+        def include(row):
+            songs.add(row["song_id"])
+            for field in ("guide_sha", "guide_reference_sha"):
+                checksum = row[field]
+                if isinstance(checksum, str) and SHA.fullmatch(checksum):
+                    guides.add(checksum)
+
         with self.store.lock, self.store.connection() as db:
+            db.execute("BEGIN")
             for room in db.execute("SELECT id,current_song,played FROM rooms WHERE closed=0"):
                 played = set(json.loads(room["played"]))
-                for row in db.execute("SELECT id,song_id,state FROM songs WHERE room=? AND removed=0", (room["id"],)):
+                for row in db.execute(
+                    "SELECT id,song_id,state,guide_sha,guide_reference_sha FROM songs WHERE room=? AND removed=0",
+                    (room["id"],),
+                ):
                     if row["id"] == room["current_song"] or (row["id"] not in played and row["state"] not in {"failed", "cancelled"}):
-                        result.add(row["song_id"])
-            for row in db.execute("SELECT s.song_id FROM commands c JOIN songs s ON s.id=c.song JOIN rooms r ON r.id=c.room WHERE r.closed=0 AND c.action='play' AND c.seq>r.last_command AND c.created>?", (int(time.time()) - 20,)):
-                result.add(row[0])
-        return result
+                        include(row)
+            now = int(time.time())
+            for row in db.execute(
+                "SELECT s.song_id,s.guide_sha,s.guide_reference_sha FROM commands c "
+                "JOIN songs s ON s.id=c.song AND s.room=c.room AND s.removed=0 "
+                "JOIN rooms r ON r.id=c.room WHERE r.closed=0 AND c.action='play' "
+                "AND c.seq>r.last_command AND c.created>? AND c.created<=?",
+                (now - 20, now),
+            ):
+                include(row)
+        return songs, guides
 
     def inventory(self):
         with self.lock:
-            protected = self.protected()
+            protected, protected_guides = self._protected_media()
             with self.store.connection() as db:
                 links = [dict(r) for r in db.execute("SELECT * FROM managed_media")]
                 records = {r["sha"]: dict(r) for r in db.execute("SELECT * FROM coordinator_cache")}
@@ -139,7 +212,8 @@ class Management:
             known = {sha for group in groups.values() for sha in group["hashes"]}
             used = sum(info[2] for sha, info in identities.items() if sha in known)
             return {"available": True, "entries": sorted(entries, key=lambda r: r["last_used"], reverse=True), "bytes": used,
-                    "policy": self.policy(), "protected_song_ids": sorted(protected), "unmanaged_entries": unknown,
+                    "policy": self.policy(), "protected_song_ids": sorted(protected), "protected_guide_hashes": sorted(protected_guides),
+                    "unmanaged_entries": unknown,
                     "last_cleanup": dict(self.last_cleanup)}
 
     def _validate_items(self, value):
@@ -201,6 +275,7 @@ class Management:
                         db.execute("DELETE FROM coordinator_manifests WHERE song IN (SELECT id FROM songs WHERE song_id=?)", (sid,))
                         db.execute("DELETE FROM coordinator_manifest_versions WHERE song IN (SELECT id FROM songs WHERE song_id=?)", (sid,))
                         db.execute("DELETE FROM managed_media WHERE song_id=?", (sid,))
+                        db.execute("DELETE FROM managed_editions WHERE song_id=?", (sid,))
                     result = {"removed": len(selected), "removed_bytes": removed_bytes, "models_deleted": False}
                     db.execute("INSERT INTO owner_receipts VALUES(?,?,?,?)", (payload["request_id"], body_sha, json.dumps(result), int(time.time())))
                     db.execute("DELETE FROM owner_receipts WHERE request_id NOT IN (SELECT request_id FROM owner_receipts ORDER BY created DESC,rowid DESC LIMIT 128)")
@@ -293,7 +368,7 @@ class Management:
                 db.execute("UPDATE rooms SET queue_revision=queue_revision+1 WHERE id=?", (room["id"],))
             result = {"removed": len(value["ids"])}
         elif operation in {"theme", "controls", "command", "retry", "order", "songs"}:
-            method = {"order": "reorder", "songs": "add"}.get(operation, operation)
+            method = {"order": "reorder", "songs": "add", "controls": "song_controls"}.get(operation, operation)
             result = getattr(self.store, method)(room, value)
         else:
             raise self.error(404, "not_found")

@@ -94,15 +94,15 @@ def _hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _workspace(path: Path) -> Path:
+def _workspace(path: Path, *, workspace: Path | None = None) -> Path:
     path = path.absolute()
-    if not path.is_relative_to(ROOT) or path.resolve() != path:
+    if not path.is_relative_to(workspace or ROOT) or path.resolve() != path:
         raise PreparationError("output_outside_workspace")
     return path
 
 
-def _private_directory(path: Path) -> Path:
-    path = _workspace(path)
+def _private_directory(path: Path, *, workspace: Path | None = None) -> Path:
+    path = _workspace(path, workspace=workspace)
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     info = path.stat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
@@ -110,8 +110,8 @@ def _private_directory(path: Path) -> Path:
     return path
 
 
-def write_report(path: Path, value: dict) -> None:
-    path = _workspace(path)
+def write_report(path: Path, value: dict, *, workspace: Path | None = None) -> None:
+    path = _workspace(path, workspace=workspace)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, temporary = tempfile.mkstemp(prefix=".ktv-report-", dir=path.parent)
     try:
@@ -201,7 +201,9 @@ def _terminate(process: subprocess.Popen) -> None:
     process.wait(timeout=2)
 
 
-def _run_worker(request: Path, runtime: Path, cancel: threading.Event, timeout: float) -> None:
+def _run_worker(
+    request: Path, runtime: Path, cancel: threading.Event, timeout: float, *, workspace: Path | None = None
+) -> None:
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -221,8 +223,11 @@ def _run_worker(request: Path, runtime: Path, cancel: threading.Event, timeout: 
             "OPENBLAS_NUM_THREADS": "2",
         }
     )
+    command = [str(runtime), str(ROOT / "scripts/ktv_prepare.py"), "--worker-request", str(request)]
+    if workspace is not None:
+        command.extend(("--installed-root", str(workspace)))
     process = subprocess.Popen(
-        [str(runtime), str(ROOT / "scripts/ktv_prepare.py"), "--worker-request", str(request)],
+        command,
         cwd=ROOT,
         env=environment,
         stdout=subprocess.DEVNULL,
@@ -320,6 +325,8 @@ def prepare(
     timeout: float = 1800,
     cancel: threading.Event | None = None,
     simulated: bool = False,
+    transient_stems: Path | None = None,
+    workspace: Path | None = None,
 ) -> dict:
     """Prepare one selected file. SIGTERM/SIGINT callers set cancel; no inference on import."""
     cancel = cancel if cancel is not None else threading.Event()
@@ -334,8 +341,8 @@ def prepare(
         from .runtime_log import RuntimeLog
         if type(timeout) not in {int, float} or not math.isfinite(timeout) or not 0 < timeout <= 3600:
             raise PreparationError("invalid_request")
-        cache = _private_directory(cache_dir)
-        report_path = _workspace(report_path)
+        cache = _private_directory(cache_dir, workspace=workspace)
+        report_path = _workspace(report_path, workspace=workspace)
         journal = RuntimeLog(cache / "logs")
         correlation = secrets.token_hex(16)
         journal.record("service.start", "start", correlation=correlation)
@@ -347,16 +354,16 @@ def prepare(
             fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise PreparationError("cache_busy") from error
-        jobs = _private_directory(cache / "jobs")
+        jobs = _private_directory(cache / "jobs", workspace=workspace)
         job = Path(tempfile.mkdtemp(prefix="prepare-", dir=jobs))
         staged, source_hash, signature = _stage_source(source, job, cancel)
         result["source_sha256"] = source_hash
-        model_dir = _private_directory(cache / "models")
+        model_dir = _private_directory(cache / "models", workspace=workspace)
         # Validate even for an empty/new song cache. A changed model must never
         # turn into a fresh inference while still claiming the fixed revision.
         model_binding = _model_files(model_dir)
         key = hashlib.sha256((source_hash + MODEL + PACKAGE_VERSION + str(simulated)).encode()).hexdigest()
-        locks = _private_directory(cache / "locks")
+        locks = _private_directory(cache / "locks", workspace=workspace)
         song_lock = os.open(locks / (key + ".lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         wait_deadline = time.monotonic() + timeout
         while True:
@@ -374,10 +381,12 @@ def prepare(
             result = hit
         else:
             result.update(status="preparing", code="preparing", cache_key=key)
-            write_report(report_path, result)
+            write_report(report_path, result, workspace=workspace)
             request = job / "request.json"
-            write_report(request, {"source": str(staged), "output": str(job), "model_dir": str(model_dir)})
-            _run_worker(request, runtime, cancel, timeout)
+            write_report(request, {"source": str(staged), "output": str(job), "model_dir": str(model_dir)},
+                         workspace=workspace)
+            launch = {"workspace": workspace} if workspace is not None and workspace != ROOT else {}
+            _run_worker(request, runtime, cancel, timeout, **launch)
             outcome = json.loads((job / "worker-result.json").read_text())
             if outcome.get("code") != "none":
                 code = outcome.get("code")
@@ -387,15 +396,26 @@ def prepare(
             if _model_files(model_dir) != model_binding:
                 raise PreparationError("model_identity_mismatch")
             artifacts = {stem: _artifact(job / outcome[stem], job) for stem in ("instrumental", "vocals")}
-            entry = cache / "prepared" / key
-            entry.parent.mkdir(mode=0o700, exist_ok=True)
-            if entry.exists():
-                # Preserve an altered cache as evidence, never silently overwrite it.
-                entry.rename(entry.with_name(key + ".replaced-" + secrets.token_hex(4)))
+            if transient_stems is not None:
+                entry = _workspace(transient_stems, workspace=workspace)
+                if entry.parent != report_path.parent or entry.name != ".separation":
+                    raise PreparationError("unsafe_output")
+            else:
+                entry = cache / "prepared" / key
+                entry.parent.mkdir(mode=0o700, exist_ok=True)
+                if entry.exists():
+                    # 保留被改动的共享缓存作为证据。
+                    entry.rename(entry.with_name(key + ".replaced-" + secrets.token_hex(4)))
             entry.mkdir(mode=0o700)
-            for item in artifacts.values():
-                (job / item["filename"]).rename(entry / item["filename"])
-                os.chmod(entry / item["filename"], 0o600)
+            for stem, item in artifacts.items():
+                if transient_stems is not None and stem != "instrumental":
+                    continue
+                target = entry / item["filename"]
+                if target.parent.stat().st_dev == job.stat().st_dev:
+                    (job / item["filename"]).rename(target)
+                else:
+                    shutil.copyfile(job / item["filename"], target)
+                os.chmod(target, 0o600)
             manifest = {
                 **_base("ready", "none", simulated=simulated),
                 "source_sha256": source_hash,
@@ -406,11 +426,11 @@ def prepare(
                 "duration_seconds": outcome["duration_seconds"],
                 "sample_rate_hz": outcome["sample_rate_hz"],
             }
-            write_report(entry / "manifest.json", manifest)
+            write_report(entry / "manifest.json", manifest, workspace=workspace)
             result = {
                 **manifest,
                 "instrumental_path": str(entry / artifacts["instrumental"]["filename"]),
-                "vocals_path": str(entry / artifacts["vocals"]["filename"]),
+                "vocals_path": str(entry / artifacts["vocals"]["filename"]) if transient_stems is None else None,
                 "manifest_path": str(entry / "manifest.json"),
                 "cache_hit": False,
             }
@@ -461,7 +481,7 @@ def prepare(
         result["logging_available"] = journal.disk_available is True
     else:
         result["logging_available"] = False
-    write_report(report_path, result)
+    write_report(report_path, result, workspace=workspace)
     return result
 
 
@@ -487,8 +507,9 @@ def _load_runtime():
         raise PreparationError(code) from error
 
 
-def worker(request_path: Path) -> int:
+def worker(request_path: Path, *, workspace: Path | None = None) -> int:
     """平台隔离的分离进程；原始库输出由所有者丢弃。"""
+    request_path = _workspace(request_path, workspace=workspace)
     outcome = {"code": "model_or_separation_failed"}
     output = request_path.parent
     try:
@@ -501,7 +522,9 @@ def worker(request_path: Path) -> int:
         if version(PACKAGE) != PACKAGE_VERSION:
             raise PreparationError("runtime_version_mismatch")
         request = json.loads(request_path.read_text())
-        source, output, model_dir = (Path(request[name]) for name in ("source", "output", "model_dir"))
+        source, model_dir = (Path(request[name]) for name in ("source", "model_dir"))
+        if Path(request["output"]) != output:
+            raise PreparationError("unsafe_output")
         pinned_before = _model_files(model_dir)
         info, Separator = _load_runtime()
         try:
@@ -551,5 +574,5 @@ def worker(request_path: Path) -> int:
         outcome = {"code": error.args[0] if error.args[0] in CODES else "model_or_separation_failed"}
     except Exception:
         outcome = {"code": "model_or_separation_failed"}
-    write_report(output / "worker-result.json", outcome)
+    write_report(output / "worker-result.json", outcome, workspace=workspace)
     return 0

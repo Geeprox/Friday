@@ -3,15 +3,22 @@ import copy
 import hashlib
 import io
 import json
+import threading
 import time
 import uuid
 import wave
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
 from homeplane.ktv_service import create_app
-from homeplane.ktv_worker import MediaTickets, PreparationWorker, WorkerCapabilities, manifest_version, media_origin
+from homeplane.ktv_worker import (
+    MediaTickets,
+    PreparationWorker,
+    WorkerCapabilities,
+    manifest_version,
+    media_origin,
+)
 
 KEY = "s" * 43
 
@@ -87,6 +94,7 @@ def test_worker_origin_is_fixed_private_lan_not_a_generic_proxy(origin):
 
 def test_worker_readiness_requires_source_identity_and_pinned_model_not_http_success(tmp_path, monkeypatch):
     from types import SimpleNamespace
+
     from homeplane import ktv_accompaniment as audio
     from homeplane import ktv_worker as worker_module
     model = tmp_path / "models" / audio.MODEL
@@ -211,6 +219,7 @@ def test_new_guide_is_published_immediately_with_new_version_not_after_ticket_re
 
 def test_preparation_worker_and_nas_exchange_real_contracts_without_mac_control_relay(tmp_path, monkeypatch):
     from urllib.parse import parse_qs, urlsplit
+
     from integrations.ktv_public.nas_server import Store
     store = Store(tmp_path / "nas", "https://example.test")
     coordinator = store.coordinator
@@ -257,7 +266,7 @@ def test_preparation_worker_and_nas_exchange_real_contracts_without_mac_control_
         coordinator.close()
 
 
-def test_optional_lyrics_failure_does_not_block_a_verified_playable_manifest(tmp_path):
+def test_pending_lyrics_do_not_block_archiving_stems(tmp_path):
     worker, _, _, _, calls = make_worker(tmp_path)
     def unavailable(_):
         raise ValueError("lyrics temporarily unavailable")
@@ -266,6 +275,177 @@ def test_optional_lyrics_failure_does_not_block_a_verified_playable_manifest(tmp
         worker.tick()
         manifest = next(body for path, body in calls if path == "/agent/manifests")
         assert manifest["job"]["state"] == "ready" and manifest["lyrics"] == {"status": "unavailable", "lines": []}
+    finally:
+        worker.close()
+
+
+def test_hung_lyrics_leave_audio_ready_for_archiving_and_update_the_same_media(tmp_path, monkeypatch):
+    worker, queue, _, _, calls = make_worker(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    timed = {"status": "ready", "lines": [{"time_ms": at, "text": "合成歌词"} for at in (300, 600, 1000)]}
+    editions = [{"status": "ready", "lines": []}, timed]
+
+    def lookup(_):
+        entered.set()
+        assert release.wait(timeout=3)
+        return editions.pop(0)
+
+    monkeypatch.setattr("homeplane.ktv_worker.LYRIC_RETRY_SECONDS", (0,))
+    worker.lyrics_provider = lookup
+    edition = manifest_version(queue.job)
+    try:
+        worker.tick()
+        assert entered.wait(timeout=1)
+        initial = next(body for path, body in calls if path == "/agent/manifests")
+        assert initial["lyrics"]["lines"] == []
+        assert initial["job"]["state"] == "ready"
+        release.set()
+        worker.lyric_work[edition].future.result(timeout=1)
+        worker.tick()
+        worker.lyric_work[edition].future.result(timeout=1)
+        worker.tick()
+        versions = [body for path, body in calls if path == "/agent/manifests"]
+        assert len(versions) == 2
+        assert versions[-1]["lyrics"] == timed
+        assert versions[-1]["job"]["media"] == initial["job"]["media"]
+        assert versions[-1]["timeline"] == initial["timeline"]
+        assert worker.tickets.permits(versions[-1]["media_ticket"], queue.job)
+    finally:
+        release.set()
+        worker.close()
+
+
+def test_mutually_independent_lyrics_lanes_repair_nas_only_tracks_without_repreparing(tmp_path):
+    worker, queue, _, response, calls = make_worker(tmp_path)
+    tasks = [{"id": str(uuid.uuid4()), "song_id": str(song), "version": "a" * 64, "title": "合成歌曲",
+              "source": "song", "duration_ms": 2000} for song in (123, 124, 125)]
+    first, second, verified = [(task["id"], task["version"]) for task in tasks]
+    entered = {key[0]: threading.Event() for key in (first, second)}
+    release = threading.Event()
+    timed = {"status": "ready", "lines": [{"time_ms": at, "text": "合成歌词"} for at in (300, 600, 1000)]}
+
+    class Provider:
+        def primary_for(self, task):
+            return timed if task["id"] == verified[0] else {"status": "unavailable", "lines": []}
+
+        def recover(self, task):
+            entered[task["id"]].set()
+            assert release.wait(timeout=4)
+            return {"status": "unavailable", "lines": []}
+
+    worker.lyrics_provider = Provider()
+    worker.mapping.clear()
+    queue.submit = lambda _: pytest.fail("已归档歌曲补歌词时不能重新制备")
+    queue.get = lambda _: pytest.fail("补歌词无需读取 Mac 音轨")
+    response["rooms"][0]["order"] = [task["id"] for task in tasks]
+    response["lyric_tasks"] = tasks[:2]
+    try:
+        worker.tick()
+        for edition in (first, second):
+            worker.lyric_work[edition].future.result(timeout=1)
+        worker.tick()
+        assert all(event.wait(timeout=1) for event in entered.values())
+        response["lyric_tasks"] = tasks
+        worker.tick()
+        worker.lyric_work[verified].future.result(timeout=1)
+        for _ in range(2):
+            worker.tick()
+        metadata = [body for path, body in calls if path == "/agent/lyrics"]
+        assert metadata == [{"id": verified[0], "version": verified[1], "instance": worker.instance, "lyrics": timed}]
+        assert not any(path == "/agent/manifests" for path, _ in calls)
+    finally:
+        release.set()
+        worker.close()
+
+
+def test_nas_only_lyrics_stop_when_retries_exhausted(tmp_path, monkeypatch):
+    worker, _, remote, response, calls = make_worker(tmp_path)
+    worker.mapping.clear()
+    calls_to_provider = []
+    worker.lyrics_provider = lambda task: calls_to_provider.append(task["id"]) or {"status": "unavailable", "lines": []}
+    monkeypatch.setattr("homeplane.ktv_worker.LYRIC_RETRY_SECONDS", (0,))
+    version = "a" * 64
+    response["lyric_tasks"] = [{"id": remote, "song_id": "123", "version": version, "source": "song",
+                                "duration_ms": 2000, "title": "合成歌曲"}]
+    try:
+        for _ in range(2):
+            worker.tick()
+            worker.lyric_work[(remote, version)].future.result(timeout=1)
+        for _ in range(2):
+            worker.tick()
+        assert calls_to_provider == [remote, remote]
+        assert [body["lyrics"] for path, body in calls if path == "/agent/lyrics"] == [
+            {"status": "unavailable", "lines": [], "retry_exhausted": True},
+        ]
+    finally:
+        worker.close()
+
+
+def test_worker_repair_opens_playable_nas_archive_without_changing_audio(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from homeplane.intelligence.ktv_lyrics import KtvLyricsRecovery
+    from integrations.ktv_public.nas_server import Store
+    from tests.test_ktv_coordinator import admitted, fake_cache, manifest, registration, started, uid
+
+    store = Store(tmp_path / "nas", "https://example.test")
+    coordinator = store.coordinator
+    monkeypatch.setattr(coordinator.cache_pool, "submit", lambda *args: None)
+    worker, queue, _, _, _ = make_worker(tmp_path)
+    worker.mapping.clear()
+    queue.get = queue.submit = lambda _: pytest.fail("补歌词不访问 Mac 音轨")
+    endpoints = {"/agent/worker": coordinator.register_worker, "/agent/qr": coordinator.qr,
+                 "/agent/lyrics": coordinator.repair_lyrics}
+    worker.request = lambda path, body=None: store.poll() if path == "/agent/tasks" else endpoints[path](body)
+    timed = {"status": "ready", "lines": [{"time_ms": at, "text": "合成歌词"} for at in (300, 600, 1000)]}
+    source = SimpleNamespace(public_timed_lyrics=lambda song, duration: timed if (song, duration) == ("123", 2000) else None)
+    worker.lyrics_provider = KtvLyricsRecovery(None, source, queue, lambda _: pytest.fail("读取了 Mac 歌单"))
+    try:
+        original, audio, _, _, old_room = manifest(store, registration(worker.instance, origin=worker.media_origin))
+        original["lyrics"] = {"status": "unavailable", "lines": []}
+        coordinator.manifest(original)
+        fake_cache(monkeypatch, audio, [])
+        row = coordinator._row(original["id"])
+        for kind, spec in coordinator._specs(row).items():
+            coordinator._cache_one(row, kind, spec)
+        with store.connection() as db:
+            db.execute("UPDATE rooms SET closed=1 WHERE id=?", (old_room["id"],))
+        _, party = started(store)
+        room, _, guest = admitted(store, party)
+        song = store.add(room, {"song_id": "123", "title": "合成归档曲", "request_id": uid()}, guest)["id"]
+        [before] = coordinator.jobs()["jobs"]
+        assert store.status(room)["playable"] == [] and before["archive"] == "ready"
+        worker.tick()
+        worker.lyric_work[(song, before["version"])].future.result(timeout=1)
+        worker.tick()
+        [after] = coordinator.jobs()["jobs"]
+        assert after["media"] == before["media"] and after["archive"] == "ready"
+        assert coordinator.lyrics(song) == timed and store.poll()["lyric_tasks"] == []
+        assert store.status(room)["playable"] == coordinator.party()["playable"] == [song]
+    finally:
+        worker.close()
+        coordinator.close()
+
+
+def test_public_lyric_priming_starts_before_audio_preparation_completes(tmp_path):
+    worker, queue, remote, response, calls = make_worker(tmp_path)
+    queue.job["state"] = "acquiring"
+    response["tasks"] = [{"id": remote, "song_id": "123", "title": "合成歌曲", "source": "song"}]
+    started = threading.Event()
+
+    class Provider:
+        def prefetch_public(self, song_id):
+            assert song_id == "123"
+            started.set()
+
+        def __call__(self, _):
+            raise AssertionError("音轨就绪前不校验时间轴")
+
+    worker.lyrics_provider = Provider()
+    try:
+        worker.tick()
+        assert started.wait(timeout=1)
+        assert not any(path == "/agent/manifests" for path, _ in calls)
     finally:
         worker.close()
 
@@ -284,6 +464,18 @@ def test_lost_qr_is_republished_and_stalled_health_is_not_renewed_as_ready(tmp_p
         registration = [body for path, body in calls if path == "/agent/worker"][-1]
         assert not any(registration["capabilities"].values()), "a blocked health check cannot renew old true capabilities"
         assert len([path for path, _ in calls if path == "/agent/qr"]) == 2
+    finally:
+        worker.close()
+
+
+def test_room_qr_does_not_wait_for_preparation_lane(tmp_path):
+    worker, _, _, _, calls = make_worker(tmp_path)
+    worker.background = True
+    worker._work_once = lambda: pytest.fail("room polling must not run the preparation lane")
+    try:
+        worker.tick()
+        assert any(path == "/agent/qr" for path, _ in calls)
+        assert worker.work_wake.is_set()
     finally:
         worker.close()
 
@@ -347,6 +539,7 @@ def test_archive_check_cannot_release_a_changed_local_edition_with_an_old_proof(
 @pytest.mark.parametrize("after_commit", [False, True])
 def test_worker_crash_around_manifest_commit_recovers_mapping_and_only_manifest_commits_ready(tmp_path, monkeypatch, after_commit):
     from urllib.parse import parse_qs, urlsplit
+
     from integrations.ktv_public.nas_server import Store
     class Crash(BaseException):
         pass
@@ -398,11 +591,14 @@ def test_worker_crash_around_manifest_commit_recovers_mapping_and_only_manifest_
 
 def test_restart_keeps_published_good_lyrics_when_optional_provider_is_offline(tmp_path):
     first, queue, remote, response, calls = make_worker(tmp_path)
-    first.lyrics_provider = lambda _: {"status": "ready", "lines": [{"at_ms": 0, "text": "Synthetic"}]}
+    first.lyrics_provider = lambda _: {"status": "ready", "lines": [{"time_ms": at, "text": "Synthetic"} for at in (0, 300, 600)]}
     second = None
     try:
         first.tick()
-        original = next(body for path, body in calls if path == "/agent/manifests")
+        first.lyric_work[manifest_version(queue.job)].future.result(timeout=1)
+        first.tick()
+        original = [body for path, body in calls if path == "/agent/manifests"][-1]
+        assert original["lyrics"]["status"] == "ready"
         first.close()
         second = PreparationWorker(queue, tmp_path / "nas.json", signing_key=KEY, health=lambda: {})
         second.lyrics_provider = lambda _: (_ for _ in ()).throw(ValueError("offline"))

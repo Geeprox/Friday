@@ -19,9 +19,13 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import httpx
 from fastapi import HTTPException
 
 from .ktv_nas_bridge import NasBridge
@@ -30,6 +34,43 @@ from .ktv_service import atomic_json, private_directory
 UUID = re.compile(r"[a-f0-9-]{36}")
 TICKET = re.compile(r"([0-9]{10})\.([A-Za-z0-9_-]{43})")
 CAPABILITIES = ("source", "model", "download", "lyrics", "media")
+LYRIC_RETRY_SECONDS = (15, 60, 300)
+LYRIC_PREFETCH_COUNT = 4
+LYRIC_LOOKUP_WORKERS = 2
+BACKGROUND_PREFETCH_COUNT = 4
+
+
+@dataclass
+class LyricWork:
+    future: Future | None = None
+    attempts: int = 0
+    retry_at: float = 0
+    recovering: bool = False
+
+
+def has_lyrics(value):
+    if not isinstance(value, dict) or value.get("status") != "ready":
+        return False
+    lines = value.get("lines")
+    return (isinstance(lines, list) and 3 <= len(lines) <= 1000
+            and all(isinstance(line, dict) and type(line.get("time_ms")) is int
+                    and 0 <= line["time_ms"] <= 1800000
+                    and isinstance(line.get("text"), str) and 0 < len(line["text"]) <= 200 for line in lines))
+
+
+def archive_lyric_tasks(value):
+    if not isinstance(value, list) or len(value) > 8:
+        return {}
+    tasks = {}
+    for task in value:
+        if (not isinstance(task, dict) or not isinstance(task.get("id"), str) or not UUID.fullmatch(task["id"])
+                or not isinstance(task.get("song_id"), str) or not re.fullmatch(r"[1-9][0-9]{0,17}", task["song_id"])
+                or task.get("source") not in ("song", "cloud", "mv", "mv_direct")
+                or type(task.get("duration_ms")) is not int or not 1 <= task["duration_ms"] <= 1800000
+                or not isinstance(task.get("version"), str) or not re.fullmatch(r"[0-9a-f]{64}", task["version"])):
+            continue
+        tasks[task["id"]] = {field: task[field] for field in ("id", "song_id", "source", "duration_ms", "version")}
+    return tasks
 
 
 def media_origin(value, *, allow_loopback=False):
@@ -160,7 +201,15 @@ class PreparationWorker(NasBridge):
         self.capabilities_at = 0
         self.health_thread = None
         self.worker_registered = 0
-        self.manifest_acked, self.lyrics_cache, self.qr_acked = {}, {}, set()
+        self.manifest_acked = {}
+        self.lyric_pool = ThreadPoolExecutor(max_workers=LYRIC_LOOKUP_WORKERS, thread_name_prefix="ktv-timed-lyrics")
+        self.lyric_recovery_pool = ThreadPoolExecutor(max_workers=LYRIC_LOOKUP_WORKERS, thread_name_prefix="ktv-lyric-recovery")
+        self.lyric_work = OrderedDict()
+        self.lyric_prefetch = OrderedDict()
+        self.archive_lyric_tasks = {}
+        self.archive_lyric_acks = set()
+        self.qr_acked = ""
+        self.next_qr_attempt = 0
         self.archive_pending = set(self.mapping.values())
         self.metadata_root = private_directory(Path(config_path).absolute().parent / "worker-publications")
         self.published_metadata = {}
@@ -188,12 +237,119 @@ class PreparationWorker(NasBridge):
         return value
 
     def _remember_metadata(self, audio_version, lyrics, guide):
+        if not has_lyrics(lyrics) and guide is None:
+            return
         value = {"audio_version": audio_version, "lyrics": lyrics, "guide": guide}
         if self._metadata(audio_version) != value:
             # Persist stable edition metadata before the NAS commit. A restart
             # cannot roll a with-guide edition back to a retired no-guide one.
-            atomic_json(self.metadata_root / (audio_version + ".json"), value)
+            try:
+                atomic_json(self.metadata_root / (audio_version + ".json"), value)
+            except OSError:
+                # 持久化失败时仍发布可用音轨，后续进程会重新校验补全结果。
+                pass
             self.published_metadata[audio_version] = copy.deepcopy(value)
+
+    def _matches_lyric_target(self, target, edition):
+        if isinstance(target, dict):
+            with self.lock:
+                return self.archive_lyric_tasks.get(target["id"]) == target
+        return manifest_version(self.queue.get(target)) == edition
+
+    def _candidate_lyrics(self, resolve, target, edition):
+        if not self._matches_lyric_target(target, edition):
+            return None
+        value = resolve(target)
+        if (isinstance(value, dict) and (has_lyrics(value) or value.get("status") == "instrumental")
+                and len(json.dumps(value, allow_nan=False).encode()) <= 131072
+                and self._matches_lyric_target(target, edition)):
+            return value
+        return None
+
+    def _active_lyric_lookups(self, recovering=False):
+        return sum(work.recovering == recovering and work.future is not None and not work.future.done()
+                   for work in self.lyric_work.values())
+
+    def _prime_pending_lyrics(self):
+        prime = getattr(self.lyrics_provider, "prefetch_public", None)
+        if not callable(prime) or self.stop.is_set():
+            return
+        if any(not future.done() for future in self.lyric_prefetch.values()):
+            return
+        if self._active_lyric_lookups() >= LYRIC_LOOKUP_WORKERS:
+            return
+        with self.lock:
+            played = set(((self.party or {}).get("playback") or {}).get("played", []))
+            waiting = [remote for remote in self.remote_order if remote not in played][:LYRIC_PREFETCH_COUNT]
+            tasks = [self.pending_tasks[remote] for remote in waiting if remote in self.pending_tasks]
+        for task in tasks:
+            song_id = task.get("song_id")
+            if (task.get("source", "song") != "song" or not isinstance(song_id, str)
+                    or not re.fullmatch(r"[1-9][0-9]{0,17}", song_id) or song_id in self.lyric_prefetch):
+                continue
+            if len(self.lyric_prefetch) >= 128:
+                self.lyric_prefetch.popitem(last=False)
+            future = self.lyric_pool.submit(prime, song_id)
+            self.lyric_prefetch[song_id] = future
+            future.add_done_callback(lambda _: self.work_wake.set())
+            return
+
+    def _lyrics_for(self, target, song_id, edition, previous=None):
+        if has_lyrics(previous):
+            return previous
+        unavailable = {"status": "unavailable", "lines": []}
+        work = self.lyric_work.get(edition)
+        now = time.monotonic()
+        recovery = getattr(self.lyrics_provider, "recover", None)
+        if work and work.future and work.future.done():
+            try:
+                value = work.future.result()
+            except Exception:
+                value = None
+            if has_lyrics(value):
+                # 先保存已验证歌词，重试 NAS 发布时继续使用同一份。
+                return value
+            work.future = None
+            if value and value.get("status") == "instrumental":
+                work.attempts = len(LYRIC_RETRY_SECONDS) + 1
+                work.recovering = False
+            elif not work.recovering and callable(recovery):
+                work.recovering = True
+            else:
+                work.recovering = False
+                if work.attempts <= len(LYRIC_RETRY_SECONDS):
+                    work.retry_at = now + LYRIC_RETRY_SECONDS[work.attempts - 1]
+        if not self.lyrics_provider or self.stop.is_set():
+            return unavailable
+        primer = self.lyric_prefetch.get(song_id)
+        if primer is not None and not primer.done():
+            return unavailable
+        if work and (work.future or now < work.retry_at):
+            return unavailable
+        recovering = bool(work and work.recovering)
+        if work and not recovering and work.attempts > len(LYRIC_RETRY_SECONDS):
+            return {**unavailable, "retry_exhausted": True}
+        active = self._active_lyric_lookups(recovering)
+        if not recovering:
+            active += sum(not future.done() for future in self.lyric_prefetch.values())
+        if active >= LYRIC_LOOKUP_WORKERS:
+            return unavailable
+        if work is None:
+            if len(self.lyric_work) >= 256:
+                oldest = next((key for key, item in self.lyric_work.items() if item.future is None or item.future.done()), None)
+                if oldest is None:
+                    return unavailable
+                self.lyric_work.pop(oldest)
+            work = self.lyric_work[edition] = LyricWork()
+        self.lyric_work.move_to_end(edition)
+        if recovering:
+            work.future = self.lyric_recovery_pool.submit(self._candidate_lyrics, recovery, target, edition)
+        else:
+            work.attempts += 1
+            primary = getattr(self.lyrics_provider, "primary_for", self.lyrics_provider)
+            work.future = self.lyric_pool.submit(self._candidate_lyrics, primary, target, edition)
+        work.future.add_done_callback(lambda _: self.work_wake.set())
+        return unavailable
 
     def _publish_guide(self, remote, media, generation):
         # Direct coordination publishes guide metadata once through immutable
@@ -208,7 +364,7 @@ class PreparationWorker(NasBridge):
             super()._send_updates(progress, mapping, generation)
 
     def request(self, path, body=None):
-        if path in {"/agent/worker", "/agent/manifests", "/agent/qr", "/agent/archive-check"}:
+        if path in {"/agent/worker", "/agent/manifests", "/agent/lyrics", "/agent/qr", "/agent/archive-check"}:
             # The fixed extra endpoints carry no arbitrary path or proxy target.
             with self.http.stream("POST", self.endpoint + path,
                                   headers={"Authorization": "Bearer " + self.key}, json=body,
@@ -278,10 +434,14 @@ class PreparationWorker(NasBridge):
                 active = direct[0] if direct else None
                 if (active or {}).get("room_id") != (self.party or {}).get("room_id"):
                     self.room_generation += 1
+                    self.next_qr_attempt = 0
                     self.pending_tasks.clear()
                     self.pending_cancelled.clear()
                 self.party = copy.deepcopy(active)
                 self.remote_order = list(active.get("order", [])) if active else []
+                self.archive_lyric_tasks = archive_lyric_tasks(value.get("lyric_tasks")) if active else {}
+                self.archive_lyric_acks.intersection_update((task["id"], task["version"])
+                                                            for task in self.archive_lyric_tasks.values())
                 if self.party:
                     self.party["order"] = [self.mapping[i] for i in self.remote_order if i in self.mapping]
                     report = self.party.get("playback", {})
@@ -305,50 +465,71 @@ class PreparationWorker(NasBridge):
                             else:
                                 self.archive_pending.add(local)
             self.work_wake.set()
+            self._publish_room_qr(active)
         if not self.background:
             self._work_once()
 
-    def _work_once(self):
-        super()._work_once()
-        self._check_archives()
-        with self.lock:
-            party, mapping, generation = copy.deepcopy(self.party), dict(self.mapping), self.room_generation
+    def _publish_room_qr(self, party):
+        # 房间二维码随状态轮询交付，避免被上一首歌的归档或媒体制作拖住。
         if not party:
             return
-        report = self.playback or {}
-        if report.get("current") and hasattr(self.queue, "touch"):
-            self.queue.touch(report["current"])
         url = party.get("join_url", "")
         tv_instance = party.get("tv_instance", "")
-        if (url.startswith(self.endpoint + "/#") and (url not in self.qr_acked or party.get("qr_ready") is False)
-                and UUID.fullmatch(tv_instance)):
+        if (time.monotonic() < self.next_qr_attempt or not isinstance(url, str) or not url.startswith(self.endpoint + "/#")
+                or (url == self.qr_acked and party.get("qr_ready") is not False)
+                or not isinstance(tv_instance, str) or not UUID.fullmatch(tv_instance)):
+            return
+        try:
             import qrcode
             from qrcode.image.pure import PyPNGImage
+
             output = io.BytesIO()
             qrcode.make(url, image_factory=PyPNGImage, box_size=8, border=4).save(output)
             png = output.getvalue()
             self.request("/agent/qr", {"room_id": party["room_id"], "instance": tv_instance, "join_url": url,
                 "sha256": hashlib.sha256(png).hexdigest(), "png": base64.b64encode(png).decode()})
-            self.qr_acked.add(url)
-        for remote in party.get("order", []):
-            if remote in report.get("played", []) and remote != report.get("current"):
-                continue
-            # party.order is local after synchronization, mapping is remote→local.
-            if remote in mapping.values():
-                remote = next(k for k, v in mapping.items() if v == remote)
-            local = mapping.get(remote)
-            if local is None or not self._same_room(generation):
+            self.qr_acked = url
+        except (ImportError, OSError, ValueError, httpx.HTTPError):
+            self.next_qr_attempt = time.monotonic() + 2
+
+    def _work_once(self):
+        self._prime_pending_lyrics()
+        super()._work_once()
+        self._check_archives()
+        with self.lock:
+            party, mapping, generation = copy.deepcopy(self.party), dict(self.mapping), self.room_generation
+            report = copy.deepcopy(self.playback or {})
+        if not party:
+            return
+        current = report.get("current")
+        if current and hasattr(self.queue, "touch"):
+            self.queue.touch(current)
+        played = set(report.get("played", []))
+        inverse = {local: remote for remote, local in mapping.items()}
+        order = [local for local in party.get("order", []) if local not in played or local == current]
+        if current in inverse:
+            order = [current] + [local for local in order if local != current]
+        background_count = 0
+        for local in order:
+            remote = inverse.get(local)
+            if remote is None or not self._same_room(generation):
                 continue
             try:
                 job = self.queue.get(local)
+                if job["state"] in {"failed", "cancelled"}:
+                    continue
                 if job["state"] != "ready":
                     continue
                 audio_version = manifest_version(job)
                 background = None
                 if self.backgrounds is not None:
                     try:
-                        candidate = self.backgrounds.request_from_thread(job)
-                        if candidate.get('status') == 'ready':
+                        if background_count < BACKGROUND_PREFETCH_COUNT and self.backgrounds.eligible_for_generation(job):
+                            background_count += 1
+                            candidate = self.backgrounds.request_from_thread(job)
+                        else:
+                            candidate = self.backgrounds.cached_for(job)
+                        if candidate and candidate.get('status') == 'ready':
                             background = {k:candidate[k] for k in ('status','sha256','bytes')}
                             background.update(encoding='png',url=f'/v1/jobs/{local}/media/background')
                     except (ValueError,OSError,RuntimeError,TypeError,KeyError):
@@ -357,19 +538,7 @@ class PreparationWorker(NasBridge):
                 guide = previous_metadata.get("guide")
                 if self.guide is not None and local in self.guide.protected:
                     guide = self.guide.get(local) or guide
-                cached_lyrics = self.lyrics_cache.get(audio_version)
-                if cached_lyrics is None and previous_metadata.get("lyrics", {}).get("status") == "ready":
-                    cached_lyrics = self.lyrics_cache[audio_version] = (previous_metadata["lyrics"], time.monotonic())
-                if (cached_lyrics is None or (cached_lyrics[0].get("status") != "ready"
-                                             and time.monotonic() - cached_lyrics[1] >= 30)):
-                    try:
-                        value = self.lyrics_provider(local) if self.lyrics_provider else None
-                        if not isinstance(value, dict) or len(json.dumps(value, allow_nan=False).encode()) > 131072:
-                            raise ValueError("lyrics_unavailable")
-                    except Exception:
-                        value = {"status": "unavailable", "lines": []}
-                    self.lyrics_cache[audio_version] = (value, time.monotonic())
-                lyrics_value = self.lyrics_cache[audio_version][0]
+                lyrics_value = self._lyrics_for(local, job["song_id"], audio_version, previous_metadata.get("lyrics"))
                 version = hashlib.sha256(json.dumps({"audio": audio_version, "job": job, "lyrics": lyrics_value, "guide": guide, "background":background},
                     sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
                 ack = self.manifest_acked.get(remote)
@@ -390,16 +559,38 @@ class PreparationWorker(NasBridge):
                 if guide and guide.get("url"):
                     payload["guide"] = guide
                 self._remember_metadata(audio_version, lyrics_value, guide)
+                if has_lyrics(lyrics_value):
+                    self.lyric_work.pop(audio_version, None)
                 self.request("/agent/manifests", payload)
                 with self.lock:
                     self.manifest_acked[remote] = (version, time.monotonic())
                     self.archive_pending.add(local)
                     self.terminal_acked.add(local)
-                if len(self.lyrics_cache) > 256:
-                    self.lyrics_cache.pop(next(iter(self.lyrics_cache)))
             except Exception:
                 # A transient publish/cache fault cannot mark a ready local job failed.
                 continue
+        self._publish_archive_lyrics(generation)
+
+    def _publish_archive_lyrics(self, generation):
+        with self.lock:
+            tasks = list(self.archive_lyric_tasks.values())
+        for task in tasks:
+            edition = task["id"], task["version"]
+            with self.lock:
+                if not self._same_room(generation) or edition in self.archive_lyric_acks:
+                    continue
+            lyrics = self._lyrics_for(task, task["song_id"], edition)
+            if (not has_lyrics(lyrics) and not lyrics.get("retry_exhausted")) or not self._matches_lyric_target(task, edition):
+                continue
+            try:
+                self.request("/agent/lyrics", {"id": task["id"], "instance": self.instance,
+                                          "version": task["version"], "lyrics": lyrics})
+            except (OSError, httpx.HTTPError, ValueError):
+                return
+            with self.lock:
+                if self._same_room(generation):
+                    self.archive_lyric_acks.add(edition)
+            self.lyric_work.pop(edition, None)
 
     def _check_archives(self):
         now = time.monotonic()
@@ -491,5 +682,7 @@ class PreparationWorker(NasBridge):
 
     def close(self):
         super().close()
+        self.lyric_pool.shutdown(wait=False, cancel_futures=True)
+        self.lyric_recovery_pool.shutdown(wait=False, cancel_futures=True)
         if self.health_thread is not None:
             self.health_thread.join(timeout=1)

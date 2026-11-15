@@ -14,6 +14,24 @@ public final class ProbePolicyTest {
         return p;
     }
     static ProbePolicy started(){ProbePolicy p=ready();check(p.beginStart(5000,5000,true,true),"explicit start");return p;}
+    static void hardwareEffectsLifecycle(){
+        ProbePolicy p=ready();
+        check(!p.beginHardwareStart(5000,5000,false,true,target()),"需要明确开麦操作");
+        check(!p.beginHardwareStart(5000,5000,true,false,target()),"需要录音权限");
+        check(!p.beginHardwareStart(5000,5000,true,true,target("card=4;device=0",1,1,4660,22137)),"等待时更换 USB 输入");
+        check(p.beginHardwareStart(5000,5000,true,true,target())&&p.hardwareLease,"一次操作建立原厂 USB 返听");
+        long lease=p.leaseId;
+        check(p.startFinished(5100,true,0,true,true)&&p.allowGain(lease,5200,5200,true,20),"启动回读后应用所选增益");
+        p.gainFinished(lease,20,true,0);
+        check(p.allowGain(lease,5300,5300,true,0),"演唱中可软静音");
+        p.gainFinished(lease,0,true,0);
+        check(p.owns&&p.startCalls==1&&p.allowGain(lease,95000,95000,true,20),"暂停调试后仍沿用同一静音会话和音量控制");
+        check(p.deadlineMs==0,"原厂返听没有自动过期计时");
+        p.clientDied(96000);
+        check(p.state==ProbePolicy.STOPPING&&!p.allowGain(lease,96010,96010,true,20),"控制进程退出后释放返听");
+        p.stopFinished(96100,true,2,true,true,true);
+        check(!p.owns&&!p.hardwareLease&&p.deadlineMs==0,"停止回读释放硬件租约");
+    }
     public static void main(String[] args){
         ProbePolicy empty=new ProbePolicy();check(!empty.owns&&empty.startCalls==0,"default no start");
         check(!empty.beginStart(10,10,true,true),"no target evidence no start");
@@ -62,6 +80,7 @@ public final class ProbePolicyTest {
         check(p.owns&&p.state==ProbePolicy.RECOVERY,"disable return required for owned cleanup");
         p=started();check(!p.startFinished(5100,true,0,true,false)&&p.state==ProbePolicy.STOPPING,"failed enable leads to stop");
         p=new ProbePolicy();p.recoverOwnedMarker();check(p.owns&&p.state==ProbePolicy.RECOVERY&&p.startCalls==0,"restart never starts, retained unknown cleanup");
+        hardwareEffectsLifecycle();
         System.out.println("ProbePolicyTest: "+checks+" checks passed");
     }
 }

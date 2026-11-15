@@ -2,18 +2,22 @@
 
 import asyncio
 import base64
+import copy
 import hashlib
 import os
 import subprocess
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
-from homeplane.intelligence.backgrounds import SongBackgrounds
+from homeplane.intelligence.backgrounds import SongBackgrounds, prepare_backdrop
 from homeplane.ktv_service import create_app
-from homeplane.ktv_worker import MediaTickets, manifest_version
+from homeplane.ktv_worker import BACKGROUND_PREFETCH_COUNT, MediaTickets, manifest_version
 from scripts.ktv_build_workspace import build_workspace
 from tests.test_intelligence_journeys import picture
 from tests.test_intelligence_providers import runtime
@@ -39,15 +43,24 @@ async def test_checked_png_is_available_only_with_original_job_ticket_and_does_n
         url = f"/v1/jobs/{queue.job_id}/media/background"
         assert client.get(url).status_code == 401
         response = client.get(url, headers={"X-KTV-Media": token})
-        assert response.status_code == 200 and response.content == picture()
+        assert response.status_code == 200 and response.content == prepare_backdrop(picture())
         assert response.headers["content-type"] == "image/png"
         assert client.get(url, headers={"X-KTV-Media": token + "bad"}).status_code == 401
     assert manifest_version(queue.job) == before
 
 
-def test_tv_background_generation_fence_and_media_credential_scope():
-    import pytest
+def test_generated_background_is_widescreen_and_tames_lyric_area_highlights():
+    import io
 
+    source = io.BytesIO()
+    Image.new("RGB", (768, 512), (240, 240, 240)).save(source, format="PNG")
+    with Image.open(io.BytesIO(prepare_backdrop(source.getvalue()))) as delivered:
+        assert delivered.size == (1536, 864)
+        assert max(delivered.getpixel((768, 432))) <= 80
+        assert min(delivered.getpixel((0, 0))) >= 230
+
+
+def test_tv_background_generation_fence_and_media_credential_scope():
     configured = os.environ.get("FRIDAY_TEST_JAVA_HOME") or os.environ.get("JAVA_HOME")
     java = Path(configured) / "bin/java" if configured else None
     javac = Path(configured) / "bin/javac" if configured else None
@@ -83,7 +96,7 @@ def test_optional_background_failure_does_not_hold_audio_publication(tmp_path):
     def unavailable(song):
         raise ValueError("synthetic_background_settings_unavailable")
 
-    worker.backgrounds = SimpleNamespace(request_from_thread=unavailable)
+    worker.backgrounds = SimpleNamespace(eligible_for_generation=lambda song: True, request_from_thread=unavailable)
     try:
         worker.tick()
         published = next(body for path, body in calls if path == "/agent/manifests")
@@ -96,7 +109,7 @@ def test_optional_background_failure_does_not_hold_audio_publication(tmp_path):
 def test_late_background_changes_only_optional_metadata_and_keeps_audio_ticket(tmp_path):
     worker, queue, remote, report, calls = make_worker(tmp_path)
     value = {"status": "local"}
-    worker.backgrounds = SimpleNamespace(request_from_thread=lambda song: dict(value))
+    worker.backgrounds = SimpleNamespace(eligible_for_generation=lambda song: True, request_from_thread=lambda song: dict(value))
     try:
         worker.tick()
         previous = next(body for path, body in calls if path == "/agent/manifests")
@@ -107,6 +120,42 @@ def test_late_background_changes_only_optional_metadata_and_keeps_audio_ticket(t
         assert published[-1]["job"]["media"] == previous["job"]["media"]
         assert worker.tickets.permits(previous["media_ticket"], queue.job)
         assert published[-1]["job"]["background"]["url"] == f"/v1/jobs/{queue.job_id}/media/background"
+    finally:
+        worker.close()
+
+
+def test_background_lookahead_counts_only_eligible_ready_songs(tmp_path, monkeypatch):
+    worker, queue, _, report, calls = make_worker(tmp_path)
+    owner = runtime(tmp_path / "ai", lambda request: pytest.fail("synthetic test must not request generation"))
+    owner.settings.update({"cloud_images": True})
+    images = SongBackgrounds(owner, recording=lambda _: pytest.fail("synthetic test must not read the public catalog"))
+    worker.backgrounds = images
+    generated, cached = [], []
+    monkeypatch.setattr(images, "request_from_thread", lambda song: generated.append(song["song_id"]))
+    monkeypatch.setattr(images, "cached_for", lambda song: cached.append(song["song_id"]))
+    fixtures = [
+        *({"audio_origin": "cloud"} for _ in range(4)),
+        {"video": {"status": "ready"}},
+        {"simulated": True},
+        *({} for _ in range(BACKGROUND_PREFETCH_COUNT + 1)),
+    ]
+    jobs, mapping = {}, {}
+    song_ids = []
+    for number, fields in enumerate(fixtures, 100):
+        ready = copy.deepcopy(queue.job)
+        ready.update(id=str(uuid.uuid4()), song_id=str(number), simulated=False)
+        ready.update(fields)
+        song_ids.append(ready["song_id"])
+        mapping[str(uuid.uuid4())] = ready["id"]
+        jobs[ready["id"]] = ready
+    worker.mapping = mapping
+    report["rooms"][0]["order"] = list(mapping)
+    monkeypatch.setattr(queue, "get", lambda job_id: copy.deepcopy(jobs[job_id]))
+    try:
+        worker.tick()
+        assert generated == song_ids[6:-1]
+        assert cached == song_ids[:6] + song_ids[-1:]
+        assert len([path for path, _ in calls if path == "/agent/manifests"]) == len(fixtures)
     finally:
         worker.close()
 

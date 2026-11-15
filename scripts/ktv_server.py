@@ -44,6 +44,7 @@ def acquire_source(queue, adapter, cloud_adapter, song_id, folder, event):
 
 def main(argv=None):
     # Runtime/dependency imports stay inside the outer startup admission guard.
+    from homeplane.ktv_accompaniment import RUNTIME
     from homeplane.ktv_service import (
         Queue,
         atomic_json,
@@ -53,9 +54,11 @@ def main(argv=None):
         separator,
         transcode_pcm,
     )
+    from homeplane.ktv_startup import installed_workspace
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["init", "serve", "check"])
     parser.add_argument("--config", type=Path, default=Path("data/ktv/config.json"))
+    parser.add_argument("--installed-root", type=Path, help="Private resources from the registered parent installation")
     parser.add_argument("--host", type=local_host, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8769)
     parser.add_argument("--download-dir", type=Path)
@@ -68,10 +71,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config_path = args.config.absolute()
     root = Path(__file__).resolve().parents[1]
+    try:
+        installed = installed_workspace(root, args.installed_root)
+    except ValueError as error:
+        parser.error(str(error))
     if config_path.resolve() != config_path or not any(
-        config_path.is_relative_to(root / p) for p in ("data", ".artifacts")
+        config_path.is_relative_to(installed / p) for p in ("data", ".artifacts")
     ):
         parser.error("config_must_be_private_workspace_file")
+    if installed != root:
+        configs = [config_path] + ([args.public_config.absolute()] if args.public_config else [])
+        if args.action == "init" or any(path.resolve() != path or not path.is_relative_to(installed / "data/ktv")
+                                      for path in configs):
+            parser.error("private_config_required")
     if args.action == "init":
         if config_path.exists():
             parser.error("existing_config_preserved")
@@ -93,6 +105,13 @@ def main(argv=None):
     if not config_path.is_file() or config_path.stat().st_mode & 0o077:
         parser.error("private_config_required")
     config = json.loads(config_path.read_text())
+    if installed != root:
+        for key in ("root", "separation_cache"):
+            path = Path(config[key])
+            if path.resolve() != path or not any(path.is_relative_to(installed / area)
+                                                for area in ("data/ktv", ".artifacts/ktv-audio")):
+                parser.error("private_runtime_directory_required")
+    separation_runtime = installed / RUNTIME.relative_to(root)
     from homeplane.ktv_download import NetEaseDownloadAdapter
     from homeplane.ktv_resources import available_memory, machine
     from homeplane.ktv_source_api import APIAudioAdapter, LocalSourceAPI
@@ -101,7 +120,8 @@ def main(argv=None):
         Path(config["download_dir"]), Path(config["root"]) / "downloads", allow_launch=False
     )
     source_api = LocalSourceAPI(Path(config["root"]) / "source-account",
-        root / "data/ktv/provider/node_modules/@neteasecloudmusicapienhanced/api")
+        installed / "data/ktv/provider/node_modules/@neteasecloudmusicapienhanced/api",
+        official_bundle=installed / ".artifacts/ktv-source/OfficialLogin.app")
     adapter = APIAudioAdapter(source_api, Path(config["root"]) / "api-downloads",
                               legacy=legacy, enabled=args.allow_download)
     cloud_adapter = APIAudioAdapter(source_api, Path(config["root"]) / "cloud-downloads",
@@ -130,7 +150,7 @@ def main(argv=None):
     queue = Queue(
         Path(config["root"]),
         acquire=acquire,
-        separate=separator(Path(config["separation_cache"])),
+        separate=separator(Path(config["separation_cache"]), workspace=installed, runtime=separation_runtime),
         transcode=partial(transcode_pcm, ffmpeg=ffmpeg),
         video=lambda song_id, original, folder, event: {"status": "unavailable"} if queue.jobs[folder.name].get("audio_origin") == "cloud" else prepare_video(song_id, original, folder, event),
         hardware=machine(),
@@ -138,11 +158,21 @@ def main(argv=None):
     )
     import uvicorn
 
+    from homeplane.intelligence.backgrounds import SongBackgrounds
+    from homeplane.intelligence.ktv_lyrics import KtvLyricsRecovery
+    from homeplane.intelligence.runtime import IntelligenceRuntime
+    from homeplane.intelligence.settings import default_directory
     from homeplane.ktv_cache import CacheManager
     from homeplane.ktv_nas_bridge import NasBridge
     from homeplane.ktv_search import search_songs, song_lyrics
     from homeplane.ktv_service import prepared_lyrics
     from homeplane.ktv_worker import PreparationWorker, WorkerCapabilities, media_origin
+
+    intelligence = IntelligenceRuntime(None, default_directory())
+    song_backgrounds = SongBackgrounds(intelligence, recording=source_api.public_lyric_recording)
+    lyric_recovery = KtvLyricsRecovery(
+        intelligence, source_api, queue, lambda job_id: prepared_lyrics(queue, job_id, song_lyrics, source_api),
+    )
 
     public_config = json.loads(args.public_config.read_text()) if args.public_config else {}
     if public_config.get("coordination") not in (None, "nas"):
@@ -157,8 +187,9 @@ def main(argv=None):
         guide = GuidePublisher(queue, config_path.parent / "guide.json", local=coordinator)
     if coordinator:
         bridge = PreparationWorker(queue, args.public_config, signing_key=config["token"],
-            health=WorkerCapabilities(source_api, Path(config["separation_cache"]), download_enabled=args.allow_download),
-            lyrics=lambda job_id: prepared_lyrics(queue, job_id, song_lyrics, source_api),
+            health=WorkerCapabilities(source_api, Path(config["separation_cache"]),
+                                      download_enabled=args.allow_download, runtime=separation_runtime),
+            lyrics=lyric_recovery,
             cloud_catalog=source_api.cloud_catalog, guide=guide, cloud_lyrics=source_api.prepare_cloud_lyrics)
     else:
         bridge = NasBridge(queue, args.public_config, cloud_catalog=source_api.cloud_catalog, guide=guide,
@@ -199,10 +230,6 @@ def main(argv=None):
     library = SongLibrary(queue, Path(config["separation_cache"]), bridge=bridge, source_api=source_api, archive=archive)
     queue.storage_manager = library
     # No access log: song/job paths and authorization headers are private operational data.
-    from homeplane.intelligence.backgrounds import SongBackgrounds
-    from homeplane.intelligence.runtime import IntelligenceRuntime
-    from homeplane.intelligence.settings import default_directory
-    song_backgrounds = SongBackgrounds(IntelligenceRuntime(None,default_directory()))
     if hasattr(bridge,'backgrounds'):
         bridge.backgrounds = song_backgrounds
     app = create_app(

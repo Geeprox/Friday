@@ -47,8 +47,11 @@ def public_sources():
     result = scan(REPO)
     if result['findings']:
         raise ValueError('publication audit must pass before packaging')
+    ktv_audio = 'integrations/ktv_public/web/party-audio.js'
+    if ktv_audio not in result['records']:
+        raise ValueError('KTV room helper missing from publication inventory')
     return {name: digest for name, digest in result['records'].items()
-            if Path(name).parts[0] in {'homeplane', 'friday', 'fixtures', 'schemas', 'workers'}}
+            if Path(name).parts[0] in {'homeplane', 'friday', 'fixtures', 'schemas', 'workers'} or name == ktv_audio}
 
 
 def runtime_checks():

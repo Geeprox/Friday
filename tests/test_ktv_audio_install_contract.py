@@ -100,6 +100,20 @@ def test_companion_cannot_gain_network_or_unprotected_entry(contract):
         contract.builder.validate_companion_manifest(source)
 
 
+@pytest.mark.parametrize("declaration", [
+    '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
+    '<uses-permission android:name="local.friday.ktv.audio.CONTROL" />',
+    '<service android:name="local.friday.audio.WetService" android:exported="false" />',
+    '<activity android:name=".DirectMonitorActivity" android:exported="false" />',
+])
+def test_main_install_rejects_capture_permissions_and_diagnostics(contract, declaration):
+    manifest = contract.root / "native/KTVTV/android/AndroidManifest.xml"
+    end = "</manifest>" if declaration.startswith("<uses-permission") else "</application>"
+    manifest.write_text(manifest.read_text().replace(end, declaration + end))
+    with pytest.raises(ValueError, match="main_playback_only_contract_required"):
+        verify(contract)
+
+
 def test_builder_change_requires_new_audio_receipt(contract):
     (contract.root / "scripts/build_ktv_audio_guard.py").write_text("# changed build process\n")
     with pytest.raises(ValueError, match="builder_drift"):
@@ -144,6 +158,23 @@ def test_no_launch_installs_both_in_order_without_starting_either(contract, monk
     assert not result["runtime_verified"] and not result["physical_latency_verified"]
 
 
+def test_main_only_install_keeps_companion_and_does_not_launch(contract, monkeypatch):
+    calls = []
+
+    def install(build, *args):
+        calls.append(build.role)
+        return {"role": build.role, "installed_reported": True, "outcome": "installed_reported"}
+
+    monkeypatch.setattr(contract.installer, "install_build", install)
+    result = contract.installer.install_pair(verify(contract), "unused", contract.output,
+                                             lambda: pytest.fail("--no-launch must not create launch session"),
+                                             True, True, main_only=True)
+    assert calls == ["main"]
+    assert result["outcome"] == "main_installed_reported"
+    assert result["installed_reported"] and not result["main_launch_requested"]
+    assert not (contract.output / "install-audio-result.json").exists()
+
+
 def test_dry_run_accepts_all_flags_without_private_config_or_network(contract, monkeypatch, capsys):
     monkeypatch.setattr(contract.installer, "ROOT", contract.root)
     monkeypatch.setattr(contract.installer.sys, "argv", ["install_ktv_tv.py", "--dry-run", "--review-prompt", "--no-launch",
@@ -155,6 +186,22 @@ def test_dry_run_accepts_all_flags_without_private_config_or_network(contract, m
     assert result["same_signer_verified"] and not result["device_contacted"]
     assert result["install_order"] == [contract.builder.PACKAGE, contract.installer.PACKAGE]
     assert not result["main_launch_planned"]
+
+
+def test_main_only_verifies_retained_companion_in_separate_directory(contract, monkeypatch, capsys):
+    retained = contract.root / "retained-companion"
+    retained.mkdir()
+    for artifact in (*contract.output.glob("friday-ktv-audio-*.apk"), contract.output / "audio-build-result.json"):
+        artifact.rename(retained / artifact.name)
+    monkeypatch.setattr(contract.installer, "ROOT", contract.root)
+    monkeypatch.setattr(contract.installer.sys, "argv", ["install_ktv_tv.py", "--dry-run", "--main-only",
+                                                        "--audio-build-dir", str(retained), "--no-launch"])
+    monkeypatch.setattr(contract.installer.socket, "socket", lambda *args: pytest.fail("dry-run contacted a device"))
+    assert contract.installer.main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["main_only"] and result["same_signer_verified"] and not result["device_contacted"]
+    assert [build["role"] for build in result["packages"]] == ["audio", "main"]
+    assert result["install_order"] == [contract.installer.PACKAGE]
 
 
 @pytest.mark.parametrize("changed", ["package", "permissions", "certificate"])

@@ -18,6 +18,10 @@ public final class KtvClient {
     private final File cache;
     public final MediaCache mediaCache;
     private static final long LIMIT=345600044L;
+    static final class HttpFailure extends IOException {
+        final int status;
+        HttpFailure(int status){super(status==401?"unauthorized":"request_failed");this.status=status;}
+    }
     public KtvClient(String origin, String key, File cache) throws Exception {
         endpoint=KtvEndpoint.parse(origin);
         if(key==null||!key.matches("[A-Za-z0-9_-]{32,128}"))throw new IOException("invalid_connection");
@@ -26,6 +30,7 @@ public final class KtvClient {
         mediaCache=new MediaCache(cache);
     }
     public boolean coordinator(){return coordinator;}
+    public boolean negotiated(){return negotiated;}
     public void instance(String value)throws IOException{if(value==null||!value.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"))throw new IOException("invalid_instance");instance=value;}
     public void observeStatus(JSONObject value){coordinator=value.optBoolean("coordinator");negotiated=true;}
     private void authenticate(HttpURLConnection c){
@@ -68,7 +73,7 @@ public final class KtvClient {
                 try(OutputStream out=c.getOutputStream()){out.write(bytes);}
             }
             int status=c.getResponseCode();
-            if (status<200 || status>=300) throw new IOException(status==401?"unauthorized":"request_failed");
+            if (status<200 || status>=300) throw new HttpFailure(status);
             try(InputStream in=c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()) {
                 byte[] b=new byte[8192];int count;
                 while((count=in.read(b))!=-1) {if(out.size()+count>1048576)throw new IOException("response_too_large");out.write(b,0,count);}
@@ -78,6 +83,7 @@ public final class KtvClient {
     }
     public byte[] image(String path) throws Exception {
         HttpURLConnection c=connection(path,"GET");
+        c.setConnectTimeout(2000);c.setReadTimeout(2500);
         try {
             if(c.getResponseCode()!=200 || !"image/png".equals(c.getContentType()))throw new IOException("qr_unavailable");
             try(InputStream in=c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){
@@ -87,13 +93,17 @@ public final class KtvClient {
             }
         } finally {c.disconnect();}
     }
+    private final Object wavTransfers=new Object(),videoTransfers=new Object(),backgroundTransfers=new Object();
     public File download(JSONObject media, AtomicBoolean cancel) throws Exception {
-        return downloadMedia(media,cancel,false);
+        synchronized(wavTransfers){return downloadMedia(media,cancel,false);}
     }
     public File downloadVideo(JSONObject media, AtomicBoolean cancel) throws Exception {
-        return downloadMedia(media,cancel,true);
+        synchronized(videoTransfers){return downloadMedia(media,cancel,true);}
     }
     public File downloadBackground(JSONObject media,AtomicBoolean cancel)throws Exception{
+        synchronized(backgroundTransfers){return downloadBackgroundMedia(media,cancel);}
+    }
+    private File downloadBackgroundMedia(JSONObject media,AtomicBoolean cancel)throws Exception{
         String hash=media.getString("sha256"),path=media.getString("url");long size=media.getLong("bytes");
         if(!hash.matches("[a-f0-9]{64}")||size<33||size>12L*1024*1024||!"png".equals(media.getString("encoding"))||!MediaRoute.kind(path).equals("background"))throw new IOException("invalid_background");
         File target=new File(cache,hash+".png");
@@ -112,7 +122,7 @@ public final class KtvClient {
         }catch(Exception invalid){return false;}
     }
     public boolean cached(JSONObject media,boolean video){try{String sha=media.getString("sha256");if(!sha.matches("[a-f0-9]{64}"))return false;File f=new File(cache,sha+(video?".mp4":".wav"));return f.isFile()&&f.length()==media.getLong("bytes");}catch(Exception e){return false;}}
-    private synchronized File downloadMedia(JSONObject media, AtomicBoolean cancel,boolean video) throws Exception {
+    private File downloadMedia(JSONObject media, AtomicBoolean cancel,boolean video) throws Exception {
         String sha=media.getString("sha256"),path=media.getString("url");long size=media.getLong("bytes");
         if (!sha.matches("[a-f0-9]{64}") || size<48 || size>(video?134217728L:LIMIT))throw new IOException("invalid_media");
         String kind=MediaRoute.kind(path);

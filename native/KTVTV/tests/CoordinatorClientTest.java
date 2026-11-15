@@ -35,11 +35,41 @@ public final class CoordinatorClientTest {
 
         CoordinatorSession session=new CoordinatorSession();check(session.claimOpen(true,true,0).isEmpty(),"poll cannot authorize an unopened session");session.requestOpen();
         check(session.claimOpen(false,true,0).isEmpty(),"background cannot open");String request=session.claimOpen(true,true,0);check(!request.isEmpty(),"explicit app start");
-        check(session.claimOpen(true,true,10).isEmpty(),"backoff");check(session.claimOpen(true,true,1000).equals(request),"retry same idempotency key");check(session.claimOpen(true,true,4000).equals(request),"third attempt same key");check(session.claimOpen(true,true,50000).isEmpty(),"finite retry bound");
-        session.acknowledged(request);check(!session.pending(),"ACK consumes authorization");check(session.claimOpen(true,true,60000).isEmpty(),"poll cannot reopen after ACK");session.requestOpen();session.closed();check(session.claimOpen(true,true,70000).isEmpty(),"closed session cannot reopen");
+        check(session.claimOpen(true,true,10).isEmpty(),"backoff");
+        for(long at:new long[]{1000,4000,9000,17000})check(session.claimOpen(true,true,at).equals(request),"retry same idempotency key");
+        check(session.slow()&&session.claimOpen(true,true,26000).isEmpty(),"slow path still waits for the retry interval");
+        session.refused(request,503);
+        check(session.claimOpen(true,true,27000).equals(request),"a service that starts late still gets the original request");
+        check(session.claimOpen(true,true,36999).isEmpty()&&session.claimOpen(true,true,37000).equals(request),"late retries stay paced");
+        session.refused("stale",409);
+        check(session.refusal()==0,"an old reply cannot suspend a new request");
+        session.refused(request,410);
+        check(session.refusal()==410&&session.claimOpen(true,true,70000).isEmpty(),"a closed room cannot be automatically revived");
+        session.retry();
+        check(session.claimOpen(true,true,71000).equals(request),"manual retry preserves idempotency after a lost reply");
+        check(!session.acknowledged("stale")&&session.pending(),"unrelated reply cannot consume the request");
+        check(session.acknowledged(request)&&!session.pending(),"ACK consumes authorization");
+        check(session.claimOpen(true,true,80000).isEmpty(),"poll cannot reopen after ACK");
+        session.requestOpen();session.closed();session.retry();
+        check(session.claimOpen(true,true,70000).isEmpty(),"closed session cannot reopen without a new request");
+
+        PlaybackReportThrottle reports=new PlaybackReportThrottle();
+        check(reports.shouldSend(1,"paused",false,0)&&reports.shouldSend(1,"paused",false,150),"failed receipt is still due");
+        reports.accepted(1,"paused",150);
+        check(!reports.shouldSend(1,"paused",false,3149)&&reports.shouldSend(1,"paused",false,3150),"idle heartbeat has a bounded interval");
+        check(reports.shouldSend(1,"paused with confirmed mute",false,300),"new mute confirmation must bypass interval");
+        check(reports.shouldSend(1,"playing",true,300),"play start is immediate");
+        reports.accepted(1,"playing",300);
+        check(!reports.shouldSend(1,"playing",true,1299)&&reports.shouldSend(1,"playing",true,1300),"position-only changes use a one second heartbeat");
+        check(reports.shouldSend(1,"playing with confirmed mute",true,801),"new controls are immediate during playback");
+        check(reports.shouldSend(2,"paused",false,200),"reconnected controls establish a new receipt");
 
         Map<String,Boolean> gates=new HashMap<>();for(String gate:CoordinatorStatus.GATES)gates.put(gate,true);CoordinatorStatus status=new CoordinatorStatus();
         status.observe(true,true,gates);check(status.complete(),"all complete gates");check(!status.expire(6000,true)&&status.complete(),"fresh status");check(status.expire(6001,true)&&!status.complete(),"an unanswered poll cannot leave complete readiness stale");gates.put("worker_model",false);status.observe(true,true,gates);check(!status.complete()&&status.text().contains("伴奏处理"),"HTTP ready cannot override failed model dependency");gates.put("worker_model",true);gates.remove("qr");status.observe(true,true,gates);check(!status.complete(),"missing gate fails closed");status.disconnected(true);check(!status.complete()&&status.text().contains("本地播放继续"),"disconnect is visibly degraded");
+        gates.put("qr",true);gates.put("tv_audio",false);
+        status.observe(true,false,gates);check(status.complete()&&status.text().equals("房间已就绪"),"external microphone does not delay the room");
+        gates.put("tv_playback",false);
+        status.observe(true,false,gates);check(!status.complete()&&status.text().contains("电视播放")&&!status.text().contains("麦克风"),"real playback failure stays visible");
 
         PlaybackTimeline timeline=new PlaybackTimeline("","","");check(timeline.start("song","edition",true),"first performance");String epoch=timeline.epoch();check(!timeline.start("song","edition",false)&&epoch.equals(timeline.epoch()),"pause/resume and route recovery retain timeline");check(timeline.start("song","edition",true)&&!epoch.equals(timeline.epoch()),"same-song replay even at time zero changes epoch");epoch=timeline.epoch();check(timeline.start("song","new-edition",false)&&!epoch.equals(timeline.epoch()),"changed edition invalidates calibration");PlaybackTimeline restored=new PlaybackTimeline(timeline.epoch(),timeline.song(),timeline.media());check(!restored.start("song","new-edition",false)&&restored.epoch().equals(timeline.epoch()),"persistent timeline proof");
         check(MediaTimeline.valid(48000,1000,192044,192044,1,1),"exact PCM timeline");check(MediaTimeline.valid(48000,1000,192044,192048,1,48001/48000.0),"bounded equivalent tail");check(!MediaTimeline.valid(48000,1000,192044,250000,1,1),"mismatched stem timeline");check(!MediaTimeline.valid(48000,1000,192044,192044,Double.NaN,1),"nonfinite duration");

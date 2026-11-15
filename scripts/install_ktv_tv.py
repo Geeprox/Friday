@@ -1,7 +1,7 @@
-"""Install the verified KTV audio companion, then KTV, through the selected TCL install UI.
+"""通过指定 TCL 电视的安装界面安装已验证的 Friday KTV。
 
-Dry-run verifies both local builds without contacting a device. Installation reports are
-transport observations; they do not establish runtime, microphone, or latency acceptance.
+默认先安装音频伴随应用，再安装主应用。单独更新主应用时仍校验两个安装包及签名。
+离线预检不连接电视。安装回报只记录传输与系统应答，仍需实机验收。
 """
 from __future__ import annotations
 
@@ -18,24 +18,21 @@ import socket
 import sys
 import threading
 import time
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
 from build_ktv_audio_guard import (
-    CONTROL,
-    NS,
     digest,
     inspect_apk,
     java_environment,
-    manifest_identity,
     source_snapshot,
     validate_companion_manifest,
 )
 from build_ktv_audio_guard import PACKAGE as AUDIO_PACKAGE
+from build_ktv_tv import PACKAGE, validate_main_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE, ACTIVITY = "local.friday.ktv", "local.friday.ktv.MainActivity"
+ACTIVITY = "local.friday.ktv.MainActivity"
 
 
 @dataclass(frozen=True)
@@ -60,12 +57,7 @@ def verify_build(role: str, output: Path, sdk: Path, environment: dict, root: Pa
     elif role == "main":
         source, package, prefix, receipt_name = (root / "native/KTVTV/android", PACKAGE,
                                                  "friday-ktv-", "build-result.json")
-        identity = manifest_identity(source, package)
-        tree = ET.parse(source / "AndroidManifest.xml").getroot()
-        queries = {node.get(NS + "name") for node in tree.findall("queries/package")}
-        if (set(identity["permissions"]) != {"android.permission.INTERNET", "android.permission.RECORD_AUDIO", "android.permission.MODIFY_AUDIO_SETTINGS", CONTROL}
-                or AUDIO_PACKAGE not in queries or identity["min_api"] != 26 or identity["target_api"] != 35):
-            raise ValueError("main_audio_companion_contract_required")
+        identity = validate_main_manifest(source)
     else:
         raise ValueError("unknown_build_role")
     receipt_path = output / receipt_name
@@ -109,11 +101,15 @@ def verify_build(role: str, output: Path, sdk: Path, environment: dict, root: Pa
     return VerifiedBuild(role, identity, receipt, apk, body, cert)
 
 
-def verify_builds(output: Path, sdk: Path, java: Path, root: Path = ROOT) -> list[VerifiedBuild]:
-    if output.resolve() != output:
+def verify_builds(output: Path, sdk: Path, java: Path, root: Path = ROOT, *,
+                  audio_output: Path | None = None) -> list[VerifiedBuild]:
+    if audio_output is None:
+        audio_output = output
+    if output.resolve() != output or audio_output.resolve() != audio_output:
         raise ValueError("canonical_workspace_output_required")
     environment = java_environment(java)
-    builds = [verify_build(role, output, sdk, environment, root) for role in ("audio", "main")]
+    builds = [verify_build("audio", audio_output, sdk, environment, root),
+              verify_build("main", output, sdk, environment, root)]
     if len({build.certificate_sha256 for build in builds}) != 1:
         raise ValueError("audio_and_main_signatures_must_match")
     return builds
@@ -245,22 +241,24 @@ def install_build(build: VerifiedBuild, host: str, output: Path, session_factory
 
 
 def install_pair(builds: list[VerifiedBuild], host: str, output: Path, session_factory,
-                 review_prompt: bool, no_launch: bool) -> dict:
+                 review_prompt: bool, no_launch: bool, *, main_only: bool = False) -> dict:
     if [build.role for build in builds] != ["audio", "main"]:
         raise ValueError("audio_then_main_required")
+    selected = builds[1:] if main_only else builds
     result = {"packages": [], "outcome": "not_started", "installed_reported": False,
               "main_launch_requested": False, "runtime_verified": False,
               "audio_state_verified": False, "physical_latency_verified": False,
-              "microphone_command_sent": False}
+              "microphone_command_sent": False, "main_only": main_only}
     try:
-        for build in builds:
+        for build in selected:
             step = install_build(build, host, output, session_factory, review_prompt)
             result["packages"].append(step)
             if not step["installed_reported"]:
                 result["outcome"] = build.role + "_" + step["outcome"]
                 break
         else:
-            result.update({"outcome": "both_installed_reported", "installed_reported": True})
+            result.update({"outcome": "main_installed_reported" if main_only else "both_installed_reported",
+                           "installed_reported": True})
             if not no_launch:
                 session = session_factory()
                 try:
@@ -285,17 +283,23 @@ def main() -> int:
     parser.add_argument("--sdk", type=Path, default=ROOT / ".artifacts/embodied-toolchain/android")
     parser.add_argument("--java", type=Path, default=ROOT / ".artifacts/embodied-toolchain/jdk")
     parser.add_argument("--dry-run", action="store_true", help="Verify both APKs, receipts and signers without device access")
+    parser.add_argument("--main-only", action="store_true", help="Verify both packages and install only the main app")
+    parser.add_argument("--audio-build-dir", type=Path, help="Absolute path to the retained companion APK and receipt for --main-only")
     parser.add_argument("--review-prompt", action="store_true", help="Wait for local one-time confirmation after each install-prompt screenshot")
-    parser.add_argument("--no-launch", action="store_true", help="Install both packages without opening the main app")
+    parser.add_argument("--no-launch", action="store_true", help="Install without opening the main app")
     args = parser.parse_args()
+    if args.audio_build_dir is not None and not args.main_only:
+        parser.error("--audio-build-dir requires --main-only")
     os.umask(0o077)
     output = ROOT / ".artifacts/ktv-tv"
-    builds = verify_builds(output, args.sdk, args.java, ROOT)
+    builds = verify_builds(output, args.sdk, args.java, ROOT, audio_output=args.audio_build_dir)
     if args.dry_run:
-        print(json.dumps({"verified_build": True, "packages": [build.summary() for build in builds],
-                          "install_order": [build.identity["package"] for build in builds],
-                          "same_signer_verified": True, "device_contacted": False,
-                          "main_launch_planned": not args.no_launch}, indent=2))
+        selected = builds[1:] if args.main_only else builds
+        result = {"verified_build": True, "packages": [build.summary() for build in builds],
+                  "install_order": [build.identity["package"] for build in selected],
+                  "same_signer_verified": True, "device_contacted": False,
+                  "main_launch_planned": not args.no_launch, "main_only": args.main_only}
+        print(json.dumps(result, indent=2))
         return 0
     config = args.config.absolute()
     if config.resolve() != config or not config.is_file() or config.stat().st_mode & 0o077:
@@ -308,7 +312,7 @@ def main() -> int:
     sys.path.insert(0, str(ROOT / "scripts/embodied"))
     from tcl_diagnostic_session import Session
 
-    result = install_pair(builds, host, output, Session, args.review_prompt, args.no_launch)
+    result = install_pair(builds, host, output, Session, args.review_prompt, args.no_launch, main_only=args.main_only)
     return 0 if result["installed_reported"] else 1
 
 

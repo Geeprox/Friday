@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from homeplane.ktv_game_api import LAUNCH_AGENT_LABEL, create_router
+from homeplane.ktv_startup import definition
 
 TOKEN = "SYNTHETIC_OWNER_" + "x" * 32
 
@@ -35,7 +36,7 @@ def files(tmp_path):
     return SimpleNamespace(config=config, bundle=bundle, agent=agent, job=job, save=save)
 
 
-def request(files, *, explicit=None):
+def request(files, *, explicit=None, operation="manage/room"):
     seen = []
 
     def upstream(value):
@@ -45,7 +46,7 @@ def request(files, *, explicit=None):
     app.include_router(create_router(explicit, launch_agent_path=files.agent, development_root=files.bundle,
                                     transport=httpx.MockTransport(upstream)))
     with TestClient(app, base_url="http://127.0.0.1:8740", client=("127.0.0.1", 9000)) as client:
-        response = client.get("/api/games/ktv/manage/room")
+        response = client.get("/api/games/ktv/" + operation)
     return response, seen
 
 
@@ -64,6 +65,23 @@ def test_explicit_installed_config_parameter_is_followed_without_executing_args(
     files.save()
     response, seen = request(files)
     assert response.status_code == 200 and len(seen) == 1
+
+
+@pytest.mark.parametrize("operation", ["scheduler", "manage/library"])
+def test_launch_agent_generated_for_registered_worker_worktree(files, operation):
+    installed = files.config.parents[2]
+    source = installed / ".private/worktrees/current-release"
+    registry = installed / ".git/worktrees/current-release"
+    source.mkdir(parents=True)
+    registry.mkdir(parents=True)
+    (source / ".git").write_text(f"gitdir: {registry}\n")
+    (registry / "gitdir").write_text(f"{source / '.git'}\n")
+    files.job.update(definition(source, "192.0.2.10", installed_root=installed))
+    files.save()
+    response, seen = request(files, operation=operation)
+    assert response.status_code == 200 and len(seen) == 1
+    assert seen[0].url.path == f"/v1/{operation}"
+    assert seen[0].headers["X-KTV-Key"] == TOKEN
 
 
 def test_development_fallback_and_explicit_override_are_preserved(files):

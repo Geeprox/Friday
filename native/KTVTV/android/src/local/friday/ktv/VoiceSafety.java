@@ -6,7 +6,7 @@ package local.friday.ktv;
 public final class VoiceSafety {
     private static final int HOP=512,OVERLOAD_FRAMES=4800;
     private final FeedbackNotch standalone=new FeedbackNotch(0);
-    private int at,clipped,hotFrames;
+    private int at,clippedA,clippedB,hotFrames;
     private double energyA,energyB,blockPeak;
     private long lastASequence,lastBSequence;
     public volatile boolean ready,attenuated,latched;
@@ -17,22 +17,29 @@ public final class VoiceSafety {
     /** Explicit render-owner reset. Telemetry counters and frame progress remain
      * monotonic; normal clear/stream transitions never call this operation. */
     public void reset(){
-        at=clipped=hotFrames=0;energyA=energyB=blockPeak=0;ready=attenuated=latched=false;
+        interruptInput();attenuated=latched=false;
         severity=reason=0;gainCap=100;peakHz=peak=0;standalone.reset();
+    }
+    /** 输入缺帧时清除本段分析窗口，保留保护限额和已锁定的静音。 */
+    public void interruptInput(){
+        at=clippedA=clippedB=hotFrames=0;
+        energyA=energyB=blockPeak=0;ready=false;
     }
     /** Legacy mono observer for callers without the streaming notch stage. Its
      * zero notch budget escalates conservative sustained risk to gain then mute. */
     public boolean accept(float sample,boolean rawClipped){standalone.process(sample);return accept(sample,0,rawClipped,false,standalone,null);}
-    public boolean accept(float rawA,float rawB,boolean clippedA,boolean clippedB,FeedbackNotch a,FeedbackNotch b){
+    public boolean accept(float rawA,float rawB,boolean clipA,boolean clipB,FeedbackNotch a,FeedbackNotch b){
         ready=a.ready&&(b==null||b.ready);
-        frames++;clipped+=(clippedA?1:0)+(clippedB?1:0);clippedSamples+=(clippedA?1:0)+(clippedB?1:0);
+        frames++;
+        if(clipA){clippedA++;clippedSamples++;}
+        if(clipB){clippedB++;clippedSamples++;}
         double left=clean(rawA),right=b==null?0:clean(rawB);energyA+=left*left;energyB+=right*right;blockPeak=Math.max(blockPeak,Math.max(Math.abs(left),Math.abs(right)));
         if(++at==HOP){
-            peak=(float)blockPeak;int channels=b==null?1:2;
-            boolean overload=clipped>=HOP*channels*.02&&Math.sqrt(Math.max(energyA,energyB)/HOP)>=.2;
+            peak=(float)blockPeak;
+            boolean overload=(clippedA>=HOP*.02&&energyA>=HOP*.04)||(clippedB>=HOP*.02&&energyB>=HOP*.04);
             hotFrames=ready&&overload?Math.min(OVERLOAD_FRAMES,hotFrames+HOP):0;
             if(hotFrames>=OVERLOAD_FRAMES&&!latched)latch(1,0);
-            at=clipped=0;energyA=energyB=blockPeak=0;
+            at=clippedA=clippedB=0;energyA=energyB=blockPeak=0;
         }
         boolean changedA=a.sequence!=lastASequence,changedB=b!=null&&b.sequence!=lastBSequence;
         if(changedA||changedB){

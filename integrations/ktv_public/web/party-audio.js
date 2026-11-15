@@ -45,6 +45,7 @@
     if (action === "pause") return playback.current === song && ["paused", "idle"].includes(playback.state);
     if (action === "resume") return playback.current === song && playback.state === "playing";
     if (action === "next") return playback.current !== before.current
+      || !before.current && before.state === "playing" && playback.state === "preparing"
       || !!before.current && playback.played?.includes(before.current);
     if (action !== "play" || playback.current !== song) return false;
     if (playback.state === "preparing") return true; // Loading is visible as loading, never "played".

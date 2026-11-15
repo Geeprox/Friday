@@ -2,6 +2,7 @@
 import hashlib
 import json
 import threading
+import time
 import uuid
 
 import pytest
@@ -134,6 +135,30 @@ def test_policy_validation_and_persistence(library):
     for bad in ({"enabled": 1, "limit_bytes": 8 * 1024**3}, {"enabled": True, "limit_bytes": -1}, {"enabled": True}):
         with pytest.raises(HTTPException):
             library.policy(bad)
+
+
+def test_mac_capacity_reports_current_policy_and_neutral_retained_cache(library, monkeypatch):
+    local = job(library.queue, "1")
+    library.last_cleanup = {"state": "protected_over_limit", "removed_bytes": 0, "removed": 0}
+    disabled = library.local_inventory()
+    assert disabled["last_cleanup"]["state"] == "disabled"
+    assert disabled["hot_cache"]["limit_bytes"] == 2 * 1024**3
+
+    target = 20 * 1024**3
+    measured = [target + 1]
+    monkeypatch.setattr(library, "_hot_cache_usage", lambda jobs: measured[0])
+    monkeypatch.setattr(library, "_hot_cache_protected", lambda: {local})
+    library.policy({"enabled": True, "limit_bytes": target})
+    assert library.trim_wake.is_set()
+    assert library.local_inventory()["last_cleanup"]["state"] == "pending"
+    assert library.trim_hot_cache()["state"] == "retained_over_target"
+    assert library.local_inventory()["last_cleanup"]["state"] == "retained_over_target"
+    assert local in library.queue.jobs
+
+    measured[0] = target - 1
+    now = library.local_inventory()
+    assert now["hot_cache"] == {"bytes": target - 1, "limit_bytes": target}
+    assert now["last_cleanup"]["state"] == "within_limit"
 
 
 def test_owner_routes_require_loopback_exact_host_session_and_same_origin(library):
@@ -291,7 +316,7 @@ def test_nas_lru_includes_legacy_sources_and_does_not_delete_mac(library, tmp_pa
         store.coordinator.close()
 
 
-def test_owner_api_refuses_offline_unmute_before_forwarding_to_legacy_scene(library, tmp_path):
+def test_owner_api_rejects_retired_mic_controls_before_forwarding(library, tmp_path):
     store = connect_nas(library, tmp_path)
     origin = "http://127.0.0.1:8769"
     room = store.create()["room_id"]
@@ -301,7 +326,7 @@ def test_owner_api_refuses_offline_unmute_before_forwarding_to_legacy_scene(libr
             client.get("/console")
             result = client.post("/v1/manage/room/controls", headers={"Origin": origin},
                                  json={"room_id": room, "value": {"mic_muted": 0}})
-            assert result.status_code == 409 and result.json()["detail"] == "tv_offline"
+            assert result.status_code == 400 and result.json()["detail"] == "invalid_control"
             assert store.management.room()["status"]["controls"]["mic_muted"] == 1
     finally:
         store.coordinator.close()
@@ -360,6 +385,83 @@ def test_unassociated_legacy_guides_visible_for_batch_delete_personal_file_prese
     plan = library.preview({"ids": [r["id"] for r in data["entries"]], "scope": "nas"})
     assert library.delete({"plan": plan["plan"]})["complete"]
     assert list(guides.iterdir()) == [personal]
+
+
+def test_legacy_guides_only_protect_exact_playback_references_and_recheck_before_delete(library, tmp_path, monkeypatch):
+    from homeplane.ktv_archive import MediaArchive
+
+    store = connect_nas(library, tmp_path)
+    mount = tmp_path / "nas"
+    archived, guides = mount / "media", mount / "guides"
+    archived.mkdir(parents=True)
+    guides.mkdir()
+    config = tmp_path / "archive.json"
+    atomic_json(config, {"mount": str(mount), "root": str(archived)})
+    atomic_json(tmp_path / "guide.json", {"mount": str(mount), "directory": str(guides)})
+    library.archive = MediaArchive(library.queue, config, mounted=lambda _: True)
+    files = {}
+    for audio in (b"first synthetic guide", b"second synthetic guide"):
+        checksum = hashlib.sha256(audio).hexdigest()
+        files[checksum] = guides / (checksum + ".mp3")
+        files[checksum].write_bytes(audio)
+    queued_guide, played_guide = files
+    queued, played = uid(), uid()
+    room_id = store.create()["room_id"]
+
+    def rows():
+        return {row["id"].removeprefix("legacy-guide:"): row["nas"] for row in library.inventory()["entries"]}
+
+    try:
+        with store.connection() as db:
+            db.execute("INSERT INTO songs(id,room,song_id,title,request_id,state,created,guide_sha) "
+                       "VALUES(?,?,?,?,?,'ready',1,?)", (queued, room_id, "1", "待唱", uid(), queued_guide))
+            db.execute("INSERT INTO songs(id,room,song_id,title,request_id,state,created,guide_reference_sha,guide_reference_kind) "
+                       "VALUES(?,?,?,?,?,'ready',1,?,'accompaniment')", (played, room_id, "2", "已唱", uid(), played_guide))
+            db.execute("UPDATE rooms SET played=? WHERE id=?", (json.dumps([played]), room_id))
+        assert store.management.inventory()["protected_song_ids"] == ["1"]
+        assert store.management.inventory()["protected_guide_hashes"] == [queued_guide]
+        present = rows()
+        assert present[queued_guide]["reason"] == "in_queue" and not present[queued_guide]["can_delete"]
+        assert present[played_guide]["can_delete"]
+
+        scope = {"ids": ["legacy-guide:" + played_guide], "scope": "nas"}
+        real_manage = library.bridge.manage
+        def legacy_manage(operation, value):
+            data = real_manage(operation, value)
+            if operation == "library":
+                data.pop("protected_guide_hashes")
+            return data
+        with monkeypatch.context() as compatibility:
+            compatibility.setattr(library.bridge, "manage", legacy_manage)
+            pending = rows()
+            assert all(row["reason"] == "usage_unverified" and not row["can_delete"] for row in pending.values())
+            with pytest.raises(HTTPException) as error:
+                library.preview(scope)
+            assert error.value.detail == "cache_usage_unverified"
+
+        def offline(*_):
+            raise HTTPException(503, "nas_management_unavailable")
+
+        with monkeypatch.context() as disconnected:
+            disconnected.setattr(library.bridge, "manage", offline)
+            pending = rows()
+            assert len(pending) == 2 and all(row["reason"] == "usage_unverified" for row in pending.values())
+
+        plan = library.preview(scope)
+        with store.connection() as db:
+            command = db.execute("INSERT INTO commands(room,request_id,action,song,created) VALUES(?,?,'play',?,?)",
+                                 (room_id, uid(), played, int(time.time()))).lastrowid
+        assert set(store.management.inventory()["protected_guide_hashes"]) == set(files)
+        conflict = library.delete({"plan": plan["plan"]})
+        assert not conflict["complete"] and conflict["code"] == "cache_in_use"
+        assert all(file.is_file() for file in files.values())
+
+        with store.connection() as db:
+            db.execute("UPDATE rooms SET last_command=? WHERE id=?", (command, room_id))
+        assert library.delete({"plan": plan["plan"]})["complete"]
+        assert files[queued_guide].is_file() and not files[played_guide].exists()
+    finally:
+        store.coordinator.close()
 
 
 def test_purge_reconciles_completed_nas_queue_so_no_unplayable_ready_item_remains(library, tmp_path):

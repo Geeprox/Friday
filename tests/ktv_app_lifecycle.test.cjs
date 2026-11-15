@@ -1,10 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path'),{webcrypto}=require('node:crypto');
 const web=path.join(__dirname,'../integrations/ktv_public/web');
-const source=fs.readFileSync(path.join(web,'app.js'),'utf8').replace('import("./sync.mjs")','Promise.resolve({FridayAcousticSync:TestSync})').replace('join();document.addEventListener','document.addEventListener');
+const source=fs.readFileSync(path.join(web,'app.js'),'utf8').replace('join();document.addEventListener','document.addEventListener');
 function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};}
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 function harness({validRoom=false,deferFrames=false}={}){
- const nodes=new Map(),trace=[],alignments=[],listeners=new Map(),frames=[];
+ const nodes=new Map(),trace=[],listeners=new Map(),frames=[];
  const events=name=>({addEventListener(type,callback){const key=name+':'+type;if(!listeners.has(key))listeners.set(key,new Set());listeners.get(key).add(callback);}});
  const emit=(name,type,event={})=>{for(const callback of [...(listeners.get(name+':'+type)||[])])callback(event);};
  class Node{constructor(id=''){this.id=id;this.children=[];this.dataset={};this.style={};this.value='';this.textContent='';this.hidden=false;this.isConnected=true;this.classList={add(){},remove(){},toggle(){}};this.attributes={};this.parentElement=null;}
@@ -13,18 +13,14 @@ function harness({validRoom=false,deferFrames=false}={}){
  const document={...events('document'),hidden:false,body:new Node('body'),getElementById:element,createElement:()=>new Node(),querySelector:q=>q==='dialog[open]'?null:element(q),querySelectorAll:()=>[],activeElement:null};
  class Ear{constructor(clock,changed){this.clock=clock;this.changed=changed;this.stops=0;this.syncs=0;this.version=0;this.alignedGeneration=null;this.buffer=null;this.context={state:'running',decodeAudioData:async bytes=>({duration:5,marker:new Uint8Array(bytes)[0]})};}
   start(loader){trace.push('start');this.controller=new AbortController();return Promise.resolve().then(()=>loader(this.controller.signal)).then(bytes=>{this.buffer={duration:5,marker:new Uint8Array(bytes)[0]};return this.buffer;});}
-  resumePlayback(){trace.push('resume');return Promise.resolve();}stop(){this.stops++;this.version++;this.controller?.abort();this.buffer=null;this.alignedGeneration=null;this.pendingResult=null;}halt(){trace.push('halt');}sync(){this.syncs++;return !this.needsAlignment()&&!this.capturePending();}stats(){return {};}volume(){}
-  needsAlignment(){return !!this.buffer&&this.alignedGeneration!==this.clock.generation;}
-  capturePending(){return !!this.liveCapture;}
-  acceptAlignment(result){trace.push('accept');const pending=this.pendingResult;if(!pending||pending.result!==result||pending.generation!==this.clock.generation||pending.version!==this.version||pending.buffer!==this.buffer||this.capturePending())throw Object.assign(new Error(),{code:'changed'});this.clock.adjustment=result.offset;this.alignedGeneration=this.clock.generation;this.pendingResult=null;}
-  setManualAdjustment(value){trace.push('manual');if(this.capturePending())throw Object.assign(new Error(),{code:'changed'});this.clock.adjustment=Math.max(-5000,Math.min(5000,value));this.alignedGeneration=this.clock.generation;}}
+  stop(){this.stops++;this.controller?.abort();this.buffer=null;this.calibrating=false;}sync(){if(this.calibrating)return false;this.syncs++;return true;}volume(){}
+  setManualAdjustment(value){this.clock.adjustment=value;}}
  class Clock{constructor(){this.adjustment=0;this.generation=0;}observe(){return true;}}
- class Sync{run(ear,clock,countdown,diagnostic,options){const d=deferred(),owner={version:ear.version,buffer:ear.buffer,generation:clock.generation};alignments.push({d,ear,clock,options});return d.promise.then(result=>{ear.pendingResult={...owner,result};return result;});}cancel(){trace.push('cancel');}}
- const context=vm.createContext({document,location:{hash:validRoom?'#r=11111111-1111-4111-8111-111111111111&k='+ 'a'.repeat(43):'',pathname:'/'},sessionStorage:{getItem:()=>null,setItem(){},removeItem(){}},history:{state:null,replaceState(value){this.state=value;},pushState(value){this.state=value;},back(){}},window:{...events('window'),scrollY:0,scrollTo(v){this.scrollY=v.top||0;}},URLSearchParams,AbortController,crypto:webcrypto,performance,setTimeout,clearTimeout,setInterval:()=>0,clearInterval(){},requestAnimationFrame:fn=>deferFrames?frames.push(fn):fn(),FridayGuideClock:Clock,FridayEarMonitor:Ear,FridayPartyAudio:require(path.join(web,'party-audio.js')),FridayAddQueue:require(path.join(web,'add-queue.js')),FridayStatusFeed:require(path.join(web,'status-feed.js')),TestSync:Sync,fetch:async()=>{throw Error('unexpected fetch');}});
+ const context=vm.createContext({document,location:{hash:validRoom?'#r=11111111-1111-4111-8111-111111111111&k='+ 'a'.repeat(43):'',pathname:'/'},sessionStorage:{getItem:()=>null,setItem(){},removeItem(){}},history:{state:null,replaceState(value){this.state=value;},pushState(value){this.state=value;},back(){}},window:{...events('window'),scrollY:0,scrollTo(v){this.scrollY=v.top||0;}},URLSearchParams,AbortController,crypto:webcrypto,performance,setTimeout,clearTimeout,setInterval:()=>0,clearInterval(){},requestAnimationFrame:fn=>deferFrames?frames.push(fn):fn(),FridayGuideClock:Clock,FridayEarMonitor:Ear,FridayPartyAudio:require(path.join(web,'party-audio.js')),FridayAddQueue:require(path.join(web,'add-queue.js')),FridayStatusFeed:require(path.join(web,'status-feed.js')),fetch:async()=>{throw Error('unexpected fetch');}});
  vm.runInContext(source,context);
  const run=code=>vm.runInContext(code,context);
  run('var actualSetControl=setControl,actualApi=api;api=async()=>({});setControl=async()=>{controls.original=0;};identity={key:"fixture"};playback={online:true,current:"song-a",played:[],state:"playing",guide:{sha256:"a".repeat(64),bytes:2048,duration_ms:5000,reference:{kind:"accompaniment",sha256:"b".repeat(64),bytes:2048,duration_ms:5000}}};earEnabled=true;controls.original=0;');
- return {context,run,nodes,trace,alignments,element,emit,flushFrames(){while(frames.length)frames.shift()();}};
+ return {context,run,nodes,trace,element,emit,flushFrames(){while(frames.length)frames.shift()();}};
 }
 
 test('guide and app scripts share globals without duplicate declarations',()=>{
@@ -36,7 +32,8 @@ test('phone distinguishes a retained room from incomplete TV and worker readines
  h.context.state={mac_online:true,readiness:{state:'degraded',ready:false,gates:{link_tv:true,tv_audio:true,link_worker:false}}};
  assert.match(h.run('readinessHint(state)'),/歌曲准备服务正在连接/);
  h.context.state.readiness.gates={link_tv:false};assert.match(h.run('readinessHint(state)'),/电视暂未连接/);
- h.context.state.readiness.gates={link_tv:true,tv_audio:false};assert.match(h.run('readinessHint(state)'),/电视正在准备/);
+ h.context.state.readiness.gates={link_tv:true,tv_audio:false};assert.equal(h.run('readinessHint(state)'),'');
+ h.context.state.readiness.gates.qr=false;assert.match(h.run('readinessHint(state)'),/正在准备本场/);
  h.context.state.readiness.ready=true;assert.equal(h.run('readinessHint(state)'),'');
  assert.doesNotMatch(h.run('readinessHint({mac_online:false})'),/房间.*离线|本场.*结束/);
 });
@@ -50,113 +47,11 @@ test('an old load finally cannot clear the new loading state or stop its monitor
  h.run('invalidateGuide({disable:true})');fresh.resolve({});await second;
 });
 
-test('old matching result cannot apply offset or resume a newer session',async()=>{
- const h=harness();h.run('var firstOp=beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-a"');
- const first=h.run('prepareAlignment(firstOp)').catch(e=>e);await flush();
- h.run('playback.current="song-b";var secondOp=beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-b"');
- const second=h.run('prepareAlignment(secondOp)');await flush();
- h.alignments[0].d.resolve({offset:1700,frames:100,score:.8,margin:.3});await first;
- assert.equal(h.run('earClock.adjustment'),0);assert.equal(h.run('alignLoading'),true);assert.equal(h.run('ear.syncs'),0);
- h.alignments[1].d.resolve({offset:25,frames:100,score:.8,margin:.3});await second;
- assert.equal(h.run('earClock.adjustment'),25);assert.equal(h.run('earCanPlay'),true);
-});
-
-test('reference bytes are verified and kept separate from the original output buffer',async()=>{
- const h=harness(),original=new Uint8Array(2048).fill(1),reference=new Uint8Array(2048).fill(2),hash=async b=>Buffer.from(await webcrypto.subtle.digest('SHA-256',b)).toString('hex');
- h.context.spec={sha256:await hash(original),bytes:2048,duration_ms:5000,reference:{kind:'accompaniment',sha256:await hash(reference),bytes:2048,duration_ms:5000}};
- const fetched=[];h.context.fetch=async(url,options)=>{fetched.push([url,options.signal]);return {ok:true,arrayBuffer:async()=>(url.includes('variant=reference')?reference:original).slice().buffer};};
- h.run('playback.guide=spec');const pending=h.run('loadGuide()');assert.equal(h.trace[0],'start');
- for(let i=0;i<20&&!h.alignments.length;i++)await flush();
- assert.equal(h.alignments.length,1);assert.equal(h.alignments[0].ear.buffer.marker,1);assert.equal(h.alignments[0].options.referenceBuffer.marker,2);assert.equal(h.alignments[0].options.referenceSong,'song-a');
- assert.equal(fetched.length,2);assert.equal(fetched[0][1],fetched[1][1]);
- h.alignments[0].d.resolve({offset:0,frames:100,score:.9,margin:.4});await pending;
- assert.equal(h.run('earCanPlay'),true);
-});
-
-test('retry resumes audio in the click task before alignment waits',async()=>{
- const h=harness();h.run('beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-a";earCanPlay=false');
- h.trace.length=0;h.element('guide-toggle').onclick();assert.equal(h.trace[0],'resume');
- await flush();assert.equal(h.alignments.length,1);h.run('invalidateGuide({disable:true})');
- h.alignments[0].d.resolve({offset:500,frames:100,score:.9,margin:.3});await flush();assert.equal(h.run('earClock.adjustment'),0);
-});
-
 test('search and queue remain distinct while preserving query and scroll',()=>{
  const h=harness();h.run('mode="find";selected=[{id:"queued",song_id:"123",title:"已点歌曲",state:"ready"}];songs=[{song_id:"456",title:"搜索结果"}];searchQuery="保留搜索词";$("query").value=searchQuery;window.scrollY=90;render()');
  assert.equal(h.element('results').children.length,1);assert.equal(h.element('search').hidden,false);
  h.run('setView("queue")');assert.equal(h.element('search').hidden,true);assert.equal(h.element('results').children[0].className,'queue-group pending');
  h.run('window.scrollY=35;setView("find")');assert.equal(h.element('query').value,'保留搜索词');assert.equal(h.context.window.scrollY,90);assert.equal(h.element('results').children.length,1);
-});
-
-
-test('a retry owns pending resume immediately and a second click cancels instead of starting another matcher',async()=>{
- const h=harness(),resume=deferred();h.context.resume=resume;
- h.run('beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-a";earCanPlay=false;ear.resumePlayback=()=>resume.promise');
- h.element('guide-toggle').onclick();assert.equal(h.run('earLoading'),true);
- h.element('guide-toggle').onclick();assert.equal(h.run('earEnabled'),false);assert.equal(h.run('earLoading'),false);
- resume.resolve();await flush();assert.equal(h.alignments.length,0);assert.equal(h.run('earCanPlay'),false);
-});
-
-test('same-song guide version changes invalidate the pending result',async()=>{
- const h=harness();h.run('var op=beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-a"');
- const pending=h.run('prepareAlignment(op)').catch(e=>e);await flush();
- h.run('playback.guide={...playback.guide,sha256:"c".repeat(64)}');
- h.alignments[0].d.resolve({offset:800,frames:100,score:.9,margin:.3});await pending;
- assert.equal(h.run('earClock.adjustment'),0);assert.equal(h.run('ear.syncs'),0);
- h.run('invalidateGuide({disable:true})');
-});
-
-test('failed alignment attempts do not recapture on status refresh, and user retry activates audio synchronously',async()=>{
- const h=harness();h.run('var op=beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-a"');
- const pending=h.run('prepareAlignment(op)');await flush();h.alignments[0].d.reject(Object.assign(new Error(),{code:'quiet'}));await pending;
- for(let i=0;i<20;i++)h.run('updateGuide()');assert.equal(h.alignments.length,1);assert.equal(h.run('earCanPlay'),false);assert.equal(h.element('guide-toggle').textContent,'重试');
- h.trace.length=0;h.element('guide-toggle').onclick();assert.equal(h.trace[0],'resume');await flush();assert.equal(h.alignments.length,2);
- h.alignments[1].d.resolve({offset:-150,frames:296,score:.9,margin:.2});await flush();assert.equal(h.run('earCanPlay'),true);assert.equal(h.run('earClock.adjustment'),-150);
- for(let i=0;i<20;i++)h.run('updateGuide()');assert.equal(h.alignments.length,2);h.run('invalidateGuide({disable:true})');
-});
-
-test('same-song replay requests one new alignment and stops the prior speaker output immediately',async()=>{
- const h=harness();h.run('var op=beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-a"');
- const first=h.run('prepareAlignment(op)');await flush();h.alignments[0].d.resolve({offset:100,frames:296,score:.9,margin:.2});await first;
- h.trace.length=0;h.run('earClock.generation++;updateGuide()');assert.equal(h.trace[0],'halt');assert.equal(h.run('earCanPlay'),false);assert.equal(h.run('alignLoading'),true);
- for(let i=0;i<20;i++)h.run('updateGuide()');await flush();assert.equal(h.alignments.length,2);assert.equal(h.run('op.alignmentGeneration'),1);
- h.alignments[1].d.resolve({offset:-40,frames:296,score:.9,margin:.2});await flush();assert.equal(h.run('earClock.adjustment'),-40);assert.equal(h.run('earCanPlay'),true);
- h.run('invalidateGuide({disable:true})');
-});
-
-test('replay during initial alignment preserves the replacement attempt UI through the old loader finally',async()=>{
- const h=harness();h.run('ear.start=async()=>{ear.buffer={duration:5};referenceBuffer={};referenceSong=playback.current;}');
- const load=h.run('loadGuide()');await flush();assert.equal(h.alignments.length,1);
- h.run('earClock.generation++;updateGuide()');h.alignments[0].d.reject(Object.assign(new Error(),{code:'changed'}));await load;await flush();
- assert.equal(h.alignments.length,2);assert.equal(h.run('alignLoading'),true);assert.equal(h.element('guide-align-cancel').hidden,false);assert.equal(h.element('guide-toggle').getAttribute('aria-busy'),'true');assert.equal(h.element('guide-toggle').textContent,'取消');
- h.alignments[1].d.resolve({offset:80,frames:296,score:.9,margin:.2});await flush();assert.equal(h.run('earCanPlay'),true);h.run('invalidateGuide({disable:true})');
-});
-
-test('replay during a retry preserves the replacement attempt UI through the old retry finally',async()=>{
- const h=harness();h.run('var op=beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-a";earCanPlay=false');
- h.element('guide-toggle').onclick();await flush();assert.equal(h.alignments.length,1);
- h.run('earClock.generation++');h.alignments[0].d.reject(Object.assign(new Error(),{code:'changed'}));await flush();
- assert.equal(h.alignments.length,2);assert.equal(h.run('alignLoading'),true);assert.equal(h.element('guide-align-cancel').hidden,false);assert.equal(h.element('guide-toggle').getAttribute('aria-busy'),'true');
- h.alignments[1].d.resolve({offset:0,frames:296,score:.9,margin:.2});await flush();assert.equal(h.run('earCanPlay'),true);h.run('invalidateGuide({disable:true})');
-});
-
-test('pagehide cancels alignment and returning to the page does not start microphone work without another click',async()=>{
- const h=harness();h.run('var op=beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-a"');
- const pending=h.run('prepareAlignment(op)').catch(error=>error);await flush();h.emit('window','pagehide');
- assert.equal(h.run('earEnabled'),false);assert.equal(h.run('alignLoading'),false);assert.ok(h.trace.includes('cancel'));assert.match(h.element('guide-status').textContent,/点开启继续/);
- h.alignments[0].d.resolve({offset:500,frames:296,score:.9,margin:.2});await pending;h.run('updateGuide()');assert.equal(h.alignments.length,1);assert.equal(h.run('earClock.adjustment'),0);assert.equal(h.run('earCanPlay'),false);
-});
-
-test('capture cleanup failure has a specific message and manual adjustment cannot bypass the capture gate',async()=>{
- const h=harness();h.run('var op=beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-a"');
- const pending=h.run('prepareAlignment(op)');await flush();h.run('ear.liveCapture=true');h.alignments[0].d.reject(Object.assign(new Error(),{code:'capture_release_failed'}));await pending;
- assert.equal(h.run('alignmentState.code'),'capture_release_failed');assert.match(h.element('guide-status').textContent,/麦克风尚未释放/);
- h.element('guide-advance').onclick();assert.equal(h.run('earClock.adjustment'),0);assert.equal(h.run('earCanPlay'),false);assert.match(h.element('guide-status').textContent,/关闭页面/);assert.equal(h.alignments.length,1);
- h.run('ear.liveCapture=false');h.element('guide-advance').onclick();assert.equal(h.run('earClock.adjustment'),50);assert.equal(h.run('earCanPlay'),true);assert.ok(h.trace.includes('manual'));assert.equal(h.alignments.length,1);h.run('invalidateGuide({disable:true})');
-});
-
-test('a hidden page cannot start a guide loader or a new automatic alignment',async()=>{
- const h=harness();h.context.document.hidden=true;await h.run('loadGuide()');assert.equal(h.trace.includes('start'),false);assert.equal(h.alignments.length,0);
- h.run('var op=beginGuide();ear.buffer={};referenceBuffer={};referenceSong="song-a";updateGuide()');await flush();assert.equal(h.alignments.length,0);h.emit('document','visibilitychange');assert.equal(h.run('earEnabled'),false);
 });
 
 
@@ -177,27 +72,6 @@ test('music mute cancels a pending slider request so it cannot unmute later',asy
  h.run('toggleMusic()');assert.equal(h.run('writes[1].music_gain'),43);
 });
 
-test('microphone icon follows actual mute while music remains unconfirmed until the applied revision',()=>{
- const h=harness();h.run('controls={...controls,mic_muted:0,music_gain:0,control_revision:3};playback={...playback,mic_muted:true,applied_revision:2};updateMuteButtons()');
- assert.equal(h.element('mute-button').getAttribute('aria-pressed'),'true');
- assert.equal(h.element('music-mute-button').getAttribute('aria-pressed'),'mixed');
- assert.equal(h.element('music-mute-button').dataset.muted,'true');
- assert.match(h.element('music-mute-state').textContent,/等待电视确认/);
- h.run('playback.applied_revision=3;updateMuteButtons()');assert.equal(h.element('music-mute-button').getAttribute('aria-pressed'),'true');
- h.run('playback.mic_muted=false;updateMuteButtons()');assert.equal(h.element('mute-button').getAttribute('aria-pressed'),'false');
- assert.equal(h.element('mute-button').textContent,'');assert.equal(h.element('music-mute-button').textContent,'');
-});
-
-test('unavailable microphone keeps its explanation and cannot be unmuted from the icon',()=>{
- const h=harness();h.run('var writes=[];setControl=async value=>writes.push(value);micAvailable=false;playback.mic_muted=true;updateMuteButtons();toggleMic()');
- assert.equal(h.element('mute-button').disabled,true);assert.equal(h.run('writes.length'),0);
- assert.match(h.element('sound-status').textContent,/暂不可用/);
- // Muting an already active microphone remains available even when acquisition is unavailable.
- h.run('playback.mic_muted=false;updateMuteButtons();toggleMic()');
- assert.equal(h.element('mute-button').disabled,false);assert.equal(h.run('writes[0].mic_muted'),1);
-});
-
-
 test('a mute POST receipt cannot clear pending UI against the preceding applied revision',async()=>{
  const h=harness(),ack=deferred();h.context.ack=ack;
  h.run('setControl=actualSetControl;api=async()=>({revision:3});waitForTV=()=>ack.promise;updateGuide=()=>{};updatePartyAudio=()=>{};controls={...controls,music_gain:50,control_revision:2};playback.applied_revision=2;');
@@ -217,20 +91,20 @@ test('API preserves service status and Retry-After for the durable add worker',a
  const unavailable=await h.run('actualApi("status")').catch(e=>e);assert.equal(unavailable.code,'service_unavailable');assert.equal(unavailable.status,503);
 });
 
-test('cancelling a guide control aborts its HTTP and lets a later mute leave the serialized queue',async()=>{
+test('cancelling a guide control aborts its HTTP and lets a later music control leave the serialized queue',async()=>{
  const h=harness({validRoom:true}),requests=[];let rejectFirst;
  h.context.fetch=async(url,options)=>{
   const payload=JSON.parse(options.body);requests.push({payload,signal:options.signal});
   if(payload.original===0)return new Promise((resolve,reject)=>{rejectFirst=reject;options.signal.addEventListener('abort',()=>reject(Object.assign(new Error(),{name:'AbortError'})),{once:true});});
   return {ok:true,status:200,json:async()=>({revision:2})};
  };
- h.run('api=actualApi;setControl=actualSetControl;waitForTV=async()=>{};updatePlayer=()=>{};var aborter=new AbortController();controls.original=1;controls.mic_muted=0;');
+ h.run('api=actualApi;setControl=actualSetControl;waitForTV=async()=>{};updatePlayer=()=>{};var aborter=new AbortController();controls.original=1;controls.music_gain=70;');
  const first=h.run('setControl({original:0},{signal:aborter.signal,propagate:true})').catch(error=>error.code);
- const second=h.run('setControl({mic_muted:1})');
+ const second=h.run('setControl({music_gain:0})');
  try{
   await flush();assert.equal(requests.length,1);h.run('aborter.abort()');assert.equal(requests[0].signal.aborted,true);
-  assert.equal(await first,'cancelled');await second;assert.equal(requests.length,2);assert.deepEqual(requests[1].payload,{mic_muted:1});
-  assert.equal(h.run('controls.original'),1);assert.equal(h.run('controls.mic_muted'),1);
+  assert.equal(await first,'cancelled');await second;assert.equal(requests.length,2);assert.deepEqual(requests[1].payload,{music_gain:0});
+  assert.equal(h.run('controls.original'),1);assert.equal(h.run('controls.music_gain'),0);
  }finally{rejectFirst?.(Object.assign(new Error(),{name:'AbortError'}));}
 });
 
@@ -253,10 +127,26 @@ test('aborting response JSON is cancellation rather than a connection failure',a
 
 test('successful reconnection removes only its connection notice and retains business/search feedback',async()=>{
  const h=harness({validRoom:true});h.run('earEnabled=false;identity=null;api=async()=>{throw Object.assign(new Error(),{code:"service_unavailable",status:503})};message("这首的版本暂不可用")');
- await h.run('refresh()');assert.match(h.element('connection-status').textContent,/重新连接/);
+ await h.run('refresh()');assert.equal(h.element('connection-status').textContent,'');
+ h.run('lastStatusSuccess=roomResumeAt=performance.now()-13000');
+ await h.run('refresh()');assert.match(h.element('connection-status').textContent,/正在重连/);
  h.run('api=async()=>({mac_online:true,songs:[],playback:{online:true,current:"",played:[],state:"idle",mic_muted:true},controls:{},theme:"content"})');
  await h.run('refresh()');assert.equal(h.element('connection-status').hidden,true);assert.equal(h.element('connection-status').textContent,'');
  assert.equal(h.element('message').textContent,'这首的版本暂不可用');assert.equal(h.run('online'),true);assert.equal(h.element('queue-count').textContent,0);
+});
+
+test('a transient events failure or a late aborted status read never replaces the last healthy view',async()=>{
+ const h=harness({validRoom:true}),old=deferred(),next=deferred(),signals=[];
+ h.context.probe=(op,data,query,opt)=>{signals.push(opt.signal);return signals.length===1?old.promise:next.promise;};
+ h.run('earEnabled=false;api=probe;lastStatusSuccess=performance.now();statusFailure({code:"request_timeout"},"events")');
+ const first=h.run('refresh()'),shared=h.run('refresh()');assert.equal(first,shared);assert.equal(signals.length,1);
+ assert.equal(h.element('connection-status').textContent,'');
+ h.run('document.hidden=true;stopRoomStatus();document.hidden=false;roomResumeAt=performance.now()');
+ const second=h.run('refresh()');assert.equal(signals[0].aborted,true);
+ old.resolve({mac_online:false,songs:[],playback:{online:false,current:"",played:[],state:"idle"}});
+ assert.equal(await first,false);
+ next.resolve({mac_online:true,songs:[],playback:{online:true,current:"",played:[],state:"idle"},controls:{},theme:'content'});
+ assert.equal(await second,true);assert.equal(h.run('online'),true);
 });
 
 test('rapid song taps enqueue serially and retain visible status until actual receipts',async()=>{
@@ -303,6 +193,27 @@ test('secondary search paginates the selected source and preserves results throu
  h.run('setView("queue");setView("find")');assert.equal(h.run('songs.length'),2);assert.equal(h.element('query').value,'歌手');assert.equal(h.element('source-picker').hidden,false);
 });
 
+test('search displays the first page before prefetch finishes and consumes the same next-page request',async()=>{
+ const h=harness(),next=deferred(),requests=[];
+ h.context.searchApi=async(operation,body,query,options)=>{
+  requests.push({operation,query,priority:options.priority});
+  if(operation==='artwork')return {covers:{}};
+  if(query.includes('offset=30'))return next.promise;
+  return {songs:[{song_id:'1',title:'首屏',artwork:'https://p1.music.126.net/one.jpg'}],next_offset:30,has_more:true};
+ };
+ h.run('mode="find";api=searchApi;$("query").value="测试歌手"');
+ await h.run('findSongs()');
+ assert.equal(h.run('songs[0].title'),'首屏');
+ assert.deepEqual(requests.map(r=>r.priority),['auto','low']);
+ const scrolling=h.run('appendNextPage()');assert.equal(h.element('page-progress').hidden,false);
+ next.resolve({songs:[{song_id:'1',title:'重复'},{song_id:'2',title:'第二页'}],next_offset:60,has_more:false});
+ await scrolling;
+ assert.deepEqual(Array.from(h.run('songs.map(s=>s.title)')),['首屏','第二页']);
+ assert.equal(requests.filter(r=>r.operation==='search').length,2);
+ await h.run('findSongs()');
+ assert.equal(requests.filter(r=>r.operation==='search').length,2);
+});
+
 test('queue reordering after secondary navigation keeps the current and sung songs outside pending moves',()=>{
  const h=harness();h.run('selected=[{id:"current",state:"ready"},{id:"a",state:"ready"},{id:"b",state:"ready"},{id:"sung",state:"ready"}];playback.current="current";playback.played=["sung"];var ordered=null;saveOrder=ids=>{ordered=ids;};setView("queue");moveSong("b","next")');
  assert.deepEqual(Array.from(h.run('ordered')),['current','b','a','sung']);
@@ -317,64 +228,49 @@ test('browser back restores the search secondary page without adding another his
  assert.equal(h.run('mode'),'find');assert.equal(pushes,2);assert.equal(h.context.window.scrollY,120);assert.equal(h.element('query').value,'保留云盘搜索');assert.equal(h.element('source-picker').hidden,false);
 });
 
-test('emergency mute is one-way and requires actual mute plus matching TV revision',async()=>{
- const h=harness(),ack=deferred();let confirms,calls=[];h.context.muteApi=async(operation,value)=>{calls.push(value);return {revision:4};};h.context.muteAck=check=>{confirms=check;return ack.promise;};
- h.run('earEnabled=false;updateGuide=()=>{};updatePartyAudio=()=>{};setControl=actualSetControl;api=muteApi;waitForTV=muteAck;playback.mic_muted=false;playback.applied_revision=3;updateMuteButtons()');
- assert.equal(h.element('quick-mute-button').disabled,false);assert.equal(h.element('quick-mute-button').textContent,'麦克风静音');
- const pending=h.element('quick-mute-button').onclick();await flush();
- assert.deepEqual(calls.map(v=>({...v})),[{mic_muted:1}]);assert.equal(h.element('quick-mute-button').textContent,'静音待确认');assert.equal(h.element('quick-mute-button').disabled,true);assert.match(h.element('quick-mute-status').textContent,/等待电视确认/);
- await h.element('quick-mute-button').onclick();assert.equal(calls.length,1);
- h.run('playback.applied_revision=4');assert.equal(confirms(),false);
- h.run('playback.mic_muted=true;playback.applied_revision=3');assert.equal(confirms(),false);
- h.run('playback.applied_revision=4');assert.equal(confirms(),true);ack.resolve();await pending;
- assert.equal(h.element('quick-mute-button').textContent,'麦克风已静音');assert.equal(h.element('quick-mute-button').disabled,true);assert.match(h.element('quick-mute-status').textContent,/电视已确认/);
- assert.equal(h.run('controls.music_gain'),70);assert.equal(h.run('controls.mic_gain'),50);
+test('the mobile sound sheet exposes track and music controls without vocal controls',()=>{
+ const html=fs.readFileSync(path.join(web,'index.html'),'utf8');
+ const sheet=html.match(/<dialog id="sound-dialog"[\s\S]*?<\/dialog>/)[0];
+ assert.doesNotMatch(html,/麦克风|人声音效|id="mute-button"|id="mic-|id="vocal-/);
+ assert.match(sheet,/id="mode-instrumental"[\s\S]*id="music-mute-button"[\s\S]*id="guide-toggle"/);
 });
 
-test('emergency mute explains offline or unknown microphone state and reports failure without claiming silence',async()=>{
- const h=harness();h.run('earEnabled=false;playback={...playback,online:false,mic_muted:false};var muteWrites=[];setControl=async v=>muteWrites.push(v);updateMuteButtons()');
- assert.equal(h.element('quick-mute-button').disabled,true);assert.match(h.element('quick-mute-status').textContent,/未连接/);await h.element('quick-mute-button').onclick();assert.equal(h.run('muteWrites.length'),0);
- h.run('playback.online=true;delete playback.mic_muted;updateMuteButtons()');assert.equal(h.element('quick-mute-button').disabled,false);assert.match(h.element('quick-mute-status').textContent,/状态未确认/);
- h.run('setControl=async()=>{throw new Error("unconfirmed")};');await h.element('quick-mute-button').onclick();assert.equal(h.element('quick-mute-button').textContent,'麦克风静音');assert.match(h.element('quick-mute-status').textContent,/静音尚未确认/);assert.doesNotMatch(h.element('quick-mute-status').textContent,/电视已确认/);
+test('a scanned invite joins without a gesture or writable browser storage',async()=>{
+ const h=harness({validRoom:true}),writes=[];
+ h.context.joinApi=async(operation,value)=>{writes.push([operation,value]);return {key:'opaque',nickname:'自动加入',avatar:1};};
+ h.run('identity=null;api=joinApi;sessionStorage.setItem=()=>{throw Error("private storage")};refresh=()=>{};startStatusFeed=()=>{};loadDiscover=()=>{};initAddQueue=()=>{}');
+ await h.run('join()');
+ assert.equal(writes.length,1);assert.equal(writes[0][0],'join');assert.match(writes[0][1].guest_key,/^[a-f0-9]{64}$/);
+ assert.equal(h.element('my-name').textContent,'自动加入');
+ assert.equal(h.element('search-entry').hidden,false);
 });
 
-test('late microphone slider writes never undo emergency mute or reset the selected gain',async()=>{
- const h=harness(),writes=[];h.context.muteApi=async(operation,value)=>{writes.push({...value});return {revision:writes.length};};
- h.run('earEnabled=false;updateGuide=()=>{};updatePartyAudio=()=>{};setControl=actualSetControl;api=muteApi;waitForTV=async()=>{};playback.mic_muted=false;changeGain("mic","mic_gain",80,20);updateMuteButtons()');
- await h.element('quick-mute-button').onclick();await new Promise(resolve=>setTimeout(resolve,40));await flush();
- assert.deepEqual(writes,[{mic_muted:1},{mic_gain:80}]);assert.equal(h.run('controls.mic_muted'),1);assert.equal(h.run('controls.mic_gain'),80);assert.equal(h.run('controls.music_gain'),70);
+test('the player reports playback even when the TV reports vocal protection',()=>{
+ const h=harness();h.run('earEnabled=false;selected=[{id:playback.current,title:"当前歌曲"}];playback.safety_latched=true;playback.audio_capabilities={sfx:true,voice_protection:{state:"failed"}};updatePlayer()');
+ assert.match(h.element('player-status').textContent,/正在唱/);
 });
 
-test('emergency mute remains available to supersede an earlier unmute awaiting TV confirmation',async()=>{
- const h=harness(),unmuteAck=deferred(),muteAck=deferred(),writes=[];h.context.emergencyApi=async(operation,value)=>{writes.push({...value});return {revision:writes.length};};h.context.emergencyWait=()=>writes.length===1?unmuteAck.promise:muteAck.promise;
- h.run('earEnabled=false;updateGuide=()=>{};updatePartyAudio=()=>{};setControl=actualSetControl;api=emergencyApi;waitForTV=emergencyWait;playback.mic_muted=true;playback.applied_revision=0');
- const prior=h.run('setControl({mic_muted:0})');await flush();h.run('updateMuteButtons()');assert.equal(h.element('quick-mute-button').disabled,false);
- const emergency=h.element('quick-mute-button').onclick();await flush();assert.deepEqual(writes,[{mic_muted:0},{mic_muted:1}]);
- h.run('playback.mic_muted=true;playback.applied_revision=2');muteAck.resolve();await emergency;unmuteAck.resolve();await prior;
- assert.equal(h.run('controls.mic_muted'),1);assert.equal(h.element('quick-mute-button').textContent,'麦克风已静音');
+test('failed songs no longer count as upcoming and warmup can cut into the actual queue',()=>{
+ const h=harness();h.run('earEnabled=false;playback.current="";mode="queue";selected=[{id:"a",song_id:"1",title:"失败",state:"failed"},{id:"b",song_id:"2",title:"下首",state:"ready"},{id:"c",song_id:"3",title:"待制备",state:"acquiring"}];render();updatePlayer()');
+ assert.equal(h.element('queue-count').textContent,2);
+ assert.equal(h.element('results').children[0].className,'queue-group pending');
+ assert.equal(h.element('results').children[1].className,'queue-group preparing');
+ assert.equal(h.element('results').children[2].className,'queue-group failed');
+ assert.equal(h.element('now-title').textContent,'接下来：下首');
+ assert.equal(h.element('skip-button').disabled,false);
 });
 
-test('phone presents protection preparation, attenuation and latch without changing saved gains',()=>{
- const h=harness();h.run('earEnabled=false;controls.mic_gain=70;playback.audio_capabilities={vocal_presets:["dry"],sfx:true,voice_protection:{state:"preparing",effective_gain:0}};updatePlayer()');
- assert.equal(h.element('player-status').textContent,'正在准备语音保护');
- h.run('playback.audio_capabilities.voice_protection={state:"attenuated",effective_gain:26};updatePlayer()');
- assert.match(h.element('player-status').textContent,/已下调人声设定/);assert.equal(h.run('controls.mic_gain'),70);
- h.run('playback.safety_latched=true;playback.mic_muted=true;updatePlayer()');
- assert.match(h.element('player-status').textContent,/需手动恢复/);assert.equal(h.run('controls.mic_gain'),70);
-});
-
-test('local mute intent and revision cannot acknowledge an unconfirmed Guard mute',async()=>{
- const h=harness();h.run('earEnabled=false;playback.applied_revision=5;playback.mic_muted=true;playback.audio_capabilities={vocal_presets:["dry"],sfx:true,voice_protection:{state:"muted",effective_gain:70,mute_confirmed:false}};updateMuteButtons()');
- assert.equal(h.element('mute-button').getAttribute('aria-pressed'),'mixed');assert.equal(h.element('quick-mute-button').disabled,false);
- h.run('playback.safety_latched=true;updatePlayer()');assert.match(h.element('player-status').textContent,/正在静音/);
- h.run('playback.audio_capabilities.voice_protection.mute_confirmed=true;updateMuteButtons()');
- assert.equal(h.element('mute-button').getAttribute('aria-pressed'),'true');assert.equal(h.element('quick-mute-button').disabled,true);
+test('frequent songs count a personally requested playback once and stay re-addable',()=>{
+ const h=harness();h.run('identity.id="mine";playback.current="one";var tracks=[{id:"one",guest_id:"mine",song_id:"101",source:"song",title:"常唱",state:"ready"}];rememberFrequent(tracks);rememberFrequent(tracks);playback.current="someone-else";rememberFrequent([{...tracks[0],id:"someone-else",guest_id:"another"}]);playback.current="cloud";rememberFrequent([{...tracks[0],id:"cloud",source:"cloud"}]);playback.current="two";rememberFrequent([{...tracks[0],id:"two"}]);setView("frequent")');
+ assert.equal(h.run('frequentSongs.length'),1);assert.equal(h.run('frequentSongs[0].plays'),2);
+ assert.equal(h.element('page-title').textContent,'常唱歌曲');
+ assert.equal(h.element('results').children[0].children.at(-1).dataset.song,'song:101');
 });
 
 test('queue progress changes replace only the changed row and retain stable groups, focus and history disclosure',()=>{
  const h=harness();h.run('earEnabled=false;mode="queue";playback.current="";playback.played=["old"];selected=[{id:"a",song_id:"1",title:"下载",state:"acquiring",progress:{source_bytes:10}},{id:"b",song_id:"2",title:"已就绪",state:"ready"},{id:"old",song_id:"3",title:"已唱",state:"ready"}];render()');
- const root=h.element('results'),pending=root.children[0],history=root.children[1],a=pending.children[1],b=pending.children[2];history.open=true;const focused=b.children.at(-1).children[0];focused.focus();const insertions=[];const insert=pending.insertBefore.bind(pending);pending.insertBefore=(node,before)=>{insertions.push(node);insert(node,before);};
- h.run('selected[0]={...selected[0],progress:{source_bytes:20}};render()');assert.equal(root.children[0],pending);assert.equal(root.children[1],history);assert.equal(history.open,true);assert.notEqual(pending.children[1],a);assert.equal(pending.children[2],b);assert.equal(h.context.document.activeElement,focused);assert.equal(insertions.includes(b),false,'an unchanged row is not detached/moved just because its sibling changes');
+ const root=h.element('results'),pending=root.children[0],preparing=root.children[1],history=root.children[2],a=preparing.children[1],b=pending.children[1];history.open=true;const focused=b.children.at(-1).children[0];focused.focus();const insertions=[];const insert=pending.insertBefore.bind(pending);pending.insertBefore=(node,before)=>{insertions.push(node);insert(node,before);};
+ h.run('selected[0]={...selected[0],progress:{source_bytes:20}};render()');assert.equal(root.children[0],pending);assert.equal(root.children[1],preparing);assert.equal(root.children[2],history);assert.equal(history.open,true);assert.notEqual(preparing.children[1],a);assert.equal(pending.children[1],b);assert.equal(h.context.document.activeElement,focused);assert.equal(insertions.includes(b),false,'an unchanged row is not detached/moved just because another progress state changes');
 });
 
 test('IME search waits for composition and debounces the committed text once',async()=>{
@@ -389,12 +285,8 @@ test('typing cancels the old search fetch immediately while independent controls
   return {ok:true,status:200,json:async()=>url.includes('/controls')?{revision:1}:{songs:[{song_id:'2',title:'new'}],has_more:false}};
  };
  h.run('earEnabled=false;mode="find";api=actualApi;setControl=actualSetControl;waitForTV=async()=>{};$("query").value="old"');const first=h.run('findSongs()');await flush();
- await h.run('setControl({mic_muted:1})');assert.equal(requests.some(r=>r.url.includes('/controls')),true);
+ await h.run('setControl({music_gain:0})');assert.equal(requests.some(r=>r.url.includes('/controls')),true);
  h.run('$("query").value="new";$("query").oninput({isComposing:false})');assert.equal(requests[0].options.signal.aborted,true);await first;await new Promise(resolve=>setTimeout(resolve,280));assert.equal(h.run('songs[0].title'),'new');assert.equal(requests.filter(r=>r.url.includes('/search')).length,2);
-});
-
-test('original decoded duration mismatch prevents alignment or speaker output',async()=>{
- const h=harness();h.run('playback.guide.duration_ms=5150;verifiedGuide=async()=>new Uint8Array(2048).buffer');await h.run('loadGuide()');assert.equal(h.run('earEnabled'),false);assert.equal(h.run('earCanPlay'),false);assert.equal(h.alignments.length,0);assert.equal(h.run('ear.buffer'),null);
 });
 
 test('event status advances UI with calibration explicitly disabled',()=>{
@@ -415,4 +307,35 @@ test('event progress cannot replace selected rows while a queue drag owns the DO
  h.context.progressStatus={mac_online:true,theme:'content',songs:[{id:'a',song_id:'1',state:'acquiring',progress:{source_bytes:20}}],playback:{online:true,current:'',played:[],state:'idle'},controls:{}};
  h.run('applyStatus(progressStatus)');assert.equal(group.children[1],row);assert.equal(h.run('selected[0].progress.source_bytes'),10);
  h.run('drag=null;applyStatus(progressStatus)');assert.notEqual(group.children[1],row);assert.equal(h.run('selected[0].progress.source_bytes'),20);
+});
+
+test('the guide verifies and plays only the original track without any microphone or reference request',async()=>{
+ const h=harness(),bytes=Buffer.alloc(2048,2);
+ h.context.playableSpec={sha256:Buffer.from(await webcrypto.subtle.digest('SHA-256',bytes)).toString('hex'),bytes:2048,duration_ms:5000};
+ const requested=[];
+ h.context.fetch=async(url,options)=>{requested.push({url,options});return {ok:true,arrayBuffer:async()=>Uint8Array.from(bytes).buffer};};
+ h.run('playback.guide=playableSpec');await h.run('loadGuide()');
+ assert.equal(requested.length,1);assert.match(requested[0].url,/\/guide\?id=song-a$/);
+ assert.equal(requested[0].options.method,undefined);
+ assert.equal(h.run('earCanPlay'),true);
+ h.element('guide-delay').onclick();assert.equal(h.run('earClock.adjustment'),-50);
+ h.emit('window','pagehide');assert.equal(h.run('earEnabled'),false);assert.equal(h.run('ear.buffer'),null);
+ assert.doesNotMatch(source,/getUserMedia|sync-capture|sync\.mjs/);
+});
+
+test('a decoded duration mismatch never reaches speaker playback',async()=>{
+ const h=harness(),bytes=Buffer.alloc(2048,3);
+ h.context.playableSpec={sha256:Buffer.from(await webcrypto.subtle.digest('SHA-256',bytes)).toString('hex'),bytes:2048,duration_ms:6000};
+ h.context.fetch=async()=>({ok:true,arrayBuffer:async()=>Uint8Array.from(bytes).buffer});
+ h.run('playback.guide=playableSpec');await h.run('loadGuide()');
+ assert.equal(h.run('ear.syncs'),0);assert.equal(h.run('earEnabled'),false);
+});
+
+test('a partial status snapshot does not corrupt the room state used by auto join or search',async()=>{
+ const h=harness({validRoom:true});
+ h.run('selected=[{id:"keep",song_id:"123",state:"ready"}];applyStatus({mac_online:true})');
+ h.context.fetch=async()=>({ok:true,status:200,json:async()=>({server_time_ms:1,playback:{played:[]}})});
+ await assert.rejects(h.run('actualApi("status")'),{code:'service_unavailable'});
+ assert.equal(h.run('selected[0].id'),'keep');h.run('tabs()');
+ assert.equal(h.element('search-entry').hidden,false);
 });

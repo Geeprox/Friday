@@ -167,6 +167,9 @@ def test_complete_readiness_requires_each_real_receipt_and_stales_fail_closed(st
     assert not coordinator.readiness()["ready"], "QR is not ready yet"
     publish_qr(store, instance, party)
     assert coordinator.readiness()["ready"]
+    coordinator.tv_readiness({"instance": instance, "playback": True, "audio": False, "media": True, "protocol": 1})
+    assert not coordinator.readiness()["gates"]["tv_audio"]
+    assert coordinator.readiness()["ready"]
     broken = copy.deepcopy(worker)
     broken["capabilities"]["model"] = False
     coordinator.register_worker(broken)
@@ -249,6 +252,58 @@ def test_corrupt_archive_keeps_direct_source_and_cannot_publish_wrong_bytes(stor
     with pytest.raises(Refusal) as error:
         store.coordinator.media_file(value["id"], "original")
     assert error.value.code == "media_cache_pending"
+
+def test_exact_nas_archive_survives_old_room_and_plays_without_mac(store, monkeypatch):
+    value, data, tv, party, old_room = manifest(store)
+    store.coordinator.manifest(value)
+    fake_cache(monkeypatch, data, [])
+    old = store.coordinator._row(value["id"])
+    for kind, spec in store.coordinator._specs(old).items():
+        store.coordinator._cache_one(old, kind, spec)
+    assert store.coordinator.archive_state(value["id"]) == "ready"
+    # 模拟旧房间清理后的状态；长期曲目关联独立保留。
+    with store.connection() as db:
+        db.execute("DELETE FROM coordinator_manifests WHERE song=?", (value["id"],))
+        db.execute("UPDATE rooms SET closed=1 WHERE id=?", (old_room["id"],))
+    store.coordinator.worker["at"] -= 30
+    _, new_party = started(store)
+    room, _, guest = admitted(store, new_party)
+    request = {"song_id": "123", "title": "合成归档曲", "request_id": uid()}
+    accepted = store.add(room, request, guest)
+    assert accepted["state"] == "ready" and accepted["cache_hit"]
+    assert store.add(room, {**request, "request_id": uid()}, guest)["id"] == accepted["id"]
+    assert store.status(room)["upcoming"] == [accepted["id"]]
+    assert store.coordinator.party()["upcoming"] == [accepted["id"]]
+    assert store.poll()["tasks"] == []
+    [job] = store.coordinator.jobs()["jobs"]
+    assert job["id"] == accepted["id"] and job["state"] == "ready"
+    assert job["synced_lyrics"] is False
+    assert all(len(track["sources"]) == 1 and "origin" not in track["sources"][0]
+               for track in job["media"].values())
+    with pytest.raises(Refusal) as err:
+        store.add(room, {**request, "source": "mv", "request_id": uid()}, guest)
+    assert err.value.code == "mac_offline"
+
+def test_missing_or_disordered_lyrics_do_not_block_the_next_verified_song(store):
+    head, _, _, party, room = manifest(store)
+    head["lyrics"] = {"status": "unavailable", "lines": []}
+    store.coordinator.manifest(head)
+    _, _, guest = admitted(store, party)
+    followed = store.add(room, {"song_id": "456", "title": "合成第二首", "request_id": uid()}, guest)["id"]
+    lines = [{"at_ms": t, "text": "合成行"} for t in (0, 500, 1500)]
+    verified = {"status": "ready", "lines": lines}
+    store.coordinator.manifest({**head, "id": followed, "version": "c" * 64,
+                               "job": {**head["job"], "id": followed, "song_id": "456"}, "lyrics": verified})
+    assert store.coordinator.party()["upcoming"] == [head["id"], followed]
+    assert store.coordinator.party()["playable"] == [followed]
+    snapshot = store.status(room)
+    assert snapshot["playable"] == [followed] and snapshot["songs"][0]["lyrics_pending"]
+    invalid = {"status": "ready", "lines": list(reversed(lines))}
+    store.coordinator.manifest({**head, "version": "d" * 64, "lyrics": invalid})
+    assert store.status(room)["playable"] == [followed]
+    store.coordinator.manifest({**head, "version": "e" * 64, "lyrics": verified})
+    assert store.status(room)["playable"] == [head["id"], followed]
+    assert store.status(room)["playback"]["current"] == ""
 
 
 def test_manifest_identity_versions_paths_and_old_instance_are_closed(store):
@@ -392,6 +447,8 @@ def test_recovery_is_tv_requested_bounded_pinned_and_listener_ack_is_not_ready(s
     submitted = []
     monkeypatch.setattr(store.coordinator.recovery_pool, "submit", lambda *args: submitted.append(args))
     store.coordinator.recovery_enabled = True
+    times, attempts = [0.0], []
+    monkeypatch.setattr("integrations.ktv_public.coordinator.time.monotonic", lambda: times[0])
     store.coordinator.status()
     assert submitted == [], "worker/phone status cannot trigger recovery"
     instance, request = uid(), uid()
@@ -399,24 +456,46 @@ def test_recovery_is_tv_requested_bounded_pinned_and_listener_ack_is_not_ready(s
     assert len(submitted) == 1
     store.coordinator.start({"instance": instance, "request_id": request})
     assert len(submitted) == 1, "same-request retries cannot multiply recovery jobs"
-    times, attempts = [0.0], []
-    class Cancel:
-        def wait(self, duration):
-            times[0] += duration
-            return False
+    def wait(duration):
+        times[0] += duration
+        return False
     class Opener:
         def open(self, request, timeout):
             attempts.append((times[0], request.full_url, request.header_items(), timeout))
             raise urllib.error.HTTPError(request.full_url, 401, "synthetic", {}, None)
-    monkeypatch.setattr("integrations.ktv_public.coordinator.time.monotonic", lambda: times[0])
     monkeypatch.setattr("integrations.ktv_public.coordinator.urllib.request.build_opener", lambda *args: Opener())
-    store.coordinator._recover_worker((instance, request), Cancel())
+    monkeypatch.setattr(submitted[0][2], "wait", wait)
+    submitted[0][0](*submitted[0][1:])
     assert [row[0] for row in attempts] == [0, 2, 6, 14]
     assert all(url == worker["origin"] + "/v1/status" and headers == [] and timeout == 1 for _, url, headers, timeout in attempts)
     assert store.coordinator.recovery()["attempt"] == 4
     assert store.coordinator.recovery()["last_result"] == "listener_response"
     assert not store.coordinator.readiness()["ready"], "401 is only listener activation evidence"
     assert store.coordinator.recovery()["cannot_wake"] is True
+
+    receipt = {"instance": instance, "protocol": 1, "playback": True, "audio": False, "media": True}
+    times[0] = 60
+    store.coordinator.tv_readiness(receipt)
+    assert len(submitted) == 1, "a live worker with an unavailable dependency is not restarted"
+    store.coordinator.worker["at"] -= 21
+    times[0] = 59
+    store.coordinator.tv_readiness(receipt)
+    assert len(submitted) == 1, "the follow-up probe waits for its deadline"
+    times[0] = 60
+    store.coordinator.status()
+    assert len(submitted) == 1, "an observer cannot trigger the follow-up"
+    store.coordinator.tv_readiness(receipt)
+    store.coordinator.tv_readiness(receipt)
+    assert len(submitted) == 2 and submitted[1][3] == (0,), "continued TV presence gets one bounded probe"
+
+    class RegisterThenRespond(Opener):
+        def open(self, request, timeout):
+            store.coordinator.register_worker(registration())
+            return super().open(request, timeout)
+
+    monkeypatch.setattr("integrations.ktv_public.coordinator.urllib.request.build_opener", lambda *args: RegisterThenRespond())
+    submitted[1][0](*submitted[1][1:])
+    assert store.coordinator.recovery()["last_result"] == "worker_ready", "an obsolete listener response cannot overwrite worker readiness"
     store.coordinator.close_party(instance, {"room_id": party["room_id"]})
     assert not store.coordinator.recovery()["requested"]
 
@@ -726,7 +805,8 @@ def test_explicitly_closed_retention_purges_room_metadata_and_keeps_active_scene
     with store.connection() as db:
         for table in ("coordinator_manifests", "coordinator_manifest_versions"):
             assert db.execute("SELECT count(*) FROM " + table + " WHERE song=?", (old["id"],)).fetchone()[0] == 0
-            assert db.execute("SELECT count(*) FROM " + table + " WHERE song=?", (current["id"],)).fetchone()[0] == 1
+            assert db.execute("SELECT count(*) FROM " + table + " WHERE song=? AND version=?",
+                              (current["id"], current["version"])).fetchone()[0] == 1
         for table in ("room_tokens", "coordinator_start_requests", "retries", "commands", "songs", "song_requests", "guests"):
             assert db.execute("SELECT count(*) FROM " + table + " WHERE room=?", (old_party["room_id"],)).fetchone()[0] == 0
             assert db.execute("SELECT count(*) FROM " + table + " WHERE room=?", (current_party["room_id"],)).fetchone()[0] == 1

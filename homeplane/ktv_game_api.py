@@ -69,7 +69,7 @@ def installed_owner_config(launch_agent: Path, development_root: Path) -> Path:
                 or Path(arguments[1]).parent.name != "scripts" or arguments[2] != "serve"):
             raise ValueError
         flags, index = {}, 3
-        valued = {"--config", "--host", "--port", "--download-dir", "--public-config"}
+        valued = {"--config", "--host", "--port", "--download-dir", "--public-config", "--installed-root"}
         switches = {"--allow-download", "--launchd-sockets"}
         while index < len(arguments):
             argument = arguments[index]
@@ -186,7 +186,11 @@ def create_router(config_path=None, *, transport=None, read_only=False, launch_a
     @router.get("/party-audio.js")
     async def party_audio():
         source = Path(__file__).resolve().parents[1] / "integrations/ktv_public/web/party-audio.js"
-        return Response(source.read_bytes(), media_type="text/javascript", headers={"Cache-Control": "no-store"})
+        try:
+            payload = source.read_bytes()
+        except OSError:
+            raise HTTPException(503, "ktv_audio_controls_unavailable") from None
+        return Response(payload, media_type="text/javascript", headers={"Cache-Control": "no-store"})
 
     @router.get("/{operation:path}", operation_id="ktv_owner_read")
     @router.post("/{operation:path}", operation_id="ktv_owner_write")

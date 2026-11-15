@@ -54,8 +54,10 @@ public final class AudioEngine {
     public volatile int duplexOpenFailures,duplexStartFailures;
     private final java.util.Set<Long> unsupportedSources=new java.util.HashSet<>();
     public AudioEngine(Context context,Listener listener){this(context,listener,NativeDuplexIO.INPUT_RATE_DEFAULT,false);}
-    public AudioEngine(Context context,Listener listener,boolean playbackOnly){this(context,listener,NativeDuplexIO.INPUT_RATE_DEFAULT,playbackOnly);}
     public AudioEngine(Context context,Listener listener,int inputRateMode){this(context,listener,inputRateMode,false);}
+    public static AudioEngine forPlayback(Context context,Listener listener){
+        return new AudioEngine(context,listener,NativeDuplexIO.INPUT_RATE_DEFAULT,true);
+    }
     private AudioEngine(Context context,Listener listener,int inputRateMode,boolean playbackOnly){
         if(inputRateMode!=NativeDuplexIO.INPUT_RATE_DEFAULT&&inputRateMode!=NativeDuplexIO.INPUT_RATE_NATIVE_48K)throw new IllegalArgumentException();
         manager=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);this.listener=listener;this.inputRateMode=inputRateMode;this.playbackOnly=playbackOnly;
@@ -87,8 +89,12 @@ public final class AudioEngine {
         }
         throw new IOException("input_unavailable");
     }
+    public void startBacking(File backing,long seek)throws Exception{
+        start(backing,null,null,seek);
+    }
     public synchronized void start(File backing,AudioDeviceInfo input,AudioDeviceInfo output,long seek) throws Exception {
         if(playbackOnly&&input!=null)throw new IOException("separate_microphone_owner");
+        if(playbackOnly&&output!=null)throw new IOException("system_output_required");
         if(playbackOnly)mixer.micMuted=true;
         if(!released())throw new IOException("audio_busy");
         if(output!=null && (!output.isSink() || !present(output,AudioManager.GET_DEVICES_OUTPUTS)))throw new IOException("output_selection_required");
@@ -170,8 +176,8 @@ public final class AudioEngine {
             long routeGraceUntil=System.nanoTime()/1000000+AudioBackendPolicy.PLATFORM_FRESHNESS_MILLIS;
             while(!stop.get()){
                 int frames=music.read(song,240);backingSwitches=music.switches;backingFailures=music.failures;if(frames==0){natural=true;code="completed";break;}
-                ring.take(mic,240);queuedMicFrames=ring.queuedFrames();missingMicFrames=ring.missingFrames;micRebuffers=ring.rebufferCount;micPeakQueueFrames=ring.peakFrames;micRatePpm=ring.ratePpm;
-                long dspStarted=System.nanoTime();mixer.mix(song,mic,channels,frames,mixed);observeMixedPeak(mixed,frames);dspNanosMax=Math.max(dspNanosMax,System.nanoTime()-dspStarted);
+                int micFrames=ring.take(mic,frames);queuedMicFrames=ring.queuedFrames();missingMicFrames=ring.missingFrames;micRebuffers=ring.rebufferCount;micPeakQueueFrames=ring.peakFrames;micRatePpm=ring.ratePpm;
+                long dspStarted=System.nanoTime();mixer.mix(song,mic,channels,frames,micFrames,mixed);observeMixedPeak(mixed,frames);dspNanosMax=Math.max(dspNanosMax,System.nanoTime()-dspStarted);
                 int written=0;while(written<frames*2&&!stop.get()){int n=io.write(mixed,written,frames*2-written);if(n<=0||n>frames*2-written||n%2!=0)throw new IOException("output_write_failed");written+=n;}
                 renderedFrames+=written/2;positionFrames=music.position;io.metrics(metrics);publishNativeMetrics(metrics,false);
                 if(metrics[2]!=outputDevice)throw new IOException("output_route_changed");if(metrics[3]!=input.getId())throw new IOException("input_route_changed");
@@ -272,9 +278,12 @@ public final class AudioEngine {
                 AudioDeviceInfo actual=localTrack.getRoutedDevice();
                 if(actual==null || actual.getId()!=outputDevice)throw new IOException("output_route_changed");
                 int frames=music.read(song,240);backingSwitches=music.switches;backingFailures=music.failures;if(frames==0){natural=true;code="completed";break;}
-                if(ring!=null){ring.take(mic,240);missingMicFrames=ring.missingFrames;queuedMicFrames=ring.queuedFrames();droppedMicFrames=ring.droppedFrames;micRebuffers=ring.rebufferCount;micPeakQueueFrames=ring.peakFrames;micRatePpm=ring.ratePpm;}
+                int micFrames=0;
+                if(ring!=null){micFrames=ring.take(mic,frames);missingMicFrames=ring.missingFrames;queuedMicFrames=ring.queuedFrames();droppedMicFrames=ring.droppedFrames;micRebuffers=ring.rebufferCount;micPeakQueueFrames=ring.peakFrames;micRatePpm=ring.ratePpm;}
                 long dspStart=System.nanoTime();
-                mixer.mix(song,mic,Math.max(1,channels),frames,mixed);observeMixedPeak(mixed,frames);
+                if(playbackOnly)mixer.mixBacking(song,frames,mixed);
+                else mixer.mix(song,mic,Math.max(1,channels),frames,micFrames,mixed);
+                observeMixedPeak(mixed,frames);
                 dspNanosMax=Math.max(dspNanosMax,System.nanoTime()-dspStart);
                 int written=0;
                 while(written<frames*2 && !stop.get()){

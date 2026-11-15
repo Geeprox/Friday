@@ -48,6 +48,82 @@ def song():
     return {"song_id": "123", "title": "测试歌曲", "request_id": str(uuid.uuid4())}
 
 
+def test_auto_join_retry_preserves_one_guest_and_keeps_legacy_clients(station):
+    store, client = station
+    value, secret = room(store)
+    path = f"/api/rooms/{value['id']}/join"
+    headers = {"X-KTV-Room": secret}
+    payload = {"guest_key": "a2" * 32}
+    first = client.post(path, headers=headers, json=payload)
+    assert first.status_code == 201 and first.json()["key"] == payload["guest_key"]
+    retry = client.post(path, headers=headers, json=payload)
+    assert retry.status_code == 201 and retry.json() == first.json()
+    assert store.limits["join:" + value["id"]][1] == 1
+    legacy = client.post(path, headers=headers, json={})
+    assert legacy.status_code == 201 and legacy.json()["id"] != first.json()["id"]
+    assert client.post(path, headers=headers, json={"guest_key": "weak"}).status_code == 400
+
+
+def test_empty_worker_poll_does_not_publish_repeated_writes(station, monkeypatch):
+    store, _ = station
+    clock = [10]
+    monkeypatch.setattr("integrations.ktv_public.nas_server.time.monotonic", lambda: clock[0])
+    store.poll()
+    cursor = store.coordinator.cursor
+    assert store.poll()["tasks"] == []
+    assert store.coordinator.cursor == cursor
+    clock[0] += 2
+    store.poll()
+    assert store.coordinator.cursor > cursor
+
+
+def test_search_returns_available_results_without_waiting_for_cover_enrichment(station, monkeypatch):
+    store, _ = station
+    calls = []
+
+    def metadata(path, params, *, timeout):
+        calls.append((path, params, timeout))
+        return {"result": {"songCount": 42, "songs": [
+            {"id": 123, "name": "合成曲", "artists": [{"name": "歌手"}]},
+            {"id": 456, "name": "带封面", "album": {"picUrl": "http://p1.music.126.net/cover.jpg"}},
+        ]}}
+
+    monkeypatch.setattr(store, "public_metadata", metadata)
+    result = store.search("歌手")
+    assert len(calls) == 1 and calls[0][0] == "/api/search/get/web" and calls[0][2] == 5
+    assert "artwork" not in result["songs"][0]
+    assert result["songs"][1]["artwork"].startswith("https://p1.music.126.net/")
+    assert result["has_more"]
+    assert store.search("歌手") == result and len(calls) == 1
+
+
+def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch):
+    store, client = station
+    value, secret = room(store)
+    path = f"/api/rooms/{value['id']}/artwork"
+    headers = {"X-KTV-Room": secret}
+    calls = []
+
+    def metadata(path, params, *, timeout):
+        calls.append((path, json.loads(params["c"]), timeout))
+        return {"songs": [
+            {"id": 123, "al": {"picUrl": "http://p1.music.126.net/cover.jpg"}},
+            {"id": 234, "al": {"picUrl": "https://example.test/cover.jpg"}},
+            {"id": 345, "al": {"picUrl": "https://p1.music.126.net/unrequested.jpg"}},
+        ]}
+
+    monkeypatch.setattr(store, "public_metadata", metadata)
+    assert client.get(path, headers=headers, params={"ids": "123"}).status_code == 403
+    headers["X-KTV-Guest"] = store.join(value)["key"]
+    assert client.get(path, headers=headers, params={"ids": "123,invalid"}).status_code == 400
+    response = client.get(path, headers=headers, params={"ids": "123,234,123"})
+    assert response.status_code == 200
+    assert response.json() == {"covers": {"123": "https://p1.music.126.net/cover.jpg?param=240y240"}}
+    assert calls == [("/api/v3/song/detail", [{"id": 123}, {"id": 234}], 3)]
+    assert client.get(path, headers=headers, params={"ids": "123,234"}).json() == response.json()
+    assert len(calls) == 1
+
+
 def test_station_scopes_and_static_privacy(station):
     store, client = station
     value, secret = room(store)
@@ -59,9 +135,9 @@ def test_station_scopes_and_static_privacy(station):
     assert client.get("/app.js").headers["content-type"].startswith("text/javascript")
     assert client.get("/add-queue.js").headers["content-type"].startswith("text/javascript")
     for name in ("sync.mjs", "sync-dsp.mjs", "sync-capture.mjs"):
-        assert client.get("/" + name).headers["content-type"].startswith("text/javascript")
+        assert client.get("/" + name).status_code == 404
     policy = client.get("/").headers["permissions-policy"]
-    assert "microphone=(self)" in policy and "camera=()" in policy and "geolocation=()" in policy
+    assert "microphone=()" in policy and "camera=()" in policy and "geolocation=()" in policy
     assert client.get("/health").json()["protocol"] == 1
     assert client.get("/agent/tasks", headers=guest).status_code == 401
     assert client.get(base + "/status").status_code == 403
@@ -256,7 +332,7 @@ def test_controls_queue_revision_and_commands(station):
         == 403
     )
     assert (
-        client.post(base + "/controls", headers=headers, json={"music_gain": 25, "mic_muted": 1}).status_code
+        client.post(base + "/controls", headers=headers, json={"music_gain": 25}).status_code
         == 200
     )
     state = store.status(value)
@@ -529,24 +605,19 @@ def test_cloud_search_pages_cover_the_entire_artist_catalog(station):
     assert len({s['song_id'] for p in pages for s in p['songs']})==65
 
 
-def test_monitor_accepts_only_bounded_aggregate_playback_fields(station):
-    store,client=station;value,secret=room(store);base='/api/rooms/'+value['id'];headers={'X-KTV-Room':secret}
-    payload={'phase':'playing','context':'running','primed':True,'session_playback':True,'node':True,'buffer_ms':60000,'position_ms':15000,'target_ms':15020}
-    assert client.post(base+'/monitor',headers=headers,json=payload).status_code==403
-    guest=store.join(value);headers['X-KTV-Guest']=guest['key']
-    assert client.post(base+'/monitor',headers=headers,json=payload).status_code==200
-    assert client.post(base+'/monitor',headers=headers,json={**payload,'cookie':'forbidden'}).status_code==400
-    saved=json.loads((store.root/'monitor.json').read_text());assert saved[guest['id']]['node'] is True
-    alignment={'phase':'failed','code':'ambiguous','frames':296,'score':220,'margin':10,'offset_ms':0}
-    assert client.post(base+'/monitor',headers=headers,json={**payload,'alignment':alignment}).status_code==200
-    release_failed={**alignment,'code':'capture_release_failed'}
-    assert client.post(base+'/monitor',headers=headers,json={**payload,'phase':'failed','node':False,'alignment':release_failed}).status_code==200
-    saved=json.loads((store.root/'monitor.json').read_text())
-    assert saved[guest['id']]['alignment']['code']=='capture_release_failed'
-    assert client.post(base+'/monitor',headers=headers,json={**payload,'alignment':{**alignment,'code':'arbitrary_device_data'}}).status_code==400
-    assert client.post(base+'/monitor',headers=headers,json={**payload,'alignment':{**alignment,'audio':'forbidden'}}).status_code==400
-    assert client.post(base+'/monitor',headers=headers,json={**payload,'alignment':{**alignment,'frames':1000000}}).status_code==400
-    assert (store.root/'monitor.json').stat().st_mode&0o077==0
+def test_guest_audio_is_playback_only(station):
+    store, client = station
+    state, secret = room(store)
+    base = "/api/rooms/" + state["id"]
+    headers = {"X-KTV-Room": secret}
+    headers["X-KTV-Guest"] = client.post(base + "/join", headers=headers, json={}).json()["key"]
+    assert client.post(base + "/monitor", headers=headers, json={"phase": "on"}).status_code == 404
+    controls = base + "/controls"
+    for payload in ({"mic_muted": 0}, {"mic_gain": 70}, {"vocal_preset": "dry"}, {"music_gain": 52, "mic_gain": 45}):
+        assert client.post(controls, headers=headers, json=payload).status_code == 400
+    assert client.post(controls, headers=headers, json={"music_gain": 52, "original": 1, "sfx_gain": 63}).status_code == 200
+    assert store.status(state)["controls"]["music_gain"] == 52
+    assert store.status(state)["controls"]["mic_muted"] == 1
 
 
 def test_artist_portraits_are_exact_name_official_images_and_privately_cached(station,monkeypatch):

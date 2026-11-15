@@ -25,7 +25,7 @@ public final class MediaTransfer {
         if(size<48||!sha.matches("[a-f0-9]{64}")||routes==null||routes.length<1||routes.length>3)throw new IOException("invalid_media");
         if(existing(target,size,sha,verify,cancel,cache)!=null)return target;
         if(target.exists()&&!target.delete())throw new IOException("cache_unavailable");
-        cache.reserve(target,size);
+        try(MediaCache.Reservation reservation=cache.reserveTransfer(target,size)){
         long deadline=System.nanoTime()+180000000000L;
         for(MediaRoute route:routes){
             check(cancel);long total=0;MessageDigest h=MessageDigest.getInstance("SHA-256");File partial=cache.beginPartial(sha);
@@ -44,5 +44,6 @@ public final class MediaTransfer {
             }finally{try{if(partial.exists()&&!partial.delete())throw new IOException("cache_unavailable");}finally{MediaCache.endPartial(partial);}}
         }
         throw new IOException("media_sources_unavailable");
+        }
     }
 }

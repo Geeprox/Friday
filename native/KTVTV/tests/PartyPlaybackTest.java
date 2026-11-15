@@ -20,7 +20,7 @@ public final class PartyPlaybackTest {
         require(remote.press(22,false,0,true)==RemoteShortcuts.Action.NONE);
         require(remote.press(22,true,0,true)==RemoteShortcuts.Action.NEXT);
         require(remote.press(20,true,0,false)==RemoteShortcuts.Action.NONE);
-        require(remote.press(20,true,0,true)==RemoteShortcuts.Action.MUTE);
+        require(remote.press(20,true,0,true)==RemoteShortcuts.Action.NONE&&!RemoteShortcuts.direction(20));
         require(remote.press(19,true,0,true)==RemoteShortcuts.Action.ORIGINAL);
         require(remote.press(21,true,0,true)==RemoteShortcuts.Action.REPLAY);
         require(SongTitle.display("01. 周杰伦 (Feat. 潘儿) - 夜的第七章.flac").equals("夜的第七章"));
