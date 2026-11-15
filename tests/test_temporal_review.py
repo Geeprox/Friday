@@ -14,14 +14,16 @@ from fastapi import APIRouter, FastAPI
 from PIL import Image
 
 from homeplane.embodied import paths, safety, safety_api
-from homeplane.embodied.decisions_review import DecisionsWindowReviewer, visible_people
 from homeplane.embodied import temporal_model as model
+from homeplane.embodied.decisions_review import DecisionsWindowReviewer, visible_people
 from homeplane.embodied.rapid_review import RapidReviewWindow
 from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
 from homeplane.embodied.stable_tracks import StableTracks
 from homeplane.embodied.temporal_model import GIB, HostBudget, MlxWindowProcess, VisualResult
 from homeplane.embodied.temporal_review import TemporalReviewer
+from homeplane.intelligence.budget import EnhancementUnavailable
 from homeplane.intelligence.runtime import IntelligenceRuntime
+from tests.test_embodied_safety import person
 
 
 class Clock:
@@ -83,8 +85,14 @@ async def test_decisions_review_sends_cropped_fresh_frames_and_honors_daily_cap(
     with io.BytesIO() as buffer:
         Image.new('RGB', (640, 360), 'gray').save(buffer, 'JPEG')
         frames = [(stamp-n, buffer.getvalue()) for n in (3, 2, 1, 0)]
+    selected = []
+
+    def window():
+        selected.append(True)
+        return frames, False
+
     async def review():
-        return await client.analyze_scoped(lambda: (frames, False),
+        return await client.analyze_scoped(window,
                                            current=lambda: admission, regions_for=lambda _: box)
 
     admission = False
@@ -94,11 +102,138 @@ async def test_decisions_review_sends_cropped_fresh_frames_and_honors_daily_cap(
     admission = True
     assert (await review()).event == 'face_obscured'
     assert calls == ['/v1/decisions'] and len(widths) == 4
+    selections = len(selected)
     with pytest.raises(ValueError, match='daily_visual_review_reached'):
         await review()
+    assert len(selected) == selections
     usage = owner.ledger.status(owner.settings.read())
     assert usage['visual_review'] == {'used': 1, 'limit': 1}
     assert usage['used']['images'] == 0 and len(calls) == 1
+
+
+@pytest.mark.parametrize(('quota', 'reason'), [
+    ('daily', 'daily_visual_review_reached'), ('project', 'api_quota_exhausted'),
+])
+async def test_visual_quota_releases_view_and_leaves_four_camera_local_recording_running(
+        tmp_path, monkeypatch, quota, reason):
+    clock = Clock()
+    base = time.monotonic() + 15
+    clock.value = base
+    cameras = [f'cam_{slot:010x}' for slot in range(1, 5)]
+    context = {camera: f'{slot:064x}' for slot, camera in enumerate(cameras, 1)}
+    selected = cameras[-1]
+    sent = []
+    ready, respond = asyncio.Event(), asyncio.Event()
+
+    async def transport(request):
+        sent.append(request.url.path)
+        if request.url.path == '/v1/responses':
+            return httpx.Response(429, json={'error': {'code': 'project_spend_limit_exceeded'}})
+        assert request.url.path == '/v1/decisions'
+        ready.set()
+        await respond.wait()
+        question, = json.loads(request.content)['questions']
+        return httpx.Response(200, json={
+            'answers': [{'type': 'choice', 'name': question['name'], 'choice': 'none',
+                         'probabilities': [{'value': row['value'], 'probability': .95 if row['value'] == 'none' else .01}
+                                           for row in question['choices']]}],
+            'usage': {'input_tokens': 150},
+        })
+
+    def intelligence():
+        return IntelligenceRuntime(None, tmp_path/'intel', transport=httpx.MockTransport(transport),
+                                   key_resolver=lambda: 'synthetic-visual-budget')
+
+    owner = intelligence()
+    owner.settings.update({'provider': 'openai', 'cloud_text': True,
+                           'daily_visual_review': 0 if quota == 'daily' else 4})
+    if quota == 'project':
+        with pytest.raises(EnhancementUnavailable, match=reason):
+            await intelligence().client.post('responses', 'responses', {'input': 'synthetic'},
+                                             request_id='synthetic-exhausted', deadline=base, text_tokens=1)
+    initial_sends = list(sent)
+    store = SafetyStore(tmp_path/'safety.sqlite')
+    policy = store.configure(safety.SafetyControls(enabled=True, visual_review=True))
+    store.configure_visual_cloud(
+        policy.revision, safety.PostureSource(camera=selected, source_context=context[selected]))
+    monkeypatch.setattr(safety, 'time', SimpleNamespace(monotonic=clock, time=lambda: 1800000000 + clock() - base))
+    monkeypatch.setattr('homeplane.embodied.camera_provenance.configured_camera_sources',
+                        lambda: [{'id': key, 'source_context': value} for key, value in context.items()])
+    local = Engine()
+    runtime = SafetyRuntime(store, visual_engine=local, intelligence=owner)
+    runtime.visual.clock = runtime.visual.cloud.clock = clock
+    entered, release = asyncio.Event(), asyncio.Event()
+    review = runtime.visual.cloud.analyze_scoped
+    selected_windows = []
+
+    async def held(window, **options):
+        def observe_selection():
+            selected_windows.append(clock())
+            return window()
+
+        entered.set()
+        await release.wait()
+        return await review(observe_selection, **options)
+
+    monkeypatch.setattr(runtime.visual.cloud, 'analyze_scoped', held)
+    pictures = {}
+    for index, camera in enumerate(cameras):
+        with io.BytesIO() as image:
+            Image.new('RGB', (160, 90), (32 * index, 96, 128)).save(image, 'JPEG')
+            pictures[camera] = image.getvalue()
+
+    async def tick(index):
+        clock.value = base + index * .25
+        await runtime.sync_policy()
+        for index_within_home, camera in enumerate(cameras, 1):
+            session = f'synthetic-{index_within_home}'
+            cap = f'{index_within_home:032x}'
+            runtime.capture_frame(camera, cap, context[camera], clock())
+            track = dict(person(down=(camera == selected and index >= 7)), tracking={'follow_revision': 1})
+            assert runtime.offer(camera, session, [track], clock(), clock(), stable=True,
+                                 jpeg=pictures[camera], source_context=context[camera], capture_session=cap)
+        await runtime.observation_task
+
+    try:
+        for index in range(14):
+            await tick(index)
+        await asyncio.wait_for(entered.wait(), 1)
+        pending_while_preparing = runtime.review_pending(selected, 'synthetic-4')
+        task = runtime.visual.task
+        assert task is not None and runtime.visual.phase == 'preparing'
+        for index in range(14, 29):
+            await tick(index)
+        await runtime.drain()
+        assert not task.done()
+        event, = store.events()
+        assert event['kind'] == 'fall' and event['camera'] == selected
+        evidence = event['frames']
+        assert evidence[0]['at'] < event['captured_at'] < evidence[-1]['at']
+        assert all(store.frame(event['id'], frame['ordinal']) == pictures[selected] for frame in evidence)
+        assert len(runtime.status()['cameras']) == len(cameras)
+        release.set()
+        await asyncio.wait_for(task, 2)
+        assert sent == initial_sends and not selected_windows and not local.calls
+        assert not pending_while_preparing and not runtime.review_pending(selected, 'synthetic-4')
+        assert runtime.review_status() == {'visual_provider': 'decisions', 'visual': 'quota_limited'}
+
+        owner.settings.update({'daily_visual_review': 4})
+        owner.ledger.clear_blocks()
+        for index in range(29, 96):
+            await tick(index)
+            if runtime.visual.task:
+                task = runtime.visual.task
+                await asyncio.wait_for(ready.wait(), 1)
+                assert runtime.review_pending(selected, 'synthetic-4')
+                respond.set()
+                await asyncio.wait_for(task, 2)
+        assert sent == initial_sends + ['/v1/decisions'] and len(selected_windows) == 1
+        assert runtime.review_status() == {'visual_provider': 'decisions', 'visual': 'standby'}
+        assert len(store.events()) == 1 and not local.calls
+    finally:
+        release.set()
+        respond.set()
+        await runtime.close()
 
 
 async def test_cloud_result_uses_current_selected_camera_and_never_loads_local_engine():

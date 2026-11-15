@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -62,11 +62,20 @@ class UsageLedger:
         finally:
             db.close()
 
+    @staticmethod
+    def _active_window(db, timestamp):
+        row = db.execute("SELECT * FROM usage_window WHERE id=1").fetchone()
+        if row is None or timestamp >= row["end"]:
+            return None
+        if timestamp < row["start"]:
+            raise EnhancementUnavailable("usage_clock_regressed")
+        return row
+
     def _window(self, db, config):
         now = self.now()
         timestamp = now.timestamp()
-        row = db.execute("SELECT * FROM usage_window WHERE id=1").fetchone()
-        if row is None or timestamp >= row["end"]:
+        row = self._active_window(db, timestamp)
+        if row is None:
             zone = ZoneInfo(config.timezone)
             day = now.astimezone(zone).date()
             start = datetime.combine(day, time(), zone).timestamp()
@@ -74,31 +83,52 @@ class UsageLedger:
             db.execute("INSERT OR REPLACE INTO usage_window VALUES(1,?,?,0,0,0,0)", (start, end))
             db.execute("DELETE FROM attempts WHERE window < ?", (start - 7 * 86400,))
             row = db.execute("SELECT * FROM usage_window WHERE id=1").fetchone()
-        if timestamp < row["start"]:
-            raise EnhancementUnavailable("usage_clock_regressed")
+            if timestamp < start:
+                raise EnhancementUnavailable("usage_clock_regressed")
         return row
 
-    def reserve(self, identifier, capability, config, *, text_tokens=0, images=0, voice_seconds=0):
+    @staticmethod
+    def _amounts(text_tokens, images, voice_seconds):
         amounts = dict(requests=1, text_tokens=text_tokens, images=images, voice_seconds=voice_seconds)
         if any(type(v) is not int or v < 0 for v in amounts.values()):
             raise ValueError("invalid_usage_reservation")
+        return amounts
+
+    def _check_limits(self, db, capability, config, window, amounts, *, identifier=None):
+        block = db.execute(
+            "SELECT code FROM cooldown WHERE capability IN (?, 'all') AND until > ? "
+            "ORDER BY (capability = 'all') DESC LIMIT 1",
+            (capability, self.now().timestamp()),
+        ).fetchone()
+        if block:
+            raise EnhancementUnavailable(block["code"])
+        if identifier is not None and db.execute("SELECT 1 FROM attempts WHERE id=?", (identifier,)).fetchone():
+            raise EnhancementUnavailable("request_already_attempted")
+        if capability == "visual_review":
+            used = self._visual_count(db, window) if window is not None else 0
+            if used >= config.daily_visual_review:
+                raise EnhancementUnavailable("daily_visual_review_reached")
+        for name, amount in amounts.items():
+            used = window[name] if window is not None else 0
+            if amount and used + amount > getattr(config, "daily_" + name):
+                raise EnhancementUnavailable("daily_" + name + "_reached")
+
+    def check_available(self, capability, config, *, text_tokens=0, images=0, voice_seconds=0):
+        """在准备请求前读取已经提交的额度，不写入预留或轮转账本。"""
+        amounts = self._amounts(text_tokens, images, voice_seconds)
+        private_path(self.path)
+        uri = self.path.absolute().as_uri() + '?mode=ro'
+        with closing(sqlite3.connect(uri, uri=True, timeout=2)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN")
+            window = self._active_window(db, self.now().timestamp())
+            self._check_limits(db, capability, config, window, amounts)
+
+    def reserve(self, identifier, capability, config, *, text_tokens=0, images=0, voice_seconds=0):
+        amounts = self._amounts(text_tokens, images, voice_seconds)
         with self.transaction() as db:
             window = self._window(db, config)
-            block = db.execute(
-                "SELECT code FROM cooldown WHERE capability IN (?, 'all') AND until > ? "
-                "ORDER BY (capability = 'all') DESC LIMIT 1",
-                (capability, self.now().timestamp()),
-            ).fetchone()
-            if block:
-                raise EnhancementUnavailable(block["code"])
-            if db.execute("SELECT 1 FROM attempts WHERE id=?", (identifier,)).fetchone():
-                raise EnhancementUnavailable("request_already_attempted")
-            if (capability == "visual_review"
-                    and self._visual_count(db, window) >= config.daily_visual_review):
-                raise EnhancementUnavailable("daily_visual_review_reached")
-            for name in COUNTERS:
-                if amounts[name] and window[name] + amounts[name] > getattr(config, "daily_" + name):
-                    raise EnhancementUnavailable("daily_" + name + "_reached")
+            self._check_limits(db, capability, config, window, amounts, identifier=identifier)
             db.execute(
                 "UPDATE usage_window SET requests=requests+1,text_tokens=text_tokens+?,"
                 "images=images+?,voice_seconds=voice_seconds+? WHERE id=1",

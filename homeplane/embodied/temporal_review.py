@@ -28,7 +28,8 @@ class CloudCue:
 
 # 仅按平台选择离线后端；导入不加载模型，也不增加窗口结果的时效。
 if sys.platform.startswith('linux'):
-    from .cpu_review import CpuWindowProcess as WindowProcess, readiness as review_readiness
+    from .cpu_review import CpuWindowProcess as WindowProcess
+    from .cpu_review import readiness as review_readiness
 else:
     WindowProcess, review_readiness = MlxWindowProcess, model_readiness
 
@@ -239,7 +240,13 @@ class TemporalReviewer:
             return False
         active = (self.active_camera == camera and self.task is not None
                   and not self.task.done() and not self.task.cancelling())
-        rapid = (self.active_rapid if active else ()) or state.rapid.pending(self.clock())
+        cloud = getattr(self.policy(), 'visual_cloud_source', None)
+        # API 复核在额度检查和取样之间不占用镜头。已受限时等下次真正取样。
+        if cloud is not None and ((active and self.phase != 'reviewing') or (not active and self.error in API_ERRORS)):
+            return False
+        rapid = self.active_rapid if active else ()
+        if not rapid and cloud is None:
+            rapid = state.rapid.pending(self.clock())
         due = max(self.retry_after, self.last_submit + 6, state.submitted + 6)
         if (rapid and self._current(camera, state, rapid)
                 and (active or due <= rapid[-1][0] + MAX_CANDIDATE_AGE)):

@@ -4,18 +4,16 @@ import asyncio
 import base64
 import io
 import math
-import re
 import time
 from uuid import uuid4
 
 from PIL import Image
 
 from homeplane.intelligence.budget import EnhancementUnavailable
-from homeplane.intelligence.settings import default_directory
 from homeplane.intelligence.runtime import IntelligenceRuntime
+from homeplane.intelligence.settings import default_directory
 
 from .temporal_model import VisualResult, VisualSourceChanged
-
 
 EVENTS = {
     "none": "Ordinary activity, clear scene and no listed change.",
@@ -25,6 +23,7 @@ EVENTS = {
     "rapid_movement": "One person visibly moves another person abruptly.",
 }
 PRONE = "The only visible person lies with the front of their torso facing the surface throughout the sequence."
+TEXT_RESERVATION = 3000
 OBSERVATIONS = {
     "none": "画面未见所选异常线索。",
     "unclear": "画面不足以判断。",
@@ -127,9 +126,14 @@ class DecisionsWindowReviewer:
                     max_image_edge=256, parallel_requests=1, automatic_announcement=False)
 
     async def analyze_scoped(self, window, *, current, regions_for):
-        try:
-            client = await asyncio.to_thread(lambda: self.runtime.client)
+        def preflight():
+            client = self.runtime.client
             config, _ = client.authorize("visual_review", admitted=True)
+            client.ledger.check_available("visual_review", config, text_tokens=TEXT_RESERVATION)
+            return client, config
+
+        try:
+            client, config = await asyncio.to_thread(preflight)
         except EnhancementUnavailable as error:
             raise ValueError(error.code) from None
         frames, posture = window()
@@ -169,7 +173,7 @@ class DecisionsWindowReviewer:
         }
         try:
             payload = await client.post("visual_review", "decisions", body, request_id=uuid4().hex,
-                                        deadline=deadline, text_tokens=3000, current=current)
+                                        deadline=deadline, text_tokens=TEXT_RESERVATION, current=current)
         except EnhancementUnavailable as error:
             if not current():
                 raise VisualSourceChanged("visual_source_changed") from None
