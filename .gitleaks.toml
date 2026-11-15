@@ -7,3 +7,10 @@ condition = "AND"
 paths = ['''(^|/)homeplane/(laya-model-manifest|native_media_sdk(_linux)?)\.json$''']
 regexTarget = "line"
 regexes = ['''^\s*"[^"]+":\s*"[a-f0-9]{64}",?\s*$''']
+
+[[allowlists]]
+description = "公开历史中的预览返回表达式，仅含变量引用，没有凭据字面量"
+condition = "AND"
+paths = ['''(^|/)homeplane/embodied/live_preview\.py$''']
+regexTarget = "line"
+regexes = ['''^\s*return dict\(report, preview_token=token, recognition_enabled=not manual\)\s*$''']
