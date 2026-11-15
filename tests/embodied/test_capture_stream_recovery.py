@@ -202,11 +202,13 @@ async def test_original_queue_consumer_publishes_fault_and_preserves_a_closed_sh
 
 
 @pytest.mark.parametrize('source_status',['unavailable','stopped','shutter_closed'])
-def test_live_status_view_cannot_publish_old_game_players_while_source_is_down(tmp_path,source_status):
+def test_live_status_view_cannot_publish_old_game_or_motor_state_while_source_is_down(tmp_path,source_status):
     home=SimpleNamespace(public=lambda:{})
     game=MotionGames();game.reset('ski');game.publish([{'id':1}],'playing','')
+    control = dict(owner='friday', mode='patrol', phase='patrolling',
+                   view_usable=True, target_locked=True, scheduled_survey_active=True)
     scope=dict(
-        state=dict(status=source_status,processed_frames=5,people=[],hands=[],room=None),
+        state=dict(status=source_status,processed_frames=5,people=[],hands=[],room=None,camera_control=control),
         games=game,party_camera=PartyCamera(),
         home=home,recorder=SimpleNamespace(public=lambda:{}),secondary_homes={},
         safety=SimpleNamespace(recording_status=lambda:{'state':'off'}),
@@ -219,6 +221,11 @@ def test_live_status_view_cannot_publish_old_game_players_while_source_is_down(t
     assert result['game']['control_context']==game.control_context
     assert game.public['players']==[{'id':1}]
     assert scope['games'].public['status']=='playing','Presentation must not rewrite game progress'
+    assert result['camera_control']['owner'] == 'none'
+    assert result['camera_control']['phase'] == 'restore_pending'
+    assert result['camera_control']['mode'] == 'patrol'
+    assert not result['camera_control']['scheduled_survey_active']
+    assert control['owner'] == 'friday' and control['scheduled_survey_active']
 
 
 @pytest.mark.asyncio

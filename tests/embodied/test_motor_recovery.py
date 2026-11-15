@@ -151,9 +151,36 @@ def primary_scope():
         command = json.loads(data)
         sent.append(command)
         scope['motor_waiters'][command['request_id']].set_result(dict(native_code=0))
-    scope['capture'] = SimpleNamespace(stdin=SimpleNamespace(write=write, drain=AsyncMock()))
+    scope['capture'] = SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock()))
     extract('homeplane/embodied/worker.py', {'motor_step'}, scope)
     return scope, sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['retired', 'exited'])
+@pytest.mark.parametrize('during_privacy_read', [False, True])
+async def test_primary_manual_motor_rejects_ended_capture(change, during_privacy_read):
+    scope, sent = primary_scope()
+
+    def end_capture():
+        if change == 'retired':
+            scope['state']['status'] = 'unavailable'
+        else:
+            scope['capture'].returncode = 0
+
+    async def privacy_read(_):
+        if during_privacy_read:
+            end_capture()
+        return True
+
+    scope['camera_is_open'] = AsyncMock(side_effect=privacy_read)
+    if not during_privacy_read:
+        end_capture()
+    code = 'capture_source_changed' if change == 'retired' else 'camera_not_owned'
+    with pytest.raises(RuntimeError, match=f'^{code}$'):
+        await scope['motor_step']('right')
+    assert not sent and not scope['motor_waiters']
+    assert scope['camera_is_open'].await_count == int(during_privacy_read)
 
 
 @pytest.mark.asyncio

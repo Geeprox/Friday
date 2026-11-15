@@ -250,8 +250,9 @@ def close_primary_view():
     global motion_generation
     motion_generation += 1
     calibration_frames.clear()
-    state.update(status='shutter_closed',recognition='waiting',reason='privacy_shutter_closed',people=[],hands=[],frame=None,
-                 animals=[],animals_current=False,scene={'objects': []},_patrol_view=None)
+    state.update(status='shutter_closed', recognition='waiting', reason='privacy_shutter_closed',
+                 error_stage='shutter_readback', error_class=None, people=[], hands=[], frame=None,
+                 animals=[], animals_current=False, tracking_current=False, scene={'objects': []}, _patrol_view=None)
     pet_tracks.clear()
     wall.clear(SELECTED['id'], primary_wall_epoch)
     clear_camera(SELECTED['id'])
@@ -272,7 +273,7 @@ async def primary_capture_closed(my_generation, wall_epoch, reason, error_class=
     motion_generation += 1
     latest, last_frame, last_jpeg, last_preview, last_preview_at = None, 0, b'', b'', 0.0
     state.update(frame=None, recognition='waiting', people=[], hands=[], animals=[], animals_current=False, room=None,
-                 scene={'objects': []}, _patrol_view=None)
+                 tracking_current=False, scene={'objects': []}, _patrol_view=None)
     if state.get('status') != 'shutter_closed':
         state.update(status='unavailable', reason=reason, error_class=error_class, error_stage=stage)
     home.armed = False
@@ -397,8 +398,11 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
     if direction not in ("left", "right", "up", "down"):
         raise ValueError("invalid_motor_direction")
     if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
+    if state.get('status') not in {'connecting', 'live'}:
+        raise RuntimeError('capture_source_changed')
     if (
         not capture
+        or capture.returncode is not None
         or not capture.stdin
         or not camera_lease
         or not camera_lease.snapshot
@@ -425,17 +429,17 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
     try:
         async with motor_dispatch_window(room_lock, expires, lambda: camera_is_open(SELECTED),
                                          monotonic=time.monotonic) as opened:
+            # 等待隐私读回时采集可能已结束，旧读回不能修改当前状态或放行转向。
+            if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
+            if (capture is not owned_capture or camera_lease is not owned_lease
+                    or owned_capture.returncode is not None
+                    or not camera_lease.snapshot or camera_lease.snapshot.get('status')!='owned'):
+                raise RuntimeError('camera_not_owned')
+            if motion_generation != owned_motion_generation or state.get('status') not in {'connecting', 'live'}:
+                raise RuntimeError('capture_source_changed')
             if not opened:
                 close_primary_view()
                 raise RuntimeError('privacy_shutter_closed')
-            # Registration and privacy reads may have waited. No await separates
-            # the final authority/observation check from reserving and writing.
-            if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
-            if (capture is not owned_capture or camera_lease is not owned_lease
-                    or not camera_lease.snapshot or camera_lease.snapshot.get('status')!='owned'):
-                raise RuntimeError('camera_not_owned')
-            if motion_generation != owned_motion_generation:
-                raise RuntimeError('capture_source_changed')
             if expected_intent is not None and (camera_planner is not owned_planner
                     or not camera_planner or camera_planner.intent_revision != expected_intent):
                 raise RuntimeError('camera_intent_changed')
@@ -510,11 +514,16 @@ async def camera_search():
     owner = capture
     io = lease = planner = None
     published = retry = False
+
+    def owns_source():
+        return (capture is owner and state.get('status') in {'connecting', 'live'}
+                and (owner is None or owner.returncode is None))
+
     try:
         io = Transport()
         lease = CameraLease(io, open_privacy=False, restore_native=True)
         await lease.acquire()
-        if capture is not owner or state.get('status') not in {'connecting', 'live'}:
+        if not owns_source():
             return False
         acquired_at = time.monotonic()
         planner = SearchPlanner(lease.presets, time.monotonic(), lease.active)
@@ -531,11 +540,14 @@ async def camera_search():
         camera_lease, camera_planner = lease, planner
         published = True
         checked = 0.0
-        while True:
+        while owns_source():
             now = time.monotonic()
             if now-checked >= 10:
                 checked = now
-                if not await camera_is_open(SELECTED):
+                opened = await camera_is_open(SELECTED)
+                if not owns_source():
+                    return False
+                if not opened:
                     close_primary_view()
                     return
             now = time.monotonic()
@@ -718,9 +730,14 @@ def view():
             room=None,
             game=dict(result['game'], status="paused", reason="实时画面已过期", players=[]),
         )
-    if result['status'] != 'live' and result.get('camera_control'):
-        result['camera_control'] = dict(result['camera_control'], view_usable=False, target_locked=False,
-                                        scheduled_survey_active=False)
+    if control := result.get('camera_control'):
+        retired = control.get('owner') == 'friday' and (
+            state['status'] not in {'connecting', 'live'} or capture is None or capture.returncode is not None)
+        if retired or result['status'] != 'live':
+            control = dict(control, view_usable=False, target_locked=False, scheduled_survey_active=False)
+            if retired:
+                control.update(owner='none', phase='restore_pending', reason='镜头待释放')
+            result['camera_control'] = control
     if result['status'] != 'live':
         result['game'] = dict(result['game'], players=[])
         if result['game'].get('mode') != 'off' and result['game'].get('status') != 'complete':
@@ -830,6 +847,8 @@ async def run_source(my_generation):
         camera_control=None,
         vision_cadence=cadence.public(),
         reason=None,
+        error_stage=None,
+        error_class=None,
         frame=None,
         people=[],
         hands=[],
@@ -862,7 +881,7 @@ async def run_source(my_generation):
         if my_generation != generation:
             return
         if not opened:
-            state.update(status='shutter_closed', reason='privacy_shutter_closed')
+            state.update(status='shutter_closed', reason='privacy_shutter_closed', error_stage='shutter_readback')
             await notify()
             return
         stage = 'source_start'
@@ -1438,6 +1457,7 @@ async def stop():
     home.discard_audio()
     home.pending_audio = None
     home.gesture.reset()
+    state.update(status='stopped', tracking_current=False)
     generation += 1
     if task:
         task.cancel()
@@ -2297,13 +2317,12 @@ async def camera_control(request: Request):
                     raise HTTPException(409, detail='camera_control_unavailable') from None
                 return {'mode': stopped.mode, 'intent_revision': stopped.revision}
         raise HTTPException(409, detail="camera_not_owned")
-    if survey_revision is not None and (camera_planner.mode not in {'survey', 'patrol'}
-                                       or camera_planner.intent_revision != survey_revision):
-        raise HTTPException(409, detail='camera_intent_changed')
     try:
-        set_primary_camera_mode(mode)
-    except (OSError, ValueError, RuntimeError):
-        raise HTTPException(409, detail='camera_control_unavailable') from None
+        set_primary_camera_mode(mode, survey_revision=survey_revision)
+    except (OSError, ValueError, RuntimeError) as error:
+        code = str(error)
+        detail = code if code in {'camera_not_owned', 'camera_intent_changed'} else 'camera_control_unavailable'
+        raise HTTPException(409, detail=detail) from None
     if mode == "survey":
         camera_planner.visited.clear()
         camera_planner.last_person = time.monotonic() - 8
@@ -2311,10 +2330,16 @@ async def camera_control(request: Request):
     return {"mode": mode, "intent_revision": camera_planner.intent_revision}
 
 
-def set_primary_camera_mode(mode):
+def set_primary_camera_mode(mode, *, survey_revision=None):
     if mode not in CAMERA_MODES:
         raise ValueError('invalid_camera_mode')
     if not camera_planner:
+        raise RuntimeError('camera_not_owned')
+    if survey_revision is not None:
+        if (mode != 'hold' or camera_planner.mode not in {'survey', 'patrol'}
+                or camera_planner.intent_revision != survey_revision):
+            raise RuntimeError('camera_intent_changed')
+    elif capture is None or capture.returncode is not None or state.get('status') not in {'connecting', 'live'}:
         raise RuntimeError('camera_not_owned')
     camera_planner.mode = 'hold'
     camera_planner.intent_revision = secrets.token_hex(16)

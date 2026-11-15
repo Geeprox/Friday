@@ -230,6 +230,7 @@ async def test_secondary_save_failure_holds_locally_and_does_not_dispatch(monkey
 def primary_scope(tmp_path):
     scope = dict(Request=Request, HTTPException=HTTPException, secrets=secrets, time=time, CAMERA_MODES=CAMERA_MODES,
                  SELECTED=CAMERA, camera_intents=store_at(tmp_path / 'camera'),
+                 state={'status': 'live'}, capture=SimpleNamespace(returncode=None),
                  camera_planner=SimpleNamespace(mode='auto', intent_revision='old', intent_status='default',
                                                visited=set(), last_person=0, last_move=0),
                  motor_step=AsyncMock(return_value={'native_code': 0}),
@@ -261,6 +262,24 @@ async def test_primary_public_and_legacy_manual_paths_save_hold_before_send(tmp_
               else await scope['manual_motor'](req))
     assert result['native_code'] == 0
     scope['motor_step'].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['shutter_closed', 'unavailable', 'stopped', 'exited'])
+async def test_retired_capture_cannot_save_a_new_manual_or_automatic_mode(tmp_path, state):
+    scope = primary_scope(tmp_path)
+    original = scope['camera_intents'].save('auto')
+    if state == 'exited':
+        scope['capture'].returncode = 0
+    else:
+        scope['state']['status'] = state
+    with pytest.raises(HTTPException) as manual:
+        await scope['manual_motor'](request({'direction': 'left'}))
+    with pytest.raises(HTTPException) as automatic:
+        await scope['camera_control'](request({'mode': 'survey'}))
+    assert manual.value.status_code == automatic.value.status_code == 409
+    assert scope['camera_intents'].load() == original
+    scope['motor_step'].assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -297,7 +316,8 @@ async def test_survey_readback_and_stop_are_bound_to_the_current_intent(tmp_path
     scope.update(state=state, games=MotionGames(), party_camera=PartyCamera(), last_frame=time.monotonic(),
                  recorder=SimpleNamespace(public=lambda: {}), safety=SimpleNamespace(recording_status=lambda: {}),
                  home=SimpleNamespace(public=lambda: {}), secondary_homes={}, fleet=SimpleNamespace(public=lambda _: {}),
-                 PRIVATE=tmp_path, previews=pool, configuration=config, PET_MODES=PET_MODES, capture=None,
+                 PRIVATE=tmp_path, previews=pool, configuration=config, PET_MODES=PET_MODES,
+                 wall=SimpleNamespace(frame=lambda _: None),
                  camera_intent_readback=camera_intent_readback)
     actual_worker_functions({'view', 'preview_status', 'primary_capture_preview'}, scope)
     worker = FastAPI()
@@ -405,7 +425,7 @@ async def test_pending_primary_auto_decision_is_cancelled_after_intent_changes(c
     noop = lambda *_, **__: None
     planner = SimpleNamespace(mode='auto', intent_revision='original')
     scope = dict(asyncio=asyncio, time=time, secrets=secrets, json=json,
-                 capture=SimpleNamespace(stdin=SimpleNamespace(write=sent.append, drain=AsyncMock())),
+                 capture=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=sent.append, drain=AsyncMock())),
                  camera_lease=SimpleNamespace(snapshot={'status': 'owned'}), camera_planner=planner,
                  state={'status': 'live'}, SELECTED=CAMERA, camera_is_open=AsyncMock(return_value=True),
                  close_primary_view=noop, motor_sequence=0, motion_generation=0, motor_waiters={},

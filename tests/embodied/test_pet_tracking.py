@@ -226,18 +226,20 @@ async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once
     clock=[0.0];sent=[];noop=lambda *_,**__:None
     scope=dict(asyncio=asyncio,secrets=secrets,json=json,CAMERA_MODES=CAMERA_MODES,
         time=SimpleNamespace(monotonic=lambda:clock[0],time=lambda:1000+clock[0]),
-        camera_intents=store,camera_planner=SimpleNamespace(mode='auto',intent_revision='old',intent_status='default'),
+        state={'status': 'live'},camera_intents=store,
+        camera_planner=SimpleNamespace(mode='auto',intent_revision='old',intent_status='default'),
         motor_sequence=0,motor_waiters={},motor_last_sent=-100,motion_generation=0,calibration_frames=CalibrationFrames(),
         camera_lease=SimpleNamespace(snapshot={'status':'owned'}),room_lock=asyncio.Lock(),
         SELECTED=selected,camera_is_open=AsyncMock(return_value=True),close_primary_view=noop,
         identities=SimpleNamespace(discard=noop),fleet=SimpleNamespace(clear=noop),
         safety=SimpleNamespace(clear_view=noop),
-        home=SimpleNamespace(selected=True,epoch=0,vad=[],pending_audio=None,runtime_log=SimpleNamespace(record=noop)),
+        home=SimpleNamespace(selected=True,epoch=0,discard_audio=noop,pending_audio=None,
+                             runtime_log=SimpleNamespace(record=noop)),
         room=SimpleNamespace(expect_motion=noop))
     def send(raw):
         command=json.loads(raw);sent.append(command)
         asyncio.get_running_loop().call_soon(scope['motor_waiters'][command['request_id']].set_result,{'native_code':0})
-    scope['capture']=SimpleNamespace(stdin=SimpleNamespace(write=send,drain=AsyncMock()))
+    scope['capture']=SimpleNamespace(returncode=None,stdin=SimpleNamespace(write=send,drain=AsyncMock()))
     path=Path('homeplane/embodied/worker.py')
     nodes=[n for n in ast.parse(path.read_text()).body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))
            and n.name in {'set_primary_camera_mode','motor_step'}]
