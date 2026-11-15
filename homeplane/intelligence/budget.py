@@ -79,7 +79,8 @@ class UsageLedger:
         with self.transaction() as db:
             window = self._window(db, config)
             block = db.execute(
-                "SELECT code FROM cooldown WHERE capability IN (?, 'all') AND until > ? LIMIT 1",
+                "SELECT code FROM cooldown WHERE capability IN (?, 'all') AND until > ? "
+                "ORDER BY (capability = 'all') DESC LIMIT 1",
                 (capability, self.now().timestamp()),
             ).fetchone()
             if block:

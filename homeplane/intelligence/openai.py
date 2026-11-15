@@ -12,6 +12,24 @@ import httpx
 from .budget import EnhancementUnavailable
 
 
+QUOTA_ERROR_CODES = frozenset({
+    "insufficient_quota",
+    "billing_hard_limit_reached",
+    "billing_not_active",
+    "credit_balance_exhausted",
+    "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded",
+    "organization_usage_limit_exceeded",
+})
+
+
+def is_quota_error(error):
+    if not isinstance(error, dict):
+        return False
+    code = error.get("code")
+    return error.get("type") == "insufficient_quota" or isinstance(code, str) and code in QUOTA_ERROR_CODES
+
+
 def token_usage(payload):
     usage = payload.get("usage")
     if not isinstance(usage, dict):
@@ -109,9 +127,7 @@ class OpenAIClient:
             await asyncio.to_thread(self.ledger.settle, identifier)
 
     def http_failure(self, capability, status, payload):
-        error = payload.get("error")
-        code = error.get("code") if isinstance(error, dict) else None
-        if code in {"insufficient_quota", "billing_hard_limit_reached", "billing_not_active"}:
+        if is_quota_error(payload.get("error")):
             reason, scope, delay = "api_quota_exhausted", "all", 900
         elif status == 401:
             reason, scope, delay = "api_key_rejected", "all", 900

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -12,11 +13,14 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from homeplane.api import create_app
+from homeplane.decision import DecisionRequest
 from homeplane.intelligence.backgrounds import SongBackgrounds
 from homeplane.intelligence.budget import EnhancementUnavailable
+from homeplane.intelligence.decisions import OpenAIDecisionProvider
+from homeplane.intelligence.runtime import IntelligenceRuntime
 from homeplane.intelligence.voice import MAX_SESSION_SECONDS, RealtimeVoice
-from tests.test_homeplane_home_flow import domain
-from tests.test_homeplane_home_questions import ask, make_adapter
+from tests.test_homeplane_home_flow import bootstrap, domain, request, turn
+from tests.test_homeplane_home_questions import QuestionRuntime, ask, make_adapter
 from tests.test_household_timezone_wiring import OfflineARL
 from tests.test_intelligence_providers import completion, runtime
 
@@ -65,6 +69,53 @@ async def test_real_question_reads_original_values_after_api_interpretation_and_
                 app.state.core.store.connection.execute("SELECT count(*) FROM light_actions").fetchone()[0]
                 == 0
             )
+
+
+@pytest.mark.parametrize("first_endpoint", ["/v1/responses", "/v1/decisions"])
+async def test_project_spend_limit_preserves_home_question_and_session(tmp_path, first_endpoint):
+    attempted = []
+
+    def reject(incoming):
+        attempted.append(incoming.url.path)
+        return httpx.Response(429, json={"error": {"code": "project_spend_limit_exceeded"}})
+
+    arl = QuestionRuntime()
+    owner = runtime(tmp_path / "ai", reject, arl=arl)
+    owner.settings.update({"provider": "auto", "allow_arl_fallback": True})
+    if first_endpoint == "/v1/decisions":
+        decisions_owner = IntelligenceRuntime(
+            None, owner.settings.directory, transport=httpx.MockTransport(reject),
+            key_resolver=owner.settings.key_resolver,
+        )
+        decision = await OpenAIDecisionProvider(decisions_owner).decide(
+            DecisionRequest("intent", {"text": "合成测试"}, time.monotonic() + 5)
+        )
+        assert decision.unknown_reason == "api_quota_exhausted"
+
+    app = create_app(
+        make_adapter(tmp_path),
+        db_path=tmp_path / "trace.sqlite",
+        settings_path=tmp_path / "settings.json",
+        arl_runtime=arl,
+        intelligence_runtime=owner,
+        background_enabled=False,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver",
+            headers={"Origin": "http://testserver"},
+        ) as client:
+            session = (await bootstrap(client))["session_id"]
+            for operation in ("question:first", "question:next"):
+                result = await turn(client, request(session, operation=operation, text="客厅的温度能查一下吗？"))
+                assert result["phase"] == "result" and result["session_id"] == session, result
+                payload = domain(result)
+                assert payload["interpretation"] == dict(provider="arl_application_scenario", read_only=True)
+                assert any(item["value"] == 24.5 for item in payload["query"]["items"])
+                assert payload["query"]["execution_authority"] is False
+            assert app.state.core.store.connection.execute("SELECT count(*) FROM light_actions").fetchone()[0] == 0
+    assert attempted == [first_endpoint] and len(arl.calls) == 2
+    assert owner.last_route == {"provider": "arl", "reason": "api_quota_exhausted"}
 
 
 def test_settings_are_same_origin_masked_and_do_not_make_billable_requests(tmp_path):
@@ -265,3 +316,38 @@ async def test_realtime_uses_server_key_no_tools_bounded_audio_and_separate_budg
     with pytest.raises(EnhancementUnavailable, match="voice_seconds"):
         await RealtimeVoice(owner, connector=connector).transcribe(audio(), emit)
     assert len(closed) == 1
+
+
+async def test_realtime_quota_failure_routes_next_text_request_to_arl(tmp_path):
+    owner = runtime(tmp_path / "ai", lambda _: pytest.fail("额度已用完，应直接走 ARL"))
+    owner.settings.update({"cloud_voice": True, "allow_arl_fallback": True})
+    owner.arl.complete_scenario.return_value = {"text": "合成回答"}
+    socket = FakeSocket()
+    socket.events = iter([{
+        "type": "response.done",
+        "response": {
+            "status": "failed",
+            "status_details": {"type": "failed", "error": {"code": "credit_balance_exhausted"}},
+        },
+    }])
+
+    @asynccontextmanager
+    async def connector(*args, **kwargs):
+        yield socket
+
+    async def audio():
+        yield b"\0\0" * 2400
+
+    events = []
+
+    async def emit(value):
+        events.append(value)
+
+    with pytest.raises(EnhancementUnavailable, match="api_quota_exhausted"):
+        await RealtimeVoice(owner, connector=connector).transcribe(audio(), emit)
+    assert [event["event"] for event in events] == ["ready"]
+    answer = await owner.complete_scenario(
+        "home_planning", "合成问题", request_id="next", deadline=time.monotonic() + 5
+    )
+    assert answer == {"text": "合成回答"}
+    assert owner.last_route == {"provider": "arl", "reason": "api_quota_exhausted"}
