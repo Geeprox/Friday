@@ -6,12 +6,29 @@
    this.cursor=0;this.active=false;this.closed=false;this.legacy=false;this.generation=0;this.failures=0;this.controller=null;this.pollTimer=null;this.probeTimer=null;this.probing=false;this.probeController=null;
   }
   current(generation){return this.active&&!this.closed&&this.visible()&&generation===this.generation;}
-  start(){if(this.closed||this.active||!this.visible())return;this.active=true;const generation=++this.generation;this.poll(generation);if(!this.legacy)this.scheduleProbe(generation);}
+  start(){if(this.closed||this.active||!this.visible())return;this.active=true;const generation=++this.generation;this.poll(generation);if(!this.legacy)this.scheduleProbe(generation,0);}
   stop(){this.active=false;this.generation++;this.controller?.abort();this.probeController?.abort();this.clearTimer(this.pollTimer);this.clearTimer(this.probeTimer);this.pollTimer=this.probeTimer=null;}
   close(){this.closed=true;this.stop();}
   schedulePoll(generation,delay){if(!this.current(generation))return;this.clearTimer(this.pollTimer);this.pollTimer=this.setTimer(()=>{this.pollTimer=null;this.poll(generation);},delay);}
-  scheduleProbe(generation){if(!this.current(generation)||this.legacy)return;this.clearTimer(this.probeTimer);this.probeTimer=this.setTimer(async()=>{this.probeTimer=null;await this.sample(generation);this.scheduleProbe(generation);},this.probeEvery);}
-  async sample(generation){if(!this.current(generation)||this.probing)return;this.probing=true;const controller=new AbortController();this.probeController=controller;try{await this.probe({signal:controller.signal});}catch(error){if(this.current(generation)&&!controller.signal.aborted)this.onFailure(error);}finally{if(this.probeController===controller)this.probeController=null;this.probing=false;}}
+  scheduleProbe(generation,delay=this.probeEvery,retry=250){
+   if(!this.current(generation)||this.legacy)return;
+   this.clearTimer(this.probeTimer);
+   this.probeTimer=this.setTimer(async()=>{
+    this.probeTimer=null;
+    if(this.probing){this.scheduleProbe(generation,50,retry);return;}
+    const received=await this.sample(generation);
+    // WebKit 在网络已恢复时仍可能挂着旧的长轮询。快照独立重试，成功后恢复常规间隔。
+    if(received===false)this.scheduleProbe(generation,retry,Math.min(this.probeEvery,retry*2));
+    else this.scheduleProbe(generation);
+   },delay);
+  }
+  async sample(generation){
+   if(!this.current(generation)||this.probing)return;
+   this.probing=true;const controller=new AbortController();this.probeController=controller;
+   try{return await this.probe({signal:controller.signal});}
+   catch(error){if(this.current(generation)&&!controller.signal.aborted)this.onFailure(error);return false;}
+   finally{if(this.probeController===controller)this.probeController=null;this.probing=false;}
+  }
   async poll(generation){
    if(!this.current(generation))return;
    // A stop/start does not open another connection before the aborted request
