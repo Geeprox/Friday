@@ -22,6 +22,8 @@ The Mac's existing launchd service also has a persistent outer `serve` startup b
 
 ## Listeners and transport
 
+Mac 制备 Worker 的私有 `--public-config` 在 `coordination: "nas"` 模式下可设置 `lan_ipv4`。填入 NAS 现有 HTTPS 反向代理的 RFC1918 IPv4，只改变 Mac 连接该 NAS 的 TCP 地址。沿用现有 `endpoint` 的 HTTPS 域名、端口、路径、`Host` 和 TLS SNI，并继续验证证书。省略 `lan_ipv4` 时沿用原公网连接方式。手机二维码与电视的局域网媒体地址继续使用各自配置。
+
 The default listener remains loopback. An optional explicit `lan_host` RFC1918 IPv4 adds one listener on the same configured port and the same Store; the HTTPS phone proxy continues using loopback. Wildcard, public, link-local, DNS and loopback values are refused for `lan_host`. A partial bind failure closes already-created listeners. The service does not alter DHCP, DNS, routing or firewall settings.
 
 `GET /api/rooms/{id}/events?after=<cursor>&wait=5` provides authenticated, bounded long polling as `{cursor,status}`. There are at most eight waiters, leaving normal request capacity for controls. Updates wake listeners; an unknown or larger old cursor returns a current snapshot immediately. Event responses are not midpoint clock probes. All control success still depends on the TV's actual applied revision and state.

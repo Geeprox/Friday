@@ -3,11 +3,14 @@ import copy
 import hashlib
 import io
 import json
+import ssl
 import threading
 import time
 import uuid
 import wave
 
+import httpcore
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -146,6 +149,88 @@ def make_worker(tmp_path):
         return copy.deepcopy(response) if path == "/agent/tasks" else {"accepted": True, "archive": "pending"}
     worker.request = request
     return worker, queue, remote, response, calls
+
+
+@pytest.fixture
+def lan_config(tmp_path):
+    config = tmp_path / "nas.json"
+
+    def save(**updates):
+        value = {"endpoint": "https://nas.example.test:8443/ktv", "agent_key": KEY, "coordination": "nas",
+                 "media_origin": "http://10.0.0.2:8769", "lan_ipv4": "10.4.0.2"}
+        config.write_text(json.dumps({**value, **updates}))
+        config.chmod(0o600)
+        return config
+
+    return save
+
+
+def test_lan_pin_keeps_verified_original_nas_identity(lan_config, monkeypatch):
+    connections, handshakes, writes = [], [], []
+    ok = b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}'
+    redirect = b'HTTP/1.1 307 Temporary Redirect\r\nLocation: https://elsewhere.invalid/\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}'
+    responses = iter((ok, ok, redirect))
+
+    class MemoryStream:
+        def __init__(self, response):
+            self.response = response
+            self.written = bytearray()
+            writes.append(self.written)
+
+        def start_tls(self, ssl_context, server_hostname, timeout=None):
+            handshakes.append((server_hostname, ssl_context.check_hostname, ssl_context.verify_mode))
+            return self
+
+        def read(self, max_bytes, timeout=None):
+            chunk, self.response = self.response[:max_bytes], self.response[max_bytes:]
+            return chunk
+
+        def write(self, buffer, timeout=None):
+            self.written.extend(buffer)
+
+        def close(self):
+            pass
+
+        def get_extra_info(self, name):
+            return None
+
+    def connect(self, host, port, **_):
+        connections.append((host, port))
+        return MemoryStream(next(responses))
+
+    monkeypatch.setattr(httpcore.SyncBackend, "connect_tcp", connect)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:8000")
+    worker = PreparationWorker(PreparedQueue(), lan_config(), signing_key=KEY, health=lambda: {})
+    try:
+        assert worker.endpoint == "https://nas.example.test:8443/ktv"
+        assert worker.manage("room", {}) == {}
+        assert worker.request("/agent/worker", {}) == {}
+        assert worker.http.get(worker.endpoint + "/health").status_code == 307
+        for url in ("https://elsewhere.invalid:8443/ktv/health", "https://nas.example.test:8443/other/health",
+                    "http://nas.example.test:8443/ktv/health"):
+            with pytest.raises(httpx.UnsupportedProtocol, match="configured_nas_endpoint_required"):
+                worker.http.get(url)
+        assert connections == [("10.4.0.2", 8443)] * 3
+        assert handshakes == [("nas.example.test", True, ssl.CERT_REQUIRED)] * 3
+        assert all(b"Host: nas.example.test:8443\r\n" in request for request in writes)
+        assert [request.partition(b"\r\n")[0] for request in writes] == [
+            b"POST /ktv/agent/manage HTTP/1.1", b"POST /ktv/agent/worker HTTP/1.1", b"GET /ktv/health HTTP/1.1",
+        ]
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "169.254.1.2", "100.64.0.2", "8.8.8.8", "fd00::1",
+                                     "nas.example.test", "10.01.0.2", None, 0x0A040002])
+def test_lan_pin_rejects_noncanonical_or_nonprivate_ipv4(lan_config, address):
+    with pytest.raises(ValueError, match="private_nas_lan_ipv4_required"):
+        PreparationWorker(PreparedQueue(), lan_config(lan_ipv4=address), signing_key=KEY, health=lambda: {})
+
+
+@pytest.mark.parametrize("changes", [{"coordination": None}, {"endpoint": "http://127.0.0.1:18769/ktv"}])
+def test_lan_pin_requires_nas_coordination_and_https(lan_config, changes):
+    with pytest.raises(ValueError, match="nas_lan_https_required"):
+        PreparationWorker(PreparedQueue(), lan_config(**changes), signing_key=KEY, health=lambda: {}, allow_loopback=True)
 
 
 def test_worker_publishes_before_nas_cache_and_never_relays_room_or_controls(tmp_path):
