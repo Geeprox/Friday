@@ -41,6 +41,8 @@ python3 scripts/embodied/runtime.py --build-portable
 
 人体和手部使用 OpenCV Zoo 固定提交 `48b10fa505aeb51fbd127fc60a5c660040e823b7` 的四个 ONNX 模型，逐文件核对 Git LFS 摘要。预处理与坐标还原源码及 Apache 2.0 许可证位于 `homeplane/embodied/vendor/opencv_zoo/`；适配器显式选择 `CPUExecutionProvider`，两条计算线程、一条调度线程，不导入 MediaPipe 原生运行库。模型准备后保存在 `models/opencv-zoo/`。
 
+检测阶段保留上游候选池，先用 NMS 合并重叠框，再对最多 6 个人体、4 只手进行关键点推理。不能在 NMS 前用该数量截断，否则同一目标的高分重复框会挤掉其他目标。合成张量回归覆盖重复框、多目标保留与后续推理数量上限，不加载真实模型。
+
 这条视觉路径不要求 AVX，已在 AVX=false 的 amd64 模拟环境完成模型加载和真实图片推理。检测框 NMS 使用 xywh；人体关节保留可见度与存在分数，手部仍区分左右手分类分数和模型存在门槛。单帧缓存保留原 sample_id，不把旧手势当新观测。
 
 可选环境声音分类仍使用要求 AVX 的 MediaPipe YAMNet；它不属于基础视觉依赖，也不影响 SenseVoice 语音识别。需要时另外执行 `uv sync --locked --python 3.12 --extra sound --project native/PortableVision`（沿用上面的 `UV_PROJECT_ENVIRONMENT`），再运行 `prepare_portable_models.py --sound --download` 和 `runtime.py --build-sound`。无 AVX 时声音分类明确拒绝加载。Docker 保留该可选库和 EGL/GLES 链接依赖，但不会借此启用 GPU。

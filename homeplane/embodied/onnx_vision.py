@@ -40,8 +40,9 @@ class Pose:
     def __init__(self, folder):
         from .vendor.opencv_zoo.mp_persondet import MPPersonDet
         from .vendor.opencv_zoo.mp_pose import MPPose
+        # 保留上游候选池，先合并重叠框，再限制后续关键点推理数量。
         self.detector = MPPersonDet(str(folder/'person_detection_mediapipe_2023mar.onnx'),
-                                    scoreThreshold=.65, topK=6)
+                                    scoreThreshold=.65)
         self.landmarker = MPPose(str(folder/'pose_estimation_mediapipe_2023mar.onnx'),
                                 confThreshold=.65)
 
@@ -69,7 +70,7 @@ class Hand:
         from .vendor.opencv_zoo.mp_palmdet import MPPalmDet
         from .vendor.opencv_zoo.mp_handpose import MPHandPose
         self.detector = MPPalmDet(str(folder/'palm_detection_mediapipe_2023feb.onnx'),
-                                 scoreThreshold=.75, topK=4)
+                                 scoreThreshold=.75)
         self.landmarker = MPHandPose(str(folder/'handpose_estimation_mediapipe_2023feb.onnx'),
                                     confThreshold=.75)
 
