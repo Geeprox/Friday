@@ -1116,6 +1116,7 @@ async def run_source(my_generation):
                 state.update(
                     status="live",
                     recognition="running",
+                    reconnect_attempt=0,
                     tracking_current=tracks.input_valid,
                     animals=animals,animals_current=pet_tracks.current,
                     animals_intent=pet_revision if pet_active else None,pet_tracking=pet_tracks.public(),
@@ -1188,12 +1189,19 @@ async def run_source(my_generation):
 async def supervised_source(my_generation):
     retry = 0
     while my_generation == generation:
+        previous_frames = state.get('processed_frames', 0)
         await run_source(my_generation)
         if my_generation != generation:
             return
-        retry += 1
-        state["reconnect_attempt"] = retry
-        await asyncio.sleep(15 if state['status'] == 'shutter_closed' else min(30, 2 ** min(retry, 5)))
+        if state['status'] == 'shutter_closed':
+            retry, delay = 0, 15
+        else:
+            # 只有这一轮发布了新的识别帧，才算从上一轮故障中恢复。
+            recovered = state.get('processed_frames', 0) > previous_frames
+            retry = 1 if recovered else retry + 1
+            delay = min(30, 2 ** min(retry, 5))
+        state['reconnect_attempt'] = retry
+        await asyncio.sleep(delay)
 
 
 async def start():

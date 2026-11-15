@@ -239,6 +239,36 @@ async def test_capture_loss_while_waiting_for_room_lock_cannot_send_a_manual_or_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(('outcomes', 'expected'), [
+    ([('shutter_closed', False)] * 6 + [('unavailable', False)],
+     [(15, 0)] * 6 + [(2, 1)]),
+    ([('unavailable', False)] * 6 + [('unavailable', True), ('unavailable', False)],
+     [(2, 1), (4, 2), (8, 3), (16, 4), (30, 5), (30, 6), (2, 1), (4, 2)]),
+    ([('unavailable', False)] * 2 + [('shutter_closed', False), ('unavailable', False)],
+     [(2, 1), (4, 2), (15, 0), (2, 1)]),
+])
+async def test_primary_backoff_counts_only_consecutive_capture_failures(outcomes, expected):
+    retries = []
+    pending = iter(outcomes)
+    state = dict(status='unavailable', processed_frames=12)
+    scope = dict(generation=1, state=state)
+
+    async def run_source(_):
+        status, recovered = next(pending)
+        state['processed_frames'] += int(recovered)
+        state['status'] = status
+
+    async def sleep(delay):
+        retries.append((delay, state['reconnect_attempt']))
+        if len(retries) == len(outcomes):
+            scope['generation'] = 2
+
+    scope.update(run_source=run_source, asyncio=SimpleNamespace(sleep=sleep))
+    await actual('homeplane/embodied/worker.py', 'supervised_source', scope)(1)
+    assert retries == expected
+
+
+@pytest.mark.asyncio
 async def test_original_supervisor_retries_after_fault_and_a_replacement_receiver_admits_new_frames():
     owner,close,epoch,pending,acknowledged=closed_scope()
     attempts=[];delays=[];recovered=[]
