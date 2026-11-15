@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -12,8 +13,9 @@ from pathlib import Path
 
 
 class Sandbox:
-    def __init__(self, image):
+    def __init__(self, image, *, camera_sdk=False):
         self.image=image
+        self.camera_sdk=camera_sdk
         self.owner=uuid.uuid4().hex
         self.container=None
         self.ports={}
@@ -35,7 +37,8 @@ class Sandbox:
             '--label','org.friday.verification='+self.owner,'--platform','linux/amd64','--init',
             '--memory','6g','--cpus','2','--pids-limit','256','--cap-drop','ALL',
             '--security-opt','no-new-privileges:true','--stop-timeout','60',
-            '-e','FRIDAY_CONTAINER_PROFILE=simulator','-v','/opt/friday/data','-v','/opt/friday/.artifacts',
+            '-e','FRIDAY_CONTAINER_PROFILE=simulator','-e','FRIDAY_CAMERA_SDK='+('auto' if self.camera_sdk else 'disabled'),
+            '-v','/opt/friday/data','-v','/opt/friday/.artifacts',
             '-p','127.0.0.1::8740','-p','127.0.0.1::18745',image)
         self.docker('start',self.container)
         self.wait()
@@ -49,7 +52,7 @@ class Sandbox:
             self.ports[port]=int(rows[0]['HostPort'])
 
     def wait(self):
-        deadline=time.monotonic()+180
+        deadline=time.monotonic()+(660 if self.camera_sdk else 180)
         while time.monotonic()<deadline:
             state=json.loads(self.docker('inspect','--format','{{json .State}}',self.container))
             if not state['Running']:raise RuntimeError('test_container_exited')
@@ -93,6 +96,14 @@ class Sandbox:
 
 
 def verify(box):
+    sdk=None
+    if box.camera_sdk:
+        sdk=json.loads(box.execute('python','/opt/container/entrypoint.py','camera-sdk-status'))
+        assert sdk['camera_sdk']=='verified'
+        # 只导入 SDK 验证装配，绝不创建相机、账号或网络会话。
+        output=box.execute('/opt/friday/data/embodied/runtime/bin/python','-B','-I','-c',
+            'import miot.camera, importlib.metadata; print(importlib.metadata.version("miloco-miot"))')
+        assert output==sdk['version']
     health=json.loads(box.execute('python','/opt/container/entrypoint.py','health'))
     assert health['healthy'] is True and health['hardware_verified'] is False and health['friday']=='simulator'
     status,raw=box.fetch(8740,'/api/doctor')
@@ -119,6 +130,10 @@ def verify(box):
     status,raw=box.fetch(18745,'/api/scheduler',headers={**auth,'Origin':'http://127.0.0.1:18745','Content-Type':'application/json'},data=json.dumps({'max_parallel':temporary}).encode())
     assert status==200 and json.loads(raw)['saved'] is True
     box.restart()
+    if box.camera_sdk:
+        assert json.loads(box.execute('python','/opt/container/entrypoint.py','camera-sdk-status'))==sdk
+        logs=box.docker('logs',box.container)
+        assert logs.count('"camera_sdk": "downloading"')==1 and '"camera_sdk": "cached_verified"' in logs
     current=box.token()
     assert current!=token and box.fetch(18745,'/api/status',headers=auth)[0]==401
     status,raw=box.fetch(18745,'/api/status',headers={'Authorization':'Bearer '+current})
@@ -126,18 +141,25 @@ def verify(box):
     return dict(passed=True,friday_http='simulator',arl_socket='healthy',settings_http='authenticated',
         foreign_origin_and_host='rejected',apple_services='unsupported',cpu_dependencies=dependencies,
         restart=dict(graceful_exit_code=0,settings_persisted=True,old_token_rejected=True),
-        model_inference_attempted=False,hardware_verified=False)
+        camera_sdk=sdk,model_inference_attempted=False,hardware_verified=False)
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image',required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--camera-sdk',action='store_true',help='隔离容器首次真实下载 SDK，并确认重启复用缓存')
     args=parser.parse_args()
-    box=Sandbox(args.image)
+    box=Sandbox(args.image,camera_sdk=args.camera_sdk)
     try:
         box.create()
         result=verify(box)
+    except Exception:
+        if box.container:
+            box.owned()
+            # 只回读本轮空白模拟容器，失败后仍回收，不读取家庭日志。
+            print(box.docker('logs','--tail','35',box.container),file=sys.stderr)
+        raise
     finally:
         box.close()
     result['isolated_resources_removed']=True

@@ -23,8 +23,20 @@ def layout():
     os.umask(0o077)
     data=Path(os.environ['FRIDAY_EMBODIED_DATA'])
     data.mkdir(parents=True,exist_ok=True)
-    for name,target in [('runtime','/opt/runtime'),('vision-runtime','/opt/vision')]:
+    mode=os.environ.get('FRIDAY_CAMERA_SDK','auto')
+    if mode not in ('auto','disabled'):raise ValueError('unknown_camera_sdk_mode')
+    runtime=Path('/opt/runtime')
+    if mode=='auto':
+        from camera_sdk import ensure
+        runtime=ensure(ROOT/'data')
+    for name,target in [('runtime',runtime),('vision-runtime',Path('/opt/vision'))]:
         link=data/name
+        # 只迁移旧容器生成的固定链接；不覆盖操作者自己的环境目录。
+        if name=='runtime' and link.is_symlink() and link.resolve()==Path('/opt/runtime') and target!=Path('/opt/runtime'):
+            replacement=data/'.runtime-next'
+            replacement.unlink(missing_ok=True)
+            replacement.symlink_to(target,target_is_directory=True)
+            replacement.replace(link)
         if not link.exists():link.symlink_to(target,target_is_directory=True)
         if link.resolve()!=Path(target):raise RuntimeError('runtime_path_conflict')
     cache=ROOT/'.artifacts/ktv-audio/separation';cache.mkdir(parents=True,exist_ok=True)
@@ -33,6 +45,7 @@ def layout():
     if link.resolve()!=Path('/opt/separation'):raise RuntimeError('separation_path_conflict')
     subprocess.run([PYTHON,'scripts/embodied/runtime.py','--build-portable'],check=True,stdout=subprocess.DEVNULL)
     subprocess.run([PYTHON,'scripts/embodied/runtime.py','--build-sound'],check=True,stdout=subprocess.DEVNULL)
+    return str(runtime/'bin/python')
 
 
 def settings():
@@ -95,11 +108,12 @@ def health():
 
 
 def supervise():
-    layout();children=[];stopping=threading.Event();failure=False
+    runtime_python=layout();children=[];stopping=threading.Event();failure=False
     def stop(*_):stopping.set()
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     try:
-        for command in ([PYTHON,'-m','arl.linux_host','serve'],[PYTHON,__file__,'settings'],[PYTHON,__file__,'web']):
+        # 持久卷代码只在不可变基础解释器完成完整校验后交给应用进程。
+        for command in ([runtime_python,'-B','-m','arl.linux_host','serve'],[runtime_python,'-B',__file__,'settings'],[runtime_python,'-B',__file__,'web']):
             children.append(subprocess.Popen(command,cwd=ROOT,start_new_session=True))
         # 应用仍只监听回环；独立容器网络的转发保留原始 Host/Origin，不信任代理头。
         address=socket.gethostbyname(socket.gethostname())
@@ -131,6 +145,14 @@ if __name__=='__main__':
         elif command=='settings':settings()
         elif command=='web':web()
         elif command=='settings-url':print(URL_FILE.read_text().strip())
+        elif command=='camera-sdk-status':
+            from camera_sdk import HERE, validate
+            lock=json.loads((HERE/'camera-sdk-lock.json').read_text())
+            folder=ROOT/'data/camera-sdk'/lock['version']
+            validate(folder,lock)
+            print(json.dumps({'camera_sdk':'verified','version':lock['version'],'directory':str(folder),'hardware_verified':False}))
         else:raise ValueError('unknown_container_command')
     except Exception as error:
-        print(json.dumps({'error':type(error).__name__}),file=sys.stderr);raise SystemExit(1)
+        # 安装错误使用固定代码，禁止打印供应商响应、账号或带签名的下载链接。
+        reason=str(error) if isinstance(error,ValueError) and str(error).startswith('camera_sdk_') else type(error).__name__
+        print(json.dumps({'error':reason}),file=sys.stderr);raise SystemExit(1)

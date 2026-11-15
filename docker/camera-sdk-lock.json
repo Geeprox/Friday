@@ -1,0 +1,11 @@
+{
+  "version": "2026.9.11",
+  "platform": "linux/amd64",
+  "archive_url": "https://github.com/XiaoMi/xiaomi-miloco/releases/download/v2026.9.11/miloco-linux-x86_64-2026.9.11.tar.gz",
+  "archive_sha256": "f73065a839f1343a9ff698b3fa2de8b228a992e71aab8227dc9a84e28e97d6ee",
+  "archive_max_bytes": 134217728,
+  "wheel": "miloco_miot-2026.9.11-py3-none-manylinux_2_28_x86_64.whl",
+  "wheel_sha256": "146fc1b51f6434a78e467fff46e9e4e8c5548d38f37378124f5013f41188a6eb",
+  "license_sha256": "ee2ffd5d984e59b0174622fb753500b9bb75c85ae1161640a6385bc2740aff38",
+  "license_url": "https://github.com/XiaoMi/xiaomi-miloco/blob/v2026.9.11/LICENSE.md"
+}

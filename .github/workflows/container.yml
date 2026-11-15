@@ -56,7 +56,7 @@ jobs:
           cache-from: type=gha,scope=linux-amd64
           cache-to: type=gha,scope=linux-amd64,mode=max
       - name: 隔离启动、权限边界、正常重启和持久化
-        run: python3 scripts/verify_linux_container.py --image friday-ci:verified --output .artifacts/container-verification.json
+        run: python3 scripts/verify_linux_container.py --image friday-ci:verified --camera-sdk --output .artifacts/container-verification.json
       - name: 记录已验收镜像 ID
         id: identity
         run: echo "image_id=$(docker image inspect --format '{{.Id}}' friday-ci:verified)" >> "$GITHUB_OUTPUT"

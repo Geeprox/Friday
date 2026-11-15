@@ -35,7 +35,9 @@ def stage(friday,arl,output, *, release=False):
         target=output/'ARL'/relative;target.parent.mkdir(parents=True,exist_ok=True)
         data=source.read_bytes();target.write_bytes(data);manifest[name]=hashlib.sha256(data).hexdigest()
     target=output/'container';target.mkdir()
-    shutil.copy2(ROOT/'docker/entrypoint.py',target/'entrypoint.py')
+    for name in ('entrypoint.py','camera_sdk.py','camera-sdk-lock.json'):
+        shutil.copy2(ROOT/'docker'/name,target/name)
+    shutil.copytree(ROOT/'docker/licenses',target/'licenses')
     shutil.copy2(ROOT/'docker/Dockerfile',output/'Dockerfile')
     subprocess.run(['python3',str(friday/'scripts/audit_publication.py'),'--root',str(output/'Friday')],check=True)
     # 发布锁同时约束 Git 版本和实际打入镜像的 ARL 文件，工作区只能用于本地候选。
@@ -43,7 +45,8 @@ def stage(friday,arl,output, *, release=False):
         raise ValueError('arl_build_input_mismatch')
     (output/'build-inputs.json').write_text(json.dumps(dict(schema_version=1,platform='linux/amd64',
         friday=friday_state,arl=arl_state,friday_source_sha256=export['source_sha256'],arl_files=manifest,
-        camera_sdk=False,private_data_included=False),indent=2)+'\n')
+        camera_sdk=False,camera_sdk_bootstrap=dict(mode='first_start',
+            lock=json.loads((ROOT/'docker/camera-sdk-lock.json').read_text())),private_data_included=False),indent=2)+'\n')
 
 
 def main():
@@ -74,6 +77,7 @@ def main():
             shutil.copy2(wheel,context/name)
             receipt=json.loads((context/'build-inputs.json').read_text())
             receipt['camera_sdk']={'file':name,'sha256':hashlib.sha256(wheel.read_bytes()).hexdigest(),'distribution':'local_only'}
+            receipt['camera_sdk_bootstrap']['mode']='disabled'
             (context/'build-inputs.json').write_text(json.dumps(receipt,indent=2)+'\n')
             shutil.copy2(ROOT/'docker/camera-constraints.txt',context/'camera-constraints.txt')
             with (context/'Dockerfile').open('a') as dockerfile:
@@ -81,7 +85,7 @@ def main():
                     'COPY camera-constraints.txt /opt/sdk/camera-constraints.txt\n'
                     'RUN --mount=type=cache,target=/root/.cache/uv uv pip install --python /opt/runtime/bin/python '
                     '--constraint /opt/sdk/camera-constraints.txt /opt/sdk/'+name+' && uv pip check --python /opt/runtime/bin/python\n'
-                    'USER friday\n')
+                    'USER friday\nENV FRIDAY_CAMERA_SDK=disabled\n')
         shutil.copy2(context/'build-inputs.json',parent/'build-inputs.json')
         return subprocess.run(['docker','build','--platform','linux/amd64','--label','org.opencontainers.image.source=https://github.com/Geeprox/Friday','--label','org.opencontainers.image.revision='+source_state(args.friday)['revision'],'--tag',args.tag,str(context)]).returncode
 

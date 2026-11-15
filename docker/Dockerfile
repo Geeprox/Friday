@@ -12,6 +12,8 @@ RUN pip install --no-cache-dir uv==0.13.7
 COPY Friday/pyproject.toml Friday/uv.lock /opt/friday/
 WORKDIR /opt/friday
 RUN --mount=type=cache,target=/root/.cache/uv UV_PROJECT_ENVIRONMENT=/opt/runtime uv sync --locked --no-dev --extra vision --extra local-runtime --extra airplay --extra nas-connection --extra privacy-playback --extra ktv
+COPY Friday/docker/camera-requirements.txt Friday/docker/camera-constraints.txt /opt/container-dependencies/
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --python /opt/runtime/bin/python --constraint /opt/container-dependencies/camera-constraints.txt --requirement /opt/container-dependencies/camera-requirements.txt && uv pip check --python /opt/runtime/bin/python
 COPY Friday/native/PortableVision/ /opt/friday/native/PortableVision/
 RUN --mount=type=cache,target=/root/.cache/uv UV_PROJECT_ENVIRONMENT=/opt/vision uv sync --locked --no-dev --extra sound --project native/PortableVision
 COPY Friday/native/PortableSeparation/ /opt/friday/native/PortableSeparation/
@@ -26,5 +28,5 @@ RUN useradd --create-home --uid 1000 friday && mkdir -p /opt/friday/data /opt/fr
 ENV PATH=/opt/runtime/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin XDG_STATE_HOME=/opt/friday/data/state FRIDAY_EMBODIED_DATA=/opt/friday/data/embodied OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2
 USER friday
 EXPOSE 8740 18745
-HEALTHCHECK --interval=15s --timeout=12s --start-period=90s --retries=3 CMD ["/opt/runtime/bin/python", "/opt/container/entrypoint.py", "health"]
+HEALTHCHECK --interval=15s --timeout=12s --start-period=10m --retries=3 CMD ["/opt/runtime/bin/python", "/opt/container/entrypoint.py", "health"]
 ENTRYPOINT ["/opt/runtime/bin/python", "/opt/container/entrypoint.py"]
