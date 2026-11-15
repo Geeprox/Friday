@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -12,11 +13,14 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from homeplane.api import create_app
+from homeplane.embodied.voice_decisions import VoiceDecisions
 from homeplane.intelligence.backgrounds import SongBackgrounds
 from homeplane.intelligence.budget import EnhancementUnavailable
+from homeplane.intelligence.runtime import IntelligenceRuntime
 from homeplane.intelligence.voice import MAX_SESSION_SECONDS, RealtimeVoice
-from tests.test_homeplane_home_flow import domain
-from tests.test_homeplane_home_questions import ask, make_adapter
+from tests.test_homeplane_home_flow import bootstrap, domain, request, turn
+from tests.test_homeplane_home_questions import QuestionRuntime, ask, make_adapter
+from tests.test_homeplane_task_composition import TEXT, TaskRuntime, approve, task_app
 from tests.test_household_timezone_wiring import OfflineARL
 from tests.test_intelligence_providers import completion, runtime
 
@@ -65,6 +69,62 @@ async def test_real_question_reads_original_values_after_api_interpretation_and_
                 app.state.core.store.connection.execute("SELECT count(*) FROM light_actions").fetchone()[0]
                 == 0
             )
+
+
+@pytest.mark.parametrize("first_endpoint", ["/v1/responses", "/v1/decisions"])
+async def test_project_quota_continues_questions_in_the_same_session_via_arl(tmp_path, first_endpoint):
+    attempted = []
+
+    def reject(incoming):
+        attempted.append(incoming.url.path)
+        return httpx.Response(429, json={"error": {"code": "insufficient_quota"}})
+
+    arl = QuestionRuntime()
+    owner = runtime(tmp_path / "ai", reject, arl=arl)
+    owner.settings.update({"provider": "auto", "allow_arl_fallback": True})
+    if first_endpoint == "/v1/decisions":
+        voice = VoiceDecisions(IntelligenceRuntime(
+            None, owner.settings.directory, transport=httpx.MockTransport(reject),
+            key_resolver=owner.settings.key_resolver,
+        ))
+        assert await voice.classify("客厅现在适合休息吗", request_id="voice:simulated",
+                                    current=lambda: True, deadline=time.monotonic() + 3) is None
+
+    app = create_app(
+        make_adapter(tmp_path), db_path=tmp_path / "trace.sqlite", settings_path=tmp_path / "settings.json",
+        arl_runtime=arl, intelligence_runtime=owner, background_enabled=False,
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver",
+                                     headers={"Origin": "http://testserver"}) as client:
+            session = (await bootstrap(client))["session_id"]
+            for index in range(2):
+                report = await turn(client, request(session, operation=f"question:{index}",
+                                                    text="客厅的温度能查一下吗？"))
+                assert report["phase"] == "result" and report["session_id"] == session, report
+                result = domain(report)
+                assert result["interpretation"] == dict(provider="arl_application_scenario", read_only=True)
+                assert any(item["value"] == 24.5 for item in result["query"]["items"])
+                assert result["query"]["execution_authority"] is False
+            assert app.state.core.store.connection.execute("SELECT count(*) FROM light_actions").fetchone()[0] == 0
+    assert attempted == [first_endpoint] and len(arl.calls) == 2
+    assert owner.last_route == {"provider": "arl", "reason": "api_quota_exhausted"}
+
+
+async def test_friday_daily_limit_keeps_arl_task_preview_and_original_approval(tmp_path):
+    arl = TaskRuntime()
+    owner = runtime(tmp_path / "ai", lambda _: pytest.fail("额度用完应直接使用 ARL"), arl=arl)
+    owner.settings.update({"provider": "auto", "allow_arl_fallback": True, "daily_requests": 0})
+    async with task_app(tmp_path, arl, intelligence=owner) as (app, client, device_calls, session):
+        shown = await turn(client, request(session, operation="task:one", text=TEXT))
+        assert shown["phase"] == "preview", shown
+        assert domain(shown)["plan"]["status"] == "awaiting_approval"
+        assert not app.state.core_rules.records() and not device_calls
+        approved = domain(await turn(client, approve(session, shown)))["plan"]
+        assert approved["status"] == "verified" and approved["real_write_attempted"] is False
+        assert len(app.state.core_rules.records()) == 1 and len(arl.calls) == 1 and not device_calls
+    assert owner.last_route == {"provider": "arl", "reason": "daily_requests_reached"}
+    assert owner.status()["usage"]["used"]["requests"] == 0
 
 
 def test_settings_are_same_origin_masked_and_do_not_make_billable_requests(tmp_path):
