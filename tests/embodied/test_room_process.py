@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import sys
 import time
 from types import SimpleNamespace
@@ -113,7 +114,18 @@ async def test_real_room_child_preserves_registration_draft_and_unconfigured_lay
 
 
 @pytest.mark.asyncio
-async def test_real_room_child_confirms_patrol_from_background_with_moving_foreground(tmp_path, image):
+@pytest.mark.parametrize("legacy_reference", [False, True])
+async def test_real_room_child_confirms_patrol_from_background_with_moving_foreground(
+    tmp_path, image, legacy_reference
+):
+    if legacy_reference:
+        from homeplane.embodied.room_engine import DEFAULT, calibration_draft
+
+        older_config = dict(calibration_draft(DEFAULT), mode="approximate")
+        (tmp_path / "room-calibration.json").write_text(json.dumps(older_config))
+        unrelated = cv2.imencode(".jpg", np.full((360, 640, 3), 110, dtype=np.uint8))[1].tobytes()
+        (tmp_path / "room-reference.jpg").write_bytes(unrelated)
+    saved_files = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     session = RoomSession(tmp_path)
     director = CameraDirector()
     director.apply_mode("survey", "synthetic-intent")
@@ -172,9 +184,9 @@ async def test_real_room_child_confirms_patrol_from_background_with_moving_foreg
             assert director.survey_confirmed_moves == step + 1
         assert director.public()['survey_result'] == 'complete' and director.position == (0, 0)
         assert director.public()["physical_motion_verified"] is False
-        assert not list(tmp_path.iterdir())
     finally:
         assert await session.close()
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == saved_files
     assert session.patrol_view is None
 
 

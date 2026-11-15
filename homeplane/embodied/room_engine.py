@@ -39,6 +39,13 @@ def calibration_draft(config):
     return draft
 
 
+def uses_saved_reference(config):
+    if not isinstance(config, dict):
+        raise ValueError("invalid_config")
+    mode = config.get("mode")
+    return mode == "relative_calibrated" or (mode == "approximate" and config.get("calibration_source") == "manual")
+
+
 def load_room(folder, picture, *, factory=None):
     """Load existing calibration offloop; an ordinary frame never saves one."""
     config_path, reference_path = folder / "room-calibration.json", folder / "room-reference.jpg"
@@ -55,14 +62,15 @@ def load_room(folder, picture, *, factory=None):
         try:
             config, reference, _ = CalibrationStore(folder).read()
         except FileNotFoundError:
-            pass
-        else:
-            return make(config, reference)
-        config = json.loads(read(config_path, 64 * 1024)) if config_path.exists() else copy.deepcopy(DEFAULT)
-        reference = read(reference_path, 2_000_000) if reference_path.exists() else picture
-        if not reference_path.exists():
-            config = dict(config, mode="unconfigured")
-        return make(config, reference)
+            config = json.loads(read(config_path, 64 * 1024)) if config_path.exists() else DEFAULT
+            reference = None
+        if uses_saved_reference(config):
+            if reference is None and reference_path.exists():
+                reference = read(reference_path, 2_000_000)
+            if reference is not None:
+                return make(config, reference)
+        # 未标定镜头用本次会话的画面比较视角。历史自动估算可能来自完全不同的朝向。
+        return make(copy.deepcopy(DEFAULT), picture)
     except (OSError, ValueError, TypeError, KeyError, RecursionError, cv2.error):
         # Calibration is optional. Preserve its files, and keep the actual body
         # and gesture path available on an unprojected, current reference.
@@ -122,15 +130,10 @@ def validate(config):
 
 class Room:
     def __init__(self, config, reference):
-        if not isinstance(config, dict):
-            raise ValueError("invalid_config")
+        calibrated = uses_saved_reference(config)
         self.calibration_candidate = dict(copy.deepcopy(DEFAULT), **copy.deepcopy(config))
         self.config = copy.deepcopy(self.calibration_candidate)
-        # Older automatic "approximate" files carry no manual calibration
-        # evidence. Preserve them for the editor, but do not publish their map.
-        calibrated = (config.get("mode") == "relative_calibrated"
-                      or config.get("mode") == "approximate" and config.get("calibration_source") == "manual")
-        self.floor = validate(config) if calibrated and config.get("mode") != "unconfigured" else None
+        self.floor = validate(config) if calibrated else None
         if self.floor is None:
             self.config.update(copy.deepcopy(DEFAULT))
         self.reference = reference
