@@ -71,13 +71,14 @@ async def test_real_question_reads_original_values_after_api_interpretation_and_
             )
 
 
+@pytest.mark.parametrize("quota_code", ["insufficient_quota", "project_spend_limit_exceeded"])
 @pytest.mark.parametrize("first_endpoint", ["/v1/responses", "/v1/decisions"])
-async def test_project_quota_continues_questions_in_the_same_session_via_arl(tmp_path, first_endpoint):
+async def test_project_quota_continues_questions_in_the_same_session_via_arl(tmp_path, first_endpoint, quota_code):
     attempted = []
 
     def reject(incoming):
         attempted.append(incoming.url.path)
-        return httpx.Response(429, json={"error": {"code": "insufficient_quota"}})
+        return httpx.Response(429, json={"error": {"code": quota_code}})
 
     arl = QuestionRuntime()
     owner = runtime(tmp_path / "ai", reject, arl=arl)
@@ -327,3 +328,38 @@ async def test_realtime_uses_server_key_no_tools_bounded_audio_and_separate_budg
     with pytest.raises(EnhancementUnavailable, match="voice_seconds"):
         await RealtimeVoice(owner, connector=connector).transcribe(audio(), emit)
     assert len(closed) == 1
+
+
+async def test_realtime_quota_failure_routes_next_text_request_to_arl(tmp_path):
+    owner = runtime(tmp_path / "ai", lambda _: pytest.fail("额度已用完，应直接走 ARL"))
+    owner.settings.update({"cloud_voice": True, "allow_arl_fallback": True})
+    owner.arl.complete_scenario.return_value = {"text": "合成回答"}
+    socket = FakeSocket()
+    socket.events = iter([{
+        "type": "response.done",
+        "response": {
+            "status": "failed",
+            "status_details": {"type": "failed", "error": {"code": "credit_balance_exhausted"}},
+        },
+    }])
+
+    @asynccontextmanager
+    async def connector(*args, **kwargs):
+        yield socket
+
+    async def audio():
+        yield b"\0\0" * 2400
+
+    events = []
+
+    async def emit(value):
+        events.append(value)
+
+    with pytest.raises(EnhancementUnavailable, match="api_quota_exhausted"):
+        await RealtimeVoice(owner, connector=connector).transcribe(audio(), emit)
+    assert [event["event"] for event in events] == ["ready"]
+    answer = await owner.complete_scenario(
+        "home_planning", "合成问题", request_id="next", deadline=time.monotonic() + 5
+    )
+    assert answer == {"text": "合成回答"}
+    assert owner.last_route == {"provider": "arl", "reason": "api_quota_exhausted"}
