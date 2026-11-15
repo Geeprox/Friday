@@ -10,8 +10,7 @@ from unittest.mock import AsyncMock, Mock
 import numpy as np
 import pytest
 
-from homeplane.embodied import home_service
-from homeplane.embodied import voice_activity
+from homeplane.embodied import home_service, voice_activity
 from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, deliver_audio
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.intent import address
@@ -20,9 +19,12 @@ from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.voice_routing import RETRY_OTHER_MIC, Utterance, VoiceRouting
 from tests.embodied.test_camera_audio import CAMERA, actual, voice_service
 from tests.embodied.test_wake_camera_motion import (
-    SESSION, WORKER, cue_source, current_frame, dispatch_for,
+    SESSION,
+    WORKER,
+    cue_source,
+    current_frame,
+    dispatch_for,
 )
-
 
 OTHER = dict(id='cam_2222222222', device={'did': 'synthetic-other-camera'})
 
@@ -223,6 +225,68 @@ async def test_same_utterance_uses_one_fresh_alternate_after_asr_rejection_or_so
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('arrival', ['together', 'late_full'])
+async def test_fourth_capture_completes_command_when_other_mics_are_unusable(arrival, monkeypatch, tmp_path):
+    clock = clock_at(10)
+    monkeypatch.setattr(home_service, 'time', clock)
+    monkeypatch.setattr(home_service, 'DATA', tmp_path)
+    monkeypatch.setattr(home_service, 'VOICE_INPUT_PAUSED', tmp_path/'paused')
+    monkeypatch.setattr(home_service, 'VOICE_PAUSED', tmp_path/'quiet')
+    device = AsyncMock(return_value=dict(status='reported_match', acknowledged=True, reached_target=True))
+    monkeypatch.setattr(home_service.bridge, 'command', device)
+    route = VoiceRouting(lambda: True, clock=clock.monotonic)
+    route.COLLECT_SECONDS = 0
+    text = 'Friday，打开玄关灯'
+    primary, second, third, fourth = [
+        voice_at(dict(id=f'cam_{slot:010x}'), f'synthetic-view-{slot}', route, owner=slot, text=text)
+        for slot in range(1, 5)
+    ]
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def stalled_primary(*_, **__):
+        entered.set()
+        await release.wait()
+        return dict(text=text, address=address(text))
+
+    primary.request = AsyncMock(side_effect=stalled_primary)
+    phrase = candidate(clock.at)
+    first = replace(phrase, level=.25)
+    short = arrival == 'late_full'
+    other = replace(phrase, source=('2'*32, 'b'*64), level=.17, wake_only=short)
+    fresh = replace(phrase, source=('4'*32, 'd'*64), level=.06, attending=True, owner=4)
+    for service in (primary, second, third, fourth):
+        service.last_video = clock.at
+    assert route.offer(primary, first)
+    assert route.offer(second, other)
+    if arrival == 'together':
+        assert route.offer(third, replace(phrase, source=('3'*32, 'c'*64), level=.11))
+        assert route.offer(fourth, fresh)
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        if arrival == 'late_full':
+            clock.at += .6
+            fourth.last_video = clock.at
+            route.offer(fourth, replace(fresh, captured=clock.at))
+        else:
+            second.epoch += 1
+        clock.at = 11.7
+        second.last_video = fourth.last_video = clock.at
+    finally:
+        release.set()
+        await asyncio.wait_for(route.task, 1)
+    primary.request.assert_awaited_once()
+    second.request.assert_not_awaited()
+    third.request.assert_not_awaited()
+    fourth.request.assert_awaited_once()
+    assert fourth.request.await_args.kwargs['attending'] is False
+    assert fourth.request.await_args.kwargs['wake_only'] is False
+    assert fourth.wake_camera.source == fresh.source and primary.wake_camera is None
+    assert fourth.state['voice_command']['state'] == 'readback'
+    device.assert_awaited_once()
+    assert device.await_args.kwargs['camera_id'] == fourth.camera_id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('outcome', ['stale', 'acted', 'discarded', 'expired'])
 async def test_late_alternate_uses_own_mic_and_never_replays_after_the_first_action(
         outcome, monkeypatch, tmp_path):
@@ -259,13 +323,14 @@ async def test_late_alternate_uses_own_mic_and_never_replays_after_the_first_act
         # 旧语句已经处理过，重叠到它的迟到片段仍应被去重。
         assert not routing.offer(second, replace(late, started=8.6))
         assert routing.offer(second, late)
-        assert not routing.offer(third, replace(late, source=('c'*32, 'd'*64)))
+        assert routing.offer(third, replace(late, source=('c'*32, 'd'*64), level=.02))
         clock.at = 11.7 if outcome != 'expired' else 13.9
         second.last_video = clock.at
         if outcome == 'acted':
             primary.last_video = clock.at
         if outcome == 'discarded':
             routing.discard(second.camera_id)
+            routing.discard(third.camera_id)
     finally:
         complete.set()
         await asyncio.wait_for(routing.task, 1)
