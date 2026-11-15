@@ -577,7 +577,9 @@ class HomeService:
         cue = self.wake_camera
         if cue is None:
             return None
-        if 0 <= now - cue.captured < WAKE_CAMERA_SECONDS and not VOICE_INPUT_PAUSED.exists() and self.input_allowed():
+        began = cue.confirmed_mono if cue.confirmed_mono is not None else cue.captured
+        if (began <= now < began + WAKE_CAMERA_SECONDS
+                and not VOICE_INPUT_PAUSED.exists() and self.input_allowed()):
             try:
                 if self.voice_preferences().revision == cue.voice_revision:
                     return cue

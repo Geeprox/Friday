@@ -41,7 +41,7 @@ def subject(track, x):
     return row
 
 
-async def hear_wake(tmp_path, monkeypatch, clock, word, *, text=None, voiced_frames=6):
+async def hear_wake(tmp_path, monkeypatch, clock, word, *, text=None, voiced_frames=6, asr_delay=0.0):
     monkeypatch.setattr(home_service, 'DATA', tmp_path)
     monkeypatch.setattr(home_service, 'VOICE_INPUT_PAUSED', tmp_path / 'voice-input-paused')
     monkeypatch.setattr(home_service, 'time', clock)
@@ -53,8 +53,13 @@ async def hear_wake(tmp_path, monkeypatch, clock, word, *, text=None, voiced_fra
     jobs = []
     h.spawn = lambda coro: jobs.append(asyncio.create_task(coro))
     text = word if text is None else text
-    h.request = AsyncMock(return_value=dict(
-        text=text, voice_revision=7, address=address(text, False, wake_word=word)))
+    async def transcript(*args, **kwargs):
+        if asr_delay:
+            clock.at += asr_delay
+            h.last_video = clock.at
+        return dict(text=text, voice_revision=7, address=address(text, False, wake_word=word))
+
+    h.request = AsyncMock(side_effect=transcript)
     h.command = AsyncMock()
     # 先给出完整的语音活动，再用连续的静音帧关闭语音段。
     measurements = [SpeechActivity(True, 1.0, .03, 0.0)] * voiced_frames
@@ -209,6 +214,47 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(
     assert not director.public()['physical_motion_verified']
     assert not home.attention.latest
     assert cue('cam_3333333333', state, None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+async def test_valid_slow_transcript_keeps_the_motion_window(tmp_path, monkeypatch, owner):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday', asr_delay=8.0)
+    wake = home.wake_camera
+    assert wake.confirmed_mono - wake.captured == pytest.approx(8.0)
+    cue, safety = cue_source(home, clock, owner)
+    director = CameraDirector()
+    director.apply_mode('auto', 'original')
+    party = PartyCamera()
+    assert director.choose(current_frame(1.0, source), 1.0) is None
+
+    clock.at = wake.captured + home_service.WAKE_CAMERA_SECONDS + .1
+    state = current_frame(clock.at, source)
+    if owner == 'primary':
+        state['party_camera'] = party.status(camera=CAMERA['id'], session=SESSION,
+                                             frame_mono=clock.at, now=clock.at)
+    assert cue(CAMERA['id'], state, None) is wake
+    direction = director.choose(state, clock.at, sound_cue=wake)
+    send, sent = dispatch_for(owner, state, clock, director, home, cue, safety, party)
+    assert direction == 'right'
+    await send(direction)
+    assert [row['direction'] for row in sent] == ['right']
+
+    clock.at = wake.confirmed_mono + home_service.WAKE_CAMERA_SECONDS
+    assert cue(CAMERA['id'], current_frame(clock.at, source), wake) is None
+    assert home.wake_camera is None
+
+
+@pytest.mark.asyncio
+async def test_expired_transcript_cannot_start_a_motion_window(tmp_path, monkeypatch):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday', asr_delay=10.1)
+    assert home.wake_motion_cue(current_frame(clock.at, source), clock.at) is None
+    assert home.wake_camera is None
+    assert home.runtime_log.record.call_args.kwargs['code'] == 'stale_input'
 
 
 @pytest.mark.asyncio
@@ -387,7 +433,7 @@ async def test_idle_awakened_camera_releases_full_rate_without_motor_polling(tmp
 
     session = SESSION
     if ended == 'expired':
-        clock.at = wake.captured + home_service.WAKE_CAMERA_SECONDS
+        clock.at = wake.confirmed_mono + home_service.WAKE_CAMERA_SECONDS
     elif ended == 'paused':
         home_service.VOICE_INPUT_PAUSED.touch()
     elif ended == 'changed_policy':
