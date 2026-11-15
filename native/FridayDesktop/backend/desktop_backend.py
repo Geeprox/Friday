@@ -35,6 +35,7 @@ from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse, HTMLResponse, FileResponse, RedirectResponse
 from homeplane.arl import ARLRuntime
 from homeplane.ha import HAReadOnlyAdapter
+from homeplane.ktv_game_api import OWNER_PREFIX, accepts_owner_operation, create_router as ktv_owner_router
 from homeplane.settings import SettingsConfig, SettingsService
 from friday.home import Credentials
 
@@ -62,12 +63,6 @@ READ_ONLY_PREPARATION_PATHS = frozenset({
 })
 # RuleIR permits 12 KiB; retain a bounded envelope for this existing preview.
 READ_ONLY_REQUEST_BYTES = {'/api/rules/core/plans': 16384}
-KTV_OWNER_WRITE_PATHS = frozenset('/api/games/ktv/' + operation for operation in (
-    'manage/preview', 'manage/delete', 'manage/policy', 'scheduler',
-    'source/login', 'source/poll', 'source/settings',
-    *('manage/room/' + operation for operation in (
-        'theme', 'controls', 'command', 'order', 'queue-remove', 'songs', 'retry', 'preferences')),
-))
 PEOPLE_WRITE_PATHS = frozenset('/api/people/' + name for name in (
     'name', 'merge', 'split', 'correct', 'undo', 'voice-review', 'live/register', 'live/forget', 'live/name-candidate',
     'live/candidate-group','live/candidate-group/undo'))
@@ -474,6 +469,8 @@ class DesktopService:
         self.home_task = None
         self.persistent = False
         self.arl = {'status': 'not_checked', 'sdkVersion': '0.1.1', 'ready': False, 'inferenceAttempted': False}
+        self.ktv_owner = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+        self.ktv_owner.include_router(ktv_owner_router())
         self.metadata = FastAPI()
         self.metadata.add_api_route('/desktop/status', self.status, methods=['GET'])
         self.metadata.add_api_route('/desktop/capabilities', self.capabilities, methods=['GET'])
@@ -778,7 +775,8 @@ class DesktopService:
                                    people_catalog=people, file_steward_enabled=True,
                                    family_media_indexed_kinds=('image', 'video', 'audio', 'other'),
                                    nas_credential_resolver=local_settings.resolve_nas_credential,
-                                   console_read_only=not controls, runtime_log=self.runtime_log, embodied_service=integration,
+                                   console_read_only=not controls, ktv_owner_writes=True,
+                                   runtime_log=self.runtime_log, embodied_service=integration,
                                    background_enabled=self.persistent)
                 lifespan = inner.router.lifespan_context(inner)
                 phase = 'startup'
@@ -1078,16 +1076,10 @@ class DesktopService:
                     return
                 await self.inner(scope,receive,send)
                 return
-            if scope['method'] == 'POST' and path in KTV_OWNER_WRITE_PATHS:
-                if origin != ORIGIN.encode():
-                    await JSONResponse({'code': 'origin_required'}, status_code=403)(scope, receive, send)
-                    return
-                if self.inner is None:
-                    await JSONResponse({'code': 'home_not_connected'}, status_code=503)(scope, receive, send)
-                    return
-                # The fixed owner adapter still enforces loopback, Host and the
-                # inner app's genuine read-only mode; this is no general proxy.
-                await self.inner(scope, receive, send)
+            ktv_prefix = OWNER_PREFIX + '/'
+            if path.startswith(ktv_prefix) and accepts_owner_operation(scope['method'], path[len(ktv_prefix):]):
+                # KTV 使用自身的本机来源校验和 Worker 凭据，不依赖 HA 连接或设备控制权限。
+                await self.ktv_owner(scope, receive, send)
                 return
             if scope['method']=='POST' and self.inner is not None and (
                 path.startswith('/api/embodied/') or path in PEOPLE_WRITE_PATHS

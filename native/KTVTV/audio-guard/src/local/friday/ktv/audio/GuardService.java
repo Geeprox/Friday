@@ -20,7 +20,7 @@ public final class GuardService extends Service {
     private final Handler main=new Handler(Looper.getMainLooper());
     private final ExecutorService commands=Executors.newSingleThreadExecutor(),stopper=Executors.newSingleThreadExecutor(),bridgeKeeper=Executors.newSingleThreadExecutor();
     private final AtomicBoolean refreshInFlight=new AtomicBoolean(),bridgeBeatInFlight=new AtomicBoolean();
-    private volatile boolean bridgeReserved,bridgeBound,bridgeContractVerified;private volatile long lastBridgeBeat;
+    private volatile boolean bridgeReserved,bridgeBound,bridgeContractVerified,stockRouteReady;private volatile long lastBridgeBeat;
     private final StopDispatch stopDispatch=new StopDispatch();
     private final CarrierGate carrierGate=new CarrierGate();
     private final GainRequestGate gainDispatch=new GainRequestGate();
@@ -43,6 +43,7 @@ public final class GuardService extends Service {
     private int controllerUid=-1,controllerPid=-1,commandExceptions,preflightStopCalls;
     private long lastRefresh,stopIssueMs,stopReturnMs,startIssueMs,startReturnMs,commandMaxMs;
     private long selfTestStopIssueMs,selfTestStopReturnMs;
+    private long rejectedHardwareStartMs=-1;
     private long startCallReturnMs;
     private int actualStartCalls,flagEnableCalls,flagDisableCalls;
     private ProbePolicy.Target observedTarget;
@@ -56,7 +57,10 @@ public final class GuardService extends Service {
     @Override public void onCreate(){
         super.onCreate();audio=(AudioManager)getSystemService(AUDIO_SERVICE);vendor=new VendorBridge(this,audio);
         wake=((PowerManager)getSystemService(POWER_SERVICE)).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"friday:globalmic-guard");wake.setReferenceCounted(false);
-        if(getSharedPreferences("lease",MODE_PRIVATE).getBoolean("unresolved",false))policy.recoverOwnedMarker();
+        if(getSharedPreferences("lease",MODE_PRIVATE).getBoolean("unresolved",false)){
+            policy.recoverOwnedMarker();
+            requestStop(ProbePolicy.SERVICE_END);
+        }
         audio.registerAudioDeviceCallback(devices,main);main.post(protectionWatchdog);event("guard_created_no_start");
     }
     @Override public int onStartCommand(Intent intent,int flags,int startId){
@@ -85,7 +89,8 @@ public final class GuardService extends Service {
         if(m.what==Protocol.READ){refresh();reply(m.replyTo);return;}
         if(m.what==Protocol.STOP){requestStop(ProbePolicy.USER);reply(m.replyTo);return;}
         if(!external||clientBinder==null||!clientBinder.isBinderAlive()){lastError="separate_controller_required";reply(m.replyTo);return;}
-        if(m.what==Protocol.START)beginStart(b);
+        if(m.what==Protocol.START)beginStart(b,false);
+        else if(m.what==Protocol.START_HARDWARE&&m.replyTo!=null&&m.replyTo.getBinder()==clientBinder)beginStart(b,true);
         else if(m.what==Protocol.LOW)low(b);
         else if(m.what==Protocol.MUTE)mute(b);
         else if(m.what==Protocol.PROTECTION)protection(b);
@@ -94,7 +99,10 @@ public final class GuardService extends Service {
     }
     private boolean bindClient(Message m){
         IBinder binder=m.replyTo.getBinder();if(binder==clientBinder)return true;
-        synchronized(policy){if(policy.owns){lastError="controller_changed_during_lease";return false;}}
+        synchronized(policy){
+            // 重启后的残留标记没有控制者。允许新控制者读取清理结果，原通道仍只接受 STOP。
+            if(policy.owns&&(policy.leaseId!=0||clientBinder!=null)){lastError="controller_changed_during_lease";return false;}
+        }
         if(clientBinder!=null&&death!=null)clientBinder.unlinkToDeath(death,0);
         client=m.replyTo;clientBinder=binder;controllerUid=m.sendingUid;controllerPid=m.getData().getInt("pid",-1);
         death=()->{synchronized(policy){policy.clientDied(now());}event("controller_binder_died");requestStop(ProbePolicy.CLIENT_DIED);};
@@ -136,9 +144,11 @@ public final class GuardService extends Service {
             boolean safePlatform=NativeCacheOwner.available(version);bridgeContractVerified=safePlatform;
             synchronized(policy){observedTarget=target;lastRefresh=now();
                 boolean idle=policy.idleEvidence(target,NativeCacheOwner.baseVersion(version),model,status,cards,Build.VERSION.SDK_INT>=34&&"mtktv".equals(Build.HARDWARE));
-                if(!safePlatform){lastError="strict_platform_bridge_unavailable";policy.watchdogVerified=false;}
-                return idle&&safePlatform;}
-        }catch(RuntimeException failure){bridgeContractVerified=false;error("idle_read_failed");return false;}
+                stockRouteReady=idle&&"1.1.3".equals(version);
+                if(!safePlatform&&!stockRouteReady){lastError="strict_platform_bridge_unavailable";policy.watchdogVerified=false;}
+                else if("strict_platform_bridge_unavailable".equals(lastError))lastError="";
+                return idle;}
+        }catch(RuntimeException failure){bridgeContractVerified=stockRouteReady=false;error("idle_read_failed");return false;}
     }
     private void refresh(){
         synchronized(policy){if(policy.owns||now()-lastRefresh<1000)return;}
@@ -177,17 +187,31 @@ public final class GuardService extends Service {
         }
         if(!released)error("carrier_release_unverified");event(released?"carrier_release_returned":"carrier_release_unknown");
     }
-    private void beginStart(Bundle data){
+    private void rejectStart(boolean hardware,long action){
+        if(hardware)synchronized(policy){rejectedHardwareStartMs=action;}
+        main.post(()->reply(client));
+    }
+    private void beginStart(Bundle data,boolean hardware){
         final long action=data.getLong("action_ms",-1);final boolean local=data.getBoolean("local_action");
-        final long epoch;synchronized(policy){epoch=policy.cancellationEpoch;}
+        final long epoch;final ProbePolicy.Target expected;final IBinder controller=clientBinder;
+        synchronized(policy){
+            if(hardware&&(!stockRouteReady||observedTarget==null||observedTarget.inputId!=data.getInt("input_id",-1))){
+                rejectStart(true,action);return;
+            }
+            expected=observedTarget;epoch=policy.cancellationEpoch;
+        }
         commands.execute(()->{
-            synchronized(policy){if(!policy.pendingAllowed(epoch)||carrierGate.occupied())return;}
-            if(!readIdle())return;
-            final int output=builtInOutput();if(output<=0){error("built_in_output_unknown");main.post(()->reply(client));return;}
+            synchronized(policy){if(!policy.pendingAllowed(epoch)||carrierGate.occupied()){rejectStart(hardware,action);return;}}
+            if(!readIdle()||(hardware?!stockRouteReady:!bridgeContractVerified)){rejectStart(hardware,action);return;}
+            final int output=builtInOutput();if(output<=0){error("built_in_output_unknown");rejectStart(hardware,action);return;}
             final ProbePolicy.Target selected;final long lease;final ZeroOutputCarrier current;
             synchronized(policy){
-                if(!policy.pendingAllowed(epoch)||carrierGate.occupied()||clientBinder==null||!clientBinder.isBinderAlive()||!policy.beginStart(now(),action,local,
-                    checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED))return;
+                if(!policy.pendingAllowed(epoch)||carrierGate.occupied()||controller==null||clientBinder!=controller||!controller.isBinderAlive()){
+                    rejectStart(hardware,action);return;
+                }
+                boolean permission=checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED;
+                boolean accepted=hardware?policy.beginHardwareStart(now(),action,local,permission,expected):policy.beginStart(now(),action,local,permission);
+                if(!accepted){rejectStart(hardware,action);return;}
                 selected=policy.target;lastError="";lease=policy.leaseId;
                 if(!gainWrites.beginLease(lease,epoch)){policy.requestStop(ProbePolicy.COMMAND_ERROR);main.post(()->requestStop(ProbePolicy.COMMAND_ERROR,lease));return;}
                 protection.begin(lease);resetZeroPending=false;startIssueMs=0;userGain=appliedUserGain=0;carrierLease=lease;carrierGate.attach(lease);carrierBeforeStart=new JSONObject();
@@ -197,8 +221,10 @@ public final class GuardService extends Service {
             try{
                 if(!getSharedPreferences("lease",MODE_PRIVATE).edit().putBoolean("unresolved",true).commit())throw new IllegalStateException("lease_marker_failed");
                 if(!startAllowed(epoch)||!foreground)throw new IllegalStateException("start_cancelled");
-                if(!NativeCacheOwner.begin(lease,selected.card,selected.device))throw new IllegalStateException("strict_bridge_reservation_failed");
-                bridgeReserved=true;bridgeBound=false;lastBridgeBeat=now();
+                if(!hardware){
+                    if(!NativeCacheOwner.begin(lease,selected.card,selected.device))throw new IllegalStateException("strict_bridge_reservation_failed");
+                    bridgeReserved=true;bridgeBound=false;lastBridgeBeat=now();
+                }
                 if(!startAllowed(epoch))throw new IllegalStateException("start_cancelled");
                 event("carrier_start_requested");current.start();sampleCarrier("starting");
                 if(!current.awaitReady(()->!startAllowed(epoch)||!foreground||serviceEnding))throw new IllegalStateException("carrier_not_ready_or_cancelled");
@@ -215,8 +241,11 @@ public final class GuardService extends Service {
                 if(!startAllowed(epoch))throw new IllegalStateException();
                 call("GlobalMicLowLatency=enable",vendor::enableFlag);enabled=true;
                 status=Protocol.status(get("61959"));
-                if(status!=0||!startAllowed(epoch)||!NativeCacheOwner.bind(lease))throw new IllegalStateException("strict_bridge_bind_failed");
-                bridgeBound=true;lastBridgeBeat=now();
+                if(status!=0||!startAllowed(epoch))throw new IllegalStateException("start_status_unconfirmed");
+                if(!hardware){
+                    if(!NativeCacheOwner.bind(lease))throw new IllegalStateException("strict_bridge_bind_failed");
+                    bridgeBound=true;lastBridgeBeat=now();
+                }
             }catch(RuntimeException failure){zero=false;error("carrier_start_zero_or_bridge_failed");}
             boolean active;
             synchronized(policy){startReturnMs=now();carrierGate.sequenceFinished(lease);active=policy.startFinished(now(),returned,status,zero,enabled);}
@@ -236,7 +265,10 @@ public final class GuardService extends Service {
         low(data);
     }
     private boolean gainAllowed(long epoch,long lease){synchronized(policy){return policy.pendingAllowed(epoch)&&policy.owns&&policy.leaseId==lease&&(policy.state==ProbePolicy.ZERO||policy.state==ProbePolicy.LOW);}}
-    private int protectedGain(int wanted){return NativeCacheOwner.inline()?(protection.healthy(now())?protection.referenceGain(wanted):0):protection.effectiveGain(wanted,now());}
+    private int protectedGain(int wanted){
+        if(policy.hardwareLease)return wanted;
+        return NativeCacheOwner.inline()?(protection.healthy(now())?protection.referenceGain(wanted):0):protection.effectiveGain(wanted,now());
+    }
     private boolean positiveGain(String name,Runnable command,long epoch,long lease,long ticket){
         final long write;
         synchronized(policy){
@@ -264,7 +296,7 @@ public final class GuardService extends Service {
             boolean returned=false;int status=Integer.MIN_VALUE;
             try{
                 if(Protocol.status(get("61959"))!=0||!gainAllowed(epoch,lease))throw new IllegalStateException();
-                synchronized(policy){if(gain>0&&(!protection.healthy(now())||protectedGain(wanted)<gain))return;}
+                synchronized(policy){if(gain>0&&!policy.hardwareLease&&(!protection.healthy(now())||protectedGain(wanted)<gain))return;}
                 if(gain==0&&!NativeCacheOwner.muteInline(lease,true))throw new IllegalStateException("inline_mute_failed");
                 if(gain==0)call("MIC_ZERO",vendor::micZero);else if(!positiveGain("MIC_GAIN_"+gain,()->vendor.micGain(gain),epoch,lease,ticket))return;synchronized(policy){policy.gainCalls++;if(!gainDispatch.current(ticket))return;}
                 if(!gainAllowed(epoch,lease))throw new IllegalStateException();
@@ -283,18 +315,26 @@ public final class GuardService extends Service {
     private Bundle protectionGainRequest(){Bundle b=new Bundle();synchronized(policy){b.putLong("lease_id",policy.leaseId);b.putInt("gain",userGain);}b.putLong("action_ms",now());b.putBoolean("local_action",true);return b;}
     private void protection(Bundle b){
         long lease=b.getLong("lease_id"),token=b.getLong("monitor_token"),seq=b.getLong("sequence");
-        final long epoch;final boolean changed;boolean accepted;
+        final long epoch;final boolean changed,stopForProtection;
         synchronized(policy){
-            if(resetZeroPending||!policy.owns||lease!=policy.leaseId||b.getLong("guard_pid")!=android.os.Process.myPid())return;
+            if(policy.hardwareLease||resetZeroPending||!policy.owns||lease!=policy.leaseId||b.getLong("guard_pid")!=android.os.Process.myPid())return;
             epoch=policy.cancellationEpoch;
-            accepted=protection.heartbeat(lease,token,b.getLong("frames"),b.getBoolean("ready"),b.getInt("wet"),b.getLong("action_ms",-1),now());
+            boolean accepted=protection.heartbeat(lease,token,b.getLong("frames"),b.getBoolean("ready"),b.getInt("wet"),b.getLong("action_ms",-1),now());
             changed=accepted&&protection.observe(lease,token,seq,b.getInt("severity"),b.getInt("frequency"),protection.referenceGain(userGain));
             if(protection.watchdog(now(),policy.requestedGain>0)||changed)gainDispatch.cancel();
+            stopForProtection=protection.latched()&&policy.state!=ProbePolicy.STOPPING&&policy.state!=ProbePolicy.RECOVERY;
+        }
+        if(stopForProtection){
+            // 先撤销同流输出租约。最后一次增益调用仍由原有停止栅栏收尾。
+            requestStop(ProbePolicy.COMMAND_ERROR,lease);reply(client);return;
         }
         if(changed)commands.execute(()->{
             if(!gainAllowed(epoch,lease))return;
             try{call("FEEDBACK_EQ",()->applyProtectionEq(lease));}
-            catch(RuntimeException failure){synchronized(policy){protection.trip(6);}error("feedback_eq_failed");}
+            catch(RuntimeException failure){
+                synchronized(policy){if(!gainAllowed(epoch,lease))return;protection.trip(6);}
+                error("feedback_eq_failed");requestStop(ProbePolicy.COMMAND_ERROR,lease);main.post(()->reply(client));return;
+            }
             main.post(()->{low(protectionGainRequest());reply(client);});
         });
         else {boolean adjust;synchronized(policy){adjust=policy.requestedGain!=protectedGain(userGain);}if(adjust)low(protectionGainRequest());}
@@ -302,7 +342,7 @@ public final class GuardService extends Service {
     private void resetProtection(Bundle b){
         final long lease=b.getLong("lease_id"),action=b.getLong("action_ms",-1),epoch;
         synchronized(policy){
-            if(resetZeroPending||!b.getBoolean("local_action")||action<0||now()<action||now()-action>750||!policy.owns||lease!=policy.leaseId)return;
+            if(policy.hardwareLease||resetZeroPending||!b.getBoolean("local_action")||action<0||now()<action||now()-action>750||!policy.owns||lease!=policy.leaseId)return;
             epoch=policy.cancellationEpoch;resetZeroPending=true;resetZeroSince=now();gainDispatch.cancel();
         }
         commands.execute(()->{
@@ -344,10 +384,11 @@ public final class GuardService extends Service {
                 }finally{bridgeBeatInFlight.set(false);}
             });
         }
-        synchronized(policy){tripped=policy.owns&&protection.watchdog(now(),policy.requestedGain>0);if(tripped)gainDispatch.cancel();emergency=policy.owns&&(protection.emergencyStopDue(now(),policy.requestedGain>0)
+        synchronized(policy){tripped=policy.owns&&!policy.hardwareLease&&protection.watchdog(now(),policy.requestedGain>0);if(tripped)gainDispatch.cancel();emergency=policy.owns&&((!policy.hardwareLease&&protection.emergencyStopDue(now(),policy.requestedGain>0))
                 ||(resetZeroPending&&now()-resetZeroSince>=500)
                 ||(policy.state==ProbePolicy.STARTING&&startIssueMs>0&&!policy.zeroCallsReturned&&now()-startIssueMs>=750));}
-        if(emergency)requestStop(ProbePolicy.COMMAND_ERROR);else if(tripped){low(protectionGainRequest());reply(client);}main.postDelayed(this,100);
+        if(emergency||tripped){requestStop(ProbePolicy.COMMAND_ERROR,bridgeLease);reply(client);}
+        main.postDelayed(this,100);
     }};
     private void requestStop(int reason){requestStop(reason,-1);}
     private void requestStop(int reason,long expectedLease){
@@ -360,7 +401,7 @@ public final class GuardService extends Service {
         }
         // Cancel before revoking the bridge. In-flight positive calls may still
         // return later, so they remain fenced until a STOP issued after them.
-        bridgeReserved=bridgeBound=bridgeContractVerified=false;NativeCacheOwner.end();
+        bridgeReserved=bridgeBound=bridgeContractVerified=stockRouteReady=false;NativeCacheOwner.end();
         if(ticket==0)return;
         stopper.execute(()->{
             final boolean afterStart,afterWrites;
@@ -387,17 +428,18 @@ public final class GuardService extends Service {
     private final AudioDeviceCallback devices=new AudioDeviceCallback(){
         @Override public void onAudioDevicesAdded(AudioDeviceInfo[] changed){changed();}
         @Override public void onAudioDevicesRemoved(AudioDeviceInfo[] changed){changed();}
-        private void changed(){synchronized(policy){policy.cancelPending();if(!policy.owns){policy.watchdogVerified=false;return;}}event("device_changed");requestStop(ProbePolicy.DEVICE_CHANGED);}
+        private void changed(){synchronized(policy){stockRouteReady=false;policy.cancelPending();if(!policy.owns){policy.watchdogVerified=false;return;}}event("device_changed");requestStop(ProbePolicy.DEVICE_CHANGED);}
     };
     String receipt(){return receipt(true);}
     private String receipt(boolean history){
         synchronized(policy){try{
             JSONArray commandRows=new JSONArray();if(history)for(String row:calls)commandRows.put(new JSONObject(row));
-            JSONObject j=new JSONObject();j.put("schema",3).put("guard_version","0.5").put("guard_package",getPackageName()).put("guard_uid",android.os.Process.myUid()).put("guard_pid",android.os.Process.myPid())
+            JSONObject j=new JSONObject();j.put("schema",3).put("guard_version","0.8").put("guard_package",getPackageName()).put("guard_uid",android.os.Process.myUid()).put("guard_pid",android.os.Process.myPid())
                 .put("controller_uid",controllerUid).put("controller_pid",controllerPid).put("state",policy.state).put("reject",policy.reject).put("last_error",lastError)
                 .put("cancellation_epoch",policy.cancellationEpoch).put("elapsed_ms",now()).put("continuous_mode",true).put("automatic_expiry",false).put("hal_status",policy.halStatus).put("version",policy.version).put("play_model",policy.model).put("foreground_ready",policy.foregroundReady).put("foreground_service_active",foreground)
                 .put("independent_uid",policy.independentUid).put("watchdog_verified",policy.watchdogVerified).put("watchdog_verified_ms",policy.verifiedAtMs)
-                .put("controller_death_ms",policy.controllerDeathMs).put("strict_bridge_available",bridgeContractVerified).put("strict_cache_required",true).put("strict_bridge_reserved",bridgeReserved).put("strict_bridge_bound",bridgeBound).put("native_zero_initialization_verified",bridgeReserved).put("self_test_required",false).put("preflight_stop_calls",preflightStopCalls)
+                .put("controller_death_ms",policy.controllerDeathMs).put("strict_bridge_available",bridgeContractVerified).put("strict_cache_required",!policy.hardwareLease).put("strict_bridge_reserved",bridgeReserved).put("strict_bridge_bound",bridgeBound).put("native_zero_initialization_verified",bridgeReserved).put("self_test_required",false).put("preflight_stop_calls",preflightStopCalls)
+                .put("stock_route_ready",stockRouteReady).put("hardware_lease",policy.hardwareLease).put("rejected_hardware_start_ms",rejectedHardwareStartMs)
                 .put("self_test_stop_issue_ms",selfTestStopIssueMs).put("self_test_stop_return_ms",selfTestStopReturnMs)
                 .put("owns_unresolved_lease",policy.owns).put("started_ms",policy.startedMs).put("deadline_ms",policy.deadlineMs).put("stopped_ms",policy.stoppedMs)
                 .put("start_calls",actualStartCalls).put("accepted_start_requests",policy.startCalls).put("lease_id",policy.leaseId).put("start_call_returned",policy.startCallSucceeded).put("start_sequence_finished",policy.startReturned)
@@ -407,7 +449,7 @@ public final class GuardService extends Service {
                 .put("start_issue_ms",startIssueMs).put("start_return_ms",startCallReturnMs).put("start_sequence_finish_ms",startReturnMs).put("stop_issue_ms",stopIssueMs).put("stop_return_ms",stopReturnMs)
                 .put("command_max_ms",commandMaxMs).put("command_exceptions",commandExceptions).put("gain_readback_available",false).put("mixer_restore_verified",false)
                 .put("permission_ready",checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED).put("native_capture_owned",policy.owns).put("mic_muted",policy.owns&&((policy.state==ProbePolicy.ZERO&&policy.zeroCallsReturned)||(policy.state==ProbePolicy.LOW&&policy.lowCallsReturned&&policy.requestedGain==0))).put("soft_mute_keeps_capture",true).put("physical_latency_measured",false).put("raw_audio_saved",false).put("usb_interface_classes",usbInterfaceClasses).put("target_capability_reason",targetReason);
-            j.put("protection_reset_count",protectionResetCount).put("requested_gain_setpoint",userGain).put("applied_user_gain_setpoint",appliedUserGain).put("protection_required",true).put("protection_ready",protection.healthy(now())).put("protection_latched",protection.latched())
+            j.put("protection_reset_count",protectionResetCount).put("requested_gain_setpoint",userGain).put("applied_user_gain_setpoint",appliedUserGain).put("protection_required",!policy.hardwareLease).put("protection_ready",!policy.hardwareLease&&protection.healthy(now())).put("protection_latched",protection.latched())
                 .put("protection_gain_cap",protection.gainCap()).put("protection_level",protection.level()).put("protection_reason",protection.reason()).put("protection_sequence",protection.sequence())
                 .put("protection_monitor_token",protection.monitorPid()).put("protection_frames",protection.frames()).put("protection_wet",protection.wet()).put("protection_audio_verified",false);
             j.put("zero_output_carrier",carrier==null?carrierFinal:carrier.metrics()).put("carrier_before_vendor_start",carrierBeforeStart).put("carrier_lease_id",carrierLease).put("carrier_resources_pending",carrierGate.occupied()).put("carrier_start_gate_required",true).put("stop_order","final_vendor_stop_and_disable_attempt_then_carrier_release").put("ordinary_zero_samples_saved",false);

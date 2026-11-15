@@ -214,6 +214,30 @@ def test_logging_failure_visible_without_changing_ready(environment, monkeypatch
     assert "private exception" not in report.read_text()
 
 
+def test_worktree_separator_reuses_installed_storage_and_worker_runtime(environment, monkeypatch):
+    source, cache, report, runtime = environment
+    installed = cache.parent
+    code = installed / ".private/worktrees/current"
+    code.mkdir(parents=True)
+    monkeypatch.setattr(audio, "ROOT", code)
+
+    def run(request, interpreter, cancel, timeout, *, workspace):
+        assert workspace == installed and interpreter == runtime
+        assert request.is_relative_to(cache / "jobs")
+        wav(request.parent / "instrumental.wav", 50)
+        wav(request.parent / "vocals.wav", 25)
+        audio.write_report(request.with_name("worker-result.json"), {
+            "code": "none", "instrumental": "instrumental.wav", "vocals": "vocals.wav",
+            "duration_seconds": .1, "sample_rate_hz": 8000,
+        }, workspace=workspace)
+
+    monkeypatch.setattr(audio, "_run_worker", run)
+    ready = audio.prepare(source, cache, report, runtime=runtime, workspace=installed, simulated=True)
+    assert ready["status"] == "ready"
+    assert not list((cache / "jobs").iterdir())
+    assert not (code / "data").exists()
+
+
 def test_actual_worker_poll_cancels_and_reaps_ignored_sigterm(tmp_path, monkeypatch):
     monkeypatch.setattr(audio, "ROOT", tmp_path)
     job = tmp_path / "job"

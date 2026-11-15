@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from .ktv_service import ERRORS, JobRequest, atomic_json, private_directory
+from .ktv_service import ERRORS, JobRequest, atomic_json, local_host, nas_attempt_request_id, private_directory
 
 VOCAL_PRESETS = {"dry", "pop", "ktv", "power", "opera", "studio", "echo"}
 SFX_ACTIONS = {"sfx_applause", "sfx_cheer", "sfx_stop"}
@@ -69,6 +69,38 @@ def command_is_fresh(command, now):
     return created <= now < created + 20
 
 
+def _nas_lan_ipv4(value):
+    try:
+        if not isinstance(value, str) or local_host(value) != value or value.startswith("127."):
+            raise ValueError
+    except ValueError:
+        raise ValueError("private_nas_lan_ipv4_required") from None
+    return value
+
+
+class _LanNasTransport(httpx.HTTPTransport):
+    """只替换已配置 NAS 的 TCP 地址，保留 HTTPS 的认证身份。"""
+
+    def __init__(self, endpoint, address, limits):
+        super().__init__(verify=True, trust_env=False, limits=limits)
+        self.endpoint = httpx.URL(endpoint)
+        self.address = address
+
+    def handle_request(self, request):
+        url = request.url
+        if (url.scheme != "https" or url.raw_host != self.endpoint.raw_host or url.port != self.endpoint.port
+                or not url.raw_path.startswith(self.endpoint.raw_path + b"/")):
+            raise httpx.UnsupportedProtocol("configured_nas_endpoint_required")
+        headers = request.headers.copy()
+        headers["Host"] = self.endpoint.netloc.decode("ascii")
+        # 锁定的 httpcore 用此值同时发送 SNI 并验证服务端证书的主机名。
+        extensions = {**request.extensions, "sni_hostname": self.endpoint.raw_host.decode("ascii")}
+        return super().handle_request(httpx.Request(
+            request.method, url.copy_with(host=self.address), headers=headers, stream=request.stream,
+            extensions=extensions,
+        ))
+
+
 class NasBridge:
     def __init__(self, queue, config_path: Path, *, allow_loopback=False, cloud_catalog=None, guide=None, cloud_lyrics=None):
         path = config_path.absolute()
@@ -95,8 +127,13 @@ class NasBridge:
         self.queue, self.endpoint, self.key = queue, endpoint, value["agent_key"]
         # Reuse TLS/HTTP connections across the short control polls. The pool
         # leaves capacity for the independent media and catalog workers.
-        self.http = httpx.Client(timeout=8, follow_redirects=False,
-                                 limits=httpx.Limits(max_connections=8, max_keepalive_connections=4))
+        limits = httpx.Limits(max_connections=8, max_keepalive_connections=4)
+        transport = None
+        if "lan_ipv4" in value:
+            if value.get("coordination") != "nas" or parsed.scheme != "https":
+                raise ValueError("nas_lan_https_required")
+            transport = _LanNasTransport(endpoint, _nas_lan_ipv4(value["lan_ipv4"]), limits)
+        self.http = httpx.Client(timeout=8, follow_redirects=False, limits=limits, transport=transport)
         self.path = private_directory(path.parent) / "nas-bridge-state.json"
         self.mapping, self.party = {}, None
         self.cloud_lyrics = cloud_lyrics
@@ -273,7 +310,7 @@ class NasBridge:
                     continue
                 try:
                     request = JobRequest(song_id=item["song_id"], title=item["title"],
-                        request_id=item["id"] if not item.get("attempt") else str(uuid.uuid5(uuid.UUID(item["id"]), "retry:" + str(item["attempt"]))),
+                        request_id=nas_attempt_request_id(item["id"], item.get("attempt", 0)),
                         requester=item.get("requester"), source_preference={"cloud": "cloud", "mv": "mv_direct"}.get(item.get("source"), "song"))
                     job = self.queue.submit(request)
                     with self.lock:

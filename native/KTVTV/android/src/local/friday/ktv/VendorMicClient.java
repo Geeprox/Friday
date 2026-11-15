@@ -15,44 +15,62 @@ public final class VendorMicClient implements AutoCloseable {
     public interface Listener {void onChanged(JSONObject state);}
     private static final String PACKAGE="local.friday.ktv.audio",PERMISSION=PACKAGE+".CONTROL";
     private static final int READ=1,START=3,LOW=4,STOP=5,REPLY=6,MUTE=7,PROTECTION=8,PROTECTION_RESET=9;
+    private static final int START_HARDWARE=10;
     private static final int READY=2,STARTING=3,ZERO=4,ACTIVE=5,STOPPING=6,RECOVERY=8;
     private final Context app;
+    private final boolean hardwareMode;
     private final WeakReference<Activity> activity;
     private final Handler ui=new Handler(Looper.getMainLooper());
     private final DesiredState intent=new DesiredState();
     private Listener listener;
     private Messenger service;
-    private boolean bound,startPending,hardStopPending,notifyQueued;
+    private boolean bound,startPending,notifyQueued;
+    private volatile boolean hardStopPending;
     private int guardUid=-1,pendingGain=Integer.MIN_VALUE;
     private long pendingGainCalls,initialGainLease,requiredCancelEpoch,resetLease,resetCounter;private boolean protectionResetPending;
     private volatile long receiptAtMs;
+    private long pendingHardwareStartAt=-1;
     private String error="";
     private volatile JSONObject raw=new JSONObject(),published=new JSONObject();
 
     /** No audio or service start occurs in the constructor or availability check. */
-    public VendorMicClient(Activity activity,Listener listener){this.app=activity.getApplicationContext();this.activity=new WeakReference<>(activity);this.listener=listener;publish();}
-    public static boolean available(Context context){
+    public VendorMicClient(Activity activity,Listener listener){this(activity,listener,false);}
+    public VendorMicClient(Activity activity,Listener listener,boolean hardwareMode){
+        this.app=activity.getApplicationContext();this.activity=new WeakReference<>(activity);this.listener=listener;
+        this.hardwareMode=hardwareMode;publish();
+    }
+    public static boolean available(Context context){return available(context,6);}
+    public static boolean hardwareAvailable(Context context){return available(context,8);}
+    private boolean available(){return hardwareMode?hardwareAvailable(app):available(app);}
+    private static boolean available(Context context,int minimumVersion){
         if(Build.VERSION.SDK_INT<34||!"mtktv".equals(Build.HARDWARE))return false;
         try{
             AudioManager.class.getMethod("getParameters",String.class);AudioManager.class.getMethod("setParameters",String.class);
             PackageManager pm=context.getPackageManager();android.content.pm.ApplicationInfo target=pm.getApplicationInfo(PACKAGE,0);
             ServiceInfo info=pm.getServiceInfo(new ComponentName(PACKAGE,PACKAGE+".GuardService"),PackageManager.MATCH_DISABLED_COMPONENTS);
-            // Automatic protection requires the signed 0.5 companion. Older guards lack
-            // the fail-closed heartbeat and attenuation protocol.
-            return pm.getPackageInfo(PACKAGE,0).versionCode>=5&&target.enabled&&target.uid!=android.os.Process.myUid()&&info.enabled&&info.exported&&PERMISSION.equals(info.permission)
+            // 限定到会立即撤销保护锁定会话的签名伴随组件。
+            return pm.getPackageInfo(PACKAGE,0).versionCode>=minimumVersion&&target.enabled&&target.uid!=android.os.Process.myUid()&&info.enabled&&info.exported&&PERMISSION.equals(info.permission)
                 &&pm.checkSignatures(context.getPackageName(),PACKAGE)==PackageManager.SIGNATURE_MATCH
                 &&pm.getApplicationEnabledSetting(PACKAGE)<=PackageManager.COMPONENT_ENABLED_STATE_ENABLED
                 &&pm.getComponentEnabledSetting(new ComponentName(PACKAGE,PACKAGE+".GuardService"))<=PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
         }catch(Exception|LinkageError denied){return false;}
     }
-    public boolean permissionReady(){return available(app)&&app.getPackageManager().checkPermission(Manifest.permission.RECORD_AUDIO,PACKAGE)==PackageManager.PERMISSION_GRANTED;}
-    public void openPermission(){onMain(()->{Activity owner=activity.get();if(intent.closing||!intent.foreground||owner==null||!available(app))return;try{owner.startActivity(new Intent().setComponent(new ComponentName(PACKAGE,PACKAGE+".PermissionActivity")));}catch(RuntimeException failure){error="permission_entry_unavailable";publish();}});}
+    public boolean permissionReady(){return available()&&app.getPackageManager().checkPermission(Manifest.permission.RECORD_AUDIO,PACKAGE)==PackageManager.PERMISSION_GRANTED;}
+    public void openPermission(){onMain(()->{Activity owner=activity.get();if(intent.closing||!intent.foreground||owner==null||!available())return;try{owner.startActivity(new Intent().setComponent(new ComponentName(PACKAGE,PACKAGE+".PermissionActivity")));}catch(RuntimeException failure){error="permission_entry_unavailable";publish();}});}
     public void setForeground(boolean value){onMain(()->{if(intent.closing)return;intent.foreground(value);if(value){ensureBound();pollSoon();}else hardStop();publish();});}
     public void setEnabled(boolean enabled,int gain){onMain(()->{
         if(intent.closing)return;boolean wasDesired=intent.desired;intent.enabled(enabled,gain);
+        if(!wasDesired&&intent.desired&&"hardware_start_unavailable".equals(error))error="";
         if(!intent.desired&&(wasDesired||startPending)){startPending=false;sendMute();}
         if(intent.foreground)ensureBound();drive();pollSoon();publish();
     });}
+    public boolean hardwareRouteReady(int inputId){
+        JSONObject guard=raw;
+        if(!hardwareMode||hardStopPending||readbackAgeMs()>1500||!guard.optBoolean("foreground_ready")||!guard.optBoolean("independent_uid"))return false;
+        int phase=guard.optInt("state");
+        if(guard.optBoolean("hardware_lease"))return phase>=STARTING&&phase<=ACTIVE&&guard.optInt("input_id")==inputId;
+        return phase==READY&&guard.optBoolean("stock_route_ready")&&guard.optInt("observed_input_id")==inputId&&!guard.optBoolean("carrier_resources_pending");
+    }
     public void protection(boolean ready,long token,long frames,long sequence,int level,int frequency,int wet){onMain(()->{
         if(service==null||intent.closing||!intent.foreground||!raw.optBoolean("owns_unresolved_lease"))return;
         Bundle b=new Bundle();b.putLong("lease_id",raw.optLong("lease_id"));b.putLong("guard_pid",raw.optLong("guard_pid"));b.putLong("monitor_token",token);
@@ -85,7 +103,7 @@ public final class VendorMicClient implements AutoCloseable {
     private Intent serviceIntent(){return new Intent().setComponent(new ComponentName(PACKAGE,PACKAGE+".GuardService"));}
     private final ServiceConnection connection=new ServiceConnection(){
         @Override public void onServiceConnected(ComponentName name,IBinder binder){
-            if(!PACKAGE.equals(name.getPackageName())||!available(app)){error="companion_identity_mismatch";detach();publish();return;}
+            if(!PACKAGE.equals(name.getPackageName())||!available()){error="companion_identity_mismatch";detach();publish();return;}
             try{guardUid=app.getPackageManager().getApplicationInfo(PACKAGE,0).uid;service=new Messenger(binder);error="";if(hardStopPending||!intent.foreground||intent.closing)send(STOP,new Bundle());send(READ,new Bundle());pollSoon();}catch(Exception failure){error="companion_connection_failed";publish();}
         }
         @Override public void onServiceDisconnected(ComponentName name){service=null;startPending=false;pendingGain=Integer.MIN_VALUE;intent.stop();error="companion_disconnected";hardStopPending=true;requiredCancelEpoch=0;publish();}
@@ -97,18 +115,18 @@ public final class VendorMicClient implements AutoCloseable {
     });
     private void ensureBound(){
         if(bound||!intent.foreground||intent.closing)return;
-        if(!available(app)){error="companion_unavailable";return;}
+        if(!available()){error="companion_unavailable";return;}
         try{app.startForegroundService(serviceIntent());bound=app.bindService(serviceIntent(),connection,Context.BIND_AUTO_CREATE);if(!bound)error="companion_bind_failed";}
         catch(RuntimeException failure){error="companion_start_failed";bound=false;}
     }
     private boolean send(int what,Bundle data){
         if(service==null)return false;
-        try{data.putInt("pid",android.os.Process.myPid());if(what==START||what==LOW||what==MUTE||what==PROTECTION_RESET){data.putLong("action_ms",SystemClock.elapsedRealtime());data.putBoolean("local_action",intent.foreground&&!intent.closing);}
+        try{data.putInt("pid",android.os.Process.myPid());if(what==START||what==START_HARDWARE||what==LOW||what==MUTE||what==PROTECTION_RESET){data.putLong("action_ms",SystemClock.elapsedRealtime());data.putBoolean("local_action",intent.foreground&&!intent.closing);}
             Message message=Message.obtain(null,what);message.replyTo=replies;message.setData(data);service.send(message);return true;
         }catch(RemoteException failure){service=null;intent.stop();error="companion_send_failed";return false;}
     }
     private void hardStop(){
-        intent.stop();startPending=false;pendingGain=Integer.MIN_VALUE;
+        intent.stop();startPending=false;pendingGain=Integer.MIN_VALUE;initialGainLease=0;
         hardStopPending=true;requiredCancelEpoch=Math.max(requiredCancelEpoch,raw.optLong("cancellation_epoch",0)+1);
         send(STOP,new Bundle());pollSoon();
     }
@@ -119,12 +137,15 @@ public final class VendorMicClient implements AutoCloseable {
     private void accept(String json){
         try{
             JSONObject next=new JSONObject(json);long oldPid=raw.optLong("guard_pid",0),newPid=next.optLong("guard_pid",0),priorStops=raw.optLong("stop_calls",0);raw=next;if(protectionResetPending&&(next.optLong("lease_id")!=resetLease||next.optLong("protection_reset_count")>=resetCounter))protectionResetPending=false;receiptAtMs=SystemClock.elapsedRealtime();
-            if(oldPid!=0&&newPid!=oldPid){intent.stop();startPending=false;pendingGain=Integer.MIN_VALUE;hardStopPending=true;requiredCancelEpoch=next.optLong("cancellation_epoch",0)+1;send(STOP,new Bundle());}
+            if(oldPid!=0&&newPid!=oldPid){intent.stop();startPending=false;pendingGain=Integer.MIN_VALUE;initialGainLease=0;hardStopPending=true;requiredCancelEpoch=next.optLong("cancellation_epoch",0)+1;send(STOP,new Bundle());}
             int state=next.optInt("state",-1),gain=next.optInt("gain_setpoint",0);long lease=next.optLong("lease_id",0);
             if(!hardStopPending&&(state==STOPPING||state==RECOVERY)){intent.stop();hardStopPending=true;requiredCancelEpoch=next.optLong("cancellation_epoch",0)+1;startPending=false;send(STOP,new Bundle());}
             if(!hardStopPending&&oldPid!=0&&oldPid==newPid&&next.optLong("stop_calls",0)>priorStops&&cleanupVerified(next)){intent.stop();startPending=false;}
+            if(hardwareMode&&startPending&&next.optLong("rejected_hardware_start_ms",-2)==pendingHardwareStartAt){
+                intent.stop();startPending=false;error="hardware_start_unavailable";
+            }
             if(state!=READY)startPending=false;
-            if(state==ACTIVE&&next.optBoolean("low_calls_returned")&&gain>0)initialGainLease=lease;
+            if(!hardStopPending&&state==ACTIVE&&next.optBoolean("low_calls_returned")&&gain>0)initialGainLease=lease;
             if(pendingGain!=Integer.MIN_VALUE&&state==ACTIVE&&next.optBoolean("low_calls_returned")&&next.optInt("applied_user_gain_setpoint",-1)==pendingGain&&next.optLong("gain_calls",0)>pendingGainCalls)pendingGain=Integer.MIN_VALUE;
             if(!next.optBoolean("owns_unresolved_lease")||state==STOPPING||state==RECOVERY)pendingGain=Integer.MIN_VALUE;
             if(hardStopPending&&next.optLong("cancellation_epoch",0)>=requiredCancelEpoch&&cleanupVerified(next)){hardStopPending=false;if(intent.closing){detach();publish();return;}}
@@ -136,9 +157,23 @@ public final class VendorMicClient implements AutoCloseable {
         boolean owns=raw.optBoolean("owns_unresolved_lease");int state=raw.optInt("state",-1);
         if(!intent.desired){if(owns&&(state==ZERO||state==ACTIVE)&&!raw.optBoolean("mic_muted"))sendMute();return;}
         if(!permissionReady()||!raw.optBoolean("foreground_ready")||!raw.optBoolean("independent_uid"))return;
-        if(!owns&&state==READY&&!raw.optBoolean("carrier_resources_pending")&&!startPending){if(send(START,new Bundle()))startPending=true;return;}
+        if(!owns&&state==READY&&!raw.optBoolean("carrier_resources_pending")&&!startPending){
+            int input=raw.optInt("observed_input_id",-1);
+            boolean available=hardwareMode?input>0&&raw.optBoolean("stock_route_ready"):raw.optBoolean("strict_bridge_available");
+            if(!available)return;
+            Bundle start=new Bundle();
+            if(hardwareMode)start.putInt("input_id",input);
+            if(send(hardwareMode?START_HARDWARE:START,start)){
+                startPending=true;
+                if(hardwareMode)pendingHardwareStartAt=start.getLong("action_ms");
+            }
+            return;
+        }
         if(!owns||(state!=ZERO&&state!=ACTIVE)||pendingGain!=Integer.MIN_VALUE)return;
-        long lease=raw.optLong("lease_id",0);int target=!protectionResetPending&&raw.optBoolean("protection_ready")?(initialGainLease==lease?intent.gain:bootstrapGain(intent.gain)):0;
+        if(hardwareMode!=raw.optBoolean("hardware_lease"))return;
+        long lease=raw.optLong("lease_id",0);
+        int target=hardwareMode?intent.gain:!protectionResetPending&&raw.optBoolean("protection_ready")
+            ?(initialGainLease==lease?intent.gain:bootstrapGain(intent.gain)):0;
         if(state==ACTIVE&&raw.optBoolean("low_calls_returned")&&raw.optInt("applied_user_gain_setpoint",-1)==target)return;
         Bundle data=new Bundle();data.putLong("lease_id",lease);data.putInt("gain",target);pendingGainCalls=raw.optLong("gain_calls",0);if(send(LOW,data))pendingGain=target;
     }
@@ -152,8 +187,9 @@ public final class VendorMicClient implements AutoCloseable {
     private void pollSoon(){ui.removeCallbacks(poll);if(service!=null&&(intent.foreground||hardStopPending))ui.post(poll);}
     private void detach(){ui.removeCallbacks(poll);service=null;if(bound){try{app.unbindService(connection);}catch(RuntimeException ignored){}bound=false;}}
     private void publish(){
-        JSONObject result=new JSONObject();boolean installed=available(app),permission=permissionReady(),owns=raw.optBoolean("owns_unresolved_lease");int phase=raw.optInt("state",-1),gain=raw.optInt("gain_setpoint",0);
-        boolean enabled=intent.mayStart()&&service!=null&&!hardStopPending&&owns&&phase==ACTIVE&&raw.optBoolean("low_calls_returned")&&gain>0&&raw.optBoolean("protection_ready");
+        JSONObject result=new JSONObject();boolean installed=available(),permission=permissionReady(),owns=raw.optBoolean("owns_unresolved_lease");int phase=raw.optInt("state",-1),gain=raw.optInt("gain_setpoint",0);
+        boolean enabled=intent.mayStart()&&service!=null&&!hardStopPending&&owns&&phase==ACTIVE&&raw.optBoolean("low_calls_returned")&&gain>0
+            &&(hardwareMode?raw.optBoolean("hardware_lease"):raw.optBoolean("protection_ready"));
         String name=!installed?"unavailable":!permission?"permission_required":hardStopPending?"stopping":service==null?"disconnected":enabled?"enabled":owns&&raw.optBoolean("mic_muted")?"muted":intent.desired?"starting":"ready";
         String guardError=raw.optString("last_error","");if(guardError.isEmpty())guardError=raw.optString("reject","");
         try{result.put("protection_reset_pending",protectionResetPending).put("state",name).put("available",installed).put("permission_ready",permission).put("connected",service!=null).put("foreground",intent.foreground).put("desired",intent.desired).put("desired_enabled",intent.desired).put("desired_gain",intent.gain).put("enabled",enabled).put("stopping",hardStopPending||phase==STOPPING||phase==RECOVERY).put("native_capture_owned",owns).put("mic_muted",muteConfirmed()?confirmedMuted():JSONObject.NULL).put("effective_gain_setpoint",gain).put("gain_readback_available",false).put("stop_verified",service!=null&&cleanupVerified(raw)).put("last_error",!error.isEmpty()?error:guardError).put("guard",copy(raw));}catch(Exception ignored){}

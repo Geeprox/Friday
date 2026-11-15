@@ -175,27 +175,55 @@ class MediaArchive:
             or source.get("audio_origin") in {"mv", "mv_direct"}
             or source.get("identity_basis") == "exact_mv_id_full_decode"))
 
-    def restore_job(self, song_id, folder, binding, *, audio_origin="song"):
-        if not self.available() or not self._catalog(song_id).is_file():
+    def restore_job(self, song_id, folder, binding, *, audio_origin="song", reserve=None):
+        if not self.available():
             return None
-        value = json.loads(self._catalog(song_id).read_text())
-        if not self._same_audio_origin(value, audio_origin):
-            return None
-        if value.get("binding") != binding or set(value.get("media", {})) != {"original", "instrumental"}:
-            return None
-        for kind in ("original", "instrumental", "video"):
-            item = value.get("files", {}).get(kind)
-            if not item:
-                if kind != "video":
+        try:
+            catalog = self._catalog(song_id)
+            if catalog.resolve() != catalog or catalog.stat().st_size > 65536:
+                return None
+            value = json.loads(catalog.read_text())
+            if value.get("song_id") != song_id or not self._same_audio_origin(value, audio_origin):
+                return None
+            if value.get("binding") != binding or set(value.get("media", {})) != {"original", "instrumental"}:
+                return None
+            video = value.get("video") or {"status": "unavailable"}
+            expected = dict(value["media"])
+            if video.get("status") == "ready":
+                expected["video"] = video
+            copies = []
+            for kind, spec in expected.items():
+                suffix = ".mp4" if kind == "video" else ".wav"
+                item = value["files"][kind]
+                sha, size = item["sha256"], item["bytes"]
+                if (not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{64}", sha)
+                        or item["file"] != sha + suffix or sha != spec["sha256"] or size != spec["bytes"]
+                        or type(size) is not int or not 1 <= size <= 512 * 1024**2
+                        or kind != "video" and spec.get("filename") != kind + suffix):
                     return None
-                continue
-            if not re.fullmatch(r"[a-f0-9]{64}\.(?:wav|mp4)", item["file"]):
-                raise ValueError("archive_copy_invalid")
-            self._copy(self.root / "blobs" / item["file"], folder / ("video.mp4" if kind == "video" else kind + ".wav"), item["sha256"])
-        return {"media": value["media"], "video": value.get("video", {"status": "unavailable"}), "cache_hit": True, "audio_origin": value.get("audio_origin", "song")}
+                source = self.root / "blobs" / item["file"]
+                if source.resolve() != source or source.stat().st_size != size:
+                    return None
+                copies.append((source, folder / (kind + suffix), sha, size))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+        if reserve is not None:
+            reserve(sum(size for _, _, _, size in copies))
+        restored = []
+        try:
+            for source, destination, sha, _ in copies:
+                existed = destination.exists()
+                self._copy(source, destination, sha)
+                if not existed:
+                    restored.append(destination)
+        except (OSError, ValueError):
+            for path in restored:
+                path.unlink(missing_ok=True)
+            return None
+        return {"media": value["media"], "video": video, "cache_hit": True, "audio_origin": audio_origin}
 
-    def verify_prepared(self, song_id):
-        """Prove a complete NAS copy still exists before evicting local media."""
+    def verify_prepared(self, song_id, *, job=None):
+        """清理本机成品前核对 NAS 副本及对应音源版本。"""
         try:
             if not self.available():
                 return False
@@ -207,6 +235,14 @@ class MediaArchive:
             files = entry.get("files", {})
             if not {"original", "instrumental"}.issubset(files):
                 return False
+            if job is not None:
+                video = job.get("video") or {}
+                media = {**job["media"], **({"video": video} if video.get("status") == "ready" else {})}
+                if entry.get("binding") != job.get("binding") or not self._same_audio_origin(entry, job.get("audio_origin", "song")):
+                    return False
+                if any((files.get(kind, {}).get("sha256"), files.get(kind, {}).get("bytes"))
+                       != (spec["sha256"], spec["bytes"]) for kind, spec in media.items()):
+                    return False
             if entry.get("video", {}).get("status") == "ready" and "video" not in files:
                 return False
             for item in files.values():
@@ -318,6 +354,13 @@ class MediaArchive:
                 with self.lock:
                     self.results[value["song_id"]] = result
                     self.known[value["id"]] = fingerprint
+                if value.get("audio_origin") in {"mv", "mv_direct"}:
+                    # 归档成功后才回收抓取的 MV 中间音频。
+                    folder = self.queue.jobs_dir / value["id"]
+                    for name in (".mv-audio.wav", "mv-source.json"):
+                        path = folder / name
+                        if path.resolve() == path:
+                            path.unlink(missing_ok=True)
             except (OSError, ValueError, KeyError):
                 with self.lock:
                     self.results[value["song_id"]] = {"state": "waiting", "updated": int(time.time())}
@@ -334,8 +377,8 @@ class MediaArchive:
                     "bytes": sum(unique.values())}
 
     def trim_local(self):
-        if getattr(self.queue, "storage_manager", None) and self.queue.storage_manager.policy()["enabled"]:
-            # One owner policy accounts for originals, stems and both NAS stores.
+        if getattr(self.queue, "storage_manager", None):
+            # 同一个 Mac 热缓存由主清理线程统一管理。
             return
         if not self.cache_manager or not self.available():
             return

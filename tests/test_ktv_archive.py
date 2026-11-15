@@ -49,7 +49,9 @@ def setup_archive(tmp_path):
     return queue, archive, manager, job, calls
 
 
-def test_archive_verified_and_local_clear_restores_without_provider(tmp_path):
+def test_archive_verified_and_local_clear_restores_without_provider(tmp_path, monkeypatch):
+    from homeplane import ktv_service
+
     queue, archive, manager, job, calls = setup_archive(tmp_path)
     try:
         archive.tick()
@@ -58,12 +60,37 @@ def test_archive_verified_and_local_clear_restores_without_provider(tmp_path):
         assert row["nas_bytes"] > 0 and row["local_bytes"] > 0
         manager.delete(row["id"], row["revision"], local_only=True)
         assert not queue.jobs and archive._catalog("1").is_file()
-        # A different request receives its own job, with NAS media restored; no model/source call.
+        # 本机冷缓存已超过旧限额时，依然可以按回档字节数恢复。
+        monkeypatch.setattr(ktv_service, "MAX_STORAGE", 1)
         again = queue.submit(JobRequest(song_id="1", title="合成曲目", request_id=str(uuid.uuid4())))
         result = queue.futures[again["id"]].result(3)
         assert result["state"] == "ready" and result["cache_hit"]
         assert calls == ["acquire"]
         assert manager.inventory()["entries"][0]["nas_bytes"] > 0
+    finally:
+        queue.close()
+
+def test_managed_hot_cache_prunes_verified_idle_media_only(tmp_path, monkeypatch):
+    from homeplane.ktv_library import SongLibrary
+
+    queue, archive, manager, item, calls = setup_archive(tmp_path)
+    try:
+        archive.tick()
+        library = SongLibrary(queue, manager.prepared, archive=archive)
+        queue.storage_manager = library
+        archive.hot_limit = 0
+        original = queue.root / "api-downloads/1/source.audio"
+        archive.active.add(item["id"])
+        assert library.trim_hot_cache()["removed"] == 0
+        archive.active.clear()
+        blob = archive.root / "blobs" / archive.entries["1"]["files"]["instrumental"]["file"]
+        saved = blob.read_bytes()
+        blob.write_bytes(b"corrupt")
+        assert library.trim_hot_cache()["removed"] == 0
+        blob.write_bytes(saved)
+        assert library.trim_hot_cache()["removed"] == 1
+        assert item["id"] not in queue.jobs and original.is_file()
+        assert archive.verify_prepared("1")
     finally:
         queue.close()
 

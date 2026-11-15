@@ -153,15 +153,21 @@ async def test_background_is_nonblocking_deduplicated_reusable_and_uses_only_son
         calls.append(json.loads(request.content))
         began.set()
         await release.wait()
-        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(picture()).decode()}]})
+        body = calls[-1]
+        size = tuple(map(int, body["size"].split("x")))
+        image = io.BytesIO()
+        Image.new("RGB", size, (24, 40, 60)).save(image, format=body["output_format"].upper())
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(image.getvalue()).decode()}]})
 
     owner = runtime(tmp_path / "ai", handler)
     owner.settings.update({"cloud_images": True})
-    images = SongBackgrounds(owner)
+    images = SongBackgrounds(owner, recording=lambda song_id: {
+        "id": song_id, "title": "曲库合成歌曲", "artists": ["曲库合成歌手"],
+    })
     song = {
         "song_id": "42",
-        "title": "合成歌曲",
-        "artist": "合成演唱者",
+        "title": "PRIVATE queue title",
+        "artist": "PRIVATE queue artist",
         "requester": {"name": "PRIVATE-not-for-cloud"},
     }
     try:
@@ -170,6 +176,7 @@ async def test_background_is_nonblocking_deduplicated_reusable_and_uses_only_son
         await began.wait()
         assert images.request(song)["status"] == "preparing" and len(calls) == 1
         assert "PRIVATE" not in json.dumps(calls) and calls[0]["n"] == 1
+        assert "曲库合成歌曲" in calls[0]["prompt"] and calls[0]["quality"] == "high"
         release.set()
         await asyncio.gather(*list(images.tasks.values()))
         ready = images.request(song)
@@ -177,6 +184,7 @@ async def test_background_is_nonblocking_deduplicated_reusable_and_uses_only_son
         assert SongBackgrounds(owner).request(song) == ready
         owner.settings.update({"daily_requests": 0, "cloud_images": False})
         assert images.request(song) == ready and len(calls) == 1
+        assert images.request({**song, "audio_origin": "cloud"})["status"] == "local"
         assert owner.status()["usage"]["used"]["images"] == 1
     finally:
         await images.close()

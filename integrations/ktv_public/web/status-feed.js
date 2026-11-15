@@ -1,8 +1,8 @@
 "use strict";
 (function(scope){
  class FridayStatusFeed {
-  constructor({events,probe,onStatus,onFailure=()=>{},visible=()=>true,setTimer=setTimeout,clearTimer=clearTimeout,now=()=>performance.now(),probeEvery=2500}){
-   Object.assign(this,{events,probe,onStatus,onFailure,visible,setTimer,clearTimer,now,probeEvery});
+  constructor({events,probe,onStatus,onFailure=()=>{},visible=()=>true,setTimer=(callback,delay)=>setTimeout(callback,delay),clearTimer=id=>clearTimeout(id),now=()=>performance.now(),probeEvery=2500,pollEvery=100}){
+   Object.assign(this,{events,probe,onStatus,onFailure,visible,setTimer,clearTimer,now,probeEvery,pollEvery});
    this.cursor=0;this.active=false;this.closed=false;this.legacy=false;this.generation=0;this.failures=0;this.controller=null;this.pollTimer=null;this.probeTimer=null;this.probing=false;this.probeController=null;
   }
   current(generation){return this.active&&!this.closed&&this.visible()&&generation===this.generation;}
@@ -24,7 +24,7 @@
     if(!this.current(generation)||controller.signal.aborted)return;
     if(!Number.isSafeInteger(value?.cursor)||!value.status||!Number.isFinite(value.status.server_time_ms))throw Object.assign(new Error(),{code:"service_unavailable"});
     this.cursor=value.cursor;this.failures=0;this.onStatus(value.status);
-    delay=Math.max(0,100-(this.now()-started));
+    delay=Math.max(0,this.pollEvery-(this.now()-started));
    }catch(error){
     if(!this.current(generation)||controller.signal.aborted)return;
     if((error.status===404&&!['room_closed','room_unavailable','guest_unavailable'].includes(error.code))

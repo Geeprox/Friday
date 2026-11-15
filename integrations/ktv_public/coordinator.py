@@ -35,6 +35,8 @@ TICKET = re.compile(r"[A-Za-z0-9_.-]{32,128}\Z")
 CAPABILITIES = frozenset({"source", "model", "download", "lyrics", "media"})
 PERSISTENT_EXPIRY = 2147483647
 MEDIA_LIMIT = 345600044
+RECOVERY_WINDOW = 30
+RECOVERY_RETRY_INTERVAL = 60
 
 
 def fixed_media_path(value, kind):
@@ -130,7 +132,7 @@ class Coordinator:
         self.recovery_identity = None
         self.recovery_attempts = 0
         self.recovery_result = "not_requested"
-        self.recovery_started_at = 0
+        self.recovery_started_at = None
         self.probe = False
         self.data_probe = False
         self.health_at = 0
@@ -150,6 +152,7 @@ class Coordinator:
                 state TEXT NOT NULL, updated INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
               CREATE TABLE IF NOT EXISTS coordinator_manifest_versions(song TEXT NOT NULL, version TEXT NOT NULL,
                 PRIMARY KEY(song,version));
+              CREATE TABLE IF NOT EXISTS coordinator_lyric_status(song TEXT PRIMARY KEY,version TEXT NOT NULL,ready INTEGER NOT NULL);
               CREATE TABLE IF NOT EXISTS coordinator_start_requests(request_id TEXT PRIMARY KEY,
                 instance TEXT NOT NULL, room TEXT NOT NULL, created INTEGER NOT NULL);
               CREATE TABLE IF NOT EXISTS coordinator_household(id INTEGER PRIMARY KEY CHECK(id=1),
@@ -157,6 +160,10 @@ class Coordinator:
               CREATE TABLE IF NOT EXISTS room_tokens(room TEXT NOT NULL, token_hash TEXT NOT NULL,
                 expires INTEGER NOT NULL, PRIMARY KEY(room,token_hash));
             """)
+            for row in db.execute("SELECT m.song,m.version,m.lyrics,m.timeline FROM coordinator_manifests m "
+                                  "LEFT JOIN coordinator_lyric_status ls ON ls.song=m.song AND ls.version=m.version "
+                                  "WHERE ls.song IS NULL").fetchall():
+                self.index_lyrics(db, row["song"], row["version"], json.loads(row["lyrics"]), json.loads(row["timeline"]))
             # This household-scoped marker outlives all scene retention. If an
             # older coordinator already left a household identity but no marker,
             # conservatively avoid adopting another legacy scene on upgrade.
@@ -225,62 +232,81 @@ class Coordinator:
             if all(self.worker["capabilities"].values()):
                 self.recovery_cancel.set()
                 self.recovery_identity = None
-                self.recovery_started_at = 0
+                self.recovery_started_at = None
                 self.recovery_result = "worker_ready"
         self.changed()
         return {"accepted": True, "instance": payload["instance"], "expires_in": 20,
                 "preparation_requested": bool(self.active()), "recovery": self.recovery(), "party": self.party()}
 
     def recovery(self):
-        active = self.active()
+        return self._recovery(self.active())
+
+    def _recovery(self, active):
         # This is a request for the already configured local supervisor. There
         # are no shell commands, arbitrary launch targets or wake actions here.
         if not active:
             return {"requested": False, "attempt": 0, "reason": "tv_not_opened"}
-        elapsed = max(0, int(time.time()) - (self.recovery_started_at or active["opened"]))
-        return {"requested": not self.worker_healthy() and elapsed < 30,
-                "attempt": self.recovery_attempts, "reason": "readiness" if elapsed < 30 else "timed_out",
-                "configured": bool(self.recovery_enabled and self.worker_origin), "cannot_wake": True,
-                "last_result": self.recovery_result}
+        with self.lock:
+            elapsed = (time.monotonic() - self.recovery_started_at if self.recovery_started_at is not None
+                       else max(0, int(time.time()) - active["opened"]))
+            return {"requested": not self.worker_healthy() and elapsed < RECOVERY_WINDOW,
+                    "attempt": self.recovery_attempts, "reason": "readiness" if elapsed < RECOVERY_WINDOW else "timed_out",
+                    "configured": bool(self.recovery_enabled and self.worker_origin), "cannot_wake": True,
+                    "last_result": self.recovery_result}
 
     def _schedule_recovery(self, active):
-        if not active or not self.recovery_enabled or not self.worker_origin or self.worker_healthy():
+        if not active or not self.recovery_enabled or not self.worker_origin:
             return
         identity = (active["instance"], active["request_id"])
         with self.lock:
-            if self.recovery_identity == identity:
+            if self.closed or self.worker_healthy():
                 return
+            now = time.monotonic()
+            same_request = self.recovery_identity == identity
+            if same_request:
+                worker_present = self.worker and 0 <= time.time() - self.worker["at"] <= 20
+                if now - self.recovery_started_at < RECOVERY_RETRY_INTERVAL or worker_present:
+                    return
+            # 同一台仍在上报的电视可等到 Mac 重新可达，每分钟最多补一次探测。
+            delays = (0,) if same_request else (0, 2, 6, 14)
             self.recovery_identity = identity
             self.recovery_cancel.set()
             self.recovery_cancel = threading.Event()
             self.recovery_attempts = 0
             self.recovery_result = "scheduled"
-            self.recovery_started_at = time.time()
-            self.recovery_pool.submit(self._recover_worker, identity, self.recovery_cancel)
+            self.recovery_started_at = now
+            self.recovery_pool.submit(self._recover_worker, identity, self.recovery_cancel, delays)
 
-    def _recover_worker(self, identity, cancel):
+    def _recover_worker(self, identity, cancel, delays):
         started = time.monotonic()
-        for delay in (0, 2, 6, 14):
+        for delay in delays:
             if cancel.wait(max(0, started + delay - time.monotonic())) or self.closed:
                 return
             active = self.active()
-            if (not active or (active["instance"], active["request_id"]) != identity
-                    or time.time() - self.recovery_started_at >= 30 or self.worker_healthy()):
+            if not active or (active["instance"], active["request_id"]) != identity:
                 return
             # Contact only the operator-pinned existing listener. Its response
             # can activate an already configured launchd socket, but neither
             # 200 nor 401 is readiness, and there is no device wake primitive.
             with self.lock:
+                if (cancel is not self.recovery_cancel or cancel.is_set()
+                        or time.monotonic() - self.recovery_started_at >= RECOVERY_WINDOW or self.worker_healthy()):
+                    return
                 self.recovery_attempts += 1
             try:
                 request = urllib.request.Request(self.worker_origin + "/v1/status", method="GET")
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
                 with opener.open(request, timeout=1) as response:
-                    self.recovery_result = "listener_response" if response.status in {200, 401} else "listener_unready"
+                    result = "listener_response" if response.status in {200, 401} else "listener_unready"
             except urllib.error.HTTPError as error:
-                self.recovery_result = "listener_response" if error.code == 401 else "listener_unready"
+                result = "listener_response" if error.code == 401 else "listener_unready"
+                error.close()
             except (OSError, ValueError):
-                self.recovery_result = "unreachable"
+                result = "unreachable"
+            with self.lock:
+                if cancel is not self.recovery_cancel or cancel.is_set():
+                    return
+                self.recovery_result = result
             self.changed()
 
     def _nas_media_probe(self):
@@ -342,8 +368,10 @@ class Coordinator:
         self.health_pool.submit(refresh)
 
     def readiness(self):
+        return self._readiness(self.active())
+
+    def _readiness(self, active):
         self._schedule_health()
-        active = self.active()
         with self.lock:
             worker = copy.deepcopy(self.worker)
         live_worker = bool(worker and 0 <= time.time() - worker["at"] <= 20)
@@ -353,12 +381,12 @@ class Coordinator:
             health_fresh = self.health_at > 0 and 0 <= time.monotonic() - self.health_at <= 15
             data, media = self.data_probe, self.probe
         gates = {"nas_api": True, "nas_data": health_fresh and data, "nas_media": health_fresh and media,
-                 "link_worker": live_worker, "link_tv": live_tv, "qr": self.qr_ready(active)}
+                 "link_worker": live_worker, "link_tv": live_tv, "qr": bool(active and self.qr_ready(active))}
         gates.update({"worker_" + k: bool(live_worker and worker["capabilities"][k]) for k in sorted(CAPABILITIES)})
         gates.update({"tv_" + k: bool(live_tv and tv.get(k)) for k in ("playback", "audio", "media")})
-        ready = bool(active and all(gates.values()))
+        ready = bool(active and all(value for name, value in gates.items() if name != "tv_audio"))
         return {"state": "ready" if ready else "degraded" if active else "closed", "ready": ready,
-                "gates": gates, "recovery": self.recovery()}
+                "gates": gates, "recovery": self._recovery(active)}
 
     def start(self, payload):
         if (set(payload) != {"instance", "request_id"} or any(not isinstance(v, str) or not UUID.fullmatch(v)
@@ -441,21 +469,27 @@ class Coordinator:
     def party(self):
         active = self.active()
         if not active:
-            return {"active": False, "readiness": self.readiness()}
+            return {"active": False, "readiness": self._readiness(None)}
         self.store.expire_unmute(active["room"])
         with self.store.connection() as db:
+            db.execute("BEGIN")
             room = dict(db.execute("SELECT * FROM rooms WHERE id=?", (active["room"],)).fetchone())
-            ids = [r[0] for r in db.execute("SELECT id FROM songs WHERE room=? ORDER BY position,rowid LIMIT 80", (active["room"],))]
+            ordered = db.execute("SELECT s.id,s.state,ls.ready=1 AS synced_lyrics FROM songs s "
+                                 "LEFT JOIN coordinator_lyric_status ls ON ls.song=s.id "
+                                 "WHERE s.room=? AND s.removed=0 ORDER BY s.position,s.rowid LIMIT 80", (active["room"],)).fetchall()
+            ids = [row["id"] for row in ordered]
             now = int(time.time())
             commands = [dict(r) for r in db.execute("SELECT seq,action,song,created FROM commands WHERE room=? AND seq>? AND created>? AND created<=? ORDER BY seq LIMIT 20",
                                                    (active["room"], room["last_command"], now - 20, now))]
         commands = [dict(r, **({"expires": r["created"] + 5} if r["action"].startswith("sfx_") else {})) for r in commands
                     if not r["action"].startswith("sfx_") or r["created"] + 5 > now]
         return {"active": True, "persistent": True, "household_id": self.household_id, "room_id": active["room"], "expires": room["expires"],
-                "join_url": self.store.origin + self.store.base_path + "/#" + urllib.parse.urlencode({"r": active["room"], "k": active["secret"]}),
+                "join_url": self.store.join_url(active["room"], active["secret"]),
                 "theme": room["theme"], "theme_revision": room["theme_revision"],
                 "controls": {k: room[k] for k in ("music_gain", "mic_gain", "mic_muted", "original", "control_revision", "mic_revision", "vocal_preset", "sfx_gain")},
-                "commands": commands, "order": ids, "readiness": self.readiness()}
+                "commands": commands, "order": ids, "upcoming": self.store.upcoming_ids(ordered, room),
+                "playable": self.store.upcoming_ids(ordered, room, playable_only=True),
+                "queue_revision": room["queue_revision"], "readiness": self._readiness(active)}
 
     def playback(self, payload, instance):
         active = self._instance(instance)
@@ -463,9 +497,10 @@ class Coordinator:
         if value.pop("room_id", None) != active["room"]:
             raise self.error(409, "room_changed")
         result = self.store.playback(active["room"], value)
-        with self.store.connection() as db:
-            db.execute("UPDATE coordinator_session SET tv_at=? WHERE id=1 AND instance=?", (int(time.time()), instance))
-        self.changed()
+        now = int(time.time())
+        if active["tv_at"] < now:
+            with self.store.connection() as db:
+                db.execute("UPDATE coordinator_session SET tv_at=? WHERE id=1 AND instance=? AND tv_at<?", (now, instance, now))
         return result
 
     def tv_controls(self, payload, instance):
@@ -499,14 +534,18 @@ class Coordinator:
         identity = self._identity(path)
         return bool(identity and isinstance(metadata, dict) and metadata.get("identity") == list(identity)
                     and isinstance(metadata.get("sha256"), str) and SHA.fullmatch(metadata["sha256"])
+                    and metadata.get("join_sha256") == self._qr_join_digest(active)
                     and 32 <= identity[2] <= 131072)
+
+    def _qr_join_digest(self, active):
+        return hashlib.sha256(self.store.join_url(active["room"], active["secret"]).encode()).hexdigest()
 
     def qr(self, payload):
         fields = {"room_id", "instance", "join_url", "sha256", "png"}
         active = self.active()
         if (set(payload) != fields or not active or payload["instance"] != active["instance"]
                 or payload["room_id"] != active["room"] or not isinstance(payload["png"], str)
-                or len(payload["png"]) > 180000 or payload["join_url"] != self.party()["join_url"]
+                or len(payload["png"]) > 180000 or payload["join_url"] != self.store.join_url(active["room"], active["secret"])
                 or not isinstance(payload["sha256"], str) or not SHA.fullmatch(payload["sha256"])):
             raise self.error(400, "invalid_qr")
         try:
@@ -546,8 +585,11 @@ class Coordinator:
             current = self.active()
             if not current or current["instance"] != active["instance"] or current["room"] != active["room"]:
                 raise self.error(409, "tv_instance_changed")
+            if payload["join_url"] != self.store.join_url(current["room"], current["secret"]):
+                raise self.error(409, "qr_invitation_changed")
             os.replace(temporary, target)
-            metadata = {"sha256": payload["sha256"], "identity": list(self._identity(target))}
+            metadata = {"sha256": payload["sha256"], "identity": list(self._identity(target)),
+                        "join_sha256": self._qr_join_digest(current)}
             atomic_private(target.with_suffix(".json"), metadata)
             self.qr_metadata[active["room"]] = metadata
         finally:
@@ -562,8 +604,9 @@ class Coordinator:
         return self.store.root / ("qr-" + active["room"] + ".png")
 
     def status(self):
+        party = self.party()
         return {"service": "friday-ktv-coordinator", "protocol": 2, "coordinator": True,
-                "party": self.party(), "readiness": self.readiness(), "cursor": self.cursor}
+                "party": party, "readiness": party["readiness"], "cursor": self.cursor}
 
     def events(self, room, after, wait=5):
         if type(after) is not int or after < 0 or type(wait) not in {int, float} or not 0 <= wait <= 5:
@@ -684,6 +727,7 @@ class Coordinator:
                        (payload["id"], payload["version"], payload["instance"], json.dumps(timeline, sort_keys=True),
                         json.dumps(clean, sort_keys=True), json.dumps(lyrics, sort_keys=True), worker["origin"], payload["media_ticket"], payload["media_expires"], now))
             db.execute("INSERT OR IGNORE INTO coordinator_manifest_versions VALUES(?,?)", (payload["id"], payload["version"]))
+            self.index_lyrics(db, payload["id"], payload["version"], lyrics, timeline)
             db.execute("UPDATE songs SET state='ready',code='none' WHERE id=? AND state!='cancelled'", (payload["id"],))
             if getattr(self.store, "management", None):
                 published = db.execute("SELECT * FROM coordinator_manifests WHERE song=?", (payload["id"],)).fetchone()
@@ -691,6 +735,78 @@ class Coordinator:
         self.changed()
         self._queue_cache(payload["id"])
         return {"accepted": True, "version": payload["version"], "archive": self.archive_state(payload["id"])}
+
+    @staticmethod
+    def lyric_state(lyrics, timeline):
+        # 新歌先准备歌词。缺失或有冲突的时间轴留给后台恢复，不算可唱。
+        lines = lyrics.get("lines") if isinstance(lyrics, dict) else None
+        duration = timeline.get("duration_ms") if isinstance(timeline, dict) else None
+        ready = (type(duration) is int and isinstance(lines, list) and 3 <= len(lines) <= 1000
+                 and lyrics.get("status", "ready") == "ready")
+        previous = -1
+        if ready:
+            for line in lines:
+                stamp = line.get("time_ms", line.get("at_ms")) if isinstance(line, dict) else None
+                text = line.get("text") if isinstance(line, dict) else None
+                if type(stamp) is not int or not previous <= stamp <= duration or stamp < 0 or not isinstance(text, str) or not text.strip():
+                    ready = False
+                    break
+                previous = stamp
+        return 1 if ready else -1 if isinstance(lyrics, dict) and lyrics.get("retry_exhausted") is True else 0
+
+    @classmethod
+    def index_lyrics(cls, db, song, version, lyrics, timeline):
+        db.execute("INSERT OR REPLACE INTO coordinator_lyric_status VALUES(?,?,?)",
+                   (song, version, cls.lyric_state(lyrics, timeline)))
+
+    def lyric_tasks(self, room_id, db):
+        rows = db.execute("SELECT s.id,s.song_id,s.source,s.title,m.timeline,m.version "
+                          "FROM songs s JOIN coordinator_manifests m ON m.song=s.id "
+                          "JOIN coordinator_lyric_status ls ON ls.song=s.id AND ls.ready=0 "
+                          "WHERE s.room=? AND s.removed=0 AND s.state='ready' AND m.instance='' "
+                          "ORDER BY s.position,s.rowid LIMIT 8", (room_id,)).fetchall()
+        return [{**{k: row[k] for k in ("id", "song_id", "source", "title", "version")},
+                 "duration_ms": json.loads(row["timeline"])["duration_ms"]} for row in rows]
+
+    def repair_lyrics(self, payload):
+        if (set(payload) != {"id", "instance", "version", "lyrics"}
+                or any(not isinstance(payload[k], str) or not UUID.fullmatch(payload[k]) for k in ("id", "instance"))
+                or not isinstance(payload["version"], str) or not SHA.fullmatch(payload["version"])
+                or not isinstance(payload["lyrics"], dict)):
+            raise self.error(400, "invalid_lyrics")
+        with self.lock:
+            worker = self.worker
+            if not worker or payload["instance"] != worker["instance"] or not 0 <= time.time() - worker["at"] <= 20:
+                raise self.error(409, "worker_unavailable")
+        lyrics = payload["lyrics"]
+        encoded = json.dumps(lyrics, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode()) > 131072:
+            raise self.error(400, "invalid_lyrics")
+        with self.store.lock, self.store.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT m.* FROM coordinator_manifests m JOIN songs s ON s.id=m.song "
+                             "JOIN coordinator_session c ON c.room=s.room JOIN rooms r ON r.id=s.room "
+                             "WHERE m.song=? AND m.instance='' AND s.state='ready' AND s.removed=0 AND r.closed=0",
+                             (payload["id"],)).fetchone()
+            if not row:
+                raise self.error(409, "lyrics_edition_changed")
+            if row["version"] != payload["version"]:
+                expected = hashlib.sha256((payload["version"] + ":" + encoded).encode()).hexdigest()
+                if row["version"] == expected:
+                    return {"accepted": True, "version": expected}
+                raise self.error(409, "lyrics_edition_changed")
+            timeline = json.loads(row["timeline"])
+            if self.lyric_state(lyrics, timeline) == 0:
+                raise self.error(400, "invalid_lyrics")
+            version = hashlib.sha256((row["version"] + ":" + encoded).encode()).hexdigest()
+            db.execute("UPDATE coordinator_manifests SET lyrics=?,version=?,updated=? WHERE song=?",
+                       (encoded, version, int(time.time()), payload["id"]))
+            self.index_lyrics(db, payload["id"], version, lyrics, timeline)
+            db.execute("INSERT OR IGNORE INTO coordinator_manifest_versions VALUES(?,?)", (payload["id"], version))
+            if getattr(self.store, "management", None):
+                self.store.management.remember(db.execute("SELECT * FROM coordinator_manifests WHERE song=?",
+                                                          (payload["id"],)).fetchone(), db)
+        return {"accepted": True, "version": version}
 
     def _row(self, song):
         with self.store.connection() as db:
@@ -866,25 +982,59 @@ class Coordinator:
         if not active:
             return {"jobs": []}
         with self.store.connection() as db:
-            songs = [dict(r) for r in db.execute("SELECT * FROM songs WHERE room=? AND removed=0 ORDER BY position,rowid LIMIT 80", (active["room"],))]
+            db.execute("BEGIN")
+            songs = [dict(r) for r in db.execute(
+                "SELECT s.id,s.song_id,s.title,s.state,s.code,s.created,s.source,m.version,m.job,m.timeline,m.origin,m.ticket,m.expires,"
+                "coalesce(ls.ready=1,0) AS synced_lyrics "
+                "FROM songs s LEFT JOIN coordinator_manifests m ON m.song=s.id AND s.state='ready' "
+                "LEFT JOIN coordinator_lyric_status ls ON ls.song=m.song AND ls.version=m.version "
+                "WHERE s.room=? AND s.removed=0 ORDER BY s.position,s.rowid LIMIT 80", (active["room"],))]
+            rows = [(row, self._specs(row)) for row in songs if row["version"]]
+            specs_by_song = {row["id"]: specs for row, specs in rows}
+            hashes = sorted({spec["sha256"] for specs in specs_by_song.values() for spec in specs.values()})
+            cache = {}
+            for i in range(0, len(hashes), 200):
+                batch = hashes[i:i + 200]
+                placeholders = ",".join("?" for _ in batch)
+                cache.update((r["sha"], dict(r)) for r in db.execute(
+                    "SELECT * FROM coordinator_cache WHERE sha IN (" + placeholders + ")", batch))
+        # 同一文件只查一次；验证通过才对电视公开本地来源。
+        present = {}
+        for specs in specs_by_song.values():
+            for spec in specs.values():
+                key = spec["sha256"], spec["bytes"]
+                if key in present:
+                    continue
+                record = cache.get(key[0])
+                valid = bool(record and record["state"] == "ready" and record["bytes"] == key[1]
+                             and self._identity(self.media_root / key[0]) == self._verified_identity(record))
+                present[key] = valid
+                if not valid and record and record["state"] == "ready" and record["bytes"] == key[1]:
+                    self._queue_verify(spec)
+        now, worker_media = time.time(), self.worker_media_ready()
         jobs = []
-        for song in songs:
-            row = self._row(song["id"])
-            if not row:
+        for row in songs:
+            song = row
+            if not row["version"]:
                 pending = {k: song[k] for k in ("id", "song_id", "title", "state", "code", "created", "source")}
                 if pending["state"] == "ready":
                     pending.update(state="transcoding", code="none")
                 jobs.append(pending)
                 continue
             job = json.loads(row["job"])
-            job.update(version=row["version"], timeline=json.loads(row["timeline"]), archive=self.archive_state(song["id"]))
-            for kind, spec in self._specs(row).items():
+            specs = specs_by_song[row["id"]]
+            states = [cache.get(spec["sha256"], {}).get("state", "pending") for spec in specs.values()]
+            all_local = all(present[(spec["sha256"], spec["bytes"])] for spec in specs.values())
+            archive = "ready" if states and all(s == "ready" for s in states) and all_local else "failed" if "failed" in states else "pending"
+            job.update(version=row["version"], timeline=json.loads(row["timeline"]), archive=archive,
+                       synced_lyrics=bool(row["synced_lyrics"]))
+            for kind, spec in specs.items():
                 if kind.startswith("guide_"):
                     continue
                 sources = []
-                if self.cached_file(spec):
+                if present[(spec["sha256"], spec["bytes"])]:
                     sources.append({"url": "/v1/jobs/" + song["id"] + "/media/" + kind})
-                if row["expires"] > time.time() + 5 and self.worker_media_ready():
+                if row["expires"] > now + 5 and worker_media:
                     sources.append({"origin": row["origin"], "url": spec["url"], "header": "X-KTV-Media",
                                     "credential": row["ticket"], "expires": row["expires"]})
                 public = dict(spec, sources=sources)
@@ -1029,8 +1179,9 @@ class Coordinator:
         self.store.guide_update(value)
 
     def close(self):
-        self.closed = True
-        self.recovery_cancel.set()
+        with self.lock:
+            self.closed = True
+            self.recovery_cancel.set()
         self.changed()
         self.cache_pool.shutdown(wait=False)
         self.recovery_pool.shutdown(wait=False)

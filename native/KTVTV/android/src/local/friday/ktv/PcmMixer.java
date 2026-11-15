@@ -12,6 +12,7 @@ public final class PcmMixer {
     private final java.util.concurrent.atomic.AtomicLong safetyReset=new java.util.concurrent.atomic.AtomicLong();
     private long appliedSafetyReset;
     private float limiterGain=1,voiceGate;
+    private boolean voiceInput;
     private long processedFrames;
     private volatile long voiceGateWord;
     public volatile long limitedSamples;
@@ -26,7 +27,7 @@ public final class PcmMixer {
      * boundary; polling and ordinary stream clears never release protection. */
     public void resetVoiceSafety(){safetyReset.incrementAndGet();}
     public void clearVoice() {
-        feedbackA.clearState();feedbackB.clearState();
+        feedbackA.clearState();feedbackB.clearState();safety.interruptInput();voiceInput=false;
         java.util.Arrays.fill(hpLastX,0);java.util.Arrays.fill(hpLastY,0);java.util.Arrays.fill(envelope,0);
         effects.clear();
     }
@@ -47,8 +48,19 @@ public final class PcmMixer {
     }
 
     public void mix(short[] music, short[] mic, int micChannels, int frames, short[] output) {
-        if (frames < 0 || music.length < frames * 2 || output.length < frames * 2
-                || (micChannels != 1 && micChannels != 2) || mic.length < frames * micChannels)
+        mix(music,mic,micChannels,frames,frames,output);
+    }
+    /** 只处理歌曲音轨，沿用同一音乐增益和限幅。 */
+    public void mixBacking(short[] music,int frames,short[] output){
+        if(frames<0||frames>music.length/2||frames>output.length/2)throw new IllegalArgumentException("invalid_pcm_block");
+        float gain=clamp(musicGain,0,1);
+        for(int sample=0;sample<frames*2;sample+=2){
+            limit(music[sample]/32768f*gain,music[sample+1]/32768f*gain,output,sample);
+        }
+    }
+    public void mix(short[] music, short[] mic, int micChannels, int frames, int micFrames, short[] output) {
+        if (frames < 0 || frames>music.length/2 || frames>output.length/2
+                || (micChannels != 1 && micChannels != 2) || micFrames<0 || micFrames>frames || micFrames>mic.length/micChannels)
             throw new IllegalArgumentException("invalid_pcm_block");
         float mg = clamp(musicGain, 0, 1), a = clamp(gainA, 0, 1), b = clamp(gainB, 0, 1);
         long reset=safetyReset.get();if(frames>0&&reset!=appliedSafetyReset){feedbackA.reset();feedbackB.reset();safety.reset();appliedSafetyReset=reset;}
@@ -56,16 +68,21 @@ public final class PcmMixer {
         float gainReference=micChannels==2?Math.max(a,b):a;
         boolean observedMute=false,observedLatch=false;
         for (int frame = 0; frame < frames; frame++) {
-            float raw=mic[frame*micChannels]/32768f;
-            boolean clippedA=Math.abs((int)mic[frame*micChannels])>=32760,clippedB=false;
-            float filteredA=feedbackA.process(raw);
-            float voiceA=voice(filteredA,0)*a,voiceB=voiceA;
-            float vocal=voiceA;
-            float rawB=0;
-            if(micChannels==2){rawB=mic[frame*2+1]/32768f;float filteredB=feedbackB.process(rawB);clippedB=Math.abs((int)mic[frame*2+1])>=32760;voiceB=voice(filteredB,1)*b;vocal=(voiceA+voiceB)*.5f;}
-            safety.accept(raw,rawB,clippedA,clippedB,feedbackA,micChannels==2?feedbackB:null);
+            float voiceA=0,voiceB=0;
+            if(frame<micFrames){
+                voiceInput=true;
+                int sampleA=mic[frame*micChannels],sampleB=micChannels==2?mic[frame*2+1]:0;
+                float rawA=sampleA/32768f,rawB=sampleB/32768f;
+                voiceA=voice(feedbackA.process(rawA),0)*a;
+                voiceB=micChannels==2?voice(feedbackB.process(rawB),1)*b:voiceA;
+                safety.accept(rawA,rawB,Math.abs(sampleA)>=32760,Math.abs(sampleB)>=32760,feedbackA,micChannels==2?feedbackB:null);
+            }else if(voiceInput){
+                // 补零不参与防啸叫。恢复输入后用新的连续窗口恢复人声输出。
+                clearVoice();voiceGate=0;
+            }
+            float vocal=(voiceA+voiceB)*.5f;
             observedMute=micMuted;observedLatch=safety.latched;
-            float target=observedMute||observedLatch?0:1;voiceGate+=clamp(target-voiceGate,-1f/96,1f/2400);
+            float target=observedMute||observedLatch||!safety.ready?0:1;voiceGate+=clamp(target-voiceGate,-1f/96,1f/2400);
             // Only the wet state is delayed. Mute/guard/zero gain clear it on
             // the current sample; the existing dry gate keeps its short fade.
             effects.process(voiceA*voiceGate,voiceB*voiceGate,target>0&&gainReference>0);
@@ -73,15 +90,17 @@ public final class PcmMixer {
             float dry=CompatVocalEffects.softLimit(vocal*voiceGate*protection/(1+effects.activeWet()),dryCeiling);
             float left=music[frame*2]/32768f*mg+dry+CompatVocalEffects.softLimit(effects.left*protection,wetCeiling);
             float right=music[frame*2+1]/32768f*mg+dry+CompatVocalEffects.softLimit(effects.right*protection,wetCeiling);
-            // Causal linked peak limiting, with smooth release. No dry FIFO or
-            // lookahead is added by the effects or the mixer.
-            float peak=Math.max(Math.abs(left),Math.abs(right));
-            float desired=peak>.8f?.8f/peak:1;
-            limiterGain=desired<limiterGain?desired:Math.min(desired,limiterGain+.0002f);
-            if(desired<1)limitedSamples+=2;
-            output[frame*2]=(short)Math.round(clamp(left*limiterGain,-.8f,.8f)*32767);
-            output[frame*2+1]=(short)Math.round(clamp(right*limiterGain,-.8f,.8f)*32767);
+            limit(left,right,output,frame*2);
         }
         if(frames>0){processedFrames+=frames;voiceGateWord=(processedFrames<<3)|(observedMute?4:0)|(observedLatch?2:0)|(voiceGate==0?1:0);}
+    }
+    /** 复用按立体声峰值联动的限幅和释放，不增加缓冲。 */
+    private void limit(float left,float right,short[] output,int sample){
+        float peak=Math.max(Math.abs(left),Math.abs(right));
+        float desired=peak>.8f?.8f/peak:1;
+        limiterGain=desired<limiterGain?desired:Math.min(desired,limiterGain+.0002f);
+        if(desired<1)limitedSamples+=2;
+        output[sample]=(short)Math.round(clamp(left*limiterGain,-.8f,.8f)*32767);
+        output[sample+1]=(short)Math.round(clamp(right*limiterGain,-.8f,.8f)*32767);
     }
 }

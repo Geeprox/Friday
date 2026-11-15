@@ -19,7 +19,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 OWNER_ORIGIN = "http://127.0.0.1:8769"
-READS = {"manage/room", "manage/library", "manage/search", "jobs", "scheduler", "source/status"}
+OWNER_PREFIX = "/api/games/ktv"
+READS = {"manage/room", "manage/library", "manage/search", "manage/backgrounds", "jobs", "scheduler", "source/status"}
 WRITES = {
     "manage/preview", "manage/delete", "manage/policy", "scheduler", "source/login", "source/poll",
     "source/settings", *{"manage/room/" + op for op in
@@ -27,6 +28,7 @@ WRITES = {
 }
 ERRORS = {
     "cache_changed", "archive_changed", "cache_in_use", "plan_expired", "nas_management_unavailable",
+    "background_unavailable", "daily_images_reached", "cloud_images_disabled", "background_queue_full",
     "tv_offline", "room_changed", "queue_changed", "song_playing", "vocal_preset_unavailable",
     "microphone_update_required", "sfx_unavailable", "source_login_required", "source_rights_denied",
     "source_api_unavailable", "source_file_invalid", "download_timeout", "separation_failed",
@@ -34,6 +36,9 @@ ERRORS = {
     "invalid_request", "invalid_control", "invalid_query", "library_unavailable", "source_downloading",
     "source_changed", "download_unavailable", "source_login_unavailable", "source_login_expired",
     "source_settings_invalid", "unauthorized",
+    "failed_history_already_prepared", "failed_history_source_unknown", "failed_history_source_changed",
+    "failed_history_hidden", "retry_unavailable", "retry_in_progress", "retry_limit", "remove_unavailable",
+    "cache_miss", "not_found", "idempotency_conflict", "mac_offline", "cloud_song_unavailable",
 }
 PRIVATE_FIELDS = {
     "token", "agent_key", "key", "credential", "cookie", "authorization", "endpoint", "origin",
@@ -69,7 +74,7 @@ def installed_owner_config(launch_agent: Path, development_root: Path) -> Path:
                 or Path(arguments[1]).parent.name != "scripts" or arguments[2] != "serve"):
             raise ValueError
         flags, index = {}, 3
-        valued = {"--config", "--host", "--port", "--download-dir", "--public-config"}
+        valued = {"--config", "--host", "--port", "--download-dir", "--public-config", "--installed-root"}
         switches = {"--allow-download", "--launchd-sockets"}
         while index < len(arguments):
             argument = arguments[index]
@@ -151,6 +156,17 @@ def public_value(value, token):
     return value
 
 
+def accepts_owner_operation(method, operation):
+    """桌面外层与同源适配器共用一份读写入口。"""
+    if method == "GET":
+        return operation in READS or operation == "party-audio.js" or bool(re.fullmatch(
+            r"(?:jobs/[a-f0-9-]{36}/journal|manage/backgrounds/[a-f0-9]{64}/preview)", operation))
+    if method == "POST":
+        return operation in WRITES or bool(re.fullmatch(
+            r"manage/(?:jobs/[a-f0-9-]{36}/(?:retry|remove)|backgrounds/[a-f0-9]{64}/regenerate)", operation))
+    return False
+
+
 def create_router(config_path=None, *, transport=None, read_only=False, launch_agent_path=None, development_root=None):
     launch_agent = (Path(launch_agent_path) if launch_agent_path is not None
                     else Path.home() / "Library/LaunchAgents/local.friday.ktv.plist")
@@ -181,18 +197,21 @@ def create_router(config_path=None, *, transport=None, read_only=False, launch_a
         if read_only and request.method == "POST":
             raise HTTPException(403, "ktv_read_only")
 
-    router = APIRouter(prefix="/api/games/ktv", dependencies=[Depends(boundary)])
+    router = APIRouter(prefix=OWNER_PREFIX, dependencies=[Depends(boundary)])
 
     @router.get("/party-audio.js")
     async def party_audio():
         source = Path(__file__).resolve().parents[1] / "integrations/ktv_public/web/party-audio.js"
-        return Response(source.read_bytes(), media_type="text/javascript", headers={"Cache-Control": "no-store"})
+        try:
+            payload = source.read_bytes()
+        except OSError:
+            raise HTTPException(503, "ktv_audio_controls_unavailable") from None
+        return Response(payload, media_type="text/javascript", headers={"Cache-Control": "no-store"})
 
     @router.get("/{operation:path}", operation_id="ktv_owner_read")
     @router.post("/{operation:path}", operation_id="ktv_owner_write")
     async def owner_operation(operation: str, request: Request):
-        journal = bool(re.fullmatch(r"jobs/[a-f0-9-]{36}/journal", operation))
-        if operation not in (READS if request.method == "GET" else WRITES) and not (journal and request.method == "GET"):
+        if not accepts_owner_operation(request.method, operation):
             raise HTTPException(404, "not_found")
         query = dict(request.query_params)
         if len(query) != len(request.query_params.multi_items()):

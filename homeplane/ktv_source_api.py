@@ -5,8 +5,8 @@ private pipes, stay in a 0600 local file and never appear in public snapshots.
 """
 from __future__ import annotations
 
-import fcntl
 import concurrent.futures
+import fcntl
 import hashlib
 import io
 import json
@@ -31,11 +31,13 @@ SOURCE_ERRORS = {"source_login_required", "source_rights_denied", "source_api_un
 
 
 class LocalSourceAPI:
-    def __init__(self, root: Path, provider: Path, *, node=None, rpc=None):
+    def __init__(self, root: Path, provider: Path, *, node=None, rpc=None, official_bundle=None):
         self.root = _directory(root, create=True)
         self.provider = provider.absolute()
         self.node = node or shutil.which("node")
-        self.bridge = Path(__file__).resolve().parents[1] / "integrations/ktv_source/bridge.cjs"
+        workspace = Path(__file__).resolve().parents[1]
+        self.bridge = workspace / "integrations/ktv_source/bridge.cjs"
+        self.official_bundle = official_bundle or workspace / ".artifacts/ktv-source/OfficialLogin.app"
         self.tmp = _directory(self.root / "tmp", create=True)
         self.session_path = self.root / "session.json"
         self.lock = threading.RLock()
@@ -104,11 +106,10 @@ class LocalSourceAPI:
             return self.settings()
 
     def official_login(self):
-        bundle = Path(__file__).resolve().parents[1] / ".artifacts/ktv-source/OfficialLogin.app"
         try:
-            subprocess.run(["/usr/bin/codesign", "--verify", "--deep", str(bundle)], check=True,
+            subprocess.run(["/usr/bin/codesign", "--verify", "--deep", str(self.official_bundle)], check=True,
                            capture_output=True, timeout=8)
-            subprocess.run(["/usr/bin/open", "-n", str(bundle), "--args", str(self.session_path)],
+            subprocess.run(["/usr/bin/open", "-n", str(self.official_bundle), "--args", str(self.session_path)],
                            check=True, capture_output=True, timeout=8)
         except (OSError, subprocess.SubprocessError):
             raise ValueError("source_api_unavailable") from None
@@ -281,6 +282,98 @@ class LocalSourceAPI:
             return future.result(timeout=6) if future else {"status": "unavailable", "lines": []}
         except (concurrent.futures.TimeoutError, OSError, ValueError):
             return {"status": "unavailable", "lines": []}
+
+    def public_lyric_recording(self, song_id):
+        """公开曲库的录音身份，供歌词候选复核。"""
+        song_id = canonical_song_id(song_id)
+        body = self.rpc("detail", id=song_id, cookie="")["body"]
+        songs = body.get("songs", [])
+        if not isinstance(songs, list) or len(songs) != 1 or not isinstance(songs[0], dict) or str(songs[0].get("id")) != song_id:
+            raise ValueError("lyric_recording_unverified")
+        song = songs[0]
+        title, duration = song.get("name"), song.get("dt")
+        if (not isinstance(title, str) or not 0 < len(title) <= 120 or any(ord(c) < 32 or ord(c) == 127 for c in title)
+                or type(duration) is not int or not 0 < duration <= 1800000):
+            raise ValueError("lyric_recording_unverified")
+        artists = [artist for artist in (song.get("ar") or [])[:8]
+                   if isinstance(artist, dict) and isinstance(artist.get("name"), str)
+                   and 0 < len(artist["name"]) <= 100
+                   and not any(ord(c) < 32 or ord(c) == 127 for c in artist["name"])]
+        artist_ids = tuple(str(artist.get("id", "")) for artist in artists)
+        isrc = str(song.get("isrc") or "").replace("-", "").upper()
+        return {
+            "id": song_id,
+            "title": title,
+            "duration_ms": duration,
+            "artists": [artist["name"] for artist in artists],
+            "artist_ids": artist_ids if all(re.fullmatch(r"[1-9][0-9]{0,17}", value) for value in artist_ids) else (),
+            "album": str((song.get("al") or {}).get("id") or ""),
+            "isrc": isrc if re.fullmatch(r"[A-Z]{2}[A-Z0-9]{3}[0-9]{7}", isrc) else "",
+        }
+
+    def public_timed_lyrics(self, song_id, duration_ms):
+        """只从官方歌词接口取时间轴，使用固定的公开读取方式。"""
+        from .ktv_search import parse_lrc
+
+        song_id = canonical_song_id(song_id)
+        body = self.rpc("lyrics", id=song_id, cookie="")["body"]
+        if body.get("pureMusic"):
+            return {"status": "instrumental", "lines": []}
+        lines = [line for line in parse_lrc((body.get("lrc") or {}).get("lyric", ""))
+                 if line["time_ms"] <= duration_ms and line["text"] not in {"暂无歌词", "纯音乐，请欣赏"}]
+        if body.get("uncollected") or len(lines) < 3:
+            return {"status": "unavailable", "lines": []}
+        return {"status": "ready", "lines": lines}
+
+    def public_cloud_background(self, song_id):
+        """用公开录音核对已缓存云盘曲目，只返回公开歌名与歌手。"""
+        from .ktv_search import search_songs
+
+        song_id = canonical_song_id(song_id)
+        path = self.root / "cloud-owned.json"
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077 or path.stat().st_size > 1048576:
+                return None
+            owned = json.loads(path.read_text())["songs"][song_id]
+            title, artists, duration = song_title(owned["title"]), owned["artists"], owned["duration_ms"]
+            if (not title or not isinstance(artists, list) or not artists or not all(isinstance(a, str) and a for a in artists)
+                    or type(duration) is not int or not 0 < duration <= 1800000):
+                return None
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+        def verified(identity):
+            try:
+                detail = self.public_lyric_recording(identity)
+                if (not detail["artist_ids"] or not re.fullmatch(r"[1-9][0-9]{0,17}", detail["album"])
+                        or not _same_lyric_identity(owned, detail) or abs(detail["duration_ms"] - duration) > 2500):
+                    return None
+                return {"title": detail["title"], "artist": " / ".join(detail["artists"])}
+            except (OSError, ValueError, TypeError, KeyError, httpx.HTTPError):
+                return None
+
+        lyric_id = owned.get("lyric_id")
+        identities = {song_id: None}
+        if isinstance(lyric_id, str) and re.fullmatch(r"[1-9][0-9]{0,17}", lyric_id):
+            identities[lyric_id] = None
+        for identity in identities:
+            result = verified(identity)
+            if result:
+                return result
+        try:
+            candidates = search_songs(title + " " + _lyric_artist(artists[0]))
+            exact = [row for row in candidates if _same_lyric_identity(owned, row)]
+            if not exact:
+                exact = [row for row in self._artist_lyric_candidates(owned) if _same_lyric_identity(owned, row)]
+        except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError):
+            return None
+        for candidate in exact[:3]:
+            identity = candidate.get("song_id")
+            if isinstance(identity, str) and identity not in identities:
+                result = verified(identity)
+                if result:
+                    return result
+        return None
 
     def _cloud_lyrics(self, song_id):
         from .ktv_search import parse_lrc, search_songs

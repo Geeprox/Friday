@@ -54,11 +54,45 @@ def activate(host, port, *, library=None):
         raise
 
 
-def definition(root, host, port=8769):
-    root = root.absolute()
-    arguments = [str(root/".venv/bin/python"), str(root/"scripts/ktv_server.py"), "serve", "--host", host,
-                 "--port", str(port), "--allow-download", "--public-config", str(root/"data/ktv/nas.json"), "--launchd-sockets"]
-    return {"Label": "local.friday.ktv", "ProgramArguments": arguments, "WorkingDirectory": str(root),
+def installed_workspace(root, installed_root):
+    """确认源码来自当前用户持有的同仓库工作树，复用既有本机资源。"""
+    root = Path(root).absolute()
+    installed = Path(installed_root).absolute() if installed_root is not None else root
+    if installed == root:
+        return root
+
+    def read_pointer(path):
+        info = path.lstat()
+        if (path.resolve() != path or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or not 0 < info.st_size <= 4096):
+            raise ValueError("unregistered_installation_worktree")
+        return path.read_text().rstrip("\n")
+
+    try:
+        if (installed.resolve() != installed or installed.stat().st_uid != os.getuid()
+                or root.resolve() != root or root.stat().st_uid != os.getuid()
+                or root.parent != installed / ".private/worktrees"):
+            raise ValueError()
+        link = root / ".git"
+        pointer = read_pointer(link)
+        if not pointer.startswith("gitdir: "):
+            raise ValueError()
+        registry = Path(pointer.removeprefix("gitdir: "))
+        if registry.parent != installed / ".git/worktrees" or read_pointer(registry / "gitdir") != str(link):
+            raise ValueError()
+    except (OSError, ValueError, UnicodeError):
+        raise ValueError("unregistered_installation_worktree") from None
+    return installed
+
+
+def definition(root, host, port=8769, *, installed_root=None):
+    root = Path(root).absolute()
+    installed = installed_workspace(root, installed_root)
+    arguments = [str(installed/".venv/bin/python"), str(root/"scripts/ktv_server.py"), "serve", "--host", host,
+                 "--port", str(port), "--allow-download", "--public-config", str(installed/"data/ktv/nas.json"), "--launchd-sockets"]
+    if installed != root:
+        arguments += ["--installed-root", str(installed), "--config", str(installed/"data/ktv/config.json")]
+    return {"Label": "local.friday.ktv", "ProgramArguments": arguments, "WorkingDirectory": str(installed),
         "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "ThrottleInterval": 3, "ExitTimeOut": 30,
         "ProcessType": "Background", "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin", "PYTHONDONTWRITEBYTECODE": "1"},
         "StandardOutPath": "/dev/null", "StandardErrorPath": "/dev/null",
@@ -246,7 +280,7 @@ class _EntryParser(argparse.ArgumentParser):
 def _entry(argv):
     parser = _EntryParser(add_help=False, allow_abbrev=False)
     parser.add_argument("action", nargs="?")
-    for option, default in (("config", "data/ktv/config.json"), ("public-config", None), ("host", "127.0.0.1"), ("port", "8769"), ("download-dir", None)):
+    for option, default in (("config", "data/ktv/config.json"), ("public-config", None), ("host", "127.0.0.1"), ("port", "8769"), ("download-dir", None), ("installed-root", None)):
         parser.add_argument("--" + option, default=default)
     for option in ("launchd-sockets", "allow-download", "reset-startup-budget"):
         parser.add_argument("--" + option, action="store_true")
@@ -335,6 +369,11 @@ def guarded_run(main, argv, *, clock=time.time, sleep=time.sleep, timer_factory=
     if any(option in argv for option in ("--help", "-h")) or (args.action != "serve" and not args.reset_startup_budget):
         return main(list(argv))
     try:
+        if args.installed_root is not None:
+            installed = installed_workspace(Path(__file__).resolve().parents[1], args.installed_root)
+            configs = [args.config, args.public_config] if args.public_config is not None else [args.config]
+            if any(not Path(config).absolute().is_relative_to(installed / "data/ktv") for config in configs):
+                raise StartupBudgetError("startup_budget_unavailable")
         anchor = Path(args.public_config or args.config).absolute()
         fingerprint = fingerprint_fn(args.config, args.public_config)
         budget = StartupBudget(anchor.with_name("startup-budget.json"), fingerprint, clock=clock)

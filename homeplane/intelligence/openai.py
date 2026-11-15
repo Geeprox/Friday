@@ -22,6 +22,15 @@ def token_usage(payload):
     return sum(values)
 
 
+def image_size_rejected(status, payload):
+    """只识别服务端在生成前明确拒绝的尺寸参数。"""
+    error = payload.get("error")
+    return (status in (400, 422) and isinstance(error, dict) and error.get("param") == "size"
+            and error.get("type") in (None, "invalid_request_error")
+            and error.get("code") in (None, "invalid_value", "unsupported_value", "invalid_size",
+                                      "invalid_image_size", "unsupported_image_size"))
+
+
 class OpenAIClient:
     def __init__(self, settings, ledger, *, transport=None):
         self.settings, self.ledger, self.transport = settings, ledger, transport
@@ -87,6 +96,11 @@ class OpenAIClient:
                         if not isinstance(payload, dict):
                             payload = {}
                         if response.status_code != 200:
+                            if (capability == "images" and path == "images/generations" and images
+                                    and image_size_rejected(response.status_code, payload)):
+                                # 这次已验证的参数拒绝没有生成图片，已发送的 HTTP 请求仍计数。
+                                await asyncio.to_thread(self.ledger.settle, identifier, text_tokens=0, images=0)
+                                raise EnhancementUnavailable("api_image_size_rejected")
                             if 400 <= response.status_code < 500:
                                 await asyncio.to_thread(self.ledger.settle, identifier, text_tokens=0)
                             await asyncio.to_thread(

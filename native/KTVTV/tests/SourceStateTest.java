@@ -23,6 +23,14 @@ public final class SourceStateTest {
   File cache=new File(root,"cache");cache.mkdir();String a=String.join("",Collections.nCopies(64,"a")),b=String.join("",Collections.nCopies(64,"b")),c=String.join("",Collections.nCopies(64,"c"));
   File fa=new File(cache,a+".wav"),fb=new File(cache,b+".mp4"),fc=new File(cache,c+".wav");Files.write(fa.toPath(),new byte[40]);Files.write(fb.toPath(),new byte[40]);fa.setLastModified(1);fb.setLastModified(2);
   MediaCache media=new MediaCache(cache,100);media.protect(new HashSet<>(Arrays.asList(a)));media.reserve(fc,40);check(fa.exists()&&!fb.exists(),"pinned current survives LRU eviction");Files.write(fc.toPath(),new byte[40]);media.protect(new HashSet<>(Arrays.asList(a,c)));boolean full=false;try{media.reserve(fb,40);}catch(IOException e){full=true;}check(full&&media.bytes()==80,"pinned media never evicted to overfill");media.protect(new HashSet<>());media.used(fa);media.reserve(fb,40);check(fa.exists()&&!fc.exists(),"recently used song survives");
+  Files.write(fc.toPath(),new byte[40]);media.played(fa);fa.setLastModified(1);media.used(fc);
+  media.reserve(fb,40);check(fa.exists()&&!fc.exists(),"frequently sung stem survives a recently prefetched file");
+  try(MediaCache.Reservation download=media.reserveTransfer(fb,50)){
+   media.protect(new HashSet<>(Arrays.asList(a)));boolean blocked=false;
+   try{media.reserveTransfer(fc,20);}catch(IOException expected){blocked=true;}
+   check(blocked,"concurrent transfers cannot oversubscribe space reserved for another song");
+  }
+  try(MediaCache.Reservation after=media.reserveTransfer(fc,20)){check(fa.exists(),"released reservation leaves played song intact");}
   System.out.println("Input quarantine, hot switch and protected TV LRU passed; no device started");
  }
 }

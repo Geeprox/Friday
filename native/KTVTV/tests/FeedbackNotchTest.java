@@ -121,6 +121,34 @@ public final class FeedbackNotchTest {
         safety.reset();for(int i=0;i<8192;i++)safety.accept(i%2==0?1:-1,true);
         check(safety.latched&&safety.reason==1&&safety.peakHz==0,"persistent digital overload is a distinct safety reason");
         for(int i=0;i<48000;i++)safety.accept(0,false);check(safety.latched,"quiet input never clears overload");
+
+        PcmMixer interrupted=new PcmMixer();interrupted.micMuted=false;interrupted.musicGain=0;
+        short[] backingOnly=new short[480],stereo=new short[480],combined=new short[480];
+        for(int block=0;block<30;block++)interrupted.mix(backingOnly,stereo,2,240,0,combined);
+        check(!interrupted.safety.ready&&interrupted.safety.frames==0,"backing-only render cannot prime protection");
+        for(int block=0;block<20;block++){
+            for(int i=0;i<240;i++)stereo[2*i]=(short)(tone(block*240+i,660)*8000);
+            interrupted.mix(backingOnly,stereo,2,240,combined);
+        }
+        check(interrupted.safety.ready&&(interrupted.voiceGateState()&1)==0,"continuous actual input opens the protected dry gate");
+        interrupted.mix(backingOnly,stereo,2,240,15,combined);
+        check(!interrupted.safety.ready&&interrupted.safety.frames==4815&&(interrupted.voiceGateState()&1)==1,"partial delivery mutes at the gap and counts only real input");
+        for(int i=30;i<combined.length;i++)check(combined[i]==0,"missing input cannot replay a previous voice block");
+        interrupted.mix(backingOnly,stereo,2,240,combined);
+        check(!interrupted.safety.ready&&(interrupted.voiceGateState()&1)==1,"a fresh window is required after the gap");
+
+        PcmMixer clippedChannel=new PcmMixer();
+        for(int block=0;block<40;block++){
+            for(int i=0;i<240;i++){
+                int sample=block*240+i;
+                stereo[2*i]=(short)(sample%32==0?32767:tone(sample,490)*14000);
+                stereo[2*i+1]=0;
+            }
+            clippedChannel.mix(backingOnly,stereo,2,240,combined);
+        }
+        check(clippedChannel.safety.latched&&clippedChannel.safety.reason==1,"persistent clipping on one stereo channel must not be averaged away");
+        clippedChannel.mix(backingOnly,stereo,2,240,0,combined);
+        check(clippedChannel.safety.latched,"missing input cannot clear a latched mute");
         FeedbackNotch corrupt=new FeedbackNotch();
         for(int i=0;i<48000;i++){float value=i%3==0?Float.NaN:i%3==1?Float.POSITIVE_INFINITY:Float.MAX_VALUE;check(Float.isFinite(corrupt.process(value)),"nonfinite input never poisons IIR or analysis");}
 

@@ -97,6 +97,7 @@ class Session:
             return
         u=urllib.parse.urlsplit(f[2])
         if u.scheme!='http' or u.hostname!=HOST: raise ValueError('unexpected screenshot host')
+        ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
         (ROOT/'tv-screenshot-url.txt').write_text(f[2])
         print(json.dumps({'screenshot_port':u.port}),flush=True)
         opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))

@@ -1,6 +1,7 @@
 """Synthetic startup/recovery definitions; no actual processes or household services."""
 import json
 from pathlib import Path
+import pytest
 from homeplane.ktv_startup import definition
 from integrations.ktv_public.launch import owned
 
@@ -14,6 +15,31 @@ def test_launch_agent_reuses_only_existing_api_port_and_fixed_entry(tmp_path):
     assert {s['SockServiceName'] for s in value['Sockets'].values()}=={'8769'}
     assert value['ProgramArguments'][-1]=='--launchd-sockets'
     assert not any('token' in s.lower() for s in value['ProgramArguments'])
+
+
+def test_launch_agent_accepts_only_registered_worktree_for_existing_installation(tmp_path):
+    from homeplane.ktv_startup import installed_workspace
+
+    installed = tmp_path / "installed"
+    source = installed / ".private/worktrees/current-release"
+    registry = installed / ".git/worktrees/current-release"
+    source.mkdir(parents=True)
+    registry.mkdir(parents=True)
+    (source / ".git").write_text(f"gitdir: {registry}\n")
+    (registry / "gitdir").write_text(f"{source / '.git'}\n")
+    spec = definition(source, "192.168.10.5", installed_root=installed)
+    arguments = spec["ProgramArguments"]
+    assert spec["WorkingDirectory"] == str(installed)
+    assert arguments[:3] == [str(installed / ".venv/bin/python"), str(source / "scripts/ktv_server.py"), "serve"]
+    assert arguments[arguments.index("--config") + 1] == str(installed / "data/ktv/config.json")
+    assert arguments[arguments.index("--public-config") + 1] == str(installed / "data/ktv/nas.json")
+    unrelated = tmp_path / "other-installation"
+    unrelated.mkdir()
+    with pytest.raises(ValueError, match="unregistered_installation_worktree"):
+        installed_workspace(source, unrelated)
+    (registry / "gitdir").write_text(f"{unrelated / '.git'}\n")
+    with pytest.raises(ValueError, match="unregistered_installation_worktree"):
+        installed_workspace(source, installed)
 
 
 def test_nas_recovery_refuses_pid_reuse_or_different_config(tmp_path):

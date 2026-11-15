@@ -19,6 +19,7 @@ import uuid
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import HTTPException
 
 from .ktv_service import ACTIVE, atomic_json
@@ -27,6 +28,7 @@ ID = re.compile(r"[1-9][0-9]{0,17}\Z")
 SHA = re.compile(r"[a-f0-9]{64}\Z")
 JOB = re.compile(r"[a-f0-9-]{36}\Z")
 DEFAULT_POLICY = {"enabled": False, "limit_bytes": 20 * 1024**3}
+DEFAULT_HOT_CACHE_BYTES = 2 * 1024**3
 
 
 def read_record(path, limit=262144):
@@ -74,6 +76,9 @@ class SongLibrary:
         self.last_cleanup = {"state": "not_run", "removed_bytes": 0, "removed": 0}
         self.reservations = {}
         self.legacy_guide_hashes = {}
+        self.trim_wake = threading.Event()
+        self.trim_request_lock = threading.Lock()
+        self.trim_bytes_requested = 0
 
     def policy(self, value=None):
         with self.lock:
@@ -82,6 +87,7 @@ class SongLibrary:
                         or type(value["limit_bytes"]) is not int or not 2 * 1024**3 <= value["limit_bytes"] <= 100 * 1024**4):
                     raise HTTPException(400, "invalid_policy")
                 atomic_json(self.path, value)
+                self.request_trim()
             data = read_record(self.path)
             return data if set(data) == set(DEFAULT_POLICY) else dict(DEFAULT_POLICY)
 
@@ -205,6 +211,27 @@ class SongLibrary:
                                    "last_used": int(path.lstat().st_mtime), "protected": False, "busy": active, "kind": "orphan"}
         return groups
 
+    def _hot_cache_limit(self, policy):
+        return policy["limit_bytes"] if policy["enabled"] else getattr(self.archive, "hot_limit", DEFAULT_HOT_CACHE_BYTES)
+
+    def _hot_cache_usage(self, jobs):
+        files = {}
+        for job in jobs:
+            if job["state"] != "ready":
+                continue
+            folder = self.queue.jobs_dir / job["id"]
+            names = ["original.wav", "instrumental.wav"]
+            if job.get("video", {}).get("status") == "ready":
+                names.append("video.mp4")
+            for name in names:
+                try:
+                    info = (folder / name).lstat()
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode):
+                    files[info.st_dev, info.st_ino] = info.st_size
+        return sum(files.values())
+
     def local_inventory(self, remote_protected=()):
         with self.lock, self.state_lock():
             entries, unique = [], {}
@@ -215,8 +242,19 @@ class SongLibrary:
                                 "bytes": sum(files.values()), "revision": revision, "copies": len(row["jobs"]),
                                 "can_delete": not (row["busy"] or row["protected"] or unsafe),
                                 "reason": "preparing" if row["busy"] else "in_queue" if row["protected"] else "unsafe" if unsafe else ""})
+            policy = self.policy()
+            hot_cache = {"bytes": self._hot_cache_usage(self.queue.jobs.values()), "limit_bytes": self._hot_cache_limit(policy)}
+            cleanup = dict(self.last_cleanup)
+            if not policy["enabled"]:
+                cleanup = {"state": "disabled", "removed_bytes": 0, "removed": 0}
+            elif hot_cache["bytes"] <= hot_cache["limit_bytes"]:
+                cleanup["state"] = "within_limit"
+            elif cleanup["state"] != "unavailable" and (
+                cleanup.get("limit_bytes") != hot_cache["limit_bytes"] or cleanup["state"] != "retained_over_target"
+            ):
+                cleanup = {"state": "pending", "removed_bytes": 0, "removed": 0}
             return {"available": True, "entries": sorted(entries, key=lambda r: r["last_used"], reverse=True),
-                    "bytes": sum(unique.values()), "policy": self.policy(), "last_cleanup": dict(self.last_cleanup)}
+                    "bytes": sum(unique.values()), "policy": policy, "hot_cache": hot_cache, "last_cleanup": cleanup}
 
     def _index_legacy_guides(self):
         if not self.archive or not self.archive.guide_root:
@@ -256,9 +294,14 @@ class SongLibrary:
             try:
                 data = {**self.remote("library"), "configured": True}
             except HTTPException:
-                return data
+                pass
         elif self.archive:
             data.update(available=True, bytes=0, policy=self.nas_policy(), protected_song_ids=[])
+        guide_hashes = data.get("protected_guide_hashes")
+        guide_protection_known = data["available"] and isinstance(guide_hashes, list) and all(
+            isinstance(checksum, str) and SHA.fullmatch(checksum) for checksum in guide_hashes
+        )
+        protected_guides = set(guide_hashes) if guide_protection_known else set()
         rows = {r["id"]: {**r, "remote": r, "legacy": None} for r in data["entries"]}
         if self.archive:
             try:
@@ -267,11 +310,18 @@ class SongLibrary:
             except (OSError, ValueError):
                 data.update(available=False, entries=[], bytes=None)
                 return data
-            data["bytes"] = (data["bytes"] or 0) + legacy["bytes"]
+            if data["available"]:
+                data["bytes"] += legacy["bytes"]
             for key, item in legacy["entries"].items():
                 public = {k: v for k, v in item.items() if k != "paths"}
-                if key.startswith("legacy-guide:") and data.get("protected_song_ids"):
-                    public.update(can_delete=False, reason="in_queue")
+                guides = {p.stem for p in item["paths"] if p.parent == self.archive.guide_root and p.suffix == ".mp3"}
+                if public["can_delete"]:
+                    if guides & protected_guides:
+                        public.update(can_delete=False, reason="in_queue")
+                    elif self.direct and guides and not guide_protection_known:
+                        public.update(can_delete=False, reason="usage_unverified")
+                    elif not data["available"]:
+                        public.update(can_delete=False, reason="nas_offline")
                 row = rows.setdefault(key, {**public, "bytes": 0, "remote": None, "legacy": None})
                 row["legacy"] = public
                 row["bytes"] += public["bytes"]
@@ -318,12 +368,27 @@ class SongLibrary:
                 if item["mac"] and item["nas"] and item["mac"]["reason"] in {"preparing", "in_queue"}:
                     item["nas"].update(can_delete=False, reason=item["mac"]["reason"])
             return {"mac": {k: v for k, v in mac.items() if k != "entries"},
-                    "nas": {k: v for k, v in nas.items() if k not in {"entries", "protected_song_ids"}},
+                    "nas": {k: v for k, v in nas.items() if k not in {"entries", "protected_song_ids", "protected_guide_hashes"}},
                     "entries": sorted(combined.values(), key=lambda r: r["last_used"], reverse=True),
                     "original_downloads_included": True, "models_included": False}
 
+    def _validate_legacy_deletion(self, selected):
+        current = {r["id"]: r["nas"] for r in self.inventory()["entries"]}
+        for item in selected:
+            row = current.get(item["id"])
+            if row and row["reason"] == "usage_unverified":
+                raise HTTPException(409, "cache_usage_unverified")
+            if not row or not row["can_delete"]:
+                raise HTTPException(409, "cache_in_use")
+            if not row["legacy"] or row["legacy"]["revision"] != item["revision"]:
+                raise HTTPException(409, "cache_changed")
+
     def _delete_nas(self, items, plan):
         stores = plan.setdefault("nas_stores", {})
+        legacy = [{"id": row["legacy"]["id"], "revision": row["legacy"]["revision"]}
+                  for row in items if row.get("legacy")]
+        if legacy and "legacy" not in stores:
+            self._validate_legacy_deletion(legacy)
         for name in ("remote", "legacy"):
             selected = [{"id": row[name]["id"], "revision": row[name]["revision"]} for row in items if row.get(name)]
             if not selected or name in stores:
@@ -331,11 +396,8 @@ class SongLibrary:
             if name == "remote":
                 stores[name] = self.remote("delete", {"items": selected, "request_id": plan["request_id"]})
             else:
-                current = {r["id"]: r for r in self.inventory()["entries"]}
-                for item in selected:
-                    row = current.get(item["id"], {}).get("nas")
-                    if not row or not row["can_delete"]:
-                        raise HTTPException(409, "cache_in_use")
+                if "remote" in stores:
+                    self._validate_legacy_deletion(selected)
                 try:
                     stores[name] = self.archive.remove_all(selected)
                 except (OSError, ValueError):
@@ -372,7 +434,8 @@ class SongLibrary:
                     raise HTTPException(409, "cache_changed")
                 hosts = [h for h in ("mac", "nas") if value["scope"] in (h, "both") and row[h]]
                 if not hosts or any(not row[h]["can_delete"] for h in hosts):
-                    raise HTTPException(409, "cache_in_use")
+                    reason = "cache_usage_unverified" if any(row[h]["reason"] == "usage_unverified" for h in hosts) else "cache_in_use"
+                    raise HTTPException(409, reason)
                 selected.append({"id": key, "title": row["title"], **{h: row[h] if h in hosts else None for h in ("mac", "nas")}})
             if value["scope"] in {"nas", "both"} and not data["nas"]["available"]:
                 raise HTTPException(503, "nas_management_unavailable")
@@ -538,18 +601,124 @@ class SongLibrary:
         with self.lock:
             self.reservations.pop(job_id, None)
 
+    def request_trim(self, required_bytes=0):
+        with self.trim_request_lock:
+            self.trim_bytes_requested = max(self.trim_bytes_requested, required_bytes)
+            self.trim_wake.set()
+
+    def _hot_cache_protected(self):
+        protected = set(self.archive.active) if self.archive else set()
+        if self.bridge:
+            getter = getattr(self.bridge, "protected_jobs", None)
+            if callable(getter):
+                protected.update(getter())
+            else:
+                report = self.bridge.playback or {}
+                protected.update(set((self.bridge.party or {}).get("order", [])) - set(report.get("played", [])))
+                protected.add(report.get("current"))
+        return protected
+
+    def _archived_on_nas(self, jobs):
+        # 直连 NAS 按成品 SHA 和大小确认。兼容挂载路径还核对音源版本。
+        verified = set()
+        if self.direct and callable(getattr(self.bridge, "request", None)):
+            payload = []
+            for value in jobs:
+                specs = list(value["media"].values())
+                if value.get("video", {}).get("status") == "ready":
+                    specs.append(value["video"])
+                payload.append({"id": value["id"], "files": [
+                    {"sha256": spec["sha256"], "bytes": spec["bytes"]} for spec in specs]})
+            try:
+                result = self.bridge.request("/agent/archive-check", {"items": payload})
+                verified.update(row["id"] for row in result["items"] if row["state"] == "ready")
+            except (AttributeError, KeyError, TypeError, OSError, ValueError, RuntimeError, HTTPException, httpx.HTTPError):
+                pass
+        if self.archive:
+            for job in jobs:
+                if job["id"] not in verified and self.archive.verify_prepared(job["song_id"], job=job):
+                    verified.add(job["id"])
+        return verified
+
+    def trim_hot_cache(self, required_bytes=0):
+        """仅淘汰已核对 NAS 成品的本机缓存，按最近使用时间回收。"""
+        with self.lock:
+            policy = self.policy()
+            limit = self._hot_cache_limit(policy)
+            with self.state_lock():
+                protected = self._hot_cache_protected()
+                ready = [dict(job) for job in self.queue.jobs.values() if job["state"] == "ready"]
+                used = self._hot_cache_usage(ready)
+            target = max(0, used - limit, required_bytes)
+            removed = removed_bytes = 0
+            candidates = sorted((job for job in ready if job["id"] not in protected),
+                                key=lambda job: (job.get("last_used", job["created"]), job["id"]))
+            # 分批验证，磁盘有足够空间便结束。每轮只检查有限的备选项。
+            for start in range(0, min(32, len(candidates)), 8):
+                if removed_bytes >= target or self.stop.is_set():
+                    break
+                batch = candidates[start:start + 8]
+                verified = self._archived_on_nas(batch)
+                for job in batch:
+                    if removed_bytes >= target:
+                        break
+                    job_id = job["id"]
+                    if job_id not in verified:
+                        continue
+                    with self.state_lock():
+                        current = self.queue.jobs.get(job_id)
+                        if current != job or job_id in self._hot_cache_protected():
+                            continue
+                        try:
+                            folder = self.queue.jobs_dir / job_id
+                            files = [p.lstat() for p in folder.rglob("*") if p.is_file() and not p.is_symlink()]
+                            self.queue.remove(job_id)
+                        except (HTTPException, OSError):
+                            continue
+                        if self.direct:
+                            self.bridge.mapping = {k: v for k, v in self.bridge.mapping.items() if v != job_id}
+                            self.bridge.archive_pending.discard(job_id)
+                            self.bridge.terminal_acked.discard(job_id)
+                        removed += 1
+                        removed_bytes += sum(info.st_size for info in files if info.st_nlink == 1)
+            if removed and self.direct:
+                self.bridge._save()
+            with self.state_lock():
+                remaining = self._hot_cache_usage(self.queue.jobs.values()) if removed else used
+            self.last_cleanup = {
+                "state": ("disabled" if not policy["enabled"] else
+                          "within_limit" if remaining <= limit else "retained_over_target"),
+                "limit_bytes": limit, "remaining_bytes": remaining,
+                "removed_bytes": removed_bytes, "removed": removed, "at": int(time.time()),
+            }
+            return dict(self.last_cleanup)
+
     def start(self):
         def run():
-            while not self.stop.wait(30):
+            next_nas_check = time.monotonic() + 30
+            while not self.stop.is_set():
+                self.trim_wake.wait(30)
+                if self.stop.is_set():
+                    break
+                with self.trim_request_lock:
+                    pressure = self.trim_bytes_requested
+                    self.trim_bytes_requested = 0
+                    self.trim_wake.clear()
                 try:
-                    self.enforce()
-                    self.enforce_nas()
+                    self.trim_hot_cache(pressure)
                 except Exception:
                     self.last_cleanup = {"state": "unavailable", "removed_bytes": 0, "removed": 0}
+                if time.monotonic() >= next_nas_check:
+                    next_nas_check = time.monotonic() + 30
+                    try:
+                        self.enforce_nas()
+                    except Exception:
+                        pass
         self.thread = threading.Thread(target=run, name="ktv-storage", daemon=True)
         self.thread.start()
 
     def close(self):
         self.stop.set()
+        self.trim_wake.set()
         if self.thread:
             self.thread.join(2)

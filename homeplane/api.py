@@ -152,6 +152,7 @@ def create_app(
     people_catalog=None,
     flow_household_timezone=None,
     console_read_only=False,
+    ktv_owner_writes=False,
     runtime_log=None,
     embodied_service=None,
     background_enabled=False,
@@ -1434,11 +1435,12 @@ def create_app(
     @app.api_route("/index.html", methods=["GET", "HEAD"], include_in_schema=False)
     def console_index():
         path = Path(__file__).parent / "static/index.html"
-        if people_catalog is None and file_steward is None and not console_read_only:
+        if people_catalog is None and file_steward is None and not console_read_only and not ktv_owner_writes:
             return FileResponse(path)
         attributes = (' data-people-enabled="true"' if people_catalog is not None else '')
         attributes += (' data-file-steward-enabled="true"' if file_steward is not None else '')
         attributes += (' data-console-read-only="true"' if console_read_only else '')
+        attributes += (' data-ktv-owner-writes="true"' if ktv_owner_writes else '')
         return HTMLResponse(path.read_text().replace('<body>', '<body' + attributes + '>', 1))
 
     if people_catalog is not None:

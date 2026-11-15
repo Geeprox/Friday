@@ -178,6 +178,35 @@ def test_cloud_featured_credit_matches_primary_artist_but_not_a_cover(tmp_path, 
     assert not _same_lyric_identity(owned,{'title':'合成歌曲 (Live)','artists':['原唱']})
 
 
+def test_cloud_background_only_uses_the_matching_public_recording(tmp_path, monkeypatch):
+    monkeypatch.setattr("homeplane.ktv_search.search_songs", lambda q: [
+        {"song_id": "55", "title": "合成歌曲", "artists": ["原唱"]},
+        {"song_id": "56", "title": "合成歌曲", "artists": ["原唱"]},
+    ])
+    requests = []
+
+    def rpc(operation, **params):
+        assert operation == "detail" and params["cookie"] == ""
+        identity = params["id"]
+        requests.append(identity)
+        recording = {"id": int(identity), "name": "合成歌曲", "dt": 91000 if identity == "55" else 60100,
+                     "al": {"id": 1 if identity != "123" else 0}, "ar": [{"id": 3, "name": "原唱"}]}
+        return {"body": {"songs": [recording]}}
+
+    api = logged_api(tmp_path, rpc)
+    path = api.root / "cloud-owned.json"
+    path.write_text(json.dumps({"songs": {"123": {
+        "title": "01 原唱 - 合成歌曲.flac", "artists": ["原唱"], "duration_ms": 60000, "md5": "a" * 32,
+    }}}))
+    path.chmod(0o600)
+    try:
+        assert api.public_cloud_background("123") == {"title": "合成歌曲", "artist": "原唱"}
+        assert requests == ["123", "55", "56"]
+        assert api.public_cloud_background("789") is None
+    finally:
+        api.close()
+
+
 def test_filename_lyric_matching_keeps_artist_and_version_constraints():
     from homeplane.ktv_source_api import _same_lyric_identity
     owned = {'title': '01. 原唱 - 合成歌曲.flac', 'artists': ['原唱']}

@@ -23,12 +23,19 @@ from pathlib import Path
 try:
     from integrations.ktv_public.coordinator import PERSISTENT_EXPIRY, Coordinator, private_origin
     from integrations.ktv_public.management import Management
+    from integrations.ktv_public.tv_update_inbox import TvUpdateInbox
+    from integrations.ktv_public.tv_updates import APK_CONTENT_TYPE, UPDATE_APK_PATH, UPDATE_INFO_PATH, TvUpdateStore
 except ImportError:  # Standalone NAS export, alongside this module.
     from coordinator import PERSISTENT_EXPIRY, Coordinator, private_origin
     from management import Management
+    from tv_update_inbox import TvUpdateInbox
+    from tv_updates import APK_CONTENT_TYPE, UPDATE_APK_PATH, UPDATE_INFO_PATH, TvUpdateStore
 
 ID = re.compile(r"[1-9][0-9]{0,17}\Z")
 UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
+ROOM_ROUTE = re.compile(
+    r"/api/rooms/([a-f0-9-]{36})/(status|events|search|artwork|discover|playlist|guide|songs|join|profile|theme|controls|command|order|retry)"
+)
 STATES = {"queued", "acquiring", "separating", "transcoding", "ready", "failed", "cancelled"}
 CODES = {
     "none",
@@ -57,7 +64,7 @@ VOCAL_PRESETS = {"dry", "pop", "ktv", "power", "opera", "studio", "echo"}
 SFX_ACTIONS = {"sfx_applause", "sfx_cheer", "sfx_stop"}
 SFX_TTL = 5
 SERVICE_EVENT_LIMIT = 1024 * 1024
-SERVICE_OPERATIONS = {"status", "search", "discover", "playlist", "guide", "monitor", "songs", "join",
+SERVICE_OPERATIONS = {"status", "search", "artwork", "discover", "playlist", "guide", "monitor", "songs", "join",
                       "profile", "theme", "controls", "command", "order", "retry"}
 AUDIO_PLAYBACK_FIELDS = {"audio_capabilities", "vocal_preset", "vocal_preset_state",
                          "sfx_seq", "sfx_action", "sfx_state"}
@@ -75,6 +82,14 @@ NAMES = (
     "北极企鹅",
     "节拍小子",
 )
+GUEST_NAMES = NAMES + (
+    "山茶晚风", "海盐汽水", "弯月小岛", "白桃列车", "银杏信箱", "雾蓝唱片", "月亮贝壳", "柚子雨",
+    "青苔小鹿", "杏仁云", "露台灯", "铃兰邮差", "晚班星光", "松针小熊", "蔷薇车站", "晴空纸船",
+    "橘子电台", "雪松泡泡", "河畔回声", "莓果音符", "蒲公英", "山间小调", "晴雨伞", "冰岛月光",
+    "银河旅伴", "海风留声", "薄荷岛", "春天胶卷", "时差小猫", "夜色柠檬", "琥珀麦穗", "微风来信",
+    "暖橘月台", "云朵口袋", "山野萤火", "雨声漫步", "湖畔晨星", "月光咖啡", "风铃晚班", "浪花回信",
+    "露水花园", "海边落日", "星星邮局", "云边积木", "暮色电车", "青柠月亮", "小岛晴天", "咖啡雨",
+)
 ARTISTS = ["周杰伦", "陈奕迅", "林俊杰", "五月天", "孙燕姿", "张惠妹", "张学友", "王菲", "邓紫棋", "薛之谦", "陶喆", "林宥嘉", "李荣浩", "郭顶", "告五人", "许嵩", "周深", "张杰", "赵雷", "陈粒", "苏打绿", "王力宏", "刘德华", "梁静茹"]
 
 
@@ -85,6 +100,34 @@ class Refusal(ValueError):
 
 def sha(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def guest_origin(value):
+    if not isinstance(value, str) or not re.fullmatch(r"https://[a-z0-9.-]+(?::[1-9][0-9]{0,4})?", value):
+        return None
+    try:
+        origin = urllib.parse.urlsplit(value)
+        port = origin.port
+    except ValueError:
+        return None
+    if not origin.hostname or not all(
+        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part) for part in origin.hostname.split(".")
+    ):
+        return None
+    return value[:-4] if port == 443 else value
+
+
+def guest_profile(payload):
+    if (
+        not isinstance(payload, dict) or set(payload) != {"nickname", "avatar"}
+        or not isinstance(payload["nickname"], str)
+        or not 1 <= len(payload["nickname"].strip()) <= 24
+        or any(ord(c) < 32 or ord(c) == 127 for c in payload["nickname"])
+        or type(payload["avatar"]) is not int
+        or not 0 <= payload["avatar"] < len(NAMES)
+    ):
+        raise Refusal(400, "invalid_profile")
+    return payload["nickname"].strip(), payload["avatar"]
 
 
 def audio_playback(value):
@@ -136,19 +179,29 @@ def song_title(value):
 
 
 class Store:
-    def __init__(self, root, origin, base_path="/ktv", *, worker_origin=None, allow_loopback_worker=False, recovery_enabled=False, background_health=False):
+    def __init__(self, root, origin, base_path="/ktv", *, worker_origin=None, allow_loopback_worker=False,
+                 recovery_enabled=False, background_health=False, previous_guest_origin=None):
+        self.previous_guest_origin = guest_origin(previous_guest_origin)
+        if previous_guest_origin is not None and self.previous_guest_origin is None:
+            raise ValueError("invalid_previous_guest_origin")
         self.root = Path(root).absolute()
         if self.root.resolve() != self.root:
             raise ValueError("unsafe_root")
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.root.chmod(0o700)
         self.db = self.root / "state.sqlite"
-        self.origin, self.base_path = origin.rstrip("/"), base_path.rstrip("/")
+        self.tv_updates = TvUpdateStore(self.root)
+        self.origin, self.base_path = guest_origin(origin.rstrip("/")) or origin.rstrip("/"), base_path.rstrip("/")
         self._backup_before_guest_queue_upgrade()
         self.lock = threading.RLock()
+        self.rate_lock = threading.Lock()
         self.event_lock = threading.Lock()
         self.limits = {}
         self.search_cache = {}
+        self.search_slots = threading.BoundedSemaphore(4)
+        self.artwork_cache = {}
+        self.artwork_slots = threading.BoundedSemaphore(2)
+        self.next_poll_maintenance = 0
         self.recommendations = None
         self.playlist_cache = {}
         self.artist_refreshing = False
@@ -394,8 +447,12 @@ class Store:
                 temporary.unlink(missing_ok=True)
 
     @staticmethod
-    def _default_guest_profile(occupied):
+    def _default_guest_profile(occupied, *, varied=False):
         """A room-local display name, independent of the guest's credentials."""
+        if varied:
+            available_names = [name for name in GUEST_NAMES if name not in occupied]
+            if available_names:
+                return available_names[secrets.randbelow(len(available_names))], secrets.randbelow(len(NAMES))
         available = [avatar for avatar, name in enumerate(NAMES) if name not in occupied]
         avatar = available[secrets.randbelow(len(available))] if available else secrets.randbelow(len(NAMES))
         name = NAMES[avatar]
@@ -462,7 +519,8 @@ class Store:
 
     def budget(self, key, count=40, seconds=60):
         now = time.monotonic()
-        with self.lock:
+        # 请求计数不等待制备、归档或歌单写事务。
+        with self.rate_lock:
             if len(self.limits) > 4096:
                 self.limits = {k: v for k, v in self.limits.items() if v[0] > now}
                 if len(self.limits) > 4096:
@@ -525,6 +583,7 @@ class Store:
         for table in ("coordinator_manifest_versions", "coordinator_manifests"):
             db.execute("DELETE FROM " + table + " WHERE song IN (" + expired_songs + ") OR song NOT IN (SELECT id FROM songs)",
                        (now - 86400,))
+        db.execute("DELETE FROM coordinator_lyric_status WHERE song NOT IN (SELECT song FROM coordinator_manifests)")
         for table in ("room_tokens", "coordinator_start_requests", "coordinator_session", "retries", "commands"):
             db.execute("DELETE FROM " + table + " WHERE room IN (" + expired_rooms + ") OR room NOT IN (SELECT id FROM rooms)",
                        (now - 86400,))
@@ -583,26 +642,40 @@ class Store:
             "persistent": True,
             "theme": "content",
             "theme_revision": 0,
-            "join_url": self.origin
-            + self.base_path
-            + "/#"
-            + urllib.parse.urlencode({"r": room_id, "k": key}),
+            "join_url": self.join_url(room_id, key),
         }
 
-    def join(self, room):
+    def join_url(self, room_id, key):
+        return self.origin + self.base_path + "/#" + urllib.parse.urlencode({"r": room_id, "k": key})
+
+    def join(self, room, guest_key=None, *, profile=None, existing_key=""):
+        if guest_key is not None and (not isinstance(guest_key, str) or not re.fullmatch(r"[a-f0-9]{64}", guest_key)):
+            raise Refusal(400, "invalid_request")
+        if not isinstance(existing_key, str) or (existing_key and not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", existing_key)):
+            raise Refusal(400, "invalid_request")
+        requested = guest_profile(profile) if profile is not None else None
         with self.lock, self.connection() as db:
-            self._expire(db)
+            db.execute("BEGIN IMMEDIATE")
             active = db.execute("SELECT closed,expires FROM rooms WHERE id=?", (room["id"],)).fetchone()
             if not active or active["closed"]:
                 raise Refusal(410, "room_closed")
+            # 同一手机重试时返回原身份，响应丢失不会消耗新的名额。
+            for token in dict.fromkeys((existing_key, guest_key)):
+                if not token:
+                    continue
+                existing = db.execute("SELECT id,nickname,avatar FROM guests WHERE room=? AND token_hash=?",
+                                      (room["id"], sha(token))).fetchone()
+                if existing:
+                    return {**dict(existing), "key": token}
             if db.execute("SELECT count(*) FROM guests WHERE room=?", (room["id"],)).fetchone()[0] >= 60:
                 raise Refusal(429, "guest_capacity")
-            guest_id, key = str(uuid.uuid4()), secrets.token_urlsafe(32)
+            self.budget("join:" + room["id"], 60, 14400)
+            guest_id, key = str(uuid.uuid4()), guest_key or secrets.token_urlsafe(32)
             occupied = {row[0] for row in db.execute("SELECT nickname FROM guests WHERE room=?", (room["id"],))}
-            nickname, avatar = self._default_guest_profile(occupied)
+            nickname, avatar = requested or self._default_guest_profile(occupied, varied=True)
             db.execute(
-                "INSERT INTO guests(id,room,token_hash,nickname,avatar,created,nickname_custom) VALUES(?,?,?,?,?,?,0)",
-                (guest_id, room["id"], sha(key), nickname, avatar, int(time.time())),
+                "INSERT INTO guests(id,room,token_hash,nickname,avatar,created,nickname_custom) VALUES(?,?,?,?,?,?,?)",
+                (guest_id, room["id"], sha(key), nickname, avatar, int(time.time()), int(requested is not None)),
             )
         return {"id": guest_id, "key": key, "nickname": nickname, "avatar": avatar}
 
@@ -618,16 +691,7 @@ class Store:
         return dict(value)
 
     def profile(self, room, guest, payload):
-        if (
-            set(payload) != {"nickname", "avatar"}
-            or not isinstance(payload["nickname"], str)
-            or not 1 <= len(payload["nickname"].strip()) <= 24
-            or any(ord(c) < 32 or ord(c) == 127 for c in payload["nickname"])
-            or type(payload["avatar"]) is not int
-            or not 0 <= payload["avatar"] < len(NAMES)
-        ):
-            raise Refusal(400, "invalid_profile")
-        nickname, avatar = payload["nickname"].strip(), payload["avatar"]
+        nickname, avatar = guest_profile(payload)
         with self.lock, self.connection() as db:
             db.execute(
                 "UPDATE guests SET nickname=?,avatar=?,nickname_custom=1 WHERE id=? AND room=?",
@@ -676,7 +740,10 @@ class Store:
             if not theme or theme["closed"]:
                 raise Refusal(410, "room_closed")
             rows = db.execute(
-                "SELECT id,song_id,title,state,code,created,guest_id,nickname,avatar,artwork,progress,cache_hit,source FROM songs WHERE room=? AND removed=0 ORDER BY position,rowid LIMIT 80",
+                "SELECT s.id,s.song_id,s.title,s.state,s.code,s.created,s.guest_id,s.nickname,s.avatar,s.artwork,s.progress,s.cache_hit,s.source,"
+                "coalesce(ls.ready,0) AS lyric_state,coalesce(ls.ready=1,0) AS synced_lyrics "
+                "FROM songs s LEFT JOIN coordinator_lyric_status ls ON ls.song=s.id "
+                "WHERE s.room=? AND s.removed=0 ORDER BY s.position,s.rowid LIMIT 80",
                 (room["id"],),
             ).fetchall()
             guide = db.execute("SELECT guide_sha,guide_bytes,guide_duration,guide_reference_sha,guide_reference_bytes,guide_reference_duration,guide_reference_kind FROM songs WHERE room=? AND id=?", (room["id"], theme["current_song"])).fetchone()
@@ -693,12 +760,16 @@ class Store:
                 "microphone_available": not (self.root / "microphone-hold.json").exists(),
                 "readiness": readiness,
                 "songs": [
-                    {**dict(r), "title": song_title(r["title"]), "lyrics_pending": r["id"] == theme["lyrics_waiting"], "progress": json.loads(r["progress"]), "cache_hit": bool(r["cache_hit"])}
+                    {**dict(r), "title": song_title(r["title"]), "lyrics_pending": r["lyric_state"] != -1
+                     and (r["id"] == theme["lyrics_waiting"] or r["state"] == "ready" and not r["synced_lyrics"]),
+                     "progress": json.loads(r["progress"]), "cache_hit": bool(r["cache_hit"])}
                     for r in rows
                 ],
                 "theme": theme["theme"],
                 "theme_revision": theme["theme_revision"],
                 "queue_revision": theme["queue_revision"],
+                "upcoming": self.upcoming_ids(rows, theme),
+                "playable": self.upcoming_ids(rows, theme, playable_only=True),
                 "controls": {
                     k: theme[k]
                     for k in ("music_gain", "mic_gain", "mic_muted", "original", "control_revision", "mic_revision", "vocal_preset", "sfx_gain")
@@ -724,6 +795,18 @@ class Store:
                     "guide": guide_spec,
                 },
             }
+
+    @staticmethod
+    def upcoming_ids(rows, room, *, playable_only=False):
+        played = set(json.loads(room["played"]))
+        return [row["id"] for row in rows if row["id"] != room["current_song"]
+                and row["id"] not in played and row["state"] not in {"failed", "cancelled"}
+                and (not playable_only or row["state"] == "ready" and row["synced_lyrics"])]
+
+    def song_controls(self, room, payload):
+        if not payload or set(payload) - {"music_gain", "sfx_gain", "original"}:
+            raise Refusal(400, "invalid_control")
+        return self.controls(room, payload)
 
     def controls(self, room, payload):
         limits = {"music_gain": 100, "mic_gain": 100, "mic_muted": 1, "original": 1, "sfx_gain": 100}
@@ -809,6 +892,12 @@ class Store:
                 ).fetchone()
                 if not item or item["state"] != "ready":
                     raise Refusal(409, "song_not_ready")
+                if payload["song"] != state["current_song"] and db.execute(
+                    "SELECT 1 FROM coordinator_session WHERE room=?", (room["id"],)
+                ).fetchone() and not db.execute(
+                    "SELECT 1 FROM coordinator_lyric_status WHERE song=? AND ready=1", (payload["song"],)
+                ).fetchone():
+                    raise Refusal(409, "lyrics_not_ready")
                 if item["song_id"] in self.management.deleting:
                     raise Refusal(409, "cache_in_use")
             elif payload["song"] != state["current_song"]:
@@ -1070,11 +1159,12 @@ class Store:
                 db.execute("INSERT INTO song_requests VALUES(?,?,?,?,?,?,?,1)",
                     (room["id"], request_id, guest["id"] if guest else "", song_id, title, source, existing["id"]))
                 return {"id": existing["id"], "state": existing["state"], "duplicate": True}
-            if not self.online(db):
+            archived = self.management.verified_edition(song_id, source, db)
+            if archived is None and not self.online(db):
                 raise Refusal(503, "mac_offline")
             if db.execute("SELECT count(*) FROM songs WHERE room=? AND removed=0", (room["id"],)).fetchone()[0] >= 80:
                 raise Refusal(429, "queue_full")
-            if (
+            if archived is None and (
                 db.execute(
                     "SELECT count(*) FROM songs WHERE state NOT IN ('ready','failed','cancelled')"
                 ).fetchone()[0]
@@ -1118,16 +1208,31 @@ class Store:
             db.execute("UPDATE rooms SET queue_revision=queue_revision+1 WHERE id=?", (room["id"],))
             db.execute("INSERT INTO song_requests VALUES(?,?,?,?,?,?,?,0)",
                 (room["id"], request_id, profile["id"], song_id, title, source, row_id))
+            if archived is not None:
+                self.management.attach_edition(archived, row_id, title, source, profile, db)
+                db.execute("UPDATE songs SET state='ready',cache_hit=1 WHERE id=?", (row_id,))
+                return {"id": row_id, "state": "ready", "cache_hit": True}
             return {"id": row_id, "state": "queued"}
 
     def poll(self):
         with self.lock, self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            self._expire(db)
+            now = int(time.time())
+            monotonic = time.monotonic()
+            heartbeat_due = monotonic >= self.next_poll_maintenance
+            expiry_due = db.execute(
+                "SELECT 1 FROM rooms WHERE (closed=1 AND expires<?) "
+                "OR (closed=0 AND mic_muted=0 AND mic_request_at>0 AND mic_request_at<=?) LIMIT 1",
+                (now - 86400, now - 5),
+            ).fetchone()
+            if heartbeat_due or expiry_due:
+                # 空轮询只读。定期续租兼容心跳和清理，仍然立即领取新任务。
+                db.execute("BEGIN IMMEDIATE")
+                self._expire(db)
+            if heartbeat_due:
+                db.execute("INSERT OR REPLACE INTO heartbeat VALUES(1,?)", (now,))
+                self.next_poll_maintenance = monotonic + 2
             direct_row = db.execute("SELECT session.* FROM coordinator_session AS session JOIN rooms ON rooms.id=session.room WHERE session.id=1 AND rooms.closed=0").fetchone()
             direct = dict(direct_row) if direct_row else None
-            now = int(time.time())
-            db.execute("INSERT OR REPLACE INTO heartbeat VALUES(1,?)", (now,))
             rows = db.execute(
                 "SELECT id,song_id,title,guest_id,nickname,avatar,attempt,source FROM songs WHERE state NOT IN ('ready','failed','cancelled') "
                 "AND lease<=? " + ("AND room=? " if direct else "") + "ORDER BY position,rowid LIMIT 8",
@@ -1172,14 +1277,16 @@ class Store:
                     )
                 ]
                 if direct and direct["room"] == r["room_id"]:
-                    join_url = self.origin + self.base_path + "/#" + urllib.parse.urlencode({"r": direct["room"], "k": direct["secret"]})
+                    join_url = self.join_url(direct["room"], direct["secret"])
                     info.update(join_url=join_url, tv_instance=direct["instance"], direct=True)
                     info["qr_ready"] = self.coordinator.qr_ready(direct)
                     playback = db.execute("SELECT current_song,played FROM rooms WHERE id=?", (r["room_id"],)).fetchone()
                     info["playback"] = {"current": playback["current_song"], "played": json.loads(playback["played"])}
                 rooms.append(info)
             archives = self.coordinator.archives(direct["room"], db) if direct else []
-            return {"tasks": tasks, "cancelled": [r[0] for r in cancelled], "rooms": rooms, "archives": archives}
+            lyrics = self.coordinator.lyric_tasks(direct["room"], db) if direct else []
+            return {"tasks": tasks, "cancelled": [r[0] for r in cancelled], "rooms": rooms, "archives": archives,
+                    "lyric_tasks": lyrics}
 
     def retry(self, room, payload):
         if set(payload) != {"id", "request_id"} or any(
@@ -1261,6 +1368,7 @@ class Store:
                     "queued",
                     "acquiring",
                     "waiting_separation",
+                    "waiting_storage",
                     "waiting_memory",
                     "separating",
                     "waiting_transcode",
@@ -1349,6 +1457,7 @@ class Store:
             raise Refusal(400, "invalid_source")
         if type(offset) is not int or not 0 <= offset <= 100000:
             raise Refusal(400, "invalid_query")
+        query = query.strip()
         if source == "cloud":
             terms = query.casefold().split()
             with self.connection() as db:
@@ -1362,71 +1471,45 @@ class Store:
         cache_key = source + ":" + str(offset) + ":" + query
         with self.lock:
             cached = self.search_cache.get(cache_key)
-            if cached and time.monotonic() - cached[0] < 60:
+            if cached and time.monotonic() - cached[0] < 120:
                 return {"songs": cached[1], **cached[2]}
         search_path = "/api/search/get" if source == "mv" else "/api/search/get/web"
-        url = "https://music.163.com" + search_path + "?" + urllib.parse.urlencode(
-            {"s": query, "type": 1004 if source == "mv" else 1, "limit": 30, "offset": offset}
-        )
-        request = urllib.request.Request(url, headers={"Referer": "https://music.163.com/"})
-
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *args, **kwargs):
-                return None
-
-        opener = urllib.request.build_opener(NoRedirect())
-        with opener.open(request, timeout=8) as response:
-            if response.geturl().split("?", 1)[0] != "https://music.163.com" + search_path:
-                raise Refusal(503, "search_unavailable")
-            raw = response.read(1048577)
-            if len(raw) > 1048576:
-                raise Refusal(503, "search_unavailable")
-        value = json.loads(raw)
-        if value.get("code") != 200:
+        if not self.search_slots.acquire(blocking=False):
+            if cached and time.monotonic() - cached[0] < 600:
+                return {"songs": cached[1], **cached[2]}
+            raise Refusal(429, "search_busy")
+        try:
+            value = self.public_metadata(search_path, {"s": query, "type": 1004 if source == "mv" else 1,
+                                                      "limit": 30, "offset": offset}, timeout=5)
+        except (OSError, ValueError, Refusal):
+            if cached and time.monotonic() - cached[0] < 600:
+                return {"songs": cached[1], **cached[2]}
+            raise Refusal(503, "search_unavailable") from None
+        finally:
+            self.search_slots.release()
+        result = value.get("result", {})
+        if not isinstance(result, dict):
+            raise Refusal(503, "search_unavailable")
+        rows = result.get("mvs" if source == "mv" else "songs", [])
+        if not isinstance(rows, list):
             raise Refusal(503, "search_unavailable")
         songs = []
-        for row in value.get("result", {}).get("mvs" if source == "mv" else "songs", [])[:30]:
+        for row in rows[:30]:
+            if not isinstance(row, dict):
+                continue
             song_id, title = str(row.get("id", "")), row.get("name")
             if ID.fullmatch(song_id) and isinstance(title, str) and 0 < len(title) <= 120:
                 artists = [
                     a["name"][:100]
-                    for a in row.get("artists", [])[:8]
+                    for a in (row["artists"][:8] if isinstance(row.get("artists"), list) else [])
                     if isinstance(a, dict) and isinstance(a.get("name"), str)
                 ]
-                songs.append({"song_id": song_id, "title": title, "artists": artists, "source": source})
-        # Search returns image IDs; one bounded detail batch supplies public album art.
-        if songs and source == "song":
-            try:
-                detail_url = "https://music.163.com/api/v3/song/detail?" + urllib.parse.urlencode(
-                    {"c": json.dumps([{"id": int(s["song_id"])} for s in songs])}
-                )
-                with opener.open(
-                    urllib.request.Request(detail_url, headers={"Referer": "https://music.163.com/"}),
-                    timeout=3,
-                ) as reply:
-                    data = reply.read(1048577)
-                if len(data) <= 1048576:
-                    covers = {}
-                    for item in json.loads(data).get("songs", [])[:30]:
-                        url = urllib.parse.urlsplit(item.get("al", {}).get("picUrl", ""))
-                        if (
-                            url.scheme in {"https", "http"}
-                            and url.hostname
-                            and url.hostname.endswith(".music.126.net")
-                            and not url.username
-                            and not url.password
-                            and url.port in {None, 443, 80}
-                            and len(url.path) < 512
-                        ):
-                            covers[str(item["id"])] = urllib.parse.urlunsplit(
-                                ("https", url.hostname, url.path, "param=160y160", "")
-                            )
-                    for song in songs:
-                        if song["song_id"] in covers:
-                            song["artwork"] = covers[song["song_id"]]
-            except Exception:
-                pass
-        result = value.get("result", {})
+                song = {"song_id": song_id, "title": title, "artists": artists, "source": source}
+                album = row.get("album")
+                artwork = self.artwork(album.get("picUrl") if isinstance(album, dict) else row.get("cover"))
+                if artwork:
+                    song["artwork"] = artwork
+                songs.append(song)
         count = result.get("mvCount" if source == "mv" else "songCount")
         has_more = offset + 30 < count if type(count) is int else len(songs) == 30
         page = {"source": source, "offset": offset, "next_offset": offset + 30, "has_more": has_more}
@@ -1438,8 +1521,49 @@ class Store:
             self.search_cache[cache_key] = (time.monotonic(), songs, page)
         return {"songs": songs, **page}
 
+    def search_artwork(self, song_ids):
+        if not isinstance(song_ids, str) or len(song_ids) > 569:
+            raise Refusal(400, "invalid_query")
+        ids = song_ids.split(",")
+        if not 1 <= len(ids) <= 30 or any(not ID.fullmatch(i) for i in ids):
+            raise Refusal(400, "invalid_query")
+        now = time.monotonic()
+        with self.lock:
+            cached = {i: self.artwork_cache[i][1] for i in dict.fromkeys(ids)
+                      if i in self.artwork_cache and now - self.artwork_cache[i][0]
+                      < (600 if self.artwork_cache[i][1] else 90)}
+        missing = list(dict.fromkeys(i for i in ids if i not in cached))
+        if missing:
+            if not self.artwork_slots.acquire(blocking=False):
+                raise Refusal(429, "search_busy")
+            try:
+                details = self.public_metadata("/api/v3/song/detail",
+                                               {"c": json.dumps([{"id": int(i)} for i in missing], separators=(",", ":"))},
+                                               timeout=3)
+            except (OSError, ValueError, Refusal):
+                raise Refusal(503, "search_unavailable") from None
+            finally:
+                self.artwork_slots.release()
+            songs = details.get("songs")
+            if not isinstance(songs, list):
+                raise Refusal(503, "search_unavailable")
+            resolved = dict.fromkeys(missing, "")
+            for song in songs[:30]:
+                if not isinstance(song, dict):
+                    continue
+                ident, album = str(song.get("id", "")), song.get("al")
+                if ident in resolved and isinstance(album, dict):
+                    resolved[ident] = self.artwork(album.get("picUrl"))
+            with self.lock:
+                for ident, cover in resolved.items():
+                    if len(self.artwork_cache) >= 512 and ident not in self.artwork_cache:
+                        self.artwork_cache.pop(next(iter(self.artwork_cache)))
+                    self.artwork_cache[ident] = (time.monotonic(), cover)
+            cached.update(resolved)
+        return {"covers": {ident: cover for ident, cover in cached.items() if cover}}
+
     @staticmethod
-    def public_metadata(path, params):
+    def public_metadata(path, params, *, timeout=8):
         if path not in {"/api/search/get", "/api/search/get/web", "/api/v6/playlist/detail", "/api/v3/song/detail"}:
             raise Refusal(400, "invalid_query")
         class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1447,14 +1571,14 @@ class Store:
                 return None
         base = "https://music.163.com" + path
         request = urllib.request.Request(base + "?" + urllib.parse.urlencode(params), headers={"Referer": "https://music.163.com/"})
-        with urllib.request.build_opener(NoRedirect(), urllib.request.ProxyHandler({})).open(request, timeout=8) as reply:
+        with urllib.request.build_opener(NoRedirect(), urllib.request.ProxyHandler({})).open(request, timeout=timeout) as reply:
             if reply.geturl().split("?", 1)[0] != base:
                 raise Refusal(503, "search_unavailable")
             data = reply.read(2097153)
         if len(data) > 2097152:
             raise Refusal(503, "search_unavailable")
         value = json.loads(data)
-        if value.get("code") != 200:
+        if not isinstance(value, dict) or value.get("code") != 200:
             raise Refusal(503, "search_unavailable")
         return value
 
@@ -1580,7 +1704,7 @@ def make_handler(store, agent_key, assets):
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "no-referrer",
                 "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; media-src 'self' data:; img-src 'self' data: https://*.music.126.net; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
-                "Permissions-Policy": "camera=(), microphone=(self), geolocation=()",
+                "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
             }
             for key, value in headers.items():
                 self.send_header(key, value)
@@ -1607,6 +1731,12 @@ def make_handler(store, agent_key, assets):
             return value
 
         def media_reply(self, file, kind, size):
+            with os.fdopen(os.open(str(file), os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+                if os.fstat(stream.fileno()).st_size != size:
+                    raise Refusal(409, "media_changed")
+                return self.media_stream_reply(stream, kind, size)
+
+        def media_stream_reply(self, stream, kind, size, *, etag=None):
             first, last, status = 0, size - 1, 200
             supplied = self.headers.get("Range")
             if supplied is not None:
@@ -1630,27 +1760,51 @@ def make_handler(store, agent_key, assets):
                     self.end_headers()
                     return
                 status = 206
-            with os.fdopen(os.open(str(file), os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
-                if os.fstat(stream.fileno()).st_size != size:
-                    raise Refusal(409, "media_changed")
-                self.send_response(status)
-                headers = {"Content-Type": kind, "Content-Length": str(last - first + 1), "Accept-Ranges": "bytes",
-                           "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
-                if status == 206:
-                    headers["Content-Range"] = "bytes " + str(first) + "-" + str(last) + "/" + str(size)
-                for key, value in headers.items():
-                    self.send_header(key, value)
-                self.end_headers()
-                if self.command != "HEAD":
-                    stream.seek(first)
-                    remaining = last - first + 1
-                    while remaining:
-                        block = stream.read(min(65536, remaining))
-                        if not block:
-                            self.close_connection = True
-                            return
-                        self.wfile.write(block)
-                        remaining -= len(block)
+            self.send_response(status)
+            headers = {"Content-Type": kind, "Content-Length": str(last - first + 1), "Accept-Ranges": "bytes",
+                       "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+            if status == 206:
+                headers["Content-Range"] = "bytes " + str(first) + "-" + str(last) + "/" + str(size)
+            if etag:
+                headers["ETag"] = etag
+            for key, value in headers.items():
+                self.send_header(key, value)
+            self.end_headers()
+            if self.command != "HEAD":
+                stream.seek(first)
+                remaining = last - first + 1
+                while remaining:
+                    block = stream.read(min(65536, remaining))
+                    if not block:
+                        self.close_connection = True
+                        return
+                    self.wfile.write(block)
+                    remaining -= len(block)
+
+        def tv_update(self, path):
+            expected = {"GET"} if path == UPDATE_INFO_PATH else {"GET", "HEAD"}
+            if self.command not in expected:
+                raise Refusal(405, "method_refused")
+            if self.headers.get("Origin"):
+                raise Refusal(403, "origin_refused")
+            updates = store.tv_updates
+            if not updates.download_slots.acquire(blocking=False):
+                raise Refusal(503, "tv_update_busy")
+            try:
+                opened = updates.open_current()
+                if opened is None:
+                    raise Refusal(404, "tv_update_unavailable")
+                release, stream = opened
+                with stream:
+                    if path == UPDATE_INFO_PATH:
+                        return self.reply(200, release.public())
+                    etag = '"' + release.sha256 + '"'
+                    provided = self.headers.get("If-Match")
+                    if provided not in {None, "*", etag}:
+                        raise Refusal(412, "tv_update_changed")
+                    return self.media_stream_reply(stream, APK_CONTENT_TYPE, release.bytes, etag=etag)
+            finally:
+                updates.download_slots.release()
 
         def dispatch(self):
             parsed = urllib.parse.urlsplit(self.path)
@@ -1660,7 +1814,8 @@ def make_handler(store, agent_key, assets):
             if self.command not in {"GET", "POST", "HEAD"}:
                 raise Refusal(405, "method_refused")
             origin = self.headers.get("Origin")
-            if origin and origin != store.origin:
+            room_route = ROOM_ROUTE.fullmatch(path)
+            if origin and origin != store.origin and (not room_route or origin != store.previous_guest_origin):
                 raise Refusal(403, "origin_refused")
             if self.command in {"GET", "HEAD"} and path in {
                 "/avatars.png",
@@ -1672,7 +1827,7 @@ def make_handler(store, agent_key, assets):
                 if asset.is_symlink() or not asset.is_file() or asset.stat().st_size > 8 * 1024 * 1024:
                     raise Refusal(404, "not_found")
                 return self.reply(200, asset.read_bytes(), "image/png")
-            if self.command in {"GET", "HEAD"} and path in {"/", "/app.js", "/add-queue.js", "/party-audio.js", "/guide.js", "/status-feed.js", "/style.css", "/sync.mjs", "/sync-dsp.mjs", "/sync-capture.mjs"}:
+            if self.command in {"GET", "HEAD"} and path in {"/", "/app.js", "/add-queue.js", "/party-audio.js", "/guide.js", "/status-feed.js", "/style.css"}:
                 name, kind = {
                     "/": ("index.html", "text/html; charset=utf-8"),
                     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -1680,9 +1835,6 @@ def make_handler(store, agent_key, assets):
                     "/party-audio.js": ("party-audio.js", "text/javascript; charset=utf-8"),
                     "/guide.js": ("guide.js", "text/javascript; charset=utf-8"),
                     "/status-feed.js": ("status-feed.js", "text/javascript; charset=utf-8"),
-                    "/sync.mjs": ("sync.mjs", "text/javascript; charset=utf-8"),
-                    "/sync-dsp.mjs": ("sync-dsp.mjs", "text/javascript; charset=utf-8"),
-                    "/sync-capture.mjs": ("sync-capture.mjs", "text/javascript; charset=utf-8"),
                     "/style.css": ("style.css", "text/css; charset=utf-8"),
                 }[path]
                 return self.reply(200, (assets / name).read_bytes(), kind)
@@ -1691,6 +1843,8 @@ def make_handler(store, agent_key, assets):
             if path.startswith("/v1/") and self.headers.get("X-KTV-TV-Key") is not None:
                 if not store.coordinator.authenticate(self.headers.get("X-KTV-TV-Key")):
                     raise Refusal(401, "unauthorized")
+                if path in {UPDATE_INFO_PATH, UPDATE_APK_PATH}:
+                    return self.tv_update(path)
                 coordinator = store.coordinator
                 instance = self.headers.get("X-KTV-TV-Instance", "")
                 if path == "/v1/status" and self.command == "GET":
@@ -1740,6 +1894,9 @@ def make_handler(store, agent_key, assets):
                     return self.reply(200, store.coordinator.register_worker(self.body()))
                 if path == "/agent/manifests" and self.command == "POST":
                     return self.reply(200, store.coordinator.manifest(self.body(196608)))
+                if path == "/agent/lyrics" and self.command == "POST":
+                    store.budget("lyrics-repair", 120)
+                    return self.reply(200, store.coordinator.repair_lyrics(self.body(145000)))
                 if path == "/agent/archive-check" and self.command == "POST":
                     store.budget("archive-check", 120)
                     return self.reply(200, store.coordinator.archive_check(self.body()))
@@ -1772,10 +1929,7 @@ def make_handler(store, agent_key, assets):
                         else store.playback(match.group(1), payload),
                     )
                 raise Refusal(404, "not_found")
-            match = re.fullmatch(
-                r"/api/rooms/([a-f0-9-]{36})/(status|events|search|discover|playlist|guide|monitor|songs|join|profile|theme|controls|command|order|retry)",
-                path,
-            )
+            match = room_route
             if not match:
                 raise Refusal(404, "not_found")
             self.operation = match.group(2)
@@ -1783,15 +1937,15 @@ def make_handler(store, agent_key, assets):
             # Reverse proxies share a loopback IP; admitted party guests must not exhaust one IP bucket.
             store.budget("room-read:" + room["id"], 4000)
             operation = match.group(2)
-            if operation == "monitor" and self.command == "POST":
-                guest = store.guest(room, self.headers.get("X-KTV-Guest", ""))
-                store.budget("monitor:" + guest["id"], 30)
-                return self.reply(200, store.monitor(room, guest, self.body()))
             if operation == "join" and self.command == "POST":
-                if self.body():
+                payload = self.body()
+                if (set(payload) - {"guest_key", "profile"}
+                        or ("guest_key" in payload and not isinstance(payload["guest_key"], str))):
                     raise Refusal(400, "invalid_request")
-                store.budget("join:" + room["id"], 60, 14400)
-                return self.reply(201, store.join(room))
+                if "profile" in payload and not isinstance(payload["profile"], dict):
+                    raise Refusal(400, "invalid_profile")
+                return self.reply(201, store.join(room, payload.get("guest_key"), profile=payload.get("profile"),
+                                                  existing_key=self.headers.get("X-KTV-Guest", "")))
             if operation in {"profile", "theme", "controls", "command", "order", "retry"} or (
                 operation == "songs" and self.command == "POST"
             ):
@@ -1815,7 +1969,7 @@ def make_handler(store, agent_key, assets):
                         getattr(
                             store,
                             {
-                                "controls": "controls",
+                                "controls": "song_controls",
                                 "command": "command",
                                 "order": "reorder",
                                 "retry": "retry",
@@ -1852,6 +2006,13 @@ def make_handler(store, agent_key, assets):
                 if not re.fullmatch(r"[0-9]{1,6}", offset):
                     raise Refusal(400, "invalid_query")
                 return self.reply(200, store.playlist(params.get("id", [""])[0], int(offset)))
+            if operation == "artwork" and self.command == "GET":
+                guest = store.guest(room, self.headers.get("X-KTV-Guest", ""))
+                store.budget("artwork:" + guest["id"], 40)
+                params = urllib.parse.parse_qs(parsed.query, max_num_fields=2)
+                if set(params) != {"ids"} or len(params["ids"]) != 1:
+                    raise Refusal(400, "invalid_query")
+                return self.reply(200, store.search_artwork(params["ids"][0]))
             if operation == "search" and self.command == "GET":
                 store.budget("search:" + room["id"], 30)
                 params = urllib.parse.parse_qs(parsed.query, max_num_fields=4)
@@ -1948,25 +2109,32 @@ def main():
         raise ValueError("private_config_required")
     config = json.loads(args.config.read_text())
     origin = config["public_origin"]
-    if not re.fullmatch(r"https://[a-z0-9.-]+(?::\d+)?", origin) or not re.fullmatch(
+    if not guest_origin(origin) or not re.fullmatch(
         r"[A-Za-z0-9_-]{43,100}", config["agent_key"]
     ):
         raise ValueError("invalid_config")
     store = Store(args.config.parent / "state", origin, config.get("base_path", "/ktv"), worker_origin=config.get("worker_origin"),
-                  recovery_enabled=config.get("recover_worker", True) is True, background_health=True)
+                  recovery_enabled=config.get("recover_worker", True) is True, background_health=True,
+                  previous_guest_origin=config.get("previous_guest_origin"))
     servers = create_listeners(config, store, config["agent_key"], Path(__file__).parent / "web")
     workers = [threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .5}, daemon=True) for server in servers[:-1]]
+    stop_inbox = threading.Event()
+    inbox = TvUpdateInbox(store.tv_updates, config["agent_key"])
+    inbox_worker = threading.Thread(target=inbox.run, args=(stop_inbox,), name="ktv-tv-update-inbox", daemon=True)
+    inbox_worker.start()
     try:
         for worker in workers:
             worker.start()
         servers[-1].serve_forever(poll_interval=.5)
     finally:
+        stop_inbox.set()
         for server in servers[:-1]:
             server.shutdown()
         for server in servers:
             server.server_close()
         for worker in workers:
             worker.join(2)
+        inbox_worker.join(2)
         store.coordinator.close()
         store.management.close()
 

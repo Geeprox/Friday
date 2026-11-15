@@ -42,7 +42,7 @@ public final class ProbePolicy {
     public long deadlineMs, verifiedAtMs, startedMs, stoppedMs, controllerDeathMs;
     public boolean owns, startReturned, startCallSucceeded, zeroCallsReturned, lowCallsReturned, stopReturned,stopAfterGainWrites;
     public boolean flagEnableReturned, flagDisableReturned;
-    public boolean watchdogVerified, controllerDead, foregroundReady, independentUid, stopAfterStart;
+    public boolean watchdogVerified, controllerDead, foregroundReady, independentUid, stopAfterStart, hardwareLease;
     public int stopCalls, startCalls, gainCalls;
     public long cancellationEpoch,leaseId;
     public Target target;
@@ -68,10 +68,17 @@ public final class ProbePolicy {
     public void cancelPending(){cancellationEpoch++;}
     public boolean pendingAllowed(long capturedEpoch){return capturedEpoch==cancellationEpoch;}
     public boolean beginStart(long now,long actionMs,boolean localAction,boolean permission){
+        return beginStart(now,actionMs,localAction,permission,false);
+    }
+    public boolean beginHardwareStart(long now,long actionMs,boolean localAction,boolean permission,Target expected){
+        if(target==null||!target.same(expected))return refuse("hardware_input_changed");
+        return beginStart(now,actionMs,localAction,permission,true);
+    }
+    private boolean beginStart(long now,long actionMs,boolean localAction,boolean permission,boolean hardware){
         if(owns||state!=READY||target==null||!target.valid()||(halStatus!=-1&&halStatus!=2))return refuse("not_ready");
         if(!foregroundReady||!independentUid)return refuse("independent_guard_unavailable");
         if(!localAction||!permission||actionMs<0||now<actionMs)return refuse("local_action_required");
-        leaseId++;startedMs=now;deadlineMs=0;owns=true;startReturned=false;startCallSucceeded=false;
+        leaseId++;startedMs=now;deadlineMs=0;owns=true;hardwareLease=hardware;startReturned=false;startCallSucceeded=false;
         zeroCallsReturned=lowCallsReturned=stopReturned=stopAfterStart=stopAfterGainWrites=flagEnableReturned=flagDisableReturned=false;
         controllerDead=false;stopReason=0;stoppedMs=0;requestedGain=0;
         startCalls++;state=STARTING;reject="";return true;
@@ -98,7 +105,7 @@ public final class ProbePolicy {
         stopCalls++;halStatus=status;stopReturned=returned;flagDisableReturned=disableReturned;
         stopAfterStart=issuedAfterStartReturned&&startReturned;
         stopAfterGainWrites=issuedAfterGainWrites;
-        if(returned&&disableReturned&&status==2&&stopAfterStart&&stopAfterGainWrites){owns=false;stoppedMs=now;state=STOPPED;}
+        if(returned&&disableReturned&&status==2&&stopAfterStart&&stopAfterGainWrites){owns=false;hardwareLease=false;deadlineMs=0;stoppedMs=now;state=STOPPED;}
         else state=RECOVERY;
     }
     public void recoverOwnedMarker(){owns=true;startReturned=true;state=RECOVERY;reject="previous_guard_exit_cleanup_unknown";}

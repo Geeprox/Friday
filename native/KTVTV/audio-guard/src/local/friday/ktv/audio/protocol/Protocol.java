@@ -5,6 +5,7 @@ public final class Protocol {
     public static final String GUARD="local.friday.ktv.audio", CONTROLLER="local.friday.ktv";
     public static final String PERMISSION=GUARD+".CONTROL";
     public static final int READ=1, SELF_TEST=2, START=3, LOW=4, STOP=5, REPLY=6, MUTE=7, PROTECTION=8, PROTECTION_RESET=9;
+    public static final int START_HARDWARE=10;
     public static final String STOP_COMMAND="61697=null";
     public static final String MIC_ZERO="61698=0", SYSTEM_ZERO="61713=0";
     // Local setpoints only; there is no gain or OEM flag readback.

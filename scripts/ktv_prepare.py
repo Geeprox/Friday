@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from homeplane.ktv_accompaniment import RUNTIME, prepare, worker
+from homeplane.ktv_startup import installed_workspace
 
 
 def main() -> int:
@@ -21,9 +22,13 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=1800)
     parser.add_argument("--synthetic-input", action="store_true")
     parser.add_argument("--worker-request", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--installed-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker_request:
-        return worker(args.worker_request)
+        workspace = installed_workspace(Path(__file__).resolve().parents[1], args.installed_root)
+        return worker(args.worker_request, workspace=workspace)
+    if args.installed_root:
+        parser.error("installed_root_requires_worker_request")
     if not all((args.input, args.cache_dir, args.report)):
         parser.error("--input, --cache-dir and --report are required")
     cancel = threading.Event()
