@@ -670,12 +670,15 @@ class HomeService:
             if refusal:
                 result_kind, result_code = 'refused', refusal
                 self.state["reason"] = "等待清晰的语音指令"
-                if self.current(captured, epoch) and not VOICE_INPUT_PAUSED.exists():
+                if not VOICE_INPUT_PAUSED.exists() and (
+                        self.voice_routing is not None or self.current(captured, epoch)):
                     return RETRY_OTHER_MIC
                 return
             if not self.current(captured, epoch) or time.monotonic() - captured > 10:
                 result_kind, result_code = "refused", "stale_input"
                 self.state["reason"] = "指令已过期或操作者变化"
+                if self.voice_routing is not None and not VOICE_INPUT_PAUSED.exists():
+                    return RETRY_OTHER_MIC
                 return
             if wake_only or not route.get("admitted"):
                 if (route.get('reason') == 'waiting_instruction'

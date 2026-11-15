@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import time
 
 
-# 只有本机转写明确拒绝、且未确认唤醒或动作时，才能换一路收音。
+# 只允许在唤醒与设备动作之前明确放弃的语句转交另一路。
 RETRY_OTHER_MIC = object()
 
 
@@ -23,6 +23,14 @@ class Utterance:
     ended: float
     level: float
     wake_only: bool = False
+
+
+@dataclass(slots=True)
+class _ActiveUtterance:
+    camera: str
+    window: tuple[float, float]
+    full: bool
+    alternate: tuple | None
 
 
 def overlaps(first, second):
@@ -41,6 +49,7 @@ class VoiceRouting:
         self.recent = deque(maxlen=12)
         self.reply_until = 0.0
         self.replies = 0
+        self._active = None
         self.task = None
 
     def listening(self, now):
@@ -50,6 +59,8 @@ class VoiceRouting:
     def replying(self, until):
         self.reply_until = max(self.reply_until, until)
         self.pending.clear()
+        if self._active is not None:
+            self._active.alternate = None
         self.replies += 1
         try:
             yield
@@ -59,15 +70,19 @@ class VoiceRouting:
 
     def discard(self, camera):
         self.pending.pop(camera, None)
+        active = self._active
+        if active is not None and active.alternate and active.alternate[0].camera_id == camera:
+            active.alternate = None
 
     def _current(self, service, item, now):
         return (self.listening(now) and item.started >= self.reply_until
                 and 0 <= now - item.captured <= self.START_LIMIT
                 and service.current(item.captured, item.epoch))
 
-    def _duplicates(self, item, now):
+    def _duplicates(self, item, now, *, except_window=None):
         return any(
-            0 <= now - admitted <= self.REPEAT_LIMIT and overlaps((item.started, item.ended), window)
+            window is not except_window and 0 <= now - admitted <= self.REPEAT_LIMIT
+            and overlaps((item.started, item.ended), window)
             for admitted, window in self.recent)
 
     def _eligible(self, service, item, now):
@@ -75,13 +90,23 @@ class VoiceRouting:
 
     def offer(self, service, item):
         now = self.clock()
-        if not self._eligible(service, item, now):
+        if not self._current(service, item, now):
             return False
         camera = service.camera_id
-        previous = self.pending.get(camera)
-        if item.wake_only and previous and not previous[1].wake_only and self._eligible(*previous, now):
-            return False
-        self.pending[camera] = (service, item)
+        active = self._active
+        if active is not None and active.full and overlaps(active.window, (item.started, item.ended)):
+            # 完整语句已预留去重窗口。首路仍在处理时，只暂存另一路的重叠收音。
+            if (camera == active.camera or self._duplicates(item, now, except_window=active.window)
+                    or (active.alternate and self._current(*active.alternate, now))):
+                return False
+            active.alternate = (service, item)
+        else:
+            if self._duplicates(item, now):
+                return False
+            previous = self.pending.get(camera)
+            if item.wake_only and previous and not previous[1].wake_only and self._eligible(*previous, now):
+                return False
+            self.pending[camera] = (service, item)
         asyncio.get_running_loop().call_later(
             self.START_LIMIT - (now - item.captured), self._expire, camera, item.captured)
         if self.task is None:
@@ -91,7 +116,12 @@ class VoiceRouting:
     def _expire(self, camera, captured):
         candidate = self.pending.get(camera)
         if candidate is not None and candidate[1].captured == captured:
-            self.discard(camera)
+            self.pending.pop(camera)
+        active = self._active
+        if active is not None and active.alternate:
+            service, item = active.alternate
+            if service.camera_id == camera and item.captured == captured:
+                active.alternate = None
 
     def _select(self, now):
         fresh = [(service, item) for service, item in self.pending.values()
@@ -124,12 +154,20 @@ class VoiceRouting:
                 if selection is None:
                     continue
                 candidates, window = selection
-                for index, (service, item) in enumerate(candidates):
-                    job = service.spawn(self._transcribe(service, item, window, alternate=index > 0))
-                    result, = await asyncio.gather(job, return_exceptions=True)
-                    if result is not RETRY_OTHER_MIC:
-                        break
+                service, item = candidates.pop(0)
+                active = _ActiveUtterance(service.camera_id, window, not item.wake_only,
+                                          candidates.pop() if candidates else None)
+                self._active = active
+                job = service.spawn(self._transcribe(service, item, window))
+                result, = await asyncio.gather(job, return_exceptions=True)
+                self._active = None
+                if result is RETRY_OTHER_MIC and active.alternate is not None:
+                    service, item = active.alternate
+                    job = service.spawn(self._transcribe(service, item, window, alternate=True))
+                    await asyncio.gather(job, return_exceptions=True)
+                active.alternate = None
         finally:
+            self._active = None
             self.task = None
 
     async def _transcribe(self, service, item, window, *, alternate=False):
@@ -147,6 +185,6 @@ class VoiceRouting:
         result = await service.transcribe(item.pcm, None if alternate else item.owner,
                                           item.captured, item.attending and not alternate,
                                           item.epoch, item.source, item.wake_only)
-        if item.wake_only and result is True:
+        if item.wake_only and result is True and not duplicate:
             self.recent.append((self.clock(), window))
         return result

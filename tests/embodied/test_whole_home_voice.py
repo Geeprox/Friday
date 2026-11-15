@@ -166,8 +166,10 @@ def candidate(at):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('first_result', ['rejected', 'accepted', 'expired', 'paused', 'replace_source', 'alternate_no_wake'])
-async def test_same_utterance_uses_one_fresh_alternate_only_after_explicit_asr_rejection(
+@pytest.mark.parametrize('first_result', [
+    'rejected', 'primary_stale', 'accepted', 'expired', 'paused', 'replace_source', 'alternate_no_wake',
+])
+async def test_same_utterance_uses_one_fresh_alternate_after_asr_rejection_or_source_expiry(
         first_result, monkeypatch, tmp_path):
     clock = clock_at(10)
     monkeypatch.setattr(home_service, 'time', clock)
@@ -183,11 +185,14 @@ async def test_same_utterance_uses_one_fresh_alternate_only_after_explicit_asr_r
         if first_result == 'expired':
             clock.at += routing.START_LIMIT + .1
             primary.last_video = second.last_video = clock.at
+        elif first_result == 'primary_stale':
+            clock.at += 1.7
+            second.last_video = clock.at
         elif first_result == 'paused':
             home_service.VOICE_INPUT_PAUSED.touch()
         elif first_result == 'replace_source':
             second.epoch += 1
-        if first_result == 'accepted':
+        if first_result in {'accepted', 'primary_stale'}:
             return {'text': 'Friday', 'address': address('Friday')}
         return {'text': '', 'address': {'admitted': False, 'reason': 'no_speech'}}
 
@@ -204,10 +209,10 @@ async def test_same_utterance_uses_one_fresh_alternate_only_after_explicit_asr_r
                                          source=('b'*32, 'c'*64)))
     await routing.task
     primary.request.assert_awaited_once()
-    if first_result in ('rejected', 'alternate_no_wake'):
+    if first_result in ('rejected', 'primary_stale', 'alternate_no_wake'):
         second.request.assert_awaited_once()
         assert second.request.await_args.kwargs['attending'] is False
-        if first_result == 'rejected':
+        if first_result in {'rejected', 'primary_stale'}:
             assert second.wake_camera.source == ('b'*32, 'c'*64)
         else:
             assert second.wake_camera is None and second.state.get('voice_command') is None
@@ -215,6 +220,72 @@ async def test_same_utterance_uses_one_fresh_alternate_only_after_explicit_asr_r
     else:
         second.request.assert_not_awaited()
     assert (primary.wake_camera is not None) == (first_result == 'accepted')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['stale', 'acted', 'discarded', 'expired'])
+async def test_late_alternate_uses_own_mic_and_never_replays_after_the_first_action(
+        outcome, monkeypatch, tmp_path):
+    clock = clock_at(10)
+    monkeypatch.setattr(home_service, 'time', clock)
+    monkeypatch.setattr(home_service, 'DATA', tmp_path)
+    monkeypatch.setattr(home_service, 'VOICE_INPUT_PAUSED', tmp_path/'pause')
+    monkeypatch.setattr(home_service, 'VOICE_PAUSED', tmp_path/'quiet')
+    device = AsyncMock(return_value=dict(status='unknown_outcome', acknowledged=False))
+    monkeypatch.setattr(home_service.bridge, 'command', device)
+    routing = VoiceRouting(lambda: not home_service.VOICE_INPUT_PAUSED.exists(), clock=clock.monotonic)
+    routing.COLLECT_SECONDS = 0
+    text = 'Friday，打开玄关灯'
+    primary = voice_at(CAMERA, 'primary-view', routing, text=text)
+    second = voice_at(OTHER, 'second-view', routing, owner=7, text=text)
+    third = voice_at(dict(id='cam_3333333333'), 'third-view', routing, text=text)
+    primary.last_video = clock.at
+    started, complete = asyncio.Event(), asyncio.Event()
+
+    async def transcribe(*args, **kwargs):
+        started.set()
+        await complete.wait()
+        return {'text': text, 'address': address(text)}
+
+    primary.request = AsyncMock(side_effect=transcribe)
+    phrase = candidate(clock.at)
+    routing.recent.append((9.0, (7.0, 8.4)))
+    assert routing.offer(primary, phrase)
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        clock.at += .55
+        second.last_video = third.last_video = clock.at
+        late = replace(phrase, captured=clock.at, source=('b'*32, 'c'*64), attending=True, owner=7)
+        # 旧语句已经处理过，重叠到它的迟到片段仍应被去重。
+        assert not routing.offer(second, replace(late, started=8.6))
+        assert routing.offer(second, late)
+        assert not routing.offer(third, replace(late, source=('c'*32, 'd'*64)))
+        clock.at = 11.7 if outcome != 'expired' else 13.9
+        second.last_video = clock.at
+        if outcome == 'acted':
+            primary.last_video = clock.at
+        if outcome == 'discarded':
+            routing.discard(second.camera_id)
+    finally:
+        complete.set()
+        await asyncio.wait_for(routing.task, 1)
+    primary.request.assert_awaited_once()
+    third.request.assert_not_awaited()
+    if outcome == 'stale':
+        second.request.assert_awaited_once()
+        assert second.request.await_args.kwargs['attending'] is False
+        assert second.wake_camera.source == late.source and primary.wake_camera is None
+        device.assert_awaited_once()
+        assert device.await_args.kwargs['camera_id'] == OTHER['id']
+    else:
+        second.request.assert_not_awaited()
+        if outcome == 'acted':
+            assert primary.state['voice_command']['state'] == 'unknown_outcome'
+            device.assert_awaited_once()
+            assert device.await_args.kwargs['camera_id'] == CAMERA['id']
+        else:
+            device.assert_not_awaited()
+    assert routing._active is None
 
 
 @pytest.mark.asyncio
