@@ -44,6 +44,7 @@ class VisionCadence:
     interval = .58
     minimum_quiet_ms = 4500
     settle_seconds = 4
+    wide_rescue_interval = 2.0
     # 限频决策需给候选帧等待下一次调度及下游发布留出余量。
     publishing_margin = .25
 
@@ -55,6 +56,9 @@ class VisionCadence:
         self.processed = self.skipped = 0
         self.active_frames = self.unclear_frames = self.recent_motion_frames = 0
         self.deadline_frames = 0
+        self.wide_rescue_deferred = 0
+        self.wide_pose_rescue = True
+        self.next_wide_rescue = -math.inf
         self.quiet_ms = None
         self.latest_capture = None
         self.latencies = deque(maxlen=5)
@@ -65,19 +69,32 @@ class VisionCadence:
             self.intent = intent
         quiet = packet.get('scene_quiet_ms')
         self.quiet_ms = quiet if type(quiet) is int else None
+        quiet_empty = False
+        self.wide_pose_rescue = True
         if self.full_rate() or force:
             self.active_frames += 1
         elif self.quiet_ms is None or self.quiet_ms < self.minimum_quiet_ms:
             self.recent_motion_frames += 1
         elif now < self.active_until or self.checked_at == -math.inf:
             self.unclear_frames += 1
-        elif now < self.checked_at + self.interval:
+        else:
             observed_age = now - self.latest_capture if self.latest_capture is not None else -1
-            required = self.publishing_margin + max(self.latencies, default=MAX_AGE)
-            if 0 <= observed_age and observed_age + required < MAX_AGE:
-                self.skipped += 1
-                return False
-            self.deadline_frames += 1
+            quiet_empty = 0 <= observed_age < MAX_AGE
+            if now < self.checked_at + self.interval:
+                required = self.publishing_margin + max(self.latencies, default=MAX_AGE)
+                if quiet_empty and observed_age + required < MAX_AGE:
+                    self.skipped += 1
+                    return False
+                self.deadline_frames += 1
+        # 空场仍检查全图和明确的人形线索。只降低无目标的两侧裁切补检频率。
+        if quiet_empty:
+            self.wide_pose_rescue = now >= self.next_wide_rescue
+            if self.wide_pose_rescue:
+                self.next_wide_rescue = now + self.wide_rescue_interval
+            else:
+                self.wide_rescue_deferred += 1
+        else:
+            self.next_wide_rescue = -math.inf
         self.processed += 1
         return True
 
@@ -91,10 +108,13 @@ class VisionCadence:
 
     def reset(self):
         self.checked_at = self.active_until = -math.inf
+        self.next_wide_rescue = -math.inf
+        self.wide_pose_rescue = True
         self.latest_capture = None
         self.latencies.clear()
 
     def public(self):
         return {'processed': self.processed, 'skipped_static': self.skipped,
                 'active_path': self.active_frames, 'recent_motion': self.recent_motion_frames,
-                'unclear': self.unclear_frames, 'deadline': self.deadline_frames, 'quiet_ms': self.quiet_ms}
+                'unclear': self.unclear_frames, 'deadline': self.deadline_frames, 'quiet_ms': self.quiet_ms,
+                'wide_rescue_deferred': self.wide_rescue_deferred}

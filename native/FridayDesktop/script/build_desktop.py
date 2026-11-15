@@ -24,7 +24,10 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 NATIVE = REPO / 'native/FridayDesktop'
-SOUND_HELPER = 'Helpers/friday-sound'
+NATIVE_HELPERS = {
+    'Helpers/friday-sound': ('EmbodiedVision/SoundWorker.swift', 'sound-worker'),
+    'Helpers/friday-vision': ('EmbodiedVision/VisionWorker.swift', 'vision-worker'),
+}
 
 
 def project_cache_root():
@@ -133,10 +136,12 @@ def validate_runtime(args, destination, area, run):
 
 
 def package(args, destination, records, area):
-    sound_source = NATIVE.parent / 'EmbodiedVision/SoundWorker.swift'
+    helpers = {name: (NATIVE.parent / source, identifier)
+               for name, (source, identifier) in NATIVE_HELPERS.items()}
     native_inputs = {str(p.relative_to(REPO)): hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in NATIVE.rglob('*.swift') if not any(x in p.parts for x in ('build', '.build', 'tests'))}
-    native_inputs[sound_source.relative_to(REPO).as_posix()] = hashlib.sha256(sound_source.read_bytes()).hexdigest()
+    native_inputs.update({source.relative_to(REPO).as_posix(): hashlib.sha256(source.read_bytes()).hexdigest()
+                          for source, _ in helpers.values()})
     build_inputs = {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in (NATIVE/'Package.swift', NATIVE/'backend/desktop_backend.py',
                                  NATIVE/'Resources/product-inputs.json',
@@ -184,11 +189,14 @@ def package(args, destination, records, area):
         binary = Path(run([*command, '--show-bin-path'], output=True).strip()) / 'Friday'
         if not binary.is_file() or not binary.resolve().is_relative_to(area):
             raise ValueError('compiler output is outside this build area')
-        sound_binary = area / 'friday-sound'
-        run(['xcrun', 'swiftc', '-O', '-target', f'{platform.machine()}-apple-macosx14.0',
-             '-module-cache-path', str(area/'module-cache'), str(sound_source), '-o', str(sound_binary)])
+        helper_binaries = {}
+        for name, (source, _) in helpers.items():
+            executable = area / Path(name).name
+            run(['xcrun', 'swiftc', '-O', '-target', f'{platform.machine()}-apple-macosx14.0',
+                 '-module-cache-path', str(area/'module-cache'), str(source), '-o', str(executable)])
+            helper_binaries[name] = executable
         assemble(args, destination, records, native_inputs, build_inputs, binary, value,
-                 sdk_root=sdk_root, sdk_records=sdk_records, sound_binary=sound_binary)
+                 sdk_root=sdk_root, sdk_records=sdk_records, helper_binaries=helper_binaries)
         state['runtime_validation'] = validate_runtime(args, destination, area, run)
         for name, expected in {**records, **native_inputs, **build_inputs}.items():
             if hashlib.sha256((REPO/name).read_bytes()).hexdigest() != expected:
@@ -196,20 +204,23 @@ def package(args, destination, records, area):
         if frozen_sdk_input(args, records) != (sdk_root, sdk_records):
             raise ValueError('SDK input changed during build; candidate cannot be installed')
         # 先签包内程序，记录签名后的字节，再签外层 App。
-        sound_helper = destination / 'Contents' / SOUND_HELPER
-        run(['codesign', '--force', '--sign', args.signing_identity,
-             '--identifier', value['bundle_identifier'] + '.sound-worker', str(sound_helper)])
-        sound_digest = hashlib.sha256(sound_helper.read_bytes()).hexdigest()
+        helper_digests = {}
+        for name, (_, identifier) in helpers.items():
+            helper = destination / 'Contents' / name
+            run(['codesign', '--force', '--sign', args.signing_identity,
+                 '--identifier', value['bundle_identifier'] + '.' + identifier, str(helper)])
+            helper_digests[name] = hashlib.sha256(helper.read_bytes()).hexdigest()
         binding_path = destination / 'Contents/Resources/FRIDAY-SOURCE-INTEGRATION.json'
         binding = json.loads(binding_path.read_text())
-        binding['packaged_inputs'][SOUND_HELPER] = sound_digest
+        binding['packaged_inputs'].update(helper_digests)
         binding_path.write_text(json.dumps(binding, indent=2))
         run(['codesign', '--force', '--sign', args.signing_identity, str(destination)])
         run(['codesign', '--verify', '--deep', '--strict', str(destination)])
         state.update(status='verified', actual_binary=str(binary.resolve()),
                      compiled_binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
                      signed_binary_sha256=hashlib.sha256((destination/'Contents/MacOS/Friday').read_bytes()).hexdigest(),
-                     sound_helper_sha256=sound_digest, source_files=len(records))
+                     sound_helper_sha256=helper_digests['Helpers/friday-sound'],
+                     vision_helper_sha256=helper_digests['Helpers/friday-vision'], source_files=len(records))
     except BaseException:
         state['status'] = 'failed'
         raise
@@ -222,15 +233,16 @@ def package(args, destination, records, area):
 
 
 def assemble(args, destination, records, native_inputs, build_inputs, binary, value, *,
-             sdk_root, sdk_records, sound_binary):
+             sdk_root, sdk_records, helper_binaries):
     contents = destination / 'Contents'
     resources = contents / 'Resources'
     (contents / 'MacOS').mkdir(parents=True, exist_ok=False)
     resources.mkdir()
     shutil.copy2(binary, contents / 'MacOS/Friday')
-    sound_helper = contents / SOUND_HELPER
-    sound_helper.parent.mkdir()
-    shutil.copy2(sound_binary, sound_helper)
+    for name, path in helper_binaries.items():
+        target = contents / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
     backend = resources / 'backend'
     backend.mkdir()
     shutil.copy2(NATIVE / 'backend/desktop_backend.py', backend)

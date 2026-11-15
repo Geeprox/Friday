@@ -15,14 +15,11 @@ import os
 import platform
 from pathlib import Path
 
-from .paths import DATA, PRIVATE, PROJECT
+from .paths import APP_CONTENTS, DATA, PRIVATE
 from .review_child import ReviewChild
 from .temporal_model import host_budget
 
-CONTENTS = PROJECT.parent.parent.parent
-BUNDLED_SOUND = (CONTENTS / 'Helpers/friday-sound'
-                 if CONTENTS.name == 'Contents' and CONTENTS.parent.suffix == '.app'
-                 and PROJECT == CONTENTS / 'Resources/product/app' else None)
+BUNDLED_SOUND = APP_CONTENTS / 'Helpers/friday-sound' if APP_CONTENTS is not None else None
 SOUND = BUNDLED_SOUND or DATA / 'bin/friday-sound'
 INFANT_CRY_LABEL = 'baby_crying'
 IDENTIFIERS = {

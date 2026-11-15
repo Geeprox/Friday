@@ -140,10 +140,12 @@ ARL 不属于基础依赖，缺少可信身份/任务契约时模型功能明确
 桌面应用会向既有 ARL 注册名称、图标与场景，并维持会话；注册本身不运行模型。
 应用平台版本要求、场景套餐及界面连接字段见 [ARL 应用会话](arl-application.md)。
 
-摄像头、人物识别和动作实验主要面向 macOS，并需要独立的本地模型、原生构建和 SDK。
+摄像头、人物识别和动作实验主要面向 macOS，并需要独立的本地模型和 SDK。
+macOS 桌面 App 自带 Apple Vision 识别程序，更新 App 时识别程序一并更新。
 `uv sync --locked --extra vision --extra camera-media` 只安装声明的软件依赖，不下载
 模型或获取授权。`python3 scripts/embodied/runtime.py --check` 列出缺失输入，
-`--build-native` 编译当前主机的 Vision worker 与摄像头 socket helper，不安装或启动它们。
+从源码运行时使用 `--build-native` 编译当前主机的 Vision worker 与摄像头 socket helper。
+桌面 App 如需绑定指定网卡，也使用该命令准备 socket helper。编译时不会启动摄像头。
 
 macOS 桌面 App 内置声音复核程序，通过系统 SoundAnalysis 识别声音。在「家中提醒 → 监测设置」
 开启声音复核后，首次处理已授权镜头的声音时才核对系统分类器提供的类别。

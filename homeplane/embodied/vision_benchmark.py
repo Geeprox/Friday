@@ -71,12 +71,13 @@ def comparison_scope(report):
     return (report['worker'], *(row['session'] + ':' + row['mode_revision'] for row in cameras))
 
 
-def camera_sample(slot, state, recognition, session, mode_revision, counters, frames, latency_ms, voice, *, timings=None):
+def camera_sample(slot, state, recognition, session, mode_revision, counters, frames, latency_ms, voice, *,
+                  timings=None, body_rescue_passes=None):
     sample = dict(slot=slot, state=state, recognition=recognition, session=session, mode_revision=mode_revision,
                   inference=counters.get('processed') if counters else None,
                   skipped=counters.get('skipped_static') if counters else None,
                   quiet_ms=counters.get('quiet_ms') if counters else None,
-                  frames=frames, latency_ms=latency_ms, voice=voice)
+                  frames=frames, latency_ms=latency_ms, voice=voice, body_rescue_passes=body_rescue_passes)
     if timings is not None:
         sample['timings'] = {key: histogram.bins.copy() for key, histogram in timings.items()}
     return sample

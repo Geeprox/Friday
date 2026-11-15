@@ -104,6 +104,7 @@ def summarize(rows):
             inference_submitted=end['inference']-start['inference'],
             skipped_static=end['skipped']-start['skipped'],
             recognized_frames=end['frames']-start['frames'],
+            body_rescue_passes=counter_delta(start, end, 'body_rescue_passes'),
             preview_frames=preview_frames,
             preview_fresh_samples=(sum(row.get('preview_fresh') is True for row in lane)
                                    if preview_frames is not None else None),
@@ -142,7 +143,7 @@ def measure(port, pool, seconds, scope, *, full_rate):
             if sample['sampled_mono'] <= rows[-1][0]['sampled_mono']:
                 raise ValueError('measurement_clock_discontinuous')
             for previous, row in zip(rows[-1][0]['cameras'], sample['cameras']):
-                for key in (*COUNTERS, 'preview_frames'):
+                for key in (*COUNTERS, 'preview_frames', 'body_rescue_passes'):
                     counter_delta(previous, row, key)
                 for key in WAKE_COUNTS:
                     counter_delta(previous['voice'], row['voice'], key)

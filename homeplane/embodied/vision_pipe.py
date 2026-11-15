@@ -56,6 +56,7 @@ class VisionProcess:
         self.process = None
         self.failures = 0
         self.retry_at = 0.0
+        self.body_rescue_passes = None
         self.timings = {'vision_request': LatencyHistogram(), 'native_processing': LatencyHistogram()}
 
     async def detect(self, payload, *, on_failure):
@@ -85,6 +86,9 @@ class VisionProcess:
             return None
         self.failures = 0
         self.timings['native_processing'].record_ms(reply.get('inference_ms'))
+        passes = reply.get('body_rescue_passes')
+        if type(passes) is int and 0 <= passes <= 2:
+            self.body_rescue_passes = (self.body_rescue_passes or 0) + passes
         return reply
 
     async def _retire_failed(self):

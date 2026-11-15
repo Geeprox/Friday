@@ -100,14 +100,21 @@ while let line = readLine() {
             }
             try infer(full,CGRect(x:0,y:0,width:1,height:1))
             let supplied=obj["person_rois"] as? [[String:Double]] ?? []
-            if poses.allSatisfy({ (($0["joints"] as? [String:Any])?.count ?? 0) < 6 }) && (!supplied.isEmpty || Date().timeIntervalSince(lastRescue)>0.5) {
+            // 安静空场只降频无目标的补检。全图和有明确人形线索的路径照常运行。
+            let wideRescueAllowed = (obj["allow_wide_pose_rescue"] as? Bool) != false || !boxes.isEmpty
+            var bodyRescuePasses = 0
+            if poses.allSatisfy({ (($0["joints"] as? [String:Any])?.count ?? 0) < 6 }) &&
+                (!supplied.isEmpty || (wideRescueAllowed && Date().timeIntervalSince(lastRescue)>0.5)) {
                 lastRescue=Date()
                 let regions=supplied.isEmpty ? [CGRect(x:0,y:0,width:0.6,height:1),CGRect(x:0.4,y:0,width:0.6,height:1)] : supplied.prefix(2).map { b in
                     CGRect(x:(b["x"] ?? 0)-0.04,y:(b["y"] ?? 0)-0.05,width:(b["w"] ?? 0)+0.08,height:(b["h"] ?? 0)+0.10).intersection(CGRect(x:0,y:0,width:1,height:1))
                 }
                 for r in regions where r.width>0 && r.height>0 {
                     let px=CGRect(x:r.minX*Double(full.width),y:r.minY*Double(full.height),width:r.width*Double(full.width),height:r.height*Double(full.height)).integral
-                    if let crop=full.cropping(to:px) {try infer(crop,CGRect(x:px.minX/Double(full.width),y:px.minY/Double(full.height),width:px.width/Double(full.width),height:px.height/Double(full.height)))}
+                    if let crop=full.cropping(to:px) {
+                        bodyRescuePasses += 1
+                        try infer(crop,CGRect(x:px.minX/Double(full.width),y:px.minY/Double(full.height),width:px.width/Double(full.width),height:px.height/Double(full.height)))
+                    }
                 }
             }
             let bodyMilliseconds=Date().timeIntervalSince(started)*1000
@@ -219,7 +226,7 @@ while let line = readLine() {
             let result: [String: Any] = ["boxes":unique,"poses":poses,"hands":hands,"faces":faces,
                 "animals":animals,"animals_supported":true,"animals_status":animalStatus,
                 "animal_ms":Date().timeIntervalSince(animalStarted)*1000,
-                "body_ms":bodyMilliseconds,"hand_ms":handMilliseconds,"hands_sampled":sampleHands,
+                "body_ms":bodyMilliseconds,"body_rescue_passes":bodyRescuePasses,"hand_ms":handMilliseconds,"hands_sampled":sampleHands,
                 "inference_ms":Date().timeIntervalSince(started)*1000]
             let out = try JSONSerialization.data(withJSONObject: result,options:[.sortedKeys])
             print(String(decoding:out,as:UTF8.self));fflush(stdout)

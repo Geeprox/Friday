@@ -22,9 +22,10 @@ SwiftPM、中间文件和模块缓存使用
 临时安装候选也可通过 `--output` 放在该项目的缓存命名空间内；不允许写入其他项目的缓存。
 构建前后核对源码摘要，安装前使用 `check_registry_package_pins.py` 检查包内来源绑定。
 
-同一次构建将 `SoundWorker.swift` 编译到桌面包的 `Contents/Helpers/friday-sound`。
-包内导入检查确认后端选中该程序，并核对可执行状态。先签包内程序，将签名后的 SHA-256
-纳入来源清单，再签外层 App。声音复核启用后才会按需启动分类器。
+同一次构建将 `SoundWorker.swift` 和 `VisionWorker.swift` 编译到桌面包的
+`Contents/Helpers/friday-sound` 和 `Contents/Helpers/friday-vision`。包内导入检查核对
+程序的可执行状态，并确认主镜头和其他镜头都使用与 App 同版本的视觉识别程序。
+先签包内程序，将签名后的 SHA-256 纳入来源清单，再签外层 App。
 
 `--arl-sdk-input` 需要包含经审核的 `ARL-SDK-MANIFEST.json`、对应源码和许可文件。
 其清单摘要必须与 `homeplane/arl_sdk_requirements.json` 中的固定值一致；构建不下载 SDK，
@@ -53,7 +54,7 @@ flowchart LR
   B --> C[独占短目录下公开 SDK 消费者合成回归]
   B --> D[强制 arl-sdk-input 封包]
   D --> E[独立导入检查]
-  S[编译声音复核程序] --> E
+  S[编译声音复核和视觉识别程序] --> E
   E --> G[先签包内程序，再签外层 App]
   C --> V[回读固定输入完整性]
   E --> V

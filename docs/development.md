@@ -78,6 +78,8 @@ python3 -B scripts/embodied/compare_vision.py --seconds 24 --compare
 
 `preview_frames` 是预览入口接收的新 JPEG 帧数，`preview_fresh_samples` 是采样时仍有新鲜预览的次数。按路与识别帧对照即可发现降频时的预览停滞。实际观看流畅度由现场确认。`sampled_frame_age_p95_ms` 使用每两秒读取时最近一帧完成识别的管线耗时。
 
+`body_rescue_passes` 是收到原生识别回执的裁切补检次数。同一帧可能执行两次。与每路 `inference_submitted` 一起对照，区分少提交整帧与少做空场裁切的开销。旧版原生识别器无该计数时显示为 `null`。
+
 每路的 `timings` 使用本段开始和结束的累计计数差，列出样本数、p95 所在档位上限和超出量程的样本数。空样本和落在最高档之外的 p95 显示为 `null`。旧版 worker 没有时延计数时，`timings` 为空。
 
 | 字段 | 起止点 |

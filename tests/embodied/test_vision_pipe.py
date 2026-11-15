@@ -166,11 +166,12 @@ async def test_recognizer_records_request_round_trip_and_separate_native_process
             clock[0] += .22
             raise TimeoutError()
         clock[0] += .055
-        return {'inference_ms': 41.0}
+        return {'inference_ms': 41.0, 'body_rescue_passes': 2}
 
     monkeypatch.setattr(vision_pipe, 'request_vision', respond)
     assert (await owner.detect({'jpeg': 'synthetic-frame'}, on_failure=on_failure))['inference_ms'] == 41
     assert await owner.detect({'jpeg': 'synthetic-timeout'}, on_failure=on_failure) is None
+    assert owner.body_rescue_passes == 2
     on_failure.assert_called_once_with('TimeoutError')
     assert summarize_timing(owner.timings['vision_request'].bins) == {
         'samples': 2, 'p95_upper_ms': 300, 'above_range': 0,

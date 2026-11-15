@@ -91,7 +91,7 @@ def test_worker_copies_separate_per_camera_timings_only_for_diagnostic_queries()
     }
     item = {
         'recognizer': SimpleNamespace(session='secondary-run', vision=SimpleNamespace(
-            timings={'vision_request': secondary})),
+            timings={'vision_request': secondary}, body_rescue_passes=11)),
         'mode_revision': 'secondary-mode', 'wake_motion_counts': WakeMotionCounts(),
     }
     scope = dict(
@@ -207,7 +207,7 @@ def test_host_summary_excludes_pre_phase_and_cached_baselines_without_losing_pre
         worker = new_report(sample=index * 2)
         for camera in worker['cameras']:
             camera['frames'] += index
-            camera.update(preview_frames=index * 5, preview_fresh=index != 2)
+            camera.update(preview_frames=index * 5, preview_fresh=index != 2, body_rescue_passes=index * 2)
             camera['voice'].update(voice_packets=index * 3, voice_segments=index // 2, asr_results=index // 2)
         rows.append((worker, dict(available=True, sampled_at=sample_id, cpu_percent=cpu, memory_used_bytes=cpu * 100)))
     summary = compare_vision.summarize(rows)
@@ -215,6 +215,7 @@ def test_host_summary_excludes_pre_phase_and_cached_baselines_without_losing_pre
     assert summary['host_memory_used_bytes_median'] == 3000 and summary['host_samples'] == 2
     for camera in summary['cameras']:
         assert (camera['preview_frames'], camera['preview_fresh_samples'], camera['recognized_frames']) == (20, 4, 4)
+        assert camera['body_rescue_passes'] == 8
         assert (camera['voice']['voice_packets'], camera['voice']['voice_segments'], camera['voice']['asr_results']) == (12, 2, 2)
     with pytest.raises(ValueError, match='measurement_host_samples_unavailable'):
         compare_vision.summarize(rows[:-1])

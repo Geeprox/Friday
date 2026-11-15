@@ -4,6 +4,7 @@ import base64
 import io
 import math
 from types import SimpleNamespace as Row
+from unittest.mock import Mock
 
 import pytest
 from PIL import Image
@@ -134,6 +135,22 @@ def test_cached_frame_does_not_become_new_hand_evidence(monkeypatch):
     second = worker.detect(request)
     assert not second['hands_sampled'] and len(calls) == count
     assert second['hands'][0]['sample_id'] == first['hands'][0]['sample_id']
+
+
+@pytest.mark.parametrize(('permit', 'rois', 'passes'), [
+    (False, [], 0), (False, [{'x': .3, 'y': .2, 'w': .3, 'h': .5}], 1), (True, [], 2),
+])
+def test_empty_crops_defer_without_dropping_full_frame_body_and_hand(permit, rois, passes):
+    worker = PortableVision.__new__(PortableVision)
+    worker.image = lambda array: array
+    body = Mock(return_value=Row(pose_landmarks=[]))
+    gestures = Mock(return_value=hand())
+    worker.pose, worker.hand = Row(detect=body), Row(detect=gestures)
+    worker.sequence, worker.last_hands, worker.last_sample = 0, [], -math.inf
+    reply = worker.detect(dict(jpeg=jpeg(), person_rois=rois, allow_wide_pose_rescue=permit))
+    assert body.call_count == 1 + passes
+    assert reply['body_rescue_passes'] == passes and reply['hands']
+    gestures.assert_called_once()
 
 
 @pytest.mark.parametrize('encoded', ['', 'invalid!', base64.b64encode(b'not an image').decode()])

@@ -838,6 +838,7 @@ async def run_source(my_generation):
             limit=6_000_000,
         )
         vision = VisionProcess(VISION)
+        state['body_rescue_total'] = None
         vision_measurement.primary_timings = vision.timings
         capture.stdin.write(
             (
@@ -1056,6 +1057,7 @@ async def run_source(my_generation):
                     "jpeg": item["jpeg"],
                     "face_jpeg": item.get("face_jpeg"),
                     "person_rois": rois,
+                    "allow_wide_pose_rescue": 'scene_quiet_ms' not in item or cadence.wide_pose_rescue,
                     "hand_interval_ms": 140 if games.mode not in ("off", "home") else 80,
                     "attention_enabled": True,
                     "animals_enabled": pet_revision is not None,
@@ -1063,6 +1065,7 @@ async def run_source(my_generation):
                 if detection is None:
                     cadence.reset()
                     continue
+                state['body_rescue_total'] = vision.body_rescue_passes
                 timings['vision_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 phase_at = time.monotonic()
                 if my_generation != generation:
@@ -1291,6 +1294,7 @@ async def run_source(my_generation):
                     scene=current_scene,
                     inference_ms=round(detection.get("inference_ms", 0), 1),
                     body_ms=round(detection.get("body_ms", 0), 1),
+                    body_rescue_passes=detection.get("body_rescue_passes"),
                     hand_ms=round(detection.get("hand_ms", 0), 1),
                     animal_ms=round(detection.get("animal_ms", 0), 1),
                     capture_fps=rate(captured_times),
@@ -1462,7 +1466,8 @@ def vision_measurement_sample(*, include_timings=False):
                           str(camera_planner.intent_revision) if camera_planner else 'fixed',
                           state.get('vision_cadence'), state['processed_frames'],
                           state.get('pipeline_ms') if primary_open else None,
-                          home.vision_benchmark_voice() | home.wake_motion_counts.public(), timings=primary_timings)]
+                          home.vision_benchmark_voice() | home.wake_motion_counts.public(), timings=primary_timings,
+                          body_rescue_passes=state.get('body_rescue_total'))]
     rows[0].update(wall.preview_metrics(SELECTED['id']))
     for camera_id in (camera['id'] for camera in wall.cameras if camera['id'] != SELECTED['id']):
         item = previews.sessions.get(camera_id, {})
@@ -1483,7 +1488,8 @@ def vision_measurement_sample(*, include_timings=False):
         rows.append(camera_sample(len(rows)+1, report['state'], report.get('recognition', 'waiting'),
                                   recognizer.session if recognizer else None, item.get('mode_revision'),
                                   report.get('vision_cadence'), report['frames'], report.get('latency_ms'),
-                                  voice, timings=timings))
+                                  voice, timings=timings,
+                                  body_rescue_passes=recognizer.vision.body_rescue_passes if recognizer else None))
         rows[-1].update(wall.preview_metrics(camera_id))
     interactive = (games.mode not in {'off', 'home'} or party_camera.window(now)[2]
                    or practice.active() is not None)

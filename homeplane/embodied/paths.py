@@ -10,11 +10,15 @@ from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent
 PROJECT = SOURCE.parents[1]
+_CONTENTS = PROJECT.parent.parent.parent
+APP_CONTENTS = (_CONTENTS if _CONTENTS.name == 'Contents' and _CONTENTS.parent.suffix == '.app'
+                and PROJECT == _CONTENTS / 'Resources/product/app' else None)
 DATA = Path(os.environ.get("FRIDAY_EMBODIED_DATA", PROJECT / "data/embodied")).absolute()
 PRIVATE = DATA / "private"
 MODELS = DATA / "models"
 PYTHON = DATA / "runtime/bin/python"
-VISION = DATA / "bin/friday-vision"
+VISION = (APP_CONTENTS / 'Helpers/friday-vision' if sys.platform == 'darwin' and APP_CONTENTS is not None
+          else DATA / 'bin/friday-vision')
 SOCKETS = DATA / "bin/camera-sockets.dylib"
 
 

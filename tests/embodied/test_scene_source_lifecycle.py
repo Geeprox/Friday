@@ -364,7 +364,8 @@ async def test_original_vision_request_only_uses_current_scene_rois(change):
     scope = dict(motion_generation=4, my_generation=1, generation=1, primary_wall_epoch=2,
         wall_epoch=2, time=SimpleNamespace(time=lambda: 1000, monotonic=lambda: 10),
         state=dict(status='live'), item=item, scene_data=scene, room=None,
-        camera_planner=None, games=SimpleNamespace(mode='home'), vision=SimpleNamespace(detect=request),
+        camera_planner=None, games=SimpleNamespace(mode='home'),
+        vision=SimpleNamespace(detect=request, body_rescue_passes=None),
         recognition_failed=lambda _:None)
     if change == 'queued_motion':
         scope['motion_generation'] = 5

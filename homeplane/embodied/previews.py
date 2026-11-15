@@ -639,7 +639,8 @@ class PreviewPool:
                         recognizer.animals_intent = item.get('mode_revision')
                         observation = await recognizer.observe(packet,
                             source_current=lambda: self.source_current(selected['id'], process),
-                            on_vision_failure=recognition_failed, room_lock=room_lock)
+                            on_vision_failure=recognition_failed, room_lock=room_lock,
+                            allow_wide_pose_rescue=not use_cadence or cadence.wide_pose_rescue)
                         if item['privacy_closed'] or not item['source_active']:break
                         # Inference finishing after a stale input cannot trigger.
                         item['timing'] = recognizer.timing

@@ -43,7 +43,8 @@ class CameraRecognition:
         self.last = None
         if self.room is not None:self.room.expect_motion(now, 2)
 
-    async def observe(self, packet, *, source_current=None, on_vision_failure=None, room_lock=None):
+    async def observe(self, packet, *, source_current=None, on_vision_failure=None, room_lock=None,
+                      allow_wide_pose_rescue=True):
         motion_generation = self.motion_generation
         def current():
             return (motion_generation == self.motion_generation
@@ -68,6 +69,7 @@ class CameraRecognition:
                 on_vision_failure(error)
 
         detection = await self.vision.detect(dict(jpeg=packet['jpeg'], face_jpeg=packet.get('face_jpeg'),
+            allow_wide_pose_rescue=allow_wide_pose_rescue,
             hand_interval_ms=100, attention_enabled=True, animals_enabled=animal_intent is not None),
             on_failure=vision_failed)
         if detection is None:
@@ -130,6 +132,7 @@ class CameraRecognition:
             return None
         self.timing = dict(vision_ms=round((vision_done-began)*1000),
             animal_ms=detection.get('animal_ms', 0),
+            body_rescue_passes=detection.get('body_rescue_passes'),
             layout_ms=round((layout_done-vision_done)*1000),
             identity_ms=round((time.monotonic()-layout_done)*1000),
             pipeline_ms=round((time.time()-packet['received_at'])*1000))

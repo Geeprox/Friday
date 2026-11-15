@@ -161,3 +161,23 @@ def test_switching_camera_intent_requires_a_new_complete_observation():
     assert cadence.due(still, 10.1, force=False, intent=after)
     assert cadence.latest_capture is None
     assert cadence.due(still, 10.2, force=False, intent=after)
+
+
+def test_quiet_empty_camera_limits_only_untargeted_pose_rescues():
+    cadence = VisionCadence()
+    still = {'scene_quiet_ms': 6000}
+    cadence.observed(10, clear=True, captured_at=9.8)
+    requested = []
+    for now in (10.6, 11.21, 11.82, 12.43, 13.04):
+        assert cadence.due(still, now, force=False)
+        requested.append(cadence.wide_pose_rescue)
+        cadence.observed(now, clear=True, captured_at=now - .18)
+    assert requested == [True, False, False, False, True]
+    assert cadence.public()['wide_rescue_deferred'] == 3
+    assert cadence.due(still, 13.06, force=True)
+    assert cadence.wide_pose_rescue
+    assert cadence.due({'scene_quiet_ms': 0}, 13.07, force=False)
+    assert cadence.wide_pose_rescue
+    cadence.reset()
+    assert cadence.due(still, 13.08, force=False)
+    assert cadence.wide_pose_rescue
