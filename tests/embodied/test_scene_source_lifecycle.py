@@ -15,15 +15,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.scene_process import SceneProcess
 from homeplane.embodied.scene_protocol import MAX_JPEG, scene_result
 from homeplane.embodied.scene_worker import serve
+from homeplane.embodied.vision_cadence import VisionCadence
 from tests.embodied.test_camera_audio import actual
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['generation', 'motion', 'wall', 'context', 'session', 'age', 'none'])
-async def test_actual_scene_producer_never_publishes_a_reply_after_source_change(tmp_path, change):
+@pytest.mark.parametrize('quiet_follow', [False, True])
+async def test_actual_scene_producer_never_publishes_a_reply_after_source_change(tmp_path, change, quiet_follow):
     entered, release = threading.Event(), threading.Event()
     after_reply, leave = asyncio.Event(), asyncio.Event()
     objects = [dict(class_='synthetic-only')]
@@ -60,7 +63,21 @@ async def test_actual_scene_producer_never_publishes_a_reply_after_source_change
                  time=SimpleNamespace(time=lambda: 1000., monotonic=lambda: 10.), base64=base64,
                  latest_item=item, my_generation=1, generation=1, wall_epoch=2, primary_wall_epoch=2,
                  motion_generation=4, SELECTED={'id': 'cam_1111111111'}, state={'status': 'live'},
-                 scene_data=dict(objects=[], observed_at=0))
+                 camera_planner=None, scene_data=dict(objects=[], observed_at=0))
+    if quiet_follow:
+        director = CameraDirector()
+        director.apply_mode('pet_target', 'synthetic-intent')
+        item['scene_quiet_ms'] = 6000
+        cadence = VisionCadence()
+        assert cadence.due(item, 9.9, force=False, intent=director.intent)
+        cadence.observed(9.9, clear=True, captured_at=9.8)
+        scope.update(
+            cadence=cadence,
+            camera_planner=SimpleNamespace(mode='pet_target', intent_revision='synthetic-intent', director=director),
+            benchmark_full_vision=lambda: False, games=SimpleNamespace(mode='home'),
+            party_camera=SimpleNamespace(window=lambda _: (None, None, False)),
+            needs_full_vision=lambda *_: False, identities=SimpleNamespace(session='synthetic-recognition'),
+        )
     source = Path('homeplane/embodied/worker.py').read_text()
     for name in ('primary_frame_current', 'scene_frame_current'):
         if f'def {name}(' in source:
@@ -68,7 +85,7 @@ async def test_actual_scene_producer_never_publishes_a_reply_after_source_change
     producer = actual('homeplane/embodied/worker.py', 'observe_scene', scope)
     job = asyncio.create_task(producer())
     try:
-        assert await asyncio.to_thread(entered.wait, 1)
+        assert await asyncio.to_thread(entered.wait, 1), job.exception() if job.done() else 'scene_did_not_start'
         if change == 'generation':
             scope['generation'] = 2
         elif change == 'motion':
