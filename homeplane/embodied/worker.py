@@ -444,23 +444,28 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
 
 async def camera_search():
     global camera_lease, camera_planner
-    io = Transport()
-    lease = CameraLease(io, open_privacy=False, restore_native=True)
-    camera_lease = lease
-    planner = None
+    owner = capture
+    io = lease = planner = None
+    published = retry = False
     try:
+        io = Transport()
+        lease = CameraLease(io, open_privacy=False, restore_native=True)
         await lease.acquire()
+        if capture is not owner or state.get('status') not in {'connecting', 'live'}:
+            return False
+        acquired_at = time.monotonic()
         planner = SearchPlanner(lease.presets, time.monotonic(), lease.active)
         intent = camera_intents.load()
         planner.mode, planner.intent_revision = intent.mode, intent.revision
         planner.intent_status = intent.status
         if os.environ.get("FRIDAY_CAMERA_HOLD")=="1":planner.mode="hold"
-        camera_planner = planner
         director = CameraDirector()
         from homeplane.embodied.camera_follow_picker import CameraFollowPicker
 
         planner.follow_picker = CameraFollowPicker(director, lambda: primary_follow_sample(),
             lambda: (planner.mode, planner.intent_revision), lambda mode: set_primary_camera_mode(mode))
+        camera_lease, camera_planner = lease, planner
+        published = True
         checked = 0.0
         while True:
             now = time.monotonic()
@@ -470,6 +475,9 @@ async def camera_search():
                     close_primary_view()
                     return
             now = time.monotonic()
+            if owner is not None and last_frame <= acquired_at:
+                await asyncio.sleep(.3)
+                continue
             sample = dict(state, _local_received=last_frame, game=games.public,
                 party_camera=party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
                     frame_mono=last_frame,now=now))
@@ -521,32 +529,80 @@ async def camera_search():
     except asyncio.CancelledError:
         raise
     except Exception as error:
+        retry = not published and str(error) != 'privacy_shutter_closed'
+        if not published and not retry and owner is not None:
+            try:
+                await primary_capture_closed(generation, primary_wall_epoch, 'camera_state_unavailable',
+                                             type(error).__name__, stage='shutter_readback')
+            finally:
+                await reap(owner)
         if planner is None or planner.mode != 'survey':
             state["camera_control"] = {
                 "owner": "none",
                 "phase": "unavailable",
-                "reason": "接管失败",
+                "reason": "暂时无法转向",
                 "error_class": type(error).__name__,
             }
     finally:
-        survey_ended = planner is not None and planner.mode == 'survey'
+        survey_ended = published and planner.mode == 'survey'
         if survey_ended:
             readback = camera_intent_readback(state.get('camera_control') or {}, mode='survey',
                                              revision=planner.intent_revision, status=planner.intent_status)
             state['camera_control'] = finish_camera_survey(dict(readback, owner='none'))
-        camera_planner = None
+        if published:
+            camera_lease = camera_planner = None
         try:
-            # No queued motor command may run after vendor tracking is restored.
+            # 曾经发放控制权时，采集进程须退出，之后才能恢复厂商的跟随设置。
             try:
-                await reap(capture)
+                if published:
+                    await reap(owner)
             finally:
-                restored = await lease.release()
-                released = dict(owner='none', phase='restored' if restored else 'restore_pending',
-                                reason='镜头已释放' if restored else '镜头待释放')
-                state['camera_control'] = dict(state['camera_control'], **released) if survey_ended else released
+                restored = lease is None or await lease.release()
+                if published or not restored:
+                    released = dict(owner='none', phase='restored' if restored else 'restore_pending',
+                                    reason='镜头已释放' if restored else '镜头待释放')
+                    state['camera_control'] = dict(state['camera_control'], **released) if survey_ended else released
         finally:
-            try:await io.close()
-            finally:camera_lease = None
+            if io is not None:
+                await io.close()
+    return retry
+
+
+async def supervise_primary_motion(owner):
+    while capture is owner and owner.returncode is None and state.get('status') in {'connecting', 'live'}:
+        if not await camera_search():
+            return
+        await asyncio.sleep(5)
+
+
+async def watch_primary_privacy(owner, my_generation, wall_epoch):
+    def current():
+        return (capture is owner and owner.returncode is None and my_generation == generation
+                and wall_epoch == primary_wall_epoch and state.get('status') in {'connecting', 'live'})
+
+    while current():
+        await asyncio.sleep(10)
+        if not current():
+            return
+        if camera_lease is not None:
+            continue
+        try:
+            opened = await camera_is_open(SELECTED)
+            error_class = None
+        except Exception as error:
+            opened, error_class = None, type(error).__name__
+        if not current():
+            return
+        if opened is True:
+            continue
+        try:
+            if opened is False:
+                close_primary_view()
+            reason = 'privacy_shutter_closed' if opened is False else 'camera_state_unavailable'
+            await primary_capture_closed(my_generation, wall_epoch, reason, error_class, stage='shutter_readback')
+        finally:
+            await reap(owner)
+        return
 
 
 def rate(times):
@@ -660,6 +716,7 @@ async def run_source(my_generation):
     state.update(
         status="connecting",
         recognition="waiting",
+        camera_control=None,
         reason=None,
         frame=None,
         people=[],
@@ -669,9 +726,9 @@ async def run_source(my_generation):
         _patrol_view=None,
         game={"mode": games.mode, "status": "paused", "reason": "实时画面已过期", "players": []},
     )
-    camera_task = None
+    camera_task = privacy_task = None
     vision = None
-    stage = "source_start"
+    stage = 'shutter_readback'
 
     def recognition_failed(error_class):
         global latest, last_frame, last_jpeg, last_preview, last_preview_at
@@ -688,30 +745,15 @@ async def run_source(my_generation):
         state.update(status='connecting', recognition='recovering', session_id=identities.session, frame=None,
                      reason='recognition_recovering', error_stage='vision_request', error_class=error_class)
     try:
-        if not await camera_is_open(SELECTED):
-            state.update(status='shutter_closed', reason='privacy_shutter_closed')
-            await notify()
+        opened = await camera_is_open(SELECTED)
+        if my_generation != generation:
             return
-        camera_task = asyncio.create_task(camera_search()) if SELECTED.get('takeover') else None
-        # Preview may have been physically shuttered before this lease. Wait
-        # for its read-back-confirmed takeover before asking the SDK for video.
-        ready_by = time.monotonic() + 30
-        while camera_task and not (
-            camera_lease and camera_lease.snapshot and camera_lease.snapshot.get("status") == "owned"
-        ):
-            if camera_task.done() or time.monotonic() > ready_by:
-                raise RuntimeError("camera_takeover_not_ready")
-            await asyncio.sleep(0.1)
-        if camera_lease and camera_lease.snapshot.get("before", {}).get("camera_power") is False:
-            # Property ACK precedes the C700's physical privacy shutter. Allow
-            # hardware to wake before starting the local SDK handshake.
-            await asyncio.sleep(5)
-        stage = 'shutter_readback'
-        if not await camera_is_open(SELECTED):
+        if not opened:
             state.update(status='shutter_closed', reason='privacy_shutter_closed')
             await notify()
             return
         stage = 'source_start'
+        motor_enabled = bool(SELECTED.get('takeover'))
         capture_session = secrets.token_hex(16)
         audio_ingress = AudioIngress(SELECTED, capture_session)
         capture = await asyncio.create_subprocess_exec(
@@ -729,13 +771,16 @@ async def run_source(my_generation):
         capture.stdin.write(
             (
                 json.dumps(
-                    {"source": "miloco", "camera": SELECTED["id"], "motor": bool(camera_task),
+                    {"source": "miloco", "camera": SELECTED["id"], "motor": motor_enabled,
                      "audio": True, "identity": False, "capture_session": capture_session}
                 )
                 + "\n"
             ).encode()
         )
         await capture.stdin.drain()
+        privacy_task = asyncio.create_task(watch_primary_privacy(capture, my_generation, wall_epoch))
+        if motor_enabled:
+            camera_task = asyncio.create_task(supervise_primary_motion(capture))
         queue = asyncio.Queue(maxsize=1)
         latest_item = None
         last_selection = None
@@ -1175,9 +1220,10 @@ async def run_source(my_generation):
                     try:
                         await close_rooms(source_scope)
                     finally:
-                        if camera_task:
-                            camera_task.cancel()
-                            await asyncio.gather(camera_task, return_exceptions=True)
+                        background = [task for task in (camera_task, privacy_task) if task is not None]
+                        for task in background:
+                            task.cancel()
+                        await asyncio.gather(*background, return_exceptions=True)
                 finally:
                     try:await reap(capture)
                     finally:

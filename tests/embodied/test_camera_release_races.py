@@ -35,7 +35,7 @@ async def test_exited_capture_race_cannot_skip_native_restore_or_retain_lock(tmp
     capture=SimpleNamespace(returncode=None,terminate=exited,wait=AsyncMock())
     scope=dict(asyncio=asyncio,time=time,os=os,Transport=lambda:io,CameraLease=lambda *_,**__:lease,
                SearchPlanner=SearchPlanner,CameraDirector=lambda:None,camera_is_open=AsyncMock(return_value=False),
-               SELECTED={'id':'synthetic'},close_primary_view=lambda:None,capture=capture,state={},
+               SELECTED={'id':'synthetic'},close_primary_view=lambda:None,capture=capture,state={'status':'live'},
                camera_intents=SimpleNamespace(load=lambda:CameraIntent('auto','initial','default')),
                camera_lease=None,camera_planner=None)
     functions({'camera_search','reap'},scope)
@@ -62,7 +62,7 @@ async def test_primary_search_recreation_loads_intent_and_still_restores_vendor(
         planner=SearchPlanner(*args);planners.append(planner);return planner
     scope=dict(asyncio=asyncio,time=time,os=os,Transport=lambda:io,CameraLease=lambda *_,**__:lease,
                SearchPlanner=make_planner,CameraDirector=lambda:None,camera_is_open=AsyncMock(return_value=False),
-               SELECTED=selected,close_primary_view=lambda:None,capture=None,state={},
+               SELECTED=selected,close_primary_view=lambda:None,capture=None,state={'status':'live'},
                camera_intents=intents,camera_lease=None,camera_planner=None)
     functions({'camera_search','reap'},scope)
     await scope['camera_search']()

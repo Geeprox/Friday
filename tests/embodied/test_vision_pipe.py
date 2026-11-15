@@ -3,6 +3,7 @@
 import asyncio
 import json
 import base64
+import os
 import secrets
 import time
 from collections import deque
@@ -14,6 +15,8 @@ import pytest
 
 from homeplane.embodied.vision_pipe import PIPE_LIMIT, request_vision
 from homeplane.embodied import camera_recognition, previews, ptz_control, vision_pipe
+from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_intent import camera_intent_readback
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.camera_audio import AudioIngress
@@ -189,8 +192,11 @@ def camera_ports(monkeypatch, fault):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('fault', ['write_stall', 'read_stall', 'bad_reply'])
-async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fresh_frame(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize(('fault', 'motor_recovery'), [
+    ('write_stall', False), ('read_stall', False), ('bad_reply', False), ('bad_reply', True),
+])
+async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fresh_frame(
+        tmp_path, monkeypatch, fault, motor_recovery):
     from fastapi import HTTPException, Request
     from starlette.responses import Response
 
@@ -231,8 +237,28 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
     owner['safety'].sound_requested = lambda _:False
     owner['safety'].recording_status = lambda:{'state':'ready'}
     owner['games'].reset('ski')
+    if motor_recovery:
+        camera['takeover'] = True
+        may_retry = asyncio.Event()
+        sleep = asyncio.sleep
+
+        async def retry_sleep(delay):
+            if delay == 5:
+                await may_retry.wait()
+            else:
+                await sleep(delay)
+
+        monkeypatch.setattr(asyncio, 'sleep', retry_sleep)
+        lease = SimpleNamespace(presets=[], active=None, snapshot={'status':'owned'},
+            acquire=AsyncMock(side_effect=[RuntimeError('camera_owned_by_live_process'), None]),
+            release=AsyncMock(return_value=True))
+        owner.update(os=os, camera_intent_readback=camera_intent_readback, Transport=lambda:SimpleNamespace(close=AsyncMock()),
+            CameraLease=lambda *a, **k:lease, SearchPlanner=ptz_control.SearchPlanner,
+            CameraDirector=CameraDirector, motor_step=AsyncMock(),
+            camera_intents=SimpleNamespace(load=lambda:SimpleNamespace(mode='auto', revision='initial', status='saved')))
     for name in ('reap','invalidate_calibration','calibration_source','primary_frame_current','scene_frame_current',
-                 'primary_recovery_frame','view','preview_status','preview_frame','run_source'):
+                 'primary_recovery_frame','view','preview_status','preview_frame','run_source',
+                 'watch_primary_privacy','supervise_primary_motion','camera_search'):
         actual('homeplane/embodied/worker.py', name, owner)
     task = asyncio.create_task(owner['run_source'](1))
     state = owner['state']
@@ -242,6 +268,16 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         frame(b'SYNTHETIC-FIRST')
         await until(lambda:state['processed_frames']==1 or task.done() or state.get('recognition')=='recovering')
         assert state['processed_frames']==1, (state.get('error_class'),state.get('error_stage'))
+        if motor_recovery:
+            assert state['camera_control']['phase'] == 'unavailable' and owner['camera_lease'] is None
+            assert owner['home'].observe.await_count == owner['safety'].offer.call_count == 1
+            assert json.loads(capture.stdin.write.call_args_list[0].args[0])['motor'] is True
+            may_retry.set()
+            await until(lambda:owner['camera_lease'] is lease)
+            assert owner['capture'] is capture and capture.returncode is None
+            lease.acquire.assert_awaited()
+            assert lease.acquire.await_count == 2
+            owner['motor_step'].assert_not_awaited()
         previous = state['session_id']
         frame(b'SYNTHETIC-FAILED')
         await until(lambda:failed.wait.await_count==1)
@@ -273,6 +309,9 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         capture.wait.assert_awaited_once()
         replacement.wait.assert_awaited_once()
         owner['identities'].close.assert_called_once()
+        if motor_recovery:
+            assert owner['camera_lease'] is None
+            assert lease.release.await_count == 2
     finally:
         if not task.done():
             task.cancel()

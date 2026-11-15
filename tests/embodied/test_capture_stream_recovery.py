@@ -239,6 +239,36 @@ async def test_capture_loss_while_waiting_for_room_lock_cannot_send_a_manual_or_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['closed', 'unknown', 'obsolete'])
+async def test_primary_checks_privacy_during_motor_recovery_and_rejects_obsolete_results(case):
+    scope, _, epoch, pending, acknowledged = closed_scope()
+    owner = SimpleNamespace(returncode=None)
+
+    async def read_privacy(_):
+        if case == 'obsolete':
+            scope['generation'] = 2
+        if case == 'unknown':
+            raise OSError('synthetic_readback_failed')
+        return False
+
+    scope.update(capture=owner, camera_lease=None, camera_is_open=read_privacy,
+                 asyncio=SimpleNamespace(sleep=AsyncMock()), reap=AsyncMock())
+    actual('homeplane/embodied/worker.py', 'close_primary_view', scope)
+    await actual('homeplane/embodied/worker.py', 'watch_primary_privacy', scope)(owner, 1, epoch)
+
+    if case == 'obsolete':
+        assert scope['state']['status'] == 'live' and not pending.done()
+        scope['reap'].assert_not_awaited()
+        pending.cancel()
+    else:
+        assert scope['state']['status'] == ('shutter_closed' if case == 'closed' else 'unavailable')
+        assert scope['state']['frame'] is None and not scope['home'].armed
+        assert isinstance(pending.exception(), RuntimeError)
+        scope['reap'].assert_awaited_once_with(owner)
+    assert acknowledged.result() == {'native_code': 0}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(('outcomes', 'expected'), [
     ([('shutter_closed', False)] * 6 + [('unavailable', False)],
      [(15, 0)] * 6 + [(2, 1)]),
