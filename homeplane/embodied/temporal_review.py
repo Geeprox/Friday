@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -24,6 +25,12 @@ CLOUD_CUE_GAP = 5
 class CloudCue:
     last_seen: float
     pending: bool = True
+
+# 仅按平台选择离线后端；导入不加载模型，也不增加窗口结果的时效。
+if sys.platform.startswith('linux'):
+    from .cpu_review import CpuWindowProcess as WindowProcess, readiness as review_readiness
+else:
+    WindowProcess, review_readiness = MlxWindowProcess, model_readiness
 
 
 @dataclass
@@ -76,7 +83,7 @@ class TemporalReviewer:
     def __init__(self, *, policy, deliver, engine=None, cloud=None, cloud_current=None,
                  clock=time.monotonic, wall=time.time):
         self.policy, self.deliver = policy, deliver
-        self.engine = engine or MlxWindowProcess()
+        self.engine = engine or WindowProcess()
         self.cloud, self.cloud_current = cloud, cloud_current
         self.clock, self.wall = clock, wall
         self.windows = {}
@@ -415,7 +422,7 @@ class TemporalReviewer:
             for camera in list(self.windows):
                 self.clear(camera)
         cloud = getattr(policy, 'visual_cloud_source', None)
-        ready = self.cloud.readiness() if cloud and self.cloud is not None else model_readiness()
+        ready = self.cloud.readiness() if cloud and self.cloud is not None else review_readiness()
         if not cloud:
             ready['provider'] = 'local'
         posture = getattr(policy, 'posture_source', None)
@@ -444,6 +451,7 @@ class TemporalReviewer:
             error=self.error,
             resident=bool(getattr(self.engine, "process", None)),
             peak_mlx_mib=round(getattr(self.engine, "peak_mlx_bytes", 0) / 1024**2),
+            peak_rss_mib=round(getattr(self.engine, "peak_rss_bytes", 0) / 1024**2),
             camera_count=len(self.windows),
             progress=progress,
             posture_ready_camera=posture_camera,

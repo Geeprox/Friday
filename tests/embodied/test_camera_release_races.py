@@ -163,7 +163,7 @@ async def test_secondary_cleanup_exception_cannot_leave_sdk_child_alive(tmp_path
     process.terminate=terminate
     process.kill=terminate
     with patch.object(previews,'DATA',tmp_path),patch.object(previews,'camera_is_open',AsyncMock(return_value=True)),\
-         patch.object(previews,'camera_storage',lambda _:tmp_path),patch.object(previews,'capture_environment',lambda:{}),\
+         patch.object(previews,'camera_storage',lambda _:tmp_path),patch.object(previews,'capture_environment',lambda *_:{}),\
          patch.object(ptz_control,'Transport',lambda _:io),patch.object(ptz_control,'CameraLease',lease_factory),\
          patch.dict(sys.modules,{'homeplane.embodied.camera_recognition':SimpleNamespace(CameraRecognition=rec_factory)}),\
          patch.object(asyncio,'create_subprocess_exec',AsyncMock(return_value=process)):

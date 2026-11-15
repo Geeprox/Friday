@@ -276,7 +276,7 @@ class HomeExperience:
                         quality=state.quality if state else 'unknown',
                         attributes={k:attrs[k]for k in ('brightness','color_temp_kelvin','color_temp','temperature','current_temperature','current_position','target_position','current_tilt_position','percentage','hvac_modes','fan_modes','fan_mode','hvac_action','unit_of_measurement','volume_level','is_volume_muted','media_title','source','humidity','current_humidity','mode','operation_mode','operation_list')if k in attrs}))
                 for cap in e.capabilities:
-                    if cap.access!='read' or cap.name not in ('temperature','humidity','sensor.state','binary_sensor.state'):
+                    if cap.access!='read' or cap.name not in ('temperature','humidity','sensor.state','binary_sensor.state','media_player.state'):
                         continue
                     o=observations.get((e.id,cap.name))
                     if o:
@@ -298,6 +298,12 @@ class HomeExperience:
                             pair=labels.get(device_class,('未触发','已触发'))
                             value=pair[value=='on']
                         label=re.sub(r'[（(].*?[）)]','',e.name.rsplit(' ',1)[-1]).strip() or e.name
+                        # 播放器状态是只读观测，不以音量或播放控制授权为显示条件。
+                        if cap.name=='media_player.state':
+                            label='播放状态'
+                            value={'idle':'待机','playing':'正在播放','paused':'已暂停','buffering':'正在缓冲',
+                                   'off':'已关闭','on':'已开启','standby':'待机'}.get(value,value)
+                            device_class='media_player'
                         readings.append(dict(id=e.id,name=label,value=value if available else None,available=available,
                             unit=o.unit,device_class=device_class,reported_at=o.received_at if local and available else o.integration_written_at,
                             measured_at=o.measured_at,basis='reported',transport=o.transport_health))

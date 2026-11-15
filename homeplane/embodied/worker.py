@@ -831,7 +831,7 @@ async def run_source(my_generation):
             "-B",
             "-m",
             "homeplane.embodied.capture_worker",
-            env=capture_environment(),
+            env=capture_environment(SELECTED['id']),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,

@@ -1,0 +1,17 @@
+[project]
+name = "friday-portable-vision"
+version = "0.1.0"
+description = "Friday 的独立本地跨平台视觉运行环境"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "numpy==2.5.4",
+    "opencv-contrib-python==5.0.0.93",
+    "pillow==13.0.0",
+    "onnxruntime==1.30.0",
+]
+
+[project.optional-dependencies]
+sound = ["mediapipe==1.2.3"]
+
+[tool.uv]
+package = false

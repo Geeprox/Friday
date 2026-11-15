@@ -78,18 +78,23 @@ class ProducerImportFence(importlib.abc.MetaPathFinder):
 
 def qualify_sdk(home=SDK_HOME):
     """Pin installed APIs/assets before importing the conditional dependency."""
-    if sys.platform != "darwin" or platform.machine() != "arm64":
+    target = (sys.platform, platform.machine())
+    if target == ('darwin', 'arm64'):
+        manifest_name, native_dir = 'native_media_sdk.json', 'libs/darwin/arm64'
+    elif target == ('linux', 'x86_64'):
+        manifest_name, native_dir = 'native_media_sdk_linux.json', 'libs/linux/x86_64'
+    else:
         return False
     root = home / "lib/python3.12/site-packages/miot"
     try:
-        manifest = json.loads((PROJECT / "homeplane/native_media_sdk.json").read_text())
+        manifest = json.loads((PROJECT / "homeplane" / manifest_name).read_text())
         # Inspect metadata without loading any SDK/module/native library.
         versions = [d.version for d in importlib.metadata.distributions(path=[str(root.parent)])
-                    if d.metadata.get("Name", "").lower() == "miloco"]
+                    if d.metadata.get("Name", "").lower() == ("miloco-miot" if target == ("linux", "x86_64") else "miloco")]
         if versions != [manifest["version"]] or root.is_symlink():
             return False
         actual = {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and
-                  (p.suffix in {".py", ".yaml", ".json"} or "libs/darwin/arm64" in str(p))}
+                  (p.suffix in {".py", ".yaml", ".json"} or native_dir in str(p))}
         if actual != set(manifest["files"]):
             return False
         for relative, expected in manifest["files"].items():

@@ -38,17 +38,20 @@ def normalize_audio(samples):
 
 
 def main():
-    from homeplane.shared_laya import SharedLaya
-
     asr = LocalASR(os.environ.get("FRIDAY_ASR", "sensevoice"))
     agent = None
+    shared_laya = sys.platform == 'darwin'
     intent_runtime = None
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     # Load/warm only the existing local checkpoint. Silence never becomes a command.
     with contextlib.redirect_stdout(sys.stderr):
         asr.transcribe(np.zeros(16000, dtype=np.float32))
-    emit({"type": "ready", "asr": asr.label, "semantic": "separate_command_gate", "audio_persisted": False,
-          "intelligence": {"laya": "arl_shared", "laya_state": "on_demand", "laya_via_shared_arl": True,
+    emit({"type": "ready", "asr": asr.label,
+          "semantic": "separate_command_gate" if shared_laya else "local_rules_and_arl_intent",
+          "audio_persisted": False,
+          "intelligence": {"laya": "arl_shared" if shared_laya else "not_used",
+                           "laya_state": "on_demand" if shared_laya else "not_used_on_linux",
+                           "laya_via_shared_arl": shared_laya,
                            "codex": "on_demand_scoped_text", "agent_tools": False}})
     for line in sys.stdin:
         request = {}
@@ -97,12 +100,15 @@ def main():
                 route = address(text, request.get("attending") is True, wake_word=policy.wake_word)
                 if not route.get("admitted"):
                     raise ValueError("invalid_task")
-                try:
-                    if agent is None:
-                        agent = SharedLaya()
-                    semantic = agent.predict(classify_input(text, route), LAYA_QUESTIONS)["answers"]["command"]
-                except Exception:
-                    semantic = {"status": "unavailable"}
+                semantic = {'status': 'deferred_to_arl_intent'}
+                if shared_laya:
+                    try:
+                        if agent is None:
+                            from homeplane.shared_laya import SharedLaya
+                            agent = SharedLaya()
+                        semantic = agent.predict(classify_input(text, route), LAYA_QUESTIONS)["answers"]["command"]
+                    except Exception:
+                        semantic = {"status": "unavailable"}
                 emit({"id": request["id"], "type": "classification", "laya": semantic})
             elif op == "delegate":
                 text = request.get("text", "")

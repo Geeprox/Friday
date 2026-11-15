@@ -704,6 +704,7 @@ def test_explicit_sound_build_retains_only_runtime_result_and_bounded_receipt(tm
     from pathlib import Path
     namespace=runpy.run_path('scripts/embodied/runtime.py')
     build=namespace['build_sound'];scope=build.__globals__
+    scope['sys']=SimpleNamespace(platform='darwin')
     source=tmp_path/'project/native/EmbodiedVision/SoundWorker.swift';source.parent.mkdir(parents=True)
     source.write_text('// SYNTHETIC input; compiler is not executed')
     scope['ROOT']=tmp_path/'project';scope['DATA']=tmp_path/'operator-runtime'

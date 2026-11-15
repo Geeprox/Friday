@@ -1,5 +1,7 @@
 # Architecture
 
+Linux x86_64 CPU 适配的独立环境、ARL 入口、验证范围和平台边界见[Linux CPU 运行时](linux-runtime.md)。
+
 `homeplane/` is the current control plane; `friday/` retains the optional legacy
 camera-oriented API. The default homeplane adapter is the explicit Simulator.
 HA ingress reads states and area/device/entity registries. Action planning and

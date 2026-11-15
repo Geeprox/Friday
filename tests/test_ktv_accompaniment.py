@@ -123,6 +123,7 @@ def test_model_change_during_inference_refuses_ready(environment, monkeypatch):
 
 
 def test_worker_reports_gpu_access_failure_without_native_import_retry(environment, monkeypatch):
+    monkeypatch.setattr(audio, 'SEPARATION_PLATFORM', 'darwin')
     source, cache, report, runtime = environment
     request = report.with_name("worker-request.json")
     audio.write_report(request, {"source": str(source), "output": str(report.parent),
@@ -184,7 +185,7 @@ def test_symlink_source_refused_and_library_not_started(environment, monkeypatch
 
 
 def test_terminate_kills_and_reaps_ignored_sigterm(tmp_path):
-    process = subprocess.Popen(["/usr/bin/python3", "-c",
+    process = subprocess.Popen([sys.executable, "-c",
                                 "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); time.sleep(30)"],
                                stdout=subprocess.PIPE, start_new_session=True)
     assert process.stdout.readline().strip() == b"ready"
@@ -206,7 +207,8 @@ def test_logging_failure_visible_without_changing_ready(environment, monkeypatch
     monkeypatch.setattr(audio, "_run_worker", fake_worker)
     def fail_log(*_):
         raise OSError("private exception text must not escape")
-    monkeypatch.setattr(audio.RuntimeLog, "_append", fail_log)
+    from homeplane.runtime_log import RuntimeLog
+    monkeypatch.setattr(RuntimeLog, "_append", fail_log)
     result = audio.prepare(source, cache, report, runtime=runtime, simulated=True)
     assert result["status"] == "ready" and result["logging_available"] is False
     assert "private exception" not in report.read_text()

@@ -54,8 +54,19 @@ def sound_readiness(binary=SOUND):
             reason = 'sound_runtime_missing'
     except OSError:
         reason = 'sound_runtime_missing'
-    if platform.system() != 'Darwin':reason = 'macos_required'
-    return dict(available=reason is None, reason=reason, model='apple.soundanalysis.version1',
+    model = 'apple.soundanalysis.version1'
+    if platform.system() == 'Linux':
+        model = 'yamnet_cpu'
+        from .portable_models import MODELS as PINS
+        model_path = DATA/'models/mediapipe/yamnet.tflite'
+        try:
+            if model_path.is_symlink() or model_path.stat().st_size != PINS['yamnet.tflite'][2]:
+                reason = 'sound_model_missing'
+        except OSError:
+            reason = 'sound_model_missing'
+    elif platform.system() != 'Darwin':
+        reason = 'sound_platform_unsupported'
+    return dict(available=reason is None, reason=reason, model=model,
                 labels_verified=False, audio_persisted=False, directional_audio=False,
                 automatic_announcement=False, cloud_fallback=False)
 

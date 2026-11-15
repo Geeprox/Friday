@@ -157,10 +157,10 @@ async def main():
         # Consume the SDK's full-rate decoded frames; suppress its unused PIL/JPEG
         # preview conversion after the first frame. This leaves installed SDK files intact.
         install_decoder(camera_sdk, on_packet=emit,relay_enabled=lambda:time.monotonic()<video_until)
-        await owner.init_async(frame_interval=3600000, enable_hw_accel=True)
+        await owner.init_async(frame_interval=3600000, enable_hw_accel=sys.platform == "darwin")
         emit({"type": "diagnostic", "stage": "native_initialized"})
         camera = await owner.create_camera_async(
-            camera_info=info, frame_interval=3600000, enable_hw_accel=True
+            camera_info=info, frame_interval=3600000, enable_hw_accel=sys.platform == "darwin"
         )
         owner_camera.append(camera)
         emit({"type": "diagnostic", "stage": "camera_created"})
@@ -181,7 +181,13 @@ async def main():
             enable_record=False,
         )
         emit({"type": "diagnostic", "stage": "camera_start_returned"})
-        motor = LocalMotor(camera) if request.get("motor") is True else None
+        motor = None
+        if request.get('motor') is True:
+            try:
+                motor = LocalMotor(camera)
+            except RuntimeError:
+                # 云台能力缺失不能终止视频与语音；具体动作继续在控制边界拒绝。
+                emit({'type': 'diagnostic', 'stage': 'local_motor_unavailable'})
 
         async def controls():
             nonlocal audio_until, sound_until, attention_until, video_until
@@ -208,6 +214,8 @@ async def main():
                         continue
                     if motor is None:
                         raise ValueError("motor_not_owned")
+                    if motor is None:
+                        raise ValueError('local_motor_unavailable')
                     check_motor_deadline(command.get('expires_mono'))
                     result = await asyncio.to_thread(motor.step, command.get("direction"),
                                                      expires_mono=command['expires_mono'])

@@ -357,7 +357,7 @@ class PreviewPool:
                 "-m",
                 "homeplane.embodied.capture_worker",
                 cwd=str(PROJECT),
-                env=capture_environment(),
+                env=capture_environment(selected['id']),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,

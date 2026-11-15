@@ -111,9 +111,48 @@ class HostBudget:
         return None
 
 
+def linux_memory(meminfo=Path('/proc/meminfo'), cgroup=Path('/sys/fs/cgroup'), membership=Path('/proc/self/cgroup')):
+    """按宿主和当前 cgroup 的较小额度准入，避免容器误用宿主可用内存。"""
+    values = {}
+    for line in meminfo.read_text().splitlines():
+        key, value = line.split(':', 1)
+        values[key] = int(value.split()[0])*1024
+    total, available = values['MemTotal'], values['MemAvailable']
+    groups = [(cgroup, 'memory.max', 'memory.current'),
+              (cgroup/'memory', 'memory.limit_in_bytes', 'memory.usage_in_bytes')]
+    for line in membership.read_text().splitlines():
+        _, controllers, relative = line.split(':', 2)
+        if controllers == '' or 'memory' in controllers.split(','):
+            root = cgroup if controllers == '' else cgroup/'memory'
+            # 命名空间外的祖先不能按本地路径拼接；可见根的限制仍会检查。
+            if '..' in Path(relative).parts:
+                continue
+            current = root/relative.lstrip('/')
+            while current != root:
+                groups.append((current, 'memory.max' if controllers == '' else 'memory.limit_in_bytes',
+                               'memory.current' if controllers == '' else 'memory.usage_in_bytes'))
+                current = current.parent
+    for directory, limit_name, usage_name in groups:
+        limit_path = directory/limit_name
+        if not limit_path.exists():
+            continue
+        raw = limit_path.read_text().strip()
+        if raw == 'max':
+            continue
+        limit, usage = int(raw), int((directory/usage_name).read_text())
+        if limit <= 0 or usage < 0:
+            raise ValueError('invalid_memory_limit')
+        total = min(total, limit)
+        available = min(available, max(0, limit-usage))
+    return total, min(total, available)
+
+
 def host_budget():
     """Read-only host pressure. Failure defers inference instead of guessing."""
     try:
+        if platform.system() == 'Linux':
+            total, available = linux_memory()
+            return HostBudget(total, int(100*available/total), os.getloadavg()[0], os.cpu_count() or 1)
         total = int(
             subprocess.check_output(["sysctl", "-n", "hw.memsize"], timeout=2, stderr=subprocess.DEVNULL)
         )
@@ -123,7 +162,7 @@ def host_budget():
         match = re.search(r"System-wide memory free percentage:\s*(\d+)%", text)
         percent = int(match[1]) if match else None
         return HostBudget(total, percent, os.getloadavg()[0], os.cpu_count() or 1)
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, ZeroDivisionError, subprocess.SubprocessError):
         return HostBudget(0, None)
 
 
@@ -145,6 +184,17 @@ class MlxWindowProcess:
     def lease(self):
         return self.child.lease if self.child else None
 
+    def readiness(self):
+        return model_readiness(self.model)
+
+    def command(self):
+        return (sys.executable, "-u", "-m", "homeplane.embodied.temporal_worker", "--model", str(self.model))
+
+    def parse_reply(self, data):
+        reply = WorkerReply.model_validate_json(data)
+        self.peak_mlx_bytes = reply.peak_mlx_bytes
+        return reply.result
+
     async def _start(self):
         if self.child and self.child.closed:
             if self.child.slot:
@@ -156,7 +206,7 @@ class MlxWindowProcess:
             await self.close()
             if self.child:
                 raise ValueError("model_busy")
-        ready = model_readiness(self.model)
+        ready = self.readiness()
         if not ready["available"]:
             raise ValueError(ready["reason"])
         environment = dict(
@@ -168,12 +218,12 @@ class MlxWindowProcess:
             FRIDAY_REVIEW_OWNER_PID=str(os.getpid()),
         )
         self.child = ReviewChild(
-            (sys.executable, "-u", "-m", "homeplane.embodied.temporal_worker", "--model", str(self.model)),
+            self.command(),
             self.private, "temporal-model.lock", busy="model_busy", unavailable="local_runtime_missing",
             cwd=PROJECT, env=environment, limit=8192,
         )
         try:
-            async with asyncio.timeout(START_TIMEOUT):
+            async with asyncio.timeout(getattr(self, "startup_timeout", START_TIMEOUT)):
                 await self.child.start()
                 data = await self.process.stdout.readline()
                 if not data or len(data) > 128 or not data.endswith(b'\n'):
@@ -242,9 +292,7 @@ class MlxWindowProcess:
                 if not data:
                     raise ValueError("model_unavailable")
                 self.last_used = time.monotonic()
-                reply = WorkerReply.model_validate_json(data)
-                self.peak_mlx_bytes = reply.peak_mlx_bytes
-                return reply.result
+                return self.parse_reply(data)
             except asyncio.CancelledError:
                 if not self.child or not self.child.closed:
                     await self.close()
