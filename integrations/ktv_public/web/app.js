@@ -1,6 +1,7 @@
 "use strict";
 const $=id=>document.getElementById(id),fragment=new URLSearchParams(location.hash.slice(1));
 const names=["汽水猫","夜航兔","慢慢鲸","摇摆熊","月球旅人","小幽灵","唱片君","星星糖","柠檬汽水","仙人掌","北极企鹅","节拍小子"];
+const extraNames=["山茶晚风","海盐汽水","弯月小岛","白桃列车","银杏信箱","雾蓝唱片","月亮贝壳","柚子雨","杏仁云","铃兰邮差","晚班星光","晴空纸船"];
 const themes=[["content","内容与留白","安静的影像，给歌声留白"],["festival","音乐节","鲜明图形，今晚放开唱"],["live","Live","把客厅交给现场"]];
 let room=fragment.get("r"),key=fragment.get("k"),identity=null,songs=[],selected=[],mode="home",online=false,theme="content",refreshTimer,chosenAvatar=0,queueRevision=0,playableOrder=null,playback={online:false,current:"",played:[],state:"idle"},controls={music_gain:70,sfx_gain:60,control_revision:0},drag=null,ordering=false,actionSong=null,commandBusy=false,pendingControls={},source="song",searchSequence=0,searchOffset=0,searchMore=false,searchBusy=false,searchQuery="",playlistId="",playlistTitle="",recommendations=null,playlistPage=0;
 try{if(room&&key){sessionStorage.setItem("friday-ktv-room",JSON.stringify({room,key}));history.replaceState(null,"",location.pathname);}else({room,key}=JSON.parse(sessionStorage.getItem("friday-ktv-room")||"{}"));identity=JSON.parse(sessionStorage.getItem(`friday-ktv-guest:${room}`)||"null");}catch{}
@@ -9,6 +10,9 @@ const pendingAdds=new Set();
 let addQueue=null,addSnapshot={items:[],stopped:"",persistence:"memory"},addViewSignature="",statusFailures=0,lastStatusSuccess=0,lastStatusProbe=-Infinity,roomResumeAt=performance.now(),statusRequest=null,joining=false,joinTimer,statusFeed=null;
 const roomStaleMs=12000;
 let joinKey="",joinFailures=0;
+let preferredProfile=null;
+const guestSeedKey="friday-ktv-guest-seed-v1",guestProfileKey="friday-ktv-guest-profile";
+const guestCredential=/^[A-Za-z0-9_-]{32,80}$/,randomSecret=/^[a-f0-9]{64}$/;
 let playbackAvailable=true;
 const pendingActions=new Map();
 function busy(node,active,label="正在处理…"){
@@ -58,8 +62,39 @@ const labels={queued:"等待准备",acquiring:"下载中",separating:"制作伴�
 function message(text){$("message").textContent=text;}
 function toast(text){$("toast").textContent=text;$("toast").classList.add("show");setTimeout(()=>$("toast").classList.remove("show"),2400);}
 function avatar(node,id){const i=Number.isInteger(id)&&id>=0&&id<12?id:0;node.style.backgroundPosition=`${i%4*100/3}% ${Math.floor(i/4)*50}%`;}
-function saveIdentity(){
+function readGuestStorage(storage,name){
+ try{return globalThis[storage].getItem(name)||"";}catch{return "";}
+}
+function writeGuestStorage(storage,name,value){
+ try{
+  const data=globalThis[storage];
+  data.setItem(name,value);
+  return data.getItem(name)===value;
+ }catch{return false;}
+}
+function usableGuestProfile(value){
+ if(typeof value?.nickname!=="string"||/[\x00-\x1f\x7f]/.test(value.nickname))return null;
+ const nickname=value.nickname.trim();
+ if(!nickname||Array.from(nickname).length>24||!Number.isInteger(value.avatar)||value.avatar<0||value.avatar>=names.length)return null;
+ return {nickname,avatar:value.avatar};
+}
+function savedGuestProfile(){
+ for(const storage of ["localStorage","sessionStorage"]){
+  try{
+   const saved=usableGuestProfile(JSON.parse(readGuestStorage(storage,guestProfileKey)||"null"));
+   if(saved)return saved;
+  }catch{}
+ }
+ return preferredProfile;
+}
+function saveIdentity({prefer=false}={}){
  try{sessionStorage.setItem(`friday-ktv-guest:${room}`,JSON.stringify(identity));}catch{}
+ const profile=usableGuestProfile(identity);
+ if(profile&&(prefer||!savedGuestProfile())){
+  preferredProfile=profile;
+  const value=JSON.stringify(profile);
+  if(!writeGuestStorage("localStorage",guestProfileKey,value))writeGuestStorage("sessionStorage",guestProfileKey,value);
+ }
  $("my-name").textContent=identity.nickname;avatar($("my-avatar"),identity.avatar);
  $("profile-button").setAttribute("aria-label",`${identity.nickname}，修改昵称和头像`);
 }
@@ -67,12 +102,12 @@ function connectionError(error){return ["network_error","request_timeout","servi
 function connectionNotice(text){const node=$("connection-status");node.textContent=text;node.hidden=!text;}
 const usableStatus=value=>Array.isArray(value?.songs)&&value.songs.every(song=>song&&typeof song.id==="string")&&(!value.playback||Array.isArray(value.playback.played));
 const requestBudgets={status:7500,events:10000,search:7000,discover:5500,join:7500,profile:6000,controls:5500,command:5500};
-async function api(operation,body,query="",{signal,timeoutMs=requestBudgets[operation]||15000,priority="auto"}={}){
+async function api(operation,body,query="",{signal,timeoutMs=requestBudgets[operation]||15000,priority="auto",guestKey=identity?.key}={}){
  const controller=new AbortController(),abort=()=>controller.abort();let timedOut=false;
  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);signal?.addEventListener("abort",abort,{once:true});if(signal?.aborted)abort();
  try{
   const started=performance.now();let response;
-  try{response=await fetch(`./api/rooms/${room}/${operation}${query}`,{method:body?"POST":"GET",headers:{"X-KTV-Room":key,...(identity?.key?{"X-KTV-Guest":identity.key}:{}),...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined,credentials:"omit",signal:controller.signal,cache:"no-store",priority});}
+  try{response=await fetch(`./api/rooms/${room}/${operation}${query}`,{method:body?"POST":"GET",headers:{"X-KTV-Room":key,...(guestKey?{"X-KTV-Guest":guestKey}:{}),...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined,credentials:"omit",signal:controller.signal,cache:"no-store",priority});}
   catch(error){throw Object.assign(new Error(),{code:signal?.aborted?"cancelled":timedOut?"request_timeout":"network_error",status:0});}
   let value;try{value=await response.json();}catch{throw Object.assign(new Error(),{code:signal?.aborted?"cancelled":timedOut?"request_timeout":"service_unavailable",status:response.status});}if(signal?.aborted)throw Object.assign(new Error(),{code:"cancelled"});
   if(!response.ok){const retry=response.headers?.get("Retry-After"),seconds=Number(retry),retryAfterMs=retry?(Number.isFinite(seconds)?Math.max(0,seconds*1000):Math.max(0,Date.parse(retry)-Date.now())):0;throw Object.assign(new Error(),{code:value.code||"service_unavailable",status:response.status,retryAfterMs});}
@@ -173,7 +208,7 @@ function applyStatus(value){
 function statusFailure(error,channel="snapshot"){
  if(error.code==="stale_status"||error.code==="cancelled")return;
  if(channel==="events"&&error.code==="guest_unavailable"){
-  stopRoomStatus(true);statusFeed=null;join({verify:true});return;
+  stopRoomStatus(true);statusFeed=null;join();return;
  }
  if(connectionError(error)||error.code==="rate_limited"){
   if(channel==="events"){probeSoon();return;}
@@ -381,8 +416,8 @@ function openDialog(id){const dialog=$(id);if(dialog.showModal)dialog.showModal(
 function chooseAvatar(id){chosenAvatar=id;document.querySelectorAll(".avatar-choice").forEach((b,i)=>b.setAttribute("aria-pressed",String(i===id)));}
 for(let i=0;i<12;i++){const b=document.createElement("button");b.type="button";b.className="avatar-choice";b.setAttribute("aria-label",`选择${names[i]}头像`);b.setAttribute("aria-pressed","false");const picture=document.createElement("span");picture.className="avatar";picture.setAttribute("aria-hidden","true");avatar(picture,i);b.append(picture);b.onclick=()=>chooseAvatar(i);$("avatar-picker").append(b);}
 $("profile-button").onclick=()=>{if(!identity)return;$("nickname").value=identity.nickname;chooseAvatar(identity.avatar);$("profile-error").textContent="";openDialog("profile-dialog");};
-$("random-profile").onclick=()=>{const id=crypto.getRandomValues(new Uint32Array(1))[0]%12;chooseAvatar(id);$("nickname").value=names[id];};
-$("save-profile").onclick=async()=>{const name=$("nickname").value.trim();if(!name){$("profile-error").textContent="起一个昵称再保存。";$("nickname").focus();return;}const b=$("save-profile");b.disabled=true;busy(b,true,"正在保存…");try{const result=await api("profile",{nickname:name,avatar:chosenAvatar});identity={...identity,...result};saveIdentity();$("profile-dialog").close();toast("就用这个名字，开唱吧");await refresh();}catch{$("profile-error").textContent="还没保存，检查连接后再试。";}finally{b.disabled=false;busy(b,false);}};
+$("random-profile").onclick=()=>{const [picture,word]=crypto.getRandomValues(new Uint32Array(2)),choices=[...names,...extraNames];chooseAvatar(picture%names.length);$("nickname").value=choices[word%choices.length];};
+$("save-profile").onclick=async()=>{const name=$("nickname").value.trim();if(!name){$("profile-error").textContent="起一个昵称再保存。";$("nickname").focus();return;}const b=$("save-profile");b.disabled=true;busy(b,true,"正在保存…");try{const result=await api("profile",{nickname:name,avatar:chosenAvatar});identity={...identity,...result};saveIdentity({prefer:true});$("profile-dialog").close();toast("就用这个名字，开唱吧");await refresh();}catch{$("profile-error").textContent="还没保存，检查连接后再试。";}finally{b.disabled=false;busy(b,false);}};
 for(const [value,title,description]of themes){const button=document.createElement("button");button.type="button";button.className="theme-option";button.dataset.theme=value;button.setAttribute("aria-pressed",String(theme===value));const preview=document.createElement("img");preview.className="theme-preview";preview.src=`./${value}.png?v=3`;preview.alt="";const text=document.createElement("div");text.className="theme-copy";const heading=document.createElement("strong");heading.textContent=title;const detail=document.createElement("span");detail.textContent=description;text.append(heading,detail);button.append(preview,text);button.onclick=async()=>{if([...document.querySelectorAll(".theme-option")].some(b=>b.getAttribute("aria-busy")==="true"))return;button.disabled=true;busy(button,true,"正在切换风格…");try{await api("theme",{theme:value});applyTheme(value);$("theme-error").textContent="";toast("本场风格已更新");}catch{$("theme-error").textContent="还没切换，检查连接后再试。";}finally{button.disabled=false;busy(button,false);}};$("theme-picker").append(button);}
 $("settings-button").onclick=()=>{if(!identity)return;$("theme-error").textContent="";openDialog("settings-dialog");};
 // The remembered nonzero level belongs to this room and survives a page reload.
@@ -478,30 +513,55 @@ function startDrag(event,song,handle){if(event.button!==0||ordering)return;const
  handle.onpointermove=e=>{if(!drag)return;if(Math.abs(e.clientY-drag.startY)>6){drag.moved=true;handle.dataset.moved="1";row.classList.add("dragging");}if(!drag.moved)return;const target=document.elementFromPoint(e.clientX,e.clientY)?.closest("article[data-queue]");if(!target||target===row)return;const id=target.dataset.queue;if(id===playback.current||playback.played.includes(id))return;const from=selected.findIndex(s=>s.id===song.id),to=selected.findIndex(s=>s.id===id);if(from<0||to<0)return;const [item]=selected.splice(from,1);selected.splice(to,0,item);if(from<to)target.after(row);else target.before(row);if(e.clientY>innerHeight-170)scrollBy(0,18);else if(e.clientY<100)scrollBy(0,-18);};
  const finish=cancelled=>{if(!drag)return;const result=drag;drag=null;row.classList.remove("dragging");handle.onpointermove=null;handle.onpointerup=null;handle.onpointercancel=null;if(result.moved&&!cancelled)saveOrder(selected.map(s=>s.id),result.revision);else refresh();};handle.onpointerup=()=>finish(false);handle.onpointercancel=()=>finish(true);
 }
-function automaticGuestKey(){
+const hexBytes=bytes=>Array.from(bytes,byte=>byte.toString(16).padStart(2,"0")).join("");
+function localSecret(name){
+ const saved=readGuestStorage("localStorage",name);
+ if(randomSecret.test(saved))return saved;
+ const session=readGuestStorage("sessionStorage",name);
+ const secret=randomSecret.test(session)?session:hexBytes(crypto.getRandomValues(new Uint8Array(32)));
+ writeGuestStorage("localStorage",name,secret);
+ const persisted=readGuestStorage("localStorage",name);
+ if(randomSecret.test(persisted))return persisted;
+ writeGuestStorage("sessionStorage",name,secret);
+ return secret;
+}
+async function sharedLocalSecret(name){
+ const saved=readGuestStorage("localStorage",name);
+ if(randomSecret.test(saved))return saved;
+ try{
+  // 按来源串行初始化，两个新标签同时扫码会共用种子。
+  if(globalThis.navigator?.locks?.request)return await navigator.locks.request(name,()=>localSecret(name));
+ }catch{}
+ return localSecret(name);
+}
+async function automaticGuestKey(){
  if(joinKey)return joinKey;
- const storageKey=`friday-ktv-join:${room}`;
- try{joinKey=sessionStorage.getItem(storageKey)||"";}catch{}
- if(!/^[a-f0-9]{64}$/.test(joinKey)){
-  joinKey=Array.from(crypto.getRandomValues(new Uint8Array(32)),byte=>byte.toString(16).padStart(2,"0")).join("");
-  try{sessionStorage.setItem(storageKey,joinKey);}catch{}
+ if(!globalThis.crypto?.getRandomValues)return "";
+ try{
+  const seed=await sharedLocalSecret(guestSeedKey);
+  const bytes=Uint8Array.from(seed.match(/../g),part=>parseInt(part,16));
+  const context=Uint8Array.from("Friday KTV guest room v1/"+room,character=>character.charCodeAt(0));
+  const secret=await crypto.subtle.importKey("raw",bytes,{name:"HMAC",hash:"SHA-256"},false,["sign"]);
+  joinKey=hexBytes(new Uint8Array(await crypto.subtle.sign("HMAC",secret,context)));
+ }catch{
+  joinKey=await sharedLocalSecret(`friday-ktv-join:${room}`);
  }
  return joinKey;
 }
-async function join({verify=false}={}){
+async function join(){
  if(joining||document.hidden)return;
  if(!valid){$("profile-button").disabled=true;$("settings-button").disabled=true;return;}
  joining=true;clearTimeout(joinTimer);
  if(!identity){$("my-name").textContent="正在加入…";$("empty").textContent="正在连接本场…";}
  try{
-  if(verify&&identity?.key){
-   try{identity={...identity,...await api("profile")};}
-   catch(error){if(error.code!=="guest_unavailable")throw error;addQueue?.close();identity=null;}
-  }
-  if(!identity){
-   refresh();
-   try{identity=await api("join",{guest_key:automaticGuestKey()});}
-   catch(error){if(error.code!=="invalid_request")throw error;identity=await api("join",{});}
+  const retainedKey=`friday-ktv-room-credential:${room}`;
+  const known=[identity?.key,readGuestStorage("localStorage",retainedKey),readGuestStorage("sessionStorage",`friday-ktv-join:${room}`)]
+   .find(candidate=>typeof candidate==="string"&&guestCredential.test(candidate));
+  const proposed=await automaticGuestKey(),profile=savedGuestProfile();
+  const payload={...(proposed?{guest_key:proposed}:{}),...(profile?{profile}:{})};
+  identity=await api("join",payload,"",{guestKey:known||""});
+  if(guestCredential.test(identity.key||"")&&(identity.key!==proposed||known)){
+   writeGuestStorage("localStorage",retainedKey,identity.key!==proposed?identity.key:"");
   }
   joinFailures=0;saveIdentity();message("");connectionNotice("");render();
   initAddQueue();clearInterval(refreshTimer);startStatusFeed();Promise.resolve(refresh()).then(()=>{if(identity&&!document.hidden)loadDiscover();});

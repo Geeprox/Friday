@@ -35,16 +35,26 @@ from prepare_ktv_coordinator import (  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "local.friday.ktv"
-MAIN_PERMISSIONS = {"android.permission.INTERNET"}
+MAIN_PERMISSIONS = {
+    "android.permission.INTERNET",
+    "android.permission.POST_NOTIFICATIONS",
+    "android.permission.REQUEST_INSTALL_PACKAGES",
+    "android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION",
+}
 
 
 def validate_main_manifest(source):
-    """正式包只注册点歌播放入口，音频诊断留在源码中。"""
+    """正式包只注册点歌播放入口与私有更新回调，音频诊断留在源码中。"""
     identity = manifest_identity(source, PACKAGE)
     app = ET.parse(source / "AndroidManifest.xml").getroot().find("application")
+    receivers = [] if app is None else app.findall("receiver")
     if (set(identity["permissions"]) != MAIN_PERMISSIONS or identity["min_api"] != 26 or identity["target_api"] != 35
             or app is None or [node.get(NS + "name") for node in app.findall("activity")] != [".MainActivity"]
-            or app.findall("service")):
+            or app.findall("activity-alias") or app.findall("service") or app.findall("provider")
+            or len(receivers) != 1 or receivers[0].get(NS + "name") != ".TvUpdateReceiver"
+            or receivers[0].get(NS + "exported") != "false"
+            or [node.get(NS + "name") for node in receivers[0].findall("intent-filter/action")]
+            != ["android.intent.action.MY_PACKAGE_REPLACED"]):
         raise ValueError("main_playback_only_contract_required")
     return identity
 

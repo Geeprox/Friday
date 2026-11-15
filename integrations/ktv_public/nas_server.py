@@ -23,12 +23,19 @@ from pathlib import Path
 try:
     from integrations.ktv_public.coordinator import PERSISTENT_EXPIRY, Coordinator, private_origin
     from integrations.ktv_public.management import Management
+    from integrations.ktv_public.tv_update_inbox import TvUpdateInbox
+    from integrations.ktv_public.tv_updates import APK_CONTENT_TYPE, UPDATE_APK_PATH, UPDATE_INFO_PATH, TvUpdateStore
 except ImportError:  # Standalone NAS export, alongside this module.
     from coordinator import PERSISTENT_EXPIRY, Coordinator, private_origin
     from management import Management
+    from tv_update_inbox import TvUpdateInbox
+    from tv_updates import APK_CONTENT_TYPE, UPDATE_APK_PATH, UPDATE_INFO_PATH, TvUpdateStore
 
 ID = re.compile(r"[1-9][0-9]{0,17}\Z")
 UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
+ROOM_ROUTE = re.compile(
+    r"/api/rooms/([a-f0-9-]{36})/(status|events|search|artwork|discover|playlist|guide|songs|join|profile|theme|controls|command|order|retry)"
+)
 STATES = {"queued", "acquiring", "separating", "transcoding", "ready", "failed", "cancelled"}
 CODES = {
     "none",
@@ -75,6 +82,14 @@ NAMES = (
     "北极企鹅",
     "节拍小子",
 )
+GUEST_NAMES = NAMES + (
+    "山茶晚风", "海盐汽水", "弯月小岛", "白桃列车", "银杏信箱", "雾蓝唱片", "月亮贝壳", "柚子雨",
+    "青苔小鹿", "杏仁云", "露台灯", "铃兰邮差", "晚班星光", "松针小熊", "蔷薇车站", "晴空纸船",
+    "橘子电台", "雪松泡泡", "河畔回声", "莓果音符", "蒲公英", "山间小调", "晴雨伞", "冰岛月光",
+    "银河旅伴", "海风留声", "薄荷岛", "春天胶卷", "时差小猫", "夜色柠檬", "琥珀麦穗", "微风来信",
+    "暖橘月台", "云朵口袋", "山野萤火", "雨声漫步", "湖畔晨星", "月光咖啡", "风铃晚班", "浪花回信",
+    "露水花园", "海边落日", "星星邮局", "云边积木", "暮色电车", "青柠月亮", "小岛晴天", "咖啡雨",
+)
 ARTISTS = ["周杰伦", "陈奕迅", "林俊杰", "五月天", "孙燕姿", "张惠妹", "张学友", "王菲", "邓紫棋", "薛之谦", "陶喆", "林宥嘉", "李荣浩", "郭顶", "告五人", "许嵩", "周深", "张杰", "赵雷", "陈粒", "苏打绿", "王力宏", "刘德华", "梁静茹"]
 
 
@@ -85,6 +100,34 @@ class Refusal(ValueError):
 
 def sha(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def guest_origin(value):
+    if not isinstance(value, str) or not re.fullmatch(r"https://[a-z0-9.-]+(?::[1-9][0-9]{0,4})?", value):
+        return None
+    try:
+        origin = urllib.parse.urlsplit(value)
+        port = origin.port
+    except ValueError:
+        return None
+    if not origin.hostname or not all(
+        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part) for part in origin.hostname.split(".")
+    ):
+        return None
+    return value[:-4] if port == 443 else value
+
+
+def guest_profile(payload):
+    if (
+        not isinstance(payload, dict) or set(payload) != {"nickname", "avatar"}
+        or not isinstance(payload["nickname"], str)
+        or not 1 <= len(payload["nickname"].strip()) <= 24
+        or any(ord(c) < 32 or ord(c) == 127 for c in payload["nickname"])
+        or type(payload["avatar"]) is not int
+        or not 0 <= payload["avatar"] < len(NAMES)
+    ):
+        raise Refusal(400, "invalid_profile")
+    return payload["nickname"].strip(), payload["avatar"]
 
 
 def audio_playback(value):
@@ -136,14 +179,19 @@ def song_title(value):
 
 
 class Store:
-    def __init__(self, root, origin, base_path="/ktv", *, worker_origin=None, allow_loopback_worker=False, recovery_enabled=False, background_health=False):
+    def __init__(self, root, origin, base_path="/ktv", *, worker_origin=None, allow_loopback_worker=False,
+                 recovery_enabled=False, background_health=False, previous_guest_origin=None):
+        self.previous_guest_origin = guest_origin(previous_guest_origin)
+        if previous_guest_origin is not None and self.previous_guest_origin is None:
+            raise ValueError("invalid_previous_guest_origin")
         self.root = Path(root).absolute()
         if self.root.resolve() != self.root:
             raise ValueError("unsafe_root")
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.root.chmod(0o700)
         self.db = self.root / "state.sqlite"
-        self.origin, self.base_path = origin.rstrip("/"), base_path.rstrip("/")
+        self.tv_updates = TvUpdateStore(self.root)
+        self.origin, self.base_path = guest_origin(origin.rstrip("/")) or origin.rstrip("/"), base_path.rstrip("/")
         self._backup_before_guest_queue_upgrade()
         self.lock = threading.RLock()
         self.rate_lock = threading.Lock()
@@ -399,8 +447,12 @@ class Store:
                 temporary.unlink(missing_ok=True)
 
     @staticmethod
-    def _default_guest_profile(occupied):
+    def _default_guest_profile(occupied, *, varied=False):
         """A room-local display name, independent of the guest's credentials."""
+        if varied:
+            available_names = [name for name in GUEST_NAMES if name not in occupied]
+            if available_names:
+                return available_names[secrets.randbelow(len(available_names))], secrets.randbelow(len(NAMES))
         available = [avatar for avatar, name in enumerate(NAMES) if name not in occupied]
         avatar = available[secrets.randbelow(len(available))] if available else secrets.randbelow(len(NAMES))
         name = NAMES[avatar]
@@ -590,34 +642,40 @@ class Store:
             "persistent": True,
             "theme": "content",
             "theme_revision": 0,
-            "join_url": self.origin
-            + self.base_path
-            + "/#"
-            + urllib.parse.urlencode({"r": room_id, "k": key}),
+            "join_url": self.join_url(room_id, key),
         }
 
-    def join(self, room, guest_key=None):
+    def join_url(self, room_id, key):
+        return self.origin + self.base_path + "/#" + urllib.parse.urlencode({"r": room_id, "k": key})
+
+    def join(self, room, guest_key=None, *, profile=None, existing_key=""):
         if guest_key is not None and (not isinstance(guest_key, str) or not re.fullmatch(r"[a-f0-9]{64}", guest_key)):
             raise Refusal(400, "invalid_request")
+        if not isinstance(existing_key, str) or (existing_key and not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", existing_key)):
+            raise Refusal(400, "invalid_request")
+        requested = guest_profile(profile) if profile is not None else None
         with self.lock, self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
             active = db.execute("SELECT closed,expires FROM rooms WHERE id=?", (room["id"],)).fetchone()
             if not active or active["closed"]:
                 raise Refusal(410, "room_closed")
             # 同一手机重试时返回原身份，响应丢失不会消耗新的名额。
-            if guest_key is not None:
+            for token in dict.fromkeys((existing_key, guest_key)):
+                if not token:
+                    continue
                 existing = db.execute("SELECT id,nickname,avatar FROM guests WHERE room=? AND token_hash=?",
-                                      (room["id"], sha(guest_key))).fetchone()
+                                      (room["id"], sha(token))).fetchone()
                 if existing:
-                    return {**dict(existing), "key": guest_key}
+                    return {**dict(existing), "key": token}
             if db.execute("SELECT count(*) FROM guests WHERE room=?", (room["id"],)).fetchone()[0] >= 60:
                 raise Refusal(429, "guest_capacity")
             self.budget("join:" + room["id"], 60, 14400)
             guest_id, key = str(uuid.uuid4()), guest_key or secrets.token_urlsafe(32)
             occupied = {row[0] for row in db.execute("SELECT nickname FROM guests WHERE room=?", (room["id"],))}
-            nickname, avatar = self._default_guest_profile(occupied)
+            nickname, avatar = requested or self._default_guest_profile(occupied, varied=True)
             db.execute(
-                "INSERT INTO guests(id,room,token_hash,nickname,avatar,created,nickname_custom) VALUES(?,?,?,?,?,?,0)",
-                (guest_id, room["id"], sha(key), nickname, avatar, int(time.time())),
+                "INSERT INTO guests(id,room,token_hash,nickname,avatar,created,nickname_custom) VALUES(?,?,?,?,?,?,?)",
+                (guest_id, room["id"], sha(key), nickname, avatar, int(time.time()), int(requested is not None)),
             )
         return {"id": guest_id, "key": key, "nickname": nickname, "avatar": avatar}
 
@@ -633,16 +691,7 @@ class Store:
         return dict(value)
 
     def profile(self, room, guest, payload):
-        if (
-            set(payload) != {"nickname", "avatar"}
-            or not isinstance(payload["nickname"], str)
-            or not 1 <= len(payload["nickname"].strip()) <= 24
-            or any(ord(c) < 32 or ord(c) == 127 for c in payload["nickname"])
-            or type(payload["avatar"]) is not int
-            or not 0 <= payload["avatar"] < len(NAMES)
-        ):
-            raise Refusal(400, "invalid_profile")
-        nickname, avatar = payload["nickname"].strip(), payload["avatar"]
+        nickname, avatar = guest_profile(payload)
         with self.lock, self.connection() as db:
             db.execute(
                 "UPDATE guests SET nickname=?,avatar=?,nickname_custom=1 WHERE id=? AND room=?",
@@ -1228,7 +1277,7 @@ class Store:
                     )
                 ]
                 if direct and direct["room"] == r["room_id"]:
-                    join_url = self.origin + self.base_path + "/#" + urllib.parse.urlencode({"r": direct["room"], "k": direct["secret"]})
+                    join_url = self.join_url(direct["room"], direct["secret"])
                     info.update(join_url=join_url, tv_instance=direct["instance"], direct=True)
                     info["qr_ready"] = self.coordinator.qr_ready(direct)
                     playback = db.execute("SELECT current_song,played FROM rooms WHERE id=?", (r["room_id"],)).fetchone()
@@ -1682,6 +1731,12 @@ def make_handler(store, agent_key, assets):
             return value
 
         def media_reply(self, file, kind, size):
+            with os.fdopen(os.open(str(file), os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+                if os.fstat(stream.fileno()).st_size != size:
+                    raise Refusal(409, "media_changed")
+                return self.media_stream_reply(stream, kind, size)
+
+        def media_stream_reply(self, stream, kind, size, *, etag=None):
             first, last, status = 0, size - 1, 200
             supplied = self.headers.get("Range")
             if supplied is not None:
@@ -1705,27 +1760,51 @@ def make_handler(store, agent_key, assets):
                     self.end_headers()
                     return
                 status = 206
-            with os.fdopen(os.open(str(file), os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
-                if os.fstat(stream.fileno()).st_size != size:
-                    raise Refusal(409, "media_changed")
-                self.send_response(status)
-                headers = {"Content-Type": kind, "Content-Length": str(last - first + 1), "Accept-Ranges": "bytes",
-                           "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
-                if status == 206:
-                    headers["Content-Range"] = "bytes " + str(first) + "-" + str(last) + "/" + str(size)
-                for key, value in headers.items():
-                    self.send_header(key, value)
-                self.end_headers()
-                if self.command != "HEAD":
-                    stream.seek(first)
-                    remaining = last - first + 1
-                    while remaining:
-                        block = stream.read(min(65536, remaining))
-                        if not block:
-                            self.close_connection = True
-                            return
-                        self.wfile.write(block)
-                        remaining -= len(block)
+            self.send_response(status)
+            headers = {"Content-Type": kind, "Content-Length": str(last - first + 1), "Accept-Ranges": "bytes",
+                       "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
+            if status == 206:
+                headers["Content-Range"] = "bytes " + str(first) + "-" + str(last) + "/" + str(size)
+            if etag:
+                headers["ETag"] = etag
+            for key, value in headers.items():
+                self.send_header(key, value)
+            self.end_headers()
+            if self.command != "HEAD":
+                stream.seek(first)
+                remaining = last - first + 1
+                while remaining:
+                    block = stream.read(min(65536, remaining))
+                    if not block:
+                        self.close_connection = True
+                        return
+                    self.wfile.write(block)
+                    remaining -= len(block)
+
+        def tv_update(self, path):
+            expected = {"GET"} if path == UPDATE_INFO_PATH else {"GET", "HEAD"}
+            if self.command not in expected:
+                raise Refusal(405, "method_refused")
+            if self.headers.get("Origin"):
+                raise Refusal(403, "origin_refused")
+            updates = store.tv_updates
+            if not updates.download_slots.acquire(blocking=False):
+                raise Refusal(503, "tv_update_busy")
+            try:
+                opened = updates.open_current()
+                if opened is None:
+                    raise Refusal(404, "tv_update_unavailable")
+                release, stream = opened
+                with stream:
+                    if path == UPDATE_INFO_PATH:
+                        return self.reply(200, release.public())
+                    etag = '"' + release.sha256 + '"'
+                    provided = self.headers.get("If-Match")
+                    if provided not in {None, "*", etag}:
+                        raise Refusal(412, "tv_update_changed")
+                    return self.media_stream_reply(stream, APK_CONTENT_TYPE, release.bytes, etag=etag)
+            finally:
+                updates.download_slots.release()
 
         def dispatch(self):
             parsed = urllib.parse.urlsplit(self.path)
@@ -1735,7 +1814,8 @@ def make_handler(store, agent_key, assets):
             if self.command not in {"GET", "POST", "HEAD"}:
                 raise Refusal(405, "method_refused")
             origin = self.headers.get("Origin")
-            if origin and origin != store.origin:
+            room_route = ROOM_ROUTE.fullmatch(path)
+            if origin and origin != store.origin and (not room_route or origin != store.previous_guest_origin):
                 raise Refusal(403, "origin_refused")
             if self.command in {"GET", "HEAD"} and path in {
                 "/avatars.png",
@@ -1763,6 +1843,8 @@ def make_handler(store, agent_key, assets):
             if path.startswith("/v1/") and self.headers.get("X-KTV-TV-Key") is not None:
                 if not store.coordinator.authenticate(self.headers.get("X-KTV-TV-Key")):
                     raise Refusal(401, "unauthorized")
+                if path in {UPDATE_INFO_PATH, UPDATE_APK_PATH}:
+                    return self.tv_update(path)
                 coordinator = store.coordinator
                 instance = self.headers.get("X-KTV-TV-Instance", "")
                 if path == "/v1/status" and self.command == "GET":
@@ -1847,10 +1929,7 @@ def make_handler(store, agent_key, assets):
                         else store.playback(match.group(1), payload),
                     )
                 raise Refusal(404, "not_found")
-            match = re.fullmatch(
-                r"/api/rooms/([a-f0-9-]{36})/(status|events|search|artwork|discover|playlist|guide|songs|join|profile|theme|controls|command|order|retry)",
-                path,
-            )
+            match = room_route
             if not match:
                 raise Refusal(404, "not_found")
             self.operation = match.group(2)
@@ -1860,9 +1939,13 @@ def make_handler(store, agent_key, assets):
             operation = match.group(2)
             if operation == "join" and self.command == "POST":
                 payload = self.body()
-                if set(payload) - {"guest_key"} or ("guest_key" in payload and not isinstance(payload["guest_key"], str)):
+                if (set(payload) - {"guest_key", "profile"}
+                        or ("guest_key" in payload and not isinstance(payload["guest_key"], str))):
                     raise Refusal(400, "invalid_request")
-                return self.reply(201, store.join(room, payload.get("guest_key")))
+                if "profile" in payload and not isinstance(payload["profile"], dict):
+                    raise Refusal(400, "invalid_profile")
+                return self.reply(201, store.join(room, payload.get("guest_key"), profile=payload.get("profile"),
+                                                  existing_key=self.headers.get("X-KTV-Guest", "")))
             if operation in {"profile", "theme", "controls", "command", "order", "retry"} or (
                 operation == "songs" and self.command == "POST"
             ):
@@ -2026,25 +2109,32 @@ def main():
         raise ValueError("private_config_required")
     config = json.loads(args.config.read_text())
     origin = config["public_origin"]
-    if not re.fullmatch(r"https://[a-z0-9.-]+(?::\d+)?", origin) or not re.fullmatch(
+    if not guest_origin(origin) or not re.fullmatch(
         r"[A-Za-z0-9_-]{43,100}", config["agent_key"]
     ):
         raise ValueError("invalid_config")
     store = Store(args.config.parent / "state", origin, config.get("base_path", "/ktv"), worker_origin=config.get("worker_origin"),
-                  recovery_enabled=config.get("recover_worker", True) is True, background_health=True)
+                  recovery_enabled=config.get("recover_worker", True) is True, background_health=True,
+                  previous_guest_origin=config.get("previous_guest_origin"))
     servers = create_listeners(config, store, config["agent_key"], Path(__file__).parent / "web")
     workers = [threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .5}, daemon=True) for server in servers[:-1]]
+    stop_inbox = threading.Event()
+    inbox = TvUpdateInbox(store.tv_updates, config["agent_key"])
+    inbox_worker = threading.Thread(target=inbox.run, args=(stop_inbox,), name="ktv-tv-update-inbox", daemon=True)
+    inbox_worker.start()
     try:
         for worker in workers:
             worker.start()
         servers[-1].serve_forever(poll_interval=.5)
     finally:
+        stop_inbox.set()
         for server in servers[:-1]:
             server.shutdown()
         for server in servers:
             server.server_close()
         for worker in workers:
             worker.join(2)
+        inbox_worker.join(2)
         store.coordinator.close()
         store.management.close()
 

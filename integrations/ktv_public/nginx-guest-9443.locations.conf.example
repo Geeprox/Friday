@@ -1,0 +1,28 @@
+# 仅作为既有 9443 TLS server 的 location include，部署前核对实际 KTV loopback 端口。
+# 保留上一层的 TLS、Host 校验、原门户位置和所有其它服务。这里以默认端口 19089 为例。
+
+location = /ktv {
+    return 308 /ktv/;
+}
+
+location ~ "^/ktv/(?:health|(?:app|add-queue|party-audio|guide|status-feed)\.js|style\.css|(?:avatars|content|festival|live)\.png|api/rooms/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/(?:status|events|search|artwork|discover|playlist|guide|songs|join|profile|theme|controls|command|order|retry))?$" {
+    if ($request_method !~ ^(GET|HEAD|POST)$) { return 405; }
+    rewrite ^/ktv(/.*)$ $1 break;
+    proxy_pass http://127.0.0.1:19089;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Origin $http_origin;
+    proxy_set_header Connection "";
+    proxy_set_header Authorization "";
+    proxy_set_header Cookie "";
+    proxy_set_header X-KTV-Key "";
+    proxy_set_header X-KTV-TV-Key "";
+    proxy_set_header X-KTV-TV-Instance "";
+    proxy_set_header X-KTV-Media "";
+    proxy_hide_header Set-Cookie;
+    proxy_buffering off;
+}
+
+location /ktv/ {
+    return 404;
+}

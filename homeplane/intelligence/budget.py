@@ -30,15 +30,19 @@ class UsageLedger:
                     id INTEGER PRIMARY KEY CHECK(id=1), start REAL, end REAL,
                     requests INTEGER, text_tokens INTEGER, images INTEGER, voice_seconds INTEGER);
                 CREATE TABLE IF NOT EXISTS attempts (
-                    id TEXT PRIMARY KEY, window REAL, text_tokens INTEGER, status TEXT, voice_seconds INTEGER DEFAULT 0);
+                    id TEXT PRIMARY KEY, window REAL, text_tokens INTEGER, status TEXT,
+                    voice_seconds INTEGER DEFAULT 0, images INTEGER DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS cooldown (
                     capability TEXT PRIMARY KEY, code TEXT, until REAL);
             """
             for statement in schema.split(";"):
                 if statement.strip():
                     db.execute(statement)
-            if "voice_seconds" not in {row[1] for row in db.execute("PRAGMA table_info(attempts)")}:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(attempts)")}
+            if "voice_seconds" not in columns:
                 db.execute("ALTER TABLE attempts ADD COLUMN voice_seconds INTEGER DEFAULT 0")
+            if "images" not in columns:
+                db.execute("ALTER TABLE attempts ADD COLUMN images INTEGER DEFAULT 0")
         path.chmod(0o600)
 
     @contextmanager
@@ -95,11 +99,11 @@ class UsageLedger:
                 (text_tokens, images, voice_seconds),
             )
             db.execute(
-                "INSERT INTO attempts(id,window,text_tokens,status,voice_seconds) VALUES(?,?,?,'reserved',?)",
-                (identifier, window["start"], text_tokens, voice_seconds),
+                "INSERT INTO attempts(id,window,text_tokens,status,voice_seconds,images) VALUES(?,?,?,'reserved',?,?)",
+                (identifier, window["start"], text_tokens, voice_seconds, images),
             )
 
-    def settle(self, identifier, *, text_tokens=None, voice_seconds=None):
+    def settle(self, identifier, *, text_tokens=None, voice_seconds=None, images=None):
         with self.transaction() as db:
             attempt = db.execute("SELECT * FROM attempts WHERE id=?", (identifier,)).fetchone()
             if not attempt or attempt["status"] != "reserved":
@@ -114,10 +118,15 @@ class UsageLedger:
                     "UPDATE usage_window SET voice_seconds=max(0,voice_seconds+?) WHERE id=1 AND start=?",
                     (voice_seconds - attempt["voice_seconds"], attempt["window"]),
                 )
+            if type(images) is int and 0 <= images <= attempt["images"]:
+                db.execute(
+                    "UPDATE usage_window SET images=max(0,images+?) WHERE id=1 AND start=?",
+                    (images - attempt["images"], attempt["window"]),
+                )
             db.execute(
                 "UPDATE attempts SET status=? WHERE id=?",
                 (
-                    "accounted" if text_tokens is not None or voice_seconds is not None else "uncertain",
+                    "accounted" if any(value is not None for value in (text_tokens, voice_seconds, images)) else "uncertain",
                     identifier,
                 ),
             )

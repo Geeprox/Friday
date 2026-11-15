@@ -153,7 +153,11 @@ async def test_background_is_nonblocking_deduplicated_reusable_and_uses_only_son
         calls.append(json.loads(request.content))
         began.set()
         await release.wait()
-        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(picture()).decode()}]})
+        body = calls[-1]
+        size = tuple(map(int, body["size"].split("x")))
+        image = io.BytesIO()
+        Image.new("RGB", size, (24, 40, 60)).save(image, format=body["output_format"].upper())
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(image.getvalue()).decode()}]})
 
     owner = runtime(tmp_path / "ai", handler)
     owner.settings.update({"cloud_images": True})

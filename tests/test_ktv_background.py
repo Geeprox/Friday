@@ -4,8 +4,13 @@ import asyncio
 import base64
 import copy
 import hashlib
+import io
+import json
 import os
+import random
+import select
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +20,13 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from homeplane.intelligence.backgrounds import SongBackgrounds, prepare_backdrop
+from homeplane.intelligence import backgrounds as module
+from homeplane.intelligence.backgrounds import (
+    LEGACY_CANVAS, LEGACY_REQUEST_SIZE, MAX_IMAGE_BYTES, PROMPT_VERSION, QHD_CANVAS, UHD_CANVAS,
+    SongBackgrounds, png_dimensions, prepare_backdrop, song_identity,
+)
+from homeplane.intelligence.budget import EnhancementUnavailable
+from homeplane.intelligence.settings import atomic_json
 from homeplane.ktv_service import create_app
 from homeplane.ktv_worker import BACKGROUND_PREFETCH_COUNT, MediaTickets, manifest_version
 from scripts.ktv_build_workspace import build_workspace
@@ -27,8 +38,11 @@ from tests.test_ktv_worker import KEY, PreparedQueue, make_worker
 
 
 async def test_checked_png_is_available_only_with_original_job_ticket_and_does_not_change_audio(tmp_path):
+    requests = []
+
     def handler(request):
-        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(picture()).decode()}]})
+        requests.append(json.loads(request.content))
+        return image_response(solid_jpeg(UHD_CANVAS, "#23384c"))
 
     owner = runtime(tmp_path / "ai", handler)
     owner.settings.update({"cloud_images": True})
@@ -43,21 +57,350 @@ async def test_checked_png_is_available_only_with_original_job_ticket_and_does_n
         url = f"/v1/jobs/{queue.job_id}/media/background"
         assert client.get(url).status_code == 401
         response = client.get(url, headers={"X-KTV-Media": token})
-        assert response.status_code == 200 and response.content == prepare_backdrop(picture())
+        assert response.status_code == 200 and png_dimensions(response.content, decode=True) == UHD_CANVAS
         assert response.headers["content-type"] == "image/png"
+        with Image.open(io.BytesIO(response.content)) as delivered:
+            assert delivered.mode == "RGB"
         assert client.get(url, headers={"X-KTV-Media": token + "bad"}).status_code == 401
     assert manifest_version(queue.job) == before
+    assert len(requests) == 1 and requests[0]["size"] == "3840x2160" and requests[0]["output_format"] == "jpeg"
+    cached = images.cached_for(queue.job)
+    assert (cached["width"], cached["height"]) == UHD_CANVAS
 
 
-def test_generated_background_is_widescreen_and_tames_lyric_area_highlights():
-    import io
-
+def test_generated_background_is_widescreen_and_preserves_theme_colors():
     source = io.BytesIO()
-    Image.new("RGB", (768, 512), (240, 240, 240)).save(source, format="PNG")
+    frame = Image.new("RGB", LEGACY_REQUEST_SIZE, (32, 160, 80))
+    frame.paste((180, 130, 30), (768, 0, 1536, 1024))
+    frame.save(source, format="PNG")
     with Image.open(io.BytesIO(prepare_backdrop(source.getvalue()))) as delivered:
-        assert delivered.size == (1536, 864)
-        assert max(delivered.getpixel((768, 432))) <= 80
-        assert min(delivered.getpixel((0, 0))) >= 230
+        assert delivered.size == LEGACY_CANVAS
+        assert delivered.getpixel((600, 432)) == (32, 160, 80)
+        assert delivered.getpixel((1150, 432)) == (180, 130, 30)
+
+
+def solid_png(color):
+    content = io.BytesIO()
+    Image.new("RGB", LEGACY_REQUEST_SIZE, color).save(content, "PNG")
+    return content.getvalue()
+
+
+def solid_jpeg(size, color):
+    content = io.BytesIO()
+    Image.new("RGB", size, color).save(content, "JPEG", quality=96)
+    return content.getvalue()
+
+
+def image_response(content):
+    return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(content).decode()}]})
+
+
+@pytest.mark.parametrize("reject_qhd", [False, True])
+async def test_only_verified_size_rejection_falls_back_and_uses_one_image_slot(tmp_path, reject_qhd):
+    requests = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        requests.append((body["size"], body["output_format"], body["model"]))
+        if body["size"] == "3840x2160" or reject_qhd and body["size"] == "2560x1440":
+            status = 400 if body["size"] == "3840x2160" else 422
+            return httpx.Response(status, json={"error": {
+                "type": "invalid_request_error", "param": "size", "code": "invalid_value",
+            }})
+        return image_response(solid_png("#24344c") if reject_qhd else solid_jpeg(QHD_CANVAS, "#24344c"))
+
+    owner = runtime(tmp_path / "ai", handler)
+    model = "gpt-image-2.5-flare-2026-09-08"
+    owner.settings.update({"cloud_images": True, "daily_images": 1, "image_model": model})
+    images = SongBackgrounds(owner)
+    song = {"song_id": "808", "title": "合成回退歌曲"}
+    first = images.request(song)
+    await asyncio.gather(*list(images.tasks.values()))
+    expected = LEGACY_CANVAS if reject_qhd else QHD_CANVAS
+    ready = images.cached(first["id"])
+    assert ready and (ready["width"], ready["height"]) == expected
+    assert png_dimensions(images.read_image(first["id"]), decode=True) == expected
+    assert requests == [("3840x2160", "jpeg", model), ("2560x1440", "jpeg", model)] + (
+        [("1536x1024", "png", model)] if reject_qhd else []
+    )
+    used = owner.status()["usage"]["used"]
+    assert used["images"] == 1 and used["requests"] == len(requests)
+    assert owner.status()["usage"]["blocks"] == []
+
+
+@pytest.mark.parametrize("outcome", ["ambiguous_400", "rate_limit", "timeout", "undersized_200"])
+async def test_unverified_failure_or_undersized_response_never_retries_as_smaller_image(tmp_path, outcome):
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content)["size"])
+        if outcome == "undersized_200":
+            return image_response(solid_jpeg(QHD_CANVAS, "#35524a"))
+        if outcome == "timeout":
+            raise httpx.ReadTimeout("等待合成响应", request=request)
+        if outcome == "rate_limit":
+            return httpx.Response(429, json={"error": {"param": "size", "code": "invalid_value"}})
+        return httpx.Response(400, json={"error": {"message": "size error", "code": "invalid_value"}})
+
+    owner = runtime(tmp_path / "ai", handler)
+    config = owner.settings.update({"cloud_images": True, "daily_images": 2})
+    images = SongBackgrounds(owner)
+    song = {"song_id": "617", "title": "已有老背景的合成曲目"}
+    cached_id = song_identity(song, config.image_model)
+    content = prepare_backdrop(solid_png("#293e51"))
+    images.directory.mkdir(mode=0o700)
+    path = images.directory / (cached_id + ".png")
+    path.write_bytes(content)
+    path.chmod(0o600)
+    atomic_json(images.directory / (cached_id + ".json"), {
+        "prompt_version": PROMPT_VERSION, "render_revision": 2, "sha256": hashlib.sha256(content).hexdigest(),
+    })
+    assert images.request(song)["width"] == LEGACY_CANVAS[0] and not requests
+    assert images.request(song, force=True)["status"] == "preparing"
+    await asyncio.gather(*list(images.tasks.values()))
+    assert requests == ["3840x2160"] and images.read_image(cached_id) == content
+    assert images.cached(cached_id)["height"] == LEGACY_CANVAS[1]
+    used = owner.status()["usage"]["used"]
+    assert used["images"] == used["requests"] == 1
+
+
+def test_full_resolution_overflow_uses_bounded_palette_png_only_when_rgb_cannot_fit():
+    width, height = UHD_CANVAS
+    pixels = random.Random(259).randbytes(width * height * 3)
+    source = io.BytesIO()
+    Image.frombytes("RGB", UHD_CANVAS, pixels).save(source, "JPEG", quality=88)
+    assert len(source.getvalue()) < MAX_IMAGE_BYTES
+    data = prepare_backdrop(source.getvalue(), requested_size=UHD_CANVAS, encoding="jpeg")
+    assert len(data) <= MAX_IMAGE_BYTES and png_dimensions(data, decode=True) == UHD_CANVAS
+    with Image.open(io.BytesIO(data)) as result:
+        assert result.mode == "P"
+
+
+async def test_cloud_regeneration_keeps_legacy_on_failure_and_uses_verified_public_metadata(tmp_path, monkeypatch):
+    prompts = []
+    color = "#6d1322"
+
+    def generated(request):
+        prompts.append(json.loads(request.content)["prompt"])
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(solid_png(color)).decode()}]})
+
+    owner = runtime(tmp_path / "ai", generated)
+    config = owner.settings.update({"cloud_images": True, "cached_background_limit": 1, "image_model": "gpt-image-1.5"})
+    images = SongBackgrounds(owner)
+    song = {"song_id": "420", "title": "PRIVATE 云盘标记", "artist": "", "audio_origin": "cloud"}
+    public = {"title": "公开曲名", "artist": "公开歌手"}
+    identifier = song_identity(song, config.image_model)
+    old = prepare_backdrop(solid_png("#213745"))
+    before = hashlib.sha256(old).hexdigest()
+    images.directory.mkdir()
+    old_path = images.directory / f"{identifier}.png"
+    old_path.write_bytes(old)
+    old_path.chmod(0o600)
+    record = images.directory / f"{identifier}.json"
+    atomic_json(record, {"prompt_version": PROMPT_VERSION, "sha256": before, "public_metadata": public})
+
+    def fail_at_commit(path, value):
+        assert path == record and value["sha256"] != before
+        assert images.read_image(identifier) == old
+        raise OSError("synthetic failure before pointer switch")
+
+    try:
+        assert images.read_image(identifier) == old and images.public_metadata_for(identifier) == public
+        assert images.song_ref_for(identifier) is None
+        with monkeypatch.context() as changes:
+            changes.setattr(module, "atomic_json", fail_at_commit)
+            assert images.request(song, force=True)["status"] == "preparing"
+            await asyncio.gather(*list(images.tasks.values()))
+        assert images.cached(identifier)["sha256"] == before and old_path.read_bytes() == old
+        assert not list(images.versions.glob("*.png"))
+        assert images.request(song, force=True)["status"] == "preparing"
+        await asyncio.gather(*list(images.tasks.values()))
+        after = images.cached(identifier)["sha256"]
+        assert after != before and images.read_image(identifier) == prepare_backdrop(solid_png(color))
+        assert images.read_image(identifier, expected_sha=before) == old
+        assert images.read_image(identifier, expected_sha="invalid") is None
+        assert images.public_metadata_for(identifier) == public and images.song_ref_for(identifier) == song
+        assert "public_metadata" not in images.cached(identifier) and "song_ref" not in images.cached(identifier)
+        color = "#255345"
+        assert images.request(song, force=True)["status"] == "preparing"
+        await asyncio.gather(*list(images.tasks.values()))
+        assert images.read_image(identifier, expected_sha=after) == prepare_backdrop(solid_png("#6d1322"))
+        assert images.read_image(identifier, expected_sha=before) is None and not old_path.exists()
+        assert len(list(images.versions.glob("*.png"))) == 2
+        assert len(prompts) == 3 and all("公开曲名" in text and "PRIVATE" not in text for text in prompts)
+    finally:
+        await images.close()
+
+
+@pytest.mark.parametrize("parallel", [1, 3])
+async def test_generation_respects_configured_parallelism_and_deduplicates_pending_song(tmp_path, parallel):
+    calls = 0
+    active = 0
+    peak = 0
+    entered, release = asyncio.Event(), asyncio.Event()
+    encoded = base64.b64encode(solid_png("#18344c")).decode()
+
+    async def generated(request):
+        nonlocal active, peak, calls
+        calls += 1
+        active += 1
+        peak = max(peak, active)
+        if active == parallel:
+            entered.set()
+        try:
+            await release.wait()
+            return httpx.Response(200, json={"data": [{"b64_json": encoded}]})
+        finally:
+            active -= 1
+
+    owner = runtime(tmp_path / "ai", generated)
+    owner.settings.update({"cloud_images": True, "image_model": "gpt-image-1.5"})
+    generator = SongBackgrounds(owner, max_parallel=parallel)
+    songs = [{"song_id": str(n), "title": "歌曲 " + str(n)} for n in range(1, 5)]
+    try:
+        for song in songs:
+            assert generator.request(song)["status"] == "preparing"
+        await asyncio.wait_for(entered.wait(), 5)
+        assert generator.request(songs[0], force=True)["status"] == "preparing"
+        assert calls == parallel
+        release.set()
+        await asyncio.gather(*list(generator.tasks.values()))
+        assert peak == parallel and calls == 4
+        assert all(generator.cached_for(song)["status"] == "ready" for song in songs)
+    finally:
+        release.set()
+        await generator.close()
+
+
+@pytest.mark.parametrize("invalid", [0, 25, True, 2.5, "3"])
+def test_background_parallelism_is_a_positive_bounded_integer(tmp_path, invalid):
+    owner = runtime(tmp_path / "ai", lambda request: pytest.fail("合成测试不会请求模型"))
+    with pytest.raises(ValueError, match="invalid_background_parallelism"):
+        SongBackgrounds(owner, max_parallel=invalid)
+
+
+def test_context_timeout_is_configurable_with_a_bound(tmp_path):
+    owner = runtime(tmp_path / "ai", lambda request: pytest.fail("合成测试不会请求模型"))
+    assert SongBackgrounds(owner).context_timeout == 4
+    assert SongBackgrounds(owner, context_timeout=22).context_timeout == 22
+    for value in (.9, 30.1, True, float("nan")):
+        with pytest.raises(ValueError, match="invalid_background_context_timeout"):
+            SongBackgrounds(owner, context_timeout=value)
+
+
+async def test_public_release_brief_is_vetted_and_persists_across_regeneration(tmp_path):
+    public = {"title": "公开曲名", "artist": "公开歌手"}
+    brief = "公开发行于摇滚专辑。低调的苔绿和雾中的巨石拱门，歌词区保留深色。"
+    received, prompts = [], []
+    encoded = base64.b64encode(solid_png("#18344c")).decode()
+
+    async def resolve(fields):
+        received.append(fields)
+        return brief
+
+    def generated(request):
+        prompts.append(json.loads(request.content)["prompt"])
+        return httpx.Response(200, json={"data": [{"b64_json": encoded}]})
+
+    owner = runtime(tmp_path / "ai", generated)
+    owner.settings.update({"cloud_images": True, "image_model": "gpt-image-1.5"})
+    generator = SongBackgrounds(owner, context_resolver=resolve)
+    song = {"song_id": "808", "title": "私人云盘名", "artist": "", "audio_origin": "cloud"}
+    try:
+        assert generator.request(song)["reason"] == "private_song_metadata"
+        with pytest.raises(ValueError, match="invalid_public_background_metadata"):
+            generator.request(song, force=True, public_metadata={**public, "context": "字" * 401})
+        pending = generator.request(song, public_metadata=public)
+        await asyncio.gather(*list(generator.tasks.values()))
+        assert generator.request(song, force=True)["status"] == "preparing"
+        await asyncio.gather(*list(generator.tasks.values()))
+        assert received == [public]
+        assert generator.public_metadata_for(pending["id"]) == {**public, "context": brief}
+        assert len(prompts) == 2 and all(brief in text and "私人云盘名" not in text for text in prompts)
+    finally:
+        await generator.close()
+
+
+async def test_background_uses_base_public_metadata_when_brief_lookup_times_out(tmp_path):
+    attempted, cancelled, prompts = [], [], []
+    public = {"title": "公开曲名", "artist": "公开歌手"}
+    encoded = base64.b64encode(solid_png("#18344c")).decode()
+
+    async def slow(fields):
+        attempted.append(fields)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+
+    def generated(request):
+        prompts.append(json.loads(request.content)["prompt"])
+        return httpx.Response(200, json={"data": [{"b64_json": encoded}]})
+
+    owner = runtime(tmp_path / "ai", generated)
+    owner.settings.update({"cloud_images": True, "image_model": "gpt-image-1.5"})
+    generator = SongBackgrounds(owner, context_resolver=slow, context_timeout=1)
+    song = {"song_id": "111", "title": "合成曲目"}
+    try:
+        pending = generator.request(song, public_metadata=public)
+        await asyncio.wait_for(asyncio.gather(*list(generator.tasks.values())), 3)
+        assert attempted == [public] and cancelled == [True]
+        assert len(prompts) == 1 and all(value in prompts[0] for value in public.values())
+        assert generator.public_metadata_for(pending["id"]) == public
+    finally:
+        await generator.close()
+
+
+def test_process_leases_reserve_insert_capacity_and_recover_uncommitted_image(tmp_path):
+    root = tmp_path / "shared"
+    runtime_stub = SimpleNamespace(settings=SimpleNamespace(directory=tmp_path))
+    generator = SongBackgrounds(runtime_stub, root, max_parallel=4)
+    first, second, third = "a" * 64, "b" * 64, "c" * 64
+    program = """\
+from pathlib import Path
+from types import SimpleNamespace
+from homeplane.intelligence.backgrounds import SongBackgrounds
+import sys
+root=Path(sys.argv[1])
+app=SongBackgrounds(SimpleNamespace(settings=SimpleNamespace(directory=root)), root, max_parallel=4)
+lease=app._claim(sys.argv[2], 2)
+print("held", flush=True)
+sys.stdin.buffer.read(1)
+app._release(lease)
+"""
+    process = subprocess.Popen([sys.executable, "-B", "-c", program, str(root), first],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    other = None
+    try:
+        assert select.select([process.stdout], [], [], 5)[0] and process.stdout.readline().strip() == b"held"
+        with pytest.raises(EnhancementUnavailable) as duplicate:
+            generator._claim(first, 2)
+        assert duplicate.value.code == "background_in_progress"
+        other = generator._claim(second, 2)
+        with pytest.raises(EnhancementUnavailable) as full:
+            generator._claim(third, 2)
+        assert full.value.code == "background_storage_limit_reached"
+        generator.versions.mkdir(mode=0o700)
+        data = prepare_backdrop(solid_png("#486278"))
+        stale = generator.versions / (first + "." + hashlib.sha256(data).hexdigest() + ".png")
+        stale.write_bytes(data)
+        stale.chmod(0o600)
+        unknown = generator.versions / "unknown-source.png"
+        unknown.write_bytes(b"keep")
+        process.kill()
+        process.communicate(timeout=5)
+        recovered = generator._claim(third, 2)
+        try:
+            assert not stale.exists() and unknown.read_bytes() == b"keep"
+            assert not (root / ".reservations" / (first + ".lease")).exists()
+        finally:
+            generator._release(recovered)
+    finally:
+        if other is not None:
+            generator._release(other)
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
 
 
 def test_tv_background_generation_fence_and_media_credential_scope():

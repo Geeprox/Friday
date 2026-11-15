@@ -3,6 +3,7 @@ import base64
 import copy
 import hashlib
 import io
+import re
 import struct
 import threading
 import time
@@ -645,6 +646,76 @@ def test_qr_loss_or_same_size_damage_requests_worker_republication(store):
     assert store.coordinator.qr_ready()
     path.unlink()
     assert not store.coordinator.qr_ready()
+
+
+def test_guest_origin_switch_rebinds_pending_qr_and_preserves_room_and_guest(store):
+    instance, previous_party = started(store)
+    _, room_key, existing_guest = admitted(store, previous_party)
+    publish_qr(store, instance, previous_party)
+    assert store.coordinator.qr_ready()
+
+    current = "https://guests.example.test:9443"
+    reopened = Store(store.root, current, previous_guest_origin=store.origin)
+    server = Server(("127.0.0.1", 0), make_handler(reopened, AGENT, ASSETS))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        new_party = reopened.coordinator.party()
+        assert new_party["room_id"] == previous_party["room_id"]
+        assert new_party["join_url"].startswith(current + "/ktv/#")
+        assert urlsplit(new_party["join_url"]).fragment == urlsplit(previous_party["join_url"]).fragment
+        assert not reopened.coordinator.qr_ready() and reopened.poll()["rooms"][0]["qr_ready"] is False
+        with pytest.raises(Refusal) as stale:
+            publish_qr(reopened, instance, previous_party)
+        assert stale.value.code == "invalid_qr"
+        publish_qr(reopened, instance, new_party)
+        assert reopened.coordinator.qr_ready()
+
+        with httpx.Client(base_url="http://127.0.0.1:" + str(server.server_port), timeout=3, trust_env=False) as client:
+            path = "/api/rooms/" + new_party["room_id"]
+            guest_headers = {"X-KTV-Room": room_key, "X-KTV-Guest": existing_guest["key"]}
+            old_profile = client.get(path + "/profile", headers={**guest_headers, "Origin": store.origin})
+            assert old_profile.status_code == 200 and old_profile.json()["id"] == existing_guest["id"]
+            existing = client.post(path + "/join", headers={**guest_headers, "Origin": store.origin},
+                                   json={"guest_key": "a" * 64, "profile": {"nickname": "暂存的新昵称", "avatar": 5}})
+            assert existing.status_code == 201 and existing.json() == existing_guest
+            joined = client.post(path + "/join", headers={"X-KTV-Room": room_key, "Origin": current},
+                                 json={"guest_key": "b" * 64, "profile": {"nickname": "海风留声", "avatar": 6}})
+            assert joined.status_code == 201 and joined.json()["nickname"] == "海风留声"
+            assert client.post(path + "/join", headers={"Origin": current}, json={}).status_code == 403
+            foreign = client.get(path + "/profile", headers={**guest_headers, "Origin": "https://elsewhere.invalid"})
+            assert foreign.status_code == 403 and foreign.json()["code"] == "origin_refused"
+            agent = {"Authorization": "Bearer " + AGENT, "Origin": store.origin}
+            tv = {"X-KTV-TV-Key": reopened.coordinator.tv_key, "Origin": store.origin}
+            assert client.get("/agent/tasks", headers=agent).json()["code"] == "origin_refused"
+            assert client.get("/v1/status", headers=tv).json()["code"] == "origin_refused"
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        server.server_close()
+        reopened.coordinator.close()
+
+
+def test_guest_proxy_template_tracks_public_routes_without_forwarding_internal_paths():
+    from integrations.ktv_public.nas_server import ROOM_ROUTE
+
+    template = (ASSETS.parent / "nginx-guest-9443.locations.conf.example").read_text()
+    allowed = re.compile(re.search(r'location ~ "([^"]+)"', template).group(1))
+    assert allowed.fullmatch("/ktv/health")
+    assert allowed.fullmatch("/ktv/")
+    for asset in ("app.js", "add-queue.js", "party-audio.js", "guide.js", "status-feed.js", "style.css",
+                  "avatars.png", "content.png", "festival.png", "live.png"):
+        assert allowed.fullmatch("/ktv/" + asset) and (ASSETS / asset).is_file()
+    operations = ROOM_ROUTE.pattern.rsplit("/", 1)[1].strip("()").split("|")
+    for operation in operations:
+        assert allowed.fullmatch(f"/ktv/api/rooms/{uid()}/{operation}")
+    for path in ("/ktv/agent/manage", "/ktv/v1/status", "/ktv/api/rooms/invalid/join",
+                 f"/ktv/api/rooms/{uid()}/internal", "/ktv/app.js/extra", "/auth/account"):
+        assert not allowed.fullmatch(path)
+    assert "rewrite ^/ktv(/.*)$ $1 break;" in template
+    assert 'proxy_set_header Authorization "";' in template
+    assert 'proxy_set_header X-KTV-TV-Key "";' in template
+    assert "location /ktv/ {\n    return 404;" in template
 
 
 def test_status_queues_one_health_refresh_without_waiting_for_disk_and_stale_proof_is_not_ready(store, monkeypatch):

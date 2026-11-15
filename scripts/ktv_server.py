@@ -166,10 +166,12 @@ def main(argv=None):
     from homeplane.ktv_nas_bridge import NasBridge
     from homeplane.ktv_search import search_songs, song_lyrics
     from homeplane.ktv_service import prepared_lyrics
-    from homeplane.ktv_worker import PreparationWorker, WorkerCapabilities, media_origin
+    from homeplane.ktv_worker import BACKGROUND_PREFETCH_COUNT, PreparationWorker, WorkerCapabilities, media_origin
 
     intelligence = IntelligenceRuntime(None, default_directory())
-    song_backgrounds = SongBackgrounds(intelligence, recording=source_api.public_lyric_recording)
+    from homeplane.intelligence.ktv_background_context import SongBackgroundContext
+    song_backgrounds = SongBackgrounds(intelligence, recording=source_api.public_lyric_recording, max_parallel=BACKGROUND_PREFETCH_COUNT,
+                                       context_resolver=SongBackgroundContext(intelligence), context_timeout=22)
     lyric_recovery = KtvLyricsRecovery(
         intelligence, source_api, queue, lambda job_id: prepared_lyrics(queue, job_id, song_lyrics, source_api),
     )

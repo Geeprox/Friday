@@ -2,12 +2,24 @@ export function mountKtv(target,{endpoint='/v1',onBack=null,embedded=false,party
 let alive=true;const lifetime=new AbortController();
 const $ = id => shell.querySelector('#ktv-'+id);
 const el = (tag, text, cls) => { const n=document.createElement(tag); if(text!==undefined&&text!==null)n.textContent=text;if(cls)n.className=cls;return n; };
-const tabs=['room','search','queue','cache','settings','jobs','source'];
+const tabs=['room','search','queue','cache','settings','jobs'];
 const primaryTabs=[['room','正在唱'],['search','点歌'],['queue','已点'],['cache','歌曲文件'],['settings','设置']];
 const commandObserved=partyAudio?.commandObserved||(()=>false);
 const volumeControls=[['music_gain','伴奏音量'],['sfx_gain','氛围音量']];
 const phase={queued:'排队中',acquiring:'获取原曲',waiting_storage:'等待 Mac 腾出缓存空间',waiting_separation:'等待制作伴奏',waiting_memory:'等待内存',separating:'生成伴奏',waiting_transcode:'等待封装',transcoding:'准备播放文件',video:'匹配 MV',ready:'已准备好',failed:'准备失败',cancelled:'已取消',source_authorizing:'验证下载权限',source_downloading:'下载原曲',source_cache_hit:'命中原曲缓存',decoding:'校验原曲'};
-const errors={cache_changed:'文件或歌单已变化，请刷新后重新选择。',archive_changed:'NAS 归档已变化，请刷新后重新选择。',cache_in_use:'所选歌曲正在使用或制作，请稍后再试。',plan_expired:'删除预览已过期，请重新选择。',nas_management_unavailable:'NAS 暂未连接，恢复连接后可继续操作。',tv_offline:'电视离线，请开机后再操作。',room_changed:'房间已变化，请刷新后重试。',queue_changed:'歌单已更新，请刷新后重新选择。',song_playing:'当前歌曲正在播放，请先切歌。',sfx_unavailable:'电视氛围音效暂不可用。',source_login_required:'请先在音源授权页登录。',source_rights_denied:'账户无此版本下载权限，请换一个版本。',source_api_unavailable:'音源暂未连接，请稍后重试。',source_file_invalid:'原曲文件不完整，请重新准备。',download_timeout:'原曲下载未完成，请重试或换一个版本。',separation_failed:'伴奏生成失败，请重试。',transcode_failed:'播放文件封装失败，请重试。',storage_full:'存储空间不足，请调整上限或删除空闲歌曲。',search_unavailable:'暂时无法搜索，请稍后重试。',queue_full:'歌单已满，请先移除不需要的歌曲。',rate_limited:'操作较频繁，请稍等片刻再试。',invalid_policy:'请输入有效的容量上限（2–102400 GB）。',unauthorized:'管理会话已过期，请刷新页面。',ktv_offline:'KTV 暂未连接。请确认本机 KTV 服务已运行，再重试连接。',ktv_not_configured:'家庭 KTV 尚未配置。完成本机连接后即可使用。',ktv_config_unavailable:'KTV 连接配置暂不可读，请检查本机配置后重试。',ktv_read_only:'当前窗口只读，请在本机 Friday 窗口操作。',ktv_unavailable:'KTV 暂时无法完成操作，请稍后重试。',unavailable:'连接未完成，请检查服务后重试。'};
+const errors={
+ failed_history_already_prepared:'同一版本已准备完成，可删除这条旧失败记录。',
+ failed_history_source_changed:'歌单中的歌曲已换用其他版本。',
+ failed_history_hidden:'这条失败记录已删除，请刷新。',
+ cache_miss:'暂时找不到这个版本的制备文件。',
+ remove_unavailable:'暂时无法删除这条失败记录。',
+ retry_in_progress:'这个版本正在制备。',
+ mac_offline:'Mac 制备服务暂未连接。',
+ background_unavailable:'暂时无法制作歌曲背景。',
+ daily_images_reached:'今天的背景生成次数已用完。',
+ cloud_images_disabled:'歌曲背景生成尚未开启。',
+ background_queue_full:'背景正在排队，请稍后再试。',
+ cache_changed:'文件或歌单已变化，请刷新后重新选择。',archive_changed:'NAS 归档已变化，请刷新后重新选择。',cache_in_use:'所选歌曲正在使用或制作，请稍后再试。',plan_expired:'删除预览已过期，请重新选择。',nas_management_unavailable:'NAS 暂未连接，恢复连接后可继续操作。',tv_offline:'电视离线，请开机后再操作。',room_changed:'房间已变化，请刷新后重试。',queue_changed:'歌单已更新，请刷新后重新选择。',song_playing:'当前歌曲正在播放，请先切歌。',sfx_unavailable:'电视氛围音效暂不可用。',source_login_required:'请在 KTV 设置的音源授权中登录。',source_rights_denied:'这个版本未能取得可用音频。',source_api_unavailable:'音源暂未连接，请稍后重试。',source_file_invalid:'原曲文件不完整，请重新准备。',download_timeout:'原曲下载未完成，请重试或换一个版本。',separation_failed:'伴奏生成失败，请重试。',transcode_failed:'播放文件封装失败，请重试。',storage_full:'存储空间不足，请调整上限或删除空闲歌曲。',search_unavailable:'暂时无法搜索，请稍后重试。',queue_full:'歌单已满，请先移除不需要的歌曲。',rate_limited:'操作较频繁，请稍等片刻再试。',cloud_song_unavailable:'暂时无法取得这个音乐云盘文件。',failed_history_source_unknown:'这条记录的原音源待确认，请重新搜索该曲。',retry_unavailable:'本次制备暂不能重试。',retry_limit:'本条记录的重试次数已用完。',invalid_policy:'请输入有效的容量上限（2–102400 GB）。',unauthorized:'管理会话已过期，请刷新页面。',ktv_offline:'KTV 暂未连接。请确认本机 KTV 服务已运行，再重试连接。',ktv_not_configured:'家庭 KTV 尚未配置。完成本机连接后即可使用。',ktv_config_unavailable:'KTV 连接配置暂不可读，请检查本机配置后重试。',ktv_read_only:'当前窗口只读，请在本机 Friday 窗口操作。',ktv_unavailable:'KTV 暂时无法完成操作，请稍后重试。',unavailable:'连接未完成，请检查服务后重试。'};
 const themes=[['content','内容与留白'],['festival','音乐节'],['live','Live']], sourceNames={song:'曲库',mv:'MV',cloud:'音乐云盘'};
 const reasons={preparing:'正在制作',in_queue:'当前歌单正在使用',transferring:'正在归档或校验',unsafe:'文件需要核对',nas_offline:'NAS 离线，暂不能核对使用情况'};
 const size=n=>n===null||n===undefined?'暂不可读':n>=1024**3?`${(n/1024**3).toFixed(2)} GB`:`${(n/1024**2).toFixed(1)} MB`;
@@ -17,6 +29,8 @@ let pendingLibrary=null;
 let cacheData=null,cacheQuery='',scope='both',page=0,deletePlan=null,lastCheckbox=-1;
 const libraryReadError='歌曲文件暂时无法读取。';
 let searchData=null,searchQuery='',searchSource='song',searchOffset=0;
+let sourceSession=null;
+let backgroundView=null;
 const renderSignatures=new Map();
 const selected=new Set(),queueSelected=new Set(),searchSelected=new Set(),addRequests=new Map(),added=new Set();
 function message(text,error=false){if(!alive)return;$('status').textContent=text;$('status').classList.toggle('error',error);}
@@ -33,7 +47,7 @@ function readLibrary(){
  if(!pendingLibrary)pendingLibrary=api('manage/library').finally(()=>{pendingLibrary=null;});
  return pendingLibrary;
 }
-function resetContent(){$('summary').replaceChildren();$('content').replaceChildren();if(view==='source'||view==='jobs')$('content').append(button(view==='source'?'返回设置':'返回已点',()=>setView(view==='source'?'settings':'queue'),{className:'ktv-inline-back'}));}
+function resetContent(){$('summary').replaceChildren();$('content').replaceChildren();if(view==='jobs')$('content').append(button('返回已点',()=>setView('queue'),{className:'ktv-inline-back'}));}
 async function refresh({quiet=false}={}){
  if(!alive||document.hidden||changing)return;
  if(view==='settings'){
@@ -50,7 +64,7 @@ async function refresh({quiet=false}={}){
  $('refresh').disabled=true;
  if(!quiet)message(current==='cache'?'正在读取歌曲文件…':'正在读取…');
  try{
-  const path={jobs:'jobs',source:'source/status'}[current]||'manage/room';
+  const path=current==='jobs'?'jobs':'manage/room';
   const data=await (current==='cache'?readLibrary():api(path,undefined,signal));
   if(signal.aborted)return;
   const signature=JSON.stringify(data,(key,value)=>['server_time_ms','position_ms','position_at','cursor'].includes(key)?undefined:value);
@@ -65,7 +79,6 @@ async function refresh({quiet=false}={}){
   if(data?.simulated)shell.querySelector('.ktv-context').textContent='合成验证 · 本机管理';
   if(current==='cache'){cacheData=data;if(!data.nas.configured)scope='mac';renderCache(data);}
   else if(current==='jobs')renderJobs(data.jobs);
-  else if(current==='source')renderSource(data);
   else{
    adoptRoom(data);
    if(current==='room')renderRoom(data);
@@ -196,7 +209,7 @@ $('delete-dialog').addEventListener('cancel',e=>{if(changing)e.preventDefault();
 }
 
 function renderSearch(){
- $('summary').append(el('h2','找一首想唱的歌'),el('p',room.active?`当前房间已有 ${room.status.songs.length} 首歌曲。`:'房间开启后可以点歌；现在可以先搜索。','muted'));const form=el('form',null,'search-form'),input=el('input');input.type='search';input.value=searchQuery;input.maxLength=120;input.placeholder='歌曲、歌手';input.setAttribute('aria-label','歌曲或歌手');const origin=select(Object.entries(sourceNames),searchSource);origin.setAttribute('aria-label','搜索范围');const submit=el('button','搜索','primary');submit.type='submit';form.append(input,origin,submit);form.onsubmit=async e=>{e.preventDefault();searchQuery=input.value.trim();searchSource=origin.value;searchOffset=0;searchSelected.clear();await searchSongs(submit);};$('content').append(form);const results=el('section',null,'section');results.id='ktv-search-results';$('content').append(results);renderSearchRows();
+ $('summary').append(el('h2','找一首想唱的歌'),el('p',room.active?`当前房间已有 ${room.status.songs.length} 首歌曲。`:'房间开启后可以点歌；现在可以先搜索。','muted'));const form=el('form',null,'search-form'),input=el('input');input.type='search';input.value=searchQuery;input.maxLength=120;input.placeholder='歌曲、歌手';input.setAttribute('aria-label','歌曲或歌手');const origin=select(Object.entries(sourceNames),searchSource);origin.setAttribute('aria-label','搜索范围');const submit=el('button','搜索','primary');submit.type='submit';submit.id='ktv-search-submit';form.append(input,origin,submit);form.onsubmit=async e=>{e.preventDefault();searchQuery=input.value.trim();searchSource=origin.value;searchOffset=0;searchSelected.clear();await searchSongs(submit);};$('content').append(form);const results=el('section',null,'section');results.id='ktv-search-results';$('content').append(results);renderSearchRows();
 }
 async function searchSongs(b){if(changing)return;if(!searchQuery&&searchSource!=='cloud'){message('请输入歌曲或歌手。',true);return;}changing=true;b.disabled=true;message('正在搜索…');try{searchData=await api(`manage/search?q=${encodeURIComponent(searchQuery)}&source=${searchSource}&offset=${searchOffset}`);renderSearchRows();message('');}catch(error){message(explain(error),true);}finally{changing=false;b.disabled=false;}}
 function renderSearchRows(){const box=$('search-results');if(!box)return;box.replaceChildren();if(!searchData){box.append(el('p','搜索曲库、MV，或浏览已授权的音乐云盘。','empty'));return;}const songs=searchData.songs||[],tools=el('div',null,'toolbar');const add=button(`点所选歌曲（${searchSelected.size}）`,e=>addSongs(songs.filter(s=>searchSelected.has(s.source+':'+s.song_id)),e.currentTarget),{disabled:!room.active||!searchSelected.size||!room.status?.mac_online});tools.append(button('全选本页',()=>{for(const s of songs)if(!added.has(s.source+':'+s.song_id))searchSelected.add(s.source+':'+s.song_id);renderSearchRows();}),button('取消选择',()=>{searchSelected.clear();renderSearchRows();}),add);box.append(tools);if(!songs.length)box.append(el('p','没有找到匹配歌曲，请换个关键词或搜索范围。','empty'));
@@ -204,15 +217,84 @@ function renderSearchRows(){const box=$('search-results');if(!box)return;box.rep
  if(searchData.has_more||searchOffset){const pager=el('div',null,'pager');pager.append(button('上一页',e=>{searchOffset=Math.max(0,searchOffset-30);searchSelected.clear();searchSongs(e.currentTarget);},{disabled:searchOffset===0}),el('span',`${Math.floor(searchOffset/30)+1}`),button('下一页',e=>{searchOffset=searchData.next_offset??searchOffset+30;searchSelected.clear();searchSongs(e.currentTarget);},{disabled:!searchData.has_more}));box.append(pager);}
 }
 async function addSongs(songs,b){if(changing||!room.active||!songs.length)return;changing=true;b.disabled=true;const roomId=room.room_id;let count=0;try{for(const song of songs){const key=song.source+':'+song.song_id;if(added.has(key))continue;const requestKey=roomId+':'+key;if(!addRequests.has(requestKey))addRequests.set(requestKey,crypto.randomUUID());await roomAction('songs',{song_id:song.song_id,title:song.title,source:song.source,request_id:addRequests.get(requestKey)},roomId);added.add(key);searchSelected.delete(key);count++;}message(`已点 ${count} 首，后台将自动准备。`);}catch(error){message(`已点 ${count} 首。${explain(error)}剩余歌曲仍保留选择。`,true);}finally{changing=false;renderSearchRows();if(b.isConnected)b.disabled=false;}}
-function renderJobs(jobs){$('summary').append(el('h2',`正在准备 ${jobs.filter(j=>!['ready','failed','cancelled'].includes(j.state)).length} 首`),el('p','自动按歌单顺序处理。','muted'));if(!jobs.length)$('content').append(el('p','点歌后，下载和伴奏制作进度会显示在这里。','empty'));for(const job of [...jobs].reverse()){const row=el('article',null,'entry'),info=el('div',null,'entry-info');info.append(el('h3',job.title),el('p',job.cache_hit?'命中完整播放缓存':phase[job.progress?.stage]||phase[job.state],'muted'));if(job.state==='failed')info.append(el('p',errors[job.code]||'本次未准备完成，可在房间歌单中重试。','error'));const bar=el('progress');bar.max=4;bar.value=job.progress?.completed_steps||0;bar.setAttribute('aria-label','处理步骤');info.append(bar);const details=el('details'),summary=el('summary','处理记录'),list=el('ol',null,'events');details.append(summary,list);details.ontoggle=async()=>{if(!details.open||list.children.length)return;try{const data=await api(`jobs/${job.id}/journal`);for(const e of data.events)list.append(el('li',`${date(e.at)} · ${phase[e.stage]||'阶段更新'}${e.code!=='none'?' · '+(errors[e.code]||'本阶段未完成'):''}`));if(!data.events.length)list.append(el('li','暂无处理记录。'));}catch{list.append(el('li','记录暂时无法读取，关闭后再试。'));}};info.append(details);row.append(info);$('content').append(row);}}
+const finishedJobStates=new Set(['ready','failed','cancelled']);
+const preparationSources={song:'曲库版本',mv_direct:'MV 版本',cloud:'音乐云盘文件'};
+const jobRetryRequests=new Map();
+function renderJobs(jobs){
+ const unfinished=jobs.filter(job=>!finishedJobStates.has(job.state)).length;
+ $('summary').append(el('h2',`正在准备 ${unfinished} 首`),el('p','自动按歌单顺序处理。','muted'));
+ if(!jobs.length)$('content').append(el('p','点歌后，下载和伴奏制作进度会显示在这里。','empty'));
+ for(const job of [...jobs].reverse()){
+  const row=el('article',null,'entry'),info=el('div',null,'entry-info'),finished=finishedJobStates.has(job.state);
+  const detail=job.state==='ready'&&job.cache_hit?'命中完整播放缓存':phase[finished?job.state:job.progress?.stage]||phase[job.state];
+  info.append(el('h3',job.title),el('p',[detail,preparationSources[job.source_preference]].filter(Boolean).join(' · '),'muted'));
+  if(job.state==='failed'){
+   if(job.retry_reason==='failed_history_already_prepared'){
+    info.append(el('p',errors[job.retry_reason],'muted'));
+   }else{
+    const failure=job.code==='storage_full'?'这次制作时 Mac 可用空间不足。':errors[job.code]||'本次未准备完成。';
+    info.append(el('p',failure,'error'));
+    if(job.retry_reason!==job.code&&errors[job.retry_reason])info.append(el('p',errors[job.retry_reason],'muted'));
+   }
+  }
+  if(!finished){
+   const bar=el('progress');bar.max=4;bar.value=job.progress?.completed_steps||0;
+   bar.setAttribute('aria-label','处理步骤');
+   info.append(bar);
+  }
+  const details=el('details'),summary=el('summary','处理记录'),list=el('ol',null,'events');
+  details.append(summary,list);
+  details.ontoggle=async()=>{
+   if(!details.open||list.children.length)return;
+   try{
+    const data=await api(`jobs/${encodeURIComponent(job.id)}/journal`);
+    for(const e of data.events)list.append(el('li',`${date(e.at)} · ${phase[e.stage]||'阶段更新'}${e.code!=='none'?' · '+(errors[e.code]||'本阶段未完成'):''}`));
+    if(!data.events.length)list.append(el('li','暂无处理记录。'));
+   }catch{list.append(el('li','记录暂时无法读取，关闭后再试。'));}
+  };
+  info.append(details);row.append(info);
+  if(job.state==='failed')renderFailedJobActions(row,job);
+  $('content').append(row);
+ }
+}
+function renderFailedJobActions(row,job){
+ const tools=el('div',null,'button-row');
+ const endpoint=`manage/jobs/${encodeURIComponent(job.id)}`;
+ if(!readOnly&&job.can_retry===true)tools.append(button('重试制备',e=>action(e.currentTarget,async()=>{
+  if(!jobRetryRequests.has(job.id))jobRetryRequests.set(job.id,crypto.randomUUID());
+  const result=await api(endpoint+'/retry',{request_id:jobRetryRequests.get(job.id)});
+  if(result.accepted!==true)throw new Error('retry_unavailable');
+  jobRetryRequests.delete(job.id);
+  return result;
+ },'已提交重试。'),{className:'primary'}));
+ if(job.code==='source_rights_denied'&&job.retry_reason!=='failed_history_already_prepared'&&['song','mv_direct'].includes(job.source_preference))tools.append(button('去音乐云盘搜这首',()=>findCloudVersion(job.title)));
+ if(!readOnly&&job.can_remove===true)tools.append(button('删除失败记录',e=>action(e.currentTarget,async()=>{
+  const result=await api(endpoint+'/remove',{});
+  if(result.removed!==true)throw new Error('unavailable');
+  jobRetryRequests.delete(job.id);
+  return result;
+ },'已删除失败记录。')));
+ if(tools.children.length)row.append(tools);
+}
+function findCloudVersion(title){
+ searchQuery=title.trim().slice(0,120);
+ searchSource='cloud';searchOffset=0;searchData=null;searchSelected.clear();
+ setView('search',()=>{
+  const submit=$('search-submit');
+  if(view==='search'&&submit)void searchSongs(submit);
+ });
+}
 function renderSettings(signal){
  $('summary').append(el('h2','KTV 设置'),el('p','设置新房间的声音与画面，管理音源和制作方式。','muted'));
  const shortcuts=el('div',null,'button-row');
- shortcuts.append(button('音源授权与下载品质',()=>setView('source')),button('查看制作进度',()=>setView('jobs')));
+ const sourceButton=button('音源授权与下载品质',e=>openSourceDialog(e.currentTarget));
+ sourceButton.setAttribute('aria-haspopup','dialog');
+ shortcuts.append(sourceButton,button('查看制作进度',()=>setView('jobs')));
  $('summary').append(shortcuts);
  settingsSection('歌曲制作性能',()=>api('scheduler',undefined,signal),renderScheduler,signal);
  settingsSection('新房间默认设置',()=>api('manage/room',undefined,signal),renderRoomDefaults,signal);
  settingsSection('容量与自动清理',readLibrary,renderStoragePolicy,signal);
+ renderBackgroundSettings(signal);
 }
 function settingsSection(title,read,render,signal){
  const section=el('section',null,'section'),body=el('div');
@@ -309,15 +391,200 @@ function renderScheduler(section,scheduler){
  };
  section.append(form);
 }
-function renderSource(data){$('summary').append(el('h2',data.logged_in?'音源已连接':'连接网易云音乐'),el('p','授权信息仅保存在这台 Mac。','muted'));const section=el('section',null,'section source-card'),state=el('p',data.logged_in?'已登录，可自动准备新点歌曲。':({waiting_official:'请在网易云官方窗口完成登录。',waiting_scan:'请在手机扫码并确认。'})[data.state]||'尚未登录。');state.id='ktv-source-state';section.append(state,button(data.logged_in?'重新授权':'打开官方网页登录',e=>action(e.currentTarget,()=>api('source/login',{}),'请在官方窗口完成授权。'),{className:'primary'}));const quality=select([['standard','普通 MP3 · 128 kbps'],['exhigh','高品质 MP3 · 320 kbps']],data.settings?.level||'standard');quality.onchange=()=>action(quality,()=>api('source/settings',{level:quality.value}),'下载品质已保存，将用于新下载。');section.append(field('新歌下载品质',quality));$('content').append(section);}
-function setView(name){
+function renderBackgroundSettings(signal){
+ const section=el('details',null,'section background-settings');
+ const summary=el('summary');summary.append(el('h2','歌曲背景'));
+ const status=el('p',null,'muted');status.setAttribute('role','status');
+ const list=el('div',null,'background-items');
+ const retry=button('重试读取歌曲背景',()=>readBackgrounds(state));retry.hidden=true;
+ const state={signal,section,status,list,retry,items:new Map(),loading:false,remaining:null,revision:0,reload:false};
+ backgroundView=state;
+ section.append(summary,status,retry,list);
+ section.ontoggle=()=>{if(section.open)void readBackgrounds(state);};
+ $('content').append(section);
+}
+async function readBackgrounds(state){
+ if(state.loading||state.signal.aborted)return;
+ const revision=state.revision;
+ state.loading=true;
+ if(!state.items.size)state.status.textContent='正在读取歌曲背景…';
+ state.retry.hidden=true;
+ try{
+  const data=await api('manage/backgrounds',undefined,state.signal);
+  if(state.signal.aborted||revision!==state.revision)return;
+  state.remaining=Number.isInteger(data.daily_remaining)?data.daily_remaining:null;
+  const quota=state.remaining===0?'今日生成次数已用完':state.remaining===null?'':`今日还可生成 ${state.remaining} 张`;
+  state.status.textContent=data.items.length?quota:'准备完成的歌曲会显示在这里。';
+  const ids=new Set(data.items.map(item=>item.id));
+  for(const [id,row] of state.items){
+   if(!ids.has(id)&&!row.writing){row.element.remove();state.items.delete(id);}
+  }
+  for(const item of data.items){
+   let row=state.items.get(item.id);
+   if(!row){
+    const element=el('article',null,'entry'),info=el('div',null,'entry-info');
+    const title=el('h3',item.title),status=el('p',null,'muted'),notice=el('p',null,'error');
+    const generate=button('生成',()=>generateBackground(state,row));
+    const preview=el('canvas',null,'background-preview');preview.hidden=true;
+    const previewNotice=el('p',null,'muted');previewNotice.setAttribute('role','status');
+    preview.id='ktv-background-preview-'+item.id;preview.setAttribute('role','img');
+    preview.setAttribute('aria-label',`《${item.title}》的背景预览`);
+    const previewToggle=button('预览',()=>toggleBackgroundPreview(state,row));
+    previewToggle.setAttribute('aria-controls',preview.id);
+    const controls=el('div',null,'button-row');controls.append(previewToggle,generate);
+    info.append(title,status,notice,previewNotice,preview);element.append(info,controls);state.list.append(element);
+    row={element,status,notice,generate,preview,previewNotice,previewToggle,item,writing:false,previewOpen:false,previewLoaded:false,previewRevision:0};
+    state.items.set(item.id,row);
+   }
+   if(!row.writing){
+    const refreshed=row.item.status==='preparing'&&item.status==='ready';
+    row.item=item;
+    if(refreshed&&row.previewOpen)void loadBackgroundPreview(state,row);
+   }
+   updateBackgroundRow(state,row);
+  }
+ }catch{
+  if(!state.signal.aborted&&revision===state.revision){state.status.textContent='暂时无法读取歌曲背景。';state.retry.hidden=false;}
+ }finally{
+  state.loading=false;
+  if(state.reload){state.reload=false;if(state.section.open)void readBackgrounds(state);}
+ }
+}
+function updateBackgroundRow(state,row){
+ const {item}=row;
+ const preparing=row.writing||item.status==='preparing';
+ const label=preparing?(item.ready?'正在更新背景':'正在生成背景'):({ready:'已生成',failed:item.ready?'更新失败，当前背景可用':'生成失败'})[item.status]||'尚未生成';
+ row.status.textContent=[preparationSources[item.source],label].filter(Boolean).join(' · ');
+ row.generate.textContent=item.ready?'重新生成':'生成';
+ row.generate.setAttribute('aria-label',`${row.generate.textContent}《${item.title}》的背景`);
+ row.generate.disabled=readOnly||preparing||state.remaining===0;
+ row.previewToggle.hidden=!item.ready;
+ row.previewToggle.textContent=row.previewOpen?'收起预览':'预览';
+ row.previewToggle.setAttribute('aria-expanded',String(row.previewOpen));
+ row.previewToggle.setAttribute('aria-label',`${row.previewToggle.textContent}《${item.title}》的背景`);
+ row.preview.hidden=!item.ready||!row.previewOpen||!row.previewLoaded;
+}
+function toggleBackgroundPreview(state,row){
+ row.previewOpen=!row.previewOpen;
+ updateBackgroundRow(state,row);
+ if(row.previewOpen)void loadBackgroundPreview(state,row);
+ else row.previewNotice.textContent='';
+}
+async function loadBackgroundPreview(state,row){
+ const revision=++row.previewRevision;
+ row.previewNotice.classList.toggle('error',false);
+ row.previewNotice.textContent=row.previewLoaded?'':'正在读取背景预览…';
+ let bitmap;
+ try{
+  const data=await api(`manage/backgrounds/${encodeURIComponent(row.item.id)}/preview`,undefined,state.signal);
+  if(state.signal.aborted||revision!==row.previewRevision||!row.previewOpen)return;
+  const encoded=typeof data.image==='string'&&data.image.length<=192*1024&&data.image.match(/^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/)?.[1];
+  if(!encoded)throw new Error('background_unavailable');
+  const bytes=Uint8Array.from(atob(encoded),character=>character.charCodeAt(0));
+  bitmap=await createImageBitmap(new Blob([bytes],{type:'image/jpeg'}));
+  if(state.signal.aborted||revision!==row.previewRevision||!row.previewOpen)return;
+  row.preview.width=bitmap.width;row.preview.height=bitmap.height;
+  row.preview.getContext('2d').drawImage(bitmap,0,0);
+  row.previewLoaded=true;row.previewNotice.textContent='';
+  updateBackgroundRow(state,row);
+ }catch{
+  if(!state.signal.aborted&&revision===row.previewRevision&&row.previewOpen){
+   row.previewNotice.classList.toggle('error',true);
+   row.previewNotice.textContent='暂时无法读取背景预览。';
+  }
+ }finally{bitmap?.close();}
+}
+async function generateBackground(state,row){
+ if(state.signal.aborted||row.generate.disabled)return;
+ row.writing=true;
+ row.notice.textContent='';
+ updateBackgroundRow(state,row);
+ try{
+  const data=await api(`manage/backgrounds/${encodeURIComponent(row.item.id)}/regenerate`,{},state.signal);
+  if(!state.signal.aborted){
+   row.item={...row.item,status:data.status,ready:data.ready};
+   if(row.previewOpen&&data.status==='ready')void loadBackgroundPreview(state,row);
+   state.revision++;
+   if(state.loading)state.reload=true;
+   else if(state.section.open)void readBackgrounds(state);
+  }
+ }catch(error){
+  if(!state.signal.aborted)row.notice.textContent=explain(error);
+ }finally{
+  row.writing=false;
+  if(!state.signal.aborted)updateBackgroundRow(state,row);
+ }
+}
+function openSourceDialog(opener){
+ if(sourceDialog.open)return;
+ sourceSession?.controller.abort();
+ sourceSession={opener,controller:new AbortController(),status:null,pending:false,waiting:false};
+ sourceState.textContent='正在读取音源状态…';
+ sourceNotice.textContent='';
+ sourceNotice.classList.toggle('error',false);
+ sourceAuthorize.textContent='打开网易云官方登录';
+ sourceQuality.value='standard';
+ sourceRetry.hidden=true;
+ sourceDialog.showModal();
+ sourceClose.focus({preventScroll:true});
+ void sourceRequest();
+}
+async function sourceRequest(path='source/status',body){
+ const session=sourceSession;
+ if(!sourceDialog.open||!session||session.pending)return;
+ const signal=session.controller.signal;
+ session.pending=true;
+ sourceAuthorize.disabled=sourceQuality.disabled=sourceRetry.disabled=true;
+ if(body!==undefined){
+  sourceNotice.textContent=path==='source/login'?'正在打开网易云官方窗口…':'正在保存下载品质…';
+  sourceNotice.classList.toggle('error',false);
+ }
+ try{
+  const data=await api(path,body,signal);
+  if(signal.aborted)return;
+  if(path==='source/settings'){
+   session.status.settings=data;
+   sourceQuality.value=data.level;
+   sourceNotice.textContent='下载品质已保存，将用于新下载。';
+  }else{
+   if(session.waiting&&data.logged_in)sourceNotice.textContent='';
+   session.status=data;
+   session.waiting=!data.logged_in&&['waiting_official','waiting_scan','waiting_confirm'].includes(data.state);
+   sourceState.textContent=data.logged_in?'音源已连接':({waiting_official:'请在网易云官方窗口完成登录。',waiting_scan:'请在手机扫码并确认。',waiting_confirm:'请在手机确认授权。'})[data.state]||'尚未登录。';
+   sourceAuthorize.textContent=data.logged_in?'重新授权':'打开网易云官方登录';
+   sourceQuality.value=data.settings?.level||'standard';
+   sourceRetry.hidden=true;
+   if(path==='source/login')sourceNotice.textContent=data.logged_in?'请在网易云官方窗口完成登录。':'';
+  }
+ }catch(error){
+  if(signal.aborted)return;
+  if(path==='source/status'){
+   session.waiting=false;
+   sourceState.textContent='暂时无法读取音源状态。';
+   sourceRetry.hidden=false;
+  }else{
+   sourceNotice.textContent=explain(error);
+   sourceNotice.classList.toggle('error',true);
+   if(path==='source/settings')sourceQuality.value=session.status?.settings?.level||'standard';
+  }
+ }finally{
+  if(!signal.aborted){
+   session.pending=false;
+   sourceAuthorize.disabled=sourceQuality.disabled=readOnly||!session.status;
+   sourceRetry.disabled=false;
+  }
+ }
+}
+function setView(name,afterRefresh){
  if(!alive||changing||!tabs.includes(name))return;
  viewRequest?.abort();viewRequest=null;
  view=name;renderSignatures.delete(name);resetContent();
  $('refresh').disabled=false;
- for(const [key]of primaryTabs)$(key+'-tab').setAttribute('aria-pressed',String(key===name||(key==='settings'&&name==='source')||(key==='queue'&&name==='jobs')));
- void refresh();
+ for(const [key]of primaryTabs)$(key+'-tab').setAttribute('aria-pressed',String(key===name||(key==='queue'&&name==='jobs')));
+ const loading=refresh();
+ const request=viewRequest;
  $('content').focus({preventScroll:true});
+ if(afterRefresh)void loading.then(()=>{if(view===name&&!request?.signal.aborted)afterRefresh();});
 }
 function renderNoRoom(){
  const section=el('section',null,'ktv-empty-state');
@@ -342,12 +609,45 @@ const summary=el('section');summary.id='ktv-summary';summary.setAttribute('aria-
 const dialog=el('dialog');dialog.id='ktv-delete-dialog';dialog.setAttribute('aria-labelledby','ktv-delete-heading');dialog.setAttribute('aria-describedby','ktv-delete-note');
 for(const[tag,id,text]of [['h2','delete-heading','删除歌曲文件'],['p','delete-title',''],['p','delete-note',''],['ul','delete-songs',''],['p','delete-bytes',''],['p','delete-error','']]){const n=el(tag,text);n.id='ktv-'+id;if(id==='delete-error')n.setAttribute('role','alert');dialog.append(n);}
 const actions=el('div',null,'actions'),cancel=button('取消',()=>dialog.close()),confirm=button('确认删除',()=>{}, {className:'danger'});cancel.id='ktv-cancel-delete';cancel.autofocus=true;confirm.id='ktv-confirm-delete';actions.append(cancel,confirm);dialog.append(actions);
-shell.append(heading,nav,status,summary,content,dialog);target.append(shell);
+const sourceDialog=el('dialog',null,'source-dialog');
+sourceDialog.id='ktv-source-dialog';sourceDialog.setAttribute('aria-labelledby','ktv-source-heading');
+const sourceHeading=el('h2','音源授权'),sourceHeader=el('div',null,'source-dialog-header');
+sourceHeading.id='ktv-source-heading';
+const sourceClose=button('×',()=>sourceDialog.close(),{className:'source-dialog-close'});
+sourceClose.setAttribute('aria-label','关闭音源授权');sourceClose.autofocus=true;
+sourceHeader.append(sourceHeading,sourceClose);
+const sourceState=el('p',null,'source-status');sourceState.id='ktv-source-state';sourceState.setAttribute('role','status');
+const sourceNotice=el('p',null,'source-notice');sourceNotice.setAttribute('role','status');
+const sourceButtons=el('div',null,'button-row');
+const sourceAuthorize=button('打开网易云官方登录',()=>sourceRequest('source/login',{}),{className:'primary'});
+const sourceRetry=button('重试读取状态',()=>sourceRequest());
+sourceButtons.append(sourceAuthorize,sourceRetry);
+const sourceQuality=select([['standard','普通 MP3 · 128 kbps'],['exhigh','高品质 MP3 · 320 kbps']],'standard');
+sourceQuality.onchange=()=>sourceRequest('source/settings',{level:sourceQuality.value});
+sourceDialog.append(sourceHeader,sourceState,sourceButtons,field('新歌下载品质',sourceQuality),sourceNotice);
+shell.append(heading,nav,status,summary,content,dialog,sourceDialog);target.append(shell);
 // Wire handlers only after the scoped surface exists.
 wireDelete();dialog.addEventListener('close',()=>{if(alive)$('delete-selected')?.focus();});
-const timer=setInterval(()=>{if(!alive||document.hidden||viewRequest||changing||dialog.open||['settings','search','source'].includes(view)||view==='cache'&&selected.size||view==='queue'&&queueSelected.size||shell.querySelector('details[open]'))return;const focused=document.activeElement;if(focused&&focused!==document.body&&content.contains(focused))return;void refresh({quiet:true});},5000);
+sourceDialog.addEventListener('close',()=>{
+ if(sourceDialog.open)return;
+ const session=sourceSession;sourceSession=null;
+ session?.controller.abort();
+ if(alive&&session?.opener.isConnected)session.opener.focus({preventScroll:true});
+});
+const timer=setInterval(()=>{
+ if(!alive||document.hidden)return;
+ if(sourceDialog.open){if(sourceSession?.waiting)void sourceRequest();return;}
+ if(view==='settings'){
+  if(backgroundView?.section.open&&[...backgroundView.items.values()].some(row=>row.item.status==='preparing'))void readBackgrounds(backgroundView);
+  return;
+ }
+ if(viewRequest||changing||dialog.open||view==='search'||view==='cache'&&selected.size||view==='queue'&&queueSelected.size||shell.querySelector('details[open]'))return;
+ const focused=document.activeElement;
+ if(focused&&focused!==document.body&&content.contains(focused))return;
+ void refresh({quiet:true});
+},5000);
 void refresh();
-return{dispose(){if(!alive)return;alive=false;viewRequest?.abort();viewRequest=null;lifetime.abort();clearInterval(timer);if(dialog.open)dialog.close();shell.remove();}};
+return{dispose(){if(!alive)return;alive=false;viewRequest?.abort();viewRequest=null;sourceSession?.controller.abort();lifetime.abort();clearInterval(timer);if(dialog.open)dialog.close();if(sourceDialog.open)sourceDialog.close();shell.remove();}};
 }
 
 const standalone=document.querySelector('[data-ktv-standalone]');

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
+import io
 import ipaddress
 import json
 import math
@@ -29,9 +31,13 @@ from .ktv_accompaniment import MAX_DURATION_SECONDS, MODEL_REVISION, RUNTIME, pr
 from .ktv_scheduler import PriorityPool
 
 SONG_ID = re.compile(r"[1-9][0-9]{0,17}\Z")
+JOB_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+SOURCE_ORIGINS = {"auto": "song", "song": "song", "mv": "mv", "cloud": "cloud", "mv_direct": "mv_direct"}
 MAX_MEDIA = 512 * 1024 * 1024
 MAX_STORAGE = 4 * 1024 * 1024 * 1024
 DEFAULT_MODEL_WORKERS = 3
+DEFAULT_DOWNLOAD_WORKERS = 3
+DEFAULT_ENCODE_WORKERS = 3
 MAX_MODEL_WORKERS = 10
 PREPARATION_RESERVE_BYTES = MAX_MEDIA * 4
 STORAGE_RETRY_SECONDS = 3
@@ -61,7 +67,12 @@ ERRORS = {
 
 def requested_audio_origin(preference: str) -> str:
     """Automatic MV matching must never change the selected song's audio edition."""
-    return {"auto": "song", "song": "song", "mv": "mv", "cloud": "cloud", "mv_direct": "mv_direct"}[preference]
+    return SOURCE_ORIGINS[preference]
+
+
+def nas_attempt_request_id(job_id: str, attempt: int) -> str:
+    """沿用 NAS 队列记录与 Mac 制备记录的确定性绑定。"""
+    return job_id if not attempt else str(uuid.uuid5(uuid.UUID(job_id), "retry:" + str(attempt)))
 
 
 def valid_video(value, source_hash):
@@ -146,7 +157,7 @@ class Queue:
         simulated: bool = False,
         capacity: int = 32,
         video: Callable | None = None,
-        download_workers: int = 2,
+        download_workers: int = DEFAULT_DOWNLOAD_WORKERS,
         hardware=None,
         memory_available=None,
     ):
@@ -162,7 +173,7 @@ class Queue:
         self.pools = {
             "acquire": PriorityPool(download_workers, "ktv-download"),
             "separate": PriorityPool(DEFAULT_MODEL_WORKERS, "ktv-model"),
-            "finish": PriorityPool(2, "ktv-encode"),
+            "finish": PriorityPool(DEFAULT_ENCODE_WORKERS, "ktv-encode"),
         }
         self.hardware = hardware or {"cpu": "测试环境", "memory_bytes": 0, "cpu_cores": 1}
         self.memory_available = memory_available
@@ -170,8 +181,9 @@ class Queue:
         self.active_models = 0
         self.waiting_models = {}
         self.model_ranks = {}
-        self.scheduler_config = {"mode": "manual", "download": download_workers,
-                                 "model": DEFAULT_MODEL_WORKERS, "encode": 2}
+        self.scheduler_config = {"mode": "auto" if download_workers == DEFAULT_DOWNLOAD_WORKERS else "manual",
+                                 "download": download_workers,
+                                 "model": DEFAULT_MODEL_WORKERS, "encode": DEFAULT_ENCODE_WORKERS}
         self.storage_lock = threading.Lock()
         self.storage_reservations = {}
         self.storage_condition = threading.Condition(self.lock)
@@ -316,15 +328,90 @@ class Queue:
                 raise HTTPException(404, "not_found")
             return self.snapshot(self.jobs[job_id])
 
-    def list(self, *, for_playback=False) -> list[dict]:
+    def list(self, *, for_playback=False, linked_jobs=()) -> list[dict]:
         with self.lock:
-            return [self.snapshot(v) for v in self.jobs.values() if not (
-                for_playback and v["state"] == "ready"
-                and v.get("source_preference", "auto") in {"auto", "song"}
-                and (v.get("audio_origin", "song") != "song"
-                     or (v.get("video") or {}).get("method") == "same_mv_audio"))]
+            values = []
+            for item in self.jobs.values():
+                if item.get("history_dismissed") is True:
+                    continue
+                if (for_playback and item["state"] == "ready"
+                        and item.get("source_preference", "auto") in {"auto", "song"}
+                        and (item.get("audio_origin", "song") != "song"
+                             or (item.get("video") or {}).get("method") == "same_mv_audio")):
+                    continue
+                snapshot = self.snapshot(item)
+                if item["state"] == "failed":
+                    reason = self.failed_retry_reason(item, linked=item["id"] in linked_jobs)
+                    snapshot.update(source_preference=self.history_source(item), can_retry=not reason,
+                                    retry_reason=reason, can_remove=True)
+                values.append(snapshot)
+            return values
 
-    def submit(self, request: JobRequest) -> dict:
+    @staticmethod
+    def history_source(job):
+        source = job.get("source_preference")
+        return source if isinstance(source, str) and source in SOURCE_ORIGINS else ""
+
+    def failed_retry_reason(self, job, *, linked=False):
+        source = self.history_source(job)
+        if job.get("history_dismissed") is True:
+            return "failed_history_hidden"
+        if not linked and (not source or type(job.get("cache_only", False)) is not bool):
+            return "failed_history_source_unknown"
+        if not linked:
+            origin = requested_audio_origin(source)
+            if any(item["state"] == "ready" and item["song_id"] == job["song_id"]
+                   and item.get("audio_origin", "song") == origin
+                   and item.get("binding") == MODEL_REVISION and set(item.get("media", {})) == {"original", "instrumental"}
+                   and not (origin == "song" and (item.get("video") or {}).get("method") == "same_mv_audio")
+                   for item in self.jobs.values()):
+                return "failed_history_already_prepared"
+        if job["code"] in {"source_rights_denied", "cloud_song_unavailable"}:
+            return job["code"]
+        return ""
+
+    def failed_record(self, job_id, unavailable="retry_unavailable"):
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise HTTPException(404, "not_found")
+            if job["state"] != "failed":
+                raise HTTPException(409, unavailable)
+            return dict(job)
+
+    def dismiss_failed(self, job_id):
+        with self.lock:
+            job = self.failed_record(job_id, "remove_unavailable")
+            if job.get("history_dismissed") is not True:
+                job["history_dismissed"] = True
+                self._save(job)
+                self.jobs[job_id] = job
+            return {"removed": True, "scope": "history"}
+
+    def retry_failed_locally(self, job_id, request_id):
+        with self.lock:
+            job = self.failed_record(job_id)
+            replay_id = str(uuid.uuid5(uuid.UUID(job_id), "owner-preparation-retry:" + request_id))
+            for item in self.jobs.values():
+                if item.get("preparation_retry_of") == job_id and item["request_id"] == replay_id:
+                    return {"accepted": True, "scope": "history", "job_id": item["id"]}
+            reason = self.failed_retry_reason(job)
+            if reason:
+                raise HTTPException(409, reason)
+            origin = requested_audio_origin(self.history_source(job))
+            for item in self.jobs.values():
+                if (item["state"] in ACTIVE and item["song_id"] == job["song_id"]
+                        and SOURCE_ORIGINS.get(self.history_source(item)) == origin
+                        and item.get("cache_only", False) == job.get("cache_only", False)):
+                    raise HTTPException(409, "retry_in_progress")
+            # 历史重试使用独立制备 ID，旧副本仍可供 NAS 识别。
+            request = JobRequest(song_id=job["song_id"], title=job["title"], request_id=replay_id,
+                                 cache_only=job.get("cache_only", False),
+                                 source_preference=self.history_source(job))
+            queued = self.submit(request, retry_of=job_id)
+            return {"accepted": True, "scope": "history", "job_id": queued["id"]}
+
+    def submit(self, request: JobRequest, *, retry_of="") -> dict:
         if any(ord(c) < 32 or ord(c) == 127 for c in request.title):
             raise HTTPException(400, "invalid_title")
         requester = request.requester or {"id": "", "nickname": "朋友", "avatar": 0}
@@ -344,7 +431,9 @@ class Queue:
                 raise HTTPException(503, "service_closed")
             for value in self.jobs.values():
                 if value["request_id"] == str(request.request_id):
-                    if value["song_id"] != request.song_id or value["title"] != request.title or value.get("source_preference", "auto") != request.source_preference:
+                    if (value["song_id"] != request.song_id or value["title"] != request.title
+                            or value.get("source_preference", "auto") != request.source_preference
+                            or value.get("preparation_retry_of", "") != retry_of):
                         raise HTTPException(409, "idempotency_conflict")
                     return self.snapshot(value)
             if (
@@ -372,6 +461,8 @@ class Queue:
                 "cache_only": request.cache_only,
                 "source_preference": request.source_preference,
             }
+            if retry_of:
+                value["preparation_retry_of"] = retry_of
             self.jobs[job_id] = value
             self.events[job_id] = threading.Event()
             self._save(value)
@@ -455,7 +546,8 @@ class Queue:
             "hardware": self.hardware,
             "active_models": self.active_models,
             "limits": {"download": 3, "model": MAX_MODEL_WORKERS, "encode": 4},
-            "recommended": {"download": 2, "model": DEFAULT_MODEL_WORKERS, "encode": 2},
+            "recommended": {"download": DEFAULT_DOWNLOAD_WORKERS, "model": DEFAULT_MODEL_WORKERS,
+                            "encode": DEFAULT_ENCODE_WORKERS},
             "optimal_measured": False,
         }
 
@@ -471,7 +563,8 @@ class Queue:
             raise HTTPException(400, "invalid_scheduler")
         effective = {**value}
         if effective["mode"] == "auto":
-            effective.update(download=2, model=DEFAULT_MODEL_WORKERS, encode=2)
+            effective.update(download=DEFAULT_DOWNLOAD_WORKERS, model=DEFAULT_MODEL_WORKERS,
+                             encode=DEFAULT_ENCODE_WORKERS)
         for stage, key in (("acquire", "download"), ("separate", "model"), ("finish", "encode")):
             self.pools[stage].resize(effective[key])
         with self.model_condition:
@@ -1366,7 +1459,12 @@ def create_app(
             and request.client.host == console_host
             and request.headers.get("host") == console_origin.removeprefix("http://")
         )
-        owner_path = bool(re.fullmatch(r"/v1/manage/(?:library|preview|delete|policy|room|search|room/(?:theme|controls|command|order|queue-remove|songs|retry|preferences))", request.url.path))
+        owner_path = bool(re.fullmatch(
+            rf"/v1/manage/(?:library|preview|delete|policy|room|search|"
+            rf"room/(?:theme|controls|command|order|queue-remove|songs|retry|preferences)|jobs/{JOB_ID.pattern}/(?:retry|remove)|"
+            r"backgrounds(?:/[a-f0-9]{64}/(?:preview|regenerate))?)",
+            request.url.path,
+        ))
         if request.url.path.startswith("/v1/manage/") and not local_console:
             return JSONResponse({"code": "not_found"}, status_code=404)
         if (request.url.path.startswith("/v1/source/") or request.url.path == "/v1/cache/normalize-video") and not local_console:
@@ -1513,6 +1611,47 @@ def create_app(
     def owner_room():
         return {**owner_library().remote("room"), "simulated": queue.simulated}
 
+    def owner_backgrounds():
+        from .ktv_background_admin import BackgroundManagement
+        if song_backgrounds is None:
+            raise HTTPException(503, "background_unavailable")
+        return BackgroundManagement(queue, song_backgrounds)
+
+    @app.get("/v1/manage/backgrounds")
+    async def list_owner_backgrounds():
+        manager = owner_backgrounds()
+        candidates = await asyncio.to_thread(manager.candidates)
+        return {"items": [manager.status(key, song) for key, song in list(candidates.items())[:128]],
+                "daily_remaining": await asyncio.to_thread(manager.daily_remaining)}
+
+    @app.get("/v1/manage/backgrounds/{identifier}/preview")
+    def owner_background_preview(identifier: str):
+        from .ktv_background_admin import BACKGROUND_ID
+        if not BACKGROUND_ID.fullmatch(identifier):
+            raise HTTPException(404, "background_unavailable")
+        image = owner_backgrounds().preview(identifier)
+        if not image:
+            raise HTTPException(404, "background_unavailable")
+        return {"image": image}
+
+    @app.post("/v1/manage/backgrounds/{identifier}/regenerate", status_code=202)
+    async def regenerate_owner_background(identifier: str, value: dict):
+        from .ktv_background_admin import BACKGROUND_ID
+        if value or not BACKGROUND_ID.fullmatch(identifier):
+            raise HTTPException(400, "invalid_request")
+        manager = owner_backgrounds()
+        candidate = (await asyncio.to_thread(manager.candidates)).get(identifier)
+        if not candidate:
+            raise HTTPException(404, "background_unavailable")
+        if identifier not in song_backgrounds.tasks:
+            if not await asyncio.to_thread(manager.daily_remaining):
+                raise HTTPException(409, "daily_images_reached")
+            public_metadata = song_backgrounds.public_metadata_for(identifier)
+            job = song_backgrounds.request(candidate, force=True, public_metadata=public_metadata)
+            if job["status"] != "preparing":
+                raise HTTPException(409, job.get("reason", "background_unavailable"))
+        return manager.status(identifier, candidate)
+
     @app.get("/v1/manage/search")
     def owner_search(q: str = "", source: str = "song", offset: int = 0):
         if not (0 if source == "cloud" else 1) <= len(q.strip()) <= 120 or source not in {"song", "mv", "cloud"} or not 0 <= offset <= 100000:
@@ -1530,6 +1669,54 @@ def create_app(
         if operation == "preferences" and set(value) - {"theme", "music_gain", "sfx_gain", "original"}:
             raise HTTPException(400, "invalid_preferences")
         return owner_library().remote(operation, value)
+
+    @app.post("/v1/manage/jobs/{job_id}/retry")
+    def owner_retry_preparation(job_id: str, value: dict):
+        request_id = value.get("request_id")
+        if (not JOB_ID.fullmatch(job_id) or set(value) != {"request_id"}
+                or not isinstance(request_id, str) or not JOB_ID.fullmatch(request_id)):
+            raise HTTPException(400, "invalid_request")
+        job = queue.failed_record(job_id)
+        if callable(getattr(bridge, "manage", None)):
+            manager = owner_library()
+            room = manager.remote("room")
+            if room.get("active") is True:
+                with bridge.lock:
+                    mapped = {remote for remote, local in bridge.mapping.items() if local == job_id}
+                status = room.get("status")
+                rows = status.get("songs") if isinstance(status, dict) else None
+                room_id = room.get("room_id")
+                if not isinstance(rows, list) or not isinstance(room_id, str) or not JOB_ID.fullmatch(room_id):
+                    raise HTTPException(503, "nas_management_unavailable")
+                matches = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        raise HTTPException(503, "nas_management_unavailable")
+                    remote_id = row.get("id")
+                    if isinstance(remote_id, str) and JOB_ID.fullmatch(remote_id) and (
+                        remote_id in mapped or job["request_id"] in {nas_attempt_request_id(remote_id, n) for n in range(4)}
+                    ):
+                        matches.append(row)
+                if matches:
+                    source = queue.history_source(job)
+                    allowed = {"song": {"auto", "song"}, "mv": {"mv_direct"}, "cloud": {"cloud"}}
+                    row = matches[0]
+                    if (len(matches) != 1 or row.get("song_id") != job["song_id"]
+                            or source and source not in allowed.get(row.get("source", "song"), set())):
+                        raise HTTPException(409, "failed_history_source_changed")
+                    reason = queue.failed_retry_reason(job, linked=True)
+                    if reason:
+                        raise HTTPException(409, reason)
+                    result = manager.remote("retry", {"room_id": room_id,
+                                                      "value": {"id": row["id"], "request_id": request_id}})
+                    return {**result, "scope": "room"}
+        return queue.retry_failed_locally(job_id, request_id)
+
+    @app.post("/v1/manage/jobs/{job_id}/remove")
+    def owner_remove_failed_preparation(job_id: str, value: dict):
+        if not JOB_ID.fullmatch(job_id) or value:
+            raise HTTPException(400, "invalid_request")
+        return queue.dismiss_failed(job_id)
 
     def source_call(method):
         if source_api is None:
@@ -1666,7 +1853,8 @@ def create_app(
     @app.get("/v1/jobs")
     def jobs():
         from .ktv_metadata import song_title
-        values = queue.list(for_playback=True)
+        linked = getattr(bridge, "protected_jobs", None)
+        values = queue.list(for_playback=True, linked_jobs=linked() if callable(linked) else ())
         if song_backgrounds is not None:
             from .intelligence.backgrounds import song_identity
             active = bridge.current() if bridge is not None else {}
@@ -1768,7 +1956,10 @@ def create_app(
             item = song_backgrounds.cached(identifier)
             if not item:
                 raise HTTPException(404,'background_unavailable')
-            stream = (song_backgrounds.directory / (identifier+'.png')).open('rb')
+            data = song_backgrounds.read_image(identifier, item["sha256"])
+            if not data:
+                raise HTTPException(404, "background_unavailable")
+            stream = io.BytesIO(data)
         elif kind in {"guide_original", "guide_reference"}:
             try:
                 stream, item = bridge.guide.media(job_id, kind)

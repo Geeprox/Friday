@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from .ktv_service import ERRORS, JobRequest, atomic_json, local_host, private_directory
+from .ktv_service import ERRORS, JobRequest, atomic_json, local_host, nas_attempt_request_id, private_directory
 
 VOCAL_PRESETS = {"dry", "pop", "ktv", "power", "opera", "studio", "echo"}
 SFX_ACTIONS = {"sfx_applause", "sfx_cheer", "sfx_stop"}
@@ -310,7 +310,7 @@ class NasBridge:
                     continue
                 try:
                     request = JobRequest(song_id=item["song_id"], title=item["title"],
-                        request_id=item["id"] if not item.get("attempt") else str(uuid.uuid5(uuid.UUID(item["id"]), "retry:" + str(item["attempt"]))),
+                        request_id=nas_attempt_request_id(item["id"], item.get("attempt", 0)),
                         requester=item.get("requester"), source_preference={"cloud": "cloud", "mv": "mv_direct"}.get(item.get("source"), "song"))
                     job = self.queue.submit(request)
                     with self.lock:

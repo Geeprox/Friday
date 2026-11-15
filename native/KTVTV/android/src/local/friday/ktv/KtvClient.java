@@ -7,6 +7,7 @@ import java.net.*;
 import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
 /** Native LAN client. Authentication never appears in URLs, logs or exported diagnostics. */
 public final class KtvClient {
@@ -60,6 +61,53 @@ public final class KtvClient {
     public JSONObject controlJson(String path,JSONObject body)throws Exception{
         return json(path,body,true);
     }
+    TvUpdateSpec televisionUpdate() throws Exception {
+        if (!negotiated || !coordinator) return null;
+        HttpURLConnection request = connection("/v1/tv/update", "GET");
+        request.setConnectTimeout(2000);
+        request.setReadTimeout(2500);
+        long deadline = System.nanoTime() + 4_000_000_000L;
+        try {
+            int status = request.getResponseCode();
+            if (status == 404) return null;
+            if (status != 200) throw new HttpFailure(status);
+            try (InputStream input = request.getInputStream(); ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[1024];
+                int count;
+                while ((count = input.read(buffer)) != -1) {
+                    if (System.nanoTime() > deadline || bytes.size() + count > 4096)
+                        throw new IOException("invalid_update_manifest");
+                    bytes.write(buffer, 0, count);
+                }
+                JSONObject result = new JSONObject(bytes.toString("UTF-8"));
+                return TvUpdateSpec.checked(result.get("version_code"), result.get("version_name"),
+                    result.get("bytes"), result.get("sha256"), result.get("url"));
+            }
+        } finally {
+            request.disconnect();
+        }
+    }
+    void downloadTelevisionUpdate(TvUpdateSpec release, File target, BooleanSupplier cancelled) throws Exception {
+        if (!negotiated || !coordinator || cancelled.getAsBoolean()) throw new IOException("update_cancelled");
+        HttpURLConnection request = connection(TvUpdateSpec.APK_PATH, "GET");
+        request.setConnectTimeout(3000);
+        request.setReadTimeout(5000);
+        request.setRequestProperty("Accept-Encoding", "identity");
+        request.setRequestProperty("If-Match", "\"" + release.sha256 + "\"");
+        long deadline = System.nanoTime() + 90_000_000_000L;
+        try {
+            int status = request.getResponseCode();
+            if (status != 200) throw new HttpFailure(status);
+            long length = request.getContentLengthLong();
+            if (length >= 0 && length != release.bytes) throw new IOException("invalid_update_bytes");
+            try (InputStream input = request.getInputStream(); FileOutputStream output = new FileOutputStream(target)) {
+                release.copyVerified(input, output, () -> cancelled.getAsBoolean() || System.nanoTime() > deadline);
+                output.getFD().sync();
+            }
+        } finally {
+            request.disconnect();
+        }
+    }
     private JSONObject json(String path, JSONObject body,boolean immediate) throws Exception {
         HttpURLConnection c=connection(path,body==null?"GET":"POST");
         if(immediate){c.setConnectTimeout(2000);c.setReadTimeout(2500);}
@@ -107,7 +155,7 @@ public final class KtvClient {
         String hash=media.getString("sha256"),path=media.getString("url");long size=media.getLong("bytes");
         if(!hash.matches("[a-f0-9]{64}")||size<33||size>12L*1024*1024||!"png".equals(media.getString("encoding"))||!MediaRoute.kind(path).equals("background"))throw new IOException("invalid_background");
         File target=new File(cache,hash+".png");
-        MediaTransfer.Verifier verify=file->{try(DataInputStream in=new DataInputStream(new FileInputStream(file))){if(in.readLong()!=0x89504e470d0a1a0aL||in.readInt()!=13||in.readInt()!=0x49484452)throw new IOException("invalid_background");int width=in.readInt(),height=in.readInt();if(width<256||height<256||width>4096||height>4096||(long)width*height>9000000)throw new IOException("invalid_background");}};
+        MediaTransfer.Verifier verify=file->{try(DataInputStream in=new DataInputStream(new FileInputStream(file))){if(in.readLong()!=0x89504e470d0a1a0aL||in.readInt()!=13||in.readInt()!=0x49484452)throw new IOException("invalid_background");if(!BackdropImagePolicy.validSource(in.readInt(),in.readInt()))throw new IOException("invalid_background");}};
         File found=MediaTransfer.existing(target,size,hash,verify,cancel,mediaCache);if(found!=null)return found;
         return MediaTransfer.download(target,size,hash,routes(media,path,"background"),route->openMedia(route,size),verify,cancel,mediaCache);
     }

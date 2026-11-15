@@ -37,7 +37,7 @@ CAPABILITIES = ("source", "model", "download", "lyrics", "media")
 LYRIC_RETRY_SECONDS = (15, 60, 300)
 LYRIC_PREFETCH_COUNT = 4
 LYRIC_LOOKUP_WORKERS = 2
-BACKGROUND_PREFETCH_COUNT = 4
+BACKGROUND_PREFETCH_COUNT = 10
 
 
 @dataclass
@@ -89,6 +89,29 @@ def media_origin(value, *, allow_loopback=False):
             or not port or not 1024 <= port <= 65535 or address.is_unspecified or address.is_link_local):
         raise ValueError("private_worker_origin_required")
     return "http://" + str(address) + ":" + str(port)
+
+
+def _public_join_endpoint(value, worker_endpoint):
+    if value is None:
+        current = urlsplit(worker_endpoint)
+        if current.scheme == "https" and current.netloc.endswith(":443"):
+            return current._replace(netloc=current.netloc[:-4]).geturl()
+        return worker_endpoint
+    if not isinstance(value, str) or not re.fullmatch(
+        r"https://[a-z0-9.-]+(?::[1-9][0-9]{0,4})?/[a-z0-9_-]+/?", value
+    ):
+        raise ValueError("https_public_join_endpoint_required")
+    candidate = urlsplit(value.rstrip("/"))
+    try:
+        port = candidate.port
+    except ValueError:
+        raise ValueError("https_public_join_endpoint_required") from None
+    if (candidate.path != urlsplit(worker_endpoint).path or not candidate.hostname
+            or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part)
+                       for part in candidate.hostname.split("."))):
+        raise ValueError("https_public_join_endpoint_required")
+    authority = candidate.hostname if port in (None, 443) else f"{candidate.hostname}:{port}"
+    return f"https://{authority}{candidate.path}"
 
 
 def manifest_version(job):
@@ -194,6 +217,7 @@ class PreparationWorker(NasBridge):
         super().__init__(queue, config_path, **kwargs)
         config = json.loads(Path(config_path).read_text())
         self.media_origin = media_origin(config["media_origin"], allow_loopback=kwargs.get("allow_loopback", False))
+        self.public_join_endpoint = _public_join_endpoint(config.get("public_join_endpoint"), self.endpoint)
         self.instance = str(uuid.uuid4())
         self.tickets = MediaTickets(signing_key)
         self.health_check, self.lyrics_provider = health, lyrics
@@ -399,7 +423,8 @@ class PreparationWorker(NasBridge):
                     allowed = {"cache_changed", "cache_in_use", "invalid_policy", "invalid_selection", "invalid_preferences", "invalid_query",
                                "room_changed", "ambiguous_room", "tv_offline", "queue_changed", "song_playing", "song_not_ready", "playback_changed",
                                "vocal_preset_unavailable", "sfx_unavailable", "microphone_update_required", "cloud_song_unavailable", "mac_offline", "rate_limited",
-                               "invalid_control", "invalid_command", "search_unavailable", "queue_full", "idempotency_conflict", "unsafe_cache"}
+                               "invalid_control", "invalid_command", "search_unavailable", "queue_full", "idempotency_conflict", "unsafe_cache",
+                               "retry_unavailable", "retry_limit"}
                     code = data.get("code")
                     raise HTTPException(reply.status_code if reply.status_code in {400, 409, 429} else 503,
                                         code if code in allowed else "nas_management_unavailable")
@@ -475,7 +500,8 @@ class PreparationWorker(NasBridge):
             return
         url = party.get("join_url", "")
         tv_instance = party.get("tv_instance", "")
-        if (time.monotonic() < self.next_qr_attempt or not isinstance(url, str) or not url.startswith(self.endpoint + "/#")
+        if (time.monotonic() < self.next_qr_attempt or not isinstance(url, str)
+                or not url.startswith(self.public_join_endpoint + "/#")
                 or (url == self.qr_acked and party.get("qr_ready") is not False)
                 or not isinstance(tv_instance, str) or not UUID.fullmatch(tv_instance)):
             return

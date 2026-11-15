@@ -484,7 +484,7 @@ class Coordinator:
         commands = [dict(r, **({"expires": r["created"] + 5} if r["action"].startswith("sfx_") else {})) for r in commands
                     if not r["action"].startswith("sfx_") or r["created"] + 5 > now]
         return {"active": True, "persistent": True, "household_id": self.household_id, "room_id": active["room"], "expires": room["expires"],
-                "join_url": self.store.origin + self.store.base_path + "/#" + urllib.parse.urlencode({"r": active["room"], "k": active["secret"]}),
+                "join_url": self.store.join_url(active["room"], active["secret"]),
                 "theme": room["theme"], "theme_revision": room["theme_revision"],
                 "controls": {k: room[k] for k in ("music_gain", "mic_gain", "mic_muted", "original", "control_revision", "mic_revision", "vocal_preset", "sfx_gain")},
                 "commands": commands, "order": ids, "upcoming": self.store.upcoming_ids(ordered, room),
@@ -534,14 +534,18 @@ class Coordinator:
         identity = self._identity(path)
         return bool(identity and isinstance(metadata, dict) and metadata.get("identity") == list(identity)
                     and isinstance(metadata.get("sha256"), str) and SHA.fullmatch(metadata["sha256"])
+                    and metadata.get("join_sha256") == self._qr_join_digest(active)
                     and 32 <= identity[2] <= 131072)
+
+    def _qr_join_digest(self, active):
+        return hashlib.sha256(self.store.join_url(active["room"], active["secret"]).encode()).hexdigest()
 
     def qr(self, payload):
         fields = {"room_id", "instance", "join_url", "sha256", "png"}
         active = self.active()
         if (set(payload) != fields or not active or payload["instance"] != active["instance"]
                 or payload["room_id"] != active["room"] or not isinstance(payload["png"], str)
-                or len(payload["png"]) > 180000 or payload["join_url"] != self.party()["join_url"]
+                or len(payload["png"]) > 180000 or payload["join_url"] != self.store.join_url(active["room"], active["secret"])
                 or not isinstance(payload["sha256"], str) or not SHA.fullmatch(payload["sha256"])):
             raise self.error(400, "invalid_qr")
         try:
@@ -581,8 +585,11 @@ class Coordinator:
             current = self.active()
             if not current or current["instance"] != active["instance"] or current["room"] != active["room"]:
                 raise self.error(409, "tv_instance_changed")
+            if payload["join_url"] != self.store.join_url(current["room"], current["secret"]):
+                raise self.error(409, "qr_invitation_changed")
             os.replace(temporary, target)
-            metadata = {"sha256": payload["sha256"], "identity": list(self._identity(target))}
+            metadata = {"sha256": payload["sha256"], "identity": list(self._identity(target)),
+                        "join_sha256": self._qr_join_digest(current)}
             atomic_private(target.with_suffix(".json"), metadata)
             self.qr_metadata[active["room"]] = metadata
         finally:

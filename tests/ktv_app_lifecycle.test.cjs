@@ -3,7 +3,12 @@ const web=path.join(__dirname,'../integrations/ktv_public/web');
 const source=fs.readFileSync(path.join(web,'app.js'),'utf8').replace('join();document.addEventListener','document.addEventListener');
 function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};}
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
-function harness({validRoom=false,deferFrames=false}={}){
+const firstRoom='11111111-1111-4111-8111-111111111111';
+function memoryStorage(){
+ const values=new Map();
+ return {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key),clear:()=>values.clear()};
+}
+function harness({validRoom=false,deferFrames=false,roomId=firstRoom,invite='a'.repeat(43),localStorage,sessionStorage=memoryStorage(),locks}={}){
  const nodes=new Map(),trace=[],listeners=new Map(),frames=[];
  const events=name=>({addEventListener(type,callback){const key=name+':'+type;if(!listeners.has(key))listeners.set(key,new Set());listeners.get(key).add(callback);}});
  const emit=(name,type,event={})=>{for(const callback of [...(listeners.get(name+':'+type)||[])])callback(event);};
@@ -16,10 +21,10 @@ function harness({validRoom=false,deferFrames=false}={}){
   stop(){this.stops++;this.controller?.abort();this.buffer=null;this.calibrating=false;}sync(){if(this.calibrating)return false;this.syncs++;return true;}volume(){}
   setManualAdjustment(value){this.clock.adjustment=value;}}
  class Clock{constructor(){this.adjustment=0;this.generation=0;}observe(){return true;}}
- const context=vm.createContext({document,location:{hash:validRoom?'#r=11111111-1111-4111-8111-111111111111&k='+ 'a'.repeat(43):'',pathname:'/'},sessionStorage:{getItem:()=>null,setItem(){},removeItem(){}},history:{state:null,replaceState(value){this.state=value;},pushState(value){this.state=value;},back(){}},window:{...events('window'),scrollY:0,scrollTo(v){this.scrollY=v.top||0;}},URLSearchParams,AbortController,crypto:webcrypto,performance,setTimeout,clearTimeout,setInterval:()=>0,clearInterval(){},requestAnimationFrame:fn=>deferFrames?frames.push(fn):fn(),FridayGuideClock:Clock,FridayEarMonitor:Ear,FridayPartyAudio:require(path.join(web,'party-audio.js')),FridayAddQueue:require(path.join(web,'add-queue.js')),FridayStatusFeed:require(path.join(web,'status-feed.js')),fetch:async()=>{throw Error('unexpected fetch');}});
+ const context=vm.createContext({document,location:{hash:validRoom?`#r=${roomId}&k=${invite}`:'',pathname:'/'},localStorage,sessionStorage,navigator:{locks},history:{state:null,replaceState(value){this.state=value;},pushState(value){this.state=value;},back(){}},window:{...events('window'),scrollY:0,scrollTo(v){this.scrollY=v.top||0;}},URLSearchParams,AbortController,crypto:webcrypto,performance,setTimeout,clearTimeout,setInterval:()=>0,clearInterval(){},requestAnimationFrame:fn=>deferFrames?frames.push(fn):fn(),FridayGuideClock:Clock,FridayEarMonitor:Ear,FridayPartyAudio:require(path.join(web,'party-audio.js')),FridayAddQueue:require(path.join(web,'add-queue.js')),FridayStatusFeed:require(path.join(web,'status-feed.js')),fetch:async()=>{throw Error('unexpected fetch');}});
  vm.runInContext(source,context);
  const run=code=>vm.runInContext(code,context);
- run('var actualSetControl=setControl,actualApi=api;api=async()=>({});setControl=async()=>{controls.original=0;};identity={key:"fixture"};playback={online:true,current:"song-a",played:[],state:"playing",guide:{sha256:"a".repeat(64),bytes:2048,duration_ms:5000,reference:{kind:"accompaniment",sha256:"b".repeat(64),bytes:2048,duration_ms:5000}}};earEnabled=true;controls.original=0;');
+ run('var actualSetControl=setControl,actualApi=api,storedIdentity=identity;api=async()=>({});setControl=async()=>{controls.original=0;};identity={key:"fixture"};playback={online:true,current:"song-a",played:[],state:"playing",guide:{sha256:"a".repeat(64),bytes:2048,duration_ms:5000,reference:{kind:"accompaniment",sha256:"b".repeat(64),bytes:2048,duration_ms:5000}}};earEnabled=true;controls.original=0;');
  return {context,run,nodes,trace,element,emit,flushFrames(){while(frames.length)frames.shift()();}};
 }
 
@@ -243,6 +248,82 @@ test('a scanned invite joins without a gesture or writable browser storage',asyn
  assert.equal(writes.length,1);assert.equal(writes[0][0],'join');assert.match(writes[0][1].guest_key,/^[a-f0-9]{64}$/);
  assert.equal(h.element('my-name').textContent,'自动加入');
  assert.equal(h.element('search-entry').hidden,false);
+});
+
+function joinServer(){
+ const requests=[],guests=new Map();
+ return {requests,guests,reply:async(room,operation,payload,options)=>{
+  assert.equal(operation,'join');
+  requests.push({room,payload:Object.fromEntries(Object.entries(payload)),existing:options.guestKey});
+  const known=guests.get(room+':'+options.guestKey)||guests.get(room+':'+payload.guest_key);
+  if(known)return known;
+  const value={id:'guest-'+guests.size,key:payload.guest_key,...(payload.profile||{nickname:'月亮贝壳',avatar:4})};
+  guests.set(room+':'+value.key,value);
+  return value;
+ }};
+}
+function scannedWebView(server,options={}){
+ const h=harness({validRoom:true,...options});
+ h.context.joinApi=(operation,payload,_query,options)=>server.reply(h.run('room'),operation,payload,options);
+ h.run('identity=storedIdentity;api=joinApi;refresh=()=>{};startStatusFeed=()=>{};loadDiscover=()=>{};initAddQueue=()=>{}');
+ return h;
+}
+
+test('fresh and concurrent scanned pages recover one guest and keep chosen profile across rooms',async()=>{
+ const storage=memoryStorage(),server=joinServer();let tail=Promise.resolve();
+ const locks={request(_key,callback){const result=tail.then(callback);tail=result;return result;}};
+ const settings={localStorage:storage,locks};
+ const first=scannedWebView(server,settings),parallel=scannedWebView(server,settings);
+ await Promise.all([first.run('join()'),parallel.run('join()')]);
+ const seed=storage.getItem('friday-ktv-guest-seed-v1'),guest=first.run('identity.key');
+ assert.match(seed,/^[a-f0-9]{64}$/);assert.notEqual(seed,guest);
+ assert.equal(server.requests.length,2);assert.equal(server.guests.size,1);
+ assert.equal(parallel.run('identity.id'),first.run('identity.id'));
+ first.run('identity={...identity,nickname:"偏爱的名字",avatar:9};saveIdentity({prefer:true})');
+ server.guests.set(firstRoom+':'+guest,{id:first.run('identity.id'),key:guest,nickname:'偏爱的名字',avatar:9});
+ const rescanned=scannedWebView(server,{...settings,invite:'b'.repeat(43)});
+ await rescanned.run('join()');
+ assert.equal(rescanned.run('identity.key'),guest);
+ const other=scannedWebView(server,{...settings,roomId:'22222222-2222-4222-8222-222222222222'});
+ await other.run('join()');
+ assert.notEqual(other.run('identity.key'),guest);
+ assert.equal(other.element('my-name').textContent,'偏爱的名字');
+ assert.equal(other.run('identity.avatar'),9);
+ assert.equal(server.requests.length,4);
+ assert.deepEqual(Object.keys(server.requests.at(-1).payload).sort(),['guest_key','profile']);
+ assert.equal(JSON.stringify(server.requests).includes(seed),false);
+ storage.clear();
+ const cleared=scannedWebView(server,settings);await cleared.run('join()');
+ assert.notEqual(cleared.run('identity.key'),guest);
+});
+
+test('an older guest credential is recovered through the one join and retained for a new WebView',async()=>{
+ const storage=memoryStorage(),session=memoryStorage(),server=joinServer(),key='g'.repeat(43);
+ const identity={id:'older-guest',key,nickname:'原昵称',avatar:7};
+ server.guests.set(firstRoom+':'+key,identity);
+ session.setItem('friday-ktv-guest:'+firstRoom,JSON.stringify(identity));
+ const old=scannedWebView(server,{localStorage:storage,sessionStorage:session});
+ await old.run('join()');
+ const fresh=scannedWebView(server,{localStorage:storage});
+ await fresh.run('join()');
+ assert.equal(server.requests.length,2);assert.ok(server.requests.every(r=>r.existing===key));
+ assert.equal(fresh.run('identity.id'),identity.id);
+ assert.equal(fresh.element('my-name').textContent,'原昵称');
+});
+
+test('blocked persistent storage uses the session and a rejected join sends no fallback POST',async()=>{
+ const server=joinServer(),session=memoryStorage(),blocked={getItem(){throw Error('storage denied');},setItem(){throw Error('storage denied');}};
+ const first=scannedWebView(server,{localStorage:blocked,sessionStorage:session});await first.run('join()');
+ first.run('identity={...identity,nickname:"潮汐轻唱",avatar:8};saveIdentity({prefer:true})');
+ const reloaded=scannedWebView(server,{localStorage:blocked,sessionStorage:session});await reloaded.run('join()');
+ assert.equal(reloaded.run('identity.key'),first.run('identity.key'));
+ assert.equal(server.requests.at(-1).payload.profile.nickname,'潮汐轻唱');
+ const noStorage=scannedWebView(server,{localStorage:blocked,sessionStorage:blocked});await noStorage.run('join()');
+ assert.notEqual(noStorage.run('identity.key'),first.run('identity.key'));
+ let calls=0;noStorage.context.joinApi=async()=>{calls++;throw Object.assign(Error(),{code:'invalid_request'});};
+ noStorage.run('api=joinApi');
+ await noStorage.run('join()');
+ assert.equal(calls,1);
 });
 
 test('the player reports playback even when the TV reports vocal protection',()=>{

@@ -63,9 +63,10 @@ def main() -> None:
         production = output / "production"
         production.mkdir()
         tests = [test_root / (name + ".java") for name in (
-            "PlaybackOnlyContractTest", "PartyPlaybackTest", "ImmediateControlTest", "LyricWindowTest",
+            "PlaybackOnlyContractTest", "TvUpdateSpecTest", "PartyPlaybackTest", "ImmediateControlTest", "LyricWindowTest",
             "QueueRefreshContinuityTest", "QueuePlaybackIntentTest", "SourceStateTest", "BackingStartupIntentTest", "MicMuteConfirmationTest", "CoordinatorClientTest",
             "CompatVocalEffectsTest", "PcmContractTest", "FeedbackNotchTest", "CompatMuteReadbackTest", "NativeVendorContractTest", "AudioEngineReleaseTest")]
+        tests.append(root / "native/KTVTV/android/tests/SongBackdropTest.java")
         run([str(jdk / "javac"), "--release", "8", "-cp", str(jar),
                         "-d", str(production), *map(str, sorted(source_root.rglob("*.java")) + tests)], check=True)
         for test in tests:

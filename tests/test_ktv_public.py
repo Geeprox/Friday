@@ -64,6 +64,43 @@ def test_auto_join_retry_preserves_one_guest_and_keeps_legacy_clients(station):
     assert client.post(path, headers=headers, json={"guest_key": "weak"}).status_code == 400
 
 
+def test_single_join_keeps_existing_profile_and_strictly_accepts_new_profile(station):
+    store, client = station
+    value, secret = room(store)
+    path = f"/api/rooms/{value['id']}/join"
+    headers = {"X-KTV-Room": secret}
+    original = client.post(path, headers=headers, json={}).json()
+    request = {"guest_key": "e" * 64, "profile": {"nickname": "  山茶晚风  ", "avatar": 10}}
+    restored = client.post(path, headers={**headers, "X-KTV-Guest": original["key"]}, json=request)
+    assert restored.status_code == 201 and restored.json() == original
+    created = client.post(path, headers=headers, json=request)
+    assert created.status_code == 201 and created.json()["nickname"] == "山茶晚风" and created.json()["avatar"] == 10
+    replay = client.post(path, headers=headers, json={**request, "profile": {"nickname": "不要覆盖", "avatar": 1}})
+    assert replay.json() == created.json()
+    for bad in (None, [], {"nickname": "空", "avatar": True}, {"nickname": "x\t", "avatar": 0},
+                {"nickname": "甲" * 25, "avatar": 0}, {"nickname": "有效", "avatar": 12},
+                {"nickname": "有效", "avatar": 0, "device_id": "unexpected"}):
+        reply = client.post(path, headers=headers, json={"guest_key": "f" * 64, "profile": bad})
+        assert reply.status_code == 400 and reply.json()["code"] == "invalid_profile"
+    assert store.limits["join:" + value["id"]][1] == 2
+
+
+def test_same_room_key_concurrently_keeps_single_new_profile(station):
+    from concurrent.futures import ThreadPoolExecutor
+
+    store, _ = station
+    one, _ = room(store)
+    two, _ = room(store)
+    profile = {"nickname": "潮汐轻唱", "avatar": 8}
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        guests = list(pool.map(lambda _: store.join(one, "a" * 64, profile=profile), range(12)))
+    assert all(guest == guests[0] for guest in guests)
+    assert store.limits["join:" + one["id"]][1] == 1
+    newcomer = store.join(two, "b" * 64, profile=profile)
+    assert newcomer["nickname"] == guests[0]["nickname"] and newcomer["avatar"] == guests[0]["avatar"]
+    assert newcomer["id"] != guests[0]["id"] and newcomer["key"] != guests[0]["key"]
+
+
 def test_empty_worker_poll_does_not_publish_repeated_writes(station, monkeypatch):
     store, _ = station
     clock = [10]

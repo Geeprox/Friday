@@ -325,6 +325,56 @@ class LocalSourceAPI:
             return {"status": "unavailable", "lines": []}
         return {"status": "ready", "lines": lines}
 
+    def public_cloud_background(self, song_id):
+        """用公开录音核对已缓存云盘曲目，只返回公开歌名与歌手。"""
+        from .ktv_search import search_songs
+
+        song_id = canonical_song_id(song_id)
+        path = self.root / "cloud-owned.json"
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077 or path.stat().st_size > 1048576:
+                return None
+            owned = json.loads(path.read_text())["songs"][song_id]
+            title, artists, duration = song_title(owned["title"]), owned["artists"], owned["duration_ms"]
+            if (not title or not isinstance(artists, list) or not artists or not all(isinstance(a, str) and a for a in artists)
+                    or type(duration) is not int or not 0 < duration <= 1800000):
+                return None
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+        def verified(identity):
+            try:
+                detail = self.public_lyric_recording(identity)
+                if (not detail["artist_ids"] or not re.fullmatch(r"[1-9][0-9]{0,17}", detail["album"])
+                        or not _same_lyric_identity(owned, detail) or abs(detail["duration_ms"] - duration) > 2500):
+                    return None
+                return {"title": detail["title"], "artist": " / ".join(detail["artists"])}
+            except (OSError, ValueError, TypeError, KeyError, httpx.HTTPError):
+                return None
+
+        lyric_id = owned.get("lyric_id")
+        identities = {song_id: None}
+        if isinstance(lyric_id, str) and re.fullmatch(r"[1-9][0-9]{0,17}", lyric_id):
+            identities[lyric_id] = None
+        for identity in identities:
+            result = verified(identity)
+            if result:
+                return result
+        try:
+            candidates = search_songs(title + " " + _lyric_artist(artists[0]))
+            exact = [row for row in candidates if _same_lyric_identity(owned, row)]
+            if not exact:
+                exact = [row for row in self._artist_lyric_candidates(owned) if _same_lyric_identity(owned, row)]
+        except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError):
+            return None
+        for candidate in exact[:3]:
+            identity = candidate.get("song_id")
+            if isinstance(identity, str) and identity not in identities:
+                result = verified(identity)
+                if result:
+                    return result
+        return None
+
     def _cloud_lyrics(self, song_id):
         from .ktv_search import parse_lrc, search_songs
         cookie = self._session()

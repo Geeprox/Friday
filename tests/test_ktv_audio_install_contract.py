@@ -105,11 +105,22 @@ def test_companion_cannot_gain_network_or_unprotected_entry(contract):
     '<uses-permission android:name="local.friday.ktv.audio.CONTROL" />',
     '<service android:name="local.friday.audio.WetService" android:exported="false" />',
     '<activity android:name=".DirectMonitorActivity" android:exported="false" />',
+    '<provider android:name=".UnexpectedProvider" android:exported="false" />',
+    '<receiver android:name=".UnexpectedReceiver" android:exported="true" />',
 ])
 def test_main_install_rejects_capture_permissions_and_diagnostics(contract, declaration):
     manifest = contract.root / "native/KTVTV/android/AndroidManifest.xml"
     end = "</manifest>" if declaration.startswith("<uses-permission") else "</application>"
     manifest.write_text(manifest.read_text().replace(end, declaration + end))
+    with pytest.raises(ValueError, match="main_playback_only_contract_required"):
+        verify(contract)
+
+
+def test_main_update_result_receiver_stays_private(contract):
+    manifest = contract.root / "native/KTVTV/android/AndroidManifest.xml"
+    original = manifest.read_text()
+    manifest.write_text(original.replace('android:name=".TvUpdateReceiver" android:exported="false"',
+                                         'android:name=".TvUpdateReceiver" android:exported="true"'))
     with pytest.raises(ValueError, match="main_playback_only_contract_required"):
         verify(contract)
 

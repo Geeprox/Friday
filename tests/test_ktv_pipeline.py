@@ -232,9 +232,9 @@ def test_pool_resize_and_scheduler_settings_persist_without_interrupting_active_
             queue.configure({"mode": "manual", "download": True, "model": 1, "encode": 1})
         assert queue.configure({"mode": "auto", "download": 3, "model": 2, "encode": 4})["settings"] == {
             "mode": "auto",
-            "download": 2,
+            "download": 3,
             "model": 3,
-            "encode": 2,
+            "encode": 3,
         }
     finally:
         queue.close()

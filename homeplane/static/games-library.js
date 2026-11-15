@@ -301,7 +301,8 @@ export function mountGames(root,{go=()=>{}}={}){
    // 附加音效未加载时仍可点歌和管理缓存。
    if(!globalThis.FridayPartyAudio)await import('/api/games/ktv/party-audio.js').catch(()=>{});
    if(!alive||stamp!==generation||selection?.id!=='ktv')return;screen.replaceChildren();
-   ktv=mountKtv(screen,{endpoint:'/api/games/ktv',embedded:true,partyAudio:globalThis.FridayPartyAudio,readOnly:document.body.dataset.consoleReadOnly==='true',onBack:()=>{selection=null;generation++;draw();screen.querySelector('button[aria-label="查看家庭 KTV"]')?.focus?.();}});
+   const readOnly=document.body.dataset.consoleReadOnly==='true'&&document.body.dataset.ktvOwnerWrites!=='true';
+   ktv=mountKtv(screen,{endpoint:'/api/games/ktv',embedded:true,partyAudio:globalThis.FridayPartyAudio,readOnly,onBack:()=>{selection=null;generation++;draw();screen.querySelector('button[aria-label="查看家庭 KTV"]')?.focus?.();}});
   }catch{if(alive&&stamp===generation){screen.replaceChildren(h('h2','家庭 KTV'),h('p','页面暂时无法载入，请重试。','games-empty'),button('重新载入',()=>{screen.replaceChildren();void openKtv();}),button('返回游戏库',()=>{selection=null;generation++;draw();}));}}
  }
  function retireStage(){

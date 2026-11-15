@@ -129,10 +129,10 @@ def test_worker_readiness_requires_source_identity_and_pinned_model_not_http_suc
     assert health()["model"] is False
 
 
-def make_worker(tmp_path):
+def make_worker(tmp_path, **worker_config):
     config = tmp_path / "nas.json"
     config.write_text(json.dumps({"endpoint": "https://example.test/ktv", "agent_key": "a" * 43,
-                                  "coordination": "nas", "media_origin": "http://10.0.0.2:8769"}))
+                                  "coordination": "nas", "media_origin": "http://10.0.0.2:8769", **worker_config}))
     config.chmod(0o600)
     queue = PreparedQueue()
     worker = PreparationWorker(queue, config, signing_key=KEY, health=lambda: dict.fromkeys(("source", "model", "download", "lyrics", "media"), True))
@@ -551,6 +551,32 @@ def test_lost_qr_is_republished_and_stalled_health_is_not_renewed_as_ready(tmp_p
         assert len([path for path, _ in calls if path == "/agent/qr"]) == 2
     finally:
         worker.close()
+
+
+def test_worker_publishes_configured_guest_url_over_existing_worker_endpoint(tmp_path):
+    guest = "https://guests.example.test:9443/ktv"
+    worker, _, _, response, calls = make_worker(tmp_path, public_join_endpoint=guest)
+    try:
+        old_url = response["rooms"][0]["join_url"]
+        worker.tick()
+        assert not any(path == "/agent/qr" for path, _ in calls)
+        response["rooms"][0]["join_url"] = guest + "/#" + old_url.split("#", 1)[1]
+        worker.tick()
+        qr = next(body for path, body in calls if path == "/agent/qr")
+        assert qr["join_url"] == response["rooms"][0]["join_url"]
+        assert worker.endpoint == "https://example.test/ktv"
+        assert worker.public_join_endpoint == guest
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("value", ["http://guests.example.test/ktv", "https://guests.example.test/other",
+    "https://user@example.invalid/ktv", "https://guests.example.test:65536/ktv",
+    "https://guests.example.test/ktv#fragment", "https://guests.example.test/ktv?foo=1"])
+def test_worker_guest_url_requires_explicit_https_base_without_credentials(value):
+    from homeplane.ktv_worker import _public_join_endpoint
+    with pytest.raises(ValueError, match="https_public_join_endpoint_required"):
+        _public_join_endpoint(value, "https://example.test/ktv")
 
 
 def test_room_qr_does_not_wait_for_preparation_lane(tmp_path):

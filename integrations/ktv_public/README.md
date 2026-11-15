@@ -2,7 +2,7 @@
 
 The NAS owns room/session state, guest queues, commands, public search and TV playback receipts. The Mac prepares songs and exposes only signed, bounded media reads to the TV/NAS. Phone requests and TV controls no longer require a Mac relay in direct mode. This changes coordination, not the real-time microphone DSP or acoustic latency.
 
-`nas_server.py`, `coordinator.py`, `supervisor.py`, `launch.py` and `web/` form the standalone Python 3.8+ service; there are no third-party NAS Python dependencies. Configuration, keys, SQLite, cached media and supervisor receipts remain in a private directory outside `web/`.
+`nas_server.py`, `coordinator.py`, `management.py`, `tv_updates.py`, `tv_update_inbox.py`, `supervisor.py`, `launch.py` and `web/` form the standalone Python 3.8+ service; there are no third-party NAS Python dependencies. Configuration, keys, SQLite, cached media and supervisor receipts remain in a private directory outside `web/`.
 
 ## Startup and readiness
 
@@ -28,6 +28,22 @@ The default listener remains loopback. An optional explicit `lan_host` RFC1918 I
 
 `GET /api/rooms/{id}/events?after=<cursor>&wait=5` provides authenticated, bounded long polling as `{cursor,status}`. There are at most eight waiters, leaving normal request capacity for controls. Updates wake listeners; an unknown or larger old cursor returns a current snapshot immediately. Event responses are not midpoint clock probes. All control success still depends on the TV's actual applied revision and state.
 
+### 通过既有 HTTPS 9443 接入外网访客
+
+将 [访客路由模板](nginx-guest-9443.locations.conf.example) 保存为 `.inc`，由已有 TLS `server` 显式包含，使用实际 NAS KTV loopback 端口。模板放行访客首页、健康检查、明确列出的前端文件与房间操作。电视及 Worker 使用原私有服务地址。沿用 9443 的证书和 Host 校验，保留同站门户。检查 Nginx 配置、访客健康检查以及原门户，再切换二维码地址。
+
+- NAS 私有配置的 `public_origin` 设置为访客 HTTPS 来源，例如 `https://guests.example.test:9443`。已加入的访客仍需使用原地址时，可将原 HTTPS 来源写入 `previous_guest_origin`。这项兼容仅适用于房间访客接口。
+- Mac Worker 私有配置的 `public_join_endpoint` 设置为相同来源和现有路径，例如 `https://guests.example.test:9443/ktv`。Worker 继续按原 `endpoint` 和局域网 TLS 配置连接管理接口。
+- 公开来源改变后，NAS 会等待按新地址生成的二维码，房间及邀请凭据保持有效。核对新二维码确实使用 9443，再从外部网络打开访客页面。只有 AAAA 记录的入口需要访客网络支持 IPv6。
+
+## 电视应用更新
+
+电视使用自己的 `X-KTV-TV-Key` 从固定内网地址读取 `GET /v1/tv/update`。结果为 `{version_code,version_name,bytes,sha256,url}`，其中 `url` 固定为 `/v1/tv/update.apk`。APK 接口支持 GET、HEAD 和单段字节范围。带摘要的 `If-Match` 在发布刚切换时返回 412，电视可重新检查。尚未登记或当前成品失去校验时返回 404。访客的 9443 白名单不包含 `/v1`。
+
+发布文件位于配置旁的私有 `state/tv-updates/`，与页面和媒体数据独立。Mac 发布工具沿用电视安装预检，核对主应用与伴随包的实际 Android 签名、构建回执、源码和字节，主应用限 64 MiB。Mac 通过私有挂载将已核对的 APK 与认证记录原子投递至 NAS 创建的单件收件目录，普通 NAS 服务账户在后台以本机 0700／0600 权限登记。认证使用现有 Worker 密钥和独立用途标识。投递有效期为 15 分钟，Mac 命令收到匹配版本、字节和摘要的认证回执后才报告已发布。此过程不依赖电视在线或房间开启。
+
+发布锁串行处理变更，先登记摘要和完成文件，再原子切换当前版本。版本号只能增加，后续发布沿用首个发布版本证书。上一版保留供维护核对，接口只提供当前版本。发布中断后可重试同一版本，发布期间可继续读取已打开的成品。挂载端的模式显示可能由 SMB 合成，排查异常时由现有 NAS 服务账户在本机运行 `diagnose_tv_update.py`，用已验签发布回执的 `version_code`、`bytes` 和 `sha256` 检查实际状态。
+
 ## Sessions and stale actions
 
 The household identity is persistent; each explicitly ended session has its own room/queue identity. Existing active rooms and their songs/guest identities migrate without deletion. Empty queues, warm-up, pause, worker failure and temporary disconnection do not close a session. The compatibility `expires` value is not a session timeout when `persistent:true`; only explicit close ends the session. Retention cleanup applies to explicitly closed sessions after its independent horizon.
@@ -37,6 +53,8 @@ Legacy-room adoption is a one-time household initialization step. A separate per
 While a direct TV session exists, preparation task leases are restricted to that current room. Other preserved legacy rooms and their queues remain intact and are not silently sent ahead of the current queue. After an explicitly closed session passes the 24-hour retention horizon, its song/guest/retry/command records, manifest and publication history, room-token history, start-request associations and obsolete coordinator-session pointer are cleaned together. Active sessions are excluded. Content-addressed media and its verification proof have a separate lifetime.
 
 Joined guest credentials currently remain valid until the session is explicitly ended. There is no new independent guest time TTL. When a QR key changes during adoption, a guest who already joined can still use the prior room key together with that guest credential; an old QR alone cannot admit a new visitor. No existing guest is revoked by this migration.
+
+手机通过一次访客加入请求返回身份和资料。浏览器在同一站点保存随机种子，按房间导出不同的访客凭据。首次进入可随加入请求提交已保存的昵称和头像。已有身份重入时保留 NAS 上的资料。站点存储不可用时，访客仍可在当前会话扫码加入。
 
 Start request IDs are durable and idempotent throughout the retained session window. A delayed old request cannot reopen a retained closed session or reclaim a newer TV instance. Closing requires both the current TV instance and current `room_id`. New TV instances skip old command cursors and start with microphone mute requested. Legacy Mac bridge playback/control/close writes are refused for a directly owned room.
 
@@ -62,4 +80,4 @@ QR creation runs in the Mac worker's separate preparation lane. `/agent/tasks.ro
 
 ## Offline verification
 
-`tests/test_ktv_coordinator.py` covers direct API credential scopes, complete/stale readiness, bounded recovery using request substitutes, immutable manifests, first playback before archive, cache corruption/fallback, source/model degradation, media ranges, QR publication/repair, guest preservation, explicit lifecycle/retention, stale starts/closes/unmutes, NAS restart and event delivery. `tests/test_ktv_public.py` retains the legacy bridge and guest contracts. All fixtures use isolated storage and synthetic media; no household device, real microphone, playback, model or live NAS is needed.
+`tests/test_ktv_coordinator.py` covers direct API credential scopes, complete/stale readiness, bounded recovery using request substitutes, immutable manifests, first playback before archive, cache corruption/fallback, source/model degradation, media ranges, QR publication/repair, guest preservation, explicit lifecycle/retention, stale starts/closes/unmutes, NAS restart and event delivery. `tests/test_ktv_public.py` retains the legacy bridge and guest contracts. `tests/test_ktv_tv_updates.py` 验证电视权限、下载、单调发布、中断恢复和私有文件校验。All fixtures use isolated storage and synthetic media; no household device, real microphone, playback, model or live NAS is needed.

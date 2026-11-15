@@ -7,7 +7,9 @@ import android.content.pm.PackageManager;
 import android.graphics.*;
 import android.graphics.drawable.*;
 import android.media.*;
+import android.net.Uri;
 import android.os.*;
+import android.provider.Settings;
 import android.util.TypedValue;
 import android.view.*;
 import android.widget.*;
@@ -36,6 +38,8 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private final PlaybackReportThrottle playbackReports=new PlaybackReportThrottle();
     private final ExecutorService backdropNetwork=new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(1));
     private final SongBackdrop songBackdrop=new SongBackdrop();
+    private JSONObject backdropJob;
+    private boolean backdropBusy;
     private final ExecutorService controlActions=new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(16));
     private final LocalControlIntent localOriginal=new LocalControlIntent();
     private boolean controlBusy,protocolReady;
@@ -59,6 +63,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private volatile KtvClient client;
     private AudioEngine engine;
     private SoundEffectPlayer soundEffects;
+    private TvUpdater updater;
     private PartyEffectsView partyEffects;
     private long shownSfx;
     private AudioManager audio;
@@ -75,6 +80,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private long[] lyricStarts=new long[0];
     private long[] entryStarts;
     private TextView headline,notice,trackTitle,requester,nextSong,clock,connectionBadge;
+    private TextView updateBadge;
     private ProgressBar progress,roomProgress;
     private MediaPlayer video;
     private Surface videoSurface;
@@ -130,15 +136,29 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         audio=(AudioManager)getSystemService(AUDIO_SERVICE);
         engine=AudioEngine.forPlayback(this,(code,natural)->ui.post(()->ended(code,natural)));
         soundEffects=new SoundEffectPlayer(this);
+        updater=TvUpdater.forApp(this);
         build();audio.registerAudioDeviceCallback(devices,ui);
         try(InputStream in=getAssets().open("avatars.png")){atlas=BitmapFactory.decodeStream(in);}catch(Exception ignored){}
         connect();
         if(state!=null&&state.getBoolean("debug_screen"))setDebugScreen(true);
     }
     private boolean userPlayback(){
-        if(debugScreen)return false;
+        if(debugScreen||updater.blocksPlayback())return false;
         queueIntent.enablePlayback();
         return true;
+    }
+    boolean canApplyTvUpdate(){
+        return TvUpdateSpec.idleForInstall(foreground&&!isFinishing()&&!isDestroyed(),hasWindowFocus(),
+            debugScreen,current!=null,loading,engine.running);
+    }
+    private boolean tryTvUpdate(){
+        boolean busy=updater.advance(this,client);
+        String hint=foreground&&!debugScreen&&current==null?updater.idleHint():"";
+        if(!hint.contentEquals(updateBadge.getText())){
+            updateBadge.setText(hint);
+            updateBadge.setVisibility(hint.isEmpty()?View.GONE:View.VISIBLE);
+        }
+        return busy;
     }
     private void applyProvisionedConnection(){
         Set<String> seen=new HashSet<>(preferences.getStringSet("provisioned-profiles",Collections.emptySet()));
@@ -151,6 +171,11 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private int dp(float value){return Math.round(value*getResources().getDisplayMetrics().density);}
     private void toast(String message){Toast.makeText(this,message,Toast.LENGTH_SHORT).show();}
     private TextView text(String value,int size,int color){TextView v=new TextView(this);v.setText(value);v.setTextSize(size);v.setTextColor(color);v.setIncludeFontPadding(false);v.setLineSpacing(0,1.25f);return v;}
+    private void textShadow(TextView label,boolean active){
+        float density=getResources().getDisplayMetrics().density;
+        label.setShadowLayer((active?3.4f:2.2f)*density,0,(active?.9f:.6f)*density,
+            active?0xf4000000:0xe8000000);
+    }
     private FrameLayout.LayoutParams box(int width,int height,int gravity,int x,int y){FrameLayout.LayoutParams p=new FrameLayout.LayoutParams(width<0?width:dp(width),height<0?height:dp(height),gravity);p.setMargins(dp(x),dp(y),dp(x),dp(y));return p;}
     private GradientDrawable surface(int color,int radius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;}
     private void build(){
@@ -158,9 +183,14 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         page=new FrameLayout(this);page.setBackgroundColor(0xff0c1110);
         root.addView(page,new FrameLayout.LayoutParams(-1,-1));
         background=new ImageView(this);background.setScaleType(ImageView.ScaleType.CENTER_CROP);page.addView(background,new FrameLayout.LayoutParams(-1,-1));
+        background.addOnLayoutChangeListener((view,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->{
+            if(right-left!=oldRight-oldLeft||bottom-top!=oldBottom-oldTop)loadSongBackground();
+        });
         picture=new TextureView(this);picture.setSurfaceTextureListener(this);picture.setAlpha(0);page.addView(picture,new FrameLayout.LayoutParams(-1,-1));
-        page.addView(new View(this){private final Paint paint=new Paint();@Override protected void onDraw(Canvas c){paint.setShader(new LinearGradient(0,0,getWidth(),0,new int[]{0xb8000000,0xb8000000,0x08000000},new float[]{0,.68f,1},Shader.TileMode.CLAMP));c.drawRect(0,0,getWidth(),getHeight(),paint);}},new FrameLayout.LayoutParams(-1,-1));
         TextView brand=text("Friday KTV",20,WHITE);brand.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));brand.setContentDescription("Friday KTV，长按打开房间维护");brand.setOnLongClickListener(v->{maintenance();return true;});page.addView(brand,box(-2,-2,Gravity.TOP|Gravity.START,32,27));
+        updateBadge=text("",13,MUTED);updateBadge.setVisibility(View.GONE);
+        updateBadge.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        page.addView(updateBadge,box(-2,-2,Gravity.TOP|Gravity.START,32,61));
         connectionBadge=text("",13,MUTED);connectionBadge.setMaxLines(2);connectionBadge.setGravity(Gravity.END);connectionBadge.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);FrameLayout.LayoutParams connection=box(-1,-2,Gravity.TOP|Gravity.END,150,30);connection.leftMargin=dp(230);page.addView(connectionBadge,connection);
         smallQr=new FrameLayout(this);
         smallQrImage=new ImageView(this);
@@ -190,15 +220,16 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         page.addView(idle,box(-1,-2,Gravity.CENTER,140,60));
         lyricScroll=new ScrollView(this);lyricScroll.setFillViewport(false);lyricScroll.setVerticalScrollBarEnabled(false);lyricScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);lyricScroll.setClipToPadding(false);lyricScroll.setVisibility(View.GONE);
         lyrics=new LinearLayout(this);lyrics.setOrientation(LinearLayout.VERTICAL);lyricScroll.addView(lyrics,new ScrollView.LayoutParams(-1,-2));FrameLayout.LayoutParams lyricArea=box(-1,-1,Gravity.TOP|Gravity.START,64,94);lyricArea.rightMargin=dp(190);lyricArea.bottomMargin=dp(104);page.addView(lyricScroll,lyricArea);
-        mvLyrics=new LinearLayout(this);mvLyrics.setOrientation(LinearLayout.VERTICAL);mvLyrics.setPadding(dp(64),dp(32),dp(64),dp(20));mvLyrics.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0x00000000,0x99000000}));mvLyrics.setVisibility(View.GONE);
-        mvPrevious=text("",26,0xffe2e2e2);mvPrevious.setPadding(0,0,0,dp(8));mvPrevious.setShadowLayer(dp(3),0,dp(1),0xff000000);mvLyrics.addView(mvPrevious);
-        mvCurrent=text("",34,WHITE);mvCurrent.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));mvCurrent.setShadowLayer(dp(3),0,dp(1),0xff000000);mvLyrics.addView(mvCurrent);
-        mvNext=text("",22,0xffdddddd);mvNext.setPadding(0,dp(9),0,0);mvNext.setShadowLayer(dp(3),0,dp(1),0xff000000);mvLyrics.addView(mvNext);FrameLayout.LayoutParams cues=new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM);cues.bottomMargin=dp(98);page.addView(mvLyrics,cues);
+        mvLyrics=new LinearLayout(this);mvLyrics.setOrientation(LinearLayout.VERTICAL);mvLyrics.setPadding(dp(64),dp(32),dp(64),dp(20));mvLyrics.setVisibility(View.GONE);
+        mvPrevious=text("",26,0xffe2e2e2);mvPrevious.setPadding(0,0,0,dp(8));textShadow(mvPrevious,false);mvLyrics.addView(mvPrevious);
+        mvCurrent=text("",34,WHITE);mvCurrent.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));textShadow(mvCurrent,true);mvLyrics.addView(mvCurrent);
+        mvNext=text("",22,0xffdddddd);mvNext.setPadding(0,dp(9),0,0);textShadow(mvNext,false);mvLyrics.addView(mvNext);FrameLayout.LayoutParams cues=new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM);cues.bottomMargin=dp(98);page.addView(mvLyrics,cues);
         trackTitle=text("",19,WHITE);trackTitle.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));FrameLayout.LayoutParams title=box(-1,-2,Gravity.TOP|Gravity.START,32,62);title.rightMargin=dp(170);page.addView(trackTitle,title);
-        LinearLayout footer=new LinearLayout(this);footer.setOrientation(LinearLayout.VERTICAL);footer.setPadding(dp(32),dp(12),dp(32),dp(20));footer.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,new int[]{0x00000000,0xd9000000}));
+        LinearLayout footer=new LinearLayout(this);footer.setOrientation(LinearLayout.VERTICAL);footer.setPadding(dp(32),dp(12),dp(32),dp(20));
         byline=new LinearLayout(this);byline.setGravity(Gravity.CENTER_VERTICAL);requesterAvatar=new ImageView(this);byline.addView(requesterAvatar,new LinearLayout.LayoutParams(dp(30),dp(30)));requester=text("",14,MUTED);LinearLayout.LayoutParams name=new LinearLayout.LayoutParams(0,-2,1);name.setMarginStart(dp(10));byline.addView(requester,name);nextSong=text("",13,MUTED);nextSong.setGravity(Gravity.END);nextSong.setMaxLines(2);byline.addView(nextSong,new LinearLayout.LayoutParams(0,-2,1));footer.addView(byline);
-        progress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);progress.setMax(10000);progress.setProgressTintList(android.content.res.ColorStateList.valueOf(WHITE));progress.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(0x55ffffff));LinearLayout.LayoutParams bar=new LinearLayout.LayoutParams(-1,dp(3));bar.topMargin=dp(12);footer.addView(progress,bar);
+        progress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);progress.setMax(10000);progress.setProgressTintList(android.content.res.ColorStateList.valueOf(WHITE));progress.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(0x80000000));LinearLayout.LayoutParams bar=new LinearLayout.LayoutParams(-1,dp(3));bar.topMargin=dp(12);footer.addView(progress,bar);
         clock=text("",11,MUTED);clock.setFontFeatureSettings("tnum");LinearLayout.LayoutParams time=new LinearLayout.LayoutParams(-1,-2);time.topMargin=dp(7);footer.addView(clock,time);page.addView(footer,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM));byline.setVisibility(View.GONE);progress.setVisibility(View.INVISIBLE);setTheme("content");
+        for(TextView label:new TextView[]{brand,updateBadge,connectionBadge,headline,notice,trackTitle,requester,nextSong,clock})textShadow(label,label==headline);
         partyEffects=new PartyEffectsView(this);page.addView(partyEffects,new FrameLayout.LayoutParams(-1,-1));
         debugShade=new View(this);
         debugShade.setBackgroundColor(Color.BLACK);
@@ -236,18 +267,63 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private void songBackground(JSONObject job){
         final String song=job==null?"":job.optString("id","");
         if(songBackdrop.select(song)){String previous=theme;theme="";setTheme(previous);}
-        if(job==null||client==null)return;
-        final JSONObject descriptor=job.optJSONObject("background");
-        if(descriptor==null||!descriptor.optString("status").equals("ready"))return;
-        final String hash=descriptor.optString("sha256");final long request=songBackdrop.begin(song,hash);if(request==0)return;
-        final KtvClient owner=client;final int version=generation.get();final AtomicBoolean cancelled=transferCancel;
-        try{backdropNetwork.execute(()->{try{
-            File image=owner.downloadBackground(descriptor,cancelled);
-            BitmapFactory.Options options=new BitmapFactory.Options();options.inJustDecodeBounds=true;BitmapFactory.decodeFile(image.getAbsolutePath(),options);
-            options.inSampleSize=1;while(options.outWidth/options.inSampleSize>1920||options.outHeight/options.inSampleSize>1080)options.inSampleSize*=2;
-            options.inJustDecodeBounds=false;final Bitmap bitmap=BitmapFactory.decodeFile(image.getAbsolutePath(),options);if(bitmap==null)throw new IOException("background_unavailable");
-            ui.post(()->{if(foreground&&version==generation.get()&&current!=null&&currentId.equals(song)&&songBackdrop.accept(song,hash,request))background.setImageBitmap(bitmap);else{songBackdrop.fail(request);bitmap.recycle();}});
-        }catch(Exception|OutOfMemoryError ignored){ui.post(()->songBackdrop.fail(request));}});}catch(RejectedExecutionException ignored){songBackdrop.fail(request);}
+        backdropJob=job;
+        loadSongBackground();
+    }
+    private boolean uhdBackdrop(){
+        Display display=background.getDisplay();
+        if(display==null)return false;
+        Display.Mode mode=display.getMode();
+        return BackdropImagePolicy.benefitsFromUhd(mode.getPhysicalWidth(),mode.getPhysicalHeight(),
+            background.getWidth(),background.getHeight());
+    }
+    private static JSONObject readyBackdrop(JSONObject job){
+        JSONObject descriptor=job==null?null:job.optJSONObject("background");
+        return descriptor!=null&&descriptor.optString("status").equals("ready")?descriptor:null;
+    }
+    private void loadSongBackground(){
+        if(backdropBusy||!foreground||debugScreen||client==null||current==null||backdropJob==null
+            ||background.getWidth()==0||background.getHeight()==0)return;
+        final String song=backdropJob.optString("id","");
+        final JSONObject descriptor=readyBackdrop(backdropJob);
+        if(!currentId.equals(song)||descriptor==null)return;
+        final String hash=descriptor.optString("sha256");
+        final boolean wantsUhd=uhdBackdrop();
+        final long request=songBackdrop.begin(song,hash,wantsUhd);
+        if(request==0)return;
+
+        final KtvClient owner=client;
+        final int version=generation.get();
+        final AtomicBoolean cancelled=transferCancel;
+        final ActivityManager memory=getSystemService(ActivityManager.class);
+        backdropBusy=true;
+        try{
+            backdropNetwork.execute(()->{
+                Bitmap decoded=null;
+                try{
+                    File image=owner.downloadBackground(descriptor,cancelled);
+                    decoded=BackdropImage.decode(image,wantsUhd,memory,cancelled);
+                }catch(Exception|OutOfMemoryError ignored){}
+                final Bitmap bitmap=decoded;
+                ui.post(()->{
+                    backdropBusy=false;
+                    JSONObject desired=readyBackdrop(backdropJob);
+                    boolean wanted=foreground&&!debugScreen&&owner==client&&version==generation.get()&&current!=null
+                        &&currentId.equals(song)&&desired!=null&&hash.equals(desired.optString("sha256"))&&wantsUhd==uhdBackdrop();
+                    if(wanted&&bitmap!=null&&songBackdrop.accept(song,hash,request)){
+                        bitmap.prepareToDraw();
+                        background.setImageBitmap(bitmap);
+                    }else{
+                        songBackdrop.fail(request);
+                        if(bitmap!=null)bitmap.recycle();
+                    }
+                    if(!wanted)loadSongBackground();
+                });
+            });
+        }catch(RejectedExecutionException ignored){
+            backdropBusy=false;
+            songBackdrop.fail(request);
+        }
     }
     private void connect(){
         prefetchCancel.set(true);
@@ -259,7 +335,8 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         roomMessage="正在连接房间…";roomRetry=false;showIdle();
         String origin=preferences.getString("origin",SetupDefaults.ORIGIN),key=preferences.getString("key",SetupDefaults.KEY);
         try{client=new KtvClient(origin,key,new File(getCacheDir(),"audio"));client.instance(tvInstance);notice.setText("正在连接房间…");poll();}
-        catch(Exception e){headline.setText("连接你的房间");setRoomNotice("按遥控器菜单键设置家庭服务。",false);}
+        catch(Exception e){client=null;headline.setText("连接你的房间");setRoomNotice("按遥控器菜单键设置家庭服务。",false);}
+        updater.newConnection(client);
     }
     private boolean ownsConnection(KtvClient c,long epoch){return foreground&&autoRoom&&c==client&&epoch==connectionEpoch;}
     private void poll(){
@@ -581,6 +658,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
             prepareLyrics(job);
             return;
         }
+        if(updater.blocksPlayback())return;
         if(!userPlayback()){pendingPlay=null;return;}
         pendingPlay=null;
         queueIntent.awaitNext();
@@ -824,6 +902,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private long[] readEntries(JSONObject response){if(!Arrays.asList("vocal_activity","vocal_residual").contains(response.optString("cue_source")))return null;JSONArray values=response.optJSONArray("entry_ms");if(values==null||values.length()>1000)return null;long[] result=new long[values.length()];long prior=-1;for(int i=0;i<result.length;i++){long value=values.optLong(i,-1);if(value<0||value>1800000||value<=prior)return null;result[i]=value;prior=value;}return result;}
     private void playNext(){
         if(!queueIntent.playbackEnabled()||!queueIntent.shouldStart(foreground,loading,current!=null)||!autoRoom)return;
+        if(tryTvUpdate())return;
         String next=nextSelectionId();
         if(next.isEmpty()){
             if(hasPending())showIdle();
@@ -962,7 +1041,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private void play(JSONObject job,long position,boolean restart){
         String jobId=job.optString("id");
         String edition=audioEdition(job);
-        if(client==null||!foreground||loading||!queueIntent.playbackEnabled())return;
+        if(client==null||!foreground||loading||!queueIntent.playbackEnabled()||updater.blocksPlayback())return;
         if(!readyForPerformance(job)){prepareLyrics(job);return;}
         final JSONArray verifiedLyrics=preparedLyrics.get(jobId);
         final long[] verifiedEntries=preparedEntries.get(jobId);
@@ -1080,8 +1159,8 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private void setLyrics(JSONArray value,String title){
         lines=value;activeLine=-1;lyrics.removeAllViews();lyricViews.clear();int h=Math.max(dp(150),lyricScroll.getHeight()/2);lyrics.setPadding(0,h,0,h);
         lyricStarts=new long[value.length()];for(int i=0;i<value.length();i++)lyricStarts[i]=value.optJSONObject(i).optLong("time_ms");mvPrevious.setText("");mvCurrent.setText("");mvNext.setText("");countdownLine=-1;countdownValue=0;
-        if(value.length()==0){TextView line=text(title,38,WHITE);line.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));lyrics.addView(line);TextView pending=text("暂无同步歌词",18,MUTED);pending.setPadding(0,dp(20),0,0);lyrics.addView(pending);return;}
-        for(int i=0;i<value.length();i++){TextView line=text(value.optJSONObject(i).optString("text"),25,MUTED);line.setPadding(0,dp(10),0,dp(10));line.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);lyrics.addView(line,new LinearLayout.LayoutParams(-1,-2));lyricViews.add(line);}
+        if(value.length()==0){TextView line=text(title,38,WHITE);line.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));textShadow(line,true);lyrics.addView(line);TextView pending=text("暂无同步歌词",18,MUTED);pending.setPadding(0,dp(20),0,0);textShadow(pending,false);lyrics.addView(pending);return;}
+        for(int i=0;i<value.length();i++){TextView line=text(value.optJSONObject(i).optString("text"),25,MUTED);line.setPadding(0,dp(10),0,dp(10));line.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));textShadow(line,false);line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);lyrics.addView(line,new LinearLayout.LayoutParams(-1,-2));lyricViews.add(line);}
         lyricScroll.post(()->lyricScroll.smoothScrollTo(0,0));
     }
     private void refreshMissingLyrics(){
@@ -1129,7 +1208,16 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         paused=pause;loading=false;
         engine.stop();releaseVideo();
     }
-    private void togglePause(){if(loading)return;if(!engine.running&&!userPlayback())return;if(engine.running){queueIntent.pause();stopAudio(true);clock.setText("已暂停");}else if(current!=null){queueIntent.awaitNext();JSONObject job=current;current=null;play(job,resumeFrame);}else{queueIntent.awaitNext();paused=false;playNext();}}
+    private void togglePause(){
+        if(loading||!engine.running&&!userPlayback())return;
+        if(engine.running){
+            queueIntent.pause();stopAudio(true);clock.setText("已暂停");
+        }else if(current!=null){
+            queueIntent.awaitNext();play(current,resumeFrame);
+        }else{
+            queueIntent.awaitNext();paused=false;playNext();
+        }
+    }
     private void next(){
         pendingPlay=null;
         if(!userPlayback())return;
@@ -1179,11 +1267,16 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         }
     }
     private void highlightScrollingLyrics(int index){
+        int former=activeLine;
+        int formerPrevious=LyricWindow.previous(former,lyricViews.size());
         activeLine=index;
         int previous=LyricWindow.previous(index,lyricViews.size());
-        for(int i=0;i<lyricViews.size();i++){
-            TextView line=lyricViews.get(i);line.setTextSize(i==index?40:i==previous?28:25);
-            line.setTextColor(i==index?(theme.equals("festival")?accent:WHITE):i==previous?0xffe2e2e2:MUTED);
+        for(int i:new int[]{formerPrevious,former,previous,index}){
+            if(i<0||i>=lyricViews.size())continue;
+            boolean active=i==index;
+            TextView line=lyricViews.get(i);line.setTextSize(active?40:i==previous?28:25);
+            line.setTextColor(active?(theme.equals("festival")?accent:WHITE):i==previous?0xffe2e2e2:MUTED);
+            textShadow(line,active);
         }
         if(index<0||index>=lyricViews.size())return;
         TextView line=lyricViews.get(index);
@@ -1214,11 +1307,26 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     @Override public void onSurfaceTextureUpdated(SurfaceTexture texture){videoSurfaceFrames++;}
     private void enlargeQr(){if(qrBitmap==null)return;ImageView view=new ImageView(this);view.setImageBitmap(qrBitmap);view.setPadding(dp(18),dp(18),dp(18),dp(18));new AlertDialog.Builder(this).setTitle("扫码点歌").setView(view).setPositiveButton("返回",(d,w)->{}).show();}
     private void maintenance(){
-        String[] items={"声音","连接设置","黑屏调试","结束本场"};
+        String[] items={"声音","连接设置","软件更新","黑屏调试","结束本场"};
         new AlertDialog.Builder(this).setTitle("房间设置").setItems(items,(dialog,which)->{
             if(which==0)sound();else if(which==1)connection();
-            else if(which==2)setDebugScreen(true);else endParty();
+            else if(which==2)softwareUpdate();else if(which==3)setDebugScreen(true);else endParty();
         }).setNegativeButton("返回",(d,w)->{}).show();
+    }
+    private void softwareUpdate(){
+        boolean permission=updater.needsSourcePermission();
+        new AlertDialog.Builder(this).setTitle("软件更新")
+            .setMessage("当前版本 "+installedVersion+"\n"+updater.stateText())
+            .setNegativeButton("返回",(d,w)->{})
+            .setPositiveButton(permission?"打开系统设置":"重新检查",(d,w)->{
+                if(permission){
+                    try{
+                        startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,Uri.parse("package:"+getPackageName())));
+                    }catch(RuntimeException unavailable){
+                        toast("请在电视的应用安装设置中允许 Friday KTV 更新。");
+                    }
+                }else updater.checkAgain();
+            }).show();
     }
     private LinearLayout sheet(){LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(24),dp(16),dp(24),dp(16));return panel;}
     private void connection(){
@@ -1296,7 +1404,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
             if(shownSfx!=soundEffects.sequence){shownSfx=soundEffects.sequence;partyEffects.show(soundEffects.action);}
         }else if(!"pending".equals(soundEffects.state)){partyEffects.stop();}
     }
-    private final Runnable tick=new Runnable(){public void run(){if(!foreground)return;refreshCoordinatorStatus();syncPartyEffects();if(ticks++%5==0){poll();refreshMissingLyrics();}if(engine.running&&current!=null){long ms=engine.playheadFrames/48;updateMvLyrics(ms);int index=-1;for(int i=0;i<lines.length();i++){if(lines.optJSONObject(i).optLong("time_ms")<=ms)index=i;else break;}if(index!=activeLine)highlightScrollingLyrics(index);
+    private final Runnable tick=new Runnable(){public void run(){if(!foreground)return;refreshCoordinatorStatus();syncPartyEffects();if(ticks++%5==0){poll();refreshMissingLyrics();tryTvUpdate();}if(engine.running&&current!=null){long ms=engine.playheadFrames/48;updateMvLyrics(ms);int index=-1;for(int i=0;i<lines.length();i++){if(lines.optJSONObject(i).optLong("time_ms")<=ms)index=i;else break;}if(index!=activeLine)highlightScrollingLyrics(index);
             JSONObject media=current.optJSONObject("media");JSONObject song=media==null?null:media.optJSONObject("original");long duration=song==null?0:Math.round(song.optDouble("duration_seconds")*1000);progress.setProgress(duration>0?(int)Math.min(10000,ms*10000/duration):0);
             clock.setText(time(ms)+"  /  "+time(duration)+"     ↑ 原唱/伴奏   ← 重唱   → 切歌");
             if(ticks%5==0)syncVideo(false);
@@ -1358,7 +1466,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         super.onStop();
     }
     @Override protected void onDestroy(){
-        songBackdrop.select("");backdropNetwork.shutdownNow();soundEffects.close();
+        songBackdrop.select("");backdropJob=null;background.setImageDrawable(null);backdropNetwork.shutdownNow();soundEffects.close();
         audio.unregisterAudioDeviceCallback(devices);transferCancel.set(true);engine.stop();releaseVideo();
         roomNetwork.shutdownNow();roomReports.shutdownNow();roomQrNetwork.shutdownNow();lyricsNetwork.shutdownNow();
         network.shutdownNow();mediaNetwork.shutdownNow();videoNetwork.shutdownNow();controlNetwork.shutdownNow();
