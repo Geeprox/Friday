@@ -28,6 +28,7 @@ from homeplane.home_experience import create_router
 from homeplane.local_camera_home import LocalCameraHome
 from homeplane.mijia_climate_mode import climate_mode_operation
 from homeplane.mijia_control import MijiaPower
+from homeplane.mijia_lan_client import MijiaLanClient
 from homeplane.mijia_enrollment import native_power_operation
 from homeplane.mijia_power_home import MijiaPowerHome, catalog_available
 from homeplane.settings import SettingsService
@@ -90,6 +91,7 @@ class Gateway:
         self.value = False
         self.calls = []
         self.online = True
+        self.route_tokens = {}
         self.lose_response = False
         self.before_dispatch = lambda: None
         self.fields = fields if fields is not None else {}
@@ -103,6 +105,9 @@ class Gateway:
 
     def ready(self, family, did=None):
         return self.online and family == self.service.discovery_report['family'] and (did is None or did in self.dids)
+
+    def route_token(self, family, did):
+        return self.route_tokens.setdefault(did, object()) if self.ready(family, did) else None
 
     @property
     def dids(self):
@@ -307,6 +312,76 @@ async def test_migrated_plan_cannot_change_source_or_retry_send(tmp_path, case):
         core.actions.mijia.request.assert_not_called()
     finally:
         await close(core)
+
+
+@pytest.mark.asyncio
+async def test_mijia_direct_requires_fresh_state_and_a_new_plan_after_reconnect(tmp_path):
+    core, _, gateway, ha_calls = await provision(tmp_path)
+    original_adapter = core.adapter
+    core.adapter = LocalCameraHome(mijia_selected=True)
+    try:
+        home = core.actions.mijia.home
+        await home.sample_once()
+        context, targets = home.active()
+        target = next(iter(targets.values()))
+        assert target.entity.kind == 'switch'
+        before = home.sample_for(context, target)
+        assert before is not None and before.value == 'off'
+        intent = await plan(core, 'switch.set', {'power': 'on'})
+        assert intent.status == 'planned'
+        old_writer = home.writer(target.entity.id)
+
+        gateway.route_tokens.pop(DID)
+        assert home.sample_for(context, target) is None
+        assert not (await core.snapshot()).action_targets
+        with pytest.raises(ValueError):
+            await old_writer.readback()
+        await home.sample_once()
+        after = home.sample_for(context, target)
+        assert after is not None and after.value == before.value and after.version != before.version
+        rejected = await core.actions.execute(intent.action_id)
+        assert rejected.status == 'rejected'
+        gateway.manager.set_prop_async.assert_not_called()
+
+        fresh = await plan(core, 'switch.set', {'power': 'on'})
+        executed = await core.actions.execute(fresh.action_id)
+        assert executed.status == 'reported_match'
+        gateway.manager.set_prop_async.assert_awaited_once()
+        assert not ha_calls
+    finally:
+        await original_adapter.close()
+        await close(core)
+
+
+@pytest.mark.asyncio
+async def test_lan_route_tokens_are_local_to_each_device_and_fence_an_io_waiter(monkeypatch):
+    from homeplane import mijia_lan_client
+    from unittest.mock import Mock
+
+    family, peer = 'a' * 64, '222222222'
+    now = [20.]
+    monkeypatch.setattr(mijia_lan_client, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    lan = MijiaLanClient(lambda: family)
+    lan.family = family
+    lan.process = SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=Mock()))
+    lan._update_routes([DID, peer], True, 2)
+    first, other = lan.route_token(family, DID), lan.route_token(family, peer)
+    assert first is not None and other is not None
+    async with lan.io:
+        job = asyncio.create_task(lan.request({'did': DID, 'power': 'on'}, family=family))
+        await asyncio.sleep(0)
+        lan._update_routes([peer], True, 1)
+        assert lan.route_token(family, DID) is None
+        lan._update_routes([DID, peer], True, 2)
+    with pytest.raises(ValueError, match='mijia_permission_changed'):
+        await job
+    lan.process.stdin.write.assert_not_called()
+    assert lan.route_token(family, DID) is not first
+    assert lan.route_token(family, peer) is other
+    now[0] += 13
+    assert lan.route_token(family, peer) is None
+    lan._update_routes([DID, peer], True, 2)
+    assert lan.route_token(family, peer) is not other
 
 
 @pytest.mark.asyncio

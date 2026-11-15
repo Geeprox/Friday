@@ -125,7 +125,8 @@ async def enroll(home, identifier, revision):
     if candidate is None or candidate.revision != revision:
         raise ValueError('mijia_enrollment_changed')
     family, household, grant = candidate.context
-    if not home.power.lan.ready(family, candidate.did):
+    route = home.power.lan.route_token(family, candidate.did)
+    if route is None:
         raise ValueError('mijia_enrollment_offline')
 
     async with asyncio.timeout(15):
@@ -144,7 +145,8 @@ async def enroll(home, identifier, revision):
             readings[target.entity.id] = row['power']
 
     async with home.core.actions._lock:
-        if candidate != enrollment_candidates(home).get(identifier) or not home.power.lan.ready(family, candidate.did):
+        if (candidate != enrollment_candidates(home).get(identifier)
+                or home.power.lan.route_token(family, candidate.did) is not route):
             raise ValueError('mijia_enrollment_changed')
         previous, _ = home.native_catalog()
         if previous is None:
@@ -160,7 +162,7 @@ async def enroll(home, identifier, revision):
             home.save_native_catalog(updated)
         context = (family, grant)
         for target in targets:
-            home.record((context, target.reference), readings[target.entity.id], lambda: True)
+            home.record((context, target.reference), readings[target.entity.id], lambda: True, route)
         return candidate.device_id
 
 

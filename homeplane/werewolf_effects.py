@@ -152,6 +152,8 @@ class SceneLights:
             raise ValueError('scene_light_brightness_unavailable')
         power = home.writer(target, context=context, target=lamp)
         brightness = home.setting_writer(context, lamp, setting)
+        if power is None or brightness is None:
+            raise ValueError('scene_light_unavailable')
         binding = digest(['werewolf-lan-light/1', power.fingerprint(), brightness.fingerprint()])
         if fingerprint is not None and binding != fingerprint:
             raise ValueError('scene_light_binding_changed')

@@ -19,6 +19,7 @@ class MijiaLanClient:
         self.family = None
         self.inventory = None
         self.routes = frozenset()
+        self._route_tokens = {}
         self.connected = False
         self.push = 0
         self.updated_at = None
@@ -41,6 +42,16 @@ class MijiaLanClient:
         return {'connected': live, 'control_devices': len(self.routes) if live else 0,
                 'push_capable': self.push if live else 0}
 
+    def route_token(self, family, did):
+        return self._route_tokens.get(did) if self.ready(family, did) else None
+
+    def _update_routes(self, routes, connected, push):
+        # 仅延续仍在线且路径未消失的设备，重连不复用断线前的读回。
+        previous = self._route_tokens if self.ready(self.family) else {}
+        self._route_tokens = {did: previous.get(did) or object() for did in routes} if connected else {}
+        self.routes = frozenset(routes)
+        self.connected, self.push, self.updated_at = connected, push, time.monotonic()
+
     async def _open(self, family, inventory=None):
         from .embodied.paths import DATA, PROJECT, PYTHON
 
@@ -62,6 +73,7 @@ class MijiaLanClient:
         self.family = self.updated_at = None
         self.inventory = None
         self.routes, self.connected, self.push = frozenset(), False, 0
+        self._route_tokens.clear()
         if proc is None or proc.returncode is not None:
             return
         proc.stdin.close()
@@ -103,16 +115,25 @@ class MijiaLanClient:
             raise ValueError('mijia_lan_unavailable')
 
     async def request(self, request, *, family, guard=None):
-        if not self.ready(family, request.get('did')):
+        did = request.get('did')
+        route = self.route_token(family, did)
+        if route is None:
             raise ValueError('mijia_lan_unavailable')
+
+        def current():
+            return self.route_token(family, did) is route and (guard is None or guard())
+
         read_only = request.get('cover') == 'read' or not {'cover', 'power', 'value', 'hvac_mode'}.intersection(request)
         async with asyncio.timeout(1.6 if read_only else 5):
-            reply = await self._call(request, family, guard=guard)
+            reply = await self._call(request, family, guard=current)
+        if self.route_token(family, did) is not route:
+            raise ValueError('mijia_lan_unavailable')
         if 'error' in reply:
             if reply['error'] in ('mijia_property_unsupported', 'mijia_permission_changed'):
                 raise ValueError(reply['error'])
             # 本地候选失效后，让下一次用户操作重新选择仍可用的渠道。
-            self.routes = self.routes.difference({request.get('did')})
+            self.routes = self.routes.difference({did})
+            self._route_tokens.pop(did, None)
             raise ValueError('mijia_lan_unavailable')
         return reply
 
@@ -154,8 +175,7 @@ class MijiaLanClient:
                             or type(row.get('push')) is not int or not 0 <= row['push'] <= len(ids)
                             or type(row.get('connected')) is not bool):
                         raise ValueError('mijia_lan_unavailable')
-                    self.routes = frozenset(ids)
-                    self.connected, self.push, self.updated_at = row['connected'], row['push'], time.monotonic()
+                    self._update_routes(ids, row['connected'], row['push'])
                     await asyncio.sleep(3)
                 except (OSError, ValueError, TimeoutError):
                     await self._close_process()

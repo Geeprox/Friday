@@ -19,7 +19,8 @@ from homeplane.mijia_control import MijiaPower
 from homeplane.mijia_lan_client import MijiaLanClient
 from homeplane.mijia_power_home import MijiaPowerHome, NATIVE_CATALOG
 from homeplane.rule_contracts import RuleIR
-from tests.test_connection_setup import ORIGIN, fresh
+from tests.test_connection_setup import ORIGIN
+from tests.test_connection_setup import fresh as fresh
 from tests.test_homeplane_core_rules import enable
 from tests.test_mijia_power_home import Gateway
 
@@ -86,6 +87,36 @@ def client_for(backend, address='127.0.0.1'):
 def control_request(entity, event_id, power):
     return dict(target=entity['id'], operation='switch.set', desired={'power': power}, event_id=event_id,
                 expected_state_version=entity['state_version'])
+
+
+@pytest.mark.asyncio
+async def test_enrollment_rejects_readings_across_a_gateway_reconnect(fresh, tmp_path, monkeypatch):
+    backend, module = fresh
+    backend.persistent = True
+    directory, _, gateways = fixture_home(module, tmp_path, monkeypatch)
+    try:
+        await backend._connect()
+        gateway, = gateways
+        request_property = gateway.request
+
+        async def reconnect_between_reads(payload, *, family):
+            result = await request_property(payload, family=family)
+            if len(gateway.calls) == 1:
+                gateway.route_tokens.pop(NEW_DID)
+            return result
+
+        monkeypatch.setattr(gateway, 'request', reconnect_between_reads)
+        async with client_for(backend) as client:
+            status = (await client.get('/api/home/overview')).json()
+            candidate, = status['discovery']['devices']
+            response = await client.post('/api/embodied/discovery/enroll-device', headers=HEADERS,
+                                         json=dict(candidate=CANDIDATE, allow_power=True,
+                                                   expected_revision=candidate['enrollment_revision']))
+            assert response.status_code == 409 and response.json()['detail'] == 'mijia_enrollment_changed'
+            assert not (directory / NATIVE_CATALOG).exists()
+            gateway.manager.set_prop_async.assert_not_awaited()
+    finally:
+        await backend.close()
 
 
 @pytest.mark.asyncio

@@ -255,7 +255,8 @@ class MijiaPower:
         urn = catalog['urn']
         did = identity.split('_', 1)[1]
         family = self.current_family()
-        local = bool(family and channel != 'cloud' and self.lan.ready(family, did))
+        route = self.lan.route_token(family, did) if family and channel != 'cloud' else None
+        local = route is not None
         if (channel == 'lan' and not local) or (quick and (not local or urn not in self.specs)):
             return None
         try:
@@ -280,10 +281,10 @@ class MijiaPower:
             return MijiaPowerWriter(self.request, binding, current)
 
         async def request_lan(payload):
-            return await self.lan.request(payload, family=family)
+            return await self.lan.request(payload, family=family, guard=local_current)
 
         def local_current():
-            return current() and self.lan.ready(family, did)
+            return self.lan.route_token(family, did) is route and current()
 
         return MijiaPowerWriter(request_lan, binding, local_current, channel='lan', family=family)
 

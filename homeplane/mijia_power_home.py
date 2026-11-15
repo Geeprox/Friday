@@ -279,6 +279,7 @@ class Sample:
     expires: float
     version: str
     comparison: str | int | float | CoverReading | tuple[str, str]
+    route: object
 
 
 @dataclass(frozen=True)
@@ -717,7 +718,7 @@ class MijiaPowerHome:
             return None
         value = self.samples.get((context, reference))
         did = identity.split('_', 1)[1]
-        if value and time.monotonic() < value.expires and self.power.lan.ready(context[0], did):
+        if value and time.monotonic() < value.expires and self.power.lan.route_token(context[0], did) is value.route:
             return value
         return None
 
@@ -1086,14 +1087,19 @@ class MijiaPowerHome:
         _, siid, piid = target.property_key
         did = target.identity.split('_', 1)[1]
         key = context, target.reference
+        route = self.power.lan.route_token(family, did)
+        if route is None:
+            return None
 
         def current():
             refreshed, targets = self.active()
             selected = targets.get(entity_id)
             return (refreshed == context and selected is not None and selected.reference == target.reference
-                    and self.power.lan.ready(family, did))
+                    and self.power.lan.route_token(family, did) is route)
 
         async def request(payload):
+            if not current():
+                raise ValueError('mijia_permission_changed')
             if target.native:
                 payload = {**payload, 'native_power': self.fingerprint(entity_id)}
             if 'power' not in payload:
@@ -1105,34 +1111,34 @@ class MijiaPowerHome:
                 {**payload, 'authority_revision': revision, 'deadline': deadline}, family=family,
                 guard=lambda: current() and guard())
 
-        if not self.power.lan.ready(family, did):
-            return None
         return MijiaPowerWriter(request, {'did': did, 'siid': siid, 'piid': piid, 'grant': grant},
                                 current, channel='lan', family=family,
-                                on_readback=lambda row: self.record(key, row['power'], current))
+                                on_readback=lambda row: self.record(key, row['power'], current, route))
 
-    def record(self, key, value, current, *, comparison=None):
+    def record(self, key, value, current, route, *, comparison=None):
         if not current():
             raise ValueError('mijia_permission_changed')
         previous = self.samples.get(key)
         now = time.monotonic()
         comparison = value if comparison is None else comparison
-        version = (previous.version if previous and previous.expires > now and previous.comparison == comparison
+        version = (previous.version if previous and previous.route is route
+                   and previous.expires > now and previous.comparison == comparison
                    else uuid4().hex)
-        self.samples[key] = Sample(value, datetime.now(UTC), now + SAMPLE_TTL, version, comparison)
+        self.samples[key] = Sample(value, datetime.now(UTC), now + SAMPLE_TTL, version, comparison, route)
 
     def cover_writer(self, context, target, *, operation, desired, deadline, revision, guard):
         family, grant = context
         did = target.identity.split('_', 1)[1]
         binding = {'registered_cover': cover_digest(target), 'did': did, 'grant': grant}
-        if not self.power.lan.ready(family, did):
+        route = self.power.lan.route_token(family, did)
+        if route is None:
             return None
 
         def current():
             refreshed, targets = self.active()
             selected = targets.get(target.entity.id)
             return (refreshed == context and selected is not None and selected.reference == target.reference
-                    and self.power.lan.ready(family, did))
+                    and self.power.lan.route_token(family, did) is route)
 
         async def request(fields):
             if not current():
@@ -1146,12 +1152,16 @@ class MijiaPowerHome:
                 guard=lambda: current() and guard(),
             )
 
-        return CoverWriter(target, request, current, lambda row: self.record((context, target.reference), row, current),
+        return CoverWriter(target, request, current,
+                           lambda row: self.record((context, target.reference), row, current, route),
                            family, operation, desired)
 
     def setting_writer(self, context, target, setting, *, deadline=None, revision=None, guard=None):
         family, grant = context
         did = target.identity.split('_', 1)[1]
+        route = self.power.lan.route_token(family, did)
+        if route is None:
+            return None
         climate_mode = isinstance(setting, ClimateMode)
         keys = ({'registered_climate_mode': mode_revision(setting)} if climate_mode
                 else {'numeric': True, 'siid': target.siid, 'piid': setting.piid})
@@ -1161,7 +1171,7 @@ class MijiaPowerHome:
             refreshed, targets = self.active()
             selected = targets.get(target.entity.id)
             return (refreshed == context and selected is not None and selected.reference == target.reference
-                    and setting in self.settings_for(selected) and self.power.lan.ready(family, did))
+                    and setting in self.settings_for(selected) and self.power.lan.route_token(family, did) is route)
 
         async def request(payload):
             if not current():
@@ -1180,12 +1190,12 @@ class MijiaPowerHome:
             power_key = context, target.reference
 
             def record_mode(power, mode):
-                self.record(power_key, power, current)
-                self.last_poll[power_key] = time.monotonic()
+                self.record(power_key, power, current, route)
+                self.last_poll[power_key] = (route, time.monotonic())
                 if mode is None:
                     self.samples.pop(setting_key, None)
                 else:
-                    self.record(setting_key, mode, current, comparison=(mode, self.samples[power_key].version))
+                    self.record(setting_key, mode, current, route, comparison=(mode, self.samples[power_key].version))
 
             def invalidate():
                 self.samples.pop(power_key, None)
@@ -1196,12 +1206,15 @@ class MijiaPowerHome:
             return ClimateModeWriter(setting, lambda payload: request({**binding, **payload}),
                                      current, record_mode, invalidate)
         return SettingWriter(setting, binding, family, request, current,
-                             lambda value, raw: self.record((context, self.setting_key(target, setting)), value, current,
+                             lambda value, raw: self.record((context, self.setting_key(target, setting)), value, current, route,
                                                             comparison=raw))
 
     async def read_sensor(self, context, sensor):
         family, grant = context
         did = sensor.identity.split('_', 1)[1]
+        route = self.power.lan.route_token(family, did)
+        if route is None:
+            raise ValueError('mijia_lan_unavailable')
         result = await self.power.lan.request(
             {'numeric': True, 'did': did, 'siid': sensor.siid, 'piid': sensor.piid, 'grant': grant}, family=family)
         value = result.get('value')
@@ -1211,9 +1224,10 @@ class MijiaPowerHome:
         def current():
             live = self.context()
             return (live is not None and (live[0], live[2]) == context and
-                    self.active_sensors().get(sensor.entity.id) == sensor and self.power.lan.ready(family, did))
+                    self.active_sensors().get(sensor.entity.id) == sensor
+                    and self.power.lan.route_token(family, did) is route)
 
-        self.record((context, sensor.reference), value, current)
+        self.record((context, sensor.reference), value, current, route)
 
     async def refresh_hints(self, context, entries, now):
         fetch = getattr(self.power.lan, 'property_notifications', None)
@@ -1276,18 +1290,25 @@ class MijiaPowerHome:
         await self.refresh_hints(context, entries, now)
         if adapter is not self.core.adapter or not self.uses_lan_home(adapter) or self.core.actions._lock.locked():
             return
+        routes = {identity: self.power.lan.route_token(context[0], identity.split('_', 1)[1])
+                  for identity in {target.identity for _, target, _ in entries}}
+
+        def last_checked(reference, target):
+            previous_route, checked = self.last_poll.get((context, reference), (None, float('-inf')))
+            return checked if previous_route is routes[target.identity] else float('-inf')
+
         # 优先补足周期读回，避免频繁变化的设备挤掉其他设备。
         def order(entry):
-            recent = self.last_poll.get((context, entry[0]), 0)
+            recent = last_checked(entry[0], entry[1])
             return now - recent < 20, entry[0] not in self.hints, recent
 
         for reference, target, setting in sorted(entries, key=order):
             key = context, reference
-            elapsed = now - self.last_poll.get(key, now - 20)
+            elapsed = now - last_checked(reference, target)
             if elapsed < 20 and (reference not in self.hints or elapsed < 2):
                 continue
-            did = target.identity.split('_', 1)[1]
-            if not self.power.lan.ready(context[0], did):
+            route = routes[target.identity]
+            if route is None:
                 continue
             if setting and target.entity.kind == 'light':
                 power = self.sample_for(context, target)
@@ -1295,10 +1316,12 @@ class MijiaPowerHome:
                     self.samples.pop(key, None)
                     continue
             self.hints.discard(reference)
-            self.last_poll[key] = now
+            self.last_poll[key] = (route, now)
             try:
                 if setting:
-                    await self.setting_writer(context, target, setting).readback()
+                    writer = self.setting_writer(context, target, setting)
+                    if writer is not None:
+                        await writer.readback()
                 elif isinstance(target, Sensor):
                     await self.read_sensor(context, target)
                 else:

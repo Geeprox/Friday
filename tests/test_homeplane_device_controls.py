@@ -256,7 +256,8 @@ async def test_existing_device_plan_uses_exact_mijia_power_binding_or_one_ha_wri
             raise ValueError('synthetic')
         return {'power': 'on' if len(mi_calls) > 1 else 'off'}
 
-    async def local(payload, *, family):
+    async def local(payload, *, family, guard=None):
+        assert guard is not None and guard()
         local_calls.append(payload)
         assert family == 'b' * 64
         if case == 'lan_preflight':
@@ -267,7 +268,13 @@ async def test_existing_device_plan_uses_exact_mijia_power_binding_or_one_ha_wri
             return {'power': 'on'}
         return {'accepted': True} if 'power' in payload else {'power': 'off' if len(local_calls) == 1 else 'on'}
 
-    lan = SimpleNamespace(ready=lambda family, did: case.startswith('lan_') and did == '200000001', request=local)
+    route = object()
+
+    def ready(family, did):
+        return case.startswith('lan_') and did == '200000001'
+
+    lan = SimpleNamespace(ready=ready, request=local)
+    lan.route_token = lambda family, did: route if lan.ready(family, did) else None
     core.adapter._inventory = registry
     core.actions.mijia = MijiaPower(service, spec=public_spec, request=send, lan=lan)
     core.actions.mijia.specs[urn] = spec
