@@ -113,6 +113,22 @@ async def test_real_room_child_preserves_registration_draft_and_unconfigured_lay
     assert process.returncode is not None and not session.owner.slot
 
 
+def test_registration_decodes_once_and_still_checks_view_between_matches(image, monkeypatch):
+    from homeplane.embodied.room_engine import DEFAULT, Room
+
+    room = Room(DEFAULT, image)
+    cover = cv2.imencode(".jpg", np.full((360, 640), 36, dtype=np.uint8))[1].tobytes()
+    original = cv2.imdecode
+    decode = Mock(side_effect=original)
+    monkeypatch.setattr(cv2, "imdecode", decode)
+    assert room.register(image, [], 10.0, check_visibility=True) is True
+    assert decode.call_count == 1 and room.reg_info["status"] == "locked"
+    assert room.register(cover, [], 10.1, check_visibility=True) is False
+    assert decode.call_count == 2 and room.reg_checked == 10.0
+    room.register(cover, [], 10.2)
+    assert decode.call_count == 2
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy_reference", [False, True])
 async def test_real_room_child_confirms_patrol_from_background_with_moving_foreground(
@@ -208,15 +224,14 @@ class Room:
         self.reg_info={'status':'locked'}
         self.registration=SimpleNamespace(tolist=lambda:[[1,0,0],[0,1,0],[0,0,1]])
     def expect_motion(self,now,seconds):self.command_until=now+seconds
-    def register(self,*_):
+    def register(self,*_,check_visibility=False):
         if mode=='register':stall()
+        if check_visibility and mode=='visible':stall()
+        return True if check_visibility else None
     def update(self,*_):
         if mode=='layout':stall()
         return dict(unavailable_layout(),registration={'status':'locked'})
-def visible(_):
-    if mode=='visible':stall()
-    return True
-serve(sys.stdin.buffer,sys.stdout.buffer,Path(sys.argv[1]),factory=Room,visibility=visible,draft_factory=lambda _:None)
+serve(sys.stdin.buffer,sys.stdout.buffer,Path(sys.argv[1]),factory=Room,draft_factory=lambda _:None)
 """
 
 

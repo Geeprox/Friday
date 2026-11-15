@@ -14,7 +14,10 @@ from .pose_rules import iou
 
 
 def visible_scene(jpeg):
-    image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_GRAYSCALE)
+    return visible_scene_luma(cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_GRAYSCALE))
+
+
+def visible_scene_luma(image):
     if image is None:
         return False
     # Ignore the timestamp overlay: it is sharp even behind the privacy cover.
