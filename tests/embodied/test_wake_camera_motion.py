@@ -85,13 +85,18 @@ def cue_source(h, clock, owner):
     return source_function(WORKER, 'camera_motion_cue', scope), quiet
 
 
-def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, recognizer=None, room_lock=None):
+def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, recognizer=None, room_lock=None,
+                 read_privacy=None):
     """执行主、副镜头原来的发送函数，原生端只以管道回执替身回应。"""
     if owner == 'primary':
         scope, sent = primary_scope()
         scope.update(time=clock, SELECTED=CAMERA, home=h, state=state, director=director,
                      safety=safety, previews=SimpleNamespace(sessions={}), direction='right',
                      games=SimpleNamespace(public={}), party_camera=party, camera_motion_cue=cue)
+        if read_privacy is not None:
+            scope['camera_is_open'] = read_privacy
+        if room_lock is not None:
+            scope['room_lock'] = room_lock
         extract(WORKER, {'decision_current'}, scope)
 
         async def send(direction):
@@ -118,7 +123,7 @@ def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, recogn
                      director=director, selected=CAMERA, self=motion, item=item, waiters=waiters,
                      process=SimpleNamespace(returncode=None,
                          stdin=SimpleNamespace(write=write, drain=AsyncMock())),
-                     camera_is_open=AsyncMock(return_value=True), motion_lock=asyncio.Lock(),
+                     camera_is_open=read_privacy or AsyncMock(return_value=True), motion_lock=asyncio.Lock(),
                      recognizer=recognizer, room_lock=room_lock or asyncio.Lock(), privacy_closed=Mock())
         extract(PREVIEWS, {'current_sample', 'send_motion'}, scope)
 
@@ -200,6 +205,58 @@ async def test_wake_search_turns_and_follows_on_the_same_capture(
     assert not director.public()['physical_motion_verified']
     assert not home.attention.latest
     assert cue('cam_3333333333', state, None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+@pytest.mark.parametrize('delay', ['privacy', 'view_lock'])
+async def test_wake_can_expire_before_dispatch_while_waiting_for_privacy_or_view(tmp_path, monkeypatch, owner, delay):
+    from homeplane.runtime_log import RuntimeLog
+
+    clock = SimpleNamespace(at=0.)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, source = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
+    journal = RuntimeLog()
+    for args, kwargs in home.runtime_log.record.call_args_list:
+        journal.record(*args, **kwargs)
+    home.runtime_log = journal
+    cue, safety = cue_source(home, clock, owner)
+    director = CameraDirector()
+    director.apply_mode('auto', 'original')
+    director.choose(current_frame(1., source), 1.)
+    state = current_frame(clock.at, source)
+    assert director.choose(state, clock.at, sound_cue=cue(CAMERA['id'], state, None)) == 'right'
+    lock = asyncio.Lock()
+    cancelled = asyncio.Event()
+
+    async def wait_for_shutter(_):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    read_privacy = AsyncMock(side_effect=wait_for_shutter)
+    if delay == 'view_lock':
+        await lock.acquire()
+    send, sent = dispatch_for(owner, state, clock, director, home, cue, safety, PartyCamera(),
+                              room_lock=lock, read_privacy=read_privacy)
+    clock.at += 1.42
+    expected = 'motor_privacy_timeout' if delay == 'privacy' else 'motor_request_expired'
+    try:
+        with pytest.raises(RuntimeError, match=expected):
+            await asyncio.wait_for(send('right'), 1.)
+    finally:
+        if delay == 'view_lock':
+            lock.release()
+    assert read_privacy.await_count == int(delay == 'privacy')
+    assert cancelled.is_set() == (delay == 'privacy')
+    assert not sent and not lock.locked()
+    assert director.failed_moves == 0
+    receipts = [row['code'] for row in journal.export()['events']
+                if row['correlation'] == home.wake_camera.correlation]
+    code = 'wake_motor_privacy_timeout' if delay == 'privacy' else 'wake_motor_dispatch_expired'
+    assert receipts == ['wake_confirmed', code]
+    assert home.wake_motion_counts.public() == {'wake_motor_sent': 0, 'wake_motor_acknowledged': 0}
 
 
 @pytest.mark.asyncio

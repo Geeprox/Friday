@@ -199,6 +199,26 @@ async def test_primary_reserves_motion_before_first_await_and_bounds_child_comma
 
 
 @pytest.mark.asyncio
+async def test_primary_dispatches_with_one_privacy_read_inside_remaining_frame_window():
+    scope, sent = primary_scope()
+    observed = 60.
+    now = observed + .55
+    reads = []
+    scope.update(last_frame=observed, time=SimpleNamespace(monotonic=lambda: now, time=time.time))
+
+    async def read_power(_):
+        nonlocal now
+        reads.append((now, scope['room_lock'].locked()))
+        now += .60
+        return True
+
+    scope['camera_is_open'] = read_power
+    await scope['motor_step']('right', observed, expected_intent='original', decision_current=lambda: True)
+    assert reads == [(observed + .55, True)]
+    assert sent[0]['direction'] == 'right' and sent[0]['expires_mono'] == observed + 1.5
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['direction', 'tracking', 'post_move', 'epoch', 'privacy', 'source', 'review', 'fall'])
 async def test_secondary_checks_latest_observation_after_privacy_read(change):
     director = CameraDirector()
@@ -241,7 +261,7 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['none', 'new_target', 'expired', 'source_closed'])
+@pytest.mark.parametrize('change', ['none', 'new_target', 'expired', 'shutter_closed', 'source_closed'])
 async def test_secondary_rechecks_motor_authority_after_waiting_for_room(change):
     from tests.embodied.test_camera_audio import actual
 
@@ -279,16 +299,21 @@ async def test_secondary_rechecks_motor_authority_after_waiting_for_room(change)
             state['people'] = view(now, x=.05)['people']
         elif change == 'expired':
             now += 1.51
+        elif change == 'shutter_closed':
+            scope['camera_is_open'].return_value = False
         elif change == 'source_closed':
             item['source_active'] = False
     if change == 'none':
         await job
         assert [row['direction'] for row in sent] == ['right']
     else:
-        error = 'capture_source_changed' if change == 'source_closed' else 'stale_input'
+        error = {'source_closed': 'capture_source_changed', 'expired': 'motor_request_expired',
+                 'shutter_closed': 'privacy_shutter_closed'}.get(change, 'stale_input')
         with pytest.raises(RuntimeError, match=error):
             await job
         assert not sent
+        if change == 'expired':
+            scope['camera_is_open'].assert_not_awaited()
     assert not waiters
 
 
@@ -344,6 +369,7 @@ async def test_primary_expired_manual_wait_preserves_current_observation():
     scope['room_lock'] = Wait()
     with pytest.raises(RuntimeError, match='motor_request_expired'):
         await scope['motor_step']('left')
+    scope['camera_is_open'].assert_not_awaited()
     assert not sent and not scope['motor_waiters'] and scope['motion_generation'] == 0
 
 

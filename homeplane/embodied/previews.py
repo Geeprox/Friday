@@ -470,6 +470,7 @@ class PreviewPool:
                 item['follow_picker'] = CameraFollowPicker(director, follow_sample,
                     lambda: (item['mode'], item['mode_revision']), lambda mode: self._set_mode(selected['id'], item, mode))
             async def send_motion(direction, observed=None, expected_epoch=None):
+                from homeplane.embodied.ptz_control import motor_dispatch_window
                 from homeplane.embodied.wake_diagnostics import record_wake_motor
 
                 if direction not in {'left','right','up','down'}:raise ValueError('invalid_motor_direction')
@@ -489,11 +490,12 @@ class PreviewPool:
                     self.runtime_log.record('embodied.command','start',correlation=correlation)
                     try:
                         if process.returncode is not None:raise RuntimeError('camera_not_owned')
-                        if not await camera_is_open(selected):
-                            privacy_closed()
-                            raise RuntimeError('privacy_shutter_closed')
                         # 等当前配准或布局完成，再清除这一视角。转向前后需要同一背景基准。
-                        async with room_lock:
+                        async with motor_dispatch_window(room_lock, expires, lambda: camera_is_open(selected),
+                                                         monotonic=time.monotonic) as opened:
+                            if not opened:
+                                privacy_closed()
+                                raise RuntimeError('privacy_shutter_closed')
                             if item['privacy_closed']:raise RuntimeError('privacy_shutter_closed')
                             if not item.get('source_active'):raise RuntimeError('capture_source_changed')
                             if process.returncode is not None:raise RuntimeError('camera_not_owned')
@@ -546,15 +548,17 @@ class PreviewPool:
                             record_wake_motor(self.runtime_log, wake, direction, result='cancelled', sent=sent)
                         raise
                     except Exception as error:
-                        if str(error) not in {'stale_input', 'camera_intent_changed', 'motor_request_expired',
-                                              'privacy_shutter_closed', 'capture_source_changed', 'source_closed',
-                                              'capture_stream_unavailable'}:
+                        code = str(error)
+                        if code not in {'stale_input', 'camera_intent_changed', 'motor_request_expired',
+                                        'motor_privacy_timeout', 'privacy_shutter_closed', 'capture_source_changed',
+                                        'source_closed', 'capture_stream_unavailable'}:
                             director.failed(time.monotonic())
                         self.runtime_log.record('embodied.command','result',correlation=correlation,
                             result='unavailable',code='runtime_error',elapsed_ms=round((time.monotonic()-began)*1000))
                         if wake is not None:
                             record_wake_motor(self.runtime_log, wake, direction, result='unavailable', sent=sent,
-                                              rejected=str(error) in {'local_motor_rejected', 'motor_request_expired'} and sent)
+                                              rejected=code in {'local_motor_rejected', 'motor_request_expired'} and sent,
+                                              blocked=code)
                         raise
                     finally:
                         waiters.pop(request_id,None)

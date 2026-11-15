@@ -15,11 +15,31 @@ import secrets
 import stat
 import tempfile
 import time
+from contextlib import asynccontextmanager
 
 from homeplane.embodied.paths import PRIVATE, camera, camera_storage
 
 FLAGS = dict.fromkeys(('cruise', 'human_tracking', 'pet_tracking', 'human_close_up'))
 logging.getLogger("miot").setLevel(logging.CRITICAL)
+
+
+@asynccontextmanager
+async def motor_dispatch_window(lock, expires, read_privacy, *, monotonic=time.monotonic):
+    """等画面状态可锁定后读一次隐私状态，沿用原始云台命令时限。"""
+    remaining = expires - monotonic()
+    if remaining <= 0:
+        raise RuntimeError('motor_request_expired')
+    reason = 'motor_request_expired'
+    try:
+        async with asyncio.timeout(remaining), lock:
+            if monotonic() >= expires:
+                raise RuntimeError(reason)
+            reason = 'motor_privacy_timeout'
+            opened = await read_privacy()
+            reason = 'motor_request_expired'
+            yield opened
+    except TimeoutError:
+        raise RuntimeError(reason) from None
 
 
 def atomic(path, data):

@@ -389,6 +389,7 @@ configure(registry, bindings, games, home)
 
 
 async def motor_step(direction, observed=None, expected_intent=None, decision_current=None, wake=None):
+    from homeplane.embodied.ptz_control import motor_dispatch_window
     from homeplane.embodied.wake_diagnostics import record_wake_motor
 
     global motor_sequence, motion_generation, motor_last_sent
@@ -421,11 +422,9 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
     wake_submitted_at = None
     home.runtime_log.record('embodied.command','start',correlation=correlation)
     try:
-        if not await camera_is_open(SELECTED):
-            close_primary_view()
-            raise RuntimeError('privacy_shutter_closed')
-        async with room_lock:
-            if not await camera_is_open(SELECTED):
+        async with motor_dispatch_window(room_lock, expires, lambda: camera_is_open(SELECTED),
+                                         monotonic=time.monotonic) as opened:
+            if not opened:
                 close_primary_view()
                 raise RuntimeError('privacy_shutter_closed')
             # Registration and privacy reads may have waited. No await separates
@@ -493,8 +492,10 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             result='unavailable',code='runtime_error',elapsed_ms=round((time.monotonic()-began)*1000))
         if wake is not None:
+            code = str(error)
             record_wake_motor(home.runtime_log, wake, direction, result='unavailable', sent=sent,
-                              rejected=str(error) in {'local_motor_rejected', 'motor_request_expired'} and sent)
+                              rejected=code in {'local_motor_rejected', 'motor_request_expired'} and sent,
+                              blocked=code)
         raise
     finally:
         motor_waiters.pop(request_id, None)
@@ -577,7 +578,8 @@ async def camera_search():
                 except (RuntimeError, OSError, TimeoutError) as error:
                     # Capture connection is not ready during startup; retry only
                     # after a new fresh observation, with no queued motor commands.
-                    if str(error) not in {'stale_input', 'camera_intent_changed', 'motor_busy', 'motor_request_expired', 'capture_source_changed'}:
+                    if str(error) not in {'stale_input', 'camera_intent_changed', 'motor_busy',
+                                          'motor_request_expired', 'motor_privacy_timeout', 'capture_source_changed'}:
                         state['camera_control']['phase'] = 'motor_unavailable'
                         director.failed(time.monotonic())
             await asyncio.sleep(.3)

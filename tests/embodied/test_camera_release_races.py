@@ -95,7 +95,7 @@ async def test_manual_close_during_room_wait_blocks_motor_send():
         room_lock=RoomLock(),room=SimpleNamespace(expect_motion=noop))
     functions({'motor_step'},scope)
     with pytest.raises(RuntimeError,match='privacy_shutter_closed'):await scope['motor_step']('left',time.monotonic())
-    assert reads==2 and not sent
+    assert reads==1 and not sent
 
 
 @pytest.mark.asyncio
