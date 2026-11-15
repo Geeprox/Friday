@@ -119,13 +119,18 @@ class Sensor(Contract):
 
     @model_validator(mode='after')
     def validate_binding(self):
-        if (self.entity.kind != 'sensor' or not self.entity.id.startswith('ha:') or ':provisional:' in self.entity.id
+        if (self.entity.kind != 'sensor' or not (self.native or self.entity.id.startswith('ha:'))
+                or ':provisional:' in self.entity.id
                 or self.entity.simulated or self.device.simulated
                 or self.device.category != 'device' or not any(
                     b.source == 'xiaomi-identity' and b.external_id == self.identity for b in self.device.bindings
                 )):
             raise ValueError('mijia_invalid_sensor')
         return self
+
+    @property
+    def native(self):
+        return self.entity.id.startswith('mijia:sensor:')
 
     @property
     def property_key(self):
@@ -162,7 +167,8 @@ class NumericCatalog(Contract):
 
     @model_validator(mode='after')
     def unique_sensors(self):
-        if (len({sensor.entity.id for sensor in self.sensors}) != len(self.sensors)
+        if (any(sensor.native for sensor in self.sensors)
+                or len({sensor.entity.id for sensor in self.sensors}) != len(self.sensors)
                 or len({sensor.property_key for sensor in self.sensors}) != len(self.sensors)):
             raise ValueError('mijia_invalid_sensor')
         return self

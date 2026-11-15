@@ -80,3 +80,26 @@ test('an initial outage has a usable retry and a failed refresh retains the last
  assert.equal(f.context.data.generated_at,2);assert.equal(f.view.children[0].text,'家庭空间');
  assert.equal(f.toasts.length,1);assert.equal(f.toasts[0][0],'家庭状态同步暂时中断');
 });
+
+test('meter and power enrollment request their respective permissions',async()=>{
+ const enrollment=source.slice(source.indexOf(' function enrollDevice('),source.indexOf(' function drawDiscovery('));
+ for(const access of ['readings','power']){
+  const calls=[],opened=[],dialogs=[];
+  const h=(tag,text,attrs={})=>({tag,text,textContent:text,attrs,children:[],append(...children){this.children.push(...children);},
+   addEventListener(){},showModal(){dialogs.push(this);},close(){}});
+  const device={id:'synthetic-device',name:'示例设备',enrollment_revision:'fixture',enrollment_access:access};
+  const context=vm.createContext({h,add:(node,...children)=>{node.append(...children);return node;},
+   btn:(text,run)=>({...h('button',text),run}),view:h('section'),alive:true,load:async()=>{},
+   inspect:item=>opened.push(item),toast(){},data:{devices:[device]},
+   api:async(path,body)=>{calls.push([path,JSON.parse(JSON.stringify(body))]);return{device:device.id};}});
+  vm.runInContext(enrollment,context);
+  context.enrollDevice(device);
+  const [dialog]=dialogs,confirm=dialog.children.at(-1).children.at(-1);
+  assert.equal(confirm.text,access==='readings'?'接入传感器':'接入并允许控制');
+  await confirm.run();
+  assert.deepEqual(calls,[['/api/embodied/discovery/enroll-device',{
+   candidate:device.id, expected_revision:'fixture', [access==='readings'?'allow_readings':'allow_power']:true,
+  }]]);
+  assert.deepEqual(opened,[device]);
+ }
+});

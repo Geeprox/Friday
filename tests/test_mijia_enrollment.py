@@ -17,7 +17,7 @@ from homeplane.embodied.mijia_power import family_binding, grant_binding
 from homeplane.embodied.ptz_control import atomic
 from homeplane.mijia_control import MijiaPower
 from homeplane.mijia_lan_client import MijiaLanClient
-from homeplane.mijia_power_home import MijiaPowerHome, NATIVE_CATALOG
+from homeplane.mijia_power_home import MijiaPowerHome, NATIVE_CATALOG, NATIVE_SENSORS
 from homeplane.rule_contracts import RuleIR
 from tests.test_connection_setup import ORIGIN
 from tests.test_connection_setup import fresh as fresh
@@ -29,6 +29,7 @@ NEW_DID = '900000001'
 IDENTITY = f'cn_{NEW_DID}'
 URN = 'urn:miot-spec-v2:device:outlet:00000001:fixture-dual:1'
 MODEL = 'fixture.outlet.dual'
+SENSOR_URN = 'urn:miot-spec-v2:device:temperature-humidity-sensor:0000A00A:fixture-sensor:1'
 HOME = 'synthetic-home'
 CANDIDATE = reference('cn', HOME, NEW_DID)
 HEADERS = {'Origin': ORIGIN}
@@ -42,23 +43,40 @@ def spec(first, second):
     return {'type': URN, 'services': [outlet(5, first), outlet(9, second)]}
 
 
-def fixture_home(module, tmp_path, monkeypatch):
+def sensor_spec():
+    return {'type': SENSOR_URN, 'services': [{
+        'iid': 2, 'type': 'urn:miot-spec-v2:service:environment:0000780A:fixture:1',
+        'properties': [
+            {'iid': 1, 'type': 'urn:miot-spec-v2:property:temperature:00000020',
+             'access': ['read', 'notify'], 'format': 'float', 'unit': 'celsius'},
+            {'iid': 2, 'type': 'urn:miot-spec-v2:property:relative-humidity:0000000C',
+             'access': ['read'], 'format': 'uint8', 'unit': 'percentage'},
+            {'iid': 3, 'type': 'urn:miot-spec-v2:property:illumination:00000065',
+             'access': ['read', 'write'], 'format': 'uint32', 'unit': 'lux'},
+        ],
+    }]}
+
+
+def fixture_home(module, tmp_path, monkeypatch, *, sensor=False):
     directory = tmp_path / 'embodied' / 'private'
     directory.mkdir(parents=True, mode=0o700)
     saved = {'cloud_server': 'cn', 'user_info': {'uid': 'synthetic-account'}, 'oauth_uuid': 'synthetic-mi-grant'}
     atomic(directory / 'miot-session.json', saved)
     atomic(directory / 'home-room-membership.json', {'home_id': HOME})
     grant = grant_binding(saved)
+    specification = sensor_spec() if sensor else spec(3, 7)
+    model = 'fixture.temperature.humidity' if sensor else MODEL
     report = {
-        'state': 'ready', 'region': 'cn', 'models': {IDENTITY: {'urn': URN, 'model': MODEL}},
+        'state': 'ready', 'region': 'cn', 'models': {IDENTITY: {'urn': specification['type'], 'model': model}},
         'grant': grant, 'family': family_binding(grant, HOME), 'household': account_household(saved, HOME),
         'inputs': home_input(directory)[2], 'devices': [
-            {'id': CANDIDATE, 'identity': IDENTITY, 'name': '示例双路插座', 'room': '书房',
+            {'id': CANDIDATE, 'identity': IDENTITY, 'name': '示例温湿度计' if sensor else '示例双路插座', 'room': '书房',
              'kind': 'device', 'online': True},
         ],
     }
     gateways = []
-    fields = {(NEW_DID, 5, 3): False, (NEW_DID, 9, 7): True}
+    fields = ({(NEW_DID, 2, 1): 22.4, (NEW_DID, 2, 2): 0, (NEW_DID, 2, 3): 5} if sensor
+              else {(NEW_DID, 5, 3): False, (NEW_DID, 9, 7): True})
 
     def discovery(service):
         service.discovery_report = report
@@ -68,7 +86,7 @@ def fixture_home(module, tmp_path, monkeypatch):
         gateway = Gateway(directory, power.service, fields)
         power.lan = gateway
         gateway.close = AsyncMock()
-        power.spec = AsyncMock(return_value=spec(3, 7))
+        power.spec = AsyncMock(return_value=specification)
         power.request = AsyncMock(side_effect=AssertionError('不应经米家云写入'))
         power.home = MijiaPowerHome(core, power)
         gateways.append(gateway)
@@ -90,10 +108,11 @@ def control_request(entity, event_id, power):
 
 
 @pytest.mark.asyncio
-async def test_enrollment_rejects_readings_across_a_gateway_reconnect(fresh, tmp_path, monkeypatch):
+@pytest.mark.parametrize('sensor', [False, True])
+async def test_enrollment_rejects_readings_across_a_gateway_reconnect(fresh, tmp_path, monkeypatch, sensor):
     backend, module = fresh
     backend.persistent = True
-    directory, _, gateways = fixture_home(module, tmp_path, monkeypatch)
+    directory, _, gateways = fixture_home(module, tmp_path, monkeypatch, sensor=sensor)
     try:
         await backend._connect()
         gateway, = gateways
@@ -109,14 +128,87 @@ async def test_enrollment_rejects_readings_across_a_gateway_reconnect(fresh, tmp
         async with client_for(backend) as client:
             status = (await client.get('/api/home/overview')).json()
             candidate, = status['discovery']['devices']
+            permitted = {'allow_readings': True} if sensor else {'allow_power': True}
             response = await client.post('/api/embodied/discovery/enroll-device', headers=HEADERS,
-                                         json=dict(candidate=CANDIDATE, allow_power=True,
+                                         json=dict(candidate=CANDIDATE, **permitted,
                                                    expected_revision=candidate['enrollment_revision']))
             assert response.status_code == 409 and response.json()['detail'] == 'mijia_enrollment_changed'
             assert not (directory / NATIVE_CATALOG).exists()
+            assert not (directory / NATIVE_SENSORS).exists()
             gateway.manager.set_prop_async.assert_not_awaited()
     finally:
         await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_sensor_enrollment_restores_readings_without_ha_or_control_authority(fresh, tmp_path, monkeypatch):
+    backend, module = fresh
+    backend.persistent = True
+    directory, discovery, gateways = fixture_home(module, tmp_path, monkeypatch, sensor=True)
+    route = '/api/embodied/discovery/enroll-device'
+    try:
+        await backend._connect()
+        gateway, = gateways
+        async with client_for(backend) as client:
+            result = (await client.get('/api/home/overview')).json()
+            candidate, = result['discovery']['devices']
+            assert candidate['enrollment_access'] == 'readings' and not result['devices']
+            command = {'candidate': CANDIDATE, 'expected_revision': candidate['enrollment_revision']}
+            response = await client.post(route, headers=HEADERS, json=command | {'allow_power': True})
+            assert response.status_code == 422 and not gateway.calls
+            response = await client.post(route, headers=HEADERS, json=command | {'allow_readings': True})
+            assert response.status_code == 200, response.text
+            connected = response.json()['device']
+            result = (await client.get('/api/home/overview')).json()
+            assert result['source'] == 'mijia-lan' and not result['discovery']['devices']
+            device, = result['devices']
+            assert device['id'] == connected and device['room'] == '书房' and not device['controls']
+            assert {(r['device_class'], r['value'], r['unit']) for r in device['readings']} == {
+                ('temperature', 22.4, '°C'), ('humidity', 0, '%'),
+            }
+            assert all(r['measured_at'] is None for r in device['readings'])
+            identifiers = {r['id'] for r in device['readings']}
+            assert (directory / NATIVE_SENSORS).is_file() and not (directory / NATIVE_CATALOG).exists()
+            assert not (directory / 'action-authority.json').exists()
+            assert [row['piid'] for row in gateway.calls] == [1, 2]
+            with pytest.raises(ValueError, match='mijia_permission_changed'):
+                await gateway.request({'did': NEW_DID, 'siid': 2, 'piid': 3, 'numeric': True,
+                                       'sensor_read': 'registered', 'grant': discovery['grant']},
+                                      family=discovery['family'])
+            assert gateway.manager.get_prop_async.await_count == 2
+            gateway.manager.set_prop_async.assert_not_awaited()
+    finally:
+        await backend.close()
+
+    discovery['devices'][0].update(name='示例传感器新名称', room='客厅')
+    reopened = module.DesktopService()
+    reopened.persistent = True
+    try:
+        await reopened._connect()
+        core = reopened.inner.state.core
+        home = core.actions.mijia_power_home
+        gateway = gateways[-1]
+        for _ in range(3):
+            await home.sample_once()
+        async with client_for(reopened) as client:
+            status = (await client.get('/api/home/overview')).json()
+            device, = status['devices']
+            assert device['id'] == connected and device['room'] == '客厅' and device['name'] == '示例传感器新名称'
+            assert {r['id'] for r in device['readings']} == identifiers
+            assert all(r['available'] for r in device['readings'])
+            assert all(row['sensor_read'] == 'registered' for row in gateway.calls)
+            gateway.route_tokens.pop(NEW_DID)
+            assert not any(r['available'] for r in (await client.get('/api/home/overview')).json()['devices'][0]['readings'])
+            for _ in range(3):
+                await home.sample_once()
+            assert all(r['available'] for r in (await client.get('/api/home/overview')).json()['devices'][0]['readings'])
+        snapshot = await core.snapshot()
+        assert not snapshot.events and all(state.quality == 'unknown' for state in snapshot.states)
+        assert not core.actions.authority()[0]
+        gateway.manager.set_prop_async.assert_not_awaited()
+    finally:
+        await reopened.close()
+    module.real_adapter.assert_not_awaited()
 
 
 @pytest.mark.asyncio

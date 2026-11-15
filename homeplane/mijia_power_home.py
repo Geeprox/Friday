@@ -67,6 +67,7 @@ from .rule_contracts import (
 CATALOG = 'mijia-power-catalog.json'
 NUMERIC_CATALOG = 'mijia-numeric-catalog.json'
 NATIVE_CATALOG = 'mijia-enrolled-devices.json'
+NATIVE_SENSORS = 'mijia-enrolled-sensors.json'
 MAX_TARGETS = 512
 MAX_CATALOG_BYTES = 512 * 1024
 SAMPLE_TTL = 45
@@ -153,6 +154,28 @@ class NativeDeviceCatalog(Contract):
         return digest([self.family, self.household, self.epoch, self.enabled])
 
 
+class NativeSensorCatalog(Contract):
+    household: str = Field(pattern=FAMILY.pattern + '$')
+    family: str = Field(pattern=FAMILY.pattern + '$')
+    sensors: list[Sensor] = Field(min_length=1, max_length=MAX_TARGETS)
+
+    @model_validator(mode='after')
+    def validate_sensors(self):
+        if len({sensor.property_key for sensor in self.sensors}) != len(self.sensors):
+            raise ValueError('mijia_invalid_enrollment')
+        for sensor in self.sensors:
+            key = digest([self.household, *sensor.property_key])
+            if (sensor.entity.id != 'mijia:sensor:' + key or sensor.registry_uid != key
+                    or [(b.source, b.external_id) for b in sensor.entity.bindings] != [('mijia-property', key)]):
+                raise ValueError('mijia_invalid_enrollment')
+        return self
+
+
+def read_native_sensors(directory):
+    body, _ = _read_authority_file(directory / NATIVE_SENSORS, limit=MAX_CATALOG_BYTES)
+    return NativeSensorCatalog.model_validate_json(body)
+
+
 def read_native_catalog(directory):
     body, stamp = _read_authority_file(directory / NATIVE_CATALOG, limit=MAX_CATALOG_BYTES)
     return NativeDeviceCatalog.model_validate_json(body), hashlib.sha256(body + stamp).hexdigest()
@@ -169,6 +192,11 @@ def read_numeric_catalog(directory):
 
 
 def catalog_available(directory):
+    try:
+        if read_native_sensors(directory).sensors:
+            return True
+    except (OSError, ValueError):
+        pass
     try:
         if read_native_catalog(directory)[0].targets:
             return True
@@ -354,13 +382,28 @@ class MijiaPowerHome:
             return None, None
         return catalog, generation
 
-    def save_native_catalog(self, catalog):
+    def _save_enrollment(self, name, catalog):
         from .embodied.ptz_control import atomic
 
         body = catalog.model_dump(mode='json')
         if len(json.dumps(body, ensure_ascii=False, indent=2).encode()) > MAX_CATALOG_BYTES:
             raise ValueError('mijia_enrollment_limit')
-        atomic(self.path.with_name(NATIVE_CATALOG), body)
+        atomic(self.path.with_name(name), body)
+
+    def save_native_catalog(self, catalog):
+        self._save_enrollment(NATIVE_CATALOG, catalog)
+
+    def native_sensors(self, context):
+        if context is None:
+            return None
+        try:
+            catalog = read_native_sensors(self.path.parent)
+        except (OSError, ValueError):
+            return None
+        return catalog if (catalog.family, catalog.household) == context[:2] else None
+
+    def save_native_sensors(self, catalog):
+        self._save_enrollment(NATIVE_SENSORS, catalog)
 
     def set_native_enabled(self, enabled, expected):
         catalog, _ = self.native_catalog()
@@ -372,9 +415,12 @@ class MijiaPowerHome:
     def enrollment_identities(self, context):
         # 同一家庭已从 HA 登记过的设备保留已有编号和选择。
         family, household = context[:2]
-        return {target.identity for catalog in (self.catalog, self.covers)
-                if catalog and (catalog.family, catalog.household) == (family, household)
-                for target in catalog.targets}
+        related = {target.identity for catalog in (self.catalog, self.covers)
+                   if catalog and (catalog.family, catalog.household) == (family, household)
+                   for target in catalog.targets}
+        if self.numeric and self.numeric.family == family:
+            related.update(sensor.identity for sensor in self.numeric.sensors)
+        return related
 
     def discovery_context(self):
         from .embodied.mijia_lan import home_input
@@ -417,6 +463,8 @@ class MijiaPowerHome:
         family, household, _, _, configuration = context
         native, _ = self.native_catalog(context)
         enrolled = {t.identity for t in native.targets} if native else set()
+        if native_readings := self.native_sensors(context):
+            enrolled.update(sensor.identity for sensor in native_readings.sensors)
         approval = cover_approval(authority)
         previous = self.catalog
         known = ({(t.identity, t.urn, t.model, t.registry_uid, t.entity.kind): t.property_key for t in previous.targets}
@@ -637,7 +685,7 @@ class MijiaPowerHome:
         cover_matches = cover_catalog and (family, household, approval) == (
             cover_catalog.family, cover_catalog.household, cover_catalog.legacy_approval)
         numeric_matches = self.numeric and (family, approval) == (self.numeric.family, self.numeric.legacy_approval)
-        if not (power_matches or cover_matches or numeric_matches or native):
+        if not (power_matches or cover_matches or numeric_matches or native or self.native_sensors(context)):
             return None, {}
         targets = {t.entity.id: t for t in (catalog.targets if power_matches else []) if t.operation in authority.operations
                    and (authority.external_entity_ids is None or bindings(t.entity)[0] in authority.external_entity_ids)
@@ -669,9 +717,11 @@ class MijiaPowerHome:
                 })
         return (family, grant), targets
 
-    def numeric_active(self):
+    def numeric_active(self, context=None):
         numeric = self.numeric
-        context = self.context() if numeric else None
+        if numeric is None:
+            return None
+        context = context if context is not None else self.context()
         if context is None:
             return None
         authority, _ = self.core.actions.authority(include_inactive=True)
@@ -681,12 +731,28 @@ class MijiaPowerHome:
         return context
 
     def active_sensors(self):
-        context = self.numeric_active()
-        if context is None:
+        discovery = self.discovery_context()
+        if discovery is None:
             return {}
-        models = context[3]
-        return {s.entity.id: s for s in self.numeric.sensors
-                if models.get(s.identity) == {'urn': s.urn, 'model': s.model}}
+        models = discovery[3]
+        sensors = {s.entity.id: s for s in self.numeric.sensors
+                   if models.get(s.identity) == {'urn': s.urn, 'model': s.model}} if self.numeric_active(discovery) else {}
+        if catalog := self.native_sensors(discovery):
+            existing = {sensor.identity for sensor in sensors.values()}
+            rows = {row['identity']: row for row in self.power.service.discovery_report.get('devices', ())
+                    if row.get('kind') == 'device'}
+            for sensor in catalog.sensors:
+                row = rows.get(sensor.identity)
+                if (sensor.identity in existing or row is None
+                        or models.get(sensor.identity) != {'urn': sensor.urn, 'model': sensor.model}):
+                    continue
+                name, room = row['name'], row['room']
+                suffix = sensor.entity.name.removeprefix(sensor.device.name)
+                sensors[sensor.entity.id] = sensor.model_copy(update={
+                    'entity': sensor.entity.model_copy(update={'name': name + suffix, 'room': room}),
+                    'device': sensor.device.model_copy(update={'name': name, 'room': room}),
+                })
+        return sensors
 
     def settings_for(self, target):
         numeric, catalog = self.numeric, self.catalog
@@ -1215,8 +1281,11 @@ class MijiaPowerHome:
         route = self.power.lan.route_token(family, did)
         if route is None:
             raise ValueError('mijia_lan_unavailable')
+        request = {'numeric': True, 'did': did, 'siid': sensor.siid, 'piid': sensor.piid, 'grant': grant}
+        if sensor.native:
+            request['sensor_read'] = 'registered'
         result = await self.power.lan.request(
-            {'numeric': True, 'did': did, 'siid': sensor.siid, 'piid': sensor.piid, 'grant': grant}, family=family)
+            request, family=family)
         value = result.get('value')
         if not sensor.scale.accepts(value, exact_step=False):
             raise ValueError('mijia_invalid_readback')

@@ -383,6 +383,7 @@ class HomeExperience:
                 for row in discovery['devices']:
                     if candidate := candidates.get(row['id']):
                         row['enrollment_revision'] = candidate.revision
+                        row['enrollment_access'] = 'readings' if candidate.read_only else 'power'
         connected = (any(o.transport_health == 'online' for o in snapshot.observations) if local
                      else self.connection_health().get('transport') == 'online')
         return dict(home_name=HOME_NAME,devices=devices,discovery=discovery,preferences=self.preferences,presentation=profile.model_dump(),

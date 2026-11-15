@@ -748,14 +748,17 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   return list;
  }
  function enrollDevice(device){
+  const readOnly=device.enrollment_access==='readings';
+  const confirmTitle=readOnly?'接入传感器':'接入并允许控制';
   const dialog=h('dialog',null,{class:'product-dialog','aria-labelledby':'mijia-enrollment-title'});
   const status=h('p',null,{role:'status','aria-live':'polite',hidden:''});
   const cancel=btn('取消',()=>dialog.close());
-  const enroll=btn('接入并允许控制',async()=>{
+  const enroll=btn(confirmTitle,async()=>{
    enroll.disabled=true;cancel.disabled=true;enroll.textContent='正在接入…';status.hidden=true;
    try{
     const result=await api('/api/embodied/discovery/enroll-device',{
-     candidate:device.id,expected_revision:device.enrollment_revision,allow_power:true});
+     candidate:device.id,expected_revision:device.enrollment_revision,
+     ...(readOnly?{allow_readings:true}:{allow_power:true})});
     dialog.close();
     if(!alive)return;
     await load();
@@ -766,12 +769,13 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     status.hidden=false;status.textContent=({
      mijia_enrollment_changed:'设备信息有变化，请关闭后重新选择。',
      mijia_enrollment_offline:'米家中枢还没读到设备，请稍后重试。',
-     mijia_enrollment_unsupported:'这台设备暂不支持直连控制。',
+     mijia_enrollment_unsupported:'这台设备暂不支持直连。',
      mijia_enrollment_limit:'已达到接入上限。',
     })[error.message]||'暂时无法接入，请稍后重试。';
-   }finally{enroll.disabled=false;cancel.disabled=false;enroll.textContent='接入并允许控制';}
+   }finally{enroll.disabled=false;cancel.disabled=false;enroll.textContent=confirmTitle;}
   },{class:'primary'});
-  add(dialog,h('h2',device.name,{id:'mijia-enrollment-title'}),h('p','允许 Friday 控制这台设备的开关。'),
+  add(dialog,h('h2',device.name,{id:'mijia-enrollment-title'}),
+      h('p',readOnly?'允许 Friday 读取这台传感器的读数。':'允许 Friday 控制这台设备的开关。'),
       status,add(h('div',null,{class:'button-row'}),cancel,enroll));
   dialog.addEventListener('close',()=>dialog.remove(),{once:true});
   dialog.addEventListener('cancel',event=>{if(enroll.disabled)event.preventDefault();});

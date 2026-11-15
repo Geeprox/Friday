@@ -99,19 +99,31 @@ async def migrated_power_operation(manager, request, grant, family, region, grou
 
 
 async def numeric_operation(manager, request, grant, family, region, group, dids, current, directory):
-    from homeplane.mijia_power_home import authorize_numeric
+    from homeplane.mijia_power_home import authorize_numeric, read_native_sensors
 
     write = 'value' in request
     required = {'numeric', 'did', 'siid', 'piid', 'grant'}
     if write:
         required |= {'value', 'authority_revision', 'deadline'}
+    sensor_read = request.get('sensor_read')
+    if 'sensor_read' in request:
+        required.add('sensor_read')
+        if write or sensor_read not in ('probe', 'registered'):
+            raise ValueError('mijia_property_unsupported')
     if request.keys() != required or request['numeric'] is not True:
         raise ValueError('mijia_property_unsupported')
     did, siid, piid, _ = property_request({k: request[k] for k in ('did', 'siid', 'piid', 'grant')})
     if (not current() or request['grant'] != grant or did not in dids or not manager.can_control(did)
             or manager.in_local_cooldown(did) or (manager.local_device(did) or {}).get('group_id') != group):
         raise ValueError('mijia_lan_unavailable')
-    guard = authorize_numeric(directory, family, region, did, siid, piid, request)
+    guard = None
+    if sensor_read == 'registered':
+        catalog = read_native_sensors(directory)
+        if catalog.family != family or not any(s.property_key == (f'{region}_{did}', siid, piid)
+                                               for s in catalog.sensors):
+            raise ValueError('mijia_permission_changed')
+    elif sensor_read != 'probe':
+        guard = authorize_numeric(directory, family, region, did, siid, piid, request)
     try:
         async with asyncio.timeout(1.0 if not write else 4.0):
             if write:
@@ -129,7 +141,7 @@ async def numeric_operation(manager, request, grant, family, region, group, dids
     except TimeoutError:
         manager.note_local_failure(did)
         raise
-    if (not isinstance(row, dict) or type(row.get('code')) is not int or row['code'] != 0
+    if (not current() or not isinstance(row, dict) or type(row.get('code')) is not int or row['code'] != 0
             or not finite_numeric(row.get('value')) or abs(row['value']) > 1000000):
         raise ValueError('mijia_property_unsupported')
     return {'value': row['value']}

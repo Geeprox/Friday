@@ -6,7 +6,7 @@ import time
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from homeplane.runtime_log import observe
 
@@ -142,7 +142,8 @@ class MiHomeCandidate(BaseModel):
 
 class MiHomeDeviceEnrollment(MiHomeCandidate):
     expected_revision: str = Field(pattern=r'^[a-f0-9]{64}$')
-    allow_power: bool
+    allow_power: StrictBool = False
+    allow_readings: StrictBool = False
 
 
 class CameraInteractionSettings(BaseModel):
@@ -285,17 +286,20 @@ def create_router(service, core, lock, infrastructure=None, *, intelligence=None
         if (http_request.client is None or http_request.client.host not in {'127.0.0.1', '::1'}
                 or http_request.headers.get('origin') != str(http_request.base_url).rstrip('/')):
             raise HTTPException(403, detail='invalid_local_origin')
-        if not request.allow_power:
-            raise HTTPException(422, detail='mijia_power_consent_required')
+        if request.allow_power == request.allow_readings:
+            raise HTTPException(422, detail='mijia_enrollment_consent_required')
         home = core.actions.mijia_power_home
         if home is None:
             raise HTTPException(409, detail='mijia_enrollment_changed')
         try:
-            device = await enroll(home, request.candidate, request.expected_revision)
+            device = await enroll(home, request.candidate, request.expected_revision,
+                                  allow_power=request.allow_power, allow_readings=request.allow_readings)
         except (OSError, ValueError, TimeoutError, httpx.HTTPError) as error:
             accepted = {'mijia_enrollment_changed', 'mijia_enrollment_offline', 'mijia_enrollment_unsupported',
                         'mijia_enrollment_limit'}
             code = str(error)
+            if code == 'mijia_enrollment_consent_required':
+                raise HTTPException(422, detail=code) from None
             raise HTTPException(409, detail=code if code in accepted else 'mijia_enrollment_unavailable') from None
         return {'state': 'connected', 'device': device}
 
