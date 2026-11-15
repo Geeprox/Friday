@@ -209,15 +209,15 @@ async def test_secondary_new_session_restores_choice_before_any_motor_dispatch(t
 @pytest.mark.asyncio
 async def test_secondary_save_failure_holds_locally_and_does_not_dispatch(monkeypatch):
     monkeypatch.setattr(previews, 'camera', lambda _: CAMERA)
-    pool = previews.PreviewPool.__new__(previews.PreviewPool)
-    pool.intent_factory = lambda _: SimpleNamespace(save=lambda _: (_ for _ in ()).throw(OSError()))
+    pool = previews.PreviewPool(
+        recognize=True,
+        intent_factory=lambda _: SimpleNamespace(save=lambda _: (_ for _ in ()).throw(OSError())),
+    )
     send = AsyncMock()
     item = dict(control=send, mode='auto', mode_revision='old', control_epoch=4, manual_tasks=set(),
                 camera_control={'mode': 'auto'}, received_at=time.time(), state='live', frames=1,
                 shutter_changed=False)
     pool.sessions = {CAMERA['id']: item}
-    pool.recognize = True
-    pool.on_audio = None
     with pytest.raises(RuntimeError, match='camera_intent_unavailable'):
         await pool.control(CAMERA['id'], direction='left')
     assert item['mode'] == 'hold' and item['control_epoch'] == 5
@@ -297,9 +297,9 @@ async def test_survey_readback_and_stop_are_bound_to_the_current_intent(tmp_path
     scope.update(state=state, games=MotionGames(), party_camera=PartyCamera(), last_frame=time.monotonic(),
                  recorder=SimpleNamespace(public=lambda: {}), safety=SimpleNamespace(recording_status=lambda: {}),
                  home=SimpleNamespace(public=lambda: {}), secondary_homes={}, fleet=SimpleNamespace(public=lambda _: {}),
-                 PRIVATE=tmp_path, previews=pool, configuration=config, PET_MODES=PET_MODES,
+                 PRIVATE=tmp_path, previews=pool, configuration=config, PET_MODES=PET_MODES, capture=None,
                  camera_intent_readback=camera_intent_readback)
-    actual_worker_functions({'view', 'preview_status'}, scope)
+    actual_worker_functions({'view', 'preview_status', 'primary_capture_preview'}, scope)
     worker = FastAPI()
     worker.get('/api/previews/{camera_id}')(scope['preview_status'])
     worker.post('/api/previews/{camera_id}/control')(scope['preview_control'])
