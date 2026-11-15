@@ -15,6 +15,7 @@ from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, WakeCameraC
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.intent import address
 from homeplane.embodied.party_camera import PartyCamera
+from homeplane.embodied.vision_cadence import VisionCadence
 from homeplane.embodied.voice_activity import SpeechActivity
 from tests.embodied.test_camera_audio import CAMERA, audio, video, voice_service
 from tests.embodied.test_camera_director import patrol_view, person, sample
@@ -302,6 +303,52 @@ async def test_wake_does_not_resume_after_revocation(tmp_path, monkeypatch, revo
     assert home.wake_camera is None
     home.voice_busy = False
     assert home.wake_motion_cue(current_frame(clock.at, source), clock.at) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+@pytest.mark.parametrize('ended', ['expired', 'paused', 'changed_policy', 'different_session'])
+async def test_idle_awakened_camera_releases_full_rate_without_motor_polling(tmp_path, monkeypatch, owner, ended):
+    clock = SimpleNamespace(at=0.0)
+    clock.monotonic, clock.time = lambda: clock.at, lambda: 1000 + clock.at
+    home, _ = await hear_wake(tmp_path, monkeypatch, clock, 'Friday')
+    camera = home.camera_id
+    wake = home.wake_camera
+    practice = SimpleNamespace(suppresses=Mock(return_value=False))
+    safety = SimpleNamespace(policy_cache=SimpleNamespace(enabled=True, visual_review=True,
+                            posture_source=SimpleNamespace(camera=camera)),
+                            review_pending=Mock(return_value=False), fall_pending=Mock(return_value=False))
+    selected = CAMERA if owner == 'primary' else {'id': 'cam_2222222222'}
+    scope = dict(time=clock, SELECTED=selected, home=home if owner == 'primary' else None,
+                 secondary_homes={} if owner == 'primary' else {camera: home}, practice=practice, safety=safety)
+    force = source_function(WORKER, 'needs_full_vision', scope)
+    assert force(camera, SESSION)
+
+    session = SESSION
+    if ended == 'expired':
+        clock.at = wake.captured + home_service.WAKE_CAMERA_SECONDS
+    elif ended == 'paused':
+        home_service.VOICE_INPUT_PAUSED.touch()
+    elif ended == 'changed_policy':
+        home.voice_preferences = lambda: SimpleNamespace(wake_word='小福', revision=8)
+    else:
+        session = 'synthetic-new-view'
+
+    # 既不开云台轮询，也不关闭监测设置。调度读取原会话和最新策略。
+    cadence = VisionCadence()
+    cadence.observed(clock.at - .1, clear=True, captured_at=clock.at - .2)
+    still = {'scene_quiet_ms': 6000}
+    assert not cadence.due(still, clock.at, force=force(camera, session))
+    assert (home.wake_camera is wake) is (ended == 'different_session')
+    assert cadence.due({'scene_quiet_ms': 0}, clock.at, force=force(camera, session))
+
+    # 动作、异常证据和正在讲话不依赖原来的唤醒提示续期。
+    for active in (safety.review_pending, safety.fall_pending, practice.suppresses):
+        active.return_value = True
+        assert cadence.due(still, clock.at, force=force(camera, session))
+        active.return_value = False
+    home.speaking = True
+    assert force(camera, session)
 
 
 @pytest.mark.asyncio

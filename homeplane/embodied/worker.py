@@ -366,11 +366,10 @@ def benchmark_full_vision():
 
 def needs_full_vision(camera_id, session):
     service = home if camera_id == SELECTED['id'] else secondary_homes.get(camera_id)
-    policy = safety.policy_cache
+    wake = service.current_wake(time.monotonic()) if service else None
     return (practice.suppresses(camera_id)
-            or bool(service and (service.wake_camera or service.speaking or service.voice_busy))
-            or bool(policy.enabled and policy.visual_review and policy.posture_source
-                    and policy.posture_source.camera == camera_id)
+            or bool(service and (service.speaking or service.voice_busy))
+            or bool(wake and wake.session == session)
             or safety.review_pending(camera_id, session) or safety.fall_pending(camera_id, session))
 
 

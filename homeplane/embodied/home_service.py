@@ -477,27 +477,28 @@ class HomeService:
                              if target is not None else None)
         return self.camera_focus is not None
 
-    def wake_motion_cue(self, sample, now):
+    def current_wake(self, now):
         cue = self.wake_camera
         if cue is None:
             return None
-        if (not 0 <= now - cue.captured < WAKE_CAMERA_SECONDS or VOICE_INPUT_PAUSED.exists()
-                or not self.input_allowed()):
-            self.wake_camera = None
-            return None
+        if 0 <= now - cue.captured < WAKE_CAMERA_SECONDS and not VOICE_INPUT_PAUSED.exists() and self.input_allowed():
+            try:
+                if self.voice_preferences().revision == cue.voice_revision:
+                    return cue
+            except (OSError, ValueError):
+                pass
+        self.wake_camera = None
+        return None
+
+    def wake_motion_cue(self, sample, now):
+        cue = self.current_wake(now)
         # 短时缺少识别帧不代表采集已换源；真正停止或恢复识别时由采集所有者撤销。
-        if sample.get('status') != 'live':
+        if cue is None or sample.get('status') != 'live':
             return None
         if sample.get('session_id') != cue.session or sample.get('_wake_source') != cue.source:
             self.wake_camera = None
             return None
-        try:
-            if self.voice_preferences().revision == cue.voice_revision:
-                return WakeCameraPause(cue) if self.speaking or self.voice_busy else cue
-        except (OSError, ValueError):
-            pass
-        self.wake_camera = None
-        return None
+        return WakeCameraPause(cue) if self.speaking or self.voice_busy else cue
 
     async def speak_reply(self, text, current):
         self.reply_until = time.monotonic() + min(30, max(3.5, len(text) / 4.5 + 1.5))
