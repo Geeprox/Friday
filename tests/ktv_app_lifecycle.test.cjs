@@ -341,6 +341,21 @@ test('failed songs no longer count as upcoming and warmup can cut into the actua
  assert.equal(h.element('skip-button').disabled,false);
 });
 
+test('terminal lyric failures retain the order without looking busy or enabling an unavailable next song',()=>{
+ const h=harness();h.run('earEnabled=false;playback={online:true,current:"",played:[],state:"paused"};mode="queue";selected=[{id:"a",song_id:"1",title:"合成云盘",state:"ready",lyric_state:-1,lyrics_pending:false}];render();updatePlayer()');
+ assert.equal(h.element('queue-count').textContent,1);
+ assert.equal(h.element('results').children[0].className,'queue-group failed');
+ assert.equal(h.element('now-title').textContent,'暂无同步歌词');
+ assert.equal(h.element('skip-button').disabled,true);
+ assert.equal(h.element('play-toggle').disabled,true);
+ h.run('playback.state="playing";updatePlayer()');
+ assert.equal(h.element('play-toggle').disabled,false,'the listener can pause an existing warmup');
+ h.run('playback.state="paused";selected.push({id:"b",song_id:"2",title:"下首",state:"ready",lyric_state:1});updatePlayer()');
+ assert.equal(h.element('now-title').textContent,'接下来：下首');
+ assert.equal(h.element('play-toggle').disabled,false);
+ assert.equal(h.element('skip-button').disabled,false);
+});
+
 test('frequent songs count a personally requested playback once and stay re-addable',()=>{
  const h=harness();h.run('identity.id="mine";playback.current="one";var tracks=[{id:"one",guest_id:"mine",song_id:"101",source:"song",title:"常唱",state:"ready"}];rememberFrequent(tracks);rememberFrequent(tracks);playback.current="someone-else";rememberFrequent([{...tracks[0],id:"someone-else",guest_id:"another"}]);playback.current="cloud";rememberFrequent([{...tracks[0],id:"cloud",source:"cloud"}]);playback.current="two";rememberFrequent([{...tracks[0],id:"two"}]);setView("frequent")');
  assert.equal(h.run('frequentSongs.length'),1);assert.equal(h.run('frequentSongs[0].plays'),2);

@@ -326,8 +326,17 @@ def test_missing_or_disordered_lyrics_do_not_block_the_next_verified_song(store)
     invalid = {"status": "ready", "lines": list(reversed(lines))}
     store.coordinator.manifest({**head, "version": "d" * 64, "lyrics": invalid})
     assert store.status(room)["playable"] == [followed]
+    exhausted = {"status": "unavailable", "lines": [], "retry_exhausted": True}
+    store.coordinator.manifest({**head, "version": "f" * 64, "lyrics": exhausted})
+    guest_snapshot = store.status(room)
+    television = {job["id"]: job for job in store.coordinator.jobs()["jobs"]}
+    assert guest_snapshot["songs"][0]["lyric_state"] == television[head["id"]]["lyric_state"] == -1
+    assert guest_snapshot["songs"][0]["lyrics_pending"] is False
+    assert television[head["id"]]["synced_lyrics"] is False
+    assert guest_snapshot["playable"] == store.coordinator.party()["playable"] == [followed]
     store.coordinator.manifest({**head, "version": "e" * 64, "lyrics": verified})
     assert store.status(room)["playable"] == [head["id"], followed]
+    assert store.coordinator.jobs()["jobs"][0]["lyric_state"] == 1
     assert store.status(room)["playback"]["current"] == ""
 
 
