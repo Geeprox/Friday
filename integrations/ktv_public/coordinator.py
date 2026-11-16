@@ -1077,15 +1077,16 @@ class Coordinator:
                     job.pop("background", None)
                     continue
                 sources = []
+                local_url = "/v1/jobs/" + song["id"] + "/media/" + kind
                 if present[(spec["sha256"], spec["bytes"])]:
-                    sources.append({"url": "/v1/jobs/" + song["id"] + "/media/" + kind})
-                if row["expires"] > now + 5 and worker_media:
+                    sources.append({"url": local_url})
+                if row["expires"] > now + 5 and worker_media and not (kind == "background" and spec["url"] == local_url):
                     sources.append({"origin": row["origin"], "url": spec["url"], "header": "X-KTV-Media",
                                     "credential": row["ticket"], "expires": row["expires"]})
                 public = dict(spec, sources=sources)
                 # Relative url remains the local cache fallback for old clients;
                 # clients using sources never wait for it to become ready.
-                public["url"] = "/v1/jobs/" + song["id"] + "/media/" + kind
+                public["url"] = local_url
                 if kind == "video":
                     job["video"] = public
                 elif kind == 'background':
@@ -1121,16 +1122,21 @@ class Coordinator:
         active = self.active()
         if not active:
             return {"tasks": []}
+        with self.lock:
+            worker_instance = self.worker["instance"] if self.worker else ""
         with self.store.connection() as db:
             room = db.execute("SELECT current_song, played FROM rooms WHERE id=?", (active["room"],)).fetchone()
             current, played = room["current_song"], set(json.loads(room["played"]))
             rows = db.execute(
-                "SELECT s.id,s.song_id,s.title,s.source,m.job,m.version "
+                "SELECT s.id,s.song_id,s.title,s.source,m.job,m.version,m.instance "
                 "FROM songs s JOIN coordinator_manifests m ON m.song=s.id "
-                "WHERE s.room=? AND s.removed=0 AND s.state='ready' AND m.instance='' "
+                "WHERE s.room=? AND s.removed=0 AND s.state='ready' "
                 "ORDER BY s.id=? DESC,s.position,s.rowid LIMIT 80", (active["room"], current))
             tasks = []
             for row in rows:
+                # 现任 Worker 会为待唱及正在唱的本机任务发布背景。历史记录可直接补图。
+                if row["instance"] and row["instance"] == worker_instance and row["id"] not in played:
+                    continue
                 job = json.loads(row["job"])
                 if job.get("simulated") is True:
                     continue
@@ -1164,7 +1170,7 @@ class Coordinator:
                     or not 0 <= time.time() - worker["at"] <= 20):
                 raise self.error(409, "worker_unavailable")
         row = self._row(payload["id"])
-        if not row or row["instance"] or payload["version"] != row["version"]:
+        if not row or payload["version"] != row["version"]:
             raise self.error(409, "background_edition_changed")
         manager = getattr(self.store, "management", None)
         with manager.lock if manager else self.lock:
@@ -1181,11 +1187,12 @@ class Coordinator:
         current = db.execute(
             "SELECT m.* FROM coordinator_manifests m JOIN songs s ON s.id=m.song "
             "JOIN coordinator_session c ON c.room=s.room JOIN rooms r ON r.id=s.room "
-            "WHERE m.song=? AND m.instance='' AND s.state='ready' AND s.removed=0 AND r.closed=0", (row["song"],)).fetchone()
+            "WHERE m.song=? AND s.state='ready' AND s.removed=0 AND r.closed=0", (row["song"],)).fetchone()
         if not current:
             return False
         job, snapshot = json.loads(current["job"]), json.loads(row["job"])
-        if job["media"] != snapshot["media"] or job.get("background") != snapshot.get("background"):
+        if (current["instance"] != row["instance"] or current["timeline"] != row["timeline"]
+                or job["media"] != snapshot["media"] or job.get("background") != snapshot.get("background")):
             return False
         descriptor = dict(spec, url=f'/v1/jobs/{row["song"]}/media/background')
         if job.get("background") != descriptor:
