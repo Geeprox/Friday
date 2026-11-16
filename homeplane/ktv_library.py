@@ -74,6 +74,7 @@ class SongLibrary:
         self.path = queue.root / "storage-policy.json"
         self.plans = {}
         self.last_cleanup = {"state": "not_run", "removed_bytes": 0, "removed": 0}
+        self.nas_usage = None
         self.reservations = {}
         self.legacy_guide_hashes = {}
         self.trim_wake = threading.Event()
@@ -81,15 +82,17 @@ class SongLibrary:
         self.trim_bytes_requested = 0
 
     def policy(self, value=None):
-        with self.lock:
-            if value is not None:
+        if value is not None:
+            with self.lock:
                 if (set(value) != {"enabled", "limit_bytes"} or type(value["enabled"]) is not bool
                         or type(value["limit_bytes"]) is not int or not 2 * 1024**3 <= value["limit_bytes"] <= 100 * 1024**4):
                     raise HTTPException(400, "invalid_policy")
                 atomic_json(self.path, value)
                 self.request_trim()
-            data = read_record(self.path)
-            return data if set(data) == set(DEFAULT_POLICY) else dict(DEFAULT_POLICY)
+                return dict(value)
+        # 清单或清理可能在等待 NAS。容量策略采用原子替换，可独立读取。
+        data = read_record(self.path)
+        return data if set(data) == set(DEFAULT_POLICY) else dict(DEFAULT_POLICY)
 
     def remote(self, operation, value=None):
         if not self.direct:
@@ -232,6 +235,31 @@ class SongLibrary:
                     files[info.st_dev, info.st_ino] = info.st_size
         return sum(files.values())
 
+    def _local_capacity(self, jobs):
+        policy = self.policy()
+        hot_cache = {"bytes": self._hot_cache_usage(jobs), "limit_bytes": self._hot_cache_limit(policy)}
+        cleanup = dict(self.last_cleanup)
+        if not policy["enabled"]:
+            cleanup = {"state": "disabled", "removed_bytes": 0, "removed": 0}
+        elif hot_cache["bytes"] <= hot_cache["limit_bytes"]:
+            cleanup["state"] = "within_limit"
+        elif cleanup["state"] != "unavailable" and (
+            cleanup.get("limit_bytes") != hot_cache["limit_bytes"] or cleanup["state"] != "retained_over_target"
+        ):
+            cleanup = {"state": "pending", "removed_bytes": 0, "removed": 0}
+        return {"available": True, "policy": policy, "hot_cache": hot_cache, "last_cleanup": cleanup}
+
+    def capacity(self, host):
+        if host == "mac":
+            with self.queue.lock:
+                jobs = [dict(job) for job in self.queue.jobs.values() if job["state"] == "ready"]
+            return self._local_capacity(jobs)
+        if not self.direct and not self.archive:
+            return {"configured": False, "available": False}
+        if not self.direct and not self.archive.available():
+            raise HTTPException(503, "nas_management_unavailable")
+        return {"configured": True, "available": True, "policy": self.nas_policy(), "bytes": self.nas_usage}
+
     def local_inventory(self, remote_protected=()):
         with self.lock, self.state_lock():
             entries, unique = [], {}
@@ -242,19 +270,8 @@ class SongLibrary:
                                 "bytes": sum(files.values()), "revision": revision, "copies": len(row["jobs"]),
                                 "can_delete": not (row["busy"] or row["protected"] or unsafe),
                                 "reason": "preparing" if row["busy"] else "in_queue" if row["protected"] else "unsafe" if unsafe else ""})
-            policy = self.policy()
-            hot_cache = {"bytes": self._hot_cache_usage(self.queue.jobs.values()), "limit_bytes": self._hot_cache_limit(policy)}
-            cleanup = dict(self.last_cleanup)
-            if not policy["enabled"]:
-                cleanup = {"state": "disabled", "removed_bytes": 0, "removed": 0}
-            elif hot_cache["bytes"] <= hot_cache["limit_bytes"]:
-                cleanup["state"] = "within_limit"
-            elif cleanup["state"] != "unavailable" and (
-                cleanup.get("limit_bytes") != hot_cache["limit_bytes"] or cleanup["state"] != "retained_over_target"
-            ):
-                cleanup = {"state": "pending", "removed_bytes": 0, "removed": 0}
-            return {"available": True, "entries": sorted(entries, key=lambda r: r["last_used"], reverse=True),
-                    "bytes": sum(unique.values()), "policy": policy, "hot_cache": hot_cache, "last_cleanup": cleanup}
+            return {**self._local_capacity(self.queue.jobs.values()),
+                    "entries": sorted(entries, key=lambda r: r["last_used"], reverse=True), "bytes": sum(unique.values())}
 
     def _index_legacy_guides(self):
         if not self.archive or not self.archive.guide_root:
@@ -355,6 +372,8 @@ class SongLibrary:
     def inventory(self):
         with self.lock:
             nas = self._nas_inventory()
+            if nas["available"]:
+                self.nas_usage = nas["bytes"]
             mac = self.local_inventory(nas.get("protected_song_ids", ()))
             if nas["configured"] and not nas["available"]:
                 for row in mac["entries"]:

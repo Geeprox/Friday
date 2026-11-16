@@ -67,6 +67,15 @@ def test_explicit_installed_config_parameter_is_followed_without_executing_args(
     assert response.status_code == 200 and len(seen) == 1
 
 
+def test_background_debug_flag_keeps_installed_owner_access(files):
+    files.job["ProgramArguments"].append("--debug-backgrounds")
+    files.save()
+    response, seen = request(files, operation="manage/backgrounds")
+    assert response.status_code == 200 and len(seen) == 1
+    assert seen[0].url.path == "/v1/manage/backgrounds"
+    assert seen[0].headers["X-KTV-Key"] == TOKEN
+
+
 @pytest.mark.parametrize("operation", ["scheduler", "manage/library"])
 def test_launch_agent_generated_for_registered_worker_worktree(files, operation):
     installed = files.config.parents[2]

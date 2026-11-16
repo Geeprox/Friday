@@ -175,6 +175,7 @@ def main(argv=None):
         intelligence, recording=source_api.public_lyric_recording, max_parallel=BACKGROUND_PREFETCH_COUNT,
         context_resolver=SongBackgroundContext(intelligence, debug=args.debug_backgrounds),
         context_timeout=22, debug=args.debug_backgrounds,
+        cloud_recording=source_api.public_cloud_background, include_mv=True,
     )
     lyric_recovery = KtvLyricsRecovery(
         intelligence, source_api, queue, lambda job_id: prepared_lyrics(queue, job_id, song_lyrics, source_api),

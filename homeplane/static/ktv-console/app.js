@@ -20,8 +20,21 @@ const errors={
  invalid_background_limit:'请输入大于或等于 0 的整数。',
  api_quota_exhausted:'OpenAI API 额度不足。',
  api_rate_limited:'OpenAI API 暂时限流。',
- cloud_images_disabled:'歌曲背景生成尚未开启。',
+ cloud_images_disabled:'歌曲背景已关闭。',
+ cloud_capability_disabled:'Friday 的当前服务模式未启用生图。',
+ api_key_missing:'请先在 Friday 配置 OpenAI。',
+ api_key_unavailable:'Friday 暂时无法读取 OpenAI 配置。',
+ api_key_rejected:'OpenAI 未接受当前凭据。',
+ api_model_unavailable:'OpenAI 暂不支持当前生图模型。',
+ api_unavailable:'暂时连不上 OpenAI。',
+ api_timeout:'OpenAI 生图请求超时。',
+ private_song_metadata:'暂未匹配到这首云盘歌曲的公开发行资料。',
+ background_recording_unverified:'暂未核对到公开曲库的歌曲资料。',
+ background_catalog_unavailable:'暂时无法读取公开曲库。',
+ background_storage_limit_reached:'已达 Friday 背景缓存设置上限。',
  background_queue_full:'背景正在排队，请稍后再试。',
+ ktv_response_timeout:'KTV 服务响应较慢，请重试。',
+ ktv_response_unavailable:'暂时无法读取 KTV 服务响应，请重试。',
  cache_changed:'文件或歌单已变化，请刷新后重新选择。',archive_changed:'NAS 归档已变化，请刷新后重新选择。',cache_in_use:'所选歌曲正在使用或制作，请稍后再试。',plan_expired:'删除预览已过期，请重新选择。',nas_management_unavailable:'NAS 暂未连接，恢复连接后可继续操作。',tv_offline:'电视离线，请开机后再操作。',room_changed:'房间已变化，请刷新后重试。',queue_changed:'歌单已更新，请刷新后重新选择。',song_playing:'当前歌曲正在播放，请先切歌。',sfx_unavailable:'电视氛围音效暂不可用。',source_login_required:'请在 KTV 设置的音源授权中登录。',source_rights_denied:'这个版本未能取得可用音频。',source_api_unavailable:'音源暂未连接，请稍后重试。',source_file_invalid:'原曲文件不完整，请重新准备。',download_timeout:'原曲下载未完成，请重试或换一个版本。',separation_failed:'伴奏生成失败，请重试。',transcode_failed:'播放文件封装失败，请重试。',storage_full:'存储空间不足，请调整上限或删除空闲歌曲。',search_unavailable:'暂时无法搜索，请稍后重试。',queue_full:'歌单已满，请先移除不需要的歌曲。',rate_limited:'操作较频繁，请稍等片刻再试。',cloud_song_unavailable:'暂时无法取得这个音乐云盘文件。',failed_history_source_unknown:'这条记录的原音源待确认，请重新搜索该曲。',retry_unavailable:'本次制备暂不能重试。',retry_limit:'本条记录的重试次数已用完。',invalid_policy:'请输入有效的容量上限（2–102400 GB）。',unauthorized:'管理会话已过期，请刷新页面。',ktv_offline:'KTV 暂未连接。请确认本机 KTV 服务已运行，再重试连接。',ktv_not_configured:'家庭 KTV 尚未配置。完成本机连接后即可使用。',ktv_config_unavailable:'KTV 连接配置暂不可读，请检查本机配置后重试。',ktv_read_only:'当前窗口只读，请在本机 Friday 窗口操作。',ktv_unavailable:'KTV 暂时无法完成操作，请稍后重试。',unavailable:'连接未完成，请检查服务后重试。'};
 const themes=[['content','内容与留白'],['festival','音乐节'],['live','Live']], sourceNames={song:'曲库',mv:'MV',cloud:'音乐云盘'};
 const reasons={preparing:'正在制作',in_queue:'当前歌单正在使用',transferring:'正在归档或校验',unsafe:'文件需要核对',nas_offline:'NAS 离线，暂不能核对使用情况'};
@@ -34,6 +47,8 @@ const libraryReadError='歌曲文件暂时无法读取。';
 let searchData=null,searchQuery='',searchSource='song',searchOffset=0;
 let sourceSession=null;
 let backgroundView=null;
+let retryStorageSettings=null;
+const storagePolicies=new Map();
 const renderSignatures=new Map();
 const selected=new Set(),queueSelected=new Set(),searchSelected=new Set(),addRequests=new Map(),added=new Set();
 function message(text,error=false){if(!alive)return;$('status').textContent=text;$('status').classList.toggle('error',error);}
@@ -296,7 +311,7 @@ function renderSettings(signal){
  $('summary').append(shortcuts);
  settingsSection('歌曲制作性能',()=>api('scheduler',undefined,signal),renderScheduler,signal);
  settingsSection('新房间默认设置',()=>api('manage/room',undefined,signal),renderRoomDefaults,signal);
- settingsSection('容量与自动清理',readLibrary,renderStoragePolicy,signal);
+ renderStorageSettings(signal);
  renderBackgroundSettings(signal);
 }
 function settingsSection(title,read,render,signal){
@@ -319,36 +334,98 @@ function settingsSection(title,read,render,signal){
  }
  void load();
 }
-function renderStoragePolicy(section,library){
+function renderStorageSettings(signal){
+ const section=el('section',null,'section');
  const grid=el('div',null,'policy-grid');
+ const retries=[];
  for(const host of ['mac','nas']){
-  const data=library[host],form=el('form',null,'policy-form'),mac=host==='mac';
-  form.append(el('h3',mac?'Mac':'NAS'));
-  if(mac&&data.hot_cache?.bytes!=null)form.append(el('p',`本机播放成品 ${size(data.hot_cache.bytes)}`,'muted'));
-  if(!mac)form.append(el('p',`当前占用 ${size(data.bytes)}`,'muted'));
+  const form=el('form',null,'policy-form'),mac=host==='mac',name=mac?'Mac':'NAS';
+  const usage=el('p',null,'muted');
+  const notice=el('p',null,'muted');
+  notice.setAttribute('role','status');
   const description=mac?'达到回收目标时，优先清理最久未使用且已核对 NAS 归档的本机播放成品。':'达到上限时，优先清理最久未使用的歌曲文件。制作中、当前播放和本场待唱歌曲会保留。';
-  form.append(el('p',description,'setting-note'));
+  const note=el('p',description,'setting-note');
   const enabled=el('input');
-  enabled.type='checkbox';enabled.checked=!!data.policy?.enabled;
+  enabled.type='checkbox';
   const check=el('label',null,'check-label');
   check.append(enabled,el('span',mac?'达到回收目标自动清理':'达到上限自动清理'));
   const limit=el('input');
   limit.type='number';limit.min='2';limit.max='102400';limit.step='1';limit.required=true;
-  limit.value=String(Math.round((data.policy?.limit_bytes||(host==='mac'?20:100)*1024**3)/1024**3));
+  const limitField=field(mac?'回收目标（GB）':'容量上限（GB）',limit);
   const save=el('button','保存容量策略','primary');
+  const retry=button(`重试读取 ${name} 容量设置`,()=>load());
   save.type='submit';
-  form.append(check,field(mac?'回收目标（GB）':'容量上限（GB）',limit),save);
-  if(!data.available){
-   enabled.disabled=true;limit.disabled=true;save.disabled=true;
-   form.append(el('p',host==='nas'?'NAS 连接后可设置。':'本机数据暂时不可读。','muted'));
+  form.append(el('h3',name),usage,note,check,limitField,save,notice,retry);
+  let loading=false,writing=false,failed=false,revision=0;
+  function display(data,{force=false}={}){
+   const prior=storagePolicies.get(host)?.policy;
+   const changed=prior&&(enabled.checked!==prior.enabled||limit.value!==String(Math.round(prior.limit_bytes/1024**3)));
+   if(data)storagePolicies.set(host,data);
+   const hasPolicy=!!data?.policy;
+   if(hasPolicy&&(force||!changed)){
+    enabled.checked=data.policy.enabled;
+    limit.value=String(Math.round(data.policy.limit_bytes/1024**3));
+   }
+   const bytes=mac?data?.hot_cache?.bytes:data?.bytes;
+   usage.textContent=bytes==null?'':`${mac?'本机播放成品':'最近统计'} ${size(bytes)}`;
+   usage.hidden=bytes==null;
+   note.hidden=check.hidden=limitField.hidden=save.hidden=!hasPolicy;
+   enabled.disabled=limit.disabled=save.disabled=readOnly||!hasPolicy||writing;
   }
-  form.onsubmit=e=>{
+  function status(text,error=false){
+   notice.textContent=text;
+   notice.hidden=!text;
+   notice.classList.toggle('error',error);
+  }
+  async function load(){
+   if(signal.aborted||loading||writing)return;
+   loading=true;retry.disabled=true;
+   const began=revision;
+   if(!storagePolicies.has(host)&&!failed)status('正在读取…');
+   try{
+    const data=await api('manage/policy/'+host,undefined,signal);
+    if(signal.aborted||revision!==began)return;
+    failed=false;
+    display(data);
+    status(data.configured===false?'尚未配置 NAS。':'');
+   }catch(error){
+    if(signal.aborted||revision!==began)return;
+    failed=true;
+    const unavailable=!mac&&error.message==='nas_management_unavailable';
+    status(unavailable?'暂时无法连接 NAS。':`暂时无法读取 ${name} 容量设置。`,true);
+   }finally{
+    loading=false;retry.disabled=false;retry.hidden=!failed;
+   }
+  }
+  form.onsubmit=async e=>{
    e.preventDefault();
-   if(form.reportValidity())action(save,()=>api('manage/policy',{host,value:{enabled:enabled.checked,limit_bytes:Number(limit.value)*1024**3}}),'容量策略已保存，后台将自动按需清理。');
+   if(signal.aborted||save.disabled||!form.reportValidity())return;
+   const value={enabled:enabled.checked,limit_bytes:Number(limit.value)*1024**3};
+   writing=true;revision++;
+   enabled.disabled=limit.disabled=save.disabled=true;
+   try{
+    const policy=await api('manage/policy',{host,value},signal);
+    if(signal.aborted)return;
+    failed=false;retry.hidden=true;
+    display({...storagePolicies.get(host),policy},{force:true});
+    status('容量策略已保存。');
+   }catch(error){
+    if(!signal.aborted)status(explain(error),true);
+   }finally{
+    writing=false;
+    if(!signal.aborted)enabled.disabled=limit.disabled=save.disabled=readOnly;
+   }
   };
+  retry.hidden=true;
+  display(storagePolicies.get(host),{force:true});
+  retries.push(()=>{if(failed)void load();});
   grid.append(form);
+  void load();
  }
  section.append(grid);
+ section.prepend(el('h2','容量与自动清理'));
+ $('content').append(section);
+ retryStorageSettings=()=>retries.forEach(retry=>retry());
 }
 function renderRoomDefaults(section,roomResult){
  section.append(el('p','用于下一次新建的房间。','setting-note'));
@@ -399,33 +476,67 @@ function renderBackgroundSettings(signal){
  const summary=el('summary');summary.append(el('h2','歌曲背景'));
  const status=el('p',null,'muted');status.setAttribute('role','status');
  const policy=el('form',null,'background-limit');policy.hidden=true;
+ const enabled=el('input');enabled.type='checkbox';enabled.setAttribute('role','switch');
+ enabled.disabled=readOnly;
+ const switchField=el('label',null,'background-switch');
+ switchField.append(enabled,el('span','启用 AI 歌曲背景'));
  const limit=el('input');limit.type='number';limit.min='0';limit.step='1';limit.required=true;limit.disabled=readOnly;
  const save=el('button','保存上限');save.type='submit';save.disabled=readOnly;
  const result=el('p',null,'muted background-policy-result');result.setAttribute('role','status');
- policy.append(field('每日生成上限（张）',limit),save);
+ policy.append(switchField,field('每日生成上限（张）',limit),save);
  const list=el('div',null,'background-items');
  const retry=button('重试读取歌曲背景',()=>readBackgrounds(state));retry.hidden=true;
- const state={signal,section,status,policy,limit,list,retry,items:new Map(),loading:false,remaining:null,revision:0,reload:false};
+ const state={signal,section,status,policy,enabled,limit,list,retry,items:new Map(),loading:false,saving:false,
+  active:true,remaining:null,issue:'',revision:0,reload:false};
  backgroundView=state;
  section.append(summary,policy,result,status,retry,list);
- policy.onsubmit=async event=>{
-  event.preventDefault();
-  if(save.disabled||signal.aborted)return;
-  save.disabled=true;result.textContent='';
+ async function savePolicy(patch){
+  if(state.saving||readOnly||signal.aborted)return;
+  state.saving=true;
+  state.revision++;
+  enabled.disabled=save.disabled=true;
+  result.textContent='';
   try{
-   const data=await api('manage/backgrounds/policy',{daily_images:limit.valueAsNumber},signal);
+   const data=await api('manage/backgrounds/policy',patch,signal);
    if(signal.aborted)return;
-   limit.value=String(data.daily_limit);
-   limit.defaultValue=limit.value;
+   if('daily_images' in patch)limit.defaultValue=limit.value=String(data.daily_limit);
+   applyBackgroundPolicy(state,data);
    result.textContent='已保存。';
-   state.revision++;
    if(state.loading)state.reload=true;
    else void readBackgrounds(state);
-  }catch(error){if(!signal.aborted)result.textContent=explain(error);}
-  finally{save.disabled=readOnly;}
+  }catch(error){
+   if(!signal.aborted){enabled.checked=state.active;result.textContent=explain(error);}
+  }finally{
+   state.saving=false;
+   enabled.disabled=save.disabled=readOnly;
+  }
+ }
+ enabled.onchange=()=>void savePolicy({enabled:enabled.checked});
+ policy.onsubmit=event=>{
+  event.preventDefault();
+  void savePolicy({daily_images:limit.valueAsNumber});
  };
  section.ontoggle=()=>{if(section.open)void readBackgrounds(state);};
  $('content').append(section);
+}
+function applyBackgroundPolicy(state,data){
+ if(Number.isInteger(data.daily_limit)){
+  if(state.policy.hidden||state.limit.value===state.limit.defaultValue)state.limit.value=String(data.daily_limit);
+  state.limit.defaultValue=String(data.daily_limit);
+  state.policy.hidden=false;
+ }
+ state.active=data.enabled!==false;
+ state.enabled.checked=state.active;
+ state.remaining=Number.isInteger(data.daily_remaining)?data.daily_remaining:null;
+ state.issue=errors[data.generation_issue]||'';
+ updateBackgroundStatus(state);
+ for(const row of state.items.values())updateBackgroundRow(state,row);
+}
+function updateBackgroundStatus(state){
+ const quota=state.remaining===0?'已达每日生成上限。':state.remaining===null
+  ?(state.policy.hidden?'':'调试模式不限每日张数。'):`今日还可生成 ${state.remaining} 张。`;
+ const message=state.active?state.issue:'已关闭，电视使用常规背景。';
+ state.status.textContent=[message,quota].filter(Boolean).join(' ');
 }
 async function readBackgrounds(state){
  if(state.loading||state.signal.aborted)return;
@@ -436,15 +547,7 @@ async function readBackgrounds(state){
  try{
   const data=await api('manage/backgrounds',undefined,state.signal);
   if(state.signal.aborted||revision!==state.revision)return;
-  if(Number.isInteger(data.daily_limit)){
-   if(state.policy.hidden||state.limit.value===state.limit.defaultValue)state.limit.value=String(data.daily_limit);
-   state.limit.defaultValue=String(data.daily_limit);
-   state.policy.hidden=false;
-  }
-  state.remaining=Number.isInteger(data.daily_remaining)?data.daily_remaining:null;
-  const quota=state.remaining===0?'已达每日生成上限。':state.remaining===null
-   ?(state.policy.hidden?'':'调试模式不限每日张数。'):`今日还可生成 ${state.remaining} 张。`;
-  state.status.textContent=data.items.length?quota:['准备完成的歌曲会显示在这里。',quota].filter(Boolean).join(' ');
+  applyBackgroundPolicy(state,data);
   const ids=new Set(data.items.map(item=>item.id));
   for(const [id,row] of state.items){
    if(!ids.has(id)&&!row.writing){row.element.remove();state.items.delete(id);}
@@ -488,7 +591,7 @@ function updateBackgroundRow(state,row){
  row.notice.textContent=row.error||(!preparing&&item.status==='failed'?(errors[item.reason]||''):'');
  row.generate.textContent=item.ready?'重新生成':'生成';
  row.generate.setAttribute('aria-label',`${row.generate.textContent}《${item.title}》的背景`);
- row.generate.disabled=readOnly||preparing||state.remaining===0;
+ row.generate.disabled=readOnly||preparing||!state.active||state.remaining===0;
  row.previewToggle.hidden=!item.ready;
  row.previewToggle.textContent=row.previewOpen?'收起预览':'预览';
  row.previewToggle.setAttribute('aria-expanded',String(row.previewOpen));
@@ -669,6 +772,7 @@ const timer=setInterval(()=>{
  if(!alive||document.hidden)return;
  if(sourceDialog.open){if(sourceSession?.waiting)void sourceRequest();return;}
  if(view==='settings'){
+  retryStorageSettings?.();
   if(backgroundView?.section.open&&[...backgroundView.items.values()].some(row=>row.item.status==='preparing'))void readBackgrounds(backgroundView);
   return;
  }

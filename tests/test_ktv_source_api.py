@@ -170,6 +170,30 @@ def test_cloud_lyric_fallback_requires_title_artist_and_duration(tmp_path, monke
     api.close()
 
 
+def test_cloud_lyrics_continue_past_a_wrong_duration_to_the_same_artist_catalog(tmp_path, monkeypatch):
+    search_result = {"song_id": "500", "title": "合成歌", "artists": ["合成歌手"]}
+    monkeypatch.setattr("homeplane.ktv_search.search_songs", lambda _: [search_result])
+    calls = []
+
+    def rpc(operation, **kw):
+        identity = kw["id"]
+        calls.append((operation, identity))
+        if operation == "detail":
+            return {"body": {"songs": [{"id": int(identity), "dt": 73000 if identity == "500" else 60000}]}}
+        return {"body": {"lrc": None if identity == "123" else {"lyric": "[00:10]一句\n[00:20]二句\n[00:30]三句"}}}
+
+    api = logged_api(tmp_path, rpc)
+    (api.root / "cloud-owned.json").write_text(json.dumps({"songs": {"123": {
+        "md5": "a" * 32, "title": "合成歌", "artists": ["合成歌手"], "duration_ms": 60000,
+    }}}))
+    monkeypatch.setattr(api, "_artist_lyric_candidates", lambda _: [search_result, {**search_result, "song_id": "501"}])
+    try:
+        assert [row["time_ms"] for row in api.cloud_lyrics("123")["lines"]] == [10000, 20000, 30000]
+        assert calls == [("lyrics", "123"), ("detail", "500"), ("detail", "501"), ("lyrics", "501")]
+    finally:
+        api.close()
+
+
 def test_cloud_featured_credit_matches_primary_artist_but_not_a_cover(tmp_path, monkeypatch):
     from homeplane.ktv_source_api import _same_lyric_identity
     owned={'title':'合成歌曲','artists':['原唱 (Feat. 朋友)']}

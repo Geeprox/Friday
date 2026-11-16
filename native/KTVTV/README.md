@@ -12,6 +12,8 @@ Android 可能要求允许 Friday KTV 安装应用，或显示确认安装画面
 
 0.74 可直接播放 JPEG 背景和已有的 PNG 缓存。背景由 Mac 校验后经 NAS 传输，电视按媒体摘要缓存。旧电视版本在 JPEG 背景不可用时显示本地主题。
 
+0.75 在 AI 背景已显示且歌词可见时，仅在画面左侧叠加渐隐阴影，并保留歌词文字阴影。背景设置改动与后到图片会在当前歌曲中更新。原唱／伴奏命令应用后在同一轮上报电视控制回执。
+
 对于 3840×2160 的背景，电视会根据 Android 当前显示模式、实际绘制尺寸和可用内存选择解码尺寸。4K 输出且应用绘制面积高于 1080p 时可使用完整分辨率。若系统仍以 1080p 绘制应用，或内存不足，电视降采样显示同一张图。后台只解码当前要显示的一张背景，旧图和过期结果随播放进度释放。画面保持原图色彩，歌词用文字阴影保持可读性。实机原生 4K 显示还需该设备的 Android 绘制区域达到 3840×2160。 [Android 显示模式](https://developer.android.com/reference/android/view/Display#getMode()) · [Android 位图内存](https://developer.android.com/topic/performance/graphics/manage-memory)
 
 ## 构建和验收

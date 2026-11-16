@@ -34,9 +34,11 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  let jobs=[unavailableTrack,oldStorageFailure,activeJob,laterPrepared];
  let sourceStatus={logged_in:true,state:'logged_in',settings:{level:'standard'}};
  const background={id:'a'.repeat(64),title:'合成背景歌曲',source:'song',status:'ready',ready:true};
- let backgroundAllowance=3,backgroundLimit=100;
+ let backgroundAllowance=3,backgroundLimit=100,backgroundEnabled=true;
  const writes=[],reads=[];let deleteAttempts=0,cleared=false,timer,lateResolve=null;
  let holdLibrary=false,resolveLibrary,failLibrary=false;
+ let holdNasPolicy=false,failNasPolicy=false;
+ const nasPolicyReads=[];
  const scope=vm.createContext({document,console,Date,JSON,Set,Map,URL,AbortController,AbortSignal,performance,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout,setInterval:fn=>{timer=fn;return 17;},clearInterval:id=>{assert.equal(id,17);cleared=true;},fetch:async(path,options={})=>{
   assert.ok(path.startsWith('/api/games/ktv/'),'No cross-origin request or management key');
   assert.equal(options.credentials,'same-origin');assert.ok(!Object.keys(options.headers).some(k=>/key|authorization/i.test(k)));
@@ -47,6 +49,7 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
    if(path.endsWith('manage/room/command'))return reply({seq:9});
    if(path.endsWith('manage/room/songs'))return reply({accepted:true});
    if(path.endsWith('manage/room/controls')||path.endsWith('manage/room/preferences'))return reply({revision:5});
+   if(path.endsWith('manage/policy'))return reply(data.value);
    if(path.endsWith('source/login')){
     sourceStatus={...sourceStatus,logged_in:false,state:'waiting_official'};
     return reply(structuredClone(sourceStatus));
@@ -69,9 +72,12 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
     return reply({status:background.status,ready:background.ready});
    }
    if(path.endsWith('manage/backgrounds/policy')){
-    backgroundAllowance+=data.daily_images-backgroundLimit;
-    backgroundLimit=data.daily_images;
-    return reply({daily_limit:backgroundLimit,daily_remaining:backgroundAllowance});
+    if('daily_images' in data){
+     backgroundAllowance+=data.daily_images-backgroundLimit;
+     backgroundLimit=data.daily_images;
+    }
+    if('enabled' in data)backgroundEnabled=data.enabled;
+    return reply({enabled:backgroundEnabled,daily_limit:backgroundLimit,daily_remaining:backgroundAllowance});
    }
    throw Error('unexpected write '+path);
   }
@@ -83,19 +89,25 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
    if(failLibrary)return libraryFailure();
    return reply(structuredClone(inventory));
   }
+  if(path.endsWith('manage/policy/mac'))return reply({...structuredClone(inventory.mac),hot_cache:{bytes:1024**3}});
+  if(path.endsWith('manage/policy/nas')){
+   if(holdNasPolicy)return new Promise(resolve=>nasPolicyReads.push(resolve));
+   return failNasPolicy?nasPolicyFailure():reply(structuredClone(inventory.nas));
+  }
   if(path.includes('manage/search?')){
    const query=new URL(path,'https://fixture.invalid').searchParams;
    const cloud=query.get('source')==='cloud';
    return reply({songs:[{song_id:'7',title:cloud?'合成云盘同名歌曲':'搜到的合成曲',artists:['歌手'],source:cloud?'cloud':'song'}]});
   }
   if(path.endsWith('source/status'))return reply(structuredClone(sourceStatus));
-  if(path.endsWith('manage/backgrounds'))return reply({items:[structuredClone(background)],daily_limit:backgroundLimit,daily_remaining:backgroundAllowance});
+  if(path.endsWith('manage/backgrounds'))return reply({items:[structuredClone(background)],enabled:backgroundEnabled,daily_limit:backgroundLimit,daily_remaining:backgroundAllowance});
   if(path.endsWith('scheduler'))return reply({hardware:{cpu:'SYNTHETIC',memory_bytes:8*1024**3},settings:{mode:'auto',download:1,model:1,encode:1},limits:{download:3,model:2,encode:4}});
   if(path.endsWith('jobs'))return reply({jobs:structuredClone(jobs)});
   throw Error('unexpected read '+path);
  }});
  function reply(data){return{ok:true,json:async()=>data};}
  function libraryFailure(){return{ok:false,json:async()=>({detail:'ktv_offline'})};}
+ function nasPolicyFailure(){return{ok:false,json:async()=>({detail:'nas_management_unavailable'})};}
  vm.runInContext(fs.readFileSync('integrations/ktv_public/web/party-audio.js','utf8'),scope);
  vm.runInContext(fs.readFileSync('homeplane/static/ktv-console/app.js','utf8').replace('export function mountKtv','function mountKtv'),scope);
  scope.root=root;scope.back=()=>{};const owner=vm.runInContext("mountKtv(root,{endpoint:'/api/games/ktv',embedded:true,onBack:back})",scope);
@@ -120,29 +132,50 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  await click(byId('delete-selected'));assert.equal(deleteAttempts,0,'Preview must not delete');assert.equal(byId('delete-dialog').open,true);await click(byId('cancel-delete'));assert.equal(deleteAttempts,0);assert.equal(document.activeElement,byId('delete-selected'),'Cancel restores focus');
  await click(byId('delete-selected'));await click(byId('confirm-delete'));assert.equal(deleteAttempts,1);assert.equal(byId('delete-dialog').open,true);assert.match(byId('delete-error').textContent,/重试剩余删除/);await click(byId('confirm-delete'));assert.equal(deleteAttempts,2);assert.equal(byId('delete-dialog').open,false);assert.ok(writes.filter(w=>w.path.endsWith('/delete')).every(w=>w.data.plan==='SYNTHETIC-plan'),'Partial retry reuses the reviewed deletion plan');
  const libraryReads=()=>reads.filter(path=>path.endsWith('manage/library')).length;
+ const policyForms=()=>nodes().filter(n=>n.className==='policy-form');
+ const policySave=host=>walk(policyForms()[host]).find(n=>n.tagName==='button'&&n.type==='submit');
  const previousLibraryReads=libraryReads();
- holdLibrary=true;
+ holdLibrary=holdNasPolicy=true;
  await click(byId('settings-tab'));
- assert.ok(buttons('保存制作设置')[0],'Scheduler renders before inventory');
- assert.ok(buttons('保存房间默认设置')[0],'Room defaults render before inventory');
- assert.match(root.textContent,/容量与自动清理正在读取/);
+ assert.ok(buttons('保存制作设置')[0],'Scheduler renders while NAS capacity is pending');
+ assert.ok(buttons('保存房间默认设置')[0],'Room defaults render while NAS capacity is pending');
+ assert.match(policyForms()[0].textContent,/本机播放成品 1.00 GB/);
+ assert.equal(policySave(0).disabled,false,'Mac settings render while NAS capacity is pending');
+ assert.equal(policySave(1).hidden,true,'No speculative NAS policy is shown');
+ assert.equal(libraryReads(),previousLibraryReads,'Settings does not fetch the file inventory');
  assert.equal(byId('status').textContent,'');
  await click(byId('cache-tab'));
  assert.match(byId('status').textContent,/正在读取歌曲文件/);
- assert.equal(libraryReads(),previousLibraryReads+1,'Cache and settings share one inventory read');
+ assert.equal(libraryReads(),previousLibraryReads+1,'Only the file list fetches the inventory');
  await click(byId('room-tab'));
  assert.match(root.textContent,/合成当前曲/,'Cache request must not hold the room tab');
  await click(byId('settings-tab'));
  assert.equal(libraryReads(),previousLibraryReads+1,'Switching back cannot start a parallel inventory read');
  const schedulerSave=buttons('保存制作设置')[0];
- holdLibrary=false;
+ holdLibrary=holdNasPolicy=false;
  resolveLibrary(libraryFailure());
+ for(const complete of nasPolicyReads)complete(nasPolicyFailure());
  await settle();
  assert.equal(byId('status').textContent,'','An old cache failure cannot replace the active tab status');
- assert.equal(buttons('保存制作设置')[0],schedulerSave,'Inventory failure preserves the scheduler form');
- await click(buttons('重试')[0]);
- assert.equal(buttons('保存容量策略').length,2);
- assert.equal(buttons('保存制作设置')[0],schedulerSave,'Inventory retry only renders its own settings');
+ assert.equal(buttons('保存制作设置')[0],schedulerSave,'NAS failure preserves the scheduler form');
+ assert.equal(policySave(0).disabled,false,'NAS failure preserves Mac capacity settings');
+ assert.match(policyForms()[1].textContent,/暂时无法连接 NAS/);
+ assert.equal(policySave(1).hidden,true);
+ await click(buttons('重试读取 NAS 容量设置')[0]);
+ assert.equal(policySave(1).hidden,false);
+ assert.equal(buttons('保存制作设置')[0],schedulerSave,'NAS retry only updates its own settings');
+ failNasPolicy=true;
+ await click(byId('refresh'));
+ assert.equal(policySave(1).hidden,false,'A temporary failure keeps the last successful NAS settings');
+ assert.match(policyForms()[1].textContent,/最近统计 1.00 GB.*暂时无法连接 NAS/);
+ failNasPolicy=false;
+ timer();await settle();
+ assert.doesNotMatch(policyForms()[1].textContent,/暂时无法连接 NAS/);
+ const macForm=policyForms()[0];
+ walk(macForm).find(n=>n.tagName==='input'&&n.type==='number').value='12';
+ await macForm.onsubmit({preventDefault(){}});
+ assert.match(macForm.textContent,/容量策略已保存/);
+ assert.deepEqual(writes.find(write=>write.path.endsWith('manage/policy')).data,{host:'mac',value:{enabled:false,limit_bytes:12*1024**3}});
  assert.doesNotMatch(root.textContent,microphoneCopy);
  assert.match(root.textContent,/已核对 NAS 归档的本机播放成品/);
  buttons('保存房间默认设置')[0].parent.onsubmit({preventDefault(){}});
@@ -183,13 +216,22 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  assert.equal(regenerate.disabled,false);
  assert.equal(buttons('重新生成')[0],regenerate,'Background activity updates the existing card');
  const limitForm=walk(backgroundPanel).find(n=>n.className==='background-limit');
- const limitInput=walk(limitForm).find(n=>n.tagName==='input');
+ const limitInput=walk(limitForm).find(n=>n.tagName==='input'&&n.type==='number');
  assert.equal(limitInput.value,'100');
  limitInput.value='120';limitInput.valueAsNumber=120;
  await limitForm.onsubmit({preventDefault(){}});await settle();
  assert.equal(limitInput.value,'120');
  assert.match(backgroundPanel.textContent,/已保存。今日还可生成 22 张/);
  assert.deepEqual(writes.find(w=>w.path.endsWith('/backgrounds/policy')).data,{daily_images:120});
+ const switchInput=walk(limitForm).find(n=>n.getAttribute?.('role')==='switch');
+ assert.equal(switchInput.checked,true);
+ switchInput.checked=false;switchInput.onchange();await settle();
+ assert.equal(regenerate.disabled,true);
+ assert.equal(limitInput.value,'120');
+ assert.match(backgroundPanel.textContent,/已关闭，电视使用常规背景。/);
+ assert.deepEqual(writes.filter(w=>w.path.endsWith('/backgrounds/policy')).at(-1).data,{enabled:false});
+ switchInput.checked=true;switchInput.onchange();await settle();
+ assert.equal(regenerate.disabled,false);
  await click(buttons('查看制作进度')[0]);
  const jobRow=title=>nodes().find(n=>n.tagName==='article'&&n.textContent.includes(title));
  assert.match(jobRow(unavailableTrack.title).textContent,/曲库版本/);

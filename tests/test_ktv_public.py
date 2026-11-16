@@ -667,6 +667,51 @@ def test_artist_portraits_are_exact_name_official_images_and_privately_cached(st
     assert all(url.startswith('https://p1.music.126.net/') for url in saved['photos'].values())
 
 
+def test_discover_serves_cached_playlists_and_artists_while_one_refresh_is_in_flight(station, monkeypatch):
+    import threading
+    import time
+
+    store, _ = station
+    (store.root / "recommendations.json").write_text(json.dumps({
+        "updated": 1, "playlists": [{"id": "123", "title": "上次的歌单"}],
+    }))
+    (store.root / "artist-portraits.json").write_text(json.dumps({
+        "updated": int(time.time()), "photos": {},
+    }))
+    requested, release, ready = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+
+    def slow_source(path, params):
+        calls.append(path)
+        requested.set()
+        assert release.wait(3)
+        return {"result": {"playlists": [{"id": 456, "name": "新歌单"}]}}
+
+    refresh = store.refresh_recommendations
+
+    def observe_refresh():
+        try:
+            refresh()
+        finally:
+            ready.set()
+
+    monkeypatch.setattr(store, "refresh_recommendations", observe_refresh)
+    monkeypatch.setattr(store, "public_metadata", slow_source)
+    try:
+        first = store.discover()
+        assert requested.wait(3)
+        assert first["artists"] and first["refreshing"]
+        assert store.discover()["playlists"] == first["playlists"] == [{"id": "123", "title": "上次的歌单"}]
+        assert calls == ["/api/search/get/web"]
+    finally:
+        release.set()
+        assert ready.wait(3)
+    current = store.discover()
+    assert not current["refreshing"]
+    assert current["playlists"][0]["id"] == "456"
+    assert json.loads((store.root / "recommendations.json").read_text())["playlists"] == current["playlists"]
+
+
 @pytest.mark.parametrize('state', ['playing', 'paused', 'preparing', 'idle'])
 def test_online_state_does_not_expire_or_reopen_a_persistent_session(station, state):
     import time

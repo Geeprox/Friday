@@ -7,14 +7,18 @@ public final class SongBackdropTest {
     private static void require(boolean value){if(!value)throw new AssertionError();}
     public static void main(String[] args)throws Exception{
         String a=new String(new char[64]).replace('\0','a'),b=new String(new char[64]).replace('\0','b');
-        SongBackdrop owner=new SongBackdrop();require(owner.select("one"));long first=owner.begin("one",a,true);require(first>0);
-        require(owner.begin("one",a,true)==0&&owner.begin("one",a,false)==0);
+        SongBackdrop owner=new SongBackdrop();require(owner.select("one"));long first=owner.begin("one",a,true,0);require(first>0);
+        require(owner.begin("one",a,true,0)==0&&owner.begin("one",a,false,0)==0);
         require(owner.select("two"));require(!owner.accept("one",a,first));
-        long second=owner.begin("two",b,false);require(owner.accept("two",b,second));require(owner.begin("two",b,false)==0);
-        long upgraded=owner.begin("two",b,true);require(upgraded>0);require(owner.accept("two",b,upgraded));
-        require(owner.begin("two",b,true)==0);
-        owner.select("three");for(int i=0;i<3;i++){long attempt=owner.begin("three",a,true);require(attempt>0);owner.fail(attempt);}
-        require(owner.begin("three",a,true)==0);require(owner.begin("three",b,true)>0);
+        long second=owner.begin("two",b,false,0);require(owner.accept("two",b,second));require(owner.begin("two",b,false,0)==0);
+        long upgraded=owner.begin("two",b,true,0);require(upgraded>0);owner.clear();
+        require(!owner.accept("two",b,upgraded));
+        upgraded=owner.begin("two",b,true,0);require(owner.accept("two",b,upgraded));
+        require(owner.begin("two",b,true,0)==0);
+        owner.select("three");
+        for(int i=0;i<4;i++){long at=i*30000L, attempt=owner.begin("three",a,true,at);
+            require(attempt>0);owner.fail(attempt,at);require(owner.begin("three",a,true,at+500)==0);}
+        require(owner.begin("three",b,true,90000)>0);
         require(BackdropImagePolicy.validSource(3840,2160)&&BackdropImagePolicy.validSource(1536,864));
         require(!BackdropImagePolicy.validSource(4096,2300)&&!BackdropImagePolicy.validSource(3841,4097));
         require(!BackdropImagePolicy.validSource(0,2160)&&!BackdropImagePolicy.validSource(-1,2160));

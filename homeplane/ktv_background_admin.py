@@ -12,6 +12,7 @@ from typing import Any
 from PIL import Image
 
 from homeplane.intelligence.backgrounds import song_identity
+from homeplane.intelligence.budget import EnhancementUnavailable
 
 
 BACKGROUND_ID = re.compile(r"[a-f0-9]{64}")
@@ -47,8 +48,7 @@ class BackgroundManagement:
         for song in sorted(ready, key=lambda row: row.get("updated", 0), reverse=True):
             try:
                 identifier = song_identity(song, config.image_model)
-                if song.get("audio_origin") != "cloud" or backgrounds.public_metadata_for(identifier):
-                    result.setdefault(identifier, song)
+                result.setdefault(identifier, song)
             except (ValueError, OSError):
                 continue
         for path in sorted(backgrounds.directory.glob("*.json"))[:2048]:
@@ -92,6 +92,21 @@ class BackgroundManagement:
     def policy(self):
         runtime = self.backgrounds.runtime
         config = runtime.settings.read()
-        used = runtime.ledger.status(config)["used"]["images"]
-        return {"daily_limit": config.daily_images,
-                "daily_remaining": None if self.backgrounds.debug else max(0, config.daily_images - used)}
+        usage = runtime.ledger.status(config)
+        remaining = None if self.backgrounds.debug else max(0, config.daily_images - usage["used"]["images"])
+        policy = {"enabled": config.cloud_images, "daily_limit": config.daily_images, "daily_remaining": remaining}
+        if config.cloud_images:
+            try:
+                runtime.client.authorize("images")
+            except EnhancementUnavailable as exc:
+                policy["generation_issue"] = exc.code
+            else:
+                for block in usage["blocks"]:
+                    if block["capability"] in {"images", "all"}:
+                        policy["generation_issue"] = block["code"]
+                        break
+        return policy
+
+    def listing(self):
+        items = [self.status(key, song) for key, song in list(self.candidates().items())[:128]]
+        return {"items": items, **self.policy()}

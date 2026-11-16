@@ -460,7 +460,7 @@ def test_nas_only_lyrics_stop_when_retries_exhausted(tmp_path, monkeypatch):
             worker.tick()
         assert calls_to_provider == [remote, remote]
         assert [body["lyrics"] for path, body in calls if path == "/agent/lyrics"] == [
-            {"status": "unavailable", "lines": [], "retry_exhausted": True},
+            {"status": "unavailable", "lines": [], "retry_exhausted": True, "lookup_revision": 2},
         ]
     finally:
         worker.close()

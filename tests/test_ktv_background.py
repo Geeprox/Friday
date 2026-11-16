@@ -2,7 +2,6 @@
 
 import asyncio
 import base64
-import copy
 import hashlib
 import io
 import json
@@ -13,7 +12,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,11 +29,11 @@ from homeplane.intelligence.budget import EnhancementUnavailable
 from homeplane.intelligence.settings import IntelligenceConfig
 from homeplane.intelligence.settings import atomic_json
 from homeplane.ktv_service import create_app
-from homeplane.ktv_worker import BACKGROUND_PREFETCH_COUNT, MediaTickets, manifest_version
+from homeplane.ktv_worker import MediaTickets, manifest_version
 from scripts.ktv_build_workspace import build_workspace
 from tests.test_intelligence_journeys import picture
 from tests.test_intelligence_providers import runtime
-from tests.test_ktv_coordinator import manifest
+from tests.test_ktv_coordinator import fake_cache, manifest, registration
 from tests.test_ktv_coordinator import store as store
 from tests.test_ktv_worker import KEY, PreparedQueue, make_worker
 
@@ -66,6 +64,14 @@ async def test_4k_jpeg_reaches_tv_route_unchanged_with_original_job_ticket(tmp_p
         with Image.open(io.BytesIO(response.content)) as delivered:
             assert delivered.format == "JPEG" and delivered.size == UHD_CANVAS
         assert client.get(url, headers={"X-KTV-Media": token + "bad"}).status_code == 401
+        cached = images.cached_for(queue.job)
+        asset_token, _ = MediaTickets(KEY).issue_background(cached["id"], cached["sha256"])
+        asset_url = f'/v1/background-assets/{cached["id"]}/{cached["sha256"]}'
+        assert client.get(asset_url, headers={"X-KTV-Media": asset_token}).content == source
+        assert client.get(asset_url, headers={"X-KTV-Media": token}).status_code == 401
+        assert client.get(url, headers={"X-KTV-Media": asset_token}).status_code == 401
+        owner.settings.update({"cloud_images": False})
+        assert client.get(asset_url, headers={"X-KTV-Media": asset_token}).status_code == 404
     assert manifest_version(queue.job) == before
     assert len(requests) == 1 and requests[0]["size"] == "3840x2160" and requests[0]["output_format"] == "jpeg"
     cached = images.cached_for(queue.job)
@@ -103,12 +109,16 @@ def test_owner_can_change_daily_image_limit_in_place_and_debug_never_waits(tmp_p
             assert client.post(prefix + "/policy", json={"daily_images": 100}).status_code == 403
             assert client.post(prefix + "/policy", json={"daily_images": True}, headers=headers).status_code == 400
             report = client.post(prefix + "/policy", json={"daily_images": 100}, headers=headers)
-            assert report.json() == {"daily_limit": 100, "daily_remaining": 100}
+            assert report.json() == {"enabled": True, "daily_limit": 100, "daily_remaining": 100}
         assert client.post(endpoint, json={}, headers=headers).status_code == 202
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and not (item := client.get(prefix).json()["items"][0])["ready"]:
             time.sleep(.03)
         assert item["ready"] and len(calls) == 1
+        assert client.post(prefix + "/policy", json={"enabled": False}, headers=headers).json()["enabled"] is False
+        assert client.post(endpoint, json={}, headers=headers).json()["detail"] == "cloud_images_disabled"
+        assert client.get(endpoint.replace("/regenerate", "/preview")).json()["image"].startswith("data:image/jpeg;base64,")
+        assert client.post(prefix + "/policy", json={"enabled": True}, headers=headers).json()["enabled"] is True
         assert owner.status()["usage"]["used"]["images"] == 1
         assert owner.settings.read().daily_images == (0 if debug else 100)
         assert owner.settings.read().daily_requests == config.daily_requests
@@ -486,7 +496,7 @@ def test_optional_background_failure_does_not_hold_audio_publication(tmp_path):
     def unavailable(song):
         raise ValueError("synthetic_background_settings_unavailable")
 
-    worker.backgrounds = SimpleNamespace(eligible_for_generation=lambda song: True, request_from_thread=unavailable)
+    worker.backgrounds = SimpleNamespace(enabled=lambda: False, cached_for=unavailable)
     try:
         worker.tick()
         published = next(body for path, body in calls if path == "/agent/manifests")
@@ -499,7 +509,7 @@ def test_optional_background_failure_does_not_hold_audio_publication(tmp_path):
 def test_late_background_changes_only_optional_metadata_and_keeps_audio_ticket(tmp_path):
     worker, queue, remote, report, calls = make_worker(tmp_path)
     value = {"status": "local"}
-    worker.backgrounds = SimpleNamespace(eligible_for_generation=lambda song: True, request_from_thread=lambda song: dict(value))
+    worker.backgrounds = SimpleNamespace(enabled=lambda: False, cached_for=lambda song: dict(value))
     try:
         worker.tick()
         previous = next(body for path, body in calls if path == "/agent/manifests")
@@ -516,40 +526,33 @@ def test_late_background_changes_only_optional_metadata_and_keeps_audio_ticket(t
         worker.close()
 
 
-def test_background_lookahead_counts_only_eligible_ready_songs(tmp_path, monkeypatch):
-    worker, queue, _, report, calls = make_worker(tmp_path)
-    owner = runtime(tmp_path / "ai", lambda request: pytest.fail("synthetic test must not request generation"))
-    owner.settings.update({"cloud_images": True})
-    images = SongBackgrounds(owner, recording=lambda _: pytest.fail("synthetic test must not read the public catalog"))
-    worker.backgrounds = images
-    generated, cached = [], []
-    monkeypatch.setattr(images, "request_from_thread", lambda song: generated.append(song["song_id"]))
-    monkeypatch.setattr(images, "cached_for", lambda song: cached.append(song["song_id"]))
-    fixtures = [
-        *({"audio_origin": "cloud"} for _ in range(4)),
-        {"video": {"status": "ready"}},
-        {"simulated": True},
-        *({} for _ in range(BACKGROUND_PREFETCH_COUNT + 1)),
-    ]
-    jobs, mapping = {}, {}
-    song_ids = []
-    for number, fields in enumerate(fixtures, 100):
-        ready = copy.deepcopy(queue.job)
-        ready.update(id=str(uuid.uuid4()), song_id=str(number), simulated=False)
-        ready.update(fields)
-        song_ids.append(ready["song_id"])
-        mapping[str(uuid.uuid4())] = ready["id"]
-        jobs[ready["id"]] = ready
-    worker.mapping = mapping
-    report["rooms"][0]["order"] = list(mapping)
-    monkeypatch.setattr(queue, "get", lambda job_id: copy.deepcopy(jobs[job_id]))
+async def test_background_prefetch_reaches_cloud_and_mv_after_filling_first_wave(tmp_path):
+    prompts = []
+    encoded = base64.b64encode(solid_png("#18344c")).decode()
+
+    def generated(request):
+        prompts.append(json.loads(request.content)["prompt"])
+        return httpx.Response(200, json={"data": [{"b64_json": encoded}]})
+
+    owner = runtime(tmp_path / "ai", generated)
+    owner.settings.update({"cloud_images": True, "image_model": "gpt-image-1.5"})
+    public = {"title": "公开曲名", "artist": "公开歌手"}
+    images = SongBackgrounds(owner, max_parallel=2, cloud_recording=lambda _: public, include_mv=True)
+    songs = [{"song_id": "123", "title": "私人上传名", "audio_origin": "cloud"},
+             {"song_id": "124", "title": "现有 MV", "video": {"status": "ready"}},
+             {"song_id": "125", "title": "后排歌曲"}]
     try:
-        worker.tick()
-        assert generated == song_ids[6:-1]
-        assert cached == song_ids[:6] + song_ids[-1:]
-        assert len([path for path, _ in calls if path == "/agent/manifests"]) == len(fixtures)
+        images.prefetch(songs)
+        assert len(images.tasks) == 2
+        await asyncio.gather(*list(images.tasks.values()))
+        assert images.cached_for(songs[2]) is None
+        images.prefetch(songs)
+        await asyncio.gather(*list(images.tasks.values()))
+        assert len(prompts) == 3 and all(images.cached_for(song) for song in songs)
+        assert any("公开曲名" in prompt for prompt in prompts)
+        assert all("私人上传名" not in prompt for prompt in prompts)
     finally:
-        worker.close()
+        await images.close()
 
 
 @pytest.mark.parametrize("encoding", ["png", "jpeg"])
@@ -574,3 +577,43 @@ def test_nas_background_is_scoped_media_and_invalid_optional_image_keeps_audio(s
     store.coordinator.manifest(value)
     published = store.coordinator.jobs()["jobs"][0]
     assert published["state"] == "ready" and "background" not in published
+
+
+def test_nas_only_song_gets_background_and_switch_keeps_archive_files(store, monkeypatch):
+    entry, data, *_ = manifest(store)
+    entry["job"].update(simulated=False, audio_origin="cloud")
+    coordinator = store.coordinator
+    coordinator.manifest(entry)
+    fake_cache(monkeypatch, data, [])
+    original = coordinator._row(entry["id"])
+    for kind, spec in coordinator._specs(original).items():
+        coordinator._cache_one(original, kind, spec)
+    with store.connection() as db:
+        db.execute("UPDATE coordinator_manifests SET origin='',ticket='',expires=0,instance='' WHERE song=?", (entry["id"],))
+        db.execute("UPDATE rooms SET current_song=?", (entry["id"],))
+    before = coordinator.jobs()["jobs"][0]
+    candidate = coordinator.background_tasks()["tasks"][0]
+    assert candidate["current"] is True and candidate["audio_origin"] == "cloud"
+    assert candidate["background_sha"] == "" and before["state"] == "ready"
+    image = solid_jpeg(QHD_CANVAS, "#123345")
+    checksum = hashlib.sha256(image).hexdigest()
+    fake_cache(monkeypatch, {checksum: image}, [])
+    monkeypatch.setattr(coordinator.cache_pool, "submit", lambda fn, *args: fn(*args))
+    assert coordinator.repair_background({
+        "id": candidate["id"], "instance": entry["instance"], "version": candidate["version"],
+        "background": {"status": "ready", "encoding": "jpeg", "sha256": checksum, "bytes": len(image),
+                       "url": f'/v1/background-assets/{"a" * 64}/{checksum}'},
+        "media_ticket": entry["media_ticket"], "media_expires": entry["media_expires"],
+    })["accepted"]
+    after = coordinator.jobs()["jobs"][0]
+    assert after["state"] == "ready" and before["media"] == after["media"]
+    assert after["background"]["sources"] == [{"url": f'/v1/jobs/{entry["id"]}/media/background'}]
+    path, _ = coordinator.media_file(entry["id"], "background")
+    assert path.read_bytes() == image
+    coordinator.register_worker(registration(entry["instance"], backgrounds_enabled=False))
+    off = coordinator.jobs()
+    assert not off["backgrounds_enabled"] and "background" not in off["jobs"][0]
+    assert json.loads(coordinator.background_policy.read_text()) == {"enabled": False}
+    assert path.read_bytes() == image
+    coordinator.register_worker(registration(entry["instance"], backgrounds_enabled=True))
+    assert coordinator.jobs()["jobs"][0]["background"]["sha256"] == checksum

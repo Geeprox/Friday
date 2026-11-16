@@ -133,3 +133,26 @@ def test_nas_archive_lyric_recovery_retries_after_an_empty_result(tmp_path, monk
     epoch[0] += 60
     assert recovery(task) == timed
     assert len(requests) == 2 and "PRIVATE" not in requests[-1]["input"]
+
+
+def test_cloud_recovery_uses_only_verified_public_identity_and_unique_timecodes(tmp_path):
+    calls = []
+    public = {"id": "81", "title": "公开录音", "artists": ["歌手"], "artist_ids": ("33",),
+              "duration_ms": 12000, "album": "44", "isrc": "CNA123456789"}
+    unavailable = {"status": "unavailable", "lines": []}
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "completed", "usage": {"input_tokens": 40, "output_tokens": 8},
+            "output": [{"type": "web_search_call", "action": {"type": "search",
+                "sources": [{"url": "https://music.163.com/song?id=81"}]}}]})
+
+    source = SimpleNamespace(public_cloud_recording=lambda song_id: public if song_id == "98700" else None,
+                             public_timed_lyrics=lambda song_id, _: {
+                                 "status": "ready", "lines": [{"time_ms": at, "text": "合成歌词"}
+                                                             for at in (1000, 2000, 2000, 3000)]})
+    recovery = KtvLyricsRecovery(runtime(tmp_path / "ai", handler), source, None, None)
+    task = {"song_id": "98700", "source": "cloud", "duration_ms": 12000, "title": "PRIVATE 云盘名"}
+    assert [line["time_ms"] for line in recovery.recover(task)["lines"]] == [1000, 2000, 3000]
+    assert len(calls) == 1 and "98700" not in calls[0]["input"] and "PRIVATE" not in calls[0]["input"]
+    assert recovery.recover({**task, "song_id": "98701"}) == unavailable and len(calls) == 1

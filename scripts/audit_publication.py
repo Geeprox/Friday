@@ -23,9 +23,14 @@ FORBIDDEN_SUFFIXES = {'.sqlite', '.sqlite3', '.db', '.pem', '.key', '.p12', '.mp
                       '.m4a', '.aiff', '.zip', '.tar', '.gz', '.bundle', '.patch', '.ses', '.onnx', '.safetensors'}
 # Exact reviewed artwork and synthetic assets; household photos and changed bytes still fail closed.
 SYNTHETIC_MEDIA = {
+    # 手机队列和声音面板，示例歌曲与房间均为合成数据。
+    'docs/screenshots/ktv-mobile-queue.png':
+        '4acf79e70e2565191a4d9a8aacd7436f81c67aae5cdaf1a2b1948298057b448d',
+    'docs/screenshots/ktv-mobile-sound.png':
+        'd3bc70a07a333bbb413d07c1fb427879b871ca008ad9d63ee0919380cde222c6',
     # 合成歌曲与用量设置的 KTV 用户手册截图。
     'docs/screenshots/ktv-background-settings.png':
-        '6c3e953bb1cf8e5e58b075108385eec40c310f1007fc28d9012c948a76e00f87',
+        '639c1877515fdac0b2c0ed33b38e03cd6f6beb05bc95cc322149d75859f88117',
     # Reviewed Godot XR CC0 hand target frames, exact approved runtime pose.
     'homeplane/static/motion-art/godot-xr/targets/hand-ok.png':
         'b7e7822447c8fe2c20dbbdbb04aedd6e8b307a1387f22e97a28cea6678bc025a',

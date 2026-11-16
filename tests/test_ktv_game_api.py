@@ -85,6 +85,26 @@ def test_explicit_write_passes_revision_payload_only_to_fixed_owner(config):
     assert seen[0].url.host == "127.0.0.1" and seen[0].url.port == 8769
 
 
+def test_capacity_reads_use_fixed_hosts_and_distinguish_slow_response(config):
+    seen = []
+
+    def upstream(request):
+        seen.append(request.url.path)
+        if request.url.path.endswith("/nas"):
+            raise httpx.ReadTimeout("synthetic slow NAS response", request=request)
+        return httpx.Response(200, json={"available": True})
+
+    with client_for(config, upstream) as client:
+        prefix = "/api/games/ktv/manage/policy/"
+        assert client.get(prefix + "mac").json() == {"available": True}
+        reply = client.get(prefix + "nas")
+        assert reply.status_code == 504
+        assert reply.json() == {"detail": "ktv_response_timeout"}
+        assert client.get(prefix + "other").status_code == 404
+        assert client.post(prefix + "mac", json={}, headers={"Origin": ORIGIN}).status_code == 404
+    assert seen == ["/v1/manage/policy/mac", "/v1/manage/policy/nas"]
+
+
 @pytest.mark.parametrize("query", ["q=x&url=http://example.invalid", "q=x&q=y", "q=x&offset=-1", "q=x&source=other", "q=" + "a" * 121])
 def test_search_query_budget_and_no_destination_override(config, query):
     seen = []

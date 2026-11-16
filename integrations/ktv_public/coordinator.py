@@ -123,6 +123,15 @@ class Coordinator:
             raise ValueError("invalid_household_identity")
         self.household_id = household_path.read_text().strip()
         self.qr_metadata = {}
+        self.background_policy = store.root / "background-policy.json"
+        self.backgrounds_enabled = True
+        if self.background_policy.is_file() and not self.background_policy.is_symlink():
+            try:
+                value = json.loads(self.background_policy.read_text()).get("enabled")
+                if type(value) is bool:
+                    self.backgrounds_enabled = value
+            except (OSError, ValueError, AttributeError):
+                pass
         self.cache_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ktv-nas-cache")
         self.cache_pending = set()
         self.verify_pending = set()
@@ -213,10 +222,12 @@ class Coordinator:
                         and self.worker["capabilities"]["media"])
 
     def register_worker(self, payload):
-        if (set(payload) != {"instance", "origin", "capabilities"}
+        fields = {"instance", "origin", "capabilities"}
+        if (not fields <= set(payload) or set(payload) - fields - {"backgrounds_enabled"}
                 or not isinstance(payload["instance"], str) or not UUID.fullmatch(payload["instance"])
                 or not isinstance(payload["capabilities"], dict) or set(payload["capabilities"]) != CAPABILITIES
-                or any(type(v) is not bool for v in payload["capabilities"].values())):
+                or any(type(v) is not bool for v in payload["capabilities"].values())
+                or "backgrounds_enabled" in payload and type(payload["backgrounds_enabled"]) is not bool):
             raise self.error(400, "invalid_worker")
         try:
             origin = private_origin(payload["origin"], self.allow_loopback)
@@ -228,6 +239,10 @@ class Coordinator:
             if not self.worker_origin:
                 self.worker_origin = origin
                 atomic_private(self.store.root / "worker-origin.json", {"origin": origin})
+            enabled = payload.get("backgrounds_enabled", self.backgrounds_enabled)
+            if enabled != self.backgrounds_enabled:
+                atomic_private(self.background_policy, {"enabled": enabled})
+                self.backgrounds_enabled = enabled
             self.worker = {"instance": payload["instance"], "origin": origin,
                            "capabilities": dict(payload["capabilities"]), "at": time.time()}
             if all(self.worker["capabilities"].values()):
@@ -468,20 +483,30 @@ class Coordinator:
         return self.readiness()
 
     def party(self):
-        active = self.active()
-        if not active:
+        def snapshot():
+            # 电视高频取控制状态时，在同一读事务取房间、歌单和命令。
+            with self.store.connection() as db:
+                db.execute("BEGIN")
+                active = self.active(db)
+                if not active:
+                    return None
+                room = dict(db.execute("SELECT * FROM rooms WHERE id=?", (active["room"],)).fetchone())
+                ordered = db.execute("SELECT s.id,s.state,ls.ready=1 AS synced_lyrics FROM songs s "
+                                     "LEFT JOIN coordinator_lyric_status ls ON ls.song=s.id "
+                                     "WHERE s.room=? AND s.removed=0 ORDER BY s.position,s.rowid LIMIT 80", (active["room"],)).fetchall()
+                now = int(time.time())
+                commands = [dict(r) for r in db.execute("SELECT seq,action,song,created FROM commands WHERE room=? AND seq>? AND created>? AND created<=? ORDER BY seq LIMIT 20",
+                                                       (active["room"], room["last_command"], now - 20, now))]
+                return active, room, ordered, commands, now
+
+        value = snapshot()
+        if value and not value[1]["mic_muted"] and 0 < value[1]["mic_request_at"] <= value[4] - 5:
+            self.store.expire_unmute(value[0]["room"])
+            value = snapshot()
+        if value is None:
             return {"active": False, "readiness": self._readiness(None)}
-        self.store.expire_unmute(active["room"])
-        with self.store.connection() as db:
-            db.execute("BEGIN")
-            room = dict(db.execute("SELECT * FROM rooms WHERE id=?", (active["room"],)).fetchone())
-            ordered = db.execute("SELECT s.id,s.state,ls.ready=1 AS synced_lyrics FROM songs s "
-                                 "LEFT JOIN coordinator_lyric_status ls ON ls.song=s.id "
-                                 "WHERE s.room=? AND s.removed=0 ORDER BY s.position,s.rowid LIMIT 80", (active["room"],)).fetchall()
-            ids = [row["id"] for row in ordered]
-            now = int(time.time())
-            commands = [dict(r) for r in db.execute("SELECT seq,action,song,created FROM commands WHERE room=? AND seq>? AND created>? AND created<=? ORDER BY seq LIMIT 20",
-                                                   (active["room"], room["last_command"], now - 20, now))]
+        active, room, ordered, commands, now = value
+        ids = [row["id"] for row in ordered]
         commands = [dict(r, **({"expires": r["created"] + 5} if r["action"].startswith("sfx_") else {})) for r in commands
                     if not r["action"].startswith("sfx_") or r["created"] + 5 > now]
         return {"active": True, "persistent": True, "household_id": self.household_id, "room_id": active["room"], "expires": room["expires"],
@@ -763,8 +788,10 @@ class Coordinator:
     def lyric_tasks(self, room_id, db):
         rows = db.execute("SELECT s.id,s.song_id,s.source,s.title,m.timeline,m.version "
                           "FROM songs s JOIN coordinator_manifests m ON m.song=s.id "
-                          "JOIN coordinator_lyric_status ls ON ls.song=s.id AND ls.ready=0 "
+                          "JOIN coordinator_lyric_status ls ON ls.song=s.id "
                           "WHERE s.room=? AND s.removed=0 AND s.state='ready' AND m.instance='' "
+                          "AND (ls.ready=0 OR (ls.ready=-1 AND s.source='cloud' "
+                          "AND instr(m.lyrics,'\"lookup_revision\"')=0)) "
                           "ORDER BY s.position,s.rowid LIMIT 8", (room_id,)).fetchall()
         return [{**{k: row[k] for k in ("id", "song_id", "source", "title", "version")},
                  "duration_ms": json.loads(row["timeline"])["duration_ms"]} for row in rows]
@@ -943,11 +970,12 @@ class Coordinator:
             return "unavailable"
         states = []
         valid = True
+        specs = [spec for kind, spec in self._specs(row).items() if kind != "background"]
         with self.store.connection() as db:
-            for spec in self._specs(row).values():
+            for spec in specs:
                 found = db.execute("SELECT state FROM coordinator_cache WHERE sha=?", (spec["sha256"],)).fetchone()
                 states.append(found[0] if found else "pending")
-        for spec in self._specs(row).values():
+        for spec in specs:
             valid &= self.cached_file(spec) is not None
         return "ready" if states and all(s == "ready" for s in states) and valid else "failed" if "failed" in states else "pending"
 
@@ -980,8 +1008,9 @@ class Coordinator:
 
     def jobs(self):
         active = self.active()
+        backgrounds_enabled = self.backgrounds_enabled
         if not active:
-            return {"jobs": []}
+            return {"jobs": [], "backgrounds_enabled": backgrounds_enabled}
         with self.store.connection() as db:
             db.execute("BEGIN")
             songs = [dict(r) for r in db.execute(
@@ -1024,13 +1053,17 @@ class Coordinator:
                 continue
             job = json.loads(row["job"])
             specs = specs_by_song[row["id"]]
-            states = [cache.get(spec["sha256"], {}).get("state", "pending") for spec in specs.values()]
-            all_local = all(present[(spec["sha256"], spec["bytes"])] for spec in specs.values())
+            required = [spec for kind, spec in specs.items() if kind != "background"]
+            states = [cache.get(spec["sha256"], {}).get("state", "pending") for spec in required]
+            all_local = all(present[(spec["sha256"], spec["bytes"])] for spec in required)
             archive = "ready" if states and all(s == "ready" for s in states) and all_local else "failed" if "failed" in states else "pending"
             job.update(version=row["version"], timeline=json.loads(row["timeline"]), archive=archive,
                        lyric_state=row["lyric_state"], synced_lyrics=row["lyric_state"] == 1)
             for kind, spec in specs.items():
                 if kind.startswith("guide_"):
+                    continue
+                if kind == "background" and not backgrounds_enabled:
+                    job.pop("background", None)
                     continue
                 sources = []
                 if present[(spec["sha256"], spec["bytes"])]:
@@ -1051,7 +1084,7 @@ class Coordinator:
             if any(not spec.get("sources") for spec in job["media"].values()):
                 job.update(state="transcoding", code="none")
             jobs.append(job)
-        return {"jobs": jobs}
+        return {"jobs": jobs, "backgrounds_enabled": backgrounds_enabled}
 
     def lyrics(self, song):
         row = self._row(song)
@@ -1060,6 +1093,8 @@ class Coordinator:
         return json.loads(row["lyrics"])
 
     def media_file(self, song, kind):
+        if kind == "background" and not self.backgrounds_enabled:
+            raise self.error(404, "not_found")
         row = self._row(song)
         if not row or kind not in self._specs(row):
             raise self.error(404, "not_found")
@@ -1068,6 +1103,90 @@ class Coordinator:
         if path is None:
             raise self.error(503, "media_cache_pending")
         return path, spec
+
+    def background_tasks(self):
+        if not self.backgrounds_enabled:
+            return {"tasks": []}
+        active = self.active()
+        if not active:
+            return {"tasks": []}
+        with self.store.connection() as db:
+            room = db.execute("SELECT current_song, played FROM rooms WHERE id=?", (active["room"],)).fetchone()
+            current, played = room["current_song"], set(json.loads(room["played"]))
+            rows = db.execute(
+                "SELECT s.id,s.song_id,s.title,s.source,m.job,m.version "
+                "FROM songs s JOIN coordinator_manifests m ON m.song=s.id "
+                "WHERE s.room=? AND s.removed=0 AND s.state='ready' AND m.instance='' "
+                "ORDER BY s.id=? DESC,s.position,s.rowid LIMIT 80", (active["room"], current))
+            tasks = []
+            for row in rows:
+                if row["id"] in played and row["id"] != current:
+                    continue
+                job = json.loads(row["job"])
+                if job.get("simulated") is True:
+                    continue
+                spec = job.get("background")
+                storage = getattr(self.store, "management", None)
+                ready = spec and storage and storage._verified_asset(spec, db)
+                tasks.append({"id": row["id"], "song_id": row["song_id"], "title": job.get("title", row["title"]),
+                              "audio_origin": job.get("audio_origin") or row["source"], "version": row["version"],
+                              "current": row["id"] == current, "background_sha": spec["sha256"] if ready else ""})
+        return {"tasks": tasks}
+
+    def repair_background(self, payload):
+        now = int(time.time())
+        spec = payload.get("background")
+        if (set(payload) != {"id", "instance", "version", "background", "media_ticket", "media_expires"}
+                or any(not isinstance(payload[key], str) or not UUID.fullmatch(payload[key]) for key in ("id", "instance"))
+                or not isinstance(payload["version"], str) or not SHA.fullmatch(payload["version"])
+                or not isinstance(payload["media_ticket"], str) or not TICKET.fullmatch(payload["media_ticket"])
+                or type(payload["media_expires"]) is not int or not now + 10 <= payload["media_expires"] <= now + 900
+                or not isinstance(spec, dict) or set(spec) != {"status", "sha256", "bytes", "encoding", "url"}
+                or spec["status"] != "ready" or spec["encoding"] not in ("jpeg", "png")
+                or not isinstance(spec["sha256"], str) or not SHA.fullmatch(spec["sha256"])
+                or type(spec["bytes"]) is not int or not 33 <= spec["bytes"] <= 12 * 1024 * 1024
+                or not isinstance(spec["url"], str) or not re.fullmatch(r"/v1/background-assets/[a-f0-9]{64}/" + spec["sha256"], spec["url"])):
+            raise self.error(400, "invalid_background")
+        with self.lock:
+            worker = self.worker
+            if (not self.backgrounds_enabled or not worker or payload["instance"] != worker["instance"]
+                    or not 0 <= time.time() - worker["at"] <= 20):
+                raise self.error(409, "worker_unavailable")
+        row = self._row(payload["id"])
+        if not row or row["instance"] or payload["version"] != row["version"]:
+            raise self.error(409, "background_edition_changed")
+        manager = getattr(self.store, "management", None)
+        with manager.lock if manager else self.lock:
+            if self.cached_file(spec):
+                with self.store.connection() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    self._attach_archive_background(db, row, spec)
+            else:
+                download = dict(row, origin=worker["origin"], ticket=payload["media_ticket"], expires=payload["media_expires"])
+                self._queue_asset_cache(download, "background", spec, archived=True)
+        return {"accepted": True}
+
+    def _attach_archive_background(self, db, row, spec):
+        current = db.execute(
+            "SELECT m.* FROM coordinator_manifests m JOIN songs s ON s.id=m.song "
+            "JOIN coordinator_session c ON c.room=s.room JOIN rooms r ON r.id=s.room "
+            "WHERE m.song=? AND m.instance='' AND s.state='ready' AND s.removed=0 AND r.closed=0", (row["song"],)).fetchone()
+        if not current:
+            return False
+        job, snapshot = json.loads(current["job"]), json.loads(row["job"])
+        if job["media"] != snapshot["media"] or job.get("background") != snapshot.get("background"):
+            return False
+        descriptor = dict(spec, url=f'/v1/jobs/{row["song"]}/media/background')
+        if job.get("background") != descriptor:
+            job["background"] = descriptor
+            version = hashlib.sha256((current["version"] + ":background:" + spec["sha256"]).encode()).hexdigest()
+            db.execute("UPDATE coordinator_manifests SET job=?,version=?,updated=? WHERE song=?",
+                       (json.dumps(job, sort_keys=True), version, int(time.time()), row["song"]))
+            db.execute("INSERT OR IGNORE INTO coordinator_manifest_versions VALUES(?,?)", (row["song"], version))
+            self.index_lyrics(db, row["song"], version, json.loads(current["lyrics"]), json.loads(current["timeline"]))
+            if getattr(self.store, "management", None):
+                self.store.management.remember(db.execute("SELECT * FROM coordinator_manifests WHERE song=?", (row["song"],)).fetchone(), db)
+        return True
 
     def _queue_cache(self, song):
         manager = getattr(self.store, "management", None)
@@ -1083,20 +1202,32 @@ class Coordinator:
         for kind, spec in self._specs(row).items():
             if self.cached_file(spec):
                 continue
-            with self.lock:
-                if spec["sha256"] in self.cache_pending or spec["sha256"] in self.verify_pending:
-                    continue
-                self.cache_pending.add(spec["sha256"])
+            self._queue_asset_cache(row, kind, spec)
+
+    def _queue_asset_cache(self, row, kind, spec, *, archived=False):
+        with self.lock:
+            if self.closed or spec["sha256"] in self.cache_pending or spec["sha256"] in self.verify_pending:
+                return
+            self.cache_pending.add(spec["sha256"])
+        try:
             with self.store.connection() as db:
                 old = db.execute("SELECT updated,attempts FROM coordinator_cache WHERE sha=?", (spec["sha256"],)).fetchone()
-                if old and (old["attempts"] >= 4 or time.time() - old["updated"] < 30):
+                if old and ((kind != "background" and old["attempts"] >= 4) or time.time() - old["updated"] < 30):
                     with self.lock:
                         self.cache_pending.discard(spec["sha256"])
-                    continue
-                db.execute("INSERT OR REPLACE INTO coordinator_cache(sha,bytes,state,updated,attempts) VALUES(?,?,'pending',?,?)", (spec["sha256"], spec["bytes"], int(time.time()), (old["attempts"] if old else 0) + 1))
-            self.cache_pool.submit(self._cache_one, row, kind, spec)
+                    return
+                db.execute("INSERT OR REPLACE INTO coordinator_cache(sha,bytes,state,updated,attempts) VALUES(?,?,'pending',?,?)",
+                           (spec["sha256"], spec["bytes"], int(time.time()), (old["attempts"] if old else 0) + 1))
+            if archived:
+                self.cache_pool.submit(self._cache_one, row, kind, spec, True)
+            else:
+                self.cache_pool.submit(self._cache_one, row, kind, spec)
+        except BaseException:
+            with self.lock:
+                self.cache_pending.discard(spec["sha256"])
+            raise
 
-    def _cache_one(self, row, kind, spec):
+    def _cache_one(self, row, kind, spec, archived=False):
         temporary = None
         state = "failed"
         try:
@@ -1134,14 +1265,19 @@ class Coordinator:
                         raise ValueError("media_timeline_failed")
             with manager.lock if manager else self.lock:
                 with self.store.connection() as db:
-                    current = db.execute("SELECT job FROM coordinator_manifests WHERE song=?", (row["song"],)).fetchone()
-                expected = self._specs(current).get(kind) if current else None
-                # Serialize identity commits with owner deletion and eviction.
-                if not expected or expected["sha256"] != spec["sha256"] or expected["bytes"] != spec["bytes"]:
-                    return
-                os.chmod(temporary, 0o400)
-                os.replace(temporary, self.media_root / spec["sha256"])
-                temporary = None
+                    if archived:
+                        db.execute("BEGIN IMMEDIATE")
+                        if not self._attach_archive_background(db, row, spec):
+                            return
+                    else:
+                        current = db.execute("SELECT job FROM coordinator_manifests WHERE song=?", (row["song"],)).fetchone()
+                        expected = self._specs(current).get(kind) if current else None
+                        # 与删除和缓存淘汰串行确认当前文件仍被引用。
+                        if not expected or expected["sha256"] != spec["sha256"] or expected["bytes"] != spec["bytes"]:
+                            return
+                    os.chmod(temporary, 0o400)
+                    os.replace(temporary, self.media_root / spec["sha256"])
+                    temporary = None
                 state = "ready"
         except Exception:
             # Fixed state only; upstream URLs/tickets/errors are never logged.

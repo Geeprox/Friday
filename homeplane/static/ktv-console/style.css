@@ -23,10 +23,17 @@
 .ktv-console .source-dialog>.field{margin-top:24px}
 .ktv-console .source-notice{margin:12px 0 0}
 .ktv-console .source-notice:empty,.ktv-console .source-dialog button[hidden]{display:none}
+.ktv-console .policy-form [hidden]{display:none}
 .ktv-console .background-settings>summary{padding:0}
 .ktv-console .background-settings>summary h2{display:inline;margin:0 0 0 6px}
 .ktv-console .background-limit{display:flex;align-items:end;flex-wrap:wrap;gap:12px;margin:16px 0 0}
-.ktv-console .background-limit input{width:12ch}
+.ktv-console .background-limit input[type=number]{width:12ch}
+.ktv-console .background-switch{display:flex;align-items:center;gap:10px;flex-basis:100%;min-height:36px;cursor:pointer}
+.ktv-console .background-switch input{appearance:none;display:grid;align-items:center;flex:0 0 36px;width:36px;height:22px;padding:2px;margin:0;border:1px solid #adafad;border-radius:11px;background:var(--soft);cursor:pointer}
+.ktv-console .background-switch input::before{content:"";width:16px;height:16px;border-radius:50%;background:#777e78;transition:transform .15s ease}
+.ktv-console .background-switch input:checked{border-color:var(--accent);background:var(--accent)}
+.ktv-console .background-switch input:checked::before{background:#fff;transform:translateX(14px)}
+.ktv-console .background-switch input:disabled{opacity:.6;cursor:default}
 .ktv-console .background-limit[hidden],.ktv-console .background-policy-result:empty{display:none}
 .ktv-console .background-settings button[hidden],.ktv-console .background-items .entry p:empty{display:none}
 .ktv-console .background-preview{display:block;max-width:100%;height:auto;margin-top:12px;border-radius:8px}
