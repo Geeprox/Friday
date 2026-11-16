@@ -582,7 +582,11 @@ $("search-entry").onclick=()=>setView("find",{focus:"query"});
 $("frequent-entry").onclick=()=>setView("frequent");
 document.querySelector(".brand").onclick=event=>{event.preventDefault();setView("home");};
 $("queue-tab").onclick=()=>setView("queue");$("view-queue").onclick=()=>setView("queue");
-function openDialog(id){const dialog=$(id);if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");}
+function openDialog(id){
+ const dialog=$(id);
+ if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");
+ dialog.querySelector(".sheet-heading h2").focus({preventScroll:true});
+}
 function chooseAvatar(id){chosenAvatar=id;document.querySelectorAll(".avatar-choice").forEach((b,i)=>b.setAttribute("aria-pressed",String(i===id)));}
 for(let i=0;i<12;i++){const b=document.createElement("button");b.type="button";b.className="avatar-choice";b.setAttribute("aria-label",`选择${names[i]}头像`);b.setAttribute("aria-pressed","false");const picture=document.createElement("span");picture.className="avatar";picture.setAttribute("aria-hidden","true");avatar(picture,i);b.append(picture);b.onclick=()=>chooseAvatar(i);$("avatar-picker").append(b);}
 $("profile-button").onclick=()=>{if(!identity)return;$("nickname").value=identity.nickname;chooseAvatar(identity.avatar);$("profile-error").textContent="";openDialog("profile-dialog");};
@@ -641,7 +645,7 @@ function updatePlayer(){updateGuide();updatePartyAudio();
  $("player").hidden=!identity;document.body.classList.toggle("has-player",!!identity);
  const current=selected.find(s=>s.id===playback.current),queued=selected.filter(isUpcoming),next=nextPlayable();
  const onlyUnavailable=queued.length>0&&queued.every(song=>song.lyric_state===-1);
- $("now-title").textContent=current?.title||(next?"接下来："+next.title:onlyUnavailable?"暂无同步歌词":queued.length?"正在准备下一首":playback.state==="playing"&&playback.online?"暖场":"准备好，唱下一首");
+ $("now-title").textContent=current?.title||(next?"接下来："+next.title:onlyUnavailable?"等待可唱歌曲":queued.length?"正在准备下一首":playback.state==="playing"&&playback.online?"暖场":"准备好，唱下一首");
  $("player-status").textContent=!playback.online?(statusFailures?"正在连接房间":"等待电视连接"):playback.state==="playing"?(current?(current.nickname||"朋友")+" 正在唱":"暖场播放中"):playback.state==="preparing"?"正在加载音源":"已暂停";
  const transportReady=playback.online&&playbackAvailable;
  const playing=playback.state==="playing"||playback.state==="preparing";
@@ -651,7 +655,7 @@ function updatePlayer(){updateGuide();updatePartyAudio();
  $("restart-button").disabled=!transportReady||!playback.current||commandBusy;
  updateSoundMode();
 
- for(const [id,key]of volumeControls){const input=$(`${id}-volume`);input.disabled=!playback.online||(id==="sfx"&&playback.audio_capabilities?.sfx!==true);const level=pendingControls[key]??controls[key];updateVolumeButtons(id,level);if(document.activeElement!==input){input.value=level;$(`${id}-value`).textContent=`${level}%`;}}
+ for(const [id,key]of volumeControls){const input=$(`${id}-volume`),level=pendingControls[key]??controls[key];updateVolumeButtons(id,level);if(document.activeElement!==input){input.value=level;$(`${id}-value`).textContent=`${level}%`;}}
  updateMuteButtons();
 }
 async function sendCommand(action,song="",origin=""){if(commandBusy||!playbackAvailable)return;const before={...playback};commandBusy=true;const button=$(origin||(action==="next"?"skip-button":"play-toggle"));busy(button,true,origin==="restart-button"?"正在从头开始…":action==="next"?"正在切歌…":action==="pause"?"正在暂停…":"正在开始播放…");updatePlayer();try{const result=await api("command",{action,song,request_id:crypto.randomUUID()});await waitForTV(()=>FridayPartyAudio.commandObserved(action,song,before,playback,result.seq));}catch(error){failure(error);}finally{commandBusy=false;busy(button,false);await refresh();updatePlayer();}}
@@ -733,13 +737,23 @@ function setControl(value,{signal,propagate=false}={}){
 }
 $("sound-button").onclick=()=>{updatePlayer();openDialog("sound-dialog");};$("play-toggle").onclick=()=>sendCommand(["playing","preparing"].includes(playback.state)?"pause":"resume",playback.current);$("skip-button").onclick=()=>sendCommand("next",playback.current);$("restart-button").onclick=()=>sendCommand("play",playback.current,"restart-button");
 for(const [id,key]of volumeControls){const input=$(`${id}-volume`);input.oninput=()=>changeGain(id,key,Number(input.value));$(`${id}-minus`).onclick=()=>changeGain(id,key,Number(pendingControls[key]??controls[key])-10,0);$(`${id}-plus`).onclick=()=>changeGain(id,key,Number(pendingControls[key]??controls[key])+10,0);}
-function updateVolumeButtons(id,level){$(`${id}-minus`).disabled=level<=0||!playback.online||(id==="sfx"&&playback.audio_capabilities?.sfx!==true);$(`${id}-plus`).disabled=level>=100||!playback.online||(id==="sfx"&&playback.audio_capabilities?.sfx!==true);}
+function updateVolumeButtons(id,level){
+ const enabled=playback.online&&(id!=="sfx"||playback.audio_capabilities?.sfx===true),range=$(`${id}-volume`);
+ range.disabled=!enabled;
+ if(range.dataset.level!==String(level)){
+  range.dataset.level=String(level);
+  range.style.setProperty("--volume-level",`${level}%`);
+ }
+ $(`${id}-minus`).disabled=!enabled||level<=0;
+ $(`${id}-plus`).disabled=!enabled||level>=100;
+}
 const sfxCommands=new FridayPartyAudio.SfxCommands({send:payload=>api("command",payload),onState:state=>{$("sfx-status").textContent=FridayPartyAudio.sfxMessage(state);}});
 function updatePartyAudio(){
  const supported=playback.audio_capabilities?.sfx===true;
  for(const id of["sfx-applause","sfx-cheer"])$(id).disabled=!playback.online||!supported;$("sfx-stop").disabled=!playback.online||(!supported&&!playback.sfx_seq&&!sfxCommands.state.serial);
  sfxCommands.observe(playback);
- $("sfx-status").textContent=!playback.online?"等待电视连接":!supported?"电视暂未提供氛围音效":FridayPartyAudio.sfxMessage(sfxCommands.state);
+ $("sfx-status").textContent=!playback.online?"等待电视连接":!supported?"电视暂未提供氛围音效":
+  sfxCommands.state.phase==="idle"?"":FridayPartyAudio.sfxMessage(sfxCommands.state);
 }
 async function trackSfx(serial){const end=performance.now()+7500;while(serial===sfxCommands.state.serial&&performance.now()<end&&["sending","sent"].includes(sfxCommands.state.phase)){probeSoon();await new Promise(resolve=>setTimeout(resolve,125));}sfxCommands.observe(playback);}
 for(const [id,action]of[["sfx-applause","sfx_applause"],["sfx-cheer","sfx_cheer"],["sfx-stop","sfx_stop"]])$(id).onclick=()=>{
@@ -957,9 +971,8 @@ async function join(){
  }catch(error){
   failure(error);
   if(connectionError(error)||error.code==="rate_limited"){
-   joinFailures++;
-   if(joinFailures<=4)joinTimer=setTimeout(join,Math.min(8000,1000*2**(joinFailures-1)));
-   else{$("my-name").textContent="加入失败";$("empty").textContent="暂时连不上，请刷新重试。";}
+   joinFailures=Math.min(4,joinFailures+1);
+   if(!document.hidden)joinTimer=setTimeout(join,Math.max(error.retryAfterMs||0,1000*2**(joinFailures-1)));
   }else{$("my-name").textContent="等待扫码";$("empty").textContent="扫描电视上的二维码加入。";}
  }finally{joining=false;}
 }

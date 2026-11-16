@@ -233,6 +233,58 @@ def test_full_resolution_detailed_jpeg_is_never_remapped_or_recompressed():
         assert result.format == "JPEG" and result.size == UHD_CANVAS
 
 
+async def test_same_song_across_sources_shares_legacy_background_and_regenerates_in_place(tmp_path):
+    prompts = []
+    owner = runtime(tmp_path / "ai", lambda request: (
+        prompts.append(json.loads(request.content)["prompt"])
+        or image_response(solid_jpeg(UHD_CANVAS, "#44617c"))))
+    config = owner.settings.update({"cloud_images": True})
+    track = {"song_id": "678", "title": "合成歌", "artist": "合成人", "audio_origin": "song"}
+    live = {**track, "song_id": "679", "title": "合成歌（现场版）"}
+    cloud = {**track, "song_id": "680", "artist": "", "audio_origin": "cloud"}
+    other = {**track, "song_id": "681", "artist": "另一歌手"}
+    public = {"title": "合成歌", "artist": "合成人"}
+    legacy = song_identity(track, config.image_model)
+    image = solid_png("#304053", LEGACY_CANVAS)
+    images = SongBackgrounds(owner, max_parallel=4, cloud_metadata=lambda _: public)
+    images.directory.mkdir(mode=0o700)
+    image_file = images.directory / (legacy + ".png")
+    image_file.write_bytes(image)
+    image_file.chmod(0o600)
+    atomic_json(images.directory / (legacy + ".json"), {
+        "model": config.image_model, "song_ref": track, "prompt_version": PROMPT_VERSION,
+        "sha256": hashlib.sha256(image).hexdigest(),
+    })
+    assert images.request(live)["id"] == images.request(cloud)["id"] == legacy
+    assert not prompts
+    for song in (track, live, cloud):
+        assert images.request(song, force=True)["id"] == legacy
+    assert images.request(other)["id"] != legacy
+    await asyncio.gather(*list(images.tasks.values()))
+    assert len(prompts) == 2
+    assert all("左侧约 44%" in prompt for prompt in prompts)
+    assert all(images.cached_for(song)["id"] == legacy for song in (track, live, cloud))
+    assert images.cached_for(other)["id"] != legacy
+    assert len(list(images.directory.glob("*.json"))) == 2
+
+
+async def test_new_cloud_and_catalog_versions_generate_at_most_one_shared_image(tmp_path):
+    calls = []
+    owner = runtime(tmp_path / "ai", lambda request: calls.append(request)
+                    or image_response(solid_jpeg(UHD_CANVAS, "#314258")))
+    owner.settings.update({"cloud_images": True})
+    public = {"title": "合成歌曲", "artist": "合成歌手"}
+    tracks = [
+        {**public, "song_id": "621", "title": "合成歌曲 (Live)", "audio_origin": "song"},
+        {"title": "合成歌曲", "artist": "", "song_id": "622", "audio_origin": "cloud"},
+    ]
+    images = SongBackgrounds(owner, max_parallel=3, cloud_metadata=lambda _: public)
+    identifiers = [images.request(track)["id"] for track in tracks]
+    assert identifiers[0] == identifiers[1] and len(images.tasks) == 1
+    await asyncio.gather(*list(images.tasks.values()))
+    assert len(calls) == 1 and images.cached_for(tracks[0]) == images.cached_for(tracks[1])
+
+
 async def test_cloud_regeneration_keeps_legacy_on_failure_and_uses_verified_public_metadata(tmp_path, monkeypatch):
     prompts = []
     color = "#6d1322"
@@ -579,7 +631,8 @@ def test_nas_background_is_scoped_media_and_invalid_optional_image_keeps_audio(s
     assert published["state"] == "ready" and "background" not in published
 
 
-def test_nas_only_song_gets_background_and_switch_keeps_archive_files(store, monkeypatch):
+@pytest.mark.parametrize("retired_worker", [False, True])
+def test_nas_only_song_gets_background_and_switch_keeps_archive_files(store, monkeypatch, retired_worker):
     entry, data, *_ = manifest(store)
     entry["job"].update(simulated=False, audio_origin="cloud")
     coordinator = store.coordinator
@@ -588,8 +641,12 @@ def test_nas_only_song_gets_background_and_switch_keeps_archive_files(store, mon
     original = coordinator._row(entry["id"])
     for kind, spec in coordinator._specs(original).items():
         coordinator._cache_one(original, kind, spec)
+    instance = "11111111-1111-4111-8111-111111111119" if retired_worker else entry["instance"]
+    if retired_worker:
+        coordinator.register_worker(registration(instance))
     with store.connection() as db:
-        db.execute("UPDATE coordinator_manifests SET origin='',ticket='',expires=0,instance='' WHERE song=?", (entry["id"],))
+        db.execute("UPDATE coordinator_manifests SET origin='',ticket='',expires=0,instance=? WHERE song=?",
+                   (entry["instance"] if retired_worker else "", entry["id"]))
         db.execute("UPDATE rooms SET current_song=?", (entry["id"],))
     before = coordinator.jobs()["jobs"][0]
     candidate = coordinator.background_tasks()["tasks"][0]
@@ -600,7 +657,7 @@ def test_nas_only_song_gets_background_and_switch_keeps_archive_files(store, mon
     fake_cache(monkeypatch, {checksum: image}, [])
     monkeypatch.setattr(coordinator.cache_pool, "submit", lambda fn, *args: fn(*args))
     assert coordinator.repair_background({
-        "id": candidate["id"], "instance": entry["instance"], "version": candidate["version"],
+        "id": candidate["id"], "instance": instance, "version": candidate["version"],
         "background": {"status": "ready", "encoding": "jpeg", "sha256": checksum, "bytes": len(image),
                        "url": f'/v1/background-assets/{"a" * 64}/{checksum}'},
         "media_ticket": entry["media_ticket"], "media_expires": entry["media_expires"],
@@ -610,10 +667,10 @@ def test_nas_only_song_gets_background_and_switch_keeps_archive_files(store, mon
     assert after["background"]["sources"] == [{"url": f'/v1/jobs/{entry["id"]}/media/background'}]
     path, _ = coordinator.media_file(entry["id"], "background")
     assert path.read_bytes() == image
-    coordinator.register_worker(registration(entry["instance"], backgrounds_enabled=False))
+    coordinator.register_worker(registration(instance, backgrounds_enabled=False))
     off = coordinator.jobs()
     assert not off["backgrounds_enabled"] and "background" not in off["jobs"][0]
     assert json.loads(coordinator.background_policy.read_text()) == {"enabled": False}
     assert path.read_bytes() == image
-    coordinator.register_worker(registration(entry["instance"], backgrounds_enabled=True))
+    coordinator.register_worker(registration(instance, backgrounds_enabled=True))
     assert coordinator.jobs()["jobs"][0]["background"]["sha256"] == checksum

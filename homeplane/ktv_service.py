@@ -1052,6 +1052,12 @@ def prepared_lyrics(queue, job_id, lyrics=None, source_api=None):
         def annotate(value):
             return with_count_ins(value, folder / "preparation.json", original=folder / "original.wav", instrumental=folder / "instrumental.wav")
         if job.get("audio_origin") == "cloud" and source_api is not None:
+            embedded = getattr(source_api, "embedded_cloud_lyrics", None)
+            duration = job.get("media", {}).get("original", {}).get("duration_seconds")
+            if callable(embedded) and type(duration) in (int, float) and math.isfinite(duration):
+                local = embedded(job["song_id"], round(duration * 1000))
+                if local["status"] == "ready":
+                    return annotate(local)
             return annotate(source_api.cloud_lyrics(job["song_id"]))
         # Provider lyrics do not establish the timeline of an MV edit/live take.
         if lyrics is not None and job.get("audio_origin") == "song":

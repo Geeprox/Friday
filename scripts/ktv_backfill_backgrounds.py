@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from homeplane.intelligence.backgrounds import SongBackgrounds, song_identity
+from homeplane.intelligence.backgrounds import SongBackgrounds
 from homeplane.intelligence.ktv_background_context import SongBackgroundContext
 from homeplane.intelligence.runtime import IntelligenceRuntime
 from homeplane.intelligence.settings import default_directory, private_path
@@ -47,15 +47,16 @@ async def run(args):
     root, jobs = prepared_rows(args.config.absolute())
     runtime = IntelligenceRuntime(None, default_directory())
     config = runtime.settings.read()
-    resolver = SongBackgroundContext(runtime, debug=args.debug_backgrounds)
+    resolver = SongBackgroundContext(runtime)
     source = LocalSourceAPI(root / "source-account", args.catalog_package.resolve(strict=True))
     backgrounds = SongBackgrounds(runtime, recording=source.public_lyric_recording, max_parallel=args.parallel,
-                                  context_resolver=resolver, context_timeout=22, debug=args.debug_backgrounds)
+                                  context_resolver=resolver, context_timeout=22, debug=args.debug_backgrounds,
+                                  cloud_metadata=source.cloud_background_metadata, include_mv=True)
     items, cloud = {}, []
     counts = Counter()
     for row in jobs:
         try:
-            identifier = song_identity(row, config.image_model)
+            identifier = backgrounds.identifier_for(row, model=config.image_model)
             if identifier in items:
                 continue
             cached = backgrounds.cached(identifier)
@@ -70,12 +71,15 @@ async def run(args):
         except (OSError, ValueError):
             counts["invalid"] += 1
     if args.verify_cloud or args.apply:
-        # 云盘身份在官方曲库核对；只把公开发行资料交给生图管线。
+        # 云盘只提供显示的歌名和歌手，有公开来源时再补发行与创作资料。
         gate = asyncio.Semaphore(2)
 
         async def verify(key, row):
             async with gate:
-                metadata = await asyncio.to_thread(source.public_cloud_background, str(row["song_id"]))
+                song_id = str(row["song_id"])
+                metadata = source.cloud_background_metadata(song_id)
+                if metadata is None:
+                    metadata = await asyncio.to_thread(source.public_cloud_background, song_id)
                 if metadata:
                     items[key] = (row, metadata)
                     counts["verified_cloud"] += 1
@@ -99,10 +103,11 @@ async def run(args):
         for offset in range(0, len(selected), args.parallel):
             batch = selected[offset:offset + args.parallel]
             for _, row, metadata in batch:
-                backgrounds.request(row, force=True, public_metadata=metadata)
+                backgrounds.request(row, public_metadata=metadata)
             await asyncio.gather(*list(backgrounds.tasks.values()), return_exceptions=True)
-            for identifier, _, _ in batch:
-                if backgrounds.cached(identifier):
+            for identifier, row, metadata in batch:
+                resolved = backgrounds.identifier_for(row, public=metadata)
+                if backgrounds.cached(resolved):
                     counts["generated"] += 1
                 else:
                     code = backgrounds.failures.get(identifier, ("generation_pending",))[0]

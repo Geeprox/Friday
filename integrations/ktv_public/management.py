@@ -54,8 +54,13 @@ class Management:
                        (job["song_id"], spec["sha256"], job["title"], spec["bytes"], row["updated"]))
         source = db.execute("SELECT source FROM songs WHERE id=?", (row["song"],)).fetchone()
         if source is not None:
+            if not job.get("background"):
+                background = self.verified_background(job["song_id"], source[0], db)
+                if background:
+                    job["background"] = background
             db.execute("INSERT OR REPLACE INTO managed_editions VALUES(?,?,?,?,?,?,?)",
-                       (job["song_id"], source[0], row["version"], row["timeline"], row["job"], row["lyrics"], row["updated"]))
+                       (job["song_id"], source[0], row["version"], row["timeline"], json.dumps(job, sort_keys=True),
+                        row["lyrics"], row["updated"]))
             db.execute("DELETE FROM managed_editions WHERE song_id=? AND source=? AND version NOT IN "
                        "(SELECT version FROM managed_editions WHERE song_id=? AND source=? ORDER BY updated DESC,rowid DESC LIMIT 3)",
                        (job["song_id"], source[0], job["song_id"], source[0]))
@@ -75,13 +80,26 @@ class Management:
                     and self.coordinator._identity(self.coordinator.media_root / spec["sha256"])
                     == self.coordinator._verified_identity(record))
 
+    def verified_background(self, song_id, source, db):
+        rows = db.execute("SELECT job FROM managed_editions WHERE song_id=? AND source=? "
+                          "ORDER BY updated DESC,rowid DESC LIMIT 3", (song_id, source))
+        for row in rows:
+            background = json.loads(row["job"]).get("background")
+            if background and background.get("status") == "ready" and self._verified_asset(background, db):
+                return background
+        return None
+
     def attach_edition(self, row, queue_id, title, source, requester, db):
         job = json.loads(row["job"])
         job.update(id=queue_id, title=title, requester=requester, source=source)
-        for key in ("video", "background"):
-            spec = job.get(key)
-            if spec and spec.get("status") == "ready" and not self._verified_asset(spec, db):
-                job.pop(key)
+        video = job.get("video")
+        if video and video.get("status") == "ready" and not self._verified_asset(video, db):
+            job.pop("video")
+        background = self.verified_background(job["song_id"], source, db)
+        if background:
+            job["background"] = dict(background, url=f"/v1/jobs/{queue_id}/media/background")
+        else:
+            job.pop("background", None)
         if "guide" in job and not all(self._verified_asset(spec, db) for spec in (job["guide"], job["guide"]["reference"])):
             job.pop("guide")
         guide = job.get("guide")

@@ -60,7 +60,7 @@ Joined guest credentials currently remain valid until the session is explicitly 
 
 打开「已点」后，按住歌曲右侧的排序手柄可连续拖过多首歌曲。歌曲的「⋯」菜单提供「置顶」，将这首移到待唱歌单最前面，当前演唱继续。暂时没有同步歌词的版本可以通过「找其他版本」回到曲库搜索。[查看歌曲操作示例](../../docs/screenshots/ktv-mobile-queue.png)。
 
-「歌曲声音」会立即显示选择的原唱或伴奏。电视确认较慢时，会在音轨选择下方提示，仍可继续切换。[查看声音面板示例](../../docs/screenshots/ktv-mobile-sound.png)。
+「歌曲声音」会立即显示选择的原唱或伴奏。电视确认较慢时，会在音轨选择下方提示，仍可继续切换。「歌曲声音」和「氛围」使用同样的标题、关闭按钮和音量滑块。手机初次扫码遇到短暂断线会在页面可见时继续重连。[查看声音面板示例](../../docs/screenshots/ktv-mobile-sound.png)。
 
 Start request IDs are durable and idempotent throughout the retained session window. A delayed old request cannot reopen a retained closed session or reclaim a newer TV instance. Closing requires both the current TV instance and current `room_id`. New TV instances skip old command cursors and start with microphone mute requested. Legacy Mac bridge playback/control/close writes are refused for a directly owned room.
 

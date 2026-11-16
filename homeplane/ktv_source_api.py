@@ -45,6 +45,8 @@ class LocalSourceAPI:
         self.rpc = rpc or self._rpc
         self.lyric_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="ktv-cloud-lyrics")
         self.lyric_futures = {}
+        self.cloud_metadata_version = None
+        self.cloud_metadata = {}
 
     def _rpc(self, op, **values):
         if not self.node or not (self.provider / "package.json").is_file():
@@ -283,6 +285,47 @@ class LocalSourceAPI:
         except (concurrent.futures.TimeoutError, OSError, ValueError):
             return {"status": "unavailable", "lines": []}
 
+    def embedded_cloud_lyrics(self, song_id, duration_ms):
+        """从已经核验过的原始上传文件取同一音轨内嵌的时间轴。"""
+        from .ktv_search import parse_lrc
+
+        missing = {"status": "unavailable", "lines": []}
+        try:
+            song_id = canonical_song_id(song_id)
+            directory = self.root.parent / "cloud-downloads" / song_id
+            path, record = directory / "source.audio", directory / "manifest.json"
+            if (directory.resolve() != directory or path.is_symlink() or record.is_symlink()
+                    or not path.is_file() or not record.is_file() or record.stat().st_size > 8192):
+                return missing
+            expected = json.loads(record.read_text())
+            original = path.stat()
+            if (expected.get("source") != "cloud" or expected.get("song_id") != song_id
+                    or expected.get("exact_song_id_verified") is not True
+                    or expected.get("full_decode_verified") is not True
+                    or original.st_size != expected["source_bytes"]
+                    or not 0 < expected["source_bytes"] <= MAX_BYTES
+                    or abs(expected["duration_seconds"] * 1000 - duration_ms) > 250
+                    or _hash_file(path) != expected["source_sha256"]):
+                return missing
+            ffprobe = shutil.which("ffprobe")
+            if not ffprobe:
+                return missing
+            probe = subprocess.run([ffprobe, "-v", "error", "-show_entries",
+                                    "format_tags=lyrics,syncedlyrics,unsyncedlyrics", "-of", "json", str(path)],
+                                   capture_output=True, check=True, timeout=4)
+            current = path.stat()
+            if (len(probe.stdout) > 196608 or (current.st_ino, current.st_size, current.st_mtime_ns)
+                    != (original.st_ino, original.st_size, original.st_mtime_ns)):
+                return missing
+            tags = json.loads(probe.stdout).get("format", {}).get("tags", {})
+            for value in tags.values():
+                lines = [line for line in parse_lrc(value) if line["time_ms"] <= duration_ms]
+                if len(lines) >= 3:
+                    return {"status": "ready", "lines": lines}
+        except (OSError, TypeError, KeyError, ValueError, AttributeError, subprocess.SubprocessError):
+            pass
+        return missing
+
     def public_lyric_recording(self, song_id):
         """公开曲库的录音身份，供歌词候选复核。"""
         song_id = canonical_song_id(song_id)
@@ -329,6 +372,33 @@ class LocalSourceAPI:
         """用公开录音核对已缓存云盘曲目，只返回公开歌名与歌手。"""
         recording = self.public_cloud_recording(song_id)
         return {"title": recording["title"], "artist": " / ".join(recording["artists"])} if recording else None
+
+    def cloud_track_metadata(self, song_id):
+        """读取已缓存的显示信息，不传递文件名、云盘标识或账号数据。"""
+        path = self.root / "cloud-owned.json"
+        try:
+            info = path.lstat()
+            if path.is_symlink() or not path.is_file() or info.st_mode & 0o077 or info.st_size > 1048576:
+                return None
+            version = info.st_ino, info.st_mtime_ns, info.st_size
+            with self.lock:
+                if self.cloud_metadata_version != version:
+                    self.cloud_metadata = json.loads(path.read_text())["songs"]
+                    self.cloud_metadata_version = version
+                owned = self.cloud_metadata[canonical_song_id(song_id)]
+            title, artists, duration = song_title(owned["title"]), owned["artists"], owned["duration_ms"]
+            if (not 0 < len(title) <= 120 or not isinstance(artists, list) or not artists
+                    or any(not isinstance(a, str) or not 0 < len(a.strip()) <= 100 for a in artists)
+                    or any(ord(c) < 32 or ord(c) == 127 for value in (title, *artists) for c in value)
+                    or "/" in title or "\\" in title or type(duration) is not int or not 0 < duration <= 1800000):
+                return None
+            return {"title": title, "artists": [a.strip() for a in artists], "duration_ms": duration}
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return None
+
+    def cloud_background_metadata(self, song_id):
+        track = self.cloud_track_metadata(song_id)
+        return {"title": track["title"], "artist": " / ".join(track["artists"])} if track else None
 
     def public_cloud_recording(self, song_id):
         """仅返回能与云盘元数据匹配的公开曲库记录。"""

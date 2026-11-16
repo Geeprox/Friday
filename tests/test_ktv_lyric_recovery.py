@@ -59,7 +59,7 @@ def test_web_lookup_matches_official_recording_then_gets_provider_timecodes(tmp_
         assert received == [("lyrics", "60"), ("detail", "60"), ("detail", "61"), ("detail", "62"), ("lyrics", "62")]
         assert requested[0]["tools"][0]["filters"]["allowed_domains"] == ["music.163.com", "y.music.163.com"]
         assert requested[0]["store"] is False and "PRIVATE" not in requested[0]["input"]
-        assert owner.status()["usage"]["used"]["text_tokens"] == 61
+        assert owner.status()["usage"]["ktv_lookups"] == {"requests": 1, "text_tokens": 61}
         job["audio_origin"] = "cloud"
         assert recovery("synthetic-job")["status"] == "unavailable"
         assert len(requested) == 1
@@ -156,3 +156,35 @@ def test_cloud_recovery_uses_only_verified_public_identity_and_unique_timecodes(
     assert [line["time_ms"] for line in recovery.recover(task)["lines"]] == [1000, 2000, 3000]
     assert len(calls) == 1 and "98700" not in calls[0]["input"] and "PRIVATE" not in calls[0]["input"]
     assert recovery.recover({**task, "song_id": "98701"}) == unavailable and len(calls) == 1
+
+
+def test_unlinked_cloud_song_searches_by_label_with_a_separate_ktv_ledger(tmp_path):
+    requests = []
+    labels = {"title": "合成歌曲", "artists": ["合成歌手"], "duration_ms": 12000}
+    timed = {"status": "ready", "lines": [{"time_ms": stamp, "text": "合成歌词"}
+                                         for stamp in (1000, 2000, 3400)]}
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "completed", "usage": {"input_tokens": 40, "output_tokens": 8},
+            "output": [{"type": "web_search_call", "action": {"type": "search",
+                "sources": [{"url": "https://music.163.com/song?id=91"}, {"url": "https://music.163.com/song?id=92"}]}}]})
+
+    def detail(song_id):
+        return {**labels, "duration_ms": 13100 if song_id == "91" else 17000}
+
+    def lyrics(song_id, _):
+        assert song_id == "91"
+        return timed
+
+    owner = runtime(tmp_path / "ai", handler)
+    owner.settings.update({"daily_requests": 0, "daily_text_tokens": 0})
+    source = SimpleNamespace(cloud_track_metadata=lambda _: labels, public_lyric_recording=detail,
+                             public_timed_lyrics=lyrics)
+    recovery = KtvLyricsRecovery(owner, source, None, None)
+    task = {"song_id": "98705", "source": "cloud", "duration_ms": 12200, "title": "PRIVATE 上传信息"}
+    assert recovery.recover(task) == timed
+    assert json.loads(requests[0]["input"]) == {"title": labels["title"], "artists": labels["artists"]}
+    used = owner.status()["usage"]
+    assert used["used"]["requests"] == 0 and used["used"]["text_tokens"] == 0
+    assert used["ktv_lookups"] == {"requests": 1, "text_tokens": 48}

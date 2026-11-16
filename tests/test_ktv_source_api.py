@@ -133,6 +133,34 @@ def test_cloud_adapter_never_reuses_public_source_manifest(tmp_path):
         APIAudioAdapter(API(), root, enabled=True, source='cloud').acquire('123')
 
 
+def test_embedded_cloud_timecodes_are_bound_to_verified_audio(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    api = LocalSourceAPI(tmp_path / "account", tmp_path / "provider")
+    album = tmp_path / "cloud-downloads" / "123"
+    album.mkdir(parents=True)
+    audio = album / "source.audio"
+    audio.write_bytes(b"synthetic flac")
+    (album / "manifest.json").write_text(json.dumps({
+        "song_id": "123", "source": "cloud", "duration_seconds": 4,
+        "source_bytes": audio.stat().st_size, "source_sha256": hashlib.sha256(audio.read_bytes()).hexdigest(),
+        "full_decode_verified": True, "exact_song_id_verified": True,
+    }))
+    payload = {"format": {"tags": {"LYRICS": "[00:01.00]合成一句\n[00:02.00]合成二句\n[00:03.00]合成三句"}}}
+    calls = []
+    monkeypatch.setattr("homeplane.ktv_source_api.shutil.which", lambda _: "/usr/bin/ffprobe")
+    monkeypatch.setattr("homeplane.ktv_source_api.subprocess.run",
+                        lambda args, **kwargs: calls.append(args) or SimpleNamespace(stdout=json.dumps(payload).encode()))
+    try:
+        assert [line["time_ms"] for line in api.embedded_cloud_lyrics("123", 4000)["lines"]] == [1000, 2000, 3000]
+        assert api.embedded_cloud_lyrics("123", 4800)["lines"] == []
+        audio.write_bytes(b"synthetic edit")
+        assert api.embedded_cloud_lyrics("123", 4000)["lines"] == []
+        assert len(calls) == 1
+    finally:
+        api.close()
+
+
 def test_cloud_lyrics_are_bound_to_uploaded_content_and_reject_placeholders(tmp_path, monkeypatch):
     lrc = '[00:10.00]合成第一句\n[00:20.00]合成第二句\n[00:30.00]合成第三句'
     calls = []

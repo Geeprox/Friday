@@ -31,7 +31,7 @@ class UsageLedger:
                     requests INTEGER, text_tokens INTEGER, images INTEGER, voice_seconds INTEGER);
                 CREATE TABLE IF NOT EXISTS attempts (
                     id TEXT PRIMARY KEY, window REAL, text_tokens INTEGER, status TEXT,
-                    voice_seconds INTEGER DEFAULT 0, images INTEGER DEFAULT 0);
+                    voice_seconds INTEGER DEFAULT 0, images INTEGER DEFAULT 0, ktv_lookup INTEGER DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS cooldown (
                     capability TEXT PRIMARY KEY, code TEXT, until REAL);
             """
@@ -43,6 +43,8 @@ class UsageLedger:
                 db.execute("ALTER TABLE attempts ADD COLUMN voice_seconds INTEGER DEFAULT 0")
             if "images" not in columns:
                 db.execute("ALTER TABLE attempts ADD COLUMN images INTEGER DEFAULT 0")
+            if "ktv_lookup" not in columns:
+                db.execute("ALTER TABLE attempts ADD COLUMN ktv_lookup INTEGER DEFAULT 0")
         path.chmod(0o600)
 
     @contextmanager
@@ -77,17 +79,24 @@ class UsageLedger:
         return row
 
     @staticmethod
-    def _request_usage(db, window):
-        # 旧账本把生图也记进总请求数。从同一周期的预留记录分出图片请求。
-        image_requests = db.execute(
-            "SELECT count(*) FROM attempts WHERE window=? AND images>0", (window["start"],)
-        ).fetchone()[0]
-        return window["requests"] - image_requests
+    def _usage(db, window):
+        # 从总用量中分出已记账的图片请求与 KTV 歌词、资料检索。
+        separate = db.execute(
+            "SELECT count(CASE WHEN images>0 OR ktv_lookup=1 THEN 1 END) AS requests,"
+            "count(CASE WHEN ktv_lookup=1 THEN 1 END) AS lookups,"
+            "coalesce(sum(CASE WHEN ktv_lookup=1 THEN text_tokens END),0) AS lookup_tokens "
+            "FROM attempts WHERE window=?", (window["start"],)
+        ).fetchone()
+        used = {name: window[name] for name in COUNTERS}
+        used["requests"] -= separate["requests"]
+        used["text_tokens"] -= separate["lookup_tokens"]
+        return used, {"requests": separate["lookups"], "text_tokens": separate["lookup_tokens"]}
 
     def reserve(self, identifier, capability, config, *, text_tokens=0, images=0, voice_seconds=0,
-                enforce_daily_limits=True):
+                enforce_daily_limits=True, ktv_lookup=False):
         amounts = dict(requests=1, text_tokens=text_tokens, images=images, voice_seconds=voice_seconds)
-        if any(type(v) is not int or v < 0 for v in amounts.values()):
+        if (any(type(v) is not int or v < 0 for v in amounts.values())
+                or ktv_lookup and (capability != "responses" or images or voice_seconds)):
             raise ValueError("invalid_usage_reservation")
         with self.transaction() as db:
             window = self._window(db, config)
@@ -99,11 +108,12 @@ class UsageLedger:
                 raise EnhancementUnavailable(block["code"])
             if db.execute("SELECT 1 FROM attempts WHERE id=?", (identifier,)).fetchone():
                 raise EnhancementUnavailable("request_already_attempted")
-            if enforce_daily_limits:
-                if not images and self._request_usage(db, window) >= config.daily_requests:
+            if enforce_daily_limits and not ktv_lookup:
+                used, _ = self._usage(db, window)
+                if not images and used["requests"] >= config.daily_requests:
                     raise EnhancementUnavailable("daily_requests_reached")
                 for name in COUNTERS[1:]:
-                    if amounts[name] and window[name] + amounts[name] > getattr(config, "daily_" + name):
+                    if amounts[name] and used[name] + amounts[name] > getattr(config, "daily_" + name):
                         raise EnhancementUnavailable("daily_" + name + "_reached")
             db.execute(
                 "UPDATE usage_window SET requests=requests+1,text_tokens=text_tokens+?,"
@@ -111,8 +121,8 @@ class UsageLedger:
                 (text_tokens, images, voice_seconds),
             )
             db.execute(
-                "INSERT INTO attempts(id,window,text_tokens,status,voice_seconds,images) VALUES(?,?,?,'reserved',?,?)",
-                (identifier, window["start"], text_tokens, voice_seconds, images),
+                "INSERT INTO attempts(id,window,text_tokens,status,voice_seconds,images,ktv_lookup) VALUES(?,?,?,'reserved',?,?,?)",
+                (identifier, window["start"], text_tokens, voice_seconds, images, int(ktv_lookup)),
             )
 
     def settle(self, identifier, *, text_tokens=None, voice_seconds=None, images=None):
@@ -136,9 +146,10 @@ class UsageLedger:
                     (images - attempt["images"], attempt["window"]),
                 )
             db.execute(
-                "UPDATE attempts SET status=? WHERE id=?",
+                "UPDATE attempts SET status=?,text_tokens=? WHERE id=?",
                 (
                     "accounted" if any(value is not None for value in (text_tokens, voice_seconds, images)) else "uncertain",
+                    text_tokens if type(text_tokens) is int and text_tokens >= 0 else attempt["text_tokens"],
                     identifier,
                 ),
             )
@@ -157,8 +168,10 @@ class UsageLedger:
     def status(self, config):
         with self.transaction() as db:
             row = self._window(db, config)
+            used, ktv = self._usage(db, row)
             return {
-                "used": {**{name: row[name] for name in COUNTERS}, "requests": self._request_usage(db, row)},
+                "used": used,
+                "ktv_lookups": ktv,
                 "limits": {name: getattr(config, "daily_" + name) for name in COUNTERS},
                 "resets_at": datetime.fromtimestamp(row["end"], UTC).isoformat(),
                 "uncertain_requests": db.execute(

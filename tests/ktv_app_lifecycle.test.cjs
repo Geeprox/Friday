@@ -12,7 +12,7 @@ function harness({validRoom=false,deferFrames=false,roomId=firstRoom,invite='a'.
  const nodes=new Map(),trace=[],listeners=new Map(),frames=[];
  const events=name=>({addEventListener(type,callback){const key=name+':'+type;if(!listeners.has(key))listeners.set(key,new Set());listeners.get(key).add(callback);}});
  const emit=(name,type,event={})=>{for(const callback of [...(listeners.get(name+':'+type)||[])])callback(event);};
- class Node{constructor(id=''){this.id=id;this.children=[];this.dataset={};this.style={};this.value='';this.textContent='';this.hidden=false;this.isConnected=true;this.classList={add(){},remove(){},toggle(){}};this.attributes={};this.parentElement=null;}
+ class Node{constructor(id=''){this.id=id;this.children=[];this.dataset={};this.style={setProperty(name,value){this[name]=value;}};this.value='';this.textContent='';this.hidden=false;this.isConnected=true;this.classList={add(){},remove(){},toggle(){}};this.attributes={};this.parentElement=null;}
   append(...nodes){for(const n of nodes){if(n.parentElement)n.parentElement.removeChild(n);this.children.push(n);n.parentElement=this;}}replaceChildren(...n){for(const old of this.children)old.parentElement=null;this.children=[];this.append(...n);}removeChild(n){const at=this.children.indexOf(n);if(at>=0)this.children.splice(at,1);n.parentElement=null;return n;}setAttribute(k,v){this.attributes[k]=v;}getAttribute(k){return this.attributes[k];}querySelector(q){return q==='button'?(this.button??=new Node()):null;}querySelectorAll(){return [];}closest(){return null;}addEventListener(){}focus(){document.activeElement=this;}insertBefore(n,before=null){if(n.parentElement)n.parentElement.removeChild(n);const at=before?this.children.indexOf(before):-1;this.children.splice(at<0?this.children.length:at,0,n);n.parentElement=this;}}
  const element=id=>{if(!nodes.has(id))nodes.set(id,new Node(id));return nodes.get(id);};
  const document={...events('document'),hidden:false,body:new Node('body'),getElementById:element,createElement:()=>new Node(),querySelector:q=>q==='dialog[open]'?null:element(q),querySelectorAll:()=>[],activeElement:null};
@@ -30,6 +30,19 @@ function harness({validRoom=false,deferFrames=false,roomId=firstRoom,invite='a'.
 
 test('guide and app scripts share globals without duplicate declarations',()=>{
  new vm.Script(fs.readFileSync(path.join(web,'guide.js'),'utf8')+'\n'+source);
+});
+
+test('scan stays on automatic recovery after a long outage',async()=>{
+ const h=harness({validRoom:true}),timers=[];
+ h.context.setTimeout=(run,delay)=>{timers.push({run,delay});return timers.length;};
+ h.run('identity=null;joinFailures=4;api=async()=>{throw Object.assign(new Error(),{code:"request_timeout"});}');
+ await h.run('join()');
+ assert.equal(timers.at(-1).delay,8000);
+ assert.equal(h.element('my-name').textContent,'正在加入…');
+ h.run('document.hidden=true');
+ timers.at(-1).run();
+ await flush();
+ assert.equal(timers.length,1);
 });
 
 test('phone distinguishes a retained room from incomplete TV and worker readiness',()=>{
@@ -364,7 +377,7 @@ test('terminal lyric failures retain the order without looking busy or enabling 
  const h=harness();h.run('earEnabled=false;playback={online:true,current:"",played:[],state:"paused"};mode="queue";selected=[{id:"a",song_id:"1",title:"合成云盘",state:"ready",lyric_state:-1,lyrics_pending:false}];render();updatePlayer()');
  assert.equal(h.element('queue-count').textContent,1);
  assert.equal(h.element('results').children[0].className,'queue-group failed');
- assert.equal(h.element('now-title').textContent,'暂无同步歌词');
+ assert.equal(h.element('now-title').textContent,'等待可唱歌曲');
  assert.equal(h.element('skip-button').disabled,true);
  assert.equal(h.element('play-toggle').disabled,true);
  h.run('playback.state="playing";updatePlayer()');

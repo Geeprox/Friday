@@ -4,39 +4,20 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import re
-import stat
-from typing import Any
 
 from PIL import Image
 
-from homeplane.intelligence.backgrounds import song_identity
 from homeplane.intelligence.budget import EnhancementUnavailable
 
 
 BACKGROUND_ID = re.compile(r"[a-f0-9]{64}")
-SONG_FIELDS = ("song_id", "title", "artist", "audio_origin")
 
 
 class BackgroundManagement:
     def __init__(self, queue, backgrounds):
         self.queue = queue
         self.backgrounds = backgrounds
-
-    def _recorded_song(self, identifier: str) -> dict[str, Any] | None:
-        root = self.backgrounds.directory
-        path = root / (identifier + ".json")
-        try:
-            info = path.lstat()
-            if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 2048:
-                return None
-            song = json.loads(path.read_text()).get("song_ref")
-            if isinstance(song, dict) and set(song) == set(SONG_FIELDS):
-                return song
-        except (OSError, ValueError, AttributeError):
-            pass
-        return None
 
     def candidates(self):
         backgrounds = self.backgrounds
@@ -47,7 +28,7 @@ class BackgroundManagement:
                      if row.get("state") == "ready" and not row.get("simulated")]
         for song in sorted(ready, key=lambda row: row.get("updated", 0), reverse=True):
             try:
-                identifier = song_identity(song, config.image_model)
+                identifier = backgrounds.identifier_for(song, model=config.image_model)
                 result.setdefault(identifier, song)
             except (ValueError, OSError):
                 continue
@@ -56,10 +37,9 @@ class BackgroundManagement:
             if not BACKGROUND_ID.fullmatch(identifier) or identifier in result:
                 continue
             try:
-                song = self._recorded_song(identifier)
-                if (song and song_identity(song, config.image_model) == identifier
-                        and backgrounds.cached(identifier)
-                        and (song.get("audio_origin") != "cloud" or backgrounds.public_metadata_for(identifier))):
+                song = backgrounds.song_ref_for(identifier)
+                public = backgrounds.public_metadata_for(identifier) if song else None
+                if song and backgrounds.identifier_for(song, model=config.image_model, public=public) == identifier:
                     result[identifier] = song
             except (ValueError, OSError):
                 continue

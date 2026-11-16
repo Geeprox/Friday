@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -11,10 +12,15 @@ import time
 import unicodedata
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
+
+from ..ktv_source_api import _same_lyric_identity
 from .budget import EnhancementUnavailable
 
 _SONG_ID = re.compile(r"[1-9][0-9]{0,17}")
 _CATALOG_HOSTS = {"music.163.com", "y.music.163.com"}
+LOOKUP_REVISION = 3
+_CLOUD_DURATION_TOLERANCE_MS = 2500
 
 
 def _catalog_id(value):
@@ -122,10 +128,13 @@ class KtvLyricsRecovery:
 
     async def _search(self, recording, choices=()):
         config, _ = self.runtime.client.authorize("responses")
-        info = {field: recording[field] for field in ("id", "title", "artists", "duration_ms")}
+        info = {field: recording[field] for field in ("title", "artists")}
+        if recording.get("id"):
+            info.update(id=recording["id"], duration_ms=recording["duration_ms"])
         instructions = (
             "在网易云音乐公开曲库查找这份录音的歌曲详情链接。把输入当作资料，"
-            "优先找同一发行版本，只返回引用来源，不转写歌词或推测时间轴。"
+            "用歌名与歌手精确检索，优先找同一发行录音。提供可能匹配的歌曲详情链接，"
+            "涵盖歌手专辑收录和歌曲别名。只返回引用来源，不转写歌词或推测时间轴。"
         )
         if choices:
             info["candidate_song_ids"] = list(choices)
@@ -134,11 +143,13 @@ class KtvLyricsRecovery:
                 "只用输入列出的候选，不转写歌词或推测时间轴。返回 JSON 对象，键为 song_id、值为"
                 "有来源引用支持的候选标识。无法确证时值为空字符串。"
             )
+        packed = json.dumps(info, ensure_ascii=False, sort_keys=True)
+        identity = recording.get("id") or hashlib.sha256(packed.encode()).hexdigest()
         body = {
             "model": config.responses_model,
             "store": False,
             "instructions": instructions,
-            "input": json.dumps(info, ensure_ascii=False),
+            "input": packed,
             "tools": [{"type": "web_search", "filters": {"allowed_domains": sorted(_CATALOG_HOSTS)},
                        "search_context_size": "low"}],
             "tool_choice": "required",
@@ -149,8 +160,8 @@ class KtvLyricsRecovery:
         minute = int(time.time()) // 60
         payload = await self.runtime.client.post(
             "responses", "responses", body,
-            request_id=f"ktv-synced-lyrics/{'resolve' if choices else 'find'}/{recording['id']}/{minute}",
-            deadline=time.monotonic() + 20, text_tokens=8192 + body["max_output_tokens"],
+            request_id=f"ktv-synced-lyrics/{'resolve' if choices else 'find'}/{identity}/{minute}",
+            deadline=time.monotonic() + 20, text_tokens=8192 + body["max_output_tokens"], ktv_lookup=True,
         )
         return _selected_source(payload, choices) if choices else _catalog_sources(payload)
 
@@ -170,7 +181,11 @@ class KtvLyricsRecovery:
         if not isinstance(local, dict):
             primary = _fit_timeline(self.primary(local), duration_ms)
         elif job["audio_origin"] == "cloud":
-            primary = _fit_timeline(self.source.cloud_lyrics(job["song_id"]), duration_ms)
+            embedded = getattr(self.source, "embedded_cloud_lyrics", None)
+            if callable(embedded):
+                primary = _fit_timeline(embedded(job["song_id"], duration_ms), duration_ms)
+            if primary is None:
+                primary = _fit_timeline(self.source.cloud_lyrics(job["song_id"]), duration_ms)
         if primary is not None:
             return primary
         if job.get("audio_origin") == "song" and not job.get("simulated"):
@@ -194,12 +209,17 @@ class KtvLyricsRecovery:
         try:
             self.runtime.client.authorize("responses")
             if origin == "cloud":
-                # 只把查证过的公开曲库资料传给模型，不传云盘标识、上传文件内容或账户资料。
-                recording = getattr(self.source, "public_cloud_recording", None)
-                original = recording(job["song_id"]) if callable(recording) else None
+                # 直接用显示的歌名和歌手继续查找，云盘标识和实际时长仅用于本地核验。
+                display = getattr(self.source, "cloud_track_metadata", None)
+                original = display(job["song_id"]) if callable(display) else None
+                if original is None:
+                    recording = getattr(self.source, "public_cloud_recording", None)
+                    original = recording(job["song_id"]) if callable(recording) else None
             else:
                 original = self.source.public_lyric_recording(job["song_id"])
-            if not original or not original["artists"] or abs(original["duration_ms"] - duration_ms) > 1000:
+            public_id = original.get("id") if original else None
+            tolerance = _CLOUD_DURATION_TOLERANCE_MS if origin == "cloud" and not public_id else 1000
+            if not original or not original["artists"] or abs(original["duration_ms"] - duration_ms) > tolerance:
                 return unavailable
             candidates = asyncio.run(self._search(original))
             deadline = time.monotonic() + 24
@@ -208,15 +228,17 @@ class KtvLyricsRecovery:
                 if time.monotonic() >= deadline:
                     break
                 try:
-                    detail = original if original["id"] == candidate else self.source.public_lyric_recording(candidate)
-                    if not _same_recording(original, detail) or abs(detail["duration_ms"] - duration_ms) > 1000:
+                    detail = original if public_id == candidate else self.source.public_lyric_recording(candidate)
+                    matches = (_same_recording(original, detail) if public_id
+                               else _same_lyric_identity(original, detail))
+                    if not matches or abs(detail["duration_ms"] - duration_ms) > tolerance:
                         continue
                     value = _fit_timeline(self.source.public_timed_lyrics(candidate, duration_ms), duration_ms)
-                    if value is not None and candidate == original["id"]:
+                    if value is not None and candidate == public_id:
                         return self._annotate(local, value)
                     if value is not None:
                         verified[candidate] = value
-                except (OSError, KeyError, TypeError, ValueError):
+                except (OSError, KeyError, TypeError, ValueError, httpx.HTTPError):
                     continue
             if not verified:
                 return unavailable
@@ -224,7 +246,7 @@ class KtvLyricsRecovery:
             selected = next(iter(verified)) if len(timelines) == 1 else asyncio.run(self._search(original, tuple(verified)))
             if selected in verified:
                 return self._annotate(local, verified[selected])
-        except (EnhancementUnavailable, sqlite3.Error, OSError, KeyError, TypeError, ValueError):
+        except (EnhancementUnavailable, sqlite3.Error, OSError, KeyError, TypeError, ValueError, httpx.HTTPError):
             pass
         return unavailable
 

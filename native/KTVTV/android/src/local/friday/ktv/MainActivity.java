@@ -39,7 +39,8 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private final ExecutorService backdropNetwork=new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(1));
     private final SongBackdrop songBackdrop=new SongBackdrop();
     private JSONObject backdropJob;
-    private boolean backdropBusy,aiBackdropVisible,backgroundsEnabled=true;
+    private boolean backdropBusy,backgroundsEnabled=true;
+    private volatile boolean aiBackdropVisible;
     private final ExecutorService controlActions=new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(16));
     private final LocalControlIntent localOriginal=new LocalControlIntent();
     private boolean controlBusy,protocolReady;
@@ -779,11 +780,11 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         boolean preparing=!next.isEmpty()&&!readyForPerformance(queued);
         boolean showJoinCode=joining&&(!hasRequest||unavailable);
         headline.setVisibility(joining&&!hasRequest?View.GONE:View.VISIBLE);
-        headline.setText(unavailable?"暂无同步歌词":queued!=null?SongTitle.display(queued.optString("title","下一首")):hasRequest?"下一首歌曲":"");
+        headline.setText(unavailable?"等待可唱歌曲":queued!=null?SongTitle.display(queued.optString("title","下一首")):hasRequest?"下一首歌曲":"");
         bigQr.setVisibility(showJoinCode?View.VISIBLE:View.GONE);
         smallQr.setVisibility(joining&&!showJoinCode?View.VISIBLE:View.INVISIBLE);
         String message=joining?"":roomMessage;
-        if(unavailable)message=joining?"扫码点一首其他歌曲":"用手机点一首其他歌曲";
+        if(unavailable)message="可在手机上查看已点歌曲";
         else if(protocolReady&&preparing)message=queuePreparation(queued);
         else if(protocolReady&&!next.isEmpty()&&paused)message="歌曲已就绪";
         setRoomNotice(message,!unavailable&&autoRoom&&!roomRetry&&(!joining||preparing));
@@ -976,13 +977,15 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         String id=candidate.optString("id"),edition=audioEdition(candidate);
         JSONObject media=candidate.optJSONObject("media");
         JSONObject instrumental=media.optJSONObject("instrumental"),original=media.optJSONObject("original");
+        JSONObject backdrop=backgroundsEnabled?readyBackdrop(candidate):null;
         if(instrumental==null||original==null)return;
         if(prefetchBusy){
             if(!id.equals(prefetchId)||!edition.equals(prefetchEdition))prefetchCancel.set(true);
             return;
         }
         if(id.equals(prefetchedId)&&edition.equals(prefetchedEdition)
-            &&client.cached(instrumental,false)&&client.cached(original,false))return;
+            &&client.cached(instrumental,false)&&client.cached(original,false)
+            &&(backdrop==null||client.cachedBackground(backdrop)))return;
         if(id.equals(prefetchId)&&edition.equals(prefetchEdition)&&SystemClock.elapsedRealtime()-prefetchAttempt<8000)return;
         prefetchAttempt=SystemClock.elapsedRealtime();
         prefetchId=id;
@@ -998,6 +1001,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                 owner.download(instrumental,cancel);
                 owner.download(original,cancel);
                 complete=!cancel.get();
+                if(backdrop!=null)try{owner.downloadBackground(backdrop,cancel);}catch(Exception ignored){}
                 JSONObject movie=candidate.optJSONObject("video");
                 if(movieReady(movie,original))owner.downloadVideo(movie,cancel);
             }catch(Exception ignored){}
@@ -1209,7 +1213,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private void setLyrics(JSONArray value,String title){
         lines=value;activeLine=-1;lyrics.removeAllViews();lyricViews.clear();int h=Math.max(dp(150),lyricScroll.getHeight()/2);lyrics.setPadding(0,h,0,h);
         lyricStarts=new long[value.length()];for(int i=0;i<value.length();i++)lyricStarts[i]=value.optJSONObject(i).optLong("time_ms");mvPrevious.setText("");mvCurrent.setText("");mvNext.setText("");countdownLine=-1;countdownValue=0;
-        if(value.length()==0){TextView line=text(title,38,WHITE);line.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));textShadow(line,true);lyrics.addView(line);TextView pending=text("暂无同步歌词",18,MUTED);pending.setPadding(0,dp(20),0,0);textShadow(pending,false);lyrics.addView(pending);return;}
+        if(value.length()==0){TextView line=text(title,38,WHITE);line.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));textShadow(line,true);lyrics.addView(line);return;}
         for(int i=0;i<value.length();i++){TextView line=text(value.optJSONObject(i).optString("text"),25,MUTED);line.setPadding(0,dp(10),0,dp(10));line.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));textShadow(line,false);line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);lyrics.addView(line,new LinearLayout.LayoutParams(-1,-2));lyricViews.add(line);}
         lyricScroll.post(()->lyricScroll.smoothScrollTo(0,0));
     }
@@ -1224,7 +1228,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         String text="";
         if(next!=null)text="下一首  "+SongTitle.display(next.optString("title","歌曲"));
         else if(!selected.isEmpty())text="正在同步下一首…";
-        else if(hasPending())text="下一首暂无同步歌词";
+        else if(hasPending())text="等待可唱歌曲";
         if(!text.contentEquals(nextSong.getText()))nextSong.setText(text);
     }
     private void ended(String code,boolean natural){
@@ -1399,6 +1403,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
             if(owner!=null)data.put("tv_cache_bytes",owner.mediaCache.bytes()).put("tv_cache_limit",owner.mediaCache.limit());
             data.put("apk_version",installedVersion)
                 .put("warmup_active",warmup).put("warmup_pool",warmupJobs.size()).put("lyric_lines",lines.length())
+                .put("song_background_visible",aiBackdropVisible&&!videoReady)
                 .put("next_prefetched",!prefetchedId.isEmpty())
                 .put("video_seek_count",videoSeekCount).put("video_drift_abs_ms",Math.abs(videoClock.drift))
                 .put("video_buffer_events",videoBufferEvents).put("video_surface_frames",videoSurfaceFrames)
