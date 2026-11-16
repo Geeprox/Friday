@@ -27,7 +27,7 @@ SYNTHETIC_MEDIA = {
     'docs/screenshots/ktv-mobile-queue.png':
         '4acf79e70e2565191a4d9a8aacd7436f81c67aae5cdaf1a2b1948298057b448d',
     'docs/screenshots/ktv-mobile-sound.png':
-        'd3bc70a07a333bbb413d07c1fb427879b871ca008ad9d63ee0919380cde222c6',
+        'baec81741efaf621a35c8f4e748cef8bec164ee881d3f4e515b7c0b6e0961b71',
     # 合成歌曲与用量设置的 KTV 用户手册截图。
     'docs/screenshots/ktv-background-settings.png':
         '639c1877515fdac0b2c0ed33b38e03cd6f6beb05bc95cc322149d75859f88117',

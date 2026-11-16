@@ -173,6 +173,12 @@ public final class KtvClient {
         }catch(Exception invalid){return false;}
     }
     public boolean cached(JSONObject media,boolean video){try{String sha=media.getString("sha256");if(!sha.matches("[a-f0-9]{64}"))return false;File f=new File(cache,sha+(video?".mp4":".wav"));return f.isFile()&&f.length()==media.getLong("bytes");}catch(Exception e){return false;}}
+    public boolean cachedBackground(JSONObject media){
+        String sha=media.optString("sha256"),encoding=media.optString("encoding");
+        if(!sha.matches("[a-f0-9]{64}")||!("jpeg".equals(encoding)||"png".equals(encoding)))return false;
+        File image=new File(cache,sha+("jpeg".equals(encoding)?".jpg":".png"));
+        return image.isFile()&&image.length()==media.optLong("bytes");
+    }
     private File downloadMedia(JSONObject media, AtomicBoolean cancel,boolean video) throws Exception {
         String sha=media.getString("sha256"),path=media.getString("url");long size=media.getLong("bytes");
         if (!sha.matches("[a-f0-9]{64}") || size<48 || size>(video?134217728L:LIMIT))throw new IOException("invalid_media");
@@ -193,15 +199,23 @@ public final class KtvClient {
         JSONArray sources=media.optJSONArray("sources");
         if(sources==null)return new MediaRoute[]{MediaRoute.local(endpoint,path,kind)};
         if(!coordinator||sources.length()<1||sources.length()>3)throw new IOException("invalid_media_sources");
-        MediaRoute[] routes=new MediaRoute[sources.length()];long now=System.currentTimeMillis()/1000;
-        for(int i=0;i<routes.length;i++){
-            JSONObject source=sources.optJSONObject(i);if(source==null)throw new IOException("invalid_media_sources");
-            Iterator<String> keys=source.keys();while(keys.hasNext())if(!Arrays.asList("origin","url","header","credential","expires").contains(keys.next()))throw new IOException("invalid_media_sources");
-            if(source.optString("origin").isEmpty()){
-                if(source.has("header")||source.has("credential")||source.has("expires"))throw new IOException("invalid_media_sources");
-                routes[i]=MediaRoute.local(endpoint,source.getString("url"),kind);
-            }else routes[i]=MediaRoute.worker(source.getString("origin"),source.getString("url"),source.getString("header"),source.getString("credential"),source.getLong("expires"),now,kind);
-        }return routes;
+        List<MediaRoute> routes=new ArrayList<>();
+        long now=System.currentTimeMillis()/1000;
+        for(int i=0;i<sources.length();i++){
+            try{routes.add(mediaRoute(sources.getJSONObject(i),now,kind));}
+            catch(IOException|org.json.JSONException ignored){}
+        }
+        if(routes.isEmpty())throw new IOException("invalid_media_sources");
+        return routes.toArray(new MediaRoute[0]);
+    }
+    private MediaRoute mediaRoute(JSONObject source,long now,String kind)throws IOException,org.json.JSONException{
+        Iterator<String> keys=source.keys();
+        while(keys.hasNext())if(!Arrays.asList("origin","url","header","credential","expires").contains(keys.next()))throw new IOException("invalid_media_sources");
+        if(source.optString("origin").isEmpty()){
+            if(source.has("header")||source.has("credential")||source.has("expires"))throw new IOException("invalid_media_sources");
+            return MediaRoute.local(endpoint,source.getString("url"),kind);
+        }
+        return MediaRoute.worker(source.getString("origin"),source.getString("url"),source.getString("header"),source.getString("credential"),source.getLong("expires"),now,kind);
     }
     private InputStream openMedia(MediaRoute route,long size)throws Exception{
         final HttpURLConnection c=(HttpURLConnection)new URL(route.url).openConnection();

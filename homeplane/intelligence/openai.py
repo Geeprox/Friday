@@ -57,7 +57,7 @@ class OpenAIClient:
         return self.settings.read() == config and self.settings.key() == key
 
     async def post(self, capability, path, body, *, request_id, deadline, text_tokens=0, images=0,
-                   enforce_daily_limits=True):
+                   enforce_daily_limits=True, ktv_lookup=False):
         config, key = self.authorize(capability)
         encoded = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
         if len(encoded) > 65536 or time.monotonic() >= deadline:
@@ -65,7 +65,7 @@ class OpenAIClient:
         identifier = hashlib.sha256(capability.encode() + request_id.encode() + encoded).hexdigest()
         await asyncio.to_thread(
             self.ledger.reserve, identifier, capability, config, text_tokens=text_tokens, images=images,
-            enforce_daily_limits=enforce_daily_limits,
+            enforce_daily_limits=enforce_daily_limits, ktv_lookup=ktv_lookup,
         )
         try:
             if not self.configuration_current(config, key):

@@ -173,9 +173,10 @@ def main(argv=None):
     from homeplane.intelligence.ktv_background_context import SongBackgroundContext
     song_backgrounds = SongBackgrounds(
         intelligence, recording=source_api.public_lyric_recording, max_parallel=BACKGROUND_PREFETCH_COUNT,
-        context_resolver=SongBackgroundContext(intelligence, debug=args.debug_backgrounds),
+        context_resolver=SongBackgroundContext(intelligence),
         context_timeout=22, debug=args.debug_backgrounds,
-        cloud_recording=source_api.public_cloud_background, include_mv=True,
+        cloud_recording=source_api.public_cloud_background, cloud_metadata=source_api.cloud_background_metadata,
+        include_mv=True,
     )
     lyric_recovery = KtvLyricsRecovery(
         intelligence, source_api, queue, lambda job_id: prepared_lyrics(queue, job_id, song_lyrics, source_api),

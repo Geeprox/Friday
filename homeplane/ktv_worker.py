@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import HTTPException
 
+from .intelligence.ktv_lyrics import LOOKUP_REVISION
 from .ktv_nas_bridge import NasBridge
 from .ktv_service import atomic_json, private_directory
 
@@ -388,7 +389,7 @@ class PreparationWorker(NasBridge):
             return unavailable
         recovering = bool(work and work.recovering)
         if work and not recovering and work.attempts > len(LYRIC_RETRY_SECONDS):
-            return {**unavailable, "retry_exhausted": True, "lookup_revision": 2}
+            return {**unavailable, "retry_exhausted": True, "lookup_revision": LOOKUP_REVISION}
         active = self._active_lyric_lookups(recovering)
         if not recovering:
             active += sum(not future.done() for future in self.lyric_prefetch.values())
@@ -663,8 +664,9 @@ class PreparationWorker(NasBridge):
                 pass
         # 当前曲目在 NAS 回放时没有本机任务，也应先于闲置缓存补图。
         current_archive = [song for song in archived if song.get("current") is True]
-        waiting_archive = [song for song in archived if song.get("current") is not True]
-        candidates = [*current_archive, *active, *waiting_archive]
+        waiting_archive = [song for song in archived if not song.get("current") and not song.get("played")]
+        played_archive = [song for song in archived if not song.get("current") and song.get("played")]
+        candidates = [*current_archive, *active, *waiting_archive, *played_archive]
         if callable(getattr(self.queue, "list", None)):
             candidates.extend(song for song in self.queue.list()
                               if song["state"] == "ready" and not song.get("simulated"))

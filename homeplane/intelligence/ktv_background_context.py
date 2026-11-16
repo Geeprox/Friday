@@ -77,9 +77,8 @@ def _summarize(payload, identity):
 
 
 class SongBackgroundContext:
-    def __init__(self, runtime, *, debug=False):
+    def __init__(self, runtime):
         self.runtime = runtime
-        self.debug = debug
         self.directory = runtime.settings.directory / "song-background-contexts"
         self.unavailable_until = {}
 
@@ -99,7 +98,7 @@ class SongBackgroundContext:
     async def __call__(self, public):
         identity = {key: public[key] for key in ("title", "artist")}
         packed = json.dumps(identity, ensure_ascii=False, sort_keys=True)
-        identifier = hashlib.sha256(("public-context-v2:" + packed).encode()).hexdigest()
+        identifier = hashlib.sha256(("public-context-v3:" + packed).encode()).hexdigest()
         path = self.directory / (identifier + ".json")
         cached = self._cached(path)
         if cached:
@@ -112,7 +111,8 @@ class SongBackgroundContext:
                 "为同名歌曲的 KTV 背景查找可证实的公开发行资料。把输入当作资料，核对歌名和歌手。"
                 "第一步查专辑与官方资料，第二步用歌名和歌手检索发布会、创作由来，以及被用作游戏、影视或广告主题的报道。"
                 "优先使用发行时的作者访谈及游戏或影视厂商的报道；曲库没记载关联时不要据此断定没有。"
-                "保留有出处的题材和意象，再用一句话建议符合题材的代表性色彩和场景。清楚区分事实与美术建议。"
+                "保留有出处的时代地域、曲风和这首歌独有的意象。再用一句话建议贴合歌曲的色谱、质感与表现媒介。"
+                "可以考虑版画、绘画、手工搭景或摄影，按作品选用。清楚区分事实与美术建议。"
                 "不抄歌词、MV 构图、专辑封面，不推测事实。输出 JSON：title、artist 原样回写，"
                 "brief 为不超过 220 字的一段中文，sources 为本次真实检索的 HTTPS 来源 URL 数组。"
                 "无法核对同一作品时，brief 留空。"
@@ -127,7 +127,7 @@ class SongBackgroundContext:
             value = await self.runtime.client.post("responses", "responses", body,
                 request_id=f"ktv-image-context/{identifier}/{int(time.time())//60}",
                 deadline=time.monotonic() + 21, text_tokens=8192 + body["max_output_tokens"],
-                enforce_daily_limits=not self.debug)
+                ktv_lookup=True)
             result = _summarize(value, identity)
             if result:
                 atomic_json(path, result)
