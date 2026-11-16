@@ -1462,7 +1462,7 @@ def create_app(
         owner_path = bool(re.fullmatch(
             rf"/v1/manage/(?:library|preview|delete|policy|room|search|"
             rf"room/(?:theme|controls|command|order|queue-remove|songs|retry|preferences)|jobs/{JOB_ID.pattern}/(?:retry|remove)|"
-            r"backgrounds(?:/[a-f0-9]{64}/(?:preview|regenerate))?)",
+            r"backgrounds(?:/policy|/[a-f0-9]{64}/(?:preview|regenerate))?)",
             request.url.path,
         ))
         if request.url.path.startswith("/v1/manage/") and not local_console:
@@ -1622,7 +1622,15 @@ def create_app(
         manager = owner_backgrounds()
         candidates = await asyncio.to_thread(manager.candidates)
         return {"items": [manager.status(key, song) for key, song in list(candidates.items())[:128]],
-                "daily_remaining": await asyncio.to_thread(manager.daily_remaining)}
+                **await asyncio.to_thread(manager.policy)}
+
+    @app.post("/v1/manage/backgrounds/policy")
+    async def update_owner_background_policy(value: dict):
+        if set(value) != {"daily_images"} or type(value["daily_images"]) is not int or value["daily_images"] < 0:
+            raise HTTPException(400, "invalid_background_limit")
+        manager = owner_backgrounds()
+        await asyncio.to_thread(song_backgrounds.runtime.settings.update, value)
+        return await asyncio.to_thread(manager.policy)
 
     @app.get("/v1/manage/backgrounds/{identifier}/preview")
     def owner_background_preview(identifier: str):
@@ -1644,7 +1652,7 @@ def create_app(
         if not candidate:
             raise HTTPException(404, "background_unavailable")
         if identifier not in song_backgrounds.tasks:
-            if not await asyncio.to_thread(manager.daily_remaining):
+            if (await asyncio.to_thread(manager.policy))["daily_remaining"] == 0:
                 raise HTTPException(409, "daily_images_reached")
             public_metadata = song_backgrounds.public_metadata_for(identifier)
             job = song_backgrounds.request(candidate, force=True, public_metadata=public_metadata)
@@ -1866,8 +1874,8 @@ def create_app(
                     candidate = song_backgrounds.request_from_thread(job) if job['id'] in selected else song_backgrounds.cached(
                         song_identity(job,song_backgrounds.runtime.settings.read().image_model))
                     if candidate and candidate.get('status') == 'ready':
-                        job['background'] = {k:candidate[k] for k in ('status','sha256','bytes')}
-                        job['background'].update(encoding='png',url=f"/v1/jobs/{job['id']}/media/background")
+                        job['background'] = {k:candidate[k] for k in ('status','sha256','bytes','encoding')}
+                        job['background']['url'] = f"/v1/jobs/{job['id']}/media/background"
                 except (OSError,ValueError):
                     pass
         return {"jobs": [{**job,'title':song_title(job['title'])} for job in values]}
@@ -2012,7 +2020,7 @@ def create_app(
         return StreamingResponse(
             blocks(),
             status_code=status_code,
-            media_type="image/png" if kind == 'background' else "video/mp4" if kind == "video" else "audio/mpeg" if kind.startswith("guide_") else "audio/wav",
+            media_type=item["mime"] if kind == 'background' else "video/mp4" if kind == "video" else "audio/mpeg" if kind.startswith("guide_") else "audio/wav",
             headers=headers,
         )
 

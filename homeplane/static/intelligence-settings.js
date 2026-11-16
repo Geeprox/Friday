@@ -65,7 +65,7 @@ export async function mountIntelligenceSettings(container,{api,onOpenConversatio
   field(form,'cloud_images','自动为歌曲生成背景',config.cloud_images,{type:'checkbox',help:'仅发送歌名和演唱者。先显示本地背景，准备好后替换，同一背景可反复使用。'});
   field(form,'cloud_voice','开启云端语音输入',config.cloud_voice,{type:'checkbox',help:'主动点击后录音，最长 8 秒。转写先放入输入框，由你发送。'});
   const limits=node('fieldset',null);limits.append(node('legend','每日上限'));
-  for(const [key,label] of [['daily_requests','API 请求次数'],['daily_text_tokens','文本 Token'],['daily_images','歌曲背景张数'],['daily_voice_seconds','语音会话秒数']])field(limits,key,label,config[key],{type:'number'});
+  for(const [key,label] of [['daily_requests','文字与语音请求次数'],['daily_text_tokens','文本 Token'],['daily_images','歌曲背景张数'],['daily_voice_seconds','语音会话秒数']])field(limits,key,label,config[key],{type:'number'});
   field(limits,'timezone','每日重置时区',config.timezone);
   limits.append(node('p','上限为 0 时暂停对应调用。用量先预留，未知结果保留预留；这里统计本应用用量，不代表账户余额。',{class:'meta'}));
   const advanced=node('details',null);advanced.append(node('summary','模型配置'));

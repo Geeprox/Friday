@@ -1878,7 +1878,10 @@ def make_handler(store, agent_key, assets):
                     if media.group(2) == "lyrics":
                         return self.reply(200, coordinator.lyrics(media.group(1)))
                     file, spec = coordinator.media_file(media.group(1), media.group(3))
-                    return self.media_reply(file, 'image/png' if media.group(3) == 'background' else "video/mp4" if media.group(3) == "video" else "audio/wav", spec["bytes"])
+                    kind = media.group(3)
+                    content_type = ("image/" + spec["encoding"] if kind == "background"
+                                    else "video/mp4" if kind == "video" else "audio/wav")
+                    return self.media_reply(file, content_type, spec["bytes"])
                 raise Refusal(404, "not_found")
             if path.startswith("/agent/"):
                 supplied = self.headers.get("Authorization", "")

@@ -77,8 +77,9 @@ def _summarize(payload, identity):
 
 
 class SongBackgroundContext:
-    def __init__(self, runtime):
+    def __init__(self, runtime, *, debug=False):
         self.runtime = runtime
+        self.debug = debug
         self.directory = runtime.settings.directory / "song-background-contexts"
         self.unavailable_until = {}
 
@@ -125,7 +126,8 @@ class SongBackgroundContext:
             }
             value = await self.runtime.client.post("responses", "responses", body,
                 request_id=f"ktv-image-context/{identifier}/{int(time.time())//60}",
-                deadline=time.monotonic() + 21, text_tokens=8192 + body["max_output_tokens"])
+                deadline=time.monotonic() + 21, text_tokens=8192 + body["max_output_tokens"],
+                enforce_daily_limits=not self.debug)
             result = _summarize(value, identity)
             if result:
                 atomic_json(path, result)

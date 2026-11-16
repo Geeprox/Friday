@@ -690,7 +690,7 @@ class Coordinator:
         clean = {k: copy.deepcopy(job[k]) for k in ("id", "song_id", "title", "state", "code", "created", "progress", "requester", "audio_origin", "simulated", "source") if k in job}
         clean["media"] = media
         background = job.get('background',{})
-        if (isinstance(background,dict) and background.get('status') == 'ready' and background.get('encoding') == 'png'
+        if (isinstance(background,dict) and background.get('status') == 'ready' and background.get('encoding') in ('png', 'jpeg')
                 and isinstance(background.get('sha256'),str) and SHA.fullmatch(background['sha256'])
                 and type(background.get('bytes')) is int and 33 <= background['bytes'] <= 12*1024*1024
                 and fixed_media_path(background.get('url'),'background')):

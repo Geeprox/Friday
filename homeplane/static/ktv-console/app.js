@@ -16,7 +16,10 @@ const errors={
  retry_in_progress:'这个版本正在制备。',
  mac_offline:'Mac 制备服务暂未连接。',
  background_unavailable:'暂时无法制作歌曲背景。',
- daily_images_reached:'今天的背景生成次数已用完。',
+ daily_images_reached:'已达每日生成上限，可在这里调整。',
+ invalid_background_limit:'请输入大于或等于 0 的整数。',
+ api_quota_exhausted:'OpenAI API 额度不足。',
+ api_rate_limited:'OpenAI API 暂时限流。',
  cloud_images_disabled:'歌曲背景生成尚未开启。',
  background_queue_full:'背景正在排队，请稍后再试。',
  cache_changed:'文件或歌单已变化，请刷新后重新选择。',archive_changed:'NAS 归档已变化，请刷新后重新选择。',cache_in_use:'所选歌曲正在使用或制作，请稍后再试。',plan_expired:'删除预览已过期，请重新选择。',nas_management_unavailable:'NAS 暂未连接，恢复连接后可继续操作。',tv_offline:'电视离线，请开机后再操作。',room_changed:'房间已变化，请刷新后重试。',queue_changed:'歌单已更新，请刷新后重新选择。',song_playing:'当前歌曲正在播放，请先切歌。',sfx_unavailable:'电视氛围音效暂不可用。',source_login_required:'请在 KTV 设置的音源授权中登录。',source_rights_denied:'这个版本未能取得可用音频。',source_api_unavailable:'音源暂未连接，请稍后重试。',source_file_invalid:'原曲文件不完整，请重新准备。',download_timeout:'原曲下载未完成，请重试或换一个版本。',separation_failed:'伴奏生成失败，请重试。',transcode_failed:'播放文件封装失败，请重试。',storage_full:'存储空间不足，请调整上限或删除空闲歌曲。',search_unavailable:'暂时无法搜索，请稍后重试。',queue_full:'歌单已满，请先移除不需要的歌曲。',rate_limited:'操作较频繁，请稍等片刻再试。',cloud_song_unavailable:'暂时无法取得这个音乐云盘文件。',failed_history_source_unknown:'这条记录的原音源待确认，请重新搜索该曲。',retry_unavailable:'本次制备暂不能重试。',retry_limit:'本条记录的重试次数已用完。',invalid_policy:'请输入有效的容量上限（2–102400 GB）。',unauthorized:'管理会话已过期，请刷新页面。',ktv_offline:'KTV 暂未连接。请确认本机 KTV 服务已运行，再重试连接。',ktv_not_configured:'家庭 KTV 尚未配置。完成本机连接后即可使用。',ktv_config_unavailable:'KTV 连接配置暂不可读，请检查本机配置后重试。',ktv_read_only:'当前窗口只读，请在本机 Friday 窗口操作。',ktv_unavailable:'KTV 暂时无法完成操作，请稍后重试。',unavailable:'连接未完成，请检查服务后重试。'};
@@ -395,11 +398,32 @@ function renderBackgroundSettings(signal){
  const section=el('details',null,'section background-settings');
  const summary=el('summary');summary.append(el('h2','歌曲背景'));
  const status=el('p',null,'muted');status.setAttribute('role','status');
+ const policy=el('form',null,'background-limit');policy.hidden=true;
+ const limit=el('input');limit.type='number';limit.min='0';limit.step='1';limit.required=true;limit.disabled=readOnly;
+ const save=el('button','保存上限');save.type='submit';save.disabled=readOnly;
+ const result=el('p',null,'muted background-policy-result');result.setAttribute('role','status');
+ policy.append(field('每日生成上限（张）',limit),save);
  const list=el('div',null,'background-items');
  const retry=button('重试读取歌曲背景',()=>readBackgrounds(state));retry.hidden=true;
- const state={signal,section,status,list,retry,items:new Map(),loading:false,remaining:null,revision:0,reload:false};
+ const state={signal,section,status,policy,limit,list,retry,items:new Map(),loading:false,remaining:null,revision:0,reload:false};
  backgroundView=state;
- section.append(summary,status,retry,list);
+ section.append(summary,policy,result,status,retry,list);
+ policy.onsubmit=async event=>{
+  event.preventDefault();
+  if(save.disabled||signal.aborted)return;
+  save.disabled=true;result.textContent='';
+  try{
+   const data=await api('manage/backgrounds/policy',{daily_images:limit.valueAsNumber},signal);
+   if(signal.aborted)return;
+   limit.value=String(data.daily_limit);
+   limit.defaultValue=limit.value;
+   result.textContent='已保存。';
+   state.revision++;
+   if(state.loading)state.reload=true;
+   else void readBackgrounds(state);
+  }catch(error){if(!signal.aborted)result.textContent=explain(error);}
+  finally{save.disabled=readOnly;}
+ };
  section.ontoggle=()=>{if(section.open)void readBackgrounds(state);};
  $('content').append(section);
 }
@@ -412,9 +436,15 @@ async function readBackgrounds(state){
  try{
   const data=await api('manage/backgrounds',undefined,state.signal);
   if(state.signal.aborted||revision!==state.revision)return;
+  if(Number.isInteger(data.daily_limit)){
+   if(state.policy.hidden||state.limit.value===state.limit.defaultValue)state.limit.value=String(data.daily_limit);
+   state.limit.defaultValue=String(data.daily_limit);
+   state.policy.hidden=false;
+  }
   state.remaining=Number.isInteger(data.daily_remaining)?data.daily_remaining:null;
-  const quota=state.remaining===0?'今日生成次数已用完':state.remaining===null?'':`今日还可生成 ${state.remaining} 张`;
-  state.status.textContent=data.items.length?quota:'准备完成的歌曲会显示在这里。';
+  const quota=state.remaining===0?'已达每日生成上限。':state.remaining===null
+   ?(state.policy.hidden?'':'调试模式不限每日张数。'):`今日还可生成 ${state.remaining} 张。`;
+  state.status.textContent=data.items.length?quota:['准备完成的歌曲会显示在这里。',quota].filter(Boolean).join(' ');
   const ids=new Set(data.items.map(item=>item.id));
   for(const [id,row] of state.items){
    if(!ids.has(id)&&!row.writing){row.element.remove();state.items.delete(id);}
@@ -455,6 +485,7 @@ function updateBackgroundRow(state,row){
  const preparing=row.writing||item.status==='preparing';
  const label=preparing?(item.ready?'正在更新背景':'正在生成背景'):({ready:'已生成',failed:item.ready?'更新失败，当前背景可用':'生成失败'})[item.status]||'尚未生成';
  row.status.textContent=[preparationSources[item.source],label].filter(Boolean).join(' · ');
+ row.notice.textContent=row.error||(!preparing&&item.status==='failed'?(errors[item.reason]||''):'');
  row.generate.textContent=item.ready?'重新生成':'生成';
  row.generate.setAttribute('aria-label',`${row.generate.textContent}《${item.title}》的背景`);
  row.generate.disabled=readOnly||preparing||state.remaining===0;
@@ -497,7 +528,7 @@ async function loadBackgroundPreview(state,row){
 async function generateBackground(state,row){
  if(state.signal.aborted||row.generate.disabled)return;
  row.writing=true;
- row.notice.textContent='';
+ row.error='';
  updateBackgroundRow(state,row);
  try{
   const data=await api(`manage/backgrounds/${encodeURIComponent(row.item.id)}/regenerate`,{},state.signal);
@@ -509,7 +540,7 @@ async function generateBackground(state,row){
    else if(state.section.open)void readBackgrounds(state);
   }
  }catch(error){
-  if(!state.signal.aborted)row.notice.textContent=explain(error);
+  if(!state.signal.aborted)row.error=explain(error);
  }finally{
   row.writing=false;
   if(!state.signal.aborted)updateBackgroundRow(state,row);

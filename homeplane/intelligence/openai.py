@@ -56,14 +56,16 @@ class OpenAIClient:
     def configuration_current(self, config, key):
         return self.settings.read() == config and self.settings.key() == key
 
-    async def post(self, capability, path, body, *, request_id, deadline, text_tokens=0, images=0):
+    async def post(self, capability, path, body, *, request_id, deadline, text_tokens=0, images=0,
+                   enforce_daily_limits=True):
         config, key = self.authorize(capability)
         encoded = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
         if len(encoded) > 65536 or time.monotonic() >= deadline:
             raise EnhancementUnavailable("request_budget_exceeded")
         identifier = hashlib.sha256(capability.encode() + request_id.encode() + encoded).hexdigest()
         await asyncio.to_thread(
-            self.ledger.reserve, identifier, capability, config, text_tokens=text_tokens, images=images
+            self.ledger.reserve, identifier, capability, config, text_tokens=text_tokens, images=images,
+            enforce_daily_limits=enforce_daily_limits,
         )
         try:
             if not self.configuration_current(config, key):
@@ -98,7 +100,7 @@ class OpenAIClient:
                         if response.status_code != 200:
                             if (capability == "images" and path == "images/generations" and images
                                     and image_size_rejected(response.status_code, payload)):
-                                # 这次已验证的参数拒绝没有生成图片，已发送的 HTTP 请求仍计数。
+                                # 已确认参数拒绝没有生成图片，退回张数并保留请求记录。
                                 await asyncio.to_thread(self.ledger.settle, identifier, text_tokens=0, images=0)
                                 raise EnhancementUnavailable("api_image_size_rejected")
                             if 400 <= response.status_code < 500:

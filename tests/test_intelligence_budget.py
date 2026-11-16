@@ -47,18 +47,18 @@ def test_day_rollover_and_timezone_change_do_not_free_existing_usage(tmp_path):
     now = [datetime(2026, 11, 10, 15, 55, tzinfo=UTC)]
     config = IntelligenceConfig(daily_requests=1)
     ledger = UsageLedger(tmp_path / "usage.sqlite", now=lambda: now[0])
-    ledger.reserve("a", "images", config, images=1)
+    ledger.reserve("a", "responses", config)
     reset = ledger.status(config)["resets_at"]
     changed = config.model_copy(update={"timezone": "America/Los_Angeles"})
     assert ledger.status(changed)["resets_at"] == reset
     with pytest.raises(EnhancementUnavailable, match="daily_requests_reached"):
-        ledger.reserve("b", "images", changed)
+        ledger.reserve("b", "responses", changed)
     now[0] += timedelta(minutes=10)
     assert ledger.status(config)["used"]["requests"] == 0
-    ledger.reserve("b", "images", config)
+    ledger.reserve("b", "responses", config)
     now[0] -= timedelta(days=1)
     with pytest.raises(EnhancementUnavailable, match="usage_clock_regressed"):
-        ledger.reserve("c", "images", config)
+        ledger.reserve("c", "responses", config)
 
 
 def test_zero_limit_and_lowered_limit_block_without_reset(tmp_path):
@@ -75,14 +75,14 @@ def test_zero_limit_and_lowered_limit_block_without_reset(tmp_path):
 
 def test_lowering_image_limit_preserves_independent_text_and_voice_budget(tmp_path):
     ledger = UsageLedger(tmp_path / "usage.sqlite")
-    config = IntelligenceConfig(daily_images=1)
+    config = IntelligenceConfig(daily_images=1, daily_requests=2)
     ledger.reserve("picture", "images", config, images=1)
     config.daily_images = 0
     ledger.reserve("text", "responses", config, text_tokens=100)
     ledger.reserve("voice", "realtime", config, voice_seconds=25)
     with pytest.raises(EnhancementUnavailable, match="daily_images_reached"):
         ledger.reserve("picture-two", "images", config, images=1)
-    assert ledger.status(config)["used"] == dict(requests=3, text_tokens=100, images=1, voice_seconds=25)
+    assert ledger.status(config)["used"] == dict(requests=2, text_tokens=100, images=1, voice_seconds=25)
 
 
 def test_private_settings_do_not_echo_credentials_or_accept_symlink(tmp_path):

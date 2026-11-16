@@ -209,7 +209,7 @@ async def test_background_quota_and_bad_image_never_replace_local_fallback(tmp_p
         images.request(song)
         await asyncio.gather(*list(images.tasks.values()))
         assert images.request(song)["kind"] == "local" and len(calls) == 1
-        assert not list(images.directory.glob("*.png"))
+        assert images.cached_for(song) is None
     finally:
         await images.close()
 

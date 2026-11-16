@@ -25,6 +25,9 @@
 .ktv-console .source-notice:empty,.ktv-console .source-dialog button[hidden]{display:none}
 .ktv-console .background-settings>summary{padding:0}
 .ktv-console .background-settings>summary h2{display:inline;margin:0 0 0 6px}
+.ktv-console .background-limit{display:flex;align-items:end;flex-wrap:wrap;gap:12px;margin:16px 0 0}
+.ktv-console .background-limit input{width:12ch}
+.ktv-console .background-limit[hidden],.ktv-console .background-policy-result:empty{display:none}
 .ktv-console .background-settings button[hidden],.ktv-console .background-items .entry p:empty{display:none}
 .ktv-console .background-preview{display:block;max-width:100%;height:auto;margin-top:12px;border-radius:8px}
 .ktv-console .background-preview[hidden]{display:none}

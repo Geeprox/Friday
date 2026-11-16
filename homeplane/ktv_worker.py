@@ -556,8 +556,8 @@ class PreparationWorker(NasBridge):
                         else:
                             candidate = self.backgrounds.cached_for(job)
                         if candidate and candidate.get('status') == 'ready':
-                            background = {k:candidate[k] for k in ('status','sha256','bytes')}
-                            background.update(encoding='png',url=f'/v1/jobs/{local}/media/background')
+                            background = {k:candidate[k] for k in ('status','sha256','bytes','encoding')}
+                            background['url'] = f'/v1/jobs/{local}/media/background'
                     except (ValueError,OSError,RuntimeError,TypeError,KeyError):
                         pass
                 previous_metadata = self._metadata(audio_version)

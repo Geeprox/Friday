@@ -40,7 +40,7 @@ class IntelligenceConfig(BaseModel):
     realtime_model: str = Field(default="gpt-realtime-2.1", pattern=r"^[A-Za-z0-9._:-]{1,128}$")
     daily_requests: int = Field(default=100, ge=0, le=100000)
     daily_text_tokens: int = Field(default=100000, ge=0, le=100000000)
-    daily_images: int = Field(default=5, ge=0, le=1000)
+    daily_images: int = Field(default=100, ge=0)
     daily_voice_seconds: int = Field(default=300, ge=0, le=86400)
     max_output_tokens: int = Field(default=2048, ge=128, le=8192)
     timezone: str = Field(default="Asia/Shanghai", max_length=64)

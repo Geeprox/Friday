@@ -76,7 +76,16 @@ class UsageLedger:
             raise EnhancementUnavailable("usage_clock_regressed")
         return row
 
-    def reserve(self, identifier, capability, config, *, text_tokens=0, images=0, voice_seconds=0):
+    @staticmethod
+    def _request_usage(db, window):
+        # 旧账本把生图也记进总请求数。从同一周期的预留记录分出图片请求。
+        image_requests = db.execute(
+            "SELECT count(*) FROM attempts WHERE window=? AND images>0", (window["start"],)
+        ).fetchone()[0]
+        return window["requests"] - image_requests
+
+    def reserve(self, identifier, capability, config, *, text_tokens=0, images=0, voice_seconds=0,
+                enforce_daily_limits=True):
         amounts = dict(requests=1, text_tokens=text_tokens, images=images, voice_seconds=voice_seconds)
         if any(type(v) is not int or v < 0 for v in amounts.values()):
             raise ValueError("invalid_usage_reservation")
@@ -90,9 +99,12 @@ class UsageLedger:
                 raise EnhancementUnavailable(block["code"])
             if db.execute("SELECT 1 FROM attempts WHERE id=?", (identifier,)).fetchone():
                 raise EnhancementUnavailable("request_already_attempted")
-            for name in COUNTERS:
-                if amounts[name] and window[name] + amounts[name] > getattr(config, "daily_" + name):
-                    raise EnhancementUnavailable("daily_" + name + "_reached")
+            if enforce_daily_limits:
+                if not images and self._request_usage(db, window) >= config.daily_requests:
+                    raise EnhancementUnavailable("daily_requests_reached")
+                for name in COUNTERS[1:]:
+                    if amounts[name] and window[name] + amounts[name] > getattr(config, "daily_" + name):
+                        raise EnhancementUnavailable("daily_" + name + "_reached")
             db.execute(
                 "UPDATE usage_window SET requests=requests+1,text_tokens=text_tokens+?,"
                 "images=images+?,voice_seconds=voice_seconds+? WHERE id=1",
@@ -146,7 +158,7 @@ class UsageLedger:
         with self.transaction() as db:
             row = self._window(db, config)
             return {
-                "used": {name: row[name] for name in COUNTERS},
+                "used": {**{name: row[name] for name in COUNTERS}, "requests": self._request_usage(db, row)},
                 "limits": {name: getattr(config, "daily_" + name) for name in COUNTERS},
                 "resets_at": datetime.fromtimestamp(row["end"], UTC).isoformat(),
                 "uncertain_requests": db.execute(
