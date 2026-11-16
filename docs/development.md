@@ -1,7 +1,7 @@
 # 开发与验证
 
 可选 ARL/API 通道的数据流和用量语义见[智能通道](intelligence.md)。新增回归使用合成
-HTTP/WebSocket 与 PNG，正常测试不需要真实 API Key。`tests/test_intelligence_*` 覆盖
+HTTP/WebSocket 与 JPEG、PNG，正常测试不需要真实 API Key。`tests/test_intelligence_*` 覆盖
 并发预留、跨日、降级、设置和主动语音生命周期；`tests/test_ktv_background.py` 覆盖歌曲
 媒体票据与可选图片故障。纯 Java 状态测试需显式 `FRIDAY_TEST_JAVA_HOME`，缺少时跳过，
 不会触发系统 Java 安装器。浏览器检查使用独立示例服务，不能据此宣称真实付费调用或电视验收。

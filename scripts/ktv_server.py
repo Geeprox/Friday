@@ -64,6 +64,7 @@ def main(argv=None):
     parser.add_argument("--download-dir", type=Path)
     parser.add_argument("--launchd-sockets", action="store_true", help="Use system-owned LAN and loopback listeners")
     parser.add_argument("--public-config", type=Path, help="Private NAS endpoint and agent configuration")
+    parser.add_argument("--debug-backgrounds", action="store_true", help="调试生图时跳过 Friday 的每日上限")
     parser.add_argument("--reset-startup-budget", action="store_true", help="Explicit local budget reset; does not start the service")
     parser.add_argument(
         "--allow-download", action="store_true", help="Allow authenticated local API downloads; never opens client windows"
@@ -170,8 +171,11 @@ def main(argv=None):
 
     intelligence = IntelligenceRuntime(None, default_directory())
     from homeplane.intelligence.ktv_background_context import SongBackgroundContext
-    song_backgrounds = SongBackgrounds(intelligence, recording=source_api.public_lyric_recording, max_parallel=BACKGROUND_PREFETCH_COUNT,
-                                       context_resolver=SongBackgroundContext(intelligence), context_timeout=22)
+    song_backgrounds = SongBackgrounds(
+        intelligence, recording=source_api.public_lyric_recording, max_parallel=BACKGROUND_PREFETCH_COUNT,
+        context_resolver=SongBackgroundContext(intelligence, debug=args.debug_backgrounds),
+        context_timeout=22, debug=args.debug_backgrounds,
+    )
     lyric_recovery = KtvLyricsRecovery(
         intelligence, source_api, queue, lambda job_id: prepared_lyrics(queue, job_id, song_lyrics, source_api),
     )

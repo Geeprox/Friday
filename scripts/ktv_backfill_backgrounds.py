@@ -1,4 +1,4 @@
-"""按 Friday 现有额度，为本机已制备并可核实的曲目补齐背景。"""
+"""为本机已制备并可核实的曲目补齐背景。"""
 
 from __future__ import annotations
 
@@ -47,10 +47,10 @@ async def run(args):
     root, jobs = prepared_rows(args.config.absolute())
     runtime = IntelligenceRuntime(None, default_directory())
     config = runtime.settings.read()
-    resolver = SongBackgroundContext(runtime)
+    resolver = SongBackgroundContext(runtime, debug=args.debug_backgrounds)
     source = LocalSourceAPI(root / "source-account", args.catalog_package.resolve(strict=True))
     backgrounds = SongBackgrounds(runtime, recording=source.public_lyric_recording, max_parallel=args.parallel,
-                                  context_resolver=resolver, context_timeout=22)
+                                  context_resolver=resolver, context_timeout=22, debug=args.debug_backgrounds)
     items, cloud = {}, []
     counts = Counter()
     for row in jobs:
@@ -87,7 +87,7 @@ async def run(args):
         counts["unverified_private"] += len(cloud)
     pending = [(key, *row) for key, row in items.items() if row is not None]
     usage = runtime.ledger.status(config)
-    budget = max(0, min(usage["limits"][key] - usage["used"][key] for key in ("images", "requests")))
+    budget = None if args.debug_backgrounds else max(0, config.daily_images - usage["used"]["images"])
     if not args.apply:
         return {"eligible": len(pending), "daily_remaining": budget, "parallel": args.parallel, **counts}
     selected = pending[:budget]
@@ -118,6 +118,7 @@ def main():
     parser.add_argument("--catalog-package", required=True, type=Path)
     parser.add_argument("--parallel", type=int, default=BACKGROUND_PREFETCH_COUNT, choices=range(1, 25))
     parser.add_argument("--verify-cloud", action="store_true", help="预检时也用公开曲库核对云盘录音")
+    parser.add_argument("--debug-backgrounds", action="store_true", help="调试生图时跳过 Friday 的每日上限")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     print(json.dumps(asyncio.run(run(args)), ensure_ascii=False, sort_keys=True))

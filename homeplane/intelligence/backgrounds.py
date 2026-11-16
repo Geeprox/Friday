@@ -69,7 +69,7 @@ def png_dimensions(data, *, decode=False):
 
 
 def prepare_backdrop(data, *, requested_size=LEGACY_REQUEST_SIZE, encoding="png"):
-    """生成服务必须返回请求的原始像素；旧版比例只裁切，不放大。"""
+    """宽屏 JPEG 原样入库；旧比例的图片裁切成 16:9 后编码为 JPEG。"""
     from PIL import Image
 
     if not 33 <= len(data) <= MAX_IMAGE_BYTES:
@@ -81,26 +81,26 @@ def prepare_backdrop(data, *, requested_size=LEGACY_REQUEST_SIZE, encoding="png"
     with Image.open(io.BytesIO(data), formats=[encoding.upper()]) as source:
         if source.size != requested_size or getattr(source, "n_frames", 1) != 1:
             raise ValueError("invalid_generated_background")
-        frame = source.convert("RGB")
-    if requested_size == LEGACY_REQUEST_SIZE:
+        source.load()
+        if encoding == "jpeg":
+            return data
         width, height = LEGACY_CANVAS
-        top = (frame.height - height) // 2
-        frame = frame.crop((0, top, width, top + height))
-
-    def encoded_png(image, *, optimize=False):
+        top = (source.height - height) // 2
+        frame = source.convert("RGB").crop((0, top, width, top + height))
         output = io.BytesIO()
-        image.save(output, format="PNG", optimize=optimize)
+        frame.save(output, format="JPEG", quality=95, subsampling=0)
         return output.getvalue()
 
-    result = encoded_png(frame)
-    if len(result) > MAX_IMAGE_BYTES:
-        result = encoded_png(frame, optimize=True)
-    if len(result) > MAX_IMAGE_BYTES:
-        # 极复杂的画面才减少颜色数，保留所有空间像素和既有电视传输上限。
-        palette = frame.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
-        result = encoded_png(frame.quantize(palette=palette, dither=Image.Dither.FLOYDSTEINBERG))
-    png_dimensions(result)
-    return result
+
+def backdrop_dimensions(data, encoding):
+    if encoding == "png":
+        return png_dimensions(data)
+    from PIL import Image
+
+    if encoding != "jpeg" or not 33 <= len(data) <= MAX_IMAGE_BYTES:
+        raise ValueError("invalid_generated_background")
+    with Image.open(io.BytesIO(data), formats=["JPEG"]) as picture:
+        return picture.size
 
 
 def decode_backdrop(payload, requested_size, encoding):
@@ -124,11 +124,12 @@ def checked_public_metadata(value):
 
 class SongBackgrounds:
     def __init__(self, runtime, directory=None, *, recording=None, max_parallel=1, context_resolver=None,
-                 context_timeout=4):
+                 context_timeout=4, debug=False):
         self.runtime = runtime
         self.directory = Path(directory or runtime.settings.directory / "song-backgrounds")
         self.recording = recording
         self.context_resolver = context_resolver
+        self.debug = debug
         private_path(self.directory)
         self.tasks = {}
         self.closed = False
@@ -215,9 +216,10 @@ class SongBackgrounds:
         if not isinstance(reference, dict):
             raise ValueError("invalid_generated_background")
         digest, format_version = reference.get("sha256"), reference.get("image_version", 0)
-        if not isinstance(digest, str) or not SHA256.fullmatch(digest) or type(format_version) is not int or format_version not in {0, 1}:
+        if not isinstance(digest, str) or not SHA256.fullmatch(digest) or type(format_version) is not int or format_version not in {0, 1, 2}:
             raise ValueError("invalid_generated_background")
-        image = self.versions / (identifier + "." + digest + ".png") if format_version else self.directory / (identifier + ".png")
+        suffix = ".jpg" if format_version == 2 else ".png"
+        image = self.versions / (identifier + "." + digest + suffix) if format_version else self.directory / (identifier + suffix)
         private_path(image)
         return image
 
@@ -232,12 +234,14 @@ class SongBackgrounds:
                 self.verified.move_to_end(key)
                 return dict(previous[1])
         data = image.read_bytes()
-        dimensions = png_dimensions(data)
+        encoding = "jpeg" if image.suffix == ".jpg" else "png"
+        dimensions = backdrop_dimensions(data, encoding)
         if (dimensions not in DELIVERY_SIZES or digest != hashlib.sha256(data).hexdigest()
                 or self._file_version(image, MAX_IMAGE_BYTES) != version):
             raise ValueError("invalid_generated_background")
         value = {"status": "ready", "kind": "generated", "id": identifier, "sha256": digest,
-                 "bytes": len(data), "mime": "image/png", "width": dimensions[0], "height": dimensions[1]}
+                 "bytes": len(data), "encoding": encoding, "mime": "image/" + encoding,
+                 "width": dimensions[0], "height": dimensions[1]}
         with self.cache_lock:
             self.verified[key] = (version, value)
             self.verified.move_to_end(key)
@@ -362,10 +366,11 @@ class SongBackgrounds:
             return
         files = [
             *self.versions.glob(identifier + ".*.png"),
+            *self.versions.glob(identifier + ".*.jpg"),
             *self.versions.glob("." + identifier + ".*.tmp"),
             *self.directory.glob("." + identifier + ".json.*"),
         ]
-        name = re.compile(rf"(?:{identifier}\.[a-f0-9]{{64}}\.png|\.{identifier}\.[a-f0-9]{{16}}\.tmp|\.{identifier}\.json\.[a-f0-9]{{16}})")
+        name = re.compile(rf"(?:{identifier}\.[a-f0-9]{{64}}\.(?:png|jpg)|\.{identifier}\.[a-f0-9]{{16}}\.tmp|\.{identifier}\.json\.[a-f0-9]{{16}})")
         for path in files:
             if path in retained or not name.fullmatch(path.name):
                 continue
@@ -438,14 +443,16 @@ class SongBackgrounds:
             os.close(fd)
 
     def _publish(self, identifier, song, config, data, public_metadata):
-        width, height = png_dimensions(data)
+        width, height = backdrop_dimensions(data, "jpeg")
+        if (width, height) not in DELIVERY_SIZES:
+            raise ValueError("invalid_generated_background")
         digest = hashlib.sha256(data).hexdigest()
         record = self.directory / (identifier + ".json")
         metadata = {
-            "sha256": digest, "width": width, "height": height, "image_version": 1,
+            "sha256": digest, "width": width, "height": height, "image_version": 2,
             "source": "openai_image_api", "model": config.image_model,
             "created_at": datetime.now(UTC).isoformat(), "prompt_version": PROMPT_VERSION,
-            "render_revision": 2,
+            "render_revision": 3,
             "song_ref": {field: str(song.get(field, "")) for field in SONG_FIELDS},
         }
         if public_metadata is not None:
@@ -507,7 +514,8 @@ class SongBackgrounds:
                 body.update(background="opaque", output_compression=96)
             try:
                 payload = await self.runtime.client.post("images", "images/generations", body,
-                                                         request_id=request_id, deadline=deadline, images=1)
+                                                         request_id=request_id, deadline=deadline, images=1,
+                                                         enforce_daily_limits=not self.debug)
             except EnhancementUnavailable as exc:
                 if (exc.code != "api_image_size_rejected" or size == sizes[-1] or self.closed
                         or self.runtime.settings.read() != config):

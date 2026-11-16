@@ -152,10 +152,13 @@ public final class KtvClient {
         synchronized(backgroundTransfers){return downloadBackgroundMedia(media,cancel);}
     }
     private File downloadBackgroundMedia(JSONObject media,AtomicBoolean cancel)throws Exception{
-        String hash=media.getString("sha256"),path=media.getString("url");long size=media.getLong("bytes");
-        if(!hash.matches("[a-f0-9]{64}")||size<33||size>12L*1024*1024||!"png".equals(media.getString("encoding"))||!MediaRoute.kind(path).equals("background"))throw new IOException("invalid_background");
-        File target=new File(cache,hash+".png");
-        MediaTransfer.Verifier verify=file->{try(DataInputStream in=new DataInputStream(new FileInputStream(file))){if(in.readLong()!=0x89504e470d0a1a0aL||in.readInt()!=13||in.readInt()!=0x49484452)throw new IOException("invalid_background");if(!BackdropImagePolicy.validSource(in.readInt(),in.readInt()))throw new IOException("invalid_background");}};
+        String hash=media.getString("sha256"),path=media.getString("url"),encoding=media.getString("encoding");
+        long size=media.getLong("bytes");
+        if(!hash.matches("[a-f0-9]{64}")||size<33||size>12L*1024*1024
+                ||!("jpeg".equals(encoding)||"png".equals(encoding))||!MediaRoute.kind(path).equals("background"))
+            throw new IOException("invalid_background");
+        File target=new File(cache,hash+("jpeg".equals(encoding)?".jpg":".png"));
+        MediaTransfer.Verifier verify=file->BackdropImage.verify(file,encoding);
         File found=MediaTransfer.existing(target,size,hash,verify,cancel,mediaCache);if(found!=null)return found;
         return MediaTransfer.download(target,size,hash,routes(media,path,"background"),route->openMedia(route,size),verify,cancel,mediaCache);
     }

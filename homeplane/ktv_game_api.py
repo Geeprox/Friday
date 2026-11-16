@@ -22,13 +22,14 @@ OWNER_ORIGIN = "http://127.0.0.1:8769"
 OWNER_PREFIX = "/api/games/ktv"
 READS = {"manage/room", "manage/library", "manage/search", "manage/backgrounds", "jobs", "scheduler", "source/status"}
 WRITES = {
-    "manage/preview", "manage/delete", "manage/policy", "scheduler", "source/login", "source/poll",
+    "manage/preview", "manage/delete", "manage/policy", "manage/backgrounds/policy", "scheduler", "source/login", "source/poll",
     "source/settings", *{"manage/room/" + op for op in
                         ("theme", "controls", "command", "order", "queue-remove", "songs", "retry", "preferences")},
 }
 ERRORS = {
     "cache_changed", "archive_changed", "cache_in_use", "plan_expired", "nas_management_unavailable",
     "background_unavailable", "daily_images_reached", "cloud_images_disabled", "background_queue_full",
+    "invalid_background_limit",
     "tv_offline", "room_changed", "queue_changed", "song_playing", "vocal_preset_unavailable",
     "microphone_update_required", "sfx_unavailable", "source_login_required", "source_rights_denied",
     "source_api_unavailable", "source_file_invalid", "download_timeout", "separation_failed",

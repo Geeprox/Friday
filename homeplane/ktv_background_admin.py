@@ -68,10 +68,14 @@ class BackgroundManagement:
     def status(self, identifier, song):
         backgrounds = self.backgrounds
         ready = bool(backgrounds.cached(identifier))
-        status = ("preparing" if identifier in backgrounds.tasks else "failed" if identifier in backgrounds.failures
+        failure = backgrounds.failures.get(identifier)
+        status = ("preparing" if identifier in backgrounds.tasks else "failed" if failure
                   else "ready" if ready else "missing")
-        return {"id": identifier, "title": song["title"], "source": song.get("audio_origin") or "song",
+        item = {"id": identifier, "title": song["title"], "source": song.get("audio_origin") or "song",
                 "status": status, "ready": ready}
+        if status == "failed":
+            item["reason"] = failure[0]
+        return item
 
     def preview(self, identifier):
         data = self.backgrounds.read_image(identifier)
@@ -85,7 +89,9 @@ class BackgroundManagement:
             return None
         return "data:image/jpeg;base64," + base64.b64encode(output.getvalue()).decode("ascii")
 
-    def daily_remaining(self):
+    def policy(self):
         runtime = self.backgrounds.runtime
-        usage = runtime.ledger.status(runtime.settings.read())
-        return max(0, usage["limits"]["images"] - usage["used"]["images"])
+        config = runtime.settings.read()
+        used = runtime.ledger.status(config)["used"]["images"]
+        return {"daily_limit": config.daily_images,
+                "daily_remaining": None if self.backgrounds.debug else max(0, config.daily_images - used)}

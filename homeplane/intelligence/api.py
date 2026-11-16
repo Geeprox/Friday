@@ -11,7 +11,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from starlette.websockets import WebSocketState
 
@@ -82,9 +82,11 @@ def create_router(runtime, *, origin="http://127.0.0.1:8740", backgrounds=None, 
 
     @router.get("/backgrounds/{identifier}")
     async def background_image(identifier: str):
-        if not router.backgrounds.cached(identifier):
+        item = await asyncio.to_thread(router.backgrounds.cached, identifier)
+        data = await asyncio.to_thread(router.backgrounds.read_image, identifier, item["sha256"]) if item else None
+        if not data:
             raise HTTPException(404, detail="background_unavailable")
-        return FileResponse(router.backgrounds.directory / (identifier + ".png"), media_type="image/png")
+        return Response(data, media_type=item["mime"])
 
     @router.websocket("/voice")
     async def voice_input(socket: WebSocket):

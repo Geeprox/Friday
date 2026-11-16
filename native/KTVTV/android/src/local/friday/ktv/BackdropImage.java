@@ -10,6 +10,16 @@ import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class BackdropImage {
+    static void verify(File file, String encoding) throws IOException {
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+        if (!("image/" + encoding).equals(options.outMimeType)
+                || !BackdropImagePolicy.validSource(options.outWidth, options.outHeight)) {
+            throw new IOException("invalid_background");
+        }
+    }
+
     static Bitmap decode(File file, boolean wantsUhd, ActivityManager memory, AtomicBoolean cancelled) throws IOException {
         if (cancelled.get()) return null;
         String path = file.getAbsolutePath();

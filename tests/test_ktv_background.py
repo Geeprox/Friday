@@ -11,6 +11,8 @@ import random
 import select
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,9 +25,10 @@ from PIL import Image
 from homeplane.intelligence import backgrounds as module
 from homeplane.intelligence.backgrounds import (
     LEGACY_CANVAS, LEGACY_REQUEST_SIZE, MAX_IMAGE_BYTES, PROMPT_VERSION, QHD_CANVAS, UHD_CANVAS,
-    SongBackgrounds, png_dimensions, prepare_backdrop, song_identity,
+    SongBackgrounds, prepare_backdrop, song_identity,
 )
 from homeplane.intelligence.budget import EnhancementUnavailable
+from homeplane.intelligence.settings import IntelligenceConfig
 from homeplane.intelligence.settings import atomic_json
 from homeplane.ktv_service import create_app
 from homeplane.ktv_worker import BACKGROUND_PREFETCH_COUNT, MediaTickets, manifest_version
@@ -37,12 +40,13 @@ from tests.test_ktv_coordinator import store as store
 from tests.test_ktv_worker import KEY, PreparedQueue, make_worker
 
 
-async def test_checked_png_is_available_only_with_original_job_ticket_and_does_not_change_audio(tmp_path):
+async def test_4k_jpeg_reaches_tv_route_unchanged_with_original_job_ticket(tmp_path):
     requests = []
+    source = solid_jpeg(UHD_CANVAS, "#23384c")
 
     def handler(request):
         requests.append(json.loads(request.content))
-        return image_response(solid_jpeg(UHD_CANVAS, "#23384c"))
+        return image_response(source)
 
     owner = runtime(tmp_path / "ai", handler)
     owner.settings.update({"cloud_images": True})
@@ -57,15 +61,57 @@ async def test_checked_png_is_available_only_with_original_job_ticket_and_does_n
         url = f"/v1/jobs/{queue.job_id}/media/background"
         assert client.get(url).status_code == 401
         response = client.get(url, headers={"X-KTV-Media": token})
-        assert response.status_code == 200 and png_dimensions(response.content, decode=True) == UHD_CANVAS
-        assert response.headers["content-type"] == "image/png"
+        assert response.status_code == 200 and response.content == source
+        assert response.headers["content-type"] == "image/jpeg"
         with Image.open(io.BytesIO(response.content)) as delivered:
-            assert delivered.mode == "RGB"
+            assert delivered.format == "JPEG" and delivered.size == UHD_CANVAS
         assert client.get(url, headers={"X-KTV-Media": token + "bad"}).status_code == 401
     assert manifest_version(queue.job) == before
     assert len(requests) == 1 and requests[0]["size"] == "3840x2160" and requests[0]["output_format"] == "jpeg"
     cached = images.cached_for(queue.job)
     assert (cached["width"], cached["height"]) == UHD_CANVAS
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_owner_can_change_daily_image_limit_in_place_and_debug_never_waits(tmp_path, debug):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return image_response(solid_jpeg(UHD_CANVAS, "#23384c"))
+
+    owner = runtime(tmp_path / "ai", handler)
+    config = owner.settings.update({"cloud_images": True, "daily_images": 0, "daily_requests": 0})
+    assert IntelligenceConfig().daily_images == 100
+    images = SongBackgrounds(owner, debug=debug)
+    queue = PreparedQueue()
+    queue.job["simulated"] = False
+    queue.jobs = {queue.job_id: queue.job}
+    queue.lock = threading.Lock()
+    origin = "http://127.0.0.1:8769"
+    app = create_app(queue, KEY, console_origin=origin, song_backgrounds=images)
+    prefix = "/v1/manage/backgrounds"
+    with TestClient(app, base_url=origin, client=("127.0.0.1", 48123)) as client:
+        assert client.get("/console/").status_code == 200
+        value = client.get(prefix).json()
+        assert value["daily_limit"] == 0 and value["daily_remaining"] == (None if debug else 0)
+        endpoint = prefix + "/" + value["items"][0]["id"] + "/regenerate"
+        headers = {"Origin": origin}
+        if not debug:
+            assert client.post(endpoint, json={}, headers=headers).json()["detail"] == "daily_images_reached"
+            assert not calls
+            assert client.post(prefix + "/policy", json={"daily_images": 100}).status_code == 403
+            assert client.post(prefix + "/policy", json={"daily_images": True}, headers=headers).status_code == 400
+            report = client.post(prefix + "/policy", json={"daily_images": 100}, headers=headers)
+            assert report.json() == {"daily_limit": 100, "daily_remaining": 100}
+        assert client.post(endpoint, json={}, headers=headers).status_code == 202
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not (item := client.get(prefix).json()["items"][0])["ready"]:
+            time.sleep(.03)
+        assert item["ready"] and len(calls) == 1
+        assert owner.status()["usage"]["used"]["images"] == 1
+        assert owner.settings.read().daily_images == (0 if debug else 100)
+        assert owner.settings.read().daily_requests == config.daily_requests
 
 
 def test_generated_background_is_widescreen_and_preserves_theme_colors():
@@ -74,14 +120,14 @@ def test_generated_background_is_widescreen_and_preserves_theme_colors():
     frame.paste((180, 130, 30), (768, 0, 1536, 1024))
     frame.save(source, format="PNG")
     with Image.open(io.BytesIO(prepare_backdrop(source.getvalue()))) as delivered:
-        assert delivered.size == LEGACY_CANVAS
-        assert delivered.getpixel((600, 432)) == (32, 160, 80)
-        assert delivered.getpixel((1150, 432)) == (180, 130, 30)
+        assert delivered.format == "JPEG" and delivered.size == LEGACY_CANVAS
+        assert delivered.getpixel((600, 432)) == pytest.approx((32, 160, 80), abs=2)
+        assert delivered.getpixel((1150, 432)) == pytest.approx((180, 130, 30), abs=2)
 
 
-def solid_png(color):
+def solid_png(color, size=LEGACY_REQUEST_SIZE):
     content = io.BytesIO()
-    Image.new("RGB", LEGACY_REQUEST_SIZE, color).save(content, "PNG")
+    Image.new("RGB", size, color).save(content, "PNG")
     return content.getvalue()
 
 
@@ -119,12 +165,13 @@ async def test_only_verified_size_rejection_falls_back_and_uses_one_image_slot(t
     expected = LEGACY_CANVAS if reject_qhd else QHD_CANVAS
     ready = images.cached(first["id"])
     assert ready and (ready["width"], ready["height"]) == expected
-    assert png_dimensions(images.read_image(first["id"]), decode=True) == expected
+    with Image.open(io.BytesIO(images.read_image(first["id"]))) as delivered:
+        assert delivered.format == "JPEG" and delivered.size == expected
     assert requests == [("3840x2160", "jpeg", model), ("2560x1440", "jpeg", model)] + (
         [("1536x1024", "png", model)] if reject_qhd else []
     )
     used = owner.status()["usage"]["used"]
-    assert used["images"] == 1 and used["requests"] == len(requests)
+    assert used["images"] == 1 and used["requests"] == 0
     assert owner.status()["usage"]["blocks"] == []
 
 
@@ -147,7 +194,7 @@ async def test_unverified_failure_or_undersized_response_never_retries_as_smalle
     images = SongBackgrounds(owner)
     song = {"song_id": "617", "title": "已有老背景的合成曲目"}
     cached_id = song_identity(song, config.image_model)
-    content = prepare_backdrop(solid_png("#293e51"))
+    content = solid_png("#293e51", LEGACY_CANVAS)
     images.directory.mkdir(mode=0o700)
     path = images.directory / (cached_id + ".png")
     path.write_bytes(content)
@@ -161,19 +208,19 @@ async def test_unverified_failure_or_undersized_response_never_retries_as_smalle
     assert requests == ["3840x2160"] and images.read_image(cached_id) == content
     assert images.cached(cached_id)["height"] == LEGACY_CANVAS[1]
     used = owner.status()["usage"]["used"]
-    assert used["images"] == used["requests"] == 1
+    assert used["images"] == 1 and used["requests"] == 0
 
 
-def test_full_resolution_overflow_uses_bounded_palette_png_only_when_rgb_cannot_fit():
+def test_full_resolution_detailed_jpeg_is_never_remapped_or_recompressed():
     width, height = UHD_CANVAS
     pixels = random.Random(259).randbytes(width * height * 3)
     source = io.BytesIO()
     Image.frombytes("RGB", UHD_CANVAS, pixels).save(source, "JPEG", quality=88)
     assert len(source.getvalue()) < MAX_IMAGE_BYTES
     data = prepare_backdrop(source.getvalue(), requested_size=UHD_CANVAS, encoding="jpeg")
-    assert len(data) <= MAX_IMAGE_BYTES and png_dimensions(data, decode=True) == UHD_CANVAS
+    assert data == source.getvalue()
     with Image.open(io.BytesIO(data)) as result:
-        assert result.mode == "P"
+        assert result.format == "JPEG" and result.size == UHD_CANVAS
 
 
 async def test_cloud_regeneration_keeps_legacy_on_failure_and_uses_verified_public_metadata(tmp_path, monkeypatch):
@@ -190,7 +237,7 @@ async def test_cloud_regeneration_keeps_legacy_on_failure_and_uses_verified_publ
     song = {"song_id": "420", "title": "PRIVATE 云盘标记", "artist": "", "audio_origin": "cloud"}
     public = {"title": "公开曲名", "artist": "公开歌手"}
     identifier = song_identity(song, config.image_model)
-    old = prepare_backdrop(solid_png("#213745"))
+    old = solid_png("#213745", LEGACY_CANVAS)
     before = hashlib.sha256(old).hexdigest()
     images.directory.mkdir()
     old_path = images.directory / f"{identifier}.png"
@@ -212,7 +259,7 @@ async def test_cloud_regeneration_keeps_legacy_on_failure_and_uses_verified_publ
             assert images.request(song, force=True)["status"] == "preparing"
             await asyncio.gather(*list(images.tasks.values()))
         assert images.cached(identifier)["sha256"] == before and old_path.read_bytes() == old
-        assert not list(images.versions.glob("*.png"))
+        assert not list(images.versions.glob("*.jpg"))
         assert images.request(song, force=True)["status"] == "preparing"
         await asyncio.gather(*list(images.tasks.values()))
         after = images.cached(identifier)["sha256"]
@@ -226,7 +273,7 @@ async def test_cloud_regeneration_keeps_legacy_on_failure_and_uses_verified_publ
         await asyncio.gather(*list(images.tasks.values()))
         assert images.read_image(identifier, expected_sha=after) == prepare_backdrop(solid_png("#6d1322"))
         assert images.read_image(identifier, expected_sha=before) is None and not old_path.exists()
-        assert len(list(images.versions.glob("*.png"))) == 2
+        assert len(list(images.versions.glob("*.jpg"))) == 2
         assert len(prompts) == 3 and all("公开曲名" in text and "PRIVATE" not in text for text in prompts)
     finally:
         await images.close()
@@ -456,12 +503,14 @@ def test_late_background_changes_only_optional_metadata_and_keeps_audio_ticket(t
     try:
         worker.tick()
         previous = next(body for path, body in calls if path == "/agent/manifests")
-        value.update(status="ready", sha256=hashlib.sha256(picture()).hexdigest(), bytes=len(picture()))
+        data = solid_jpeg(UHD_CANVAS, "#23384c")
+        value.update(status="ready", sha256=hashlib.sha256(data).hexdigest(), bytes=len(data), encoding="jpeg")
         worker.tick()
         published = [body for path, body in calls if path == "/agent/manifests"]
         assert len(published) == 2 and published[-1]["version"] != previous["version"]
         assert published[-1]["job"]["media"] == previous["job"]["media"]
         assert worker.tickets.permits(previous["media_ticket"], queue.job)
+        assert published[-1]["job"]["background"]["encoding"] == "jpeg"
         assert published[-1]["job"]["background"]["url"] == f"/v1/jobs/{queue.job_id}/media/background"
     finally:
         worker.close()
@@ -503,19 +552,22 @@ def test_background_lookahead_counts_only_eligible_ready_songs(tmp_path, monkeyp
         worker.close()
 
 
-def test_nas_background_is_scoped_media_and_invalid_optional_image_keeps_audio(store):
+@pytest.mark.parametrize("encoding", ["png", "jpeg"])
+def test_nas_background_is_scoped_media_and_invalid_optional_image_keeps_audio(store, encoding):
     value, data, instance, party, room = manifest(store)
     original = value["job"]["media"]["original"]["url"]
+    picture_data = picture() if encoding == "png" else solid_jpeg(UHD_CANVAS, "#23384c")
     value["job"]["background"] = {
         "status": "ready",
-        "encoding": "png",
-        "sha256": hashlib.sha256(picture()).hexdigest(),
-        "bytes": len(picture()),
+        "encoding": encoding,
+        "sha256": hashlib.sha256(picture_data).hexdigest(),
+        "bytes": len(picture_data),
         "url": original.replace("/original", "/background"),
     }
     store.coordinator.manifest(value)
     published = store.coordinator.jobs()["jobs"][0]
     assert set(published["media"]) == {"original", "instrumental"} and published["state"] == "ready"
+    assert published["background"]["encoding"] == encoding
     assert published["background"]["sources"][0]["header"] == "X-KTV-Media"
     value["version"] = hashlib.sha256(b"background-invalid-test-version").hexdigest()
     value["job"]["background"]["url"] = "https://untrusted.invalid/private"

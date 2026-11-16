@@ -34,7 +34,7 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  let jobs=[unavailableTrack,oldStorageFailure,activeJob,laterPrepared];
  let sourceStatus={logged_in:true,state:'logged_in',settings:{level:'standard'}};
  const background={id:'a'.repeat(64),title:'合成背景歌曲',source:'song',status:'ready',ready:true};
- let backgroundAllowance=3;
+ let backgroundAllowance=3,backgroundLimit=100;
  const writes=[],reads=[];let deleteAttempts=0,cleared=false,timer,lateResolve=null;
  let holdLibrary=false,resolveLibrary,failLibrary=false;
  const scope=vm.createContext({document,console,Date,JSON,Set,Map,URL,AbortController,AbortSignal,performance,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout,setInterval:fn=>{timer=fn;return 17;},clearInterval:id=>{assert.equal(id,17);cleared=true;},fetch:async(path,options={})=>{
@@ -68,6 +68,11 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
     background.status='preparing';
     return reply({status:background.status,ready:background.ready});
    }
+   if(path.endsWith('manage/backgrounds/policy')){
+    backgroundAllowance+=data.daily_images-backgroundLimit;
+    backgroundLimit=data.daily_images;
+    return reply({daily_limit:backgroundLimit,daily_remaining:backgroundAllowance});
+   }
    throw Error('unexpected write '+path);
   }
   reads.push(path);
@@ -84,7 +89,7 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
    return reply({songs:[{song_id:'7',title:cloud?'合成云盘同名歌曲':'搜到的合成曲',artists:['歌手'],source:cloud?'cloud':'song'}]});
   }
   if(path.endsWith('source/status'))return reply(structuredClone(sourceStatus));
-  if(path.endsWith('manage/backgrounds'))return reply({items:[structuredClone(background)],daily_remaining:backgroundAllowance});
+  if(path.endsWith('manage/backgrounds'))return reply({items:[structuredClone(background)],daily_limit:backgroundLimit,daily_remaining:backgroundAllowance});
   if(path.endsWith('scheduler'))return reply({hardware:{cpu:'SYNTHETIC',memory_bytes:8*1024**3},settings:{mode:'auto',download:1,model:1,encode:1},limits:{download:3,model:2,encode:4}});
   if(path.endsWith('jobs'))return reply({jobs:structuredClone(jobs)});
   throw Error('unexpected read '+path);
@@ -177,6 +182,14 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  background.status='ready';timer();await settle();
  assert.equal(regenerate.disabled,false);
  assert.equal(buttons('重新生成')[0],regenerate,'Background activity updates the existing card');
+ const limitForm=walk(backgroundPanel).find(n=>n.className==='background-limit');
+ const limitInput=walk(limitForm).find(n=>n.tagName==='input');
+ assert.equal(limitInput.value,'100');
+ limitInput.value='120';limitInput.valueAsNumber=120;
+ await limitForm.onsubmit({preventDefault(){}});await settle();
+ assert.equal(limitInput.value,'120');
+ assert.match(backgroundPanel.textContent,/已保存。今日还可生成 22 张/);
+ assert.deepEqual(writes.find(w=>w.path.endsWith('/backgrounds/policy')).data,{daily_images:120});
  await click(buttons('查看制作进度')[0]);
  const jobRow=title=>nodes().find(n=>n.tagName==='article'&&n.textContent.includes(title));
  assert.match(jobRow(unavailableTrack.title).textContent,/曲库版本/);
