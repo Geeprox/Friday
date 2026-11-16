@@ -56,6 +56,12 @@ Joined guest credentials currently remain valid until the session is explicitly 
 
 手机通过一次访客加入请求返回身份和资料。浏览器在同一站点保存随机种子，按房间导出不同的访客凭据。首次进入可随加入请求提交已保存的昵称和头像。已有身份重入时保留 NAS 上的资料。站点存储不可用时，访客仍可在当前会话扫码加入。
 
+手机加入后即可使用「常唱歌手」。NAS 先返回已保存的推荐歌单，并在后台更新上游数据。首次加载时，手机会自动刷新歌单，搜索和播放控制可以照常使用。
+
+打开「已点」后，按住歌曲右侧的排序手柄可连续拖过多首歌曲。歌曲的「⋯」菜单提供「置顶」，将这首移到待唱歌单最前面，当前演唱继续。暂时没有同步歌词的版本可以通过「找其他版本」回到曲库搜索。[查看歌曲操作示例](../../docs/screenshots/ktv-mobile-queue.png)。
+
+「歌曲声音」会立即显示选择的原唱或伴奏。电视确认较慢时，会在音轨选择下方提示，仍可继续切换。[查看声音面板示例](../../docs/screenshots/ktv-mobile-sound.png)。
+
 Start request IDs are durable and idempotent throughout the retained session window. A delayed old request cannot reopen a retained closed session or reclaim a newer TV instance. Closing requires both the current TV instance and current `room_id`. New TV instances skip old command cursors and start with microphone mute requested. Legacy Mac bridge playback/control/close writes are refused for a directly owned room.
 
 An unmute gesture is accepted only with a fresh direct-TV lease. Its pending intent expires after five seconds unless the TV reports `mic_muted:false`, actual `voice_protection.mute_confirmed:true` and an applied revision at least as new as that gesture. Expiry raises a new mute revision; network recovery cannot revive the old enable request. Already confirmed live microphone state is not muted merely because the gesture is old. Older clients without the confirmation capability retain the legacy receipt interpretation; direct mode uses the new TV pair.

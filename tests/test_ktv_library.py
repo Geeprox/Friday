@@ -4,6 +4,7 @@ import json
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi import HTTPException
@@ -159,6 +160,32 @@ def test_mac_capacity_reports_current_policy_and_neutral_retained_cache(library,
     now = library.local_inventory()
     assert now["hot_cache"] == {"bytes": target - 1, "limit_bytes": target}
     assert now["last_cleanup"]["state"] == "within_limit"
+
+
+def test_capacity_routes_do_not_wait_for_full_inventory_lock(library, monkeypatch):
+    job(library.queue, "1")
+    target = 8 * 1024**3
+    mac = library.policy({"enabled": True, "limit_bytes": target})
+    nas = {"enabled": False, "limit_bytes": 100 * 1024**3}
+    library.direct = True
+
+    def remote(operation, value=None):
+        assert (operation, value) == ("policy", None)
+        return nas
+
+    monkeypatch.setattr(library, "remote", remote)
+    library.nas_usage = 42
+    origin = "http://127.0.0.1:8769"
+    app = create_app(library.queue, "k" * 43, lambda: [], library=library, console_origin=origin)
+    with TestClient(app, base_url=origin, client=("127.0.0.1", 49152)) as client, ThreadPoolExecutor() as calls:
+        assert client.get("/v1/manage/policy/mac").status_code == 401
+        assert client.get("/console").status_code == 200
+        with library.lock:
+            local = calls.submit(client.get, "/v1/manage/policy/mac").result(timeout=2).json()
+            remote_result = calls.submit(client.get, "/v1/manage/policy/nas").result(timeout=2).json()
+        assert local["policy"] == mac
+        assert local["hot_cache"]["bytes"] > 0
+        assert remote_result == {"available": True, "configured": True, "policy": nas, "bytes": 42}
 
 
 def test_owner_routes_require_loopback_exact_host_session_and_same_origin(library):

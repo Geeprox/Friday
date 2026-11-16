@@ -203,8 +203,12 @@ class Store:
         self.artwork_slots = threading.BoundedSemaphore(2)
         self.next_poll_maintenance = 0
         self.recommendations = None
+        self.discovery_lock = threading.Lock()
+        self.recommendations_refreshing = False
+        self.next_recommendations_refresh = 0
         self.playlist_cache = {}
         self.artist_refreshing = False
+        self.next_artist_refresh = 0
         self.coordinator = None
         with self.connection() as db:
             db.executescript("""
@@ -1287,7 +1291,7 @@ class Store:
             archives = self.coordinator.archives(direct["room"], db) if direct else []
             lyrics = self.coordinator.lyric_tasks(direct["room"], db) if direct else []
             return {"tasks": tasks, "cancelled": [r[0] for r in cancelled], "rooms": rooms, "archives": archives,
-                    "lyric_tasks": lyrics}
+                    "lyric_tasks": lyrics, "backgrounds_enabled": self.coordinator.backgrounds_enabled}
 
     def retry(self, room, payload):
         if set(payload) != {"id", "request_id"} or any(
@@ -1594,44 +1598,62 @@ class Store:
             pass
         return ""
 
-    def discover(self):
-        cached = self.recommendations
-        if cached is None:
-            try:
-                path = self.root / "recommendations.json"
-                if path.is_file() and not path.is_symlink() and path.stat().st_size < 32768:
-                    cached = json.loads(path.read_text())
-            except (OSError, ValueError):
-                pass
-        if not cached or time.time() - cached.get("updated", 0) > 21600:
-            try:
-                response = self.public_metadata("/api/search/get/web", {"s": "KTV必点", "type": 1000, "limit": 8, "offset": 0})
-                rows = []
-                for r in response.get("result", {}).get("playlists", [])[:8]:
-                    if ID.fullmatch(str(r.get("id", ""))) and isinstance(r.get("name"), str):
-                        rows.append({"id": str(r["id"]), "title": r["name"][:120], "artwork": self.artwork(r.get("coverImgUrl")), "tracks": r.get("trackCount", 0)})
-                if not rows:
-                    raise Refusal(503, "search_unavailable")
-                cached = {"updated": int(time.time()), "playlists": rows}
-                temporary = self.root / "recommendations.part"
-                temporary.write_text(json.dumps(cached, ensure_ascii=False))
-                temporary.chmod(0o600)
-                temporary.replace(self.root / "recommendations.json")
-            except Exception:
-                cached = cached or {"updated": 0, "playlists": []}
-        self.recommendations = cached
-        portraits = {}
-        path = self.root / "artist-portraits.json"
+    def _discover_cache(self, filename, field, kind):
+        path = self.root / filename
         try:
             if path.is_file() and not path.is_symlink() and path.stat().st_size < 32768:
-                portraits = json.loads(path.read_text())
+                value = json.loads(path.read_text())
+                if (isinstance(value, dict) and type(value.get("updated")) is int
+                        and isinstance(value.get(field), kind)):
+                    return value
         except (OSError, ValueError):
             pass
-        with self.lock:
-            if not self.artist_refreshing and time.time() - portraits.get("updated", 0) > 604800:
+        return {"updated": 0, field: kind()}
+
+    def discover(self):
+        # 上游慢或离线时仍返回现有歌单和歌手。并发访客共用一个刷新任务。
+        now, clock = time.time(), time.monotonic()
+        with self.discovery_lock:
+            if self.recommendations is None:
+                self.recommendations = self._discover_cache("recommendations.json", "playlists", list)
+            cached = self.recommendations
+            if (not self.recommendations_refreshing and clock >= self.next_recommendations_refresh
+                    and (not cached["playlists"] or now - cached["updated"] > 21600)):
+                self.recommendations_refreshing = True
+                threading.Thread(target=self.refresh_recommendations, daemon=True).start()
+            portraits = self._discover_cache("artist-portraits.json", "photos", dict)
+            if (not self.artist_refreshing and clock >= self.next_artist_refresh
+                    and now - portraits["updated"] > 604800):
                 self.artist_refreshing = True
-                threading.Thread(target=self.refresh_artists, args=(portraits.get("photos", {}),), daemon=True).start()
-        return {**cached, "artists": ARTISTS, "artist_photos": portraits.get("photos", {})}
+                threading.Thread(target=self.refresh_artists, args=(portraits["photos"],), daemon=True).start()
+            refreshing = self.recommendations_refreshing or self.artist_refreshing
+        return {**cached, "artists": ARTISTS, "artist_photos": portraits["photos"], "refreshing": refreshing}
+
+    def refresh_recommendations(self):
+        try:
+            value = self.public_metadata("/api/search/get/web",
+                                         {"s": "KTV必点", "type": 1000, "limit": 8, "offset": 0})
+            rows = []
+            for row in value.get("result", {}).get("playlists", [])[:8]:
+                if (isinstance(row, dict) and ID.fullmatch(str(row.get("id", "")))
+                        and isinstance(row.get("name"), str)):
+                    rows.append({"id": str(row["id"]), "title": row["name"][:120],
+                                 "artwork": self.artwork(row.get("coverImgUrl")), "tracks": row.get("trackCount", 0)})
+            if not rows:
+                return
+            cached = {"updated": int(time.time()), "playlists": rows}
+            with self.discovery_lock:
+                self.recommendations = cached
+            temporary = self.root / "recommendations.part"
+            temporary.write_text(json.dumps(cached, ensure_ascii=False))
+            temporary.chmod(0o600)
+            temporary.replace(self.root / "recommendations.json")
+        except (OSError, ValueError, TypeError, AttributeError, Refusal):
+            pass
+        finally:
+            with self.discovery_lock:
+                self.next_recommendations_refresh = time.monotonic() + 15
+                self.recommendations_refreshing = False
 
     def refresh_artists(self, previous):
         photos = dict(previous)
@@ -1646,12 +1668,17 @@ class Store:
                             photos[name] = url
                 except Exception:
                     continue
-            path = self.root / "artist-portraits.part"
-            path.write_text(json.dumps({"updated": int(time.time()), "photos": photos}, ensure_ascii=False))
-            path.chmod(0o600)
-            path.replace(self.root / "artist-portraits.json")
+            if photos:
+                path = self.root / "artist-portraits.part"
+                path.write_text(json.dumps({"updated": int(time.time()), "photos": photos}, ensure_ascii=False))
+                path.chmod(0o600)
+                path.replace(self.root / "artist-portraits.json")
+        except OSError:
+            pass
         finally:
-            self.artist_refreshing = False
+            with self.discovery_lock:
+                self.next_artist_refresh = time.monotonic() + 90
+                self.artist_refreshing = False
 
     def playlist(self, playlist_id, offset=0):
         if not isinstance(playlist_id, str) or not ID.fullmatch(playlist_id) or type(offset) is not int or not 0 <= offset <= 100000:
@@ -1901,6 +1928,11 @@ def make_handler(store, agent_key, assets):
                 if path == "/agent/lyrics" and self.command == "POST":
                     store.budget("lyrics-repair", 120)
                     return self.reply(200, store.coordinator.repair_lyrics(self.body(145000)))
+                if path == "/agent/backgrounds":
+                    if self.command == "GET":
+                        return self.reply(200, store.coordinator.background_tasks())
+                    if self.command == "POST":
+                        return self.reply(202, store.coordinator.repair_background(self.body()))
                 if path == "/agent/archive-check" and self.command == "POST":
                     store.budget("archive-check", 120)
                     return self.reply(200, store.coordinator.archive_check(self.body()))

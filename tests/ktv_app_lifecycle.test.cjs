@@ -220,9 +220,28 @@ test('search displays the first page before prefetch finishes and consumes the s
 });
 
 test('queue reordering after secondary navigation keeps the current and sung songs outside pending moves',()=>{
- const h=harness();h.run('selected=[{id:"current",state:"ready"},{id:"a",state:"ready"},{id:"b",state:"ready"},{id:"sung",state:"ready"}];playback.current="current";playback.played=["sung"];var ordered=null;saveOrder=ids=>{ordered=ids;};setView("queue");moveSong("b","next")');
- assert.deepEqual(Array.from(h.run('ordered')),['current','b','a','sung']);
- h.run('ordered=null;moveSong("sung","next");moveSong("current","next")');assert.equal(h.run('ordered'),null);
+ const h=harness();h.run('selected=[{id:"current",state:"ready"},{id:"a",state:"ready"},{id:"missing",state:"ready",lyric_state:-1},{id:"b",state:"ready"},{id:"sung",state:"ready"},{id:"prep",state:"acquiring"}];playback.current="current";playback.played=["sung"];var ordered=null;saveOrder=ids=>{ordered=ids;};setView("queue");moveSong("prep","top")');
+ assert.deepEqual(Array.from(h.run('ordered')),['current','prep','missing','a','sung','b']);
+ h.run('ordered=null;moveSong("sung","top");moveSong("current","top");moveSong("missing","top")');assert.equal(h.run('ordered'),null);
+});
+
+test('track choice updates immediately and skips a replaced unsent choice without dropping its final receipt',async()=>{
+ const h=harness(),first=deferred(),receipt=deferred();
+ h.context.writes=[];h.context.first=first;h.context.receipt=receipt;
+ h.run('earEnabled=false;setControl=actualSetControl;controls.original=0;playback.applied_revision=0;api=async (_,value)=>{writes.push(value.original);return writes.length===1?first.promise:{revision:2};};waitForTV=()=>receipt.promise;');
+ const original=h.run('chooseSoundMode(1)');
+ assert.equal(h.element('mode-original').getAttribute('aria-pressed'),'true');
+ assert.equal(h.element('mode-original').attributes['aria-busy'],undefined);
+ await flush();
+ const backing=h.run('chooseSoundMode(0)');const replaced=h.run('chooseSoundMode(1)');const final=h.run('chooseSoundMode(0)');
+ assert.equal(h.element('mode-instrumental').getAttribute('aria-pressed'),'true');
+ first.resolve({revision:1});await flush();
+ assert.deepEqual(h.context.writes,[1,0]);
+ assert.equal(h.run('modeIntent.value'),0);
+ h.run('playback.applied_revision=2');receipt.resolve();
+ await Promise.all([original,backing,replaced,final]);
+ assert.equal(h.run('modeIntent'),null);
+ assert.equal(h.element('mode-instrumental').getAttribute('aria-pressed'),'true');
 });
 
 
@@ -367,6 +386,19 @@ test('queue progress changes replace only the changed row and retain stable grou
  const h=harness();h.run('earEnabled=false;mode="queue";playback.current="";playback.played=["old"];selected=[{id:"a",song_id:"1",title:"下载",state:"acquiring",progress:{source_bytes:10}},{id:"b",song_id:"2",title:"已就绪",state:"ready"},{id:"old",song_id:"3",title:"已唱",state:"ready"}];render()');
  const root=h.element('results'),pending=root.children[0],preparing=root.children[1],history=root.children[2],a=preparing.children[1],b=pending.children[1];history.open=true;const focused=b.children.at(-1).children[0];focused.focus();const insertions=[];const insert=pending.insertBefore.bind(pending);pending.insertBefore=(node,before)=>{insertions.push(node);insert(node,before);};
  h.run('selected[0]={...selected[0],progress:{source_bytes:20}};render()');assert.equal(root.children[0],pending);assert.equal(root.children[1],preparing);assert.equal(root.children[2],history);assert.equal(history.open,true);assert.notEqual(preparing.children[1],a);assert.equal(pending.children[1],b);assert.equal(h.context.document.activeElement,focused);assert.equal(insertions.includes(b),false,'an unchanged row is not detached/moved just because another progress state changes');
+});
+
+test('the queue follows a changed NAS playable order without waiting for another song update',()=>{
+ const h=harness();
+ h.context.roomStatus={songs:[{id:'a',song_id:'1',title:'候唱示例',state:'ready'}],playable:[],
+  queue_revision:4,mac_online:true,playback:{online:true,current:'',played:[],state:'idle'},controls:{}};
+ h.run('earEnabled=false;mode="queue";applyStatus(roomStatus)');
+ const results=h.element('results');
+ assert.equal(results.children[0].className,'queue-group preparing');
+ h.context.roomStatus.playable=['a'];
+ h.run('applyStatus(roomStatus)');
+ assert.equal(results.children[0].className,'queue-group pending');
+ assert.equal(h.element('now-title').textContent,'接下来：候唱示例');
 });
 
 test('IME search waits for composition and debounces the committed text once',async()=>{

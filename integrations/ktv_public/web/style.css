@@ -104,3 +104,27 @@ body[data-view=find] #page-title{min-width:0;overflow:hidden;text-overflow:ellip
 body[data-view=find] #source-picker{margin-block:4px 0}
 #search-page-end{height:1px}
 #page-progress{margin:12px 0;text-align:center;color:var(--muted);font-size:13px}
+
+.queue-song .details .state{display:block;max-width:none;margin-top:3px;text-align:start}
+.song.queue-song:has(.preparation) .details{flex-basis:auto}
+.queue-song .queue-tools{gap:2px}
+.queue-tools .more-song,.queue-tools .reorder-handle{min-width:44px}
+.queue-tools button,#song-dialog button,#sound-dialog button{-webkit-tap-highlight-color:transparent}
+.queue-song.dragging{
+ position:relative;z-index:2;
+ transform:translateY(var(--drag-offset,0px));
+ border-radius:10px;
+}
+.queue-song.dragging .reorder-handle{cursor:grabbing}
+.queue-group.history .details .state,.queue-song:has(.preparation) .details .state{display:none}
+#song-error:empty{display:none}
+
+#sound-dialog .sheet-heading{
+ display:grid;grid-template-columns:minmax(0,1fr) 44px;
+ align-items:center;gap:10px;margin-block-end:12px;
+}
+#sound-dialog .sheet-heading>.icon-button{width:44px;height:44px}
+#sound-dialog .backing-mode{margin-block-start:0}
+#sound-dialog .backing-mode>button{min-width:0}
+#sound-mode-status{margin:8px 0 0;color:var(--muted);font-size:12px;line-height:1.4}
+#sound-mode-status:empty{display:none}

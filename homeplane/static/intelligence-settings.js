@@ -62,14 +62,13 @@ export async function mountIntelligenceSettings(container,{api,onOpenConversatio
   const providerField=node('div',null,{class:'ai-field'});providerField.append(node('label','文字处理通道',{for:provider.id}),provider);form.append(providerField);
   field(form,'cloud_text','允许云端文字处理',config.cloud_text,{type:'checkbox',help:'发送本次问题及必要设备目录；旧版即时规划还包含有限状态。设备动作仍需本地校验。'});
   field(form,'allow_arl_fallback','API 不可用时改用 ARL',config.allow_arl_fallback,{type:'checkbox'});
-  field(form,'cloud_images','自动为歌曲生成背景',config.cloud_images,{type:'checkbox',help:'仅发送歌名和演唱者。先显示本地背景，准备好后替换，同一背景可反复使用。'});
+  field(form,'cloud_images','启用 AI 歌曲背景',config.cloud_images,{type:'checkbox',help:'可在家庭 KTV 中调整此开关与每日生成上限。'});
   field(form,'cloud_voice','开启云端语音输入',config.cloud_voice,{type:'checkbox',help:'主动点击后录音，最长 8 秒。转写先放入输入框，由你发送。'});
   const limits=node('fieldset',null);limits.append(node('legend','每日上限'));
   for(const [key,label] of [['daily_requests','文字与语音请求次数'],['daily_text_tokens','文本 Token'],['daily_images','歌曲背景张数'],['daily_voice_seconds','语音会话秒数']])field(limits,key,label,config[key],{type:'number'});
   field(limits,'timezone','每日重置时区',config.timezone);
   limits.append(node('p','上限为 0 时暂停对应调用。用量先预留，未知结果保留预留；这里统计本应用用量，不代表账户余额。',{class:'meta'}));
   const advanced=node('details',null);advanced.append(node('summary','模型配置'));
-  field(advanced,'background_with_mv','已有 MV 时也生成背景',config.background_with_mv,{type:'checkbox'});
   field(advanced,'cached_background_limit','保留的歌曲背景张数上限',config.cached_background_limit,{type:'number'});
   for(const [key,label] of [['responses_model','文字模型'],['decisions_model','快速判断模型'],['image_model','图片模型'],['realtime_model','语音模型']])field(advanced,key,label,config[key],{readonly:key==='decisions_model'});
   field(advanced,'max_output_tokens','单次文本输出上限',config.max_output_tokens,{type:'number'});

@@ -73,6 +73,22 @@ def archive_lyric_tasks(value):
     return tasks
 
 
+def archive_background_tasks(value):
+    if not isinstance(value, list) or len(value) > 80:
+        return {}
+    tasks = {}
+    for task in value:
+        if (not isinstance(task, dict) or not all(isinstance(task.get(field), str)
+                for field in ("id", "song_id", "title", "audio_origin", "version", "background_sha"))
+                or not UUID.fullmatch(task["id"]) or not re.fullmatch(r"[1-9][0-9]{0,17}", task["song_id"])
+                or task["audio_origin"] not in {"song", "cloud", "mv"} or not 0 < len(task["title"]) <= 256
+                or not re.fullmatch(r"[0-9a-f]{64}", task["version"])
+                or task["background_sha"] and not re.fullmatch(r"[0-9a-f]{64}", task["background_sha"])):
+            continue
+        tasks[task["id"]] = task
+    return tasks
+
+
 def media_origin(value, *, allow_loopback=False):
     parsed = urlsplit(value)
     try:
@@ -150,6 +166,21 @@ class MediaTickets:
             return hmac.compare_digest(match[2], self._signature(job, expires))
         except (ValueError, KeyError, TypeError):
             return False
+
+    def _background_signature(self, identifier, digest, expires):
+        payload = f"background:{identifier}:{digest}:{expires}".encode()
+        return base64.urlsafe_b64encode(hmac.digest(self.secret, payload, "sha256")).decode().rstrip("=")
+
+    def issue_background(self, identifier, digest):
+        expires = int(time.time()) + 600
+        return f"{expires}.{self._background_signature(identifier, digest, expires)}", expires
+
+    def permits_background(self, ticket, identifier, digest):
+        match = TICKET.fullmatch(ticket)
+        if not match:
+            return False
+        now, expires = int(time.time()), int(match[1])
+        return now < expires <= now + 900 and hmac.compare_digest(match[2], self._background_signature(identifier, digest, expires))
 
 
 class WorkerCapabilities:
@@ -238,6 +269,11 @@ class PreparationWorker(NasBridge):
         self.metadata_root = private_directory(Path(config_path).absolute().parent / "worker-publications")
         self.published_metadata = {}
         self.backgrounds = None
+        self.nas_background_policy = False
+        self.next_background_sweep = 0
+        self.background_publish_attempts = {}
+        self.background_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ktv-background-publication")
+        self.background_work = None
         self.archive_checked, self.archive_offset = 0, 0
 
     def _metadata(self, audio_version):
@@ -352,7 +388,7 @@ class PreparationWorker(NasBridge):
             return unavailable
         recovering = bool(work and work.recovering)
         if work and not recovering and work.attempts > len(LYRIC_RETRY_SECONDS):
-            return {**unavailable, "retry_exhausted": True}
+            return {**unavailable, "retry_exhausted": True, "lookup_revision": 2}
         active = self._active_lyric_lookups(recovering)
         if not recovering:
             active += sum(not future.done() for future in self.lyric_prefetch.values())
@@ -388,9 +424,9 @@ class PreparationWorker(NasBridge):
             super()._send_updates(progress, mapping, generation)
 
     def request(self, path, body=None):
-        if path in {"/agent/worker", "/agent/manifests", "/agent/lyrics", "/agent/qr", "/agent/archive-check"}:
+        if path in {"/agent/worker", "/agent/manifests", "/agent/lyrics", "/agent/qr", "/agent/archive-check", "/agent/backgrounds"}:
             # The fixed extra endpoints carry no arbitrary path or proxy target.
-            with self.http.stream("POST", self.endpoint + path,
+            with self.http.stream("POST" if body is not None else "GET", self.endpoint + path,
                                   headers={"Authorization": "Bearer " + self.key}, json=body,
                                   timeout=8, follow_redirects=False) as response:
                 if not 200 <= response.status_code < 300:
@@ -439,8 +475,19 @@ class PreparationWorker(NasBridge):
             current = time.monotonic()
             if current - self.worker_registered >= 3:
                 capabilities = dict(self.capabilities) if current - self.capabilities_at <= 15 else dict.fromkeys(CAPABILITIES, False)
-                self.request("/agent/worker", {"instance": self.instance, "origin": self.media_origin,
-                                              "capabilities": capabilities})
+                registration = {"instance": self.instance, "origin": self.media_origin, "capabilities": capabilities}
+                if self.backgrounds is not None and self.nas_background_policy:
+                    try:
+                        registration["backgrounds_enabled"] = self.backgrounds.enabled()
+                    except (ValueError, OSError, AttributeError):
+                        pass
+                try:
+                    self.request("/agent/worker", registration)
+                except ValueError:
+                    if "backgrounds_enabled" not in registration:
+                        raise
+                    registration.pop("backgrounds_enabled")
+                    self.request("/agent/worker", registration)
                 self.worker_registered = current
             value = self.request("/agent/tasks")
             tasks, rooms, cancelled = value.get("tasks", []), value.get("rooms", []), value.get("cancelled", [])
@@ -450,6 +497,7 @@ class PreparationWorker(NasBridge):
                 raise ValueError("invalid_public_response")
             with self.lock:
                 self.online = True
+                self.nas_background_policy = type(value.get("backgrounds_enabled")) is bool
                 # The direct coordinator returns the household's current scene.
                 # Never create/close a room here or relay playback/control state.
                 direct = [r for r in rooms if isinstance(r, dict) and r.get("direct") is True
@@ -526,6 +574,7 @@ class PreparationWorker(NasBridge):
             party, mapping, generation = copy.deepcopy(self.party), dict(self.mapping), self.room_generation
             report = copy.deepcopy(self.playback or {})
         if not party:
+            self._schedule_background_sweep((), False)
             return
         current = report.get("current")
         if current and hasattr(self.queue, "touch"):
@@ -535,7 +584,7 @@ class PreparationWorker(NasBridge):
         order = [local for local in party.get("order", []) if local not in played or local == current]
         if current in inverse:
             order = [current] + [local for local in order if local != current]
-        background_count = 0
+        background_priority = []
         for local in order:
             remote = inverse.get(local)
             if remote is None or not self._same_room(generation):
@@ -550,11 +599,8 @@ class PreparationWorker(NasBridge):
                 background = None
                 if self.backgrounds is not None:
                     try:
-                        if background_count < BACKGROUND_PREFETCH_COUNT and self.backgrounds.eligible_for_generation(job):
-                            background_count += 1
-                            candidate = self.backgrounds.request_from_thread(job)
-                        else:
-                            candidate = self.backgrounds.cached_for(job)
+                        background_priority.append(job)
+                        candidate = self.backgrounds.cached_for(job)
                         if candidate and candidate.get('status') == 'ready':
                             background = {k:candidate[k] for k in ('status','sha256','bytes','encoding')}
                             background['url'] = f'/v1/jobs/{local}/media/background'
@@ -596,6 +642,58 @@ class PreparationWorker(NasBridge):
                 # A transient publish/cache fault cannot mark a ready local job failed.
                 continue
         self._publish_archive_lyrics(generation)
+        self._schedule_background_sweep(background_priority, self.nas_background_policy)
+
+    def _schedule_background_sweep(self, active, use_nas):
+        if (self.backgrounds is None or self.stop.is_set() or time.monotonic() < self.next_background_sweep
+                or self.background_work is not None and not self.background_work.done()):
+            return
+        self.next_background_sweep = time.monotonic() + 2
+        self.background_work = self.background_pool.submit(self._prefetch_backgrounds, active, use_nas)
+
+    def _prefetch_backgrounds(self, active, use_nas):
+        backgrounds = self.backgrounds
+        if not backgrounds.enabled():
+            return
+        archived = []
+        if use_nas:
+            try:
+                archived = list(archive_background_tasks(self.request("/agent/backgrounds").get("tasks")).values())
+            except (OSError, ValueError, httpx.HTTPError):
+                pass
+        # 当前曲目在 NAS 回放时没有本机任务，也应先于闲置缓存补图。
+        current_archive = [song for song in archived if song.get("current") is True]
+        waiting_archive = [song for song in archived if song.get("current") is not True]
+        candidates = [*current_archive, *active, *waiting_archive]
+        if callable(getattr(self.queue, "list", None)):
+            candidates.extend(song for song in self.queue.list()
+                              if song["state"] == "ready" and not song.get("simulated"))
+        backgrounds.prefetch_from_thread(candidates)
+        for song in archived:
+            if self.stop.is_set():
+                return
+            self._publish_archive_background(song)
+
+    def _publish_archive_background(self, song):
+        try:
+            item = self.backgrounds.cached_for(song)
+            if not item or item["sha256"] == song["background_sha"]:
+                return
+            signature = song["version"], item["sha256"]
+            now = time.monotonic()
+            if self.background_publish_attempts.get(signature, 0) > now:
+                return
+            self.background_publish_attempts = {key: expiry for key, expiry in self.background_publish_attempts.items()
+                                                if expiry > now}
+            self.background_publish_attempts[signature] = now + 5
+            ticket, expires = self.tickets.issue_background(item["id"], item["sha256"])
+            descriptor = {key: item[key] for key in ("status", "sha256", "bytes", "encoding")}
+            descriptor["url"] = f'/v1/background-assets/{item["id"]}/{item["sha256"]}'
+            self.request("/agent/backgrounds", {"id": song["id"], "instance": self.instance,
+                                                "version": song["version"], "background": descriptor,
+                                                "media_ticket": ticket, "media_expires": expires})
+        except (OSError, ValueError, TypeError, KeyError, httpx.HTTPError):
+            pass
 
     def _publish_archive_lyrics(self, generation):
         with self.lock:
@@ -710,5 +808,6 @@ class PreparationWorker(NasBridge):
         super().close()
         self.lyric_pool.shutdown(wait=False, cancel_futures=True)
         self.lyric_recovery_pool.shutdown(wait=False, cancel_futures=True)
+        self.background_pool.shutdown(wait=False, cancel_futures=True)
         if self.health_thread is not None:
             self.health_thread.join(timeout=1)

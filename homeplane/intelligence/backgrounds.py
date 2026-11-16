@@ -20,6 +20,8 @@ from collections import OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
+
 from .budget import EnhancementUnavailable
 from .settings import atomic_json, private_path
 
@@ -124,12 +126,14 @@ def checked_public_metadata(value):
 
 class SongBackgrounds:
     def __init__(self, runtime, directory=None, *, recording=None, max_parallel=1, context_resolver=None,
-                 context_timeout=4, debug=False):
+                 context_timeout=4, debug=False, cloud_recording=None, include_mv=False):
         self.runtime = runtime
         self.directory = Path(directory or runtime.settings.directory / "song-backgrounds")
         self.recording = recording
+        self.cloud_recording = cloud_recording
         self.context_resolver = context_resolver
         self.debug = debug
+        self.include_mv = include_mv
         private_path(self.directory)
         self.tasks = {}
         self.closed = False
@@ -148,23 +152,33 @@ class SongBackgrounds:
     def bind_loop(self):
         self.loop = asyncio.get_running_loop()
 
-    def request_from_thread(self, song):
-        try:
-            config = self.runtime.settings.read()
-            identifier = song_identity(song, config.image_model)
-            cached = self.cached(identifier)
-            if cached:
-                return cached
-            if self.loop and not self.closed:
-                self.loop.call_soon_threadsafe(self._schedule, dict(song))
-            return {"status": "local", "kind": "local", "theme": "content", "id": identifier}
-        except (OSError, ValueError, RuntimeError, TypeError):
-            return {
-                "status": "local",
-                "kind": "local",
-                "theme": "content",
-                "reason": "background_unavailable",
-            }
+    def enabled(self):
+        return self.runtime.settings.read().cloud_images
+
+    def prefetch_from_thread(self, songs):
+        if not self.loop or self.closed:
+            return
+        config = self.runtime.settings.read()
+        if not config.cloud_images or not self.debug and config.daily_images == 0:
+            return
+        candidates = []
+        found = set()
+        for song in songs:
+            try:
+                key = song_identity(song, config.image_model)
+                if key not in found and not self.cached(key):
+                    found.add(key)
+                    candidates.append(song)
+            except (OSError, ValueError, TypeError):
+                pass
+        if candidates:
+            self.loop.call_soon_threadsafe(self.prefetch, candidates)
+
+    def prefetch(self, songs):
+        for song in songs:
+            if len(self.tasks) >= self.max_parallel:
+                break
+            self._schedule(song)
 
     def _schedule(self, song):
         try:
@@ -176,19 +190,18 @@ class SongBackgrounds:
         return self.cached(song_identity(song, self.runtime.settings.read().image_model))
 
     def _generation_block(self, song, config, *, public_metadata=None, force=False):
-        if song.get("audio_origin") == "cloud" and public_metadata is None:
+        if self.closed or not config.cloud_images:
+            return "cloud_images_disabled"
+        if config.provider == "local":
+            return "cloud_capability_disabled"
+        if song.get("audio_origin") == "cloud" and public_metadata is None and self.cloud_recording is None:
             return "private_song_metadata"
         if self.recording is not None and song.get("simulated") is True:
             return "simulated_song"
         video = song.get("video")
-        if isinstance(video, dict) and video.get("status") == "ready" and not (config.background_with_mv or force):
+        if isinstance(video, dict) and video.get("status") == "ready" and not (self.include_mv or config.background_with_mv or force):
             return "verified_mv_available"
-        if self.closed or not config.cloud_images or config.provider == "local":
-            return "cloud_images_disabled"
         return None
-
-    def eligible_for_generation(self, song):
-        return self._generation_block(song, self.runtime.settings.read()) is None
 
     @staticmethod
     def _file_version(path, limit):
@@ -322,8 +335,6 @@ class SongBackgrounds:
         if not force and failure and time.monotonic() < failure[1] and (len(failure) == 2 or failure[2] == config):
             return {**fallback, "reason": failure[0]}
         if identifier not in self.tasks:
-            if len(self.tasks) >= max(8, self.max_parallel):
-                return {**fallback, "reason": "background_queue_full"}
             snapshot = self._record_version(identifier)
             task = asyncio.create_task(self._generate(identifier, dict(song), force=force,
                                                        initial_version=snapshot, public_metadata=public_metadata),
@@ -535,11 +546,16 @@ class SongBackgrounds:
                 reservation = self._claim(identifier, config.cached_background_limit)
                 if self.cached(identifier) and (not force or self._record_version(identifier) != initial_version):
                     return
+                if public_metadata is None and song.get("audio_origin") == "cloud":
+                    verified = await asyncio.to_thread(self.cloud_recording, song["song_id"])
+                    if verified is None:
+                        raise EnhancementUnavailable("private_song_metadata")
+                    public_metadata = checked_public_metadata(verified)
                 public = public_metadata or {key: song.get(key, "") for key in ("title", "artist")}
                 if public_metadata is None and self.recording is not None:
                     detail = await asyncio.to_thread(self.recording, song["song_id"])
                     if detail["id"] != song["song_id"] or self.runtime.settings.read() != config:
-                        return
+                        raise EnhancementUnavailable("background_recording_unverified")
                     public = {"title": detail["title"], "artist": " / ".join(detail["artists"])}
                 if public_metadata is not None or self.recording is not None:
                     contextualized = await self._resolve_context(public)
@@ -562,10 +578,14 @@ class SongBackgrounds:
                 self.failures.pop(identifier, None)
         except asyncio.CancelledError:
             raise
-        except (EnhancementUnavailable, ValueError, OSError, KeyError, TypeError, sqlite3.Error) as exc:
+        except (EnhancementUnavailable, ValueError, OSError, KeyError, TypeError, sqlite3.Error, httpx.HTTPError) as exc:
             code = ("background_in_progress" if isinstance(exc, BlockingIOError)
-                    else exc.code if isinstance(exc, EnhancementUnavailable) else "background_unavailable")
-            self.failures[identifier] = (code, time.monotonic() + (2 if code == "background_in_progress" else 900), config)
+                    else exc.code if isinstance(exc, EnhancementUnavailable)
+                    else "background_catalog_unavailable" if isinstance(exc, httpx.HTTPError)
+                    else "background_unavailable")
+            delay = {"background_in_progress": 2, "api_timeout": 30, "api_unavailable": 30,
+                     "api_rate_limited": 60, "background_catalog_unavailable": 30}.get(code, 900)
+            self.failures[identifier] = (code, time.monotonic() + delay, config)
             if len(self.failures) > 256:
                 self.failures.pop(next(iter(self.failures)))
         finally:

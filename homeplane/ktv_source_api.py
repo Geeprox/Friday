@@ -327,6 +327,11 @@ class LocalSourceAPI:
 
     def public_cloud_background(self, song_id):
         """用公开录音核对已缓存云盘曲目，只返回公开歌名与歌手。"""
+        recording = self.public_cloud_recording(song_id)
+        return {"title": recording["title"], "artist": " / ".join(recording["artists"])} if recording else None
+
+    def public_cloud_recording(self, song_id):
+        """仅返回能与云盘元数据匹配的公开曲库记录。"""
         from .ktv_search import search_songs
 
         song_id = canonical_song_id(song_id)
@@ -348,7 +353,7 @@ class LocalSourceAPI:
                 if (not detail["artist_ids"] or not re.fullmatch(r"[1-9][0-9]{0,17}", detail["album"])
                         or not _same_lyric_identity(owned, detail) or abs(detail["duration_ms"] - duration) > 2500):
                     return None
-                return {"title": detail["title"], "artist": " / ".join(detail["artists"])}
+                return detail
             except (OSError, ValueError, TypeError, KeyError, httpx.HTTPError):
                 return None
 
@@ -360,19 +365,20 @@ class LocalSourceAPI:
             result = verified(identity)
             if result:
                 return result
-        try:
-            candidates = search_songs(title + " " + _lyric_artist(artists[0]))
-            exact = [row for row in candidates if _same_lyric_identity(owned, row)]
-            if not exact:
-                exact = [row for row in self._artist_lyric_candidates(owned) if _same_lyric_identity(owned, row)]
-        except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError):
-            return None
-        for candidate in exact[:3]:
-            identity = candidate.get("song_id")
-            if isinstance(identity, str) and identity not in identities:
-                result = verified(identity)
-                if result:
-                    return result
+        for group in (lambda: search_songs(title + " " + _lyric_artist(artists[0])),
+                      lambda: self._artist_lyric_candidates(owned)):
+            try:
+                exact = [row for row in group() if _same_lyric_identity(owned, row)
+                         and row.get("song_id") not in identities]
+            except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError):
+                continue
+            for candidate in exact[:3]:
+                identity = candidate.get("song_id")
+                if isinstance(identity, str):
+                    identities[identity] = None
+                    result = verified(identity)
+                    if result:
+                        return result
         return None
 
     def _cloud_lyrics(self, song_id):
@@ -396,16 +402,20 @@ class LocalSourceAPI:
             if cached.get("upload_md5") == owned["md5"] and time.time() - cached.get("at", 0) < ttl:
                 return {"status": cached["status"], "lines": cached["lines"]}
 
+        duration = owned.get("duration_ms")
+
         def timed(body):
             if body.get("uncollected") or body.get("nolyric") or body.get("pureMusic"):
                 return []
-            lines = parse_lrc(body.get("lrc", {}).get("lyric", ""))
+            lines = parse_lrc((body.get("lrc") or {}).get("lyric", ""))
+            if isinstance(duration, (int, float)):
+                lines = [r for r in lines if r["time_ms"] <= duration + 2000]
             return lines if len(lines) >= 3 and not any("暂无歌词" in r["text"] or "纯音乐，请欣赏" in r["text"] for r in lines) else []
 
         def fetch_lyrics(identity, credential):
             try:
                 return timed(self.rpc("lyrics", id=identity, cookie=credential)["body"])
-            except (ValueError, KeyError, TypeError):
+            except (OSError, ValueError, KeyError, TypeError, AttributeError, httpx.HTTPError):
                 return []
 
         lines = fetch_lyrics(song_id, cookie)
@@ -415,31 +425,42 @@ class LocalSourceAPI:
             lines = fetch_lyrics(lyric_id, cookie)
             basis = "cloud_lyric_id"
         if not lines and owned.get("artists") and isinstance(owned.get("duration_ms"), (int, float)):
-            # Metadata matching supplies lyrics only. Never substitute the uploaded audio.
-            try:
-                candidates = search_songs(owned["title"] + " " + _lyric_artist(owned["artists"][0]))
-            except (ValueError, httpx.HTTPError):
-                candidates = []
-            candidates = [c for c in candidates if _same_lyric_identity(owned, c)]
-            if not candidates:
-                candidates = [c for c in self._artist_lyric_candidates(owned) if _same_lyric_identity(owned, c)]
-            for candidate in candidates[:3]:
+            # 公共搜索可能只返回现场版或伴奏。即使搜索命中，核验失败后也继续查歌手目录。
+            tried = {song_id, lyric_id}
+            for group in (lambda: search_songs(owned["title"] + " " + _lyric_artist(owned["artists"][0])),
+                          lambda: self._artist_lyric_candidates(owned)):
                 try:
-                    songs = self.rpc("detail", id=candidate["song_id"], cookie="")["body"].get("songs", [])
-                    if len(songs) != 1 or str(songs[0].get("id")) != candidate["song_id"]:
-                        continue
-                    duration = songs[0].get("dt")
-                    if not isinstance(duration, (int, float)) or abs(duration - owned["duration_ms"]) > 2500:
-                        continue
-                    lines = fetch_lyrics(candidate["song_id"], "")
-                    if lines:
-                        basis = "exact_title_artist_duration"
-                        break
-                except (ValueError, KeyError, TypeError):
+                    exact = [c for c in group() if _same_lyric_identity(owned, c)
+                             and c.get("song_id") not in tried]
+                except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError):
                     continue
-        duration = owned.get("duration_ms")
-        if isinstance(duration, (int, float)):
-            lines = [r for r in lines if r["time_ms"] <= duration + 2000]
+                matches = {}
+                for candidate in exact[:3]:
+                    identity = candidate["song_id"]
+                    if identity in tried:
+                        continue
+                    tried.add(identity)
+                    try:
+                        songs = self.rpc("detail", id=identity, cookie="")["body"].get("songs", [])
+                        if len(songs) != 1 or str(songs[0].get("id")) != identity:
+                            continue
+                        public_duration = songs[0].get("dt")
+                        if not isinstance(public_duration, (int, float)) or abs(public_duration - duration) > 2500:
+                            continue
+                        candidate_lines = fetch_lyrics(identity, "")
+                        if candidate_lines:
+                            key = tuple((line["time_ms"], line["text"]) for line in candidate_lines)
+                            matches[key] = candidate_lines
+                    except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError):
+                        continue
+                if matches:
+                    # 互相冲突的时间轴交给上层的公开录音查证，不直接猜一个版本。
+                    if len(matches) == 1:
+                        lines = next(iter(matches.values()))
+                        basis = "exact_title_artist_duration"
+                    else:
+                        basis = "conflicting_catalog_timelines"
+                    break
         result = {"status": "ready" if lines else "unavailable", "lines": lines}
         _write(path, {**result, "upload_md5": owned["md5"], "basis": basis, "at": int(time.time())})
         return result

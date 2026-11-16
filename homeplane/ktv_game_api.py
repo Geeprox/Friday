@@ -20,7 +20,8 @@ from fastapi.responses import JSONResponse, Response
 
 OWNER_ORIGIN = "http://127.0.0.1:8769"
 OWNER_PREFIX = "/api/games/ktv"
-READS = {"manage/room", "manage/library", "manage/search", "manage/backgrounds", "jobs", "scheduler", "source/status"}
+READS = {"manage/room", "manage/library", "manage/policy/mac", "manage/policy/nas", "manage/search",
+         "manage/backgrounds", "jobs", "scheduler", "source/status"}
 WRITES = {
     "manage/preview", "manage/delete", "manage/policy", "manage/backgrounds/policy", "scheduler", "source/login", "source/poll",
     "source/settings", *{"manage/room/" + op for op in
@@ -29,6 +30,8 @@ WRITES = {
 ERRORS = {
     "cache_changed", "archive_changed", "cache_in_use", "plan_expired", "nas_management_unavailable",
     "background_unavailable", "daily_images_reached", "cloud_images_disabled", "background_queue_full",
+    "cloud_capability_disabled", "api_key_missing", "api_key_unavailable", "api_key_rejected", "api_model_unavailable",
+    "api_unavailable", "api_timeout", "api_rate_limited", "api_quota_exhausted", "private_song_metadata",
     "invalid_background_limit",
     "tv_offline", "room_changed", "queue_changed", "song_playing", "vocal_preset_unavailable",
     "microphone_update_required", "sfx_unavailable", "source_login_required", "source_rights_denied",
@@ -76,7 +79,7 @@ def installed_owner_config(launch_agent: Path, development_root: Path) -> Path:
             raise ValueError
         flags, index = {}, 3
         valued = {"--config", "--host", "--port", "--download-dir", "--public-config", "--installed-root"}
-        switches = {"--allow-download", "--launchd-sockets"}
+        switches = {"--allow-download", "--launchd-sockets", "--debug-backgrounds"}
         while index < len(arguments):
             argument = arguments[index]
             flag, separator, inline = argument.partition("=")
@@ -265,7 +268,11 @@ def create_router(config_path=None, *, transport=None, read_only=False, launch_a
                     if not isinstance(data, dict):
                         raise HTTPException(502, "ktv_response_unavailable")
                     return JSONResponse(public_value(data, token), headers={"Cache-Control": "no-store"})
-        except httpx.HTTPError:
+        except (httpx.ConnectError, httpx.ConnectTimeout):
             raise HTTPException(503, "ktv_offline") from None
+        except httpx.TimeoutException:
+            raise HTTPException(504, "ktv_response_timeout") from None
+        except httpx.HTTPError:
+            raise HTTPException(502, "ktv_response_unavailable") from None
 
     return router

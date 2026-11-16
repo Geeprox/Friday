@@ -47,6 +47,7 @@ APPS = [{"id": key, "name": name, "description": description, "kind": kind, "pla
 
 def handler_for(scenario):
     room = json.loads(json.dumps(ROOM))
+    background_policy = {"enabled": True, "daily_limit": 100, "daily_remaining": 98}
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -81,9 +82,16 @@ def handler_for(scenario):
                     "manage/room": room if scenario == "ready" else {"active": False, "room_id": "", "defaults": DEFAULTS, "status": None},
                     "manage/library": {"simulated": True, "mac": HOST, "nas": {**HOST, "bytes": int(6.2 * 1024**3),
                         "policy": {"enabled": True, "limit_bytes": 100 * 1024**3}}, "entries": ENTRIES},
+                    "manage/policy/mac": {**HOST, "hot_cache": {"bytes": HOST["bytes"]}},
+                    "manage/policy/nas": {**HOST, "bytes": int(6.2 * 1024**3),
+                        "policy": {"enabled": True, "limit_bytes": 100 * 1024**3}},
                     "scheduler": {"hardware": {"cpu": "合成测试主机", "memory_bytes": 16 * 1024**3},
                         "settings": {"mode": "auto", "download": 2, "model": 1, "encode": 2}, "limits": {"download": 3, "model": 2, "encode": 4}},
                     "source/status": {"logged_in": True, "state": "logged_in", "settings": {"level": "standard"}}, "jobs": {"jobs": []},
+                    "manage/backgrounds": {**background_policy, "items": [
+                        {"id": "a" * 64, "title": "稻香 · 合成示例", "source": "song", "status": "ready", "ready": True},
+                        {"id": "b" * 64, "title": "晴天 · 合成示例", "source": "cloud", "status": "preparing", "ready": False},
+                    ]},
                     "manage/search": {"songs": [{"song_id": str(i), "title": title + " · 合成示例", "artists": ["合成歌手"], "source": "song"}
                         for i, title in enumerate(("稻香", "听妈妈的话", "晴天"), 7)]},
                 }
@@ -111,6 +119,12 @@ def handler_for(scenario):
                 return self.data({"id": identifier, "accepted": True})
             if path.endswith("/manage/preview"):
                 return self.data({"plan": "SYNTHETIC-plan", "songs": [{"title": row["title"]} for row in ENTRIES if row["id"] in body.get("ids", [])], "bytes": {"mac": 350 * 1024**2, "nas": 420 * 1024**2}})
+            if path.endswith("/manage/backgrounds/policy"):
+                if "enabled" in body:
+                    background_policy["enabled"] = body["enabled"]
+                if "daily_images" in body:
+                    background_policy.update(daily_limit=body["daily_images"], daily_remaining=max(0, body["daily_images"] - 2))
+                return self.data(background_policy)
             return self.data({"accepted": True, "complete": True, "seq": 5, "revision": 4})
     return Handler
 

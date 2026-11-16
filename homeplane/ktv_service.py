@@ -1460,7 +1460,7 @@ def create_app(
             and request.headers.get("host") == console_origin.removeprefix("http://")
         )
         owner_path = bool(re.fullmatch(
-            rf"/v1/manage/(?:library|preview|delete|policy|room|search|"
+            rf"/v1/manage/(?:library|preview|delete|policy(?:/mac|/nas)?|room|search|"
             rf"room/(?:theme|controls|command|order|queue-remove|songs|retry|preferences)|jobs/{JOB_ID.pattern}/(?:retry|remove)|"
             r"backgrounds(?:/policy|/[a-f0-9]{64}/(?:preview|regenerate))?)",
             request.url.path,
@@ -1507,10 +1507,15 @@ def create_app(
                 return JSONResponse({"code": "origin_refused"}, status_code=403)
         else:
             media_match = re.fullmatch(r"/v1/jobs/([a-f0-9-]{36})/media/(original|instrumental|video|background|guide_original|guide_reference)", request.url.path)
+            background_match = re.fullmatch(r"/v1/background-assets/([a-f0-9]{64})/([a-f0-9]{64})", request.url.path)
             media_authorized = False
-            if request.method in {"GET", "HEAD"} and media_match and request.headers.get("X-KTV-Media"):
+            media_ticket = request.headers.get("X-KTV-Media")
+            if request.method in {"GET", "HEAD"} and media_ticket:
                 try:
-                    media_authorized = media_tickets.permits(request.headers["X-KTV-Media"], queue.get(media_match[1]))
+                    if media_match:
+                        media_authorized = media_tickets.permits(media_ticket, queue.get(media_match[1]))
+                    elif background_match:
+                        media_authorized = media_tickets.permits_background(media_ticket, *background_match.groups())
                 except Exception:
                     pass
             if not media_authorized and (len(supplied) > 128 or not hmac.compare_digest(supplied, token)):
@@ -1591,6 +1596,12 @@ def create_app(
     def library_inventory():
         return {**owner_library().inventory(), "simulated": queue.simulated}
 
+    @app.get("/v1/manage/policy/{host}")
+    def library_capacity(host: str):
+        if host not in {"mac", "nas"}:
+            raise HTTPException(404, "not_found")
+        return owner_library().capacity(host)
+
     @app.post("/v1/manage/preview")
     def library_preview(value: dict):
         return owner_library().preview(value)
@@ -1619,17 +1630,17 @@ def create_app(
 
     @app.get("/v1/manage/backgrounds")
     async def list_owner_backgrounds():
-        manager = owner_backgrounds()
-        candidates = await asyncio.to_thread(manager.candidates)
-        return {"items": [manager.status(key, song) for key, song in list(candidates.items())[:128]],
-                **await asyncio.to_thread(manager.policy)}
+        return await asyncio.to_thread(owner_backgrounds().listing)
 
     @app.post("/v1/manage/backgrounds/policy")
     async def update_owner_background_policy(value: dict):
-        if set(value) != {"daily_images"} or type(value["daily_images"]) is not int or value["daily_images"] < 0:
+        if (not value or set(value) - {"daily_images", "enabled"}
+                or "daily_images" in value and (type(value["daily_images"]) is not int or value["daily_images"] < 0)
+                or "enabled" in value and type(value["enabled"]) is not bool):
             raise HTTPException(400, "invalid_background_limit")
         manager = owner_backgrounds()
-        await asyncio.to_thread(song_backgrounds.runtime.settings.update, value)
+        patch = {("cloud_images" if key == "enabled" else key): field for key, field in value.items()}
+        await asyncio.to_thread(song_backgrounds.runtime.settings.update, patch)
         return await asyncio.to_thread(manager.policy)
 
     @app.get("/v1/manage/backgrounds/{identifier}/preview")
@@ -1652,8 +1663,13 @@ def create_app(
         if not candidate:
             raise HTTPException(404, "background_unavailable")
         if identifier not in song_backgrounds.tasks:
-            if (await asyncio.to_thread(manager.policy))["daily_remaining"] == 0:
+            policy = await asyncio.to_thread(manager.policy)
+            if not policy["enabled"]:
+                raise HTTPException(409, "cloud_images_disabled")
+            if policy["daily_remaining"] == 0:
                 raise HTTPException(409, "daily_images_reached")
+            if policy.get("generation_issue"):
+                raise HTTPException(409, policy["generation_issue"])
             public_metadata = song_backgrounds.public_metadata_for(identifier)
             job = song_backgrounds.request(candidate, force=True, public_metadata=public_metadata)
             if job["status"] != "preparing":
@@ -1863,22 +1879,26 @@ def create_app(
         from .ktv_metadata import song_title
         linked = getattr(bridge, "protected_jobs", None)
         values = queue.list(for_playback=True, linked_jobs=linked() if callable(linked) else ())
-        if song_backgrounds is not None:
-            from .intelligence.backgrounds import song_identity
+        try:
+            backgrounds_enabled = song_backgrounds is None or song_backgrounds.enabled()
+        except (OSError, ValueError):
+            backgrounds_enabled = False
+        if song_backgrounds is not None and backgrounds_enabled:
             active = bridge.current() if bridge is not None else {}
-            selected = set(active.get('order',[])[:3]) if active.get('active') else set()
+            selected = set(active.get("order", [])[:song_backgrounds.max_parallel]) if active.get("active") else set()
+            song_backgrounds.prefetch_from_thread(job for job in values if job["state"] == "ready" and job["id"] in selected)
             for job in values:
                 if job['state'] != 'ready':
                     continue
                 try:
-                    candidate = song_backgrounds.request_from_thread(job) if job['id'] in selected else song_backgrounds.cached(
-                        song_identity(job,song_backgrounds.runtime.settings.read().image_model))
+                    candidate = song_backgrounds.cached_for(job)
                     if candidate and candidate.get('status') == 'ready':
                         job['background'] = {k:candidate[k] for k in ('status','sha256','bytes','encoding')}
                         job['background']['url'] = f"/v1/jobs/{job['id']}/media/background"
                 except (OSError,ValueError):
                     pass
-        return {"jobs": [{**job,'title':song_title(job['title'])} for job in values]}
+        return {"jobs": [{**job,'title':song_title(job['title'])} for job in values],
+                "backgrounds_enabled": backgrounds_enabled}
 
     @app.get("/v1/party")
     def party():
@@ -1955,16 +1975,26 @@ def create_app(
     def song_lyrics(job_id: str):
         return prepared_lyrics(queue, job_id, lyrics, source_api)
 
+    @app.get("/v1/background-assets/{identifier}/{checksum}")
+    def background_asset(identifier: str, checksum: str):
+        from fastapi.responses import Response
+
+        if song_backgrounds is None or not song_backgrounds.enabled():
+            raise HTTPException(404, "background_unavailable")
+        data = song_backgrounds.read_image(identifier, checksum)
+        if not data:
+            raise HTTPException(404, "background_unavailable")
+        encoding = "png" if data.startswith(b"\x89PNG\r\n\x1a\n") else "jpeg"
+        return Response(data, media_type="image/" + encoding)
+
     @app.api_route("/v1/jobs/{job_id}/media/{kind}", methods=["GET", "HEAD"])
     def media(job_id: str, kind: str, request: Request):
         if kind == 'background' and song_backgrounds is not None:
-            from .intelligence.backgrounds import song_identity
             job = queue.get(job_id)
-            identifier = song_identity(job,song_backgrounds.runtime.settings.read().image_model)
-            item = song_backgrounds.cached(identifier)
+            item = song_backgrounds.cached_for(job) if song_backgrounds.enabled() else None
             if not item:
                 raise HTTPException(404,'background_unavailable')
-            data = song_backgrounds.read_image(identifier, item["sha256"])
+            data = song_backgrounds.read_image(item["id"], item["sha256"])
             if not data:
                 raise HTTPException(404, "background_unavailable")
             stream = io.BytesIO(data)

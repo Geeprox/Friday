@@ -94,11 +94,14 @@ def _selected_source(payload, choices):
 def _fit_timeline(value, duration_ms):
     if not isinstance(value, dict) or value.get("status") != "ready" or not isinstance(value.get("lines"), list):
         return None
-    lines = [line for line in value["lines"] if isinstance(line, dict) and type(line.get("time_ms")) is int
-             and 0 <= line["time_ms"] <= duration_ms and isinstance(line.get("text"), str) and line["text"].strip()]
+    lines = {}
+    for line in value["lines"]:
+        if (isinstance(line, dict) and type(line.get("time_ms")) is int and 0 <= line["time_ms"] <= duration_ms
+                and isinstance(line.get("text"), str) and line["text"].strip()):
+            lines.setdefault(line["time_ms"], {"time_ms": line["time_ms"], "text": line["text"]})
     if len(lines) < 3:
         return None
-    result = {**value, "lines": sorted(lines, key=lambda line: line["time_ms"])}
+    result = {**value, "lines": [lines[stamp] for stamp in sorted(lines)]}
     if isinstance(value.get("entry_ms"), list):
         result["entry_ms"] = [at for at in value["entry_ms"] if type(at) is int and 0 <= at <= duration_ms]
     return result
@@ -185,13 +188,18 @@ class KtvLyricsRecovery:
     def recover(self, local):
         unavailable = {"status": "unavailable", "lines": []}
         job, duration_ms = self._job_timeline(local)
-        # 只为同曲库原曲找候选。云盘录音和 MV 剪辑只能使用自己的时间轴。
-        if job.get("audio_origin") != "song" or job.get("simulated"):
+        origin = job.get("audio_origin")
+        if origin not in {"song", "cloud"} or job.get("simulated"):
             return unavailable
         try:
             self.runtime.client.authorize("responses")
-            original = self.source.public_lyric_recording(job["song_id"])
-            if not original["artists"] or abs(original["duration_ms"] - duration_ms) > 1000:
+            if origin == "cloud":
+                # 只把查证过的公开曲库资料传给模型，不传云盘标识、上传文件内容或账户资料。
+                recording = getattr(self.source, "public_cloud_recording", None)
+                original = recording(job["song_id"]) if callable(recording) else None
+            else:
+                original = self.source.public_lyric_recording(job["song_id"])
+            if not original or not original["artists"] or abs(original["duration_ms"] - duration_ms) > 1000:
                 return unavailable
             candidates = asyncio.run(self._search(original))
             deadline = time.monotonic() + 24

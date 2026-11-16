@@ -39,7 +39,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private final ExecutorService backdropNetwork=new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(1));
     private final SongBackdrop songBackdrop=new SongBackdrop();
     private JSONObject backdropJob;
-    private boolean backdropBusy;
+    private boolean backdropBusy,aiBackdropVisible,backgroundsEnabled=true;
     private final ExecutorService controlActions=new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(16));
     private final LocalControlIntent localOriginal=new LocalControlIntent();
     private boolean controlBusy,protocolReady;
@@ -68,7 +68,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private long shownSfx;
     private AudioManager audio;
     private FrameLayout page,smallQr;
-    private View debugShade;
+    private View debugShade,lyricContrast;
     private ImageView background,smallQrImage,bigQr,requesterAvatar;
     private TextureView picture;
     private LinearLayout idle,lyrics,byline;
@@ -111,7 +111,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private int roomOriginal;
     private boolean controlsInitialized;
     private long nextConnectAttempt;private int connectionFailures;
-    private long nextJobPoll,nextQrPoll,nextDiagnosticPoll;
+    private long nextJobPoll,nextQrPoll,nextDiagnosticPoll,lastControlStateAt;
     private JSONArray roomOrder,roomUpcoming,roomPlayable;
     private long queueRevision=-1;
     private String roomMessage="正在连接房间…";
@@ -187,6 +187,18 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
             if(right-left!=oldRight-oldLeft||bottom-top!=oldBottom-oldTop)loadSongBackground();
         });
         picture=new TextureView(this);picture.setSurfaceTextureListener(this);picture.setAlpha(0);page.addView(picture,new FrameLayout.LayoutParams(-1,-1));
+        lyricContrast=new View(this){
+            private final Paint shade=new Paint();
+            @Override protected void onSizeChanged(int w,int h,int oldw,int oldh){
+                super.onSizeChanged(w,h,oldw,oldh);
+                if(w>0)shade.setShader(new LinearGradient(0,0,w,0,
+                    new int[]{0x54000000,0x49000000,0x1c000000,0x00000000},
+                    new float[]{0,.14f,.34f,.55f},Shader.TileMode.CLAMP));
+            }
+            @Override protected void onDraw(Canvas canvas){canvas.drawRect(0,0,getWidth(),getHeight(),shade);}
+        };
+        lyricContrast.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        lyricContrast.setVisibility(View.GONE);page.addView(lyricContrast,new FrameLayout.LayoutParams(-1,-1));
         TextView brand=text("Friday KTV",20,WHITE);brand.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));brand.setContentDescription("Friday KTV，长按打开房间维护");brand.setOnLongClickListener(v->{maintenance();return true;});page.addView(brand,box(-2,-2,Gravity.TOP|Gravity.START,32,27));
         updateBadge=text("",13,MUTED);updateBadge.setVisibility(View.GONE);
         updateBadge.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
@@ -260,13 +272,33 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private void setTheme(String value){
         if(!Arrays.asList("content","festival","live").contains(value))return;
         if(background.getDrawable()!=null && theme.equals(value))return;theme=value;accent=theme.equals("festival")?0xffeee353:0xfffa6670;
-        try(InputStream in=getAssets().open(theme+".png")){background.setImageBitmap(BitmapFactory.decodeStream(in));}catch(Exception ignored){}
+        if(!aiBackdropVisible)showThemeBackdrop();
         if(activeLine>=0 && activeLine<lyricViews.size())lyricViews.get(activeLine).setTextColor(theme.equals("festival")?accent:WHITE);
         if(smallQr.hasFocus())updateQrFrame(true);
     }
+    private void showThemeBackdrop(){
+        aiBackdropVisible=false;
+        try(InputStream in=getAssets().open(theme+".png")){background.setImageBitmap(BitmapFactory.decodeStream(in));}catch(Exception ignored){}
+        updateLyricContrast();
+    }
+    private void updateLyricContrast(){
+        lyricContrast.setVisibility(aiBackdropVisible&&lyricScroll.getVisibility()==View.VISIBLE?View.VISIBLE:View.GONE);
+    }
+    private void showScrollingLyrics(boolean show){
+        lyricScroll.setVisibility(show?View.VISIBLE:View.GONE);
+        updateLyricContrast();
+    }
+    private void showSongBackgrounds(boolean allowed){
+        if(backgroundsEnabled==allowed)return;
+        backgroundsEnabled=allowed;
+        if(!allowed){
+            songBackdrop.clear();
+            if(aiBackdropVisible)showThemeBackdrop();
+        }
+    }
     private void songBackground(JSONObject job){
         final String song=job==null?"":job.optString("id","");
-        if(songBackdrop.select(song)){String previous=theme;theme="";setTheme(previous);}
+        if(songBackdrop.select(song)&&aiBackdropVisible)showThemeBackdrop();
         backdropJob=job;
         loadSongBackground();
     }
@@ -282,14 +314,14 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         return descriptor!=null&&descriptor.optString("status").equals("ready")?descriptor:null;
     }
     private void loadSongBackground(){
-        if(backdropBusy||!foreground||debugScreen||client==null||current==null||backdropJob==null
+        if(backdropBusy||!backgroundsEnabled||!foreground||debugScreen||client==null||current==null||backdropJob==null
             ||background.getWidth()==0||background.getHeight()==0)return;
         final String song=backdropJob.optString("id","");
         final JSONObject descriptor=readyBackdrop(backdropJob);
         if(!currentId.equals(song)||descriptor==null)return;
         final String hash=descriptor.optString("sha256");
         final boolean wantsUhd=uhdBackdrop();
-        final long request=songBackdrop.begin(song,hash,wantsUhd);
+        final long request=songBackdrop.begin(song,hash,wantsUhd,SystemClock.elapsedRealtime());
         if(request==0)return;
 
         final KtvClient owner=client;
@@ -308,13 +340,15 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                 ui.post(()->{
                     backdropBusy=false;
                     JSONObject desired=readyBackdrop(backdropJob);
-                    boolean wanted=foreground&&!debugScreen&&owner==client&&version==generation.get()&&current!=null
+                    boolean wanted=backgroundsEnabled&&foreground&&!debugScreen&&owner==client&&version==generation.get()&&current!=null
                         &&currentId.equals(song)&&desired!=null&&hash.equals(desired.optString("sha256"))&&wantsUhd==uhdBackdrop();
                     if(wanted&&bitmap!=null&&songBackdrop.accept(song,hash,request)){
                         bitmap.prepareToDraw();
                         background.setImageBitmap(bitmap);
+                        aiBackdropVisible=true;
+                        updateLyricContrast();
                     }else{
-                        songBackdrop.fail(request);
+                        songBackdrop.fail(request,SystemClock.elapsedRealtime());
                         if(bitmap!=null)bitmap.recycle();
                     }
                     if(!wanted)loadSongBackground();
@@ -322,7 +356,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
             });
         }catch(RejectedExecutionException ignored){
             backdropBusy=false;
-            songBackdrop.fail(request);
+            songBackdrop.fail(request,SystemClock.elapsedRealtime());
         }
     }
     private void connect(){
@@ -331,7 +365,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         autoRoom=true;
         coordinatorSession.requestOpen();readinessAt=0;coordinatorVisible=false;coordinatorStatus.disconnected(false);if(connectionBadge!=null)connectionBadge.setText("");
         connectionEpoch++;controlEpoch++;roomEpoch++;pendingPlay=null;stopAudio(true);protocolReady=false;roomId="";currentFilesJob="";currentOriginal=currentInstrumental=null;client=null;current=null;currentId="";jobs.clear();qrBitmap=null;
-        resetRoomQueue();nextConnectAttempt=nextJobPoll=nextQrPoll=nextDiagnosticPoll=0;connectionFailures=0;
+        resetRoomQueue();nextConnectAttempt=nextJobPoll=nextQrPoll=nextDiagnosticPoll=lastControlStateAt=0;connectionFailures=0;
         roomMessage="正在连接房间…";roomRetry=false;showIdle();
         String origin=preferences.getString("origin",SetupDefaults.ORIGIN),key=preferences.getString("key",SetupDefaults.KEY);
         try{client=new KtvClient(origin,key,new File(getCacheDir(),"audio"));client.instance(tvInstance);notice.setText("正在连接房间…");poll();}
@@ -341,7 +375,8 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private boolean ownsConnection(KtvClient c,long epoch){return foreground&&autoRoom&&c==client&&epoch==connectionEpoch;}
     private void poll(){
         long now=SystemClock.elapsedRealtime();
-        if(client==null||pollBusy||!foreground||!autoRoom||now<nextConnectAttempt)return;
+        if(client==null||pollBusy||!foreground||!autoRoom||now<nextConnectAttempt
+            ||protocolReady&&lastControlStateAt!=0&&now-lastControlStateAt<1250)return;
         pollBusy=true;
         final KtvClient c=client;
         final long epoch=connectionEpoch;
@@ -472,7 +507,9 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         if(sendDiagnostic)nextDiagnosticPoll=now+3000;
         try{network.execute(()->{
             try{
-                JSONArray incoming=c.json("/v1/jobs",null).optJSONArray("jobs");
+                JSONObject response=c.json("/v1/jobs",null);
+                JSONArray incoming=response.optJSONArray("jobs");
+                boolean artworkEnabled=response.optBoolean("backgrounds_enabled",true);
                 JSONArray values=new JSONArray();
                 if(incoming!=null)for(int i=0;i<incoming.length();i++){
                     JSONObject job=incoming.optJSONObject(i);
@@ -480,6 +517,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                 }
                 if(incoming!=null)ui.post(()->{
                     if(!foreground||!autoRoom||c!=client||epoch!=roomEpoch||!protocolReady)return;
+                    showSongBackgrounds(artworkEnabled);
                     jobs.clear();
                     for(int i=0;i<values.length();i++){
                         JSONObject job=values.optJSONObject(i);
@@ -556,29 +594,41 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private final Runnable controlTick=new Runnable(){public void run(){
         if(!foreground)return;
         if(client!=null&&autoRoom&&protocolReady&&!controlBusy){
-            controlBusy=true;final KtvClient c=client;final long epoch=controlEpoch;final JSONObject report=playbackReport();
+            controlBusy=true;final KtvClient c=client;final long epoch=controlEpoch;
             try{controlNetwork.execute(()->{try{
                 JSONObject room=c.controlJson("/v1/party",null);
-                ui.post(()->{
-                    if(!foreground||!autoRoom||epoch!=controlEpoch||c!=client||!protocolReady
-                        ||!room.optBoolean("active")||!roomId.equals(room.optString("room_id")))return;
-                    applyRoom(room);
-                    if(c.coordinator())observeReadiness(true,room.optJSONObject("readiness"));
-                });
-                if(epoch==controlEpoch&&!report.optString("room_id").isEmpty()){
-                    long position=report.optLong("position_ms");
-                    if(report.optString("current").equals(currentId))position=Math.min(1800000,Math.max(0,engine.playheadFrames/48));
-                    report.remove("position_ms");
-                    String payload=report.toString();
-                    boolean playing="playing".equals(report.optString("state"));
-                    if(playbackReports.shouldSend(epoch,payload,playing,SystemClock.elapsedRealtime())
-                        &&c.controlJson("/v1/tv/playback",report.put("position_ms",position)).optBoolean("accepted"))
-                        playbackReports.accepted(epoch,payload,SystemClock.elapsedRealtime());
-                }
-            }catch(Exception ignored){}finally{ui.post(()->controlBusy=false);}});}catch(RejectedExecutionException ignored){controlBusy=false;}
+                ui.post(()->handleControlState(c,epoch,room));
+            }catch(Exception ignored){ui.post(()->controlBusy=false);}});}catch(RejectedExecutionException ignored){controlBusy=false;}
         }
         ui.postDelayed(this,150);
     }};
+    private void handleControlState(KtvClient c,long epoch,JSONObject room){
+        if(!foreground||!autoRoom||epoch!=controlEpoch||c!=client||!protocolReady
+            ||!room.optBoolean("active")||!roomId.equals(room.optString("room_id"))){
+            controlBusy=false;return;
+        }
+        lastControlStateAt=SystemClock.elapsedRealtime();
+        String priorTheme=theme;
+        setTheme(room.optString("theme","content"));
+        applyRoom(room);
+        if(c.coordinator())observeReadiness(true,room.optJSONObject("readiness"));
+        refreshTvReadiness(c,roomId,connectionEpoch);
+        refreshRoomQr(c,roomId,connectionEpoch);
+        refreshRoomJobs(c,roomEpoch);
+        if(!priorTheme.equals(theme)&&current==null&&!loading)showIdle();
+        // 在主线程应用当前状态后再生成同一轮回报，避免多等一次网络轮询。
+        final JSONObject report=playbackReport();
+        try{controlNetwork.execute(()->{try{
+            if(epoch!=controlEpoch||!foreground||c!=client)return;
+            long position=report.optLong("position_ms");
+            report.remove("position_ms");
+            String payload=report.toString();
+            boolean playing="playing".equals(report.optString("state"));
+            if(playbackReports.shouldSend(epoch,payload,playing,SystemClock.elapsedRealtime())
+                &&c.controlJson("/v1/tv/playback",report.put("position_ms",position)).optBoolean("accepted"))
+                playbackReports.accepted(epoch,payload,SystemClock.elapsedRealtime());
+        }catch(Exception ignored){}finally{ui.post(()->controlBusy=false);}});}catch(RejectedExecutionException ignored){controlBusy=false;}
+    }
     private void switchMusic(){
         if(current==null||!engine.running)return;
         File file=original?currentOriginal:currentInstrumental;
@@ -713,7 +763,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private void showIdle(){
         if(current==null)songBackground(null);
         idle.setVisibility(View.VISIBLE);
-        lyricScroll.setVisibility(View.GONE);
+        showScrollingLyrics(false);
         byline.setVisibility(View.GONE);
         progress.setVisibility(View.INVISIBLE);
         clock.setText("");
@@ -1094,7 +1144,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                     showRequester(job);
                     idle.setVisibility(View.GONE);
                     trackTitle.setVisibility(View.VISIBLE);
-                    lyricScroll.setVisibility(View.VISIBLE);
+                    showScrollingLyrics(true);
                     progress.setVisibility(View.VISIBLE);
                     try{
                         engine.startBacking(original?currentOriginal:currentInstrumental,position);
@@ -1239,7 +1289,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     }
     private void prepareVideo(){releaseVideo();if(videoFile==null||!picture.isAvailable()||!foreground)return;try{
         videoPrepareCount++;videoClock.reset();videoSeekCount=videoBufferEvents=videoSurfaceFrames=0;videoSpeed=1;videoSpeedSupported=false;videoSurface=new Surface(picture.getSurfaceTexture());final MediaPlayer p=new MediaPlayer();video=p;p.setSurface(videoSurface);p.setDataSource(videoFile.getAbsolutePath());p.setLooping(false);p.setVolume(0,0);p.setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING);
-        p.setOnPreparedListener(v->{if(video!=p||!foreground)return;videoReady=true;syncVideo(true);});p.setOnSeekCompleteListener(v->{if(video!=p)return;try{seekResultMs=p.getCurrentPosition();videoSeeking=false;if(engine.running&&foreground){long target=engine.playheadFrames/48+videoOffsetMs;long lag=target-seekResultMs;if(videoSeekCount==1&&lag>180&&lag<1500&&target+lag<videoDurationMs-40){videoSeeking=true;videoSeekCount++;p.seekTo(target+lag,MediaPlayer.SEEK_CLOSEST);}else p.start();}}catch(Exception ignored){if(video==p)releaseVideo();}});p.setOnInfoListener((v,what,extra)->{if(what==MediaPlayer.MEDIA_INFO_BUFFERING_START)videoBufferEvents++;if(what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START&&video==p){picture.setAlpha(1);lyricScroll.setVisibility(View.GONE);trackTitle.setVisibility(View.GONE);}return false;});p.setOnCompletionListener(v->{if(video==p)picture.setAlpha(0);});p.setOnErrorListener((v,what,extra)->{if(video==p)releaseVideo();return true;});p.prepareAsync();
+        p.setOnPreparedListener(v->{if(video!=p||!foreground)return;videoReady=true;syncVideo(true);});p.setOnSeekCompleteListener(v->{if(video!=p)return;try{seekResultMs=p.getCurrentPosition();videoSeeking=false;if(engine.running&&foreground){long target=engine.playheadFrames/48+videoOffsetMs;long lag=target-seekResultMs;if(videoSeekCount==1&&lag>180&&lag<1500&&target+lag<videoDurationMs-40){videoSeeking=true;videoSeekCount++;p.seekTo(target+lag,MediaPlayer.SEEK_CLOSEST);}else p.start();}}catch(Exception ignored){if(video==p)releaseVideo();}});p.setOnInfoListener((v,what,extra)->{if(what==MediaPlayer.MEDIA_INFO_BUFFERING_START)videoBufferEvents++;if(what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START&&video==p){picture.setAlpha(1);showScrollingLyrics(false);trackTitle.setVisibility(View.GONE);}return false;});p.setOnCompletionListener(v->{if(video==p)picture.setAlpha(0);});p.setOnErrorListener((v,what,extra)->{if(video==p)releaseVideo();return true;});p.prepareAsync();
         }catch(Exception ignored){releaseVideo();}}
     private void updateMvLyrics(long ms){
         lyricCue.update(ms,lyricStarts,entryStarts);boolean showVideo=video!=null&&picture.getAlpha()>0&&lines.length()>0;
@@ -1300,7 +1350,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         if(videoClock.seek){videoSeeking=true;videoSeekCount++;video.seekTo(target,MediaPlayer.SEEK_CLOSEST);}
         else if(!video.isPlaying())video.start();
         }catch(Exception ignored){releaseVideo();}}
-    private void releaseVideo(){if(current!=null){lyricScroll.setVisibility(View.VISIBLE);trackTitle.setVisibility(View.VISIBLE);}mvLyrics.setVisibility(View.GONE);videoReady=false;videoSeeking=false;picture.setAlpha(0);if(video!=null){try{video.release();}catch(Exception ignored){}video=null;}if(videoSurface!=null){videoSurface.release();videoSurface=null;}}
+    private void releaseVideo(){if(current!=null){showScrollingLyrics(true);trackTitle.setVisibility(View.VISIBLE);}mvLyrics.setVisibility(View.GONE);videoReady=false;videoSeeking=false;picture.setAlpha(0);if(video!=null){try{video.release();}catch(Exception ignored){}video=null;}if(videoSurface!=null){videoSurface.release();videoSurface=null;}}
     @Override public void onSurfaceTextureAvailable(SurfaceTexture texture,int w,int h){if(engine.running)prepareVideo();}
     @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture){releaseVideo();return true;}
     @Override public void onSurfaceTextureSizeChanged(SurfaceTexture texture,int w,int h){}
