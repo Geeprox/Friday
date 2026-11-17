@@ -267,6 +267,9 @@ def test_stock_migration_is_read_only_by_default_and_protects_active_songs(tmp_p
         row = store.coordinator._row(payload["id"])
         for kind, spec in store.coordinator._specs(row).items():
             store.coordinator._cache_one(row, kind, spec)
+        with store.connection() as db:
+            db.execute("INSERT INTO managed_editions SELECT song_id,source,?,timeline,job,lyrics,updated "
+                       "FROM managed_editions WHERE song_id='123'", ("f" * 64,))
         before = (store.db.read_bytes(), {p.name: p.read_bytes() for p in store.coordinator.media_root.iterdir()})
         preview = plan(store.root)
         assert preview["items"][0]["protected"]
@@ -301,7 +304,14 @@ def test_stock_migration_is_read_only_by_default_and_protects_active_songs(tmp_p
                    "source_metadata": {"bitrate": 128000}}
         (legacy / "catalog/123.json").write_text(json.dumps(catalog))
         prepare(store.root, stage, legacy)
-        assert len(list(stage.glob("*/prepared.json"))) == 1
+        staged = list(stage.glob("*/prepared.json"))
+        assert len(staged) == 2
+        first, second = [json.loads(path.read_text()) for path in staged]
+        assert first["encoding_revision"] == second["encoding_revision"] == 1
+        for kind in ("original", "instrumental"):
+            left = staged[0].parent / first["media"][kind]["filename"]
+            right = staged[1].parent / second["media"][kind]["filename"]
+            assert left.stat().st_ino == right.stat().st_ino
         with store.connection() as db:
             db.execute("UPDATE rooms SET closed=0 WHERE id=?", (room["id"],))
         assert apply(store.root, stage, proof, legacy)["completed"] == 0
@@ -317,8 +327,8 @@ def test_stock_migration_is_read_only_by_default_and_protects_active_songs(tmp_p
             apply(store.root, stage, proof, legacy)
         monkeypatch.setattr(migration, "atomic", real_atomic)
         result = apply(store.root, stage, proof, legacy)
-        assert result["completed"] == 1 and result["removed_bytes"] == 2 * sum(len(v) for v in data.values()) + len(raw_source)
-        assert apply(store.root, stage, proof, legacy)["completed"] == 1
+        assert result["completed"] == 2 and result["removed_bytes"] == 2 * sum(len(v) for v in data.values()) + len(raw_source)
+        assert apply(store.root, stage, proof, legacy)["completed"] == 2
         assert untouched.read_bytes() == data["original"]
         converted = json.loads((legacy / "catalog/123.json").read_text())
         assert converted["retained"] == converted["originals"] == []

@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 SHA = re.compile(r"[0-9a-f]{64}\Z")
+ENCODING_REVISION = 1
 
 
 def checksum(path):
@@ -129,10 +130,11 @@ def prepare(state, stage, legacy=None, exported=None):
     stage.mkdir(mode=0o700, parents=True, exist_ok=True)
     variants = {}
     def variant(item):
-        return fingerprint([item["media"], item["bitrate"]])
+        return fingerprint(["aac_lc_m4a", ENCODING_REVISION, item["media"], item["bitrate"]])
     for record in stage.glob("*/prepared.json"):
         existing = json.loads(record.read_text())
-        variants.setdefault(variant(existing["source"]), (record.parent, existing["media"]))
+        if existing.get("encoding_revision") == ENCODING_REVISION:
+            variants.setdefault(variant(existing["source"]), (record.parent, existing["media"]))
     for item in current["items"]:
         if item["protected"]:
             continue
@@ -143,13 +145,14 @@ def prepare(state, stage, legacy=None, exported=None):
             existing = json.loads(record.read_text())
             if existing["source"] != item:
                 raise ValueError("migration_source_changed")
-            if all(checksum(folder / spec["filename"]) == spec["sha256"] for spec in existing["media"].values()):
+            if (existing.get("encoding_revision") == ENCODING_REVISION
+                    and all(checksum(folder / spec["filename"]) == spec["sha256"] for spec in existing["media"].values())):
                 continue
         shared = variants.get(variant(item))
         if shared and shared[0] != folder and all(checksum(shared[0] / spec["filename"]) == spec["sha256"] for spec in shared[1].values()):
             for spec in shared[1].values():
                 _legacy_link(shared[0] / spec["filename"], folder / spec["filename"])
-            atomic(record, {"source": item, "media": shared[1]})
+            atomic(record, {"source": item, "media": shared[1], "encoding_revision": ENCODING_REVISION})
             continue
         paths = [state / "coordinator-media" / item["media"][kind]["sha256"] for kind in ("original", "instrumental")]
         if any(checksum(path) != item["media"][kind]["sha256"] for path, kind in zip(paths, ("original", "instrumental"))):
@@ -158,7 +161,7 @@ def prepare(state, stage, legacy=None, exported=None):
                               ffprobe=shutil.which("ffprobe"), bitrate=item["bitrate"])
         for path in folder.glob(".playback-*.wav"):
             path.unlink()
-        atomic(record, {"source": item, "media": media})
+        atomic(record, {"source": item, "media": media, "encoding_revision": ENCODING_REVISION})
         variants[variant(item)] = (folder, media)
     return current
 

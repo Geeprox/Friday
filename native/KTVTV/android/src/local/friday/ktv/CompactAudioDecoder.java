@@ -45,6 +45,9 @@ public final class CompactAudioDecoder {
         File root=encoded.getParentFile(),target=new File(root,sha+".wav"),receipt=new File(root,sha+".pcm");
         File found=verified(target,receipt,frames,delay,padding,cancel,cache);
         if(found!=null)return found;
+        // 损坏或中断的旧解码副本先退役，替换时不重复计入整轨容量。
+        if(target.exists()&&!target.delete())throw new IOException("cache_unavailable");
+        if(receipt.exists()&&!receipt.delete())throw new IOException("cache_unavailable");
         try(AutoCloseable pinned=cache.pin(encoded);
             MediaCache.Reservation reservation=cache.reserveTransfer(target,44+frames*4+128)){
             File partial=cache.beginPartial(sha),metadata=null;
