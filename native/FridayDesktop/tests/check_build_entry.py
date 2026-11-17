@@ -32,6 +32,8 @@ class BuildGuards(unittest.TestCase):
     def test_packaging_uses_publication_inventory(self):
         records = build.public_sources()
         self.assertIn('homeplane/api.py', records)
+        self.assertIn('homeplane/ktv_audio.py', records)
+        self.assertIn('integrations/ktv_public/audio_format.py', records)
         self.assertIn('fixtures/homeplane/archive-simulated.mp4', records)
         self.assertFalse(any(name.startswith(('data/', '.artifacts/')) or 'node_modules' in name for name in records))
 

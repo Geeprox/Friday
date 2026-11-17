@@ -89,8 +89,12 @@ assert not any(isinstance(n, (ast.Assign, ast.AnnAssign)) and 'DesktopService(' 
 from starlette.responses import JSONResponse  # noqa: E402
 
 import homeplane.runtime_log as log  # noqa: E402
+import homeplane.ktv_audio as ktv_audio  # noqa: E402
+from integrations.ktv_public import audio_format  # noqa: E402
 
 assert Path(log.__file__).resolve() == (PRODUCT / 'app/homeplane/runtime_log.py').resolve()
+assert Path(ktv_audio.__file__).resolve() == (PRODUCT / 'app/homeplane/ktv_audio.py').resolve()
+assert Path(audio_format.__file__).resolve() == (PRODUCT / 'app/integrations/ktv_public/audio_format.py').resolve()
 checks = []
 for code in ['control_cancelled_after_send', 'flow_operation_invalidated', 'rule_cleanup_pending', 'nas_source_changed', 'ha_authorization_rejected']:
     assert log.fixed_code(code) == code
@@ -105,9 +109,9 @@ for name, module in list(sys.modules.items()):
     path = getattr(module, '__file__', None)
     if not path:
         continue
-    if name == spec.name or name.split('.')[0] in {'homeplane', 'friday', 'fastapi', 'starlette', 'httpx', 'pydantic', 'qrcode'}:
+    if name == spec.name or name.split('.')[0] in {'homeplane', 'friday', 'integrations', 'fastapi', 'starlette', 'httpx', 'pydantic', 'qrcode'}:
         path = Path(path).resolve()
-        if name == spec.name or name.split('.')[0] in {'homeplane', 'friday'}:
+        if name == spec.name or name.split('.')[0] in {'homeplane', 'friday', 'integrations'}:
             assert path.is_relative_to(APP.resolve()), 'External project source fallback: ' + name
         modules[name] = {'path': str(path), 'sha256': sha(path)}
 assert modules[spec.name]['sha256'] == sha(BACKEND)
