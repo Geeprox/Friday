@@ -28,7 +28,8 @@ def acquire_source(queue, adapter, cloud_adapter, song_id, folder, event):
             raise ValueError("cancelled" if event.is_set() else "source_unavailable") from None
     else:
         selected = cloud_adapter if origin == "cloud" else adapter
-        result = selected.acquire(song_id, timeout=180, cancel=event,
+        # 云盘原文件可能是无损音频，传输时间与普通曲库有明显差异。
+        result = selected.acquire(song_id, timeout=600 if origin == "cloud" else 180, cancel=event,
                                   progress=lambda value: queue.report_source(folder.name, value))
         if result.get("status") != "ready":
             raw = result.get("code")

@@ -123,6 +123,32 @@ def test_complete_transfer_decode_cache_and_tamper(tmp_path, monkeypatch):
         adapter.acquire("1")
 
 
+@pytest.mark.parametrize("cdn_status", [200, 206])
+def test_cloud_range_download_reassembles_the_exact_source(tmp_path, monkeypatch, cdn_status):
+    from homeplane import ktv_source_api as source
+
+    raw = b"0123456789abcdef" * 16385
+    requests = []
+
+    @contextmanager
+    def stream(url, deadline, headers):
+        start, end = map(int, headers["Range"].removeprefix("bytes=").split("-"))
+        requests.append((start, end))
+        if cdn_status == 200:
+            yield httpx.Response(200, content=raw)
+        else:
+            yield httpx.Response(206, content=raw[start:end + 1],
+                                 headers={"Content-Range": f"bytes {start}-{end}/{len(raw)}"})
+
+    monkeypatch.setattr(source, "_open_audio_cdn", stream)
+    target = tmp_path / "audio.part"
+    source._transfer_audio("https://m.test.music.126.net/song", target, len(raw),
+                           threading.Event(), time.monotonic() + 10, lambda _: None,
+                           large_cloud_file=True)
+    assert target.read_bytes() == raw
+    assert len(requests) == (4 if cdn_status == 206 else 1)
+
+
 def test_source_quality_defaults_to_mp3_and_is_bounded(tmp_path):
     api = LocalSourceAPI(tmp_path / 'account', tmp_path / 'provider')
     assert api.settings() == {'level':'standard'}

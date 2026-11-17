@@ -616,12 +616,12 @@ def _media_addresses(host, timeout):
 
 
 @contextmanager
-def _open_audio_cdn(url, deadline):
+def _open_audio_cdn(url, deadline, headers=None):
     options = {"timeout": min(12, max(1, deadline - time.monotonic())),
                "follow_redirects": False, "trust_env": False}
     with ExitStack() as stack:
         try:
-            reply = stack.enter_context(httpx.stream("GET", url, **options))
+            reply = stack.enter_context(httpx.stream("GET", url, headers=headers, **options))
         except (httpx.ConnectError, httpx.ConnectTimeout):
             endpoint = httpx.URL(url)
             # 备用解析只替换连接地址。TLS 仍按供应商原始域名校验证书。
@@ -636,7 +636,7 @@ def _open_audio_cdn(url, deadline):
                     break
                 try:
                     reply = stack.enter_context(client.stream("GET", endpoint.copy_with(host=address),
-                        headers={"Host": host}, extensions={"sni_hostname": host}))
+                        headers={**(headers or {}), "Host": host}, extensions={"sni_hostname": host}))
                 except (httpx.ConnectError, httpx.ConnectTimeout):
                     continue
                 break
@@ -645,6 +645,71 @@ def _open_audio_cdn(url, deadline):
             if time.monotonic() >= deadline:
                 raise ValueError("source_api_unavailable")
         yield reply
+
+
+def _transfer_audio(url, part, size, cancel, deadline, progress, *, large_cloud_file):
+    identity_headers = {"Accept-Encoding": "identity"}
+    lock = threading.Lock()
+    total, last = 0, 0
+
+    def copy(reply, output, length):
+        nonlocal total, last
+        received = 0
+        if reply.headers.get("content-length") and int(reply.headers["content-length"]) != length:
+            raise ValueError("source_file_invalid")
+        for chunk in reply.iter_bytes(65536):
+            _check(cancel, deadline)
+            received += len(chunk)
+            if received > length:
+                raise ValueError("source_file_invalid")
+            output.write(chunk)
+            with lock:
+                total += len(chunk)
+                now = time.monotonic()
+                if now - last > .3:
+                    progress({"phase": "source_downloading", "bytes": total, "total": size})
+                    last = now
+        if received != length:
+            raise ValueError("source_file_invalid")
+
+    def validate_range(reply, start, end):
+        if reply.status_code != 206:
+            raise ValueError("source_api_unavailable")
+        if reply.headers.get("content-range") != f"bytes {start}-{end}/{size}":
+            raise ValueError("source_file_invalid")
+
+    def download_range(start, end):
+        headers = {**identity_headers, "Range": f"bytes={start}-{end}"}
+        with _open_audio_cdn(url, deadline, headers) as reply, part.open("r+b") as output:
+            validate_range(reply, start, end)
+            output.seek(start)
+            copy(reply, output, end - start + 1)
+
+    # 云盘保留上传版本。大文件使用 CDN 的分段能力，加快完整原文件到达。
+    if large_cloud_file:
+        edges = [size * lane // 4 for lane in range(5)]
+        ranges = [(left, right - 1) for left, right in zip(edges, edges[1:])]
+        first_end = ranges[0][1]
+        headers = {**identity_headers, "Range": f"bytes=0-{first_end}"}
+        with _open_audio_cdn(url, deadline, headers) as first, part.open("xb") as output:
+            part.chmod(0o600)
+            if first.status_code == 200:
+                copy(first, output, size)
+                return
+            validate_range(first, 0, first_end)
+            output.truncate(size)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="ktv-cloud-range") as pool:
+                pending = [pool.submit(download_range, start, end) for start, end in ranges[1:]]
+                copy(first, output, first_end + 1)
+                for future in pending:
+                    future.result()
+        return
+
+    with _open_audio_cdn(url, deadline, identity_headers) as reply, part.open("xb") as output:
+        if reply.status_code != 200:
+            raise ValueError("source_api_unavailable")
+        part.chmod(0o600)
+        copy(reply, output, size)
 
 
 class APIAudioAdapter:
@@ -704,27 +769,13 @@ class APIAudioAdapter:
             part = destination / "source.part"
             # Failed partial transfers are private and never eligible as complete source cache.
             part.unlink(missing_ok=True)
-            total, md5 = 0, hashlib.md5()
             try:
-                with _open_audio_cdn(url, deadline) as reply:
-                    if reply.status_code != 200:
-                        raise ValueError("source_api_unavailable")
-                    if reply.headers.get("content-length") and int(reply.headers["content-length"]) != spec["size"]:
-                        raise ValueError("source_file_invalid")
-                    with part.open("xb") as output:
-                        part.chmod(0o600)
-                        last = 0
-                        for chunk in reply.iter_bytes(65536):
-                            _check(cancel, deadline)
-                            total += len(chunk)
-                            if total > spec["size"]:
-                                raise ValueError("source_file_invalid")
-                            output.write(chunk)
-                            md5.update(chunk)
-                            if time.monotonic() - last > .3:
-                                progress({"phase": "source_downloading", "bytes": total, "total": spec["size"]})
-                                last = time.monotonic()
-                if total != spec["size"] or md5.hexdigest() != spec["md5"].lower():
+                total = spec["size"]
+                _transfer_audio(url, part, total, cancel, deadline, progress,
+                                large_cloud_file=self.source == "cloud" and total >= 8 * 1024**2)
+                with part.open("rb") as transferred:
+                    checksum = hashlib.file_digest(transferred, "md5").hexdigest()
+                if part.stat().st_size != total or checksum != spec["md5"].lower():
                     raise ValueError("source_file_invalid")
                 progress({"phase": "decoding", "bytes": total, "total": total})
                 ffprobe, ffmpeg = shutil.which("ffprobe"), shutil.which("ffmpeg")
