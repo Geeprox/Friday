@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 import wave
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -249,6 +250,34 @@ def test_pool_resize_and_scheduler_settings_persist_without_interrupting_active_
         assert restarted.scheduler_status()["settings"]["mode"] == "auto"
     finally:
         restarted.close()
+
+
+def test_storage_scan_survives_concurrent_atomic_state_replacement(tmp_path, monkeypatch):
+    from homeplane import ktv_service
+
+    queue = Queue(tmp_path / "runtime", acquire=lambda *args: None,
+                  separate=lambda *args: None, transcode=lambda *args: None, simulated=True)
+    pending = queue.root / ".state.json.pending"
+    pending.write_bytes(b"temporary-state")
+    (queue.root / "kept.bin").write_bytes(b"x" * 4096)
+    original_lstat = Path.lstat
+    replaced = []
+
+    def completed_write(path, *args, **kwargs):
+        if path == pending and not replaced:
+            pending.unlink()
+            replaced.append(True)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", completed_write)
+    monkeypatch.setattr(ktv_service, "MAX_STORAGE", 16384)
+    try:
+        queue._reserve_storage("scan", 1024)
+        assert replaced and queue.storage_reservations["scan"] == 1024
+        with pytest.raises(ValueError, match="storage_full"):
+            queue._reserve_storage("scan", 16384)
+    finally:
+        queue.close()
 
 
 def test_default_pool_runs_three_separations_with_headroom(tmp_path):

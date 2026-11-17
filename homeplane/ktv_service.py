@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -663,8 +664,12 @@ class Queue:
                 # 无归档管理器的独立工作区仍使用本地容量上限。
                 files = {}
                 for path in self.root.rglob("*"):
-                    if path.is_file() and not path.is_symlink():
-                        info = path.stat()
+                    try:
+                        info = path.lstat()
+                    except FileNotFoundError:
+                        # 其他制备线程刚完成原子写入时，临时路径已经被替换。
+                        continue
+                    if stat.S_ISREG(info.st_mode):
                         files[info.st_dev, info.st_ino] = info.st_size
                 if sum(files.values()) + amount > MAX_STORAGE:
                     raise ValueError("storage_full")
