@@ -1,6 +1,8 @@
 """Guest station contracts, with isolated storage and no physical devices/models."""
 
 import hashlib
+import base64
+import io
 import json
 import sqlite3
 import subprocess
@@ -8,6 +10,7 @@ import sys
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from email.message import Message
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -176,6 +179,26 @@ def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch)
     assert calls == [("/api/v3/song/detail", [{"id": 123}, {"id": 234}])]
     assert client.get(path, headers=headers, params={"ids": "123,234"}).json() == response.json()
     assert len(calls) == 1
+
+    image_requests = []
+    content = b"\xff\xd8\xff\xe0synthetic-thumbnail"
+
+    class Thumbnail(io.BytesIO):
+        headers = Message()
+        headers["Content-Type"] = "image/jpeg"
+
+    class Images:
+        def open(self, request, *, timeout):
+            image_requests.append(request.full_url)
+            assert not request.has_header("Authorization") and not request.has_header("Cookie")
+            return Thumbnail(content)
+
+    monkeypatch.setattr("integrations.ktv_public.nas_server.urllib.request.build_opener", lambda *_: Images())
+    inline = client.get(path, headers=headers, params={"ids": "123,234", "inline": "1"})
+    assert inline.status_code == 200
+    assert inline.json() == {"covers": {"123": "data:image/jpeg;base64," + base64.b64encode(content).decode()}, "pending": []}
+    assert client.get(path, headers=headers, params={"ids": "123", "inline": "1"}).json() == inline.json()
+    assert image_requests == ["https://p1.music.126.net/cover.jpg?param=240y240"]
 
 
 def test_station_scopes_and_static_privacy(station):

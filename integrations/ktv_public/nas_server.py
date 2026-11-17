@@ -1,6 +1,7 @@
 """Standalone NAS guest song station. Python stdlib only; no household or audio APIs."""
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -18,6 +19,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -179,6 +181,11 @@ def song_title(value):
     return title.strip()
 
 
+class NoImageRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
 class Store:
     def __init__(self, root, origin, base_path="/ktv", *, worker_origin=None, allow_loopback_worker=False,
                  recovery_enabled=False, background_health=False, previous_guest_origin=None):
@@ -201,6 +208,7 @@ class Store:
         self.search_cache = {}
         self.search_slots = threading.BoundedSemaphore(4)
         self.artwork_cache = {}
+        self.thumbnail_cache = {}
         self.artwork_slots = threading.BoundedSemaphore(2)
         self.next_poll_maintenance = 0
         self.recommendations = None
@@ -1539,7 +1547,7 @@ class Store:
                 return result
         raise Refusal(503, "search_unavailable")
 
-    def search_artwork(self, song_ids):
+    def search_artwork(self, song_ids, *, inline=False):
         if not isinstance(song_ids, str) or len(song_ids) > 569:
             raise Refusal(400, "invalid_query")
         ids = song_ids.split(",")
@@ -1578,7 +1586,38 @@ class Store:
                         self.artwork_cache.pop(next(iter(self.artwork_cache)))
                     self.artwork_cache[ident] = (time.monotonic(), cover)
             cached.update(resolved)
-        return {"covers": {ident: cover for ident, cover in cached.items() if cover}}
+        covers = {ident: cover for ident, cover in cached.items() if cover}
+        if not inline:
+            return {"covers": covers}
+        def thumbnail(item):
+            ident, url = item
+            with self.lock:
+                saved = self.thumbnail_cache.get(url)
+            if saved:
+                return ident, saved
+            try:
+                request = urllib.request.Request(url, headers={"Referer": "https://music.163.com/"})
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoImageRedirect())
+                with opener.open(request, timeout=3) as image:
+                    kind = image.headers.get_content_type()
+                    data = image.read(1048577)
+                if (len(data) > 1048576 or
+                        not ((kind in {"image/jpeg", "image/jpg"} and data.startswith(b"\xff\xd8\xff"))
+                             or kind == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n"))):
+                    return ident, ""
+                kind = "image/png" if kind == "image/png" else "image/jpeg"
+                value = "data:" + kind + ";base64," + base64.b64encode(data).decode("ascii")
+                with self.lock:
+                    if len(self.thumbnail_cache) >= 512:
+                        self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
+                    self.thumbnail_cache[url] = value
+                return ident, value
+            except (OSError, ValueError):
+                return ident, ""
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            images = dict(pool.map(thumbnail, covers.items()))
+        return {"covers": {ident: image for ident, image in images.items() if image},
+                "pending": [ident for ident, image in images.items() if not image]}
 
     @staticmethod
     def public_metadata(path, params, *, timeout=8):
@@ -2073,9 +2112,11 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                 guest = store.guest(room, self.headers.get("X-KTV-Guest", ""))
                 store.budget("artwork:" + guest["id"], 40)
                 params = urllib.parse.parse_qs(parsed.query, max_num_fields=2)
-                if set(params) != {"ids"} or len(params["ids"]) != 1:
+                if (not {"ids"} <= set(params) or set(params) - {"ids", "inline"}
+                        or any(len(values) != 1 for values in params.values())
+                        or params.get("inline", ["0"])[0] not in {"0", "1"}):
                     raise Refusal(400, "invalid_query")
-                return self.reply(200, store.search_artwork(params["ids"][0]))
+                return self.reply(200, store.search_artwork(params["ids"][0], inline=params.get("inline") == ["1"]))
             if operation == "search" and self.command == "GET":
                 params = urllib.parse.parse_qs(parsed.query, max_num_fields=4)
                 source = params.get("source", ["song"])[0]

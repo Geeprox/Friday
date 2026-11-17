@@ -150,8 +150,12 @@ function failure(error){
  const alert=document.querySelector("dialog[open] [role=alert]");if(alert)alert.textContent=text;
 }
 function applyTheme(value){if(!themes.some(t=>t[0]===value))return;theme=value;document.body.dataset.theme=value;document.querySelectorAll(".theme-option").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.theme===theme)));}
-function artworkUrl(url){return typeof url==="string"&&/^https:\/\/[a-z0-9.-]+\.music\.126\.net\//.test(url)?url:"";}
-function resolvedArtwork(song){return artworkUrl(song.artwork)||(sourceOf(song)==="song"?searchArtwork.get(song.song_id)||"":"");}
+function artworkUrl(url){
+ if(typeof url!=="string")return "";
+ if(/^https:\/\/[a-z0-9.-]+\.music\.126\.net\//.test(url))return url;
+ return url.length<1500000&&/^data:image\/(?:jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(url)?url:"";
+}
+function resolvedArtwork(song){return (sourceOf(song)==="song"?searchArtwork.get(song.song_id)||"":"")||artworkUrl(song.artwork);}
 function placeholderCover(){const cover=document.createElement("div");cover.className="cover placeholder";cover.setAttribute("aria-hidden","true");cover.textContent="♪";return cover;}
 function coverFor(song,visible=false){
  const url=resolvedArtwork(song);if(!url)return placeholderCover();
@@ -360,25 +364,30 @@ function stopArtwork(){
 }
 function queueArtwork(rows){
  if(!identity||mode!=="find"||document.hidden)return;
- for(const song of rows)if(sourceOf(song)==="song"&&/^[1-9][0-9]{0,17}$/.test(song.song_id)&&!resolvedArtwork(song)&&!artworkAttempted.has(song.song_id))artworkPending.add(song.song_id);
+ for(const song of rows)if(sourceOf(song)==="song"&&/^[1-9][0-9]{0,17}$/.test(song.song_id)&&!searchArtwork.has(song.song_id)&&!artworkAttempted.has(song.song_id))artworkPending.add(song.song_id);
  enrichArtwork();
 }
 async function enrichArtwork(){
  if(artworkController||artworkRetry!==null||!artworkPending.size||document.hidden)return;
- const controller=new AbortController(),ids=[...artworkPending].slice(0,30);
+ const controller=new AbortController(),ids=[...artworkPending].slice(0,6);
  artworkController=controller;
  for(const id of ids)artworkPending.delete(id);
  try{
-  const {covers}=await api("artwork",null,"?"+new URLSearchParams({ids:ids.join(",")}),{signal:controller.signal,timeoutMs:6500,priority:"low"});
+  const {covers,pending=[]}=await api("artwork",null,"?"+new URLSearchParams({ids:ids.join(","),inline:1}),{signal:controller.signal,timeoutMs:9500,priority:"low"});
   if(controller.signal.aborted||mode!=="find")return;
   if(!covers||Array.isArray(covers)||typeof covers!=="object")throw Object.assign(new Error(),{code:"search_unavailable"});
   artworkDelay=650;
   for(const id of ids){
+   if(pending.includes(id)){artworkPending.add(id);continue;}
    artworkAttempted.add(id);artworkPending.delete(id);
    const url=artworkUrl(covers?.[id]);if(!url)continue;
    searchArtwork.set(id,url);if(searchArtwork.size>240)searchArtwork.delete(searchArtwork.keys().next().value);
    const row=resultRowCache.get("find:song:"+id)?.row;
-   if(row?.firstElementChild?.classList.contains("placeholder"))row.firstElementChild.replaceWith(coverFor({song_id:id,source:"song"},row.dataset.firstCovers==="1"));
+   if(row?.firstElementChild?.classList.contains("cover"))row.firstElementChild.replaceWith(coverFor({song_id:id,source:"song"},row.dataset.firstCovers==="1"));
+  }
+  if(pending.length){
+   artworkRetry=setTimeout(()=>{artworkRetry=null;enrichArtwork();},artworkDelay);
+   artworkDelay=Math.min(6000,artworkDelay*2);
   }
  }catch(error){
   if(controller.signal.aborted||mode!=="find")return;
