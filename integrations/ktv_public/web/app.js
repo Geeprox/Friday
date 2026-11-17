@@ -16,6 +16,7 @@ const guestSeedKey="friday-ktv-guest-seed-v1",guestProfileKey="friday-ktv-guest-
 const guestCredential=/^[A-Za-z0-9_-]{32,80}$/,randomSecret=/^[a-f0-9]{64}$/;
 let playbackAvailable=true;
 const pendingActions=new Map(),receiptListeners=new Set();
+let commandRequest=null;
 function busy(node,active,label="正在处理…"){
  if(!node)return;node.classList.toggle("is-busy",active);node.setAttribute("aria-busy",String(active));
  if(active)pendingActions.set(node,label);else pendingActions.delete(node);
@@ -376,15 +377,17 @@ async function enrichArtwork(){
   const {covers,pending=[]}=await api("artwork",null,"?"+new URLSearchParams({ids:ids.join(","),inline:1}),{signal:controller.signal,timeoutMs:9500,priority:"low"});
   if(controller.signal.aborted||mode!=="find")return;
   if(!covers||Array.isArray(covers)||typeof covers!=="object")throw Object.assign(new Error(),{code:"search_unavailable"});
-  artworkDelay=650;
+  let resolved=0;
   for(const id of ids){
    if(pending.includes(id)){artworkPending.add(id);continue;}
    artworkAttempted.add(id);artworkPending.delete(id);
    const url=artworkUrl(covers?.[id]);if(!url)continue;
+   resolved++;
    searchArtwork.set(id,url);if(searchArtwork.size>240)searchArtwork.delete(searchArtwork.keys().next().value);
    const row=resultRowCache.get("find:song:"+id)?.row;
    if(row?.firstElementChild?.classList.contains("cover"))row.firstElementChild.replaceWith(coverFor({song_id:id,source:"song"},row.dataset.firstCovers==="1"));
   }
+  if(resolved)artworkDelay=650;
   if(pending.length){
    artworkRetry=setTimeout(()=>{artworkRetry=null;enrichArtwork();},artworkDelay);
    artworkDelay=Math.min(6000,artworkDelay*2);
@@ -726,10 +729,27 @@ function updatePlayer(){updateGuide();updatePartyAudio();
  for(const [id,key]of volumeControls){const input=$(`${id}-volume`),level=pendingControls[key]??controls[key];updateVolumeButtons(id,level);if(document.activeElement!==input){input.value=level;$(`${id}-value`).textContent=`${level}%`;}}
  updateMuteButtons();
 }
-async function sendCommand(action,song="",origin=""){if(commandBusy||!playbackAvailable)return;const before={...playback};commandBusy=true;const button=$(origin||(action==="next"?"skip-button":"play-toggle"));busy(button,true,origin==="restart-button"?"正在从头开始…":action==="next"?"正在切歌…":action==="pause"?"正在暂停…":"正在开始播放…");updatePlayer();try{const result=await api("command",{action,song,request_id:crypto.randomUUID()});await waitForTV(()=>FridayPartyAudio.commandObserved(action,song,before,playback,result.seq));}catch(error){failure(error);}finally{commandBusy=false;busy(button,false);await refresh();updatePlayer();}}
+async function sendCommand(action,song="",origin=""){
+ if(commandBusy||!playbackAvailable)return;
+ const before={...playback},button=$(origin||(action==="next"?"skip-button":"play-toggle"));
+ const request={signal:controlRoom.signal,button};
+ commandRequest=request;commandBusy=true;
+ busy(button,true,origin==="restart-button"?"正在从头开始…":action==="next"?"正在切歌…":action==="pause"?"正在暂停…":"正在开始播放…");
+ updatePlayer();
+ try{
+  const result=await api("command",{action,song,request_id:crypto.randomUUID()},"",{signal:request.signal});
+  await waitForTV(()=>FridayPartyAudio.commandObserved(action,song,before,playback,result.seq),request.signal);
+ }catch(error){if(!request.signal.aborted)failure(error);}
+ finally{
+  if(commandRequest===request){
+   commandRequest=null;commandBusy=false;busy(button,false);
+   await refresh();updatePlayer();
+  }
+ }
+}
 $("mode-instrumental").onclick=()=>chooseSoundMode(0);
 $("mode-original").onclick=()=>chooseSoundMode(1);
-let controlWrites=Promise.resolve(),controlSerial=0,modeIntent=null;
+let controlWrites=Promise.resolve(),controlSerial=0,modeIntent=null,controlRoom=new AbortController();
 const controlPendingVersions=new Map();
 const controlFields={original:[],music_gain:["music-value","music-mute-button"],sfx_gain:["sfx-value"]};
 function updateSoundMode(){
@@ -749,6 +769,10 @@ function chooseSoundMode(value){
  return setControl({original:value});
 }
 function setControl(value,{signal,propagate=false}={}){
+ const controller=new AbortController(),roomSignal=controlRoom.signal,abort=()=>controller.abort();
+ signal?.addEventListener("abort",abort,{once:true});roomSignal.addEventListener("abort",abort,{once:true});
+ if(signal?.aborted||roomSignal.aborted)abort();
+ const requestSignal=controller.signal;
  const version=++controlSerial,fields=Object.keys(value);
  const nodes=fields.flatMap(field=>controlFields[field].map($));
  const errorNode=$(Object.hasOwn(value,"sfx_gain")?"sfx-error":"sound-error");
@@ -767,17 +791,17 @@ function setControl(value,{signal,propagate=false}={}){
  const current=()=>Boolean(intent&&modeIntent===intent)||nodes.some(node=>controlPendingVersions.get(node)===version);
  // 已发的写入保持顺序，跳过还没发出且已被替换的手动音轨选择。
  const request=controlWrites.catch(()=>{}).then(async()=>{
-  if(signal?.aborted)throw Object.assign(new Error(),{code:"cancelled"});
+  if(requestSignal.aborted)throw Object.assign(new Error(),{code:"cancelled"});
   if(intent&&!propagate&&!nodes.length&&modeIntent!==intent)return null;
-  const result=await api("controls",value,"",{signal,priority:"high"});
-  if(signal?.aborted)throw Object.assign(new Error(),{code:"cancelled"});
+  const result=await api("controls",value,"",{signal:requestSignal,priority:"high"});
+  if(requestSignal.aborted)throw Object.assign(new Error(),{code:"cancelled"});
   if(result.revision>=controls.control_revision)controls={...controls,...value,control_revision:result.revision};
   return result;
  });
  controlWrites=request;
  return request.then(async result=>{
   if(!result||(!current()&&!propagate))return;
-  await waitForTV(()=>playback.applied_revision>=result.revision,signal);
+  await waitForTV(()=>playback.applied_revision>=result.revision,requestSignal);
   if(current())errorNode.textContent="";
  }).catch(error=>{
   if(error.code!=="cancelled"&&current()){
@@ -786,6 +810,7 @@ function setControl(value,{signal,propagate=false}={}){
   }
   if(propagate)throw error;
  }).finally(()=>{
+  signal?.removeEventListener("abort",abort);roomSignal.removeEventListener("abort",abort);
   if(intent&&modeIntent===intent){
    clearTimeout(intent.timer);
    modeIntent=null;
@@ -1023,6 +1048,13 @@ async function enterCurrentRoom(expired=false){
  if(roomLookup||document.hidden)return;
  const controller=new AbortController();
  roomLookup=controller;
+ controlRoom.abort();controlRoom=new AbortController();controlWrites=Promise.resolve();
+ if(commandRequest)busy(commandRequest.button,false);
+ commandRequest=null;commandBusy=false;
+ if(modeIntent)clearTimeout(modeIntent.timer);
+ modeIntent=null;
+ for(const node of controlPendingVersions.keys())busy(node,false);
+ controlPendingVersions.clear();
  valid=false;identity=null;joinKey="";
  clearTimeout(joinTimer);stopRoomStatus(true);statusFeed=null;stopDiscover();
  if(expired){

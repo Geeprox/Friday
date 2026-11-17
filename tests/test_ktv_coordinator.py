@@ -159,6 +159,12 @@ def test_inactive_room_change_keeps_normal_overnight_session_and_live_playback(s
     store.add(room, {"song_id": "123", "title": "合成测试", "request_id": uid()}, guest)
     now = int(time.time())
     with store.connection() as db:
+        db.execute("UPDATE coordinator_session SET opened=? WHERE id=1", (now - 86400,))
+        db.execute("UPDATE songs SET created=? WHERE room=?", (now - 86400, room["id"]))
+        db.execute("UPDATE rooms SET playback_state='paused' WHERE id=?", (room["id"],))
+    assert not store.coordinator.renew_inactive_room()
+    assert store.coordinator.party()["room_id"] == room["id"]
+    with store.connection() as db:
         db.execute("UPDATE coordinator_session SET opened=? WHERE id=1", (now - 4 * 86400,))
         db.execute("UPDATE songs SET created=? WHERE room=?", (now - 4 * 86400, room["id"]))
         db.execute("UPDATE rooms SET playback_state='playing',playback_at=? WHERE id=?", (now, room["id"]))

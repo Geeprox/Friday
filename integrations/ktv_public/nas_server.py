@@ -2109,8 +2109,7 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                     raise Refusal(400, "invalid_query")
                 return self.reply(200, store.playlist(params.get("id", [""])[0], int(offset)))
             if operation == "artwork" and self.command == "GET":
-                guest = store.guest(room, self.headers.get("X-KTV-Guest", ""))
-                store.budget("artwork:" + guest["id"], 40)
+                store.guest(room, self.headers.get("X-KTV-Guest", ""))
                 params = urllib.parse.parse_qs(parsed.query, max_num_fields=2)
                 if (not {"ids"} <= set(params) or set(params) - {"ids", "inline"}
                         or any(len(values) != 1 for values in params.values())

@@ -198,6 +198,8 @@ def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch)
     assert inline.status_code == 200
     assert inline.json() == {"covers": {"123": "data:image/jpeg;base64," + base64.b64encode(content).decode()}, "pending": []}
     assert client.get(path, headers=headers, params={"ids": "123", "inline": "1"}).json() == inline.json()
+    for _ in range(41):
+        assert client.get(path, headers=headers, params={"ids": "123", "inline": "1"}).json() == inline.json()
     assert image_requests == ["https://p1.music.126.net/cover.jpg?param=240y240"]
 
 

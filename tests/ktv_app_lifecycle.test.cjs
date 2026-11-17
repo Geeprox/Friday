@@ -293,6 +293,63 @@ test('track choice updates immediately and skips a replaced unsent choice withou
  assert.equal(h.element('mode-instrumental').getAttribute('aria-pressed'),'true');
 });
 
+test('automatic room recovery cancels queued old controls and lets new controls leave immediately',async()=>{
+ const h=harness({validRoom:true}),held=deferred();h.context.held=held;
+ h.run('earEnabled=false;setControl=actualSetControl;waitForTV=async()=>{};join=async()=>{};controlWrites=held.promise;var writes=[];api=async(operation,value)=>{if(operation==="current")return {room:"22222222-2222-4222-8222-222222222222",key:"b".repeat(43)};writes.push({room,value});return {revision:1};};');
+ const volume=h.run('setControl({music_gain:13})');
+ const mode=h.run('setControl({original:1})');
+ await h.run('enterCurrentRoom(true)');
+ assert.equal(h.run('modeIntent'),null);
+ assert.equal(h.element('music-value').getAttribute('aria-busy'),'false');
+ await h.run('setControl({music_gain:61})');
+ assert.equal(h.run('writes.length'),1);
+ held.resolve();await Promise.all([volume,mode]);
+ assert.equal(h.run('writes.length'),1);
+ assert.equal(h.run('writes[0].room'),'22222222-2222-4222-8222-222222222222');
+ assert.equal(h.run('writes[0].value.music_gain'),61);
+ assert.equal(h.run('controls.music_gain'),61);
+});
+
+test('automatic room recovery aborts an old TV confirmation wait',async()=>{
+ const h=harness({validRoom:true});
+ h.run('earEnabled=false;setControl=actualSetControl;join=async()=>{};lastStatusSuccess=performance.now();api=async(operation)=>operation==="current"?{room:"22222222-2222-4222-8222-222222222222",key:"b".repeat(43)}:{revision:3};');
+ const waiting=h.run('setControl({original:1},{propagate:true})').catch(error=>error.code);
+ await flush();assert.equal(h.run('receiptListeners.size'),1);
+ await h.run('enterCurrentRoom(true)');
+ assert.equal(await waiting,'cancelled');
+ assert.equal(h.run('receiptListeners.size'),0);
+ assert.equal(h.run('modeIntent'),null);
+ assert.equal(h.element('sound-error').textContent,'');
+});
+
+test('automatic room recovery cancels the old transport command without disabling the new room',async()=>{
+ const h=harness({validRoom:true});
+ h.run('earEnabled=false;join=async()=>{};lastStatusSuccess=performance.now();api=async(operation)=>operation==="current"?{room:"22222222-2222-4222-8222-222222222222",key:"b".repeat(43)}:{seq:3};');
+ const old=h.run('sendCommand("pause")');
+ await flush();assert.equal(h.run('commandBusy'),true);
+ assert.equal(h.run('receiptListeners.size'),1);
+ await h.run('enterCurrentRoom(true)');await old;
+ assert.equal(h.run('commandBusy'),false);
+ assert.equal(h.run('receiptListeners.size'),0);
+ assert.equal(h.element('play-toggle').getAttribute('aria-busy'),'false');
+});
+
+test('pending thumbnails back off until actual artwork arrives and respect Retry-After',async()=>{
+ const h=harness(),timers=[];
+ h.context.setTimeout=(run,delay)=>{timers.push({run,delay});return timers.length;};
+ h.run('earEnabled=false;mode="find";artworkPending.add("1");api=async()=>({covers:{},pending:["1"]});');
+ await h.run('enrichArtwork()');
+ for(let i=0;i<3;i++){timers.at(-1).run();await flush();}
+ assert.deepEqual(timers.map(timer=>timer.delay),[650,1300,2600,5200]);
+ h.run('api=async()=>{throw Object.assign(new Error(),{code:"rate_limited",retryAfterMs:12000});}');
+ timers.at(-1).run();await flush();assert.equal(timers.at(-1).delay,12000);
+ h.run('api=async()=>({covers:{"1":"data:image/jpeg;base64,AAAA"},pending:[]});');
+ timers.at(-1).run();await flush();
+ assert.equal(h.run('artworkPending.size'),0);
+ assert.equal(h.run('artworkDelay'),650);
+ assert.equal(h.run('searchArtwork.get("1")'),'data:image/jpeg;base64,AAAA');
+});
+
 
 test('browser back restores the search secondary page without adding another history entry',()=>{
  const h=harness();let pushes=0;h.context.history.pushState=function(value){this.state=value;pushes++;};
