@@ -36,7 +36,9 @@ SYNTHETIC_MEDIA = {
         '142d58d5ac3c10eb388a4ecffe8d3bd379ae0849a65def9496e047ad10fde42f',
     # 合成歌曲与用量设置的 KTV 用户手册截图。
     'docs/screenshots/ktv-background-settings.png':
-        '639c1877515fdac0b2c0ed33b38e03cd6f6beb05bc95cc322149d75859f88117',
+        '3e18cbb48cc87b73a7697e331151ab39d6de56d5d61cd9b9c94cdf3abdc71a69',
+    'docs/screenshots/ktv-production-settings.png':
+        'dcb47f41d7a8aade59eb92c5600225b43ac7d1a99c7a9faefe3d3aec4ad92225',
     # Reviewed Godot XR CC0 hand target frames, exact approved runtime pose.
     'homeplane/static/motion-art/godot-xr/targets/hand-ok.png':
         'b7e7822447c8fe2c20dbbdbb04aedd6e8b307a1387f22e97a28cea6678bc025a',
