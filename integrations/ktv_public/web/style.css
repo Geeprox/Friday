@@ -85,7 +85,15 @@ body.has-player main{padding-block-end:var(--player-space,122px)}html{scroll-pad
 /* The handset stays light; room themes apply to the television artwork. */
 :root,body[data-theme]{color-scheme:light;--paper:#fff;--ink:#222522;--muted:#686d68;--line:#e7e9e6;--accent:#c94149;--action-ink:#fff;--input:#f4f5f3;--focus:#313c34}
 .hero{background:#fff;color:var(--ink);padding-block:max(16px,env(safe-area-inset-top)) 18px;border-bottom:1px solid var(--line)}.hero-art{display:none}.hero .brand{font-size:19px;letter-spacing:-.03em}.hero .brand svg{color:var(--accent)}.hero button:focus-visible,.hero a:focus-visible{outline-color:var(--focus)}.identity-line{margin-top:16px;flex-wrap:nowrap}.identity-button .avatar{width:46px;height:46px}.identity-copy strong{font-size:22px}.queue-entry{display:flex;align-items:center;gap:8px;flex:none;min-height:44px;padding:10px 14px;border:1px solid var(--line);border-radius:22px;font-size:14px;font-weight:600}.queue-entry #queue-count{background:var(--input);min-width:22px;padding:2px 5px;border-radius:12px}.queue-entry>span:last-child{color:var(--muted);font-size:20px}
-main{padding-top:20px}.search-entry{display:flex;align-items:center;gap:12px;width:100%;min-height:54px;padding:14px 16px;border-radius:14px;background:var(--input);color:var(--muted);text-align:start;font-size:16px}.search-entry svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;flex:none}.search-entry>span:first-of-type{flex:1}.search-entry>span:last-child{font-size:22px}.section-heading{margin-top:28px}.section-heading h2{font-size:18px;letter-spacing:-.02em}.artist-picker{padding-block:6px}.playlist-picker{gap:24px 16px}.playlist-card .cover{border-radius:12px}.playlist-card strong{font-size:14px}
+main{padding-top:20px}
+.home-search-actions{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+.search-entry,.home-search-actions .frequent-entry{min-height:48px;border-radius:12px}
+.search-entry{display:flex;align-items:center;gap:8px;min-width:0;padding:10px 12px;background:var(--input);color:var(--muted);text-align:start;font-size:15px}
+.search-entry svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;flex:none}
+.search-entry span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.home-search-actions .frequent-entry{padding:8px 10px;gap:6px;white-space:nowrap}
+.frequent-entry span:last-child{color:var(--muted)}
+.section-heading{margin-top:28px}.section-heading h2{font-size:18px;letter-spacing:-.02em}.artist-picker{padding-block:6px}.playlist-picker{gap:24px 16px}.playlist-card .cover{border-radius:12px}.playlist-card strong{font-size:14px}
 body:not([data-view=home])[data-view] .hero{display:none}.page-heading{display:flex;align-items:center;gap:12px;margin:0 0 20px}.page-heading button{min-width:44px;min-height:44px;padding:0;font-size:32px;border-radius:50%;text-align:center}.page-heading h1{margin:0;font-size:23px;font-weight:650;outline:none}.source-picker{margin-block:14px 6px;background:transparent;padding:0;gap:20px;border-bottom:1px solid var(--line);border-radius:0}.source-picker button{flex:none;padding-inline:0;border-radius:0;color:var(--muted)}.source-picker button[aria-pressed=true]{background:transparent;box-shadow:none;outline:none;color:var(--ink);border-bottom:2px solid var(--accent)}
 #sound-dialog .volume-control{gap:8px}#sound-dialog .volume-control .volume-mute{padding:9px;font-size:16px}.volume-heading{margin-block-start:18px;margin-block-end:8px}
 @media(prefers-reduced-motion:no-preference){.page-heading{animation:page-enter .18s ease-out}.queue-entry,.search-entry{transition:background .15s ease-out}.queue-entry:hover,.search-entry:hover{background:#eaede8}@keyframes page-enter{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}}
@@ -94,7 +102,6 @@ body:not([data-view=home])[data-view] .hero{display:none}.page-heading{display:f
 .player .player-track #now-title{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;max-height:2.8em;overflow:hidden}
 
 
-.frequent-entry{margin-block:12px 0;min-height:46px}.frequent-entry span:last-child{margin-inline-start:auto;color:var(--muted)}
 body[data-view=find] main{padding-top:4px}
 body[data-view=find] .page-heading{gap:4px;margin-bottom:6px}
 body[data-view=find] #page-back{font-size:26px}

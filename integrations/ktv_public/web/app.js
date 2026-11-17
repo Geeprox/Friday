@@ -138,7 +138,10 @@ function reconcileChildren(parent,desired){
  for(const child of Array.from(parent.children))if(!keep.has(child))parent.removeChild(child);
  for(let i=0;i<desired.length;i++)if(parent.children[i]!==desired[i])parent.insertBefore(desired[i],parent.children[i]||null);
 }
-function render(){tabs();for(const [node]of pendingActions)if(!node.isConnected)busy(node,false);const home=mode==="home";$("discover").hidden=!home;document.querySelector(".list-heading").hidden=mode!=="queue";updateSearchPager();const rows=home?[]:mode==="find"?songs:mode==="frequent"?frequentSongs:[...selected].sort((a,b)=>queueRank(a)-queueRank(b)),container=$("results"),focused=document.activeElement?.dataset.focusId||document.activeElement?.dataset.song;const historyOpen=container.querySelector("details.history")?.open||false;const rootRows=[],groupRows=new Map(),usedRows=new Set(),usedGroups=new Set();$("list-title").textContent="本场歌单";$("count").textContent=rows.length?`${rows.length} 首`:"";$("empty").hidden=home||rows.length>0;$("empty").textContent=mode==="find"?"搜一首你想唱的歌。":mode==="frequent"?"从这台手机点过并播放的歌曲会出现在这里。":"还没有已点歌曲，第一首交给你。";
+function render(){tabs();for(const [node]of pendingActions)if(!node.isConnected)busy(node,false);const home=mode==="home";$("discover").hidden=!home;document.querySelector(".list-heading").hidden=mode!=="queue";updateSearchPager();const rows=home?[]:mode==="find"?songs:mode==="frequent"?frequentSongs:[...selected].sort((a,b)=>queueRank(a)-queueRank(b)),container=$("results"),focused=document.activeElement?.dataset.focusId||document.activeElement?.dataset.song;const historyOpen=container.querySelector("details.history")?.open||false;const rootRows=[],groupRows=new Map(),usedRows=new Set(),usedGroups=new Set();$("list-title").textContent="本场歌单";$("count").textContent=rows.length?`${rows.length} 首`:"";
+ const searchPrompt=mode==="find"&&!$("query").value.trim()&&source!=="cloud"&&!playlistId;
+ $("empty").hidden=home||rows.length>0||(mode==="find"&&!searchPrompt);
+ $("empty").textContent=mode==="find"?"搜一首你想唱的歌。":mode==="frequent"?"从这台手机点过并播放的歌曲会出现在这里。":"还没有已点歌曲，第一首交给你。";
  const nextQueuedId=nextPlayable()?.id,firstOrderableId=selected.find(canReorder)?.id;
  const groupCounts=new Map();
  if(mode==="queue")for(const song of rows){
@@ -377,7 +380,17 @@ function cancelSearchInput(){
  pagingObserver?.disconnect();searchSequence++;resetSearchBusy();
  if(wasBusy&&$("message").textContent==="正在找歌…")message("");
 }
-function scheduleSearch(){cancelSearchInput();if(searchComposing||mode!=="find"||document.hidden)return;searchTimer=setTimeout(()=>{searchTimer=null;findSongs();},180);}
+function clearSearchResults(){
+ searchQuery=null;searchOffset=0;searchMore=false;songs=[];
+}
+function scheduleSearch(){
+ if(mode!=="find"||document.hidden)return;
+ cancelSearchInput();
+ if($("query").value.trim()!==searchQuery||playlistId){
+  playlistId="";playlistTitle="";clearSearchResults();message("");render();
+ }
+ if(!searchComposing)searchTimer=setTimeout(()=>{searchTimer=null;findSongs();},180);
+}
 async function searchPage(q,kind,list,offset,signal,prefetch=false){
  const operation=list?"playlist":"search";
  const params=list?new URLSearchParams({id:list,offset}):new URLSearchParams({q,source:kind,offset});
@@ -424,11 +437,13 @@ async function appendNextPage(retry=false){
 }
 async function findSongs(more=false,collection=null){
  if(more)return appendNextPage(true);
- cancelSearchInput();playlistId=collection?.id||"";playlistTitle=collection?.title||"";
- const q=$("query").value.trim();
- if(!q&&source!=="cloud"&&!playlistId){searchQuery="";searchMore=false;songs=[];message("");render();return;}
+ cancelSearchInput();
+ const q=$("query").value.trim(),list=collection?.id||"";
+ if(q!==searchQuery||list!==playlistId)clearSearchResults();
+ playlistId=list;playlistTitle=collection?.title||"";
+ if(!q&&source!=="cloud"&&!playlistId){searchQuery="";message("");render();return;}
  const sequence=searchSequence,requestedSource=source,requestedPlaylist=playlistId,controller=new AbortController();
- searchController=controller;searchBusy=true;$("search").querySelector("button").disabled=true;updateSearchPager();message("正在找歌…");
+ searchController=controller;searchBusy=true;$("search").querySelector("button").disabled=true;message("正在找歌…");render();
  try{
   const value=await searchPage(q,requestedSource,requestedPlaylist,0,controller.signal);
   if(controller.signal.aborted||sequence!==searchSequence||source!==requestedSource||playlistId!==requestedPlaylist)return;
@@ -443,11 +458,17 @@ async function findSongs(more=false,collection=null){
  }finally{if(searchController===controller)searchController=null;if(sequence===searchSequence){resetSearchBusy();prefetchNextPage();observeSearchEnd();}}
 }
 function resumeSearchView(){
- if(mode!=="find")return;
- if(!playlistId&&$("query").value.trim()!==searchQuery)scheduleSearch();
+ if(mode!=="find"||searchBusy||searchTimer||searchComposing)return;
+ const q=$("query").value.trim();
+ if(playlistId&&!songs.length)findSongs(false,{id:playlistId,title:playlistTitle});
+ else if(!playlistId&&(q!==searchQuery||(!songs.length&&(q||source==="cloud"))))scheduleSearch();
  else{queueArtwork(songs);prefetchNextPage();observeSearchEnd();}
 }
-function searchTitles(query){setView("find");source="song";$("query").value=query;updateSources();findSongs();}
+function searchTitles(query){setView("find");selectSearchSource("song");$("query").value=query;findSongs();}
+function selectSearchSource(kind){
+ if(source!==kind){source=kind;clearSearchResults();}
+ updateSources();
+}
 function updateSources(){$("query").placeholder=source==="cloud"?"搜索云盘歌曲或歌手":source==="mv"?"搜索 MV 或歌手":"搜索歌曲或歌手";for(const [button,kind]of[["source-song","song"],["source-mv","mv"],["source-cloud","cloud"]])$(button).setAttribute("aria-pressed",String(source===kind));}
 const starterArtists=["周杰伦","陈奕迅","林俊杰","五月天","孙燕姿","张惠妹","张学友","王菲"];
 let discoverRequest=null,discoverRetry=null,discoverDelay=1500,artistSignature="";
@@ -486,7 +507,7 @@ function renderPlaylists(){
   const title=document.createElement("strong");
   title.textContent=list.title;button.append(title);
   button.onclick=()=>{
-   setView("find");source="song";updateSources();$("query").value="";
+   setView("find");selectSearchSource("song");$("query").value="";
    findSongs(false,list);
   };
   return button;
@@ -551,8 +572,8 @@ $("load-more").onclick=()=>findSongs(true);
 $("search").addEventListener("submit",event=>{event.preventDefault();if(!searchComposing&&!event.isComposing)findSongs();});
 $("query").oncompositionstart=()=>{searchComposing=true;cancelSearchInput();};
 $("query").oncompositionend=()=>{searchComposing=false;scheduleSearch();};
-$("query").oninput=event=>{if(event?.isComposing){searchComposing=true;cancelSearchInput();}else scheduleSearch();};
-for(const [id,value]of[["source-song","song"],["source-mv","mv"],["source-cloud","cloud"]])$(id).onclick=()=>{source=value;songs=[];playlistId="";playlistTitle="";searchQuery="";searchMore=false;searchSequence++;for(const [button,kind]of[["source-song","song"],["source-mv","mv"],["source-cloud","cloud"]])$(button).setAttribute("aria-pressed",String(source===kind));$("query").placeholder=source==="cloud"?"搜索云盘歌曲或歌手":source==="mv"?"搜索 MV 或歌手":"搜索歌曲或歌手";render();findSongs();};
+$("query").oninput=event=>{if(event?.isComposing)searchComposing=true;scheduleSearch();};
+for(const [id,value]of[["source-song","song"],["source-mv","mv"],["source-cloud","cloud"]])$(id).onclick=()=>{selectSearchSource(value);findSongs();};
 const viewScroll={home:0,find:0,queue:0,frequent:0};
 function tabs(){
  const count=selected.filter(isUpcoming).length;

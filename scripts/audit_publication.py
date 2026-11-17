@@ -23,7 +23,9 @@ FORBIDDEN_SUFFIXES = {'.sqlite', '.sqlite3', '.db', '.pem', '.key', '.p12', '.mp
                       '.m4a', '.aiff', '.zip', '.tar', '.gz', '.bundle', '.patch', '.ses', '.onnx', '.safetensors'}
 # Exact reviewed artwork and synthetic assets; household photos and changed bytes still fail closed.
 SYNTHETIC_MEDIA = {
-    # 手机队列和声音面板，示例歌曲与房间均为合成数据。
+    # 手机首页、队列和声音面板，示例房间和内容均由测试夹具提供。
+    'docs/screenshots/ktv-mobile-home.png':
+        '4b99df085cbdc7ef4a2716d87a0387dc6befc85c4cfe4552bb1987db903fe46e',
     'docs/screenshots/ktv-mobile-queue.png':
         '4acf79e70e2565191a4d9a8aacd7436f81c67aae5cdaf1a2b1948298057b448d',
     'docs/screenshots/ktv-mobile-sound.png':

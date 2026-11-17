@@ -202,6 +202,35 @@ test('clearing a search invalidates its in-flight result rather than repopulatin
  assert.equal(h.run('songs.length'),0);assert.equal(h.run('searchQuery'),'');assert.equal(h.run('searchMore'),false);
 });
 
+test('typing a different query removes visible results before debounce and ignores obsolete pages',async()=>{
+ const h=harness(),oldPage=deferred(),second=deferred(),latest=deferred(),started=deferred();
+ h.context.searchApi=async(operation,body,query)=>{
+  const params=new URLSearchParams(query);
+  if(params.get("offset")==="30")return oldPage.promise;
+  if(params.get("q")==="第二个"){started.resolve();return second.promise;}
+  if(params.get("q")==="第三个")return latest.promise;
+  return {songs:[{song_id:"1",title:"旧版结果",cover:"https://example.test/cover.jpg"}],has_more:true,next_offset:30};
+ };
+ h.run('mode="find";api=searchApi;$("query").value="第一个"');await h.run('findSongs()');
+ assert.equal(h.element('results').children.length,1);
+ const loadingPage=h.run('appendNextPage()');
+ h.run('$("query").value="第二个";$("query").oninput({isComposing:false})');
+ assert.equal(h.element('results').children.length,0);
+ assert.equal(h.element('search-page-end').hidden,true);
+ assert.equal(h.element('empty').hidden,true);
+ await started.promise;
+ h.run('$("query").value="第三个";$("query").oninput({isComposing:false})');
+ const loadingLatest=h.run('findSongs()');
+ oldPage.resolve({songs:[{song_id:"2",title:"过时第二页"}],has_more:true,next_offset:60});
+ second.resolve({songs:[{song_id:"3",title:"过时结果"}],has_more:false});
+ await loadingPage;await flush();
+ assert.equal(h.element('results').children.length,0);
+ latest.resolve({songs:[{song_id:"4",title:"当前结果"}],has_more:false});
+ await loadingLatest;
+ assert.equal(h.run('songs[0].title'),'当前结果');
+ assert.equal(h.element('results').children.length,1);
+});
+
 test('secondary search paginates the selected source and preserves results through queue navigation',async()=>{
  const h=harness(),requests=[];h.context.searchApi=async(operation,body,query)=>{
   requests.push([operation,query]);return requests.length===1?{songs:[{source:'mv',song_id:'1',title:'首个MV'}],has_more:true,next_offset:30}:{songs:[{source:'mv',song_id:'1',title:'首个MV'},{source:'mv',song_id:'2',title:'第二个MV'}],has_more:false,next_offset:60};
