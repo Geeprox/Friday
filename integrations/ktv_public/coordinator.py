@@ -199,8 +199,36 @@ class Coordinator:
 
     def active(self, db=None):
         with (self.store.connection() if db is None else nullcontext(db)) as connection:
-            row = connection.execute("SELECT s.*,r.closed FROM coordinator_session s JOIN rooms r ON r.id=s.room WHERE s.id=1").fetchone()
+            row = connection.execute(
+                "SELECT s.*,r.closed,r.playback_state,r.playback_at FROM coordinator_session s "
+                "JOIN rooms r ON r.id=s.room WHERE s.id=1"
+            ).fetchone()
         return dict(row) if row and not row["closed"] else None
+
+    def rollover_day(self):
+        now = int(time.time())
+        with self.store.lock, self.store.connection() as db:
+            active = self.active(db)
+            if not active or time.localtime(active["opened"])[:3] >= time.localtime(now)[:3]:
+                return False
+            # 午夜仍正在唱的歌曲允许唱完。暂停、空场或离线时开启当天的新场次。
+            if active["playback_state"] == "playing" and active["playback_at"] >= now - 12:
+                return False
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE rooms SET closed=1,expires=? WHERE id=?", (now, active["room"]))
+            room, secret = self.store.insert_room(db)
+            db.execute("UPDATE coordinator_session SET room=?,secret=?,opened=?,tv_at=0,readiness='{}',request_id='' WHERE id=1",
+                       (room, secret, now))
+            self.store._expire(db)
+        return True
+
+    def run_daily_rooms(self, stop):
+        while not stop.is_set():
+            try:
+                self.rollover_day()
+            except (OSError, sqlite3.Error, ValueError) as error:
+                self.store.record_failure("daily_room", error)
+            stop.wait(5)
 
     def direct_room(self, room_id):
         active = self.active()
@@ -410,6 +438,7 @@ class Coordinator:
                                                              for v in payload.values())):
             raise self.error(400, "invalid_start")
         with self.store.lock:
+            self.rollover_day()
             active = self.active()
             with self.store.connection() as db:
                 previous = db.execute("SELECT * FROM coordinator_start_requests WHERE request_id=?", (payload["request_id"],)).fetchone()
@@ -424,13 +453,13 @@ class Coordinator:
             if active:
                 with self.store.connection() as db:
                     # Reopening a TV preserves room, guests, queue and mute.
-                    db.execute("UPDATE coordinator_session SET instance=?,opened=?,tv_at=0,readiness='{}' WHERE id=1 AND instance!=?",
-                               (payload["instance"], int(time.time()), payload["instance"]))
+                    db.execute("UPDATE coordinator_session SET instance=?,tv_at=0,readiness='{}' WHERE id=1 AND instance!=?",
+                               (payload["instance"], payload["instance"]))
                     if payload["instance"] != active["instance"]:
                         db.execute("UPDATE rooms SET mic_muted=1,mic_request_at=0,control_revision=control_revision+1,mic_revision=mic_revision+1,last_command=max(last_command,coalesce((SELECT max(seq) FROM commands WHERE room=?),0)) WHERE id=?",
                                    (active["room"], active["room"]))
                     if payload["request_id"] != active["request_id"]:
-                        db.execute("UPDATE coordinator_session SET opened=?,request_id=? WHERE id=1", (int(time.time()), payload["request_id"]))
+                        db.execute("UPDATE coordinator_session SET request_id=? WHERE id=1", (payload["request_id"],))
             else:
                 # Only the first coordinator opening can adopt a legacy scene.
                 # Later explicit ends always lead to an empty new scene; other
@@ -477,8 +506,9 @@ class Coordinator:
             raise self.error(400, "invalid_tv_readiness")
         active = self._instance(payload["instance"])
         with self.store.connection() as db:
-            db.execute("UPDATE coordinator_session SET tv_at=?,readiness=? WHERE id=1 AND instance=?",
-                       (int(time.time()), json.dumps({k: payload[k] for k in ("playback", "audio", "media")}), active["instance"]))
+            db.execute("UPDATE coordinator_session SET tv_at=?,readiness=? WHERE id=1 AND instance=? AND room=?",
+                       (int(time.time()), json.dumps({k: payload[k] for k in ("playback", "audio", "media")}),
+                        active["instance"], active["room"]))
         self._schedule_recovery(self.active())
         self.changed()
         return self.readiness()
@@ -527,7 +557,8 @@ class Coordinator:
         now = int(time.time())
         if active["tv_at"] < now:
             with self.store.connection() as db:
-                db.execute("UPDATE coordinator_session SET tv_at=? WHERE id=1 AND instance=? AND tv_at<?", (now, instance, now))
+                db.execute("UPDATE coordinator_session SET tv_at=? WHERE id=1 AND instance=? AND room=? AND tv_at<?",
+                           (now, instance, active["room"], now))
         return result
 
     def tv_controls(self, payload, instance):

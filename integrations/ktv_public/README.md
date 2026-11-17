@@ -35,6 +35,8 @@ The default listener remains loopback. An optional explicit `lan_host` RFC1918 I
 - NAS 私有配置的 `public_origin` 设置为访客 HTTPS 来源，例如 `https://guests.example.test:9443`。已加入的访客仍需使用原地址时，可将原 HTTPS 来源写入 `previous_guest_origin`。这项兼容仅适用于房间访客接口。
 - Mac Worker 私有配置的 `public_join_endpoint` 设置为相同来源和现有路径，例如 `https://guests.example.test:9443/ktv`。Worker 继续按原 `endpoint` 和局域网 TLS 配置连接管理接口。
 - 公开来源改变后，NAS 会等待按新地址生成的二维码，房间及邀请凭据保持有效。核对新二维码确实使用 9443，再从外部网络打开访客页面。只有 AAAA 记录的入口需要访客网络支持 IPv6。
+- 访客反向代理应放通 `GET /api/rooms/current`，供没有房间参数的页面和过期扫码链接加入当前场次。此接口只返回当前有效房间的邀请信息，保持访问来源不变。
+- 同机容器网关可用私有配置 `guest_socket` 连接 NAS 访客接口。路径相对于 NAS 配置目录，父目录由 NAS 服务账户持有，权限为 0710，套接字为 0660。网关以该目录的组连接，仍按访客路径转发；套接字只提供页面、健康与房间访客接口。原有电视和 Worker 保持原局域网路由。
 
 ## 电视应用更新
 

@@ -159,7 +159,7 @@ def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch)
     calls = []
 
     def metadata(path, params, *, timeout):
-        calls.append((path, json.loads(params["c"]), timeout))
+        calls.append((path, json.loads(params["c"])))
         return {"songs": [
             {"id": 123, "al": {"picUrl": "http://p1.music.126.net/cover.jpg"}},
             {"id": 234, "al": {"picUrl": "https://example.test/cover.jpg"}},
@@ -173,7 +173,7 @@ def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch)
     response = client.get(path, headers=headers, params={"ids": "123,234,123"})
     assert response.status_code == 200
     assert response.json() == {"covers": {"123": "https://p1.music.126.net/cover.jpg?param=240y240"}}
-    assert calls == [("/api/v3/song/detail", [{"id": 123}, {"id": 234}], 3)]
+    assert calls == [("/api/v3/song/detail", [{"id": 123}, {"id": 234}])]
     assert client.get(path, headers=headers, params={"ids": "123,234"}).json() == response.json()
     assert len(calls) == 1
 

@@ -624,7 +624,7 @@ function renderStorageSettings(signal){
 }
 function renderRoomDefaults(section,roomResult){
  section.append(el('p','用于下一次新建的房间。','setting-note'));
- const form=el('form',null,'room-defaults-form'),fields=el('div',null,'room-defaults-fields');
+ const form=el('form',null,'room-defaults-form'),fields=el('div',null,'settings-fields');
  const defaults=roomResult.defaults;
  const theme=select(themes,defaults.theme),original=select([['0','伴奏'],['1','原唱']],String(defaults.original));
  fields.append(field('房间皮肤',theme),field('演唱模式',original));
@@ -648,19 +648,20 @@ function renderRoomDefaults(section,roomResult){
 }
 function renderScheduler(section,scheduler){
  section.append(el('p',`${scheduler.hardware.cpu} · ${Math.round(scheduler.hardware.memory_bytes/1024**3)} GB 内存`,'muted'));
- const form=el('form',null,'defaults-form'),mode=select([['auto','自动（推荐）'],['manual','手动调整']],scheduler.settings.mode),controls={};
- form.append(field('运行方式',mode));
+ const form=el('form',null,'scheduler-form'),fields=el('div',null,'settings-fields');
+ const mode=select([['auto','自动（推荐）'],['manual','手动调整']],scheduler.settings.mode),controls={};
+ fields.append(field('运行方式',mode));
  section.append(el('p','伴奏默认并行 3 首，手动可选最多 10 首。','setting-note'));
  for(const[key,title]of [['download','原曲下载'],['model','伴奏制作'],['encode','播放文件封装']]){
   const n=select(Array.from({length:scheduler.limits[key]},(_,i)=>[String(i+1),`${i+1} 路`]),String(scheduler.settings[key]));
   n.disabled=mode.value==='auto';
   controls[key]=n;
-  form.append(field(title,n));
+  fields.append(field(title,n));
  }
  mode.onchange=()=>Object.values(controls).forEach(n=>n.disabled=mode.value==='auto');
  const save=el('button','保存制作设置','primary');
  save.type='submit';
- form.append(save);
+ form.append(fields,save);
  form.onsubmit=e=>{
   e.preventDefault();
   action(save,()=>api('scheduler',{mode:mode.value,...Object.fromEntries(Object.entries(controls).map(([key,n])=>[key,Number(n.value)]))}),'制作设置已保存，将用于后续任务。');
@@ -668,8 +669,7 @@ function renderScheduler(section,scheduler){
  section.append(form);
 }
 function renderBackgroundSettings(signal){
- const section=el('details',null,'section background-settings');
- const summary=el('summary');summary.append(el('h2','歌曲背景'));
+ const section=el('section',null,'section background-settings');
  const status=el('p',null,'muted');status.setAttribute('role','status');
  const policy=el('form',null,'background-limit');policy.hidden=true;
  const enabled=el('input');enabled.type='checkbox';enabled.setAttribute('role','switch');
@@ -685,7 +685,7 @@ function renderBackgroundSettings(signal){
  const state={signal,section,status,policy,enabled,limit,list,retry,items:new Map(),loading:false,saving:false,
   active:true,remaining:null,issue:'',revision:0,reload:false};
  backgroundView=state;
- section.append(summary,policy,result,status,retry,list);
+ section.append(el('h2','歌曲背景'),policy,result,status,retry,list);
  async function savePolicy(patch){
   if(state.saving||readOnly||signal.aborted)return;
   state.saving=true;
@@ -712,8 +712,8 @@ function renderBackgroundSettings(signal){
   event.preventDefault();
   void savePolicy({daily_images:limit.valueAsNumber});
  };
- section.ontoggle=()=>{if(section.open)void readBackgrounds(state);};
  $('content').append(section);
+ void readBackgrounds(state);
 }
 function applyBackgroundPolicy(state,data){
  if(Number.isInteger(data.daily_limit)){
@@ -776,7 +776,7 @@ async function readBackgrounds(state){
   if(!state.signal.aborted&&revision===state.revision){state.status.textContent='暂时无法读取歌曲背景。';state.retry.hidden=false;}
  }finally{
   state.loading=false;
-  if(state.reload){state.reload=false;if(state.section.open)void readBackgrounds(state);}
+  if(state.reload){state.reload=false;void readBackgrounds(state);}
  }
 }
 function updateBackgroundRow(state,row){
@@ -836,7 +836,7 @@ async function generateBackground(state,row){
    if(row.previewOpen&&data.status==='ready')void loadBackgroundPreview(state,row);
    state.revision++;
    if(state.loading)state.reload=true;
-   else if(state.section.open)void readBackgrounds(state);
+   else void readBackgrounds(state);
   }
  }catch(error){
   if(!state.signal.aborted)row.error=explain(error);
@@ -970,7 +970,7 @@ const timer=setInterval(()=>{
  if(sourceDialog.open){if(sourceSession?.waiting)void sourceRequest();return;}
  if(view==='settings'){
   retryStorageSettings?.();
-  if(backgroundView?.section.open&&[...backgroundView.items.values()].some(row=>row.item.status==='preparing'))void readBackgrounds(backgroundView);
+  if(backgroundView&&[...backgroundView.items.values()].some(row=>row.item.status==='preparing'))void readBackgrounds(backgroundView);
   return;
  }
  if(viewRequest||changing||dialog.open||view==='search'||view==='cache'&&selected.size||view==='queue'&&queueSelected.size||shell.querySelector('details[open]'))return;

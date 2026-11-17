@@ -152,6 +152,30 @@ def test_persistent_session_survives_pause_empty_room_and_old_expiry(store):
         reopened.coordinator.close()
 
 
+def test_daily_room_change_waits_for_playback_and_keeps_old_commands_out(store):
+    store.coordinator.register_worker(registration())
+    instance, yesterday = started(store)
+    room, key, guest = admitted(store, yesterday)
+    store.add(room, {"song_id": "123", "title": "合成测试", "request_id": uid()}, guest)
+    now = int(time.time())
+    with store.connection() as db:
+        db.execute("UPDATE coordinator_session SET opened=? WHERE id=1", (now - 86400,))
+        db.execute("UPDATE rooms SET playback_state='playing',playback_at=? WHERE id=?", (now, room["id"]))
+    assert not store.coordinator.rollover_day()
+    assert store.coordinator.party()["room_id"] == room["id"]
+    with store.connection() as db:
+        db.execute("UPDATE rooms SET playback_state='paused' WHERE id=?", (room["id"],))
+    assert store.coordinator.rollover_day()
+    current = store.coordinator.active()
+    assert current["room"] != room["id"] and current["instance"] == instance
+    with pytest.raises(Refusal) as refused:
+        store.room(room["id"], key)
+    assert refused.value.code == "room_closed"
+    new_room = store.room(current["room"], current["secret"])
+    assert store.status(new_room)["songs"] == []
+    assert not store.coordinator.rollover_day()
+
+
 def test_tv_adopts_room_without_evicting_joined_guests_and_reopen_is_idempotent(store):
     old = store.create()
     room, old_key, guest = admitted(store, old)
@@ -438,6 +462,7 @@ def test_http_credential_scopes_direct_ownership_qr_and_protocol_routes(store, s
         with httpx.Client(base_url="http://127.0.0.1:" + str(server.server_port), timeout=3, trust_env=False) as client:
             tv = {"X-KTV-TV-Key": store.coordinator.tv_key}
             agent = {"Authorization": "Bearer " + AGENT}
+            assert client.get("/api/rooms/current").json()["code"] == "no_active_room"
             assert client.get("/v1/status").status_code == 404
             assert client.get("/v1/status", headers={"X-KTV-TV-Key": AGENT}).status_code == 401
             assert client.get("/agent/tasks", headers=tv).status_code == 401
@@ -445,6 +470,11 @@ def test_http_credential_scopes_direct_ownership_qr_and_protocol_routes(store, s
             party = client.post("/v1/party", headers=tv, json={"instance": instance, "request_id": uid()}).json()
             tv["X-KTV-TV-Instance"] = instance
             assert party["active"]
+            active = client.get("/api/rooms/current")
+            assert active.headers["Cache-Control"] == "no-store"
+            assert active.json() == {"room": party["room_id"],
+                                    "key": parse_qs(urlsplit(party["join_url"]).fragment)["k"][0]}
+            assert client.get("/api/rooms/current", headers={"Origin": "https://other.test"}).status_code == 403
             assert client.get("/v1/party/qr", headers=tv).status_code == 503
             publish_qr(store, instance, party)
             assert client.get("/v1/party/qr", headers=tv).content == png_bytes()
