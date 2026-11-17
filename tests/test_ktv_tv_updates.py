@@ -353,7 +353,8 @@ def test_fixed_authenticated_tv_download_and_guest_isolation(tmp_path):
             store.coordinator.close()
 
 
-def test_mac_command_preflights_existing_install_contract_then_requires_apply(updates, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("legacy_audio_argument", [False, True])
+def test_mac_command_preflights_main_without_audio_guard(updates, tmp_path, monkeypatch, capsys, legacy_audio_argument):
     monkeypatch.syspath_prepend(str(ROOT / "scripts"))
     command = importlib.import_module("publish_ktv_tv_update")
     (updates.state_dir / "state.sqlite").touch()
@@ -368,15 +369,21 @@ def test_mac_command_preflights_existing_install_contract_then_requires_apply(up
     (candidate / "friday-ktv-0.72.apk").write_bytes(body)
     monkeypatch.setattr(command, "validate_main_manifest", lambda _: header)
 
-    def verify(build_dir, sdk, java, root, *, audio_output):
-        assert build_dir == candidate and audio_output == retained
-        return object(), SimpleNamespace(
+    environment = {"JAVA_HOME": "SYNTHETIC"}
+    monkeypatch.setattr(command, "java_environment", lambda java: environment)
+
+    def verify(role, build_dir, sdk, actual_environment, root):
+        assert role == "main" and build_dir == candidate and actual_environment is environment
+        assert not retained.exists()
+        return SimpleNamespace(
             identity=header, body=body, receipt={"sha256": release.sha256},
             certificate_sha256=release.certificate_sha256,
         )
 
-    monkeypatch.setattr(command, "verify_builds", verify)
-    args = ["--nas-state", str(updates.state_dir), "--build-dir", str(candidate), "--audio-build-dir", str(retained)]
+    monkeypatch.setattr(command, "verify_build", verify)
+    args = ["--nas-state", str(updates.state_dir), "--build-dir", str(candidate)]
+    if legacy_audio_argument:
+        args += ["--audio-build-dir", str(retained)]
     assert command.main(args) == 0
     assert '"state": "planned"' in capsys.readouterr().out
     assert not updates.directory.exists()

@@ -256,14 +256,13 @@ python3 scripts/ktv_compact_playback.py --action apply --state <NAS私有state�
 
 便携源码没有家庭地址或密钥。预置连接的 APK 属于私有交付，不能公开分发。构建只编译／签名／核对，不安装或播放；安装脚本单独执行并核对源码与 APK 摘要，安装回报仍需实际电视画面验收。
 
-已支持内网更新的电视可以从 NAS 获取已签名主应用。先部署包含 `tv_updates.py` 与 `tv_update_inbox.py` 的 [NAS 电视更新服务](../integrations/ktv_public/README.md#电视应用更新)，再用当前源码与保留的同签名伴随包核对发布。
+已支持内网更新的电视可以从 NAS 获取已签名主应用。先部署包含 `tv_updates.py` 与 `tv_update_inbox.py` 的 [NAS 电视更新服务](../integrations/ktv_public/README.md#电视应用更新)，再核对当前主应用的源码、构建回执、APK 内容与签名后发布。主应用发布可直接使用主包构建目录，沿用 NAS 已登记的证书约束。
 
 ```sh
 .venv/bin/python scripts/publish_ktv_tv_update.py \
   --nas-state "/已授权私有挂载/配置所在目录/state" \
   --worker-config "/现有 Mac NAS Worker 私有配置" \
-  --build-dir "/本版主应用与构建回执" \
-  --audio-build-dir "/已保留音频伴随包与构建回执"
+  --build-dir "/本版主应用与构建回执"
 ```
 
 命令默认只做预检。确认目标和版本后加 `--apply`，由 NAS 后台登记并生成发布回执。显示 `staged` 时等待 NAS 回执，仍可用相同命令核对同一版本。首次启用新版电视的更新功能需要安装一个支持更新的主应用。发布完成后，用电视确认检测到目标版本、系统安装完成和重新打开后的运行版本。需要撤回功能时用原签名构建更高版本号的修正版。
