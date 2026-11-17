@@ -26,7 +26,7 @@ SYNTHETIC_MEDIA = {
     'docs/screenshots/ktv-source-quality.png':
         'd4d1152743f6b691e8d99398eb70badecbe91afae4a1b09b008af6d3b0d52ee3',
     'docs/screenshots/ktv-storage-management.png':
-        '7dbecb6053bdea695274090b37bb629a2c21a26009934a2c9d4cfa33cdc4a8ca',
+        'aa177830e58d5eb5357831f4f7cc8777031c532ac235bf40ce2ec5607d0b2a37',
     # 手机首页、队列和声音面板，示例房间和内容均由测试夹具提供。
     'docs/screenshots/ktv-mobile-home.png':
         'ee92022ad285a21d5d39447053b2337febcb2b0cae9df7680cac60de37835561',
@@ -36,7 +36,9 @@ SYNTHETIC_MEDIA = {
         '142d58d5ac3c10eb388a4ecffe8d3bd379ae0849a65def9496e047ad10fde42f',
     # 合成歌曲与用量设置的 KTV 用户手册截图。
     'docs/screenshots/ktv-background-settings.png':
-        '639c1877515fdac0b2c0ed33b38e03cd6f6beb05bc95cc322149d75859f88117',
+        '3e18cbb48cc87b73a7697e331151ab39d6de56d5d61cd9b9c94cdf3abdc71a69',
+    'docs/screenshots/ktv-production-settings.png':
+        'dcb47f41d7a8aade59eb92c5600225b43ac7d1a99c7a9faefe3d3aec4ad92225',
     # Reviewed Godot XR CC0 hand target frames, exact approved runtime pose.
     'homeplane/static/motion-art/godot-xr/targets/hand-ok.png':
         'b7e7822447c8fe2c20dbbdbb04aedd6e8b307a1387f22e97a28cea6678bc025a',

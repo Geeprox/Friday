@@ -38,22 +38,31 @@ const errors={
  cache_changed:'文件或歌单已变化，请刷新后重新选择。',archive_changed:'NAS 归档已变化，请刷新后重新选择。',cache_in_use:'所选歌曲正在使用或制作，请稍后再试。',plan_expired:'删除预览已过期，请重新选择。',nas_management_unavailable:'NAS 暂未连接，恢复连接后可继续操作。',tv_offline:'电视离线，请开机后再操作。',room_changed:'房间已变化，请刷新后重试。',queue_changed:'歌单已更新，请刷新后重新选择。',song_playing:'当前歌曲正在播放，请先切歌。',sfx_unavailable:'电视氛围音效暂不可用。',source_login_required:'请在 KTV 设置的音源授权中登录。',source_rights_denied:'这个版本未能取得可用音频。',source_api_unavailable:'音源暂未连接，请稍后重试。',source_file_invalid:'原曲文件不完整，请重新准备。',download_timeout:'原曲下载未完成，请重试或换一个版本。',separation_failed:'伴奏生成失败，请重试。',transcode_failed:'播放文件封装失败，请重试。',storage_full:'存储空间不足，请调整上限或删除空闲歌曲。',search_unavailable:'暂时无法搜索，请稍后重试。',queue_full:'歌单已满，请先移除不需要的歌曲。',rate_limited:'操作较频繁，请稍等片刻再试。',cloud_song_unavailable:'暂时无法取得这个音乐云盘文件。',failed_history_source_unknown:'这条记录的原音源待确认，请重新搜索该曲。',retry_unavailable:'本次制备暂不能重试。',retry_limit:'本条记录的重试次数已用完。',invalid_policy:'请输入有效的容量上限（2–102400 GB）。',unauthorized:'管理会话已过期，请刷新页面。',ktv_offline:'KTV 暂未连接。请确认本机 KTV 服务已运行，再重试连接。',ktv_not_configured:'家庭 KTV 尚未配置。完成本机连接后即可使用。',ktv_config_unavailable:'KTV 连接配置暂不可读，请检查本机配置后重试。',ktv_read_only:'当前窗口只读，请在本机 Friday 窗口操作。',ktv_unavailable:'KTV 暂时无法完成操作，请稍后重试。',unavailable:'连接未完成，请检查服务后重试。'};
 const themes=[['content','内容与留白'],['festival','音乐节'],['live','Live']], sourceNames={song:'曲库',mv:'MV',cloud:'音乐云盘'};
 const reasons={preparing:'正在制作',in_queue:'当前歌单正在使用',transferring:'正在归档或校验',unsafe:'文件需要核对',nas_offline:'NAS 离线，暂不能核对使用情况'};
-const size=n=>n===null||n===undefined?'暂不可读':n>=1024**3?`${(n/1024**3).toFixed(2)} GB`:`${(n/1024**2).toFixed(1)} MB`;
+function size(bytes){
+ if(bytes==null)return '暂不可读';
+ if(bytes>=1024**3)return `${(bytes/1024**3).toFixed(2)} GB`;
+ if(bytes>=1024**2)return `${(bytes/1024**2).toFixed(1)} MB`;
+ if(bytes>=1024)return `${(bytes/1024).toFixed(1)} KB`;
+ return `${bytes} B`;
+}
 const date=n=>n?new Date(n*1000).toLocaleString('zh-CN',{hour12:false}):'暂无记录';
 let view='room',viewRequest=null,changing=false,room=null,pendingCommand=null;
-let pendingLibrary=null;
 let cacheData=null,cacheQuery='',cachePresence='all',cacheSort='recent',scope='mac';
 let page=0,deletePlan=null,lastCheckbox=-1;
+let selectingFiles=false;
+let libraryFilterTimer=null,libraryIndexTimer=null;
+const libraryPageSize=50;
 const cacheHosts=['mac','nas'];
 const cacheScopes=[['mac','仅 Mac'],['nas','仅 NAS'],['both','Mac 和 NAS']];
 const libraryReadError='歌曲文件暂时无法读取。';
+const libraryLoading='正在读取歌曲文件…';
 let searchData=null,searchQuery='',searchSource='song',searchOffset=0;
 let sourceSession=null;
 let backgroundView=null;
 let retryStorageSettings=null;
 const storagePolicies=new Map();
 const renderSignatures=new Map();
-const selected=new Set(),queueSelected=new Set(),searchSelected=new Set(),addRequests=new Map(),added=new Set();
+const selected=new Map(),queueSelected=new Set(),searchSelected=new Set(),addRequests=new Map(),added=new Set();
 function message(text,error=false){if(!alive)return;$('status').textContent=text;$('status').classList.toggle('error',error);}
 function explain(error){return errors[error.message]||errors.unavailable;}
 function button(text,fn,options={}){const b=el('button',text,options.className);b.type='button';b.disabled=!!options.disabled;b.onclick=fn;return b;}
@@ -64,9 +73,15 @@ async function api(path,body,signal=lifetime.signal){
  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),path==='manage/delete'?65000:18000);
  try{const response=await fetch(endpoint+'/'+path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store',credentials:'same-origin',signal:AbortSignal.any([controller.signal,lifetime.signal,signal])});const data=await response.json();if(!response.ok)throw new Error(data.detail||data.code||'unavailable');return data;}finally{clearTimeout(timer);}
 }
-function readLibrary(){
- if(!pendingLibrary)pendingLibrary=api('manage/library').finally(()=>{pendingLibrary=null;});
- return pendingLibrary;
+function libraryPath({offset=page*libraryPageSize,limit=libraryPageSize,selectable}={}){
+ const query=new URLSearchParams({offset,limit,q:cacheQuery,presence:cachePresence,sort:cacheSort});
+ if(selectable)query.set('selectable',selectable);
+ return 'manage/library?'+query;
+}
+function loadCachePage(){
+ if(view!=='cache'||changing)return;
+ viewRequest?.abort();viewRequest=null;
+ void refresh();
 }
 function resetContent(){$('summary').replaceChildren();$('content').replaceChildren();if(view==='jobs')$('content').append(button('返回已点',()=>setView('queue'),{className:'ktv-inline-back'}));}
 async function refresh({quiet=false}={}){
@@ -83,22 +98,42 @@ async function refresh({quiet=false}={}){
  const current=view,request=new AbortController(),signal=request.signal;
  viewRequest=request;
  $('refresh').disabled=true;
- if(!quiet)message(current==='cache'?'正在读取歌曲文件…':'正在读取…');
+ if(!quiet){
+  if(current==='cache'&&!$('library-rows'))$('content').replaceChildren();
+  message(current==='cache'?libraryLoading:'正在读取…');
+ }
  try{
-  const path=current==='jobs'?'jobs':'manage/room';
-  const data=await (current==='cache'?readLibrary():api(path,undefined,signal));
+  const path=current==='jobs'?'jobs':current==='cache'?libraryPath():'manage/room';
+  const data=await api(path,undefined,signal);
   if(signal.aborted)return;
+  if(current==='cache'&&data.indexing){
+   if(!$('library-rows')){$('content').replaceChildren();message(libraryLoading);}
+   clearTimeout(libraryIndexTimer);
+   libraryIndexTimer=setTimeout(()=>{if(view==='cache')void refresh({quiet:true});},750);
+   return;
+  }
+  if(current==='cache')clearTimeout(libraryIndexTimer);
+  if(current==='cache'&&page>0&&page*libraryPageSize>=data.total){
+   page=Math.max(0,Math.ceil(data.total/libraryPageSize)-1);
+   queueMicrotask(loadCachePage);
+   return;
+  }
   const signature=JSON.stringify(data,(key,value)=>['server_time_ms','position_ms','position_at','cursor'].includes(key)?undefined:value);
-  const clearStatus=!quiet||current==='cache'&&$('status').textContent===libraryReadError;
+  const clearStatus=!quiet||current==='cache'&&[libraryReadError,libraryLoading].includes($('status').textContent);
   if(quiet&&renderSignatures.get(current)===signature){
    if(current==='room')room=data;
    if(clearStatus)message('');
    return;
   }
   renderSignatures.set(current,signature);
-  resetContent();
+  if(current!=='cache'||!$('library-rows'))resetContent();
   if(data?.simulated)shell.querySelector('.ktv-context').textContent='合成验证 · 本机管理';
-  if(current==='cache'){cacheData=data;if(!data.nas.configured)scope='mac';renderCache(data);}
+  if(current==='cache'){
+   cacheData=data;if(!data.nas.configured)scope='mac';
+   if($('library-rows')){
+    renderCacheTotals(data);renderCacheRows();
+   }else renderCache(data);
+  }
   else if(current==='jobs')renderJobs(data.jobs);
   else{
    adoptRoom(data);
@@ -198,45 +233,77 @@ function eligible(row){
 function selectCacheRows(rows,checked){
  for(const row of rows.filter(eligible)){
   if(!checked)selected.delete(row.id);
-  else if(selected.size<128)selected.add(row.id);
+  else if(selected.size<128)selected.set(row.id,row);
  }
 }
-function renderCache(data){
+function renderCacheTotals(data){
  const totals=el('div',null,'storage-totals');
- totals.append(storageSummary(data,'mac'),storageSummary(data,'nas'));$('summary').append(totals);
- const query=el('input');query.type='search';query.placeholder='搜索歌曲名称';query.value=cacheQuery;
- const presence=select([['all','全部文件'],['both','两端都有'],['nas','仅 NAS 有副本'],
+ totals.append(storageSummary(data,'mac'),storageSummary(data,'nas'));$('summary').replaceChildren(totals);
+}
+function librarySelect(node,label){
+ node.setAttribute('aria-label',label);
+ const wrap=el('div',null,'library-select');
+ wrap.append(node);
+ return wrap;
+}
+function renderCache(data){
+ renderCacheTotals(data);
+ const query=el('input');query.type='search';query.maxLength=120;query.placeholder='搜索歌曲名称';query.value=cacheQuery;
+ const presence=select([['all','全部位置'],['both','两端都有'],['nas','仅 NAS 有副本'],
   ['mac','仅 Mac 有副本'],['orphan','未关联文件']],cachePresence);
  const sort=select([['recent','最近使用'],['size','占用从大到小'],['title','歌曲名称']],cacheSort);
  query.setAttribute('aria-label','搜索歌曲');
- presence.setAttribute('aria-label','存放位置');
- sort.setAttribute('aria-label','排序');
- const changeListing=()=>{cacheQuery=query.value;cachePresence=presence.value;cacheSort=sort.value;page=0;lastCheckbox=-1;renderCacheRows();};
- query.oninput=presence.onchange=sort.onchange=changeListing;
- const filters=el('div',null,'library-filters');
- filters.append(field('搜索歌曲',query),field('存放位置',presence),field('排序',sort));
+ const changeListing=()=>{
+  clearTimeout(libraryFilterTimer);
+  cacheQuery=query.value;cachePresence=presence.value;cacheSort=sort.value;page=0;lastCheckbox=-1;loadCachePage();
+ };
+ query.oninput=()=>{clearTimeout(libraryFilterTimer);libraryFilterTimer=setTimeout(changeListing,200);};
+ presence.onchange=sort.onchange=changeListing;
 
  const host=select(cacheScopes,scope);
- host.setAttribute('aria-label','清理位置');
  host.onchange=()=>{scope=host.value;selected.clear();lastCheckbox=-1;renderCacheRows();};
- const choose=button('选择筛选结果',()=>{selectCacheRows(filteredCache(),true);renderCacheRows();});
+ const choose=button('选择筛选结果',async event=>{
+  const trigger=event.currentTarget;
+  const params={offset:0,limit:128,selectable:scope},path=libraryPath(params);
+  trigger.disabled=true;
+  try{
+   const response=await api(path);
+   if(view==='cache'&&selectingFiles&&path===libraryPath({...params,selectable:scope}))selectCacheRows(response.entries,true);
+  }catch(error){if(view==='cache')message(explain(error),true);}
+  finally{if(view==='cache'&&trigger.isConnected)renderCacheRows();}
+ });
  choose.id='ktv-select-filtered';
- const clear=button('取消选择',()=>{selected.clear();lastCheckbox=-1;renderCacheRows();});
+ const clear=button('清空选择',()=>{selected.clear();lastCheckbox=-1;renderCacheRows();});
  clear.id='ktv-clear-selected';
  const remove=button('清理所选',openDelete,{className:'danger-outline'});
  remove.id='ktv-delete-selected';
  const count=el('p','','selection-count');count.id='ktv-selection-count';count.setAttribute('role','status');
- const actions=el('div',null,'toolbar library-actions');
- actions.append(count,field('清理位置',host),choose,clear,remove);
+ const actions=el('div',null,'library-actions');actions.id='ktv-file-actions';
+ const cleanupScope=el('div',null,'library-cleanup-scope');
+ cleanupScope.append(el('span','清理位置'),librarySelect(host,'清理位置'));
+ actions.append(cleanupScope,choose,count,clear,remove);
+
+ const toggle=button('选择文件',()=>{
+  selectingFiles=!selectingFiles;
+  selected.clear();lastCheckbox=-1;
+  renderCacheRows();
+  if(selectingFiles)host.focus({preventScroll:true});
+ });
+ toggle.id='ktv-select-files';toggle.setAttribute('aria-controls',actions.id);
+ const total=el('span','','library-total');total.id='ktv-library-total';total.setAttribute('role','status');
+ const filters=el('div',null,'library-filters');
+ filters.append(query,librarySelect(presence,'存放位置'),librarySelect(sort,'排序'),total,toggle);
 
  const table=el('table',null,'library-table');
  const caption=el('caption','歌曲文件与占用','sr-only');table.append(caption);
  const head=el('thead'),tr=el('tr'),selectHead=el('th'),all=el('input');
+ selectHead.className='library-check';selectHead.id='ktv-select-column';selectHead.scope='col';
  all.type='checkbox';all.id='ktv-select-page';all.setAttribute('aria-label','选择本页可删除的歌曲');
- all.onchange=()=>{selectCacheRows(filteredCache().slice(page*50,(page+1)*50),all.checked);lastCheckbox=-1;renderCacheRows();};
+ all.onchange=()=>{selectCacheRows(cacheData.entries,all.checked);lastCheckbox=-1;renderCacheRows();};
  selectHead.append(all);tr.append(selectHead);
  for(const heading of ['歌曲','Mac','NAS','最近使用']){
   const th=el('th',heading);th.scope='col';tr.append(th);
+  if(heading==='歌曲')th.className='library-name';
  }
  head.append(tr);
  const body=el('tbody');body.id='ktv-library-rows';table.append(head,body);
@@ -245,31 +312,32 @@ function renderCache(data){
  const pager=el('div',null,'pager');pager.id='ktv-cache-pager';
  $('content').append(filters,actions,wrap,pager);renderCacheRows();
 }
-function filteredCache(){
+function matchesCache(row){
  const query=cacheQuery.normalize('NFKC').trim().toLocaleLowerCase();
- const rows=cacheData.entries.filter(row=>{
-  if(query&&!row.title.normalize('NFKC').toLocaleLowerCase().includes(query))return false;
-  if(cachePresence==='orphan')return row.kind==='orphan';
-  if(cachePresence==='both')return !!(row.mac&&row.nas);
-  if(cachePresence==='mac')return !!(cacheData.nas.available&&row.mac&&!row.nas);
-  if(cachePresence==='nas')return !!(row.nas&&cacheData.mac.available&&!row.mac);
-  return true;
- });
- const total=row=>(row.mac?.bytes||0)+(row.nas?.bytes||0);
- if(cacheSort==='size')rows.sort((a,b)=>total(b)-total(a));
- if(cacheSort==='title')rows.sort((a,b)=>a.title.localeCompare(b.title,'zh-CN'));
- return rows;
+ if(query&&!row.title.normalize('NFKC').toLocaleLowerCase().includes(query))return false;
+ if(cachePresence==='orphan')return row.kind==='orphan';
+ if(cachePresence==='both')return !!(row.mac&&row.nas);
+ if(cachePresence==='mac')return !!(cacheData.nas.available&&row.mac&&!row.nas);
+ if(cachePresence==='nas')return !!(row.nas&&cacheData.mac.available&&!row.mac);
+ return true;
 }
 function renderCacheRows(focusId){
  const body=$('library-rows');if(!body)return;
- const available=new Map(cacheData.entries.filter(eligible).map(row=>[row.id,row]));
- for(const id of selected)if(!available.has(id))selected.delete(id);
- const filtered=filteredCache(),pages=Math.max(1,Math.ceil(filtered.length/50));
- page=Math.min(page,pages-1);
- const rows=filtered.slice(page*50,(page+1)*50);
+ $('file-actions').hidden=!selectingFiles;
+ $('select-column').hidden=!selectingFiles;
+ $('select-files').textContent=selectingFiles?'退出选择':'选择文件';
+ $('select-files').setAttribute('aria-expanded',String(selectingFiles));
+ $('library-total').textContent='共 '+cacheData.total+' 项';
+ const rows=cacheData.entries,available=new Set(rows.filter(eligible).map(row=>row.id));
+ for(const row of rows)if(selected.has(row.id)){
+  if(available.has(row.id))selected.set(row.id,row);
+  else selected.delete(row.id);
+ }
+ const pages=Math.max(1,Math.ceil(cacheData.total/libraryPageSize));
  body.replaceChildren();
  rows.forEach((row,index)=>{
-  const tr=el('tr'),td=el('td'),check=el('input');
+  const tr=el('tr'),td=el('td',null,'library-check'),check=el('input');
+  td.hidden=!selectingFiles;
   check.type='checkbox';check.checked=selected.has(row.id);check.disabled=!available.has(row.id);
   check.setAttribute('aria-label','选择 '+row.title);
   check.onclick=event=>{
@@ -278,9 +346,9 @@ function renderCacheRows(focusId){
    selectCacheRows(group,check.checked);lastCheckbox=index;renderCacheRows(row.id);
   };
   td.append(check);
-  const name=el('td');name.append(el('strong',row.title));
+  const name=el('td',null,'library-name');name.append(el('strong',row.title));
   const blocked=selectedHosts().map(h=>row[h]).find(item=>item&&!item.can_delete);
-  if(blocked)name.append(el('span',reasons[blocked.reason]||'暂时保留','row-note'));
+  if(selectingFiles&&blocked)name.append(el('span',reasons[blocked.reason]||'暂时保留','row-note'));
   tr.append(td,name,el('td',row.mac?size(row.mac.bytes):'—','numeric'),
    el('td',row.nas?size(row.nas.bytes):'—','numeric'),el('td',date(row.last_used),'date'));
   body.append(tr);
@@ -289,7 +357,7 @@ function renderCacheRows(focusId){
  if(!rows.length){
   const tr=el('tr'),td=el('td',cacheQuery||cachePresence!=='all'
    ?'没有匹配的歌曲文件。':'准备好的歌曲和原曲会显示在这里。','empty');
-  td.colSpan=5;tr.append(td);body.append(tr);
+  td.colSpan=selectingFiles?5:4;tr.append(td);body.append(tr);
  }
  const enabled=rows.filter(row=>available.has(row.id)),checked=enabled.filter(row=>selected.has(row.id)).length;
  $('select-page').checked=!!checked&&checked===enabled.length;
@@ -298,25 +366,25 @@ function renderCacheRows(focusId){
  const hosts=selectedHosts();
  const bytes=hosts.map(host=>{
   const label=host==='mac'?'Mac':'NAS';
-  return label+' '+size([...selected].reduce((sum,id)=>sum+(available.get(id)[host]?.bytes||0),0));
+  return label+' '+size([...selected.values()].reduce((sum,row)=>sum+(row[host]?.bytes||0),0));
  });
- const hidden=selected.size-filtered.filter(row=>selected.has(row.id)).length;
- $('selection-count').textContent='显示 '+filtered.length+' 项'+(selected.size
-  ?' · 已选 '+selected.size+' 项 · '+bytes.join(' / ')+(hidden?' · '+hidden+' 项在筛选外':''):'');
- $('select-filtered').disabled=selected.size>=128||!filtered.some(row=>available.has(row.id)&&!selected.has(row.id));
- $('clear-selected').disabled=!selected.size;
+ const hidden=[...selected.values()].filter(row=>!matchesCache(row)).length;
+ $('selection-count').textContent='已选 '+selected.size+' 项'+(selected.size
+  ?' · '+bytes.join(' / ')+(hidden?' · '+hidden+' 项在筛选外':''):'');
+ $('select-filtered').disabled=selected.size>=128||!cacheData.total||selectedHosts().includes('nas')&&!cacheData.nas.available;
+ $('clear-selected').hidden=!selected.size;
  $('delete-selected').disabled=!selected.size||changing;
  $('delete-selected').textContent=scope==='mac'?'清理 Mac 缓存':'删除所选文件';
  $('cache-pager').replaceChildren();
- if(pages>1)$('cache-pager').append(button('上一页',()=>{page--;lastCheckbox=-1;renderCacheRows();},{disabled:page===0}),
-  el('span',(page+1)+' / '+pages),button('下一页',()=>{page++;lastCheckbox=-1;renderCacheRows();},{disabled:page+1>=pages}));
+ if(pages>1)$('cache-pager').append(button('上一页',()=>{if($('refresh').disabled)return;page--;lastCheckbox=-1;loadCachePage();},{disabled:page===0}),
+  el('span',(page+1)+' / '+pages),button('下一页',()=>{if($('refresh').disabled)return;page++;lastCheckbox=-1;loadCachePage();},{disabled:page+1>=pages}));
 }
 async function openDelete(){
  if(!selected.size||changing)return;
  const trigger=$('delete-selected');
  trigger.disabled=true;changing=true;
  try{
-  deletePlan=await api('manage/preview',{ids:[...selected],scope});
+  deletePlan=await api('manage/preview',{ids:[...selected.keys()],scope});
   const location=cacheScopes.find(([value])=>value===scope)[1];
   $('delete-title').textContent=(scope==='mac'?'清理 ':'删除 ')+deletePlan.songs.length+' 项 · '+location;
   $('delete-note').textContent=scope==='mac'?'有 NAS 归档的歌曲可以回档，其余曲目再次点歌时会重新准备。':'清除所选歌曲的归档和相应的已唱记录。';
@@ -556,19 +624,20 @@ function renderStorageSettings(signal){
 }
 function renderRoomDefaults(section,roomResult){
  section.append(el('p','用于下一次新建的房间。','setting-note'));
- const form=el('form',null,'defaults-form'),defaults=roomResult.defaults;
+ const form=el('form',null,'room-defaults-form'),fields=el('div',null,'settings-fields');
+ const defaults=roomResult.defaults;
  const theme=select(themes,defaults.theme),original=select([['0','伴奏'],['1','原唱']],String(defaults.original));
- form.append(field('房间皮肤',theme),field('演唱模式',original));
+ fields.append(field('房间皮肤',theme),field('演唱模式',original));
  const values={};
  for(const[key,label]of volumeControls){
   const input=el('input');
   input.type='number';input.min='0';input.max='100';input.required=true;input.value=String(defaults[key]);
   values[key]=input;
-  form.append(field(label,input));
+  fields.append(field(label,input));
  }
- const save=el('button','保存房间默认设置','primary');
+ const save=el('button','保存默认设置','primary');
  save.type='submit';
- form.append(save);
+ form.append(fields,save);
  form.onsubmit=e=>{
   e.preventDefault();
   const value={theme:theme.value,original:Number(original.value)};
@@ -579,19 +648,20 @@ function renderRoomDefaults(section,roomResult){
 }
 function renderScheduler(section,scheduler){
  section.append(el('p',`${scheduler.hardware.cpu} · ${Math.round(scheduler.hardware.memory_bytes/1024**3)} GB 内存`,'muted'));
- const form=el('form',null,'defaults-form'),mode=select([['auto','自动（推荐）'],['manual','手动调整']],scheduler.settings.mode),controls={};
- form.append(field('运行方式',mode));
+ const form=el('form',null,'scheduler-form'),fields=el('div',null,'settings-fields');
+ const mode=select([['auto','自动（推荐）'],['manual','手动调整']],scheduler.settings.mode),controls={};
+ fields.append(field('运行方式',mode));
  section.append(el('p','伴奏默认并行 3 首，手动可选最多 10 首。','setting-note'));
  for(const[key,title]of [['download','原曲下载'],['model','伴奏制作'],['encode','播放文件封装']]){
   const n=select(Array.from({length:scheduler.limits[key]},(_,i)=>[String(i+1),`${i+1} 路`]),String(scheduler.settings[key]));
   n.disabled=mode.value==='auto';
   controls[key]=n;
-  form.append(field(title,n));
+  fields.append(field(title,n));
  }
  mode.onchange=()=>Object.values(controls).forEach(n=>n.disabled=mode.value==='auto');
  const save=el('button','保存制作设置','primary');
  save.type='submit';
- form.append(save);
+ form.append(fields,save);
  form.onsubmit=e=>{
   e.preventDefault();
   action(save,()=>api('scheduler',{mode:mode.value,...Object.fromEntries(Object.entries(controls).map(([key,n])=>[key,Number(n.value)]))}),'制作设置已保存，将用于后续任务。');
@@ -599,8 +669,7 @@ function renderScheduler(section,scheduler){
  section.append(form);
 }
 function renderBackgroundSettings(signal){
- const section=el('details',null,'section background-settings');
- const summary=el('summary');summary.append(el('h2','歌曲背景'));
+ const section=el('section',null,'section background-settings');
  const status=el('p',null,'muted');status.setAttribute('role','status');
  const policy=el('form',null,'background-limit');policy.hidden=true;
  const enabled=el('input');enabled.type='checkbox';enabled.setAttribute('role','switch');
@@ -616,7 +685,7 @@ function renderBackgroundSettings(signal){
  const state={signal,section,status,policy,enabled,limit,list,retry,items:new Map(),loading:false,saving:false,
   active:true,remaining:null,issue:'',revision:0,reload:false};
  backgroundView=state;
- section.append(summary,policy,result,status,retry,list);
+ section.append(el('h2','歌曲背景'),policy,result,status,retry,list);
  async function savePolicy(patch){
   if(state.saving||readOnly||signal.aborted)return;
   state.saving=true;
@@ -643,8 +712,8 @@ function renderBackgroundSettings(signal){
   event.preventDefault();
   void savePolicy({daily_images:limit.valueAsNumber});
  };
- section.ontoggle=()=>{if(section.open)void readBackgrounds(state);};
  $('content').append(section);
+ void readBackgrounds(state);
 }
 function applyBackgroundPolicy(state,data){
  if(Number.isInteger(data.daily_limit)){
@@ -707,7 +776,7 @@ async function readBackgrounds(state){
   if(!state.signal.aborted&&revision===state.revision){state.status.textContent='暂时无法读取歌曲背景。';state.retry.hidden=false;}
  }finally{
   state.loading=false;
-  if(state.reload){state.reload=false;if(state.section.open)void readBackgrounds(state);}
+  if(state.reload){state.reload=false;void readBackgrounds(state);}
  }
 }
 function updateBackgroundRow(state,row){
@@ -767,7 +836,7 @@ async function generateBackground(state,row){
    if(row.previewOpen&&data.status==='ready')void loadBackgroundPreview(state,row);
    state.revision++;
    if(state.loading)state.reload=true;
-   else if(state.section.open)void readBackgrounds(state);
+   else void readBackgrounds(state);
   }
  }catch(error){
   if(!state.signal.aborted)row.error=explain(error);
@@ -838,6 +907,7 @@ async function sourceRequest(path='source/status',body){
 }
 function setView(name,afterRefresh){
  if(!alive||changing||!tabs.includes(name))return;
+ clearTimeout(libraryFilterTimer);clearTimeout(libraryIndexTimer);
  viewRequest?.abort();viewRequest=null;
  view=name;renderSignatures.delete(name);resetContent();
  $('refresh').disabled=false;
@@ -900,7 +970,7 @@ const timer=setInterval(()=>{
  if(sourceDialog.open){if(sourceSession?.waiting)void sourceRequest();return;}
  if(view==='settings'){
   retryStorageSettings?.();
-  if(backgroundView?.section.open&&[...backgroundView.items.values()].some(row=>row.item.status==='preparing'))void readBackgrounds(backgroundView);
+  if(backgroundView&&[...backgroundView.items.values()].some(row=>row.item.status==='preparing'))void readBackgrounds(backgroundView);
   return;
  }
  if(viewRequest||changing||dialog.open||view==='search'||view==='cache'&&selected.size||view==='queue'&&queueSelected.size||shell.querySelector('details[open]'))return;
@@ -909,7 +979,7 @@ const timer=setInterval(()=>{
  void refresh({quiet:true});
 },5000);
 void refresh();
-return{dispose(){if(!alive)return;alive=false;viewRequest?.abort();viewRequest=null;sourceSession?.controller.abort();lifetime.abort();clearInterval(timer);if(dialog.open)dialog.close();if(sourceDialog.open)sourceDialog.close();shell.remove();}};
+return{dispose(){if(!alive)return;alive=false;viewRequest?.abort();viewRequest=null;sourceSession?.controller.abort();lifetime.abort();clearInterval(timer);clearTimeout(libraryFilterTimer);clearTimeout(libraryIndexTimer);if(dialog.open)dialog.close();if(sourceDialog.open)sourceDialog.close();shell.remove();}};
 }
 
 const standalone=document.querySelector('[data-ktv-standalone]');

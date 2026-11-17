@@ -118,6 +118,7 @@ def main(argv=None):
     from homeplane.ktv_resources import available_memory, machine
     from homeplane.ktv_source_api import APIAudioAdapter, LocalSourceAPI
     from homeplane.ktv_video import prepare_video
+    from homeplane.ktv_audio import pack_playback
     legacy = NetEaseDownloadAdapter(
         Path(config["download_dir"]), Path(config["root"]) / "downloads", allow_launch=False
     )
@@ -154,6 +155,7 @@ def main(argv=None):
         acquire=acquire,
         separate=separator(Path(config["separation_cache"]), workspace=installed, runtime=separation_runtime),
         transcode=partial(transcode_pcm, ffmpeg=ffmpeg),
+        pack_audio=partial(pack_playback, ffmpeg=ffmpeg, ffprobe=shutil.which("ffprobe")),
         video=lambda song_id, original, folder, event: {"status": "unavailable"} if queue.jobs[folder.name].get("audio_origin") == "cloud" else prepare_video(song_id, original, folder, event),
         hardware=machine(),
         memory_available=available_memory,

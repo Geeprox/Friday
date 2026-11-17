@@ -15,6 +15,7 @@ import shutil
 import stat
 import threading
 import time
+import unicodedata
 import uuid
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -77,6 +78,13 @@ class SongLibrary:
         self.nas_usage = None
         self.reservations = {}
         self.legacy_guide_hashes = {}
+        self.legacy_scan_lock = threading.Lock()
+        self.listing_lock = threading.Lock()
+        self.listing_thread = None
+        self.listing_snapshot = None
+        self.listing_updated = float("-inf")
+        self.listing_generation = 0
+        self.listing_failed = False
         self.trim_wake = threading.Event()
         self.trim_request_lock = threading.Lock()
         self.trim_bytes_requested = 0
@@ -223,7 +231,7 @@ class SongLibrary:
             if job["state"] != "ready":
                 continue
             folder = self.queue.jobs_dir / job["id"]
-            names = ["original.wav", "instrumental.wav"]
+            names = [spec.get("filename", kind + ".wav") for kind, spec in job.get("media", {}).items()]
             if job.get("video", {}).get("status") == "ready":
                 names.append("video.mp4")
             for name in names:
@@ -305,7 +313,7 @@ class SongLibrary:
         with self.archive.lock:
             self.archive.guide_links = links
 
-    def _nas_inventory(self):
+    def _nas_inventory(self, *, listing=False):
         data = {"available": False, "configured": self.direct or bool(self.archive), "entries": [], "bytes": None}
         if self.direct:
             try:
@@ -322,8 +330,12 @@ class SongLibrary:
         rows = {r["id"]: {**r, "remote": r, "legacy": None} for r in data["entries"]}
         if self.archive:
             try:
-                self._index_legacy_guides()
-                legacy = self.archive.managed_inventory()
+                with self.legacy_scan_lock:
+                    self._index_legacy_guides()
+                    if listing:
+                        legacy = self.archive.managed_inventory(cache_catalogs=True)
+                    else:
+                        legacy = self.archive.managed_inventory()
             except (OSError, ValueError):
                 data.update(available=False, entries=[], bytes=None)
                 return data
@@ -369,27 +381,94 @@ class SongLibrary:
             atomic_json(path, value)
         return read_record(path) or {"enabled": False, "limit_bytes": 100 * 1024**3}
 
-    def inventory(self):
+    def inventory(self, *, listing=False):
+        if listing:
+            return self._combine_inventory(self._nas_inventory(listing=True))
         with self.lock:
-            nas = self._nas_inventory()
-            if nas["available"]:
-                self.nas_usage = nas["bytes"]
-            mac = self.local_inventory(nas.get("protected_song_ids", ()))
-            if nas["configured"] and not nas["available"]:
-                for row in mac["entries"]:
-                    row.update(can_delete=False, reason="nas_offline")
-            combined = {r["id"]: {"id": r["id"], "title": r["title"], "kind": r["kind"], "last_used": r["last_used"], "mac": r, "nas": None} for r in mac["entries"]}
-            for row in nas["entries"]:
-                item = combined.setdefault(row["id"], {"id": row["id"], "title": row["title"], "kind": row["kind"], "last_used": row["last_used"], "mac": None, "nas": None})
-                item["nas"] = row
-                item["last_used"] = max(item["last_used"], row["last_used"])
-            for item in combined.values():
-                if item["mac"] and item["nas"] and item["mac"]["reason"] in {"preparing", "in_queue"}:
-                    item["nas"].update(can_delete=False, reason=item["mac"]["reason"])
-            return {"mac": {k: v for k, v in mac.items() if k != "entries"},
-                    "nas": {k: v for k, v in nas.items() if k not in {"entries", "protected_song_ids", "protected_guide_hashes"}},
-                    "entries": sorted(combined.values(), key=lambda r: r["last_used"], reverse=True),
-                    "original_downloads_included": True, "models_included": False}
+            return self._combine_inventory(self._nas_inventory())
+
+    def _combine_inventory(self, nas):
+        if nas["available"]:
+            self.nas_usage = nas["bytes"]
+        mac = self.local_inventory(nas.get("protected_song_ids", ()))
+        if nas["configured"] and not nas["available"]:
+            for row in mac["entries"]:
+                row.update(can_delete=False, reason="nas_offline")
+        combined = {r["id"]: {"id": r["id"], "title": r["title"], "kind": r["kind"], "last_used": r["last_used"], "mac": r, "nas": None} for r in mac["entries"]}
+        for row in nas["entries"]:
+            item = combined.setdefault(row["id"], {"id": row["id"], "title": row["title"], "kind": row["kind"], "last_used": row["last_used"], "mac": None, "nas": None})
+            item["nas"] = row
+            item["last_used"] = max(item["last_used"], row["last_used"])
+        for item in combined.values():
+            if item["mac"] and item["nas"] and item["mac"]["reason"] in {"preparing", "in_queue"}:
+                item["nas"].update(can_delete=False, reason=item["mac"]["reason"])
+        return {"mac": {k: v for k, v in mac.items() if k != "entries"},
+                "nas": {k: v for k, v in nas.items() if k not in {"entries", "protected_song_ids", "protected_guide_hashes"}},
+                "entries": sorted(combined.values(), key=lambda r: r["last_used"], reverse=True),
+                "original_downloads_included": True, "models_included": False}
+
+    def refresh_listing(self):
+        with self.listing_lock:
+            if (self.stop.is_set() or self.listing_thread is not None
+                    or time.monotonic() - self.listing_updated < 5):
+                return
+            generation = self.listing_generation
+
+            def run():
+                snapshot = None
+                try:
+                    snapshot = self.inventory(listing=True)
+                except (OSError, ValueError, KeyError, HTTPException):
+                    pass
+                finally:
+                    with self.listing_lock:
+                        if generation == self.listing_generation:
+                            if snapshot is not None:
+                                self.listing_snapshot = snapshot
+                            self.listing_failed = snapshot is None
+                            self.listing_updated = time.monotonic()
+                        self.listing_thread = None
+
+            self.listing_thread = threading.Thread(target=run, name="ktv-library-list", daemon=True)
+            self.listing_thread.start()
+
+    def invalidate_listing(self):
+        with self.listing_lock:
+            self.listing_updated = float("-inf")
+            self.listing_generation += 1
+            self.listing_snapshot = None
+            self.listing_failed = False
+
+    def inventory_page(self, *, offset, limit, query, presence, sort, selectable):
+        self.refresh_listing()
+        with self.listing_lock:
+            data = self.listing_snapshot
+            failed = self.listing_failed
+        if data is None:
+            if failed:
+                raise HTTPException(503, "library_unavailable")
+            return {"indexing": True, "entries": [], "total": 0}
+
+        def text(value):
+            return unicodedata.normalize("NFKC", value).casefold()
+
+        def matches(row):
+            return (presence == "all" or presence == "orphan" and row["kind"] == "orphan"
+                    or presence == "both" and row["mac"] and row["nas"]
+                    or presence == "mac" and data["nas"]["available"] and row["mac"] and not row["nas"]
+                    or presence == "nas" and data["mac"]["available"] and row["nas"] and not row["mac"])
+
+        pattern = text(query.strip())
+        rows = [row for row in data["entries"] if matches(row) and (not pattern or pattern in text(row["title"]))]
+        if selectable:
+            hosts = ("mac", "nas") if selectable == "both" else (selectable,)
+            rows = [row for row in rows if (copies := [row[host] for host in hosts if row[host]])
+                    and all(copy["can_delete"] for copy in copies)]
+        if sort == "size":
+            rows.sort(key=lambda row: -sum(copy["bytes"] for copy in (row["mac"], row["nas"]) if copy))
+        if sort == "title":
+            rows.sort(key=lambda row: text(row["title"]))
+        return {**data, "entries": rows[offset:offset + limit], "total": len(rows), "indexing": False}
 
     def _validate_legacy_deletion(self, selected):
         current = {r["id"]: r["nas"] for r in self.inventory()["entries"]}
@@ -583,17 +662,22 @@ class SongLibrary:
     def enforce_nas(self):
         if not self.direct and not self.archive:
             return
+        # 先在锁外检查容量。只有达到清理条件时才读取完整的最新校验信息。
+        nas = self._nas_inventory(listing=True)
+        if not nas["available"]:
+            return
+        self.nas_usage = nas["bytes"]
+        if self.direct:
+            self.remote("external-usage", {"bytes": nas.get("legacy_bytes", 0), "delegated": bool(self.archive)})
+        policy = nas["policy"]
+        if not policy["enabled"] or nas["bytes"] <= policy["limit_bytes"]:
+            return
         with self.lock:
             data = self.inventory()
-            if not data["nas"]["available"]:
-                return
-            if self.direct:
-                self.remote("external-usage", {"bytes": data["nas"].get("legacy_bytes", 0), "delegated": bool(self.archive)})
-            policy = data["nas"]["policy"]
-            if not policy["enabled"]:
+            if not data["nas"]["available"] or not data["nas"]["policy"]["enabled"]:
                 return
             for row in sorted(data["entries"], key=lambda r: (r["last_used"], r["id"])):
-                if data["nas"]["bytes"] <= policy["limit_bytes"]:
+                if data["nas"]["bytes"] <= data["nas"]["policy"]["limit_bytes"]:
                     break
                 if not row["nas"] or not row["nas"]["can_delete"] or row["mac"] and not row["mac"]["can_delete"]:
                     continue
@@ -713,6 +797,8 @@ class SongLibrary:
             return dict(self.last_cleanup)
 
     def start(self):
+        self.refresh_listing()
+
         def run():
             next_nas_check = time.monotonic() + 30
             while not self.stop.is_set():

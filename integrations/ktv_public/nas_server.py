@@ -1,12 +1,14 @@
 """Standalone NAS guest song station. Python stdlib only; no household or audio APIs."""
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
 import os
 import re
 import secrets
+import socket
 import socketserver
 import sqlite3
 import stat
@@ -17,6 +19,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -178,6 +181,11 @@ def song_title(value):
     return title.strip()
 
 
+class NoImageRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
 class Store:
     def __init__(self, root, origin, base_path="/ktv", *, worker_origin=None, allow_loopback_worker=False,
                  recovery_enabled=False, background_health=False, previous_guest_origin=None):
@@ -200,6 +208,7 @@ class Store:
         self.search_cache = {}
         self.search_slots = threading.BoundedSemaphore(4)
         self.artwork_cache = {}
+        self.thumbnail_cache = {}
         self.artwork_slots = threading.BoundedSemaphore(2)
         self.next_poll_maintenance = 0
         self.recommendations = None
@@ -633,21 +642,25 @@ class Store:
             self._expire(db)
             if db.execute("SELECT count(*) FROM rooms WHERE closed=0").fetchone()[0] >= 8:
                 raise Refusal(429, "room_capacity")
-            room_id, key, expires = str(uuid.uuid4()), secrets.token_urlsafe(32), PERSISTENT_EXPIRY
-            muted = 1  # A new scene never grants microphone enable implicitly.
-            db.execute("INSERT INTO rooms(id,token_hash,expires,mic_muted) VALUES(?,?,?,?)", (room_id, sha(key), expires, muted))
-            if getattr(self, "management", None):
-                defaults = self.management.preferences()
-                db.execute("UPDATE rooms SET " + ",".join(key + "=?" for key in defaults) + " WHERE id=?",
-                           (*defaults.values(), room_id))
+            room_id, key = self.insert_room(db)
         return {
             "room_id": room_id,
-            "expires": expires,
+            "expires": PERSISTENT_EXPIRY,
             "persistent": True,
             "theme": "content",
             "theme_revision": 0,
             "join_url": self.join_url(room_id, key),
         }
+
+    def insert_room(self, db):
+        room_id, key = str(uuid.uuid4()), secrets.token_urlsafe(32)
+        db.execute("INSERT INTO rooms(id,token_hash,expires,mic_muted) VALUES(?,?,?,1)",
+                   (room_id, sha(key), PERSISTENT_EXPIRY))
+        if getattr(self, "management", None):
+            defaults = self.management.preferences()
+            db.execute("UPDATE rooms SET " + ",".join(key + "=?" for key in defaults) + " WHERE id=?",
+                       (*defaults.values(), room_id))
+        return room_id, key
 
     def join_url(self, room_id, key):
         return self.origin + self.base_path + "/#" + urllib.parse.urlencode({"r": room_id, "k": key})
@@ -1291,7 +1304,8 @@ class Store:
             archives = self.coordinator.archives(direct["room"], db) if direct else []
             lyrics = self.coordinator.lyric_tasks(direct["room"], db) if direct else []
             return {"tasks": tasks, "cancelled": [r[0] for r in cancelled], "rooms": rooms, "archives": archives,
-                    "lyric_tasks": lyrics, "backgrounds_enabled": self.coordinator.backgrounds_enabled}
+                    "lyric_tasks": lyrics, "backgrounds_enabled": self.coordinator.backgrounds_enabled,
+                    "playback_encoding": self.coordinator.playback_encoding(direct)}
 
     def retry(self, room, payload):
         if set(payload) != {"id", "request_id"} or any(
@@ -1478,26 +1492,20 @@ class Store:
             cached = self.search_cache.get(cache_key)
             if cached and time.monotonic() - cached[0] < 120:
                 return {"songs": cached[1], **cached[2]}
-        search_path = "/api/search/get" if source == "mv" else "/api/search/get/web"
         if not self.search_slots.acquire(blocking=False):
             if cached and time.monotonic() - cached[0] < 600:
                 return {"songs": cached[1], **cached[2]}
             raise Refusal(429, "search_busy")
         try:
-            value = self.public_metadata(search_path, {"s": query, "type": 1004 if source == "mv" else 1,
-                                                      "limit": 30, "offset": offset}, timeout=5)
+            params = {"s": query, "type": 1004 if source == "mv" else 1, "limit": 30, "offset": offset}
+            result = self.catalog_search(source, params)
         except (OSError, ValueError, Refusal):
             if cached and time.monotonic() - cached[0] < 600:
                 return {"songs": cached[1], **cached[2]}
             raise Refusal(503, "search_unavailable") from None
         finally:
             self.search_slots.release()
-        result = value.get("result", {})
-        if not isinstance(result, dict):
-            raise Refusal(503, "search_unavailable")
         rows = result.get("mvs" if source == "mv" else "songs", [])
-        if not isinstance(rows, list):
-            raise Refusal(503, "search_unavailable")
         songs = []
         for row in rows[:30]:
             if not isinstance(row, dict):
@@ -1526,7 +1534,21 @@ class Store:
             self.search_cache[cache_key] = (time.monotonic(), songs, page)
         return {"songs": songs, **page}
 
-    def search_artwork(self, song_ids):
+    def catalog_search(self, source, params):
+        # 同一个官方曲库的备用查询路径接管首轮超时。
+        paths = (("/api/search/get", 5),) if source == "mv" else (
+            ("/api/search/get", 2), ("/api/search/get/web", 3))
+        field = "mvs" if source == "mv" else "songs"
+        for path, timeout in paths:
+            try:
+                result = self.public_metadata(path, params, timeout=timeout).get("result", {})
+            except (OSError, ValueError, Refusal):
+                continue
+            if isinstance(result, dict) and isinstance(result.get(field, []), list):
+                return result
+        raise Refusal(503, "search_unavailable")
+
+    def search_artwork(self, song_ids, *, inline=False):
         if not isinstance(song_ids, str) or len(song_ids) > 569:
             raise Refusal(400, "invalid_query")
         ids = song_ids.split(",")
@@ -1544,7 +1566,7 @@ class Store:
             try:
                 details = self.public_metadata("/api/v3/song/detail",
                                                {"c": json.dumps([{"id": int(i)} for i in missing], separators=(",", ":"))},
-                                               timeout=3)
+                                               timeout=5)
             except (OSError, ValueError, Refusal):
                 raise Refusal(503, "search_unavailable") from None
             finally:
@@ -1565,7 +1587,38 @@ class Store:
                         self.artwork_cache.pop(next(iter(self.artwork_cache)))
                     self.artwork_cache[ident] = (time.monotonic(), cover)
             cached.update(resolved)
-        return {"covers": {ident: cover for ident, cover in cached.items() if cover}}
+        covers = {ident: cover for ident, cover in cached.items() if cover}
+        if not inline:
+            return {"covers": covers}
+        def thumbnail(item):
+            ident, url = item
+            with self.lock:
+                saved = self.thumbnail_cache.get(url)
+            if saved:
+                return ident, saved
+            try:
+                request = urllib.request.Request(url, headers={"Referer": "https://music.163.com/"})
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoImageRedirect())
+                with opener.open(request, timeout=3) as image:
+                    kind = image.headers.get_content_type()
+                    data = image.read(1048577)
+                if (len(data) > 1048576 or
+                        not ((kind in {"image/jpeg", "image/jpg"} and data.startswith(b"\xff\xd8\xff"))
+                             or kind == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n"))):
+                    return ident, ""
+                kind = "image/png" if kind == "image/png" else "image/jpeg"
+                value = "data:" + kind + ";base64," + base64.b64encode(data).decode("ascii")
+                with self.lock:
+                    if len(self.thumbnail_cache) >= 512:
+                        self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
+                    self.thumbnail_cache[url] = value
+                return ident, value
+            except (OSError, ValueError):
+                return ident, ""
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            images = dict(pool.map(thumbnail, covers.items()))
+        return {"covers": {ident: image for ident, image in images.items() if image},
+                "pending": [ident for ident, image in images.items() if not image]}
 
     @staticmethod
     def public_metadata(path, params, *, timeout=8):
@@ -1705,7 +1758,7 @@ class Store:
         return {"songs": songs, "title": cached[1], "offset": offset, "next_offset": offset + 30, "has_more": offset + 30 < len(cached[2]), "total": len(cached[2])}
 
 
-def make_handler(store, agent_key, assets):
+def make_handler(store, agent_key, assets, *, guest_only=False):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -1843,8 +1896,14 @@ def make_handler(store, agent_key, assets):
                 raise Refusal(405, "method_refused")
             origin = self.headers.get("Origin")
             room_route = ROOM_ROUTE.fullmatch(path)
-            if origin and origin != store.origin and (not room_route or origin != store.previous_guest_origin):
+            current_room = path == "/api/rooms/current" or (path == "/" and parsed.query == "room=current")
+            if origin and origin != store.origin and (not (room_route or current_room) or origin != store.previous_guest_origin):
                 raise Refusal(403, "origin_refused")
+            if current_room and self.command == "GET":
+                active = store.coordinator.active()
+                if not active:
+                    raise Refusal(404, "no_active_room")
+                return self.reply(200, {"room": active["room"], "key": active["secret"]})
             if self.command in {"GET", "HEAD"} and path in {
                 "/avatars.png",
                 "/content.png",
@@ -1868,6 +1927,8 @@ def make_handler(store, agent_key, assets):
                 return self.reply(200, (assets / name).read_bytes(), kind)
             if path == "/health" and self.command in {"GET", "HEAD"}:
                 return self.reply(200, {"service": "friday-ktv-public", "protocol": 1})
+            if guest_only and not room_route:
+                raise Refusal(404, "not_found")
             if path.startswith("/v1/") and self.headers.get("X-KTV-TV-Key") is not None:
                 if not store.coordinator.authenticate(self.headers.get("X-KTV-TV-Key")):
                     raise Refusal(401, "unauthorized")
@@ -1907,7 +1968,7 @@ def make_handler(store, agent_key, assets):
                     file, spec = coordinator.media_file(media.group(1), media.group(3))
                     kind = media.group(3)
                     content_type = ("image/" + spec["encoding"] if kind == "background"
-                                    else "video/mp4" if kind == "video" else "audio/wav")
+                                    else "video/mp4" if kind == "video" else "audio/mp4" if spec.get("encoding") == "aac_lc_m4a" else "audio/wav")
                     return self.media_reply(file, content_type, spec["bytes"])
                 raise Refusal(404, "not_found")
             if path.startswith("/agent/"):
@@ -2049,14 +2110,14 @@ def make_handler(store, agent_key, assets):
                     raise Refusal(400, "invalid_query")
                 return self.reply(200, store.playlist(params.get("id", [""])[0], int(offset)))
             if operation == "artwork" and self.command == "GET":
-                guest = store.guest(room, self.headers.get("X-KTV-Guest", ""))
-                store.budget("artwork:" + guest["id"], 40)
+                store.guest(room, self.headers.get("X-KTV-Guest", ""))
                 params = urllib.parse.parse_qs(parsed.query, max_num_fields=2)
-                if set(params) != {"ids"} or len(params["ids"]) != 1:
+                if (not {"ids"} <= set(params) or set(params) - {"ids", "inline"}
+                        or any(len(values) != 1 for values in params.values())
+                        or params.get("inline", ["0"])[0] not in {"0", "1"}):
                     raise Refusal(400, "invalid_query")
-                return self.reply(200, store.search_artwork(params["ids"][0]))
+                return self.reply(200, store.search_artwork(params["ids"][0], inline=params.get("inline") == ["1"]))
             if operation == "search" and self.command == "GET":
-                store.budget("search:" + room["id"], 30)
                 params = urllib.parse.parse_qs(parsed.query, max_num_fields=4)
                 source = params.get("source", ["song"])[0]
                 if source == "cloud":
@@ -2113,6 +2174,55 @@ class Server(socketserver.ThreadingMixIn, HTTPServer):
             self.capacity.release()
 
 
+class GuestSocketServer(Server):
+    address_family = socket.AF_UNIX
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "localhost", 0
+
+
+def guest_socket_listener(config_path, config, store, assets):
+    name = config.get("guest_socket")
+    if name is None:
+        return None
+    if not isinstance(name, str):
+        raise ValueError("invalid_guest_socket")
+    root = config_path.parent.resolve()
+    path = root / name
+    parent = path.parent
+    if (root not in path.parents or parent.resolve() != parent or parent == root or
+            path.suffix != ".sock" or not parent.is_dir()):
+        raise ValueError("invalid_guest_socket")
+    directory = parent.stat()
+    if directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o710:
+        raise ValueError("private_guest_socket_directory_required")
+    try:
+        previous = path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISSOCK(previous.st_mode) or previous.st_uid != directory.st_uid:
+            raise ValueError("unexpected_guest_socket_file")
+        with socket.socket(socket.AF_UNIX) as probe:
+            probe.settimeout(.2)
+            try:
+                probe.connect(str(path))
+            except ConnectionRefusedError:
+                path.unlink()
+            else:
+                raise ValueError("guest_socket_in_use")
+    server = GuestSocketServer(str(path), make_handler(store, "", assets, guest_only=True))
+    try:
+        os.chown(path, -1, directory.st_gid)
+        path.chmod(0o660)
+    except OSError:
+        server.server_close()
+        path.unlink(missing_ok=True)
+        raise
+    return server
+
+
 def listener_addresses(config):
     """Explicit LAN listener; never bind every interface or alter networking."""
     port = config.get("port", 19089)
@@ -2158,12 +2268,21 @@ def main():
     store = Store(args.config.parent / "state", origin, config.get("base_path", "/ktv"), worker_origin=config.get("worker_origin"),
                   recovery_enabled=config.get("recover_worker", True) is True, background_health=True,
                   previous_guest_origin=config.get("previous_guest_origin"))
-    servers = create_listeners(config, store, config["agent_key"], Path(__file__).parent / "web")
+    assets = Path(__file__).parent / "web"
+    servers = create_listeners(config, store, config["agent_key"], assets)
+    try:
+        gateway = guest_socket_listener(args.config, config, store, assets)
+        if gateway is not None:
+            servers.insert(0, gateway)
+    except (OSError, ValueError) as error:
+        store.record_failure("guest_socket", error)
     workers = [threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .5}, daemon=True) for server in servers[:-1]]
     stop_inbox = threading.Event()
     inbox = TvUpdateInbox(store.tv_updates, config["agent_key"])
     inbox_worker = threading.Thread(target=inbox.run, args=(stop_inbox,), name="ktv-tv-update-inbox", daemon=True)
+    room_worker = threading.Thread(target=store.coordinator.run_room_lifecycle, args=(stop_inbox,), name="ktv-room-lifecycle", daemon=True)
     inbox_worker.start()
+    room_worker.start()
     try:
         for worker in workers:
             worker.start()
@@ -2177,6 +2296,7 @@ def main():
         for worker in workers:
             worker.join(2)
         inbox_worker.join(2)
+        room_worker.join(2)
         store.coordinator.close()
         store.management.close()
 

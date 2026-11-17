@@ -5,7 +5,8 @@ const extraNames=["山茶晚风","海盐汽水","弯月小岛","白桃列车","�
 const themes=[["content","内容与留白","安静的影像，给歌声留白"],["festival","音乐节","鲜明图形，今晚放开唱"],["live","Live","把客厅交给现场"]];
 let room=fragment.get("r"),key=fragment.get("k"),identity=null,songs=[],selected=[],mode="home",online=false,theme="content",refreshTimer,chosenAvatar=0,queueRevision=0,playableOrder=null,playback={online:false,current:"",played:[],state:"idle"},controls={music_gain:70,sfx_gain:60,control_revision:0},drag=null,ordering=false,actionSong=null,commandBusy=false,pendingControls={},source="song",searchSequence=0,searchOffset=0,searchMore=false,searchBusy=false,searchQuery="",playlistId="",playlistTitle="",recommendations=null,playlistPage=0;
 try{if(room&&key){sessionStorage.setItem("friday-ktv-room",JSON.stringify({room,key}));history.replaceState(null,"",location.pathname);}else({room,key}=JSON.parse(sessionStorage.getItem("friday-ktv-room")||"{}"));identity=JSON.parse(sessionStorage.getItem(`friday-ktv-guest:${room}`)||"null");}catch{}
-const valid=typeof room==="string"&&/^[a-f0-9-]{36}$/.test(room)&&typeof key==="string"&&/^[A-Za-z0-9_-]{32,80}$/.test(key);
+const validRoom=(id,token)=>typeof id==="string"&&/^[a-f0-9-]{36}$/.test(id)&&typeof token==="string"&&/^[A-Za-z0-9_-]{32,80}$/.test(token);
+let valid=validRoom(fragment.get("r"),fragment.get("k")),roomLookup=null;
 const pendingAdds=new Set();
 let addQueue=null,addSnapshot={items:[],stopped:"",persistence:"memory"},addViewSignature="",statusFailures=0,lastStatusSuccess=0,lastStatusProbe=-Infinity,roomResumeAt=performance.now(),statusRequest=null,joining=false,joinTimer,statusFeed=null;
 const roomStaleMs=12000;
@@ -15,6 +16,7 @@ const guestSeedKey="friday-ktv-guest-seed-v1",guestProfileKey="friday-ktv-guest-
 const guestCredential=/^[A-Za-z0-9_-]{32,80}$/,randomSecret=/^[a-f0-9]{64}$/;
 let playbackAvailable=true;
 const pendingActions=new Map(),receiptListeners=new Set();
+let commandRequest=null;
 function busy(node,active,label="正在处理…"){
  if(!node)return;node.classList.toggle("is-busy",active);node.setAttribute("aria-busy",String(active));
  if(active)pendingActions.set(node,label);else pendingActions.delete(node);
@@ -108,13 +110,17 @@ function connectionNotice(text){const node=$("connection-status");node.textConte
 const usableStatus=value=>Array.isArray(value?.songs)&&value.songs.every(song=>song&&typeof song.id==="string")&&(!value.playback||Array.isArray(value.playback.played));
 const requestBudgets={status:3000,events:10000,search:7000,discover:5500,join:7500,profile:6000,controls:5500,command:5500};
 async function api(operation,body,query="",{signal,timeoutMs=requestBudgets[operation]||15000,priority="auto",guestKey=identity?.key}={}){
+ const current=operation==="current",requestRoom=room;
+ if(!current&&!valid)throw Object.assign(new Error(),{code:"cancelled"});
+ const headers=current?{}:{"X-KTV-Room":key,...(guestKey?{"X-KTV-Guest":guestKey}:{}),...(body?{"Content-Type":"application/json"}:{})};
  const controller=new AbortController(),abort=()=>controller.abort();let timedOut=false;
  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);signal?.addEventListener("abort",abort,{once:true});if(signal?.aborted)abort();
  try{
   const started=performance.now();let response;
-  try{response=await fetch(`./api/rooms/${room}/${operation}${query}`,{method:body?"POST":"GET",headers:{"X-KTV-Room":key,...(guestKey?{"X-KTV-Guest":guestKey}:{}),...(body?{"Content-Type":"application/json"}:{})},body:body?JSON.stringify(body):undefined,credentials:"omit",signal:controller.signal,cache:"no-store",priority});}
+  const url=current?"./?room=current":`./api/rooms/${requestRoom}/${operation}${query}`;
+  try{response=await fetch(url,{method:body?"POST":"GET",headers,body:body?JSON.stringify(body):undefined,credentials:"omit",signal:controller.signal,cache:"no-store",priority});}
   catch(error){throw Object.assign(new Error(),{code:signal?.aborted?"cancelled":timedOut?"request_timeout":"network_error",status:0});}
-  let value;try{value=await response.json();}catch{throw Object.assign(new Error(),{code:signal?.aborted?"cancelled":timedOut?"request_timeout":"service_unavailable",status:response.status});}if(signal?.aborted)throw Object.assign(new Error(),{code:"cancelled"});
+  let value;try{value=await response.json();}catch{throw Object.assign(new Error(),{code:signal?.aborted?"cancelled":timedOut?"request_timeout":"service_unavailable",status:response.status});}if(signal?.aborted||(!current&&(!valid||requestRoom!==room)))throw Object.assign(new Error(),{code:"cancelled"});
   if(!response.ok){const retry=response.headers?.get("Retry-After"),seconds=Number(retry),retryAfterMs=retry?(Number.isFinite(seconds)?Math.max(0,seconds*1000):Math.max(0,Date.parse(retry)-Date.now())):0;throw Object.assign(new Error(),{code:value.code||"service_unavailable",status:response.status,retryAfterMs});}
   if(operation==="status"){
    if(!usableStatus(value))throw Object.assign(new Error(),{code:"service_unavailable"});
@@ -123,10 +129,34 @@ async function api(operation,body,query="",{signal,timeoutMs=requestBudgets[oper
   return value;
  }finally{clearTimeout(timeout);signal?.removeEventListener("abort",abort);}
 }
-function failure(error){if(["room_closed","room_unavailable","guest_unavailable"].includes(error.code))addQueue?.stop(error.code);if(connectionError(error)){message(identity?"这次操作未完成，请重试。":"正在连接房间…");if(identity)probeSoon();return;}const text={room_closed:"本场已经结束，扫描电视上的新二维码即可加入。",room_unavailable:"二维码不可用，重新扫描电视上的二维码。",guest_unavailable:"加入信息已失效，重新扫描电视二维码即可。",guest_capacity:"本场加入人数已满，请联系房主。",mac_offline:"房间暂时离线，稍后再点。",queue_full:"歌单有些满，稍后再来。",rate_limited:"操作有些频繁，稍等一下。",search_unavailable:"搜索暂时不可用，稍后再试。",cloud_song_unavailable:"这首已不在云盘中，刷新搜索后再试。",retry_limit:"暂时仍无法下载，换个版本试试。",retry_unavailable:"歌曲状态已变化，请刷新歌单。",tv_offline:"电视暂时未连接，打开电视上的 Friday KTV 后再试。",tv_slow:"电视还未确认这次操作，请查看当前状态。",receipt_unavailable:"房间连接较慢，操作结果待确认。",song_not_ready:"这首还在准备。",lyrics_not_ready:"正在为这首歌找歌词。",queue_changed:"歌单刚有更新，已刷新后可重新调整。",playback_changed:"电视已经换歌，已刷新当前状态。"}[error.code]||"操作未完成，请重试。";message(text);const alert=document.querySelector("dialog[open] [role=alert]");if(alert)alert.textContent=text;if(error.code==="room_closed"||error.code==="room_unavailable"){$("search").hidden=true;$("player").hidden=true;stopRoomStatus(true);try{sessionStorage.removeItem("friday-ktv-room");}catch{}}}
+function failure(error){
+ if(["room_closed","room_unavailable"].includes(error.code)){
+  void enterCurrentRoom(true);
+  return;
+ }
+ if(error.code==="cancelled")return;
+ if(error.code==="guest_unavailable"){
+  addQueue?.stop(error.code);
+  message("正在恢复本场连接…");
+  void join();
+  return;
+ }
+ if(connectionError(error)){
+  message(identity?"这次操作未完成，请重试。":"正在连接房间…");
+  if(identity)probeSoon();
+  return;
+ }
+ const text={guest_capacity:"本场加入人数已满，请联系房主。",mac_offline:"房间暂时离线，稍后再点。",queue_full:"歌单有些满，稍后再来。",rate_limited:"操作有些频繁，稍等一下。",search_unavailable:"搜索暂时不可用，稍后再试。",cloud_song_unavailable:"这首已不在云盘中，刷新搜索后再试。",retry_limit:"暂时仍无法下载，换个版本试试。",retry_unavailable:"歌曲状态已变化，请刷新歌单。",tv_offline:"电视暂时未连接，打开电视上的 Friday KTV 后再试。",tv_slow:"电视还未确认这次操作，请查看当前状态。",receipt_unavailable:"房间连接较慢，操作结果待确认。",song_not_ready:"这首还在准备。",lyrics_not_ready:"正在为这首歌找歌词。",queue_changed:"歌单刚有更新，已刷新后可重新调整。",playback_changed:"电视已经换歌，已刷新当前状态。"}[error.code]||"操作未完成，请重试。";
+ message(text);
+ const alert=document.querySelector("dialog[open] [role=alert]");if(alert)alert.textContent=text;
+}
 function applyTheme(value){if(!themes.some(t=>t[0]===value))return;theme=value;document.body.dataset.theme=value;document.querySelectorAll(".theme-option").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.theme===theme)));}
-function artworkUrl(url){return typeof url==="string"&&/^https:\/\/[a-z0-9.-]+\.music\.126\.net\//.test(url)?url:"";}
-function resolvedArtwork(song){return artworkUrl(song.artwork)||(sourceOf(song)==="song"?searchArtwork.get(song.song_id)||"":"");}
+function artworkUrl(url){
+ if(typeof url!=="string")return "";
+ if(/^https:\/\/[a-z0-9.-]+\.music\.126\.net\//.test(url))return url;
+ return url.length<1500000&&/^data:image\/(?:jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(url)?url:"";
+}
+function resolvedArtwork(song){return (sourceOf(song)==="song"?searchArtwork.get(song.song_id)||"":"")||artworkUrl(song.artwork);}
 function placeholderCover(){const cover=document.createElement("div");cover.className="cover placeholder";cover.setAttribute("aria-hidden","true");cover.textContent="♪";return cover;}
 function coverFor(song,visible=false){
  const url=resolvedArtwork(song);if(!url)return placeholderCover();
@@ -326,33 +356,49 @@ function startStatusFeed(){
  });
  statusFeed.start();
 }
-let searchController=null,searchTimer=null,searchComposing=false,nextPage=null,pagingNow=false,pagingFailed=false;
+let searchController=null,searchTimer=null,searchComposing=false,nextPage=null,pagingNow=false,pagingFailed=false,searchRetryDelay=600;
 const searchArtwork=new Map(),artworkPending=new Set(),artworkAttempted=new Set();
-let artworkController=null;
+let artworkController=null,artworkRetry=null,artworkDelay=650;
 function stopArtwork(){
- artworkController?.abort();artworkController=null;artworkPending.clear();artworkAttempted.clear();
+ artworkController?.abort();artworkController=null;clearTimeout(artworkRetry);artworkRetry=null;artworkDelay=650;
+ artworkPending.clear();artworkAttempted.clear();
 }
 function queueArtwork(rows){
  if(!identity||mode!=="find"||document.hidden)return;
- for(const song of rows)if(sourceOf(song)==="song"&&/^[1-9][0-9]{0,17}$/.test(song.song_id)&&!resolvedArtwork(song)&&!artworkAttempted.has(song.song_id))artworkPending.add(song.song_id);
+ for(const song of rows)if(sourceOf(song)==="song"&&/^[1-9][0-9]{0,17}$/.test(song.song_id)&&!searchArtwork.has(song.song_id)&&!artworkAttempted.has(song.song_id))artworkPending.add(song.song_id);
  enrichArtwork();
 }
 async function enrichArtwork(){
- if(artworkController||!artworkPending.size)return;
- const controller=new AbortController(),ids=[...artworkPending].slice(0,30);
+ if(artworkController||artworkRetry!==null||!artworkPending.size||document.hidden)return;
+ const controller=new AbortController(),ids=[...artworkPending].slice(0,6);
  artworkController=controller;
- for(const id of ids){artworkPending.delete(id);artworkAttempted.add(id);}
+ for(const id of ids)artworkPending.delete(id);
  try{
-  const {covers}=await api("artwork",null,"?"+new URLSearchParams({ids:ids.join(",")}),{signal:controller.signal,timeoutMs:4000,priority:"low"});
+  const {covers,pending=[]}=await api("artwork",null,"?"+new URLSearchParams({ids:ids.join(","),inline:1}),{signal:controller.signal,timeoutMs:9500,priority:"low"});
   if(controller.signal.aborted||mode!=="find")return;
+  if(!covers||Array.isArray(covers)||typeof covers!=="object")throw Object.assign(new Error(),{code:"search_unavailable"});
+  let resolved=0;
   for(const id of ids){
+   if(pending.includes(id)){artworkPending.add(id);continue;}
+   artworkAttempted.add(id);artworkPending.delete(id);
    const url=artworkUrl(covers?.[id]);if(!url)continue;
+   resolved++;
    searchArtwork.set(id,url);if(searchArtwork.size>240)searchArtwork.delete(searchArtwork.keys().next().value);
    const row=resultRowCache.get("find:song:"+id)?.row;
-   if(row?.firstElementChild?.classList.contains("placeholder"))row.firstElementChild.replaceWith(coverFor({song_id:id,source:"song"},row.dataset.firstCovers==="1"));
+   if(row?.firstElementChild?.classList.contains("cover"))row.firstElementChild.replaceWith(coverFor({song_id:id,source:"song"},row.dataset.firstCovers==="1"));
   }
- }catch{
-  // 封面暂未取到时保留占位图，歌曲仍可以点。
+  if(resolved)artworkDelay=650;
+  if(pending.length){
+   artworkRetry=setTimeout(()=>{artworkRetry=null;enrichArtwork();},artworkDelay);
+   artworkDelay=Math.min(6000,artworkDelay*2);
+  }
+ }catch(error){
+  if(controller.signal.aborted||mode!=="find")return;
+  if(connectionError(error)||["search_busy","search_unavailable","rate_limited","guest_unavailable"].includes(error.code)){
+   for(const id of ids)artworkPending.add(id);
+   artworkRetry=setTimeout(()=>{artworkRetry=null;enrichArtwork();},Math.max(artworkDelay,error.retryAfterMs||0));
+   artworkDelay=Math.min(6000,artworkDelay*2);
+  }
  }finally{if(artworkController===controller){artworkController=null;enrichArtwork();}}
 }
 const searchPages=new Map();
@@ -385,19 +431,21 @@ function clearSearchResults(){
 }
 function scheduleSearch(){
  if(mode!=="find"||document.hidden)return;
+ searchRetryDelay=600;
  cancelSearchInput();
  if($("query").value.trim()!==searchQuery||playlistId){
   playlistId="";playlistTitle="";clearSearchResults();message("");render();
  }
- if(!searchComposing)searchTimer=setTimeout(()=>{searchTimer=null;findSongs();},180);
+ if(!searchComposing)searchTimer=setTimeout(()=>{searchTimer=null;findSongs();},240);
 }
-async function searchPage(q,kind,list,offset,signal,prefetch=false){
+async function searchPage(q,kind,list,offset,signal){
  const operation=list?"playlist":"search";
  const params=list?new URLSearchParams({id:list,offset}):new URLSearchParams({q,source:kind,offset});
  const cacheKey=operation+"?"+params;
  const hit=searchPages.get(cacheKey);
  if(hit&&performance.now()-hit.at<45000){searchPages.delete(cacheKey);searchPages.set(cacheKey,hit);return hit.value;}
- const value=await api(operation,null,"?"+params,{signal,priority:prefetch?"low":"auto"});
+ const value=await api(operation,null,"?"+params,{signal});
+ if(!Array.isArray(value?.songs))throw Object.assign(new Error(),{code:"search_unavailable"});
  if(!signal.aborted&&(kind!=="cloud"||value.updated)){
   searchPages.delete(cacheKey);searchPages.set(cacheKey,{at:performance.now(),value});
   if(searchPages.size>24)searchPages.delete(searchPages.keys().next().value);
@@ -412,28 +460,19 @@ function applySearchPage(value,offset,append){
  searchMore=value.has_more===true&&searchOffset>offset&&searchOffset<=100000;
  render();queueArtwork(rows);
 }
-function prefetchNextPage(){
- if(mode!=="find"||document.hidden||!searchMore||searchBusy||searchTimer||searchComposing||pagingFailed)return null;
- if(nextPage)return nextPage;
- const page={offset:searchOffset,sequence:searchSequence,controller:new AbortController()};
- page.promise=searchPage(searchQuery,source,playlistId,page.offset,page.controller.signal,true).then(value=>{
-  if(!page.controller.signal.aborted&&page.sequence===searchSequence&&Array.isArray(value.songs))queueArtwork(value.songs);
-  return {value};
- },error=>({error}));
- nextPage=page;
- return page;
-}
 async function appendNextPage(retry=false){
- if(pagingNow||mode!=="find"||document.hidden||!searchMore||searchTimer||searchComposing)return;
- if(retry&&pagingFailed){nextPage=null;pagingFailed=false;}
- const page=prefetchNextPage();if(!page)return;
+ if(pagingNow||mode!=="find"||document.hidden||!searchMore||searchBusy||searchTimer||searchComposing||pagingFailed&&!retry)return;
+ const page={offset:searchOffset,sequence:searchSequence,controller:new AbortController()};
+ nextPage=page;pagingFailed=false;
  pagingNow=true;updateSearchPager();
- const result=await page.promise;
- if(nextPage!==page||page.sequence!==searchSequence||page.controller.signal.aborted)return;
- pagingNow=false;nextPage=null;
- if(result.error){pagingFailed=true;updateSearchPager();return;}
- applySearchPage(result.value,page.offset,true);
- prefetchNextPage();observeSearchEnd();
+ try{
+  const value=await searchPage(searchQuery,source,playlistId,page.offset,page.controller.signal);
+  if(nextPage===page&&page.sequence===searchSequence&&!page.controller.signal.aborted)applySearchPage(value,page.offset,true);
+ }catch{
+  if(nextPage===page)pagingFailed=true;
+ }finally{
+  if(nextPage===page){pagingNow=false;nextPage=null;updateSearchPager();observeSearchEnd();}
+ }
 }
 async function findSongs(more=false,collection=null){
  if(more)return appendNextPage(true);
@@ -448,21 +487,31 @@ async function findSongs(more=false,collection=null){
   const value=await searchPage(q,requestedSource,requestedPlaylist,0,controller.signal);
   if(controller.signal.aborted||sequence!==searchSequence||source!==requestedSource||playlistId!==requestedPlaylist)return;
   searchQuery=q;applySearchPage(value,0,false);
+  searchRetryDelay=600;
   message(songs.length?"":requestedSource==="cloud"&&!value.updated?"云盘正在连接，稍后再试。":"没有找到，换个歌名或歌手试试。");
  }catch(error){
   if(!controller.signal.aborted&&sequence===searchSequence&&mode==="find"){
    searchMore=false;updateSearchPager();
-   if(connectionError(error)||["search_unavailable","search_busy","rate_limited"].includes(error.code))message("搜索暂时未完成，可以点搜索重试。");
+   if(connectionError(error)||["search_unavailable","search_busy","rate_limited"].includes(error.code)){
+    message("正在重新连接曲库…");
+    searchTimer=setTimeout(()=>{
+     searchTimer=null;
+     if(mode==="find"&&!document.hidden&&!searchComposing&&$("query").value.trim()===q&&source===requestedSource){
+      findSongs(false,requestedPlaylist?{id:requestedPlaylist,title:playlistTitle}:null);
+     }
+    },Math.max(searchRetryDelay,error.retryAfterMs||0));
+    searchRetryDelay=Math.min(3000,searchRetryDelay*2);
+   }
    else failure(error);
   }
- }finally{if(searchController===controller)searchController=null;if(sequence===searchSequence){resetSearchBusy();prefetchNextPage();observeSearchEnd();}}
+ }finally{if(searchController===controller)searchController=null;if(sequence===searchSequence){resetSearchBusy();observeSearchEnd();}}
 }
 function resumeSearchView(){
  if(mode!=="find"||searchBusy||searchTimer||searchComposing)return;
  const q=$("query").value.trim();
  if(playlistId&&!songs.length)findSongs(false,{id:playlistId,title:playlistTitle});
  else if(!playlistId&&(q!==searchQuery||(!songs.length&&(q||source==="cloud"))))scheduleSearch();
- else{queueArtwork(songs);prefetchNextPage();observeSearchEnd();}
+ else{queueArtwork(songs);observeSearchEnd();}
 }
 function searchTitles(query){setView("find");selectSearchSource("song");$("query").value=query;findSongs();}
 function selectSearchSource(kind){
@@ -572,7 +621,7 @@ $("load-more").onclick=()=>findSongs(true);
 $("search").addEventListener("submit",event=>{event.preventDefault();if(!searchComposing&&!event.isComposing)findSongs();});
 $("query").oncompositionstart=()=>{searchComposing=true;cancelSearchInput();};
 $("query").oncompositionend=()=>{searchComposing=false;scheduleSearch();};
-$("query").oninput=event=>{if(event?.isComposing)searchComposing=true;scheduleSearch();};
+$("query").oninput=event=>{if(!event.isComposing&&!searchComposing)scheduleSearch();};
 for(const [id,value]of[["source-song","song"],["source-mv","mv"],["source-cloud","cloud"]])$(id).onclick=()=>{selectSearchSource(value);findSongs();};
 const viewScroll={home:0,find:0,queue:0,frequent:0};
 function tabs(){
@@ -623,7 +672,8 @@ class RoomMusicVolume {
  toggle(level){if(Number.isInteger(level)&&level>0&&level<=100){this.remember(level);return 0;}return this.level;}
 }
 let roomGainStorage;try{roomGainStorage=sessionStorage;}catch{}
-const roomMusicVolume=new RoomMusicVolume(room,roomGainStorage),gainTimers=new Map();
+let roomMusicVolume=new RoomMusicVolume(room,roomGainStorage);
+const gainTimers=new Map();
 const volumeControls=[["music","music_gain"],["sfx","sfx_gain"]];
 function updateMuteIcon(button,muted,confirmed,note,status){
  button.dataset.muted=String(muted);button.setAttribute("aria-pressed",confirmed?String(muted):"mixed");
@@ -679,10 +729,27 @@ function updatePlayer(){updateGuide();updatePartyAudio();
  for(const [id,key]of volumeControls){const input=$(`${id}-volume`),level=pendingControls[key]??controls[key];updateVolumeButtons(id,level);if(document.activeElement!==input){input.value=level;$(`${id}-value`).textContent=`${level}%`;}}
  updateMuteButtons();
 }
-async function sendCommand(action,song="",origin=""){if(commandBusy||!playbackAvailable)return;const before={...playback};commandBusy=true;const button=$(origin||(action==="next"?"skip-button":"play-toggle"));busy(button,true,origin==="restart-button"?"正在从头开始…":action==="next"?"正在切歌…":action==="pause"?"正在暂停…":"正在开始播放…");updatePlayer();try{const result=await api("command",{action,song,request_id:crypto.randomUUID()});await waitForTV(()=>FridayPartyAudio.commandObserved(action,song,before,playback,result.seq));}catch(error){failure(error);}finally{commandBusy=false;busy(button,false);await refresh();updatePlayer();}}
+async function sendCommand(action,song="",origin=""){
+ if(commandBusy||!playbackAvailable)return;
+ const before={...playback},button=$(origin||(action==="next"?"skip-button":"play-toggle"));
+ const request={signal:controlRoom.signal,button};
+ commandRequest=request;commandBusy=true;
+ busy(button,true,origin==="restart-button"?"正在从头开始…":action==="next"?"正在切歌…":action==="pause"?"正在暂停…":"正在开始播放…");
+ updatePlayer();
+ try{
+  const result=await api("command",{action,song,request_id:crypto.randomUUID()},"",{signal:request.signal});
+  await waitForTV(()=>FridayPartyAudio.commandObserved(action,song,before,playback,result.seq),request.signal);
+ }catch(error){if(!request.signal.aborted)failure(error);}
+ finally{
+  if(commandRequest===request){
+   commandRequest=null;commandBusy=false;busy(button,false);
+   await refresh();updatePlayer();
+  }
+ }
+}
 $("mode-instrumental").onclick=()=>chooseSoundMode(0);
 $("mode-original").onclick=()=>chooseSoundMode(1);
-let controlWrites=Promise.resolve(),controlSerial=0,modeIntent=null;
+let controlWrites=Promise.resolve(),controlSerial=0,modeIntent=null,controlRoom=new AbortController();
 const controlPendingVersions=new Map();
 const controlFields={original:[],music_gain:["music-value","music-mute-button"],sfx_gain:["sfx-value"]};
 function updateSoundMode(){
@@ -702,6 +769,10 @@ function chooseSoundMode(value){
  return setControl({original:value});
 }
 function setControl(value,{signal,propagate=false}={}){
+ const controller=new AbortController(),roomSignal=controlRoom.signal,abort=()=>controller.abort();
+ signal?.addEventListener("abort",abort,{once:true});roomSignal.addEventListener("abort",abort,{once:true});
+ if(signal?.aborted||roomSignal.aborted)abort();
+ const requestSignal=controller.signal;
  const version=++controlSerial,fields=Object.keys(value);
  const nodes=fields.flatMap(field=>controlFields[field].map($));
  const errorNode=$(Object.hasOwn(value,"sfx_gain")?"sfx-error":"sound-error");
@@ -720,17 +791,17 @@ function setControl(value,{signal,propagate=false}={}){
  const current=()=>Boolean(intent&&modeIntent===intent)||nodes.some(node=>controlPendingVersions.get(node)===version);
  // 已发的写入保持顺序，跳过还没发出且已被替换的手动音轨选择。
  const request=controlWrites.catch(()=>{}).then(async()=>{
-  if(signal?.aborted)throw Object.assign(new Error(),{code:"cancelled"});
+  if(requestSignal.aborted)throw Object.assign(new Error(),{code:"cancelled"});
   if(intent&&!propagate&&!nodes.length&&modeIntent!==intent)return null;
-  const result=await api("controls",value,"",{signal,priority:"high"});
-  if(signal?.aborted)throw Object.assign(new Error(),{code:"cancelled"});
+  const result=await api("controls",value,"",{signal:requestSignal,priority:"high"});
+  if(requestSignal.aborted)throw Object.assign(new Error(),{code:"cancelled"});
   if(result.revision>=controls.control_revision)controls={...controls,...value,control_revision:result.revision};
   return result;
  });
  controlWrites=request;
  return request.then(async result=>{
   if(!result||(!current()&&!propagate))return;
-  await waitForTV(()=>playback.applied_revision>=result.revision,signal);
+  await waitForTV(()=>playback.applied_revision>=result.revision,requestSignal);
   if(current())errorNode.textContent="";
  }).catch(error=>{
   if(error.code!=="cancelled"&&current()){
@@ -739,6 +810,7 @@ function setControl(value,{signal,propagate=false}={}){
   }
   if(propagate)throw error;
  }).finally(()=>{
+  signal?.removeEventListener("abort",abort);roomSignal.removeEventListener("abort",abort);
   if(intent&&modeIntent===intent){
    clearTimeout(intent.timer);
    modeIntent=null;
@@ -972,16 +1044,66 @@ async function automaticGuestKey(){
  }
  return joinKey;
 }
+async function enterCurrentRoom(expired=false){
+ if(roomLookup||document.hidden)return;
+ const controller=new AbortController();
+ roomLookup=controller;
+ controlRoom.abort();controlRoom=new AbortController();controlWrites=Promise.resolve();
+ if(commandRequest)busy(commandRequest.button,false);
+ commandRequest=null;commandBusy=false;
+ if(modeIntent)clearTimeout(modeIntent.timer);
+ modeIntent=null;
+ for(const node of controlPendingVersions.keys())busy(node,false);
+ controlPendingVersions.clear();
+ valid=false;identity=null;joinKey="";
+ clearTimeout(joinTimer);stopRoomStatus(true);statusFeed=null;stopDiscover();
+ if(expired){
+  addQueue?.stop("room_closed");addQueue?.close();addQueue=null;
+  addSnapshot={items:[],stopped:"",persistence:"memory"};pendingAdds.clear();renderPendingAdds();
+  cancelDrag();searchComposing=false;cancelSearchInput();clearSearchResults();
+  playlistId="";playlistTitle="";mode="home";
+  selected=[];queueRevision=0;playableOrder=null;playbackSignature="";
+  playback={online:false,current:"",played:[],state:"idle"};
+  controls={music_gain:70,sfx_gain:60,control_revision:0};pendingControls={};controlPendingVersions.clear();
+  for(const timer of gainTimers.values())clearTimeout(timer);
+  gainTimers.clear();
+  invalidateGuide({disable:true});updatePlayer();
+ }
+ try{sessionStorage.removeItem("friday-ktv-room");}catch{}
+ $("profile-button").disabled=$("settings-button").disabled=true;
+ $("my-name").textContent="正在加入…";
+ for(const sheet of document.querySelectorAll("dialog[open]"))sheet.close();
+ render();
+ const opening=expired?"本场已结束，正在进入新场…":"正在连接当前房间…";
+ message(opening);
+ try{
+  const next=await api("current",null,"",{signal:controller.signal,timeoutMs:3500});
+  if(!validRoom(next?.room,next?.key))throw Object.assign(new Error(),{code:"service_unavailable"});
+  room=next.room;key=next.key;valid=true;joinFailures=0;statusFailures=0;lastStatusSuccess=0;lastStatusProbe=-Infinity;
+  roomMusicVolume=new RoomMusicVolume(room,roomGainStorage);roomResumeAt=performance.now();
+  writeGuestStorage("sessionStorage","friday-ktv-room",JSON.stringify({room,key}));
+  $("profile-button").disabled=$("settings-button").disabled=false;
+ }catch(error){
+  if(!controller.signal.aborted){
+   const closed=error.code==="no_active_room";
+   $("my-name").textContent=closed?"等待开场":"正在连接…";
+   message(closed?"当前没有正在进行的场次。开场后会自动加入。":opening);
+   if(!document.hidden)joinTimer=setTimeout(()=>enterCurrentRoom(),closed?5000:1800);
+  }
+ }finally{if(roomLookup===controller)roomLookup=null;}
+ if(valid)void join();
+}
 async function join(){
  if(joining||document.hidden)return;
- if(!valid){$("profile-button").disabled=true;$("settings-button").disabled=true;return;}
- joining=true;clearTimeout(joinTimer);
+ if(!valid){void enterCurrentRoom();return;}
+ const joinedRoom=room;joining=true;clearTimeout(joinTimer);
  if(!identity){$("my-name").textContent="正在加入…";$("empty").textContent="正在连接本场…";}
  try{
   const retainedKey=`friday-ktv-room-credential:${room}`;
   const known=[identity?.key,readGuestStorage("localStorage",retainedKey),readGuestStorage("sessionStorage",`friday-ktv-join:${room}`)]
    .find(candidate=>typeof candidate==="string"&&guestCredential.test(candidate));
   const proposed=await automaticGuestKey(),profile=savedGuestProfile();
+  if(!valid||room!==joinedRoom)return;
   const payload={...(proposed?{guest_key:proposed}:{}),...(profile?{profile}:{})};
   identity=await api("join",payload,"",{guestKey:known||""});
   if(guestCredential.test(identity.key||"")&&(identity.key!==proposed||known)){
@@ -990,12 +1112,14 @@ async function join(){
   joinFailures=0;saveIdentity();message("");connectionNotice("");render();
   initAddQueue();clearInterval(refreshTimer);startStatusFeed();refresh();loadDiscover();
  }catch(error){
+  if(error.code==="cancelled")return;
   failure(error);
+  if(!valid)return;
   if(connectionError(error)||error.code==="rate_limited"){
    joinFailures=Math.min(4,joinFailures+1);
    if(!document.hidden)joinTimer=setTimeout(join,Math.max(error.retryAfterMs||0,1000*2**(joinFailures-1)));
-  }else{$("my-name").textContent="等待扫码";$("empty").textContent="扫描电视上的二维码加入。";}
- }finally{joining=false;}
+  }else{$("my-name").textContent="暂未加入";$("empty").textContent="刷新页面后可重新加入本场。";}
+ }finally{joining=false;if(valid&&room!==joinedRoom)void join();}
 }
 function resumeRoom(){
  if(!identity){join();return;}
@@ -1003,7 +1127,7 @@ function resumeRoom(){
 }
 join();document.addEventListener("visibilitychange",()=>{if(document.hidden){stopRoomStatus();stopDiscover();cancelDrag();searchComposing=false;cancelSearchInput();}else resumeRoom();});
 window.addEventListener("online",()=>{if(!document.hidden)resumeRoom();});
-window.addEventListener("pagehide",()=>{addQueue?.close();stopRoomStatus();stopDiscover();cancelDrag();searchComposing=false;cancelSearchInput();clearTimeout(joinTimer);});
+window.addEventListener("pagehide",()=>{roomLookup?.abort();roomLookup=null;addQueue?.close();stopRoomStatus();stopDiscover();cancelDrag();searchComposing=false;cancelSearchInput();clearTimeout(joinTimer);});
 window.addEventListener("pageshow",event=>{if(event.persisted&&!document.hidden)resumeRoom();});
 
 // 伴唱只播放已校验的原唱音轨，跟随电视报告的播放时钟。

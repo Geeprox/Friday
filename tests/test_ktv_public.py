@@ -1,6 +1,8 @@
 """Guest station contracts, with isolated storage and no physical devices/models."""
 
 import hashlib
+import base64
+import io
 import json
 import sqlite3
 import subprocess
@@ -8,6 +10,7 @@ import sys
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from email.message import Message
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -127,11 +130,28 @@ def test_search_returns_available_results_without_waiting_for_cover_enrichment(s
 
     monkeypatch.setattr(store, "public_metadata", metadata)
     result = store.search("歌手")
-    assert len(calls) == 1 and calls[0][0] == "/api/search/get/web" and calls[0][2] == 5
+    assert len(calls) == 1 and calls[0][0] == "/api/search/get"
     assert "artwork" not in result["songs"][0]
     assert result["songs"][1]["artwork"].startswith("https://p1.music.126.net/")
     assert result["has_more"]
     assert store.search("歌手") == result and len(calls) == 1
+
+
+def test_song_search_recovers_from_first_provider_timeout(station, monkeypatch):
+    store, _ = station
+    calls = []
+
+    def metadata(path, params, *, timeout):
+        calls.append((path, params["s"], params["offset"]))
+        if path == "/api/search/get":
+            raise TimeoutError
+        return {"result": {"songCount": 75, "songs": [{"id": 123, "name": "合成曲"}]}}
+
+    monkeypatch.setattr(store, "public_metadata", metadata)
+    page = store.search("合成歌手", offset=30)
+    assert calls == [("/api/search/get", "合成歌手", 30), ("/api/search/get/web", "合成歌手", 30)]
+    assert [song["title"] for song in page["songs"]] == ["合成曲"]
+    assert page["next_offset"] == 60 and page["has_more"]
 
 
 def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch):
@@ -142,7 +162,7 @@ def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch)
     calls = []
 
     def metadata(path, params, *, timeout):
-        calls.append((path, json.loads(params["c"]), timeout))
+        calls.append((path, json.loads(params["c"])))
         return {"songs": [
             {"id": 123, "al": {"picUrl": "http://p1.music.126.net/cover.jpg"}},
             {"id": 234, "al": {"picUrl": "https://example.test/cover.jpg"}},
@@ -156,9 +176,31 @@ def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch)
     response = client.get(path, headers=headers, params={"ids": "123,234,123"})
     assert response.status_code == 200
     assert response.json() == {"covers": {"123": "https://p1.music.126.net/cover.jpg?param=240y240"}}
-    assert calls == [("/api/v3/song/detail", [{"id": 123}, {"id": 234}], 3)]
+    assert calls == [("/api/v3/song/detail", [{"id": 123}, {"id": 234}])]
     assert client.get(path, headers=headers, params={"ids": "123,234"}).json() == response.json()
     assert len(calls) == 1
+
+    image_requests = []
+    content = b"\xff\xd8\xff\xe0synthetic-thumbnail"
+
+    class Thumbnail(io.BytesIO):
+        headers = Message()
+        headers["Content-Type"] = "image/jpeg"
+
+    class Images:
+        def open(self, request, *, timeout):
+            image_requests.append(request.full_url)
+            assert not request.has_header("Authorization") and not request.has_header("Cookie")
+            return Thumbnail(content)
+
+    monkeypatch.setattr("integrations.ktv_public.nas_server.urllib.request.build_opener", lambda *_: Images())
+    inline = client.get(path, headers=headers, params={"ids": "123,234", "inline": "1"})
+    assert inline.status_code == 200
+    assert inline.json() == {"covers": {"123": "data:image/jpeg;base64," + base64.b64encode(content).decode()}, "pending": []}
+    assert client.get(path, headers=headers, params={"ids": "123", "inline": "1"}).json() == inline.json()
+    for _ in range(41):
+        assert client.get(path, headers=headers, params={"ids": "123", "inline": "1"}).json() == inline.json()
+    assert image_requests == ["https://p1.music.126.net/cover.jpg?param=240y240"]
 
 
 def test_station_scopes_and_static_privacy(station):

@@ -500,6 +500,7 @@ class PreparationWorker(NasBridge):
                     self.request("/agent/worker", registration)
                 self.worker_registered = current
             value = self.request("/agent/tasks")
+            self.playback_encoding = "aac_lc_m4a" if value.get("playback_encoding") == "aac_lc_m4a" else "pcm_s16le_wav"
             tasks, rooms, cancelled = value.get("tasks", []), value.get("rooms", []), value.get("cancelled", [])
             if (not isinstance(tasks, list) or len(tasks) > 8 or not isinstance(rooms, list) or len(rooms) > 8
                     or not isinstance(cancelled, list) or len(cancelled) > 80

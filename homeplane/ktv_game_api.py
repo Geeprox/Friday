@@ -227,6 +227,16 @@ def create_router(config_path=None, *, transport=None, read_only=False, launch_a
             if (source not in {"song", "mv", "cloud"} or not (0 if source == "cloud" else 1) <= len(q.strip()) <= 120
                     or not offset.isascii() or not offset.isdigit() or int(offset) > 100000):
                 raise HTTPException(400, "invalid_query")
+        elif operation == "manage/library" and query:
+            limit, offset = query.get("limit", ""), query.get("offset", "0")
+            if (set(query) - {"limit", "offset", "q", "presence", "sort", "selectable"}
+                    or not limit.isascii() or not limit.isdigit() or len(limit) > 3 or not 1 <= int(limit) <= 128
+                    or not offset.isascii() or not offset.isdigit() or len(offset) > 6 or int(offset) > 100000
+                    or len(query.get("q", "")) > 120
+                    or query.get("presence", "all") not in {"all", "both", "nas", "mac", "orphan"}
+                    or query.get("sort", "recent") not in {"recent", "size", "title"}
+                    or query.get("selectable") not in {None, "mac", "nas", "both"}):
+                raise HTTPException(400, "invalid_query")
         elif query:
             raise HTTPException(400, "invalid_query")
         body = None

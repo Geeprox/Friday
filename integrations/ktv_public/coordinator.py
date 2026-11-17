@@ -30,6 +30,11 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 
+try:
+    from .audio_format import AAC_FIELDS, compact_spec, verify_compact
+except ImportError:
+    from audio_format import AAC_FIELDS, compact_spec, verify_compact
+
 UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
 SHA = re.compile(r"[a-f0-9]{64}\Z")
 TICKET = re.compile(r"[A-Za-z0-9_.-]{32,128}\Z")
@@ -184,6 +189,8 @@ class Coordinator:
             db.execute("UPDATE coordinator_session SET tv_at=0,readiness='{}'")
             if "request_id" not in {row[1] for row in db.execute("PRAGMA table_info(coordinator_session)")}:
                 db.execute("ALTER TABLE coordinator_session ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
+            if "last_activity" not in {row[1] for row in db.execute("PRAGMA table_info(coordinator_session)")}:
+                db.execute("ALTER TABLE coordinator_session ADD COLUMN last_activity INTEGER NOT NULL DEFAULT 0")
             cache_columns = {row[1] for row in db.execute("PRAGMA table_info(coordinator_cache)")}
             for field in ("device", "inode", "mtime_ns", "ctime_ns"):
                 if field not in cache_columns:
@@ -199,8 +206,40 @@ class Coordinator:
 
     def active(self, db=None):
         with (self.store.connection() if db is None else nullcontext(db)) as connection:
-            row = connection.execute("SELECT s.*,r.closed FROM coordinator_session s JOIN rooms r ON r.id=s.room WHERE s.id=1").fetchone()
+            row = connection.execute(
+                "SELECT s.*,r.closed,r.playback_state,r.playback_at FROM coordinator_session s "
+                "JOIN rooms r ON r.id=s.room WHERE s.id=1"
+            ).fetchone()
         return dict(row) if row and not row["closed"] else None
+
+    def renew_inactive_room(self):
+        now = int(time.time())
+        with self.store.lock, self.store.connection() as db:
+            active = self.active(db)
+            if not active or time.localtime(active["opened"])[:3] >= time.localtime(now)[:3]:
+                return False
+            last_add = db.execute("SELECT max(created) FROM songs WHERE room=?", (active["room"],)).fetchone()[0] or 0
+            last_use = max(active["opened"], active["last_activity"], last_add)
+            if now - last_use < 3 * 86400:
+                return False
+            # 连续多天没有演唱和点歌才换场，午夜和普通重启会接续原歌单。
+            if active["playback_state"] == "playing" and active["playback_at"] >= now - 12:
+                return False
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE rooms SET closed=1,expires=? WHERE id=?", (now, active["room"]))
+            room, secret = self.store.insert_room(db)
+            db.execute("UPDATE coordinator_session SET room=?,secret=?,opened=?,last_activity=0,tv_at=0,readiness='{}',request_id='' WHERE id=1",
+                       (room, secret, now))
+            self.store._expire(db)
+        return True
+
+    def run_room_lifecycle(self, stop):
+        while not stop.is_set():
+            try:
+                self.renew_inactive_room()
+            except (OSError, sqlite3.Error, ValueError) as error:
+                self.store.record_failure("room_lifecycle", error)
+            stop.wait(5)
 
     def direct_room(self, room_id):
         active = self.active()
@@ -410,6 +449,7 @@ class Coordinator:
                                                              for v in payload.values())):
             raise self.error(400, "invalid_start")
         with self.store.lock:
+            self.renew_inactive_room()
             active = self.active()
             with self.store.connection() as db:
                 previous = db.execute("SELECT * FROM coordinator_start_requests WHERE request_id=?", (payload["request_id"],)).fetchone()
@@ -424,13 +464,13 @@ class Coordinator:
             if active:
                 with self.store.connection() as db:
                     # Reopening a TV preserves room, guests, queue and mute.
-                    db.execute("UPDATE coordinator_session SET instance=?,opened=?,tv_at=0,readiness='{}' WHERE id=1 AND instance!=?",
-                               (payload["instance"], int(time.time()), payload["instance"]))
+                    db.execute("UPDATE coordinator_session SET instance=?,tv_at=0,readiness='{}' WHERE id=1 AND instance!=?",
+                               (payload["instance"], payload["instance"]))
                     if payload["instance"] != active["instance"]:
                         db.execute("UPDATE rooms SET mic_muted=1,mic_request_at=0,control_revision=control_revision+1,mic_revision=mic_revision+1,last_command=max(last_command,coalesce((SELECT max(seq) FROM commands WHERE room=?),0)) WHERE id=?",
                                    (active["room"], active["room"]))
                     if payload["request_id"] != active["request_id"]:
-                        db.execute("UPDATE coordinator_session SET opened=?,request_id=? WHERE id=1", (int(time.time()), payload["request_id"]))
+                        db.execute("UPDATE coordinator_session SET request_id=? WHERE id=1", (payload["request_id"],))
             else:
                 # Only the first coordinator opening can adopt a legacy scene.
                 # Later explicit ends always lead to an empty new scene; other
@@ -471,17 +511,28 @@ class Coordinator:
         return active
 
     def tv_readiness(self, payload):
-        if (set(payload) != {"instance", "playback", "audio", "media", "protocol"}
+        if (set(payload) - {"audio_formats"} != {"instance", "playback", "audio", "media", "protocol"}
                 or type(payload["protocol"]) is not int or payload["protocol"] != 1
                 or any(type(payload[k]) is not bool for k in ("playback", "audio", "media"))):
             raise self.error(400, "invalid_tv_readiness")
+        formats = payload.get("audio_formats", ["pcm_s16le_wav"])
+        if (not isinstance(formats, list) or not 1 <= len(formats) <= 2
+                or any(not isinstance(name, str) or name not in {"pcm_s16le_wav", "aac_lc_m4a"} for name in formats)):
+            raise self.error(400, "invalid_tv_readiness")
         active = self._instance(payload["instance"])
         with self.store.connection() as db:
-            db.execute("UPDATE coordinator_session SET tv_at=?,readiness=? WHERE id=1 AND instance=?",
-                       (int(time.time()), json.dumps({k: payload[k] for k in ("playback", "audio", "media")}), active["instance"]))
+            db.execute("UPDATE coordinator_session SET tv_at=?,readiness=? WHERE id=1 AND instance=? AND room=?",
+                       (int(time.time()), json.dumps({**{k: payload[k] for k in ("playback", "audio", "media")}, "audio_formats": formats}),
+                        active["instance"], active["room"]))
         self._schedule_recovery(self.active())
         self.changed()
         return self.readiness()
+
+    def playback_encoding(self, active=None):
+        active = active or self.active()
+        return ("aac_lc_m4a" if active and active["tv_at"] >= int(time.time()) - 12
+                and "aac_lc_m4a" in json.loads(active["readiness"]).get("audio_formats", [])
+                else "pcm_s16le_wav")
 
     def party(self):
         def snapshot():
@@ -525,9 +576,14 @@ class Coordinator:
             raise self.error(409, "room_changed")
         result = self.store.playback(active["room"], value)
         now = int(time.time())
-        if active["tv_at"] < now:
+        singing = value.get("state") == "playing" and bool(value.get("current"))
+        if active["tv_at"] < now or singing and active["last_activity"] < now - 30:
             with self.store.connection() as db:
-                db.execute("UPDATE coordinator_session SET tv_at=? WHERE id=1 AND instance=? AND tv_at<?", (now, instance, now))
+                db.execute("UPDATE coordinator_session SET tv_at=? WHERE id=1 AND instance=? AND room=? AND tv_at<?",
+                           (now, instance, active["room"], now))
+                if singing:
+                    db.execute("UPDATE coordinator_session SET last_activity=? WHERE id=1 AND instance=? AND room=? AND last_activity<?",
+                               (now, instance, active["room"], now - 30))
         return result
 
     def tv_controls(self, payload, instance):
@@ -633,6 +689,7 @@ class Coordinator:
     def status(self):
         party = self.party()
         return {"service": "friday-ktv-coordinator", "protocol": 2, "coordinator": True,
+                "audio_formats": ["pcm_s16le_wav", "aac_lc_m4a"],
                 "party": party, "readiness": party["readiness"], "cursor": self.cursor}
 
     def events(self, room, after, wait=5):
@@ -650,7 +707,7 @@ class Coordinator:
             self.waiters.release()
 
     def _media_spec(self, value, kind, duration_ms):
-        allowed = {"url", "sha256", "bytes", "duration_seconds", "sample_rate", "channels", "encoding"}
+        allowed = {"url", "sha256", "bytes", "duration_seconds", "sample_rate", "channels", "encoding"} | AAC_FIELDS
         if not isinstance(value, dict) or set(value) - allowed:
             raise self.error(400, "invalid_manifest_media")
         if (not isinstance(value.get("sha256"), str) or not SHA.fullmatch(value["sha256"])
@@ -662,7 +719,8 @@ class Coordinator:
                     or type(value.get("duration_seconds")) not in {int, float}
                     or not math.isfinite(value["duration_seconds"]) or not 0 < value["duration_seconds"] <= 1800):
                 raise self.error(400, "invalid_manifest_media")
-        elif (value.get("sample_rate") != 48000 or value.get("channels") != 2 or value.get("encoding") != "pcm_s16le_wav"
+        elif (value.get("sample_rate") != 48000 or value.get("channels") != 2
+              or not (value.get("encoding") == "pcm_s16le_wav" and not AAC_FIELDS.intersection(value) or compact_spec(value))
               or type(value.get("duration_seconds")) not in {int, float}
               or not math.isfinite(value["duration_seconds"]) or abs(value["duration_seconds"] * 1000 - duration_ms) > 150):
             raise self.error(400, "invalid_manifest_media")
@@ -711,6 +769,10 @@ class Coordinator:
                 or not isinstance(lyrics, dict) or len(json.dumps(lyrics, allow_nan=False).encode()) > 131072):
             raise self.error(400, "invalid_manifest")
         media = {kind: self._media_spec(spec, kind, timeline["duration_ms"]) for kind, spec in job["media"].items()}
+        if any(spec["encoding"] == "aac_lc_m4a" for spec in media.values()):
+            if (not all(compact_spec(spec, timeline["frames"]) for spec in media.values())
+                    or media["original"]["bitrate"] != media["instrumental"]["bitrate"]):
+                raise self.error(400, "invalid_manifest_media")
         # Only fields consumed by the TV cross this boundary. No source account,
         # filesystem paths, arbitrary URLs, worker internals or exception strings.
         clean = {k: copy.deepcopy(job[k]) for k in ("id", "song_id", "title", "state", "code", "created", "progress", "requester", "audio_origin", "simulated", "source") if k in job}
@@ -1317,11 +1379,14 @@ class Coordinator:
             if total != spec["bytes"] or digest.hexdigest() != spec["sha256"]:
                 raise ValueError("media_integrity_failed")
             if kind in {"original", "instrumental"}:
-                with wave.open(temporary, "rb") as audio:
-                    if audio.getnchannels() != 2 or audio.getframerate() != 48000 or audio.getsampwidth() != 2:
-                        raise ValueError("media_contract_failed")
-                    if abs(audio.getnframes() / 48 - json.loads(row["timeline"])["duration_ms"]) > 150:
-                        raise ValueError("media_timeline_failed")
+                if spec.get("encoding") == "aac_lc_m4a":
+                    verify_compact(temporary, spec)
+                else:
+                    with wave.open(temporary, "rb") as audio:
+                        if audio.getnchannels() != 2 or audio.getframerate() != 48000 or audio.getsampwidth() != 2:
+                            raise ValueError("media_contract_failed")
+                        if abs(audio.getnframes() / 48 - json.loads(row["timeline"])["duration_ms"]) > 150:
+                            raise ValueError("media_timeline_failed")
             with manager.lock if manager else self.lock:
                 with self.store.connection() as db:
                     if archived:

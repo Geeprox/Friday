@@ -312,6 +312,7 @@ class NasBridge:
                     request = JobRequest(song_id=item["song_id"], title=item["title"],
                         request_id=nas_attempt_request_id(item["id"], item.get("attempt", 0)),
                         requester=item.get("requester"), source_preference={"cloud": "cloud", "mv": "mv_direct"}.get(item.get("source"), "song"))
+                    request.playback_encoding = getattr(self, "playback_encoding", "pcm_s16le_wav")
                     job = self.queue.submit(request)
                     with self.lock:
                         if not self._same_room(generation):

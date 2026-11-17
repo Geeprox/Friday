@@ -39,7 +39,7 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  let holdLibrary=false,resolveLibrary,failLibrary=false;
  let holdNasPolicy=false,failNasPolicy=false;
  const nasPolicyReads=[];
- const scope=vm.createContext({document,console,Date,JSON,Set,Map,URL,AbortController,AbortSignal,performance,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout,setInterval:fn=>{timer=fn;return 17;},clearInterval:id=>{assert.equal(id,17);cleared=true;},fetch:async(path,options={})=>{
+ const scope=vm.createContext({document,console,Date,JSON,Set,Map,URL,URLSearchParams,queueMicrotask,AbortController,AbortSignal,performance,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout,setInterval:fn=>{timer=fn;return 17;},clearInterval:id=>{assert.equal(id,17);cleared=true;},fetch:async(path,options={})=>{
   assert.ok(path.startsWith('/api/games/ktv/'),'No cross-origin request or management key');
   assert.equal(options.credentials,'same-origin');assert.ok(!Object.keys(options.headers).some(k=>/key|authorization/i.test(k)));
   if(options.method==='POST'){
@@ -84,10 +84,12 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
   reads.push(path);
   if(lateResolve!==null)return new Promise(resolve=>{lateResolve=()=>resolve(reply(structuredClone(state)));});
   if(path.endsWith('manage/room'))return reply(structuredClone(state));
-  if(path.endsWith('manage/library')){
+  if(path.includes('manage/library?')){
    if(holdLibrary)return new Promise(resolve=>{resolveLibrary=resolve;});
    if(failLibrary)return libraryFailure();
-   return reply(structuredClone(inventory));
+   const {searchParams}=new URL(path,'https://fixture.invalid');
+   const offset=Number(searchParams.get('offset')),limit=Number(searchParams.get('limit'));
+   return reply({...structuredClone(inventory),total:inventory.entries.length,entries:inventory.entries.slice(offset,offset+limit)});
   }
   if(path.endsWith('manage/policy/mac'))return reply({...structuredClone(inventory.mac),hot_cache:{bytes:1024**3}});
   if(path.endsWith('manage/policy/nas')){
@@ -128,17 +130,22 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  await click(byId('search-tab'));const search=nodes().find(n=>n.tagName==='input'&&n.type==='search');search.value='合成';const form=nodes().find(n=>n.className==='search-form');await form.onsubmit({preventDefault(){}});await settle();assert.match(root.textContent,/搜到的合成曲/);await click(buttons('点歌')[1]);assert.match(root.textContent,/已点 1 首/);assert.equal(writes.filter(w=>w.path.endsWith('/songs')).length,1);
  await click(byId('cache-tab'));
  assert.doesNotMatch(root.textContent,/空闲歌曲已清理|仍超出上限/,'Disabled Mac policy ignores legacy pressure state');
+ assert.equal(byId('file-actions').hidden,true,'Browsing keeps cleanup controls out of view');
+ assert.equal(byId('select-column').hidden,true,'Browsing shows song columns only');
+ await click(byId('select-files'));
+ assert.equal(byId('file-actions').hidden,false);
+ assert.equal(byId('select-column').hidden,false);
  const all=byId('select-page');all.checked=true;all.onchange();assert.match(root.textContent,/已选 1 项/);assert.equal(nodes().filter(n=>n.tagName==='input'&&n.type==='checkbox'&&n.disabled).length,1,'Protected content is not selectable');
  await click(byId('delete-selected'));assert.equal(deleteAttempts,0,'Preview must not delete');assert.equal(byId('delete-dialog').open,true);await click(byId('cancel-delete'));assert.equal(deleteAttempts,0);assert.equal(document.activeElement,byId('delete-selected'),'Cancel restores focus');
  await click(byId('delete-selected'));await click(byId('confirm-delete'));assert.equal(deleteAttempts,1);assert.equal(byId('delete-dialog').open,true);assert.match(byId('delete-error').textContent,/重试剩余删除/);await click(byId('confirm-delete'));assert.equal(deleteAttempts,2);assert.equal(byId('delete-dialog').open,false);assert.ok(writes.filter(w=>w.path.endsWith('/delete')).every(w=>w.data.plan==='SYNTHETIC-plan'),'Partial retry reuses the reviewed deletion plan');
- const libraryReads=()=>reads.filter(path=>path.endsWith('manage/library')).length;
+ const libraryReads=()=>reads.filter(path=>path.includes('manage/library?')).length;
  const policyForms=()=>nodes().filter(n=>n.className==='policy-form');
  const policySave=host=>walk(policyForms()[host]).find(n=>n.tagName==='button'&&n.type==='submit');
  const previousLibraryReads=libraryReads();
  holdLibrary=holdNasPolicy=true;
  await click(byId('settings-tab'));
  assert.ok(buttons('保存制作设置')[0],'Scheduler renders while NAS capacity is pending');
- assert.ok(buttons('保存房间默认设置')[0],'Room defaults render while NAS capacity is pending');
+ assert.ok(buttons('保存默认设置')[0],'Room defaults render while NAS capacity is pending');
  assert.match(policyForms()[0].textContent,/本机播放成品 1.00 GB/);
  assert.equal(policySave(0).disabled,false,'Mac settings render while NAS capacity is pending');
  assert.equal(policySave(1).hidden,true,'No speculative NAS policy is shown');
@@ -178,7 +185,7 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  assert.deepEqual(writes.find(write=>write.path.endsWith('manage/policy')).data,{host:'mac',value:{enabled:false,limit_bytes:12*1024**3}});
  assert.doesNotMatch(root.textContent,microphoneCopy);
  assert.match(root.textContent,/已核对 NAS 归档的本机播放成品/);
- buttons('保存房间默认设置')[0].parent.onsubmit({preventDefault(){}});
+ buttons('保存默认设置')[0].parent.onsubmit({preventDefault(){}});
  await settle();
  assert.deepEqual(writes.find(write=>write.path.endsWith('/preferences')).data,{theme:'content',original:0,music_gain:50,sfx_gain:80});
  const opener=buttons('音源授权与下载品质')[0],settingsBeforeSource=buttons('保存制作设置')[0];
@@ -202,9 +209,15 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  await click(buttons('×')[0]);
  assert.equal(document.activeElement,opener);
  assert.equal(buttons('保存制作设置')[0],settingsBeforeSource);
+ const schedulerForm=nodes().find(n=>n.className==='scheduler-form');
+ const schedulerFields=schedulerForm.children.find(n=>n.className==='settings-fields');
+ assert.equal(schedulerFields.children.length,4);
+ assert.ok(schedulerFields.children.every(n=>n.tagName==='label'));
+ assert.equal(schedulerForm.children.at(-1).tagName,'button');
  const backgroundPanel=nodes().find(n=>n.className.includes('background-settings'));
- assert.ok(!reads.some(path=>path.endsWith('manage/backgrounds')),'The settings page does not eagerly read backgrounds');
- backgroundPanel.open=true;backgroundPanel.ontoggle();await settle();
+ assert.equal(backgroundPanel.tagName,'section');
+ assert.ok(reads.some(path=>path.endsWith('manage/backgrounds')),'歌曲背景随设置页自动加载');
+ await settle();
  assert.match(backgroundPanel.textContent,/今日还可生成 3 张.*合成背景歌曲.*已生成/);
  assert.ok(!writes.some(w=>w.path.includes('/manage/backgrounds')),'Opening backgrounds never generates a new image');
  const regenerate=buttons('重新生成')[0];

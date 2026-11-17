@@ -2,7 +2,9 @@
 
 The NAS owns room/session state, guest queues, commands, public search and TV playback receipts. The Mac prepares songs and exposes only signed, bounded media reads to the TV/NAS. Phone requests and TV controls no longer require a Mac relay in direct mode. This changes coordination, not the real-time microphone DSP or acoustic latency.
 
-`nas_server.py`, `coordinator.py`, `management.py`, `tv_updates.py`, `tv_update_inbox.py`, `supervisor.py`, `launch.py` and `web/` form the standalone Python 3.8+ service; there are no third-party NAS Python dependencies. Configuration, keys, SQLite, cached media and supervisor receipts remain in a private directory outside `web/`.
+`nas_server.py`, `coordinator.py`, `audio_format.py`, `management.py`, `tv_updates.py`, `tv_update_inbox.py`, `supervisor.py`, `launch.py` and `web/` form the standalone Python 3.8+ service; there are no third-party NAS Python dependencies. Configuration, keys, SQLite, cached media and supervisor receipts remain in a private directory outside `web/`.
+
+NAS 的 `/v1/status` 可声明 `audio_formats`。电视确认该字段后，在就绪上报中声明可解码格式。只有新鲜的 AAC 就绪记录会让 Worker 领取 `playback_encoding: aac_lc_m4a` 任务。旧电视、旧 Worker 和未知能力继续走 WAV。压缩媒体使用既有摘要、票据、原子归档和请求范围校验，双轨的帧数与码率必须一致。`audio_format.py` 在 NAS 验证 M4A 容器、AAC LC 参数及显式裁切时间线，服务不启动编码器或音频设备。
 
 ## Startup and readiness
 
@@ -35,6 +37,8 @@ The default listener remains loopback. An optional explicit `lan_host` RFC1918 I
 - NAS 私有配置的 `public_origin` 设置为访客 HTTPS 来源，例如 `https://guests.example.test:9443`。已加入的访客仍需使用原地址时，可将原 HTTPS 来源写入 `previous_guest_origin`。这项兼容仅适用于房间访客接口。
 - Mac Worker 私有配置的 `public_join_endpoint` 设置为相同来源和现有路径，例如 `https://guests.example.test:9443/ktv`。Worker 继续按原 `endpoint` 和局域网 TLS 配置连接管理接口。
 - 公开来源改变后，NAS 会等待按新地址生成的二维码，房间及邀请凭据保持有效。核对新二维码确实使用 9443，再从外部网络打开访客页面。只有 AAAA 记录的入口需要访客网络支持 IPv6。
+- 点歌页用 `GET /?room=current` 获取当前邀请，以便纯链接和旧二维码直接入场；这个请求沿用现有访客首页的代理路径和浏览器来源。服务也接受等价的 `GET /api/rooms/current`。
+- 同机容器网关可用私有配置 `guest_socket` 连接 NAS 访客接口。路径相对于 NAS 配置目录，父目录由 NAS 服务账户持有，权限为 0710，套接字为 0660。网关以该目录的组连接，仍按访客路径转发；套接字只提供页面、健康与房间访客接口。原有电视和 Worker 保持原局域网路由。
 
 ## 电视应用更新
 

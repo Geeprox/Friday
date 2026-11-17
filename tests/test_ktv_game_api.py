@@ -55,6 +55,17 @@ def test_read_allowlist_never_forwards_arbitrary_paths(config, path):
     assert not seen
 
 
+def test_library_page_only_relays_supported_bounded_parameters(config):
+    requests = []
+    with client_for(config, lambda r: requests.append(r) or httpx.Response(200, json={"entries": [], "total": 0})) as client:
+        url = "/api/games/ktv/manage/library"
+        assert client.get(url, params={"limit": 50, "offset": 50, "presence": "both"}).status_code == 200
+        assert client.get(url, params={"limit": 129}).status_code == 400
+        assert client.get(url, params={"limit": 50, "selectable": "unexpected"}).status_code == 400
+    assert len(requests) == 1
+    assert requests[0].url.params["offset"] == "50"
+
+
 @pytest.mark.parametrize("headers", [{}, {"Origin": "https://example.invalid"}, {"Origin": ORIGIN, "Sec-Fetch-Site": "cross-site"}])
 def test_same_origin_write_is_required_before_owner_access(config, headers):
     seen = []

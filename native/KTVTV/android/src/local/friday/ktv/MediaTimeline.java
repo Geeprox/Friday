@@ -10,4 +10,9 @@ public final class MediaTimeline {
             &&Double.isFinite(originalSeconds)&&Double.isFinite(backingSeconds)
             &&Math.abs(originalSeconds-frames/48000.0)<.001&&Math.abs(backingSeconds-backingFrames/48000.0)<.001;
     }
+    public static boolean compact(long frames,long durationMs,long trackFrames,long delay,long padding,long bitrate,double seconds){
+        return frames>0&&frames<=86400000L&&trackFrames==frames&&Math.abs(Math.round(frames/48.0)-durationMs)<=1
+            &&delay==1024&&padding==(-(frames+delay)&1023)&&bitrate>=8000&&bitrate<=1024000
+            &&Double.isFinite(seconds)&&Math.abs(seconds-frames/48000.0)<.000001;
+    }
 }

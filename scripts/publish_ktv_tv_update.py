@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from build_ktv_tv import validate_main_manifest
-from install_ktv_tv import ROOT, verify_builds
+from install_ktv_tv import ROOT, java_environment, verify_build
 
 sys.path.insert(0, str(ROOT))
 from integrations.ktv_public.tv_update_inbox import COMMITTED, TvUpdateInbox  # noqa: E402
@@ -22,7 +22,7 @@ def verified_release(build_dir, audio_build_dir, sdk, java):
     if (candidate.resolve() != candidate or not candidate.is_file()
             or not 0 < candidate.stat().st_size <= MAX_APK_BYTES):
         raise TvUpdateError("bounded_main_apk_required")
-    _, main = verify_builds(build_dir, sdk, java, ROOT, audio_output=audio_build_dir)
+    main = verify_build("main", build_dir, sdk, java_environment(java), ROOT)
     release = Release(main.identity["version_code"], main.identity["version"], len(main.body),
                       main.receipt["sha256"], main.certificate_sha256)
     return release, main.body
@@ -49,7 +49,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nas-state", type=Path, required=True, help="NAS KTV 私有配置旁的现有 state 目录")
     parser.add_argument("--build-dir", type=Path, default=ROOT / ".artifacts/ktv-tv", help="主包及构建回执目录")
-    parser.add_argument("--audio-build-dir", type=Path, help="保留的同签名音频伴随包及构建回执目录")
+    parser.add_argument("--audio-build-dir", type=Path, help="兼容旧命令参数，主应用发布时可省略")
     parser.add_argument("--worker-config", type=Path, default=ROOT / "data/ktv/nas.json",
                         help="现有 Mac NAS Worker 私有配置文件，发布时用其签署投递")
     parser.add_argument("--sdk", type=Path, default=ROOT / ".artifacts/embodied-toolchain/android")

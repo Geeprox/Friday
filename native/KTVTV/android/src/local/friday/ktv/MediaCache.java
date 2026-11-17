@@ -9,13 +9,14 @@ public final class MediaCache {
  private final File root;private final long limit;
  private Set<String> protectedHashes=new HashSet<>();
  private final Map<String,Long> reserved=new HashMap<>();
+ private final Map<String,Integer> pinned=new HashMap<>();
  private final Map<String,Integer> plays=new LinkedHashMap<>();
  public MediaCache(File root)throws IOException{this(root,DEFAULT_LIMIT);}
  public MediaCache(File root,long limit)throws IOException{
   this.root=root;this.limit=limit;if(limit<=0||(!root.isDirectory()&&!root.mkdirs()))throw new IOException("cache_unavailable");
   for(File f:files())if(f.getName().endsWith(".part"))synchronized(activePartials){if(!activePartials.contains(f.getAbsolutePath()))f.delete();}
  }
- private File[] files(){File[] all=root.listFiles((dir,name)->name.matches("[a-f0-9]{64}(?:\\.(?:wav|mp4|png|jpg|part)|-[a-f0-9]{32}\\.part)"));return all==null?new File[0]:all;}
+ private File[] files(){File[] all=root.listFiles((dir,name)->name.matches("[a-f0-9]{64}(?:\\.(?:wav|m4a|pcm|mp4|png|jpg|part)|-[a-f0-9]{32}\\.part)"));return all==null?new File[0]:all;}
  public File beginPartial(String sha)throws IOException{
   if(!sha.matches("[a-f0-9]{64}"))throw new IOException("invalid_media");
   synchronized(activePartials){for(int attempt=0;attempt<3;attempt++){File file=new File(root,sha+"-"+UUID.randomUUID().toString().replace("-","")+".part");if(file.createNewFile()){activePartials.add(file.getAbsolutePath());return file;}}}
@@ -47,7 +48,7 @@ public final class MediaCache {
   for(File file:all){
    if(used+size<=limit&&root.getUsableSpace()>=requiredFree)break;
    String name=file.getName();
-   if(file.equals(target)||protectedHashes.contains(name.substring(0,64))||active(file)||reserved.containsKey(name))continue;
+   if(file.equals(target)||protectedHashes.contains(name.substring(0,64))||active(file)||reserved.containsKey(name)||pinned.containsKey(name))continue;
    if(!file.isFile()||!file.getCanonicalFile().equals(new File(root.getCanonicalFile(),name)))continue;
    long bytes=file.length();
    if(file.delete()){used-=bytes;plays.remove(name);}
@@ -60,6 +61,11 @@ public final class MediaCache {
   reserve(target,size);
   reserved.put(name,size);
   return new Reservation(name);
+ }
+ public synchronized AutoCloseable pin(File file)throws IOException{
+  if(!root.equals(file.getParentFile())||!file.isFile())throw new IOException("cache_unavailable");
+  String name=file.getName();pinned.put(name,pinned.getOrDefault(name,0)+1);
+  return ()->{synchronized(MediaCache.this){int count=pinned.getOrDefault(name,1)-1;if(count==0)pinned.remove(name);else pinned.put(name,count);}};
  }
  public final class Reservation implements AutoCloseable {
   private final String name;
