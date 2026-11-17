@@ -32,6 +32,8 @@ VERSION = "4.41.1"
 MAX_BYTES = 128 * 1024 * 1024
 DOWNLOAD_LEVELS = ("exhigh", "standard")
 SOURCE_ERRORS = {"source_login_required", "source_rights_denied", "source_api_unavailable", "source_file_invalid"}
+_MEDIA_ADDRESS_CACHE = {}
+_MEDIA_ADDRESS_LOCK = threading.Lock()
 
 
 class LocalSourceAPI:
@@ -607,20 +609,33 @@ def source_url(value):
 
 def _media_addresses(host, timeout):
     # 只查询公开 CDN 域名，签名路径和认证资料留在下载连接内。
-    query = urlencode({"name": host, "type": "A"})
-    with urllib.request.urlopen("https://dns.google/resolve?" + query, timeout=timeout) as response:
-        value = json.loads(response.read(65536))
-    if not isinstance(value, dict) or not isinstance(value.get("Answer"), list):
-        return
-    for item in value["Answer"]:
-        if not isinstance(item, dict) or item.get("type") != 1:
-            continue
-        try:
-            address = ipaddress.IPv4Address(item["data"])
-        except (ipaddress.AddressValueError, KeyError):
-            continue
-        if address.is_global:
-            yield str(address)
+    # 同域名的并发分段共用解析结果，按 DNS 返回的 TTL 到期刷新。
+    with _MEDIA_ADDRESS_LOCK:
+        saved = _MEDIA_ADDRESS_CACHE.get(host)
+        if saved and time.monotonic() < saved[0]:
+            return saved[1]
+        query = urlencode({"name": host, "type": "A"})
+        with urllib.request.urlopen("https://dns.google/resolve?" + query, timeout=timeout) as response:
+            value = json.loads(response.read(65536))
+        if not isinstance(value, dict) or not isinstance(value.get("Answer"), list):
+            return ()
+        addresses, ttl = [], None
+        for item in value["Answer"]:
+            if not isinstance(item, dict) or item.get("type") != 1:
+                continue
+            try:
+                address = ipaddress.IPv4Address(item["data"])
+            except (ipaddress.AddressValueError, KeyError):
+                continue
+            if address.is_global:
+                addresses.append(str(address))
+                lifetime = item.get("TTL", 0)
+                if type(lifetime) is int and lifetime >= 0:
+                    ttl = lifetime if ttl is None else min(ttl, lifetime)
+        result = tuple(dict.fromkeys(addresses))
+        if result and ttl:
+            _MEDIA_ADDRESS_CACHE[host] = (time.monotonic() + ttl, result)
+        return result
 
 
 @contextmanager

@@ -86,6 +86,32 @@ def test_cdn_transport_recovery_keeps_official_tls_identity(monkeypatch):
                       {"Host": "m.test.music.126.net"}, {"sni_hostname": "m.test.music.126.net"})]
 
 
+def test_parallel_ranges_share_cdn_resolution_until_dns_ttl_expires(monkeypatch):
+    from homeplane import ktv_source_api as source
+    from concurrent.futures import ThreadPoolExecutor
+    import io
+
+    requests, clock = [], [10.0]
+
+    def answer(url, *, timeout):
+        requests.append(url)
+        return io.BytesIO(json.dumps({"Answer": [
+            {"type": 1, "data": "8.8.8.8", "TTL": 30},
+            {"type": 1, "data": "198.18.0.1", "TTL": 30},
+        ]}).encode())
+
+    monkeypatch.setattr(source, "_MEDIA_ADDRESS_CACHE", {})
+    monkeypatch.setattr(source.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(source.urllib.request, "urlopen", answer)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        values = list(pool.map(lambda _: source._media_addresses("m.test.music.126.net", 5), range(4)))
+    assert values == [("8.8.8.8",)] * 4
+    assert len(requests) == 1
+    clock[0] = 41
+    assert source._media_addresses("m.test.music.126.net", 5) == ("8.8.8.8",)
+    assert len(requests) == 2
+
+
 def test_no_login_never_invokes_download_or_client(tmp_path):
     api = LocalSourceAPI(tmp_path / "account", tmp_path / "provider", rpc=lambda *a, **k: pytest.fail("no request"))
     with pytest.raises(ValueError, match="source_login_required"):
