@@ -47,23 +47,25 @@ class Management:
             for row in db.execute("SELECT * FROM coordinator_manifests").fetchall():
                 self.remember(row, db)
 
-    def remember(self, row, db):
+    def remember(self, row, db, *, source=None):
         job = json.loads(row["job"])
         for spec in self.coordinator._specs(row).values():
             db.execute("INSERT INTO managed_media VALUES(?,?,?,?,?) ON CONFLICT(song_id,sha) DO UPDATE SET title=excluded.title,bytes=excluded.bytes,last_used=max(last_used,excluded.last_used)",
                        (job["song_id"], spec["sha256"], job["title"], spec["bytes"], row["updated"]))
-        source = db.execute("SELECT source FROM songs WHERE id=?", (row["song"],)).fetchone()
+        if source is None:
+            queued = db.execute("SELECT source FROM songs WHERE id=?", (row["song"],)).fetchone()
+            source = queued[0] if queued else None
         if source is not None:
             if not job.get("background"):
-                background = self.verified_background(job["song_id"], source[0], db)
+                background = self.verified_background(job["song_id"], source, db)
                 if background:
                     job["background"] = background
             db.execute("INSERT OR REPLACE INTO managed_editions VALUES(?,?,?,?,?,?,?)",
-                       (job["song_id"], source[0], row["version"], row["timeline"], json.dumps(job, sort_keys=True),
+                       (job["song_id"], source, row["version"], row["timeline"], json.dumps(job, sort_keys=True),
                         row["lyrics"], row["updated"]))
             db.execute("DELETE FROM managed_editions WHERE song_id=? AND source=? AND version NOT IN "
                        "(SELECT version FROM managed_editions WHERE song_id=? AND source=? ORDER BY updated DESC,rowid DESC LIMIT 3)",
-                       (job["song_id"], source[0], job["song_id"], source[0]))
+                       (job["song_id"], source, job["song_id"], source))
 
     def verified_edition(self, song_id, source, db):
         for row in db.execute("SELECT * FROM managed_editions WHERE song_id=? AND source=? "
@@ -88,6 +90,36 @@ class Management:
             if background and background.get("status") == "ready" and self._verified_asset(background, db):
                 return background
         return None
+
+    def prepared_status(self, payload):
+        items = payload.get("items")
+        if (set(payload) != {"items"} or not isinstance(items, list) or not 1 <= len(items) <= 128
+                or any(not isinstance(item, dict) or set(item) != {"song_id", "source"}
+                       or not isinstance(item["song_id"], str) or not ID.fullmatch(item["song_id"])
+                       or item["source"] not in ("cloud", "song") for item in items)):
+            raise self.error(400, "invalid_request")
+        result = []
+        with self.store.connection() as db:
+            for item in items:
+                song_id, source = item["song_id"], item["source"]
+                row = self.verified_edition(song_id, source, db)
+                result.append({**item, "archived": row is not None,
+                               "lyrics_ready": bool(row and self.coordinator.lyric_state(
+                                   json.loads(row["lyrics"]), json.loads(row["timeline"])) == 1),
+                               "background_ready": self.verified_background(song_id, source, db) is not None})
+        return {"items": result}
+
+    def shared_copy(self, payload):
+        checksum, size, songs = payload.get("sha256"), payload.get("bytes"), payload.get("song_ids")
+        if (set(payload) != {"sha256", "bytes", "song_ids"} or not isinstance(checksum, str) or not SHA.fullmatch(checksum)
+                or type(size) is not int or not 44 < size <= 512 * 1024**2 or not isinstance(songs, list)
+                or any(not isinstance(item, str) or not ID.fullmatch(item) for item in songs)):
+            raise self.error(400, "invalid_request")
+        with self.store.connection() as db:
+            managed = {row[0] for row in db.execute("SELECT song_id FROM managed_media WHERE sha=? AND bytes=?", (checksum, size))}
+            verified = bool(managed and set(songs) <= managed
+                            and self._verified_asset({"sha256": checksum, "bytes": size}, db))
+        return {"verified": verified}
 
     def attach_edition(self, row, queue_id, title, source, requester, db):
         job = json.loads(row["job"])

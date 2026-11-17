@@ -15,7 +15,7 @@ from .ktv_download import _hash_file, _write, canonical_song_id
 
 
 class MediaArchive:
-    def __init__(self, queue, config, *, mounted=os.path.ismount):
+    def __init__(self, queue, config, *, mounted=os.path.ismount, shared_reference=None):
         config = Path(config)
         if config.is_symlink() or config.stat().st_mode & 0o077:
             raise ValueError("private_archive_config_required")
@@ -24,12 +24,21 @@ class MediaArchive:
         if (self.mount.resolve() != self.mount or self.root.resolve() != self.root
                 or not self.root.is_relative_to(self.mount) or self.root == self.mount):
             raise ValueError("unsafe_archive")
+        shared = value.get("coordinator_media_root")
+        self.coordinator_media_root = Path(shared) if shared else None
+        if self.coordinator_media_root is not None:
+            shared = self.coordinator_media_root
+            if (shared.resolve() != shared or not shared.is_relative_to(self.mount) or shared.name != "coordinator-media"
+                    or shared.is_relative_to(self.root) or self.root.is_relative_to(shared)):
+                raise ValueError("unsafe_archive")
         self.queue, self.mounted = queue, mounted
+        self.shared_reference = shared_reference
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.thread = None
         self.active = set()
         self.known = {}
+        self.duplicate_candidates = {}
         self.results = {}
         self.entries = {}
         self.cache_manager = None
@@ -59,6 +68,62 @@ class MediaArchive:
 
     def _catalog(self, song_id):
         return self.root / "catalog" / (canonical_song_id(song_id) + ".json")
+
+    def _shared_wav(self, name):
+        if self.coordinator_media_root is None or not re.fullmatch(r"[a-f0-9]{64}\.wav", name):
+            return None
+        shared = self.coordinator_media_root / name[:-4]
+        if shared.resolve() == shared and shared.is_file():
+            return shared
+        return None
+
+    def _playback_blob(self, name):
+        local = self.root / "blobs" / name
+        return local if local.exists() or local.is_symlink() else self._shared_wav(name) or local
+
+    def _shared_registered(self, name, size, songs):
+        try:
+            return self.shared_reference is not None and self.shared_reference(name[:-4], size, songs)
+        except (OSError, ValueError, RuntimeError):
+            return False
+
+    @staticmethod
+    def _identity(path):
+        info = path.stat(follow_symlinks=False)
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def compact_wav(self, name, *, apply=False):
+        """合并与现用 NAS 归档完全相同的旧 WAV，旧清单仍可按摘要回档。"""
+        if not re.fullmatch(r"[a-f0-9]{64}\.wav", name) or not self.available():
+            return 0
+        original = self.root / "blobs" / name
+        try:
+            shared = self._shared_wav(name)
+            if not shared or original.resolve() != original or not original.is_file():
+                return 0
+            original_id, shared_id = self._identity(original), self._identity(shared)
+            size = original_id[2]
+            # 任一旧清单有引用时，现用归档也必须保留同一首歌的关联。
+            from .ktv_library import read_record
+            songs = set()
+            for path in (self.root / "catalog").glob("*.json"):
+                entry = read_record(path, 65536)
+                files, retained = entry.get("files", {}), entry.get("retained", [])
+                if (entry.get("song_id") == path.stem and isinstance(files, dict) and isinstance(retained, list)
+                        and any(isinstance(item, dict) and item.get("file") == name for item in [*files.values(), *retained])):
+                    songs.add(path.stem)
+            if (not 44 < size <= 512 * 1024**2 or size != shared_id[2]
+                    or not self._shared_registered(name, size, songs)
+                    or _hash_file(shared) != name[:-4] or _hash_file(original) != name[:-4]):
+                return 0
+            with self.lock:
+                if self._identity(original) != original_id or self._identity(shared) != shared_id:
+                    return 0
+                if apply:
+                    original.unlink()
+                return size
+        except OSError:
+            return 0
 
     def _copy(self, source, destination, expected):
         if destination.parent.resolve() != destination.parent:
@@ -138,7 +203,13 @@ class MediaArchive:
             if not re.fullmatch(r"[a-f0-9]{64}", checksum) or path.stat().st_size != length:
                 raise ValueError("archive_source_changed")
             name = checksum + {"source": ".audio", "original": ".wav", "instrumental": ".wav", "video": ".mp4"}[kind]
-            self._copy(path, blobs / name, checksum)
+            destination = blobs / name
+            shared = self._shared_wav(name)
+            if (shared is None or shared.stat().st_size != length
+                    or not self._shared_registered(name, length, {value["song_id"]}) or _hash_file(shared) != checksum):
+                self._copy(path, destination, checksum)
+            if self.coordinator_media_root is not None and kind in {"original", "instrumental"} and destination.is_file():
+                self.duplicate_candidates[name] = None
             entries[kind] = {"file": name, "sha256": checksum, "bytes": length}
         previous = self.entries.get(value["song_id"], {})
         if source is None and previous.get("files", {}).get("source"):
@@ -201,7 +272,7 @@ class MediaArchive:
                         or type(size) is not int or not 1 <= size <= 512 * 1024**2
                         or kind != "video" and spec.get("filename") != kind + suffix):
                     return None
-                source = self.root / "blobs" / item["file"]
+                source = self._playback_blob(item["file"])
                 if source.resolve() != source or source.stat().st_size != size:
                     return None
                 copies.append((source, folder / (kind + suffix), sha, size))
@@ -248,7 +319,7 @@ class MediaArchive:
             for item in files.values():
                 if not re.fullmatch(r"[a-f0-9]{64}\.(?:audio|wav|mp4)", item["file"]):
                     return False
-                path = self.root / "blobs" / item["file"]
+                path = self._playback_blob(item["file"])
                 if (path.is_symlink() or path.resolve() != path or path.stat().st_size != item["bytes"]
                         or _hash_file(path) != item["sha256"]):
                     return False
@@ -400,6 +471,13 @@ class MediaArchive:
             while not self.stop.is_set():
                 try:
                     self.tick()
+                    for name in list(self.duplicate_candidates)[:2]:
+                        self.duplicate_candidates.pop(name)
+                        try:
+                            if not self.compact_wav(name, apply=True) and self._shared_wav(name) is None:
+                                self.duplicate_candidates[name] = None
+                        except (OSError, ValueError):
+                            pass
                     self.trim_local()
                 except (OSError, ValueError, KeyError):
                     pass

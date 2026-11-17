@@ -15,6 +15,7 @@ process.stdin.on('end',async()=>{
   const request=require(path.join(base,'util/request.js'));
   const fn=require(path.join(base,'module',operations[q.op]+'.js'));
   const args={cookie:typeof q.cookie==='string'?q.cookie:'',timeout:12000};
+  if(['detail','download','cloud_url','lyrics','artist_search','artist_songs'].includes(q.op))args.crypto='weapi';
   if(q.op==='poll'){if(!/^[A-Za-z0-9_-]{8,256}$/.test(q.key))throw Error();args.key=q.key;}
   if(q.op==='cloud'){if(!Number.isInteger(q.offset)||q.offset<0||q.offset>100000)throw Error();args.limit=100;args.offset=q.offset;}
   if(q.op==='cloud_url'){if(!/^[1-9][0-9]{0,17}$/.test(q.id))throw Error();args.id=q.id;args.br=128000;}

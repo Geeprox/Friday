@@ -70,6 +70,36 @@ def test_archive_verified_and_local_clear_restores_without_provider(tmp_path, mo
     finally:
         queue.close()
 
+
+def test_shared_wav_compaction_preserves_verified_pcm_and_reuses_the_same_blob(tmp_path):
+    queue, archive, _, job, _ = setup_archive(tmp_path)
+    try:
+        archive.tick()
+        candidate = archive.entries["1"]["files"]["original"]
+        old = archive.root / "blobs" / candidate["file"]
+        shared = archive.mount / "coordinator-media"
+        shared.mkdir()
+        archive.coordinator_media_root = shared
+        archive.shared_reference = lambda checksum, size, songs: songs == {"1"}
+        canonical = shared / candidate["sha256"]
+        original = old.read_bytes()
+        canonical.write_bytes(b"x" * len(original))
+        assert archive.compact_wav(old.name, apply=True) == 0 and old.exists()
+        canonical.write_bytes(original)
+        assert archive.compact_wav(old.name) == len(original) and old.exists()
+        assert archive.compact_wav(old.name, apply=True) == len(original)
+        assert archive.compact_wav(old.name, apply=True) == 0 and not old.exists()
+        assert archive.verify_prepared("1")
+        archive.archive(queue.jobs[job["id"]])
+        assert not old.exists(), "同一成品再次归档时不得写回第二个 WAV"
+        target = tmp_path / "restore"
+        target.mkdir()
+        result = archive.restore_job("1", target, queue.jobs[job["id"]]["binding"])
+        assert result["cache_hit"] and (target / "original.wav").read_bytes() == original
+        assert (target / "instrumental.wav").read_bytes() == original
+    finally:
+        queue.close()
+
 def test_managed_hot_cache_prunes_verified_idle_media_only(tmp_path, monkeypatch):
     from homeplane.ktv_library import SongLibrary
 

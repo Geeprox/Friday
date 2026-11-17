@@ -1925,6 +1925,12 @@ def make_handler(store, agent_key, assets):
                     return self.reply(200, store.coordinator.register_worker(self.body()))
                 if path == "/agent/manifests" and self.command == "POST":
                     return self.reply(200, store.coordinator.manifest(self.body(196608)))
+                if path == "/agent/library-manifests" and self.command == "POST" and not origin:
+                    return self.reply(200, store.coordinator.manifest(self.body(196608), library=True))
+                if path == "/agent/library-status" and self.command == "POST" and not origin:
+                    return self.reply(200, store.management.prepared_status(self.body()))
+                if path == "/agent/shared-copy" and self.command == "POST" and not origin:
+                    return self.reply(200, store.management.shared_copy(self.body()))
                 if path == "/agent/lyrics" and self.command == "POST":
                     store.budget("lyrics-repair", 120)
                     return self.reply(200, store.coordinator.repair_lyrics(self.body(145000)))

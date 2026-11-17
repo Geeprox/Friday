@@ -2,7 +2,9 @@
 import hashlib
 import json
 import threading
+import time
 import wave
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
@@ -51,6 +53,39 @@ def test_source_destination_is_fixed_official_cdn(url):
         source_url(url)
 
 
+def test_cdn_transport_recovery_keeps_official_tls_identity(monkeypatch):
+    from homeplane import ktv_source_api as source
+
+    calls = []
+    url = "https://m.test.music.126.net/audio?signature=fixture"
+
+    @contextmanager
+    def direct(method, target, **options):
+        assert method == "GET" and target == url and options["trust_env"] is False
+        raise httpx.ConnectError("合成网络错误")
+        yield
+
+    class Client:
+        def __init__(self, **options):
+            assert not options["follow_redirects"] and not options["trust_env"]
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        @contextmanager
+        def stream(self, method, target, *, headers, extensions):
+            calls.append((method, str(target), headers, extensions))
+            yield 206
+
+    monkeypatch.setattr(source.httpx, "stream", direct)
+    monkeypatch.setattr(source.httpx, "Client", Client)
+    monkeypatch.setattr(source, "_media_addresses", lambda host, timeout: ["8.8.8.8"] if host == "m.test.music.126.net" else [])
+    with source._open_audio_cdn(url, time.monotonic() + 10) as status:
+        assert status == 206
+    assert calls == [("GET", "https://8.8.8.8/audio?signature=fixture",
+                      {"Host": "m.test.music.126.net"}, {"sni_hostname": "m.test.music.126.net"})]
+
+
 def test_no_login_never_invokes_download_or_client(tmp_path):
     api = LocalSourceAPI(tmp_path / "account", tmp_path / "provider", rpc=lambda *a, **k: pytest.fail("no request"))
     with pytest.raises(ValueError, match="source_login_required"):
@@ -86,6 +121,32 @@ def test_complete_transfer_decode_cache_and_tamper(tmp_path, monkeypatch):
     Path(result["source_path"]).write_bytes(b"damaged")
     with pytest.raises(ValueError, match="source_file_invalid"):
         adapter.acquire("1")
+
+
+@pytest.mark.parametrize("cdn_status", [200, 206])
+def test_cloud_range_download_reassembles_the_exact_source(tmp_path, monkeypatch, cdn_status):
+    from homeplane import ktv_source_api as source
+
+    raw = b"0123456789abcdef" * 16385
+    requests = []
+
+    @contextmanager
+    def stream(url, deadline, headers):
+        start, end = map(int, headers["Range"].removeprefix("bytes=").split("-"))
+        requests.append((start, end))
+        if cdn_status == 200:
+            yield httpx.Response(200, content=raw)
+        else:
+            yield httpx.Response(206, content=raw[start:end + 1],
+                                 headers={"Content-Range": f"bytes {start}-{end}/{len(raw)}"})
+
+    monkeypatch.setattr(source, "_open_audio_cdn", stream)
+    target = tmp_path / "audio.part"
+    source._transfer_audio("https://m.test.music.126.net/song", target, len(raw),
+                           threading.Event(), time.monotonic() + 10, lambda _: None,
+                           large_cloud_file=True)
+    assert target.read_bytes() == raw
+    assert len(requests) == (4 if cdn_status == 206 else 1)
 
 
 def test_source_quality_defaults_to_mp3_and_is_bounded(tmp_path):
