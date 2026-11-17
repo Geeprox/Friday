@@ -92,8 +92,10 @@ def test_no_login_never_invokes_download_or_client(tmp_path):
         APIAudioAdapter(api, tmp_path / "audio", enabled=True).acquire("1")
 
 
-def test_complete_transfer_decode_cache_and_tamper(tmp_path, monkeypatch):
+@pytest.mark.parametrize("transfer_elapsed", [0, 181])
+def test_complete_transfer_decode_cache_and_tamper(tmp_path, monkeypatch, transfer_elapsed):
     import subprocess
+    from homeplane import ktv_source_api as source
     pcm = tmp_path / "synthetic.wav"
     with wave.open(str(pcm), "wb") as out:
         out.setnchannels(2)
@@ -111,6 +113,14 @@ def test_complete_transfer_decode_cache_and_tamper(tmp_path, monkeypatch):
                     "url": "https://m.test.music.126.net/song", "duration_seconds": 2}
     client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=raw)))
     monkeypatch.setattr(httpx, "stream", lambda method, url, **kw: client.stream(method, url))
+    clock, elapsed, transfer = time.monotonic, [0], source._transfer_audio
+
+    def slow_transfer(*args, **kwargs):
+        transfer(*args, **kwargs)
+        elapsed[0] += transfer_elapsed
+
+    monkeypatch.setattr(source.time, "monotonic", lambda: clock() + elapsed[0])
+    monkeypatch.setattr(source, "_transfer_audio", slow_transfer)
     api, stages = API(), []
     adapter = APIAudioAdapter(api, tmp_path / "audio", enabled=True)
     result = adapter.acquire("1", cancel=threading.Event(), progress=stages.append)
@@ -147,6 +157,67 @@ def test_cloud_range_download_reassembles_the_exact_source(tmp_path, monkeypatch
                            large_cloud_file=True)
     assert target.read_bytes() == raw
     assert len(requests) == (4 if cdn_status == 206 else 1)
+
+
+def test_progressing_source_outlives_the_initial_transfer_deadline(tmp_path, monkeypatch):
+    from homeplane import ktv_source_api as source
+
+    clock = [10.0]
+    chunks = [b"0123456789abcdef"] * 8
+    raw = b"".join(chunks)
+
+    class Reply:
+        status_code = 200
+        headers = {"content-length": str(len(raw))}
+
+        def iter_bytes(self, size):
+            for chunk in chunks:
+                clock[0] += 2
+                yield chunk
+
+    @contextmanager
+    def stream(url, deadline, headers):
+        yield Reply()
+
+    monkeypatch.setattr(source.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(source, "_open_audio_cdn", stream)
+    target = tmp_path / "source.part"
+    source._transfer_audio("https://m.test.music.126.net/song", target, len(raw),
+                           threading.Event(), 15, lambda _: None, large_cloud_file=False)
+    assert clock[0] > 15
+    assert target.read_bytes() == raw
+
+
+def test_stalled_source_keeps_timeout_and_cancellation(tmp_path, monkeypatch):
+    from homeplane import ktv_source_api as source
+    from homeplane.ktv_download import DownloadError
+
+    clock = [10.0]
+
+    class Reply:
+        status_code = 200
+        headers = {}
+
+        def iter_bytes(self, size):
+            clock[0] = 16
+            yield b"0123456789abcdef"
+
+    @contextmanager
+    def stream(url, deadline, headers):
+        yield Reply()
+
+    monkeypatch.setattr(source.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(source, "_open_audio_cdn", stream)
+    target = tmp_path / "source.part"
+    with pytest.raises(DownloadError, match="download_timeout"):
+        source._transfer_audio("https://m.test.music.126.net/song", target, 16,
+                               threading.Event(), 15, lambda _: None, large_cloud_file=False)
+    target.unlink()
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(DownloadError, match="download_cancelled"):
+        source._transfer_audio("https://m.test.music.126.net/song", target, 16,
+                               cancelled, 20, lambda _: None, large_cloud_file=False)
 
 
 def test_source_quality_defaults_to_high_mp3_and_preserves_selection(tmp_path):

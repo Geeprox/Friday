@@ -659,14 +659,18 @@ def _transfer_audio(url, part, size, cancel, deadline, progress, *, large_cloud_
     identity_headers = {"Accept-Encoding": "identity"}
     lock = threading.Lock()
     total, last = 0, 0
+    idle_timeout = max(1, deadline - time.monotonic())
 
     def copy(reply, output, length):
         nonlocal total, last
         received = 0
         if reply.headers.get("content-length") and int(reply.headers["content-length"]) != length:
             raise ValueError("source_file_invalid")
+        last_received = time.monotonic()
         for chunk in reply.iter_bytes(65536):
-            _check(cancel, deadline)
+            # 持续收到原曲时继续传输，无进展超时与整首歌的下载耗时分开计算。
+            _check(cancel, last_received + idle_timeout)
+            last_received = time.monotonic()
             received += len(chunk)
             if received > length:
                 raise ValueError("source_file_invalid")
@@ -693,7 +697,7 @@ def _transfer_audio(url, part, size, cancel, deadline, progress, *, large_cloud_
             output.seek(start)
             copy(reply, output, end - start + 1)
 
-    # 云盘保留上传版本。大文件使用 CDN 的分段能力，加快完整原文件到达。
+    # 保留平台返回的完整版本。较大原曲复用 CDN 分段能力，忽略 Range 时接收完整响应。
     if large_cloud_file:
         edges = [size * lane // 4 for lane in range(5)]
         ranges = [(left, right - 1) for left, right in zip(edges, edges[1:])]
@@ -779,13 +783,15 @@ class APIAudioAdapter:
             part.unlink(missing_ok=True)
             try:
                 total = spec["size"]
-                _transfer_audio(url, part, total, cancel, deadline, progress,
-                                large_cloud_file=self.source == "cloud" and total >= 8 * 1024**2)
+                _transfer_audio(url, part, total, cancel, time.monotonic() + timeout, progress,
+                                large_cloud_file=total >= 8 * 1024**2)
                 with part.open("rb") as transferred:
                     checksum = hashlib.file_digest(transferred, "md5").hexdigest()
                 if part.stat().st_size != total or checksum != spec["md5"].lower():
                     raise ValueError("source_file_invalid")
                 progress({"phase": "decoding", "bytes": total, "total": total})
+                # 原曲已完整到达，解码校验使用自己的阶段时间，避免被下载耗时误杀。
+                deadline = time.monotonic() + timeout
                 ffprobe, ffmpeg = shutil.which("ffprobe"), shutil.which("ffmpeg")
                 probe = json.loads(_run([ffprobe, "-v", "error", "-select_streams", "a", "-show_entries",
                     "stream=codec_name,channels,sample_rate:format=duration", "-of", "json", str(part)],
