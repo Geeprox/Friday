@@ -263,7 +263,8 @@ def test_default_pool_runs_three_separations_with_headroom(tmp_path):
             running.add(folder.name)
             if len(running) == 3:
                 started.set()
-        assert release.wait(2)
+        # 三路都进入后由主测试释放，避免首路在慢速 CI 上提前退出。
+        release.wait()
         return source
 
     queue = Queue(tmp_path / "runtime", acquire=lambda *a: source, separate=separate,
@@ -271,7 +272,7 @@ def test_default_pool_runs_three_separations_with_headroom(tmp_path):
                   memory_available=lambda: 16 * 1024**3)
     try:
         jobs = [queue.submit(request(str(i))) for i in range(100, 103)]
-        assert started.wait(1)
+        assert started.wait(10), [queue.get(item["id"])["progress"]["stage"] for item in jobs]
         assert queue.scheduler_status()["active_models"] == 3
         release.set()
         assert all(wait(queue, item)["state"] == "ready" for item in jobs)
