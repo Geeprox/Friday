@@ -1856,7 +1856,7 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                 raise Refusal(405, "method_refused")
             origin = self.headers.get("Origin")
             room_route = ROOM_ROUTE.fullmatch(path)
-            current_room = path == "/api/rooms/current"
+            current_room = path == "/api/rooms/current" or (path == "/" and parsed.query == "room=current")
             if origin and origin != store.origin and (not (room_route or current_room) or origin != store.previous_guest_origin):
                 raise Refusal(403, "origin_refused")
             if current_room and self.command == "GET":
@@ -2150,7 +2150,7 @@ def guest_socket_listener(config_path, config, store, assets):
     root = config_path.parent.resolve()
     path = root / name
     parent = path.parent
-    if (not path.is_relative_to(root) or parent.resolve() != parent or parent == root or
+    if (root not in path.parents or parent.resolve() != parent or parent == root or
             path.suffix != ".sock" or not parent.is_dir()):
         raise ValueError("invalid_guest_socket")
     directory = parent.stat()

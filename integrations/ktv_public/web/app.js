@@ -116,7 +116,8 @@ async function api(operation,body,query="",{signal,timeoutMs=requestBudgets[oper
  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);signal?.addEventListener("abort",abort,{once:true});if(signal?.aborted)abort();
  try{
   const started=performance.now();let response;
-  try{response=await fetch(`./api/rooms/${current?"":requestRoom+"/"}${operation}${query}`,{method:body?"POST":"GET",headers,body:body?JSON.stringify(body):undefined,credentials:"omit",signal:controller.signal,cache:"no-store",priority});}
+  const url=current?"./?room=current":`./api/rooms/${requestRoom}/${operation}${query}`;
+  try{response=await fetch(url,{method:body?"POST":"GET",headers,body:body?JSON.stringify(body):undefined,credentials:"omit",signal:controller.signal,cache:"no-store",priority});}
   catch(error){throw Object.assign(new Error(),{code:signal?.aborted?"cancelled":timedOut?"request_timeout":"network_error",status:0});}
   let value;try{value=await response.json();}catch{throw Object.assign(new Error(),{code:signal?.aborted?"cancelled":timedOut?"request_timeout":"service_unavailable",status:response.status});}if(signal?.aborted||(!current&&(!valid||requestRoom!==room)))throw Object.assign(new Error(),{code:"cancelled"});
   if(!response.ok){const retry=response.headers?.get("Retry-After"),seconds=Number(retry),retryAfterMs=retry?(Number.isFinite(seconds)?Math.max(0,seconds*1000):Math.max(0,Date.parse(retry)-Date.now())):0;throw Object.assign(new Error(),{code:value.code||"service_unavailable",status:response.status,retryAfterMs});}
