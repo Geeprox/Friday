@@ -474,21 +474,40 @@ def test_worker_protocol_fixed_ops_bounded_frames_and_redacted_credentials(monke
     assert SECRET not in text and "SYNTHETIC-user" not in text
 
 
-async def test_actual_worker_dependency_gate_or_fake_unreachable_endpoint_does_not_log_secret(monkeypatch):
-    # The reserved .invalid hostname cannot be a household NAS. If optional dependencies
-    # are absent it fails before network; if present it fails name resolution.
+async def test_actual_worker_dependency_gate_or_fake_unreachable_endpoint_does_not_log_secret(monkeypatch, capfd):
+    # 保持端口已绑定但未监听，使真实工作进程立即收到拒绝连接，不依赖 DNS 超时。
     transport = WorkerTransport()
+    processes = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def tracked_spawn(*args, **kwargs):
+        assert "HOME_HA_TOKEN" not in kwargs["env"]
+        assert "OPENAI_API_KEY" not in kwargs["env"]
+        assert SECRET not in repr(args) + repr(kwargs["env"])
+        process = await spawn(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", tracked_spawn)
     monkeypatch.setenv("HOME_HA_TOKEN", SECRET)
     monkeypatch.setenv("OPENAI_API_KEY", SECRET)
-    try:
-        with pytest.raises(NASConnectionError) as caught:
-            await asyncio.wait_for(transport.connect(config(), CREDS), 2)
-        assert caught.value.code in {"nas_dependency_missing", "nas_transport_failed"}
-    finally:
-        process = transport.process
-        await transport.close()
-        assert transport.process is None
-        assert process is None or process.returncode is not None
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as endpoint:
+        endpoint.bind(("127.0.0.1", 0))
+        cfg = NASConnectionConfig.model_validate({
+            **config().model_dump(), "host": "127.0.0.1", "port": endpoint.getsockname()[1],
+        })
+        try:
+            with pytest.raises(NASConnectionError) as caught:
+                # 外层只防止测试挂起；连接失败和超时由独立用例验证，不计 SDK 冷导入耗时。
+                await asyncio.wait_for(transport.connect(cfg, CREDS), 10)
+            assert caught.value.code in {"nas_dependency_missing", "nas_transport_failed"}
+        finally:
+            await transport.close()
+            assert transport.process is None
+            assert processes and all(process.returncode is not None for process in processes)
+    captured = capfd.readouterr()
+    assert SECRET not in captured.out + captured.err
+    assert "SYNTHETIC-user" not in captured.out + captured.err
 
 
 @pytest.mark.parametrize("cancel", [False, True])
