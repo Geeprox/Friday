@@ -23,11 +23,13 @@ FORBIDDEN_SUFFIXES = {'.sqlite', '.sqlite3', '.db', '.pem', '.key', '.p12', '.mp
                       '.m4a', '.aiff', '.zip', '.tar', '.gz', '.bundle', '.patch', '.ses', '.onnx', '.safetensors'}
 # Exact reviewed artwork and synthetic assets; household photos and changed bytes still fail closed.
 SYNTHETIC_MEDIA = {
-    # 手机队列和声音面板，示例歌曲与房间均为合成数据。
+    # 手机首页、队列和声音面板，示例房间和内容均由测试夹具提供。
+    'docs/screenshots/ktv-mobile-home.png':
+        'ee92022ad285a21d5d39447053b2337febcb2b0cae9df7680cac60de37835561',
     'docs/screenshots/ktv-mobile-queue.png':
-        '4acf79e70e2565191a4d9a8aacd7436f81c67aae5cdaf1a2b1948298057b448d',
+        '8cb38cb1beec00a6ee224b4cfe160aea79d11efa545491372aa2f23bb974e742',
     'docs/screenshots/ktv-mobile-sound.png':
-        'baec81741efaf621a35c8f4e748cef8bec164ee881d3f4e515b7c0b6e0961b71',
+        '142d58d5ac3c10eb388a4ecffe8d3bd379ae0849a65def9496e047ad10fde42f',
     # 合成歌曲与用量设置的 KTV 用户手册截图。
     'docs/screenshots/ktv-background-settings.png':
         '639c1877515fdac0b2c0ed33b38e03cd6f6beb05bc95cc322149d75859f88117',
