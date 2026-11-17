@@ -72,6 +72,9 @@ class Management:
                               "ORDER BY updated DESC,rowid DESC LIMIT 3",
                               (song_id, source)):
             specs = json.loads(row["job"])["media"]
+            if (any(spec.get("encoding") == "aac_lc_m4a" for spec in specs.values())
+                    and self.coordinator.playback_encoding() != "aac_lc_m4a"):
+                continue
             if all(self._verified_asset(spec, db) for spec in specs.values()):
                 return row
         return None

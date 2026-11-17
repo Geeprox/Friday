@@ -2,7 +2,9 @@
 
 The NAS owns room/session state, guest queues, commands, public search and TV playback receipts. The Mac prepares songs and exposes only signed, bounded media reads to the TV/NAS. Phone requests and TV controls no longer require a Mac relay in direct mode. This changes coordination, not the real-time microphone DSP or acoustic latency.
 
-`nas_server.py`, `coordinator.py`, `management.py`, `tv_updates.py`, `tv_update_inbox.py`, `supervisor.py`, `launch.py` and `web/` form the standalone Python 3.8+ service; there are no third-party NAS Python dependencies. Configuration, keys, SQLite, cached media and supervisor receipts remain in a private directory outside `web/`.
+`nas_server.py`, `coordinator.py`, `audio_format.py`, `management.py`, `tv_updates.py`, `tv_update_inbox.py`, `supervisor.py`, `launch.py` and `web/` form the standalone Python 3.8+ service; there are no third-party NAS Python dependencies. Configuration, keys, SQLite, cached media and supervisor receipts remain in a private directory outside `web/`.
+
+NAS 的 `/v1/status` 可声明 `audio_formats`。电视确认该字段后，在就绪上报中声明可解码格式。只有新鲜的 AAC 就绪记录会让 Worker 领取 `playback_encoding: aac_lc_m4a` 任务。旧电视、旧 Worker 和未知能力继续走 WAV。压缩媒体使用既有摘要、票据、原子归档和请求范围校验，双轨的帧数与码率必须一致。`audio_format.py` 在 NAS 验证 M4A 容器、AAC LC 参数及显式裁切时间线，服务不启动编码器或音频设备。
 
 ## Startup and readiness
 

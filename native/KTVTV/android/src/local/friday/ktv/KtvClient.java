@@ -15,6 +15,7 @@ public final class KtvClient {
     private final KtvEndpoint endpoint;
     private final String key;
     private volatile boolean coordinator,negotiated;
+    private volatile boolean compactNegotiated;
     private String instance="";
     private final File cache;
     public final MediaCache mediaCache;
@@ -33,7 +34,13 @@ public final class KtvClient {
     public boolean coordinator(){return coordinator;}
     public boolean negotiated(){return negotiated;}
     public void instance(String value)throws IOException{if(value==null||!value.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"))throw new IOException("invalid_instance");instance=value;}
-    public void observeStatus(JSONObject value){coordinator=value.optBoolean("coordinator");negotiated=true;}
+    public void observeStatus(JSONObject value){
+        coordinator=value.optBoolean("coordinator");negotiated=true;
+        JSONArray formats=value.optJSONArray("audio_formats");
+        compactNegotiated=false;
+        if(formats!=null)for(int i=0;i<formats.length();i++)if("aac_lc_m4a".equals(formats.optString(i)))compactNegotiated=true;
+    }
+    public boolean compactNegotiated(){return compactNegotiated;}
     private void authenticate(HttpURLConnection c){
         for(Map.Entry<String,String> header:MediaRoute.apiHeaders(key,instance,negotiated,coordinator).entrySet())c.setRequestProperty(header.getKey(),header.getValue());
     }
@@ -167,12 +174,30 @@ public final class KtvClient {
         try{
             if(job.optBoolean("simulated")||!job.getString("version").matches("[a-f0-9]{64}"))return false;
             JSONObject t=job.getJSONObject("timeline"),m=job.getJSONObject("media"),a=m.getJSONObject("original"),b=m.getJSONObject("instrumental");
+            if(a.optString("encoding").equals("aac_lc_m4a")||b.optString("encoding").equals("aac_lc_m4a")){
+                return t.getInt("sample_rate")==48000&&compactValid(a,t.getLong("frames"),t.getLong("duration_ms"))
+                    &&compactValid(b,t.getLong("frames"),t.getLong("duration_ms"))&&a.getLong("bitrate")==b.getLong("bitrate");
+            }
             return t.getInt("sample_rate")==48000&&a.getInt("sample_rate")==48000&&b.getInt("sample_rate")==48000&&a.getInt("channels")==2&&b.getInt("channels")==2
                 &&a.getString("sha256").matches("[a-f0-9]{64}")&&b.getString("sha256").matches("[a-f0-9]{64}")
                 &&MediaTimeline.valid(t.getLong("frames"),t.getLong("duration_ms"),a.getLong("bytes"),b.getLong("bytes"),a.getDouble("duration_seconds"),b.getDouble("duration_seconds"));
         }catch(Exception invalid){return false;}
     }
-    public boolean cached(JSONObject media,boolean video){try{String sha=media.getString("sha256");if(!sha.matches("[a-f0-9]{64}"))return false;File f=new File(cache,sha+(video?".mp4":".wav"));return f.isFile()&&f.length()==media.getLong("bytes");}catch(Exception e){return false;}}
+    private static boolean compactValid(JSONObject spec,long frames,long duration)throws org.json.JSONException{
+        return spec.getString("encoding").equals("aac_lc_m4a")&&spec.getInt("sample_rate")==48000&&spec.getInt("channels")==2
+            &&spec.getString("sha256").matches("[a-f0-9]{64}")&&spec.getLong("bytes")>=48&&spec.getLong("bytes")<=134217728
+            &&MediaTimeline.compact(frames,duration,spec.getLong("frames"),spec.getLong("encoder_delay"),spec.getLong("encoder_padding"),
+                spec.getLong("bitrate"),spec.getDouble("duration_seconds"));
+    }
+    public boolean cached(JSONObject media,boolean video){
+        try{
+            String sha=media.getString("sha256");if(!sha.matches("[a-f0-9]{64}"))return false;
+            File f=new File(cache,sha+(video?".mp4":".wav"));
+            if(!video&&media.optString("encoding").equals("aac_lc_m4a"))
+                return CompactAudioDecoder.cached(f,new File(cache,sha+".pcm"),media.getLong("frames"),media.getLong("encoder_delay"),media.getLong("encoder_padding"));
+            return f.isFile()&&f.length()==media.getLong("bytes");
+        }catch(Exception e){return false;}
+    }
     public boolean cachedBackground(JSONObject media){
         String sha=media.optString("sha256"),encoding=media.optString("encoding");
         if(!sha.matches("[a-f0-9]{64}")||!("jpeg".equals(encoding)||"png".equals(encoding)))return false;
@@ -183,17 +208,27 @@ public final class KtvClient {
         String sha=media.getString("sha256"),path=media.getString("url");long size=media.getLong("bytes");
         if (!sha.matches("[a-f0-9]{64}") || size<48 || size>(video?134217728L:LIMIT))throw new IOException("invalid_media");
         String kind=MediaRoute.kind(path);
+        boolean compact=!video&&media.optString("encoding").equals("aac_lc_m4a");
         if(video){if(!kind.equals("video") || !media.getString("encoding").matches("h264_mp4_(video_only|silent_clock)"))throw new IOException("invalid_media");}
         else if(!Arrays.asList("original","instrumental").contains(kind)
                 || media.getInt("sample_rate")!=48000 || media.getInt("channels")!=2
-                || !media.getString("encoding").equals("pcm_s16le_wav"))throw new IOException("invalid_media");
-        File target=new File(cache,sha+(video?".mp4":".wav"));
+                || !(compact?compactValid(media,media.getLong("frames"),Math.round(media.getDouble("duration_seconds")*1000)):
+                    media.getString("encoding").equals("pcm_s16le_wav")))throw new IOException("invalid_media");
+        if(compact){
+            File decoded=CompactAudioDecoder.existing(cache,sha,media.getLong("frames"),media.getLong("encoder_delay"),media.getLong("encoder_padding"),cancel,mediaCache);
+            if(decoded!=null)return decoded;
+        }
+        File target=new File(cache,sha+(video?".mp4":compact?".m4a":".wav"));
         MediaTransfer.Verifier verify=partial->{if(!video)try(WavSource source=new WavSource(partial)){} };
+        if(compact)verify=partial->{};
         // Cached songs remain usable when their old network tickets expire.
         // Validate local bytes before parsing any route or opening a socket.
-        File existing=MediaTransfer.existing(target,size,sha,verify,cancel,mediaCache);if(existing!=null)return existing;
-        MediaRoute[] routes=routes(media,path,kind);
-        return MediaTransfer.download(target,size,sha,routes,route->openMedia(route,size),verify,cancel,mediaCache);
+        File existing=MediaTransfer.existing(target,size,sha,verify,cancel,mediaCache);
+        if(existing==null){
+            MediaRoute[] routes=routes(media,path,kind);
+            existing=MediaTransfer.download(target,size,sha,routes,route->openMedia(route,size),verify,cancel,mediaCache);
+        }
+        return compact?CompactAudioDecoder.decode(existing,sha,media.getLong("frames"),media.getLong("encoder_delay"),media.getLong("encoder_padding"),cancel,mediaCache):existing;
     }
     private MediaRoute[] routes(JSONObject media,String path,String kind)throws Exception{
         JSONArray sources=media.optJSONArray("sources");

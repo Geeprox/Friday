@@ -1304,7 +1304,8 @@ class Store:
             archives = self.coordinator.archives(direct["room"], db) if direct else []
             lyrics = self.coordinator.lyric_tasks(direct["room"], db) if direct else []
             return {"tasks": tasks, "cancelled": [r[0] for r in cancelled], "rooms": rooms, "archives": archives,
-                    "lyric_tasks": lyrics, "backgrounds_enabled": self.coordinator.backgrounds_enabled}
+                    "lyric_tasks": lyrics, "backgrounds_enabled": self.coordinator.backgrounds_enabled,
+                    "playback_encoding": self.coordinator.playback_encoding(direct)}
 
     def retry(self, room, payload):
         if set(payload) != {"id", "request_id"} or any(
@@ -1967,7 +1968,7 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                     file, spec = coordinator.media_file(media.group(1), media.group(3))
                     kind = media.group(3)
                     content_type = ("image/" + spec["encoding"] if kind == "background"
-                                    else "video/mp4" if kind == "video" else "audio/wav")
+                                    else "video/mp4" if kind == "video" else "audio/mp4" if spec.get("encoding") == "aac_lc_m4a" else "audio/wav")
                     return self.media_reply(file, content_type, spec["bytes"])
                 raise Refusal(404, "not_found")
             if path.startswith("/agent/"):

@@ -208,6 +208,31 @@ Mac 和 NAS 可分别保存容量上限并开启按最近使用时间清理。�
 
 ## 运行与构建
 
+### 双轨压缩播放候选
+
+电视 0.77 与 NAS 双向协商 `audio_formats`。NAS 未声明压缩支持时，新电视沿用旧就绪上报。旧电视或能力未知时，Mac 继续制作 WAV。新 Worker 只为已协商 AAC 的新任务生成双轨 AAC LC/M4A。
+
+原唱和伴奏先转换为 48 kHz、立体声、相同帧数的 PCM，再使用相同 AAC 参数封装。目标码率使用实际有损原曲码率，无损音源采用 256 kbps。两轨合计体积约为 `时长秒数 × 码率 ÷ 4` 字节，例如 256 kbps、8 分钟约 30.7 MB，不含 MV。新压缩成品无需在旧 NAS 归档重复保存下载源文件。历史原始资料保留各自的生命周期。
+
+M4A 禁用隐式 edit list。媒体清单声明精确帧数、1024 帧编码延迟和不足一帧 AAC 包的尾部填充。NAS 使用 Python 3.8 标准库验证容器和采样时间线后归档。电视在后台媒体预取线程中完成校验和解码，显式裁掉首尾后原子发布精确帧 PCM。双轨都准备好后进入既有 `SwitchingWavSource`，原唱／伴奏切换继续使用同一采样时钟。
+
+电视缓存按压缩内容摘要保存 M4A，并将同一摘要绑定的解码 WAV 与小型校验记录放入既有容量管理。重复请求复用已核对缓存，解码中的源文件暂时固定，播放和预取的摘要继续受保护。Mac 临时规范化 PCM 在封装及可选 MV 对齐完成后删除。NAS 现用内容目录与旧归档可按同一摘要共享 M4A。
+
+存量迁移入口为 `scripts/ktv_compact_playback.py`。默认 `--action plan` 只读取指定 NAS 状态索引，输出候选数量和计划摘要。准备及应用使用显式暂存目录，并读取已完成的电视快切与歌词同步验收记录。
+
+```sh
+# 在 NAS 本机读取一致索引并导出 JSON 计划。
+python3 scripts/ktv_compact_playback.py --state <NAS私有state目录> --legacy-root <旧播放归档目录> --output <私有计划JSON>
+# 在 Mac 通过挂载读取计划和源文件，制作暂存候选。
+python3 scripts/ktv_compact_playback.py --action prepare --state <NAS私有state目录> \
+  --plan-file <NAS导出的计划JSON> --stage <私有迁移暂存目录> --tv-acceptance <实机验收回执>
+# 在 NAS 使用相同暂存候选应用。
+python3 scripts/ktv_compact_playback.py --action apply --state <NAS私有state目录> \
+  --legacy-root <旧播放归档目录> --stage <私有迁移暂存目录> --tv-acceptance <实机验收回执>
+```
+
+实机回执记录 `audio_encoding: aac_lc_m4a`，以及 `physical_tv`、`original_backing_switch`、`lyrics_in_sync` 三项实际完成事实。迁移保护当前播放、待唱、制备中及尚未执行的有效播放命令。再次应用会继续中断的步骤，冷歌曲的 NAS 版本和旧归档引用切换后，才回收已验证且无剩余引用的 WAV 和旧 NAS 受管下载副本。相同双轨和码率的历史版本共用一次编码和暂存文件，旧回档路径通过同卷硬链接读取现用 M4A。用户个人原始文件不在管理目录内，也不属于此回收范围。暂存目录保留到迁移读回及验收完成，之后按任务所有权清理。
+
 复用项目锁定环境：`uv sync --locked --extra ktv`。私有配置必须位于忽略的 data/ 或 .artifacts/，权限 0600。不要把密钥发到聊天或命令日志。
 
 本地音源依赖使用 `python3 scripts/setup_ktv_source.py`，严格按锁文件安装并禁用生命周期脚本，不启动通用接口服务器。`python3 scripts/ktv_source_login.py --build-only` 只构建官方网页授权窗口；不带该参数会打开窗口，需用户已授权该登录方式。

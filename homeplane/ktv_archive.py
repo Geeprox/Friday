@@ -72,7 +72,7 @@ class MediaArchive:
         return self.root / "catalog" / (canonical_song_id(song_id) + ".json")
 
     def _shared_wav(self, name):
-        if self.coordinator_media_root is None or not re.fullmatch(r"[a-f0-9]{64}\.wav", name):
+        if self.coordinator_media_root is None or not re.fullmatch(r"[a-f0-9]{64}\.(?:wav|m4a)", name):
             return None
         shared = self.coordinator_media_root / name[:-4]
         if shared.resolve() == shared and shared.is_file():
@@ -187,15 +187,17 @@ class MediaArchive:
         blobs.mkdir(exist_ok=True, mode=0o700)
         entries = {}
         source, metadata = self._source(value["song_id"], value.get("audio_origin", "song"))
+        compact = all(spec.get("encoding") == "aac_lc_m4a" for spec in value.get("media", {}).values())
         if value.get("audio_origin") in {"mv", "mv_direct"} and (folder / "mv-source.json").is_file():
             source, metadata = folder / ".mv-audio.wav", json.loads((folder / "mv-source.json").read_text())
         specs = []
-        if source is not None:
+        if source is not None and not compact:
             if metadata.get("song_id") != value["song_id"] or not metadata.get("full_decode_verified"):
                 raise ValueError("archive_source_changed")
             specs.append(("source", source, metadata["source_sha256"], metadata["source_bytes"]))
         for kind, spec in value.get("media", {}).items():
-            if kind not in {"original", "instrumental"} or spec["filename"] != kind + ".wav":
+            from .ktv_audio import audio_suffix
+            if kind not in {"original", "instrumental"} or spec["filename"] != kind + audio_suffix(spec):
                 raise ValueError("archive_source_changed")
             specs.append((kind, folder / spec["filename"], spec["sha256"], spec["bytes"]))
         video = value.get("video", {})
@@ -204,7 +206,8 @@ class MediaArchive:
         for kind, path, checksum, length in specs:
             if not re.fullmatch(r"[a-f0-9]{64}", checksum) or path.stat().st_size != length:
                 raise ValueError("archive_source_changed")
-            name = checksum + {"source": ".audio", "original": ".wav", "instrumental": ".wav", "video": ".mp4"}[kind]
+            suffix = ".audio" if kind == "source" else ".mp4" if kind == "video" else audio_suffix(value["media"][kind])
+            name = checksum + suffix
             destination = blobs / name
             shared = self._shared_wav(name)
             if (shared is None or shared.stat().st_size != length
@@ -248,7 +251,7 @@ class MediaArchive:
             or source.get("audio_origin") in {"mv", "mv_direct"}
             or source.get("identity_basis") == "exact_mv_id_full_decode"))
 
-    def restore_job(self, song_id, folder, binding, *, audio_origin="song", reserve=None):
+    def restore_job(self, song_id, folder, binding, *, audio_origin="song", reserve=None, playback_encoding=None):
         if not self.available():
             return None
         try:
@@ -260,13 +263,17 @@ class MediaArchive:
                 return None
             if value.get("binding") != binding or set(value.get("media", {})) != {"original", "instrumental"}:
                 return None
+            if (playback_encoding == "pcm_s16le_wav"
+                    and value["media"]["original"].get("encoding", "pcm_s16le_wav") != "pcm_s16le_wav"):
+                return None
             video = value.get("video") or {"status": "unavailable"}
             expected = dict(value["media"])
             if video.get("status") == "ready":
                 expected["video"] = video
             copies = []
             for kind, spec in expected.items():
-                suffix = ".mp4" if kind == "video" else ".wav"
+                from .ktv_audio import audio_suffix
+                suffix = ".mp4" if kind == "video" else audio_suffix(spec)
                 item = value["files"][kind]
                 sha, size = item["sha256"], item["bytes"]
                 if (not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{64}", sha)
@@ -319,7 +326,7 @@ class MediaArchive:
             if entry.get("video", {}).get("status") == "ready" and "video" not in files:
                 return False
             for item in files.values():
-                if not re.fullmatch(r"[a-f0-9]{64}\.(?:audio|wav|mp4)", item["file"]):
+                if not re.fullmatch(r"[a-f0-9]{64}\.(?:audio|wav|m4a|mp4)", item["file"]):
                     return False
                 path = self._playback_blob(item["file"])
                 if (path.is_symlink() or path.resolve() != path or path.stat().st_size != item["bytes"]
@@ -357,7 +364,7 @@ class MediaArchive:
             entry = {**entry, "files": {k: v for k, v in entry["files"].items() if k == "source"}, "retained": [], "media": {}, "video": {"status": "unavailable"}, "updated": int(time.time())}
             _write(self._catalog(song_id), entry)
             for filename in old_files - keep:
-                if not re.fullmatch(r"[a-f0-9]{64}\.(?:wav|mp4)", filename):
+                if not re.fullmatch(r"[a-f0-9]{64}\.(?:wav|m4a|mp4)", filename):
                     raise ValueError("archive_copy_invalid")
                 (self.root / "blobs" / filename).unlink(missing_ok=True)
             self.entries[song_id] = entry
@@ -525,7 +532,7 @@ class MediaArchive:
                 unsafe = False
                 for item in [*entry.get("files", {}).values(), *entry.get("retained", []), *entry.get("originals", [])]:
                     name = item.get("file", "")
-                    if not re.fullmatch(r"[a-f0-9]{64}\.(?:audio|wav|mp4)", name):
+                    if not re.fullmatch(r"[a-f0-9]{64}\.(?:audio|wav|m4a|mp4)", name):
                         unsafe = True
                         continue
                     path = self.root / "blobs" / name
@@ -538,7 +545,7 @@ class MediaArchive:
             blobs = self.root / "blobs"
             if blobs.is_dir() and not blobs.is_symlink():
                 for path in blobs.iterdir():
-                    if path not in referenced and re.fullmatch(r"[a-f0-9]{64}\.(?:audio|wav|mp4)", path.name):
+                    if path not in referenced and re.fullmatch(r"[a-f0-9]{64}\.(?:audio|wav|m4a|mp4)", path.name):
                         key = "legacy:" + path.name
                         groups[key] = {"id": key, "title": "未关联歌曲的 NAS 归档", "last_used": int(path.lstat().st_mtime),
                             "kind": "orphan", "paths": {path}, "can_delete": not self.active,

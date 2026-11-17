@@ -69,7 +69,8 @@ class GuidePublisher:
             return False
 
     def _publish_variant(self, folder, variant, spec):
-        source = folder / (variant + ".wav")
+        from .ktv_audio import audio_suffix
+        source = folder / (variant + audio_suffix(spec))
         source_sha, _, source_identity = self._checksum(source)
         if source_sha != spec["sha256"]:
             raise ValueError("source_changed")
@@ -82,8 +83,10 @@ class GuidePublisher:
             part = local.with_suffix(".part.mp3")
             try:
                 part.unlink(missing_ok=True)
+                trim = (["-af", f"atrim=start_sample={spec['encoder_delay']}:end_sample={spec['encoder_delay'] + spec['frames']}"]
+                        if spec.get("encoding") == "aac_lc_m4a" else [])
                 subprocess.run([shutil.which("ffmpeg"), "-nostdin", "-v", "error", "-y", "-i", str(source),
-                    "-map", "0:a:0", "-ar", "48000", "-ac", "2", "-c:a", "libmp3lame", "-b:a", "128k", "-map_metadata", "-1", str(part)],
+                    "-map", "0:a:0", *trim, "-ar", "48000", "-ac", "2", "-c:a", "libmp3lame", "-b:a", "128k", "-map_metadata", "-1", str(part)],
                     check=True, timeout=90, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if self._identity(source) != source_identity:
                     raise ValueError("source_changed")

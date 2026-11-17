@@ -143,6 +143,7 @@ class JobRequest(BaseModel):
     requester: dict | None = None
     cache_only: bool = False
     source_preference: Literal["auto", "mv", "song", "cloud", "mv_direct"] = "auto"
+    playback_encoding: Literal["pcm_s16le_wav", "aac_lc_m4a"] = "pcm_s16le_wav"
 
 
 class Queue:
@@ -161,6 +162,7 @@ class Queue:
         download_workers: int = DEFAULT_DOWNLOAD_WORKERS,
         hardware=None,
         memory_available=None,
+        pack_audio: Callable | None = None,
     ):
         self.root = private_directory(root)
         self.jobs_dir = private_directory(self.root / "jobs")
@@ -169,6 +171,7 @@ class Queue:
         self.events: dict[str, threading.Event] = {}
         self.futures = {}
         self.acquire, self.separate, self.transcode = acquire, separate, transcode
+        self.pack_audio = pack_audio
         self.video = video
         self.simulated, self.capacity = simulated, capacity
         self.pools = {
@@ -262,7 +265,8 @@ class Queue:
                     "duration_seconds": item["duration_seconds"],
                     "sample_rate": 48000,
                     "channels": 2,
-                    "encoding": "pcm_s16le_wav",
+                    "encoding": item.get("encoding", "pcm_s16le_wav"),
+                    **{field: item[field] for field in ("frames", "encoder_delay", "encoder_padding", "bitrate") if field in item},
                 }
                 for kind, item in value.get("media", {}).items()
             }
@@ -461,6 +465,7 @@ class Queue:
                 "cache_hit": False,
                 "cache_only": request.cache_only,
                 "source_preference": request.source_preference,
+                "playback_encoding": request.playback_encoding,
             }
             if retry_of:
                 value["preparation_retry_of"] = retry_of
@@ -603,6 +608,8 @@ class Queue:
                 or old["song_id"] != value["song_id"]
                 or old["state"] != "ready"
                 or old.get("binding") != MODEL_REVISION
+                or (value.get("playback_encoding", "pcm_s16le_wav") == "pcm_s16le_wav"
+                    and old.get("media", {}).get("original", {}).get("encoding", "pcm_s16le_wav") != "pcm_s16le_wav")
             ):
                 continue
             folder = self.jobs_dir / job_id
@@ -623,7 +630,7 @@ class Queue:
                 self.futures[job_id].set_result(self.snapshot(value))
                 return True
             except (OSError, ValueError):
-                for name in ("original.wav", "instrumental.wav", "video.mp4"):
+                for name in ("original.wav", "instrumental.wav", "original.m4a", "instrumental.m4a", "video.mp4"):
                     (folder / name).unlink(missing_ok=True)
         return False
 
@@ -636,7 +643,7 @@ class Queue:
         self._state(
             job_id, "cancelled" if event.is_set() else "failed", "cancelled" if event.is_set() else code
         )
-        for name in ("original.wav", "instrumental.wav", "video.mp4"):
+        for name in ("original.wav", "instrumental.wav", "original.m4a", "instrumental.m4a", "video.mp4"):
             (self.jobs_dir / job_id / name).unlink(missing_ok=True)
         self._release_storage(job_id)
         future = self.futures[job_id]
@@ -723,6 +730,7 @@ class Queue:
                     self.jobs[job_id]["song_id"], folder, MODEL_REVISION,
                     audio_origin=requested_audio_origin(self.jobs[job_id].get("source_preference", "auto")),
                     reserve=lambda size: self._reserve_storage(job_id, size, archive_restore=True),
+                    playback_encoding=self.jobs[job_id].get("playback_encoding", "pcm_s16le_wav"),
                 )
                 if restored:
                     if event.is_set():
@@ -808,7 +816,9 @@ class Queue:
                 raise ValueError("cancelled")
             self._state(job_id, "transcoding")
             items = {}
-            for kind, input_path in (("original", source), ("instrumental", instrumental)):
+            if self.pack_audio is not None and self.jobs[job_id].get("playback_encoding") == "aac_lc_m4a":
+                items = self.pack_audio(source, instrumental, folder, event)
+            for kind, input_path in (() if items else (("original", source), ("instrumental", instrumental))):
                 output = folder / (kind + ".wav")
                 self.transcode(input_path, output, event)
                 safe_file(output, folder)
@@ -833,8 +843,10 @@ class Queue:
             if self.video is not None and not event.is_set():
                 try:
                     candidate = self.video(
-                        self.jobs[job_id]["song_id"], folder / "original.wav", folder, event
+                        self.jobs[job_id]["song_id"], folder / (".playback-original.wav" if items["original"].get("encoding") == "aac_lc_m4a" else "original.wav"), folder, event
                     )
+                    if items["original"].get("encoding") == "aac_lc_m4a" and candidate:
+                        candidate["source_audio_sha256"] = items["original"]["sha256"]
                     path = safe_file(folder / "video.mp4", folder)
                     if (
                         not valid_video(candidate, items["original"]["sha256"])
@@ -861,13 +873,13 @@ class Queue:
 
     @staticmethod
     def _discard_intermediates(folder, *paths, terminal=False):
-        cleanup = [*paths, folder / ".mv-source.mp4"]
+        cleanup = [*paths, folder / ".mv-source.mp4", folder / ".playback-original.wav", folder / ".playback-instrumental.wav"]
         if terminal:
             cleanup.extend((folder / ".mv-audio.wav", folder / "mv-source.json"))
         for path in cleanup:
             if path is None or path.parent != folder or path.resolve() != path:
                 continue
-            if path.name in {"state.json", "preparation.json", "original.wav", "instrumental.wav", "video.mp4"}:
+            if path.name in {"state.json", "preparation.json", "original.wav", "instrumental.wav", "original.m4a", "instrumental.m4a", "video.mp4"}:
                 continue
             if path.name == ".mv-audio.wav" and not terminal:
                 continue
@@ -950,7 +962,9 @@ class Queue:
                 item = dict(value["video"])
             else:
                 item = dict(value["media"][kind])
-        path = self.jobs_dir / job_id / ("video.mp4" if kind == "video" else kind + ".wav")
+        from .ktv_audio import audio_suffix
+        filename = "video.mp4" if kind == "video" else kind + audio_suffix(item)
+        path = self.jobs_dir / job_id / filename
         try:
             safe_file(path, self.jobs_dir)
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
@@ -2097,7 +2111,7 @@ def create_app(
         return StreamingResponse(
             blocks(),
             status_code=status_code,
-            media_type=item["mime"] if kind == 'background' else "video/mp4" if kind == "video" else "audio/mpeg" if kind.startswith("guide_") else "audio/wav",
+            media_type=item["mime"] if kind == 'background' else "video/mp4" if kind == "video" else "audio/mpeg" if kind.startswith("guide_") else "audio/mp4" if item.get("encoding") == "aac_lc_m4a" else "audio/wav",
             headers=headers,
         )
 

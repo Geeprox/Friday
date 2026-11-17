@@ -30,6 +30,11 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 
+try:
+    from .audio_format import AAC_FIELDS, compact_spec, verify_compact
+except ImportError:
+    from audio_format import AAC_FIELDS, compact_spec, verify_compact
+
 UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
 SHA = re.compile(r"[a-f0-9]{64}\Z")
 TICKET = re.compile(r"[A-Za-z0-9_.-]{32,128}\Z")
@@ -506,18 +511,28 @@ class Coordinator:
         return active
 
     def tv_readiness(self, payload):
-        if (set(payload) != {"instance", "playback", "audio", "media", "protocol"}
+        if (set(payload) - {"audio_formats"} != {"instance", "playback", "audio", "media", "protocol"}
                 or type(payload["protocol"]) is not int or payload["protocol"] != 1
                 or any(type(payload[k]) is not bool for k in ("playback", "audio", "media"))):
+            raise self.error(400, "invalid_tv_readiness")
+        formats = payload.get("audio_formats", ["pcm_s16le_wav"])
+        if (not isinstance(formats, list) or not 1 <= len(formats) <= 2
+                or any(not isinstance(name, str) or name not in {"pcm_s16le_wav", "aac_lc_m4a"} for name in formats)):
             raise self.error(400, "invalid_tv_readiness")
         active = self._instance(payload["instance"])
         with self.store.connection() as db:
             db.execute("UPDATE coordinator_session SET tv_at=?,readiness=? WHERE id=1 AND instance=? AND room=?",
-                       (int(time.time()), json.dumps({k: payload[k] for k in ("playback", "audio", "media")}),
+                       (int(time.time()), json.dumps({**{k: payload[k] for k in ("playback", "audio", "media")}, "audio_formats": formats}),
                         active["instance"], active["room"]))
         self._schedule_recovery(self.active())
         self.changed()
         return self.readiness()
+
+    def playback_encoding(self, active=None):
+        active = active or self.active()
+        return ("aac_lc_m4a" if active and active["tv_at"] >= int(time.time()) - 12
+                and "aac_lc_m4a" in json.loads(active["readiness"]).get("audio_formats", [])
+                else "pcm_s16le_wav")
 
     def party(self):
         def snapshot():
@@ -674,6 +689,7 @@ class Coordinator:
     def status(self):
         party = self.party()
         return {"service": "friday-ktv-coordinator", "protocol": 2, "coordinator": True,
+                "audio_formats": ["pcm_s16le_wav", "aac_lc_m4a"],
                 "party": party, "readiness": party["readiness"], "cursor": self.cursor}
 
     def events(self, room, after, wait=5):
@@ -691,7 +707,7 @@ class Coordinator:
             self.waiters.release()
 
     def _media_spec(self, value, kind, duration_ms):
-        allowed = {"url", "sha256", "bytes", "duration_seconds", "sample_rate", "channels", "encoding"}
+        allowed = {"url", "sha256", "bytes", "duration_seconds", "sample_rate", "channels", "encoding"} | AAC_FIELDS
         if not isinstance(value, dict) or set(value) - allowed:
             raise self.error(400, "invalid_manifest_media")
         if (not isinstance(value.get("sha256"), str) or not SHA.fullmatch(value["sha256"])
@@ -703,7 +719,8 @@ class Coordinator:
                     or type(value.get("duration_seconds")) not in {int, float}
                     or not math.isfinite(value["duration_seconds"]) or not 0 < value["duration_seconds"] <= 1800):
                 raise self.error(400, "invalid_manifest_media")
-        elif (value.get("sample_rate") != 48000 or value.get("channels") != 2 or value.get("encoding") != "pcm_s16le_wav"
+        elif (value.get("sample_rate") != 48000 or value.get("channels") != 2
+              or not (value.get("encoding") == "pcm_s16le_wav" and not AAC_FIELDS.intersection(value) or compact_spec(value))
               or type(value.get("duration_seconds")) not in {int, float}
               or not math.isfinite(value["duration_seconds"]) or abs(value["duration_seconds"] * 1000 - duration_ms) > 150):
             raise self.error(400, "invalid_manifest_media")
@@ -752,6 +769,10 @@ class Coordinator:
                 or not isinstance(lyrics, dict) or len(json.dumps(lyrics, allow_nan=False).encode()) > 131072):
             raise self.error(400, "invalid_manifest")
         media = {kind: self._media_spec(spec, kind, timeline["duration_ms"]) for kind, spec in job["media"].items()}
+        if any(spec["encoding"] == "aac_lc_m4a" for spec in media.values()):
+            if (not all(compact_spec(spec, timeline["frames"]) for spec in media.values())
+                    or media["original"]["bitrate"] != media["instrumental"]["bitrate"]):
+                raise self.error(400, "invalid_manifest_media")
         # Only fields consumed by the TV cross this boundary. No source account,
         # filesystem paths, arbitrary URLs, worker internals or exception strings.
         clean = {k: copy.deepcopy(job[k]) for k in ("id", "song_id", "title", "state", "code", "created", "progress", "requester", "audio_origin", "simulated", "source") if k in job}
@@ -1358,11 +1379,14 @@ class Coordinator:
             if total != spec["bytes"] or digest.hexdigest() != spec["sha256"]:
                 raise ValueError("media_integrity_failed")
             if kind in {"original", "instrumental"}:
-                with wave.open(temporary, "rb") as audio:
-                    if audio.getnchannels() != 2 or audio.getframerate() != 48000 or audio.getsampwidth() != 2:
-                        raise ValueError("media_contract_failed")
-                    if abs(audio.getnframes() / 48 - json.loads(row["timeline"])["duration_ms"]) > 150:
-                        raise ValueError("media_timeline_failed")
+                if spec.get("encoding") == "aac_lc_m4a":
+                    verify_compact(temporary, spec)
+                else:
+                    with wave.open(temporary, "rb") as audio:
+                        if audio.getnchannels() != 2 or audio.getframerate() != 48000 or audio.getsampwidth() != 2:
+                            raise ValueError("media_contract_failed")
+                        if abs(audio.getnframes() / 48 - json.loads(row["timeline"])["duration_ms"]) > 150:
+                            raise ValueError("media_timeline_failed")
             with manager.lock if manager else self.lock:
                 with self.store.connection() as db:
                     if archived:

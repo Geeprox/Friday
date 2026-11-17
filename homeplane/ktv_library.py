@@ -231,7 +231,7 @@ class SongLibrary:
             if job["state"] != "ready":
                 continue
             folder = self.queue.jobs_dir / job["id"]
-            names = ["original.wav", "instrumental.wav"]
+            names = [spec.get("filename", kind + ".wav") for kind, spec in job.get("media", {}).items()]
             if job.get("video", {}).get("status") == "ready":
                 names.append("video.mp4")
             for name in names:

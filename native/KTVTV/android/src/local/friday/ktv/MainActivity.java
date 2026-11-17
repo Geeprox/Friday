@@ -547,8 +547,10 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         boolean playback=false;
         try{playback=AudioTrack.getMinBufferSize(48000,AudioFormat.CHANNEL_OUT_STEREO,AudioFormat.ENCODING_PCM_16BIT)>0;}
         catch(RuntimeException ignored){}
-        return new JSONObject().put("instance",tvInstance).put("protocol",1)
+        JSONObject result=new JSONObject().put("instance",tvInstance).put("protocol",1)
             .put("playback",playback&&speakers==1&&!debugScreen).put("audio",false).put("media",c.storageReady());
+        if(c.compactNegotiated())result.put("audio_formats",new JSONArray().put("pcm_s16le_wav").put("aac_lc_m4a"));
+        return result;
     }
     private void observeReadiness(boolean active,JSONObject ready){
         coordinatorReceivedAt=SystemClock.elapsedRealtime();
