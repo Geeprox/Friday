@@ -1528,7 +1528,7 @@ class Store:
     def catalog_search(self, source, params):
         # 同一个官方曲库的备用查询路径接管首轮超时。
         paths = (("/api/search/get", 5),) if source == "mv" else (
-            ("/api/search/get/web", 2), ("/api/search/get", 3))
+            ("/api/search/get", 2), ("/api/search/get/web", 3))
         field = "mvs" if source == "mv" else "songs"
         for path, timeout in paths:
             try:
@@ -2239,7 +2239,7 @@ def main():
     stop_inbox = threading.Event()
     inbox = TvUpdateInbox(store.tv_updates, config["agent_key"])
     inbox_worker = threading.Thread(target=inbox.run, args=(stop_inbox,), name="ktv-tv-update-inbox", daemon=True)
-    room_worker = threading.Thread(target=store.coordinator.run_daily_rooms, args=(stop_inbox,), name="ktv-daily-room", daemon=True)
+    room_worker = threading.Thread(target=store.coordinator.run_room_lifecycle, args=(stop_inbox,), name="ktv-room-lifecycle", daemon=True)
     inbox_worker.start()
     room_worker.start()
     try:

@@ -184,6 +184,8 @@ class Coordinator:
             db.execute("UPDATE coordinator_session SET tv_at=0,readiness='{}'")
             if "request_id" not in {row[1] for row in db.execute("PRAGMA table_info(coordinator_session)")}:
                 db.execute("ALTER TABLE coordinator_session ADD COLUMN request_id TEXT NOT NULL DEFAULT ''")
+            if "last_activity" not in {row[1] for row in db.execute("PRAGMA table_info(coordinator_session)")}:
+                db.execute("ALTER TABLE coordinator_session ADD COLUMN last_activity INTEGER NOT NULL DEFAULT 0")
             cache_columns = {row[1] for row in db.execute("PRAGMA table_info(coordinator_cache)")}
             for field in ("device", "inode", "mtime_ns", "ctime_ns"):
                 if field not in cache_columns:
@@ -205,29 +207,33 @@ class Coordinator:
             ).fetchone()
         return dict(row) if row and not row["closed"] else None
 
-    def rollover_day(self):
+    def renew_inactive_room(self):
         now = int(time.time())
         with self.store.lock, self.store.connection() as db:
             active = self.active(db)
             if not active or time.localtime(active["opened"])[:3] >= time.localtime(now)[:3]:
                 return False
-            # 午夜仍正在唱的歌曲允许唱完。暂停、空场或离线时开启当天的新场次。
+            last_add = db.execute("SELECT max(created) FROM songs WHERE room=?", (active["room"],)).fetchone()[0] or 0
+            last_use = max(active["opened"], active["last_activity"], last_add)
+            if now - last_use < 3 * 86400:
+                return False
+            # 连续多天没有演唱和点歌才换场，午夜和普通重启会接续原歌单。
             if active["playback_state"] == "playing" and active["playback_at"] >= now - 12:
                 return False
             db.execute("BEGIN IMMEDIATE")
             db.execute("UPDATE rooms SET closed=1,expires=? WHERE id=?", (now, active["room"]))
             room, secret = self.store.insert_room(db)
-            db.execute("UPDATE coordinator_session SET room=?,secret=?,opened=?,tv_at=0,readiness='{}',request_id='' WHERE id=1",
+            db.execute("UPDATE coordinator_session SET room=?,secret=?,opened=?,last_activity=0,tv_at=0,readiness='{}',request_id='' WHERE id=1",
                        (room, secret, now))
             self.store._expire(db)
         return True
 
-    def run_daily_rooms(self, stop):
+    def run_room_lifecycle(self, stop):
         while not stop.is_set():
             try:
-                self.rollover_day()
+                self.renew_inactive_room()
             except (OSError, sqlite3.Error, ValueError) as error:
-                self.store.record_failure("daily_room", error)
+                self.store.record_failure("room_lifecycle", error)
             stop.wait(5)
 
     def direct_room(self, room_id):
@@ -438,7 +444,7 @@ class Coordinator:
                                                              for v in payload.values())):
             raise self.error(400, "invalid_start")
         with self.store.lock:
-            self.rollover_day()
+            self.renew_inactive_room()
             active = self.active()
             with self.store.connection() as db:
                 previous = db.execute("SELECT * FROM coordinator_start_requests WHERE request_id=?", (payload["request_id"],)).fetchone()
@@ -555,10 +561,14 @@ class Coordinator:
             raise self.error(409, "room_changed")
         result = self.store.playback(active["room"], value)
         now = int(time.time())
-        if active["tv_at"] < now:
+        singing = value.get("state") == "playing" and bool(value.get("current"))
+        if active["tv_at"] < now or singing and active["last_activity"] < now - 30:
             with self.store.connection() as db:
                 db.execute("UPDATE coordinator_session SET tv_at=? WHERE id=1 AND instance=? AND room=? AND tv_at<?",
                            (now, instance, active["room"], now))
+                if singing:
+                    db.execute("UPDATE coordinator_session SET last_activity=? WHERE id=1 AND instance=? AND room=? AND last_activity<?",
+                               (now, instance, active["room"], now - 30))
         return result
 
     def tv_controls(self, payload, instance):

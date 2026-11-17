@@ -351,7 +351,7 @@ function startStatusFeed(){
  });
  statusFeed.start();
 }
-let searchController=null,searchTimer=null,searchComposing=false,nextPage=null,pagingNow=false,pagingFailed=false;
+let searchController=null,searchTimer=null,searchComposing=false,nextPage=null,pagingNow=false,pagingFailed=false,searchRetryDelay=600;
 const searchArtwork=new Map(),artworkPending=new Set(),artworkAttempted=new Set();
 let artworkController=null,artworkRetry=null,artworkDelay=650;
 function stopArtwork(){
@@ -419,6 +419,7 @@ function clearSearchResults(){
 }
 function scheduleSearch(){
  if(mode!=="find"||document.hidden)return;
+ searchRetryDelay=600;
  cancelSearchInput();
  if($("query").value.trim()!==searchQuery||playlistId){
   playlistId="";playlistTitle="";clearSearchResults();message("");render();
@@ -474,11 +475,21 @@ async function findSongs(more=false,collection=null){
   const value=await searchPage(q,requestedSource,requestedPlaylist,0,controller.signal);
   if(controller.signal.aborted||sequence!==searchSequence||source!==requestedSource||playlistId!==requestedPlaylist)return;
   searchQuery=q;applySearchPage(value,0,false);
+  searchRetryDelay=600;
   message(songs.length?"":requestedSource==="cloud"&&!value.updated?"云盘正在连接，稍后再试。":"没有找到，换个歌名或歌手试试。");
  }catch(error){
   if(!controller.signal.aborted&&sequence===searchSequence&&mode==="find"){
    searchMore=false;updateSearchPager();
-   if(connectionError(error)||["search_unavailable","search_busy","rate_limited"].includes(error.code))message("搜索暂时未完成，可以点搜索重试。");
+   if(connectionError(error)||["search_unavailable","search_busy","rate_limited"].includes(error.code)){
+    message("正在重新连接曲库…");
+    searchTimer=setTimeout(()=>{
+     searchTimer=null;
+     if(mode==="find"&&!document.hidden&&!searchComposing&&$("query").value.trim()===q&&source===requestedSource){
+      findSongs(false,requestedPlaylist?{id:requestedPlaylist,title:playlistTitle}:null);
+     }
+    },Math.max(searchRetryDelay,error.retryAfterMs||0));
+    searchRetryDelay=Math.min(3000,searchRetryDelay*2);
+   }
    else failure(error);
   }
  }finally{if(searchController===controller)searchController=null;if(sequence===searchSequence){resetSearchBusy();observeSearchEnd();}}

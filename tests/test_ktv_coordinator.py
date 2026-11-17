@@ -152,20 +152,21 @@ def test_persistent_session_survives_pause_empty_room_and_old_expiry(store):
         reopened.coordinator.close()
 
 
-def test_daily_room_change_waits_for_playback_and_keeps_old_commands_out(store):
+def test_inactive_room_change_keeps_normal_overnight_session_and_live_playback(store):
     store.coordinator.register_worker(registration())
     instance, yesterday = started(store)
     room, key, guest = admitted(store, yesterday)
     store.add(room, {"song_id": "123", "title": "合成测试", "request_id": uid()}, guest)
     now = int(time.time())
     with store.connection() as db:
-        db.execute("UPDATE coordinator_session SET opened=? WHERE id=1", (now - 86400,))
+        db.execute("UPDATE coordinator_session SET opened=? WHERE id=1", (now - 4 * 86400,))
+        db.execute("UPDATE songs SET created=? WHERE room=?", (now - 4 * 86400, room["id"]))
         db.execute("UPDATE rooms SET playback_state='playing',playback_at=? WHERE id=?", (now, room["id"]))
-    assert not store.coordinator.rollover_day()
+    assert not store.coordinator.renew_inactive_room()
     assert store.coordinator.party()["room_id"] == room["id"]
     with store.connection() as db:
         db.execute("UPDATE rooms SET playback_state='paused' WHERE id=?", (room["id"],))
-    assert store.coordinator.rollover_day()
+    assert store.coordinator.renew_inactive_room()
     current = store.coordinator.active()
     assert current["room"] != room["id"] and current["instance"] == instance
     with pytest.raises(Refusal) as refused:
@@ -173,7 +174,7 @@ def test_daily_room_change_waits_for_playback_and_keeps_old_commands_out(store):
     assert refused.value.code == "room_closed"
     new_room = store.room(current["room"], current["secret"])
     assert store.status(new_room)["songs"] == []
-    assert not store.coordinator.rollover_day()
+    assert not store.coordinator.renew_inactive_room()
 
 
 def test_tv_adopts_room_without_evicting_joined_guests_and_reopen_is_idempotent(store):

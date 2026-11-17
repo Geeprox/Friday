@@ -4,6 +4,13 @@ const source=fs.readFileSync(path.join(web,'app.js'),'utf8').replace('join();doc
 function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};}
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const firstRoom='11111111-1111-4111-8111-111111111111';
+const harnessTimers=new Set();
+test.afterEach(()=>{for(const timer of harnessTimers)clearTimeout(timer);harnessTimers.clear();});
+function harnessTimeout(callback,delay){
+ const timer=setTimeout(()=>{harnessTimers.delete(timer);callback();},delay);
+ harnessTimers.add(timer);
+ return timer;
+}
 function memoryStorage(){
  const values=new Map();
  return {getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key),clear:()=>values.clear()};
@@ -21,7 +28,7 @@ function harness({validRoom=false,deferFrames=false,roomId=firstRoom,invite='a'.
   stop(){this.stops++;this.controller?.abort();this.buffer=null;this.calibrating=false;}sync(){if(this.calibrating)return false;this.syncs++;return true;}volume(){}
   setManualAdjustment(value){this.clock.adjustment=value;}}
  class Clock{constructor(){this.adjustment=0;this.generation=0;}observe(){return true;}}
- const context=vm.createContext({document,location:{hash:validRoom?`#r=${roomId}&k=${invite}`:'',pathname:'/'},localStorage,sessionStorage,navigator:{locks},history:{state:null,replaceState(value){this.state=value;},pushState(value){this.state=value;},back(){}},window:{...events('window'),scrollY:0,scrollTo(v){this.scrollY=v.top||0;}},URLSearchParams,AbortController,crypto:webcrypto,performance,setTimeout,clearTimeout,setInterval:()=>0,clearInterval(){},requestAnimationFrame:fn=>deferFrames?frames.push(fn):fn(),FridayGuideClock:Clock,FridayEarMonitor:Ear,FridayPartyAudio:require(path.join(web,'party-audio.js')),FridayAddQueue:require(path.join(web,'add-queue.js')),FridayStatusFeed:require(path.join(web,'status-feed.js')),fetch:async()=>{throw Error('unexpected fetch');}});
+ const context=vm.createContext({document,location:{hash:validRoom?`#r=${roomId}&k=${invite}`:'',pathname:'/'},localStorage,sessionStorage,navigator:{locks},history:{state:null,replaceState(value){this.state=value;},pushState(value){this.state=value;},back(){}},window:{...events('window'),scrollY:0,scrollTo(v){this.scrollY=v.top||0;}},URLSearchParams,AbortController,crypto:webcrypto,performance,setTimeout:harnessTimeout,clearTimeout,setInterval:()=>0,clearInterval(){},requestAnimationFrame:fn=>deferFrames?frames.push(fn):fn(),FridayGuideClock:Clock,FridayEarMonitor:Ear,FridayPartyAudio:require(path.join(web,'party-audio.js')),FridayAddQueue:require(path.join(web,'add-queue.js')),FridayStatusFeed:require(path.join(web,'status-feed.js')),fetch:async()=>{throw Error('unexpected fetch');}});
  vm.runInContext(source,context);
  const run=code=>vm.runInContext(code,context);
  run('var actualSetControl=setControl,actualApi=api,storedIdentity=identity;api=async()=>({});setControl=async()=>{controls.original=0;};identity={key:"fixture"};playback={online:true,current:"song-a",played:[],state:"playing",guide:{sha256:"a".repeat(64),bytes:2048,duration_ms:5000,reference:{kind:"accompaniment",sha256:"b".repeat(64),bytes:2048,duration_ms:5000}}};earEnabled=true;controls.original=0;');
@@ -102,7 +109,7 @@ test('a mute POST receipt cannot clear pending UI against the preceding applied 
 
 
 test('API preserves service status and Retry-After for the durable add worker',async()=>{
- const h=harness();h.context.fetch=async()=>({ok:false,status:429,headers:{get:()=>"12"},json:async()=>({code:"rate_limited"})});
+ const h=harness({validRoom:true});h.context.fetch=async()=>({ok:false,status:429,headers:{get:()=>"12"},json:async()=>({code:"rate_limited"})});
  const error=await h.run('actualApi("songs",{song_id:"1"})').catch(e=>e);
  assert.equal(error.code,'rate_limited');assert.equal(error.status,429);assert.equal(error.retryAfterMs,12000);
  h.context.fetch=async()=>({ok:false,status:503,headers:{get:()=>null},json:async()=>{throw Error('HTML gateway error');}});
@@ -240,7 +247,7 @@ test('secondary search paginates the selected source and preserves results throu
  h.run('setView("queue");setView("find")');assert.equal(h.run('songs.length'),2);assert.equal(h.element('query').value,'歌手');assert.equal(h.element('source-picker').hidden,false);
 });
 
-test('search displays the first page before prefetch finishes and consumes the same next-page request',async()=>{
+test('search shows the first page before requesting the next page near the list end',async()=>{
  const h=harness(),next=deferred(),requests=[];
  h.context.searchApi=async(operation,body,query,options)=>{
   requests.push({operation,query,priority:options.priority});
@@ -251,7 +258,7 @@ test('search displays the first page before prefetch finishes and consumes the s
  h.run('mode="find";api=searchApi;$("query").value="测试歌手"');
  await h.run('findSongs()');
  assert.equal(h.run('songs[0].title'),'首屏');
- assert.deepEqual(requests.map(r=>r.priority),['auto','low']);
+ assert.equal(requests.filter(r=>r.operation==='search').length,1);
  const scrolling=h.run('appendNextPage()');assert.equal(h.element('page-progress').hidden,false);
  next.resolve({songs:[{song_id:'1',title:'重复'},{song_id:'2',title:'第二页'}],next_offset:60,has_more:false});
  await scrolling;
@@ -450,7 +457,7 @@ test('IME search waits for composition and debounces the committed text once',as
 });
 
 test('typing cancels the old search fetch immediately while independent controls still leave',async()=>{
- const h=harness(),requests=[];h.context.fetch=async(url,options)=>{
+ const h=harness({validRoom:true}),requests=[];h.context.fetch=async(url,options)=>{
   requests.push({url,options});if(url.includes('/search')&&url.includes('q=old'))return new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(Object.assign(new Error(),{name:'AbortError'})),{once:true}));
   return {ok:true,status:200,json:async()=>url.includes('/controls')?{revision:1}:{songs:[{song_id:'2',title:'new'}],has_more:false}};
  };
