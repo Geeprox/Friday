@@ -784,7 +784,7 @@ function openSourceDialog(opener){
  sourceNotice.textContent='';
  sourceNotice.classList.toggle('error',false);
  sourceAuthorize.textContent='打开网易云官方登录';
- sourceQuality.value='standard';
+ sourceQuality.value='exhigh';
  sourceRetry.hidden=true;
  sourceDialog.showModal();
  sourceClose.focus({preventScroll:true});
@@ -813,7 +813,7 @@ async function sourceRequest(path='source/status',body){
    session.waiting=!data.logged_in&&['waiting_official','waiting_scan','waiting_confirm'].includes(data.state);
    sourceState.textContent=data.logged_in?'音源已连接':({waiting_official:'请在网易云官方窗口完成登录。',waiting_scan:'请在手机扫码并确认。',waiting_confirm:'请在手机确认授权。'})[data.state]||'尚未登录。';
    sourceAuthorize.textContent=data.logged_in?'重新授权':'打开网易云官方登录';
-   sourceQuality.value=data.settings?.level||'standard';
+   sourceQuality.value=data.settings?.level||'exhigh';
    sourceRetry.hidden=true;
    if(path==='source/login')sourceNotice.textContent=data.logged_in?'请在网易云官方窗口完成登录。':'';
   }
@@ -826,7 +826,7 @@ async function sourceRequest(path='source/status',body){
   }else{
    sourceNotice.textContent=explain(error);
    sourceNotice.classList.toggle('error',true);
-   if(path==='source/settings')sourceQuality.value=session.status?.settings?.level||'standard';
+   if(path==='source/settings')sourceQuality.value=session.status?.settings?.level||'exhigh';
   }
  }finally{
   if(!signal.aborted){
@@ -883,7 +883,7 @@ const sourceButtons=el('div',null,'button-row');
 const sourceAuthorize=button('打开网易云官方登录',()=>sourceRequest('source/login',{}),{className:'primary'});
 const sourceRetry=button('重试读取状态',()=>sourceRequest());
 sourceButtons.append(sourceAuthorize,sourceRetry);
-const sourceQuality=select([['standard','普通 MP3 · 128 kbps'],['exhigh','高品质 MP3 · 320 kbps']],'standard');
+const sourceQuality=select([['exhigh','优先 320 kbps MP3'],['standard','128 kbps MP3']],'exhigh');
 sourceQuality.onchange=()=>sourceRequest('source/settings',{level:sourceQuality.value});
 sourceDialog.append(sourceHeader,sourceState,sourceButtons,field('新歌下载品质',sourceQuality),sourceNotice);
 shell.append(heading,nav,status,summary,content,dialog,sourceDialog);target.append(shell);

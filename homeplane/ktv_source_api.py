@@ -30,6 +30,7 @@ from .ktv_metadata import song_title
 
 VERSION = "4.41.1"
 MAX_BYTES = 128 * 1024 * 1024
+DOWNLOAD_LEVELS = ("exhigh", "standard")
 SOURCE_ERRORS = {"source_login_required", "source_rights_denied", "source_api_unavailable", "source_file_invalid"}
 
 
@@ -94,7 +95,7 @@ class LocalSourceAPI:
 
     def settings(self):
         path = self.root / "settings.json"
-        value = {"level": "standard"}
+        value = {"level": DOWNLOAD_LEVELS[0]}
         if path.is_file():
             if path.is_symlink() or path.stat().st_mode & 0o077:
                 raise ValueError("source_api_unavailable")
@@ -179,21 +180,28 @@ class LocalSourceAPI:
         duration = songs[0].get("dt")
         if type(duration) not in {int, float} or not math.isfinite(duration) or not 1000 < duration <= 1800000:
             raise ValueError("source_file_invalid")
-        level = self.settings()["level"]
-        value = self.rpc("download", id=song_id, cookie=cookie, level=level)["body"]
-        if value.get("code") in {301, 302}:
-            raise ValueError("source_login_required")
-        item = value.get("data")
-        if (value.get("code") != 200 or not isinstance(item, dict) or item.get("code") != 200
-                or not item.get("url") or item.get("freeTrialInfo") is not None):
-            raise ValueError("source_rights_denied")
-        if str(item.get("id")) != song_id:
-            raise ValueError("download_identity_mismatch")
-        if type(item.get("size")) is not int or not 1024 < item["size"] <= MAX_BYTES:
-            raise ValueError("source_file_invalid")
-        if not isinstance(item.get("md5"), str) or not re.fullmatch(r"[a-fA-F0-9]{32}", item["md5"]):
-            raise ValueError("source_file_invalid")
-        return {**item, "duration_seconds": duration / 1000, "requested_level": level}
+        start = DOWNLOAD_LEVELS.index(self.settings()["level"])
+        for level in DOWNLOAD_LEVELS[start:]:
+            value = self.rpc("download", id=song_id, cookie=cookie, level=level)["body"]
+            item = value.get("data") if isinstance(value, dict) else None
+            codes = (value.get("code") if isinstance(value, dict) else None,
+                     item.get("code") if isinstance(item, dict) else None)
+            if any(code in (301, 302, 401) for code in codes):
+                raise ValueError("source_login_required")
+            if not isinstance(value, dict) or any(type(code) is int and code >= 500 for code in codes):
+                raise ValueError("source_api_unavailable")
+            # 同一首歌的高品质版本不可用时，再请求平台提供的下一档完整音源。
+            if (codes != (200, 200) or not isinstance(item, dict)
+                    or not item.get("url") or item.get("freeTrialInfo") is not None):
+                continue
+            if str(item.get("id")) != song_id:
+                raise ValueError("download_identity_mismatch")
+            if type(item.get("size")) is not int or not 1024 < item["size"] <= MAX_BYTES:
+                raise ValueError("source_file_invalid")
+            if not isinstance(item.get("md5"), str) or not re.fullmatch(r"[a-fA-F0-9]{32}", item["md5"]):
+                raise ValueError("source_file_invalid")
+            return {**item, "duration_seconds": duration / 1000, "requested_level": level}
+        raise ValueError("source_rights_denied")
 
     def cloud_catalog(self):
         """Owner-authorized metadata only; never publish account IDs, filenames or URLs."""

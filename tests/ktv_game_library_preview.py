@@ -87,7 +87,7 @@ def handler_for(scenario):
                         "policy": {"enabled": True, "limit_bytes": 100 * 1024**3}},
                     "scheduler": {"hardware": {"cpu": "合成测试主机", "memory_bytes": 16 * 1024**3},
                         "settings": {"mode": "auto", "download": 2, "model": 1, "encode": 2}, "limits": {"download": 3, "model": 2, "encode": 4}},
-                    "source/status": {"logged_in": True, "state": "logged_in", "settings": {"level": "standard"}}, "jobs": {"jobs": []},
+                    "source/status": {"logged_in": True, "state": "logged_in", "settings": {"level": "exhigh"}}, "jobs": {"jobs": []},
                     "manage/backgrounds": {**background_policy, "items": [
                         {"id": "a" * 64, "title": "稻香 · 合成示例", "source": "song", "status": "ready", "ready": True},
                         {"id": "b" * 64, "title": "晴天 · 合成示例", "source": "cloud", "status": "preparing", "ready": False},
