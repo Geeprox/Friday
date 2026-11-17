@@ -149,16 +149,48 @@ def test_cloud_range_download_reassembles_the_exact_source(tmp_path, monkeypatch
     assert len(requests) == (4 if cdn_status == 206 else 1)
 
 
-def test_source_quality_defaults_to_mp3_and_is_bounded(tmp_path):
+def test_source_quality_defaults_to_high_mp3_and_preserves_selection(tmp_path):
     api = LocalSourceAPI(tmp_path / 'account', tmp_path / 'provider')
-    assert api.settings() == {'level':'standard'}
-    assert api.configure({'level':'exhigh'}) == {'level':'exhigh'}
-    assert LocalSourceAPI(tmp_path / 'account', tmp_path / 'provider').settings()['level'] == 'exhigh'
+    assert api.settings() == {'level': 'exhigh'}
+    assert api.configure({'level': 'standard'}) == {'level': 'standard'}
+    assert LocalSourceAPI(tmp_path / 'account', tmp_path / 'provider').settings()['level'] == 'standard'
     assert not (api.root / 'settings.json').stat().st_mode & 0o077
     with pytest.raises(ValueError):
         api.configure({'level':'lossless'})
     with pytest.raises(ValueError):
         api.configure({'level':'standard','url':'https://example.test'})
+
+
+@pytest.mark.parametrize("high,expected_calls,expected_level,expected_error", [
+    ({"br": 320000}, ["exhigh"], "exhigh", None),
+    ({"url": None, "code": 404}, ["exhigh", "standard"], "standard", None),
+    ({"freeTrialInfo": {"end": 30}}, ["exhigh", "standard"], "standard", None),
+    ({"code": 401}, ["exhigh"], None, "source_login_required"),
+    ({"code": 503}, ["exhigh"], None, "source_api_unavailable"),
+    ({"id": 2}, ["exhigh"], None, "download_identity_mismatch"),
+])
+def test_preferred_quality_uses_next_available_full_recording(
+        tmp_path, high, expected_calls, expected_level, expected_error):
+    calls = []
+    item = {"id": 1, "code": 200, "size": 2000, "md5": "0" * 32,
+            "url": "https://m.test.music.126.net/source", "br": 128000}
+
+    def rpc(op, **value):
+        if op == "detail":
+            return {"body": {"code": 200, "songs": [{"id": 1, "dt": 2000}]}}
+        calls.append(value["level"])
+        audio = {**item, **high} if value["level"] == "exhigh" else item
+        return {"body": {"code": 200, "data": audio}}
+
+    api = logged_api(tmp_path, rpc)
+    if expected_error:
+        with pytest.raises(ValueError, match=expected_error):
+            api.source("1")
+    else:
+        result = api.source("1")
+        assert result["requested_level"] == expected_level
+        assert result["br"] == (320000 if expected_level == "exhigh" else 128000)
+    assert calls == expected_calls
 
 
 def test_cloud_catalog_is_bounded_metadata_and_cloud_url_requires_uploaded_identity(tmp_path):

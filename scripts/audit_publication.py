@@ -23,6 +23,8 @@ FORBIDDEN_SUFFIXES = {'.sqlite', '.sqlite3', '.db', '.pem', '.key', '.p12', '.mp
                       '.m4a', '.aiff', '.zip', '.tar', '.gz', '.bundle', '.patch', '.ses', '.onnx', '.safetensors'}
 # Exact reviewed artwork and synthetic assets; household photos and changed bytes still fail closed.
 SYNTHETIC_MEDIA = {
+    'docs/screenshots/ktv-source-quality.png':
+        'd4d1152743f6b691e8d99398eb70badecbe91afae4a1b09b008af6d3b0d52ee3',
     'docs/screenshots/ktv-storage-management.png':
         '7dbecb6053bdea695274090b37bb629a2c21a26009934a2c9d4cfa33cdc4a8ca',
     # 手机首页、队列和声音面板，示例房间和内容均由测试夹具提供。
