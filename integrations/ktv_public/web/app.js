@@ -389,15 +389,16 @@ function scheduleSearch(){
  if($("query").value.trim()!==searchQuery||playlistId){
   playlistId="";playlistTitle="";clearSearchResults();message("");render();
  }
- if(!searchComposing)searchTimer=setTimeout(()=>{searchTimer=null;findSongs();},180);
+ if(!searchComposing)searchTimer=setTimeout(()=>{searchTimer=null;findSongs();},240);
 }
-async function searchPage(q,kind,list,offset,signal,prefetch=false){
+async function searchPage(q,kind,list,offset,signal){
  const operation=list?"playlist":"search";
  const params=list?new URLSearchParams({id:list,offset}):new URLSearchParams({q,source:kind,offset});
  const cacheKey=operation+"?"+params;
  const hit=searchPages.get(cacheKey);
  if(hit&&performance.now()-hit.at<45000){searchPages.delete(cacheKey);searchPages.set(cacheKey,hit);return hit.value;}
- const value=await api(operation,null,"?"+params,{signal,priority:prefetch?"low":"auto"});
+ const value=await api(operation,null,"?"+params,{signal});
+ if(!Array.isArray(value?.songs))throw Object.assign(new Error(),{code:"search_unavailable"});
  if(!signal.aborted&&(kind!=="cloud"||value.updated)){
   searchPages.delete(cacheKey);searchPages.set(cacheKey,{at:performance.now(),value});
   if(searchPages.size>24)searchPages.delete(searchPages.keys().next().value);
@@ -412,28 +413,19 @@ function applySearchPage(value,offset,append){
  searchMore=value.has_more===true&&searchOffset>offset&&searchOffset<=100000;
  render();queueArtwork(rows);
 }
-function prefetchNextPage(){
- if(mode!=="find"||document.hidden||!searchMore||searchBusy||searchTimer||searchComposing||pagingFailed)return null;
- if(nextPage)return nextPage;
- const page={offset:searchOffset,sequence:searchSequence,controller:new AbortController()};
- page.promise=searchPage(searchQuery,source,playlistId,page.offset,page.controller.signal,true).then(value=>{
-  if(!page.controller.signal.aborted&&page.sequence===searchSequence&&Array.isArray(value.songs))queueArtwork(value.songs);
-  return {value};
- },error=>({error}));
- nextPage=page;
- return page;
-}
 async function appendNextPage(retry=false){
- if(pagingNow||mode!=="find"||document.hidden||!searchMore||searchTimer||searchComposing)return;
- if(retry&&pagingFailed){nextPage=null;pagingFailed=false;}
- const page=prefetchNextPage();if(!page)return;
+ if(pagingNow||mode!=="find"||document.hidden||!searchMore||searchBusy||searchTimer||searchComposing||pagingFailed&&!retry)return;
+ const page={offset:searchOffset,sequence:searchSequence,controller:new AbortController()};
+ nextPage=page;pagingFailed=false;
  pagingNow=true;updateSearchPager();
- const result=await page.promise;
- if(nextPage!==page||page.sequence!==searchSequence||page.controller.signal.aborted)return;
- pagingNow=false;nextPage=null;
- if(result.error){pagingFailed=true;updateSearchPager();return;}
- applySearchPage(result.value,page.offset,true);
- prefetchNextPage();observeSearchEnd();
+ try{
+  const value=await searchPage(searchQuery,source,playlistId,page.offset,page.controller.signal);
+  if(nextPage===page&&page.sequence===searchSequence&&!page.controller.signal.aborted)applySearchPage(value,page.offset,true);
+ }catch{
+  if(nextPage===page)pagingFailed=true;
+ }finally{
+  if(nextPage===page){pagingNow=false;nextPage=null;updateSearchPager();observeSearchEnd();}
+ }
 }
 async function findSongs(more=false,collection=null){
  if(more)return appendNextPage(true);
@@ -455,14 +447,14 @@ async function findSongs(more=false,collection=null){
    if(connectionError(error)||["search_unavailable","search_busy","rate_limited"].includes(error.code))message("搜索暂时未完成，可以点搜索重试。");
    else failure(error);
   }
- }finally{if(searchController===controller)searchController=null;if(sequence===searchSequence){resetSearchBusy();prefetchNextPage();observeSearchEnd();}}
+ }finally{if(searchController===controller)searchController=null;if(sequence===searchSequence){resetSearchBusy();observeSearchEnd();}}
 }
 function resumeSearchView(){
  if(mode!=="find"||searchBusy||searchTimer||searchComposing)return;
  const q=$("query").value.trim();
  if(playlistId&&!songs.length)findSongs(false,{id:playlistId,title:playlistTitle});
  else if(!playlistId&&(q!==searchQuery||(!songs.length&&(q||source==="cloud"))))scheduleSearch();
- else{queueArtwork(songs);prefetchNextPage();observeSearchEnd();}
+ else{queueArtwork(songs);observeSearchEnd();}
 }
 function searchTitles(query){setView("find");selectSearchSource("song");$("query").value=query;findSongs();}
 function selectSearchSource(kind){
@@ -572,7 +564,7 @@ $("load-more").onclick=()=>findSongs(true);
 $("search").addEventListener("submit",event=>{event.preventDefault();if(!searchComposing&&!event.isComposing)findSongs();});
 $("query").oncompositionstart=()=>{searchComposing=true;cancelSearchInput();};
 $("query").oncompositionend=()=>{searchComposing=false;scheduleSearch();};
-$("query").oninput=event=>{if(event?.isComposing)searchComposing=true;scheduleSearch();};
+$("query").oninput=event=>{if(!event.isComposing&&!searchComposing)scheduleSearch();};
 for(const [id,value]of[["source-song","song"],["source-mv","mv"],["source-cloud","cloud"]])$(id).onclick=()=>{selectSearchSource(value);findSongs();};
 const viewScroll={home:0,find:0,queue:0,frequent:0};
 function tabs(){

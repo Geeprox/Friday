@@ -624,19 +624,20 @@ function renderStorageSettings(signal){
 }
 function renderRoomDefaults(section,roomResult){
  section.append(el('p','用于下一次新建的房间。','setting-note'));
- const form=el('form',null,'defaults-form'),defaults=roomResult.defaults;
+ const form=el('form',null,'room-defaults-form'),fields=el('div',null,'room-defaults-fields');
+ const defaults=roomResult.defaults;
  const theme=select(themes,defaults.theme),original=select([['0','伴奏'],['1','原唱']],String(defaults.original));
- form.append(field('房间皮肤',theme),field('演唱模式',original));
+ fields.append(field('房间皮肤',theme),field('演唱模式',original));
  const values={};
  for(const[key,label]of volumeControls){
   const input=el('input');
   input.type='number';input.min='0';input.max='100';input.required=true;input.value=String(defaults[key]);
   values[key]=input;
-  form.append(field(label,input));
+  fields.append(field(label,input));
  }
- const save=el('button','保存房间默认设置','primary');
+ const save=el('button','保存默认设置','primary');
  save.type='submit';
- form.append(save);
+ form.append(fields,save);
  form.onsubmit=e=>{
   e.preventDefault();
   const value={theme:theme.value,original:Number(original.value)};

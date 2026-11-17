@@ -1478,26 +1478,20 @@ class Store:
             cached = self.search_cache.get(cache_key)
             if cached and time.monotonic() - cached[0] < 120:
                 return {"songs": cached[1], **cached[2]}
-        search_path = "/api/search/get" if source == "mv" else "/api/search/get/web"
         if not self.search_slots.acquire(blocking=False):
             if cached and time.monotonic() - cached[0] < 600:
                 return {"songs": cached[1], **cached[2]}
             raise Refusal(429, "search_busy")
         try:
-            value = self.public_metadata(search_path, {"s": query, "type": 1004 if source == "mv" else 1,
-                                                      "limit": 30, "offset": offset}, timeout=5)
+            params = {"s": query, "type": 1004 if source == "mv" else 1, "limit": 30, "offset": offset}
+            result = self.catalog_search(source, params)
         except (OSError, ValueError, Refusal):
             if cached and time.monotonic() - cached[0] < 600:
                 return {"songs": cached[1], **cached[2]}
             raise Refusal(503, "search_unavailable") from None
         finally:
             self.search_slots.release()
-        result = value.get("result", {})
-        if not isinstance(result, dict):
-            raise Refusal(503, "search_unavailable")
         rows = result.get("mvs" if source == "mv" else "songs", [])
-        if not isinstance(rows, list):
-            raise Refusal(503, "search_unavailable")
         songs = []
         for row in rows[:30]:
             if not isinstance(row, dict):
@@ -1525,6 +1519,20 @@ class Store:
                 self.search_cache.pop(next(iter(self.search_cache)))
             self.search_cache[cache_key] = (time.monotonic(), songs, page)
         return {"songs": songs, **page}
+
+    def catalog_search(self, source, params):
+        # 同一个官方曲库的备用查询路径接管首轮超时。
+        paths = (("/api/search/get", 5),) if source == "mv" else (
+            ("/api/search/get/web", 2), ("/api/search/get", 3))
+        field = "mvs" if source == "mv" else "songs"
+        for path, timeout in paths:
+            try:
+                result = self.public_metadata(path, params, timeout=timeout).get("result", {})
+            except (OSError, ValueError, Refusal):
+                continue
+            if isinstance(result, dict) and isinstance(result.get(field, []), list):
+                return result
+        raise Refusal(503, "search_unavailable")
 
     def search_artwork(self, song_ids):
         if not isinstance(song_ids, str) or len(song_ids) > 569:
@@ -2056,7 +2064,6 @@ def make_handler(store, agent_key, assets):
                     raise Refusal(400, "invalid_query")
                 return self.reply(200, store.search_artwork(params["ids"][0]))
             if operation == "search" and self.command == "GET":
-                store.budget("search:" + room["id"], 30)
                 params = urllib.parse.parse_qs(parsed.query, max_num_fields=4)
                 source = params.get("source", ["song"])[0]
                 if source == "cloud":

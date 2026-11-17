@@ -127,11 +127,28 @@ def test_search_returns_available_results_without_waiting_for_cover_enrichment(s
 
     monkeypatch.setattr(store, "public_metadata", metadata)
     result = store.search("歌手")
-    assert len(calls) == 1 and calls[0][0] == "/api/search/get/web" and calls[0][2] == 5
+    assert len(calls) == 1 and calls[0][0] == "/api/search/get/web"
     assert "artwork" not in result["songs"][0]
     assert result["songs"][1]["artwork"].startswith("https://p1.music.126.net/")
     assert result["has_more"]
     assert store.search("歌手") == result and len(calls) == 1
+
+
+def test_song_search_recovers_from_first_provider_timeout(station, monkeypatch):
+    store, _ = station
+    calls = []
+
+    def metadata(path, params, *, timeout):
+        calls.append((path, params["s"], params["offset"]))
+        if path == "/api/search/get/web":
+            raise TimeoutError
+        return {"result": {"songCount": 75, "songs": [{"id": 123, "name": "合成曲"}]}}
+
+    monkeypatch.setattr(store, "public_metadata", metadata)
+    page = store.search("合成歌手", offset=30)
+    assert calls == [("/api/search/get/web", "合成歌手", 30), ("/api/search/get", "合成歌手", 30)]
+    assert [song["title"] for song in page["songs"]] == ["合成曲"]
+    assert page["next_offset"] == 60 and page["has_more"]
 
 
 def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch):
