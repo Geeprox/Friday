@@ -12,14 +12,93 @@
 .ktv-console .section{padding:29px 0;border-bottom:1px solid var(--line)}.ktv-console .section>.field{max-width:340px;margin-top:24px}.ktv-console .section>.toolbar{margin-bottom:8px}.ktv-console .setting-note{max-width:72ch;line-height:1.75;margin:12px 0 20px}.ktv-console .empty{padding:32px 0;color:var(--muted);line-height:1.75}.ktv-console .ktv-empty-state{padding:55px 0 65px;max-width:550px}.ktv-empty-state h2{font-size:25px}.ktv-empty-state p{color:var(--muted);margin-bottom:24px;max-width:48ch}.ktv-empty-state button+button{margin-left:10px}
 .ktv-console .mix-form,.ktv-console .defaults-form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;align-items:end;max-width:940px}.ktv-console .mix-form+.field{margin-bottom:22px}.ktv-console .defaults-form button{justify-self:start}.ktv-console .field{display:flex;flex-direction:column;gap:8px;font-size:14px}.ktv-console .field>span{font-weight:550}.ktv-console .field output{font-variant-numeric:tabular-nums;color:var(--muted)}.ktv-console input[type=range]{width:100%;min-height:28px;padding:0}.ktv-console input:not([type=checkbox]):not([type=range]),.ktv-console select{min-height:44px;min-width:0;background:#fff;border:1px solid #cbd0cb;border-radius:8px;padding:10px 12px;font-size:16px;caret-color:var(--accent)}.ktv-console input::placeholder{color:#69716b;opacity:1}.ktv-console input[type=checkbox]{width:18px;height:18px;flex:0 0 18px;cursor:pointer}
 .ktv-console .entry{display:flex;align-items:center;gap:16px;padding:20px 0;border-bottom:1px solid var(--line)}.ktv-console .entry:last-child{border-bottom:0}.ktv-console .entry-info{min-width:0;flex:1}.ktv-console .entry h3{overflow-wrap:anywhere}.ktv-console .entry p{margin:4px 0}.ktv-console .entry>.button-row{justify-content:flex-end}.ktv-console .queue-section{border:0}.ktv-console .storage-totals{display:grid;grid-template-columns:1fr 1fr;gap:36px}.ktv-console .storage-summary h2{font-size:16px;margin-bottom:6px}.ktv-console .storage-size{font-size:25px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.4;margin:0 0 8px}.ktv-console .storage-summary .muted{margin:4px 0}
-.ktv-console .library-filters{display:grid;grid-template-columns:minmax(180px,2fr) repeat(2,minmax(120px,1fr));gap:14px;margin:22px 0 18px}
-.ktv-console .library-filters .field,.ktv-console .library-actions .field{min-width:0;margin:0}
-.ktv-console .library-filters input,.ktv-console .library-filters select,.ktv-console .library-actions select{width:100%;min-width:0}
-.ktv-console .library-actions{align-items:end;margin-bottom:10px}
-.ktv-console .library-actions .selection-count{flex:1 1 200px;align-self:center;margin:0}
-.ktv-console .library-actions .field{flex:0 1 132px}
-@media(max-width:560px){.ktv-console .library-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.ktv-console .library-filters .field:first-child{grid-column:1/-1}.ktv-console .library-actions .selection-count{flex-basis:100%}}
-.ktv-console .selection-count{font-size:14px;color:var(--muted);margin:22px 0 8px}.ktv-console .table-scroll{overflow:auto;scrollbar-width:thin;scrollbar-color:#bbc5bc transparent}.ktv-console .library-table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}.ktv-console .library-table th{padding:13px 12px;color:var(--muted);font-weight:500;background:var(--soft);white-space:nowrap}.ktv-console .library-table td{padding:18px 12px;border-bottom:1px solid var(--line)}.ktv-console .library-table th:first-child,.ktv-console .library-table td:first-child{width:44px;padding-left:12px}.ktv-console .library-table td:nth-child(2){width:45%;min-width:160px;overflow-wrap:anywhere}.ktv-console .library-table strong{font-weight:550}.ktv-console .numeric{font-variant-numeric:tabular-nums;white-space:nowrap}.ktv-console .date{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}.ktv-console .row-note{display:block;font-size:13px;margin-top:6px}.ktv-console .pager{display:flex;justify-content:flex-end;align-items:center;gap:16px;padding-top:20px;font-size:14px;color:var(--muted)}
+.ktv-console .library-filters,
+.ktv-console .library-actions {
+ display:flex;
+ align-items:center;
+ flex-wrap:wrap;
+ gap:8px;
+}
+.ktv-console .library-filters{margin:20px 0 14px}
+.ktv-console .library-actions{
+ margin:0 0 14px;
+ padding:8px;
+ border:1px solid var(--line);
+ border-radius:8px;
+ background:var(--soft);
+}
+.ktv-console .library-actions[hidden]{display:none}
+.ktv-console .library-filters input[type=search],
+.ktv-console .library-filters button,
+.ktv-console .library-select select,
+.ktv-console .library-actions button{
+ min-height:36px;
+ height:36px;
+ border-radius:8px;
+ padding:0 11px;
+ font-size:14px;
+ line-height:1.3;
+}
+.ktv-console .library-filters input[type=search]{
+ -webkit-appearance:none;
+ appearance:none;
+ flex:1 1 230px;
+ min-width:0;
+}
+.ktv-console .library-select{position:relative;color:var(--ink)}
+.ktv-console .library-select select{
+ -webkit-appearance:none;
+ appearance:none;
+ width:100%;
+ padding-inline-end:30px;
+ cursor:pointer;
+}
+.ktv-console .library-select::after{
+ position:absolute;
+ inset-inline-end:12px;
+ top:calc(50% - 4px);
+ width:6px;
+ height:6px;
+ border:solid var(--muted);
+ border-width:0 1.5px 1.5px 0;
+ transform:rotate(45deg);
+ pointer-events:none;
+ content:"";
+}
+.ktv-console .library-filters>.library-select{min-width:130px}
+.ktv-console .library-total,
+.ktv-console .library-actions .selection-count{
+ color:var(--muted);
+ font-size:13px;
+ font-variant-numeric:tabular-nums;
+ margin:0;
+}
+.ktv-console .library-total{padding-inline:4px;white-space:nowrap}
+.ktv-console .library-cleanup-scope{display:flex;align-items:center;gap:8px;font-size:13px}
+.ktv-console .library-actions .selection-count{flex:1 1 160px;padding-inline:4px}
+.ktv-console .library-table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}
+.ktv-console .library-table th{
+ padding:9px 12px;
+ color:var(--muted);
+ font-weight:550;
+ font-size:13px;
+ background:var(--soft);
+ white-space:nowrap;
+}
+.ktv-console .library-table td{padding:13px 12px;border-bottom:1px solid var(--line)}
+.ktv-console .library-table .library-check{width:42px}
+.ktv-console .library-table .library-check[hidden]{display:none}
+.ktv-console .library-table .library-name{width:45%;min-width:160px;overflow-wrap:anywhere}
+.ktv-console .library-table strong{font-weight:550}
+.ktv-console .table-scroll{overflow:auto;scrollbar-width:thin;scrollbar-color:#bbc5bc transparent}
+.ktv-console .numeric{font-variant-numeric:tabular-nums;white-space:nowrap}
+.ktv-console .date{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ktv-console .row-note{display:block;font-size:13px;margin-top:5px}
+.ktv-console .pager{display:flex;justify-content:flex-end;align-items:center;gap:16px;padding-top:20px;font-size:14px;color:var(--muted)}
+@media(max-width:620px){
+ .ktv-console .library-filters input[type=search]{flex-basis:100%}
+ .ktv-console .library-filters>.library-select{flex:1 1 125px}
+}
 .ktv-console .policy-grid{display:grid;grid-template-columns:1fr 1fr;gap:44px;max-width:900px}.ktv-console .policy-form{display:flex;flex-direction:column;gap:16px;align-items:flex-start}.ktv-console .policy-form p,.ktv-console .policy-form h3{margin:0}.ktv-console .policy-form .field{width:100%;max-width:300px}.ktv-console .check-label{display:flex;align-items:center;gap:8px;font-size:15px}.ktv-console .search-form{display:flex;gap:12px;padding-top:24px;max-width:850px}.ktv-console .search-form input{flex:1}.ktv-console progress{display:block;width:min(100%,380px);height:6px;margin:12px 0 16px;accent-color:var(--accent)}.ktv-console details{font-size:14px}.ktv-console summary{cursor:pointer;min-height:36px;padding:8px 0}.ktv-console .events{font-size:13px;line-height:1.8;padding-left:22px}
 .ktv-console dialog{width:calc(100% - 32px);max-width:550px;max-height:85vh;overflow:auto;border:0;border-radius:16px;background:#fff;color:inherit;padding:28px;box-shadow:0 18px 60px #0003}.ktv-console dialog::backdrop{background:#171c1870}.ktv-console dialog p{font-size:14px;line-height:1.7}.ktv-console dialog h2{margin:0 0 16px}.ktv-console #ktv-delete-songs{max-height:180px;overflow:auto;padding-left:22px;font-size:14px;line-height:1.8}.ktv-console .actions{display:flex;gap:12px;justify-content:flex-end;margin-top:24px}.ktv-console .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}.ktv-console .entry progress+details{margin-top:4px}
 .ktv-console .source-dialog{max-width:448px}

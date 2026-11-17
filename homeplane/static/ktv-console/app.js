@@ -38,11 +38,18 @@ const errors={
  cache_changed:'文件或歌单已变化，请刷新后重新选择。',archive_changed:'NAS 归档已变化，请刷新后重新选择。',cache_in_use:'所选歌曲正在使用或制作，请稍后再试。',plan_expired:'删除预览已过期，请重新选择。',nas_management_unavailable:'NAS 暂未连接，恢复连接后可继续操作。',tv_offline:'电视离线，请开机后再操作。',room_changed:'房间已变化，请刷新后重试。',queue_changed:'歌单已更新，请刷新后重新选择。',song_playing:'当前歌曲正在播放，请先切歌。',sfx_unavailable:'电视氛围音效暂不可用。',source_login_required:'请在 KTV 设置的音源授权中登录。',source_rights_denied:'这个版本未能取得可用音频。',source_api_unavailable:'音源暂未连接，请稍后重试。',source_file_invalid:'原曲文件不完整，请重新准备。',download_timeout:'原曲下载未完成，请重试或换一个版本。',separation_failed:'伴奏生成失败，请重试。',transcode_failed:'播放文件封装失败，请重试。',storage_full:'存储空间不足，请调整上限或删除空闲歌曲。',search_unavailable:'暂时无法搜索，请稍后重试。',queue_full:'歌单已满，请先移除不需要的歌曲。',rate_limited:'操作较频繁，请稍等片刻再试。',cloud_song_unavailable:'暂时无法取得这个音乐云盘文件。',failed_history_source_unknown:'这条记录的原音源待确认，请重新搜索该曲。',retry_unavailable:'本次制备暂不能重试。',retry_limit:'本条记录的重试次数已用完。',invalid_policy:'请输入有效的容量上限（2–102400 GB）。',unauthorized:'管理会话已过期，请刷新页面。',ktv_offline:'KTV 暂未连接。请确认本机 KTV 服务已运行，再重试连接。',ktv_not_configured:'家庭 KTV 尚未配置。完成本机连接后即可使用。',ktv_config_unavailable:'KTV 连接配置暂不可读，请检查本机配置后重试。',ktv_read_only:'当前窗口只读，请在本机 Friday 窗口操作。',ktv_unavailable:'KTV 暂时无法完成操作，请稍后重试。',unavailable:'连接未完成，请检查服务后重试。'};
 const themes=[['content','内容与留白'],['festival','音乐节'],['live','Live']], sourceNames={song:'曲库',mv:'MV',cloud:'音乐云盘'};
 const reasons={preparing:'正在制作',in_queue:'当前歌单正在使用',transferring:'正在归档或校验',unsafe:'文件需要核对',nas_offline:'NAS 离线，暂不能核对使用情况'};
-const size=n=>n===null||n===undefined?'暂不可读':n>=1024**3?`${(n/1024**3).toFixed(2)} GB`:`${(n/1024**2).toFixed(1)} MB`;
+function size(bytes){
+ if(bytes==null)return '暂不可读';
+ if(bytes>=1024**3)return `${(bytes/1024**3).toFixed(2)} GB`;
+ if(bytes>=1024**2)return `${(bytes/1024**2).toFixed(1)} MB`;
+ if(bytes>=1024)return `${(bytes/1024).toFixed(1)} KB`;
+ return `${bytes} B`;
+}
 const date=n=>n?new Date(n*1000).toLocaleString('zh-CN',{hour12:false}):'暂无记录';
 let view='room',viewRequest=null,changing=false,room=null,pendingCommand=null;
 let cacheData=null,cacheQuery='',cachePresence='all',cacheSort='recent',scope='mac';
 let page=0,deletePlan=null,lastCheckbox=-1;
+let selectingFiles=false;
 let libraryFilterTimer=null,libraryIndexTimer=null;
 const libraryPageSize=50;
 const cacheHosts=['mac','nas'];
@@ -233,26 +240,27 @@ function renderCacheTotals(data){
  const totals=el('div',null,'storage-totals');
  totals.append(storageSummary(data,'mac'),storageSummary(data,'nas'));$('summary').replaceChildren(totals);
 }
+function librarySelect(node,label){
+ node.setAttribute('aria-label',label);
+ const wrap=el('div',null,'library-select');
+ wrap.append(node);
+ return wrap;
+}
 function renderCache(data){
  renderCacheTotals(data);
  const query=el('input');query.type='search';query.maxLength=120;query.placeholder='搜索歌曲名称';query.value=cacheQuery;
- const presence=select([['all','全部文件'],['both','两端都有'],['nas','仅 NAS 有副本'],
+ const presence=select([['all','全部位置'],['both','两端都有'],['nas','仅 NAS 有副本'],
   ['mac','仅 Mac 有副本'],['orphan','未关联文件']],cachePresence);
  const sort=select([['recent','最近使用'],['size','占用从大到小'],['title','歌曲名称']],cacheSort);
  query.setAttribute('aria-label','搜索歌曲');
- presence.setAttribute('aria-label','存放位置');
- sort.setAttribute('aria-label','排序');
  const changeListing=()=>{
   clearTimeout(libraryFilterTimer);
   cacheQuery=query.value;cachePresence=presence.value;cacheSort=sort.value;page=0;lastCheckbox=-1;loadCachePage();
  };
  query.oninput=()=>{clearTimeout(libraryFilterTimer);libraryFilterTimer=setTimeout(changeListing,200);};
  presence.onchange=sort.onchange=changeListing;
- const filters=el('div',null,'library-filters');
- filters.append(field('搜索歌曲',query),field('存放位置',presence),field('排序',sort));
 
  const host=select(cacheScopes,scope);
- host.setAttribute('aria-label','清理位置');
  host.onchange=()=>{scope=host.value;selected.clear();lastCheckbox=-1;renderCacheRows();};
  const choose=button('选择筛选结果',async event=>{
   const trigger=event.currentTarget;
@@ -260,27 +268,42 @@ function renderCache(data){
   trigger.disabled=true;
   try{
    const response=await api(path);
-   if(view==='cache'&&path===libraryPath({...params,selectable:scope}))selectCacheRows(response.entries,true);
+   if(view==='cache'&&selectingFiles&&path===libraryPath({...params,selectable:scope}))selectCacheRows(response.entries,true);
   }catch(error){if(view==='cache')message(explain(error),true);}
   finally{if(view==='cache'&&trigger.isConnected)renderCacheRows();}
  });
  choose.id='ktv-select-filtered';
- const clear=button('取消选择',()=>{selected.clear();lastCheckbox=-1;renderCacheRows();});
+ const clear=button('清空选择',()=>{selected.clear();lastCheckbox=-1;renderCacheRows();});
  clear.id='ktv-clear-selected';
  const remove=button('清理所选',openDelete,{className:'danger-outline'});
  remove.id='ktv-delete-selected';
  const count=el('p','','selection-count');count.id='ktv-selection-count';count.setAttribute('role','status');
- const actions=el('div',null,'toolbar library-actions');
- actions.append(count,field('清理位置',host),choose,clear,remove);
+ const actions=el('div',null,'library-actions');actions.id='ktv-file-actions';
+ const cleanupScope=el('div',null,'library-cleanup-scope');
+ cleanupScope.append(el('span','清理位置'),librarySelect(host,'清理位置'));
+ actions.append(cleanupScope,choose,count,clear,remove);
+
+ const toggle=button('选择文件',()=>{
+  selectingFiles=!selectingFiles;
+  selected.clear();lastCheckbox=-1;
+  renderCacheRows();
+  if(selectingFiles)host.focus({preventScroll:true});
+ });
+ toggle.id='ktv-select-files';toggle.setAttribute('aria-controls',actions.id);
+ const total=el('span','','library-total');total.id='ktv-library-total';total.setAttribute('role','status');
+ const filters=el('div',null,'library-filters');
+ filters.append(query,librarySelect(presence,'存放位置'),librarySelect(sort,'排序'),total,toggle);
 
  const table=el('table',null,'library-table');
  const caption=el('caption','歌曲文件与占用','sr-only');table.append(caption);
  const head=el('thead'),tr=el('tr'),selectHead=el('th'),all=el('input');
+ selectHead.className='library-check';selectHead.id='ktv-select-column';selectHead.scope='col';
  all.type='checkbox';all.id='ktv-select-page';all.setAttribute('aria-label','选择本页可删除的歌曲');
  all.onchange=()=>{selectCacheRows(cacheData.entries,all.checked);lastCheckbox=-1;renderCacheRows();};
  selectHead.append(all);tr.append(selectHead);
  for(const heading of ['歌曲','Mac','NAS','最近使用']){
   const th=el('th',heading);th.scope='col';tr.append(th);
+  if(heading==='歌曲')th.className='library-name';
  }
  head.append(tr);
  const body=el('tbody');body.id='ktv-library-rows';table.append(head,body);
@@ -300,6 +323,11 @@ function matchesCache(row){
 }
 function renderCacheRows(focusId){
  const body=$('library-rows');if(!body)return;
+ $('file-actions').hidden=!selectingFiles;
+ $('select-column').hidden=!selectingFiles;
+ $('select-files').textContent=selectingFiles?'退出选择':'选择文件';
+ $('select-files').setAttribute('aria-expanded',String(selectingFiles));
+ $('library-total').textContent='共 '+cacheData.total+' 项';
  const rows=cacheData.entries,available=new Set(rows.filter(eligible).map(row=>row.id));
  for(const row of rows)if(selected.has(row.id)){
   if(available.has(row.id))selected.set(row.id,row);
@@ -308,7 +336,8 @@ function renderCacheRows(focusId){
  const pages=Math.max(1,Math.ceil(cacheData.total/libraryPageSize));
  body.replaceChildren();
  rows.forEach((row,index)=>{
-  const tr=el('tr'),td=el('td'),check=el('input');
+  const tr=el('tr'),td=el('td',null,'library-check'),check=el('input');
+  td.hidden=!selectingFiles;
   check.type='checkbox';check.checked=selected.has(row.id);check.disabled=!available.has(row.id);
   check.setAttribute('aria-label','选择 '+row.title);
   check.onclick=event=>{
@@ -317,9 +346,9 @@ function renderCacheRows(focusId){
    selectCacheRows(group,check.checked);lastCheckbox=index;renderCacheRows(row.id);
   };
   td.append(check);
-  const name=el('td');name.append(el('strong',row.title));
+  const name=el('td',null,'library-name');name.append(el('strong',row.title));
   const blocked=selectedHosts().map(h=>row[h]).find(item=>item&&!item.can_delete);
-  if(blocked)name.append(el('span',reasons[blocked.reason]||'暂时保留','row-note'));
+  if(selectingFiles&&blocked)name.append(el('span',reasons[blocked.reason]||'暂时保留','row-note'));
   tr.append(td,name,el('td',row.mac?size(row.mac.bytes):'—','numeric'),
    el('td',row.nas?size(row.nas.bytes):'—','numeric'),el('td',date(row.last_used),'date'));
   body.append(tr);
@@ -328,7 +357,7 @@ function renderCacheRows(focusId){
  if(!rows.length){
   const tr=el('tr'),td=el('td',cacheQuery||cachePresence!=='all'
    ?'没有匹配的歌曲文件。':'准备好的歌曲和原曲会显示在这里。','empty');
-  td.colSpan=5;tr.append(td);body.append(tr);
+  td.colSpan=selectingFiles?5:4;tr.append(td);body.append(tr);
  }
  const enabled=rows.filter(row=>available.has(row.id)),checked=enabled.filter(row=>selected.has(row.id)).length;
  $('select-page').checked=!!checked&&checked===enabled.length;
@@ -340,10 +369,10 @@ function renderCacheRows(focusId){
   return label+' '+size([...selected.values()].reduce((sum,row)=>sum+(row[host]?.bytes||0),0));
  });
  const hidden=[...selected.values()].filter(row=>!matchesCache(row)).length;
- $('selection-count').textContent='共 '+cacheData.total+' 项'+(selected.size
-  ?' · 已选 '+selected.size+' 项 · '+bytes.join(' / ')+(hidden?' · '+hidden+' 项在筛选外':''):'');
+ $('selection-count').textContent='已选 '+selected.size+' 项'+(selected.size
+  ?' · '+bytes.join(' / ')+(hidden?' · '+hidden+' 项在筛选外':''):'');
  $('select-filtered').disabled=selected.size>=128||!cacheData.total||selectedHosts().includes('nas')&&!cacheData.nas.available;
- $('clear-selected').disabled=!selected.size;
+ $('clear-selected').hidden=!selected.size;
  $('delete-selected').disabled=!selected.size||changing;
  $('delete-selected').textContent=scope==='mac'?'清理 Mac 缓存':'删除所选文件';
  $('cache-pager').replaceChildren();

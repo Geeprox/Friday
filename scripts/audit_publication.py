@@ -26,7 +26,7 @@ SYNTHETIC_MEDIA = {
     'docs/screenshots/ktv-source-quality.png':
         'd4d1152743f6b691e8d99398eb70badecbe91afae4a1b09b008af6d3b0d52ee3',
     'docs/screenshots/ktv-storage-management.png':
-        '7dbecb6053bdea695274090b37bb629a2c21a26009934a2c9d4cfa33cdc4a8ca',
+        'aa177830e58d5eb5357831f4f7cc8777031c532ac235bf40ce2ec5607d0b2a37',
     # 手机首页、队列和声音面板，示例房间和内容均由测试夹具提供。
     'docs/screenshots/ktv-mobile-home.png':
         'ee92022ad285a21d5d39447053b2337febcb2b0cae9df7680cac60de37835561',
