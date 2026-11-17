@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -1600,8 +1600,19 @@ def create_app(
         return library
 
     @app.get("/v1/manage/library")
-    def library_inventory():
-        return {**owner_library().inventory(), "simulated": queue.simulated}
+    def library_inventory(
+        limit: int | None = Query(default=None, ge=1, le=128),
+        offset: int = Query(default=0, ge=0, le=100000),
+        q: str = Query(default="", max_length=120),
+        presence: Literal["all", "both", "nas", "mac", "orphan"] = "all",
+        sort: Literal["recent", "size", "title"] = "recent",
+        selectable: Literal["mac", "nas", "both"] | None = None,
+    ):
+        library = owner_library()
+        data = library.inventory() if limit is None else library.inventory_page(
+            offset=offset, limit=limit, query=q, presence=presence, sort=sort, selectable=selectable,
+        )
+        return {**data, "simulated": queue.simulated}
 
     @app.post("/v1/manage/library/status")
     def prepared_library_status(value: dict):
@@ -1638,7 +1649,11 @@ def create_app(
 
     @app.post("/v1/manage/delete")
     def library_delete(value: dict):
-        return owner_library().delete(value)
+        library = owner_library()
+        result = library.delete(value)
+        if result.get("results") or result.get("nas_stores"):
+            library.invalidate_listing()
+        return result
 
     @app.post("/v1/manage/policy")
     def library_policy(value: dict):
@@ -1646,7 +1661,9 @@ def create_app(
                 or value["host"] not in {"mac", "nas"} or not isinstance(value["value"], dict)):
             raise HTTPException(400, "invalid_policy")
         manager = owner_library()
-        return manager.policy(value["value"]) if value["host"] == "mac" else manager.nas_policy(value["value"])
+        policy = manager.policy(value["value"]) if value["host"] == "mac" else manager.nas_policy(value["value"])
+        manager.invalidate_listing()
+        return policy
 
     @app.get("/v1/manage/room")
     def owner_room():

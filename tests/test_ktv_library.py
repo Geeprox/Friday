@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -90,6 +91,40 @@ def test_stale_preview_and_new_active_job_refuse_without_deleting(library):
     assert not library.inventory()["entries"][0]["mac"]["can_delete"]
 
 
+def test_paged_inventory_serves_without_waiting_for_another_scan(library, monkeypatch):
+    for sid in range(1, 4):
+        job(library.queue, str(sid), used=sid)
+    original = library.inventory
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_inventory(*, listing=False):
+        assert listing
+        entered.set()
+        assert release.wait(3)
+        return original(listing=True)
+
+    monkeypatch.setattr(library, "inventory", slow_inventory)
+
+    def page(offset=0, query="", selectable=None):
+        return library.inventory_page(
+            offset=offset, limit=1, query=query, presence="all", sort="recent", selectable=selectable,
+        )
+
+    try:
+        assert page()["indexing"]
+        assert entered.wait(1)
+        assert page(1)["indexing"]
+        thread = library.listing_thread
+        release.set()
+        thread.join(3)
+        assert page()["total"] == 3
+        assert page(1)["entries"][0]["id"] == "song:2"
+        assert page(query="合成歌曲 １", selectable="mac")["entries"][0]["id"] == "song:1"
+    finally:
+        release.set()
+        library.close()
+
+
 def test_symlinks_never_followed_and_external_file_kept(library, tmp_path):
     jid = job(library.queue, "1")
     outside = tmp_path / "keep"
@@ -168,8 +203,13 @@ def test_capacity_routes_do_not_wait_for_full_inventory_lock(library, monkeypatc
     mac = library.policy({"enabled": True, "limit_bytes": target})
     nas = {"enabled": False, "limit_bytes": 100 * 1024**3}
     library.direct = True
+    library.bridge = SimpleNamespace(
+        lock=threading.RLock(), party=None, playback=None, metadata_root=library.queue.root / "metadata",
+    )
 
     def remote(operation, value=None):
+        if operation == "library":
+            return {"available": True, "policy": nas, "bytes": 42, "entries": []}
         assert (operation, value) == ("policy", None)
         return nas
 

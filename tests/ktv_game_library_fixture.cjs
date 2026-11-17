@@ -39,7 +39,7 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  let holdLibrary=false,resolveLibrary,failLibrary=false;
  let holdNasPolicy=false,failNasPolicy=false;
  const nasPolicyReads=[];
- const scope=vm.createContext({document,console,Date,JSON,Set,Map,URL,AbortController,AbortSignal,performance,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout,setInterval:fn=>{timer=fn;return 17;},clearInterval:id=>{assert.equal(id,17);cleared=true;},fetch:async(path,options={})=>{
+ const scope=vm.createContext({document,console,Date,JSON,Set,Map,URL,URLSearchParams,queueMicrotask,AbortController,AbortSignal,performance,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout,setInterval:fn=>{timer=fn;return 17;},clearInterval:id=>{assert.equal(id,17);cleared=true;},fetch:async(path,options={})=>{
   assert.ok(path.startsWith('/api/games/ktv/'),'No cross-origin request or management key');
   assert.equal(options.credentials,'same-origin');assert.ok(!Object.keys(options.headers).some(k=>/key|authorization/i.test(k)));
   if(options.method==='POST'){
@@ -84,10 +84,12 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
   reads.push(path);
   if(lateResolve!==null)return new Promise(resolve=>{lateResolve=()=>resolve(reply(structuredClone(state)));});
   if(path.endsWith('manage/room'))return reply(structuredClone(state));
-  if(path.endsWith('manage/library')){
+  if(path.includes('manage/library?')){
    if(holdLibrary)return new Promise(resolve=>{resolveLibrary=resolve;});
    if(failLibrary)return libraryFailure();
-   return reply(structuredClone(inventory));
+   const {searchParams}=new URL(path,'https://fixture.invalid');
+   const offset=Number(searchParams.get('offset')),limit=Number(searchParams.get('limit'));
+   return reply({...structuredClone(inventory),total:inventory.entries.length,entries:inventory.entries.slice(offset,offset+limit)});
   }
   if(path.endsWith('manage/policy/mac'))return reply({...structuredClone(inventory.mac),hot_cache:{bytes:1024**3}});
   if(path.endsWith('manage/policy/nas')){
@@ -131,7 +133,7 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  const all=byId('select-page');all.checked=true;all.onchange();assert.match(root.textContent,/已选 1 项/);assert.equal(nodes().filter(n=>n.tagName==='input'&&n.type==='checkbox'&&n.disabled).length,1,'Protected content is not selectable');
  await click(byId('delete-selected'));assert.equal(deleteAttempts,0,'Preview must not delete');assert.equal(byId('delete-dialog').open,true);await click(byId('cancel-delete'));assert.equal(deleteAttempts,0);assert.equal(document.activeElement,byId('delete-selected'),'Cancel restores focus');
  await click(byId('delete-selected'));await click(byId('confirm-delete'));assert.equal(deleteAttempts,1);assert.equal(byId('delete-dialog').open,true);assert.match(byId('delete-error').textContent,/重试剩余删除/);await click(byId('confirm-delete'));assert.equal(deleteAttempts,2);assert.equal(byId('delete-dialog').open,false);assert.ok(writes.filter(w=>w.path.endsWith('/delete')).every(w=>w.data.plan==='SYNTHETIC-plan'),'Partial retry reuses the reviewed deletion plan');
- const libraryReads=()=>reads.filter(path=>path.endsWith('manage/library')).length;
+ const libraryReads=()=>reads.filter(path=>path.includes('manage/library?')).length;
  const policyForms=()=>nodes().filter(n=>n.className==='policy-form');
  const policySave=host=>walk(policyForms()[host]).find(n=>n.tagName==='button'&&n.type==='submit');
  const previousLibraryReads=libraryReads();

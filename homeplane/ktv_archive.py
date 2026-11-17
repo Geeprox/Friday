@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import threading
 import time
 from pathlib import Path
@@ -41,6 +42,7 @@ class MediaArchive:
         self.duplicate_candidates = {}
         self.results = {}
         self.entries = {}
+        self.inventory_catalogs = {}
         self.cache_manager = None
         self.guide_root = None
         self.guide_links = {}
@@ -490,17 +492,33 @@ class MediaArchive:
         if self.thread:
             self.thread.join(timeout=5)
 
-    def managed_inventory(self):
+    def managed_inventory(self, *, cache_catalogs=False):
         """All managed archive copies, including old sources and retained editions."""
         from .ktv_library import read_record, signature
         if not self.available():
             raise ValueError("archive_offline")
         with self.lock:
-            for catalog in (self.root / "catalog").glob("*.json"):
-                if re.fullmatch(r"[1-9][0-9]{0,17}", catalog.stem):
-                    value = read_record(catalog, 65536)
-                    if value.get("song_id") == catalog.stem and isinstance(value.get("files"), dict):
-                        self.entries[catalog.stem] = value
+            catalogs = {}
+            catalog_root = self.root / "catalog"
+            if catalog_root.is_dir() and catalog_root.resolve() == catalog_root:
+                with os.scandir(catalog_root) as files:
+                    for item in files:
+                        if not re.fullmatch(r"[1-9][0-9]{0,17}\.json", item.name):
+                            continue
+                        try:
+                            info = item.stat(follow_symlinks=False)
+                        except FileNotFoundError:
+                            continue
+                        if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+                            continue
+                        sid = item.name[:-5]
+                        identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                        previous = self.inventory_catalogs.get(sid) if cache_catalogs else None
+                        value = previous[1] if previous and previous[0] == identity else read_record(Path(item.path), 65536)
+                        if value.get("song_id") == sid and isinstance(value.get("files"), dict):
+                            self.entries[sid] = value
+                            catalogs[sid] = (identity, value)
+            self.inventory_catalogs = catalogs
             groups, referenced = {}, set()
             for sid, entry in self.entries.items():
                 paths = {self._catalog(sid)}
@@ -513,20 +531,18 @@ class MediaArchive:
                     path = self.root / "blobs" / name
                     paths.add(path)
                     referenced.add(path)
-                revision, files, path_unsafe = signature(paths)
                 active = any(self.queue.jobs.get(job, {}).get("song_id") == sid for job in self.active)
                 groups["song:" + sid] = {"id": "song:" + sid, "title": entry["title"], "last_used": entry.get("last_used", entry["updated"]),
-                    "kind": "song", "paths": paths, "bytes": sum(files.values()), "revision": revision,
-                    "can_delete": not (unsafe or path_unsafe or active), "reason": "transferring" if active else "unsafe" if unsafe or path_unsafe else ""}
+                    "kind": "song", "paths": paths, "can_delete": not (unsafe or active),
+                    "reason": "transferring" if active else "unsafe" if unsafe else ""}
             blobs = self.root / "blobs"
             if blobs.is_dir() and not blobs.is_symlink():
                 for path in blobs.iterdir():
                     if path not in referenced and re.fullmatch(r"[a-f0-9]{64}\.(?:audio|wav|mp4)", path.name):
-                        revision, files, unsafe = signature({path})
                         key = "legacy:" + path.name
                         groups[key] = {"id": key, "title": "未关联歌曲的 NAS 归档", "last_used": int(path.lstat().st_mtime),
-                            "kind": "orphan", "paths": {path}, "bytes": sum(files.values()), "revision": revision,
-                            "can_delete": not unsafe and not self.active, "reason": "transferring" if self.active else "unsafe" if unsafe else ""}
+                            "kind": "orphan", "paths": {path}, "can_delete": not self.active,
+                            "reason": "transferring" if self.active else ""}
             guide_files, linked_guide_files = 0, 0
             if self.guide_root and self.guide_root.is_dir() and not self.guide_root.is_symlink():
                 for path in self.guide_root.glob("*.mp3"):
