@@ -726,11 +726,14 @@ class Queue:
                 raise ValueError("cancelled")
             archive = getattr(self, "archive", None)
             if archive:
+                options = {
+                    "audio_origin": requested_audio_origin(self.jobs[job_id].get("source_preference", "auto")),
+                    "reserve": lambda size: self._reserve_storage(job_id, size, archive_restore=True),
+                }
+                if self.jobs[job_id].get("playback_encoding") == "aac_lc_m4a":
+                    options["playback_encoding"] = "aac_lc_m4a"
                 restored = archive.restore_job(
-                    self.jobs[job_id]["song_id"], folder, MODEL_REVISION,
-                    audio_origin=requested_audio_origin(self.jobs[job_id].get("source_preference", "auto")),
-                    reserve=lambda size: self._reserve_storage(job_id, size, archive_restore=True),
-                    playback_encoding=self.jobs[job_id].get("playback_encoding", "pcm_s16le_wav"),
+                    self.jobs[job_id]["song_id"], folder, MODEL_REVISION, **options,
                 )
                 if restored:
                     if event.is_set():
