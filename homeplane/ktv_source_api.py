@@ -9,6 +9,7 @@ import concurrent.futures
 import fcntl
 import hashlib
 import io
+import ipaddress
 import json
 import math
 import re
@@ -17,8 +18,10 @@ import subprocess
 import threading
 import time
 import unicodedata
+import urllib.request
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -594,6 +597,56 @@ def source_url(value):
         raise ValueError("source_file_invalid") from None
 
 
+def _media_addresses(host, timeout):
+    # 只查询公开 CDN 域名，签名路径和认证资料留在下载连接内。
+    query = urlencode({"name": host, "type": "A"})
+    with urllib.request.urlopen("https://dns.google/resolve?" + query, timeout=timeout) as response:
+        value = json.loads(response.read(65536))
+    if not isinstance(value, dict) or not isinstance(value.get("Answer"), list):
+        return
+    for item in value["Answer"]:
+        if not isinstance(item, dict) or item.get("type") != 1:
+            continue
+        try:
+            address = ipaddress.IPv4Address(item["data"])
+        except (ipaddress.AddressValueError, KeyError):
+            continue
+        if address.is_global:
+            yield str(address)
+
+
+@contextmanager
+def _open_audio_cdn(url, deadline):
+    options = {"timeout": min(12, max(1, deadline - time.monotonic())),
+               "follow_redirects": False, "trust_env": False}
+    with ExitStack() as stack:
+        try:
+            reply = stack.enter_context(httpx.stream("GET", url, **options))
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            endpoint = httpx.URL(url)
+            # 备用解析只替换连接地址。TLS 仍按供应商原始域名校验证书。
+            host = endpoint.host
+            try:
+                addresses = list(_media_addresses(host, min(5, max(1, deadline - time.monotonic()))))
+            except (OSError, ValueError, TypeError):
+                addresses = []
+            client = stack.enter_context(httpx.Client(**options))
+            for address in addresses:
+                if time.monotonic() >= deadline:
+                    break
+                try:
+                    reply = stack.enter_context(client.stream("GET", endpoint.copy_with(host=address),
+                        headers={"Host": host}, extensions={"sni_hostname": host}))
+                except (httpx.ConnectError, httpx.ConnectTimeout):
+                    continue
+                break
+            else:
+                raise ValueError("source_api_unavailable") from None
+            if time.monotonic() >= deadline:
+                raise ValueError("source_api_unavailable")
+        yield reply
+
+
 class APIAudioAdapter:
     def __init__(self, api, cache: Path, *, legacy=None, enabled=False, archive=None, source="song"):
         self.api, self.cache, self.legacy, self.enabled = api, _directory(cache, create=True), legacy, enabled
@@ -653,7 +706,7 @@ class APIAudioAdapter:
             part.unlink(missing_ok=True)
             total, md5 = 0, hashlib.md5()
             try:
-                with httpx.stream("GET", url, timeout=12, follow_redirects=False, trust_env=False) as reply:
+                with _open_audio_cdn(url, deadline) as reply:
                     if reply.status_code != 200:
                         raise ValueError("source_api_unavailable")
                     if reply.headers.get("content-length") and int(reply.headers["content-length"]) != spec["size"]:

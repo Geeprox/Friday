@@ -263,6 +263,39 @@ def test_manifest_allows_first_play_before_archive_then_prefers_verified_nas_cac
     assert not store.coordinator.readiness()["ready"], "cached playback is degraded, not complete worker readiness"
 
 
+def test_library_manifest_is_idempotent_and_can_be_used_without_a_mac_job(store, monkeypatch):
+    value, data, _, _, room = manifest(store)
+    before = store.status(room)
+    library_id = uid()
+    value["id"] = library_id
+    value["job"].update(id=library_id, song_id="456", audio_origin="song", simulated=False)
+    value["lyrics"] = {"status": "ready", "lines": [
+        {"at_ms": elapsed, "text": "合成歌词"} for elapsed in (0, 500, 1000)
+    ]}
+    submitted = []
+    monkeypatch.setattr(store.coordinator.cache_pool, "submit", lambda *args: submitted.append(args))
+    first = store.coordinator.manifest(value, library=True)
+    assert first["archive"] == "pending" and first["lyrics_ready"]
+    assert len(submitted) == 2
+    assert store.coordinator.manifest(value, library=True) == first
+    assert len(submitted) == 2
+    assert store.status(room)["queue_revision"] == before["queue_revision"]
+    assert store.status(room)["songs"] == before["songs"]
+    fake_cache(monkeypatch, data, [])
+    for operation, *args in submitted:
+        operation(*args)
+    assert store.coordinator.manifest(value, library=True)["archive"] == "ready"
+    assert store.management.prepared_status({"items": [{"song_id": "456", "source": "song"}]}) == {
+        "items": [{"song_id": "456", "source": "song", "archived": True, "lyrics_ready": True, "background_ready": False}]
+    }
+    spec = value["job"]["media"]["original"]
+    assert store.management.shared_copy({"sha256": spec["sha256"], "bytes": spec["bytes"], "song_ids": ["456"]})["verified"]
+    assert not store.management.shared_copy({"sha256": spec["sha256"], "bytes": spec["bytes"], "song_ids": ["789"]})["verified"]
+    with store.connection() as db:
+        assert db.execute("SELECT count(*) FROM managed_editions WHERE song_id='456'").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM coordinator_manifests WHERE song=?", (library_id,)).fetchone()[0] == 0
+
+
 def test_corrupt_archive_keeps_direct_source_and_cannot_publish_wrong_bytes(store, monkeypatch):
     value, data, *_ = manifest(store)
     store.coordinator.manifest(value)

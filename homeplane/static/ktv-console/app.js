@@ -42,7 +42,10 @@ const size=n=>n===null||n===undefined?'暂不可读':n>=1024**3?`${(n/1024**3).t
 const date=n=>n?new Date(n*1000).toLocaleString('zh-CN',{hour12:false}):'暂无记录';
 let view='room',viewRequest=null,changing=false,room=null,pendingCommand=null;
 let pendingLibrary=null;
-let cacheData=null,cacheQuery='',scope='both',page=0,deletePlan=null,lastCheckbox=-1;
+let cacheData=null,cacheQuery='',cachePresence='all',cacheSort='recent',scope='mac';
+let page=0,deletePlan=null,lastCheckbox=-1;
+const cacheHosts=['mac','nas'];
+const cacheScopes=[['mac','仅 Mac'],['nas','仅 NAS'],['both','Mac 和 NAS']];
 const libraryReadError='歌曲文件暂时无法读取。';
 let searchData=null,searchQuery='',searchSource='song',searchOffset=0;
 let sourceSession=null;
@@ -186,20 +189,144 @@ function storageSummary(data,host){
  }
  return box;
 }
-function eligible(row){const hosts=['mac','nas'].filter(h=>scope===h||scope==='both');return !(hosts.includes('nas')&&!cacheData.nas.available)&&hosts.some(h=>row[h])&&hosts.every(h=>!row[h]||row[h].can_delete);}
+function selectedHosts(){return cacheHosts.filter(host=>host===scope||scope==='both');}
+function eligible(row){
+ const hosts=selectedHosts();
+ return !(hosts.includes('nas')&&!cacheData.nas.available)
+  &&hosts.some(host=>row[host])&&hosts.every(host=>!row[host]||row[host].can_delete);
+}
+function selectCacheRows(rows,checked){
+ for(const row of rows.filter(eligible)){
+  if(!checked)selected.delete(row.id);
+  else if(selected.size<128)selected.add(row.id);
+ }
+}
 function renderCache(data){
- const totals=el('div',null,'storage-totals');totals.append(storageSummary(data,'mac'),storageSummary(data,'nas'));$('summary').append(totals);const tools=el('div',null,'toolbar library-toolbar'),query=el('input');query.type='search';query.placeholder='筛选歌曲名称';query.value=cacheQuery;query.setAttribute('aria-label','筛选存储中的歌曲');query.oninput=()=>{cacheQuery=query.value;page=0;renderCacheRows();};
- const host=select([['both','Mac 和 NAS'],['mac','仅 Mac'],['nas','仅 NAS']],scope);host.setAttribute('aria-label','删除位置');host.onchange=()=>{scope=host.value;selected.clear();lastCheckbox=-1;renderCacheRows();};const choose=button('选择筛选结果',()=>{for(const r of filteredCache().filter(eligible).slice(0,128))selected.add(r.id);renderCacheRows();}),clear=button('取消选择',()=>{selected.clear();renderCacheRows();}),remove=button('删除所选',openDelete,{className:'danger-outline'});remove.id='ktv-delete-selected';tools.append(query,host,choose,clear,remove);$('content').append(tools,el('p','包含 Friday 管理的原曲与所有加工版本。正在制作、播放和本场待唱的歌曲会保留。','setting-note'));const count=el('p','','selection-count');count.id='ktv-selection-count';$('content').append(count);
- const table=el('table',null,'library-table'),caption=el('caption','歌曲文件与占用');caption.className='sr-only';table.append(caption);const head=el('thead'),tr=el('tr'),td=el('th'),all=el('input');all.type='checkbox';all.id='ktv-select-page';all.setAttribute('aria-label','选择本页可删除的歌曲');all.onchange=()=>{for(const r of filteredCache().slice(page*50,(page+1)*50).filter(eligible))all.checked?selected.add(r.id):selected.delete(r.id);renderCacheRows();};td.append(all);tr.append(td);for(const text of ['歌曲','Mac','NAS','最近使用']){const th=el('th',text);th.scope='col';tr.append(th);}head.append(tr);const body=el('tbody');body.id='ktv-library-rows';table.append(head,body);const wrap=el('div',null,'table-scroll');wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','歌曲文件列表，可横向滚动查看占用');wrap.append(table);const pager=el('div',null,'pager');pager.id='ktv-cache-pager';$('content').append(wrap,pager);renderCacheRows();
+ const totals=el('div',null,'storage-totals');
+ totals.append(storageSummary(data,'mac'),storageSummary(data,'nas'));$('summary').append(totals);
+ const query=el('input');query.type='search';query.placeholder='搜索歌曲名称';query.value=cacheQuery;
+ const presence=select([['all','全部文件'],['both','两端都有'],['nas','仅 NAS 有副本'],
+  ['mac','仅 Mac 有副本'],['orphan','未关联文件']],cachePresence);
+ const sort=select([['recent','最近使用'],['size','占用从大到小'],['title','歌曲名称']],cacheSort);
+ query.setAttribute('aria-label','搜索歌曲');
+ presence.setAttribute('aria-label','存放位置');
+ sort.setAttribute('aria-label','排序');
+ const changeListing=()=>{cacheQuery=query.value;cachePresence=presence.value;cacheSort=sort.value;page=0;lastCheckbox=-1;renderCacheRows();};
+ query.oninput=presence.onchange=sort.onchange=changeListing;
+ const filters=el('div',null,'library-filters');
+ filters.append(field('搜索歌曲',query),field('存放位置',presence),field('排序',sort));
+
+ const host=select(cacheScopes,scope);
+ host.setAttribute('aria-label','清理位置');
+ host.onchange=()=>{scope=host.value;selected.clear();lastCheckbox=-1;renderCacheRows();};
+ const choose=button('选择筛选结果',()=>{selectCacheRows(filteredCache(),true);renderCacheRows();});
+ choose.id='ktv-select-filtered';
+ const clear=button('取消选择',()=>{selected.clear();lastCheckbox=-1;renderCacheRows();});
+ clear.id='ktv-clear-selected';
+ const remove=button('清理所选',openDelete,{className:'danger-outline'});
+ remove.id='ktv-delete-selected';
+ const count=el('p','','selection-count');count.id='ktv-selection-count';count.setAttribute('role','status');
+ const actions=el('div',null,'toolbar library-actions');
+ actions.append(count,field('清理位置',host),choose,clear,remove);
+
+ const table=el('table',null,'library-table');
+ const caption=el('caption','歌曲文件与占用','sr-only');table.append(caption);
+ const head=el('thead'),tr=el('tr'),selectHead=el('th'),all=el('input');
+ all.type='checkbox';all.id='ktv-select-page';all.setAttribute('aria-label','选择本页可删除的歌曲');
+ all.onchange=()=>{selectCacheRows(filteredCache().slice(page*50,(page+1)*50),all.checked);lastCheckbox=-1;renderCacheRows();};
+ selectHead.append(all);tr.append(selectHead);
+ for(const heading of ['歌曲','Mac','NAS','最近使用']){
+  const th=el('th',heading);th.scope='col';tr.append(th);
+ }
+ head.append(tr);
+ const body=el('tbody');body.id='ktv-library-rows';table.append(head,body);
+ const wrap=el('div',null,'table-scroll');
+ wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','歌曲文件列表');wrap.append(table);
+ const pager=el('div',null,'pager');pager.id='ktv-cache-pager';
+ $('content').append(filters,actions,wrap,pager);renderCacheRows();
 }
-function filteredCache(){return cacheData.entries.filter(r=>!cacheQuery||r.title.toLocaleLowerCase().includes(cacheQuery.toLocaleLowerCase()));}
-function renderCacheRows(){
- if(!$('library-rows'))return;for(const id of [...selected])if(!cacheData.entries.some(r=>r.id===id&&eligible(r)))selected.delete(id);const filtered=filteredCache(),pages=Math.max(1,Math.ceil(filtered.length/50));page=Math.min(page,pages-1);const rows=filtered.slice(page*50,(page+1)*50),body=$('library-rows');body.replaceChildren();
- rows.forEach((row,index)=>{const tr=el('tr'),td=el('td'),check=el('input');check.type='checkbox';check.checked=selected.has(row.id);check.disabled=!eligible(row);check.setAttribute('aria-label','选择 '+row.title);check.onclick=e=>{if(e.shiftKey&&lastCheckbox>=0)for(const r of rows.slice(Math.min(index,lastCheckbox),Math.max(index,lastCheckbox)+1).filter(eligible))check.checked?selected.add(r.id):selected.delete(r.id);check.checked?selected.add(row.id):selected.delete(row.id);lastCheckbox=index;renderCacheRows();};td.append(check);const name=el('td');name.append(el('strong',row.title));const blocked=[row.mac,row.nas].find(r=>r&&!r.can_delete);if(blocked)name.append(el('span',reasons[blocked.reason]||'暂时保留','row-note'));tr.append(td,name,el('td',row.mac?size(row.mac.bytes):'—','numeric'),el('td',row.nas?size(row.nas.bytes):'—','numeric'),el('td',date(row.last_used),'date'));body.append(tr);});
- if(!rows.length){const tr=el('tr'),td=el('td',cacheQuery?'没有匹配的歌曲。':'准备好的歌曲和原曲会显示在这里。','empty');td.colSpan=5;tr.append(td);body.append(tr);}const enabled=rows.filter(eligible),checked=enabled.filter(r=>selected.has(r.id)).length;$('select-page').checked=!!checked&&checked===enabled.length;$('select-page').indeterminate=checked>0&&checked<enabled.length;$('select-page').disabled=!enabled.length;$('selection-count').textContent=`共 ${filtered.length} 项 · 已选 ${selected.size} 项${selected.size>=128?' · 每批最多 128 项':''}`;$('delete-selected').disabled=!selected.size||selected.size>128||changing;
- $('cache-pager').replaceChildren(button('上一页',()=>{page--;lastCheckbox=-1;renderCacheRows();},{disabled:page===0}),el('span',`${page+1} / ${pages}`),button('下一页',()=>{page++;lastCheckbox=-1;renderCacheRows();},{disabled:page+1>=pages}));
+function filteredCache(){
+ const query=cacheQuery.normalize('NFKC').trim().toLocaleLowerCase();
+ const rows=cacheData.entries.filter(row=>{
+  if(query&&!row.title.normalize('NFKC').toLocaleLowerCase().includes(query))return false;
+  if(cachePresence==='orphan')return row.kind==='orphan';
+  if(cachePresence==='both')return !!(row.mac&&row.nas);
+  if(cachePresence==='mac')return !!(cacheData.nas.available&&row.mac&&!row.nas);
+  if(cachePresence==='nas')return !!(row.nas&&cacheData.mac.available&&!row.mac);
+  return true;
+ });
+ const total=row=>(row.mac?.bytes||0)+(row.nas?.bytes||0);
+ if(cacheSort==='size')rows.sort((a,b)=>total(b)-total(a));
+ if(cacheSort==='title')rows.sort((a,b)=>a.title.localeCompare(b.title,'zh-CN'));
+ return rows;
 }
-async function openDelete(){if(!selected.size||changing)return;const b=$('delete-selected');b.disabled=true;changing=true;try{deletePlan=await api('manage/preview',{ids:[...selected],scope});$('delete-note').textContent='删除所选位置中 Friday 管理的原曲、伴奏、MV、伴唱和历史加工文件。再次点歌时需要重新准备。'+(scope==='mac'?'NAS 文件与歌单保留。':'同时移除相关已唱记录。');$('delete-title').textContent=`删除 ${deletePlan.songs.length} 项 · ${scope==='both'?'Mac 和 NAS':scope==='mac'?'仅 Mac':'仅 NAS'}`;$('delete-songs').replaceChildren(...deletePlan.songs.map(s=>el('li',s.title)));$('delete-bytes').textContent=`涉及 Mac ${size(deletePlan.bytes.mac)} / NAS ${size(deletePlan.bytes.nas)}。共享文件仍有其他歌曲使用时会保留。`;$('delete-error').textContent='';$('confirm-delete').disabled=false;$('confirm-delete').textContent='确认删除';$('delete-dialog').showModal();}catch(error){message(explain(error),true);}finally{changing=false;b.disabled=false;}}
+function renderCacheRows(focusId){
+ const body=$('library-rows');if(!body)return;
+ const available=new Map(cacheData.entries.filter(eligible).map(row=>[row.id,row]));
+ for(const id of selected)if(!available.has(id))selected.delete(id);
+ const filtered=filteredCache(),pages=Math.max(1,Math.ceil(filtered.length/50));
+ page=Math.min(page,pages-1);
+ const rows=filtered.slice(page*50,(page+1)*50);
+ body.replaceChildren();
+ rows.forEach((row,index)=>{
+  const tr=el('tr'),td=el('td'),check=el('input');
+  check.type='checkbox';check.checked=selected.has(row.id);check.disabled=!available.has(row.id);
+  check.setAttribute('aria-label','选择 '+row.title);
+  check.onclick=event=>{
+   const group=event.shiftKey&&lastCheckbox>=0
+    ?rows.slice(Math.min(index,lastCheckbox),Math.max(index,lastCheckbox)+1):[row];
+   selectCacheRows(group,check.checked);lastCheckbox=index;renderCacheRows(row.id);
+  };
+  td.append(check);
+  const name=el('td');name.append(el('strong',row.title));
+  const blocked=selectedHosts().map(h=>row[h]).find(item=>item&&!item.can_delete);
+  if(blocked)name.append(el('span',reasons[blocked.reason]||'暂时保留','row-note'));
+  tr.append(td,name,el('td',row.mac?size(row.mac.bytes):'—','numeric'),
+   el('td',row.nas?size(row.nas.bytes):'—','numeric'),el('td',date(row.last_used),'date'));
+  body.append(tr);
+  if(focusId===row.id)check.focus({preventScroll:true});
+ });
+ if(!rows.length){
+  const tr=el('tr'),td=el('td',cacheQuery||cachePresence!=='all'
+   ?'没有匹配的歌曲文件。':'准备好的歌曲和原曲会显示在这里。','empty');
+  td.colSpan=5;tr.append(td);body.append(tr);
+ }
+ const enabled=rows.filter(row=>available.has(row.id)),checked=enabled.filter(row=>selected.has(row.id)).length;
+ $('select-page').checked=!!checked&&checked===enabled.length;
+ $('select-page').indeterminate=checked>0&&checked<enabled.length;
+ $('select-page').disabled=!enabled.length;
+ const hosts=selectedHosts();
+ const bytes=hosts.map(host=>{
+  const label=host==='mac'?'Mac':'NAS';
+  return label+' '+size([...selected].reduce((sum,id)=>sum+(available.get(id)[host]?.bytes||0),0));
+ });
+ const hidden=selected.size-filtered.filter(row=>selected.has(row.id)).length;
+ $('selection-count').textContent='显示 '+filtered.length+' 项'+(selected.size
+  ?' · 已选 '+selected.size+' 项 · '+bytes.join(' / ')+(hidden?' · '+hidden+' 项在筛选外':''):'');
+ $('select-filtered').disabled=selected.size>=128||!filtered.some(row=>available.has(row.id)&&!selected.has(row.id));
+ $('clear-selected').disabled=!selected.size;
+ $('delete-selected').disabled=!selected.size||changing;
+ $('delete-selected').textContent=scope==='mac'?'清理 Mac 缓存':'删除所选文件';
+ $('cache-pager').replaceChildren();
+ if(pages>1)$('cache-pager').append(button('上一页',()=>{page--;lastCheckbox=-1;renderCacheRows();},{disabled:page===0}),
+  el('span',(page+1)+' / '+pages),button('下一页',()=>{page++;lastCheckbox=-1;renderCacheRows();},{disabled:page+1>=pages}));
+}
+async function openDelete(){
+ if(!selected.size||changing)return;
+ const trigger=$('delete-selected');
+ trigger.disabled=true;changing=true;
+ try{
+  deletePlan=await api('manage/preview',{ids:[...selected],scope});
+  const location=cacheScopes.find(([value])=>value===scope)[1];
+  $('delete-title').textContent=(scope==='mac'?'清理 ':'删除 ')+deletePlan.songs.length+' 项 · '+location;
+  $('delete-note').textContent=scope==='mac'?'有 NAS 归档的歌曲可以回档，其余曲目再次点歌时会重新准备。':'清除所选歌曲的归档和相应的已唱记录。';
+  $('delete-songs').replaceChildren(...deletePlan.songs.map(song=>el('li',song.title)));
+  $('delete-bytes').textContent=selectedHosts().map(host=>(host==='mac'?'Mac':'NAS')+' '+size(deletePlan.bytes[host])).join(' / ');
+  $('delete-error').textContent='';$('confirm-delete').disabled=false;$('confirm-delete').textContent=scope==='mac'?'清理缓存':'确认删除';
+  $('delete-dialog').showModal();
+ }catch(error){message(explain(error),true);}
+ finally{changing=false;trigger.disabled=false;}
+}
 function wireDelete(){
 $('cancel-delete').onclick=()=>$('delete-dialog').close();
 $('confirm-delete').onclick=async()=>{

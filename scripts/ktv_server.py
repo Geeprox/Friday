@@ -206,7 +206,7 @@ def main(argv=None):
     archive_config = config_path.parent / "archive.json"
     if archive_config.is_file():
         from homeplane.ktv_archive import MediaArchive
-        archive = MediaArchive(queue, archive_config)
+        archive = MediaArchive(queue, archive_config, shared_reference=getattr(bridge, "verify_shared_copy", None))
         adapter.archive = archive
         cloud_adapter.archive = archive
         queue.archive = archive

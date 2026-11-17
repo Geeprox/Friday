@@ -689,7 +689,7 @@ class Coordinator:
                 result["method"] = video["method"]
         return result
 
-    def manifest(self, payload):
+    def manifest(self, payload, *, library=False):
         fields = {"id", "instance", "version", "timeline", "job", "lyrics", "media_ticket", "media_expires"}
         now = int(time.time())
         if (not fields <= set(payload) or set(payload) - fields - {"guide"} or not isinstance(payload["id"], str) or not UUID.fullmatch(payload["id"])
@@ -742,6 +742,8 @@ class Coordinator:
         canonical = json.dumps({"timeline": timeline, "job": clean, "lyrics": lyrics}, sort_keys=True, ensure_ascii=False, allow_nan=False)
         if len(canonical.encode()) > 196608:
             raise self.error(400, "invalid_manifest")
+        if library:
+            return self._library_manifest(payload, clean, timeline, lyrics, worker, now)
         with self.store.lock, self.store.connection() as db:
             row = db.execute("SELECT room,state FROM songs WHERE id=?", (payload["id"],)).fetchone()
             if not row or row["state"] == "cancelled" or db.execute("SELECT closed FROM rooms WHERE id=?", (row["room"],)).fetchone()[0]:
@@ -764,6 +766,44 @@ class Coordinator:
         self.changed()
         self._queue_cache(payload["id"])
         return {"accepted": True, "version": payload["version"], "archive": self.archive_state(payload["id"])}
+
+    def _library_manifest(self, payload, job, timeline, lyrics, worker, now):
+        """发布到歌曲库，可在任何房间点用，和当前场次没有关联。"""
+        manager = self.store.management
+        source, song_id, title = job.get("audio_origin"), job.get("song_id"), job.get("title")
+        if (source not in {"song", "cloud"} or job.get("simulated") is not False
+                or not isinstance(song_id, str) or not re.fullmatch(r"[1-9][0-9]{0,17}", song_id)
+                or not isinstance(title, str) or not 0 < len(title) <= 120 or any(ord(c) < 32 for c in title)):
+            raise self.error(400, "invalid_manifest")
+        job.pop("requester", None)
+        job.pop("progress", None)
+        row = {"song": payload["id"], "version": payload["version"],
+               "job": json.dumps(job, sort_keys=True), "timeline": json.dumps(timeline, sort_keys=True),
+               "lyrics": json.dumps(lyrics, sort_keys=True), "updated": now,
+               "origin": worker["origin"], "ticket": payload["media_ticket"], "expires": payload["media_expires"],
+               "library_song_id": song_id, "library_source": source}
+        with manager.lock:
+            with self.store.connection() as db:
+                if source == "cloud" and not db.execute("SELECT 1 FROM cloud_catalog WHERE song_id=?", (song_id,)).fetchone():
+                    raise self.error(409, "cloud_song_unavailable")
+                existing = db.execute(
+                    "SELECT timeline,job,lyrics FROM managed_editions WHERE song_id=? AND source=? AND version=?",
+                    (song_id, source, row["version"]),
+                ).fetchone()
+                if existing and (existing["timeline"] != row["timeline"] or existing["lyrics"] != row["lyrics"]
+                                 or json.loads(existing["job"])["media"] != job["media"]):
+                    raise self.error(409, "manifest_version_conflict")
+                manager.remember(row, db, source=source)
+            specs = self._specs(row)
+            states = {}
+            for kind, spec in specs.items():
+                states[kind] = self.cached_file(spec) is not None
+                if not states[kind]:
+                    self._queue_asset_cache(row, kind, spec)
+        return {"accepted": True, "version": row["version"],
+                "archive": "ready" if all(states.values()) else "pending",
+                "lyrics_ready": self.lyric_state(lyrics, timeline) == 1,
+                "background_ready": states.get("background", False)}
 
     @staticmethod
     def lyric_state(lyrics, timeline):
@@ -1230,7 +1270,8 @@ class Coordinator:
         try:
             with self.store.connection() as db:
                 old = db.execute("SELECT updated,attempts FROM coordinator_cache WHERE sha=?", (spec["sha256"],)).fetchone()
-                if old and ((kind != "background" and old["attempts"] >= 4) or time.time() - old["updated"] < 30):
+                if old and ((kind != "background" and "library_source" not in row and old["attempts"] >= 4)
+                            or time.time() - old["updated"] < 30):
                     with self.lock:
                         self.cache_pending.discard(spec["sha256"])
                     return
@@ -1288,7 +1329,11 @@ class Coordinator:
                         if not self._attach_archive_background(db, row, spec):
                             return
                     else:
-                        current = db.execute("SELECT job FROM coordinator_manifests WHERE song=?", (row["song"],)).fetchone()
+                        if "library_source" in row:
+                            current = db.execute("SELECT job FROM managed_editions WHERE song_id=? AND source=? AND version=?",
+                                                 (row["library_song_id"], row["library_source"], row["version"])).fetchone()
+                        else:
+                            current = db.execute("SELECT job FROM coordinator_manifests WHERE song=?", (row["song"],)).fetchone()
                         expected = self._specs(current).get(kind) if current else None
                         # 与删除和缓存淘汰串行确认当前文件仍被引用。
                         if not expected or expected["sha256"] != spec["sha256"] or expected["bytes"] != spec["bytes"]:

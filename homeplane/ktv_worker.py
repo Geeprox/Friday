@@ -425,7 +425,8 @@ class PreparationWorker(NasBridge):
             super()._send_updates(progress, mapping, generation)
 
     def request(self, path, body=None):
-        if path in {"/agent/worker", "/agent/manifests", "/agent/lyrics", "/agent/qr", "/agent/archive-check", "/agent/backgrounds"}:
+        if path in {"/agent/worker", "/agent/manifests", "/agent/lyrics", "/agent/qr", "/agent/archive-check",
+                    "/agent/backgrounds", "/agent/library-manifests", "/agent/library-status", "/agent/shared-copy"}:
             # The fixed extra endpoints carry no arbitrary path or proxy target.
             with self.http.stream("POST" if body is not None else "GET", self.endpoint + path,
                                   headers={"Authorization": "Bearer " + self.key}, json=body,
@@ -442,6 +443,14 @@ class PreparationWorker(NasBridge):
                 raise ValueError("invalid_public_response")
             return result
         return super().request(path, body)
+
+    def verify_shared_copy(self, checksum, length, song_ids):
+        try:
+            return self.request("/agent/shared-copy", {
+                "sha256": checksum, "bytes": length, "song_ids": sorted(song_ids),
+            }).get("verified") is True
+        except (OSError, ValueError, httpx.HTTPError):
+            return False
 
     def manage(self, operation, value):
         """Owner-only server-side relay. Never send worker credentials to a browser."""
@@ -651,6 +660,30 @@ class PreparationWorker(NasBridge):
             return
         self.next_background_sweep = time.monotonic() + 2
         self.background_work = self.background_pool.submit(self._prefetch_backgrounds, active, use_nas)
+
+    def publish_prepared(self, job):
+        """使用日常歌曲发布所用的歌词、背景和签名媒体接口归档。"""
+        local = job["id"]
+        audio_version = manifest_version(job)
+        with self.lock:
+            metadata = self._metadata(audio_version)
+            lyrics = self._lyrics_for(local, job["song_id"], audio_version, metadata.get("lyrics"))
+            self._remember_metadata(audio_version, lyrics, metadata.get("guide"))
+        if self.backgrounds is not None:
+            self.backgrounds.prefetch_from_thread([job])
+            candidate = self.backgrounds.cached_for(job)
+            if candidate and candidate["status"] == "ready":
+                job = copy.deepcopy(job)
+                job["background"] = {k: candidate[k] for k in ("status", "sha256", "bytes", "encoding")}
+                job["background"]["url"] = f"/v1/jobs/{local}/media/background"
+        duration_ms = round(job["media"]["original"]["duration_seconds"] * 1000)
+        frames = round(job["media"]["original"]["duration_seconds"] * 48000)
+        timeline = {"sample_rate": 48000, "frames": frames, "duration_ms": duration_ms}
+        version = hashlib.sha256(json.dumps([audio_version, job.get("background"), lyrics],
+                                             sort_keys=True, allow_nan=False).encode()).hexdigest()
+        ticket, expires = self.tickets.issue(job)
+        return self.request("/agent/library-manifests", {"id": local, "instance": self.instance, "version": version,
+            "timeline": timeline, "job": job, "lyrics": lyrics, "media_ticket": ticket, "media_expires": expires})
 
     def _prefetch_backgrounds(self, active, use_nas):
         backgrounds = self.backgrounds
