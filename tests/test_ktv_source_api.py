@@ -292,7 +292,8 @@ def test_preferred_quality_uses_next_available_full_recording(
 
 def test_cloud_catalog_is_bounded_metadata_and_cloud_url_requires_uploaded_identity(tmp_path):
     calls = []
-    upload = {'songId': 123, 'songName': '测试云盘歌', 'simpleSong': {'dt': 2000, 'ar': [{'name': '歌手'}]},
+    upload = {'songId': 123, 'songName': '测试云盘歌', 'simpleSong': {'dt': 2000, 'ar': [{'name': '歌手'}],
+              'al': {'id': 0, 'name': '云盘自带专辑', 'picUrl': 'http://p3.music.126.net/cloud-cover.jpg'}},
               'fileSize': 2000, 'privateCloud': {'md5': 'a'*32, 'userId': 'never-export'}}
     item = {'id': 123, 'size': 2000, 'md5': 'a'*32, 'code': 200,
             'url': 'https://m.test.music.126.net/cloud', 'freeTrialInfo': None}
@@ -304,8 +305,11 @@ def test_cloud_catalog_is_bounded_metadata_and_cloud_url_requires_uploaded_ident
         return {'body': {'code': 200, 'data': [item]}}
     api = logged_api(tmp_path, rpc)
     rows = api.cloud_catalog()
-    assert rows == [{'song_id': '123', 'title': '测试云盘歌', 'artists': ['歌手'], 'source': 'cloud'}]
+    assert rows == [{'song_id': '123', 'title': '测试云盘歌', 'artists': ['歌手'], 'source': 'cloud',
+                     'album': '云盘自带专辑', 'artwork': 'https://p3.music.126.net/cloud-cover.jpg?param=240y240'}]
     assert 'never-export' not in str(rows)
+    upload['simpleSong']['al']['picUrl'] = 'https://private.example.test/owner-upload'
+    assert 'artwork' not in api.cloud_catalog()[0]
     assert api.cloud_source('123')['requested_level'] == 'cloud_original'
     item['md5'] = 'b'*32
     with pytest.raises(ValueError, match='download_identity_mismatch'):api.cloud_source('123')

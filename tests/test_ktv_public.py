@@ -1,6 +1,7 @@
 """Guest station contracts, with isolated storage and no physical devices/models."""
 
 import hashlib
+import hmac
 import base64
 import io
 import json
@@ -18,7 +19,7 @@ import httpx
 import pytest
 
 from homeplane.ktv_nas_bridge import NasBridge
-from integrations.ktv_public.nas_server import NAMES, Refusal, Server, Store, make_handler
+from integrations.ktv_public.nas_server import AVATAR_COUNT, NAMES, Refusal, Server, Store, make_handler
 
 KEY = "a" * 43
 ASSETS = Path(__file__).resolve().parents[1] / "integrations/ktv_public/web"
@@ -81,7 +82,7 @@ def test_single_join_keeps_existing_profile_and_strictly_accepts_new_profile(sta
     replay = client.post(path, headers=headers, json={**request, "profile": {"nickname": "不要覆盖", "avatar": 1}})
     assert replay.json() == created.json()
     for bad in (None, [], {"nickname": "空", "avatar": True}, {"nickname": "x\t", "avatar": 0},
-                {"nickname": "甲" * 25, "avatar": 0}, {"nickname": "有效", "avatar": 12},
+                {"nickname": "甲" * 25, "avatar": 0}, {"nickname": "有效", "avatar": AVATAR_COUNT},
                 {"nickname": "有效", "avatar": 0, "device_id": "unexpected"}):
         reply = client.post(path, headers=headers, json={"guest_key": "f" * 64, "profile": bad})
         assert reply.status_code == 400 and reply.json()["code"] == "invalid_profile"
@@ -154,7 +155,11 @@ def test_song_search_recovers_from_first_provider_timeout(station, monkeypatch):
     assert page["next_offset"] == 60 and page["has_more"]
 
 
-def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch):
+@pytest.mark.parametrize(("declared", "content", "actual"), [
+    ("image/jpeg", b"\xff\xd8\xff\xe0synthetic-thumbnail", "image/jpeg"),
+    ("image/jpg", b"\x89PNG\r\n\x1a\nsynthetic-thumbnail", "image/png"),
+])
+def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch, declared, content, actual):
     store, client = station
     value, secret = room(store)
     path = f"/api/rooms/{value['id']}/artwork"
@@ -181,11 +186,10 @@ def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch)
     assert len(calls) == 1
 
     image_requests = []
-    content = b"\xff\xd8\xff\xe0synthetic-thumbnail"
 
     class Thumbnail(io.BytesIO):
         headers = Message()
-        headers["Content-Type"] = "image/jpeg"
+        headers["Content-Type"] = declared
 
     class Images:
         def open(self, request, *, timeout):
@@ -196,11 +200,11 @@ def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch)
     monkeypatch.setattr("integrations.ktv_public.nas_server.urllib.request.build_opener", lambda *_: Images())
     inline = client.get(path, headers=headers, params={"ids": "123,234", "inline": "1"})
     assert inline.status_code == 200
-    assert inline.json() == {"covers": {"123": "data:image/jpeg;base64," + base64.b64encode(content).decode()}, "pending": []}
+    assert inline.json() == {"covers": {"123": "data:" + actual + ";base64," + base64.b64encode(content).decode()}, "pending": []}
     assert client.get(path, headers=headers, params={"ids": "123", "inline": "1"}).json() == inline.json()
     for _ in range(41):
         assert client.get(path, headers=headers, params={"ids": "123", "inline": "1"}).json() == inline.json()
-    assert image_requests == ["https://p1.music.126.net/cover.jpg?param=240y240"]
+    assert image_requests == ["https://p1.music.126.net/cover.jpg?param=112y112"]
 
 
 def test_station_scopes_and_static_privacy(station):
@@ -221,7 +225,7 @@ def test_station_scopes_and_static_privacy(station):
     assert client.get("/agent/tasks", headers=guest).status_code == 401
     assert client.get(base + "/status").status_code == 403
     assert client.get(base + "/status", headers=guest).status_code == 200
-    assert identity["nickname"] and 0 <= identity["avatar"] < 12
+    assert identity["nickname"] and 0 <= identity["avatar"] < AVATAR_COUNT
     assert client.post(base + "/songs", headers={"X-KTV-Room": secret}, json=song()).status_code == 403
     assert client.post(base + "/theme", headers=guest, json={"theme": "festival"}).status_code == 200
     assert client.get(base + "/status", headers=guest).json()["theme"] == "festival"
@@ -639,7 +643,32 @@ def test_cloud_index_is_atomic_room_guest_only_and_source_identity_survives_queu
     assert again['id']!=cloud['id']
     assert client.post(base+'/controls',headers=headers,json={'original':1}).status_code==200
     assert store.status(value)['controls']['original']==1
-    assert 3<=len(guest['nickname'])<=4 and not any(c.isdigit() for c in guest['nickname'])
+    assert 1<=len(guest['nickname'])<=24 and not any(c.isdigit() for c in guest['nickname'])
+
+
+def test_cloud_display_metadata_is_atomic_and_needs_no_public_recording_lookup(station, monkeypatch):
+    store, _ = station
+    row = {"song_id": "123", "title": "云盘显示曲", "artists": ["云盘歌手"], "source": "cloud",
+           "album": "上传版本专辑", "artwork": "http://p3.music.126.net/upload-cover.jpg"}
+    store.cloud_update({"revision": "a" * 64, "offset": 0, "total": 1, "songs": [row]})
+    monkeypatch.setattr(store, "public_metadata", lambda *_a, **_k: pytest.fail("云盘自带封面不应触发公开录音查询"))
+    first = store.search_artwork("123", source="cloud")
+    assert first["covers"] == {"123": "https://p3.music.126.net/upload-cover.jpg?param=240y240"}
+    assert first["tracks"]["123"]["album"] == "上传版本专辑"
+    assert store.search("显示", "cloud")["songs"][0]["album"] == "上传版本专辑"
+    store.cloud_update({"revision": "b" * 64, "offset": 0, "total": 2,
+                        "songs": [{**row, "album": "未完成的新快照"}]})
+    assert store.search_artwork("123", source="cloud") == first
+    store.cloud_update({"revision": "b" * 64, "offset": 1, "total": 2,
+                        "songs": [{**row, "song_id": "124", "album": "其他专辑"}]})
+    assert store.search_artwork("123", source="cloud")["tracks"]["123"]["album"] == "未完成的新快照"
+    value, _ = room(store)
+    store.poll()
+    guest = store.join(value)
+    store.add(value, {**song(), "source": "cloud"}, guest)
+    actual = store.status(value)["songs"][0]
+    assert actual["album"] == "未完成的新快照"
+    assert actual["artwork"] == first["covers"]["123"]
 
 
 def test_partial_cloud_sync_does_not_replace_last_catalog(station):
@@ -1592,3 +1621,176 @@ def test_voice_protection_reports_round_trip_with_closed_scalar_schema(station):
         for parse in (private_audio, public_audio):
             with pytest.raises(ValueError):
                 parse(payload)
+
+
+def test_cloud_artwork_resolves_recording_and_persists_source_specific_queue_metadata(station, monkeypatch):
+    store, _ = station
+    value, _ = room(store)
+    guest = store.join(value)
+    store.poll()
+    with store.connection() as db:
+        db.execute("INSERT INTO cloud_catalog VALUES('123','云盘合成曲','[\"云盘歌手\"]')")
+    store.add(value, song(), guest)
+    store.add(value, {**song(), "source": "cloud", "request_id": str(uuid.uuid4())}, guest)
+    calls = []
+
+    def metadata(path, params, **_kwargs):
+        calls.append((path, params))
+        if "search" in path:
+            return {"songs": []} if params["s"] != "云盘合成曲 云盘歌手" else {"result": {"songs": [
+                {"id": 998, "name": "其他录音", "artists": [{"name": "云盘歌手"}]},
+                {"id": 999, "name": "云盘合成曲", "artists": [{"name": "云盘歌手"}],
+                 "album": {"name": "云盘专辑"}},
+            ]}}
+        return {"songs": [
+            {"id": row["id"], "name": "云盘合成曲" if row["id"] == 999 else "曲库合成曲",
+             "ar": [{"name": "云盘歌手" if row["id"] == 999 else "曲库歌手"}],
+             "al": {"name": "云盘专辑" if row["id"] == 999 else "曲库专辑",
+                    "picUrl": "https://p1.music.126.net/cover-" + str(row["id"]) + ".jpg"}}
+            for row in json.loads(params["c"])]}
+
+    monkeypatch.setattr(store, "public_metadata", metadata)
+    cloud = store.search_artwork("123", source="cloud")
+    normal = store.search_artwork("123")
+    assert cloud["covers"]["123"].endswith("cover-999.jpg?param=240y240")
+    assert normal["covers"]["123"].endswith("cover-123.jpg?param=240y240")
+    assert cloud["tracks"]["123"] == {"title": "云盘合成曲", "artists": ["云盘歌手"],
+                                           "album": "云盘专辑", "source": "cloud"}
+    assert normal["tracks"]["123"]["album"] == "曲库专辑"
+    before = len(calls)
+    assert store.search_artwork("123", source="cloud") == cloud
+    assert len(calls) == before
+    reopened = Store(store.root, store.origin)
+    try:
+        rows = {row["source"]: row for row in reopened.status(value)["songs"]}
+        assert rows["cloud"]["artists"] == ["云盘歌手"]
+        assert rows["cloud"]["album"] == "云盘专辑"
+        assert rows["cloud"]["artwork"] == cloud["covers"]["123"]
+        assert rows["song"]["artists"] == ["曲库歌手"]
+        assert rows["song"]["album"] == "曲库专辑"
+    finally:
+        reopened.coordinator.close()
+
+
+def test_bare_entry_migrates_legacy_phone_and_keeps_profile_across_restart(station):
+    store, client = station
+    value, secret = room(store)
+    seed = "ab" * 32
+    old_key = hmac.new(bytes.fromhex(seed), ("Friday KTV guest room v1/" + value["id"]).encode(),
+                       hashlib.sha256).hexdigest()
+    original = store.join(value, old_key, profile={"nickname": "留声海风", "avatar": 9})
+    store.poll()
+    queued = store.add(value, song(), original)["id"]
+    with store.connection() as db:
+        db.execute("UPDATE songs SET state='ready' WHERE id=?", (queued,))
+    store.playback(value["id"], playback(played=[queued]))
+    party = store.coordinator.start({"instance": str(uuid.uuid4()), "request_id": str(uuid.uuid4())})
+    assert party["room_id"] == value["id"]
+    secret = parse_qs(urlsplit(party["join_url"]).fragment)["k"][0]
+    value = store.room(value["id"], secret)
+
+    body = {"device_key": seed, "snapshot": True}
+    response = client.post("/?room=current", json=body, headers={"Origin": store.origin})
+    assert response.status_code == 201
+    result = response.json()
+    assert result["room"] == {"room": value["id"], "key": secret}
+    assert result["guest"]["id"] == original["id"]
+    assert (result["guest"]["nickname"], result["guest"]["avatar"]) == ("留声海风", 9)
+    assert result["status"]["songs"][0]["guest_id"] == original["id"]
+    assert store.guest(value, original["key"])["id"] == original["id"]
+    assert store.frequent(value, original)["songs"][0]["plays"] == 1
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        joined = list(pool.map(lambda _: store.join(value, device_key=seed), range(6)))
+    assert {guest["id"] for guest in joined} == {original["id"]}
+    assert all(store.guest(value, guest["key"])["id"] == original["id"] for guest in joined)
+    with store.connection() as db:
+        assert db.execute("SELECT count(*) FROM guests WHERE room=?", (value["id"],)).fetchone()[0] == 1
+    changed = store.profile(value, original, {"nickname": "蓝调晚班", "avatar": 12})
+    reopened = Store(store.root, store.origin)
+    try:
+        restored = reopened.join(value, device_key=seed, profile={"nickname": "过期本机资料", "avatar": 0})
+        assert restored["id"] == original["id"]
+        assert (restored["nickname"], restored["avatar"]) == (changed["nickname"], changed["avatar"])
+        reopened.close(value["id"])
+        next_room, _ = room(reopened)
+        next_guest = reopened.join(next_room, device_key=seed)
+        assert next_guest["id"] != original["id"]
+        assert next_guest["key"] != restored["key"]
+        assert (next_guest["nickname"], next_guest["avatar"]) == ("蓝调晚班", 12)
+        assert reopened.frequent(next_room, next_guest)["songs"][0]["song_id"] == "123"
+    finally:
+        reopened.coordinator.close()
+
+
+def test_phone_absence_does_not_lose_cloud_or_catalog_frequent_plays(station):
+    store, client = station
+    value, secret = room(store)
+    me = store.join(value, device_key="c1" * 32)
+    other = store.join(value, device_key="d2" * 32)
+    store.poll()
+    with store.connection() as db:
+        db.execute("INSERT INTO cloud_catalog VALUES('123','云盘合成曲','[]')")
+    normal = store.add(value, song(), me)["id"]
+    cloud = store.add(value, {**song(), "request_id": str(uuid.uuid4()), "source": "cloud"}, me)["id"]
+    someone = store.add(value, {**song(), "song_id": "124"}, other)["id"]
+    with store.connection() as db:
+        db.execute("UPDATE songs SET state='ready' WHERE room=?", (value["id"],))
+    for current in (normal, normal, cloud, someone):
+        store.playback(value["id"], playback(current, state="playing"))
+
+    headers = {"X-KTV-Room": secret, "X-KTV-Guest": me["key"]}
+    response = client.get(f"/api/rooms/{value['id']}/profile?frequent=1", headers=headers)
+    assert response.status_code == 200
+    actual = {(row["source"], row["song_id"]): row["plays"] for row in response.json()["songs"]}
+    assert actual == {("song", "123"): 1, ("cloud", "123"): 1}
+    assert store.frequent(value, other)["songs"][0]["song_id"] == "124"
+
+    reopened = Store(store.root, store.origin)
+    try:
+        next_room, _ = room(reopened)
+        restored = reopened.join(next_room, device_key="c1" * 32)
+        assert {(row["source"], row["song_id"]): row["plays"]
+                for row in reopened.frequent(next_room, restored)["songs"]} == actual
+        with pytest.raises(Refusal) as wrong_room:
+            reopened.guest(next_room, me["key"])
+        assert wrong_room.value.code == "guest_unavailable"
+    finally:
+        reopened.coordinator.close()
+
+
+def test_search_cache_badge_requires_both_verified_tracks_and_exact_source(station, monkeypatch):
+    store, client = station
+    value, secret = room(store)
+    guest = store.join(value)
+    tracks = {}
+    paths = {}
+    for kind in ("original", "instrumental"):
+        data = ("合成缓存文件-" + kind).encode()
+        checksum = hashlib.sha256(data).hexdigest()
+        path = store.coordinator.media_root / checksum
+        path.write_bytes(data)
+        info = path.stat()
+        tracks[kind] = {"sha256": checksum, "bytes": len(data), "encoding": "aac_lc_m4a"}
+        paths[kind] = path
+        with store.connection() as db:
+            db.execute("INSERT INTO coordinator_cache(sha,bytes,state,updated,device,inode,mtime_ns,ctime_ns) "
+                       "VALUES(?,?,'ready',0,?,?,?,?)", (checksum, len(data), info.st_dev, info.st_ino,
+                                                       info.st_mtime_ns, info.st_ctime_ns))
+    with store.connection() as db:
+        db.execute("INSERT INTO managed_editions VALUES('123','song','version-one','{}',?,'{}',0)",
+                   (json.dumps({"media": tracks}),))
+        db.execute("INSERT INTO cloud_catalog VALUES('123','不同来源的合成歌曲','[]')")
+    monkeypatch.setattr(store, "public_metadata", lambda *args, **kwargs: {
+        "result": {"songCount": 2, "songs": [{"id": 123, "name": "已缓存合成曲"},
+                                             {"id": 124, "name": "待制作合成曲"}]}})
+    endpoint = f"/api/rooms/{value['id']}/search"
+    headers = {"X-KTV-Room": secret, "X-KTV-Guest": guest["key"]}
+    found = client.get(endpoint, headers=headers, params={"q": "合成"}).json()["songs"]
+    assert found[0]["cached_accompaniment"] is True
+    assert not found[1].get("cached_accompaniment", False)
+    cloud = client.get(endpoint, headers=headers, params={"source": "cloud", "q": ""}).json()["songs"]
+    assert cloud[0]["song_id"] == "123" and not cloud[0].get("cached_accompaniment", False)
+    paths["instrumental"].unlink()
+    repeated = client.get(endpoint, headers=headers, params={"q": "合成"}).json()["songs"]
+    assert not repeated[0].get("cached_accompaniment", False)

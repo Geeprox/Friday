@@ -3,7 +3,7 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const walk=n=>[n,...n.children.flatMap(walk)];
 let document;
 class Element{
- constructor(tag){Object.defineProperty(this,'tagName',{value:tag,writable:true,configurable:true});this.children=[];this.attrs={};this.handlers={};this.querySelector=selector=>selectOne(this,selector);this._text='';this.value='';this.className='';this.dataset={};this.isConnected=true;this.disabled=false;this.open=false;this.classList={toggle:(name,on)=>{const s=new Set(this.className.split(' ').filter(Boolean));on?s.add(name):s.delete(name);this.className=[...s].join(' ');},add:name=>{this.className+=' '+name;}};}
+ constructor(tag){Object.defineProperty(this,'tagName',{value:tag,writable:true,configurable:true});this.children=[];this.attrs={};this.handlers={};this.querySelector=selector=>selectOne(this,selector);this._text='';this.value='';this.className='';this.dataset={};this.isConnected=true;this.disabled=false;this.open=false;this.classList={toggle:(name,on)=>{const s=new Set(this.className.split(' ').filter(Boolean));on?s.add(name):s.delete(name);this.className=[...s].join(' ');},add:name=>{this.className+=' '+name;},contains:name=>this.className.split(' ').includes(name),remove:name=>{this.className=this.className.split(' ').filter(value=>value!==name).join(' ');}};}
  set textContent(v){this._text=String(v);this.children=[];}get textContent(){return this._text+this.children.map(c=>c.textContent).join('');}
  get options(){return this.children;}get elements(){return Object.fromEntries(walk(this).filter(n=>n.name).map(n=>[n.name,n]));}
  append(...cs){for(const n of cs){this.children.push(n);n.parent=this;}}
@@ -14,6 +14,8 @@ class Element{
  setAttribute(k,v){this.attrs[k]=String(v);}getAttribute(k){return this.attrs[k]??null;}
  addEventListener(k,fn){this.handlers[k]=fn;}
  contains(n){return walk(this).includes(n);}
+ querySelectorAll(selector){return walk(this).filter(node=>selector==='[data-scope]'?node.dataset.scope!==undefined:selector.startsWith('.')&&node.className.split(' ').includes(selector.slice(1)));}
+ closest(selector){return this.className.split(' ').includes(selector.slice(1))?this:this.parent?.closest(selector);}
  querySelector(s){return walk(this).find(n=>s.startsWith('#')?n.id===s.slice(1):s.startsWith('.')?n.className.split(' ').includes(s.slice(1)):s==='details[open]'?n.tagName==='details'&&n.open:false)||null;}
  after(n){const at=this.parent.children.indexOf(this);this.parent.children.splice(at+1,0,n);n.parent=this.parent;}
  showModal(){this.open=true;document.activeElement=walk(this).find(n=>n.autofocus)||this;}
@@ -24,9 +26,9 @@ const selectOne=(node,s)=>walk(node).find(n=>s.startsWith('#')?n.id===s.slice(1)
 const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
 (async()=>{
  const root=new Element('main'),body=new Element('body');document={createElement:t=>new Element(t),querySelector:()=>null,body,hidden:false,activeElement:body};
- const state={active:true,room_id:'SYNTHETIC-room',simulated:true,defaults:{theme:'content',original:0,vocal_preset:'dry',music_gain:50,mic_gain:40,sfx_gain:80},status:{theme:'content',microphone_available:true,mac_online:true,queue_revision:4,controls:{music_gain:50,mic_gain:40,sfx_gain:80,original:0,mic_muted:1,control_revision:3,vocal_preset:'dry'},playback:{online:true,current:'current',played:[],state:'playing',mic_muted:true,applied_revision:3,safety_latched:true,vocal_preset:'dry',vocal_preset_state:'unavailable',audio_capabilities:{sfx:true}},songs:[{id:'current',song_id:'1',source:'song',title:'合成当前曲',nickname:'朋友',state:'ready'},{id:'next',song_id:'2',source:'song',title:'合成下一曲',nickname:'朋友',state:'ready'}]}};
+ const state={active:true,room_id:'SYNTHETIC-room',simulated:true,defaults:{theme:'content',original:0,vocal_preset:'dry',music_gain:50,mic_gain:40,sfx_gain:80},status:{theme:'content',microphone_available:true,mac_online:true,queue_revision:4,controls:{music_gain:50,mic_gain:40,sfx_gain:80,original:0,mic_muted:1,control_revision:3,vocal_preset:'dry'},playback:{online:true,current:'current',played:[],state:'playing',mic_muted:true,applied_revision:3,safety_latched:true,vocal_preset:'dry',vocal_preset_state:'unavailable',audio_capabilities:{sfx:true}},songs:[{id:'current',song_id:'1',source:'song',title:'合成当前曲',nickname:'朋友',state:'ready'},{id:'next',song_id:'2',source:'song',title:'合成下一曲',nickname:'朋友',state:'ready'}, {id:'third',song_id:'3',source:'song',title:'合成第三曲',nickname:'朋友',state:'ready'},{id:'fourth',song_id:'4',source:'cloud',title:'合成第四曲',nickname:'朋友',state:'ready'}]}};
  const host={available:true,configured:true,bytes:1024**3,policy:{enabled:false,limit_bytes:20*1024**3}};
- const inventory={mac:{...host,last_cleanup:{state:'protected_over_limit'}},nas:{...host},entries:[{id:'song:1',title:'空闲合成曲',last_used:1,mac:{bytes:100,can_delete:true},nas:{bytes:100,can_delete:true}},{id:'song:2',title:'受保护合成曲',last_used:2,mac:{bytes:200,can_delete:false,reason:'in_queue'},nas:{bytes:200,can_delete:false,reason:'in_queue'}}]};
+ const inventory={mac:{...host,last_cleanup:{state:'protected_over_limit'}},nas:{...host},entries:[{id:'song:1',title:'空闲合成曲',source:'song',artists:['歌手'],album:'合成专辑',last_used:1,mac:{bytes:100,can_delete:true},nas:{bytes:100,can_delete:true}},{id:'song:2',title:'受保护合成曲',last_used:2,mac:{bytes:200,can_delete:false,reason:'in_queue'},nas:{bytes:200,can_delete:false,reason:'in_queue'}},{id:'song:3',title:'仅 NAS 合成曲',source:'song',last_used:3,mac:null,nas:{bytes:300,can_delete:true}}]};
  const unavailableTrack={id:'00000000-0000-4000-8000-000000000001',title:'合成曲库版本',state:'failed',source_preference:'song',code:'source_rights_denied',can_remove:true,can_retry:false,retry_reason:'source_rights_denied',progress:{completed_steps:1}};
  const oldStorageFailure={id:'00000000-0000-4000-8000-000000000002',title:'合成云盘制备失败',state:'failed',source_preference:'cloud',code:'storage_full',can_remove:true,can_retry:true,retry_reason:'',progress:{completed_steps:2}};
  const activeJob={id:'00000000-0000-4000-8000-000000000003',title:'合成正在制备',state:'separating',source_preference:'song',progress:{completed_steps:2}};
@@ -36,7 +38,9 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  const background={id:'a'.repeat(64),title:'合成背景歌曲',source:'song',status:'ready',ready:true};
  let backgroundAllowance=3,backgroundLimit=100,backgroundEnabled=true;
  const writes=[],reads=[];let deleteAttempts=0,cleared=false,timer,lateResolve=null;
- let holdLibrary=false,resolveLibrary,failLibrary=false;
+ let holdLibrary=false,resolveLibrary,failLibrary=false,roomResponseOverride=null,artworkFailures=1;
+ let holdSearch=false;const searchResponses=[];
+ const thumbnail='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6CHsAAAAASUVORK5CYII=';
  let holdNasPolicy=false,failNasPolicy=false;
  const nasPolicyReads=[];
  const scope=vm.createContext({document,console,Date,JSON,Set,Map,URL,URLSearchParams,queueMicrotask,AbortController,AbortSignal,performance,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout,setInterval:fn=>{timer=fn;return 17;},clearInterval:id=>{assert.equal(id,17);cleared=true;},fetch:async(path,options={})=>{
@@ -47,7 +51,12 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
    if(path.endsWith('manage/preview'))return reply({plan:'SYNTHETIC-plan',songs:[{title:'空闲合成曲'}],bytes:{mac:100,nas:100}});
    if(path.endsWith('manage/delete')){deleteAttempts++;return reply(deleteAttempts===1?{complete:false,retryable:true,code:'nas_management_unavailable',results:{mac:{}},nas_stores:{}}:{complete:true});}
    if(path.endsWith('manage/room/command'))return reply({seq:9});
-   if(path.endsWith('manage/room/songs'))return reply({accepted:true});
+   if(path.endsWith('manage/room/songs')){state.status.songs.push({...data.value,id:'added-'+data.value.song_id,state:'queued'});state.status.queue_revision++;return reply({accepted:true});}
+   if(path.endsWith('manage/room/order')){
+    assert.equal(data.room_id,state.room_id);assert.equal(data.value.revision,state.status.queue_revision);
+    assert.deepEqual([...data.value.ids].sort(),state.status.songs.map(song=>song.id).sort());
+    state.status.songs=data.value.ids.map(id=>state.status.songs.find(song=>song.id===id));state.status.queue_revision++;return reply({accepted:true});
+   }
    if(path.endsWith('manage/room/controls')||path.endsWith('manage/room/preferences'))return reply({revision:5});
    if(path.endsWith('manage/policy'))return reply(data.value);
    if(path.endsWith('source/login')){
@@ -83,13 +92,15 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
   }
   reads.push(path);
   if(lateResolve!==null)return new Promise(resolve=>{lateResolve=()=>resolve(reply(structuredClone(state)));});
-  if(path.endsWith('manage/room'))return reply(structuredClone(state));
+  if(path.endsWith('manage/room'))return reply(structuredClone(roomResponseOverride||state));
   if(path.includes('manage/library?')){
    if(holdLibrary)return new Promise(resolve=>{resolveLibrary=resolve;});
    if(failLibrary)return libraryFailure();
    const {searchParams}=new URL(path,'https://fixture.invalid');
    const offset=Number(searchParams.get('offset')),limit=Number(searchParams.get('limit'));
-   return reply({...structuredClone(inventory),total:inventory.entries.length,entries:inventory.entries.slice(offset,offset+limit)});
+   const target=searchParams.get('selectable'),hosts=target==='both'?['mac','nas']:[target];
+   const entries=inventory.entries.filter(row=>!target||hosts.some(host=>row[host])&&hosts.every(host=>!row[host]||row[host].can_delete));
+   return reply({...structuredClone(inventory),total:entries.length,entries:entries.slice(offset,offset+limit)});
   }
   if(path.endsWith('manage/policy/mac'))return reply({...structuredClone(inventory.mac),hot_cache:{bytes:1024**3}});
   if(path.endsWith('manage/policy/nas')){
@@ -97,9 +108,15 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
    return failNasPolicy?nasPolicyFailure():reply(structuredClone(inventory.nas));
   }
   if(path.includes('manage/search?')){
+   if(holdSearch)return new Promise(resolve=>searchResponses.push(resolve));
    const query=new URL(path,'https://fixture.invalid').searchParams;
    const cloud=query.get('source')==='cloud';
-   return reply({songs:[{song_id:'7',title:cloud?'合成云盘同名歌曲':'搜到的合成曲',artists:['歌手'],source:cloud?'cloud':'song'}]});
+   return reply({songs:[{song_id:'7',title:cloud?'合成云盘同名歌曲':'搜到的合成曲',artists:['歌手'],album:'合成专辑',cached_accompaniment:true,source:cloud?'cloud':'song'}]});
+  }
+  if(path.includes('manage/artwork?')){
+   if(artworkFailures-->0)return libraryFailure();
+   const query=new URL(path,'https://fixture.invalid').searchParams,ids=query.get('ids').split(',');
+   return reply({covers:Object.fromEntries(ids.map(id=>[id,thumbnail])),tracks:Object.fromEntries(ids.map(id=>[id,{artists:['歌手'],album:'合成专辑',source:query.get('source')}]))});
   }
   if(path.endsWith('source/status'))return reply(structuredClone(sourceStatus));
   if(path.endsWith('manage/backgrounds'))return reply({items:[structuredClone(background)],enabled:backgroundEnabled,daily_limit:backgroundLimit,daily_remaining:backgroundAllowance});
@@ -127,7 +144,36 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  await click(buttons('鼓掌')[0]);
  assert.equal(writes.at(-1).data.value.action,'sfx_applause','Atmosphere works on its own capability');
  await click(byId('queue-tab'));assert.match(root.textContent,/合成下一曲/);const currentCheck=nodes().find(n=>n.tagName==='input'&&n.attrs['aria-label']==='选择 合成当前曲');assert.equal(currentCheck.disabled,true,'Cannot remove current song');
- await click(byId('search-tab'));const search=nodes().find(n=>n.tagName==='input'&&n.type==='search');search.value='合成';const form=nodes().find(n=>n.className==='search-form');await form.onsubmit({preventDefault(){}});await settle();assert.match(root.textContent,/搜到的合成曲/);await click(buttons('点歌')[1]);assert.match(root.textContent,/已点 1 首/);assert.equal(writes.filter(w=>w.path.endsWith('/songs')).length,1);
+ for(let i=0;i<120&&nodes().filter(node=>node.tagName==='img'&&node.src===thumbnail).length!==4;i++)await new Promise(resolve=>setTimeout(resolve,50));await settle();
+ assert.equal(nodes().filter(node=>node.tagName==='img'&&node.src===thumbnail).length,4,'Public and cloud songs both hydrate their covers through the owner bridge');
+ assert.ok(reads.filter(path=>path.includes('manage/artwork?')).length>=3,'A temporary artwork failure retries automatically without a page refresh');
+ assert.match(root.textContent,/歌手 · 合成专辑/,'The queue hydrates the same recording metadata as search and cache');
+ assert.equal(currentCheck.hidden,true,'Normal queue browsing hides batch checkboxes');await click(buttons('选择歌曲')[0]);
+ await click(buttons('全选待唱')[0]);assert.match(root.textContent,/本场歌单/);assert.doesNotMatch(root.textContent,/声音与房间/,'Queue selection stays on the queue');
+ state.status.songs.push({id:'new',song_id:'5',source:'song',title:'外部新点歌曲',nickname:'朋友',state:'ready'});state.status.queue_revision++;
+ timer();await settle();assert.match(root.textContent,/外部新点歌曲/,'Phone/TV queue changes arrive while selection remains active');assert.match(root.textContent,/移除所选（3）/);
+ const queueRow=title=>nodes().find(node=>node.tagName==='article'&&node.className.includes('queue-entry')&&node.textContent.includes(title));
+ await click(walk(queueRow('合成第四曲')).find(node=>node.tagName==='button'&&node.textContent==='置顶'));
+ assert.deepEqual(writes.filter(write=>write.path.endsWith('/order')).at(-1).data.value.ids,['current','fourth','next','third','new'],'Pin uses the actual revision and preserves current playback');
+ const dragSource=walk(queueRow('合成第四曲')).find(node=>node.className==='queue-drag'),dropTarget=queueRow('外部新点歌曲');
+ const dragData={setData(){}};dragSource.ondragstart({dataTransfer:dragData,preventDefault(){assert.fail('Drag should start');}});
+ dropTarget.ondragover({dataTransfer:dragData,preventDefault(){}});dropTarget.ondrop({preventDefault(){}});await settle();
+ assert.deepEqual(writes.filter(write=>write.path.endsWith('/order')).at(-1).data.value.ids,['current','next','third','new','fourth'],'Dragging crosses several rows in one operation');
+ const keyboardHandle=walk(queueRow('合成第四曲')).find(node=>node.className==='queue-drag');keyboardHandle.onkeydown({key:'ArrowUp',preventDefault(){}});await settle();
+ assert.equal(state.status.songs.at(-2).id,'fourth','Keyboard reordering uses the same NAS ordering path');
+ roomResponseOverride={...structuredClone(state),status:{...structuredClone(state.status),queue_revision:0,songs:[]}};timer();await settle();
+ assert.match(root.textContent,/外部新点歌曲/,'Late old revisions cannot replace the visible queue');roomResponseOverride=null;
+ state.status.songs.find(song=>song.id==='third').lyric_state=-1;timer();await settle();
+ assert.match(queueRow('合成第三曲').textContent,/暂无同步歌词.*换个版本/);
+ assert.ok(!walk(queueRow('合成第三曲')).some(node=>node.tagName==='button'&&node.textContent==='重试'),'Ready recordings with failed lyrics do not send unsupported preparation retries');
+ await click(byId('search-tab'));const search=nodes().find(n=>n.tagName==='input'&&n.type==='search');search.value='合成';const form=nodes().find(n=>n.className==='search-form');await form.onsubmit({preventDefault(){}});await settle();assert.match(root.textContent,/搜到的合成曲.*歌手.*合成专辑.*伴奏已缓存/);
+ holdSearch=true;search.value='旧词';search.oninput();assert.doesNotMatch(root.textContent,/搜到的合成曲/,'Changing the query clears stale results immediately');const firstSearch=form.onsubmit({preventDefault(){}});await settle();
+ search.value='新词';search.oninput();const secondSearch=form.onsubmit({preventDefault(){}});await settle();
+ searchResponses[1](reply({songs:[{song_id:'7',source:'song',title:'新词结果',artists:['歌手'],album:'合成专辑',cached_accompaniment:true}]}));await secondSearch;await settle();
+ searchResponses[0](reply({songs:[{song_id:'8',source:'song',title:'旧词结果'}]}));await firstSearch;await settle();assert.match(root.textContent,/新词结果/);assert.doesNotMatch(root.textContent,/旧词结果/,'Late searches cannot overwrite newer search results');holdSearch=false;
+ search.value='合成';search.oninput();await form.onsubmit({preventDefault(){}});await settle();await click(buttons('点歌')[1]);assert.match(root.textContent,/已点 1 首/);assert.equal(writes.filter(w=>w.path.endsWith('/songs')).length,1);
+ const activeSearchForm=nodes().find(n=>n.className==='search-form');state.status.songs=state.status.songs.filter(song=>song.id!=='added-7');state.status.queue_revision++;
+ timer();await settle();assert.equal(nodes().find(n=>n.className==='search-form'),activeSearchForm,'Background synchronization preserves the active search form');assert.ok(buttons('点歌').some(node=>!node.disabled&&node!==byId('search-tab')),'Removed songs can be queued again after an external update');
  await click(byId('cache-tab'));
  assert.doesNotMatch(root.textContent,/空闲歌曲已清理|仍超出上限/,'Disabled Mac policy ignores legacy pressure state');
  assert.equal(byId('file-actions').hidden,true,'Browsing keeps cleanup controls out of view');
@@ -135,7 +181,10 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  await click(byId('select-files'));
  assert.equal(byId('file-actions').hidden,false);
  assert.equal(byId('select-column').hidden,false);
- const all=byId('select-page');all.checked=true;all.onchange();assert.match(root.textContent,/已选 1 项/);assert.equal(nodes().filter(n=>n.tagName==='input'&&n.type==='checkbox'&&n.disabled).length,1,'Protected content is not selectable');
+ assert.doesNotMatch(byId('library-rows').textContent,/仅 NAS 合成曲|受保护合成曲/,'Mac cleanup shows only actionable Mac copies');
+ await click(nodes().find(node=>node.tagName==='button'&&node.dataset.scope==='nas'));assert.match(byId('library-rows').textContent,/仅 NAS 合成曲/,'Switching the cleanup target exposes NAS-only copies');
+ await click(nodes().find(node=>node.tagName==='button'&&node.dataset.scope==='mac'));
+ const all=byId('select-page');all.checked=true;all.onchange();assert.match(root.textContent,/已选 1 项/);assert.equal(nodes().filter(n=>n.tagName==='input'&&n.type==='checkbox'&&n.disabled).length,0,'Every displayed cleanup row is actionable for the chosen target');
  await click(byId('delete-selected'));assert.equal(deleteAttempts,0,'Preview must not delete');assert.equal(byId('delete-dialog').open,true);await click(byId('cancel-delete'));assert.equal(deleteAttempts,0);assert.equal(document.activeElement,byId('delete-selected'),'Cancel restores focus');
  await click(byId('delete-selected'));await click(byId('confirm-delete'));assert.equal(deleteAttempts,1);assert.equal(byId('delete-dialog').open,true);assert.match(byId('delete-error').textContent,/重试剩余删除/);await click(byId('confirm-delete'));assert.equal(deleteAttempts,2);assert.equal(byId('delete-dialog').open,false);assert.ok(writes.filter(w=>w.path.endsWith('/delete')).every(w=>w.data.plan==='SYNTHETIC-plan'),'Partial retry reuses the reviewed deletion plan');
  const libraryReads=()=>reads.filter(path=>path.includes('manage/library?')).length;
@@ -281,5 +330,5 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  assert.match(root.textContent,/本机播放成品 3\.00 GB/);
  assert.match(root.textContent,/尚未核对 NAS 归档的成品暂时保留/);
  await click(byId('room-tab'));lateResolve=()=>{};timer();await settle();assert.ok(lateResolve);owner.dispose();lateResolve();await settle();assert.equal(root.children.length,0);assert.equal(cleared,true,'Dispose cancels polling');assert.equal(sourceWrites().filter(w=>w.path.endsWith('/login')).length,1,'Only explicit authorization starts login');
- console.log('KTV song controls, modal authorization, failed preparation actions, cloud lookup and backgrounds: OK');
+ console.log('KTV owner journey: live queue revision sync, pin/drag/keyboard order, stale-search cancellation, cover/album hydration, target-filtered cleanup and settings: OK');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -6,14 +6,17 @@ Stop with Ctrl-C. Cache ownership/cleanup is the same as other KTV build tools.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import mimetypes
+import struct
 import sys
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -29,20 +32,40 @@ ROOM = {"active": True, "room_id": "SYNTHETIC-room", "simulated": True, "default
     "playback": {"online": True, "current": "current", "played": [], "state": "playing", "mic_muted": True,
                  "applied_revision": 3, "safety_latched": False, "vocal_preset": "studio", "vocal_preset_state": "applied",
                  "audio_capabilities": {"vocal_presets": ["dry", "studio", "echo"], "sfx": True}},
-    "songs": [{"id": key, "song_id": str(i), "source": "song", "title": title + " · 合成示例", "nickname": "朋友", "state": state}
+    "songs": [{"id": key, "song_id": str(i), "source": "song", "title": title + " · 合成示例", "nickname": "朋友", "state": state,
+               "artists": ["合成歌手"], "album": "合成专辑 · 演唱会珍藏纪念版"}
               for i, (key, title, state) in enumerate((("current", "稻香", "ready"), ("next", "晴天", "ready"),
-                                                       ("third", "夜空中最亮的星", "separating")), 1)]}}
+                                                       ("third", "夜空中最亮的星", "ready"), ("fourth", "听妈妈的话", "ready"),
+                                                       ("fifth", "搁浅", "separating")), 1)]}}
 HOST = {"available": True, "configured": True, "bytes": int(3.4 * 1024**3), "policy": {"enabled": False, "limit_bytes": 20 * 1024**3}}
 ENTRIES = [{"id": "song:" + str(i), "title": title + " · 合成示例", "last_used": 1793771000 - i * 8000,
+            "source": "song", "artists": ["合成歌手"], "album": "合成专辑 · 演唱会珍藏纪念版",
             **{host: {"bytes": (120 + i * 17 + offset) * 1024**2, "can_delete": i > 3,
                       "reason": "in_queue" if i <= 3 else ""} for host, offset in (("mac", 0), ("nas", 10))}}
            for i, title in enumerate(("稻香", "晴天", "夜空中最亮的星", "小幸运", "平凡之路", "后来", "十年"), 1)]
+ENTRIES[4]["mac"] = None
 APPS = [{"id": key, "name": name, "description": description, "kind": kind, "players": players, "mode": key}
         for key, name, description, kind, players in (
             ("ski", "林间滑雪", "在雪道间转向，用身体控制速度。", "game", [1, 1]),
             ("tennis", "双人网球", "一人一侧，挥拍接住来球。", "game", [2, 2]),
             ("quest", "体感闯关", "跟着动作，逐关完成身体挑战。", "game", [1, 1]),
             ("werewolf", "狼人杀", "用手机查看身份，一起推理。", "party", [6, 12]))]
+
+
+def synthetic_cover(identifier):
+    """只绘制合成色块，避免预览依赖真实歌曲图片和外网。"""
+    color = ((104, 128, 113), (159, 126, 104), (100, 120, 143))[int(identifier) % 3]
+    pixels = bytearray()
+    for y in range(80):
+        pixels.append(0)
+        for x in range(80):
+            radius = (x - 40) ** 2 + (y - 36) ** 2
+            pixels.extend((222, 215, 188) if 125 < radius < 280 else (40, 48, 43) if radius < 625 else color)
+    def chunk(name, data):
+        return struct.pack(">I", len(data)) + name + data + struct.pack(">I", zlib.crc32(name + data))
+    payload = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 80, 80, 8, 2, 0, 0, 0))
+    payload += chunk(b"IDAT", zlib.compress(bytes(pixels))) + chunk(b"IEND", b"")
+    return "data:image/png;base64," + base64.b64encode(payload).decode()
 
 
 def handler_for(scenario):
@@ -64,6 +87,7 @@ def handler_for(scenario):
 
         def do_GET(self):
             path = urlsplit(self.path).path
+            query = parse_qs(urlsplit(self.path).query)
             if path == "/api/snapshot":
                 return self.data(dict(mode="simulator", version="SYNTHETIC-KTV", generated_at="2026-11-04T04:00:00Z",
                                       entities=[], devices=[], states=[], observations=[], events=[], rules=[], limitations=[]))
@@ -73,15 +97,29 @@ def handler_for(scenario):
                 return self.data({"cameras": []})
             if path in {"/api/games/ktv/party-audio.js", "/console/party-audio.js"}:
                 return self.send(200, PARTY_AUDIO_FILE.read_bytes(), "text/javascript")
+            if path == "/console/icon.png":
+                return self.send(200, (STATIC_ROOT / "brand/friday.png").read_bytes(), "image/png")
             prefix = next((p for p in ("/api/games/ktv/", "/v1/") if path.startswith(p)), None)
             if prefix:
                 if scenario == "offline":
                     return self.data({"detail": "ktv_offline"}, 503)
                 op = path.removeprefix(prefix)
+                if op == "manage/artwork":
+                    ids = query.get("ids", [""])[0].split(",")
+                    return self.data({"covers": {sid: synthetic_cover(sid) for sid in ids}, "tracks": {
+                        sid: {"artists": ["合成歌手"], "album": "合成专辑 · 演唱会珍藏纪念版", "source": query.get("source", ["song"])[0]} for sid in ids}})
+                if op == "manage/library":
+                    target = query.get("selectable", [""])[0]
+                    hosts = ("mac", "nas") if target == "both" else (target,)
+                    entries = [row for row in ENTRIES if not target or any(row.get(host) for host in hosts) and
+                               all(not row.get(host) or row[host]["can_delete"] for host in hosts)]
+                    text = query.get("q", [""])[0]
+                    entries = [row for row in entries if text in " ".join((row["title"], " ".join(row["artists"]), row["album"]))]
+                    offset, limit = int(query.get("offset", ["0"])[0]), int(query.get("limit", ["50"])[0])
+                    return self.data({"simulated": True, "mac": HOST, "nas": {**HOST, "bytes": int(6.2 * 1024**3),
+                        "policy": {"enabled": True, "limit_bytes": 100 * 1024**3}}, "entries": entries[offset:offset+limit], "total": len(entries)})
                 data = {
                     "manage/room": room if scenario == "ready" else {"active": False, "room_id": "", "defaults": DEFAULTS, "status": None},
-                    "manage/library": {"simulated": True, "mac": HOST, "nas": {**HOST, "bytes": int(6.2 * 1024**3),
-                        "policy": {"enabled": True, "limit_bytes": 100 * 1024**3}}, "entries": ENTRIES},
                     "manage/policy/mac": {**HOST, "hot_cache": {"bytes": HOST["bytes"]}},
                     "manage/policy/nas": {**HOST, "bytes": int(6.2 * 1024**3),
                         "policy": {"enabled": True, "limit_bytes": 100 * 1024**3}},
@@ -92,7 +130,8 @@ def handler_for(scenario):
                         {"id": "a" * 64, "title": "稻香 · 合成示例", "source": "song", "status": "ready", "ready": True},
                         {"id": "b" * 64, "title": "晴天 · 合成示例", "source": "cloud", "status": "preparing", "ready": False},
                     ]},
-                    "manage/search": {"songs": [{"song_id": str(i), "title": title + " · 合成示例", "artists": ["合成歌手"], "source": "song"}
+                    "manage/search": {"songs": [{"song_id": str(i), "title": title + " · 合成示例", "artists": ["合成歌手"], "source": "song",
+                        "album": "合成专辑 · 演唱会珍藏纪念版", "cached_accompaniment": True}
                         for i, title in enumerate(("稻香", "听妈妈的话", "晴天"), 7)]},
                 }
                 return self.data(data.get(op, {"detail": "not_found"}), 200 if op in data else 404)
@@ -117,6 +156,16 @@ def handler_for(scenario):
                         "nickname": "合成访客", "state": "queued"})
                     room["status"]["queue_revision"] += 1
                 return self.data({"id": identifier, "accepted": True})
+            if path.endswith("/manage/room/order"):
+                value = body.get("value", {})
+                songs = room["status"]["songs"]
+                if body.get("room_id") != room["room_id"] or value.get("revision") != room["status"]["queue_revision"]:
+                    return self.data({"detail": "queue_changed"}, 409)
+                if set(value.get("ids", [])) != {song["id"] for song in songs}:
+                    return self.data({"detail": "invalid_order"}, 400)
+                room["status"]["songs"] = [next(song for song in songs if song["id"] == sid) for sid in value["ids"]]
+                room["status"]["queue_revision"] += 1
+                return self.data({"accepted": True})
             if path.endswith("/manage/preview"):
                 return self.data({"plan": "SYNTHETIC-plan", "songs": [{"title": row["title"]} for row in ENTRIES if row["id"] in body.get("ids", [])], "bytes": {"mac": 350 * 1024**2, "nas": 420 * 1024**2}})
             if path.endswith("/manage/backgrounds/policy"):

@@ -67,17 +67,26 @@ class Management:
                        "(SELECT version FROM managed_editions WHERE song_id=? AND source=? ORDER BY updated DESC,rowid DESC LIMIT 3)",
                        (job["song_id"], source, job["song_id"], source))
 
-    def verified_edition(self, song_id, source, db):
+    def verified_edition(self, song_id, source, db, *, compatible=True):
         for row in db.execute("SELECT * FROM managed_editions WHERE song_id=? AND source=? "
                               "ORDER BY updated DESC,rowid DESC LIMIT 3",
                               (song_id, source)):
             specs = json.loads(row["job"])["media"]
-            if (any(spec.get("encoding") == "aac_lc_m4a" for spec in specs.values())
+            if (compatible and any(spec.get("encoding") == "aac_lc_m4a" for spec in specs.values())
                     and self.coordinator.playback_encoding() != "aac_lc_m4a"):
                 continue
             if all(self._verified_asset(spec, db) for spec in specs.values()):
                 return row
         return None
+
+    def with_cached_accompaniment(self, page):
+        with self.store.connection() as db:
+            songs = []
+            for song in page["songs"]:
+                edition = self.verified_edition(song["song_id"], song["source"], db, compatible=False)
+                media = json.loads(edition["job"])["media"] if edition else {}
+                songs.append({**song, "cached_accompaniment": True} if "instrumental" in media else song)
+        return {**page, "songs": songs}
 
     def _verified_asset(self, spec, db):
         record = db.execute("SELECT * FROM coordinator_cache WHERE sha=?", (spec["sha256"],)).fetchone()
@@ -229,6 +238,8 @@ class Management:
             with self.store.connection() as db:
                 links = [dict(r) for r in db.execute("SELECT * FROM managed_media")]
                 records = {r["sha"]: dict(r) for r in db.execute("SELECT * FROM coordinator_cache")}
+                catalog = self.store.catalog_index(db)
+                sources = {row["song_id"]: row["source"] for row in db.execute("SELECT song_id,source FROM managed_editions ORDER BY updated")}
             groups, identities, unknown = {}, {}, 0
             for path in self.coordinator.media_root.iterdir():
                 if not SHA.fullmatch(path.name):
@@ -258,7 +269,11 @@ class Management:
                 with self.coordinator.lock:
                     transferring = bool(group["hashes"] & (self.coordinator.cache_pending | self.coordinator.verify_pending))
                 in_queue = key[5:] in protected if key.startswith("song:") else False
-                entries.append({"id": key, "title": group["title"], "last_used": group["last_used"], "kind": group["kind"],
+                sid = key[5:] if key.startswith("song:") else ""
+                source = sources.get(sid, "cloud" if ("cloud", sid) in catalog else "song")
+                track = catalog.get((source, sid), {})
+                entries.append({"id": key, "title": track.get("title") or group["title"], "last_used": group["last_used"], "kind": group["kind"],
+                                **({"source": source, **{name: track[name] for name in ("artists", "album", "artwork") if name in track}} if sid else {}),
                                 "bytes": sum(v[2] for v in files.values()), "revision": fingerprint([sorted(group["hashes"]), files]),
                                 "can_delete": not (in_queue or transferring or unsafe),
                                 "reason": "in_queue" if in_queue else "transferring" if transferring else "unsafe" if unsafe else ""})
@@ -396,7 +411,11 @@ class Management:
         if operation == "search":
             if set(payload) != {"q", "source", "offset"}:
                 raise self.error(400, "invalid_query")
-            return self.store.search(payload["q"], payload["source"], payload["offset"])
+            return self.with_cached_accompaniment(self.store.search(payload["q"], payload["source"], payload["offset"]))
+        if operation == "artwork":
+            if set(payload) - {"ids", "source", "inline"} or "ids" not in payload or type(payload.get("inline", True)) is not bool:
+                raise self.error(400, "invalid_query")
+            return self.store.search_artwork(payload["ids"], source=payload.get("source", "song"), inline=payload.get("inline", True))
         if set(payload) != {"room_id", "value"} or not isinstance(payload["value"], dict):
             raise self.error(400, "invalid_request")
         room = self._room()

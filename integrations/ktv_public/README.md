@@ -58,7 +58,11 @@ While a direct TV session exists, preparation task leases are restricted to that
 
 Joined guest credentials currently remain valid until the session is explicitly ended. There is no new independent guest time TTL. When a QR key changes during adoption, a guest who already joined can still use the prior room key together with that guest credential; an old QR alone cannot admit a new visitor. No existing guest is revoked by this migration.
 
-手机通过一次访客加入请求返回身份和资料。浏览器在同一站点保存随机种子，按房间导出不同的访客凭据。首次进入可随加入请求提交已保存的昵称和头像。已有身份重入时保留 NAS 上的资料。站点存储不可用时，访客仍可在当前会话扫码加入。
+手机用一次 `POST /?room=current` 取得当前邀请、设备身份及歌单快照；原 GET 与逐房间加入接口继续兼容。浏览器在同一站点保存随机设备凭据及 Cookie 备份，NAS 只保存摘要。凭据按房间导出访客身份，迁移时可恢复原 v1 访客；新的场次沿用设备显示资料。旧凭据仍有效，重复加入不创建第二个人。头像编号 0–11 保持原映射，12–31 为新角色，电视 0.78 动态读取同一图集。
+
+NAS 在实际电视播放回报中按设备摘要幂等更新常唱记录，手机不必持续在线。`GET /api/rooms/{id}/profile?frequent=1` 只返回当前设备自己的曲库及云盘常唱。云盘目录可附带专辑及官方图片地址，显示资料随完整快照一起写入 `song_catalog`；残缺分页保持旧资料。缺少资料时再按歌名和歌手核对公开录音，已点与管理清单复用；同数值的曲库 ID 和云盘 ID 分开存放。
+
+首屏入口合并基础脚本，通过版本化资源缓存及 gzip 减少重复传输。歌曲查询合并同查询的并发请求，曲库首次请求缓存相邻两页。封面在可见行附近独立补齐，暂时失败只影响对应图片；设置预览在打开设置时才加载。`artwork` 接口除 `covers` 外可返回 `tracks` 与 `albums`，管理接口沿用相同资料。
 
 手机加入后即可使用「常唱歌手」。NAS 先返回已保存的推荐歌单，并在后台更新上游数据。首次加载时，手机会自动刷新歌单，搜索和播放控制可以照常使用。
 

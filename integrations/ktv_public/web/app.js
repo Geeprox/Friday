@@ -1,6 +1,7 @@
 "use strict";
 const $=id=>document.getElementById(id),fragment=new URLSearchParams(location.hash.slice(1));
-const names=["汽水猫","夜航兔","慢慢鲸","摇摆熊","月球旅人","小幽灵","唱片君","星星糖","柠檬汽水","仙人掌","北极企鹅","节拍小子"];
+const names=["汽水猫","夜航兔","慢慢鲸","摇摆熊","月球旅人","小幽灵","唱片君","星星糖","柠檬汽水","仙人掌","北极企鹅","节拍小子",
+ "鸣人","柯南","路飞","孙悟空","卡卡西","樱木花道","琪琪","龙猫","齐天大圣","哪吒","猪八戒","唐僧","白素贞","嫦娥","李白","鲁智深","史努比","哆啦A梦","月野兔","小丸子"];
 const extraNames=["山茶晚风","海盐汽水","弯月小岛","白桃列车","银杏信箱","雾蓝唱片","月亮贝壳","柚子雨","杏仁云","铃兰邮差","晚班星光","晴空纸船"];
 const themes=[["content","内容与留白","安静的影像，给歌声留白"],["festival","音乐节","鲜明图形，今晚放开唱"],["live","Live","把客厅交给现场"]];
 let room=fragment.get("r"),key=fragment.get("k"),identity=null,songs=[],selected=[],mode="home",online=false,theme="content",refreshTimer,chosenAvatar=0,queueRevision=0,playableOrder=null,playback={online:false,current:"",played:[],state:"idle"},controls={music_gain:70,sfx_gain:60,control_revision:0},drag=null,ordering=false,actionSong=null,commandBusy=false,pendingControls={},source="song",searchSequence=0,searchOffset=0,searchMore=false,searchBusy=false,searchQuery="",playlistId="",playlistTitle="",recommendations=null,playlistPage=0;
@@ -12,7 +13,9 @@ let addQueue=null,addSnapshot={items:[],stopped:"",persistence:"memory"},addView
 const roomStaleMs=12000;
 let joinKey="",joinFailures=0;
 let preferredProfile=null;
+let themeRevision=0,themeIntent=null;
 const guestSeedKey="friday-ktv-guest-seed-v1",guestProfileKey="friday-ktv-guest-profile";
+const deviceStorageKey="friday-ktv-browser-v1",deviceCookie="__Secure-FridayKTVBrowser";
 const guestCredential=/^[A-Za-z0-9_-]{32,80}$/,randomSecret=/^[a-f0-9]{64}$/;
 let playbackAvailable=true;
 const pendingActions=new Map(),receiptListeners=new Set();
@@ -48,7 +51,7 @@ const ear=new FridayEarMonitor(earClock,state=>{
 const sourceOf=s=>["cloud","mv"].includes(s.source)?s.source:"song",songKey=s=>`${sourceOf(s)}:${s.song_id}`;
 const alreadyQueued=s=>selected.some(v=>songKey(v)===songKey(s)&&v.state!=="cancelled"&&!playback.played.includes(v.id));
 const frequentKey="friday-ktv-frequent-songs";
-let frequentSongs=[],frequentSeen=[];
+let frequentSongs=[],frequentSeen=[],remoteFrequent=[],frequentRequest=null;
 try{
  const saved=JSON.parse(localStorage.getItem(frequentKey)||"{}");
  if(Array.isArray(saved.songs))frequentSongs=saved.songs.filter(s=>s&&typeof s.song_id==="string"&&["song","mv"].includes(s.source)&&Number.isInteger(s.plays)&&s.plays>0).slice(0,40).map(s=>({...s,artists:Array.isArray(s.artists)?s.artists:[]}));
@@ -65,10 +68,36 @@ function rememberFrequent(rows){
  try{localStorage.setItem(frequentKey,JSON.stringify({songs:frequentSongs,seen:frequentSeen}));}catch{}
  return true;
 }
+function frequentRows(){
+ const merged=new Map(remoteFrequent.map(song=>[songKey(song),song]));
+ for(const song of frequentSongs){
+  const previous=merged.get(songKey(song));
+  merged.set(songKey(song),previous?{...song,...previous,plays:Math.max(previous.plays,song.plays)}:song);
+ }
+ return [...merged.values()].sort((a,b)=>b.plays-a.plays).slice(0,40);
+}
+function loadFrequent(){
+ if(!identity||document.hidden||frequentRequest)return frequentRequest?.task;
+ const controller=new AbortController(),request={controller,task:null};frequentRequest=request;
+ if(!frequentRows().length)message("正在读取常唱歌曲…");
+ request.task=api("profile",null,"?frequent=1",{signal:controller.signal}).then(value=>{
+  if(frequentRequest!==request||controller.signal.aborted)return;
+  if(Array.isArray(value.songs))remoteFrequent=value.songs;
+  if(mode==="frequent")message("");
+ }).catch(error=>{
+  if(frequentRequest!==request||controller.signal.aborted||mode!=="frequent")return;
+  if(["room_closed","room_unavailable","guest_unavailable"].includes(error.code))failure(error);
+  else message("常唱歌曲暂时未更新。");
+ }).finally(()=>{if(frequentRequest===request){frequentRequest=null;if(mode==="frequent")render();}});
+ return request.task;
+}
 const labels={queued:"等待准备",acquiring:"下载中",separating:"制作伴奏",transcoding:"即将就绪",ready:"已就绪",failed:"准备失败",cancelled:"已取消"};
 function message(text){$("message").textContent=text;}
 function toast(text){$("toast").textContent=text;$("toast").classList.add("show");setTimeout(()=>$("toast").classList.remove("show"),2400);}
-function avatar(node,id){const i=Number.isInteger(id)&&id>=0&&id<12?id:0;node.style.backgroundPosition=`${i%4*100/3}% ${Math.floor(i/4)*50}%`;}
+function avatar(node,id){
+ const valid=Number.isInteger(id)&&id>=0&&id<names.length?id:0;
+ node.style.backgroundPosition=`${valid%4*100/3}% ${Math.floor(valid/4)*100/(Math.ceil(names.length/4)-1)}%`;
+}
 function readGuestStorage(storage,name){
  try{return globalThis[storage].getItem(name)||"";}catch{return "";}
 }
@@ -112,7 +141,7 @@ const requestBudgets={status:3000,events:10000,search:7000,discover:5500,join:75
 async function api(operation,body,query="",{signal,timeoutMs=requestBudgets[operation]||15000,priority="auto",guestKey=identity?.key}={}){
  const current=operation==="current",requestRoom=room;
  if(!current&&!valid)throw Object.assign(new Error(),{code:"cancelled"});
- const headers=current?{}:{"X-KTV-Room":key,...(guestKey?{"X-KTV-Guest":guestKey}:{}),...(body?{"Content-Type":"application/json"}:{})};
+ const headers={...(!current?{"X-KTV-Room":key}:{}),...(guestKey?{"X-KTV-Guest":guestKey}:{}),...(body?{"Content-Type":"application/json"}:{})};
  const controller=new AbortController(),abort=()=>controller.abort();let timedOut=false;
  const timeout=setTimeout(()=>{timedOut=true;controller.abort();},timeoutMs);signal?.addEventListener("abort",abort,{once:true});if(signal?.aborted)abort();
  try{
@@ -150,17 +179,34 @@ function failure(error){
  message(text);
  const alert=document.querySelector("dialog[open] [role=alert]");if(alert)alert.textContent=text;
 }
-function applyTheme(value){if(!themes.some(t=>t[0]===value))return;theme=value;document.body.dataset.theme=value;document.querySelectorAll(".theme-option").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.theme===theme)));}
+function applyTheme(value){if(!themes.some(t=>t[0]===value)||value===theme&&document.body.dataset.theme===value)return;theme=value;document.body.dataset.theme=value;document.querySelectorAll(".theme-option").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.theme===theme)));}
 function artworkUrl(url){
  if(typeof url!=="string")return "";
  if(/^https:\/\/[a-z0-9.-]+\.music\.126\.net\//.test(url))return url;
  return url.length<1500000&&/^data:image\/(?:jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(url)?url:"";
 }
-function resolvedArtwork(song){return (sourceOf(song)==="song"?searchArtwork.get(song.song_id)||"":"")||artworkUrl(song.artwork);}
+function resolvedArtwork(song){
+ const url=artworkUrl(song.artwork);
+ return needsCatalogCover(song)?searchArtwork.get(artworkKey(song))||(!artworkFailures.has(artworkKey(song))&&url.startsWith("data:")?url:""):url;
+}
+function artworkKey(song){return sourceOf(song)==="cloud"?"cloud:"+song.song_id:song.song_id;}
 function placeholderCover(){const cover=document.createElement("div");cover.className="cover placeholder";cover.setAttribute("aria-hidden","true");cover.textContent="♪";return cover;}
 function coverFor(song,visible=false){
  const url=resolvedArtwork(song);if(!url)return placeholderCover();
- const img=document.createElement("img");img.className="cover";img.alt="";img.loading=visible?"eager":"lazy";img.decoding="async";img.referrerPolicy="no-referrer";img.src=url;img.onerror=()=>img.replaceWith(placeholderCover());return img;
+ const img=document.createElement("img");img.className="cover";img.alt="";img.loading=visible?"eager":"lazy";img.decoding="async";img.referrerPolicy="no-referrer";img.src=url;
+ img.onload=()=>artworkFailures.delete(artworkKey(song));
+ img.onerror=()=>{
+  if(!img.isConnected)return;
+  img.replaceWith(placeholderCover());
+  const cached=searchArtwork.get(artworkKey(song));
+  if(!needsCatalogCover(song)||cached&&cached!==url)return;
+  const id=artworkKey(song),attempt=(artworkFailures.get(id)||0)+1;
+  searchArtwork.delete(id);artworkFailures.set(id,attempt);artworkRefresh.add(id);
+  if(artworkFailures.size>240)artworkFailures.delete(artworkFailures.keys().next().value);
+  artworkMissing.set(id,performance.now()+Math.min(8000,650*2**Math.min(attempt-1,4)));
+  queueArtwork(id);
+ };
+ return img;
 }
 const resultRowCache=new Map(),resultGroupCache=new Map();
 function reconcileChildren(parent,desired){
@@ -168,10 +214,10 @@ function reconcileChildren(parent,desired){
  for(const child of Array.from(parent.children))if(!keep.has(child))parent.removeChild(child);
  for(let i=0;i<desired.length;i++)if(parent.children[i]!==desired[i])parent.insertBefore(desired[i],parent.children[i]||null);
 }
-function render(){tabs();for(const [node]of pendingActions)if(!node.isConnected)busy(node,false);const home=mode==="home";$("discover").hidden=!home;document.querySelector(".list-heading").hidden=mode!=="queue";updateSearchPager();const rows=home?[]:mode==="find"?songs:mode==="frequent"?frequentSongs:[...selected].sort((a,b)=>queueRank(a)-queueRank(b)),container=$("results"),focused=document.activeElement?.dataset.focusId||document.activeElement?.dataset.song;const historyOpen=container.querySelector("details.history")?.open||false;const rootRows=[],groupRows=new Map(),usedRows=new Set(),usedGroups=new Set();$("list-title").textContent="本场歌单";$("count").textContent=rows.length?`${rows.length} 首`:"";
+function render(){tabs();for(const [node]of pendingActions)if(!node.isConnected)busy(node,false);const home=mode==="home";$("discover").hidden=!home;document.querySelector(".list-heading").hidden=mode!=="queue";updateSearchPager();const rows=home?[]:mode==="find"?songs:mode==="frequent"?frequentRows():[...selected].sort((a,b)=>queueRank(a)-queueRank(b)),container=$("results"),focused=document.activeElement?.dataset.focusId||document.activeElement?.dataset.song;const historyOpen=container.querySelector("details.history")?.open||false;const rootRows=[],groupRows=new Map(),usedRows=new Set(),usedGroups=new Set();$("list-title").textContent="本场歌单";$("count").textContent=rows.length?`${rows.length} 首`:"";
  const searchPrompt=mode==="find"&&!$("query").value.trim()&&source!=="cloud"&&!playlistId;
- $("empty").hidden=home||rows.length>0||(mode==="find"&&!searchPrompt);
- $("empty").textContent=mode==="find"?"搜一首你想唱的歌。":mode==="frequent"?"从这台手机点过并播放的歌曲会出现在这里。":"还没有已点歌曲，第一首交给你。";
+ $("empty").hidden=home||rows.length>0||(mode==="find"&&!searchPrompt)||(mode==="frequent"&&!!frequentRequest);
+ $("empty").textContent=mode==="find"?"搜一首你想唱的歌。":mode==="frequent"?"你点过并唱过的歌曲会出现在这里。":"还没有已点歌曲，第一首交给你。";
  const nextQueuedId=nextPlayable()?.id,firstOrderableId=selected.find(canReorder)?.id;
  const groupCounts=new Map();
  if(mode==="queue")for(const song of rows){
@@ -186,17 +232,27 @@ function render(){tabs();for(const [node]of pendingActions)if(!node.isConnected)
    queueGroup=resultGroupCache.get(group);
    if(!queueGroup){queueGroup=document.createElement(collapsible?"details":"section");queueGroup.className="queue-group "+group;if(group==="history")queueGroup.open=historyOpen;resultGroupCache.set(group,queueGroup);}
    usedGroups.add(group);const heading=queueGroup.children[0]||document.createElement(collapsible?"summary":"h3");
-   heading.textContent=({current:"正在唱",pending:"接下来",preparing:"正在准备",failed:"暂不可唱",history:"唱过了"})[group];
+   heading.textContent=({current:!playback.online?"上次播放":playback.state==="paused"?"已暂停":playback.state==="preparing"?"正在加载":"正在唱",pending:"接下来",preparing:"正在准备",failed:"暂不可唱",history:"唱过了"})[group];
    const count=document.createElement("span");count.textContent=String(groupCounts.get(group));
    heading.append(count);groupRows.set(queueGroup,[heading]);rootRows.push(queueGroup);lastQueueGroup=group;
   }
  }
- const rowKey=mode==="queue"?`queue:${song.id}`:`${mode}:${songKey(song)}`,signature=JSON.stringify([song,mode,song.id===playback.current?playback.state:"",playback.played.includes(song.id),song.id===nextQueuedId,song.id===firstOrderableId,mode==="queue"&&lastQueueGroup,mode==="queue"&&groupCounts.get(lastQueueGroup)>1]);usedRows.add(rowKey);
+ const rowKey=mode==="queue"?`queue:${song.id}`:`${mode}:${songKey(song)}`,signature=JSON.stringify([song,mode,song.id===playback.current?[playback.state,playback.online]:"",playback.played.includes(song.id),song.id===nextQueuedId,song.id===firstOrderableId,mode==="queue"&&lastQueueGroup,mode==="queue"&&groupCounts.get(lastQueueGroup)>1]);usedRows.add(rowKey);
  const previousRow=resultRowCache.get(rowKey);if(previousRow?.signature===signature){if(mode==="queue")groupRows.get(queueGroup).push(previousRow.row);else rootRows.push(previousRow.row);return;}
- const row=document.createElement("article");row.className="song";row.dataset.renderKey=rowKey;if(mode==="queue"){row.classList.add("queue-song");row.dataset.queue=song.id;if(song.id===playback.current)row.classList.add("current");}const firstCovers=mode==="find"&&index<7;row.dataset.firstCovers=firstCovers?"1":"0";row.append(coverFor(song,firstCovers));const details=document.createElement("div");details.className="details";const title=document.createElement("div");title.className="song-title";title.textContent=song.title||`歌曲 ${song.song_id}`;details.append(title);if(sourceOf(song)!=="song"){const badge=document.createElement("span");badge.className="source-badge";badge.textContent=sourceOf(song)==="cloud"?"云盘":"MV";details.append(badge);}const artist=document.createElement("div");artist.className="artist";artist.textContent=(song.artists||[]).join(" / ");if(artist.textContent)details.append(artist);
+ const row=document.createElement("article");row.className="song";row.dataset.renderKey=rowKey;if(mode==="queue"){row.classList.add("queue-song");row.dataset.queue=song.id;if(song.id===playback.current)row.classList.add("current");}
+ if(needsCatalogCover(song))row.dataset.artworkId=artworkKey(song);
+ row.append(coverFor(song,index<7));
+ const details=document.createElement("div");details.className="details";const title=document.createElement("div");title.className="song-title";title.textContent=song.title||`歌曲 ${song.song_id}`;details.append(title);
+ const metadata=document.createElement("div");metadata.className="song-metadata";
+ const artist=document.createElement("span");artist.className="artist";
+ artist.textContent=[(song.artists||[]).join(" / "),song.album].filter(Boolean).join(" · ");
+ if(artist.textContent){artist.title=artist.textContent;metadata.append(artist);}
+ if(sourceOf(song)!=="song"){const badge=document.createElement("span");badge.className="source-badge";badge.textContent=sourceOf(song)==="cloud"?"云盘":"MV";metadata.append(badge);}
+ if(mode!=="queue"&&song.cached_accompaniment===true){const badge=document.createElement("span");badge.className="cache-badge";badge.textContent="伴奏已缓存";metadata.append(badge);}
+ if(metadata.childElementCount)details.append(metadata);
  if(mode==="queue"){const by=document.createElement("div");by.className="requester";const picture=document.createElement("span");picture.className="avatar";picture.setAttribute("aria-hidden","true");avatar(picture,song.avatar);const label=document.createElement("span");label.textContent=`${song.nickname||"朋友"} 点的`;by.append(picture,label);details.append(by);if(!["ready","cancelled"].includes(song.state)){const process=document.createElement("div");process.className="preparation";const p=song.progress||{},steps=["原曲","伴奏","播放文件","MV"];const label=document.createElement("p");label.className="prepare-label";const stage={queued:"等待准备",acquiring:"获取原曲",waiting_storage:"等待 Mac 腾出缓存空间",waiting_separation:"等待制作伴奏",waiting_memory:"等待制作伴奏",separating:"正在生成伴奏",waiting_transcode:"伴奏已完成",transcoding:"准备播放文件",video:"匹配 MV"}[p.stage]||labels[song.state];label.textContent=song.state==="failed"?(song.code==="download_timeout"?"原曲下载未完成，请重试。":({source_login_required:"音源尚未连接，请联系房主。",source_rights_denied:"当前账户无法下载这个版本，请换一个版本。",source_api_unavailable:"音源服务暂时不可用，请稍后重试。",source_file_invalid:"这首暂时无法播放，请重试或换个版本。",storage_full:"Mac 缓存空间不足，释放空间后重试。"}[song.code]||"本次准备未完成，可重试或换一个版本。")):stage;process.append(label);const rail=document.createElement("div");rail.className="prepare-steps";rail.setAttribute("aria-label",`处理步骤：${stage}`);steps.forEach((name,i)=>{const step=document.createElement("span");step.textContent=name;step.className=i<(p.completed_steps||0)?"complete":i===(p.completed_steps||0)?"active":"";rail.append(step);});process.append(rail);if(p.source_total>0&&p.source_phase==="source_downloading"){const progress=document.createElement("progress");progress.max=p.source_total;progress.value=Math.min(p.source_bytes||0,p.source_total);progress.setAttribute("aria-label","原曲下载进度");process.append(progress);const bytes=document.createElement("p");bytes.className="prepare-wait";bytes.textContent=`已下载 ${Math.floor(progress.value/p.source_total*100)}%`;process.append(bytes);}details.append(process);}}row.append(details);
  if(mode==="find"||mode==="frequent"){const button=document.createElement("button");button.className="add";button.dataset.song=songKey(song);button.dataset.title=song.title;button.onclick=()=>add(song,button);row.append(button);}else addQueueActions(row,details,song,nextQueuedId,firstOrderableId,groupCounts.get(lastQueueGroup)>1);for(const b of row.querySelectorAll("button"))b.dataset.focusId=song.id?`${song.id}:${b.className.split(" ")[0]}`:b.dataset.song;resultRowCache.set(rowKey,{row,signature});if(mode==="queue")groupRows.get(queueGroup).push(row);else rootRows.push(row);});
- for(const [group,nodes]of groupRows)reconcileChildren(group,nodes);reconcileChildren(container,rootRows);
+ for(const [group,nodes]of groupRows)reconcileChildren(group,nodes);reconcileChildren(container,rootRows);observeArtwork();
  for(const key of resultRowCache.keys())if(!usedRows.has(key))resultRowCache.delete(key);for(const key of resultGroupCache.keys())if(!usedGroups.has(key))resultGroupCache.delete(key);
  for(const [node]of pendingActions)if(!node.isConnected)busy(node,false);updateAddButtons();if(focused){const button=Array.from(container.querySelectorAll("button")).find(b=>(b.dataset.focusId||b.dataset.song)===focused);button?.focus({preventScroll:true});}
 }
@@ -204,7 +260,7 @@ function addQueueActions(row,details,song,nextQueuedId,firstOrderableId,hasPeers
  const state=document.createElement("span");
  state.className="state";
  if(song.id===playback.current){
-  state.textContent=playback.state==="playing"?"正在唱":playback.state==="preparing"?"加载中":"已暂停";
+  state.textContent=!playback.online?"上次播放":playback.state==="playing"?"正在唱":playback.state==="preparing"?"加载中":"已暂停";
  }else if(playback.played.includes(song.id)){
   state.textContent="唱过了";
  }else if(song.lyric_state===-1){
@@ -307,7 +363,10 @@ function applyStatus(value){
  if(!Number.isInteger(revisionReceived)||revisionReceived>=controls.control_revision)controls={...controls,...(value.controls||{})};
  addQueue?.observe({songs:value.songs,played:playback.played});addQueue?.wake();
  const frequentChanged=rememberFrequent(value.songs);
- applyTheme(value.theme);updatePlayer();tabs();$("hint").textContent=readinessHint(value);
+ if(!themeIntent&&(!Number.isInteger(value.theme_revision)||value.theme_revision>=themeRevision)){
+  themeRevision=value.theme_revision||0;applyTheme(value.theme);
+ }
+ updatePlayer();tabs();$("hint").textContent=readinessHint(value);
  if(mode==="queue"&&(changed||playbackSignature!==queuePlaybackSignature())&&!drag&&!ordering){playbackSignature=queuePlaybackSignature();render();}else if(mode==="frequent"&&frequentChanged)render();else updateAddButtons();
  for(const wake of receiptListeners)wake();
 }
@@ -351,52 +410,105 @@ function startStatusFeed(){
  if(typeof FridayStatusFeed!=="function"){clearInterval(refreshTimer);refreshTimer=setInterval(probeSoon,2000);return;}
  if(!statusFeed)statusFeed=new FridayStatusFeed({
   probeEvery:4500,pollEvery:300,
-  events:({cursor,signal})=>api("events",null,"?after="+cursor+"&wait=3",{signal}),probe:options=>refresh(options),visible:()=>!document.hidden,
+  events:({cursor,signal})=>api("events",null,"?after="+cursor+"&wait=3",{signal}),
+  probe:options=>lastStatusSuccess>0&&performance.now()-lastStatusSuccess<900?Promise.resolve(true):refresh(options),visible:()=>!document.hidden,
   onStatus:value=>{if(!usableStatus(value)){probeSoon();return;}const now=performance.now();if(earClock.observe(value,now,now,{calibrate:false}))applyStatus(value);},onFailure:error=>statusFailure(error,"events")
  });
  statusFeed.start();
 }
-let searchController=null,searchTimer=null,searchComposing=false,nextPage=null,pagingNow=false,pagingFailed=false,searchRetryDelay=600;
-const searchArtwork=new Map(),artworkPending=new Set(),artworkAttempted=new Set();
+let searchController=null,searchTimer=null,searchComposing=false,nextPage=null,warmPage=null,pagingNow=false,pagingFailed=false,searchRetryDelay=600;
+const searchArtwork=new Map(),artworkPending=new Set(),artworkMissing=new Map(),artworkFailures=new Map(),artworkRefresh=new Set();
 let artworkController=null,artworkRetry=null,artworkDelay=650;
+const artworkObserver=typeof IntersectionObserver==="function"?new IntersectionObserver(entries=>{
+ for(const entry of entries)if(entry.isIntersecting)queueArtwork(entry.target.dataset.artworkId);
+ enrichArtwork();
+},{rootMargin:"240px 0px"}):null;
+function needsCatalogCover(song){return sourceOf(song)!=="mv"&&/^[1-9][0-9]{0,17}$/.test(song.song_id);}
 function stopArtwork(){
  artworkController?.abort();artworkController=null;clearTimeout(artworkRetry);artworkRetry=null;artworkDelay=650;
- artworkPending.clear();artworkAttempted.clear();
+ artworkObserver?.disconnect();artworkPending.clear();
 }
-function queueArtwork(rows){
- if(!identity||mode!=="find"||document.hidden)return;
- for(const song of rows)if(sourceOf(song)==="song"&&/^[1-9][0-9]{0,17}$/.test(song.song_id)&&!searchArtwork.has(song.song_id)&&!artworkAttempted.has(song.song_id))artworkPending.add(song.song_id);
+function queueArtwork(id){
+ if(!id||searchArtwork.has(id))return;
+ artworkPending.add(id);
+ if((artworkMissing.get(id)||0)>performance.now())enrichArtwork();
+}
+function observeArtwork(){
+ if(!identity||mode==="home"||document.hidden)return;
+ artworkObserver?.disconnect();
+ for(const {row} of resultRowCache.values()){
+  const id=row.dataset.artworkId;
+  if(!id||searchArtwork.has(id))continue;
+  if(artworkObserver)artworkObserver.observe(row);else queueArtwork(id);
+ }
  enrichArtwork();
 }
 async function enrichArtwork(){
- if(artworkController||artworkRetry!==null||!artworkPending.size||document.hidden)return;
- const controller=new AbortController(),ids=[...artworkPending].slice(0,6);
+ if(artworkController||document.hidden||mode==="home")return;
+ clearTimeout(artworkRetry);artworkRetry=null;
+ if(!artworkPending.size)return;
+ const now=performance.now(),ready=[...artworkPending].filter(id=>(artworkMissing.get(id)||0)<=now);
+ if(!ready.length){
+  const wait=Math.min(...[...artworkPending].map(id=>artworkMissing.get(id)-now));
+  artworkRetry=setTimeout(()=>{artworkRetry=null;enrichArtwork();},Math.ceil(wait));
+  return;
+ }
+ // 坏图按各自的截止时间重试，先补当前视图中尚未失败的封面。
+ ready.sort((a,b)=>Number(artworkMissing.has(a))-Number(artworkMissing.has(b)));
+ const controller=new AbortController(),source=ready[0].startsWith("cloud:")?"cloud":"song";
+ const retrying=artworkMissing.has(ready[0]);
+ const keys=ready.filter(id=>id.startsWith("cloud:")===(source==="cloud")&&artworkMissing.has(id)===retrying).slice(0,source==="cloud"?3:6);
+ const ids=keys.map(id=>source==="cloud"?id.slice(6):id);
+ const reload=keys.some(id=>artworkRefresh.has(id));
  artworkController=controller;
- for(const id of ids)artworkPending.delete(id);
+ for(const id of keys)artworkPending.delete(id);
  try{
-  const {covers,pending=[]}=await api("artwork",null,"?"+new URLSearchParams({ids:ids.join(","),inline:1}),{signal:controller.signal,timeoutMs:9500,priority:"low"});
-  if(controller.signal.aborted||mode!=="find")return;
+  const {covers,pending=[],albums={},tracks={}}=await api("artwork",null,"?"+new URLSearchParams({
+   ids:ids.join(","),inline:1,...(source==="cloud"?{source}:{}),...(reload?{refresh:1}:{})
+  }),{signal:controller.signal,timeoutMs:15000,priority:"low"});
+  if(controller.signal.aborted||mode==="home")return;
   if(!covers||Array.isArray(covers)||typeof covers!=="object")throw Object.assign(new Error(),{code:"search_unavailable"});
-  let resolved=0;
-  for(const id of ids){
-   if(pending.includes(id)){artworkPending.add(id);continue;}
-   artworkAttempted.add(id);artworkPending.delete(id);
-   const url=artworkUrl(covers?.[id]);if(!url)continue;
+  let resolved=0;const retryKeys=[];
+  for(const id of keys){
+   const ident=source==="cloud"?id.slice(6):id;
+   if(pending.includes(ident)){retryKeys.push(id);artworkRefresh.add(id);continue;}
+   artworkPending.delete(id);
+   const url=artworkUrl(covers?.[ident]);
+   if(!url){
+    artworkMissing.set(id,performance.now()+90000);
+    if(artworkMissing.size>240)artworkMissing.delete(artworkMissing.keys().next().value);
+    continue;
+   }
    resolved++;
+   artworkMissing.delete(id);artworkRefresh.delete(id);
    searchArtwork.set(id,url);if(searchArtwork.size>240)searchArtwork.delete(searchArtwork.keys().next().value);
-   const row=resultRowCache.get("find:song:"+id)?.row;
-   if(row?.firstElementChild?.classList.contains("cover"))row.firstElementChild.replaceWith(coverFor({song_id:id,source:"song"},row.dataset.firstCovers==="1"));
+   for(const {row} of resultRowCache.values())if(row.dataset.artworkId===id&&row.firstElementChild?.classList.contains("placeholder")){
+    row.firstElementChild.replaceWith(coverFor({song_id:ident,source},true));
+    artworkObserver?.unobserve(row);
+   }
   }
+  let metadataChanged=false;
+  for(const song of [...songs,...selected,...frequentSongs,...remoteFrequent]){
+   if(sourceOf(song)!==source)continue;
+   const track=tracks[song.song_id],album=track?.album||albums[song.song_id];
+   if(typeof album==="string"&&album!==song.album){song.album=album;metadataChanged=true;}
+   if(Array.isArray(track?.artists)&&track.artists.every(name=>typeof name==="string")
+      &&JSON.stringify(track.artists)!==JSON.stringify(song.artists||[])){
+    song.artists=track.artists;metadataChanged=true;
+   }
+  }
+  if(metadataChanged)render();
   if(resolved)artworkDelay=650;
-  if(pending.length){
-   artworkRetry=setTimeout(()=>{artworkRetry=null;enrichArtwork();},artworkDelay);
+  if(retryKeys.length){
+   const retryAt=performance.now()+artworkDelay;
+   for(const id of retryKeys){artworkPending.add(id);artworkMissing.set(id,retryAt);}
    artworkDelay=Math.min(6000,artworkDelay*2);
   }
  }catch(error){
-  if(controller.signal.aborted||mode!=="find")return;
+  if(controller.signal.aborted||mode==="home")return;
   if(connectionError(error)||["search_busy","search_unavailable","rate_limited","guest_unavailable"].includes(error.code)){
-   for(const id of ids)artworkPending.add(id);
-   artworkRetry=setTimeout(()=>{artworkRetry=null;enrichArtwork();},Math.max(artworkDelay,error.retryAfterMs||0));
+   const retryAt=performance.now()+Math.max(artworkDelay,error.retryAfterMs||0);
+   for(const id of keys){artworkPending.add(id);artworkMissing.set(id,retryAt);}
    artworkDelay=Math.min(6000,artworkDelay*2);
   }
  }finally{if(artworkController===controller){artworkController=null;enrichArtwork();}}
@@ -423,6 +535,7 @@ function cancelSearchInput(){
  const wasBusy=searchBusy;
  clearTimeout(searchTimer);searchTimer=null;searchController?.abort();searchController=null;
  nextPage?.controller.abort();nextPage=null;pagingNow=false;pagingFailed=false;stopArtwork();
+ warmPage?.controller.abort();warmPage=null;
  pagingObserver?.disconnect();searchSequence++;resetSearchBusy();
  if(wasBusy&&$("message").textContent==="正在找歌…")message("");
 }
@@ -436,15 +549,15 @@ function scheduleSearch(){
  if($("query").value.trim()!==searchQuery||playlistId){
   playlistId="";playlistTitle="";clearSearchResults();message("");render();
  }
- if(!searchComposing)searchTimer=setTimeout(()=>{searchTimer=null;findSongs();},240);
+ if(!searchComposing)searchTimer=setTimeout(()=>{searchTimer=null;findSongs();},180);
 }
-async function searchPage(q,kind,list,offset,signal){
+async function searchPage(q,kind,list,offset,signal,priority="high"){
  const operation=list?"playlist":"search";
  const params=list?new URLSearchParams({id:list,offset}):new URLSearchParams({q,source:kind,offset});
  const cacheKey=operation+"?"+params;
  const hit=searchPages.get(cacheKey);
  if(hit&&performance.now()-hit.at<45000){searchPages.delete(cacheKey);searchPages.set(cacheKey,hit);return hit.value;}
- const value=await api(operation,null,"?"+params,{signal});
+ const value=await api(operation,null,"?"+params,{signal,priority});
  if(!Array.isArray(value?.songs))throw Object.assign(new Error(),{code:"search_unavailable"});
  if(!signal.aborted&&(kind!=="cloud"||value.updated)){
   searchPages.delete(cacheKey);searchPages.set(cacheKey,{at:performance.now(),value});
@@ -457,21 +570,28 @@ function applySearchPage(value,offset,append){
  const rows=value.songs.filter(song=>{const key=songKey(song);if(seen.has(key))return false;seen.add(key);return true;});
  songs=append?[...songs,...rows]:rows;
  searchOffset=Number.isInteger(value.next_offset)?value.next_offset:offset+30;
- searchMore=value.has_more===true&&searchOffset>offset&&searchOffset<=100000;
- render();queueArtwork(rows);
+ searchMore=value.has_more===true&&value.songs.length>0&&searchOffset>offset&&searchOffset<=100000;
+ render();
+}
+function warmNextPage(){
+ if(warmPage||mode!=="find"||document.hidden||!searchMore||pagingNow||pagingFailed)return;
+ const page={offset:searchOffset,controller:new AbortController(),task:null};
+ warmPage=page;
+ page.task=searchPage(searchQuery,source,playlistId,page.offset,page.controller.signal,"low").catch(()=>null);
 }
 async function appendNextPage(retry=false){
  if(pagingNow||mode!=="find"||document.hidden||!searchMore||searchBusy||searchTimer||searchComposing||pagingFailed&&!retry)return;
  const page={offset:searchOffset,sequence:searchSequence,controller:new AbortController()};
+ const warmed=warmPage?.offset===page.offset?warmPage:null;
  nextPage=page;pagingFailed=false;
  pagingNow=true;updateSearchPager();
  try{
-  const value=await searchPage(searchQuery,source,playlistId,page.offset,page.controller.signal);
+  const value=(warmed&&await warmed.task)||await searchPage(searchQuery,source,playlistId,page.offset,page.controller.signal);
   if(nextPage===page&&page.sequence===searchSequence&&!page.controller.signal.aborted)applySearchPage(value,page.offset,true);
  }catch{
   if(nextPage===page)pagingFailed=true;
  }finally{
-  if(nextPage===page){pagingNow=false;nextPage=null;updateSearchPager();observeSearchEnd();}
+  if(nextPage===page){if(warmPage===warmed)warmPage=null;pagingNow=false;nextPage=null;updateSearchPager();observeSearchEnd();warmNextPage();}
  }
 }
 async function findSongs(more=false,collection=null){
@@ -504,14 +624,14 @@ async function findSongs(more=false,collection=null){
    }
    else failure(error);
   }
- }finally{if(searchController===controller)searchController=null;if(sequence===searchSequence){resetSearchBusy();observeSearchEnd();}}
+ }finally{if(searchController===controller)searchController=null;if(sequence===searchSequence){resetSearchBusy();observeSearchEnd();warmNextPage();}}
 }
 function resumeSearchView(){
  if(mode!=="find"||searchBusy||searchTimer||searchComposing)return;
  const q=$("query").value.trim();
  if(playlistId&&!songs.length)findSongs(false,{id:playlistId,title:playlistTitle});
  else if(!playlistId&&(q!==searchQuery||(!songs.length&&(q||source==="cloud"))))scheduleSearch();
- else{queueArtwork(songs);observeSearchEnd();}
+ else{observeArtwork();observeSearchEnd();warmNextPage();}
 }
 function searchTitles(query){setView("find");selectSearchSource("song");$("query").value=query;findSongs();}
 function selectSearchSource(kind){
@@ -635,9 +755,13 @@ function tabs(){
 }
 function setView(next,{push=true,focus}={}){
  if(!["home","find","queue","frequent"].includes(next)||mode===next)return;
- const previous=mode;viewScroll[mode]=window.scrollY;cancelDrag();mode=next;if(previous==="find"&&next!=="find"){searchComposing=false;cancelSearchInput();}
+ const previous=mode;viewScroll[mode]=window.scrollY;cancelDrag();stopArtwork();mode=next;
+ if(previous==="find"&&next!=="find"){searchComposing=false;cancelSearchInput();}
+ if(previous==="home")stopDiscover();
  if(push)history.pushState({ktvView:next},"");
- message("");tabs();render();
+ message("");
+ if(next==="frequent")loadFrequent();
+ tabs();render();
  if(next==="home")loadDiscover();
  const focusId=focus||(next==="home"?(previous==="queue"?"queue-tab":previous==="frequent"?"frequent-entry":"search-entry"):"page-title");
  // Focus in the gesture task so opening search keeps the mobile keyboard active.
@@ -657,13 +781,52 @@ function openDialog(id){
  if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");
  dialog.querySelector(".sheet-heading h2").focus({preventScroll:true});
 }
-function chooseAvatar(id){chosenAvatar=id;document.querySelectorAll(".avatar-choice").forEach((b,i)=>b.setAttribute("aria-pressed",String(i===id)));}
-for(let i=0;i<12;i++){const b=document.createElement("button");b.type="button";b.className="avatar-choice";b.setAttribute("aria-label",`选择${names[i]}头像`);b.setAttribute("aria-pressed","false");const picture=document.createElement("span");picture.className="avatar";picture.setAttribute("aria-hidden","true");avatar(picture,i);b.append(picture);b.onclick=()=>chooseAvatar(i);$("avatar-picker").append(b);}
-$("profile-button").onclick=()=>{if(!identity)return;$("nickname").value=identity.nickname;chooseAvatar(identity.avatar);$("profile-error").textContent="";openDialog("profile-dialog");};
+function chooseAvatar(id){
+ chosenAvatar=id;
+ document.querySelectorAll(".avatar-choice").forEach(button=>button.setAttribute("aria-pressed",String(Number(button.dataset.avatar)===id)));
+}
+function renderAvatarPicker(){
+ const picker=$("avatar-picker");
+ if(picker.children.length)return;
+ const displayOrder=[...names.map((name,i)=>[i,name]).slice(12),...names.map((name,i)=>[i,name]).slice(0,12)];
+ for(const [id,name] of displayOrder){
+  const button=document.createElement("button");button.type="button";button.className="avatar-choice";button.dataset.avatar=String(id);
+  button.setAttribute("aria-label",`选择${name}头像`);button.setAttribute("aria-pressed","false");
+  const picture=document.createElement("span");picture.className="avatar";picture.setAttribute("aria-hidden","true");avatar(picture,id);
+  button.append(picture);button.onclick=()=>chooseAvatar(id);picker.append(button);
+ }
+}
+$("profile-button").onclick=()=>{if(!identity)return;renderAvatarPicker();$("nickname").value=identity.nickname;chooseAvatar(identity.avatar);$("profile-error").textContent="";openDialog("profile-dialog");};
 $("random-profile").onclick=()=>{const [picture,word]=crypto.getRandomValues(new Uint32Array(2)),choices=[...names,...extraNames];chooseAvatar(picture%names.length);$("nickname").value=choices[word%choices.length];};
 $("save-profile").onclick=async()=>{const name=$("nickname").value.trim();if(!name){$("profile-error").textContent="起一个昵称再保存。";$("nickname").focus();return;}const b=$("save-profile");b.disabled=true;busy(b,true,"正在保存…");try{const result=await api("profile",{nickname:name,avatar:chosenAvatar});identity={...identity,...result};saveIdentity({prefer:true});$("profile-dialog").close();toast("就用这个名字，开唱吧");await refresh();}catch{$("profile-error").textContent="还没保存，检查连接后再试。";}finally{b.disabled=false;busy(b,false);}};
-for(const [value,title,description]of themes){const button=document.createElement("button");button.type="button";button.className="theme-option";button.dataset.theme=value;button.setAttribute("aria-pressed",String(theme===value));const preview=document.createElement("img");preview.className="theme-preview";preview.src=`./${value}.png?v=3`;preview.alt="";const text=document.createElement("div");text.className="theme-copy";const heading=document.createElement("strong");heading.textContent=title;const detail=document.createElement("span");detail.textContent=description;text.append(heading,detail);button.append(preview,text);button.onclick=async()=>{if([...document.querySelectorAll(".theme-option")].some(b=>b.getAttribute("aria-busy")==="true"))return;button.disabled=true;busy(button,true,"正在切换风格…");try{await api("theme",{theme:value});applyTheme(value);$("theme-error").textContent="";toast("本场风格已更新");}catch{$("theme-error").textContent="还没切换，检查连接后再试。";}finally{button.disabled=false;busy(button,false);}};$("theme-picker").append(button);}
-$("settings-button").onclick=()=>{if(!identity)return;$("theme-error").textContent="";openDialog("settings-dialog");};
+async function chooseTheme(value,button){
+ if(themeIntent||theme===value)return;
+ const previous=theme,intent={};themeIntent=intent;
+ $("theme-error").textContent="";applyTheme(value);busy(button,true,"正在切换风格…");
+ try{
+  const result=await api("theme",{theme:value},"",{priority:"high"});
+  if(themeIntent===intent){themeRevision=result.theme_revision??themeRevision;toast("本场风格已更新");}
+ }catch(error){
+  if(themeIntent===intent&&error.code!=="cancelled"){
+   applyTheme(previous);$("theme-error").textContent="这次未能切换，请重试。";
+   if(["room_closed","room_unavailable","guest_unavailable"].includes(error.code))failure(error);
+  }
+ }finally{if(themeIntent===intent)themeIntent=null;busy(button,false);}
+}
+function renderThemePicker(){
+ const picker=$("theme-picker");
+ if(picker.children.length)return;
+ for(const [value,title,description]of themes){
+  const button=document.createElement("button");button.type="button";button.className="theme-option";button.dataset.theme=value;
+  button.setAttribute("aria-pressed",String(theme===value));
+  const preview=document.createElement("img");preview.className="theme-preview";preview.src=`./${value}.png?v=4`;preview.alt="";preview.decoding="async";
+  const copy=document.createElement("div");copy.className="theme-copy";
+  const heading=document.createElement("strong");heading.textContent=title;
+  const detail=document.createElement("span");detail.textContent=description;copy.append(heading,detail);
+  button.append(preview,copy);button.onclick=()=>chooseTheme(value,button);picker.append(button);
+ }
+}
+$("settings-button").onclick=()=>{if(!identity)return;renderThemePicker();$("theme-error").textContent="";openDialog("settings-dialog");};
 // The remembered nonzero level belongs to this room and survives a page reload.
 // Storage may be unavailable in an embedded browser; the in-memory value still works.
 class RoomMusicVolume {
@@ -1044,6 +1207,45 @@ async function automaticGuestKey(){
  }
  return joinKey;
 }
+function savedDeviceKey(){
+ const stored=readGuestStorage("localStorage",deviceStorageKey);
+ if(randomSecret.test(stored))return stored;
+ try{
+  const backup=document.cookie.split(";").map(value=>value.trim()).find(value=>value.startsWith(deviceCookie+"="))?.split("=")[1]||"";
+  if(randomSecret.test(backup))return backup;
+ }catch{}
+ return readGuestStorage("sessionStorage",deviceStorageKey);
+}
+async function joinPayload(includeRoomKey){
+ if(!globalThis.crypto?.getRandomValues)return {snapshot:true};
+ const restored=savedDeviceKey();
+ const device=randomSecret.test(restored)?restored:await sharedLocalSecret(guestSeedKey);
+ writeGuestStorage("localStorage",deviceStorageKey,device);
+ try{
+  if(location.protocol==="https:"&&!document.cookie.includes(deviceCookie+"=")){
+   document.cookie=`${deviceCookie}=${device}; Path=${location.pathname}; Max-Age=31536000; Secure; SameSite=Strict`;
+  }
+ }catch{}
+ const proposed=includeRoomKey?await automaticGuestKey():"",profile=savedGuestProfile();
+ return {snapshot:true,device_key:device,...(proposed?{guest_key:proposed}:{}),...(profile?{profile}:{})};
+}
+function attachRoom(next){
+ room=next.room;key=next.key;valid=true;joinFailures=0;statusFailures=0;lastStatusSuccess=0;lastStatusProbe=-Infinity;
+ roomMusicVolume=new RoomMusicVolume(room,roomGainStorage);roomResumeAt=performance.now();
+ writeGuestStorage("sessionStorage","friday-ktv-room",JSON.stringify({room,key}));
+}
+function activateGuest(guest,snapshot,started){
+ identity=guest;joinFailures=0;saveIdentity({prefer:true});message("");connectionNotice("");
+ $("profile-button").disabled=$("settings-button").disabled=false;
+ if(usableStatus(snapshot)){
+  const now=performance.now();
+  if(snapshot.server_time_ms)earClock.observe(snapshot,started,now);
+  lastStatusProbe=now;applyStatus(snapshot);
+ }
+ render();initAddQueue();clearInterval(refreshTimer);startStatusFeed();loadDiscover();
+ if(!usableStatus(snapshot))refresh();
+ if(mode==="frequent")loadFrequent();
+}
 async function enterCurrentRoom(expired=false){
  if(roomLookup||document.hidden)return;
  const controller=new AbortController();
@@ -1055,7 +1257,9 @@ async function enterCurrentRoom(expired=false){
  modeIntent=null;
  for(const node of controlPendingVersions.keys())busy(node,false);
  controlPendingVersions.clear();
- valid=false;identity=null;joinKey="";
+ const retainedKey=identity?.key||"";
+ valid=false;identity=null;joinKey="";themeIntent=null;themeRevision=0;
+ const historyRequest=frequentRequest;frequentRequest=null;historyRequest?.controller.abort();
  clearTimeout(joinTimer);stopRoomStatus(true);statusFeed=null;stopDiscover();
  if(expired){
   addQueue?.stop("room_closed");addQueue?.close();addQueue=null;
@@ -1077,12 +1281,15 @@ async function enterCurrentRoom(expired=false){
  const opening=expired?"本场已结束，正在进入新场…":"正在连接当前房间…";
  message(opening);
  try{
-  const next=await api("current",null,"",{signal:controller.signal,timeoutMs:3500});
+  const started=performance.now(),options={signal:controller.signal,timeoutMs:7500,priority:"high",guestKey:retainedKey};
+  const joined=await api("current",await joinPayload(false),"",options).catch(error=>{
+   if([404,405].includes(error.status)&&error.code!=="no_active_room")return null;
+   throw error;
+  });
+  const next=joined?.room||await api("current",null,"",options);
   if(!validRoom(next?.room,next?.key))throw Object.assign(new Error(),{code:"service_unavailable"});
-  room=next.room;key=next.key;valid=true;joinFailures=0;statusFailures=0;lastStatusSuccess=0;lastStatusProbe=-Infinity;
-  roomMusicVolume=new RoomMusicVolume(room,roomGainStorage);roomResumeAt=performance.now();
-  writeGuestStorage("sessionStorage","friday-ktv-room",JSON.stringify({room,key}));
-  $("profile-button").disabled=$("settings-button").disabled=false;
+  attachRoom(next);
+  if(joined?.guest)activateGuest(joined.guest,joined.status,started);
  }catch(error){
   if(!controller.signal.aborted){
    const closed=error.code==="no_active_room";
@@ -1091,7 +1298,7 @@ async function enterCurrentRoom(expired=false){
    if(!document.hidden)joinTimer=setTimeout(()=>enterCurrentRoom(),closed?5000:1800);
   }
  }finally{if(roomLookup===controller)roomLookup=null;}
- if(valid)void join();
+ if(valid&&!identity)void join();
 }
 async function join(){
  if(joining||document.hidden)return;
@@ -1102,15 +1309,20 @@ async function join(){
   const retainedKey=`friday-ktv-room-credential:${room}`;
   const known=[identity?.key,readGuestStorage("localStorage",retainedKey),readGuestStorage("sessionStorage",`friday-ktv-join:${room}`)]
    .find(candidate=>typeof candidate==="string"&&guestCredential.test(candidate));
-  const proposed=await automaticGuestKey(),profile=savedGuestProfile();
+  const payload=await joinPayload(true),proposed=payload.guest_key,started=performance.now();
   if(!valid||room!==joinedRoom)return;
-  const payload={...(proposed?{guest_key:proposed}:{}),...(profile?{profile}:{})};
-  identity=await api("join",payload,"",{guestKey:known||""});
-  if(guestCredential.test(identity.key||"")&&(identity.key!==proposed||known)){
-   writeGuestStorage("localStorage",retainedKey,identity.key!==proposed?identity.key:"");
+  let result;
+  try{result=await api("join",payload,"",{guestKey:known||"",priority:"high"});}
+  catch(error){
+   if(error.status!==400||error.code!=="invalid_request")throw error;
+   const profile=payload.profile?.avatar<12?payload.profile:undefined;
+   result=await api("join",{guest_key:proposed,...(profile?{profile}:{})},"",{guestKey:known||"",priority:"high"});
   }
-  joinFailures=0;saveIdentity();message("");connectionNotice("");render();
-  initAddQueue();clearInterval(refreshTimer);startStatusFeed();refresh();loadDiscover();
+  const {status,...guest}=result;
+  if(guestCredential.test(guest.key||"")&&(guest.key!==proposed||known)){
+   writeGuestStorage("localStorage",retainedKey,guest.key!==proposed?guest.key:"");
+  }
+  activateGuest(guest,status,started);
  }catch(error){
   if(error.code==="cancelled")return;
   failure(error);
@@ -1124,6 +1336,8 @@ async function join(){
 function resumeRoom(){
  if(!identity){join();return;}
  roomResumeAt=performance.now();initAddQueue();startStatusFeed();refresh();loadDiscover();resumeSearchView();
+ if(mode==="queue")observeArtwork();
+ if(mode==="frequent"){loadFrequent();observeArtwork();}
 }
 join();document.addEventListener("visibilitychange",()=>{if(document.hidden){stopRoomStatus();stopDiscover();cancelDrag();searchComposing=false;cancelSearchInput();}else resumeRoom();});
 window.addEventListener("online",()=>{if(!document.hidden)resumeRoom();});

@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+import gzip
 import hashlib
 import hmac
 import json
@@ -17,9 +18,11 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import unicodedata
 import uuid
 from contextlib import contextmanager
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -84,6 +87,26 @@ NAMES = (
     "仙人掌",
     "北极企鹅",
     "节拍小子",
+    "鸣人",
+    "柯南",
+    "路飞",
+    "孙悟空",
+    "卡卡西",
+    "樱木花道",
+    "琪琪",
+    "龙猫",
+    "齐天大圣",
+    "哪吒",
+    "猪八戒",
+    "唐僧",
+    "白素贞",
+    "嫦娥",
+    "李白",
+    "鲁智深",
+    "史努比",
+    "哆啦A梦",
+    "月野兔",
+    "小丸子",
 )
 GUEST_NAMES = NAMES + (
     "山茶晚风", "海盐汽水", "弯月小岛", "白桃列车", "银杏信箱", "雾蓝唱片", "月亮贝壳", "柚子雨",
@@ -93,6 +116,10 @@ GUEST_NAMES = NAMES + (
     "暖橘月台", "云朵口袋", "山野萤火", "雨声漫步", "湖畔晨星", "月光咖啡", "风铃晚班", "浪花回信",
     "露水花园", "海边落日", "星星邮局", "云边积木", "暮色电车", "青柠月亮", "小岛晴天", "咖啡雨",
 )
+AVATAR_COUNT = len(NAMES)
+DEVICE_KEY = re.compile(r"[a-f0-9]{64}\Z")
+SEARCH_PAGE_SIZE = 30
+SEARCH_MAX_AGE = 600
 ARTISTS = ["周杰伦", "陈奕迅", "林俊杰", "五月天", "孙燕姿", "张惠妹", "张学友", "王菲", "邓紫棋", "薛之谦", "陶喆", "林宥嘉", "李荣浩", "郭顶", "告五人", "许嵩", "周深", "张杰", "赵雷", "陈粒", "苏打绿", "王力宏", "刘德华", "梁静茹"]
 
 
@@ -127,7 +154,7 @@ def guest_profile(payload):
         or not 1 <= len(payload["nickname"].strip()) <= 24
         or any(ord(c) < 32 or ord(c) == 127 for c in payload["nickname"])
         or type(payload["avatar"]) is not int
-        or not 0 <= payload["avatar"] < len(NAMES)
+        or not 0 <= payload["avatar"] < AVATAR_COUNT
     ):
         raise Refusal(400, "invalid_profile")
     return payload["nickname"].strip(), payload["avatar"]
@@ -206,6 +233,8 @@ class Store:
         self.event_lock = threading.Lock()
         self.limits = {}
         self.search_cache = {}
+        self.search_pending = {}
+        self.catalog_lock = threading.Lock()
         self.search_slots = threading.BoundedSemaphore(4)
         self.artwork_cache = {}
         self.thumbnail_cache = {}
@@ -233,6 +262,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS guests(id TEXT PRIMARY KEY, room TEXT NOT NULL, token_hash TEXT NOT NULL,
               nickname TEXT NOT NULL, avatar INTEGER NOT NULL, created INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS guests_room ON guests(room);
+            CREATE TABLE IF NOT EXISTS guest_devices(device TEXT PRIMARY KEY,nickname TEXT NOT NULL,avatar INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS guest_frequent(device TEXT NOT NULL,source TEXT NOT NULL,song_id TEXT NOT NULL,
+              title TEXT NOT NULL,artwork TEXT NOT NULL,plays INTEGER NOT NULL,last_played INTEGER NOT NULL,
+              PRIMARY KEY(device,source,song_id));
             CREATE TABLE IF NOT EXISTS retries(room TEXT NOT NULL,request_id TEXT NOT NULL,song TEXT NOT NULL,PRIMARY KEY(room,request_id));
             CREATE TABLE IF NOT EXISTS commands(seq INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL,
               request_id TEXT NOT NULL, action TEXT NOT NULL, song TEXT NOT NULL, created INTEGER NOT NULL,
@@ -241,13 +274,20 @@ class Store:
               guest_id TEXT NOT NULL, song_id TEXT NOT NULL, title TEXT NOT NULL, source TEXT NOT NULL,
               queue_id TEXT NOT NULL, was_duplicate INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room,request_id));
             CREATE TABLE IF NOT EXISTS cloud_catalog(song_id TEXT PRIMARY KEY,title TEXT NOT NULL,artists TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS cloud_recordings(song_id TEXT PRIMARY KEY,public_id TEXT NOT NULL,
+              title TEXT NOT NULL,artists TEXT NOT NULL,album TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS song_catalog(source TEXT NOT NULL,song_id TEXT NOT NULL,title TEXT NOT NULL,
+              artists TEXT NOT NULL,album TEXT NOT NULL,artwork TEXT NOT NULL,PRIMARY KEY(source,song_id));
             CREATE TABLE IF NOT EXISTS cloud_staging(position INTEGER PRIMARY KEY,song_id TEXT UNIQUE,title TEXT NOT NULL,artists TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS cloud_display_staging(song_id TEXT PRIMARY KEY,album TEXT NOT NULL,artwork TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cloud_sync(id INTEGER PRIMARY KEY,revision TEXT NOT NULL,total INTEGER NOT NULL,received INTEGER NOT NULL,updated INTEGER NOT NULL);
             """)
             for table, name, kind in (
                 ("rooms", "theme", "TEXT NOT NULL DEFAULT 'content'"),
                 ("rooms", "theme_revision", "INTEGER NOT NULL DEFAULT 0"),
                 ("guests", "nickname_custom", "INTEGER NOT NULL DEFAULT -1"),
+                ("guests", "device", "TEXT NOT NULL DEFAULT ''"),
+                ("guests", "device_token_hash", "TEXT NOT NULL DEFAULT ''"),
                 ("songs", "guest_id", "TEXT NOT NULL DEFAULT ''"),
                 ("songs", "nickname", "TEXT NOT NULL DEFAULT '朋友'"),
                 ("songs", "avatar", "INTEGER NOT NULL DEFAULT 0"),
@@ -258,6 +298,7 @@ class Store:
                 ("songs", "cache_hit", "INTEGER NOT NULL DEFAULT 0"),
                 ("songs", "source", "TEXT NOT NULL DEFAULT 'song'"),
                 ("songs", "removed", "INTEGER NOT NULL DEFAULT 0"),
+                ("songs", "frequent_recorded", "INTEGER NOT NULL DEFAULT 0"),
                 ("songs", "guide_sha", "TEXT NOT NULL DEFAULT ''"),
                 ("songs", "guide_bytes", "INTEGER NOT NULL DEFAULT 0"),
                 ("songs", "guide_duration", "INTEGER NOT NULL DEFAULT 0"),
@@ -322,6 +363,7 @@ class Store:
             digest.update(statement.encode("utf-8"))
             digest.update(b"\n")
         return digest.hexdigest()
+
 
     @staticmethod
     def _regular_private_file(path):
@@ -628,7 +670,7 @@ class Store:
                 # A new QR does not evict visitors who already joined with the
                 # previous QR. It cannot admit a new visitor with an old link.
                 valid = bool(db.execute("SELECT 1 FROM room_tokens WHERE room=? AND token_hash=?", (room_id, sha(key))).fetchone()
-                             and db.execute("SELECT 1 FROM guests WHERE room=? AND token_hash=?", (room_id, sha(guest_key))).fetchone())
+                             and self.guest_record(db, room_id, guest_key))
             if not valid:
                 raise Refusal(403, "room_unavailable")
             if value["closed"]:
@@ -665,34 +707,66 @@ class Store:
     def join_url(self, room_id, key):
         return self.origin + self.base_path + "/#" + urllib.parse.urlencode({"r": room_id, "k": key})
 
-    def join(self, room, guest_key=None, *, profile=None, existing_key=""):
+    @staticmethod
+    def guest_record(db, room_id, key):
+        digest = sha(key)
+        return db.execute("SELECT id,nickname,avatar,device FROM guests WHERE room=? AND "
+                          "(token_hash=? OR device_token_hash=?)", (room_id, digest, digest)).fetchone()
+
+    def join(self, room, guest_key=None, *, profile=None, existing_key="", device_key=None):
         if guest_key is not None and (not isinstance(guest_key, str) or not re.fullmatch(r"[a-f0-9]{64}", guest_key)):
             raise Refusal(400, "invalid_request")
         if not isinstance(existing_key, str) or (existing_key and not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", existing_key)):
             raise Refusal(400, "invalid_request")
+        if device_key is not None and (not isinstance(device_key, str) or not DEVICE_KEY.fullmatch(device_key)):
+            raise Refusal(400, "invalid_request")
         requested = guest_profile(profile) if profile is not None else None
-        with self.lock, self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            active = db.execute("SELECT closed,expires FROM rooms WHERE id=?", (room["id"],)).fetchone()
+        room_id = room["id"]
+        device = sha(device_key) if device_key else ""
+        scoped_key = (hmac.new(bytes.fromhex(device_key), ("Friday KTV room credential v2/" + room_id).encode(),
+                               hashlib.sha256).hexdigest() if device_key else "")
+        legacy_key = (hmac.new(bytes.fromhex(device_key), ("Friday KTV guest room v1/" + room_id).encode(),
+                               hashlib.sha256).hexdigest() if device_key else "")
+        tokens = tuple(dict.fromkeys(filter(None, (scoped_key, existing_key, guest_key, legacy_key))))
+
+        def find(db):
+            active = db.execute("SELECT closed,played FROM rooms WHERE id=?", (room_id,)).fetchone()
             if not active or active["closed"]:
                 raise Refusal(410, "room_closed")
-            # 同一手机重试时返回原身份，响应丢失不会消耗新的名额。
-            for token in dict.fromkeys((existing_key, guest_key)):
-                if not token:
-                    continue
-                existing = db.execute("SELECT id,nickname,avatar FROM guests WHERE room=? AND token_hash=?",
-                                      (room["id"], sha(token))).fetchone()
-                if existing:
-                    return {**dict(existing), "key": token}
-            if db.execute("SELECT count(*) FROM guests WHERE room=?", (room["id"],)).fetchone()[0] >= 60:
+            for token in tokens:
+                row = self.guest_record(db, room_id, token)
+                if row:
+                    return active, row, token
+            return active, None, ""
+
+        # 日常扫码重入只读，正在归档时也无需等待 SQLite 的写事务。
+        with self.connection() as db:
+            active, existing, key = find(db)
+        if existing and (not device or existing["device"]):
+            return {"id": existing["id"], "key": key, "nickname": existing["nickname"], "avatar": existing["avatar"]}
+        with self.lock, self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            active, existing, key = find(db)
+            if existing:
+                if device and not existing["device"]:
+                    db.execute("INSERT OR IGNORE INTO guest_devices VALUES(?,?,?)",
+                               (device, existing["nickname"], existing["avatar"]))
+                    db.execute("UPDATE guests SET device=?,device_token_hash=? WHERE id=?",
+                               (device, sha(scoped_key), existing["id"]))
+                    self.remember_plays(db, room_id, json.loads(active["played"]), guest_id=existing["id"])
+                return {"id": existing["id"], "key": key, "nickname": existing["nickname"], "avatar": existing["avatar"]}
+            if db.execute("SELECT count(*) FROM guests WHERE room=?", (room_id,)).fetchone()[0] >= 60:
                 raise Refusal(429, "guest_capacity")
-            self.budget("join:" + room["id"], 60, 14400)
-            guest_id, key = str(uuid.uuid4()), guest_key or secrets.token_urlsafe(32)
-            occupied = {row[0] for row in db.execute("SELECT nickname FROM guests WHERE room=?", (room["id"],))}
-            nickname, avatar = requested or self._default_guest_profile(occupied, varied=True)
+            self.budget("join:" + room_id, 60, 14400)
+            saved = db.execute("SELECT nickname,avatar FROM guest_devices WHERE device=?", (device,)).fetchone() if device else None
+            guest_id, key = str(uuid.uuid4()), scoped_key or guest_key or secrets.token_urlsafe(32)
+            occupied = {row[0] for row in db.execute("SELECT nickname FROM guests WHERE room=?", (room_id,))}
+            nickname, avatar = saved or requested or self._default_guest_profile(occupied, varied=True)
+            if device and not saved:
+                db.execute("INSERT INTO guest_devices VALUES(?,?,?)", (device, nickname, avatar))
             db.execute(
-                "INSERT INTO guests(id,room,token_hash,nickname,avatar,created,nickname_custom) VALUES(?,?,?,?,?,?,?)",
-                (guest_id, room["id"], sha(key), nickname, avatar, int(time.time()), int(requested is not None)),
+                "INSERT INTO guests(id,room,token_hash,nickname,avatar,created,nickname_custom,device) VALUES(?,?,?,?,?,?,?,?)",
+                (guest_id, room_id, sha(key), nickname, avatar, int(time.time()), int(bool(saved or requested)), device),
             )
         return {"id": guest_id, "key": key, "nickname": nickname, "avatar": avatar}
 
@@ -700,12 +774,10 @@ class Store:
         if not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", key):
             raise Refusal(403, "guest_unavailable")
         with self.connection() as db:
-            value = db.execute(
-                "SELECT id,nickname,avatar FROM guests WHERE room=? AND token_hash=?", (room["id"], sha(key))
-            ).fetchone()
+            value = self.guest_record(db, room["id"], key)
         if not value:
             raise Refusal(403, "guest_unavailable")
-        return dict(value)
+        return {k: value[k] for k in ("id", "nickname", "avatar")}
 
     def profile(self, room, guest, payload):
         nickname, avatar = guest_profile(payload)
@@ -718,7 +790,34 @@ class Store:
                 "UPDATE songs SET nickname=?,avatar=? WHERE guest_id=? AND room=?",
                 (nickname, avatar, guest["id"], room["id"]),
             )
+            db.execute("UPDATE guest_devices SET nickname=?,avatar=? WHERE device=(SELECT device FROM guests WHERE id=?)",
+                       (nickname, avatar, guest["id"]))
         return {"id": guest["id"], "nickname": nickname, "avatar": avatar}
+
+    def remember_plays(self, db, room_id, ids, *, guest_id=None):
+        if not ids:
+            return
+        sql = ("SELECT s.id,s.source,s.song_id,s.title,s.artwork,g.device FROM songs s "
+               "JOIN guests g ON g.id=s.guest_id AND g.room=s.room JOIN rooms r ON r.id=s.room "
+               "WHERE s.room=? AND r.closed=0 AND s.state='ready' AND s.frequent_recorded=0 AND g.device!='' "
+               "AND s.id IN (" + ",".join("?" for _ in ids) + ")")
+        params = (room_id, *ids)
+        if guest_id:
+            sql += " AND g.id=?"
+            params += (guest_id,)
+        for row in db.execute(sql, params).fetchall():
+            db.execute("UPDATE songs SET frequent_recorded=1 WHERE id=?", (row["id"],))
+            db.execute("INSERT INTO guest_frequent VALUES(?,?,?,?,?,1,?) "
+                       "ON CONFLICT(device,source,song_id) DO UPDATE SET plays=plays+1,title=excluded.title,"
+                       "artwork=CASE WHEN excluded.artwork='' THEN artwork ELSE excluded.artwork END,last_played=excluded.last_played",
+                       (row["device"], row["source"], row["song_id"], song_title(row["title"]), row["artwork"], int(time.time())))
+
+    def frequent(self, room, guest):
+        with self.connection() as db:
+            rows = db.execute("SELECT source,song_id,title,artwork,plays FROM guest_frequent WHERE "
+                              "device=(SELECT device FROM guests WHERE id=? AND room=?) "
+                              "ORDER BY plays DESC,last_played DESC,song_id LIMIT 40", (guest["id"], room["id"])).fetchall()
+        return {"songs": [dict(row) for row in rows]}
 
     def theme(self, room, payload):
         if (
@@ -732,7 +831,10 @@ class Store:
                 "UPDATE rooms SET theme=?,theme_revision=theme_revision+1 WHERE id=? AND closed=0",
                 (payload["theme"], room["id"]),
             )
-        return {"theme": payload["theme"]}
+            row = db.execute("SELECT theme_revision,closed FROM rooms WHERE id=?", (room["id"],)).fetchone()
+            if not row or row["closed"]:
+                raise Refusal(410, "room_closed")
+        return {"theme": payload["theme"], "theme_revision": row["theme_revision"]}
 
     def close(self, room_id):
         if not UUID.fullmatch(room_id):
@@ -758,9 +860,14 @@ class Store:
             if not theme or theme["closed"]:
                 raise Refusal(410, "room_closed")
             rows = db.execute(
-                "SELECT s.id,s.song_id,s.title,s.state,s.code,s.created,s.guest_id,s.nickname,s.avatar,s.artwork,s.progress,s.cache_hit,s.source,"
+                "SELECT s.id,s.song_id,s.title,s.state,s.code,s.created,s.guest_id,s.nickname,s.avatar,"
+                "coalesce(nullif(ct.artwork,''),s.artwork,'') AS artwork,s.progress,s.cache_hit,s.source,"
+                "coalesce(nullif(ct.artists,'[]'),cl.artists,'[]') AS artists,coalesce(nullif(ct.album,''),cr.album,'') AS album,"
                 "coalesce(ls.ready,0) AS lyric_state,coalesce(ls.ready=1,0) AS synced_lyrics "
                 "FROM songs s LEFT JOIN coordinator_lyric_status ls ON ls.song=s.id "
+                "LEFT JOIN song_catalog ct ON ct.song_id=s.song_id AND ct.source=s.source "
+                "LEFT JOIN cloud_catalog cl ON cl.song_id=s.song_id AND s.source='cloud' "
+                "LEFT JOIN cloud_recordings cr ON cr.song_id=cl.song_id AND cr.title=cl.title AND cr.artists=cl.artists "
                 "WHERE s.room=? AND s.removed=0 ORDER BY s.position,s.rowid LIMIT 80",
                 (room["id"],),
             ).fetchall()
@@ -780,7 +887,8 @@ class Store:
                 "songs": [
                     {**dict(r), "title": song_title(r["title"]), "lyrics_pending": r["lyric_state"] != -1
                      and (r["id"] == theme["lyrics_waiting"] or r["state"] == "ready" and not r["synced_lyrics"]),
-                     "progress": json.loads(r["progress"]), "cache_hit": bool(r["cache_hit"])}
+                     "progress": json.loads(r["progress"]), "cache_hit": bool(r["cache_hit"]),
+                     "artists": json.loads(r["artists"])}
                     for r in rows
                 ],
                 "theme": theme["theme"],
@@ -1024,6 +1132,8 @@ class Store:
                        (audio["sfx_seq"], audio["sfx_action"], audio["sfx_state"], room_id, audio["sfx_seq"]))
             db.execute("UPDATE managed_media SET last_used=? WHERE song_id=(SELECT song_id FROM songs WHERE id=?) AND last_used<?",
                        (int(time.time()), payload["current"], int(time.time()) - 60))
+            if payload["state"] == "playing" and payload["current"]:
+                self.remember_plays(db, room_id, (payload["current"],))
         return {"accepted": True}
 
     def guide_update(self, payload):
@@ -1193,16 +1303,12 @@ class Store:
             self.budget("add:" + room["id"], 20)
             row_id = str(uuid.uuid4())
             profile = guest or {"id": "", "nickname": "朋友", "avatar": 0}
-            artwork = next(
-                (
-                    s.get("artwork", "")
-                    for cache in self.search_cache.values()
-                    for results in [cache[1]]
-                    for s in results
-                    if s.get("source", "song") == source and s["song_id"] == song_id and s.get("artwork")
-                ),
-                "",
-            )
+            with self.catalog_lock:
+                artwork = self.artwork_cache.get(song_id, (0, ""))[1] if source != "mv" else ""
+                if source == "mv":
+                    artwork = next((s["artwork"] for _, page in self.search_cache.values()
+                                    for s in page["songs"] if s["source"] == source
+                                    and s["song_id"] == song_id and s.get("artwork")), "")
             db.execute(
                 "INSERT INTO songs(id,room,song_id,title,request_id,created,guest_id,nickname,avatar,artwork,source) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
@@ -1440,21 +1546,26 @@ class Store:
                 or payload["offset"] + len(payload["songs"]) > payload["total"]
                 or (not payload["songs"] and payload["total"] != 0)):
             raise Refusal(400, "invalid_catalog")
-        rows = []
+        rows, display = [], []
         for row in payload["songs"]:
-            if (not isinstance(row, dict) or set(row) != {"song_id", "title", "artists", "source"}
+            if (not isinstance(row, dict) or not {"song_id", "title", "artists", "source"} <= set(row)
+                    or set(row) - {"song_id", "title", "artists", "source", "album", "artwork"}
                     or row["source"] != "cloud" or not isinstance(row["song_id"], str) or not ID.fullmatch(row["song_id"])
                     or not isinstance(row["title"], str) or not 1 <= len(row["title"]) <= 120
                     or not isinstance(row["artists"], list) or len(row["artists"]) > 8
                     or any(not isinstance(a, str) or len(a) > 100 for a in row["artists"])
-                    or any(ord(c) < 32 or ord(c) == 127 for c in row["title"] + "".join(row["artists"]))):
+                    or not isinstance(row.get("album", ""), str) or len(row.get("album", "")) > 160
+                    or not isinstance(row.get("artwork", ""), str) or len(row.get("artwork", "")) > 2048
+                    or any(ord(c) < 32 or ord(c) == 127 for c in row["title"] + "".join(row["artists"]) + row.get("album", ""))):
                 raise Refusal(400, "invalid_catalog")
             rows.append((row["song_id"], row["title"], json.dumps(row["artists"], ensure_ascii=False)))
+            display.append((row["song_id"], row.get("album", ""), self.artwork(row.get("artwork", ""))))
         with self.lock, self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             sync = db.execute("SELECT * FROM cloud_sync WHERE id=1").fetchone()
             if payload["offset"] == 0:
                 db.execute("DELETE FROM cloud_staging")
+                db.execute("DELETE FROM cloud_display_staging")
                 db.execute("INSERT OR REPLACE INTO cloud_sync VALUES(1,?,?,0,?)",
                            (payload["revision"], payload["total"], int(time.time())))
             elif (not sync or sync["revision"] != payload["revision"] or sync["received"] != payload["offset"]
@@ -1462,11 +1573,21 @@ class Store:
                 raise Refusal(409, "catalog_changed")
             for i, row in enumerate(rows):
                 db.execute("INSERT INTO cloud_staging VALUES(?,?,?,?)", (payload["offset"] + i, *row))
+            db.executemany("INSERT INTO cloud_display_staging VALUES(?,?,?)", display)
             received = payload["offset"] + len(rows)
             db.execute("UPDATE cloud_sync SET received=?,updated=? WHERE id=1", (received, int(time.time())))
             if received == payload["total"]:
                 db.execute("DELETE FROM cloud_catalog")
                 db.execute("INSERT INTO cloud_catalog SELECT song_id,title,artists FROM cloud_staging")
+                # 显示资料随完整云盘快照一起发布，残缺分页不能替换正在使用的资料。
+                db.execute("INSERT INTO song_catalog SELECT 'cloud',c.song_id,c.title,c.artists,d.album,d.artwork "
+                           "FROM cloud_catalog c JOIN cloud_display_staging d ON d.song_id=c.song_id WHERE 1 "
+                           "ON CONFLICT(source,song_id) DO UPDATE SET title=excluded.title,artists=excluded.artists,"
+                           "album=CASE WHEN excluded.album!='' THEN excluded.album WHEN title=excluded.title AND artists=excluded.artists THEN album ELSE '' END,"
+                           "artwork=CASE WHEN excluded.artwork!='' THEN excluded.artwork WHEN title=excluded.title AND artists=excluded.artists THEN artwork ELSE '' END")
+        with self.catalog_lock:
+            for ident, _, _ in display:
+                self.artwork_cache.pop("cloud:" + ident, None)
         return {"accepted": True, "complete": received == payload["total"], "count": received}
 
     def search(self, query, source="song", offset=0):
@@ -1483,31 +1604,87 @@ class Store:
                 rows = db.execute("SELECT * FROM cloud_catalog ORDER BY title").fetchall()
                 sync = db.execute("SELECT updated FROM cloud_sync WHERE id=1").fetchone()
             matches = [r for r in rows if all(t in (r["title"] + " " + " ".join(json.loads(r["artists"]))).casefold() for t in terms)]
-            songs = [{"song_id": r["song_id"], "title": song_title(r["title"]), "artists": json.loads(r["artists"]), "source": "cloud"}
+            with self.connection() as db:
+                catalog = self.catalog_index(db)
+            songs = [{"song_id": r["song_id"], "title": song_title(r["title"]), "artists": json.loads(r["artists"]),
+                      "source": "cloud", **{name: catalog[("cloud", r["song_id"])][name] for name in ("album", "artwork")
+                                              if catalog[("cloud", r["song_id"])].get(name)}}
                      for r in matches[offset:offset + 30]]
             return {"songs": songs, "source": "cloud", "catalog_count": len(rows), "updated": sync[0] if sync else 0,
                     "offset": offset, "next_offset": offset + 30, "has_more": offset + 30 < len(matches), "total": len(matches)}
-        cache_key = source + ":" + str(offset) + ":" + query
-        with self.lock:
+        cache_key = (source, query.casefold(), offset)
+        with self.catalog_lock:
             cached = self.search_cache.get(cache_key)
-            if cached and time.monotonic() - cached[0] < 120:
-                return {"songs": cached[1], **cached[2]}
-        if not self.search_slots.acquire(blocking=False):
-            if cached and time.monotonic() - cached[0] < 600:
-                return {"songs": cached[1], **cached[2]}
-            raise Refusal(429, "search_busy")
+            age = time.monotonic() - cached[0] if cached else float("inf")
+            if age < SEARCH_MAX_AGE:
+                return cached[1]
+            stale = cached[1] if age < 86400 else None
+            future = self.search_pending.get(cache_key)
+            owner = future is None
+            if owner:
+                if not self.search_slots.acquire(blocking=False):
+                    if stale is not None:
+                        return stale
+                    raise Refusal(429, "search_busy")
+                future = self.search_pending[cache_key] = Future()
+        if not owner:
+            try:
+                return future.result(timeout=5.5)
+            except FutureTimeout:
+                if stale is not None:
+                    return stale
+                raise Refusal(503, "search_unavailable") from None
         try:
-            params = {"s": query, "type": 1004 if source == "mv" else 1, "limit": 30, "offset": offset}
-            result = self.catalog_search(source, params)
+            pages = self.catalog_pages(query, source, offset)
+            if source == "song":
+                self.save_catalog([song for page in pages for song in page["songs"]])
+            stamp = time.monotonic()
+            with self.catalog_lock:
+                for page in pages:
+                    page_key = (source, query.casefold(), page["offset"])
+                    self.search_cache.pop(page_key, None)
+                    self.search_cache[page_key] = (stamp, page)
+                    if len(self.search_cache) > 128:
+                        self.search_cache.pop(next(iter(self.search_cache)))
+                    if source == "song":
+                        self.remember_artwork({row["song_id"]: row["artwork"] for row in page["songs"] if row.get("artwork")}, stamp)
+            future.set_result(pages[0])
+            return pages[0]
         except (OSError, ValueError, Refusal):
-            if cached and time.monotonic() - cached[0] < 600:
-                return {"songs": cached[1], **cached[2]}
-            raise Refusal(503, "search_unavailable") from None
+            if stale is not None:
+                future.set_result(stale)
+                return stale
+            error = Refusal(503, "search_unavailable")
+            future.set_exception(error)
+            raise error from None
         finally:
+            with self.catalog_lock:
+                self.search_pending.pop(cache_key, None)
             self.search_slots.release()
-        rows = result.get("mvs" if source == "mv" else "songs", [])
+
+    def catalog_pages(self, query, source, offset):
+        page_size = SEARCH_PAGE_SIZE
+        # 曲库一次返回两页时，手机翻页只需读取 NAS 缓存。
+        limit = page_size * 2 if source == "song" else page_size
+        result = self.catalog_search(source, {"s": query, "type": 1004 if source == "mv" else 1,
+                                              "limit": limit, "offset": offset})
+        rows = result.get("mvs" if source == "mv" else "songs", [])[:limit]
+        count = result.get("mvCount" if source == "mv" else "songCount")
+        pages = []
+        for start in range(0, max(1, len(rows)), page_size):
+            batch = rows[start:start + page_size]
+            songs = self.catalog_songs(batch, source)
+            next_offset = offset + start + page_size
+            page = {"songs": songs, "source": source, "offset": offset + start, "next_offset": next_offset,
+                    "has_more": next_offset < count if type(count) is int else len(batch) == page_size}
+            if type(count) is int and count >= 0:
+                page["total"] = count
+            pages.append(page)
+        return pages
+
+    def catalog_songs(self, rows, source):
         songs = []
-        for row in rows[:30]:
+        for row in rows:
             if not isinstance(row, dict):
                 continue
             song_id, title = str(row.get("id", "")), row.get("name")
@@ -1519,20 +1696,13 @@ class Store:
                 ]
                 song = {"song_id": song_id, "title": title, "artists": artists, "source": source}
                 album = row.get("album")
+                if isinstance(album, dict) and isinstance(album.get("name"), str):
+                    song["album"] = album["name"][:160]
                 artwork = self.artwork(album.get("picUrl") if isinstance(album, dict) else row.get("cover"))
                 if artwork:
                     song["artwork"] = artwork
                 songs.append(song)
-        count = result.get("mvCount" if source == "mv" else "songCount")
-        has_more = offset + 30 < count if type(count) is int else len(songs) == 30
-        page = {"source": source, "offset": offset, "next_offset": offset + 30, "has_more": has_more}
-        if type(count) is int and count >= 0:
-            page["total"] = count
-        with self.lock:
-            if len(self.search_cache) >= 64:
-                self.search_cache.pop(next(iter(self.search_cache)))
-            self.search_cache[cache_key] = (time.monotonic(), songs, page)
-        return {"songs": songs, **page}
+        return songs
 
     def catalog_search(self, source, params):
         # 同一个官方曲库的备用查询路径接管首轮超时。
@@ -1548,25 +1718,109 @@ class Store:
                 return result
         raise Refusal(503, "search_unavailable")
 
-    def search_artwork(self, song_ids, *, inline=False):
+    def remember_artwork(self, covers, stamp):
+        for ident, cover in covers.items():
+            # 较晚结束的详细信息请求可能没有封面，保留已知有效的封面。
+            previous = self.artwork_cache.pop(ident, None)
+            if not cover and previous and previous[1]:
+                stamp, cover = previous
+            self.artwork_cache[ident] = (stamp, cover)
+            if len(self.artwork_cache) > 512:
+                self.artwork_cache.pop(next(iter(self.artwork_cache)))
+
+    def save_catalog(self, tracks):
+        if not tracks:
+            return
+        with self.connection() as db:
+            db.executemany("INSERT INTO song_catalog VALUES(?,?,?,?,?,?) "
+                           "ON CONFLICT(source,song_id) DO UPDATE SET title=excluded.title,artists=excluded.artists,"
+                           "album=excluded.album,artwork=excluded.artwork "
+                           "WHERE title!=excluded.title OR artists!=excluded.artists OR album!=excluded.album OR artwork!=excluded.artwork",
+                           [(track["source"], track["song_id"], track["title"], json.dumps(track["artists"], ensure_ascii=False),
+                             track.get("album", ""), track.get("artwork", "")) for track in tracks])
+
+    def catalog_index(self, db):
+        tracks = {(row["source"], row["song_id"]): {**dict(row), "artists": json.loads(row["artists"])}
+                  for row in db.execute("SELECT * FROM song_catalog")}
+        for row in db.execute("SELECT cl.*,coalesce(cr.album,'') AS album FROM cloud_catalog cl "
+                              "LEFT JOIN cloud_recordings cr ON cr.song_id=cl.song_id AND cr.title=cl.title AND cr.artists=cl.artists"):
+            key = ("cloud", row["song_id"])
+            previous = tracks.get(key, {})
+            tracks[key] = {**previous, "source": "cloud", "song_id": row["song_id"], "title": song_title(row["title"]),
+                           "artists": json.loads(row["artists"]), "album": previous.get("album") or row["album"]}
+        return tracks
+
+    def cloud_recordings(self, ids):
+        marks = ",".join("?" for _ in ids)
+        with self.connection() as db:
+            rows = db.execute("SELECT * FROM cloud_catalog WHERE song_id IN (" + marks + ")", ids).fetchall()
+            known = {r["song_id"]: dict(r) for r in db.execute(
+                "SELECT cr.* FROM cloud_recordings cr JOIN cloud_catalog c "
+                "ON c.song_id=cr.song_id AND c.title=cr.title AND c.artists=cr.artists "
+                "WHERE cr.song_id IN (" + marks + ")", ids)}
+        missing = [dict(row) for row in rows if row["song_id"] not in known]
+
+        def normalized(value):
+            return "".join(c for c in unicodedata.normalize("NFKC", value).casefold() if c.isalnum())
+
+        def resolve(row):
+            title, artists = song_title(row["title"]), json.loads(row["artists"])
+            result = self.catalog_search("song", {"s": " ".join([title, *artists]), "type": 1, "limit": 30, "offset": 0})
+            matches = [song for song in self.catalog_songs(result.get("songs", []), "song")
+                       if normalized(song["title"]) == normalized(title)
+                       and (not artists or set(map(normalized, artists)) & set(map(normalized, song["artists"])))]
+            if not matches or not artists and len(matches) != 1:
+                return None
+            song = matches[0]
+            value = {**row, "public_id": song["song_id"], "album": song.get("album", "")}
+            with self.lock, self.connection() as db:
+                db.execute("INSERT OR REPLACE INTO cloud_recordings VALUES(?,?,?,?,?)",
+                           (row["song_id"], song["song_id"], row["title"], row["artists"], value["album"]))
+            return value
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            for value in pool.map(resolve, missing):
+                if value:
+                    known[value["song_id"]] = value
+        return known
+
+    def search_artwork(self, song_ids, *, inline=False, source="song", refresh=False):
         if not isinstance(song_ids, str) or len(song_ids) > 569:
+            raise Refusal(400, "invalid_query")
+        if source not in {"song", "cloud"} or type(refresh) is not bool:
             raise Refusal(400, "invalid_query")
         ids = song_ids.split(",")
         if not 1 <= len(ids) <= 30 or any(not ID.fullmatch(i) for i in ids):
             raise Refusal(400, "invalid_query")
         now = time.monotonic()
-        with self.lock:
-            cached = {i: self.artwork_cache[i][1] for i in dict.fromkeys(ids)
-                      if i in self.artwork_cache and now - self.artwork_cache[i][0]
-                      < (600 if self.artwork_cache[i][1] else 90)}
+        prefix = "cloud:" if source == "cloud" else ""
+        with self.catalog_lock:
+            cached = {i: self.artwork_cache[prefix + i][1] for i in dict.fromkeys(ids)
+                      if prefix + i in self.artwork_cache and now - self.artwork_cache[prefix + i][0]
+                      < (86400 if self.artwork_cache[prefix + i][1] else 90)}
+        if refresh:
+            cached = {}
+        if source == "cloud":
+            with self.connection() as db:
+                index = self.catalog_index(db)
+            # 云盘自带的显示封面可以直接使用，不必把上传 ID 当成公开录音再查一次。
+            for ident in ids:
+                cover = self.artwork(index.get((source, ident), {}).get("artwork", ""))
+                if cover:
+                    cached[ident] = cover
         missing = list(dict.fromkeys(i for i in ids if i not in cached))
+        albums = {}
         if missing:
             if not self.artwork_slots.acquire(blocking=False):
                 raise Refusal(429, "search_busy")
             try:
+                recordings = self.cloud_recordings(missing) if source == "cloud" else {}
+                mapped = {ident: row["public_id"] for ident, row in recordings.items()} if source == "cloud" else dict.fromkeys(missing)
+                public_ids = list(dict.fromkeys(mapped.values())) if source == "cloud" else missing
+                albums = {ident: row["album"] for ident, row in recordings.items() if row["album"]}
                 details = self.public_metadata("/api/v3/song/detail",
-                                               {"c": json.dumps([{"id": int(i)} for i in missing], separators=(",", ":"))},
-                                               timeout=5)
+                                               {"c": json.dumps([{"id": int(i)} for i in public_ids], separators=(",", ":"))},
+                                               timeout=5) if public_ids else {"songs": []}
             except (OSError, ValueError, Refusal):
                 raise Refusal(503, "search_unavailable") from None
             finally:
@@ -1575,40 +1829,62 @@ class Store:
             if not isinstance(songs, list):
                 raise Refusal(503, "search_unavailable")
             resolved = dict.fromkeys(missing, "")
+            tracks = []
             for song in songs[:30]:
                 if not isinstance(song, dict):
                     continue
                 ident, album = str(song.get("id", "")), song.get("al")
-                if ident in resolved and isinstance(album, dict):
-                    resolved[ident] = self.artwork(album.get("picUrl"))
-            with self.lock:
-                for ident, cover in resolved.items():
-                    if len(self.artwork_cache) >= 512 and ident not in self.artwork_cache:
-                        self.artwork_cache.pop(next(iter(self.artwork_cache)))
-                    self.artwork_cache[ident] = (time.monotonic(), cover)
-            cached.update(resolved)
+                if isinstance(album, dict):
+                    if source == "song" and ident in resolved:
+                        resolved[ident] = self.artwork(album.get("picUrl"))
+                    if source == "cloud":
+                        for own, public in mapped.items():
+                            if ident == public:
+                                resolved[own] = self.artwork(album.get("picUrl"))
+                public = self.catalog_songs([{"id": song.get("id"), "name": song.get("name"),
+                                              "artists": song.get("ar", []), "album": album}], "song")
+                if public and ident in public_ids:
+                    track = public[0]
+                    if source == "song":
+                        tracks.append(track)
+                    else:
+                        for own, recording in recordings.items():
+                            if recording["public_id"] == ident:
+                                tracks.append({**track, "song_id": own, "source": "cloud",
+                                               "title": song_title(recording["title"]), "artists": json.loads(recording["artists"])})
+            self.save_catalog(tracks)
+            with self.catalog_lock:
+                self.remember_artwork({prefix + ident: value for ident, value in resolved.items()}, time.monotonic())
+                cached.update({ident: self.artwork_cache[prefix + ident][1] for ident in resolved})
         covers = {ident: cover for ident, cover in cached.items() if cover}
+        with self.connection() as db:
+            index = self.catalog_index(db)
+            tracks = {ident: {field: index[(source, ident)].get(field, "" if field != "artists" else [])
+                              for field in ("title", "artists", "album", "source")}
+                      for ident in ids if (source, ident) in index}
+        albums.update({ident: track["album"] for ident, track in tracks.items() if track["album"]})
         if not inline:
-            return {"covers": covers}
+            return {"covers": covers, **({"tracks": tracks} if tracks else {})}
         def thumbnail(item):
             ident, url = item
-            with self.lock:
+            url = url.replace("?param=240y240", "?param=112y112")
+            with self.catalog_lock:
                 saved = self.thumbnail_cache.get(url)
-            if saved:
+                if refresh:
+                    self.thumbnail_cache.pop(url, None)
+            if saved and not refresh:
                 return ident, saved
             try:
                 request = urllib.request.Request(url, headers={"Referer": "https://music.163.com/"})
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoImageRedirect())
                 with opener.open(request, timeout=3) as image:
-                    kind = image.headers.get_content_type()
                     data = image.read(1048577)
-                if (len(data) > 1048576 or
-                        not ((kind in {"image/jpeg", "image/jpg"} and data.startswith(b"\xff\xd8\xff"))
-                             or kind == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n"))):
+                # 官方 CDN 有时把 PNG 声明成 image/jpg，按实际文件签名返回类型。
+                kind = "image/png" if data.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if data.startswith(b"\xff\xd8\xff") else ""
+                if len(data) > 1048576 or not kind:
                     return ident, ""
-                kind = "image/png" if kind == "image/png" else "image/jpeg"
                 value = "data:" + kind + ";base64," + base64.b64encode(data).decode("ascii")
-                with self.lock:
+                with self.catalog_lock:
                     if len(self.thumbnail_cache) >= 512:
                         self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
                     self.thumbnail_cache[url] = value
@@ -1618,7 +1894,8 @@ class Store:
         with ThreadPoolExecutor(max_workers=6) as pool:
             images = dict(pool.map(thumbnail, covers.items()))
         return {"covers": {ident: image for ident, image in images.items() if image},
-                "pending": [ident for ident, image in images.items() if not image]}
+                "pending": [ident for ident, image in images.items() if not image],
+                **({"albums": albums} if albums else {}), **({"tracks": tracks} if tracks else {})}
 
     @staticmethod
     def public_metadata(path, params, *, timeout=8):
@@ -1759,6 +2036,22 @@ class Store:
 
 
 def make_handler(store, agent_key, assets, *, guest_only=False):
+    scripts = {"app.js": "40", "add-queue.js": "24", "party-audio.js": "26",
+               "guide.js": "24", "status-feed.js": "25", "style.css": "30"}
+    images = {"avatars.png", "content.png", "festival.png", "live.png"}
+
+    @lru_cache(maxsize=24)
+    def static_bytes(name, zipped, bundle=False):
+        path = assets / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 8 * 1024 * 1024:
+            raise Refusal(404, "not_found")
+        data = path.read_bytes()
+        if bundle:
+            dependencies = ("guide.js", "party-audio.js", "add-queue.js", "status-feed.js")
+            parts = [(assets / dependency).read_bytes() for dependency in dependencies]
+            data = b"\n".join([*parts, data])
+        return gzip.compress(data, compresslevel=6, mtime=0) if zipped else data
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -1769,12 +2062,16 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
         def log_message(self, *args):
             pass  # No request paths, room links, queries, headers, IPs or exception messages in logs.
 
-        def reply(self, status, value, content_type="application/json; charset=utf-8"):
+        def reply(self, status, value, content_type="application/json; charset=utf-8", *, extra_headers=None):
+            is_json = not isinstance(value, bytes)
             data = (
-                json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
+                json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
                 if not isinstance(value, bytes)
                 else value
             )
+            compressed = is_json and len(data) > 1024 and self.accepts_gzip()
+            if compressed:
+                data = gzip.compress(data, compresslevel=3, mtime=0)
             self.send_response(status)
             if self.close_connection:
                 self.send_header("Connection", "close")
@@ -1787,11 +2084,53 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                 "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; media-src 'self' data:; img-src 'self' data: https://*.music.126.net; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
                 "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
             }
+            headers.update(extra_headers or {})
+            if compressed:
+                headers.update({"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
             for key, value in headers.items():
                 self.send_header(key, value)
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(data)
+
+        def accepts_gzip(self):
+            encoding = self.headers.get("Accept-Encoding", "")
+            return bool(re.search(r"(?:^|,)\s*gzip\s*(?:;\s*q=(?:1(?:\.0*)?|0\.\d*[1-9]\d*))?\s*(?:,|$)", encoding, re.I))
+
+        def static(self, name, query):
+            if name in images:
+                compact = query == "v=4"
+                if compact:
+                    source = name.replace(".png", "-small.webp")
+                    return self.reply(200, static_bytes(source, False), "image/webp",
+                                      extra_headers={"Cache-Control": "public, max-age=31536000, immutable"})
+                return self.reply(200, static_bytes(name, False), "image/png")
+            content_type = ("text/html" if name == "index.html" else "text/css" if name.endswith(".css") else "text/javascript")
+            zipped = self.accepts_gzip()
+            headers = {"Vary": "Accept-Encoding"}
+            if zipped:
+                headers["Content-Encoding"] = "gzip"
+            if name in scripts and query == "v=" + scripts[name]:
+                headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return self.reply(200, static_bytes(name, zipped, bundle=name == "app.js" and query == "v=40"),
+                              content_type + "; charset=utf-8", extra_headers=headers)
+
+        def join_guest(self, room, *, current=None):
+            payload = self.body()
+            if set(payload) - {"guest_key", "profile", "device_key", "snapshot"} or (
+                    "guest_key" in payload and not isinstance(payload["guest_key"], str)) or (
+                    "device_key" in payload and not isinstance(payload["device_key"], str)) or (
+                    "snapshot" in payload and type(payload["snapshot"]) is not bool):
+                raise Refusal(400, "invalid_request")
+            if "profile" in payload and not isinstance(payload["profile"], dict):
+                raise Refusal(400, "invalid_profile")
+            identity = store.join(room, payload.get("guest_key"), profile=payload.get("profile"),
+                                  existing_key=self.headers.get("X-KTV-Guest", ""), device_key=payload.get("device_key"))
+            if current is not None:
+                identity = {"room": current, "guest": identity}
+            if payload.get("snapshot"):
+                identity["status"] = store.status(room)
+            return self.reply(201, identity)
 
         def body(self, limit=32768):
             if self.headers.get("Transfer-Encoding"):
@@ -1899,32 +2238,18 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
             current_room = path == "/api/rooms/current" or (path == "/" and parsed.query == "room=current")
             if origin and origin != store.origin and (not (room_route or current_room) or origin != store.previous_guest_origin):
                 raise Refusal(403, "origin_refused")
-            if current_room and self.command == "GET":
+            if current_room and self.command in {"GET", "POST"}:
                 active = store.coordinator.active()
                 if not active:
                     raise Refusal(404, "no_active_room")
-                return self.reply(200, {"room": active["room"], "key": active["secret"]})
-            if self.command in {"GET", "HEAD"} and path in {
-                "/avatars.png",
-                "/content.png",
-                "/festival.png",
-                "/live.png",
-            }:
-                asset = assets / path[1:]
-                if asset.is_symlink() or not asset.is_file() or asset.stat().st_size > 8 * 1024 * 1024:
-                    raise Refusal(404, "not_found")
-                return self.reply(200, asset.read_bytes(), "image/png")
-            if self.command in {"GET", "HEAD"} and path in {"/", "/app.js", "/add-queue.js", "/party-audio.js", "/guide.js", "/status-feed.js", "/style.css"}:
-                name, kind = {
-                    "/": ("index.html", "text/html; charset=utf-8"),
-                    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-                    "/add-queue.js": ("add-queue.js", "text/javascript; charset=utf-8"),
-                    "/party-audio.js": ("party-audio.js", "text/javascript; charset=utf-8"),
-                    "/guide.js": ("guide.js", "text/javascript; charset=utf-8"),
-                    "/status-feed.js": ("status-feed.js", "text/javascript; charset=utf-8"),
-                    "/style.css": ("style.css", "text/css; charset=utf-8"),
-                }[path]
-                return self.reply(200, (assets / name).read_bytes(), kind)
+                current = {"room": active["room"], "key": active["secret"]}
+                if self.command == "POST":
+                    room = store.room(current["room"], current["key"])
+                    store.budget("room-read:" + room["id"], 4000)
+                    return self.join_guest(room, current=current)
+                return self.reply(200, current)
+            if self.command in {"GET", "HEAD"} and (path == "/" or path[1:] in scripts or path[1:] in images):
+                return self.static("index.html" if path == "/" else path[1:], parsed.query)
             if path == "/health" and self.command in {"GET", "HEAD"}:
                 return self.reply(200, {"service": "friday-ktv-public", "protocol": 1})
             if guest_only and not room_route:
@@ -2010,7 +2335,7 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                 if path == "/agent/updates" and self.command == "POST":
                     return self.reply(200, store.update(self.body()))
                 if path == "/agent/cloud" and self.command == "POST":
-                    return self.reply(200, store.cloud_update(self.body()))
+                    return self.reply(200, store.cloud_update(self.body(262144)))
                 if path == "/agent/guides" and self.command == "POST":
                     return self.reply(200, store.guide_update(self.body()))
                 if path == "/agent/rooms" and self.command == "POST":
@@ -2041,20 +2366,15 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
             store.budget("room-read:" + room["id"], 4000)
             operation = match.group(2)
             if operation == "join" and self.command == "POST":
-                payload = self.body()
-                if (set(payload) - {"guest_key", "profile"}
-                        or ("guest_key" in payload and not isinstance(payload["guest_key"], str))):
-                    raise Refusal(400, "invalid_request")
-                if "profile" in payload and not isinstance(payload["profile"], dict):
-                    raise Refusal(400, "invalid_profile")
-                return self.reply(201, store.join(room, payload.get("guest_key"), profile=payload.get("profile"),
-                                                  existing_key=self.headers.get("X-KTV-Guest", "")))
+                return self.join_guest(room)
             if operation in {"profile", "theme", "controls", "command", "order", "retry"} or (
                 operation == "songs" and self.command == "POST"
             ):
                 guest = store.guest(room, self.headers.get("X-KTV-Guest", ""))
                 if operation == "profile":
                     if self.command == "GET":
+                        if parsed.query == "frequent=1":
+                            return self.reply(200, store.management.with_cached_accompaniment(store.frequent(room, guest)))
                         return self.reply(200, guest)
                     if self.command == "POST":
                         store.budget("profile:" + guest["id"], 20)
@@ -2108,15 +2428,18 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                 offset = params.get("offset", ["0"])[0]
                 if not re.fullmatch(r"[0-9]{1,6}", offset):
                     raise Refusal(400, "invalid_query")
-                return self.reply(200, store.playlist(params.get("id", [""])[0], int(offset)))
+                page = store.playlist(params.get("id", [""])[0], int(offset))
+                return self.reply(200, store.management.with_cached_accompaniment(page))
             if operation == "artwork" and self.command == "GET":
                 store.guest(room, self.headers.get("X-KTV-Guest", ""))
-                params = urllib.parse.parse_qs(parsed.query, max_num_fields=2)
-                if (not {"ids"} <= set(params) or set(params) - {"ids", "inline"}
+                params = urllib.parse.parse_qs(parsed.query, max_num_fields=4)
+                if (not {"ids"} <= set(params) or set(params) - {"ids", "inline", "source", "refresh"}
                         or any(len(values) != 1 for values in params.values())
-                        or params.get("inline", ["0"])[0] not in {"0", "1"}):
+                        or params.get("inline", ["0"])[0] not in {"0", "1"}
+                        or params.get("refresh", ["0"])[0] not in {"0", "1"}):
                     raise Refusal(400, "invalid_query")
-                return self.reply(200, store.search_artwork(params["ids"][0], inline=params.get("inline") == ["1"]))
+                return self.reply(200, store.search_artwork(params["ids"][0], inline=params.get("inline") == ["1"],
+                                  source=params.get("source", ["song"])[0], refresh=params.get("refresh") == ["1"]))
             if operation == "search" and self.command == "GET":
                 params = urllib.parse.parse_qs(parsed.query, max_num_fields=4)
                 source = params.get("source", ["song"])[0]
@@ -2125,7 +2448,8 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                 raw_offset = params.get("offset", ["0"])[0]
                 if not re.fullmatch(r"[0-9]{1,6}", raw_offset):
                     raise Refusal(400, "invalid_query")
-                return self.reply(200, store.search(params.get("q", [""])[0], source, int(raw_offset)))
+                page = store.search(params.get("q", [""])[0], source, int(raw_offset))
+                return self.reply(200, store.management.with_cached_accompaniment(page))
             if operation == "songs" and self.command == "POST":
                 return self.reply(202, store.add(room, self.body(), guest))
             raise Refusal(405, "method_refused")

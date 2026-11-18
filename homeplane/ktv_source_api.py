@@ -231,6 +231,19 @@ class LocalSourceAPI:
                         "title": simple.get("name") or title, "artists": artists, "duration_ms": simple.get("dt"),
                         "lyric_id": str(row.get("lyricId", "0"))}
                 songs[song_id] = {"song_id": song_id, "title": title, "artists": artists, "source": "cloud"}
+                album = simple.get("al")
+                if isinstance(album, dict):
+                    name = album.get("name")
+                    if isinstance(name, str) and name.strip():
+                        songs[song_id]["album"] = "".join(c for c in name if ord(c) >= 32 and ord(c) != 127)[:160]
+                    try:
+                        cover = urlsplit(album.get("picUrl"))
+                        if (cover.scheme in {"http", "https"} and cover.hostname and cover.hostname.endswith(".music.126.net")
+                                and not cover.username and not cover.password and cover.port in {None, 80, 443}
+                                and len(cover.path) < 512):
+                            songs[song_id]["artwork"] = urlunsplit(("https", cover.hostname, cover.path, "param=240y240", ""))
+                    except (TypeError, ValueError):
+                        pass
             if not body.get("hasMore") or len(rows) < 100:
                 _write(self.root / "cloud-owned.json", {"updated": int(time.time()), "songs": owned})
                 return list(songs.values())

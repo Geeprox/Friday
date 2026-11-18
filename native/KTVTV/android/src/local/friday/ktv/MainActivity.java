@@ -1223,7 +1223,13 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         if(current!=null&&(loading||engine.running)&&lines.length()==0)prepareLyrics(current);
     }
     private void showRequester(JSONObject job){JSONObject who=job.optJSONObject("requester");String nickname=who==null?"朋友":who.optString("nickname","朋友");nickname=nickname.replaceFirst("^(汽水猫|夜航兔|慢慢鲸|摇摆熊|月球旅人|小幽灵|唱片君|星星糖|柠檬汽水|仙人掌|北极企鹅|节拍机器人) [0-9]{2}$","$1").replace("节拍机器人","节拍小子");requester.setText(warmup?"暖场中":nickname+" 点的");requesterAvatar.setVisibility(warmup?View.GONE:View.VISIBLE);requesterAvatar.setImageBitmap(avatar(who==null?0:who.optInt("avatar",0)));byline.setVisibility(View.VISIBLE);updateNext();}
-    private Bitmap avatar(int id){if(atlas==null)return null;id=Math.max(0,Math.min(11,id));int w=atlas.getWidth()/4,h=atlas.getHeight()/3;return Bitmap.createBitmap(atlas,(id%4)*w,(id/4)*h,w,h);}
+    private Bitmap avatar(int id) {
+        if (atlas == null) return null;
+        int size = atlas.getWidth() / 4;
+        int rows = atlas.getHeight() / size;
+        id = Math.max(0, Math.min(rows * 4 - 1, id));
+        return Bitmap.createBitmap(atlas, (id % 4) * size, (id / 4) * size, size, size);
+    }
     private void updateNext(){
         String selected=nextSelectionId();
         JSONObject next=queuedJob(selected);

@@ -141,6 +141,10 @@ class SongLibrary:
         for value in self.queue.jobs.values():
             row = group(value["song_id"], value["title"])
             row["title"] = value["title"]
+            row["source"] = {"mv_direct": "mv"}.get(value.get("source_preference"), value.get("source_preference", "song"))
+            for field in ("artists", "album", "artwork"):
+                if value.get(field):
+                    row[field] = value[field]
             row["jobs"].add(value["id"])
             row["last_used"] = max(row["last_used"], value.get("last_used", value["created"]))
             future = self.queue.futures.get(value["id"])
@@ -177,6 +181,8 @@ class SongLibrary:
                 for folder in root.iterdir():
                     if ID.fullmatch(folder.name):
                         row = group(folder.name)
+                        if name == "cloud-downloads":
+                            row["source"] = "cloud"
                         attach(row, folder)
                         row["last_used"] = max(row["last_used"], int(folder.lstat().st_mtime))
         root = self.queue.root / "downloads/decoded"
@@ -275,6 +281,7 @@ class SongLibrary:
                 revision, files, unsafe = signature(row["paths"])
                 unique.update(files)
                 entries.append({"id": key, "title": row["title"], "last_used": row["last_used"], "kind": row["kind"],
+                                **{field: row[field] for field in ("source", "artists", "album", "artwork") if row.get(field)},
                                 "bytes": sum(files.values()), "revision": revision, "copies": len(row["jobs"]),
                                 "can_delete": not (row["busy"] or row["protected"] or unsafe),
                                 "reason": "preparing" if row["busy"] else "in_queue" if row["protected"] else "unsafe" if unsafe else ""})
@@ -394,11 +401,16 @@ class SongLibrary:
         if nas["configured"] and not nas["available"]:
             for row in mac["entries"]:
                 row.update(can_delete=False, reason="nas_offline")
-        combined = {r["id"]: {"id": r["id"], "title": r["title"], "kind": r["kind"], "last_used": r["last_used"], "mac": r, "nas": None} for r in mac["entries"]}
+        combined = {r["id"]: {"id": r["id"], "title": r["title"], "kind": r["kind"], "last_used": r["last_used"],
+                              **{field: r[field] for field in ("source", "artists", "album", "artwork") if r.get(field)},
+                              "mac": r, "nas": None} for r in mac["entries"]}
         for row in nas["entries"]:
             item = combined.setdefault(row["id"], {"id": row["id"], "title": row["title"], "kind": row["kind"], "last_used": row["last_used"], "mac": None, "nas": None})
             item["nas"] = row
             item["last_used"] = max(item["last_used"], row["last_used"])
+            for field in ("source", "artists", "album", "artwork"):
+                if row.get(field):
+                    item[field] = row[field]
         for item in combined.values():
             if item["mac"] and item["nas"] and item["mac"]["reason"] in {"preparing", "in_queue"}:
                 item["nas"].update(can_delete=False, reason=item["mac"]["reason"])
@@ -459,7 +471,8 @@ class SongLibrary:
                     or presence == "nas" and data["mac"]["available"] and row["nas"] and not row["mac"])
 
         pattern = text(query.strip())
-        rows = [row for row in data["entries"] if matches(row) and (not pattern or pattern in text(row["title"]))]
+        rows = [row for row in data["entries"] if matches(row) and (not pattern or pattern in text(" ".join((
+            row["title"], " / ".join(row.get("artists") or []), row.get("album") or ""))))]
         if selectable:
             hosts = ("mac", "nas") if selectable == "both" else (selectable,)
             rows = [row for row in rows if (copies := [row[host] for host in hosts if row[host]])
