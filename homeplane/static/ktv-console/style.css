@@ -80,18 +80,6 @@
  padding-inline-end:30px;
  cursor:pointer;
 }
-.ktv-console .library-select::after{
- position:absolute;
- inset-inline-end:12px;
- top:calc(50% - 4px);
- width:6px;
- height:6px;
- border:solid var(--muted);
- border-width:0 1.5px 1.5px 0;
- transform:rotate(45deg);
- pointer-events:none;
- content:"";
-}
 .ktv-console .library-filters>.library-select{min-width:130px}
 .ktv-console .library-total,
 .ktv-console .library-actions .selection-count{
@@ -155,3 +143,55 @@ body.ktv-standalone{background:#fff;margin:0;padding:36px 28px}.ktv-console[data
 @media(prefers-reduced-motion:reduce){.ktv-console *{transition:none!important;scroll-behavior:auto!important}}@media(forced-colors:active){.ktv-console .ktv-navigation button[aria-pressed=true]{border-bottom-color:Highlight}.ktv-console .primary,.ktv-console .danger{border:2px solid ButtonText}}
 
 .ktv-console .ktv-inline-back{margin:20px 0 0;background:transparent;border-color:transparent;padding-inline:0;color:var(--muted)}
+
+.ktv-console .song-presentation{display:flex;align-items:center;gap:12px;min-width:0;flex:1}
+.ktv-console .song-cover{display:grid;place-items:center;position:relative;flex:0 0 52px;width:52px;height:52px;border-radius:8px;background:var(--soft);overflow:hidden;color:#7a827c;font-size:24px}
+.ktv-console .song-cover img{display:block;width:100%;height:100%;object-fit:cover;outline:1px solid #0000001a;outline-offset:-1px;border-radius:inherit}
+.ktv-console .song-presentation h3{font-size:16px;line-height:1.4;margin:0 0 3px}
+.ktv-console .song-presentation .song-metadata{max-width:100%;overflow-x:auto;overflow-y:hidden;white-space:nowrap;scrollbar-width:thin;scrollbar-color:#c6ccc6 transparent;color:var(--muted);font-size:13px;line-height:1.6;margin:0;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+.ktv-console .song-metadata:focus-visible{outline:1px solid #647b69;outline-offset:2px;border-radius:3px}
+.ktv-console .song-tags{display:flex;gap:8px;align-items:center;font-size:12px;margin-top:3px}
+.ktv-console .source-tag{color:var(--muted)}
+.ktv-console .cached-tag{color:#3a6947;font-weight:550}
+.ktv-console .search-entry{gap:14px;padding:16px 0}
+.ktv-console .search-entry>button{flex:0 0 auto;min-width:68px}
+.ktv-console .library-table{table-layout:fixed}
+.ktv-console .library-table .library-name{width:44%;min-width:180px}
+.ktv-console .library-table .compact{min-width:0}
+.ktv-console .compact .song-cover{flex-basis:44px;width:44px;height:44px;font-size:21px}
+.ktv-console .compact strong{display:block;margin:0 0 2px;font-size:14px;font-weight:600;line-height:1.5}
+.ktv-console .compact .song-metadata{font-size:12px;margin:0}
+.ktv-console .library-table th:last-child{width:23%}
+.ktv-console .library-table td.date{font-size:12px;white-space:normal}
+.ktv-console .cleanup-targets{display:flex;align-items:center;gap:2px;padding:2px;border:1px solid #cbd0cb;border-radius:8px;background:var(--surface)}
+.ktv-console .cleanup-targets button{min-height:28px;height:28px;min-width:48px;padding:3px 10px;border:0;border-radius:5px;background:transparent;font-size:13px}
+.ktv-console .cleanup-targets button[aria-pressed=true]{background:var(--accent);color:#fff}
+.ktv-console .queue-heading{display:flex;align-items:baseline;gap:12px;margin-bottom:16px}
+.ktv-console .queue-heading h2{margin:0}
+.ktv-console .queue-group{margin-top:22px}
+.ktv-console .queue-group>h3,.ktv-console .queue-group>summary{font-size:13px;font-weight:550;color:var(--muted);padding:0 0 8px;margin:0;border-bottom:1px solid var(--line)}
+.ktv-console .queue-group.history>summary{padding:10px 0}
+.ktv-console .queue-entry{gap:12px;padding:16px 0}
+.ktv-console .song-presentation .queue-note{font-size:12px;color:var(--muted);margin:3px 0 0}
+.ktv-console .queue-row-actions{flex:0 0 auto;gap:6px}
+.ktv-console .queue-row-actions button{min-height:36px;padding:6px 12px;font-size:13px}
+.ktv-console .queue-row-actions .queue-remove{border-color:transparent;color:var(--muted);background:transparent}
+.ktv-console .queue-drag{min-height:36px;width:24px;flex:0 0 24px;padding:0;border:0;background:transparent;color:#8a918b;font-size:24px;cursor:grab;touch-action:none}
+.ktv-console .queue-drag:active{cursor:grabbing}
+.ktv-console .queue-drag-spacer{width:24px;flex:0 0 24px}
+.ktv-console .queue-entry.drag-over{border-bottom-color:#647b69;box-shadow:inset 0 -2px #647b69}
+.ktv-console .source-dialog,.ktv-console #ktv-delete-dialog{overscroll-behavior:contain}
+@media(max-width:850px){
+ .ktv-console .search-entry,.ktv-console .queue-entry{flex-wrap:nowrap}
+ .ktv-console .queue-entry>.button-row{width:auto;margin-left:0;justify-content:flex-end}
+ .ktv-console .queue-row-actions button{padding-inline:8px}
+ .ktv-console .library-table{min-width:680px}
+}
+@media(max-width:540px){
+ .ktv-console .queue-entry{flex-wrap:wrap}
+ .ktv-console .queue-entry>.button-row{margin-left:54px}
+ .ktv-console .queue-entry>.song-presentation{flex-basis:calc(100% - 80px)}
+ .ktv-console .queue-drag,.ktv-console .queue-drag-spacer{width:18px;flex-basis:18px}
+ .ktv-console .song-cover{flex-basis:44px;width:44px;height:44px}
+ .ktv-console .song-presentation{gap:10px}
+}

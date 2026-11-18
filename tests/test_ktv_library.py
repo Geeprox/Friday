@@ -245,6 +245,38 @@ def test_owner_routes_require_loopback_exact_host_session_and_same_origin(librar
         assert client.get("/v1/manage/library", headers={"X-KTV-Key": "k" * 43}).status_code == 404
 
 
+def test_owner_artwork_hydrates_cloud_recordings_without_a_browser_management_key(library, monkeypatch):
+    seen = []
+    payload = {"covers": {"7": "data:image/png;base64,U1lOVEhFVElD"}, "tracks": {
+        "7": {"artists": ["合成歌手"], "album": "合成专辑", "source": "cloud"}}}
+    monkeypatch.setattr(library, "remote", lambda operation, value=None: seen.append((operation, value)) or payload)
+    origin = "http://127.0.0.1:8769"
+    app = create_app(library.queue, "k" * 43, lambda: [], library=library, console_origin=origin)
+    with TestClient(app, base_url=origin, client=("127.0.0.1", 49152)) as client:
+        assert client.get("/v1/manage/artwork?ids=7&source=cloud").status_code == 401
+        assert client.get("/console").status_code == 200
+        assert client.get("/v1/manage/artwork?ids=7&source=cloud").json() == payload
+        assert client.get("/v1/manage/artwork?ids=0&source=cloud").status_code == 400
+    assert seen == [("artwork", {"ids": "7", "source": "cloud", "inline": True})]
+
+
+def test_inventory_keeps_local_cloud_source_and_nas_recording_details_searchable(library, monkeypatch):
+    jid = job(library.queue, "7")
+    library.queue.jobs[jid]["source_preference"] = "cloud"
+    metadata = {"source": "cloud", "artists": ["合成歌手"], "album": "合成专辑"}
+    nas = {"available": True, "configured": True, "bytes": 123, "entries": [{
+        "id": "song:7", "title": "合成歌曲 7", "kind": "song", "last_used": 1,
+        "bytes": 123, "can_delete": True, "reason": "", **metadata}]}
+    snapshot = library._combine_inventory(nas)
+    assert snapshot["entries"][0]["mac"]["source"] == "cloud"
+    assert {field: snapshot["entries"][0][field] for field in metadata} == metadata
+    monkeypatch.setattr(library, "refresh_listing", lambda: None)
+    library.listing_snapshot = snapshot
+    for query in ("合成歌手", "合成专辑"):
+        result = library.inventory_page(offset=0, limit=50, query=query, presence="all", sort="recent", selectable="nas")
+        assert [row["id"] for row in result["entries"]] == ["song:7"]
+
+
 def test_legacy_nas_purge_includes_original_versions_and_prevents_rearchival(library, tmp_path):
     from homeplane.ktv_archive import MediaArchive
     jid = job(library.queue, "1")

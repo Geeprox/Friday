@@ -4,6 +4,13 @@ const source=fs.readFileSync(path.join(web,'app.js'),'utf8').replace('join();doc
 function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};}
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const firstRoom='11111111-1111-4111-8111-111111111111';
+const secondRoom='22222222-2222-4222-8222-222222222222';
+function currentRoomReply(){
+ return {room:{room:secondRoom,key:'b'.repeat(43)},
+  guest:{id:'33333333-3333-4333-8333-333333333333',key:'d'.repeat(64),nickname:'新场朋友',avatar:1},
+  status:{server_time_ms:Date.now(),mac_online:true,songs:[],theme:'content',queue_revision:0,
+   playback:{online:false,current:'',played:[],state:'idle'},controls:{control_revision:0}}};
+}
 const harnessTimers=new Set();
 test.afterEach(()=>{for(const timer of harnessTimers)clearTimeout(timer);harnessTimers.clear();});
 function harnessTimeout(callback,delay){
@@ -19,10 +26,11 @@ function harness({validRoom=false,deferFrames=false,roomId=firstRoom,invite='a'.
  const nodes=new Map(),trace=[],listeners=new Map(),frames=[];
  const events=name=>({addEventListener(type,callback){const key=name+':'+type;if(!listeners.has(key))listeners.set(key,new Set());listeners.get(key).add(callback);}});
  const emit=(name,type,event={})=>{for(const callback of [...(listeners.get(name+':'+type)||[])])callback(event);};
- class Node{constructor(id=''){this.id=id;this.children=[];this.dataset={};this.style={setProperty(name,value){this[name]=value;}};this.value='';this.textContent='';this.hidden=false;this.isConnected=true;this.classList={add(){},remove(){},toggle(){}};this.attributes={};this.parentElement=null;}
-  append(...nodes){for(const n of nodes){if(n.parentElement)n.parentElement.removeChild(n);this.children.push(n);n.parentElement=this;}}replaceChildren(...n){for(const old of this.children)old.parentElement=null;this.children=[];this.append(...n);}removeChild(n){const at=this.children.indexOf(n);if(at>=0)this.children.splice(at,1);n.parentElement=null;return n;}setAttribute(k,v){this.attributes[k]=v;}getAttribute(k){return this.attributes[k];}querySelector(q){return q==='button'?(this.button??=new Node()):null;}querySelectorAll(){return [];}closest(){return null;}addEventListener(){}focus(){document.activeElement=this;}insertBefore(n,before=null){if(n.parentElement)n.parentElement.removeChild(n);const at=before?this.children.indexOf(before):-1;this.children.splice(at<0?this.children.length:at,0,n);n.parentElement=this;}}
+ class Node{constructor(id='',tagName='div'){this.id=id;this.tagName=tagName.toUpperCase();this.children=[];this.dataset={};this.style={setProperty(name,value){this[name]=value;}};this.value='';this.textContent='';this.hidden=false;this.isConnected=true;this.classList={add(){},remove(){},toggle(){},contains:value=>(this.className||'').split(/\s+/).includes(value)};this.attributes={};this.parentElement=null;}
+  get firstElementChild(){return this.children[0]||null;}get childElementCount(){return this.children.length;}
+  append(...nodes){for(const n of nodes){if(n.parentElement)n.parentElement.removeChild(n);this.children.push(n);n.parentElement=this;}}replaceChildren(...n){for(const old of this.children)old.parentElement=null;this.children=[];this.append(...n);}removeChild(n){const at=this.children.indexOf(n);if(at>=0)this.children.splice(at,1);n.parentElement=null;return n;}replaceWith(n){const parent=this.parentElement;if(parent){parent.insertBefore(n,this);parent.removeChild(this);}}setAttribute(k,v){this.attributes[k]=v;}getAttribute(k){return this.attributes[k];}querySelector(q){return q==='button'?(this.button??=new Node()):null;}querySelectorAll(){return [];}closest(){return null;}addEventListener(){}focus(){document.activeElement=this;}insertBefore(n,before=null){if(n.parentElement)n.parentElement.removeChild(n);const at=before?this.children.indexOf(before):-1;this.children.splice(at<0?this.children.length:at,0,n);n.parentElement=this;}}
  const element=id=>{if(!nodes.has(id))nodes.set(id,new Node(id));return nodes.get(id);};
- const document={...events('document'),hidden:false,body:new Node('body'),getElementById:element,createElement:()=>new Node(),querySelector:q=>q==='dialog[open]'?null:element(q),querySelectorAll:()=>[],activeElement:null};
+ const document={...events('document'),hidden:false,body:new Node('body'),getElementById:element,createElement:name=>new Node('',name),querySelector:q=>q==='dialog[open]'?null:element(q),querySelectorAll:()=>[],activeElement:null};
  class Ear{constructor(clock,changed){this.clock=clock;this.changed=changed;this.stops=0;this.syncs=0;this.version=0;this.alignedGeneration=null;this.buffer=null;this.context={state:'running',decodeAudioData:async bytes=>({duration:5,marker:new Uint8Array(bytes)[0]})};}
   start(loader){trace.push('start');this.controller=new AbortController();return Promise.resolve().then(()=>loader(this.controller.signal)).then(bytes=>{this.buffer={duration:5,marker:new Uint8Array(bytes)[0]};return this.buffer;});}
   stop(){this.stops++;this.controller?.abort();this.buffer=null;this.calibrating=false;}sync(){if(this.calibrating)return false;this.syncs++;return true;}volume(){}
@@ -247,7 +255,7 @@ test('secondary search paginates the selected source and preserves results throu
  h.run('setView("queue");setView("find")');assert.equal(h.run('songs.length'),2);assert.equal(h.element('query').value,'歌手');assert.equal(h.element('source-picker').hidden,false);
 });
 
-test('search shows the first page before requesting the next page near the list end',async()=>{
+test('search renders the first page while warming the next and reuses that response when scrolling',async()=>{
  const h=harness(),next=deferred(),requests=[];
  h.context.searchApi=async(operation,body,query,options)=>{
   requests.push({operation,query,priority:options.priority});
@@ -258,7 +266,8 @@ test('search shows the first page before requesting the next page near the list 
  h.run('mode="find";api=searchApi;$("query").value="测试歌手"');
  await h.run('findSongs()');
  assert.equal(h.run('songs[0].title'),'首屏');
- assert.equal(requests.filter(r=>r.operation==='search').length,1);
+ assert.equal(requests.filter(r=>r.operation==='search').length,2);
+ assert.equal(requests.filter(r=>r.operation==='search')[1].priority,'low');
  const scrolling=h.run('appendNextPage()');assert.equal(h.element('page-progress').hidden,false);
  next.resolve({songs:[{song_id:'1',title:'重复'},{song_id:'2',title:'第二页'}],next_offset:60,has_more:false});
  await scrolling;
@@ -294,8 +303,8 @@ test('track choice updates immediately and skips a replaced unsent choice withou
 });
 
 test('automatic room recovery cancels queued old controls and lets new controls leave immediately',async()=>{
- const h=harness({validRoom:true}),held=deferred();h.context.held=held;
- h.run('earEnabled=false;setControl=actualSetControl;waitForTV=async()=>{};join=async()=>{};controlWrites=held.promise;var writes=[];api=async(operation,value)=>{if(operation==="current")return {room:"22222222-2222-4222-8222-222222222222",key:"b".repeat(43)};writes.push({room,value});return {revision:1};};');
+ const h=harness({validRoom:true}),held=deferred();h.context.held=held;h.context.roomReply=currentRoomReply();
+ h.run('earEnabled=false;setControl=actualSetControl;waitForTV=async()=>{};startStatusFeed=loadDiscover=initAddQueue=refresh=()=>{};controlWrites=held.promise;var writes=[];api=async(operation,value)=>{if(operation==="current")return roomReply;writes.push({room,value});return {revision:1};};');
  const volume=h.run('setControl({music_gain:13})');
  const mode=h.run('setControl({original:1})');
  await h.run('enterCurrentRoom(true)');
@@ -311,8 +320,8 @@ test('automatic room recovery cancels queued old controls and lets new controls 
 });
 
 test('automatic room recovery aborts an old TV confirmation wait',async()=>{
- const h=harness({validRoom:true});
- h.run('earEnabled=false;setControl=actualSetControl;join=async()=>{};lastStatusSuccess=performance.now();api=async(operation)=>operation==="current"?{room:"22222222-2222-4222-8222-222222222222",key:"b".repeat(43)}:{revision:3};');
+ const h=harness({validRoom:true});h.context.roomReply=currentRoomReply();
+ h.run('earEnabled=false;setControl=actualSetControl;startStatusFeed=loadDiscover=initAddQueue=refresh=()=>{};lastStatusSuccess=performance.now();api=async(operation)=>operation==="current"?roomReply:{revision:3};');
  const waiting=h.run('setControl({original:1},{propagate:true})').catch(error=>error.code);
  await flush();assert.equal(h.run('receiptListeners.size'),1);
  await h.run('enterCurrentRoom(true)');
@@ -323,8 +332,8 @@ test('automatic room recovery aborts an old TV confirmation wait',async()=>{
 });
 
 test('automatic room recovery cancels the old transport command without disabling the new room',async()=>{
- const h=harness({validRoom:true});
- h.run('earEnabled=false;join=async()=>{};lastStatusSuccess=performance.now();api=async(operation)=>operation==="current"?{room:"22222222-2222-4222-8222-222222222222",key:"b".repeat(43)}:{seq:3};');
+ const h=harness({validRoom:true});h.context.roomReply=currentRoomReply();
+ h.run('earEnabled=false;startStatusFeed=loadDiscover=initAddQueue=refresh=()=>{};lastStatusSuccess=performance.now();api=async(operation)=>operation==="current"?roomReply:{seq:3};');
  const old=h.run('sendCommand("pause")');
  await flush();assert.equal(h.run('commandBusy'),true);
  assert.equal(h.run('receiptListeners.size'),1);
@@ -335,16 +344,18 @@ test('automatic room recovery cancels the old transport command without disablin
 });
 
 test('pending thumbnails back off until actual artwork arrives and respect Retry-After',async()=>{
- const h=harness(),timers=[];
+ const h=harness(),timers=[];let clock=1000;
+ h.context.performance={now:()=>clock};
  h.context.setTimeout=(run,delay)=>{timers.push({run,delay});return timers.length;};
  h.run('earEnabled=false;mode="find";artworkPending.add("1");api=async()=>({covers:{},pending:["1"]});');
  await h.run('enrichArtwork()');
- for(let i=0;i<3;i++){timers.at(-1).run();await flush();}
+ const retry=async()=>{const timer=timers.at(-1);clock+=timer.delay;timer.run();await flush();};
+ for(let i=0;i<3;i++)await retry();
  assert.deepEqual(timers.map(timer=>timer.delay),[650,1300,2600,5200]);
  h.run('api=async()=>{throw Object.assign(new Error(),{code:"rate_limited",retryAfterMs:12000});}');
- timers.at(-1).run();await flush();assert.equal(timers.at(-1).delay,12000);
+ await retry();assert.equal(timers.at(-1).delay,12000);
  h.run('api=async()=>({covers:{"1":"data:image/jpeg;base64,AAAA"},pending:[]});');
- timers.at(-1).run();await flush();
+ await retry();
  assert.equal(h.run('artworkPending.size'),0);
  assert.equal(h.run('artworkDelay'),650);
  assert.equal(h.run('searchArtwork.get("1")'),'data:image/jpeg;base64,AAAA');
@@ -415,8 +426,8 @@ test('fresh and concurrent scanned pages recover one guest and keep chosen profi
  assert.equal(other.element('my-name').textContent,'偏爱的名字');
  assert.equal(other.run('identity.avatar'),9);
  assert.equal(server.requests.length,4);
- assert.deepEqual(Object.keys(server.requests.at(-1).payload).sort(),['guest_key','profile']);
- assert.equal(JSON.stringify(server.requests).includes(seed),false);
+ assert.deepEqual(Object.keys(server.requests.at(-1).payload).sort(),['device_key','guest_key','profile','snapshot']);
+ assert.ok(server.requests.every(request=>request.payload.device_key===seed));
  storage.clear();
  const cleared=scannedWebView(server,settings);await cleared.run('join()');
  assert.notEqual(cleared.run('identity.key'),guest);
@@ -572,4 +583,188 @@ test('a partial status snapshot does not corrupt the room state used by auto joi
  await assert.rejects(h.run('actualApi("status")'),{code:'service_unavailable'});
  assert.equal(h.run('selected[0].id'),'keep');h.run('tabs()');
  assert.equal(h.element('search-entry').hidden,false);
+});
+
+test('裸入口一次加入请求恢复身份并直接显示返回的歌单快照',async()=>{
+ const storage=memoryStorage(),seed='12'.repeat(32),reply=currentRoomReply(),requests=[];
+ storage.setItem('friday-ktv-guest-seed-v1',seed);
+ reply.status.songs=[{id:'44444444-4444-4444-8444-444444444444',song_id:'123',title:'返回的歌单',state:'ready'}];
+ const h=harness({localStorage:storage});
+ h.context.fetch=async(url,options)=>{
+  requests.push({url,options});
+  return {ok:true,status:201,json:async()=>reply};
+ };
+ h.run('earEnabled=false;identity=null;api=actualApi;startStatusFeed=loadDiscover=initAddQueue=refresh=()=>{}');
+ await h.run('enterCurrentRoom()');
+ assert.equal(requests.length,1);
+ assert.equal(requests[0].url,'./?room=current');
+ assert.equal(requests[0].options.method,'POST');
+ const payload=JSON.parse(requests[0].options.body);
+ assert.equal(payload.snapshot,true);
+ assert.equal(payload.device_key,seed);
+ assert.equal(h.run('room'),secondRoom);
+ assert.equal(h.run('identity.id'),reply.guest.id);
+ assert.equal(h.run('selected[0].title'),'返回的歌单');
+ assert.equal(h.element('my-name').textContent,'新场朋友');
+});
+
+test('新页面遇到旧 NAS 时在字段明确被拒绝后按原凭据兼容加入', {timeout:1500},async()=>{
+ const storage=memoryStorage(),requests=[],joined=deferred();
+ storage.setItem('friday-ktv-guest-profile',JSON.stringify({nickname:'保留的名字',avatar:3}));
+ const h=harness({localStorage:storage});
+ h.context.fetch=async(url,options)=>{
+  const body=options.body?JSON.parse(options.body):null;requests.push({url,body});
+  if(url==='./?room=current'){
+   if(body)return {ok:false,status:404,json:async()=>({code:'not_found'})};
+   return {ok:true,status:200,json:async()=>({room:firstRoom,key:'a'.repeat(43)})};
+  }
+  assert.match(url,/\/join$/);
+  if(body.device_key)return {ok:false,status:400,json:async()=>({code:'invalid_request'})};
+  joined.resolve();
+  return {ok:true,status:201,json:async()=>({id:'33333333-3333-4333-8333-333333333333',key:body.guest_key,...body.profile})};
+ };
+ h.run('earEnabled=false;identity=null;api=actualApi;startStatusFeed=loadDiscover=initAddQueue=refresh=()=>{}');
+ await h.run('enterCurrentRoom()');await joined.promise;await flush();
+ const joins=requests.filter(request=>request.url.endsWith('/join'));
+ assert.equal(joins.length,2);
+ assert.equal(joins[0].body.guest_key,joins[1].body.guest_key);
+ assert.deepEqual(Object.keys(joins[1].body).sort(),['guest_key','profile']);
+ assert.equal(h.run('identity.nickname'),'保留的名字');
+ assert.equal(h.run('identity.avatar'),3);
+});
+
+test('已点封面延迟返回时设置立即响应并抵抗旧风格快照',async()=>{
+ const h=harness(),covers=deferred(),theme=deferred(),requests=[];
+ h.context.coverApi=async(operation,_body,query,options)=>{
+  requests.push({operation,query,priority:options?.priority});
+  if(operation==='artwork')return covers.promise;
+  if(operation==='theme')return theme.promise;
+  throw Error('unexpected operation');
+ };
+ h.run('earEnabled=false;mode="queue";playback.current="";api=coverApi;themeRevision=4;selected=[{id:"queued",song_id:"123",source:"song",title:"已点歌曲",state:"ready"}];render()');
+ assert.equal(h.run('resultRowCache.get("queue:queued").row.firstElementChild.className'),'cover placeholder');
+ const changing=h.run('chooseTheme("festival",$("theme-button"))');
+ assert.equal(h.context.document.body.dataset.theme,'festival');
+ assert.deepEqual(requests.map(request=>request.operation),['artwork','theme']);
+ assert.equal(requests[1].priority,'high');
+ h.context.oldStatus={theme:'content',theme_revision:4,songs:[{id:'queued',song_id:'123',source:'song',title:'已点歌曲',state:'ready'}],
+  mac_online:true,playback:{online:false,current:'',played:[],state:'idle'},controls:{}};
+ h.run('applyStatus(oldStatus)');
+ assert.equal(h.context.document.body.dataset.theme,'festival');
+ theme.resolve({theme:'festival',theme_revision:5});await changing;
+ h.run('applyStatus(oldStatus)');
+ assert.equal(h.context.document.body.dataset.theme,'festival');
+ covers.resolve({covers:{'123':'data:image/jpeg;base64,AAAA'},pending:[]});
+ await flush();
+ assert.equal(h.run('resultRowCache.get("queue:queued").row.firstElementChild.tagName'),'IMG');
+ assert.equal(h.run('resultRowCache.get("queue:queued").row.firstElementChild.src'),'data:image/jpeg;base64,AAAA');
+});
+
+test('电视离线后歌单显示上次播放，重新在线时恢复实际状态',()=>{
+ const h=harness();
+ h.run('earEnabled=false;mode="queue";playback={online:false,current:"one",played:[],state:"playing"};selected=[{id:"one",song_id:"123",title:"本场歌曲",state:"ready"}];render()');
+ assert.equal(h.run('resultGroupCache.get("current").children[0].textContent'),'上次播放');
+ const old=h.run('resultRowCache.get("queue:one").row');
+ h.run('playback.online=true;playback.state="paused";render()');
+ assert.equal(h.run('resultGroupCache.get("current").children[0].textContent'),'已暂停');
+ assert.notEqual(h.run('resultRowCache.get("queue:one").row'),old);
+});
+
+test('相同数值 ID 的云盘歌曲与曲库歌曲分别补封面且不会串图',async()=>{
+ const h=harness(),requests=[];
+ h.context.coverApi=async(_operation,_body,query)=>{
+  const params=new URLSearchParams(query),source=params.get('source')||'song';
+  requests.push({source,ids:params.get('ids')});
+  return {covers:{'123':source==='cloud'?'data:image/jpeg;base64,BBBB':'data:image/jpeg;base64,AAAA'},pending:[],
+   tracks:{'123':{artists:[source==='cloud'?'云盘歌手':'曲库歌手'],album:source==='cloud'?'云盘专辑':'曲库专辑'}}};
+ };
+ h.run('earEnabled=false;mode="queue";playback.current="";api=coverApi;selected=[{id:"public",song_id:"123",source:"song",title:"曲库版本",state:"ready"},{id:"cloud",song_id:"123",source:"cloud",title:"云盘版本",state:"ready"}];render()');
+ await flush();
+ assert.deepEqual(requests.map(request=>request.source).sort(),['cloud','song']);
+ assert.ok(requests.every(request=>request.ids==='123'));
+ assert.equal(h.run('resultRowCache.get("queue:public").row.firstElementChild.src'),'data:image/jpeg;base64,AAAA');
+ assert.equal(h.run('resultRowCache.get("queue:cloud").row.firstElementChild.src'),'data:image/jpeg;base64,BBBB');
+ const walk=node=>[node,...node.children.flatMap(walk)];
+ const metadata=key=>walk(h.run(`resultRowCache.get("queue:${key}").row`)).find(node=>node.className==='artist').textContent;
+ assert.equal(metadata('public'),'曲库歌手 · 曲库专辑');
+ assert.equal(metadata('cloud'),'云盘歌手 · 云盘专辑');
+});
+
+test('封面解码失败后退避重取并恢复显示，重复渲染不会密集重试',async()=>{
+ const h=harness(),timers=[];let clock=1000,requests=0;
+ const first='data:image/jpeg;base64,AAAA',recovered='data:image/jpeg;base64,BBBB';
+ h.context.performance={now:()=>clock};
+ h.context.setTimeout=(run,delay)=>{timers.push({run,delay});return timers.length;};
+ h.context.coverApi=async()=>({covers:{'123':++requests===1?first:recovered},pending:[]});
+ h.run('earEnabled=false;mode="queue";playback.current="";api=coverApi;selected=[{id:"queued",song_id:"123",source:"song",title:"重试封面",state:"ready"}];render()');
+ await flush();
+ const row=h.run('resultRowCache.get("queue:queued").row');
+ assert.equal(row.firstElementChild.src,first);
+ row.firstElementChild.onerror();
+ assert.equal(row.firstElementChild.className,'cover placeholder');
+ h.run('render();render()');await flush();
+ assert.equal(requests,1);
+ const retry=timers.find(timer=>timer.delay>0);
+ assert.ok(retry,'解码失败后应安排后台重试');
+ clock+=retry.delay;retry.run();await flush();
+ assert.equal(requests,2);
+ assert.equal(row.firstElementChild.tagName,'IMG');
+ assert.equal(row.firstElementChild.src,recovered);
+});
+
+test('坏图退避期间新出现的健康封面立即加载并独立完成',async()=>{
+ const h=harness(),timers=[],requests=[];let clock=1000;
+ h.context.performance={now:()=>clock};
+ h.context.setTimeout=(run,delay)=>{timers.push({run,delay});return timers.length;};
+ h.context.coverApi=async(_operation,_body,query)=>{
+  const ids=new URLSearchParams(query).get('ids').split(',');requests.push(ids);
+  return {covers:Object.fromEntries(ids.map(id=>[id,id==='456'?'data:image/jpeg;base64,BBBB':'data:image/jpeg;base64,AAAA'])),pending:[]};
+ };
+ h.run('earEnabled=false;mode="queue";playback.current="";api=coverApi;selected=[{id:"broken",song_id:"123",source:"song",state:"ready"}];render()');
+ await flush();
+ h.run('resultRowCache.get("queue:broken").row.firstElementChild.onerror();selected.push({id:"healthy",song_id:"456",source:"song",state:"ready"});render()');
+ await flush();
+ assert.deepEqual(requests,[['123'],['456']]);
+ assert.equal(h.run('resultRowCache.get("queue:healthy").row.firstElementChild.src'),'data:image/jpeg;base64,BBBB');
+ assert.equal(h.run('resultRowCache.get("queue:broken").row.firstElementChild.className'),'cover placeholder');
+ assert.equal(clock,1000);
+ const retry=timers.at(-1);clock+=retry.delay;retry.run();await flush();
+ assert.deepEqual(requests,[['123'],['456'],['123']]);
+});
+
+test('常唱从服务端恢复手机离开期间的云盘演唱并合并旧的本机记录',async()=>{
+ const h=harness(),history=deferred();
+ h.context.historyApi=async(operation)=>operation==='profile'?history.promise:{covers:{},pending:[]};
+ h.run('earEnabled=false;api=historyApi;frequentSongs=[{song_id:"111",source:"song",title:"本机旧记录",plays:2}];setView("frequent")');
+ assert.equal(h.element('page-title').textContent,'常唱歌曲');
+ history.resolve({songs:[{song_id:'222',source:'cloud',title:'离开期间唱过',plays:5,cached_accompaniment:true}]});
+ await h.run('frequentRequest.task');
+ assert.deepEqual(Array.from(h.run('frequentRows().map(song=>song.title)')),['离开期间唱过','本机旧记录']);
+ assert.equal(h.element('results').children.length,2);
+ assert.equal(h.element('empty').hidden,true);
+ assert.equal(h.run('resultRowCache.get("frequent:cloud:222").row.children.at(-1).dataset.song'),'cloud:222');
+});
+
+test('常唱因访客凭据失效而重新加入后自动恢复读取', {timeout:1500},async()=>{
+ const h=harness({validRoom:true}),restored=deferred();let reads=0,joins=0;
+ h.context.recoveryApi=async operation=>{
+  if(operation==='profile'){
+   reads++;
+   if(reads===1)throw Object.assign(new Error(),{code:'guest_unavailable',status:403});
+   restored.resolve();
+   return {songs:[{song_id:'222',source:'cloud',title:'恢复后的常唱',plays:4}]};
+  }
+  if(operation==='join'){
+   joins++;
+   return {...currentRoomReply().guest,status:currentRoomReply().status};
+  }
+  if(operation==='artwork')return {covers:{},pending:[]};
+  throw Error('unexpected operation');
+ };
+ h.run('earEnabled=false;api=recoveryApi;startStatusFeed=loadDiscover=initAddQueue=refresh=()=>{};mode="frequent"');
+ await h.run('loadFrequent()');await restored.promise;await flush();
+ assert.equal(joins,1);
+ assert.equal(reads,2);
+ assert.equal(h.run('frequentRows()[0].title'),'恢复后的常唱');
+ assert.equal(h.element('empty').hidden,true);
 });

@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, Response
 
 OWNER_ORIGIN = "http://127.0.0.1:8769"
 OWNER_PREFIX = "/api/games/ktv"
-READS = {"manage/room", "manage/library", "manage/policy/mac", "manage/policy/nas", "manage/search",
+READS = {"manage/room", "manage/library", "manage/policy/mac", "manage/policy/nas", "manage/search", "manage/artwork",
          "manage/backgrounds", "jobs", "scheduler", "source/status"}
 WRITES = {
     "manage/preview", "manage/delete", "manage/policy", "manage/backgrounds/policy", "scheduler", "source/login", "source/poll",
@@ -226,6 +226,12 @@ def create_router(config_path=None, *, transport=None, read_only=False, launch_a
             source, q, offset = query.get("source", "song"), query.get("q", ""), query.get("offset", "0")
             if (source not in {"song", "mv", "cloud"} or not (0 if source == "cloud" else 1) <= len(q.strip()) <= 120
                     or not offset.isascii() or not offset.isdigit() or int(offset) > 100000):
+                raise HTTPException(400, "invalid_query")
+        elif operation == "manage/artwork" and request.method == "GET":
+            ids = query.get("ids", "").split(",")
+            if (set(query) - {"ids", "source"} or not 1 <= len(ids) <= 30
+                    or any(not re.fullmatch(r"[1-9][0-9]{0,17}", ident) for ident in ids)
+                    or query.get("source", "song") not in {"song", "cloud"}):
                 raise HTTPException(400, "invalid_query")
         elif operation == "manage/library" and query:
             limit, offset = query.get("limit", ""), query.get("offset", "0")

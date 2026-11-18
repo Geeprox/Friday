@@ -1489,7 +1489,7 @@ def create_app(
             and request.headers.get("host") == console_origin.removeprefix("http://")
         )
         owner_path = bool(re.fullmatch(
-            rf"/v1/manage/(?:library(?:/status|/{JOB_ID.pattern}/publish)?|preview|delete|policy(?:/mac|/nas)?|room|search|"
+            rf"/v1/manage/(?:library(?:/status|/{JOB_ID.pattern}/publish)?|preview|delete|policy(?:/mac|/nas)?|room|search|artwork|"
             rf"room/(?:theme|controls|command|order|queue-remove|songs|retry|preferences)|jobs/{JOB_ID.pattern}/(?:retry|remove)|"
             r"backgrounds(?:/policy|/[a-f0-9]{64}/(?:preview|regenerate))?)",
             request.url.path,
@@ -1750,6 +1750,14 @@ def create_app(
         if not (0 if source == "cloud" else 1) <= len(q.strip()) <= 120 or source not in {"song", "mv", "cloud"} or not 0 <= offset <= 100000:
             raise HTTPException(400, "invalid_query")
         return owner_library().remote("search", {"q": q.strip(), "source": source, "offset": offset})
+
+    @app.get("/v1/manage/artwork")
+    def owner_artwork(ids: str, source: str = "song"):
+        items = ids.split(",")
+        if (not 1 <= len(items) <= 30 or any(not re.fullmatch(r"[1-9][0-9]{0,17}", ident) for ident in items)
+                or source not in {"song", "cloud"}):
+            raise HTTPException(400, "invalid_query")
+        return owner_library().remote("artwork", {"ids": ids, "source": source, "inline": True})
 
     @app.post("/v1/manage/room/{operation}")
     def owner_room_action(operation: str, value: dict):

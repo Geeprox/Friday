@@ -26,7 +26,11 @@ SYNTHETIC_MEDIA = {
     'docs/screenshots/ktv-source-quality.png':
         'd4d1152743f6b691e8d99398eb70badecbe91afae4a1b09b008af6d3b0d52ee3',
     'docs/screenshots/ktv-storage-management.png':
-        'aa177830e58d5eb5357831f4f7cc8777031c532ac235bf40ce2ec5607d0b2a37',
+        '2a2b9ee13b00d9df6398857b2750070fa90f7de90348ccc172c289390fd29256',
+    'docs/screenshots/ktv-desktop-queue.png':
+        '67cc1625df9d62288bad28eca2d9bae33e341f233bff104cf3946693d9f1e2fd',
+    'docs/screenshots/ktv-mobile-search.png':
+        'af54db78fcf411bae932151e41bb6ffd0798a0ff2e834abd16eaa620c561bbb6',
     # 手机首页、队列和声音面板，示例房间和内容均由测试夹具提供。
     'docs/screenshots/ktv-mobile-home.png':
         'ee92022ad285a21d5d39447053b2337febcb2b0cae9df7680cac60de37835561',
@@ -194,7 +198,7 @@ SYNTHETIC_MEDIA = {
     'fixtures/homeplane/archive-simulated.mp4':
         'a1f318cbd2d02ce033bc05256938d48edf26cd440abd4df01bb6b2a57999f038',
     'native/KTVTV/android/assets/avatars.png':
-        '080c89adc8c4c9101d9ec6199122f7ad95b9a10772bedf2de99bef8eb1a7ee38',
+        'c3f3238419f9699684ca673d193df14574703b1254d1375654f92c6628b1a03e',
     'native/KTVTV/android/assets/content.png':
         '698c3ff2823457e6d8b560def271f6329e8403761155647022454d98bb5d85a5',
     'native/KTVTV/android/assets/festival.png':
@@ -202,7 +206,15 @@ SYNTHETIC_MEDIA = {
     'native/KTVTV/android/assets/live.png':
         '71c2552210e39c864ed78206c1f747e7cf157870685a9d4374b80e9621defe5b',
     'integrations/ktv_public/web/avatars.png':
-        '080c89adc8c4c9101d9ec6199122f7ad95b9a10772bedf2de99bef8eb1a7ee38',
+        'c3f3238419f9699684ca673d193df14574703b1254d1375654f92c6628b1a03e',
+    'integrations/ktv_public/web/avatars-small.webp':
+        '8a4573e4462621ca573e8fa22d6d760255b70f84641fa111303c35c58bcc71e4',
+    'integrations/ktv_public/web/content-small.webp':
+        '12416cb846e56340fdec0b9bddf79285c26e34686564d6b51518cbbcd5129166',
+    'integrations/ktv_public/web/festival-small.webp':
+        '0f88d2c09cf6c1d5c55d45e73d70bfe4f92b3d63c79784b52304259ee41bdff7',
+    'integrations/ktv_public/web/live-small.webp':
+        'c4b46da8df701645867cd2815b57f5fa9403136ac98ed9b50c0ac35ed136e8af',
     'integrations/ktv_public/web/content.png':
         '698c3ff2823457e6d8b560def271f6329e8403761155647022454d98bb5d85a5',
     'integrations/ktv_public/web/festival.png':

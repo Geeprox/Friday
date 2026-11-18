@@ -133,6 +133,20 @@ def test_search_and_fixed_journal_are_readable(config):
     assert len(seen) == 3
 
 
+def test_recording_artwork_metadata_uses_the_fixed_owner_endpoint(config):
+    seen = []
+    artwork = "data:image/png;base64,U1lOVEhFVElD"
+    data = {"covers": {"7": artwork}, "tracks": {"7": {
+        "title": "合成歌曲", "artists": ["合成歌手"], "album": "合成专辑", "source": "cloud"}}}
+    with client_for(config, lambda request: seen.append(request) or httpx.Response(200, json=data)) as client:
+        assert client.get("/api/games/ktv/manage/artwork?ids=7,8&source=cloud").json() == data
+        for query in ("ids=0", "ids=../7", "ids=7&source=mv", "ids=7&url=https://example.invalid",
+                      "ids=7&ids=8", "ids=" + ",".join(str(i) for i in range(1, 32))):
+            assert client.get("/api/games/ktv/manage/artwork?" + query).status_code == 400
+    assert len(seen) == 1
+    assert str(seen[0].url) == OWNER_ORIGIN + "/v1/manage/artwork?ids=7%2C8&source=cloud"
+
+
 @pytest.mark.parametrize("kind", ["missing", "unsafe_mode", "symlink", "corrupt", "bad_token"])
 def test_private_config_fails_closed_and_never_leaks_path(config, kind):
     if kind == "missing":
