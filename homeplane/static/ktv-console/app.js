@@ -254,7 +254,7 @@ async function readArtwork(){
  if(!artworkQueue.size)return;
  const ready=[...artworkQueue.values()].filter(item=>(songMetadata.get(item.key)?.retryAt||0)<=Date.now());
  if(!ready.length){scheduleArtwork();return;}
- const source=ready[0].source,items=ready.filter(item=>item.source===source).slice(0,12);
+ const source=ready[0].source,items=ready.filter(item=>item.source===source).slice(0,source==='cloud'?3:12);
  for(const item of items)artworkQueue.delete(item.key);
  const request=new AbortController();artworkRequest=request;artworkBusy=true;
  try{
