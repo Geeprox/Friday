@@ -155,7 +155,11 @@ def test_song_search_recovers_from_first_provider_timeout(station, monkeypatch):
     assert page["next_offset"] == 60 and page["has_more"]
 
 
-def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch):
+@pytest.mark.parametrize(("declared", "content", "actual"), [
+    ("image/jpeg", b"\xff\xd8\xff\xe0synthetic-thumbnail", "image/jpeg"),
+    ("image/jpg", b"\x89PNG\r\n\x1a\nsynthetic-thumbnail", "image/png"),
+])
+def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch, declared, content, actual):
     store, client = station
     value, secret = room(store)
     path = f"/api/rooms/{value['id']}/artwork"
@@ -182,11 +186,10 @@ def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch)
     assert len(calls) == 1
 
     image_requests = []
-    content = b"\xff\xd8\xff\xe0synthetic-thumbnail"
 
     class Thumbnail(io.BytesIO):
         headers = Message()
-        headers["Content-Type"] = "image/jpeg"
+        headers["Content-Type"] = declared
 
     class Images:
         def open(self, request, *, timeout):
@@ -197,7 +200,7 @@ def test_search_artwork_is_guest_scoped_batched_and_cached(station, monkeypatch)
     monkeypatch.setattr("integrations.ktv_public.nas_server.urllib.request.build_opener", lambda *_: Images())
     inline = client.get(path, headers=headers, params={"ids": "123,234", "inline": "1"})
     assert inline.status_code == 200
-    assert inline.json() == {"covers": {"123": "data:image/jpeg;base64," + base64.b64encode(content).decode()}, "pending": []}
+    assert inline.json() == {"covers": {"123": "data:" + actual + ";base64," + base64.b64encode(content).decode()}, "pending": []}
     assert client.get(path, headers=headers, params={"ids": "123", "inline": "1"}).json() == inline.json()
     for _ in range(41):
         assert client.get(path, headers=headers, params={"ids": "123", "inline": "1"}).json() == inline.json()

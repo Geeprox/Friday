@@ -1878,13 +1878,11 @@ class Store:
                 request = urllib.request.Request(url, headers={"Referer": "https://music.163.com/"})
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoImageRedirect())
                 with opener.open(request, timeout=3) as image:
-                    kind = image.headers.get_content_type()
                     data = image.read(1048577)
-                if (len(data) > 1048576 or
-                        not ((kind in {"image/jpeg", "image/jpg"} and data.startswith(b"\xff\xd8\xff"))
-                             or kind == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n"))):
+                # 官方 CDN 有时把 PNG 声明成 image/jpg，按实际文件签名返回类型。
+                kind = "image/png" if data.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg" if data.startswith(b"\xff\xd8\xff") else ""
+                if len(data) > 1048576 or not kind:
                     return ident, ""
-                kind = "image/png" if kind == "image/png" else "image/jpeg"
                 value = "data:" + kind + ";base64," + base64.b64encode(data).decode("ascii")
                 with self.catalog_lock:
                     if len(self.thumbnail_cache) >= 512:
