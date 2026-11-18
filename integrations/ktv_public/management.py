@@ -272,7 +272,7 @@ class Management:
                 sid = key[5:] if key.startswith("song:") else ""
                 source = sources.get(sid, "cloud" if ("cloud", sid) in catalog else "song")
                 track = catalog.get((source, sid), {})
-                entries.append({"id": key, "title": group["title"], "last_used": group["last_used"], "kind": group["kind"],
+                entries.append({"id": key, "title": track.get("title") or group["title"], "last_used": group["last_used"], "kind": group["kind"],
                                 **({"source": source, **{name: track[name] for name in ("artists", "album", "artwork") if name in track}} if sid else {}),
                                 "bytes": sum(v[2] for v in files.values()), "revision": fingerprint([sorted(group["hashes"]), files]),
                                 "can_delete": not (in_queue or transferring or unsafe),

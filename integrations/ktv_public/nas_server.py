@@ -279,6 +279,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS song_catalog(source TEXT NOT NULL,song_id TEXT NOT NULL,title TEXT NOT NULL,
               artists TEXT NOT NULL,album TEXT NOT NULL,artwork TEXT NOT NULL,PRIMARY KEY(source,song_id));
             CREATE TABLE IF NOT EXISTS cloud_staging(position INTEGER PRIMARY KEY,song_id TEXT UNIQUE,title TEXT NOT NULL,artists TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS cloud_display_staging(song_id TEXT PRIMARY KEY,album TEXT NOT NULL,artwork TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cloud_sync(id INTEGER PRIMARY KEY,revision TEXT NOT NULL,total INTEGER NOT NULL,received INTEGER NOT NULL,updated INTEGER NOT NULL);
             """)
             for table, name, kind in (
@@ -860,7 +861,7 @@ class Store:
                 raise Refusal(410, "room_closed")
             rows = db.execute(
                 "SELECT s.id,s.song_id,s.title,s.state,s.code,s.created,s.guest_id,s.nickname,s.avatar,"
-                "coalesce(nullif(s.artwork,''),ct.artwork,'') AS artwork,s.progress,s.cache_hit,s.source,"
+                "coalesce(nullif(ct.artwork,''),s.artwork,'') AS artwork,s.progress,s.cache_hit,s.source,"
                 "coalesce(nullif(ct.artists,'[]'),cl.artists,'[]') AS artists,coalesce(nullif(ct.album,''),cr.album,'') AS album,"
                 "coalesce(ls.ready,0) AS lyric_state,coalesce(ls.ready=1,0) AS synced_lyrics "
                 "FROM songs s LEFT JOIN coordinator_lyric_status ls ON ls.song=s.id "
@@ -1545,21 +1546,26 @@ class Store:
                 or payload["offset"] + len(payload["songs"]) > payload["total"]
                 or (not payload["songs"] and payload["total"] != 0)):
             raise Refusal(400, "invalid_catalog")
-        rows = []
+        rows, display = [], []
         for row in payload["songs"]:
-            if (not isinstance(row, dict) or set(row) != {"song_id", "title", "artists", "source"}
+            if (not isinstance(row, dict) or not {"song_id", "title", "artists", "source"} <= set(row)
+                    or set(row) - {"song_id", "title", "artists", "source", "album", "artwork"}
                     or row["source"] != "cloud" or not isinstance(row["song_id"], str) or not ID.fullmatch(row["song_id"])
                     or not isinstance(row["title"], str) or not 1 <= len(row["title"]) <= 120
                     or not isinstance(row["artists"], list) or len(row["artists"]) > 8
                     or any(not isinstance(a, str) or len(a) > 100 for a in row["artists"])
-                    or any(ord(c) < 32 or ord(c) == 127 for c in row["title"] + "".join(row["artists"]))):
+                    or not isinstance(row.get("album", ""), str) or len(row.get("album", "")) > 160
+                    or not isinstance(row.get("artwork", ""), str) or len(row.get("artwork", "")) > 2048
+                    or any(ord(c) < 32 or ord(c) == 127 for c in row["title"] + "".join(row["artists"]) + row.get("album", ""))):
                 raise Refusal(400, "invalid_catalog")
             rows.append((row["song_id"], row["title"], json.dumps(row["artists"], ensure_ascii=False)))
+            display.append((row["song_id"], row.get("album", ""), self.artwork(row.get("artwork", ""))))
         with self.lock, self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             sync = db.execute("SELECT * FROM cloud_sync WHERE id=1").fetchone()
             if payload["offset"] == 0:
                 db.execute("DELETE FROM cloud_staging")
+                db.execute("DELETE FROM cloud_display_staging")
                 db.execute("INSERT OR REPLACE INTO cloud_sync VALUES(1,?,?,0,?)",
                            (payload["revision"], payload["total"], int(time.time())))
             elif (not sync or sync["revision"] != payload["revision"] or sync["received"] != payload["offset"]
@@ -1567,11 +1573,21 @@ class Store:
                 raise Refusal(409, "catalog_changed")
             for i, row in enumerate(rows):
                 db.execute("INSERT INTO cloud_staging VALUES(?,?,?,?)", (payload["offset"] + i, *row))
+            db.executemany("INSERT INTO cloud_display_staging VALUES(?,?,?)", display)
             received = payload["offset"] + len(rows)
             db.execute("UPDATE cloud_sync SET received=?,updated=? WHERE id=1", (received, int(time.time())))
             if received == payload["total"]:
                 db.execute("DELETE FROM cloud_catalog")
                 db.execute("INSERT INTO cloud_catalog SELECT song_id,title,artists FROM cloud_staging")
+                # 显示资料随完整云盘快照一起发布，残缺分页不能替换正在使用的资料。
+                db.execute("INSERT INTO song_catalog SELECT 'cloud',c.song_id,c.title,c.artists,d.album,d.artwork "
+                           "FROM cloud_catalog c JOIN cloud_display_staging d ON d.song_id=c.song_id WHERE 1 "
+                           "ON CONFLICT(source,song_id) DO UPDATE SET title=excluded.title,artists=excluded.artists,"
+                           "album=CASE WHEN excluded.album!='' THEN excluded.album WHEN title=excluded.title AND artists=excluded.artists THEN album ELSE '' END,"
+                           "artwork=CASE WHEN excluded.artwork!='' THEN excluded.artwork WHEN title=excluded.title AND artists=excluded.artists THEN artwork ELSE '' END")
+        with self.catalog_lock:
+            for ident, _, _ in display:
+                self.artwork_cache.pop("cloud:" + ident, None)
         return {"accepted": True, "complete": received == payload["total"], "count": received}
 
     def search(self, query, source="song", offset=0):
@@ -1589,11 +1605,10 @@ class Store:
                 sync = db.execute("SELECT updated FROM cloud_sync WHERE id=1").fetchone()
             matches = [r for r in rows if all(t in (r["title"] + " " + " ".join(json.loads(r["artists"]))).casefold() for t in terms)]
             with self.connection() as db:
-                albums = {r["song_id"]: r["album"] for r in db.execute(
-                    "SELECT cr.song_id,cr.album FROM cloud_recordings cr JOIN cloud_catalog c "
-                    "ON c.song_id=cr.song_id AND c.title=cr.title AND c.artists=cr.artists")}
+                catalog = self.catalog_index(db)
             songs = [{"song_id": r["song_id"], "title": song_title(r["title"]), "artists": json.loads(r["artists"]),
-                      "source": "cloud", **({"album": albums[r["song_id"]]} if albums.get(r["song_id"]) else {})}
+                      "source": "cloud", **{name: catalog[("cloud", r["song_id"])][name] for name in ("album", "artwork")
+                                              if catalog[("cloud", r["song_id"])].get(name)}}
                      for r in matches[offset:offset + 30]]
             return {"songs": songs, "source": "cloud", "catalog_count": len(rows), "updated": sync[0] if sync else 0,
                     "offset": offset, "next_offset": offset + 30, "has_more": offset + 30 < len(matches), "total": len(matches)}
@@ -1732,7 +1747,7 @@ class Store:
             key = ("cloud", row["song_id"])
             previous = tracks.get(key, {})
             tracks[key] = {**previous, "source": "cloud", "song_id": row["song_id"], "title": song_title(row["title"]),
-                           "artists": json.loads(row["artists"]), "album": row["album"] or previous.get("album", "")}
+                           "artists": json.loads(row["artists"]), "album": previous.get("album") or row["album"]}
         return tracks
 
     def cloud_recordings(self, ids):
@@ -1785,6 +1800,14 @@ class Store:
                       < (86400 if self.artwork_cache[prefix + i][1] else 90)}
         if refresh:
             cached = {}
+        if source == "cloud":
+            with self.connection() as db:
+                index = self.catalog_index(db)
+            # 云盘自带的显示封面可以直接使用，不必把上传 ID 当成公开录音再查一次。
+            for ident in ids:
+                cover = self.artwork(index.get((source, ident), {}).get("artwork", ""))
+                if cover:
+                    cached[ident] = cover
         missing = list(dict.fromkeys(i for i in ids if i not in cached))
         albums = {}
         if missing:
@@ -2314,7 +2337,7 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                 if path == "/agent/updates" and self.command == "POST":
                     return self.reply(200, store.update(self.body()))
                 if path == "/agent/cloud" and self.command == "POST":
-                    return self.reply(200, store.cloud_update(self.body()))
+                    return self.reply(200, store.cloud_update(self.body(262144)))
                 if path == "/agent/guides" and self.command == "POST":
                     return self.reply(200, store.guide_update(self.body()))
                 if path == "/agent/rooms" and self.command == "POST":

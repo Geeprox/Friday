@@ -643,6 +643,31 @@ def test_cloud_index_is_atomic_room_guest_only_and_source_identity_survives_queu
     assert 1<=len(guest['nickname'])<=24 and not any(c.isdigit() for c in guest['nickname'])
 
 
+def test_cloud_display_metadata_is_atomic_and_needs_no_public_recording_lookup(station, monkeypatch):
+    store, _ = station
+    row = {"song_id": "123", "title": "云盘显示曲", "artists": ["云盘歌手"], "source": "cloud",
+           "album": "上传版本专辑", "artwork": "http://p3.music.126.net/upload-cover.jpg"}
+    store.cloud_update({"revision": "a" * 64, "offset": 0, "total": 1, "songs": [row]})
+    monkeypatch.setattr(store, "public_metadata", lambda *_a, **_k: pytest.fail("云盘自带封面不应触发公开录音查询"))
+    first = store.search_artwork("123", source="cloud")
+    assert first["covers"] == {"123": "https://p3.music.126.net/upload-cover.jpg?param=240y240"}
+    assert first["tracks"]["123"]["album"] == "上传版本专辑"
+    assert store.search("显示", "cloud")["songs"][0]["album"] == "上传版本专辑"
+    store.cloud_update({"revision": "b" * 64, "offset": 0, "total": 2,
+                        "songs": [{**row, "album": "未完成的新快照"}]})
+    assert store.search_artwork("123", source="cloud") == first
+    store.cloud_update({"revision": "b" * 64, "offset": 1, "total": 2,
+                        "songs": [{**row, "song_id": "124", "album": "其他专辑"}]})
+    assert store.search_artwork("123", source="cloud")["tracks"]["123"]["album"] == "未完成的新快照"
+    value, _ = room(store)
+    store.poll()
+    guest = store.join(value)
+    store.add(value, {**song(), "source": "cloud"}, guest)
+    actual = store.status(value)["songs"][0]
+    assert actual["album"] == "未完成的新快照"
+    assert actual["artwork"] == first["covers"]["123"]
+
+
 def test_partial_cloud_sync_does_not_replace_last_catalog(station):
     store,_=station
     row={'song_id':'123','title':'保留目录','artists':[],'source':'cloud'}
