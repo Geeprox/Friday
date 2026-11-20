@@ -98,13 +98,21 @@ def test_follow_decision_is_rechecked_after_the_view_or_intent_changes(change):
     assert director.survey_attempts == 0
 
 
-def test_current_follow_and_empty_room_guards_accept_only_their_original_purpose():
+def test_current_follow_stops_after_losing_the_person():
     director = CameraDirector()
     director.choose(view(1), 1)
     assert director.choose(view(1.1), 1.1) == 'right'
     assert director.decision_current(view(1.2), 1.2, 'right')
     director.sent(1.2)
-    director.choose(view(20, people=[]), 20)
+    assert director.choose(view(20, people=[]), 20) is None
+    assert director.choose(view(20.2, people=[]), 20.2) is None
+    assert director.phase == 'target_lost'
+
+
+def test_empty_room_patrol_accepts_only_its_original_purpose():
+    director = CameraDirector()
+    for at in (1, 1.1):
+        assert director.choose(view(at, people=[]), at) is None
     assert director.choose(view(20.2, people=[]), 20.2) == 'right'
     assert director.decision_current(view(20.3, people=[]), 20.3, 'right')
     for anchor in (None, patrol_view(20.3, x=.04), patrol_view(20.3, basis='replacement')):
