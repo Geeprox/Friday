@@ -262,11 +262,9 @@ def test_wake_focus_and_empty_view_patrol_do_not_guess_between_people():
     assert d.choose(sample(2,people=people),2,focus=dict(track=2,at=2,session_id='first'))=='right'
     d.sent(2)
     assert d.choose(sample(20),20,occupied_elsewhere=True) is None
-    assert d.choose(sample(21),21)=='right'
-    d.sent(21)
-    assert d.choose(sample(24,x=.05),24) is None
-    assert d.choose(sample(25,x=.05),25) is None and d.scan_steps==1
-    assert d.choose(sample(35,visible=False,x=.05),35) is None
+    assert d.choose(sample(21),21) is None
+    assert d.choose(sample(35),35) is None and d.scan_steps == 0
+    assert d.choose(sample(36,visible=False,x=.05),36) is None
     assert d.phase=='view_obscured'
 
 

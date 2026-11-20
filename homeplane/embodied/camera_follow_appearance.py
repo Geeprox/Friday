@@ -15,8 +15,9 @@ class FollowAppearance:
     basis: str
     bounds: tuple
     species: str | None
-    points: np.ndarray
-    descriptors: np.ndarray
+    points: np.ndarray | None
+    descriptors: np.ndarray | None
+    clothing: np.ndarray | None = None
 
 
 def _view(sample):
@@ -42,14 +43,14 @@ def _decode(sample):
             return None
     if isinstance(jpeg, bytes) and 0 < len(jpeg) <= 2_000_000:
         try:
-            return cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_REDUCED_GRAYSCALE_2)
+            return cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_REDUCED_COLOR_2)
         except cv2.error:
             return None
     return None
 
 
 def _features(image, box, detector):
-    height, width = image.shape
+    height, width = image.shape[:2]
     x, y, w, h = (box[key] for key in ('x', 'y', 'w', 'h'))
     # 取目标框内部，减少框边的静止背景参与对应。
     left, right = round((x + .14*w)*width), round((x + .86*w)*width)
@@ -57,10 +58,28 @@ def _features(image, box, detector):
     if min(right-left, bottom-top) < 24:
         return None
     patch = cv2.resize(image[top:bottom, left:right], (96, 128), interpolation=cv2.INTER_LINEAR)
-    points, descriptors = detector.detectAndCompute(patch, None)
+    points, descriptors = detector.detectAndCompute(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY), None)
     if descriptors is None or len(points) < 12:
         return None
     return np.float32([point.pt for point in points]), descriptors
+
+
+def _clothing(image, box):
+    """从人体框中央取四个衣着色块，只保留同一次转动内的颜色中位数。"""
+    h, w = image.shape[:2]
+    colors = []
+    for y in (.29, .43, .58, .72):
+        x0 = round((box['x'] + .33 * box['w']) * w)
+        x1 = round((box['x'] + .67 * box['w']) * w)
+        y0 = round((box['y'] + (y - .045) * box['h']) * h)
+        y1 = round((box['y'] + (y + .045) * box['h']) * h)
+        patch = image[y0:y1, x0:x1]
+        if min(patch.shape[:2]) < 3:
+            return None
+        colors.append(np.median(patch.reshape(-1, 3), axis=0))
+    profile = np.asarray(colors)
+    # 单色块或低对比度的轮廓不足以支持重新选择。
+    return profile if np.ptp(profile, axis=0).max() >= 50 else None
 
 
 def _detector():
@@ -77,7 +96,11 @@ def remember_follow_target(sample, subject):
     if bounds is None or image is None:
         return None
     appearance = _features(image, box, _detector())
-    return FollowAppearance(view[0], tuple(bounds), subject.get('species'), *appearance) if appearance else None
+    clothing = _clothing(image, box) if subject.get('species') is None else None
+    if appearance is None and clothing is None:
+        return None
+    points, descriptors = appearance or (None, None)
+    return FollowAppearance(view[0], tuple(bounds), subject.get('species'), points, descriptors, clothing)
 
 
 def _near(before, after):
@@ -124,7 +147,7 @@ def _corresponds(anchor, appearance, matcher):
             and cv2.contourArea(cv2.convexHull(source[accepted])) >= 850)
 
 
-def find_follow_target(anchor, sample, subjects):
+def find_follow_target(anchor, sample, subjects, *, single_person=False):
     """同一视野基准内只返回唯一获得位置和画面支持的候选。"""
     if anchor is None:
         return None
@@ -141,7 +164,12 @@ def find_follow_target(anchor, sample, subjects):
     result = None
     for subject in nearby:
         appearance = _features(image, subject['box'], detector)
-        if appearance is not None and _corresponds(anchor, appearance, matcher):
+        matched = (appearance is not None and anchor.descriptors is not None
+                   and _corresponds(anchor, appearance, matcher))
+        if not matched and single_person and len(subjects) == 1 and anchor.clothing is not None:
+            profile = _clothing(image, subject['box'])
+            matched = profile is not None and np.abs(profile - anchor.clothing).max() <= 18
+        if matched:
             if result is not None:
                 return None
             result = subject

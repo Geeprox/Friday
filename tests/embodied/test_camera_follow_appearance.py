@@ -170,3 +170,35 @@ def test_unconfirmed_sole_subject_stays_lost_until_automatic_mode_is_selected_ag
     director.apply_mode('auto', 'explicit-choice')
     assert director.choose(frame(20.3, replacement), 20.3) is None
     assert director.choose(frame(20.6, replacement), 20.6) == 'left'
+
+
+def test_single_walker_reverses_after_pan_with_low_texture_clothing():
+    director = CameraDirector()
+    director.apply_mode('auto', 'walk')
+
+    def observe(t, x, track, shift, colors, extra=False):
+        row = subject(track, x)
+        image = np.full((480, 800, 3), 100, np.uint8)
+        top, left = 120, round(x * 800)
+        image[top:top+105, left:left+160] = colors[0]
+        image[top+105:top+216, left:left+160] = colors[1]
+        people = [row, subject(15, .82)] if extra else [row]
+        sample = dict(status='live', scene_visible=True, tracking_current=True, session_id='cam',
+                      _local_received=t, people=people, _patrol_view=patrol_view(t, x=shift),
+                      _follow_jpeg=cv2.imencode('.jpg', image)[1].tobytes())
+        return director.choose(sample, t)
+
+    shirt = ((40, 130, 180), (55, 40, 35))
+    assert observe(0, .13, 1, 0, shirt) is None
+    assert observe(.3, .13, 1, 0, shirt) == 'left'
+    director.sent(.3)
+    assert observe(2.5, .45, 3, -.16, tuple(reversed(shirt))) is None
+    assert observe(2.8, .45, 3, -.16, shirt) is None
+    assert observe(3.1, .46, 3, -.16, shirt) is None
+    assert director.phase == 'following'
+    assert observe(3.5, .69, 3, -.16, shirt) == 'right'
+    director.sent(3.5)
+    assert observe(6, .57, 7, 0, shirt, extra=True) is None
+    assert observe(6.4, .69, 7, 0, shirt) is None
+    assert observe(6.8, .69, 7, 0, shirt) is None
+    assert director.phase == 'target_reacquiring'
