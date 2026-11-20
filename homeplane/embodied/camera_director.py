@@ -79,6 +79,9 @@ class CameraDirector:
         self.failed_moves = 0
         self.retry_at = 0.0
         self.target_identity = None
+        self.auto_reconfirmed = None
+        self.single_person_move = False
+        self.followed_person = False
         self.reframe_started = None
         self.reframe_appearance = None
         self.reframe_candidate = None
@@ -144,6 +147,8 @@ class CameraDirector:
             raise ValueError('invalid_camera_mode')
         intent = (mode, revision)
         if intent != self.intent:
+            self.auto_reconfirmed = None
+            self.followed_person = False
             self._discard_patrol()
             self._clear_reframe()
             self._clear_selection_reference()
@@ -221,6 +226,7 @@ class CameraDirector:
             session=sample.get('session_id'), stamp=sample['_local_received'],
             target=self.target, identity=self.target_identity, game_window=self._camera_window(sample))
         if self.phase == 'following':
+            self.pending_decision['single_person'] = self.mode == 'auto' and len(self._subjects(sample)) == 1
             subjects = [subject for subject in self._subjects(sample) if subject['id'] == self.target]
             if len(subjects) == 1 and self.sound_following:
                 self.pending_decision.update(sound_cue=self.sound_search_cue, sound_box=dict(subjects[0]['box']),
@@ -350,6 +356,8 @@ class CameraDirector:
 
     def _watch_target_after_move(self, pending, now):
         if pending and pending['phase'] == 'following':
+            self.single_person_move = pending.get('single_person', False)
+            self.followed_person |= self.mode == 'auto'
             self.reframe_started = now
             self.reframe_appearance = pending.get('appearance')
             self.reframe_candidate = None
@@ -365,7 +373,8 @@ class CameraDirector:
         elif self.reframe_appearance is not None:
             from .camera_follow_appearance import find_follow_target
 
-            match = find_follow_target(self.reframe_appearance[1], sample, subjects)
+            match = find_follow_target(self.reframe_appearance[1], sample, subjects,
+                                       single_person=self.single_person_move and not strict)
         else:
             match = None
         previous, self.reframe_candidate = self.reframe_candidate, None
@@ -745,6 +754,9 @@ class CameraDirector:
 
     def choose(self, sample, now, *, focus=None, occupied_elsewhere=False, review_pending=False, fall_pending=False,
                sound_cue=None):
+        # 镜头稳定等待期间也要撤销单人前提，避免两人交错后误跟。
+        if self.reframe_started is not None and len(sample.get('people') or []) > 1:
+            self.single_person_move = False
         self.sound_confirmed_view = None
         if self.mode == 'hold':
             self.phase = 'held'
@@ -836,6 +848,8 @@ class CameraDirector:
                 return None
         session = sample.get('session_id')
         if session != self.source_session:
+            self.auto_reconfirmed = None
+            self.followed_person = False
             self._end_sound_search(now)
             self.source_session = session
             self.target = self.target_identity = self.last_focus = None
@@ -957,6 +971,7 @@ class CameraDirector:
                 target = self._reframe_target(sample, people)
                 if target is not None:
                     self.target = target['id']
+                    self.auto_reconfirmed = target['id'] if self.mode == 'auto' and self.single_person_move else None
                     self._clear_reframe()
                 elif people or now - self.reframe_started <= self.FOLLOW_REACQUIRE_SECONDS:
                     if people:
@@ -988,7 +1003,7 @@ class CameraDirector:
             # Allow fresh post-pan face evidence to accumulate before another
             # impulse discards it. A matched identity may release this wait;
             # an unrecognizable target never stalls following indefinitely.
-            if not self.identity(target) and now-self.last_move < 4:
+            if self.auto_reconfirmed != target['id'] and not self.identity(target) and now-self.last_move < 4:
                 return None
             direction = self._follow_direction(target)
             if direction in self.TILT_DIRECTIONS:
@@ -1008,6 +1023,9 @@ class CameraDirector:
         if now-self.target_seen > 8:
             self.target = None
             self.target_identity = None
+        if self.mode == 'auto' and self.followed_person:
+            self.phase = 'target_lost'
+            return None
         if occupied_elsewhere or now-self.last_person < 15 or now-self.last_move < 12:
             self.phase = 'observing'
             return None
@@ -1015,6 +1033,7 @@ class CameraDirector:
 
     def sent(self, now, direction=None, *, automatic=True):
         self.last_move = now
+        self.auto_reconfirmed = None
         if not automatic:
             self._end_sound_search(now)
         direction=direction or self.pending_direction
