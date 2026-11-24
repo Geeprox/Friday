@@ -4,6 +4,7 @@ import ast
 import asyncio
 import base64
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -120,14 +121,20 @@ def test_capture_rejects_invalid_or_stale_voice_window_deadlines(deadline):
 
 @pytest.mark.asyncio
 async def test_secondary_old_audio_cannot_reach_voice_recognition():
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=audio_recipient()
     scope=dict(secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
                time=__import__('time'),deliver_audio=deliver_audio,safety=SimpleNamespace(observe_audio=Mock()))
     callback=actual('homeplane/embodied/worker.py','secondary_audio',scope)
     await callback(CAMERA['id'],dict(type='audio',sample_rate=16000,received_at=1,
                    pcm=base64.b64encode(bytes(6400)).decode()))
+    await asyncio.gather(*service.tasks)
     service.audio.assert_not_awaited()
 
+
+def audio_recipient():
+    service = SimpleNamespace(audio_allowed=True, audio=AsyncMock(), reset_audio=Mock(), state={}, tasks=[])
+    service.offer_audio = lambda admission: service.tasks.append(asyncio.create_task(deliver_audio(service, admission)))
+    return service
 
 def audio(at=0, *, framer=None):
     framer=framer or PCMFramer(CAMERA,'a'*32)
@@ -194,13 +201,15 @@ def test_packet_replay_sample_overlap_source_epoch_and_video_freshness_are_indep
 @pytest.mark.asyncio
 async def test_qualified_secondary_packet_reaches_original_voice_consumer_and_reports_gap():
     g=AudioIngress(CAMERA,'a'*32);f=PCMFramer(CAMERA,'a'*32);assert video(g,0)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=audio_recipient()
     scope=dict(secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
                time=__import__('time'),deliver_audio=deliver_audio,safety=SimpleNamespace(observe_audio=Mock()))
     callback=actual('homeplane/embodied/worker.py','secondary_audio',scope)
     p=audio(framer=f);await callback(CAMERA['id'],g.accept(p,wall=1000,mono=0))
+    await asyncio.gather(*service.tasks)
     service.audio.assert_awaited_once_with(p)
     await callback(CAMERA['id'],g.accept(p,wall=1000.1,mono=.1))
+    await asyncio.gather(*service.tasks)
     assert service.audio.await_count==1 and service.reset_audio.call_count==2
     assert service.state['audio_input']['audio_persisted'] is False
 
@@ -212,7 +221,7 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
     frame=dict(type='frame',capture_session='a'*32,camera_source_context=camera_source_context(CAMERA),
                received_at=1000,jpeg='SYNTHETIC')
     packet=audio(framer=framer)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=audio_recipient()
     time=SimpleNamespace(monotonic=lambda:0,time=lambda:1000)
     callback=actual('homeplane/embodied/worker.py','secondary_audio',dict(
         secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
@@ -226,6 +235,7 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
         item={'privacy_closed':closed},waiters={7:future},queue=queue,last_video_lease=0,
         wall_epoch=1,time=time,json=json,offer_frame=lambda _,p:offered.append(p),retire_source=Mock())
     await actual('homeplane/embodied/previews.py','receive',scope)()
+    await asyncio.gather(*service.tasks)
     assert offered==[frame] and future.result()['native_code']==0
     if closed:
         service.audio.assert_not_awaited()
@@ -239,7 +249,7 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
 async def test_original_primary_receiver_gates_pcm_and_stops_an_obsolete_generation():
     g=AudioIngress(CAMERA,'a'*32);assert video(g,0)
     p=audio();old=dict(p,received_at=998)
-    service=SimpleNamespace(audio_allowed=True,audio=AsyncMock(),reset_audio=Mock(),state={})
+    service=audio_recipient()
     for obsolete in (False,True):
         scope=dict(capture=SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(side_effect=[json.dumps(old).encode(),b'']))),
             state={'status':'live'},audio_ingress=g,home=service,deliver_audio=deliver_audio,
@@ -251,9 +261,11 @@ async def test_original_primary_receiver_gates_pcm_and_stops_an_obsolete_generat
             primary_capture_closed=AsyncMock())
         receiver=actual('homeplane/embodied/worker.py','receive',scope)
         await receiver()
+        await asyncio.gather(*service.tasks)
         service.audio.assert_not_awaited()
     scope['generation']=1;scope['capture'].stdout.readline=AsyncMock(side_effect=[json.dumps(p).encode(),b''])
     receiver=actual('homeplane/embodied/worker.py','receive',scope);await receiver()
+    await asyncio.gather(*service.tasks)
     service.audio.assert_awaited_once_with(p)
 
 
@@ -329,6 +341,8 @@ async def test_local_audio_model_failure_does_not_stop_primary_frames_or_motor_r
     await actual('homeplane/embodied/worker.py','receive',scope)()
     assert offered[0]==dict(frame,_motion_generation=4)
     assert future.result()=={'type':'motor_result','request_id':7,'native_code':0}
+    if s.audio_task is not None:
+        await s.audio_task
     initial_calls=1 if fault=='load' else 0
     assert s.state['audio_analysis']['status']=='unavailable' and model.call_count==initial_calls
     assert 'private-' not in json.dumps(s.state)
@@ -342,6 +356,53 @@ async def test_local_audio_model_failure_does_not_stop_primary_frames_or_motor_r
     clock[0]=5.1;s.last_video=5.1;assert video(g,5.1)
     await deliver_audio(s,g.accept(audio(5.1,framer=framer),wall=1005.1,mono=5.1))
     assert model.call_count==initial_calls+1 and s.state['audio_analysis']['status']=='ready'
+
+
+@pytest.mark.asyncio
+async def test_stalled_voice_model_leaves_ingress_live_and_drops_revoked_audio(tmp_path, monkeypatch):
+    from homeplane.embodied import home_service as module
+
+    clock = [10.0]
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(module, 'VOICE_INPUT_PAUSED', tmp_path / 'paused')
+    service = voice_service(module)
+    loop = asyncio.get_running_loop()
+    started, release = asyncio.Event(), threading.Event()
+
+    def measure(_):
+        loop.call_soon_threadsafe(started.set)
+        release.wait(2)
+        return True, 1.0, .1
+
+    service.activity = SimpleNamespace(probability=.9, measure=measure)
+    ingress, framer = AudioIngress(CAMERA, 'a'*32), PCMFramer(CAMERA, 'a'*32)
+
+    def offer():
+        service.last_video = clock[0]
+        assert video(ingress, clock[0])
+        admission = ingress.accept(audio(clock[0], framer=framer), wall=1000+clock[0], mono=clock[0])
+        assert admission.packet is not None
+        service.offer_audio(admission)
+
+    offer()
+    task = service.audio_task
+    try:
+        async with asyncio.timeout(1):
+            await started.wait()
+        assert not task.done()
+        for _ in range(5):
+            clock[0] += .2
+            offer()
+            assert len(service.audio_backlog) <= module.VOICE_PACKET_BACKLOG
+        service.epoch += 1
+        service.discard_audio()
+    finally:
+        release.set()
+    await task
+    assert not service.audio_backlog
+    assert not service.state['voice_activity']
+    assert not service.vad
+    service.transcribe.assert_not_awaited()
 
 
 @pytest.mark.asyncio

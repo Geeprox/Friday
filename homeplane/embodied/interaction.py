@@ -16,6 +16,7 @@ from .gestures import BINDABLE_HAND_LABELS
 
 GESTURES={'body.arms_open':'双臂打开','body.arms_close':'双臂合上','body.hands_up':'双手举高','body.left_hand_up':'举起左手','body.right_hand_up':'举起右手','body.squat':'下蹲','body.lean_left':'身体向左倾','body.lean_right':'身体向右倾','hand.open_palm':'张开手掌','hand.yeah':'剪刀手','hand.ok':'OK','hand.fist':'握拳','hand.thumb_up':'点赞','hand.thumb_down':'拇指向下','hand.shaka':'电话手势','hand.horns':'摇滚手势'}
 ACTIONS={'on','off','open','close','position:0','position:25','position:50','position:75','position:100','mode:cool','mode:heat','mode:off','mode:auto','mode:heat_cool','mode:dry','mode:fan_only'}
+REPEAT_SECONDS = 3.0
 
 class Binding(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -203,6 +204,8 @@ class InteractionEngine:
             if observed - self.observed > 1:
                 self.reset();self.owner=owner
         self.observed = observed
+        # 冷却只需要保留近期轨迹。持续运行的镜头会不断产生新轨迹编号。
+        self.last = {key: stamp for key, stamp in self.last.items() if observed - stamp <= REPEAT_SECONDS}
         person=next((p for p in people if p['id']==owner),None)
         if person is None:self.reset();return []
         bindings=[b for b in self.config.bindings if b.enabled and (b.gesture!='hand.point' and b.scope!='camera' or b.camera==self.camera)]
@@ -234,7 +237,8 @@ class InteractionEngine:
             self.released.pop(key,None)
             self.holds.setdefault(key,observed)
             moving_arms=b.gesture in {'body.arms_open','body.arms_close'}
-            if key not in self.latched and (moving_arms or observed-self.holds[key]>=.7) and observed-self.last.get(key,-100)>3:
+            if (key not in self.latched and (moving_arms or observed-self.holds[key]>=.7)
+                    and observed-self.last.get(key,-100)>REPEAT_SECONDS):
                 self.last[key]=observed;self.latched.add(key);result.append(b)
         candidates=[]
         for b in bindings:
@@ -265,7 +269,7 @@ class InteractionEngine:
         if self.pending and now>self.pending[1]:self.pending=None
         if self.pending and 'ok'in labels:
             b=self.pending[0];key=('point',owner,b.id)
-            if observed-self.last.get(key,-100)>3:self.last[key]=observed;result.append(b)
+            if observed-self.last.get(key,-100)>REPEAT_SECONDS:self.last[key]=observed;result.append(b)
             self.pending=None
         self.rearm=bool(self.game_releases)
         self.public={'enabled':True,'selection':self.pending[0].target if self.pending else None,'reason':'confirm_ok'if self.pending else 'release_required'if self.rearm and len(self.game_releases)==len(bindings) else 'ready',**({'release_required':True,'blocked_gestures':sorted({b.gesture for b in bindings if b.id in self.game_releases}),'ready_bindings':len(bindings)-len(self.game_releases)}if self.rearm else {})}

@@ -19,7 +19,7 @@ from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
 from tests.embodied.test_motor_recovery import primary_scope
-from tests.embodied.test_review_motion import source_function
+from tests.embodied.test_review_motion import recorded_sound_only, source_function
 from tests.test_embodied_safety import person
 
 
@@ -445,7 +445,8 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
                                                                          status='configured')),
             os=SimpleNamespace(environ={}), SELECTED={'id': camera}, state=state, games=MotionGames(),
             party_camera=PartyCamera(), previews=SimpleNamespace(sessions={}),
-            home=SimpleNamespace(camera_focus=None), safety=runtime, motor_step=motor,
+            home=SimpleNamespace(camera_focus=None), safety=runtime, camera_motion_cue=recorded_sound_only(runtime),
+            motor_step=motor,
             reap=AsyncMock(), capture=None)
         loop = source_function('homeplane/embodied/worker.py', 'camera_search', scope)
     else:
@@ -453,7 +454,7 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
             self=SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                  review_pending=runtime.review_pending,
                                  fall_pending=lambda *args: runtime.fall_pending(*args),
-                                 sound_cue=runtime.sound_search_cue),
+                                 sound_cue=recorded_sound_only(runtime)),
             current_sample=lambda: dict(state), privacy_closed=lambda: None, send_motion=motor)
         loop = source_function('homeplane/embodied/previews.py', 'direct', scope)
 
