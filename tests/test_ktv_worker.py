@@ -68,6 +68,10 @@ def test_media_tickets_bind_current_job_version_expiry_and_no_management_privile
     changed["media"]["instrumental"]["sha256"] = "a" * 64
     assert not tickets.permits(token, changed)
     changed = copy.deepcopy(queue.job)
+    changed["video"] = {"status": "ready", "sha256": "b" * 64}
+    assert tickets.permits(token, changed, kind="instrumental")
+    assert not tickets.permits(token, changed, kind="video")
+    changed = copy.deepcopy(queue.job)
     changed["id"] = str(uuid.uuid4())
     assert not tickets.permits(token, changed)
     assert not tickets.permits(token, queue.job, now=expires)
@@ -400,6 +404,40 @@ def test_hung_lyrics_leave_audio_ready_for_archiving_and_update_the_same_media(t
         worker.close()
 
 
+def test_optional_video_keeps_an_inflight_lyric_lookup_on_the_same_audio(tmp_path):
+    worker, queue, _, _, calls = make_worker(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    invocations = []
+    timed = {"status": "ready", "lines": [{"time_ms": at, "text": "合成歌词"} for at in (300, 600, 1000)]}
+
+    def lookup(job_id):
+        invocations.append(job_id)
+        entered.set()
+        assert release.wait(timeout=3)
+        return timed
+
+    worker.lyrics_provider = lookup
+    edition = manifest_version(queue.job, include_video=False)
+    try:
+        worker.tick()
+        assert entered.wait(timeout=1)
+        lookup_future = worker.lyric_work[edition].future
+        queue.job["video"] = {"status": "ready", "sha256": "b" * 64, "bytes": 4096}
+        worker.tick()
+        assert len(worker.lyric_work) == 1 and worker.lyric_work[edition].future is lookup_future
+        release.set()
+        assert lookup_future.result(timeout=1) == timed
+        worker.tick()
+        manifests = [body for path, body in calls if path == "/agent/manifests"]
+        assert manifests[0]["job"]["video"]["status"] == "unavailable"
+        assert manifests[-1]["lyrics"] == timed and manifests[-1]["job"]["video"] == queue.job["video"]
+        assert manifests[-1]["timeline"] == manifests[0]["timeline"]
+        assert invocations == [queue.job_id]
+    finally:
+        release.set()
+        worker.close()
+
+
 def test_mutually_independent_lyrics_lanes_repair_nas_only_tracks_without_repreparing(tmp_path):
     worker, queue, _, response, calls = make_worker(tmp_path)
     tasks = [{"id": str(uuid.uuid4()), "song_id": str(song), "version": "a" * 64, "title": "合成歌曲",
@@ -630,6 +668,87 @@ def test_closed_scene_can_release_verified_archive_without_retaining_room_metada
         assert not any("/agent/rooms" in path for path, _ in calls)
     finally:
         worker.close()
+
+
+@pytest.mark.parametrize("close_scene", [False, True])
+def test_late_video_is_archived_after_playback_and_reused_on_the_next_request(tmp_path, monkeypatch, close_scene):
+    from integrations.ktv_public.nas_server import Store
+    from tests.test_ktv_coordinator import admitted, fake_cache, started, uid
+
+    worker, queue, _, _, _ = make_worker(tmp_path)
+    worker.mapping.clear()
+    queue.video_pending = {queue.job_id: True}
+    store = Store(tmp_path / "nas", "https://example.test")
+    coordinator = store.coordinator
+    audio_calls, video_tasks, full_manifests = [], [], []
+    video_bytes = b"synthetic video archive payload" * 5
+    fake_cache(monkeypatch, {"original": queue.bytes, "instrumental": queue.bytes, "video": video_bytes}, audio_calls)
+    monkeypatch.setattr(coordinator.cache_pool, "submit", lambda fn, *args: fn(*args))
+    monkeypatch.setattr(coordinator.video_cache_pool, "submit", lambda *args: video_tasks.append(args))
+    timed = {"status": "ready", "lines": [{"time_ms": at, "text": "合成歌词"} for at in (300, 600, 1000)]}
+    worker.lyrics_provider = lambda _: timed
+
+    def publish(value):
+        full_manifests.append(value)
+        return coordinator.manifest(value)
+
+    endpoints = {"/agent/worker": coordinator.register_worker, "/agent/qr": coordinator.qr,
+                 "/agent/updates": store.update, "/agent/manifests": publish,
+                 "/agent/archive-check": coordinator.archive_check, "/agent/archive-videos": coordinator.archive_videos}
+    worker.request = lambda path, body=None: store.poll() if path == "/agent/tasks" else endpoints[path](body)
+    try:
+        instance, party = started(store)
+        room, _, guest = admitted(store, party)
+        worker.tick()
+        remote = store.add(room, {"song_id": "123", "title": "合成歌曲", "request_id": uid()}, guest)["id"]
+        worker.tick()
+        worker.lyric_work[manifest_version(queue.job)].future.result(timeout=1)
+        worker.tick()
+        assert store.status(room)["playable"] == [remote]
+        assert [row["state"] for row in store.poll()["archives"]] == ["ready"]
+
+        coordinator.playback({"room_id": room["id"], "current": "", "played": [remote], "state": "idle",
+                              "last_command": 0, "safety_latched": False, "applied_revision": 0, "mic_muted": True}, instance)
+        if close_scene:
+            coordinator.close_party(instance, {"room_id": room["id"]})
+        worker.archive_checked = 0
+        worker.tick()
+        assert queue.job_id in worker.protected_jobs()
+        published_count = len(full_manifests)
+
+        queue.job["video"] = {"status": "ready", "url": f"/v1/jobs/{queue.job_id}/media/video", "bytes": len(video_bytes),
+                              "sha256": hashlib.sha256(video_bytes).hexdigest(), "duration_seconds": 2,
+                              "encoding": "h264_mp4_video_only", "video_offset_ms": 0, "method": "same_mv_audio",
+                              "source_audio_sha256": queue.job["media"]["original"]["sha256"], "derived_from_video_sha256": "e" * 64}
+        del queue.video_pending[queue.job_id]
+        worker.archive_checked = 0
+        worker.tick()
+        assert queue.job_id in worker.protected_jobs() and len(video_tasks) == 1
+        assert len(full_manifests) == published_count
+
+        if not close_scene:
+            timed = {**timed, "lines": [{**line, "text": "更新的合成歌词"} for line in timed["lines"]]}
+            coordinator.manifest({**full_manifests[-1], "lyrics": timed, "version": "c" * 64})
+        run, *args = video_tasks.pop()
+        run(*args)
+        worker.archive_checked = 0
+        worker.tick()
+        assert queue.job_id not in worker.protected_jobs()
+        assert not video_tasks
+
+        if close_scene:
+            _, next_party = started(store)
+            room, _, guest = admitted(store, next_party)
+            assert store.status(room)["songs"] == []
+        coordinator.worker["at"] = time.time() - 60
+        again = store.add(room, {"song_id": "123", "title": "再次点播", "request_id": uid()}, guest)
+        assert again["id"] != remote and again["state"] == "ready"
+        assert coordinator.lyrics(again["id"]) == timed
+        video_path, _ = coordinator.media_file(again["id"], "video")
+        assert video_path.read_bytes() == video_bytes
+    finally:
+        worker.close()
+        coordinator.close()
 
 
 def test_archive_check_cannot_release_a_changed_local_edition_with_an_old_proof(tmp_path):

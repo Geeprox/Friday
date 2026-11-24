@@ -148,7 +148,8 @@ class SongLibrary:
             row["jobs"].add(value["id"])
             row["last_used"] = max(row["last_used"], value.get("last_used", value["created"]))
             future = self.queue.futures.get(value["id"])
-            row["busy"] |= value["state"] in ACTIVE or bool(future and not future.done())
+            row["busy"] |= (value["state"] in ACTIVE or value["id"] in self.queue.video_pending
+                            or bool(future and not future.done()))
             row["protected"] |= value["id"] in protected_jobs
             folder = self.queue.jobs_dir / value["id"]
             attach(row, folder)
@@ -724,6 +725,7 @@ class SongLibrary:
 
     def _hot_cache_protected(self):
         protected = set(self.archive.active) if self.archive else set()
+        protected.update(self.queue.video_pending)
         if self.bridge:
             getter = getattr(self.bridge, "protected_jobs", None)
             if callable(getter):

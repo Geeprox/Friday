@@ -31,16 +31,16 @@ SYNTHETIC_MEDIA = {
     'docs/screenshots/ktv-storage-management.png':
         '2a2b9ee13b00d9df6398857b2750070fa90f7de90348ccc172c289390fd29256',
     'docs/screenshots/ktv-desktop-queue.png':
-        '67cc1625df9d62288bad28eca2d9bae33e341f233bff104cf3946693d9f1e2fd',
+        '161637bafe728ec7ed9fca9155b72fdfe475dcf701128ea91c76ec61894948e0',
     'docs/screenshots/ktv-mobile-search.png':
         'af54db78fcf411bae932151e41bb6ffd0798a0ff2e834abd16eaa620c561bbb6',
     # 手机首页、队列和声音面板，示例房间和内容均由测试夹具提供。
     'docs/screenshots/ktv-mobile-home.png':
         'ee92022ad285a21d5d39447053b2337febcb2b0cae9df7680cac60de37835561',
     'docs/screenshots/ktv-mobile-queue.png':
-        '8cb38cb1beec00a6ee224b4cfe160aea79d11efa545491372aa2f23bb974e742',
+        'b8427a69ffde57b69b4994fe0afee6ef3aa1db7dac980b14b0c065be7eb7b085',
     'docs/screenshots/ktv-mobile-sound.png':
-        '142d58d5ac3c10eb388a4ecffe8d3bd379ae0849a65def9496e047ad10fde42f',
+        '7118ebd6a8c891c2f7ce650286c46a53a8e105833bb3c20e3aa99b86e561fd8f',
     # 合成歌曲与用量设置的 KTV 用户手册截图。
     'docs/screenshots/ktv-background-settings.png':
         '3e18cbb48cc87b73a7697e331151ab39d6de56d5d61cd9b9c94cdf3abdc71a69',

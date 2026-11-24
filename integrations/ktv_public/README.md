@@ -37,6 +37,8 @@ The default listener remains loopback. An optional explicit `lan_host` RFC1918 I
 - NAS 私有配置的 `public_origin` 设置为访客 HTTPS 来源，例如 `https://guests.example.test:9443`。已加入的访客仍需使用原地址时，可将原 HTTPS 来源写入 `previous_guest_origin`。这项兼容仅适用于房间访客接口。
 - Mac Worker 私有配置的 `public_join_endpoint` 设置为相同来源和现有路径，例如 `https://guests.example.test:9443/ktv`。Worker 继续按原 `endpoint` 和局域网 TLS 配置连接管理接口。
 - 公开来源改变后，NAS 会等待按新地址生成的二维码，房间及邀请凭据保持有效。核对新二维码确实使用 9443，再从外部网络打开访客页面。只有 AAAA 记录的入口需要访客网络支持 IPv6。
+- 已经验证标准 443 的访客网关时，可用 NAS 的 `public_invite_origin` 单独指定二维码的 HTTPS 来源。Mac Worker 的 `public_join_endpoint` 同步到该来源及 `/ktv`。既有 `public_origin` 和 `previous_guest_origin` 继续接收各自的访客请求。切换后核对 NAS 提供的二维码、同一场次和网关的入房与搜歌。
+- 电视收到同房间的新邀请地址时撤下旧二维码并重取。控制轮询和备用房间轮询都能触发换码，电视按请求顺序应用回报。排查时用电视密钥读取 NAS 的 `GET /v1/party/qr` 核对图片内容，并分别验证访客入口的 TLS 与房间查询。
 - 点歌页用 `GET /?room=current` 获取当前邀请，以便纯链接和旧二维码直接入场；这个请求沿用现有访客首页的代理路径和浏览器来源。服务也接受等价的 `GET /api/rooms/current`。
 - 同机容器网关可用私有配置 `guest_socket` 连接 NAS 访客接口。路径相对于 NAS 配置目录，父目录由 NAS 服务账户持有，权限为 0710，套接字为 0660。网关以该目录的组连接，仍按访客路径转发；套接字只提供页面、健康与房间访客接口。原有电视和 Worker 保持原局域网路由。
 
@@ -66,11 +68,13 @@ NAS 在实际电视播放回报中按设备摘要幂等更新常唱记录，手�
 
 手机加入后即可使用「常唱歌手」。NAS 先返回已保存的推荐歌单，并在后台更新上游数据。首次加载时，手机会自动刷新歌单，搜索和播放控制可以照常使用。
 
-打开「已点」后，按住歌曲右侧的排序手柄可连续拖过多首歌曲。歌曲的「⋯」菜单提供「置顶」，将这首移到待唱歌单最前面，当前演唱继续。暂时没有同步歌词的版本可以通过「找其他版本」回到曲库搜索。[查看歌曲操作示例](../../docs/screenshots/ktv-mobile-queue.png)。
+打开「已点」后，按住歌曲右侧的排序手柄可连续拖过多首歌曲。歌曲的「⋯」菜单提供「置顶」，将这首移到待唱歌单最前面，当前演唱继续。「正在准备」显示原曲、伴奏和播放文件的进度。同步歌词和当前音轨就绪后即可开唱，MV 会在后台加载。暂时没有同步歌词的版本可以通过「找其他版本」回到曲库搜索。[查看歌曲操作示例](../../docs/screenshots/ktv-mobile-queue.png)。
 
 「歌曲声音」会立即显示选择的原唱或伴奏。电视确认较慢时，会在音轨选择下方提示，仍可继续切换。「歌曲声音」和「氛围」使用同样的标题、关闭按钮和音量滑块。手机初次扫码遇到短暂断线会在页面可见时继续重连。[查看声音面板示例](../../docs/screenshots/ktv-mobile-sound.png)。
 
 Start request IDs are durable and idempotent throughout the retained session window. A delayed old request cannot reopen a retained closed session or reclaim a newer TV instance. Closing requires both the current TV instance and current `room_id`. New TV instances skip old command cursors and start with microphone mute requested. Legacy Mac bridge playback/control/close writes are refused for a directly owned room.
+
+电视接管本场或 NAS 重启后，手机保留已点歌曲和上次播放信息，收到当前电视的播放回报后恢复控制。NAS 使用同一房间写锁检查当前电视并提交回报、控制或结束请求，旧连接的迟到请求返回 `tv_instance_changed`。
 
 An unmute gesture is accepted only with a fresh direct-TV lease. Its pending intent expires after five seconds unless the TV reports `mic_muted:false`, actual `voice_protection.mute_confirmed:true` and an applied revision at least as new as that gesture. Expiry raises a new mute revision; network recovery cannot revive the old enable request. Already confirmed live microphone state is not muted merely because the gesture is old. Older clients without the confirmation capability retain the legacy receipt interpretation; direct mode uses the new TV pair.
 
@@ -82,11 +86,25 @@ An unmute gesture is accepted only with a fresh direct-TV lease. Its pending int
 
 Each descriptor in `/v1/jobs` has `sources`: a verified NAS cache first when available, followed by the pinned Mac's fixed `/v1/jobs/{MacUUID}/media/{kind}` with the short-lived `X-KTV-Media` ticket. Only media permission crosses to the TV; no Mac management/account key does. Expired direct tickets or unavailable file service are withheld. Source/model failures degrade full readiness while still allowing already finished media from a fresh, working Mac file service.
 
+手机和电视使用 NAS 返回的同一可唱顺序。进入该顺序需要同步歌词和所选音轨的可用来源，来源可以是通过完整性校验的 NAS 文件或当前 Worker 的有效媒体票据。另一条音轨可以继续后台下载。
+
+电视通过已配置服务的 HTTP `Date` 校准媒体票据、遥控指令与氛围命令的有效期。有效期随电视的单调时钟推进，后台等待的指令在执行前再次校验。
+
+「现在唱」受理时使用与可唱顺序相同的歌词与音轨来源检查。若所选音轨暂时不可用，播放请求返回 `media_not_ready`，手机保留歌曲菜单，待来源恢复后可再次操作。
+
+在 NAS 协调房间，访客点歌先持久写入歌单。Mac 未就绪时仍保存待制备项，Worker 恢复后沿用同一请求和租约。容量或暂时 I/O 故障由下一轮租约接续。
+
+访客通过同一 `POST /api/rooms/{room}/songs` 路径撤回。请求体可用 `withdraw_request_id` 指定本次加入意图，或用 `withdraw_id` 指定自己的待唱曲目。撤回先于加入时，同房间同访客的迟到加入返回已撤回回执。重复点歌只撤本次意图，原曲及媒体保留。当前曲、已唱曲及已接收播放命令的曲目受到保护。实际移除与歌单修订在同一事务更新。
+
+电视读取 `queue_claims` 广告后通过就绪回报启用就绪歌曲撤回。校验歌词与选中音轨后，电视通过 `POST /v1/tv/playback-start` 提交房间、曲目和请求编号。启播许可与撤回共享歌单写事务。许可在 30 秒内可用于开始播放，重复请求返回剩余有效期。已领取的曲目在同一电视实例中保持保护，直到电视结束播放或取消后释放。播放回报暂时中断期间，已开始的声音继续播放。晚到的候选收到曲目已撤回的回执后使用更新的歌单。
+
 NAS caching uses independent bounded workers. First TV playback can use Mac direct delivery without waiting for NAS bytes. NAS cache publication uses temporary files, SHA/size/format checks, fsync and atomic replacement. Archive state is independently `pending/ready/failed`; `/agent/tasks.archives` is the Mac's actual archive acknowledgment. A manifest acknowledgment is not one. Cache failure leaves the direct alternative usable.
 
 Already-started archival can finish after a scene is ended or the publication gains guide/lyric metadata, provided the retained current manifest still references that kind's exact SHA and byte count. The worker can also use authenticated `POST /agent/archive-check` with at most 16 `{id,files:[{sha256,bytes}]}` items and at most five files per item. It returns content proof independently of room activity or retained requester metadata, so ending a scene does not strand a successfully archived Mac file under permanent protection. This lookup stores no local-job-to-guest association, accepts no URL and starts no download. Missing/changed files return pending, failed proof returns failed, and changed files can enter only the existing background hash verification lane.
 
-Verified cache state is bound to device/inode/size/mtime/ctime as well as its checked digest. Missing or modified files, including same-size corruption, are immediately withheld and never acknowledged as archived. Large rehashes/retrievals happen on the background cache lane, not on controls or status/event handlers. Downloads retry at most four times with backoff. TV downloads still independently check bytes and SHA and can try the next source. NAS media/guide responses implement bounded single byte ranges and correct HEAD lengths.
+NAS 在 `/agent/tasks` 声明 `archive_videos` 后，Worker 可通过认证的 `POST /agent/archive-videos` 补归档晚到的 MV。每项绑定原唱和伴奏的摘要、同一本机任务的固定文件路径及短期票据。NAS 在独立的视频通道校验文件后补入保留的版本，继续使用该版本当前的歌词和伴唱参考轨。整首唱完或房间结束后仍可完成归档，下次点播可复用。已移除的歌曲或音轨已变化的版本返回 `obsolete`。
+
+归档校验同时绑定文件摘要、设备、inode、长度及修改时间。丢失或修改的文件会暂时撤下，重新校验及拉取走独立缓存通道。有效票据到达时按 30 秒至 5 分钟的退避间隔重试，校验成功后清除此前的重试计数。电视下载也独立校验字节长度和 SHA，遇到暂时读取故障会保留选择并尝试恢复。NAS 媒体和伴唱接口支持有界的单段字节范围及 HEAD 长度。
 
 Optional `guide` describes small, timeline-bound original/reference MP3s using `guide_original`/`guide_reference` ticket scopes. Both checked caches must be available before the phone's existing guide endpoint advertises them; no SMB mount is required. This path does not record user audio. The phone still checks hashes and decoded duration before acoustic alignment.
 

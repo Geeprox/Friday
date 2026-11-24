@@ -4,12 +4,14 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Sample-aligned 5 ms crossfade. Preparing a replacement never runs on the render thread. */
 public final class SwitchingWavSource implements AutoCloseable {
  private WavSource current;
+ private volatile File activePath;
  private final AtomicReference<WavSource> pending=new AtomicReference<>();
  private final short[] alternate=new short[480];
  private final long frames;
  private boolean closed;
  public long position;public volatile int failures,switches;
- public SwitchingWavSource(File path)throws IOException{current=new WavSource(path);frames=current.frames;}
+ public SwitchingWavSource(File path)throws IOException{current=new WavSource(path);activePath=path;frames=current.frames;}
+ public File activePath(){return activePath;}
  public synchronized void request(File path){
   if(closed)return;
   WavSource next=null;
@@ -26,7 +28,7 @@ public final class SwitchingWavSource implements AutoCloseable {
    next.seek(current.position);int n=current.read(out,count),m=next.read(alternate,count);
    if(n!=m)throw new IOException("source_duration_mismatch");
    for(int i=0;i<n;i++){float blend=(i+1f)/n;for(int c=0;c<2;c++)out[i*2+c]=(short)Math.round(out[i*2+c]*(1-blend)+alternate[i*2+c]*blend);}
-   current.close();current=next;next=null;switches++;position=current.position;return n;
+   current.close();current=next;next=null;activePath=current.path;switches++;position=current.position;return n;
   }catch(IOException error){failures++;if(next!=null)next.close();current.seek(position);}}
   int n=current.read(out,count);position=current.position;return n;
  }

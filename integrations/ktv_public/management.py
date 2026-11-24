@@ -433,7 +433,9 @@ class Management:
                 ids = {r[0] for r in db.execute("SELECT id FROM songs WHERE room=? AND removed=0", (room["id"],))}
                 if not state or state["queue_revision"] != value["revision"] or not set(value["ids"]) <= ids:
                     raise self.error(409, "queue_changed")
-                if state["current_song"] in value["ids"]:
+                if state["current_song"] in value["ids"] or any(
+                    self.coordinator.playback_claimed(db, room["id"], song) for song in value["ids"]
+                ):
                     raise self.error(409, "song_playing")
                 for song in value["ids"]:
                     db.execute("UPDATE songs SET removed=1,state='cancelled',code='cancelled' WHERE id=? AND room=?", (song, room["id"]))

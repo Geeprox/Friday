@@ -422,7 +422,9 @@ class MediaArchive:
                 except (OSError, ValueError):
                     pass
         with self.queue.lock:
-            values = [json.loads(json.dumps(v)) for v in self.queue.jobs.values() if v["state"] == "ready"]
+            values = [json.loads(json.dumps(v)) for v in self.queue.jobs.values()
+                      if v["state"] == "ready" and not (
+                          v["id"] in self.queue.video_pending and v.get("audio_origin") in {"mv", "mv_direct"})]
         for value in values:
             fingerprint = hashlib.sha256(json.dumps([value.get("media"), value.get("video")], sort_keys=True).encode()).hexdigest()
             if self.known.get(value["id"]) == fingerprint:

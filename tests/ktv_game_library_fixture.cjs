@@ -6,7 +6,13 @@ class Element{
  constructor(tag){Object.defineProperty(this,'tagName',{value:tag,writable:true,configurable:true});this.children=[];this.attrs={};this.handlers={};this.querySelector=selector=>selectOne(this,selector);this._text='';this.value='';this.className='';this.dataset={};this.isConnected=true;this.disabled=false;this.open=false;this.classList={toggle:(name,on)=>{const s=new Set(this.className.split(' ').filter(Boolean));on?s.add(name):s.delete(name);this.className=[...s].join(' ');},add:name=>{this.className+=' '+name;},contains:name=>this.className.split(' ').includes(name),remove:name=>{this.className=this.className.split(' ').filter(value=>value!==name).join(' ');}};}
  set textContent(v){this._text=String(v);this.children=[];}get textContent(){return this._text+this.children.map(c=>c.textContent).join('');}
  get options(){return this.children;}get elements(){return Object.fromEntries(walk(this).filter(n=>n.name).map(n=>[n.name,n]));}
- append(...cs){for(const n of cs){this.children.push(n);n.parent=this;}}
+ append(...cs){for(const n of cs)this.insertBefore(n,null);}
+ insertBefore(n,before){
+  if(n===before)return;
+  if(n.parent)n.parent.children=n.parent.children.filter(child=>child!==n);
+  this.children.splice(before?this.children.indexOf(before):this.children.length,0,n);
+  n.parent=this;for(const child of walk(n))child.isConnected=this.isConnected;
+ }
  prepend(...cs){this.children.unshift(...cs);for(const n of cs)n.parent=this;}
  replaceChildren(...cs){this._text='';for(const n of this.children)n.removeTree();this.children=[];this.append(...cs);}
  removeTree(){this.isConnected=false;for(const n of this.children)n.removeTree();}
@@ -37,27 +43,43 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  let sourceStatus={logged_in:true,state:'logged_in',settings:{level:'standard'}};
  const background={id:'a'.repeat(64),title:'合成背景歌曲',source:'song',status:'ready',ready:true};
  let backgroundAllowance=3,backgroundLimit=100,backgroundEnabled=true;
- const writes=[],reads=[];let deleteAttempts=0,cleared=false,timer,lateResolve=null;
+ const writes=[],reads=[];let deleteAttempts=0,cleared=false,timer,lateResolve=null,commandSeq=8,holdMix=false,releaseMix;
+ const receiptTimers=new Map();
+ state.status.controls.music_mute_revision=0;
  let holdLibrary=false,resolveLibrary,failLibrary=false,roomResponseOverride=null,artworkFailures=1;
+ let holdRoom=false;const roomReads=[];
  let holdSearch=false;const searchResponses=[];
  const thumbnail='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6CHsAAAAASUVORK5CYII=';
  let holdNasPolicy=false,failNasPolicy=false;
  const nasPolicyReads=[];
- const scope=vm.createContext({document,console,Date,JSON,Set,Map,URL,URLSearchParams,queueMicrotask,AbortController,AbortSignal,performance,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout,setInterval:fn=>{timer=fn;return 17;},clearInterval:id=>{assert.equal(id,17);cleared=true;},fetch:async(path,options={})=>{
+ const scope=vm.createContext({document,console,Date,JSON,Set,Map,URL,URLSearchParams,queueMicrotask,AbortController,AbortSignal,performance,crypto:require('node:crypto').webcrypto,
+  setTimeout:(fn,ms)=>{if(ms!==7000)return setTimeout(fn,ms);const id=Symbol();receiptTimers.set(id,fn);return id;},
+  clearTimeout:id=>typeof id==='symbol'?receiptTimers.delete(id):clearTimeout(id),
+  setInterval:fn=>{timer=fn;return 17;},clearInterval:id=>{assert.equal(id,17);cleared=true;},fetch:async(path,options={})=>{
   assert.ok(path.startsWith('/api/games/ktv/'),'No cross-origin request or management key');
   assert.equal(options.credentials,'same-origin');assert.ok(!Object.keys(options.headers).some(k=>/key|authorization/i.test(k)));
   if(options.method==='POST'){
    const data=JSON.parse(options.body);writes.push({path,data});
    if(path.endsWith('manage/preview'))return reply({plan:'SYNTHETIC-plan',songs:[{title:'空闲合成曲'}],bytes:{mac:100,nas:100}});
    if(path.endsWith('manage/delete')){deleteAttempts++;return reply(deleteAttempts===1?{complete:false,retryable:true,code:'nas_management_unavailable',results:{mac:{}},nas_stores:{}}:{complete:true});}
-   if(path.endsWith('manage/room/command'))return reply({seq:9});
+   if(path.endsWith('manage/room/command'))return reply({seq:++commandSeq});
    if(path.endsWith('manage/room/songs')){state.status.songs.push({...data.value,id:'added-'+data.value.song_id,state:'queued'});state.status.queue_revision++;return reply({accepted:true});}
    if(path.endsWith('manage/room/order')){
     assert.equal(data.room_id,state.room_id);assert.equal(data.value.revision,state.status.queue_revision);
     assert.deepEqual([...data.value.ids].sort(),state.status.songs.map(song=>song.id).sort());
     state.status.songs=data.value.ids.map(id=>state.status.songs.find(song=>song.id===id));state.status.queue_revision++;return reply({accepted:true});
    }
-   if(path.endsWith('manage/room/controls')||path.endsWith('manage/room/preferences'))return reply({revision:5});
+   if(path.endsWith('manage/room/queue-remove')){
+    assert.equal(data.room_id,state.room_id);assert.equal(data.value.revision,state.status.queue_revision);
+    state.status.songs=state.status.songs.filter(song=>!data.value.ids.includes(song.id));
+    state.status.queue_revision++;return reply({accepted:true});
+   }
+   if(path.endsWith('manage/room/controls')){
+    if(holdMix&&Object.hasOwn(data.value,'sfx_gain'))return new Promise(resolve=>{releaseMix=()=>resolve(reply({revision:6}));});
+    if(data.value.music_gain===0)return reply({revision:7});
+    return reply({revision:5});
+   }
+   if(path.endsWith('manage/room/preferences'))return reply({revision:5});
    if(path.endsWith('manage/policy'))return reply(data.value);
    if(path.endsWith('source/login')){
     sourceStatus={...sourceStatus,logged_in:false,state:'waiting_official'};
@@ -92,7 +114,10 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
   }
   reads.push(path);
   if(lateResolve!==null)return new Promise(resolve=>{lateResolve=()=>resolve(reply(structuredClone(state)));});
-  if(path.endsWith('manage/room'))return reply(structuredClone(roomResponseOverride||state));
+  if(path.endsWith('manage/room')){
+   if(holdRoom)return new Promise(resolve=>roomReads.push({signal:options.signal,release:data=>resolve(reply(data))}));
+   return reply(structuredClone(roomResponseOverride||state));
+  }
   if(path.includes('manage/library?')){
    if(holdLibrary)return new Promise(resolve=>{resolveLibrary=resolve;});
    if(failLibrary)return libraryFailure();
@@ -130,17 +155,55 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  vm.runInContext(fs.readFileSync('integrations/ktv_public/web/party-audio.js','utf8'),scope);
  vm.runInContext(fs.readFileSync('homeplane/static/ktv-console/app.js','utf8').replace('export function mountKtv','function mountKtv'),scope);
  scope.root=root;scope.back=()=>{};const owner=vm.runInContext("mountKtv(root,{endpoint:'/api/games/ktv',embedded:true,onBack:back})",scope);
- const nodes=()=>walk(root),byId=id=>root.querySelector('#ktv-'+id),buttons=text=>nodes().filter(n=>n.tagName==='button'&&n.textContent===text),click=async n=>{assert.ok(n,'button exists');assert.ok(!n.disabled,'button enabled');await n.onclick({currentTarget:n});await settle();};
+ const nodes=()=>walk(root),byId=id=>root.querySelector('#ktv-'+id),buttons=text=>nodes().filter(n=>n.tagName==='button'&&!n.hidden&&n.textContent===text),click=async n=>{assert.ok(n,'button exists');assert.ok(!n.disabled,'button enabled');await n.onclick({currentTarget:n});await settle();};
  await settle();assert.equal(writes.length,0,'Opening KTV never opens a room, microphone or song');assert.match(root.textContent,/合成当前曲/);assert.equal(buttons('已点').length,1);assert.ok(!nodes().some(n=>n.id==='content'),'Must not collide with Friday content');
  const microphoneCopy=/麦克风|人声音效|语音保护|混响/;
  assert.doesNotMatch(root.textContent,microphoneCopy);
- await click(buttons('暂停')[0]);assert.equal(writes[0].path,'/api/games/ktv/manage/room/command');assert.match(root.textContent,/等待电视回报|等待电视回报|等待电视确认/);assert.ok(!root.textContent.includes('电视已回报本次播放状态'),'ACK is not observed playback');
+ const playback=state.status.playback;
+ playback.current='';playback.state='idle';state.status.playable=['next','third','fourth'];timer();await settle();
+ assert.equal(buttons('开始播放')[0].disabled,false,'A selected ready song can be started while the TV is idle');
+ assert.match(root.textContent,/接下来：合成下一曲/);
+ playback.state='preparing';timer();await settle();
+ assert.equal(buttons('暂停')[0].disabled,false,'A preparation can be stopped before audio starts');
+ playback.state='playing';timer();await settle();
+ assert.equal(buttons('暂停')[0].disabled,false,'Warmup can be paused without a queue ID');
+ assert.match(root.textContent,/暖场播放中/);
+ playback.current='current';timer();await settle();
+ const pause=buttons('暂停')[0];pause.focus();
+ await click(pause);assert.equal(writes[0].path,'/api/games/ktv/manage/room/command');assert.match(root.textContent,/等待电视回报/);
+ await click(pause);assert.equal(writes.length,1,'Repeated activation before TV observation cannot send another transport command');
+ assert.equal(document.activeElement,pause,'Transport keeps the same focused button while waiting');
+ assert.equal(pause.getAttribute('aria-disabled'),'true');
+ [...receiptTimers.values()][0]();
+ assert.match(root.textContent,/电视暂未确认/,'An unchanged room still reaches a visible deadline');
+ assert.equal(pause.getAttribute('aria-disabled'),'false');
+ await click(pause);playback.last_command=commandSeq;playback.state='paused';timer();await settle();
+ assert.equal(buttons('继续播放')[0],pause,'A TV-confirmed pause updates the existing transport button');
+ assert.doesNotMatch(root.textContent,/等待电视回报/);
+ playback.state='playing';delete state.status.playable;timer();await settle();
  const mix=nodes().find(n=>n.className==='mix-form');
- mix.elements.music_gain.value='61';
+ // 只改氛围音量时，另一个终端的音乐静音仍然有效。
  mix.elements.sfx_gain.value='42';
+ mix.elements.sfx_gain.oninput();
+ mix.elements.sfx_gain.focus();
+ state.status.controls.music_gain=0;state.status.controls.music_mute_revision=1;
+ timer();await settle();
+ assert.equal(mix.elements.music_gain.value,'0');
+ assert.equal(mix.elements.sfx_gain.value,'42');
+ assert.equal(document.activeElement,mix.elements.sfx_gain);
  mix.onsubmit({preventDefault(){}});
  await settle();
- assert.deepEqual(writes.find(write=>write.path.endsWith('/controls')).data.value,{music_gain:61,sfx_gain:42,original:0});
+ assert.deepEqual(writes.find(write=>write.path.endsWith('/controls')).data.value,{sfx_gain:42});
+ state.status.controls.sfx_gain=42;playback.applied_revision=5;timer();await settle();
+ state.status.controls.music_gain=50;timer();await settle();
+ mix.elements.sfx_gain.value='43';mix.elements.sfx_gain.oninput();
+ holdMix=true;mix.onsubmit({preventDefault(){}});await settle();
+ assert.ok(releaseMix,'Ordinary adjustment is still waiting on the network');
+ await click(buttons('音乐静音')[0]);
+ assert.deepEqual(writes.filter(write=>write.path.endsWith('/controls')).at(-1).data.value,{music_gain:0});
+ assert.equal(buttons('恢复音乐')[0].getAttribute('aria-pressed'),'true');
+ holdMix=false;releaseMix();await settle();
+ state.status.controls.music_gain=0;state.status.controls.sfx_gain=43;state.status.controls.music_mute_revision=2;playback.applied_revision=7;timer();await settle();
  await click(buttons('鼓掌')[0]);
  assert.equal(writes.at(-1).data.value.action,'sfx_applause','Atmosphere works on its own capability');
  await click(byId('queue-tab'));assert.match(root.textContent,/合成下一曲/);const currentCheck=nodes().find(n=>n.tagName==='input'&&n.attrs['aria-label']==='选择 合成当前曲');assert.equal(currentCheck.disabled,true,'Cannot remove current song');
@@ -150,22 +213,49 @@ const settle=async()=>{for(let i=0;i<5;i++)await new Promise(setImmediate);};
  assert.match(root.textContent,/歌手 · 合成专辑/,'The queue hydrates the same recording metadata as search and cache');
  assert.equal(currentCheck.hidden,true,'Normal queue browsing hides batch checkboxes');await click(buttons('选择歌曲')[0]);
  await click(buttons('全选待唱')[0]);assert.match(root.textContent,/本场歌单/);assert.doesNotMatch(root.textContent,/声音与房间/,'Queue selection stays on the queue');
+ const selectedToggle=buttons('退出选择')[0],stableSong=nodes().find(n=>n.dataset.queueId==='next');
+ selectedToggle.focus();
  state.status.songs.push({id:'new',song_id:'5',source:'song',title:'外部新点歌曲',nickname:'朋友',state:'ready'});state.status.queue_revision++;
  timer();await settle();assert.match(root.textContent,/外部新点歌曲/,'Phone/TV queue changes arrive while selection remains active');assert.match(root.textContent,/移除所选（3）/);
+ assert.equal(document.activeElement,selectedToggle);
+ assert.equal(buttons('退出选择')[0],selectedToggle,'Polling preserves the focused toolbar node');
+ assert.equal(nodes().find(n=>n.dataset.queueId==='next'),stableSong,'Polling preserves the existing song row');
  const queueRow=title=>nodes().find(node=>node.tagName==='article'&&node.className.includes('queue-entry')&&node.textContent.includes(title));
  await click(walk(queueRow('合成第四曲')).find(node=>node.tagName==='button'&&node.textContent==='置顶'));
  assert.deepEqual(writes.filter(write=>write.path.endsWith('/order')).at(-1).data.value.ids,['current','fourth','next','third','new'],'Pin uses the actual revision and preserves current playback');
  const dragSource=walk(queueRow('合成第四曲')).find(node=>node.className==='queue-drag'),dropTarget=queueRow('外部新点歌曲');
- const dragData={setData(){}};dragSource.ondragstart({dataTransfer:dragData,preventDefault(){assert.fail('Drag should start');}});
- dropTarget.ondragover({dataTransfer:dragData,preventDefault(){}});dropTarget.ondrop({preventDefault(){}});await settle();
+ const dragData={setData(){}},startDrag=()=>dragSource.ondragstart({dataTransfer:dragData,preventDefault(){assert.fail('Drag should start');}});
+ const laterRoom=structuredClone(state);laterRoom.status.queue_revision++;
+ laterRoom.status.songs=laterRoom.status.songs.filter(song=>song.id!=='new').reverse();
+ holdRoom=true;timer();await settle();assert.equal(roomReads.length,1);
+ startDrag();assert.equal(roomReads[0].signal.aborted,true,'Starting a drag aborts the pending room poll');
+ roomReads.shift().release(laterRoom);await settle();timer();await settle();
+ assert.equal(roomReads.length,0,'Waiting for a drop does not start another queue poll');
+ assert.equal(dropTarget,queueRow('外部新点歌曲'),'A late refresh cannot replace the drop target');
+ assert.equal(stableSong,nodes().find(node=>node.dataset.queueId==='next'));
+ dropTarget.ondragover({dataTransfer:dragData,preventDefault(){}});
+ holdRoom=false;dropTarget.ondrop({preventDefault(){}});dragSource.ondragend();await settle();
  assert.deepEqual(writes.filter(write=>write.path.endsWith('/order')).at(-1).data.value.ids,['current','next','third','new','fourth'],'Dragging crosses several rows in one operation');
+ holdRoom=true;const manualRefresh=byId('refresh').onclick();await settle();assert.equal(roomReads.length,1);
+ startDrag();assert.equal(roomReads[0].signal.aborted,true,'Starting a drag also aborts a pending manual refresh');
+ roomReads.shift().release(laterRoom);await manualRefresh;
+ assert.equal(dropTarget,queueRow('外部新点歌曲'));
+ assert.equal(byId('status').textContent,'','Aborting manual refresh clears its waiting text');
+ holdRoom=false;dragSource.ondragend();await settle();
  const keyboardHandle=walk(queueRow('合成第四曲')).find(node=>node.className==='queue-drag');keyboardHandle.onkeydown({key:'ArrowUp',preventDefault(){}});await settle();
  assert.equal(state.status.songs.at(-2).id,'fourth','Keyboard reordering uses the same NAS ordering path');
  roomResponseOverride={...structuredClone(state),status:{...structuredClone(state.status),queue_revision:0,songs:[]}};timer();await settle();
  assert.match(root.textContent,/外部新点歌曲/,'Late old revisions cannot replace the visible queue');roomResponseOverride=null;
  state.status.songs.find(song=>song.id==='third').lyric_state=-1;timer();await settle();
  assert.match(queueRow('合成第三曲').textContent,/暂无同步歌词.*换个版本/);
- assert.ok(!walk(queueRow('合成第三曲')).some(node=>node.tagName==='button'&&node.textContent==='重试'),'Ready recordings with failed lyrics do not send unsupported preparation retries');
+ assert.ok(!walk(queueRow('合成第三曲')).some(node=>node.tagName==='button'&&!node.hidden&&node.textContent==='重试'),'Ready recordings with failed lyrics do not send unsupported preparation retries');
+ await click(buttons('取消选择')[0]);
+ const removeCheck=walk(dropTarget).find(node=>node.type==='checkbox');removeCheck.checked=true;removeCheck.onchange();
+ const removeSongs=buttons('移除所选（1）')[0];await click(removeSongs);
+ assert.deepEqual(writes.find(write=>write.path.endsWith('/queue-remove')).data.value.ids,['new']);
+ assert.equal(queueRow('外部新点歌曲'),undefined);
+ assert.equal(buttons('移除所选（0）')[0],removeSongs,'The selection control remains mounted after removal');
+ assert.equal(removeSongs.disabled,true,'A completed removal leaves the empty selection control disabled');
  await click(byId('search-tab'));const search=nodes().find(n=>n.tagName==='input'&&n.type==='search');search.value='合成';const form=nodes().find(n=>n.className==='search-form');await form.onsubmit({preventDefault(){}});await settle();assert.match(root.textContent,/搜到的合成曲.*歌手.*合成专辑.*伴奏已缓存/);
  holdSearch=true;search.value='旧词';search.oninput();assert.doesNotMatch(root.textContent,/搜到的合成曲/,'Changing the query clears stale results immediately');const firstSearch=form.onsubmit({preventDefault(){}});await settle();
  search.value='新词';search.oninput();const secondSearch=form.onsubmit({preventDefault(){}});await settle();

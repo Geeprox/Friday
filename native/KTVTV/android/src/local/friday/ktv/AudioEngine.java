@@ -24,6 +24,7 @@ public final class AudioEngine {
     private AudioFocusRequest focus;
     public final PcmMixer mixer=new PcmMixer();
     public volatile long renderedFrames,capturedFrames,positionFrames,playheadFrames;
+    private long backingStartFrame;
     public volatile int inputDevice=-1,outputDevice=-1,bufferFrames,performanceMode,underruns,micPeak,mixedPeak;
     public volatile long droppedMicFrames,queuedMicFrames;
     public volatile long missingMicFrames,dspNanosMax,outputQueuedFrames,inputAgeNanos;
@@ -110,6 +111,7 @@ public final class AudioEngine {
         // Publish the requested clock before the worker opens streams; the UI
         // must not scroll new lyrics using the previous song's playhead.
         positionFrames=playheadFrames=seek;
+        backingStartFrame=seek;
         duplexAttempted=false;duplexOpenCode=duplexStartCode=0;audioBackend=0;
         long[] emptyMetrics=new long[AudioBackendIO.METRIC_COUNT];emptyMetrics[12]=emptyMetrics[13]=-1;nativeMetrics=emptyMetrics;nativeMetricsPublishedAt=0;
         inputTimestampAvailable=false;inputDevice=-1;outputDevice=-1;inputBufferFrames=0;droppedMicFrames=0;queuedMicFrames=0;missingMicFrames=0;dspNanosMax=0;outputQueuedFrames=0;inputAgeNanos=0;inputPeakA=inputPeakB=0;captureFault=null;
@@ -343,6 +345,8 @@ public final class AudioEngine {
     }
     private synchronized void installMusicSource(SwitchingWavSource source,File initial){musicSource=source;if(desiredBacking!=null&&!desiredBacking.equals(initial))source.request(desiredBacking);}
     public synchronized void switchBacking(File path){desiredBacking=path;SwitchingWavSource current=musicSource;if(current!=null)current.request(path);}
+    public File activeBacking(){SwitchingWavSource source=musicSource;return source==null?null:source.activePath();}
+    boolean backingPresented(){return running&&playheadFrames>backingStartFrame;}
     public void stop(){stop.set(true);AudioBackendIO io=nativeIO;if(io!=null)io.stop();AudioTrack current=track;if(current!=null){try{current.pause();current.flush();current.stop();}catch(Exception ignored){}}}
     /** Playback completion alone does not release a still-blocked input owner. */
     public boolean released(){
@@ -350,8 +354,14 @@ public final class AudioEngine {
         return !running&&(output==null||!output.isAlive())&&(input==null||!input.isAlive())
             &&track==null&&record==null&&nativeIO==null;
     }
+    Thread playbackWorker(){return render;}
+    static void awaitPlaybackWorker(Thread worker)throws InterruptedException,IOException{
+        if(worker==null)return;
+        worker.join(2500);
+        if(worker.isAlive())throw new IOException("audio_stopping");
+    }
     public void awaitStopped() throws Exception {
-        Thread current=render;if(current!=null){current.join(2500);if(current.isAlive())throw new IOException("audio_stopping");}
+        awaitPlaybackWorker(render);
         if(!released())throw new IOException(capture!=null&&capture.isAlive()?"input_stop_timeout":"audio_stopping");
     }
     public void devicesChanged(){if(running)stop();}
