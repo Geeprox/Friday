@@ -52,6 +52,7 @@ async def test_delayed_receipt_keeps_trigger_time_and_rule_metadata(monkeypatch)
     monkeypatch.setattr(bridge, 'command', AsyncMock(side_effect=command))
     nodes = ast.parse((ROOT / 'homeplane/embodied/worker.py').read_text()).body
     source_guard = next(n for n in nodes if isinstance(n, ast.FunctionDef) and n.name == 'interaction_source_current')
+    game_window = next(n for n in nodes if isinstance(n, ast.FunctionDef) and n.name == 'interaction_game_window')
     dispatch = next(n for n in nodes if isinstance(n, ast.AsyncFunctionDef) and n.name == 'dispatch_interactions')
     fleet, tasks = InteractionFleet(), []
     monkeypatch.setattr(fleet, 'current', lambda *_: True)
@@ -62,7 +63,7 @@ async def test_delayed_receipt_keeps_trigger_time_and_rule_metadata(monkeypatch)
                  party_camera=PartyCamera(), practice=RecognitionPractice(),
                  home=SimpleNamespace(armed=True, spawn=lambda coro: tasks.append(asyncio.create_task(coro))),
                  secondary_homes={}, fleet=fleet, wall=SimpleNamespace(notice=lambda *_: None))
-    exec(compile(ast.Module(body=[source_guard, dispatch], type_ignores=[]), '<合成手势分发>', 'exec'), scope)
+    exec(compile(ast.Module(body=[source_guard, game_window, dispatch], type_ignores=[]), '<合成手势分发>', 'exec'), scope)
     event = dict(camera='synthetic-camera', session='synthetic-session', track=7,
                  target='lamp', action='on', event_id='synthetic-history',
                  binding='a' * 32, revision=3, gesture='hand.open_palm', scope='home',

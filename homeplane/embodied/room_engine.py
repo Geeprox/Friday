@@ -110,6 +110,10 @@ def validate(config):
     return matrix
 
 
+def decode_luma(picture):
+    return cv2.imdecode(np.frombuffer(picture, np.uint8), cv2.IMREAD_GRAYSCALE)
+
+
 class Room:
     def __init__(self, config, reference):
         if not isinstance(config, dict):
@@ -126,7 +130,7 @@ class Room:
         self.reference = reference
         self.orb = cv2.ORB_create(nfeatures=1000, fastThreshold=12)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
-        self.ref_points, self.ref_desc = self.features(reference, [])
+        self.ref_points, self.ref_desc = self.features(decode_luma(reference), [])
         self.registration = None
         self.reg_checked = 0.0
         self.reg_info = {"status": "checking"}
@@ -225,8 +229,7 @@ class Room:
             ))
         return result
 
-    def features(self, picture, people):
-        image = cv2.imdecode(np.frombuffer(picture, np.uint8), cv2.IMREAD_GRAYSCALE)
+    def features(self, image, people):
         if image is None:
             raise ValueError("invalid_reference")
         image = cv2.resize(image, (640, 360))
@@ -241,12 +244,22 @@ class Room:
         kp, desc = self.orb.detectAndCompute(image, mask)
         return np.float32([[q.pt[0] / 640, q.pt[1] / 360] for q in kp]), desc
 
-    def register(self, picture, people, now):
-        if now - self.reg_checked < 0.3:
+    def register(self, picture, people, now, *, check_visibility=False):
+        due = now - self.reg_checked >= 0.3
+        if not due and not check_visibility:
             return
+        image = decode_luma(picture)
+        if due:
+            self._register_luma(image, people, now)
+        if check_visibility:
+            from .camera_director import visible_scene_luma
+
+            return visible_scene_luma(image)
+
+    def _register_luma(self, image, people, now):
         self.reg_checked = now
         self.registration = None
-        pts, desc = self.features(picture, people)
+        pts, desc = self.features(image, people)
         motion = 0.0
         if self.previous_features is not None and now - self.previous_at < 1:
             previous = self.estimate(pts, desc, *self.previous_features)

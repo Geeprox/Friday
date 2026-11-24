@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Friday · 感知状态合成示例</title><link rel="icon" href="data:,">
+<link rel="stylesheet" href="/homeplane/static/style.css"><link rel="stylesheet" href="/homeplane/static/icons.css"><link rel="stylesheet" href="/homeplane/static/home-conversation.css"><script defer src="/homeplane/static/copy-layout.js"></script>
+<link rel="stylesheet" href="/homeplane/static/games-library.css"><link rel="stylesheet" href="/homeplane/static/home-experience.css"><link rel="stylesheet" href="/homeplane/static/interface.css"><link rel="stylesheet" href="/homeplane/static/connection-setup.css"><link rel="stylesheet" href="/homeplane/static/motion-guide.css"><style>.icon-microphone{mask-image:url('/homeplane/static/icons/microphone.svg');-webkit-mask-image:url('/homeplane/static/icons/microphone.svg')}</style></head>
+<body>
+<a class="skip" href="#workspace">跳到内容</a>
+<aside class="sidebar"><a class="brand" href="#home">Friday</a><div class="household">示例家庭</div></aside>
+<div class="shell"><header class="topbar"><span class="badge">合成示例 · 未连接设备</span></header><main id="workspace" tabindex="-1"><div class="page-header"><div><h1>互动控制</h1><p class="muted">合成状态，展示画面与感知的区别。</p></div></div><section class="experience" id="content" aria-label="家庭状态"></section></main></div>
+<script type="module">
+import {mountInteractions} from '/homeplane/static/interactions.js';
+const devices=['示例客厅','示例书房','示例卧室','示例走廊'].map((room,index)=>({id:'cam_'+String(index+1).repeat(10),kind:'camera',room,name:'示例镜头'}));
+const sessions=[
+ {state:'live',recognition:'running',preview_fresh:true},
+ {state:'stale',recognition:'waiting',preview_fresh:true},
+ {state:'unavailable',recognition:'waiting',preview_fresh:false},
+ {state:'shutter_closed',recognition:'waiting',preview_fresh:false}
+].map((session,index)=>({...session,camera:devices[index].id}));
+const routes={
+ '/api/home/interactions':{config:{revision:0,enabled:true,bindings:[]},gestures:{}},
+ '/api/embodied/devices':{devices:[]},
+ '/api/embodied/status':{camera_sessions:sessions,voice_input:true,quiet:true,interactions:{events:[]}},
+ '/api/embodied/infrastructure':{policy:{enabled:true,recognition:true,interaction:true}},
+ '/api/embodied/voice-preferences':{revision:0,wake_word:'Friday'}
+};
+window.fetch=async(path,options={})=>{
+ if(options.method||!Object.hasOwn(routes,path))throw Error('合成示例只允许读取固定状态');
+ return {ok:true,json:async()=>structuredClone(routes[path])};
+};
+mountInteractions(document.getElementById('content'),{data:{devices},go(){},toast(){}});
+</script></body></html>

@@ -179,19 +179,21 @@ class WindowGesture:
 
     def reset(self):
         self.owner = None
-        self.phase = None
-        self.pending = None
-        self.since = None
-        self.anchor = None
+        self._reset_pose()
         self.last_seen = None
-        self.phase_at = None
+
+    def _reset_pose(self):
+        self.phase = self.pending = self.since = self.anchor = self.phase_at = None
 
     def update(self, person, now):
         if not math.isfinite(now):
             self.reset()
             return None
-        if self.last_seen is not None and not 0 <= now - self.last_seen <= 1.0:
-            self.reset()
+        if self.last_seen is not None:
+            if now <= self.last_seen:
+                return None
+            if now - self.last_seen > 1.0:
+                self.reset()
         self.last_seen = now
         if person is None:
             self.reset()
@@ -210,8 +212,7 @@ class WindowGesture:
             q(k) for k in ("leftShoulder", "rightShoulder", "leftWrist", "rightWrist", "leftHip", "rightHip")
         ]
         if not all((ls, rs, lw, rw, lh, rh)):
-            self.pending = None
-            self.since = None
+            self._reset_pose()
             self.public = {"pose": "unknown", "progress": 0.0, "reason": "让双手、肩部与髋部清晰可见"}
             return None
         width = abs(ls["x"] - rs["x"])
@@ -219,6 +220,8 @@ class WindowGesture:
         cx = (ls["x"] + rs["x"]) / 2
         torso = (lh["y"] + rh["y"]) / 2 - cy
         if width < 0.025 or torso < 0.025:
+            self._reset_pose()
+            self.public = {"pose": "unknown", "progress": 0.0, "reason": "让双手、肩部与髋部清晰可见"}
             return None
         hands = sorted(((lw["x"] - cx) / width, (rw["x"] - cx) / width))
         span = hands[1] - hands[0]
@@ -227,6 +230,12 @@ class WindowGesture:
             "open" if horizontal and span > 2.3 else "closed" if horizontal and span < 1.1 else "transition"
         )
         self.public = {"pose": pose, "span": round(span, 2), "progress": 0.0, "reason": "双臂在胸前水平开合"}
+        if not horizontal:
+            # 运动或遮挡前的端点不能与之后偶然出现的伸臂合成一条控制手势。
+            self._reset_pose()
+            return None
+        if self.phase_at is not None and now - self.phase_at > 1.5:
+            self._reset_pose()
         if pose == "transition":
             self.pending = None
             self.since = None
@@ -244,6 +253,8 @@ class WindowGesture:
             self.phase_at = now
             return None
         if pose == self.phase:
+            self.anchor = hands
+            self.phase_at = now
             return None
         outward = hands[0] < self.anchor[0] - 0.25 and hands[1] > self.anchor[1] + 0.25
         inward = hands[0] > self.anchor[0] + 0.25 and hands[1] < self.anchor[1] - 0.25

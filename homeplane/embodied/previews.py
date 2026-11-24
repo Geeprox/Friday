@@ -561,6 +561,9 @@ class PreviewPool:
                 if time.monotonic()-checked_power>=5:
                     checked_power=time.monotonic()
                     if not await camera_is_open(selected):privacy_closed()
+                    if item['source_active'] and packet.get('type') == 'frame' and not queue.empty():
+                        # 保留原有隐私校验；读回期间收到的最新包替换已经等待的包。
+                        packet = queue.get_nowait()
                 if item['privacy_closed'] or not item['source_active']:break
                 if packet.get("type") == "frame":
                     if recognizer is not None:

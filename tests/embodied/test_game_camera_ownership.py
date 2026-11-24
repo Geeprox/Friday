@@ -21,6 +21,8 @@ WORKER = Path("homeplane/embodied/worker.py")
 
 def actual(name, scope):
     scope.setdefault('party_camera',PartyCamera())
+    if name in {'dispatch_interactions', 'secondary_observation'}:
+        actual('interaction_game_window', scope)
     node = next(
         n
         for n in ast.parse(WORKER.read_text()).body
@@ -145,7 +147,7 @@ async def test_explicit_manual_positioning_still_uses_the_original_current_camer
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("camera", ["primary", "secondary"])
+@pytest.mark.parametrize("camera", ["primary", "same_room", "other_room"])
 @pytest.mark.parametrize("transition", ["none", "start", "start_then_stop"])
 async def test_queued_gestures_use_the_original_camera_and_game_window(monkeypatch, camera, transition):
     from homeplane.embodied import bridge
@@ -154,15 +156,18 @@ async def test_queued_gestures_use_the_original_camera_and_game_window(monkeypat
     command = AsyncMock(return_value=dict(status="SIMULATED", acknowledged=False, reached_target=False))
     monkeypatch.setattr(bridge, "command", command)
     scope = dict(
-        SELECTED={"id": "primary"},
+        SELECTED={"id": "primary", "room": "SYNTHETIC-game-room"},
         games=game,
         interaction_enabled=True,
         home=SimpleNamespace(armed=True, spawn=jobs.append),
-        secondary_homes={"secondary": SimpleNamespace(armed=True)},
+        secondary_homes={key: SimpleNamespace(armed=True) for key in ("same_room", "other_room")},
         interaction_source_current=lambda _: True,
         fleet=SimpleNamespace(current=lambda *_: True, receipts=deque()),
         practice=SimpleNamespace(suppresses=lambda _: False),
-        wall=SimpleNamespace(notice=Mock()),
+        wall=SimpleNamespace(notice=Mock(), cameras=[
+            {"id": "same_room", "room": "SYNTHETIC-game-room"},
+            {"id": "other_room", "room": "SYNTHETIC-other-room"},
+        ]),
         time=SimpleNamespace(monotonic=lambda: 10, time=lambda: 1000),
     )
     dispatch = actual("dispatch_interactions", scope)
@@ -183,7 +188,7 @@ async def test_queued_gestures_use_the_original_camera_and_game_window(monkeypat
         game.reset("off")
     for job in jobs:
         await job
-    if camera == "secondary" or transition == "none":
+    if camera == "other_room" or transition == "none":
         command.assert_awaited_once()
     else:
         command.assert_not_awaited()

@@ -70,7 +70,7 @@ def test_primary_recognition_health_requires_a_current_frame(tmp_path, state_nam
         safety=SimpleNamespace(recording_status=lambda:{'state':'off'}),
         home=SimpleNamespace(public=lambda:{}),secondary_homes={},fleet=SimpleNamespace(public=lambda _:{}),time=time,
         PRIVATE=tmp_path,last_frame=time.monotonic()-age if age is not None else 0,
-        SELECTED={'id':'main'},camera_planner=None,
+        SELECTED={'id':'main'},camera_planner=None,wall=SimpleNamespace(frame=lambda _:None),
         configuration=lambda:{'cameras':[{'id':'main'}]})
     exec(compile(ast.Module(body=[function],type_ignores=[]),'<actual view>','exec'),context)
     result=context['view']()

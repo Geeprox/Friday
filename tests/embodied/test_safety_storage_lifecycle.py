@@ -146,7 +146,7 @@ async def test_latest_mailboxes_keep_actual_secondary_callback_live_and_revoke_o
                  practice=SimpleNamespace(observe=Mock()), wall=SimpleNamespace(observe=Mock()),
                  fleet=SimpleNamespace(update=Mock(return_value=[]), cameras={}, voice=Mock(return_value=False)),
                  dispatch_interactions=AsyncMock(), secondary_homes={camera: home},
-                 interaction_enabled=True, PRIVATE=tmp_path, time=time)
+                 interaction_enabled=True, PRIVATE=tmp_path, time=time, SELECTED={'id': 'synthetic-primary'})
     callback = actual('homeplane/embodied/worker.py', 'secondary_observation', scope)
     try:
         assert offer(runtime, trigger=True)

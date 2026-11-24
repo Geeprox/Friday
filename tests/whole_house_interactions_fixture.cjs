@@ -15,7 +15,7 @@ class Element{
  let config={revision:0,enabled:true,bindings:[]},policy={revision:0,enabled:true,recognition:true,interaction:true},voice=true;
  let voicePreferences={revision:0,wake_word:'Friday'};
  let voiceSessions=[{camera:cameras[0].id,last_transcript:'Friday，打开客厅主灯'}];
- let interactionCameras=[],cameraStates=['live','live','live'];
+ let interactionCameras=[],cameraStates=['live','live','live'],sessionDetails=[{},{},{}],failStatus=false,statusWait=null;
  const writes=[],reads=[],root=new Element('main'),find=(tag,text)=>all(root).find(n=>n.tagName===tag&&n.textContent===text),byLabel=label=>all(root).find(n=>n.attrs['aria-label']===label);
  const targets=[{id:'lamp',kind:'light',room:'客厅',name:'主灯',controllable:true,actions:['on','off']},{id:'curtain',kind:'cover',room:'客厅',name:'窗帘',controllable:true,actions:['open','close']}];
  const fetch=async(path,options={})=>({ok:true,json:async()=>{
@@ -32,7 +32,7 @@ class Element{
   reads.push(path);
   if(path==='/api/home/interactions')return{config,gestures:{'hand.ok':'OK','body.arms_open':'双臂打开'}};
   if(path==='/api/embodied/devices')return{devices:targets};
-  if(path==='/api/embodied/status')return{owned:true,voice_input:voice,quiet:true,camera_sessions:cameras.map((c,i)=>({camera:c.id,state:cameraStates[i]})),voice_sessions:voiceSessions,interactions:{events:[],cameras:interactionCameras}};
+  if(path==='/api/embodied/status'){if(statusWait)await Promise.race([statusWait,new Promise((_,reject)=>options.signal.addEventListener('abort',()=>reject(Error('synthetic aborted read')),{once:true}))]);if(failStatus)throw Error('synthetic status unavailable');return{owned:true,voice_input:voice,quiet:true,camera_sessions:cameras.map((c,i)=>({camera:c.id,state:cameraStates[i],...sessionDetails[i]})),voice_sessions:voiceSessions,interactions:{events:[],cameras:interactionCameras}};}
   if(path==='/api/embodied/infrastructure')return{policy};
   if(path==='/api/embodied/voice-preferences')return voicePreferences;
   if(path.endsWith('/power'))return{enabled:true,revision:'e'.repeat(64)};
@@ -40,12 +40,35 @@ class Element{
   throw Error('unexpected read '+path);
  }});
  const diagram=()=>{const n=new Element('svg');n.dispose=()=>{};return n;};
- let poll;const sandbox={document:{createElement:t=>new Element(t),activeElement:null},fetch,crypto:require('node:crypto').webcrypto,setInterval:callback=>{poll=callback;return 1;},clearInterval(){},Date,console,mountMotionLibrary:()=>({dispose(){}}),createMotionDiagram:diagram,MOTION_GUIDES:{}};
+ let poll,timeoutCallback;const sandbox={document:{createElement:t=>new Element(t),activeElement:null},fetch,AbortController,setTimeout:callback=>{timeoutCallback=callback;return 1;},clearTimeout(){timeoutCallback=null;},crypto:require('node:crypto').webcrypto,setInterval:callback=>{poll=callback;return 1;},clearInterval(){},Date,console,mountMotionLibrary:()=>({dispose(){}}),createMotionDiagram:diagram,MOTION_GUIDES:{}};
  const navigations=[];
  const context=vm.createContext(sandbox);context.root=root;context.options={data:{devices:cameras},go(page){navigations.push(page);},toast(){}};
  vm.runInContext(fs.readFileSync('homeplane/static/interactions.js','utf8').replace(/^import.*$/gm,'').replace('export function mountInteractions','function mountInteractions'),context);
  const owner=vm.runInContext('mountInteractions(root,options)',context),settle=()=>new Promise(setImmediate);await settle();
  assert.equal(all(root).filter(n=>n.attrs.class==='interaction-camera').length,3);
+ const summary=()=>all(root).find(n=>'data-all-camera-summary'in n.attrs);
+ sessionDetails=[{recognition:'running',preview_fresh:true},{recognition:'waiting',preview_fresh:true},{recognition:'waiting',preview_fresh:true}];
+ cameraStates=['live','unavailable','stale'];await poll();await settle();
+ let diagnosticRows=all(root).filter(n=>n.attrs.class==='interaction-camera');
+ assert.equal(summary().textContent,'1 / 3 个镜头可用');
+ assert(diagnosticRows[1].textContent.includes('画面正常 · 感知延迟'));
+ assert(diagnosticRows[2].textContent.includes('画面正常 · 感知延迟'));
+ cameraStates[1]='live';await poll();await settle();assert.equal(summary().textContent,'1 / 3 个镜头可用','a transport-live waiting lane is not ready');
+ sessionDetails[1]={recognition:'recovering',preview_fresh:true};cameraStates[1]='connecting';await poll();await settle();assert(root.textContent.includes('感知恢复中'));
+ sessionDetails[1]={recognition:'waiting',preview_fresh:false};cameraStates[1]='unavailable';await poll();await settle();assert(root.textContent.includes('连接中断'));
+ cameraStates[1]='shutter_closed';sessionDetails[1].preview_fresh=true;await poll();await settle();assert(root.textContent.includes('镜头已关闭'),'privacy takes priority over a mismatched preview flag');
+ const focusedRow=all(root).find(n=>n.attrs.class==='interaction-camera');sandbox.document.activeElement=focusedRow.children.find(n=>n.tagName==='button');
+ failStatus=true;await poll();await settle();assert.equal(summary().textContent,'状态暂时无法读取');
+ assert.equal(all(root).find(n=>n.attrs.class==='interaction-camera'),focusedRow,'polling preserves the focused row while updating its status');
+ sandbox.document.activeElement=null;
+ assert(!all(root).filter(n=>n.attrs.class==='interaction-camera').some(n=>n.textContent.includes('识别中')),'a failed read retires the old ready rows');
+ failStatus=false;cameraStates=['live','live','live'];sessionDetails=[{recognition:'running'},{recognition:'running'},{recognition:'running'}];
+ let release;statusWait=new Promise(resolve=>{release=resolve;});const beforeReads=reads.length;
+ poll();poll();poll();await settle();assert.equal(reads.slice(beforeReads).filter(p=>p==='/api/embodied/status').length,1,'slow polling keeps one status request');
+ release();statusWait=null;await settle();assert.equal(summary().textContent,'3 / 3 个镜头可用');
+ statusWait=new Promise(()=>{});poll();await settle();assert.equal(typeof timeoutCallback,'function');timeoutCallback();await settle();
+ assert.equal(summary().textContent,'状态暂时无法读取','a hung read has a finite deadline');
+ statusWait=null;poll();await settle();assert.equal(summary().textContent,'3 / 3 个镜头可用','the next poll recovers after an aborted read');
  find('button','用文字说').onclick();assert.deepEqual(navigations,['Ask Home']);assert.equal(writes.length,0,'opening text never enables cameras or voice');
  assert.ok(!byLabel('语音使用的镜头'));assert.ok(!all(root).some(n=>n.tagName==='select'),'Voice needs no room or camera selection');assert.equal(writes.length,0);
  assert.match(root.textContent,/这条指令的结果尚未确认/);

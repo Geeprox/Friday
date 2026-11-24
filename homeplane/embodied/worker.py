@@ -135,20 +135,28 @@ def interaction_source_current(event):
                 and previews.source_current(event['camera'], item.get('process')))
 
 
+def interaction_game_window(camera_id, now):
+    primary = camera_id == SELECTED['id']
+    game_room = SELECTED.get('room')
+    same_room = primary or bool(game_room and any(
+        camera['id'] == camera_id and camera['room'] == game_room for camera in wall.cameras
+    ))
+    game_window = (games.control_context, games.control_revision) if same_room else None
+    party_window = party_camera.window(now) if primary else (None, None, False)
+    # 多个镜头可能同时看到体感游戏玩家。同房间共用游戏修订，狼人杀仍按主镜头租约。
+    game_active = (same_room and games.mode not in {'off', 'home'}) or party_window[2]
+    return game_window, party_window[:2], game_active
+
+
 async def dispatch_interactions(events):
     for event in events:
-        game_window = event.get('_game_window')
-        if event['camera'] == SELECTED['id'] and game_window is None:
-            game_window = (games.control_context, games.control_revision)
-        party_window=event.get('_party_window',party_camera.window(time.monotonic())[:2])if event['camera']==SELECTED['id']else None
-        async def dispatch(e=event, expected_game=game_window, expected_party=party_window):
-            if e['camera'] == SELECTED['id'] and (
-                    games.mode not in {'off', 'home'}
-                    or expected_game != (games.control_context, games.control_revision)):
+        game, party, _ = interaction_game_window(event['camera'], time.monotonic())
+        expected = (event.get('_game_window', game), event.get('_party_window', party))
+
+        async def dispatch(e=event, expected_window=expected):
+            game, party, blocked = interaction_game_window(e['camera'], time.monotonic())
+            if blocked or expected_window != (game, party):
                 return
-            if e['camera']==SELECTED['id']:
-                party=party_camera.window(time.monotonic())
-                if party[2]or party[:2]!=expected_party:return
             service = home if e['camera'] == SELECTED['id'] else secondary_homes.get(e['camera'])
             if not (interaction_enabled and service and service.armed and interaction_source_current(e)
                     and fleet.current(e,time.monotonic())) or practice.suppresses(e['camera']):return
@@ -300,8 +308,14 @@ async def secondary_observation(observation, process):
         hands=observation['hands'],
         moving=observation['registration'].get('status') in {'moving','settling','lost','stale'})
     active=interaction_enabled
+    game_window, party_window, game_active = interaction_game_window(camera_id, observation['now'])
     events=fleet.update(camera_id,observation['session'],observation['people'],observation['hands'],
-        observation['registration'],active,observation['now'],captured_mono=observation['captured_mono'])
+        observation['registration'],active and not game_active,observation['now'],
+        game_window=(game_window, party_window) if game_window is not None else None,
+        game_active=game_active,captured_mono=observation['captured_mono'])
+    for event in events:
+        event['_game_window'] = game_window
+        event['_party_window'] = party_window
     await dispatch_interactions(events)
     if not secondary_frame_current(observation, process):return
     if camera_id not in secondary_homes:secondary_homes[camera_id]=HomeService(camera_id,voice_provider=home)
@@ -615,6 +629,10 @@ def view():
                    latency_ms=state.get('pipeline_ms') if recognizing else None)
     result['camera_sessions'] = [primary, *[previews.status(c['id'])
         for c in configuration()['cameras'] if c['id'] != SELECTED['id']]]
+    # 预览在采集侧发布；识别超时不代表镜头失去了新画面。
+    for session in result['camera_sessions']:
+        session['preview_fresh'] = (session['state'] not in {'stopped', 'shutter_closed'}
+                                    and wall.frame(session['camera']) is not None)
     return result
 
 
@@ -1057,18 +1075,17 @@ async def run_source(my_generation):
                     state['pipeline_timing'] = dict(timings, dropped_stage='after_enable')
                     continue
                 last_selection = games.selected_mode
-                game_window = (games.control_context, games.control_revision)
-                party_window=party_camera.window(time.monotonic())
-                gesture_active = interaction_enabled and games.mode in {'off', 'home'}and not party_window[2]
+                game_window, party_window, game_active = interaction_game_window(SELECTED['id'], time.monotonic())
+                gesture_active = interaction_enabled and not game_active
                 practice.observe(SELECTED['id'], identities.session, people, hands,
                     layout['registration'], now, now-(time.time()-item['received_at']))
                 interaction_events=fleet.update(SELECTED['id'],identities.session,people,hands,
-                    layout['registration'],gesture_active,now,game_window=(game_window,party_window[:2]),
-                    game_active=games.mode not in {'off','home'}or party_window[2],
+                    layout['registration'],gesture_active,now,game_window=(game_window,party_window),
+                    game_active=game_active,
                     captured_mono=time.monotonic()-(time.time()-item['received_at']))
                 for event in interaction_events:
                     event['_game_window'] = game_window
-                    event['_party_window'] = party_window[:2]
+                    event['_party_window'] = party_window
                 voice_now = time.monotonic()
                 voice_captured_mono = voice_now - (time.time() - item['received_at'])
                 home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,home.attention.candidate() is not None,
@@ -1188,12 +1205,19 @@ async def run_source(my_generation):
 async def supervised_source(my_generation):
     retry = 0
     while my_generation == generation:
+        previous_frames = state.get('processed_frames', 0)
         await run_source(my_generation)
         if my_generation != generation:
             return
-        retry += 1
+        if state['status'] == 'shutter_closed':
+            retry, delay = 0, 15
+        else:
+            # 正常关闭不累计故障；本轮重新识别到画面后重置连续失败退避。
+            recovered = state.get('processed_frames', 0) > previous_frames
+            retry = 1 if recovered else retry + 1
+            delay = min(30, 2 ** min(retry, 5))
         state["reconnect_attempt"] = retry
-        await asyncio.sleep(15 if state['status'] == 'shutter_closed' else min(30, 2 ** min(retry, 5)))
+        await asyncio.sleep(delay)
 
 
 async def start():
