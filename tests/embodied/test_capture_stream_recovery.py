@@ -209,9 +209,11 @@ def test_live_status_view_cannot_publish_old_game_players_while_source_is_down(t
         fleet=SimpleNamespace(public=lambda _:{}),time=SimpleNamespace(monotonic=lambda:10,time=lambda:1000),
         PRIVATE=tmp_path,camera_planner=None,last_frame=0,SELECTED=CAMERA,
         configuration=lambda:{'cameras':[CAMERA]},previews=None,
+        wall=SimpleNamespace(frame=lambda _: (b'private image',1000)),
     )
     result=actual('homeplane/embodied/worker.py','view',scope)()
     assert result['game']['status']=='paused' and result['game']['players']==[]
+    assert result['camera_sessions'][0]['preview_fresh'] is (source_status=='unavailable')
     assert result['game']['control_context']==game.control_context
     assert game.public['players']==[{'id':1}]
     assert scope['games'].public['status']=='playing','Presentation must not rewrite game progress'
@@ -236,6 +238,35 @@ async def test_capture_loss_while_waiting_for_room_lock_cannot_send_a_manual_or_
         await scope['motor_step']('right',scope['last_frame']if automatic else None,
                                   expected_intent='original')
     assert not sent and not scope['motor_waiters']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('outcomes', 'expected'), [
+    ([('shutter_closed', False)] * 6 + [('unavailable', False)], [(15, 0)] * 6 + [(2, 1)]),
+    ([('unavailable', False)] * 6 + [('unavailable', True), ('unavailable', False)],
+     [(2, 1), (4, 2), (8, 3), (16, 4), (30, 5), (30, 6), (2, 1), (4, 2)]),
+    ([('unavailable', False)] * 2 + [('shutter_closed', False), ('unavailable', False)],
+     [(2, 1), (4, 2), (15, 0), (2, 1)]),
+])
+async def test_primary_backoff_counts_only_consecutive_capture_failures(outcomes, expected):
+    retries = []
+    pending = iter(outcomes)
+    state = dict(status='unavailable', processed_frames=12)
+    scope = dict(generation=1, state=state)
+
+    async def run_source(_):
+        status, recovered = next(pending)
+        state['processed_frames'] += int(recovered)
+        state['status'] = status
+
+    async def sleep(delay):
+        retries.append((delay, state['reconnect_attempt']))
+        if len(retries) == len(outcomes):
+            scope['generation'] = 2
+
+    scope.update(run_source=run_source, asyncio=SimpleNamespace(sleep=sleep))
+    await actual('homeplane/embodied/worker.py', 'supervised_source', scope)(1)
+    assert retries == expected
 
 
 @pytest.mark.asyncio
@@ -313,6 +344,7 @@ def frame_continuation(scope):
         actual('homeplane/embodied/worker.py','primary_frame_current',scope)
     actual('homeplane/embodied/worker.py','scene_frame_current',scope)
     actual('homeplane/embodied/worker.py','calibration_source',scope)
+    actual('homeplane/embodied/worker.py','interaction_game_window',scope)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper],type_ignores=[])),
                  '<original primary frame continuation>','exec'),scope)
     return scope['continue_frame']

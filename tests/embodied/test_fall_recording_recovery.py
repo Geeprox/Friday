@@ -1096,7 +1096,8 @@ async def verify_public_recording_health(monitor, monkeypatch):
         recorder=SimpleNamespace(public=lambda: {}), safety=monitor.runtime,
         home=SimpleNamespace(public=lambda: {}), secondary_homes={}, fleet=SimpleNamespace(public=lambda _: {}),
         PRIVATE=monitor.store.path.parent, time=safety.time, last_frame=0, camera_planner=None,
-        SELECTED={'id': camera}, configuration=lambda: {'cameras': [{'id': camera}]}, previews=None)
+        SELECTED={'id': camera}, configuration=lambda: {'cameras': [{'id': camera}]}, previews=None,
+        wall=SimpleNamespace(frame=lambda _: None))
     public = actual('homeplane/embodied/worker.py', 'view', scope)()
     owner = service_module.EmbodiedService()
     owner.configured = lambda: True

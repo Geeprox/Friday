@@ -133,6 +133,7 @@ def test_original_idle_view_refreshes_the_display_window_without_claiming_camera
     scope=dict(games=game,party_camera=PartyCamera(),state={'status':'starting','processed_frames':0},recorder=home,home=home,
                safety=SimpleNamespace(recording_status=lambda:{}),SELECTED=camera,secondary_homes={},
                fleet=SimpleNamespace(public=lambda at:{}),PRIVATE=tmp_path,camera_planner=None,last_frame=None,
+               wall=SimpleNamespace(frame=lambda _: None),
                time=SimpleNamespace(monotonic=lambda:now[0],time=lambda:100+now[0]),configuration=lambda:{'cameras':[camera]})
     node=next(node for node in ast.parse(Path('homeplane/embodied/worker.py').read_text()).body if isinstance(node,ast.FunctionDef)and node.name=='view')
     exec(compile(ast.Module(body=[node],type_ignores=[]),'original-worker-view','exec'),scope)

@@ -39,3 +39,24 @@ def test_only_one_arm_moving_inward_is_not_paired_close():
     for n in range(5):assert gesture.update(person(True),100.+n*.1) is None
     one_arm=person(False);one_arm['joints']['rightWrist']['x']=.9
     for n in range(5):assert gesture.update(one_arm,100.5+n*.1) is None
+
+
+@pytest.mark.parametrize('interruption', ['lowered_arms', 'missing_wrist', 'side_on', 'long_transition'])
+def test_exercise_after_an_interrupted_anchor_does_not_open_a_curtain(interruption):
+    gesture = WindowGesture()
+    for index in range(5):
+        assert gesture.update(person(False), 100 + index / 10) is None
+    middle = person(False)
+    if interruption == 'lowered_arms':
+        middle['joints']['leftWrist']['y'] = middle['joints']['rightWrist']['y'] = .82
+    elif interruption == 'missing_wrist':
+        del middle['joints']['rightWrist']
+    elif interruption == 'side_on':
+        middle['joints']['rightShoulder']['x'] = .41
+    else:
+        middle['joints']['leftWrist']['x'], middle['joints']['rightWrist']['x'] = .32, .68
+    for index in range(5, 24 if interruption == 'long_transition' else 6):
+        assert gesture.update(middle, 100 + index / 10) is None
+    first_open = 24 if interruption == 'long_transition' else 6
+    for index in range(first_open, first_open + 12):
+        assert gesture.update(person(True), 100 + index / 10) is None

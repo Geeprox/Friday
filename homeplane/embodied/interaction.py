@@ -192,10 +192,17 @@ class InteractionEngine:
             self.loaded=now
         if not self.config.enabled or not active or registration.get('status') in {'moving','settling','lost','stale'} or owner is None:
             self.reset();self.public={'enabled':False,'selection':None,'reason':'bind_operator'if active else 'not_enabled',**({'release_required':True}if self.rearm else {})};return []
+        # 用原采集时间累计动作进度和派发时效，重复帧、迟到帧都不能续接动作。
+        observed = now if observed_mono is None else observed_mono
+        if type(observed) not in (int, float) or not 0 <= now - observed <= 1.5:
+            return []
         if owner!=self.owner:self.reset();self.owner=owner
-        if self.observed is not None and now-self.observed>1:
-            self.reset();self.owner=owner
-        self.observed=now
+        if self.observed is not None:
+            if observed <= self.observed:
+                return []
+            if observed - self.observed > 1:
+                self.reset();self.owner=owner
+        self.observed = observed
         person=next((p for p in people if p['id']==owner),None)
         if person is None:self.reset();return []
         bindings=[b for b in self.config.bindings if b.enabled and (b.gesture!='hand.point' and b.scope!='camera' or b.camera==self.camera)]
@@ -206,8 +213,7 @@ class InteractionEngine:
             self.pending=None
         labels={h.get('gesture')for h in hands if h.get('person_id')==owner}
         release_hands=hands if observed_hands is None else observed_hands
-        release_stamp=now if observed_mono is None else observed_mono
-        event=self.arms.update(person,now)
+        event=self.arms.update(person,observed)
         gestures={'body.arms_'+event['action'] if event else ''}
         gestures.update('hand.'+x for x in labels if x in BINDABLE_HAND_LABELS)
         gestures.update(body_gestures(person))
@@ -218,22 +224,22 @@ class InteractionEngine:
             if b.gesture=='hand.point':continue
             key=(owner,b.id)
             if b.id in self.game_releases:
-                self._release_binding(b,person,release_hands,now,release_stamp)
+                self._release_binding(b,person,release_hands,now,observed)
                 continue
             if b.gesture not in gestures:
                 self.holds.pop(key,None)
-                self.released.setdefault(key,now)
-                if now-self.released[key]>=.25:self.latched.discard(key)
+                self.released.setdefault(key,observed)
+                if observed-self.released[key]>=.25:self.latched.discard(key)
                 continue
             self.released.pop(key,None)
-            self.holds.setdefault(key,now)
+            self.holds.setdefault(key,observed)
             moving_arms=b.gesture in {'body.arms_open','body.arms_close'}
-            if key not in self.latched and (moving_arms or now-self.holds[key]>=.7) and now-self.last.get(key,-100)>3:
-                self.last[key]=now;self.latched.add(key);result.append(b)
+            if key not in self.latched and (moving_arms or observed-self.holds[key]>=.7) and observed-self.last.get(key,-100)>3:
+                self.last[key]=observed;self.latched.add(key);result.append(b)
         candidates=[]
         for b in bindings:
             if b.gesture=='hand.point' and b.id in self.game_releases:
-                self._release_binding(b,person,release_hands,now,release_stamp)
+                self._release_binding(b,person,release_hands,now,observed)
         for hand in hands:
             if not pointing_ready or hand.get('person_id')!=owner or hand.get('gesture')!='pointing' or not hand.get('ray'):continue
             ray=hand['ray'];ox,oy=ray['origin'];dx,dy=ray['direction'];norm=math.hypot(dx,dy)
@@ -249,8 +255,8 @@ class InteractionEngine:
         if unique:
             b=candidates[0][1]
             key=('ray',owner,b.id)
-            self.holds.setdefault(key,now)
-            if now-self.holds[key]>=.8:self.pending=(b,now+3)
+            self.holds.setdefault(key,observed)
+            if observed-self.holds[key]>=.8:self.pending=(b,observed+3)
             for k in list(self.holds):
                 if k[0]=='ray'and k!=key:self.holds.pop(k,None)
         else:
@@ -259,7 +265,7 @@ class InteractionEngine:
         if self.pending and now>self.pending[1]:self.pending=None
         if self.pending and 'ok'in labels:
             b=self.pending[0];key=('point',owner,b.id)
-            if now-self.last.get(key,-100)>3:self.last[key]=now;result.append(b)
+            if observed-self.last.get(key,-100)>3:self.last[key]=observed;result.append(b)
             self.pending=None
         self.rearm=bool(self.game_releases)
         self.public={'enabled':True,'selection':self.pending[0].target if self.pending else None,'reason':'confirm_ok'if self.pending else 'release_required'if self.rearm and len(self.game_releases)==len(bindings) else 'ready',**({'release_required':True,'blocked_gestures':sorted({b.gesture for b in bindings if b.id in self.game_releases}),'ready_bindings':len(bindings)-len(self.game_releases)}if self.rearm else {})}
@@ -268,5 +274,5 @@ class InteractionEngine:
             self.sequence+=1
             events.append(dict(revision=self.config.revision,binding=b.id,gesture=b.gesture,scope=b.scope,
                 triggered_at=time.time(),camera=self.camera,session=self.session,track=owner,target=b.target,
-                action=b.action,event_id=f'interaction:{self.session}:{owner}:{self.sequence}',observed_mono=now))
+                action=b.action,event_id=f'interaction:{self.session}:{owner}:{self.sequence}',observed_mono=observed))
         return events

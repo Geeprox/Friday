@@ -3,7 +3,7 @@ import {MOTION_GUIDES,createMotionDiagram} from './motion-guide.js';
 const h=(tag,text,attrs={})=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;for(const[k,v]of Object.entries(attrs))n.setAttribute(k,v);return n;};
 const add=(n,...children)=>{children.forEach(c=>c&&n.append(c));return n;};
 const btn=(text,run,attrs={})=>{const n=h('button',text,{type:'button',...attrs});n.onclick=run;return n;};
-const api=async(path,body)=>{const r=await fetch(path,{headers:{'Content-Type':'application/json'},...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)})});const data=await r.json();if(!r.ok){const error=Error(typeof data.detail==='string'?data.detail:'unavailable');error.status=r.status;throw error;}return data;};
+const api=async(path,body,signal)=>{const r=await fetch(path,{signal,headers:{'Content-Type':'application/json'},...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)})});const data=await r.json();if(!r.ok){const error=Error(typeof data.detail==='string'?data.detail:'unavailable');error.status=r.status;throw error;}return data;};
 const actionName=value=>({on:'开启',off:'关闭',open:'打开',close:'关闭','mode:off':'关闭','mode:cool':'制冷','mode:heat':'制热','mode:auto':'自动','mode:heat_cool':'自动冷暖','mode:dry':'除湿','mode:fan_only':'送风'}[value]||(value?.startsWith('position:')?'开到 '+value.slice(9)+'%':'调整设备'));
 const states={live:'识别中',ready:'识别中',connecting:'正在连接',waiting:'等待画面',stopped:'未开启',unavailable:'连接中断',shutter_closed:'镜头已关闭',stale:'画面已中断'};
 function voiceCommandPresentation(voice){
@@ -25,7 +25,11 @@ export function mountInteractions(root,{data,go,toast}){
  const field=(label,input)=>add(h('label',null,{class:'product-field'}),h('span',label),input);
  function cameraInputStatus(id){
   const session=report.camera_sessions?.find(s=>s.camera===id),live=['live','ready'].includes(session?.state),physical={text:states[session?.state]||'未开启',available:live};
+  if(!session)return{text:'状态暂不可用',available:false};
+  if(['stopped','shutter_closed'].includes(session.state))return physical;
   if(session?.recognition==='recovering')return{text:'感知恢复中',available:false};
+  if(session.preview_fresh===true&&(!live||session.recognition!=='running'))return{text:'画面正常 · 感知延迟',available:false};
+  if(live&&session.recognition==='waiting')return{text:'等待新鲜识别结果',available:false};
   if(mode==='voice'||!live)return physical;
   const view=report.interactions?.cameras?.find(c=>c.camera===id);if(!view)return physical;
   const stateText={game:'游戏进行中',paused:'手势已暂停',waiting:'等待动作画面',connecting:'等待动作画面',moving:'等待镜头稳定'};
@@ -73,15 +77,15 @@ export function mountInteractions(root,{data,go,toast}){
   const chosen=draft.camera?cameras.filter(c=>c.id===draft.camera):cameras;
   const live=chosen.filter(c=>['live','ready'].includes(report.camera_sessions?.find(s=>s.camera===c.id)?.state));
   const recovering=chosen.some(c=>report.camera_sessions?.some(s=>s.camera===c.id&&s.recognition==='recovering'));
-  const ready=live.map(c=>cameraInputStatus(c.id)),available=ready.filter(s=>s.available),waiting=ready.length&&ready.every(s=>s.text===ready[0].text)?ready[0].text:'等待动作就绪';
+  const ready=chosen.map(c=>cameraInputStatus(c.id)),available=ready.filter(s=>s.available),waiting=ready.length&&ready.every(s=>s.text===ready[0].text)?ready[0].text:'等待动作就绪';
   const line=slot.querySelector?.('[data-interaction-readiness]');
   if(line&&!line.contains?.(document.activeElement)){
    line.replaceChildren(h('strong',!policy?.enabled||!policy?.recognition?'手势识别未开启':!policy?.interaction?'手势控制已暂停':available.length?`${available.length} 个镜头可使用`:live.length?waiting:recovering?'感知恢复中':'镜头暂不可用'));
    if(!live.length&&!recovering){line.append(h('p','可以先保存设置。使用时，请打开所选房间的镜头。',{class:'caption'}));if(chosen[0])line.append(btn('查看'+chosen[0].room+'镜头',()=>openCamera(chosen[0].id)));}
   }
-  const scopeStatus=slot.querySelector?.('[data-all-camera-summary]');if(scopeStatus)scopeStatus.textContent=cameras.length?`${live.length} / ${cameras.length} 个镜头可用`:'还没有接入摄像头';
+  const scopeStatus=slot.querySelector?.('[data-all-camera-summary]');if(scopeStatus){const count=cameras.filter(c=>cameraInputStatus(c.id).available).length;scopeStatus.textContent=cameras.length?`${count} / ${cameras.length} 个镜头可用`:'还没有接入摄像头';}
   const toggle=slot.querySelector?.('[data-interaction-toggle]');if(toggle){toggle.textContent=mode==='voice'?(policy?.enabled&&policy?.recognition&&policy?.interaction&&report.voice_input?'暂停语音输入':'开启语音控制'):policy?.enabled&&policy?.recognition&&policy?.interaction?'暂停手势控制':'启用手势控制';toggle.disabled=busy;}
-  const status=slot.querySelector?.('[data-camera-status]');if(status&&!status.contains?.(document.activeElement)){status.replaceChildren();for(const c of cameras){status.append(add(h('div',null,{class:'interaction-camera'}),h('strong',c.room+' · '+c.name),h('span',cameraInputStatus(c.id).text),btn('查看镜头',()=>openCamera(c.id))));}}
+  const status=slot.querySelector?.('[data-camera-status]');if(status){if(status.children.length!==cameras.length){status.replaceChildren();for(const c of cameras)status.append(add(h('div',null,{class:'interaction-camera'}),h('strong',c.room+' · '+c.name),h('span'),btn('查看镜头',()=>openCamera(c.id))));}for(const[index,c]of cameras.entries())status.children[index].querySelector('span').textContent=cameraInputStatus(c.id).text;}
   const voiceState=slot.querySelector?.('[data-voice-state]');if(voiceState){
    const voices=(report.voice_sessions||[]).filter(v=>v.last_transcript);if(!voices.length&&report.home?.last_transcript)voices.push({...report.home,camera:report.camera});
    const rows=voices.slice(-3).map(voice=>({voice,room:cameras.find(c=>c.id===voice.camera)?.room||'家中',outcome:voiceCommandPresentation(voice)}));
@@ -90,7 +94,8 @@ export function mountInteractions(root,{data,go,toast}){
   }
   renderHistory();
  }
- async function refresh(){try{const[next,infra]=await Promise.all([api('/api/embodied/status'),api('/api/embodied/infrastructure')]);if(alive){report=next;policy=infra.policy;readiness();if(image?.isConnected&&previewCamera)void pollImage();}}catch(_){const line=slot.querySelector?.('[data-interaction-readiness]');if(line)line.replaceChildren(h('p','状态暂时无法读取，请刷新后重试。'),btn('重试',()=>refresh()));}}
+ let refreshing=false,refreshController=null;
+ async function refresh(){if(!alive||refreshing)return;refreshing=true;const controller=new AbortController();refreshController=controller;const timeout=setTimeout(()=>controller.abort(),6000);try{const[next,infra]=await Promise.all([api('/api/embodied/status',undefined,controller.signal),api('/api/embodied/infrastructure',undefined,controller.signal)]);if(alive){report=next;policy=infra.policy;readiness();if(image?.isConnected&&previewCamera)void pollImage();}}catch(_){if(alive){report={};readiness();const scope=slot.querySelector?.('[data-all-camera-summary]');if(scope)scope.textContent='状态暂时无法读取';const line=slot.querySelector?.('[data-interaction-readiness]');if(line)line.replaceChildren(h('p','状态暂时无法读取，请刷新后重试。'),btn('重试',()=>refresh()));}}finally{clearTimeout(timeout);controller.abort();refreshController=null;refreshing=false;}}
  async function pollImage(){
   const node=image,camera=previewCamera,revision=previewRevision;
   if(!node?.isConnected||!camera)return;
@@ -235,5 +240,5 @@ export function mountInteractions(root,{data,go,toast}){
  async function load(){slot.replaceChildren(h('p','正在读取互动设置…',{role:'status'}));try{const[r,inventory,s,p,v]=await Promise.all([api('/api/home/interactions'),api('/api/embodied/devices'),api('/api/embodied/status'),api('/api/embodied/infrastructure'),api('/api/embodied/voice-preferences').catch(()=>null)]);if(!alive)return;config=r.config;gestures=r.gestures;voicePreferences=v;const product=new Map(data.devices.flatMap(d=>(d.controls||[]).map(c=>[c.id,{name:c.name,room:d.room}])));targets=inventory.devices.filter(t=>t.controllable&&t.actions?.length).map(t=>({...t,...product.get(t.id)}));report=s;policy=p.policy;draw();}catch(_){if(alive)slot.replaceChildren(h('p','互动设置暂时无法读取，请检查家庭连接后重试。',{role:'status'}),btn('重试',load));}}
  try{if(sessionStorage.getItem('Friday.interactionMode')==='gestures'){mode='gestures';sessionStorage.removeItem('Friday.interactionMode');}}catch(_){}
  void load();const timer=setInterval(()=>{if(!busy)void refresh();},1800);
- return{dispose(){alive=false;clearInterval(timer);stopPreview();motionLibrary?.dispose();selectedDiagram?.dispose();slot.remove();}};
+ return{dispose(){alive=false;refreshController?.abort();clearInterval(timer);stopPreview();motionLibrary?.dispose();selectedDiagram?.dispose();slot.remove();}};
 }
