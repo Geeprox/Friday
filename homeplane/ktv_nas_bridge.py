@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+from fastapi import HTTPException
 
 from .ktv_service import ERRORS, JobRequest, atomic_json, local_host, nas_attempt_request_id, private_directory
 
@@ -320,7 +321,12 @@ class NasBridge:
                         self.mapping[item["id"]] = job["id"]
                         if self.party:
                             self.party["order"] = [self.mapping[i] for i in self.remote_order if i in self.mapping]
-                except Exception:
+                except Exception as error:
+                    # 容量和短时 I/O 故障让 NAS 租约自然到期，恢复后沿用原请求编号。
+                    if isinstance(error, OSError) or isinstance(error, HTTPException) and (
+                        error.status_code >= 500 or error.status_code == 429 or error.detail == "retry_in_progress"
+                    ):
+                        continue
                     if self._same_room(generation):
                         self.request("/agent/updates", {"updates": [{"id": item.get("id", ""), "state": "failed", "code": "internal_error"}]})
             with self.lock:
@@ -565,13 +571,17 @@ class NasBridge:
             self._save()
             return self.current()
 
-    def close_party(self):
+    def close_party(self, expected_room=None):
         with self.room_operation_lock:
             with self.lock:
                 room_id = self.party["room_id"] if self.party else ""
+                if expected_room and room_id and room_id != expected_room:
+                    raise ValueError("room_changed")
             if room_id:
                 self.request("/agent/rooms/" + room_id + "/close", {})
             with self.lock:
+                if self.party and self.party["room_id"] != room_id:
+                    return {"closed": True}
                 self.room_generation += 1
                 self.party = None
                 self.playback = None

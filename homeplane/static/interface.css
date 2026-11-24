@@ -317,6 +317,9 @@ body :is(.caption,.muted,.meta,.tile-room,.tile-state,.device-time,.model-hint) 
 .interaction-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-block-end: 24px; border-block-end: 1px solid var(--line); }
 .interaction-toolbar > .category-tabs { flex: 1; margin: 0; border: 0; }
 .interaction-toolbar > button { flex: none; margin-block: 8px; }
+.interaction-status-note { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-block-end: 16px; }
+.interaction-status-note p { margin: 0; }
+.interaction-workspace button[aria-disabled='true'] { cursor: default; opacity: .62; }
 @media (max-width: 650px) { .interaction-toolbar { flex-wrap: wrap; gap: 0; } .interaction-toolbar > .category-tabs { flex-basis: 100%; } .interaction-toolbar > button { margin-inline-start: auto; } }
 .experience .interaction-intro { align-items: center; gap: 24px; margin-block-end: 24px; }
 .experience .interaction-intro p { font-size: .875rem; color: var(--muted); }

@@ -75,6 +75,36 @@ test('play receipts require matching current playback and replay needs a timelin
   assert.equal(commandObserved('pause','song',before,acknowledged,5),false);
 });
 
+test('resume from an empty stage follows a newly selected song after the TV receipt',()=>{
+  const before={online:true,current:'',state:'idle',last_command:4};
+  const preparing={...before,state:'preparing',last_command:5};
+  assert.equal(commandObserved('resume','',before,preparing,5),true);
+  assert.equal(commandObserved('resume','',before,{...preparing,current:'song',state:'playing'},5),true);
+  assert.equal(commandObserved('resume','',before,{...before,last_command:5},5),false);
+  assert.equal(commandObserved('resume','',before,{...preparing,last_command:4},5),false);
+  assert.equal(commandObserved('resume','',before,{...preparing,last_command:undefined},5),false);
+  assert.equal(commandObserved('resume','song',before,preparing,5),false);
+});
+
+test('a restart with timeline identity waits for a new playback epoch',()=>{
+  const before={online:true,current:'song',state:'playing',position_ms:30,playback_epoch:'old',last_command:4};
+  const acknowledged={...before,last_command:5};
+  assert.equal(commandObserved('play','song',before,{...acknowledged,state:'preparing'},5),false);
+  assert.equal(commandObserved('play','song',before,{...acknowledged,playback_epoch:'new',state:'preparing'},5),true);
+  assert.equal(commandObserved('play','song',before,{...acknowledged,playback_epoch:'new'},5),true);
+});
+
+test('skipping waits until the former song leaves current playback',()=>{
+  const before={online:true,current:'song',state:'playing',last_command:4,played:[]};
+  const receipt={...before,last_command:5,played:['song']};
+  assert.equal(commandObserved('next','song',before,receipt,5),false);
+  assert.equal(commandObserved('next','song',before,{...receipt,state:'paused'},5),false);
+  assert.equal(commandObserved('next','song',before,{...receipt,current:'',state:'idle'},5),true);
+  assert.equal(commandObserved('next','song',before,{...receipt,current:'next',state:'preparing'},5),true);
+  const warmup={...before,current:''};
+  assert.equal(commandObserved('next','',warmup,{...warmup,last_command:5,state:'preparing'},5),true);
+});
+
 
 test('failed wet startup is visible even when only dry capability remains',()=>{
  const playback={online:true,audio_capabilities:{vocal_presets:['dry'],sfx:true},vocal_preset:'dry',vocal_preset_state:'failed'};

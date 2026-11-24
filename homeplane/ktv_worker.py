@@ -131,12 +131,13 @@ def _public_join_endpoint(value, worker_endpoint):
     return f"https://{authority}{candidate.path}"
 
 
-def manifest_version(job):
+def manifest_version(job, *, include_video=True):
     if (job.get("state") != "ready" or not UUID.fullmatch(job.get("id", ""))
             or set(job.get("media", {})) != {"original", "instrumental"}):
         raise ValueError("ready_job_required")
+    video = job.get("video") if include_video else None
     bound = {"id": job["id"], "song_id": job["song_id"], "media": job["media"],
-             "video": job.get("video", {"status": "unavailable"})}
+             "video": video or {"status": "unavailable"}}
     return hashlib.sha256(json.dumps(bound, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -146,8 +147,8 @@ class MediaTickets:
             raise ValueError("strong_media_signer_required")
         self.secret = hmac.digest(secret.encode(), b"Friday-KTV-prepared-media-v1", "sha256")
 
-    def _signature(self, job, expires):
-        payload = (job["id"] + ":" + manifest_version(job) + ":" + str(expires)).encode()
+    def _signature(self, job, expires, *, include_video=True):
+        payload = (job["id"] + ":" + manifest_version(job, include_video=include_video) + ":" + str(expires)).encode()
         return base64.urlsafe_b64encode(hmac.digest(self.secret, payload, "sha256")).decode().rstrip("=")
 
     def issue(self, job, *, now=None, ttl=600):
@@ -156,7 +157,7 @@ class MediaTickets:
         expires = int(time.time() if now is None else now) + ttl
         return str(expires) + "." + self._signature(job, expires), expires
 
-    def permits(self, ticket, job, *, now=None):
+    def permits(self, ticket, job, *, now=None, kind=None):
         match = TICKET.fullmatch(ticket) if isinstance(ticket, str) else None
         if not match:
             return False
@@ -164,7 +165,11 @@ class MediaTickets:
         if not current < expires <= current + 900:
             return False
         try:
-            return hmac.compare_digest(match[2], self._signature(job, expires))
+            if hmac.compare_digest(match[2], self._signature(job, expires)):
+                return True
+            # MV 晚到不会撤销已签发的同版音轨读取，也不会扩大旧票据的读取范围。
+            return kind in {"original", "instrumental"} and hmac.compare_digest(
+                match[2], self._signature(job, expires, include_video=False))
         except (ValueError, KeyError, TypeError):
             return False
 
@@ -267,6 +272,7 @@ class PreparationWorker(NasBridge):
         self.qr_acked = ""
         self.next_qr_attempt = 0
         self.archive_pending = set(self.mapping.values())
+        self.archive_videos_supported = False
         self.metadata_root = private_directory(Path(config_path).absolute().parent / "worker-publications")
         self.published_metadata = {}
         self.backgrounds = None
@@ -311,11 +317,20 @@ class PreparationWorker(NasBridge):
                 pass
             self.published_metadata[audio_version] = copy.deepcopy(value)
 
+    def _audio_metadata(self, audio_version, media_version):
+        metadata = self._metadata(audio_version)
+        if audio_version == media_version or (has_lyrics(metadata.get("lyrics")) and metadata.get("guide")):
+            return metadata
+        # 兼容此前随 MV 版本一起保存的歌词和伴唱参考轨。
+        previous = self._metadata(media_version)
+        return {"lyrics": metadata["lyrics"] if has_lyrics(metadata.get("lyrics")) else previous.get("lyrics"),
+                "guide": metadata.get("guide") or previous.get("guide")}
+
     def _matches_lyric_target(self, target, edition):
         if isinstance(target, dict):
             with self.lock:
                 return self.archive_lyric_tasks.get(target["id"]) == target
-        return manifest_version(self.queue.get(target)) == edition
+        return manifest_version(self.queue.get(target), include_video=False) == edition
 
     def _candidate_lyrics(self, resolve, target, edition):
         if not self._matches_lyric_target(target, edition):
@@ -425,7 +440,7 @@ class PreparationWorker(NasBridge):
             super()._send_updates(progress, mapping, generation)
 
     def request(self, path, body=None):
-        if path in {"/agent/worker", "/agent/manifests", "/agent/lyrics", "/agent/qr", "/agent/archive-check",
+        if path in {"/agent/worker", "/agent/manifests", "/agent/lyrics", "/agent/qr", "/agent/archive-check", "/agent/archive-videos",
                     "/agent/backgrounds", "/agent/library-manifests", "/agent/library-status", "/agent/shared-copy"}:
             # The fixed extra endpoints carry no arbitrary path or proxy target.
             with self.http.stream("POST" if body is not None else "GET", self.endpoint + path,
@@ -509,6 +524,7 @@ class PreparationWorker(NasBridge):
             with self.lock:
                 self.online = True
                 self.nas_background_policy = type(value.get("backgrounds_enabled")) is bool
+                self.archive_videos_supported = value.get("archive_videos") is True
                 # The direct coordinator returns the household's current scene.
                 # Never create/close a room here or relay playback/control state.
                 direct = [r for r in rooms if isinstance(r, dict) and r.get("direct") is True
@@ -544,9 +560,9 @@ class PreparationWorker(NasBridge):
                         local = self.mapping[row["id"]]
                         ack = self.manifest_acked.get(row["id"])
                         if ack and ack[0] == row.get("version"):
-                            if row.get("state") == "ready":
+                            if row.get("state") == "ready" and not self.archive_videos_supported:
                                 self.archive_pending.discard(local)
-                            else:
+                            elif row.get("state") != "ready":
                                 self.archive_pending.add(local)
             self.work_wake.set()
             self._publish_room_qr(active)
@@ -580,11 +596,11 @@ class PreparationWorker(NasBridge):
     def _work_once(self):
         self._prime_pending_lyrics()
         super()._work_once()
-        self._check_archives()
         with self.lock:
             party, mapping, generation = copy.deepcopy(self.party), dict(self.mapping), self.room_generation
             report = copy.deepcopy(self.playback or {})
         if not party:
+            self._check_archives()
             self._schedule_background_sweep((), False)
             return
         current = report.get("current")
@@ -606,7 +622,8 @@ class PreparationWorker(NasBridge):
                     continue
                 if job["state"] != "ready":
                     continue
-                audio_version = manifest_version(job)
+                media_version = manifest_version(job)
+                audio_version = manifest_version(job, include_video=False)
                 background = None
                 if self.backgrounds is not None:
                     try:
@@ -617,12 +634,12 @@ class PreparationWorker(NasBridge):
                             background['url'] = f'/v1/jobs/{local}/media/background'
                     except (ValueError,OSError,RuntimeError,TypeError,KeyError):
                         pass
-                previous_metadata = self._metadata(audio_version)
+                previous_metadata = self._audio_metadata(audio_version, media_version)
                 guide = previous_metadata.get("guide")
                 if self.guide is not None and local in self.guide.protected:
                     guide = self.guide.get(local) or guide
                 lyrics_value = self._lyrics_for(local, job["song_id"], audio_version, previous_metadata.get("lyrics"))
-                version = hashlib.sha256(json.dumps({"audio": audio_version, "job": job, "lyrics": lyrics_value, "guide": guide, "background":background},
+                version = hashlib.sha256(json.dumps({"audio": media_version, "job": job, "lyrics": lyrics_value, "guide": guide, "background":background},
                     sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
                 ack = self.manifest_acked.get(remote)
                 if ack and ack[0] == version and time.monotonic() - ack[1] < 240:
@@ -653,6 +670,7 @@ class PreparationWorker(NasBridge):
                 # A transient publish/cache fault cannot mark a ready local job failed.
                 continue
         self._publish_archive_lyrics(generation)
+        self._check_archives()
         self._schedule_background_sweep(background_priority, self.nas_background_policy)
 
     def _schedule_background_sweep(self, active, use_nas):
@@ -665,9 +683,10 @@ class PreparationWorker(NasBridge):
     def publish_prepared(self, job):
         """使用日常歌曲发布所用的歌词、背景和签名媒体接口归档。"""
         local = job["id"]
-        audio_version = manifest_version(job)
+        media_version = manifest_version(job)
+        audio_version = manifest_version(job, include_video=False)
         with self.lock:
-            metadata = self._metadata(audio_version)
+            metadata = self._audio_metadata(audio_version, media_version)
             lyrics = self._lyrics_for(local, job["song_id"], audio_version, metadata.get("lyrics"))
             self._remember_metadata(audio_version, lyrics, metadata.get("guide"))
         if self.backgrounds is not None:
@@ -680,7 +699,7 @@ class PreparationWorker(NasBridge):
         duration_ms = round(job["media"]["original"]["duration_seconds"] * 1000)
         frames = round(job["media"]["original"]["duration_seconds"] * 48000)
         timeline = {"sample_rate": 48000, "frames": frames, "duration_ms": duration_ms}
-        version = hashlib.sha256(json.dumps([audio_version, job.get("background"), lyrics],
+        version = hashlib.sha256(json.dumps([media_version, job.get("background"), lyrics],
                                              sort_keys=True, allow_nan=False).encode()).hexdigest()
         ticket, expires = self.tickets.issue(job)
         return self.request("/agent/library-manifests", {"id": local, "instance": self.instance, "version": version,
@@ -759,30 +778,51 @@ class PreparationWorker(NasBridge):
         self.archive_checked = now
         with self.lock:
             pending = sorted(self.archive_pending)
+            target = {local: remote for remote, local in self.mapping.items()} if self.archive_videos_supported else {}
         if not pending:
             return
         start = self.archive_offset % len(pending)
         selected = (pending + pending)[start:start + min(16, len(pending))]
         self.archive_offset = start + len(selected)
-        items, versions = [], {}
+        items, versions, videos = {}, {}, {}
         for local in selected:
             try:
+                if local in target and local in getattr(self.queue, "video_pending", {}):
+                    continue
                 job = self.queue.get(local)
                 version = manifest_version(job)
                 specs = list(job["media"].values())
                 if job.get("video", {}).get("status") == "ready":
-                    specs.append(job["video"])
-                guide = self._metadata(version).get("guide")
+                    remote = target.get(local)
+                    if remote:
+                        ticket, expires = self.tickets.issue(job)
+                        videos[local] = {"id": remote, "video": job["video"],
+                                         "audio": {k: v["sha256"] for k, v in job["media"].items()},
+                                         "media_ticket": ticket, "media_expires": expires}
+                    else:
+                        specs.append(job["video"])
+                guide = self._audio_metadata(manifest_version(job, include_video=False), version).get("guide")
                 if guide:
                     specs.extend((guide, guide["reference"]))
-                items.append({"id": local, "files": [{"sha256": spec["sha256"], "bytes": spec["bytes"]} for spec in specs]})
+                items[local] = {"id": local, "files": [{"sha256": spec["sha256"], "bytes": spec["bytes"]} for spec in specs]}
                 versions[local] = version
             except Exception:
                 continue
-        if not items:
-            return
         try:
-            response = self.request("/agent/archive-check", {"items": items})
+            if videos:
+                try:
+                    response = self.request("/agent/archive-videos", {"instance": self.instance, "items": list(videos.values())})
+                    settled = {row["id"] for row in response.get("items", []) if row.get("state") in {"ready", "obsolete"}}
+                except (OSError, ValueError, TypeError, KeyError, AttributeError, httpx.HTTPError):
+                    settled = set()
+                # 已有同摘要文件只是内容证明，还要确认视频已挂到正确的歌曲版本。
+                for local, video in videos.items():
+                    if video["id"] not in settled:
+                        items.pop(local, None)
+                        versions.pop(local, None)
+            if not items:
+                return
+            response = self.request("/agent/archive-check", {"items": list(items.values())})
             rows = response.get("items")
             if not isinstance(rows, list) or len(rows) > len(items):
                 return
@@ -831,7 +871,7 @@ class PreparationWorker(NasBridge):
     def create_party(self):
         raise ValueError("nas_coordinates_room")
 
-    def close_party(self):
+    def close_party(self, expected_room=None):
         raise ValueError("nas_coordinates_room")
 
     def report_playback(self, value):

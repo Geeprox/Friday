@@ -27,7 +27,7 @@ SYNTHETIC_MEDIA = {
     'docs/screenshots/console-dark-device.png':
         '4065116d4829e4ff30986f6f4c99ecffc707bec51c3d4fc90f9c39a02da01195',
     'docs/screenshots/ktv-mobile-dark-sound.png':
-        'b9fe240fba0860576524e60ce919515b8bc311e77659ed3a4d1c8d4d17c0c173',
+        'dae71add526d7ef92b7136d816031c791311c27cf95eba1180e38fbbf7606734',
     # 固定合成镜头状态截图，输入来自 camera-perception.html，不连接设备。
     'docs/screenshots/camera-perception-status.png':
         '9a7df5a50fee28fcad2b18e745566e6a70ab560bb29bbd278c57d885bf02d3f8',
@@ -36,16 +36,16 @@ SYNTHETIC_MEDIA = {
     'docs/screenshots/ktv-storage-management.png':
         '2a2b9ee13b00d9df6398857b2750070fa90f7de90348ccc172c289390fd29256',
     'docs/screenshots/ktv-desktop-queue.png':
-        '67cc1625df9d62288bad28eca2d9bae33e341f233bff104cf3946693d9f1e2fd',
+        '161637bafe728ec7ed9fca9155b72fdfe475dcf701128ea91c76ec61894948e0',
     'docs/screenshots/ktv-mobile-search.png':
         'af54db78fcf411bae932151e41bb6ffd0798a0ff2e834abd16eaa620c561bbb6',
     # 手机首页、队列和声音面板，示例房间和内容均由测试夹具提供。
     'docs/screenshots/ktv-mobile-home.png':
         'ee92022ad285a21d5d39447053b2337febcb2b0cae9df7680cac60de37835561',
     'docs/screenshots/ktv-mobile-queue.png':
-        '8cb38cb1beec00a6ee224b4cfe160aea79d11efa545491372aa2f23bb974e742',
+        'b8427a69ffde57b69b4994fe0afee6ef3aa1db7dac980b14b0c065be7eb7b085',
     'docs/screenshots/ktv-mobile-sound.png':
-        '142d58d5ac3c10eb388a4ecffe8d3bd379ae0849a65def9496e047ad10fde42f',
+        '7118ebd6a8c891c2f7ce650286c46a53a8e105833bb3c20e3aa99b86e561fd8f',
     # 合成歌曲与用量设置的 KTV 用户手册截图。
     'docs/screenshots/ktv-background-settings.png':
         '3e18cbb48cc87b73a7697e331151ab39d6de56d5d61cd9b9c94cdf3abdc71a69',

@@ -215,10 +215,13 @@ class NoImageRedirect(urllib.request.HTTPRedirectHandler):
 
 class Store:
     def __init__(self, root, origin, base_path="/ktv", *, worker_origin=None, allow_loopback_worker=False,
-                 recovery_enabled=False, background_health=False, previous_guest_origin=None):
+                 recovery_enabled=False, background_health=False, previous_guest_origin=None, public_invite_origin=None):
         self.previous_guest_origin = guest_origin(previous_guest_origin)
         if previous_guest_origin is not None and self.previous_guest_origin is None:
             raise ValueError("invalid_previous_guest_origin")
+        invite_origin = guest_origin(public_invite_origin)
+        if public_invite_origin is not None and invite_origin is None:
+            raise ValueError("invalid_public_invite_origin")
         self.root = Path(root).absolute()
         if self.root.resolve() != self.root:
             raise ValueError("unsafe_root")
@@ -227,6 +230,7 @@ class Store:
         self.db = self.root / "state.sqlite"
         self.tv_updates = TvUpdateStore(self.root)
         self.origin, self.base_path = guest_origin(origin.rstrip("/")) or origin.rstrip("/"), base_path.rstrip("/")
+        self.public_invite_origin = invite_origin
         self._backup_before_guest_queue_upgrade()
         self.lock = threading.RLock()
         self.rate_lock = threading.Lock()
@@ -273,6 +277,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS song_requests(room TEXT NOT NULL, request_id TEXT NOT NULL,
               guest_id TEXT NOT NULL, song_id TEXT NOT NULL, title TEXT NOT NULL, source TEXT NOT NULL,
               queue_id TEXT NOT NULL, was_duplicate INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(room,request_id));
+            CREATE TABLE IF NOT EXISTS song_withdrawals(room TEXT NOT NULL, guest_id TEXT NOT NULL,
+              request_id TEXT NOT NULL, queue_id TEXT NOT NULL, queue_removed INTEGER NOT NULL,
+              PRIMARY KEY(room,guest_id,request_id));
             CREATE TABLE IF NOT EXISTS cloud_catalog(song_id TEXT PRIMARY KEY,title TEXT NOT NULL,artists TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cloud_recordings(song_id TEXT PRIMARY KEY,public_id TEXT NOT NULL,
               title TEXT NOT NULL,artists TEXT NOT NULL,album TEXT NOT NULL);
@@ -308,6 +315,7 @@ class Store:
                 ("songs", "guide_reference_kind", "TEXT NOT NULL DEFAULT ''"),
                 ("rooms", "queue_revision", "INTEGER NOT NULL DEFAULT 0"),
                 ("rooms", "music_gain", "INTEGER NOT NULL DEFAULT 70"),
+                ("rooms", "music_mute_revision", "INTEGER NOT NULL DEFAULT 0"),
                 ("rooms", "mic_gain", "INTEGER NOT NULL DEFAULT 50"),
                 ("rooms", "control_revision", "INTEGER NOT NULL DEFAULT 0"),
                 ("rooms", "mic_muted", "INTEGER NOT NULL DEFAULT 1"),
@@ -329,6 +337,7 @@ class Store:
                 ("rooms", "safety_latched", "INTEGER NOT NULL DEFAULT 0"),
                 ("rooms", "actual_mic_muted", "INTEGER NOT NULL DEFAULT 1"),
                 ("rooms", "applied_revision", "INTEGER NOT NULL DEFAULT 0"),
+                ("rooms", "backing_original", "INTEGER"),
                 ("rooms", "position_ms", "INTEGER NOT NULL DEFAULT 0"),
                 ("rooms", "position_at", "INTEGER NOT NULL DEFAULT 0"),
                 ("rooms", "lyrics_waiting", "TEXT NOT NULL DEFAULT ''"),
@@ -639,7 +648,8 @@ class Store:
             db.execute("DELETE FROM " + table + " WHERE song IN (" + expired_songs + ") OR song NOT IN (SELECT id FROM songs)",
                        (now - 86400,))
         db.execute("DELETE FROM coordinator_lyric_status WHERE song NOT IN (SELECT song FROM coordinator_manifests)")
-        for table in ("room_tokens", "coordinator_start_requests", "coordinator_session", "retries", "commands"):
+        for table in ("room_tokens", "coordinator_start_requests", "coordinator_session", "coordinator_playback_starts",
+                      "retries", "commands", "song_withdrawals"):
             db.execute("DELETE FROM " + table + " WHERE room IN (" + expired_rooms + ") OR room NOT IN (SELECT id FROM rooms)",
                        (now - 86400,))
         # Content-addressed media/cache verification records are independent
@@ -705,7 +715,7 @@ class Store:
         return room_id, key
 
     def join_url(self, room_id, key):
-        return self.origin + self.base_path + "/#" + urllib.parse.urlencode({"r": room_id, "k": key})
+        return (self.public_invite_origin or self.origin) + self.base_path + "/#" + urllib.parse.urlencode({"r": room_id, "k": key})
 
     @staticmethod
     def guest_record(db, room_id, key):
@@ -894,11 +904,12 @@ class Store:
                 "theme": theme["theme"],
                 "theme_revision": theme["theme_revision"],
                 "queue_revision": theme["queue_revision"],
+                "queue_withdraw_ready": self.coordinator.queue_claims_ready(db, room["id"]),
                 "upcoming": self.upcoming_ids(rows, theme),
-                "playable": self.upcoming_ids(rows, theme, playable_only=True),
+                "playable": self.coordinator.playable_ids(db, rows, theme),
                 "controls": {
                     k: theme[k]
-                    for k in ("music_gain", "mic_gain", "mic_muted", "original", "control_revision", "mic_revision", "vocal_preset", "sfx_gain")
+                    for k in ("music_gain", "music_mute_revision", "mic_gain", "mic_muted", "original", "control_revision", "mic_revision", "vocal_preset", "sfx_gain")
                 },
                 "playback": {
                     "online": time.time() - theme["playback_at"] < 12,
@@ -908,6 +919,7 @@ class Store:
                     "safety_latched": bool(theme["safety_latched"]),
                     "mic_muted": bool(theme["actual_mic_muted"]),
                     "applied_revision": theme["applied_revision"],
+                    "backing_original": theme["backing_original"],
                     "last_command": theme["last_command"],
                     "audio_capabilities": json.loads(theme["audio_capabilities"]),
                     "vocal_preset": theme["actual_vocal_preset"],
@@ -930,11 +942,15 @@ class Store:
                 and (not playable_only or row["state"] == "ready" and row["synced_lyrics"])]
 
     def song_controls(self, room, payload):
-        if not payload or set(payload) - {"music_gain", "sfx_gain", "original"}:
+        expected_mute = payload.get("music_mute_revision")
+        if (set(payload) - {"music_gain", "music_mute_revision", "sfx_gain", "original"}
+                or ("music_mute_revision" in payload and
+                    ("music_gain" not in payload or type(expected_mute) is not int or expected_mute < 0))):
             raise Refusal(400, "invalid_control")
-        return self.controls(room, payload)
+        values = {key: value for key, value in payload.items() if key != "music_mute_revision"}
+        return self.controls(room, values, expected_mute=expected_mute)
 
-    def controls(self, room, payload):
+    def controls(self, room, payload, *, expected_mute=None):
         limits = {"music_gain": 100, "mic_gain": 100, "mic_muted": 1, "original": 1, "sfx_gain": 100}
         if (
             not payload
@@ -950,6 +966,12 @@ class Store:
                 and self.coordinator.direct_room(room["id"]) and not self.coordinator.direct_live(room["id"])):
             raise Refusal(409, "tv_offline")
         with self.lock, self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            room_state = db.execute("SELECT music_mute_revision,closed FROM rooms WHERE id=?", (room["id"],)).fetchone()
+            if not room_state or room_state["closed"]:
+                raise Refusal(410, "room_closed")
+            if payload.get("music_gain", 0) > 0 and expected_mute is not None and expected_mute != room_state["music_mute_revision"]:
+                raise Refusal(409, "music_mute_changed")
             if "vocal_preset" in payload and payload["vocal_preset"] != "dry":
                 state = db.execute("SELECT audio_capabilities,playback_at FROM rooms WHERE id=?", (room["id"],)).fetchone()
                 if (time.time() - state["playback_at"] >= 12
@@ -960,14 +982,16 @@ class Store:
                 + ",".join(k + "=?" for k in payload)
                 + ",control_revision=control_revision+1"
                 + (",mic_revision=mic_revision+1" if "mic_muted" in payload else "")
+                + (",music_mute_revision=music_mute_revision+1" if payload.get("music_gain") == 0 else "")
                 + " WHERE id=? AND closed=0",
                 (*payload.values(), room["id"]),
             )
-            revision = db.execute("SELECT control_revision FROM rooms WHERE id=?", (room["id"],)).fetchone()[0]
+            revision, mute_revision = db.execute(
+                "SELECT control_revision,music_mute_revision FROM rooms WHERE id=?", (room["id"],)).fetchone()
             if "mic_muted" in payload:
                 db.execute("UPDATE rooms SET mic_request_at=?,mic_request_revision=? WHERE id=?",
                            (int(time.time()) if payload["mic_muted"] == 0 else 0, revision, room["id"]))
-        return {"accepted": True, "revision": revision}
+        return {"accepted": True, "revision": revision, "music_mute_revision": mute_revision}
 
     def tv_controls(self, room_id, payload):
         # The owner bridge has already authenticated; still require a live room.
@@ -1005,25 +1029,31 @@ class Store:
                     raise Refusal(409, "idempotency_conflict")
                 return {"seq": old["seq"]}
             state = db.execute(
-                "SELECT playback_at,current_song,audio_capabilities FROM rooms WHERE id=?", (room["id"],)
+                "SELECT playback_at,current_song,audio_capabilities,original,closed FROM rooms WHERE id=?", (room["id"],)
             ).fetchone()
+            if not state or state["closed"]:
+                raise Refusal(410, "room_closed")
             if time.time() - state["playback_at"] >= 12:
                 raise Refusal(409, "tv_offline")
             if payload["action"] in SFX_ACTIONS:
                 if payload["action"] != "sfx_stop" and not json.loads(state["audio_capabilities"]).get("sfx", False):
                     raise Refusal(409, "sfx_unavailable")
             elif payload["action"] == "play":
+                target = payload["song"]
                 item = db.execute(
-                    "SELECT state,song_id FROM songs WHERE id=? AND room=? AND removed=0", (payload["song"], room["id"])
+                    "SELECT state,song_id FROM songs WHERE id=? AND room=? AND removed=0", (target, room["id"])
                 ).fetchone()
                 if not item or item["state"] != "ready":
                     raise Refusal(409, "song_not_ready")
-                if payload["song"] != state["current_song"] and db.execute(
+                if target != state["current_song"] and db.execute(
                     "SELECT 1 FROM coordinator_session WHERE room=?", (room["id"],)
-                ).fetchone() and not db.execute(
-                    "SELECT 1 FROM coordinator_lyric_status WHERE song=? AND ready=1", (payload["song"],)
                 ).fetchone():
-                    raise Refusal(409, "lyrics_not_ready")
+                    if not db.execute(
+                        "SELECT 1 FROM coordinator_lyric_status WHERE song=? AND ready=1", (target,)
+                    ).fetchone():
+                        raise Refusal(409, "lyrics_not_ready")
+                    if target not in self.coordinator.available_track_ids(db, (target,), state["original"]):
+                        raise Refusal(409, "media_not_ready")
                 if item["song_id"] in self.management.deleting:
                     raise Refusal(409, "cache_in_use")
             elif payload["song"] != state["current_song"]:
@@ -1066,7 +1096,8 @@ class Store:
             "mic_muted",
         }
         if (
-            not required <= set(payload) or set(payload) - required - {"position_ms", "lyrics_waiting", "playback_epoch"} - AUDIO_PLAYBACK_FIELDS
+            not required <= set(payload) or set(payload) - required - {"position_ms", "lyrics_waiting", "playback_epoch", "backing_original"} - AUDIO_PLAYBACK_FIELDS
+            or ("backing_original" in payload and (type(payload["backing_original"]) is not int or payload["backing_original"] not in (-1, 0, 1)))
             or ("playback_epoch" in payload and (not isinstance(payload["playback_epoch"], str) or not UUID.fullmatch(payload["playback_epoch"])))
             or not isinstance(payload.get("lyrics_waiting", ""), str)
             or (payload.get("lyrics_waiting") and not UUID.fullmatch(payload["lyrics_waiting"]))
@@ -1094,23 +1125,29 @@ class Store:
                                      (room_id, audio["sfx_seq"])).fetchone()
                 if not command or command["action"] != audio["sfx_action"]:
                     raise Refusal(400, "invalid_sfx_ack")
-            ids = {r[0] for r in db.execute("SELECT id FROM songs WHERE room=?", (room_id,))}
-            if ((payload["current"] and payload["current"] not in ids) or set(payload["played"]) - ids
+            ids = {r["id"]: r["removed"] for r in db.execute("SELECT id,removed FROM songs WHERE room=?", (room_id,))}
+            if ((payload["current"] and payload["current"] not in ids) or set(payload["played"]) - ids.keys()
                     or (payload.get("lyrics_waiting") and payload["lyrics_waiting"] not in ids)):
                 raise Refusal(400, "invalid_playback")
+            if payload["current"] and ids[payload["current"]]:
+                raise Refusal(409, "song_unavailable")
+            previous = db.execute("SELECT played FROM rooms WHERE id=?", (room_id,)).fetchone()
+            existing_history = set(json.loads(previous["played"])) if previous else set()
+            played = [song for song in payload["played"] if not ids[song] or song in existing_history]
             db.execute("UPDATE rooms SET lyrics_waiting=? WHERE id=? AND closed=0", (payload.get("lyrics_waiting", ""), room_id))
             db.execute(
                 "UPDATE rooms SET playback_at=?,current_song=?,played=?,playback_state=?,last_command=max(last_command,?),"
-                "safety_latched=?,applied_revision=?,actual_mic_muted=? WHERE id=? AND closed=0",
+                "safety_latched=?,applied_revision=?,actual_mic_muted=?,backing_original=? WHERE id=? AND closed=0",
                 (
                     int(time.time()),
                     payload["current"],
-                    json.dumps(payload["played"]),
+                    json.dumps(played),
                     payload["state"],
                     payload["last_command"],
                     payload["safety_latched"],
                     payload["applied_revision"],
                     payload["mic_muted"],
+                    payload.get("backing_original"),
                     room_id,
                 ),
             )
@@ -1245,6 +1282,13 @@ class Store:
             active = db.execute("SELECT closed,expires FROM rooms WHERE id=?", (room["id"],)).fetchone()
             if not active or active["closed"]:
                 raise Refusal(410, "room_closed")
+            if guest is not None:
+                withdrawn = db.execute(
+                    "SELECT queue_id FROM song_withdrawals WHERE room=? AND guest_id=? AND request_id=?",
+                    (room["id"], guest["id"], request_id),
+                ).fetchone()
+                if withdrawn:
+                    return {"id": withdrawn["queue_id"], "state": "cancelled"}
             receipt = db.execute(
                 "SELECT request.*,song.state FROM song_requests AS request LEFT JOIN songs AS song "
                 "ON song.id=request.queue_id AND song.room=request.room WHERE request.room=? AND request.request_id=?",
@@ -1288,7 +1332,8 @@ class Store:
                     (room["id"], request_id, guest["id"] if guest else "", song_id, title, source, existing["id"]))
                 return {"id": existing["id"], "state": existing["state"], "duplicate": True}
             archived = self.management.verified_edition(song_id, source, db)
-            if archived is None and not self.online(db):
+            direct = self.coordinator.active(db)
+            if archived is None and not (direct and direct["room"] == room["id"]) and not self.online(db):
                 raise Refusal(503, "mac_offline")
             if db.execute("SELECT count(*) FROM songs WHERE room=? AND removed=0", (room["id"],)).fetchone()[0] >= 80:
                 raise Refusal(429, "queue_full")
@@ -1337,6 +1382,70 @@ class Store:
                 db.execute("UPDATE songs SET state='ready',cache_hit=1 WHERE id=?", (row_id,))
                 return {"id": row_id, "state": "ready", "cache_hit": True}
             return {"id": row_id, "state": "queued"}
+
+    def withdraw_song(self, room, payload, guest):
+        keys = set(payload)
+        if keys not in ({"withdraw_id"}, {"withdraw_request_id"}):
+            raise Refusal(400, "invalid_request")
+        field, value = next(iter(payload.items()))
+        if not isinstance(value, str) or not UUID.fullmatch(value):
+            raise Refusal(400, "invalid_request")
+        room_id, guest_id = room["id"], guest["id"]
+        with self.lock, self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            active = db.execute(
+                "SELECT current_song,played,last_command,queue_revision FROM rooms WHERE id=? AND closed=0", (room_id,)
+            ).fetchone()
+            if not active:
+                raise Refusal(410, "room_closed")
+            if field == "withdraw_id":
+                revision = self._withdraw_queue_song(db, room_id, guest_id, value, active)
+                return {"withdrawn": True, "id": value, "queue_removed": True, "queue_revision": revision}
+            stored = db.execute(
+                "SELECT queue_id,queue_removed FROM song_withdrawals WHERE room=? AND guest_id=? AND request_id=?",
+                (room_id, guest_id, value),
+            ).fetchone()
+            if stored:
+                return {"withdrawn": True, "id": stored["queue_id"], "queue_removed": bool(stored["queue_removed"]),
+                        **({"queue_revision": active["queue_revision"]} if stored["queue_removed"] else {})}
+            request = db.execute(
+                "SELECT guest_id,queue_id,was_duplicate FROM song_requests WHERE room=? AND request_id=?",
+                (room_id, value),
+            ).fetchone()
+            if request and request["guest_id"] != guest_id:
+                raise Refusal(403, "song_not_owned")
+            self.budget("add-receipt:" + room_id, 120)
+            queue_id = request["queue_id"] if request else str(uuid.uuid4())
+            removed = bool(request and not request["was_duplicate"])
+            revision = self._withdraw_queue_song(db, room_id, guest_id, queue_id, active) if removed else None
+            # 请求可能仍在路上，先落同访客凭据，后到的点歌不会重新进入歌单。
+            db.execute("INSERT INTO song_withdrawals VALUES(?,?,?,?,?)", (room_id, guest_id, value, queue_id, int(removed)))
+            return {"withdrawn": True, "id": queue_id, "queue_removed": removed,
+                    **({"queue_revision": revision} if removed else {})}
+
+    def _withdraw_queue_song(self, db, room_id, guest_id, song_id, active):
+        item = db.execute(
+            "SELECT guest_id,removed,state FROM songs WHERE id=? AND room=?", (song_id, room_id)
+        ).fetchone()
+        if not item:
+            raise Refusal(404, "song_unavailable")
+        if item["guest_id"] != guest_id:
+            raise Refusal(403, "song_not_owned")
+        if item["removed"]:
+            return active["queue_revision"]
+        now = int(time.time())
+        starting = db.execute(
+            "SELECT 1 FROM commands WHERE room=? AND song=? AND action='play' AND seq>? AND created>? AND created<=?",
+            (room_id, song_id, active["last_command"], now - 20, now),
+        ).fetchone()
+        if (song_id == active["current_song"] or song_id in json.loads(active["played"]) or starting
+                or self.coordinator.playback_claimed(db, room_id, song_id)):
+            raise Refusal(409, "song_already_started")
+        if item["state"] == "ready" and not self.coordinator.queue_claims_ready(db, room_id):
+            raise Refusal(409, "song_start_unavailable")
+        db.execute("UPDATE songs SET removed=1,state='cancelled',code='cancelled',lease=0 WHERE id=?", (song_id,))
+        db.execute("UPDATE rooms SET queue_revision=queue_revision+1 WHERE id=?", (room_id,))
+        return active["queue_revision"] + 1
 
     def poll(self):
         with self.lock, self.connection() as db:
@@ -1411,7 +1520,7 @@ class Store:
             lyrics = self.coordinator.lyric_tasks(direct["room"], db) if direct else []
             return {"tasks": tasks, "cancelled": [r[0] for r in cancelled], "rooms": rooms, "archives": archives,
                     "lyric_tasks": lyrics, "backgrounds_enabled": self.coordinator.backgrounds_enabled,
-                    "playback_encoding": self.coordinator.playback_encoding(direct)}
+                    "archive_videos": True, "playback_encoding": self.coordinator.playback_encoding(direct)}
 
     def retry(self, room, payload):
         if set(payload) != {"id", "request_id"} or any(
@@ -1434,7 +1543,8 @@ class Store:
                 raise Refusal(409, "retry_unavailable")
             if value["song_id"] in self.management.deleting:
                 raise Refusal(409, "cache_in_use")
-            if not self.online(db):
+            direct = self.coordinator.active(db)
+            if not (direct and direct["room"] == room["id"]) and not self.online(db):
                 raise Refusal(503, "mac_offline")
             if value["attempt"] >= 3:
                 raise Refusal(429, "retry_limit")
@@ -2036,8 +2146,8 @@ class Store:
 
 
 def make_handler(store, agent_key, assets, *, guest_only=False):
-    scripts = {"app.js": "40", "add-queue.js": "24", "party-audio.js": "26",
-               "guide.js": "24", "status-feed.js": "25", "style.css": "31"}
+    scripts = {"app.js": "48", "add-queue.js": "25", "party-audio.js": "27",
+               "guide.js": "24", "status-feed.js": "25", "style.css": "33"}
     images = {"avatars.png", "content.png", "festival.png", "live.png"}
 
     @lru_cache(maxsize=24)
@@ -2110,9 +2220,11 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
             headers = {"Vary": "Accept-Encoding"}
             if zipped:
                 headers["Content-Encoding"] = "gzip"
-            if name in scripts and query == "v=" + scripts[name]:
+            versioned = name in scripts and query == "v=" + scripts[name]
+            if versioned:
                 headers["Cache-Control"] = "public, max-age=31536000, immutable"
-            return self.reply(200, static_bytes(name, zipped, bundle=name == "app.js" and query == "v=40"),
+            bundle = name == "app.js" and (versioned or query in {"v=40", "v=41", "v=42", "v=43", "v=44", "v=45", "v=46", "v=47"})
+            return self.reply(200, static_bytes(name, zipped, bundle=bundle),
                               content_type + "; charset=utf-8", extra_headers=headers)
 
         def join_guest(self, room, *, current=None):
@@ -2236,7 +2348,8 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
             origin = self.headers.get("Origin")
             room_route = ROOM_ROUTE.fullmatch(path)
             current_room = path == "/api/rooms/current" or (path == "/" and parsed.query == "room=current")
-            if origin and origin != store.origin and (not (room_route or current_room) or origin != store.previous_guest_origin):
+            if (origin and origin != store.origin and
+                    (not (room_route or current_room) or origin not in (store.previous_guest_origin, store.public_invite_origin))):
                 raise Refusal(403, "origin_refused")
             if current_room and self.command in {"GET", "POST"}:
                 active = store.coordinator.active()
@@ -2274,6 +2387,8 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                     return self.reply(200, coordinator.qr_file().read_bytes(), "image/png")
                 if path == "/v1/tv/readiness" and self.command == "POST":
                     return self.reply(200, coordinator.tv_readiness(self.body()))
+                if path == "/v1/tv/playback-start" and self.command == "POST":
+                    return self.reply(200, coordinator.playback_start(self.body(), instance))
                 if path in {"/v1/tv/playback", "/v1/tv/controls"} and self.command == "POST":
                     method = coordinator.playback if path.endswith("playback") else coordinator.tv_controls
                     return self.reply(200, method(self.body(), instance))
@@ -2328,6 +2443,8 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                 if path == "/agent/archive-check" and self.command == "POST":
                     store.budget("archive-check", 120)
                     return self.reply(200, store.coordinator.archive_check(self.body()))
+                if path == "/agent/archive-videos" and self.command == "POST" and not origin:
+                    return self.reply(200, store.coordinator.archive_videos(self.body()))
                 if path == "/agent/coordinator" and self.command == "GET":
                     return self.reply(200, store.coordinator.status())
                 if path == "/agent/qr" and self.command == "POST":
@@ -2346,16 +2463,17 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                 match = re.fullmatch(r"/agent/rooms/([a-f0-9-]{36})/(close|playback|controls)", path)
                 if match and self.command == "POST":
                     payload = self.body()
-                    if store.coordinator.direct_room(match.group(1)):
-                        raise Refusal(409, "direct_tv_owned")
-                    if match.group(2) == "controls":
-                        return self.reply(200, store.tv_controls(match.group(1), payload))
-                    return self.reply(
-                        200,
-                        store.close(match.group(1))
-                        if match.group(2) == "close"
-                        else store.playback(match.group(1), payload),
-                    )
+                    room_id, operation = match.groups()
+                    with store.lock:
+                        if store.coordinator.direct_room(room_id):
+                            raise Refusal(409, "direct_tv_owned")
+                        if operation == "controls":
+                            receipt = store.tv_controls(room_id, payload)
+                        elif operation == "close":
+                            receipt = store.close(room_id)
+                        else:
+                            receipt = store.playback(room_id, payload)
+                    return self.reply(200, receipt)
                 raise Refusal(404, "not_found")
             match = room_route
             if not match:
@@ -2384,9 +2502,13 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                     return self.reply(200, store.theme(room, self.body()))
                 if operation in {"controls", "command", "order", "retry"} and self.command == "POST":
                     payload = self.body()
-                    # A burst of cheers must not consume the stop action's budget.
-                    bucket = "sfx-stop" if operation == "command" and payload.get("action") == "sfx_stop" else operation
-                    store.budget(bucket + ":" + room["id"], 60 if bucket in {"controls", "sfx-stop"} else 30)
+                    # 静音和停止氛围音各自保留发送额度。
+                    bucket = operation
+                    if operation == "command" and payload.get("action") == "sfx_stop":
+                        bucket = "sfx-stop"
+                    elif operation == "controls" and set(payload) == {"music_gain"} and type(payload["music_gain"]) is int and payload["music_gain"] == 0:
+                        bucket = "music-mute"
+                    store.budget(bucket + ":" + room["id"], 60 if bucket in {"controls", "sfx-stop", "music-mute"} else 30)
                     return self.reply(
                         200,
                         getattr(
@@ -2451,7 +2573,10 @@ def make_handler(store, agent_key, assets, *, guest_only=False):
                 page = store.search(params.get("q", [""])[0], source, int(raw_offset))
                 return self.reply(200, store.management.with_cached_accompaniment(page))
             if operation == "songs" and self.command == "POST":
-                return self.reply(202, store.add(room, self.body(), guest))
+                payload = self.body()
+                if "withdraw_id" in payload or "withdraw_request_id" in payload:
+                    return self.reply(200, store.withdraw_song(room, payload, guest))
+                return self.reply(202, store.add(room, payload, guest))
             raise Refusal(405, "method_refused")
 
         def handle_method(self):
@@ -2591,7 +2716,7 @@ def main():
         raise ValueError("invalid_config")
     store = Store(args.config.parent / "state", origin, config.get("base_path", "/ktv"), worker_origin=config.get("worker_origin"),
                   recovery_enabled=config.get("recover_worker", True) is True, background_health=True,
-                  previous_guest_origin=config.get("previous_guest_origin"))
+                  previous_guest_origin=config.get("previous_guest_origin"), public_invite_origin=config.get("public_invite_origin"))
     assets = Path(__file__).parent / "web"
     servers = create_listeners(config, store, config["agent_key"], assets)
     try:

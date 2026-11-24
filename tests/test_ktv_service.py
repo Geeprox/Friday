@@ -90,6 +90,23 @@ def test_complete_request_and_authenticated_media_contract(service):
     assert client.get("/v1/catalog?q=Synthetic", headers=HEADERS).json()["songs"][0]["song_id"] == "123"
 
 
+def test_first_state_write_failure_does_not_leave_an_unowned_queued_job(service, monkeypatch):
+    _, queue, _, calls = service
+    value = JobRequest(**request())
+
+    def unavailable(job):
+        raise OSError("synthetic_disk_not_ready")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(queue, "_save", unavailable)
+        with pytest.raises(OSError, match="synthetic_disk_not_ready"):
+            queue.submit(value)
+    assert not queue.jobs and not queue.events and not queue.futures and not list(queue.jobs_dir.iterdir())
+    admitted = queue.submit(value)
+    assert queue.futures[admitted["id"]].result(timeout=3)["state"] == "ready"
+    assert calls == ["123"]
+
+
 def test_direct_monitor_diagnostics_are_bounded_counters_only(service):
     client = service[0]
     payload = {"direct_monitor_result": 1, "direct_monitor_elapsed_ms": 15000,

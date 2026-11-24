@@ -46,6 +46,15 @@ def main() -> None:
         run([str(jdk / "java"), "-cp", str(output),
                         "local.friday.ktv.VocalEffectsTest"], check=True)
         run([str(jdk / "java"), "-cp", str(output), "local.friday.ktv.VoiceProtectionSessionTest"], check=True)
+        sfx_classes = output / "sfx"
+        sfx_classes.mkdir()
+        sfx_sources = sorted((test_root / "sfx_fakes").rglob("*.java"))
+        sfx_sources.extend((source_root / "local/friday/ktv/SoundEffectPlayer.java",
+                            test_root / "SoundEffectPlayerTest.java"))
+        run([str(jdk / "javac"), "--release", "8", "-d", str(sfx_classes),
+             *map(str, sfx_sources)], check=True)
+        run([str(jdk / "java"), "-cp", str(sfx_classes),
+             "local.friday.ktv.SoundEffectPlayerTest"], check=True)
         # Exercise the real wet lease/cache lifecycle against pure resources.
         wet_tests = [test_root / (name + ".java") for name in ("WetPolicyTest", "WetCacheHookTest")]
         wet_sources = [source_root / "local/friday/audio" / (name + ".java")
@@ -72,6 +81,13 @@ def main() -> None:
         for test in tests:
             run([str(jdk / "java"), "-cp", str(production) + ":" + str(jar),
                             "local.friday.ktv." + test.stem, str(output)], check=True)
+        http_tests = [test_root / (name + ".java") for name in ("KtvServerClockHttpTest", "KtvPlaybackStartHttpTest")]
+        http_classpath = os.pathsep.join(map(str, (production, output, jar)))
+        run([str(jdk / "javac"), "--release", "8", "-cp", http_classpath,
+             "-d", str(production), *map(str, http_tests)], check=True)
+        for test in http_tests:
+            run([str(jdk / "java"), "-cp", http_classpath,
+                 "local.friday.ktv." + test.stem, str(output)], check=True)
 
         guard = root / "native/KTVTV/audio-guard"
         guard_tests = sorted((guard / "tests").glob("*Test.java"))

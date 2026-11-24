@@ -1,5 +1,8 @@
 package local.friday.ktv;
 
+import java.util.Locale;
+import java.util.Random;
+
 /** Exercises the production display policy; no Activity or device is started. */
 public final class LyricWindowTest {
     private static void yes(boolean value,String message){if(!value)throw new AssertionError(message);}
@@ -8,7 +11,48 @@ public final class LyricWindowTest {
         yes(scroll>=0&&scroll<=previousTop,"previous lyric remains entirely visible");
         yes(scroll+height>=nextBottom,"current and next lyric remain entirely visible");
     }
+    private static void largeTimelineKeepsTheCueContract(){
+        final int length=1000,lookups=20000;
+        long[] starts=new long[length];
+        long[] entries=new long[length/5];
+        // 重复时间戳、等距的前后歌词、跳转和靠近曲末的随机取样。
+        for(int i=0;i<length;i++)starts[i]=(i%11==10?i-1:i)*1350L;
+        for(int i=0;i<entries.length;i++)entries[i]=starts[i*5]+(i%2==0?675:1351);
+        Random random=new Random(504094L);
+        long[] positions=new long[lookups];
+        for(int i=0;i<lookups;i++)positions[i]=random.nextInt(1400000)-3000;
+        LyricCue actual=new LyricCue();
+        for(long position:positions){
+            actual.update(position,starts,entries);
+            int current=-1,following=-1,entrance=-1,countdown=0;
+            for(int i=0;i<length;i++){
+                if(starts[i]>position){following=i;break;}
+                current=i;
+            }
+            for(long entry:entries){
+                long until=entry-position;
+                if(until<=0)continue;
+                if(until<=5000){
+                    long nearest=1501;
+                    for(int i=0;i<length;i++){
+                        long distance=Math.abs(starts[i]-entry);
+                        if(distance<nearest){nearest=distance;entrance=i;}
+                    }
+                    if(entrance>=0)countdown=(int)((until+999)/1000);
+                }
+                break;
+            }
+            yes(actual.current==current&&actual.next==following&&actual.entrance==entrance&&actual.countdown==countdown,
+                "binary search preserves the original visible cue, including duplicate timestamps");
+        }
+        int checksum=0;
+        long start=System.nanoTime();
+        for(long position:positions){actual.update(position,starts,entries);checksum+=actual.current;}
+        System.out.printf(Locale.ROOT,"LyricWindowTest: %d lookups over %d lines in %.2f ms (checksum %d; JVM only)%n",
+            lookups,length,(System.nanoTime()-start)/1_000_000d,checksum);
+    }
     public static void main(String[] args){
+        largeTimelineKeepsTheCueContract();
         LyricCue cue=new LyricCue();long[] starts={1000,2500,5000};
         cue.update(0,starts);yes(MainActivity.LyricWindow.previous(cue.current,3)==-1&&cue.next==0,"intro has no fabricated previous line");
         cue.update(1000,starts);yes(MainActivity.LyricWindow.previous(cue.current,3)==-1&&cue.next==1,"first lyric keeps next");

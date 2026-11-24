@@ -1,5 +1,6 @@
 package local.friday.ktv;
 
+import android.os.SystemClock;
 import org.json.JSONObject;
 import org.json.JSONArray;
 import java.io.*;
@@ -14,26 +15,42 @@ public final class KtvClient {
     public final String origin;
     private final KtvEndpoint endpoint;
     private final String key;
+    private final KtvServerClock serverClock;
     private volatile boolean coordinator,negotiated;
     private volatile boolean compactNegotiated;
     private String instance="";
     private final File cache;
     public final MediaCache mediaCache;
     private static final long LIMIT=345600044L;
+    private static final String PLAYBACK_START="/v1/tv/playback-start";
+    static final String PLAYBACK_REPORT="/v1/tv/playback";
     static final class HttpFailure extends IOException {
         final int status;
-        HttpFailure(int status){super(status==401?"unauthorized":"request_failed");this.status=status;}
+        HttpFailure(int status){this(status,status==401?"unauthorized":"request_failed");}
+        HttpFailure(int status,String code){super(code);this.status=status;}
+        boolean televisionChanged(){return status==409&&"tv_instance_changed".equals(getMessage());}
     }
     public KtvClient(String origin, String key, File cache) throws Exception {
+        this(origin,key,cache,new KtvServerClock(SystemClock::elapsedRealtime,System::currentTimeMillis));
+    }
+    KtvClient(String origin,String key,File cache,KtvServerClock serverClock)throws Exception {
         endpoint=KtvEndpoint.parse(origin);
         if(key==null||!key.matches("[A-Za-z0-9_-]{32,128}"))throw new IOException("invalid_connection");
-        this.origin=endpoint.base;this.key=key;this.cache=cache;
+        this.origin=endpoint.base;this.key=key;this.cache=cache;this.serverClock=serverClock;
         if (!cache.exists() && !cache.mkdirs()) throw new IOException("cache_unavailable");
         mediaCache=new MediaCache(cache);
+    }
+    long serverSeconds(){return serverClock.epochSeconds();}
+    boolean playbackCommandFresh(long created){
+        long age=serverSeconds()-created;
+        return age>=0&&age<20;
     }
     public boolean coordinator(){return coordinator;}
     public boolean negotiated(){return negotiated;}
     public void instance(String value)throws IOException{if(value==null||!value.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"))throw new IOException("invalid_instance");instance=value;}
+    boolean sameTelevisionEndpoint(KtvClient other){
+        return other!=null&&!instance.isEmpty()&&instance.equals(other.instance)&&origin.equals(other.origin);
+    }
     public void observeStatus(JSONObject value){
         coordinator=value.optBoolean("coordinator");negotiated=true;
         JSONArray formats=value.optJSONArray("audio_formats");
@@ -67,6 +84,46 @@ public final class KtvClient {
     }
     public JSONObject controlJson(String path,JSONObject body)throws Exception{
         return json(path,body,true);
+    }
+    int claimPlaybackStart(String room,String song,String request)throws Exception{
+        JSONObject receipt=controlJson(PLAYBACK_START,playbackStartBody(room,song,request));
+        Object lease=receipt.opt("lease_ms");
+        long millis=lease instanceof Integer||lease instanceof Long?((Number)lease).longValue():0;
+        if(!Boolean.TRUE.equals(receipt.opt("accepted"))||millis<=0||millis>PlaybackStartClaim.MAX_LEASE_MS)
+            throw new IOException("invalid_playback_start_receipt");
+        return (int)millis;
+    }
+    void releasePlaybackStart(String room,String song,String request)throws Exception{
+        JSONObject receipt=controlJson(PLAYBACK_START,playbackStartBody(room,song,request).put("release",true));
+        if(!Boolean.TRUE.equals(receipt.opt("accepted")))throw new IOException("invalid_playback_release_receipt");
+    }
+    private static JSONObject playbackStartBody(String room,String song,String request)throws Exception{
+        return new JSONObject().put("room_id",room).put("song",song).put("request_id",request);
+    }
+    boolean closeParty(String room)throws Exception{
+        return reconcileRoomClose(room,this::activeRoomId,()->{
+            JSONObject receipt=controlJson("/v1/party/close",new JSONObject().put("room_id",room));
+            return Boolean.TRUE.equals(receipt.opt("closed"));
+        });
+    }
+    private String activeRoomId()throws Exception{
+        JSONObject party=controlJson("/v1/party",null);
+        if(Boolean.FALSE.equals(party.opt("active"))){
+            if(!coordinator&&!Boolean.TRUE.equals(party.opt("nas_online")))throw new IOException("party_state_unavailable");
+            return "";
+        }
+        String room=party.optString("room_id");
+        if(!Boolean.TRUE.equals(party.opt("active"))||!room.matches("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"))
+            throw new IOException("invalid_party_state");
+        return room;
+    }
+    static boolean reconcileRoomClose(String room,java.util.concurrent.Callable<String> read,java.util.concurrent.Callable<Boolean> write)throws Exception{
+        if(room.isEmpty())return false;
+        if(!room.equals(read.call()))return true;
+        try{if(Boolean.TRUE.equals(write.call()))return true;}
+        catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw interrupted;}
+        catch(Exception unconfirmed){/* 回执不明时，只查询原房间是否仍然有效。 */}
+        return !room.equals(read.call());
     }
     TvUpdateSpec televisionUpdate() throws Exception {
         if (!negotiated || !coordinator) return null;
@@ -118,6 +175,8 @@ public final class KtvClient {
     private JSONObject json(String path, JSONObject body,boolean immediate) throws Exception {
         HttpURLConnection c=connection(path,body==null?"GET":"POST");
         if(immediate){c.setConnectTimeout(2000);c.setReadTimeout(2500);}
+        boolean timeSource=path.equals("/v1/status")||path.equals("/v1/party")||path.equals("/v1/jobs");
+        long requestedAt=timeSource?serverClock.elapsedMillis():0;
         try {
             if (body!=null) {
                 byte[] bytes=body.toString().getBytes("UTF-8");
@@ -128,13 +187,38 @@ public final class KtvClient {
                 try(OutputStream out=c.getOutputStream()){out.write(bytes);}
             }
             int status=c.getResponseCode();
-            if (status<200 || status>=300) throw new HttpFailure(status);
+            if (status<200 || status>=300){
+                if(status==409&&(path.equals(PLAYBACK_START)||path.equals(PLAYBACK_REPORT)))throw playbackConflict(c);
+                throw new HttpFailure(status);
+            }
+            long receivedAt=timeSource?serverClock.elapsedMillis():0;
             try(InputStream in=c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream()) {
                 byte[] b=new byte[8192];int count;
                 while((count=in.read(b))!=-1) {if(out.size()+count>1048576)throw new IOException("response_too_large");out.write(b,0,count);}
-                return new JSONObject(out.toString("UTF-8"));
+                JSONObject value=new JSONObject(out.toString("UTF-8"));
+                if(timeSource)serverClock.observe(c.getDate(),requestedAt,receivedAt);
+                return value;
             }
         } finally {c.disconnect();}
+    }
+    private static HttpFailure playbackConflict(HttpURLConnection request){
+        try(InputStream in=request.getErrorStream();ByteArrayOutputStream out=new ByteArrayOutputStream()){
+            if(in!=null){
+                byte[] buffer=new byte[256];
+                int count;
+                while((count=in.read(buffer))!=-1){
+                    if(out.size()+count>1024)return new HttpFailure(409);
+                    out.write(buffer,0,count);
+                }
+                String code=new JSONObject(out.toString("UTF-8")).optString("code");
+                switch(code){
+                    case "song_unavailable":case "room_changed":case "tv_instance_changed":
+                    case "playback_start_expired":case "playback_start_released":
+                        return new HttpFailure(409,code);
+                }
+            }
+        }catch(Exception ignored){}
+        return new HttpFailure(409);
     }
     public byte[] image(String path) throws Exception {
         HttpURLConnection c=connection(path,"GET");
@@ -148,9 +232,25 @@ public final class KtvClient {
             }
         } finally {c.disconnect();}
     }
-    private final Object wavTransfers=new Object(),videoTransfers=new Object(),backgroundTransfers=new Object();
+    private final Set<String> audioTransfers=new HashSet<>();
+    private final Object videoTransfers=new Object(),backgroundTransfers=new Object();
     public File download(JSONObject media, AtomicBoolean cancel) throws Exception {
-        synchronized(wavTransfers){return downloadMedia(media,cancel,false);}
+        String sha=media.getString("sha256");
+        // 同一摘要的下载和解码共同占用一个写入位置，其他音轨可同时校验。
+        synchronized(audioTransfers){
+            for(;;){
+                if(cancel.get()||Thread.currentThread().isInterrupted())throw new IOException("cancelled");
+                if(audioTransfers.add(sha))break;
+                audioTransfers.wait(50);
+            }
+        }
+        try{return downloadMedia(media,cancel,false);}
+        finally{
+            synchronized(audioTransfers){
+                audioTransfers.remove(sha);
+                audioTransfers.notifyAll();
+            }
+        }
     }
     public File downloadVideo(JSONObject media, AtomicBoolean cancel) throws Exception {
         synchronized(videoTransfers){return downloadMedia(media,cancel,true);}
@@ -170,7 +270,7 @@ public final class KtvClient {
         return MediaTransfer.download(target,size,hash,routes(media,path,"background"),route->openMedia(route,size),verify,cancel,mediaCache);
     }
     public boolean manifestValid(JSONObject job){
-        if(!coordinator||!job.optString("state").equals("ready"))return true;
+        if(!coordinator||(!job.has("media")&&!job.optString("state").equals("ready")))return true;
         try{
             if(job.optBoolean("simulated")||!job.getString("version").matches("[a-f0-9]{64}"))return false;
             JSONObject t=job.getJSONObject("timeline"),m=job.getJSONObject("media"),a=m.getJSONObject("original"),b=m.getJSONObject("instrumental");
@@ -204,6 +304,27 @@ public final class KtvClient {
         File image=new File(cache,sha+("jpeg".equals(encoding)?".jpg":".png"));
         return image.isFile()&&image.length()==media.optLong("bytes");
     }
+    boolean hasMediaRoute(JSONObject media){
+        return usableMediaRoutes(media).length>0;
+    }
+    boolean hasNewMediaRoute(JSONObject attempted,JSONObject latest){
+        if(attempted==latest)return false;
+        MediaRoute[] previous=usableMediaRoutes(attempted);
+        for(MediaRoute candidate:usableMediaRoutes(latest)){
+            boolean known=Arrays.stream(previous).anyMatch(route->route.coordinator==candidate.coordinator
+                &&route.url.equals(candidate.url)&&route.header.equals(candidate.header)
+                &&route.credential.equals(candidate.credential));
+            if(!known)return true;
+        }
+        return false;
+    }
+    private MediaRoute[] usableMediaRoutes(JSONObject media){
+        if(media==null)return new MediaRoute[0];
+        try{
+            String path=media.getString("url");
+            return routes(media,path,MediaRoute.kind(path));
+        }catch(Exception unavailable){return new MediaRoute[0];}
+    }
     private File downloadMedia(JSONObject media, AtomicBoolean cancel,boolean video) throws Exception {
         String sha=media.getString("sha256"),path=media.getString("url");long size=media.getLong("bytes");
         if (!sha.matches("[a-f0-9]{64}") || size<48 || size>(video?134217728L:LIMIT))throw new IOException("invalid_media");
@@ -235,7 +356,7 @@ public final class KtvClient {
         if(sources==null)return new MediaRoute[]{MediaRoute.local(endpoint,path,kind)};
         if(!coordinator||sources.length()<1||sources.length()>3)throw new IOException("invalid_media_sources");
         List<MediaRoute> routes=new ArrayList<>();
-        long now=System.currentTimeMillis()/1000;
+        long now=serverSeconds();
         for(int i=0;i<sources.length();i++){
             try{routes.add(mediaRoute(sources.getJSONObject(i),now,kind));}
             catch(IOException|org.json.JSONException ignored){}

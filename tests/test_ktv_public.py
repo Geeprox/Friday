@@ -5,6 +5,7 @@ import hmac
 import base64
 import io
 import json
+import re
 import sqlite3
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 from homeplane.ktv_nas_bridge import NasBridge
 from integrations.ktv_public.nas_server import AVATAR_COUNT, NAMES, Refusal, Server, Store, make_handler
@@ -50,6 +52,61 @@ def room(store):
 
 def song():
     return {"song_id": "123", "title": "测试歌曲", "request_id": str(uuid.uuid4())}
+
+
+def test_withdrawal_overtaking_add_does_not_resurrect_the_song(station):
+    store, client = station
+    value, secret = room(store)
+    store.poll()
+    me = store.join(value)
+    headers = {"X-KTV-Room": secret, "X-KTV-Guest": me["key"]}
+    path = f"/api/rooms/{value['id']}/songs"
+    pending = song()
+    undo = {"withdraw_request_id": pending["request_id"]}
+    first = client.post(path, headers=headers, json=undo)
+    assert first.status_code == 200
+    receipt = first.json()
+    assert receipt["withdrawn"] and not receipt["queue_removed"]
+    assert client.post(path, headers=headers, json=undo).json() == receipt
+    late = client.post(path, headers=headers, json=pending)
+    assert late.status_code == 202 and late.json() == {"id": receipt["id"], "state": "cancelled"}
+    assert store.status(value)["songs"] == [] and store.status(value)["queue_revision"] == 0
+    assert store.poll()["tasks"] == []
+
+    again = client.post(path, headers=headers, json=song()).json()
+    assert again["state"] == "queued" and again["id"] != receipt["id"]
+    assert client.post(path, headers=headers, json={"withdraw_id": again["id"]}).json()["queue_removed"]
+    assert store.status(value)["songs"] == [] and store.status(value)["queue_revision"] == 2
+    assert again["id"] in store.poll()["cancelled"]
+
+
+def test_guest_can_only_withdraw_their_own_song_before_playback(station):
+    store, client = station
+    value, secret = room(store)
+    store.poll()
+    me, friend = store.join(value), store.join(value)
+    headers = {"X-KTV-Room": secret, "X-KTV-Guest": me["key"]}
+    path = f"/api/rooms/{value['id']}/songs"
+    friend_add = song()
+    friend_id = store.add(value, friend_add, friend)["id"]
+    denied = client.post(path, headers=headers, json={"withdraw_id": friend_id})
+    assert denied.status_code == 403 and denied.json()["code"] == "song_not_owned"
+    assert client.post(path, headers=headers, json={"withdraw_request_id": friend_add["request_id"]}).status_code == 403
+    duplicate = song()
+    assert client.post(path, headers=headers, json=duplicate).json()["duplicate"]
+    cancelled = client.post(path, headers=headers, json={"withdraw_request_id": duplicate["request_id"]}).json()
+    assert cancelled["withdrawn"] and not cancelled["queue_removed"] and cancelled["id"] == friend_id
+    assert [item["id"] for item in store.status(value)["songs"]] == [friend_id]
+
+    mine = {**song(), "song_id": "456"}
+    mine_id = store.add(value, mine, me)["id"]
+    store.update({"updates": [{"id": mine_id, "state": "ready", "code": "none"}]})
+    store.playback(value["id"], playback(state="idle"))
+    store.command(value, {"action": "play", "song": mine_id, "request_id": str(uuid.uuid4())})
+    for spec in ({"withdraw_id": mine_id}, {"withdraw_request_id": mine["request_id"]}):
+        response = client.post(path, headers=headers, json=spec)
+        assert response.status_code == 409 and response.json()["code"] == "song_already_started"
+    assert [item["id"] for item in store.status(value)["songs"]] == [friend_id, mine_id]
 
 
 def test_auto_join_retry_preserves_one_guest_and_keeps_legacy_clients(station):
@@ -214,8 +271,15 @@ def test_station_scopes_and_static_privacy(station):
     guest = {"X-KTV-Room": secret}
     identity = client.post(base + "/join", headers=guest, json={}).json()
     guest["X-KTV-Guest"] = identity["key"]
-    assert client.get("/").status_code == 200
+    page = client.get("/")
+    assert page.status_code == 200
     assert client.get("/app.js").headers["content-type"].startswith("text/javascript")
+    app_entry = re.search(r'src="\.(/app\.js\?v=\d+)"', page.text)
+    assert app_entry
+    bundle = client.get(app_entry[1])
+    components = ("guide.js", "party-audio.js", "add-queue.js", "status-feed.js", "app.js")
+    assert bundle.content == b"\n".join((ASSETS / name).read_bytes() for name in components)
+    assert "immutable" in bundle.headers["cache-control"]
     assert client.get("/add-queue.js").headers["content-type"].startswith("text/javascript")
     for name in ("sync.mjs", "sync-dsp.mjs", "sync-capture.mjs"):
         assert client.get("/" + name).status_code == 404
@@ -333,6 +397,35 @@ def test_bridge_keeps_requested_audio_edition(tmp_path, source, preference):
         bridge.close()
 
 
+def test_worker_capacity_recovers_on_the_next_nas_lease(tmp_path):
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"endpoint": "http://127.0.0.1:18769/ktv", "agent_key": KEY}))
+    config.chmod(0o600)
+    queue = FakeQueue()
+    bridge = NasBridge(queue, config, allow_loopback=True)
+    item = {"id": str(uuid.uuid4()), "song_id": "123", "title": "合成点歌"}
+    original = queue.submit
+    attempts, sent = [], []
+
+    def submit(request):
+        attempts.append(request.request_id)
+        if len(attempts) == 1:
+            raise HTTPException(429, "queue_full")
+        return original(request)
+
+    queue.submit = submit
+    bridge.request = lambda *args: sent.append(args) or {}
+    try:
+        bridge.pending_tasks[item["id"]] = item
+        bridge._work_once()
+        assert not bridge.mapping and not sent
+        bridge.pending_tasks[item["id"]] = item
+        bridge._work_once()
+        assert attempts == [item["id"], item["id"]] and bridge.mapping[item["id"]] == item["id"]
+    finally:
+        bridge.close()
+
+
 def test_bridge_persistent_idempotency_state_and_close(station, tmp_path):
     store, client = station
     config = tmp_path / "config.json"
@@ -361,6 +454,9 @@ def test_bridge_persistent_idempotency_state_and_close(station, tmp_path):
     fresh = bridge.create_party()
     assert fresh["room_id"] != party["room_id"]
     assert fresh["order"] == [] and fresh["commands"] == []
+    with pytest.raises(ValueError, match="room_changed"):
+        bridge.close_party(party["room_id"])
+    assert bridge.current()["room_id"] == fresh["room_id"]
     fragment2 = parse_qs(urlsplit(fresh["join_url"]).fragment)
     room2 = store.room(fresh["room_id"], fragment2["k"][0])
     assert store.status(room2)["songs"] == []
@@ -446,6 +542,26 @@ def test_controls_queue_revision_and_commands(station):
     with store.connection() as db:
         db.execute("UPDATE commands SET created=0")
     assert store.poll()["rooms"][0]["commands"] == []
+
+
+def test_music_mute_has_own_budget_and_fences_a_delayed_gain(station):
+    store, client = station
+    value, secret = room(store)
+    base = "/api/rooms/" + value["id"]
+    headers = {"X-KTV-Room": secret}
+    headers["X-KTV-Guest"] = client.post(base + "/join", headers=headers, json={}).json()["key"]
+    for _ in range(60):
+        store.budget("controls:" + value["id"], 60)
+    stale = {"music_gain": 43, "music_mute_revision": 0}
+    assert client.post(base + "/controls", headers=headers, json=stale).status_code == 429
+    muted = client.post(base + "/controls", headers=headers, json={"music_gain": 0})
+    assert muted.status_code == 200 and muted.json()["music_mute_revision"] == 1
+    with pytest.raises(Refusal) as refusal:
+        store.song_controls(value, stale)
+    assert refusal.value.code == "music_mute_changed"
+    assert store.status(value)["controls"]["music_gain"] == 0
+    store.song_controls(value, {**stale, "music_mute_revision": 1})
+    assert store.status(value)["controls"]["music_gain"] == 43
 
 
 def test_safety_mute_wins_and_old_report_cannot_override_new_explicit_control(station):

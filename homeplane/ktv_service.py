@@ -180,6 +180,9 @@ class Queue:
             "separate": PriorityPool(DEFAULT_MODEL_WORKERS, "ktv-model"),
             "finish": PriorityPool(DEFAULT_ENCODE_WORKERS, "ktv-encode"),
         }
+        if video is not None:
+            self.pools["video"] = PriorityPool(1, "ktv-video")
+        self.video_pending = {}
         self.hardware = hardware or {"cpu": "测试环境", "memory_bytes": 0, "cpu_cores": 1}
         self.memory_available = memory_available
         self.model_condition = threading.Condition()
@@ -448,7 +451,8 @@ class Queue:
             ):
                 raise HTTPException(429, "queue_full")
             job_id = str(uuid.uuid4())
-            private_directory(self.jobs_dir / job_id)
+            folder = self.jobs_dir / job_id
+            folder.mkdir(mode=0o700)
             value = {
                 "id": job_id,
                 "song_id": request.song_id,
@@ -470,18 +474,23 @@ class Queue:
             }
             if retry_of:
                 value["preparation_retry_of"] = retry_of
-            self.jobs[job_id] = value
-            self.events[job_id] = threading.Event()
-            self._save(value)
-            self.futures[job_id] = Future()
-            if not self._reuse(job_id):
-                if request.cache_only and not getattr(self, "archive", None):
-                    shutil.rmtree(self.jobs_dir / job_id)
-                    self.jobs.pop(job_id)
-                    self.events.pop(job_id)
-                    self.futures.pop(job_id)
-                    raise HTTPException(409, "cache_miss")
-                self._schedule(job_id, "acquire", lambda: self._work(job_id))
+            try:
+                self._save(value)
+                self.jobs[job_id] = value
+                self.events[job_id] = threading.Event()
+                self.futures[job_id] = Future()
+                if not self._reuse(job_id):
+                    if request.cache_only and not getattr(self, "archive", None):
+                        raise HTTPException(409, "cache_miss")
+                    self._schedule(job_id, "acquire", lambda: self._work(job_id))
+            except Exception:
+                # 未交给工作线程的初始记录可以安全撤回，让同一租约下次继续。
+                if job_id not in self.stage_futures:
+                    self.jobs.pop(job_id, None)
+                    self.events.pop(job_id, None)
+                    self.futures.pop(job_id, None)
+                    shutil.rmtree(folder)
+                raise
             return self.snapshot(value)
 
     def _save(self, value):
@@ -626,13 +635,14 @@ class Queue:
                     if digest(path) != video["sha256"]:
                         raise ValueError("source_changed")
                     os.link(path, folder / "video.mp4")
-                value.update(media=old["media"], video=video, cache_hit=True, audio_origin=old.get("audio_origin", "song"))
-                self._state(job_id, "ready")
-                self.futures[job_id].set_result(self.snapshot(value))
-                return True
             except (OSError, ValueError):
                 for name in ("original.wav", "instrumental.wav", "original.m4a", "instrumental.m4a", "video.mp4"):
                     (folder / name).unlink(missing_ok=True)
+                continue
+            value.update(media=old["media"], video=video, cache_hit=True, audio_origin=old.get("audio_origin", "song"))
+            self._state(job_id, "ready")
+            self.futures[job_id].set_result(self.snapshot(value))
+            return True
         return False
 
     def _fail(self, job_id, error):
@@ -846,38 +856,60 @@ class Queue:
                 }
             if abs(items["original"]["duration_seconds"] - items["instrumental"]["duration_seconds"]) > 0.1:
                 raise ValueError("invalid_audio")
-            video = {"status": "unavailable"}
-            self._state(job_id, "transcoding", stage="video")
-            if self.video is not None and not event.is_set():
-                try:
-                    candidate = self.video(
-                        self.jobs[job_id]["song_id"], folder / (".playback-original.wav" if items["original"].get("encoding") == "aac_lc_m4a" else "original.wav"), folder, event
-                    )
-                    if items["original"].get("encoding") == "aac_lc_m4a" and candidate:
-                        candidate["source_audio_sha256"] = items["original"]["sha256"]
-                    path = safe_file(folder / "video.mp4", folder)
-                    if (
-                        not valid_video(candidate, items["original"]["sha256"])
-                        or path.stat().st_size != candidate["bytes"]
-                        or digest(path) != candidate.get("sha256")
-                    ):
-                        raise ValueError("invalid_video")
-                    video = candidate
-                except Exception:
-                    (folder / "video.mp4").unlink(missing_ok=True)
-            self._discard_intermediates(folder, source, instrumental)
+            if self.video is None:
+                self._discard_intermediates(folder, source, instrumental)
             with self.lock:
-                if event.is_set():
+                if self.closed or event.is_set():
                     raise ValueError("cancelled")
-                self.jobs[job_id].update(media=items, video=video, state="ready", code="none")
-                self._save(self.jobs[job_id])
-            self._state(job_id, "ready")
-            self._release_storage(job_id)
+                self.jobs[job_id].update(media=items, video={"status": "unavailable"})
+                self._state(job_id, "ready")
+                if self.video is not None:
+                    self.video_pending[job_id] = (source, instrumental)
+                    self.pools["video"].submit(job_id, lambda: self._finish_video(job_id))
+            if self.video is None:
+                self._release_storage(job_id)
             if not self.futures[job_id].done():
                 self.futures[job_id].set_result(self.get(job_id))
         except Exception as error:
             self._discard_intermediates(folder, source, instrumental, terminal=True)
             self._fail(job_id, error)
+
+    def _finish_video(self, job_id):
+        folder = self.jobs_dir / job_id
+        source, instrumental = self.video_pending[job_id]
+        job, event = self.jobs[job_id], self.events[job_id]
+        original = job["media"]["original"]
+        compact = original.get("encoding") == "aac_lc_m4a"
+        published = False
+        try:
+            if event.is_set():
+                return
+            reference = folder / (".playback-original.wav" if compact else "original.wav")
+            video = self.video(job["song_id"], reference, folder, event)
+            if compact and video:
+                video["source_audio_sha256"] = original["sha256"]
+            if not valid_video(video, original["sha256"]):
+                return
+            path = safe_file(folder / "video.mp4", folder)
+            if path.stat().st_size != video["bytes"] or digest(path) != video["sha256"]:
+                return
+            with self.lock:
+                if not event.is_set():
+                    self._save({**job, "video": video})
+                    job["video"] = video
+                    published = True
+        except Exception:
+            # MV 是可选资源，保留已经就绪的音轨。
+            pass
+        finally:
+            try:
+                if not published:
+                    (folder / "video.mp4").unlink(missing_ok=True)
+                self._discard_intermediates(folder, source, instrumental)
+            finally:
+                self._release_storage(job_id)
+                with self.lock:
+                    self.video_pending.pop(job_id, None)
 
     @staticmethod
     def _discard_intermediates(folder, *paths, terminal=False):
@@ -905,6 +937,8 @@ class Queue:
             value = self.jobs.get(job_id)
             if value is None:
                 raise HTTPException(404, "not_found")
+            if job_id in self.video_pending:
+                self.events[job_id].set()
             if value["state"] in ACTIVE:
                 self.events[job_id].set()
                 if self.storage_waiting.pop(job_id, None) is not None or value["state"] == "queued" or (
@@ -928,7 +962,7 @@ class Queue:
             if value["state"] in ACTIVE:
                 raise HTTPException(409, "cancel_before_remove")
             future = self.futures.get(job_id)
-            if future is not None and not future.done():
+            if job_id in self.video_pending or (future is not None and not future.done()):
                 raise HTTPException(409, "worker_stopping")
             folder = self.jobs_dir / job_id
             if folder.resolve() != folder:
@@ -946,12 +980,16 @@ class Queue:
             self.storage_waiting.clear()
             self.storage_condition.notify_all()
             for job_id, value in self.jobs.items():
-                if value["state"] in ACTIVE:
+                if value["state"] in ACTIVE or job_id in self.video_pending:
                     self.events[job_id].set()
         for pool in self.pools.values():
             pool.shutdown(wait=False)
         for pool in self.pools.values():
             pool.shutdown(wait=True)
+        for job_id, paths in self.video_pending.items():
+            self._discard_intermediates(self.jobs_dir / job_id, *paths)
+            self._release_storage(job_id)
+        self.video_pending.clear()
         if self.storage_thread is not None:
             self.storage_thread.join()
 
@@ -991,14 +1029,14 @@ class Queue:
             raise HTTPException(409, "media_integrity_failed") from None
 
 
-def run_bounded(command: list[str], event: threading.Event, *, timeout: float):
+def run_bounded(command: list[str], event: threading.Event, *, timeout: float, stderr=subprocess.DEVNULL):
     from .ktv_accompaniment import _terminate
 
     process = subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr,
         start_new_session=True,
     )
     deadline = time.monotonic() + timeout
@@ -1014,8 +1052,15 @@ def run_bounded(command: list[str], event: threading.Event, *, timeout: float):
         _terminate(process)
 
 
-def transcode_pcm(source: Path, output: Path, event: threading.Event, *, ffmpeg: str):
+def transcode_pcm(source: Path, output: Path, event: threading.Event, *, ffmpeg: str, gain_db: float = 0):
     # Rewrap with stdlib wave to eliminate extra RIFF chunks; Android consumes one exact PCM contract.
+    if not math.isfinite(gain_db) or gain_db > 0:
+        raise ValueError("invalid_audio")
+    filters = []
+    if gain_db:
+        from .ktv_audio import FLOAT_STEREO
+
+        filters = ["-af", f"{FLOAT_STEREO},volume={gain_db:.2f}dB:precision=float"]
     intermediate = output.with_suffix(".partial.wav")
     try:
         run_bounded(
@@ -1029,6 +1074,7 @@ def transcode_pcm(source: Path, output: Path, event: threading.Event, *, ffmpeg:
                 str(source),
                 "-map",
                 "0:a:0",
+                *filters,
                 "-t",
                 str(MAX_DURATION_SECONDS + 1),
                 "-map_metadata",
@@ -1542,7 +1588,7 @@ def create_app(
             if request.method in {"GET", "HEAD"} and media_ticket:
                 try:
                     if media_match:
-                        media_authorized = media_tickets.permits(media_ticket, queue.get(media_match[1]))
+                        media_authorized = media_tickets.permits(media_ticket, queue.get(media_match[1]), kind=media_match[2])
                     elif background_match:
                         media_authorized = media_tickets.permits_background(media_ticket, *background_match.groups())
                 except Exception:
@@ -2009,12 +2055,17 @@ def create_app(
             raise HTTPException(503, "public_unavailable") from None
 
     @app.post("/v1/party/close")
-    def close_party():
+    def close_party(value: dict | None = None):
         if bridge is None:
             raise HTTPException(503, "public_not_configured")
+        room_id = (value or {}).get("room_id")
+        if value and (set(value) != {"room_id"} or not isinstance(room_id, str) or not JOB_ID.fullmatch(room_id)):
+            raise HTTPException(400, "invalid_room")
         try:
-            return bridge.close_party()
-        except Exception:
+            return bridge.close_party(room_id) if room_id else bridge.close_party()
+        except Exception as error:
+            if isinstance(error, ValueError) and str(error) == "room_changed":
+                raise HTTPException(409, "room_changed") from None
             raise HTTPException(503, "public_unavailable") from None
 
     @app.get("/v1/party/qr")
