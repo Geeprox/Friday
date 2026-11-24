@@ -218,7 +218,7 @@ body.ktv-standalone{background:#fff;margin:0;padding:36px 28px}.ktv-console[data
 }
 .ktv-console .primary:active:enabled{background:var(--accent-hover);border-color:var(--accent-hover)}
 .ktv-console .danger:active:enabled{background:var(--danger-hover);border-color:var(--danger-hover)}
-.ktv-console .cleanup-targets button[aria-pressed=true]:enabled{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.ktv-console .cleanup-targets button[data-scope][aria-pressed=true]{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 @media(prefers-reduced-motion:no-preference){
  .ktv-console button:not(.queue-drag,.ktv-navigation button){
   transition:scale var(--quick) var(--motion-ease),background-color var(--quick) var(--motion-ease),color var(--quick) var(--motion-ease),border-color var(--quick) var(--motion-ease)

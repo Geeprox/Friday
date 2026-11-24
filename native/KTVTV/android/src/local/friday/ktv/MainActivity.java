@@ -1701,7 +1701,9 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                 try{
                     seekResultMs=v.getCurrentPosition();videoSeeking=false;
                     if(!engine.running||!foreground)return;
-                    long target=engine.playheadFrames/48+videoOffsetMs,lag=target-seekResultMs;
+                    long target=engine.playheadFrames/48+videoOffsetMs;
+                    if(target<0||target>=videoDurationMs-40)return;
+                    long lag=target-seekResultMs;
                     if(videoSeekCount==1&&lag>180&&lag<1500&&target+lag<videoDurationMs-40){
                         videoSeeking=true;videoSeekCount++;v.seekTo(target+lag,MediaPlayer.SEEK_CLOSEST);
                     }else v.start();
@@ -1868,11 +1870,25 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         showScrollingLyrics(hasSong);
         trackTitle.setVisibility(hasSong?View.VISIBLE:View.GONE);
     }
-    private void syncVideo(boolean force){if(video==null||!videoReady||!engine.backingPresented()||!foreground)return;long target=engine.playheadFrames/48+videoOffsetMs;if(target>=videoDurationMs-40){releaseVideo();return;}if(target<0){try{video.pause();}catch(Exception ignored){}hideVideoSurface();return;}try{
-        videoTargetMs=target;videoPositionMs=video.getCurrentPosition();if(videoSeeking)return;videoClock.update(target,videoPositionMs,SystemClock.elapsedRealtime(),force);
-        if(videoClock.seek){videoSeeking=true;videoSeekCount++;video.seekTo(target,MediaPlayer.SEEK_CLOSEST);}
-        else if(!video.isPlaying())video.start();
-        }catch(Exception ignored){releaseVideo();}}
+    private void syncVideo(boolean force){
+        MediaPlayer player=video;
+        if(player==null||!videoReady||!engine.backingPresented()||!foreground)return;
+        long target=engine.playheadFrames/48+videoOffsetMs;
+        if(target>=videoDurationMs-40){releaseVideo();return;}
+        try{
+            if(target<0){
+                // 负偏移先保留滚动歌词，已准备但未开始的播放器可以直接等待。
+                if(player.isPlaying())player.pause();
+                hideVideoSurface();
+                return;
+            }
+            videoTargetMs=target;videoPositionMs=player.getCurrentPosition();
+            if(videoSeeking)return;
+            videoClock.update(target,videoPositionMs,SystemClock.elapsedRealtime(),force);
+            if(videoClock.seek){videoSeeking=true;videoSeekCount++;player.seekTo(target,MediaPlayer.SEEK_CLOSEST);}
+            else if(!player.isPlaying())player.start();
+        }catch(Exception ignored){releaseVideo();}
+    }
     private void releaseVideo(){
         hideVideoSurface();
         videoReady=false;videoRendered=false;videoSeeking=false;
