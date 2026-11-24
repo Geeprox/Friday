@@ -52,39 +52,49 @@ export async function mountIntelligenceSettings(container,{api,onOpenConversatio
       +(usage.uncertain_requests?' 有 '+usage.uncertain_requests+' 次调用的预留用量待核对。':'')
       +' 下一次重置：'+new Date(usage.resets_at).toLocaleString()+'。';
   }
-  let initial;
-  try{initial=await api(ENDPOINT);}catch(_){output.textContent='暂时无法读取智能配置。';action(panel,'重试读取',async()=>report(await api(ENDPOINT)));return;}
-  if(!panel.isConnected)return;
-  const config=initial.config,form=node('div',null,{class:'ai-fields'});
-  const provider=node('select',null,{id:'intelligence-provider'});
-  for(const [value,label] of [['arl','ARL · Codex'],['openai','OpenAI API'],['auto','自动 · API 优先'],['local','仅本地功能']])provider.append(node('option',label,{value}));
-  provider.value=config.provider;fields.set('provider',provider);
-  const providerField=node('div',null,{class:'ai-field'});providerField.append(node('label','文字处理通道',{for:provider.id}),provider);form.append(providerField);
-  field(form,'cloud_text','允许云端文字处理',config.cloud_text,{type:'checkbox',help:'发送本次问题及必要设备目录；旧版即时规划还包含有限状态。设备动作仍需本地校验。'});
-  field(form,'allow_arl_fallback','API 不可用时改用 ARL',config.allow_arl_fallback,{type:'checkbox'});
-  field(form,'cloud_images','启用 AI 歌曲背景',config.cloud_images,{type:'checkbox',help:'可在家庭 KTV 中调整此开关与每日生成上限。'});
-  field(form,'cloud_voice','开启云端语音输入',config.cloud_voice,{type:'checkbox',help:'主动点击后录音，最长 8 秒。转写先放入输入框，由你发送。'});
-  const limits=node('fieldset',null);limits.append(node('legend','每日上限'));
-  for(const [key,label] of [['daily_requests','文字与语音请求次数'],['daily_text_tokens','文本 Token'],['daily_images','歌曲背景张数'],['daily_voice_seconds','语音会话秒数']])field(limits,key,label,config[key],{type:'number'});
-  field(limits,'timezone','每日重置时区',config.timezone);
-  limits.append(node('p','上限为 0 时暂停对应调用。用量先预留，未知结果保留预留；这里统计本应用用量，不代表账户余额。',{class:'meta'}));
-  const advanced=node('details',null);advanced.append(node('summary','模型配置'));
-  field(advanced,'cached_background_limit','保留的歌曲背景张数上限',config.cached_background_limit,{type:'number'});
-  for(const [key,label] of [['responses_model','文字模型'],['decisions_model','快速判断模型'],['image_model','图片模型'],['realtime_model','语音模型']])field(advanced,key,label,config[key],{readonly:key==='decisions_model'});
-  field(advanced,'max_output_tokens','单次文本输出上限',config.max_output_tokens,{type:'number'});
-  form.append(limits,advanced);panel.append(form);
-  const controls=node('div',null,{class:'ai-actions'});panel.append(controls);
-  action(controls,'保存智能配置',async()=>{
-    const patch={};for(const [key,input] of fields)patch[key]=input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value.trim();
-    report(await api(ENDPOINT,{method:'PUT',body:JSON.stringify(patch)}));
-  });
-  action(controls,'刷新用量',async()=>report(await api(ENDPOINT)));
-  if(onOpenConversation)action(controls,'打开家庭对话',async()=>onOpenConversation());
-  action(controls,'重新允许 API 尝试',async()=>report(await api(ENDPOINT+'/retry',{method:'POST',body:'{}'})));
-  const credential=node('details',null);credential.append(node('summary','配置已有 API Key'));
-  const secret=node('input',null,{id:'intelligence-api-key',type:'password',autocomplete:'off',maxlength:'512'});
-  credential.append(node('label','API Key',{for:secret.id}),secret,node('p','仅保存到本机受限文件，不在页面回显。',{class:'meta'}));
-  action(credential,'保存已有 Key',async()=>{const value=secret.value;secret.value='';report(await api(ENDPOINT+'/credential',{method:'POST',body:JSON.stringify({api_key:value})}));});
-  action(credential,'移除本机保存的 Key',async()=>report(await api(ENDPOINT+'/credential',{method:'DELETE'})));
-  panel.append(credential,node('p','',{class:'meta','data-ai-usage':''}));report(initial);
+  function renderSettings(initial){
+    if(!panel.isConnected)return;
+    const config=initial.config,form=node('div',null,{class:'ai-fields'});
+    const provider=node('select',null,{id:'intelligence-provider'});
+    for(const [value,label] of [['arl','ARL · Codex'],['openai','OpenAI API'],['auto','自动 · API 优先'],['local','仅本地功能']])provider.append(node('option',label,{value}));
+    provider.value=config.provider;fields.set('provider',provider);
+    const providerField=node('div',null,{class:'ai-field'});providerField.append(node('label','文字处理通道',{for:provider.id}),provider);form.append(providerField);
+    field(form,'cloud_text','允许云端文字处理',config.cloud_text,{type:'checkbox',help:'发送本次问题及必要设备目录；旧版即时规划还包含有限状态。设备动作仍需本地校验。'});
+    field(form,'allow_arl_fallback','API 不可用时改用 ARL',config.allow_arl_fallback,{type:'checkbox'});
+    field(form,'cloud_images','启用 AI 歌曲背景',config.cloud_images,{type:'checkbox',help:'可在家庭 KTV 中调整此开关与每日生成上限。'});
+    field(form,'cloud_voice','开启云端语音输入',config.cloud_voice,{type:'checkbox',help:'主动点击后录音，最长 8 秒。转写先放入输入框，由你发送。'});
+    const limits=node('fieldset',null);limits.append(node('legend','每日上限'));
+    for(const [key,label] of [['daily_requests','文字与语音请求次数'],['daily_text_tokens','文本 Token'],['daily_images','歌曲背景张数'],['daily_voice_seconds','语音会话秒数']])field(limits,key,label,config[key],{type:'number'});
+    field(limits,'timezone','每日重置时区',config.timezone);
+    limits.append(node('p','上限为 0 时暂停对应调用。用量先预留，未知结果保留预留；这里统计本应用用量，不代表账户余额。',{class:'meta'}));
+    const advanced=node('details',null);advanced.append(node('summary','模型配置'));
+    field(advanced,'cached_background_limit','保留的歌曲背景张数上限',config.cached_background_limit,{type:'number'});
+    for(const [key,label] of [['responses_model','文字模型'],['decisions_model','快速判断模型'],['image_model','图片模型'],['realtime_model','语音模型']])field(advanced,key,label,config[key],{readonly:key==='decisions_model'});
+    field(advanced,'max_output_tokens','单次文本输出上限',config.max_output_tokens,{type:'number'});
+    form.append(limits,advanced);panel.append(form);
+    const controls=node('div',null,{class:'ai-actions'});panel.append(controls);
+    action(controls,'保存智能配置',async()=>{
+      const patch={};for(const [key,input] of fields)patch[key]=input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value.trim();
+      report(await api(ENDPOINT,{method:'PUT',body:JSON.stringify(patch)}));
+    });
+    action(controls,'刷新用量',async()=>report(await api(ENDPOINT)));
+    if(onOpenConversation)action(controls,'打开家庭对话',async()=>onOpenConversation());
+    action(controls,'重新允许 API 尝试',async()=>report(await api(ENDPOINT+'/retry',{method:'POST',body:'{}'})));
+    const credential=node('details',null);credential.append(node('summary','配置已有 API Key'));
+    const secret=node('input',null,{id:'intelligence-api-key',type:'password',autocomplete:'off',maxlength:'512'});
+    credential.append(node('label','API Key',{for:secret.id}),secret,node('p','仅保存到本机受限文件，不在页面回显。',{class:'meta'}));
+    action(credential,'保存已有 Key',async()=>{const value=secret.value;secret.value='';report(await api(ENDPOINT+'/credential',{method:'POST',body:JSON.stringify({api_key:value})}));});
+    action(credential,'移除本机保存的 Key',async()=>report(await api(ENDPOINT+'/credential',{method:'DELETE'})));
+    panel.append(credential,node('p','',{class:'meta','data-ai-usage':''}));report(initial);
+  }
+  try{renderSettings(await api(ENDPOINT));}
+  catch(_){
+    if(!panel.isConnected)return;
+    output.textContent='暂时无法读取智能配置。';
+    const retry=action(panel,'重试读取',async()=>{
+      const initial=await api(ENDPOINT);
+      retry.remove();renderSettings(initial);
+      fields.get('provider')?.focus({preventScroll:true});
+    });
+  }
 }

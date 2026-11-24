@@ -78,6 +78,7 @@ exception text is discarded. Consumer-relevant codes: `nas_missing`,
 `nas_budget_exceeded`, `nas_timeout`. Cancellation propagates `CancelledError` and
 drops/reaps the worker. A blocked native call is first given 0.2 s for EOF cleanup,
 then 0.2 s for terminate, then killed/reaped; no queued read survives this event.
+等待关闭被取消时，进程回收继续执行。下一次关闭或连接会先等待同一回收任务。
 
 ## Transport choices against the existing project
 

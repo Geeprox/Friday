@@ -8,6 +8,9 @@ function prepare(context) {
   context.TextDecoder ??= TextDecoder;
   context.URL ??= URL;
   context.URLSearchParams ??= URLSearchParams;
+  if (context.history && context.location && !context.history.pushState) {
+    context.history.pushState = (_state, _title, hash) => {context.location.hash = hash;};
+  }
   let document = context.document;
   if (!document?.createElement) {
     if (typeof context.el !== 'function') return;

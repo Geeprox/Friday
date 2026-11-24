@@ -5,6 +5,7 @@ class Element{
  constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this._text='';this.style={};this.value='';this.disabled=false;this.hidden=false;this.dataset={};}
  set textContent(v){this._text=v;this.children=[];}get textContent(){return this._text+this.children.map(c=>c.textContent).join('');}
  setAttribute(k,v){this.attrs[k]=String(v);if(k==='value')this.value=String(v);}getAttribute(k){return this.attrs[k];}
+ removeAttribute(k){delete this.attrs[k];}
  append(...nodes){for(const n of nodes){this.children.push(n);n.parent=this;}if(this.tagName==='select'&&!this.value&&this.children.length)this.value=this.children[0].value;}
  replaceChildren(...nodes){this.children=[];this.append(...nodes);}remove(){if(this.parent)this.parent.children=this.parent.children.filter(x=>x!==this);}
  get isConnected(){return true;}getBoundingClientRect(){return {left:0,top:0,width:640,height:360};}focus(){}scrollIntoView(){}contains(n){return all(this).includes(n);}
@@ -15,24 +16,33 @@ class Element{
  let config={revision:0,enabled:true,bindings:[]},policy={revision:0,enabled:true,recognition:true,interaction:true},voice=true;
  let voicePreferences={revision:0,wake_word:'Friday'};
  let voiceSessions=[{camera:cameras[0].id,last_transcript:'Friday，打开客厅主灯'}];
- let interactionCameras=[],cameraStates=['live','live','live'],sessionDetails=[{},{},{}],failStatus=false,statusWait=null;
+ let interactionCameras=[],cameraStates=['live','live','live'],sessionDetails=[{},{},{}],failStatus=false,statusWait=null,ignoreStatusAbort=false;
  const writes=[],reads=[],root=new Element('main'),find=(tag,text)=>all(root).find(n=>n.tagName===tag&&n.textContent===text),byLabel=label=>all(root).find(n=>n.attrs['aria-label']===label);
  const targets=[{id:'lamp',kind:'light',room:'客厅',name:'主灯',controllable:true,actions:['on','off']},{id:'curtain',kind:'cover',room:'客厅',name:'窗帘',controllable:true,actions:['open','close']}];
+ const status=()=>({owned:true,voice_input:voice,quiet:true,camera_sessions:cameras.map((c,i)=>({camera:c.id,state:cameraStates[i],...sessionDetails[i]})),voice_sessions:structuredClone(voiceSessions),interactions:{events:[],cameras:interactionCameras}});
  const fetch=async(path,options={})=>({ok:true,json:async()=>{
   if(options.method==='POST'){
    const body=JSON.parse(options.body);writes.push({path,body});
    if(path==='/api/embodied/infrastructure'){policy={...body,revision:policy.revision+1};return {policy};}
-   if(path==='/api/embodied/voice-input'){voice=body.enabled;return{};}
+   if(path==='/api/embodied/voice-input'){voice=body.enabled;return status();}
    if(path==='/api/embodied/voice-preferences'){assert.equal(body.expected_revision,voicePreferences.revision);voicePreferences={revision:voicePreferences.revision+1,wake_word:body.wake_word};return voicePreferences;}
    if(path==='/api/home/interactions'){config={...body,revision:config.revision+1};return config;}
-   if(path.endsWith('/preview'))return{preview_token:'e'.repeat(32)};
+   if(path.endsWith('/preview'))return path.includes(cameras[1].id)?{preview_token:'e'.repeat(32),state:'waiting'}:{state:'live',camera:cameras[2].id,primary:true};
    if(path.endsWith('/preview/stop'))return{};
    throw Error('unexpected write '+path);
   }
   reads.push(path);
   if(path==='/api/home/interactions')return{config,gestures:{'hand.ok':'OK','body.arms_open':'双臂打开'}};
   if(path==='/api/embodied/devices')return{devices:targets};
-  if(path==='/api/embodied/status'){if(statusWait)await Promise.race([statusWait,new Promise((_,reject)=>options.signal.addEventListener('abort',()=>reject(Error('synthetic aborted read')),{once:true}))]);if(failStatus)throw Error('synthetic status unavailable');return{owned:true,voice_input:voice,quiet:true,camera_sessions:cameras.map((c,i)=>({camera:c.id,state:cameraStates[i],...sessionDetails[i]})),voice_sessions:voiceSessions,interactions:{events:[],cameras:interactionCameras}};}
+  if(path==='/api/embodied/status'){
+   const captured=status();
+   if(statusWait){
+    if(ignoreStatusAbort)await statusWait;
+    else await Promise.race([statusWait,new Promise((_,reject)=>options.signal.addEventListener('abort',()=>reject(Error('synthetic aborted read')),{once:true}))]);
+   }
+   if(failStatus)throw Error('synthetic status unavailable');
+   return captured;
+  }
   if(path==='/api/embodied/infrastructure')return{policy};
   if(path==='/api/embodied/voice-preferences')return voicePreferences;
   if(path.endsWith('/power'))return{enabled:true,revision:'e'.repeat(64)};
@@ -40,7 +50,9 @@ class Element{
   throw Error('unexpected read '+path);
  }});
  const diagram=()=>{const n=new Element('svg');n.dispose=()=>{};return n;};
- let poll,timeoutCallback;const sandbox={document:{createElement:t=>new Element(t),activeElement:null},fetch,AbortController,setTimeout:callback=>{timeoutCallback=callback;return 1;},clearTimeout(){timeoutCallback=null;},crypto:require('node:crypto').webcrypto,setInterval:callback=>{poll=callback;return 1;},clearInterval(){},Date,console,mountMotionLibrary:()=>({dispose(){}}),createMotionDiagram:diagram,MOTION_GUIDES:{}};
+ let poll,timeoutCallback;
+ const stored=new Map();
+ const sandbox={document:{createElement:t=>new Element(t),activeElement:null},sessionStorage:{setItem:(key,value)=>stored.set(key,value),getItem:key=>stored.get(key)},fetch,AbortController,setTimeout:callback=>{timeoutCallback=callback;return callback;},clearTimeout(callback){if(timeoutCallback===callback)timeoutCallback=null;},crypto:require('node:crypto').webcrypto,setInterval:callback=>{poll=callback;return 1;},clearInterval(){},Date,console,mountMotionLibrary:()=>({dispose(){}}),createMotionDiagram:diagram,MOTION_GUIDES:{}};
  const navigations=[];
  const context=vm.createContext(sandbox);context.root=root;context.options={data:{devices:cameras},go(page){navigations.push(page);},toast(){}};
  vm.runInContext(fs.readFileSync('homeplane/static/interactions.js','utf8').replace(/^import.*$/gm,'').replace('export function mountInteractions','function mountInteractions'),context);
@@ -62,6 +74,11 @@ class Element{
  assert.equal(all(root).find(n=>n.attrs.class==='interaction-camera'),focusedRow,'polling preserves the focused row while updating its status');
  sandbox.document.activeElement=null;
  assert(!all(root).filter(n=>n.attrs.class==='interaction-camera').some(n=>n.textContent.includes('识别中')),'a failed read retires the old ready rows');
+ assert(root.textContent.includes(voiceSessions[0].last_transcript),'读取失败仍保留最后一条已核对的语音');
+ assert(!root.textContent.includes('语音输入已暂停'),'读取失败不能写成语音已暂停');
+ const unknown=all(root).find(n=>'data-interaction-toggle' in n.attrs),quietButton=all(root).find(n=>'data-voice-reply' in n.attrs);
+ assert.equal(unknown.getAttribute('aria-disabled'),'true');assert.equal(quietButton.getAttribute('aria-disabled'),'true');
+ await unknown.onclick();await quietButton.onclick();assert.equal(writes.length,0,'未知状态不能猜测写入方向');
  failStatus=false;cameraStates=['live','live','live'];sessionDetails=[{recognition:'running'},{recognition:'running'},{recognition:'running'}];
  let release;statusWait=new Promise(resolve=>{release=resolve;});const beforeReads=reads.length;
  poll();poll();poll();await settle();assert.equal(reads.slice(beforeReads).filter(p=>p==='/api/embodied/status').length,1,'slow polling keeps one status request');
@@ -84,7 +101,10 @@ class Element{
  const replyState=all(root).find(n=>'data-voice-state'in n.attrs),replyRow=replyState.children[0];await poll();await settle();assert.equal(replyState.children[0],replyRow,'unchanged polling does not replace and reannounce the answer');
  const voicePanel=all(root).find(n=>n.attrs.class==='voice-interaction');assert.equal(voicePanel.children[0].attrs.class,'voice-response','Recent feedback is the first voice work area');
  const wake=byLabel('唤醒词');wake.value='小福';wake.oninput();await byLabel('语音唤醒词').onsubmit({preventDefault(){}});await settle();assert.equal(voicePreferences.wake_word,'小福');assert(root.textContent.includes('小福，把客厅的灯打开'));assert.equal(writes.length,1,'saving a cue never starts voice or cameras');
+ let staleDone;ignoreStatusAbort=true;statusWait=new Promise(resolve=>{staleDone=resolve;});poll();await settle();statusWait=null;
  await find('button','暂停语音输入').onclick();await settle();const paused=writes.find(w=>w.path==='/api/embodied/voice-input');assert.equal(paused.body.enabled,false);assert.equal(policy.recognition,true);
+ staleDone();await settle();ignoreStatusAbort=false;
+ assert(find('button','开启语音控制'),'写入前的旧轮询即使返回，也不能覆盖已回读的开关');
  find('button','手势与动作').onclick();await settle();
  interactionCameras=[
   {camera:cameras[0].id,state:'game',interaction:{reason:'game_active',release_required:true}},
@@ -105,9 +125,36 @@ class Element{
  interactionCameras=[];find('button','手势与动作').onclick();await settle();
  find('button','添加设备控制').onclick();const target=byLabel('控制设备');target.value='lamp';target.onchange();
  all(root).find(n=>n.tagName==='form').onsubmit({preventDefault(){}});await settle();assert.equal(config.bindings[0].camera,null);assert.equal(config.bindings[0].scope,'home');
- find('button','指向设备').onclick();const scope=byLabel('使用范围');scope.value=cameras[2].id;scope.onchange();const pointTarget=byLabel('控制设备');pointTarget.value='curtain';pointTarget.onchange();
- await find('button','打开镜头并查看').onclick();await settle();const image=all(root).find(n=>n.tagName==='img');image.onload();image.onclick({clientX:320,clientY:180});all(root).find(n=>n.tagName==='form').onsubmit({preventDefault(){}});await settle();
+ find('button','指向设备').onclick();find('button','添加设备控制').onclick();
+ const scope=byLabel('用于标记设备的镜头');assert.equal(scope.value,'');assert(find('button','查看画面').disabled);
+ scope.value=cameras[2].id;scope.onchange();const pointTarget=byLabel('控制设备');pointTarget.value='curtain';pointTarget.onchange();await settle();
+ await find('button','查看画面').onclick();await settle();const image=all(root).find(n=>n.tagName==='img');
+ assert(image.src.includes(cameras[2].id+'/frame'),'运行中的镜头没有预览令牌，仍返回实时画面');
+ image.onload();
+ const beforeReopen=reads.length;find('button','添加设备控制').onclick();await settle();
+ assert.equal(reads.length,beforeReopen,'表单已展开时再次点击只回到表单');
+ assert(!image.hidden&&find('button','停止查看'),'活动预览未被重置');
+ image.onclick({clientX:320,clientY:180});all(root).find(n=>n.tagName==='form').onsubmit({preventDefault(){}});await settle();
  assert.equal(config.bindings[1].camera,cameras[2].id);assert.equal(config.bindings[1].gesture,'hand.point');assert.deepEqual(config.bindings[1].anchor,[.5,.5]);
  assert.ok(!writes.some(w=>['/api/embodied/start','/api/embodied/stop'].includes(w.path)),'Viewing or saving interactions must not restart perception');
- assert.ok(!reads.some(p=>p.includes('/cameras/')&&p.includes(cameras[0].id)),'Pointing preview stays on its explicitly selected camera');owner.dispose();console.log('All-camera voice, passive browsing, home bindings and scoped pointing preview: OK');
+ assert(!writes.some(w=>w.path.includes(cameras[2].id+'/preview/stop')),'查看运行中的共享镜头只收起页面画面');
+ find('button','添加设备控制').onclick();
+ const manual=byLabel('用于标记设备的镜头');manual.value=cameras[1].id;manual.onchange();await settle();
+ await find('button','查看画面').onclick();await find('button','停止查看').onclick();
+ assert(writes.some(w=>w.path.includes(cameras[1].id+'/preview/stop')&&w.body.token==='e'.repeat(32)),'手动预览只释放自己的令牌');
+ assert.ok(!reads.some(p=>p.includes('/cameras/')&&p.includes(cameras[0].id)),'Pointing preview stays on its explicitly selected camera');
+ owner.dispose();
+ context.options.data.devices=[cameras[0]];
+ const single=vm.runInContext('mountInteractions(root,options)',context);await settle();
+ find('button','指向设备').onclick();
+ assert.equal(byLabel('用于标记设备的镜头').value,cameras[0].id,'唯一镜头自动作为当前指向选项');
+ find('button','手势与动作').onclick();
+ assert.equal(byLabel('使用范围').value,'','自动选择的指向镜头不会把全屋手势改成单镜头');
+ single.dispose();
+ context.options.data.devices=[];
+ const noCamera=vm.runInContext('mountInteractions(root,options)',context);await settle();
+ find('button','指向设备').onclick();
+ assert(find('button','接入摄像头'));assert(!find('button','添加设备控制'),'无镜头时直接说明下一步');
+ noCamera.dispose();
+ console.log('All-camera voice, passive browsing, home bindings and scoped pointing preview: OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});

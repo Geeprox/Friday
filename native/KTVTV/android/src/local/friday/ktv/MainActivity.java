@@ -125,7 +125,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private volatile boolean foreground;
     private volatile boolean debugScreen;
     private volatile boolean autoRoom=true;
-    private boolean pollBusy,roomReportBusy,roomQrBusy,jobsBusy,loading,paused=true,videoReady,videoSeeking,original;
+    private boolean pollBusy,roomReportBusy,roomQrBusy,jobsBusy,loading,paused=true,videoReady,videoRendered,videoSeeking,original;
     private Button warmupButton;private final QueuePlaybackIntent queueIntent=new QueuePlaybackIntent();
     private boolean warmup;
     private final Map<String,JSONObject> warmupJobs=new LinkedHashMap<>();
@@ -158,7 +158,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private long videoSeekCount,videoBufferEvents,videoSurfaceFrames,videoPositionMs,videoTargetMs,seekResultMs,videoPrepareCount,routeRestartCount;
     private float videoSpeed=1;private boolean videoSpeedSupported=true;
     private int activeLine=-1,ticks,accent=0xfffa6670;
-    private long shownSecond=-1;
+    private long shownSecond=-1,shownDurationSecond=-1;
     private static final int WHITE=0xfff8f7f2,MUTED=0xffd2d7d2;
 
     @Override public void onCreate(Bundle state){
@@ -927,6 +927,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         trackTitle.setText("");
         picture.setAlpha(0);
         mvLyrics.setVisibility(View.GONE);
+        visibleMvLyric=-2;
 
         boolean joining=qrBitmap!=null&&autoRoom;
         boolean retained=current!=null;
@@ -1700,7 +1701,9 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                 try{
                     seekResultMs=v.getCurrentPosition();videoSeeking=false;
                     if(!engine.running||!foreground)return;
-                    long target=engine.playheadFrames/48+videoOffsetMs,lag=target-seekResultMs;
+                    long target=engine.playheadFrames/48+videoOffsetMs;
+                    if(target<0||target>=videoDurationMs-40)return;
+                    long lag=target-seekResultMs;
                     if(videoSeekCount==1&&lag>180&&lag<1500&&target+lag<videoDurationMs-40){
                         videoSeeking=true;videoSeekCount++;v.seekTo(target+lag,MediaPlayer.SEEK_CLOSEST);
                     }else v.start();
@@ -1710,11 +1713,8 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                 if(video!=v||!foreground)return false;
                 if(what==MediaPlayer.MEDIA_INFO_BUFFERING_START)videoBufferEvents++;
                 if(what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START){
-                    picture.setAlpha(1);
-                    // 新画面先获得同一播放时刻的歌词，再收起滚动歌词。
-                    updateMvLyrics(engine.playheadFrames/48);
-                    showScrollingLyrics(false);
-                    trackTitle.setVisibility(View.GONE);
+                    videoRendered=true;
+                    showVideoIfReady();
                 }
                 return false;
             });
@@ -1804,7 +1804,10 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         TextView line=lyricViews.get(row);
         boolean active=row==currentLine;
         line.setTextColor(active?(theme.equals("festival")?accent:WHITE):row==previousLine?0xffe2e2e2:MUTED);
-        if(line.isSelected()!=active)line.setSelected(active);
+        if(line.isSelected()!=active){
+            line.setSelected(active);
+            line.setBackgroundColor(active?0x80303335:Color.TRANSPARENT);
+        }
         textShadow(line,active);
     }
     private static PathInterpolator stageEase(){return new PathInterpolator(.2f,0f,0f,1f);}
@@ -1848,22 +1851,54 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         lyricMotion.addUpdateListener(animation->lyricScroll.scrollTo(0,(Integer)animation.getAnimatedValue()));
         lyricMotion.start();
     }
-    private void syncVideo(boolean force){if(video==null||!videoReady||!engine.backingPresented()||!foreground)return;long target=engine.playheadFrames/48+videoOffsetMs;if(target>=videoDurationMs-40){releaseVideo();return;}if(target<0){try{video.pause();}catch(Exception ignored){}picture.setAlpha(0);return;}try{
-        videoTargetMs=target;videoPositionMs=video.getCurrentPosition();if(videoSeeking)return;videoClock.update(target,videoPositionMs,SystemClock.elapsedRealtime(),force);
-        if(videoClock.seek){videoSeeking=true;videoSeekCount++;video.seekTo(target,MediaPlayer.SEEK_CLOSEST);}
-        else if(!video.isPlaying())video.start();
-        }catch(Exception ignored){releaseVideo();}}
+    private void showVideoIfReady(){
+        if(picture.getAlpha()!=0||!videoRendered||!videoReady||videoSeeking||!foreground||!engine.backingPresented())return;
+        long ms=engine.playheadFrames/48,target=ms+videoOffsetMs;
+        if(target<0||target>=videoDurationMs-40)return;
+        picture.setAlpha(1);
+        // 新画面先显示同一播放时刻的歌词，再收起滚动歌词。
+        updateMvLyrics(ms);
+        showScrollingLyrics(false);
+        trackTitle.setVisibility(View.GONE);
+    }
+    private void hideVideoSurface(){
+        if(picture.getAlpha()==0)return;
+        picture.setAlpha(0);
+        mvLyrics.setVisibility(View.GONE);
+        visibleMvLyric=-2;
+        boolean hasSong=current!=null;
+        showScrollingLyrics(hasSong);
+        trackTitle.setVisibility(hasSong?View.VISIBLE:View.GONE);
+    }
+    private void syncVideo(boolean force){
+        MediaPlayer player=video;
+        if(player==null||!videoReady||!engine.backingPresented()||!foreground)return;
+        long target=engine.playheadFrames/48+videoOffsetMs;
+        if(target>=videoDurationMs-40){releaseVideo();return;}
+        try{
+            if(target<0){
+                // 负偏移先保留滚动歌词，已准备但未开始的播放器可以直接等待。
+                if(player.isPlaying())player.pause();
+                hideVideoSurface();
+                return;
+            }
+            videoTargetMs=target;videoPositionMs=player.getCurrentPosition();
+            if(videoSeeking)return;
+            videoClock.update(target,videoPositionMs,SystemClock.elapsedRealtime(),force);
+            if(videoClock.seek){videoSeeking=true;videoSeekCount++;player.seekTo(target,MediaPlayer.SEEK_CLOSEST);}
+            else if(!player.isPlaying())player.start();
+        }catch(Exception ignored){releaseVideo();}
+    }
     private void releaseVideo(){
-        if(current!=null&&picture.getAlpha()>0){showScrollingLyrics(true);trackTitle.setVisibility(View.VISIBLE);}
-        mvLyrics.setVisibility(View.GONE);visibleMvLyric=-2;
-        videoReady=false;videoSeeking=false;picture.setAlpha(0);
+        hideVideoSurface();
+        videoReady=false;videoRendered=false;videoSeeking=false;
         if(video!=null){try{video.release();}catch(Exception ignored){}video=null;}
         if(videoSurface!=null){videoSurface.release();videoSurface=null;}
     }
     @Override public void onSurfaceTextureAvailable(SurfaceTexture texture,int w,int h){if(engine.running)prepareVideo();}
     @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture){releaseVideo();return true;}
     @Override public void onSurfaceTextureSizeChanged(SurfaceTexture texture,int w,int h){}
-    @Override public void onSurfaceTextureUpdated(SurfaceTexture texture){videoSurfaceFrames++;}
+    @Override public void onSurfaceTextureUpdated(SurfaceTexture texture){videoSurfaceFrames++;showVideoIfReady();}
     private void enlargeQr(){
         if(qrBitmap==null||qrPreview!=null)return;
         final boolean returnToQr=smallQr.hasFocus();
@@ -2028,8 +2063,9 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         long duration=song==null?0:Math.round(song.optDouble("duration_seconds")*1000);
         int value=duration>0?(int)Math.min(10000,ms*10000/duration):0;
         if(progress.getProgress()!=value)progress.setProgress(value);
-        if(shownSecond==ms/1000)return;
+        if(shownSecond==ms/1000&&shownDurationSecond==duration/1000)return;
         shownSecond=ms/1000;
+        shownDurationSecond=duration/1000;
         String shortcuts=smallQr.hasFocus()?"":"     ↑ 原唱/伴奏   ← 重唱   → 切歌";
         clock.setText(time(ms)+"  /  "+time(duration)+shortcuts);
     }

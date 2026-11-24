@@ -29,7 +29,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  let cameraPrivacy=null;
  let cameraConnection=null;
  let connectionSetup=null;let connectionDraw=0;
- let recordingsView=null,homeStatus=null;
+ let recordingsView=null,homeStatus=null,speechOutput=null;
  let thumbnails=null;try{thumbnails=deviceThumbnails();}catch(_){}
  const thumbnail=d=>{try{return thumbnails?.render(d)||null;}catch(_){return null;}};
  const deviceImage=d=>{const surface=thumbnail(d);if(surface){surface.classList.add('device-model-image');return surface;}return ico(visualMark(d));};
@@ -38,7 +38,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  const view=add(h('div',null,{class:'experience','data-page':page}));root.append(view);
  let listSlot=null,inspectorSlot=null,statsSlot=null,modelSlot=null,spatialScene=null,spacePanel=null,spatialRoom=null,spatialDevice=null,placementNotice=null,placementSaving=false;
  let spatialTrigger=null,inspectorTrigger=null;
- let previewStop=null;
+ let visibleDevicesKey=null;
+ let previewStop=null,layoutDialog=null;
  const cameraStates=new Map(),requestedPositions=new Map();
  async function readCamera(id,fresh=false){const saved=cameraStates.get(id);if(!fresh&&saved&&Date.now()-saved.at<15000)return saved.value;const value=await api(`/api/embodied/cameras/${id}/power`);cameraStates.set(id,{value,at:Date.now()});return value;}
  async function wakeCamera(id){const state=await readCamera(id,true);if(state.enabled)return {...state,status:'reported_match'};const value=await api(`/api/embodied/cameras/${id}/power`,{enabled:true,revision:state.revision,event_id:crypto.randomUUID()});cameraStates.delete(id);if(value.status==='reported_match')cameraStates.set(id,{value,at:Date.now()});return value;}
@@ -81,10 +82,13 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const controller=new AbortController();loadAbort=controller;
   if(!hasDrawn){view.setAttribute('aria-busy','true');view.replaceChildren(h('p','正在读取家庭状态…',{class:'loading-state',role:'status'}));}
   try{
-   const next=await api('/api/home/overview',undefined,{signal:controller.signal});
+   const options={signal:controller.signal};
+   const [next,layout]=await Promise.all([
+    api('/api/home/overview',undefined,options),
+    page==='Home'?api('/api/home/layout',undefined,options).catch(()=>null):null,
+   ]);
    if(!alive||version!==loadVersion)return;
-   next.layout=await api('/api/home/layout',undefined,{signal:controller.signal}).catch(()=>null);
-   if(!alive||version!==loadVersion)return;
+   next.layout=layout;
    data=next;
    for(const d of data.devices)for(const c of d.controls)if(requestedPositions.has(c.id))c.attributes.requested_position=requestedPositions.get(c.id);
    document.dispatchEvent(new CustomEvent('Friday.homeStatus',{detail:{generated_at:next.generated_at,connected:next.connected,simulated:next.simulated,control_count:next.control_count}}));
@@ -588,14 +592,23 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   },1500);
  }
 
+ function closeInspector(){
+  selected=null;inspectorSlot.hidden=true;stopPreview();updateTiles();
+  const card=[...listSlot.querySelectorAll('[data-device]')].find(n=>n.dataset.device===inspectorTrigger?.device);
+  const controls=card?[...card.querySelectorAll('[data-control-key]')]:[];
+  (controls.find(n=>n.dataset.controlKey===inspectorTrigger?.key)||card?.querySelector('.device-open'))?.focus?.({preventScroll:true});
+ }
+ function toggleInspector(device){
+  if(selected===device.id&&!inspectorSlot.hidden)closeInspector();
+  else inspect(data.devices.find(d=>d.id===device.id)||device);
+ }
  function inspect(d,{viewCamera=false}={}){if(!inspectorSlot)return;const wasOpen=selected===d.id&&!inspectorSlot.hidden;if(!wasOpen)inspectorTrigger={device:d.id,key:document.activeElement?.dataset?.controlKey||'details'};selected=d.id;stopPreview();inspectorSlot.replaceChildren();inspectorSlot.setAttribute('tabindex','-1');inspectorSlot.setAttribute('aria-label',d.name+'设备详情');
-  const close=btn('关闭',()=>{selected=null;inspectorSlot.hidden=true;stopPreview();updateTiles();const card=[...listSlot.querySelectorAll('[data-device]')].find(n=>n.dataset.device===inspectorTrigger?.device);([...card?.querySelectorAll('[data-control-key]')||[]].find(n=>n.dataset.controlKey===inspectorTrigger?.key)||card?.querySelector('.device-open'))?.focus?.({preventScroll:true});},{class:'inspector-close','aria-label':'关闭设备详情'});
+  const close=btn('关闭',closeInspector,{class:'inspector-close','aria-label':'关闭设备详情'});
   add(inspectorSlot,close,add(h('div',null,{class:'product-device-heading'}),ico(visualMark(d)),h('h2',d.name),h('p',d.room,{class:'device-room'})));
   inspectorSlot.hidden=false;
   if(d.kind!=='camera')inspectorSlot.append(h('p',deviceSummary(d),{class:'device-state-summary',role:'status'}));
   if(d.kind==='camera')cameraPanel(d,inspectorSlot,{start:viewCamera});
   else if(d.controls.length)d.controls.forEach(c=>inspectorSlot.append(typeControl(c,{showName:d.controls.length>1})));
-  else inspectorSlot.append(h('p',deviceSummary(d),{class:'device-state-summary'}));
   if(d.triggers?.length)inspectorSlot.append(mainDeviceControls({...d,controls:[]},{send:control,busy}));
   deviceReadings(d,inspectorSlot);
   const details=add(h('details',null,{class:'device-diagnostics'}),h('summary','设备信息'),h('p',d.presentation?.label||names[d.kind]||'设备'),h('p',`房间：${d.room}`));inspectorSlot.append(details);
@@ -653,11 +666,28 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  function cancelPlacement(){model?.place(null);spatialScene?.classList.remove('placing-device');if(placementNotice)placementNotice.hidden=true;}
  function tiles(devices){const grid=h('div',null,{class:'product-device-grid'});devices.forEach(d=>{
   const card=h('article',null,{class:'product-device device-kind-'+d.kind+(selected===d.id?' selected':''),'data-device':d.id});
-  const open=btn(null,()=>inspect(d),{class:'device-open','aria-label':'查看'+d.name,'data-control-key':'details'});add(open,add(h('span',null,{class:'tile-icon'+(d.controls.some(c=>c.available&&c.value==='on')?' active':'')}),ico(visualMark(d))),h('span',d.room,{class:'tile-room'}),h('strong',d.name));
+  const open=btn(null,()=>toggleInspector(d),{class:'device-open','aria-label':'查看'+d.name,'data-control-key':'details','aria-expanded':String(selected===d.id),'aria-controls':'device-detail-panel'});add(open,add(h('span',null,{class:'tile-icon'+(d.controls.some(c=>c.available&&c.value==='on')?' active':'')}),ico(visualMark(d))),h('span',d.room,{class:'tile-room'}),h('strong',d.name));
   if(d.kind!=='camera')open.append(h('span',deviceSummary(d),{class:'tile-state'}));card.append(open);
   card.append(mainDeviceControls(d,{send:control,wake:wakeCamera,readCamera,viewCamera:d=>inspect(d,{viewCamera:true}),details:()=>inspect(d),busy}));grid.append(card);
  });return grid;}
- function updateTiles(){if(!listSlot||!data)return;if(listSlot.contains(document.activeElement)&&document.activeElement?.type==='range')return;const active=document.activeElement,focused=listSlot.contains(active)?active?.closest?.('[data-device]')?.dataset.device:null,key=active?.dataset?.controlKey;const ds=data.devices.filter(d=>(page!=='Cameras'||d.kind==='camera')&&(room==='全部'||d.room===room)&&(category==='全部'||d.kind===category||category==='switch'&&d.kind==='trigger'||category==='light'&&d.controls.some(c=>c.kind==='light'))&&(!query||(d.name+d.room).toLowerCase().includes(query.toLowerCase())));listSlot.replaceChildren(page==='Devices'?deviceRows(ds):tiles(ds));const count=view.querySelector('[data-device-count]');if(count)count.textContent=ds.length+' 个设备';if(!ds.length)listSlot.append(add(h('div',null,{class:'product-empty'}),ico('devices'),h('h3',data.devices.length?'没有符合条件的设备':'还没有设备'),h('p',data.devices.length?'试试其他房间、类型或关键词。':'连接家庭后，设备会显示在这里。'),btn(data.devices.length?'显示全部设备':'连接家庭',()=>{if(!data.devices.length){go('Settings');return;}query='';category='全部';room='全部';drawHome();})));if(focused){const card=[...listSlot.querySelectorAll('[data-device]')].find(n=>n.dataset.device===focused);([...card?.querySelectorAll('[data-control-key]')||[]].find(n=>n.dataset.controlKey===key)||card?.querySelector('.device-open'))?.focus?.({preventScroll:true});}}
+ function updateTiles(){
+  if(!listSlot||!data)return;
+  const active=document.activeElement;
+  if(listSlot.contains(active)&&active?.type==='range')return;
+  const focused=listSlot.contains(active)?active?.closest?.('[data-device]')?.dataset.device:null;
+  const ds=data.devices.filter(d=>(page!=='Cameras'||d.kind==='camera')&&(room==='全部'||d.room===room)&&(category==='全部'||d.kind===category||category==='switch'&&d.kind==='trigger'||category==='light'&&d.controls.some(c=>c.kind==='light'))&&(!query||(d.name+d.room).toLowerCase().includes(query.toLowerCase())));
+  const key=JSON.stringify([room,selected,busy,data.devices.length,ds.map(d=>[d.id,d.kind,d.name,d.room,visualMark(d),d.camera_state,d.controls,d.triggers,deviceSummary(d)])]);
+  if(page==='Devices'&&key===visibleDevicesKey)return;
+  visibleDevicesKey=key;
+  listSlot.replaceChildren(page==='Devices'?deviceRows(ds):tiles(ds));
+  const count=view.querySelector('[data-device-count]');if(count)count.textContent=ds.length+' 个设备';
+  if(!ds.length)listSlot.append(add(h('div',null,{class:'product-empty'}),ico('devices'),h('h3',data.devices.length?'没有符合条件的设备':'还没有设备'),h('p',data.devices.length?'试试其他房间、类型或关键词。':'连接家庭后，设备会显示在这里。'),btn(data.devices.length?'显示全部设备':'连接家庭',()=>{if(!data.devices.length){go('Settings');return;}query='';category='全部';room='全部';drawHome();})));
+  if(focused){
+   const card=[...listSlot.querySelectorAll('[data-device]')].find(n=>n.dataset.device===focused);
+   const controls=card?[...card.querySelectorAll('[data-control-key]')]:[];
+   (controls.find(n=>n.dataset.controlKey===active.dataset?.controlKey)||card?.querySelector('.device-open'))?.focus?.({preventScroll:true});
+  }
+ }
  function focusRoom(name){
   room=name;
   for(const b of view.querySelectorAll('.room-pills button'))b.setAttribute('aria-pressed',String((b.dataset.room||b.textContent)===room));
@@ -687,7 +717,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    const group=add(h('section',null,{class:'device-group'}),h('h3',name));
    for(const d of items){
     const row=h('article',null,{class:'product-device device-list-row'+(selected===d.id?' selected':''),'data-device':d.id});
-    const open=btn(null,()=>inspect(d),{class:'device-open','data-control-key':'details','aria-label':'查看'+d.name,'aria-expanded':String(selected===d.id),'aria-controls':'device-detail-panel'});
+    const open=btn(null,()=>toggleInspector(d),{class:'device-open','data-control-key':'details','aria-label':'查看'+d.name,'aria-expanded':String(selected===d.id),'aria-controls':'device-detail-panel'});
     open.append(add(h('span',null,{class:'tile-icon'+(d.controls.some(c=>c.available&&c.value==='on')?' active':'')}),ico(visualMark(d))),add(h('span',null,{class:'device-row-copy'}),h('strong',d.name),h('span',deviceSummary(d),{class:'tile-state'})));
     row.append(open,mainDeviceControls(d,{send:control,wake:wakeCamera,readCamera,viewCamera:d=>inspect(d,{viewCamera:true}),details:()=>inspect(d),busy}));
     group.append(row);
@@ -697,10 +727,10 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   return list;
  }
  function drawHome(){
-  stopPreview();model?.dispose();model=null;spacePanel=null;spatialScene=null;listSlot=null;inspectorSlot=null;statsSlot=null;
+  stopPreview();model?.dispose();model=null;spacePanel=null;spatialScene=null;listSlot=null;inspectorSlot=null;statsSlot=null;visibleDevicesKey=null;
   homeStatus?.dispose();homeStatus=null;view.replaceChildren();connectionSetup?.dispose();connectionSetup=null;
   if(!data.connected&&!data.simulated)view.append(add(h('section',null,{class:'home-source-banner source-offline',role:'status'}),ico('alert-circle'),add(h('div'),h('strong','家庭连接已中断'),h('p','显示上次记录，请恢复连接后再操作。')),btn('恢复连接',()=>go('Settings'))));
-  const dashboard=page==='Home'?h('div',null,{class:'home-dashboard'}):null;const space=dashboard?h('section',null,{class:'home-space','aria-label':'家庭空间'}):null;if(dashboard){const tools=add(h('div',null,{class:'home-space-tools'}),h('h2','家庭空间'),btn('户型与位置',editHouse,{class:'text-button'}));space.append(tools);filters(space);dashboard.append(space);view.append(dashboard);}
+  const dashboard=page==='Home'?h('div',null,{class:'home-dashboard'}):null;const space=dashboard?h('section',null,{class:'home-space','aria-label':'家庭空间'}):null;if(dashboard){const tools=add(h('div',null,{class:'home-space-tools'}),h('h2','家庭空间'));if(data.layout?.rooms?.length){tools.append(btn('户型与位置',editHouse,{class:'text-button'}));}space.append(tools);if(data.layout?.rooms?.length)filters(space);dashboard.append(space);view.append(dashboard);}
   if(page==='Home'&&data.layout?.rooms?.length){
    const scene=h('section',null,{class:'house-scene','aria-label':'家庭空间控制'});spatialScene=scene;modelSlot=h('div',null,{class:'house-canvas'});scene.append(modelSlot);
    scene.append(add(h('div',null,{class:'model-toolbar'}),btn('显示全屋',()=>{focusRoom('全部');closeSpatialPanel();model?.reset();}),btn('重置视角',()=>model?.reset())));
@@ -734,7 +764,90 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  }
  function drawStats(){}
  async function savePlacement(device,placedRoom,position){if(placementSaving)return;placementSaving=true;model?.place(null);try{data.layout=await api('/api/home/layout/device-position',{expected_revision:data.layout.revision,device_id:device.bindings?.find(b=>b.source==='xiaomi-identity')?.external_id||device.id,room_id:placedRoom.id,position});cancelPlacement();toast(device.name+'的位置已保存');drawHome();}catch(_){toast('位置未保存，请刷新户型后重试',true);cancelPlacement();}finally{placementSaving=false;}}
- function editHouse(){const dialog=h('dialog',null,{class:'product-dialog'});add(dialog,h('h2','家庭空间档案'),h('p','导入米家房间轮廓或完整户型。更新时按房间与设备 ID 对齐，已有设备位置会保留。'));const file=h('input',null,{type:'file',accept:'.json,application/json','aria-label':'导入家庭空间档案'}),out=h('div',null,{role:'status'});file.onchange=async()=>{const f=file.files[0];if(!f)return;if(f.size>2*1024*1024){out.textContent='文件过大，请选择家庭空间 JSON。';return;}try{const incoming=JSON.parse(await f.text()),report=await api('/api/home/layout/preview',{layout:incoming});out.replaceChildren(h('p',`房间：新增 ${report.rooms?.added?.length||0}，更新 ${report.rooms?.changed?.length||0}；设备点位：新增 ${report.devices?.added?.length||0}`));if(report.conflicts?.some(c=>c.kind!=='device_position_changed')){out.append(h('p','发现房间或设备归属冲突，请检查导入档案后重试。'));return;}if(report.conflicts?.length)out.append(h('p',`${report.conflicts.length} 个设备位置发生变化，导入会同步到新位置。`));out.append(btn('导入更新',async()=>{data.layout=await api('/api/home/layout/import',{layout:incoming,expected_revision:report.base_revision,accept_device_changes:Boolean(report.conflicts?.length)});dialog.close();drawHome();},{class:'primary'}));}catch(_){out.textContent='文件格式不正确，请使用 Friday 空间档案或米家 FloorMapV3 数据。';}};dialog.append(field('选择档案',file),out);if(data.layout){dialog.append(btn('撤销上次导入',async()=>{try{data.layout=await api('/api/home/layout/restore',{expected_revision:data.layout.revision});dialog.close();drawHome();}catch(_){toast('没有可恢复的上一版户型',true);}}));dialog.append(btn('导出当前档案',()=>{const blob=new Blob([JSON.stringify(data.layout,null,2)],{type:'application/json'}),a=h('a',null,{href:URL.createObjectURL(blob),download:'Friday-home-layout.json'});a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}));const target=choices([['','选择需要定位的设备'],...data.devices.map(d=>[d.id,d.room+' · '+d.name])],'定位设备');dialog.append(field('设备位置',target),btn('在户型中定位',()=>{const d=data.devices.find(d=>d.id===target.value);if(!d)return;dialog.close();beginPlacement(d);}));const placed=new Set(data.layout.devices.map(d=>d.id)),unplaced=data.devices.filter(d=>!placed.has(d.id)&&!d.bindings?.some(b=>placed.has(b.external_id)));dialog.append(h('p',`${unplaced.length} 个设备尚未定位。未定位设备可以在列表中正常控制。`));}presentationEditor(dialog);dialog.append(btn('完成',()=>dialog.close()));document.body.append(dialog);dialog.onclose=()=>dialog.remove();dialog.showModal();}
+ function editHouse(){
+  if(layoutDialog?.open)return;
+  const dialog=h('dialog',null,{class:'product-dialog','aria-labelledby':'house-import-title'});
+  layoutDialog=dialog;
+  add(dialog,h('h2','家庭空间档案',{id:'house-import-title'}),h('p','导入米家房间轮廓或 Friday 户型。先查看房间和设备位置的变化，再导入。'));
+  const file=h('input',null,{type:'file',accept:'.json,application/json','aria-label':'导入家庭空间档案'});
+  const out=h('div',null,{role:'status'});
+  let version=0,previewController=null,saving=false;
+  const active=stamp=>alive&&dialog.open&&version===stamp;
+  const preview=async()=>{
+   const stamp=++version;
+   previewController?.abort();
+   out.replaceChildren();
+   const picked=file.files[0];
+   if(!picked)return;
+   if(picked.size>2*1024*1024){out.textContent='文件过大，请选择家庭空间 JSON。';return;}
+   const controller=new AbortController();
+   previewController=controller;
+   out.textContent='正在预览户型变化…';
+   try{
+    const incoming=JSON.parse(await picked.text());
+    if(!active(stamp))return;
+    const report=await api('/api/home/layout/preview',{layout:incoming},{signal:controller.signal});
+    if(!active(stamp))return;
+    out.replaceChildren(h('p',`新增 ${report.rooms?.added?.length||0} 个房间，更新 ${report.rooms?.changed?.length||0} 个房间，新增 ${report.devices?.added?.length||0} 个设备位置。`));
+    const conflicts=report.conflicts||[];
+    if(conflicts.some(c=>c.kind!=='device_position_changed')){
+     out.append(h('p','房间或设备归属有冲突，请核对档案后重新选择。'));return;
+    }
+    if(conflicts.length)out.append(h('p',`导入将更新 ${conflicts.length} 个已有的设备位置。`));
+    const feedback=h('p',null,{role:'status'});
+    const apply=btn(conflicts.length?'导入并更新设备位置':'导入户型',async()=>{
+     if(!active(stamp)||saving)return;
+     saving=true;file.disabled=apply.disabled=true;
+     feedback.textContent='正在导入…';
+     try{
+      const layout=await api('/api/home/layout/import',{layout:incoming,expected_revision:report.base_revision,accept_device_changes:conflicts.length>0});
+      if(!alive)return;
+      data.layout=layout;
+      if(dialog.open)dialog.close();
+      drawHome();toast('户型已导入');
+      view.querySelector('.home-space-tools button')?.focus({preventScroll:true});
+     }catch(error){
+      if(!active(stamp))return;
+      if(error.message==='layout_revision_conflict'){
+       out.replaceChildren(h('p','当前户型已有更新，请重新预览。'),btn('重新预览',preview));
+      }else{
+       feedback.textContent='户型未能导入，请重试。';apply.disabled=false;
+      }
+     }finally{saving=false;file.disabled=false;}
+    },{class:'primary'});
+    out.append(apply,feedback);
+   }catch(error){
+    if(active(stamp)){
+     out.textContent=error instanceof SyntaxError||error.message==='layout_invalid_import'?'文件格式不正确，请选择 Friday 户型或米家 FloorMapV3 JSON。':'暂时无法预览户型，请重试。';
+     if(!(error instanceof SyntaxError)&&error.message!=='layout_invalid_import')out.append(btn('重新预览',preview));
+    }
+   }
+  };
+  file.onchange=preview;
+  dialog.append(field('选择档案',file),out);
+  if(data.layout){
+   dialog.append(btn('撤销上次导入',async()=>{
+    try{data.layout=await api('/api/home/layout/restore',{expected_revision:data.layout.revision});if(alive){dialog.close();drawHome();toast('已恢复上次户型');}}
+    catch(_){if(alive)toast('没有可恢复的上一版户型',true);}
+   }));
+   dialog.append(btn('导出当前档案',()=>{
+    const blob=new Blob([JSON.stringify(data.layout,null,2)],{type:'application/json'});
+    const link=h('a',null,{href:URL.createObjectURL(blob),download:'Friday-home-layout.json'});
+    link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);
+   }));
+   const target=choices([['','选择需要定位的设备'],...data.devices.map(d=>[d.id,d.room+' · '+d.name])],'定位设备');
+   const place=btn('在户型中定位',()=>{const d=data.devices.find(d=>d.id===target.value);if(d){dialog.close();beginPlacement(d);}});
+   place.disabled=true;target.onchange=()=>{place.disabled=!target.value;};
+   dialog.append(field('设备位置',target),place);
+   const placed=new Set(data.layout.devices.map(d=>d.id)),unplaced=data.devices.filter(d=>!placed.has(d.id)&&!d.bindings?.some(b=>placed.has(b.external_id)));
+   if(unplaced.length)dialog.append(h('p',`${unplaced.length} 个设备尚未定位，可在设备列表中控制。`));
+  }
+  presentationEditor(dialog);
+  dialog.append(btn('完成',()=>dialog.close()));
+  document.body.append(dialog);
+  dialog.onclose=()=>{version++;previewController?.abort();if(layoutDialog===dialog)layoutDialog=null;dialog.remove();};
+  dialog.showModal();
+ }
  function presentationEditor(dialog){
   const section=add(h('section',null,{class:'presentation-editor'}),h('h3','Friday 设备样式'),h('p','为家中的实际设备选择外观。样式单独保存，重新导入户型时会保留。',{class:'caption'}));
   const profile=structuredClone(data.presentation),climate=choices([['auto','跟随设备类型'],['ceiling_vent','中央空调 · 吊顶出风口'],['wall_unit','壁挂空调']],'全屋空调样式');climate.value=profile.climate_style;
@@ -761,8 +874,22 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   async function openArchiveMapping(){if(mappingPending)return;archiveMapping.hidden=false;if(!mappingLoaded){mappingPending=true;archiveMapping.replaceChildren(h('p','正在读取录像设置…',{role:'status'}));try{await archiveSettings(archiveMapping);mappingLoaded=true;}catch{if(alive)archiveMapping.replaceChildren(h('p','录像设置暂不可读取。',{role:'status'}),btn('重试',()=>void openArchiveMapping()));}finally{mappingPending=false;}}if(alive)archiveMapping.scrollIntoView?.({block:'start',behavior:'instant'});}
   if(requestArchiveSettings){requestArchiveSettings=false;onArchiveSettingsOpened();void openArchiveMapping();}
   cameraPrivacy?.dispose();cameraPrivacy=mountCameraPrivacy(view);
-  const quiet=add(h('section',null,{class:'preference-row'}),add(h('div'),h('h2','安静模式'),h('p','Friday 的语音回复保持静音',{class:'muted'})));const toggle=btn(worker.quiet?'已开启':'已关闭',async()=>{await api('/api/embodied/quiet',{quiet:!worker.quiet});await drawConnections();},{role:'switch','aria-checked':String(worker.quiet)});quiet.append(toggle);view.append(quiet);
-  mountSpeechOutput(view,{api,isAlive:()=>alive,toast});
+  const quiet=add(h('section',null,{class:'preference-row'}),add(h('div'),h('h2','静音语音回复')));
+  let muted=Boolean(worker.quiet),savingMute=false;
+  const toggle=btn(muted?'已静音':'未静音',async()=>{
+   if(savingMute)return;
+   savingMute=true;toggle.setAttribute('aria-busy','true');toggle.setAttribute('aria-disabled','true');
+   try{
+    const result=await api('/api/embodied/quiet',{quiet:!muted});
+    if(!toggle.isConnected)return;
+    muted=result.quiet;speechOutput?.setQuiet(muted);
+    toggle.textContent=muted?'已静音':'未静音';
+    toggle.setAttribute('aria-checked',String(muted));
+   }catch(_){if(toggle.isConnected)toast('静音设置未保存，请重试。',true);}
+   finally{savingMute=false;toggle.removeAttribute('aria-busy');toggle.removeAttribute('aria-disabled');}
+  },{role:'switch','aria-label':'静音语音回复','aria-checked':String(muted)});
+  quiet.append(toggle);view.append(quiet);
+  speechOutput?.dispose();speechOutput=mountSpeechOutput(view,{api,isAlive:()=>alive,toast});
   const advanced=add(h('details',null,{class:'advanced-connections'}),h('summary','连接与权限详情'));advanced.addEventListener('toggle',()=>{if(advanced.open&&!advanced.loaded){advanced.loaded=true;legacyConnections(advanced);}});view.append(advanced);const nasSetup=btn('设置家庭资料连接',()=>{if(!advanced.loaded){advanced.loaded=true;legacyConnections(advanced,'settings-nas');}advanced.open=true;advanced.scrollIntoView?.({block:'start',behavior:'instant'});},{class:'text-button'});list.append(nasSetup);
   const experiments=add(h('details',null,{class:'advanced-connections'}),h('summary','实验功能与调试'));if(document.body.dataset.fileStewardEnabled==='true')experiments.append(h('p','家庭资料索引与整理预览仍在完善中。',{class:'caption'}),btn('打开资料索引预览',()=>go('Files')));const debug=h('input',null,{type:'checkbox'});debug.checked=developerMode;debug.addEventListener('change',()=>setDeveloperMode(debug.checked));experiments.append(add(h('label',null,{class:'settings-debug-toggle'}),debug,h('span','在导航中显示系统状态与调试工具')),btn('文字指令调试',()=>go('Ask Home')));view.append(experiments);
  }
@@ -771,5 +898,5 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  function draw(){if(['Home','Devices'].includes(page))drawHome();else if(page==='Cameras')drawCameras();else if(page==='Activity')void drawRecordings();else if(page==='Settings')void drawConnections();else if(page==='Automations')void drawAutomations();else if(page==='Interaction')void drawInteraction();}
  function update(){homeStatus?.update(data.devices);if(page==='Cameras')updateTiles();if(['Home','Devices'].includes(page)){model?.updateDevices(data.devices);updateTiles();drawStats();if(spatialRoom&&!busy&&data.devices.find(d=>d.id===spatialDevice)?.kind!=='camera'&&!spacePanel?.contains(document.activeElement))drawSpatialPanel();if(selected&&!busy&&inspectorSlot?.isConnected){const d=data.devices.find(x=>x.id===selected);if(d&&d.kind!=='camera'&&!inspectorSlot.contains(document.activeElement))inspect(d);}}}
  void load(true);if(['Home','Devices','Cameras'].includes(page))timer=setInterval(()=>{if(!loadAbort)void load();},10000);
- return{selectTaskAttention(id){attentionId=id;automationView?.selectAttention(id);},refresh:()=>{if(homeStatus)void homeStatus.refresh();return recordingsView?recordingsView.refresh():page==='Settings'?drawConnections():load();},dispose(){alive=false;++loadVersion;loadAbort?.abort();loadAbort=null;homeStatus?.dispose();connectionSetup?.dispose();clearInterval(timer);stopPreview();recordingsView?.dispose();cameraPrivacy?.dispose();cameraConnection?.dispose();recognitionDebug?.dispose();automationView?.dispose();model?.dispose();thumbnails?.dispose();interactions?.dispose();view.replaceChildren();}};
+ return{selectTaskAttention(id){attentionId=id;automationView?.selectAttention(id);},refresh:()=>{if(homeStatus)void homeStatus.refresh();return recordingsView?recordingsView.refresh():page==='Settings'?drawConnections():load();},dispose(){alive=false;layoutDialog?.close();++loadVersion;loadAbort?.abort();loadAbort=null;homeStatus?.dispose();connectionSetup?.dispose();clearInterval(timer);stopPreview();recordingsView?.dispose();cameraPrivacy?.dispose();cameraConnection?.dispose();recognitionDebug?.dispose();automationView?.dispose();model?.dispose();thumbnails?.dispose();interactions?.dispose();view.replaceChildren();}};
 }

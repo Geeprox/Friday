@@ -41,6 +41,7 @@ async function main(){
   await stable.view.ready;assert.equal(stable.context.scrollY,260);
   const input=walk(stable.root).find(node=>node.attrs.type==='search');input.focus();input.setSelectionRange(1,2);
   await stable.view.refresh();const newInput=walk(stable.root).find(node=>node.attrs.type==='search');
+  assert.equal(newInput,input,'刷新过程中保留正在输入的搜索框');
   assert.equal(stable.context.document.activeElement,newInput);assert.equal(newInput.selectionStart,1);assert.equal(newInput.selectionEnd,2);
   assert.equal(newInput.value,'宇宙');assert(retained.selected.has('a'.repeat(64)));stable.context.scrollY=410;stable.view.destroy();assert.equal(retained.scrollY,410);
   let connected=0,reviewBody=null,failed=true;const plan={status:'blocked',plan_id:'fixture-plan',plan_fingerprint:'p',inventory_fingerprint:'i',counts:{selected:1,protected:1,collision:0},entries:[{entry_id:'one',before_relative_path:'camera/IMG.jpg',destination:'new.jpg',policy_label:'保留原名',blockers:['policy_preserve_name']}]};
@@ -75,10 +76,11 @@ async function main(){
   const watched=control('watched');watched.checked=true;watched.events.change();
   const label=control('label');label.value='科学收藏';label.events.input();label.focus();label.setSelectionRange(1,3);
   assert.equal(walk(configured.root).find(n=>n.tag==='details'&&n.textContent.includes('提取限额')).open,false);
-  walk(configured.root).find(n=>n.tag==='form').events.submit({preventDefault(){}});await new Promise(setImmediate);
+  const submitSettings=()=>walk(configured.root).find(n=>n.tag==='form'&&!n.hidden).events.submit({preventDefault(){}});
+  submitSettings();await new Promise(setImmediate);
   assert(configured.root.textContent.includes('记录已变化'));assert.equal(control('label').value,'科学收藏');assert.equal(control('rename_preview').checked,true);
   assert.equal(configured.context.document.activeElement,control('label'));assert.equal(control('label').selectionStart,1);
-  walk(configured.root).find(n=>n.tag==='form').events.submit({preventDefault(){}});await new Promise(setImmediate);
+  submitSettings();await new Promise(setImmediate);
   assert(configured.root.textContent.includes('已保存 · 提取待启用'));
   assert(settingBody.watched&&settingBody.rule.rename_preview&&!settingBody.rule.move_preview&&!settingBody.rule.structure_preview&&!settingBody.rule.dedup_review);
   assert.equal(settingBody.expected_fingerprint,'c'.repeat(64));

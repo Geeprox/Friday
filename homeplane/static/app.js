@@ -54,6 +54,7 @@ const filesState = {tab:'Files',query:'',selected:new Set(),destinations:new Map
 let peopleView = null, peopleViewVersion = 0, peopleStylesheet = null;
 let experienceView=null, experiencePage=null, experienceVersion=0;
 let snapshot = null, page = 'Home', lastTrace = null, loading = false, connected = false;
+let pageRefresh = null;
 let lastRulePlan = null;
 let homeQueryDraft = {room:null,kind:'state'}, homeQueryResult = null, homeQueryRequest = null, homeQuerySource = null, homeQuerySequence = 0;
 let homeConversationView=null, homeConversationSlot=null, homeConversationSession=null;
@@ -112,7 +113,7 @@ function safetyReviewKind(value){return ['visual','sound'].includes(value)?value
 function recordingCameraId(value){return typeof value==='string'&&/^cam_[a-f0-9]{10}$/.test(value)?value:null;}
 function pageLocation(){
   const [path,query='']=location.hash.slice(1).split('?');
-  const name=pages.find(name=>name.toLowerCase().replace(' ','-')===path);
+  const name=path==='developer'&&$('developer-mode')?.checked?'Developer':path?pages.find(name=>name.toLowerCase().replace(' ','-')===path):'Home';
   const params=new URLSearchParams(query);
   const eventId=name==='Safety'?safetyEventId(params.get('event')):null;
   return {name,eventId,review:name==='Safety'&&!eventId?safetyReviewKind(params.get('review')):null,
@@ -120,11 +121,15 @@ function pageLocation(){
     recordingCamera:name==='Activity'?recordingCameraId(params.get('camera')):null};
 }
 function rememberSafetyEvent(id){if(page!=='Safety')return;requestedSafetyReview=null;requestedSafetyEvent=safetyEventId(id);history.replaceState(null,'','#safety'+(requestedSafetyEvent?'?event='+requestedSafetyEvent:''));}
-function go(name,{eventId=null,review=null,attentionId=null,recordingCamera=null}={}){
+function go(name,{eventId=null,review=null,attentionId=null,recordingCamera=null,fromLocation=false}={}){
   const changed=page!==name;
+  const safetySelection=page==='Safety'&&Boolean(requestedSafetyEvent||requestedSafetyReview);
   const camera=name==='Activity'?recordingCameraId(recordingCamera):null;
   const recordingScopeChanged=name==='Activity'&&requestedRecordingCamera!==camera;
-  if(changed||recordingScopeChanged){archiveVersion++;archiveSetupVersion++;stopArchivePlayer();}
+  if(changed||recordingScopeChanged){
+    archiveVersion++;archiveSetupVersion++;stopArchivePlayer();
+    if(pageRefresh){pageRefresh=null;showRefresh(loading);}
+  }
   if(!changed&&recordingScopeChanged){
     experienceView?.dispose();experienceView=null;experiencePage=null;
   }
@@ -140,10 +145,14 @@ function go(name,{eventId=null,review=null,attentionId=null,recordingCamera=null
   if(requestedTaskAttention)query.set('attention',requestedTaskAttention);
   if(camera)query.set('camera',camera);
   const suffix=query.toString();
-  history.replaceState(null,'','#'+name.toLowerCase().replace(' ','-')+(suffix?'?'+suffix:''));
+  const destination='#'+name.toLowerCase().replace(' ','-')+(suffix?'?'+suffix:'');
+  if(!fromLocation&&location.hash!==destination&&(changed||location.hash||suffix)){
+    history.pushState(null,'',destination);
+  }
   render();
   if(page==='Safety'&&requestedSafetyEvent)experienceView?.selectEvent?.(requestedSafetyEvent);
   if(page==='Safety'&&requestedSafetyReview)experienceView?.focusReview?.(requestedSafetyReview);
+  if(page==='Safety'&&safetySelection&&!requestedSafetyEvent&&!requestedSafetyReview)experienceView?.clearSelection?.();
   if(page==='Automations')experienceView?.selectTaskAttention?.(requestedTaskAttention);
   if(changed||recordingScopeChanged){
     const heading=$('page-title');heading?.setAttribute('tabindex','-1');heading?.focus?.({preventScroll:true});
@@ -387,7 +396,6 @@ function render() {
   }
   if(document.body.dataset.consoleSurface!=='legacy'&&['Home','Devices','Cameras','Interaction','Activity','Automations','Settings'].includes(page)&&(snapshot||page==='Settings')){
     experiencePage=page;
-    content.append(el('p',page==='Settings'?'正在读取连接设置…':'正在读取家庭状态…',{class:'loading-state',role:'status'}));
     import('/static/home-experience.js').then(({mountExperience})=>{if(experienceCurrent!==experienceVersion||experiencePage!==page)return;content.replaceChildren();experienceView=mountExperience(content,{page,go,snapshot,attentionId:requestedTaskAttention,recordingCamera:requestedRecordingCamera,onOpenArchiveSettings:()=>{requestArchiveSettings=true;go('Settings');},developerMode:$('developer-mode').checked,setDeveloperMode:checked=>{$('developer-mode').checked=checked;navigation();},legacyConnections:(slot,target)=>{if(target)selectedConnection=target;renderSettings(slot);},archiveSettings:async slot=>{settingsData=await api('/api/settings');if(page==='Settings'&&slot.isConnected){slot.replaceChildren();renderArchiveSettings(slot);slot.querySelector('#settings-archive').open=true;}},requestArchiveSettings,onArchiveSettingsOpened:()=>{requestArchiveSettings=false;},legacyRules:renderCoreRules,openEvidenceRecording:openEventRecording});}).catch(()=>{
       if(experienceCurrent!==experienceVersion||experiencePage!==page)return;
       experiencePage=null;
@@ -399,7 +407,7 @@ function render() {
   }
   if (!snapshot) {
     if (page === 'Settings') return renderSettings(content);
-    return empty(content,'正在回到家中','正在同步房间和设备…');
+    return content.append(el('p', '正在读取家庭状态…',{class:'loading-state',role:'status'}));
   }
   if (!connected) content.append(note('连接中断，显示上次记录。请刷新后重试。',true));
   ({Home:renderHome, Devices:renderDevices, Activity:renderActivity, Automations:renderAutomations, System:renderSystem, Developer:renderDeveloper, Settings:renderSettings, 'Ask Home':renderAsk})[page](content);
@@ -2701,13 +2709,39 @@ function renderAsk(content) {
   if(homeQueryResult){renderHomeQueryResult(output,homeQueryResult);if(homeQueryResult.next_cursor)more.removeAttribute('hidden');}
   add(block,form,output,more);content.append(block);
 }
+function showRefresh(pending){
+  const control=$('refresh'),label=$('refresh-label');
+  if(pending){
+    control.setAttribute('aria-busy','true');control.setAttribute('aria-disabled','true');
+  }else{
+    control.removeAttribute('aria-busy');control.removeAttribute('aria-disabled');
+  }
+  if(label)label.textContent=pending?'正在刷新':'刷新状态';
+}
 async function refresh() {
-  if(experienceView)return experienceView.refresh();
-  if(page==='Files'&&filesView)return filesView.refresh();
-  if(loading) return; loading=true; $('refresh').disabled=true; $('notification').textContent='';
-  if (page === 'Settings') {await refreshHaStatus();await refreshGeekSession();await refreshCameraMedia();if(selectedConnection==='settings-nas')await nasConnectionRefresh?.();}
-  try{snapshot=await api('/api/snapshot');loadedScenario=null;connected=true;if(page !== 'Settings')render();}catch(error){connected=false;$('notification').textContent=error.message;if(page !== 'Settings')render();}
-  finally{renderSourceStatus();loading=false;$('refresh').disabled=false;}
+  const view=experienceView||(page==='Files'&&filesView);
+  if(view?.refresh){
+    if(pageRefresh?.view===view)return;
+    const owned={view};pageRefresh=owned;showRefresh(true);
+    $('notification').textContent='';
+    try{await view.refresh();}
+    catch(_){if(pageRefresh===owned)$('notification').textContent='状态暂时无法刷新，请重试。';}
+    finally{if(pageRefresh===owned){pageRefresh=null;showRefresh(loading);}}
+    return;
+  }
+  if(loading)return;
+  loading=true;showRefresh(true);
+  $('notification').textContent='';
+  try {
+    if(page==='Settings'){await refreshHaStatus();await refreshGeekSession();await refreshCameraMedia();if(selectedConnection==='settings-nas')await nasConnectionRefresh?.();}
+    try {snapshot=await api('/api/snapshot');loadedScenario=null;connected=true;}
+    catch(error){connected=false;$('notification').textContent=error.message;}
+    if(page!=='Settings')render();
+    renderSourceStatus();
+  } finally {
+    loading=false;
+    if(!pageRefresh)showRefresh(false);
+  }
 }
 let passiveLoading = false;
 async function refreshPassive() {
@@ -2725,10 +2759,21 @@ async function refreshPassive() {
   } finally {passiveLoading = false;}
 }
 $('brand-home')?.addEventListener('click',event => {event.preventDefault();go('Home');});
+$('skip-navigation')?.addEventListener('click',event=>{
+  event.preventDefault();
+  const workspace=$('workspace');
+  workspace.focus({preventScroll:true});
+  workspace.scrollIntoView({block:'start',behavior:'instant'});
+});
 $('refresh').addEventListener('click',refresh);
-$('developer-mode').addEventListener('change',()=>{if(page==='Developer'&&!$('developer-mode').checked)page='Home';navigation();render();});
+$('developer-mode').addEventListener('change',()=>{
+  if(page==='Developer'&&!$('developer-mode').checked){
+    history.replaceState(null,'','#home');go('Home',{fromLocation:true});return;
+  }
+  navigation();render();
+});
 const initial=pageLocation();if(initial.name){page=initial.name;requestedSafetyEvent=initial.eventId;requestedSafetyReview=initial.review;requestedTaskAttention=initial.attentionId;requestedRecordingCamera=initial.recordingCamera;}
-globalThis.addEventListener?.('hashchange',()=>{const next=pageLocation();if(next.name&&(next.name!==page||next.eventId!==requestedSafetyEvent||next.review!==requestedSafetyReview||next.attentionId!==requestedTaskAttention||next.recordingCamera!==requestedRecordingCamera))go(next.name,next);});
+globalThis.addEventListener?.('hashchange',()=>{const next=pageLocation();if(next.name&&(next.name!==page||next.eventId!==requestedSafetyEvent||next.review!==requestedSafetyReview||next.attentionId!==requestedTaskAttention||next.recordingCamera!==requestedRecordingCamera))go(next.name,{...next,fromLocation:true});});
 render(); refresh();
 // OAuth return and browser restoration must refresh authorization independently of HA polling.
 globalThis.addEventListener?.('pageshow', () => { if (page === 'Settings') void refreshHaStatus(); });

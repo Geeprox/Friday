@@ -196,8 +196,8 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    historyStatus.textContent=historyLoaded?'暂时无法刷新，显示上次读取的提醒。':'暂时无法读取提醒，请重试。';
   },replace);
  }
- function refresh(){void refreshStatus();void refreshHistory();}
- function backToList(){selectionVersion++;stopRecording();recordings.replaceChildren();root.dataset.detailOpen='false';if(!events.length){selected=null;detail.hidden=true;}onEventSelected(null);eventRows.get(selected)?.focus?.({preventScroll:true});}
+ function refresh(){return Promise.all([refreshStatus(),refreshHistory()]);}
+ function backToList({fromLocation=false}={}){requested=null;selectionVersion++;stopRecording();recordings.replaceChildren();root.dataset.detailOpen='false';if(!events.length){selected=null;detail.hidden=true;}if(!fromLocation)onEventSelected(null);eventRows.get(selected)?.focus?.({preventScroll:true});}
  function selectEvent(id){if(!alive||!validEventId(id))return;requested=id;if(!historyLoaded)return;requested=null;const event=events.find(e=>e.id===id);if(event)show(event,{focus:true});else missingEvent(id,{focus:true});}
  function choose(id){selectEvent(id);onEventSelected(id);}
  function focusDetail(heading){root.dataset.detailOpen='true';heading.focus?.({preventScroll:true});detail.scrollIntoView?.({block:'start',behavior:'instant'});}
@@ -322,5 +322,5 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  }
  if(initialReview&&!requested)focusReview(initialReview);
  availability();refresh();timer=setInterval(()=>{if(!busy)refresh();},5000);
- return{selectEvent,focusReview,dispose(){alive=false;retireRead(statusFeed);retireRead(historyFeed);selectionVersion++;clearInterval(timer);clearTimeout(retryTimer);retryController?.abort();stopRecording();root.remove();}};
+ return{selectEvent,focusReview,refresh,clearSelection(){settings.open=false;backToList({fromLocation:true});},dispose(){alive=false;retireRead(statusFeed);retireRead(historyFeed);selectionVersion++;clearInterval(timer);clearTimeout(retryTimer);retryController?.abort();stopRecording();root.remove();}};
 }

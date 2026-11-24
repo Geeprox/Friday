@@ -3,6 +3,7 @@ import AppKit
 
 struct ContentView: View {
     @ObservedObject var service: ServiceManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var presentation: HomeConnectionPresentation {
         HomeConnectionPresentation(status: service.status, readable: service.statusReadAvailable, phase: service.phase)
     }
@@ -19,7 +20,6 @@ struct ContentView: View {
             #endif
         }
         .frame(minWidth: 760, minHeight: 560)
-        .preferredColorScheme(.light)
     }
     private var liveContent: some View {
         Group {
@@ -27,6 +27,7 @@ struct ContentView: View {
                 ConsoleView(url: FridayPaths.endpoint)
             } else if service.phase == .starting {
                 FridayServiceState(title: "正在打开你的家", detail: "正在启动本机家庭服务。", busy: true)
+                    .transition(.opacity)
             } else if service.phase == .running {
                 ConsoleView(url: FridayPaths.endpoint.appendingPathComponent("desktop/setup"))
             } else {
@@ -37,8 +38,10 @@ struct ContentView: View {
                     diagnostic: service.message,
                     actionTitle: service.phase == .stopped ? "恢复运行" : "重新启动"
                 ) { Task { await service.start(userInitiated: true) } }
+                .transition(.opacity)
             }
         }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: service.phase)
     }
 }
 
@@ -50,7 +53,6 @@ struct FridayServiceState: View {
     var diagnostic: String? = nil
     var actionTitle = "重新启动"
     var action: () -> Void = {}
-    private let accent = Color(red: 66 / 255, green: 68 / 255, blue: 73 / 255)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -59,7 +61,7 @@ struct FridayServiceState: View {
                 Text("Friday")
             }
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(accent)
+                .foregroundStyle(.primary)
             VStack(alignment: .leading, spacing: 10) {
                 Text(title).font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader)
                 Text(detail).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -69,7 +71,7 @@ struct FridayServiceState: View {
             } else {
                 Button(actionTitle, action: action)
                     .buttonStyle(.borderedProminent).controlSize(.large)
-                    .keyboardShortcut(.defaultAction).tint(accent)
+                    .keyboardShortcut(.defaultAction)
             }
             if let diagnostic, !diagnostic.isEmpty {
                 DisclosureGroup("查看详情") {
@@ -81,6 +83,6 @@ struct FridayServiceState: View {
         .frame(maxWidth: 400, alignment: .leading)
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(red: 245 / 255, green: 245 / 255, blue: 243 / 255))
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }

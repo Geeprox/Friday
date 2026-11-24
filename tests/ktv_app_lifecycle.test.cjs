@@ -47,6 +47,38 @@ test('guide and app scripts share globals without duplicate declarations',()=>{
  new vm.Script(fs.readFileSync(path.join(web,'guide.js'),'utf8')+'\n'+source);
 });
 
+test('触屏弹层关闭后回到当前入口或同一首歌的新按钮，保留已经移走的焦点',()=>{
+ const h=harness(),dialog=h.element('song-dialog'),trigger=h.element('first-song'),heading=h.element('song-action-title');
+ const doc=h.context.document,other=h.element('view-queue'),replacement=h.element('replacement');
+ let close,listenerCount=0;
+ dialog.addEventListener=(type,callback)=>{if(type==='close'){close=callback;listenerCount++;}};
+ dialog.querySelector=()=>heading;
+ let expectedTrigger=trigger;
+ dialog.showModal=()=>{assert.equal(doc.activeElement,expectedTrigger);dialog.open=true;};
+ const open=(name='first-song')=>h.run(`openDialog("song-dialog", $("${name}"))`);
+ doc.activeElement=doc.body;
+ open();
+ assert.equal(doc.activeElement,heading);
+ dialog.open=false;doc.activeElement=doc.body;close();
+ assert.equal(doc.activeElement,trigger);
+ open();
+ dialog.open=false;other.focus();close();
+ assert.equal(doc.activeElement,other);
+ open();
+ trigger.isConnected=false;trigger.dataset.focusId=replacement.dataset.focusId='synthetic-song:more-song';
+ h.element('results').querySelectorAll=()=>[replacement];
+ dialog.open=false;doc.activeElement=doc.body;close();
+ assert.equal(doc.activeElement,replacement);
+ trigger.isConnected=true;
+ open();dialog.open=false;
+ expectedTrigger=other;open('view-queue');
+ close();
+ assert.equal(doc.activeElement,heading,'迟到的关闭事件不能移开新弹层内的焦点');
+ dialog.open=false;doc.activeElement=doc.body;close();close();
+ assert.equal(doc.activeElement,other,'快速重开后只认最后一次打开的按钮');
+ assert.equal(listenerCount,1);
+});
+
 test('scan stays on automatic recovery after a long outage',async()=>{
  const h=harness({validRoom:true}),timers=[];
  h.context.setTimeout=(run,delay)=>{timers.push({run,delay});return timers.length;};

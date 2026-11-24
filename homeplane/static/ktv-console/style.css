@@ -174,7 +174,6 @@ body.ktv-standalone{background:#fff;margin:0;padding:36px 28px}.ktv-console[data
 .ktv-console .library-table td.date{font-size:12px;white-space:normal}
 .ktv-console .cleanup-targets{display:flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
 .ktv-console .cleanup-targets button{min-height:28px;height:28px;min-width:48px;padding:3px 10px;border:0;border-radius:5px;background:transparent;font-size:13px}
-.ktv-console .cleanup-targets button[aria-pressed=true]{background:var(--accent);color:var(--on-accent)}
 .ktv-console .queue-heading{display:flex;align-items:baseline;gap:12px;margin-bottom:16px}
 .ktv-console .queue-heading h2{margin:0}
 .ktv-console .queue-group{margin-top:22px}
@@ -217,9 +216,12 @@ body.ktv-standalone{background:#fff;margin:0;padding:36px 28px}.ktv-console[data
  .ktv-console .ktv-navigation button:hover:enabled:not(:active){background:transparent;border-color:transparent;border-bottom-color:inherit}
  .ktv-console .ktv-navigation button[aria-pressed=true]:hover:enabled:not(:active){border-bottom-color:var(--ink)}
 }
+.ktv-console .primary:active:enabled{background:var(--accent-hover);border-color:var(--accent-hover)}
+.ktv-console .danger:active:enabled{background:var(--danger-hover);border-color:var(--danger-hover)}
+.ktv-console .cleanup-targets button[data-scope][aria-pressed=true]{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 @media(prefers-reduced-motion:no-preference){
  .ktv-console button:not(.queue-drag,.ktv-navigation button){
-  transition:scale var(--quick) ease-out,background-color var(--quick) ease-out,color var(--quick) ease-out,border-color var(--quick) ease-out
+  transition:scale var(--quick) var(--motion-ease),background-color var(--quick) var(--motion-ease),color var(--quick) var(--motion-ease),border-color var(--quick) var(--motion-ease)
  }
  .ktv-console button:active:enabled:not(.queue-drag,.ktv-navigation button,[aria-disabled=true]){scale:.96}
  .ktv-console .background-switch input::before{transition:transform var(--quick) var(--motion-ease)}

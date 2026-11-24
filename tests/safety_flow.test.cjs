@@ -17,6 +17,7 @@ function fixture(initial=[event('b'),event('a')]){
   getAttribute(k){return this.attrs[k]??null;}
   removeAttribute(k){delete this.attrs[k];}
   append(...nodes){for(const n of nodes){this.children.push(n);n.parent=this;}}
+  insertBefore(node,before){node.remove();const index=before?this.children.indexOf(before):this.children.length;this.children.splice(index,0,node);node.parent=this;}
   replaceChildren(...nodes){this.children=[];this._text='';this.append(...nodes);}
   remove(){if(this.parent)this.parent.children=this.parent.children.filter(n=>n!==this);this.parent=null;}
   contains(n){return all(this).includes(n);}
@@ -303,12 +304,12 @@ test('leaving during explicit recovery ignores its late acknowledgement and does
 
 function navigationFixture(){
  const source=fs.readFileSync('homeplane/static/app.js','utf8'),routes=source.slice(source.indexOf('function safetyEventId('),source.indexOf('\nfunction button(')),selected=[];
- const location={hash:'#home'},history={replaceState(_state,_unused,hash){location.hash=hash;}};
+ const entries=[],location={hash:'#home'},history={replaceState(_state,_unused,hash){location.hash=hash;},pushState(_state,_unused,hash){entries.push(hash);location.hash=hash;}};
  let disposed=0;
- const context=vm.createContext({location,history,URLSearchParams,pages:['Home','Safety','Devices','Settings','Activity'],page:'Home',requestedSafetyEvent:null,requestedRecordingCamera:null,
+ const context=vm.createContext({location,history,URLSearchParams,pages:['Home','Safety','Devices','Settings','Activity'],page:'Home',pageRefresh:null,requestedSafetyEvent:null,requestedRecordingCamera:null,
   archiveVersion:0,archiveSetupVersion:0,lastTrace:null,stopArchivePlayer(){},render(){},refreshHaStatus(){},$:()=>null,
   experiencePage:'Home',experienceView:{selectEvent:id=>selected.push(id),dispose(){disposed++;}}});
- vm.runInContext(routes,context);return{context,location,selected,disposed:()=>disposed};
+ vm.runInContext(routes,context);return{context,location,selected,entries,disposed:()=>disposed};
 }
 
 test('the real Console router preserves an event on reload and can select another event on the same page',()=>{
@@ -316,6 +317,16 @@ test('the real Console router preserves an event on reload and can select anothe
  assert.equal(f.location.hash,'#safety?event='+'a'.repeat(32));assert.equal(f.context.pageLocation().eventId,'a'.repeat(32));
  f.context.go('Safety',{eventId:'b'.repeat(32)});assert.equal(f.selected.at(-1),'b'.repeat(32));
  f.context.rememberSafetyEvent(null);assert.equal(f.location.hash,'#safety');assert.equal(f.context.pageLocation().eventId,null);
+});
+
+test('用户导航写入历史，返回到无锚点的首页不会新增一条历史',()=>{
+ const f=navigationFixture();
+ f.location.hash='';assert.equal(f.context.pageLocation().name,'Home');
+ f.context.go('Devices');f.context.go('Devices');f.context.go('Safety');
+ assert.deepEqual(f.entries,['#devices','#safety']);
+ f.location.hash='#devices';f.context.go('Devices',{...f.context.pageLocation(),fromLocation:true});
+ f.location.hash='';f.context.go('Home',{...f.context.pageLocation(),fromLocation:true});
+ assert.equal(f.context.page,'Home');assert.deepEqual(f.entries,['#devices','#safety']);
 });
 
 test('invalid event links cannot become a route or carry event data into another page',()=>{

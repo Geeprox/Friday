@@ -58,6 +58,7 @@ output.is-busy{display:inline-flex;align-items:center;gap:6px}output.is-busy::af
  button:not(:disabled):not(.is-busy):active{scale:.96}
 }
 @media(prefers-reduced-motion:reduce){
+ :root{--motion-state:0ms;--motion-panel:0ms}
  button.is-busy::after{content:"…";border:0;display:grid;place-items:center;font-size:15px;line-height:1}
 }
 @keyframes activity-turn{to{transform:rotate(360deg)}}

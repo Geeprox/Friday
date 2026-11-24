@@ -514,19 +514,23 @@ function reconcile(parent,nodes){
  for(const [index,node]of nodes.entries())if(parent.children[index]!==node)parent.insertBefore(node,parent.children[index]||null);
 }
 async function moveQueue(songId,targetId,b){
+ if(changing||b?.getAttribute('aria-disabled')==='true')return;
  const state=room?.status;if(!state)return;
  const movable=orderableSongs(state).map(song=>song.id),from=movable.indexOf(songId),to=movable.indexOf(targetId);
  if(from<0||to<0||from===to)return;
  movable.splice(from,1);movable.splice(to,0,songId);
  const moving=new Set(movable);let index=0;
  const ids=state.songs.map(song=>moving.has(song.id)?movable[index++]:song.id);
- return action(b,()=>roomAction('order',{ids,revision:state.queue_revision}),'歌单顺序已同步。');
+ // 排序手柄保留焦点，键盘可以接着移动同一首歌。
+ b?.setAttribute('aria-disabled','true');
+ try{return await action(null,()=>roomAction('order',{ids,revision:state.queue_revision}),'歌单顺序已同步。');}
+ finally{b?.removeAttribute('aria-disabled');}
 }
 function dragHandle(song){
  const handle=button('⠿',()=>{}, {className:'queue-drag'});
  handle.setAttribute('aria-label','拖拽排序 '+song.title);handle.title='拖拽排序，也可用上下方向键移动';handle.draggable=true;
  handle.ondragstart=event=>{
-  if(changing){event.preventDefault();return;}
+  if(changing||handle.getAttribute('aria-disabled')==='true'){event.preventDefault();return;}
   queueDrag={id:song.id,revision:room.status.queue_revision,roomId:room.room_id};
   roomSyncRequest?.abort();viewRequest?.abort();
   event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',song.id);

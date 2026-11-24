@@ -1,18 +1,18 @@
 /* People owns only its root and standalone demo surface. */
-.people-root, .people-demo{color-scheme:light;--people-bg:#f6f6f5;--people-ink:#1d1d1f;--people-muted:#596356;--people-line:#e5e5e7;--people-accent:#303033;--people-soft:#edeeec}
+.people-root, .people-demo{color-scheme:light dark;--people-surface:#fff;--people-on-accent:#fff;--people-bg:#f6f6f5;--people-ink:#1d1d1f;--people-muted:#596356;--people-line:#e5e5e7;--people-accent:#303033;--people-soft:#edeeec}
 :where(.people-root,.people-demo), :where(.people-root,.people-demo) *{box-sizing:border-box}
 .people-demo{margin:0;background:var(--people-bg);font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;color:var(--people-ink)}
 :where(.people-root,.people-demo) button, :where(.people-root,.people-demo) input, :where(.people-root,.people-demo) select{font:inherit;color:inherit}
 :where(.people-root,.people-demo) button{cursor:pointer}
 :where(.people-root,.people-demo) button:disabled{opacity:.4;cursor:default}
 :where(.people-root,.people-demo) button:focus-visible, :where(.people-root,.people-demo) input:focus-visible, :where(.people-root,.people-demo) select:focus-visible, :where(.people-root,.people-demo) a:focus-visible{outline:2px solid #365a43;outline-offset:3px}
-:where(.people-root,.people-demo) button, :where(.people-root,.people-demo) input, :where(.people-root,.people-demo) select{min-height:42px;border:1px solid var(--people-line);border-radius:10px;background:white;padding:9px 14px}
-:where(.people-root,.people-demo) button:hover:not(:disabled){background:#f1f1ef}
-:where(.people-root,.people-demo) button.primary{background:var(--people-accent);color:white;border-color:var(--people-accent)}
+:where(.people-root,.people-demo) button, :where(.people-root,.people-demo) input, :where(.people-root,.people-demo) select{min-height:42px;border:1px solid var(--people-line);border-radius:10px;background:var(--people-surface);padding:9px 14px}
+:where(.people-root,.people-demo) button:hover:not(:disabled){background:var(--people-soft)}
+:where(.people-root,.people-demo) button.primary{background:var(--people-accent);color:var(--people-on-accent);border-color:var(--people-accent)}
 :where(.people-root,.people-demo) button.primary:hover:not(:disabled){background:#151516}
 :where(.people-root,.people-demo) button.text{border:0;background:none;padding:8px 10px}
 :where(.people-root,.people-demo) input[type=checkbox]{width:18px;height:18px;min-height:18px;padding:0;accent-color:var(--people-accent)}
-:where(.people-root,.people-demo) .skip{position:absolute;left:20px;top:-60px;z-index:5;background:white;padding:12px}
+:where(.people-root,.people-demo) .skip{position:absolute;left:20px;top:-60px;z-index:5;background:var(--people-surface);padding:12px}
 :where(.people-root,.people-demo) .skip:focus{top:12px}
 :where(.people-root,.people-demo) .demo-nav{position:fixed;inset:0 auto 0 0;width:204px;background:#eeeFef;border-right:1px solid #ffffff;padding:31px 22px;display:flex;flex-direction:column}
 :where(.people-root,.people-demo) .brand{color:inherit;text-decoration:none;font-size:31px;font-weight:720;letter-spacing:-1.4px}
@@ -181,3 +181,11 @@ to{opacity:1;transform:translateY(0)}}
 @media(forced-colors:active){:where(.people-root,.people-demo) :focus-visible{outline-color:Highlight}}
 
 .people-root .live-caption,.people-demo .live-caption{color:var(--people-muted);font-size:.8125rem;line-height:1.55}
+
+@media (prefers-color-scheme: dark) {
+ .people-root, .people-demo {
+  --people-bg:#1c1c1e;--people-surface:#29292c;--people-ink:#f0f0ef;--people-muted:#b3b8b3;
+  --people-line:#454548;--people-soft:#37383a;--people-accent:#dedee1;--people-on-accent:#242426;
+ }
+ .people-root .live-caption{color:var(--people-muted)}
+}

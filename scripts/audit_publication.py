@@ -23,6 +23,11 @@ FORBIDDEN_SUFFIXES = {'.sqlite', '.sqlite3', '.db', '.pem', '.key', '.p12', '.mp
                       '.m4a', '.aiff', '.zip', '.tar', '.gz', '.bundle', '.patch', '.ses', '.onnx', '.safetensors'}
 # Exact reviewed artwork and synthetic assets; household photos and changed bytes still fail closed.
 SYNTHETIC_MEDIA = {
+    # 从隔离浏览器的模拟家庭与房间截取，按本次确认的字节放行。
+    'docs/screenshots/console-dark-device.png':
+        '4065116d4829e4ff30986f6f4c99ecffc707bec51c3d4fc90f9c39a02da01195',
+    'docs/screenshots/ktv-mobile-dark-sound.png':
+        'dae71add526d7ef92b7136d816031c791311c27cf95eba1180e38fbbf7606734',
     # 固定合成镜头状态截图，输入来自 camera-perception.html，不连接设备。
     'docs/screenshots/camera-perception-status.png':
         '9a7df5a50fee28fcad2b18e745566e6a70ab560bb29bbd278c57d885bf02d3f8',
