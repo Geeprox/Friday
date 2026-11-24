@@ -1002,15 +1002,31 @@ $("search-entry").onclick=()=>setView("find",{focus:"query"});
 $("frequent-entry").onclick=()=>setView("frequent");
 document.querySelector(".brand").onclick=event=>{event.preventDefault();setView("home");};
 $("queue-tab").onclick=()=>setView("queue");$("view-queue").onclick=()=>setView("queue");
+const dialogFocus=new WeakMap();
 function openDialog(id,trigger){
  const dialog=$(id);
  if(dialog.open)return;
+ let focus=dialogFocus.get(dialog);
+ if(!focus){
+  focus={trigger:null};
+  dialogFocus.set(dialog,focus);
+  dialog.addEventListener("close",()=>{
+   // 上一次排队的关闭事件可能在本轮弹层已经打开后才到达。
+   if(dialog.open)return;
+   const opener=focus.trigger;
+   focus.trigger=null;
+   if(!opener||document.activeElement!==document.body)return;
+   const available=node=>node?.isConnected&&!node.disabled&&!node.closest("[hidden], details:not([open])");
+   const key=opener.dataset.focusId;
+   const replacement=key&&Array.from($("results").querySelectorAll("button[data-focus-id]"))
+    .find(node=>node.dataset.focusId===key&&available(node));
+   const target=available(opener)?opener:replacement||$(mode==="home"?"queue-tab":"page-title");
+   if(available(target))target.focus({preventScroll:true});
+  });
+ }
+ focus.trigger=trigger;
  // Safari 触屏不一定聚焦按钮，先让原生弹层记住关闭后要回到的入口。
  trigger?.focus({preventScroll:true});
- if(trigger)dialog.addEventListener("close",()=>{
-  if(!dialog.open&&document.activeElement===document.body&&trigger.isConnected&&!trigger.closest("[hidden]"))
-   trigger.focus({preventScroll:true});
- },{once:true});
  if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");
  dialog.querySelector(".sheet-heading h2").focus({preventScroll:true});
 }
