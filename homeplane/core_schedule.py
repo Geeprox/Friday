@@ -167,8 +167,6 @@ class CoreSchedule:
                     status="running" if matched else "suppressed",
                     code=code or ("live_event_admitted" if matched else evaluated.reasons[0]),
                 )
-                if self.store.connection.execute("SELECT count(*) FROM core_rule_runs").fetchone()[0] >= 1000:
-                    raise ValueError("core_run_capacity")
                 with self.store.connection:
                     # A slot and its first diagnostic receipt commit together;
                     # no await or effect occurs before this durable boundary.
@@ -232,6 +230,7 @@ class CoreSchedule:
                     result['state'] = (
                         'finished' if run.fingerprint != record.fingerprint else
                         'completed' if run.status == 'completed' else
+                        'partial' if run.status == 'partial' else
                         'unconfirmed' if run.status == 'unknown_outcome' else
                         'running' if run.status in {'running', 'waiting'} else
                         'missed' if run.code == 'expired_event_no_replay' else 'not_executed'

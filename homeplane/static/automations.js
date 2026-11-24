@@ -25,6 +25,7 @@ const reviewErrors={
  brightness_required:'请输入 0.1–100 的亮度百分比。',
  delay_required:'请输入有效的等待秒数。',
  delay_total:'等待总时长需小于 30 秒，请缩短等待后重试。',
+ partial_lighting_requires_distinct_registered_devices:'请选择不同的实体灯具。属于同一设备的多个控制项需要按顺序执行。',
 };
 function sourceReference(entry){
  const heading=h('h3','原规则',{id:'automation-original-title'});
@@ -164,11 +165,23 @@ export function mountAutomations(root,{api,data,snapshot,go,toast,legacyRules,at
     catch(_){toast('规则状态待确认，请重新读取。',true);}
     finally{state.disabled=false;}
    },{role:'switch','aria-checked':String(record.enabled),'aria-label':record.rule.intent+'是否启用'});
-   const run=button('执行一次',()=>confirm('执行“'+record.rule.intent+'”？',['这次直接执行以下动作，不等待触发条件。',...record.rule.actions.filter(a=>a.target).map(describeAction)],async()=>{const result=await api(`/api/home/automations/records/${encodeURIComponent(record.id)}/run`,{expected_fingerprint:record.fingerprint,expected_context:listing.fingerprint,event_id:crypto.randomUUID()});toast(result.status==='reported_match'?'设备已回报更新':'已发送，部分设备结果尚未确认',result.status!=='reported_match');}));
+   const run=button('执行一次',()=>confirm('执行“'+record.rule.intent+'”？',[
+    '这次直接执行以下动作，不等待触发条件。',...record.rule.actions.filter(a=>a.target).map(describeAction),
+   ],async()=>{
+    const result=await api(`/api/home/automations/records/${encodeURIComponent(record.id)}/run`,{
+     expected_fingerprint:record.fingerprint,expected_context:listing.fingerprint,event_id:crypto.randomUUID(),
+    });
+    const messages={
+     reported_match:'设备已回报更新',
+     partial:'可用灯具已回报更新，已跳过暂不可用的灯具',
+     unavailable:'灯具暂不可用，本次未发送',
+    };
+    toast(messages[result.status]||'执行结果尚未确认',!['reported_match','partial'].includes(result.status));
+   }));
    const supported=record.rule.actions.every(a=>a.type==='device.set'||a.type==='light.set'&&a.brightness!=='minimum_verified'&&!a.require_no_bright_flash);run.disabled=!listing.available||!supported;
    const edit=button('编辑',()=>openEditor(record));
    if(oneOff){const status=h('p','正在核对执行状态…',{class:'caption',role:'status'});info.append(status);run.hidden=true;
-    const show=report=>{const valid=report?.fingerprint===record.fingerprint,key=valid?report.state:'unavailable',terminal=['completed','finished','missed','unconfirmed','not_executed','cancelled'].includes(key);const text=({scheduled:'等待执行',running:'正在执行',paused:'已暂停',completed:'已执行',finished:'已结束',missed:'已错过执行时间',unconfirmed:'执行结果待确认',not_executed:'未执行',cancelled:'已取消'})[key]||'执行状态待核对';if(status.textContent!==text)status.textContent=text;state.hidden=terminal;state.disabled=terminal||!valid||key==='unavailable';edit.textContent=terminal?'重新安排':'编辑';};clockViews.set(record.id,show);show(clockReport?.[record.id]);}
+    const show=report=>{const valid=report?.fingerprint===record.fingerprint,key=valid?report.state:'unavailable',terminal=['completed','partial','finished','missed','unconfirmed','not_executed','cancelled'].includes(key);const text=({scheduled:'等待执行',running:'正在执行',paused:'已暂停',completed:'已执行',partial:'部分灯具已执行',finished:'已结束',missed:'已错过执行时间',unconfirmed:'执行结果待确认',not_executed:'未执行',cancelled:'已取消'})[key]||'执行状态待核对';if(status.textContent!==text)status.textContent=text;state.hidden=terminal;state.disabled=terminal||!valid||key==='unavailable';edit.textContent=terminal?'重新安排':'编辑';};clockViews.set(record.id,show);show(clockReport?.[record.id]);}
    row.append(add(h('div',null,{class:'product-actions'}),state,edit,run));if(!supported)row.append(h('p','这条自动化按设定条件运行。',{class:'caption'}));list.append(row);
    if(focusRecord===record.id){focusRecord=null;title.focus();}
   }
@@ -231,9 +244,20 @@ export function mountAutomations(root,{api,data,snapshot,go,toast,legacyRules,at
      const sync=()=>{const on=input.value==='on';brightnessFields.hidden=!on;mode.disabled=!on;levelField.hidden=mode.value!=='level';brightness.disabled=!on||mode.value!=='level';brightness.required=!brightness.disabled;};mode.onchange=sync;input.addEventListener('change',sync);sync();const base=read;read=()=>{const value=base();if(value.power!=='on'||mode.value==='keep')return value;if(mode.value==='minimum')return{...value,brightness:'minimum_verified'};const level=Number(brightness.value);if(!brightness.value||!Number.isFinite(level)||level<.1||level>100)throw Error('brightness_required');return{...value,brightness:brightness.value===originalLevel&&typeof desired.brightness==='number'?desired.brightness:Math.max(1,Math.round(level*255/100))};};
     }}
    function operations(){operation.replaceChildren();for(const cap of byControl.get(target.value)?.capabilities||[])if(labels[cap.name])operation.append(h('option',labels[cap.name],{value:cap.name}));if(action?.operation&&[...operation.options].some(o=>o.value===action.operation))operation.value=action.operation;else if(action?.type==='light.set')operation.value='light.set';drawParameters();}target.onchange=()=>{desired=action?.type==='light.set'?originalDesired():{};operations();};operation.onchange=()=>{desired=action?.type==='light.set'&&operation.value==='light.set'?originalDesired():{};drawParameters();};operations();
-   row.append(field('设备',target),field('操作',operation),parameters,button('移除此动作',remove));inputs.push({row,read:()=>{if(!target.value)throw Error('target_required');const selected=read();if(action?.type==='light.set'&&operation.value==='light.set')return{...action,target:target.value,power:selected.power,brightness:selected.brightness,require_no_bright_flash:selected.power==='on'&&action.require_no_bright_flash===true};return{id:action?.id||'effect:'+crypto.randomUUID(),type:'device.set',target:target.value,operation:operation.value,desired:selected};}});actions.append(row);
+   row.append(field('设备',target),field('操作',operation),parameters,button('移除此动作',remove));inputs.push({row,
+    independentLight:()=>operation.value==='light.set'&&!action?.require_no_bright_flash?target.value:null,
+    read:()=>{if(!target.value)throw Error('target_required');const selected=read();if(action?.type==='light.set'&&operation.value==='light.set')return{...action,target:target.value,power:selected.power,brightness:selected.brightness,require_no_bright_flash:selected.power==='on'&&action.require_no_bright_flash===true};return{id:action?.id||'effect:'+crypto.randomUUID(),type:'device.set',target:target.value,operation:operation.value,desired:selected};}});actions.append(row);
   }
   (draft.actions.length?draft.actions:[null]).forEach(addAction);
+  const partialLighting=h('input',null,{type:'checkbox'});
+  partialLighting.checked=draft.execution.allow_partial_lighting===true;
+  const partialLightingField=add(h('label',null,{class:'automation-time-toggle'}),partialLighting,
+   h('span','有灯具暂不可用时，继续控制其余灯具'));
+  function syncPartialLighting(){
+   const targets=inputs.filter(input=>input.row.isConnected).map(input=>input.independentLight?.());
+   const eligible=!draft.safety?.allow_during_sleep&&targets.length>1&&targets.every(Boolean)&&new Set(targets).size===targets.length;
+   partialLightingField.hidden=partialLighting.disabled=!eligible;
+  }
   const conditions=add(h('details',null,{class:'automation-conditions'}),h('summary','附加条件（可选）'));
   conditions.open=Boolean(entry?.conditions?.length||draft.conditions.length);
   const conditionRows=h('div'),conditionInputs=[];
@@ -291,7 +315,7 @@ export function mountAutomations(root,{api,data,snapshot,go,toast,legacyRules,at
   const timeFields=add(h('div',null,{class:'automation-time-fields',hidden:''}),field('从',start),field('到',end));
   timeToggle.onchange=()=>{timeFields.hidden=!timeToggle.checked;};
   conditions.append(add(h('label',null,{class:'automation-time-toggle'}),timeToggle,h('span','只在指定时段运行')),timeFields);
-  fields.append(conditions,add(h('section',null,{class:'automation-actions-editor'}),h('h3','就执行'),actions,add(h('div',null,{class:'product-actions'}),
+  fields.append(conditions,add(h('section',null,{class:'automation-actions-editor'}),h('h3','就执行'),actions,partialLightingField,add(h('div',null,{class:'product-actions'}),
    button('添加一个动作',()=>{addAction();changed();}),
    button('添加等待',()=>{addAction({id:'wait:'+crypto.randomUUID(),type:'delay',milliseconds:1000,cancel_on_new_event:true});changed();}))));
   const output=h('div',null,{class:'automation-review'});
@@ -310,9 +334,10 @@ export function mountAutomations(root,{api,data,snapshot,go,toast,legacyRules,at
   const saveStatus=h('p','',{class:'automation-save-status',role:'status',tabindex:'-1'});
   activeEditor.append(saveStatus);
   document.body.append(activeEditor);activeEditor.showModal();
+  syncPartialLighting();
   (entry?title:name).focus();
   activeEditor.addEventListener('cancel',event=>{event.preventDefault();dismiss();});
-  function changed(){draftVersion++;fields.hidden=false;output.replaceChildren();}
+  function changed(){draftVersion++;fields.hidden=false;output.replaceChildren();syncPartialLighting();}
   form.addEventListener('input',changed);
   form.addEventListener('change',changed);
   const current=version=>alive&&editor===activeEditor&&activeEditor.isConnected&&activeEditor.open&&version===draftVersion;
@@ -377,6 +402,8 @@ export function mountAutomations(root,{api,data,snapshot,go,toast,legacyRules,at
     draft.conditions=conditionInputs.map(read=>read()).filter(Boolean);
     const submitted=structuredClone(draft),context=await api('/api/rules/core/context');
     if(!current(version))return;
+    if(!partialLighting.disabled&&partialLighting.checked)submitted.execution.allow_partial_lighting=true;
+    else delete submitted.execution.allow_partial_lighting;
     if(timeToggle.checked){
      if(!context.household_timezone)throw Error('timezone_required');
      submitted.conditions.push({type:'time_window',start:start.value,end:end.value,timezone:context.household_timezone});
@@ -407,6 +434,7 @@ export function mountAutomations(root,{api,data,snapshot,go,toast,legacyRules,at
     const summary=h('dl',null,{class:'automation-review-summary'});
     const groups=[['何时执行',[describeTrigger(reviewed.trigger)]],
      ['且满足',reviewed.conditions.map(describeCondition)],['就执行',reviewed.actions.map(describeAction)]];
+    if(reviewed.execution?.allow_partial_lighting)groups.push(['灯具暂不可用',['继续控制其余可用灯具']]);
     for(const[label,items]of groups){
      if(!items.length)continue;
      const list=h('ul');items.forEach(item=>list.append(h('li',item)));

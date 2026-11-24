@@ -1,7 +1,7 @@
 // Original automation workspace with inert DOM/API. No browser or device I/O.
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate);
-function fixture({zone='America/New_York',existing=true,rule={},capabilities=null,beforeRequest=null,controlId='light',sensorId='sensor',triggerCapability='binary_sensor.state',recordOverride=null,trialTrigger=null,modeReport=null,planReceipt=null,trialReceipt=null,attentionId=null,acknowledge=null}={}){
+function fixture({zone='America/New_York',existing=true,rule={},capabilities=null,beforeRequest=null,controlId='light',sensorId='sensor',triggerCapability='binary_sensor.state',recordOverride=null,trialTrigger=null,modeReport=null,planReceipt=null,trialReceipt=null,attentionId=null,acknowledge=null,extraControls=[]}={}){
  let focused,planned=null,applied=0,sequence=0,statusSink=null;
  class Element{
   constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.dataset={};this.listeners={};this._text='';this._value=null;this.disabled=false;this.hidden=false;this.checked=false;}
@@ -28,7 +28,7 @@ function fixture({zone='America/New_York',existing=true,rule={},capabilities=nul
  const body=new Element('body'),root=new Element('main');body.append(root);
  const control={id:controlId,name:'SYNTHETIC light',capabilities:[{name:'light.set',access:'write',support:'supported'}]};
  if(capabilities)control.capabilities=capabilities;
- const data={devices:[{room:'SYNTHETIC room',controls:[control],readings:[{id:sensorId,name:'SYNTHETIC contact'}]}]};
+ const data={devices:[{room:'SYNTHETIC room',controls:[control,...extraControls],readings:[{id:sensorId,name:'SYNTHETIC contact'}]}]};
  const snapshot={entities:[{id:sensorId,name:'SYNTHETIC contact',kind:'binary_sensor',capabilities:[{name:triggerCapability+'.transition',access:'event',support:'supported'}]}]};
  const record=recordOverride?structuredClone(recordOverride):{id:'record',fingerprint:'a'.repeat(64),enabled:true,rule:{id:'SYNTHETIC-timer',revision:1,intent:'SYNTHETIC daily light',trigger:{type:'schedule',at:'22:00',weekdays:[1,2,3,4,5],timezone:'Asia/Shanghai'},actions:[{id:'one',type:'device.set',target:'light',operation:'light.set',desired:{power:'on'}}],conditions:[],execution:{preferred_backend:'home_core',max_event_age_ms:3000},simulated:false}};
  Object.assign(record.rule,structuredClone(rule));
@@ -101,6 +101,31 @@ async function main(){
   f.label('动作设备').value='light';f.label('动作设备').fire('change');f.label('只在指定时段运行').checked=true;
   await all(f.body).find(n=>n.tagName==='form').fire('submit');
   assert.equal(f.planned.rule.conditions[0].timezone,'America/New_York','time conditions also use family metadata');f.owner.dispose();
+ }
+ {
+  const f=fixture({existing:false,extraControls:[{id:'second-light',name:'SYNTHETIC second light',
+   capabilities:[{name:'light.set',access:'write',support:'supported'}]}]});
+  await settle();f.by('button','新建自动化').fire('click');await settle();
+  f.label('自动化名称').value='SYNTHETIC grouped lights';
+  f.label('触发设备').value='sensor';f.label('触发设备').fire('change');
+  const option=all(f.body).find(n=>n.tagName==='label'&&n.textContent.trim()==='有灯具暂不可用时，继续控制其余灯具');
+  assert(option.hidden);
+  f.by('button','添加一个动作').fire('click');
+  const lights=all(f.body).filter(n=>n.attrs['aria-label']==='动作设备');
+  lights[0].value='light';lights[0].fire('change');
+  lights[1].value='second-light';lights[1].fire('change');
+  assert(!option.hidden&&!option.children[0].checked);
+  option.children[0].checked=true;option.children[0].fire('change');
+  const form=all(f.body).find(n=>n.tagName==='form');
+  await form.fire('submit');
+  assert.equal(f.planned.rule.execution.allow_partial_lighting,true);
+  f.by('button','返回修改').fire('click');
+  f.by('button','添加等待').fire('click');
+  assert(option.hidden);
+  await form.fire('submit');
+  assert(!Object.hasOwn(f.planned.rule.execution,'allow_partial_lighting'));
+  assert.equal(f.applied,0);
+  f.owner.dispose();
  }
  console.log('Original automation workspace: schedule list, editable days/time, exact preview approval, family timezone and missing-source refusal: OK');
 }

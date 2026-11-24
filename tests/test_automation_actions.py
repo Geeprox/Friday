@@ -1,11 +1,12 @@
 import asyncio
+import json
 from datetime import UTC,datetime,timedelta
 
 import pytest
 
 from homeplane.automation_actions import AutomationActions,RecordEdit,RunRecord
 from tests.test_homeplane_actions import close
-from tests.test_homeplane_core_rules import fixture,proposal,enable
+from tests.test_homeplane_core_rules import cleanup, fixture, proposal, enable, independent_lighting
 
 
 @pytest.mark.asyncio
@@ -27,6 +28,31 @@ async def test_pause_resume_edit_fences_and_explicit_run_reuse_action_owner(tmp_
         assert await service.run(active.id,request)==result
         assert len(calls)==1
     finally:await close(core)
+
+
+@pytest.mark.asyncio
+async def test_manual_independent_lighting_uses_the_same_offline_policy_and_receipt(tmp_path):
+    core, rows, calls, _, _, _, owner, manager, runtime = await fixture(tmp_path, second_light=True)
+    try:
+        record = (await enable(manager, await independent_lighting(core, manager))).new
+        primary = next(row for row in rows if row["entity_id"] == "light.simulated")
+        primary.update(state="unavailable", attributes={})
+        actions = AutomationActions(manager, runtime, asyncio.Lock())
+        for enabled in (False, True):
+            changed = await actions.set_enabled(record.id, RecordEdit(expected_fingerprint=record.fingerprint,
+                expected_context=manager.context()["fingerprint"], enabled=enabled))
+            assert changed.enabled is enabled and changed.rule.actions == record.rule.actions and not calls
+            record = changed
+        request = RunRecord(expected_fingerprint=record.fingerprint,
+                            expected_context=manager.context()["fingerprint"], event_id="synthetic-partial")
+        result = await actions.run(record.id, request)
+        assert result["status"] == "partial" and result["physically_confirmed"] is False
+        assert [effect["status"] for effect in result["effects"]] == ["skipped_unavailable", "reported_match"]
+        assert await actions.run(record.id, request) == result
+        assert [json.loads(call.content)["entity_id"] for call in calls] == ["light.simulated_second"]
+        assert manager.read(record.id) == record
+    finally:
+        await cleanup(core, owner, runtime)
 
 
 @pytest.mark.asyncio
