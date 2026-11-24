@@ -18,7 +18,7 @@ from homeplane.action_contracts import CoreRuleEffect, DevicePlanRequest
 from homeplane.api import create_app
 from homeplane.automation_actions import AutomationActions, RecordEdit
 from homeplane.automation_catalog import AutomationCatalog, Bundle, CatalogSelection, Entry, Import
-from homeplane.core_rules import CoreRuleApproval, CoreRuleProposal, CoreRuleRuntime, CoreRules
+from homeplane.core_rules import CoreRuleApproval, CoreRuleProposal, CoreRuleRun, CoreRuleRuntime, CoreRules
 from homeplane.ha_control import HADeviceWriter
 from homeplane.ha_stream import HAStream
 from homeplane.rule_contracts import RuleIR
@@ -28,9 +28,13 @@ from tests.test_homeplane_device_controls import CASES, rig
 from tests.test_household_timezone_wiring import OfflineARL
 
 
-async def fixture(tmp_path):
+async def fixture(tmp_path, *, second_light=False):
     core, rows, calls, fault, path, grant = rig(tmp_path)
     now = datetime.now(UTC)
+    if second_light:
+        primary = next(row for row in rows if row["entity_id"] == "light.simulated")
+        rows.append({**primary, "entity_id": "light.simulated_second",
+                     "attributes": {**primary["attributes"], "friendly_name": "SIMULATED second light"}})
     rows.append(
         {
             "entity_id": "binary_sensor.simulated_contact",
@@ -57,7 +61,7 @@ async def fixture(tmp_path):
 
 
 async def proposal(
-    core, manager, operation="light.set", desired=None, *, actions=None, conditions=None, old=None
+    core, manager, operation="light.set", desired=None, *, actions=None, conditions=None, old=None, execution=None
 ):
     snapshot = await core.snapshot()
     target = next(e for e in snapshot.entities if e.kind == operation.split(".")[0])
@@ -84,7 +88,7 @@ async def proposal(
             }
         ],
         conditions=conditions or [],
-        execution={"preferred_backend": "home_core", "max_event_age_ms": 3000},
+        execution={"preferred_backend": "home_core", "max_event_age_ms": 3000, **(execution or {})},
         simulated=False,
     )
     return CoreRuleProposal(
@@ -131,6 +135,182 @@ async def cleanup(core, owner, runtime):
     await runtime.close()
     owner.close()
     await close(core)
+
+
+async def independent_lighting(core, manager):
+    snapshot = await core.snapshot()
+    lights = [entity for entity in snapshot.entities if entity.kind == "light"]
+    return await proposal(
+        core, manager, execution={"allow_partial_lighting": True}, actions=[
+            dict(id=f"SIMULATED-light-{index}", type="device.set", target=light.id,
+                 operation="light.set", desired={"power": "on", "brightness": 8})
+            for index, light in enumerate(lights)
+        ],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offline_at", ["ingress", "dispatch", "both"])
+async def test_independent_lighting_skips_offline_and_recovers_on_a_new_event(tmp_path, monkeypatch, offline_at):
+    import json
+
+    core, rows, calls, _, _, _, owner, manager, runtime = await fixture(tmp_path, second_light=True)
+    try:
+        record = (await enable(manager, await independent_lighting(core, manager))).new
+        primary, secondary = [next(row for row in rows if row["entity_id"] == name)
+                              for name in ("light.simulated", "light.simulated_second")]
+        original_attributes = dict(primary["attributes"]), dict(secondary["attributes"])
+        original_plan = core.actions.plan
+        primary_ref = record.rule.actions[0].target
+
+        async def disconnect_after_plan(request, **kwargs):
+            plan = await original_plan(request, **kwargs)
+            if request.target == primary_ref and not calls and primary["state"] == "off":
+                primary.update(state="unavailable", attributes={})
+            return plan
+
+        if offline_at == "dispatch":
+            monkeypatch.setattr(core.actions, "plan", disconnect_after_plan)
+        else:
+            primary.update(state="unavailable", attributes={})
+            if offline_at == "both":
+                secondary.update(state="unavailable", attributes={})
+        await runtime.set_mode("awake")
+        incoming = event(core)
+        await runtime.ingest(core.adapter, incoming)
+        run = runtime.status()["runs"][0]
+        assert run["effects"][0]["status"] == "skipped_unavailable"
+        if offline_at == "both":
+            assert run["status"] == "suppressed" and not calls
+            assert run["effects"][1]["status"] == "skipped_unavailable"
+        else:
+            assert run["status"] == "partial" and len(calls) == 1
+            assert json.loads(calls[0].content)["entity_id"] == secondary["entity_id"]
+            assert run["effects"][1]["status"] == "reported_match"
+        assert manager.read(record.id) == record
+        assert not run["physically_confirmed"]
+
+        monkeypatch.setattr(core.actions, "plan", original_plan)
+        for light, attrs in zip((primary, secondary), original_attributes, strict=True):
+            if light["state"] == "unavailable":
+                light.update(state="off", attributes=attrs)
+        count = len(calls)
+        await runtime.tick()
+        await runtime.ingest(core.adapter, incoming)
+        assert len(calls) == count
+        await runtime.ingest(core.adapter, event(core))
+        assert [json.loads(call.content)["entity_id"] for call in calls[count:]] == [
+            primary["entity_id"], secondary["entity_id"]
+        ]
+        assert runtime.status()["runs"][0]["status"] == "completed"
+        assert manager.read(record.id) == record
+    finally:
+        await cleanup(core, owner, runtime)
+
+
+@pytest.mark.asyncio
+async def test_independent_lighting_does_not_retarget_uncertain_commands(tmp_path):
+    core, _, calls, fault, _, _, owner, manager, runtime = await fixture(tmp_path, second_light=True)
+    try:
+        await enable(manager, await independent_lighting(core, manager))
+        fault["send"] = "timeout"
+        await runtime.set_mode("awake")
+        incoming = event(core)
+        await runtime.ingest(core.adapter, incoming)
+        assert runtime.status()["runs"][0]["status"] == "unknown_outcome"
+        fault["send"] = None
+        await runtime.ingest(core.adapter, incoming)
+        assert len(calls) == 1
+    finally:
+        await cleanup(core, owner, runtime)
+
+
+@pytest.mark.asyncio
+async def test_independent_lighting_rejects_aliases_on_one_physical_device(tmp_path):
+    core, _, _, _, _, _, owner, manager, runtime = await fixture(tmp_path, second_light=True)
+    try:
+        request = await independent_lighting(core, manager)
+        registry = core.adapter._registry
+        registry["light.simulated_second"]["device_id"] = registry["light.simulated"]["device_id"]
+        with pytest.raises(ValueError, match="partial_lighting_requires_distinct_registered_devices"):
+            await manager.plan(request)
+    finally:
+        await cleanup(core, owner, runtime)
+
+
+@pytest.mark.asyncio
+async def test_runtime_recovers_from_a_snapshot_timeout_without_replaying_pending_events(tmp_path, monkeypatch):
+    core, _, calls, _, _, _, owner, manager, runtime = await fixture(tmp_path)
+    try:
+        record = (await enable(manager, await proposal(core, manager))).new
+        await runtime.set_mode("awake")
+        old = event(core)
+        snapshot = core.snapshot
+        reached = asyncio.Event()
+
+        async def interrupted():
+            monkeypatch.setattr(core, "snapshot", snapshot)
+            reached.set()
+            raise TimeoutError
+
+        monkeypatch.setattr(core, "snapshot", interrupted)
+        runtime.enqueue(core.adapter, [old])
+        runtime.worker = asyncio.create_task(runtime._worker())
+        await asyncio.wait_for(reached.wait(), 1)
+        assert not runtime.failure and not runtime.worker.done()
+        assert not runtime.queue and not runtime.pending and not runtime.modes and not calls
+        assert manager.read(record.id) == record
+        await runtime.set_mode("awake")
+        await runtime.ingest(core.adapter, old)
+        assert not calls
+        await runtime.ingest(core.adapter, event(core))
+        assert len(calls) == 1 and runtime.status()["runs"][0]["status"] == "completed"
+    finally:
+        await cleanup(core, owner, runtime)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superseded", [True, False])
+async def test_receipt_pressure_keeps_live_deduplication_and_future_rule_runs(tmp_path, monkeypatch, superseded):
+    core, _, calls, _, _, _, owner, manager, runtime = await fixture(tmp_path)
+    try:
+        record = (await enable(manager, await proposal(core, manager))).new
+        await runtime.set_mode("awake")
+        claimed = event(core)
+        old = datetime.now(UTC) - timedelta(hours=1)
+        histories = [
+            ("live-claim", claimed.event_id, "completed"),
+            ("clock-run:synthetic", "clock:synthetic", "completed"),
+            ("unconfirmed", "prior-send", "unknown_outcome"),
+            ("older-run", "prior-event", "suppressed" if superseded else "unknown_outcome"),
+        ]
+        monkeypatch.setattr(runtime, "RUN_CAPACITY", len(histories))
+        db = core.store.connection
+        with db:
+            for identifier, event_id, status in histories:
+                run = CoreRuleRun(id=identifier, event_id=event_id, record_id=record.id,
+                                  rule_id=record.rule.id, fingerprint=record.fingerprint,
+                                  boot_id=runtime.boot_id, created_at=old, expires_at=old+timedelta(seconds=3),
+                                  status=status, code="synthetic")
+                db.execute("INSERT INTO core_rule_runs VALUES (?,?,?,?,?)",
+                           (run.id, run.event_id, run.rule_id, old.isoformat(), run.model_dump_json()))
+        await runtime.ingest(core.adapter, event(core))
+        assert not runtime.failure
+        if not superseded:
+            assert not calls
+            assert any(e.payload.get("code") == "run_receipt_storage_unavailable"
+                       for e in core.store.recent_events(simulated=False))
+            with db:
+                db.execute("DELETE FROM core_rule_runs WHERE id='older-run'")
+            await runtime.ingest(core.adapter, event(core))
+        await runtime.ingest(core.adapter, claimed)
+        assert len(calls) == 1
+        assert runtime.get("live-claim").status == "completed"
+        assert runtime.get("clock-run:synthetic").status == "completed"
+        assert runtime.get("unconfirmed").status == "unknown_outcome"
+        assert db.execute("SELECT count(*) FROM core_rule_runs").fetchone()[0] == len(histories)
+    finally:
+        await cleanup(core, owner, runtime)
 
 
 @pytest.mark.asyncio
@@ -858,7 +1038,7 @@ async def test_gap_during_in_flight_effect_keeps_send_evidence_and_stops_remaini
 
 
 @pytest.mark.asyncio
-async def test_second_owner_and_queue_overflow_fail_closed_without_rpc(tmp_path):
+async def test_second_owner_is_refused_and_queue_overflow_recovers_without_replay(tmp_path):
     core, _, calls, _, _, _, owner, manager, runtime = await fixture(tmp_path)
     await enable(manager, await proposal(core, manager))
     other = RuleManager(core)
@@ -868,9 +1048,16 @@ async def test_second_owner_and_queue_overflow_fail_closed_without_rpc(tmp_path)
         await second.rollback(manager.listing()["plans"][0]["id"])
     other.close()
     await runtime.set_mode("awake")
-    runtime.enqueue(core.adapter, [event(core) for _ in range(33)])
-    assert runtime.failure == "live_event_queue_overflow" and runtime.queue == [] and calls == []
-    assert not (await runtime.ingest(core.adapter, event(core)))["accepted"]
+    burst = [event(core) for _ in range(33)]
+    runtime.enqueue(core.adapter, burst)
+    assert not runtime.failure and not runtime.queue and not runtime.modes and not calls
+    assert any(e.payload.get("reason") == "live_event_queue_overflow_no_replay"
+               for e in core.store.recent_events(simulated=False))
+    await runtime.set_mode("awake")
+    await runtime.ingest(core.adapter, burst[-1])
+    assert not calls
+    await runtime.ingest(core.adapter, event(core))
+    assert len(calls) == 1
     assert (await runtime.set_mode("unknown"))["modes"] == {}
     await cleanup(core, owner, runtime)
 

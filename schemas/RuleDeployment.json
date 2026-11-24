@@ -829,6 +829,11 @@
           "minimum": 1,
           "title": "Max Event Age Ms",
           "type": "integer"
+        },
+        "allow_partial_lighting": {
+          "default": false,
+          "title": "Allow Partial Lighting",
+          "type": "boolean"
         }
       },
       "title": "RuleExecution",

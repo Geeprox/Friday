@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Friday · 独立灯具自动化示例</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/homeplane/static/style.css">
+  <link rel="stylesheet" href="/homeplane/static/icons.css">
+  <link rel="stylesheet" href="/homeplane/static/home-experience.css">
+  <link rel="stylesheet" href="/homeplane/static/interface.css">
+</head>
+<body>
+  <aside class="sidebar"><a class="brand" href="#">Friday</a><div class="household">示例家庭</div></aside>
+  <div class="shell">
+    <header class="topbar"><span class="badge">合成示例 · 未连接设备</span></header>
+    <main id="workspace"><div class="page-header"><h1>自动化</h1></div><section class="experience" id="content"></section></main>
+  </div>
+  <script type="module">
+    import {mountAutomations} from '/homeplane/static/automations.js';
+
+    const controls = ['走廊壁灯', '门边灯'].map((name, index) => ({
+      id: 'synthetic-light-' + index, name,
+      capabilities: [{name: 'light.set', access: 'write', support: 'supported', maximum: 255, minimum: 1}],
+    }));
+    const sensor = {id: 'synthetic-contact', name: '示例门磁', kind: 'binary_sensor',
+      capabilities: [{name: 'binary_sensor.state.transition', access: 'event', support: 'supported'}]};
+    const rule = {
+      id: 'synthetic-welcome', revision: 1, intent: '进门时亮灯',
+      trigger: {type: 'state_transition', entity: sensor.id, capability: 'binary_sensor.state',
+        from_value: 'off', to_value: 'on'},
+      conditions: [],
+      actions: controls.map(device => ({id: device.id, target: device.id, type: 'device.set',
+        operation: 'light.set', desired: {power: 'on'}})),
+      execution: {preferred_backend: 'home_core', max_event_age_ms: 3000, allow_partial_lighting: true},
+      simulated: false,
+    };
+    const responses = {
+      '/api/rules/core/records': {available: true, fingerprint: 'synthetic-scope',
+        records: [{id: 'synthetic-record', fingerprint: 'synthetic-rule', enabled: true, rule}]},
+      '/api/embodied/scenes': {scenes: []},
+      '/api/rules/core/context': {household_timezone: 'Asia/Shanghai'},
+      '/api/home/automatic-status': {runtime: {available: true, automatic_enabled: true}},
+    };
+    const api = async (path, request) => {
+      if (request !== undefined || !Object.hasOwn(responses, path)) throw Error('示例仅支持固定读回');
+      return structuredClone(responses[path]);
+    };
+    mountAutomations(document.querySelector('#content'), {
+      api, data: {devices: [{room: '示例玄关', controls, readings: [sensor]}]}, snapshot: {entities: [sensor]},
+      go() {}, toast() {}, legacyRules() {},
+    });
+  </script>
+</body>
+</html>

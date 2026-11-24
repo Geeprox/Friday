@@ -7,7 +7,7 @@ from fastapi import APIRouter,HTTPException
 from pydantic import BaseModel,ConfigDict,Field
 
 from .action_contracts import DevicePlanRequest
-from .rule_compiler import digest
+from .rule_compiler import digest, target_state_current
 from .rule_contracts import DeviceInstruction,LightInstruction
 
 
@@ -50,7 +50,14 @@ class AutomationActions:
         _,revision=self.core.actions.authority()
         if record.authority_revision!=revision or self.manager.scope(record.rule,snapshot)!=record.source_scope:
             raise ValueError('rule_needs_review')
-        self.manager._compilation(record.rule,snapshot)
+        rule=record.rule
+        if rule.execution.allow_partial_lighting:
+            now=datetime.now(UTC)
+            rule=rule.model_copy(update={'actions':[
+                action for action in rule.actions
+                if target_state_current(snapshot,action.target,now,capability='light.state')
+            ]})
+        self.manager._compilation(rule,snapshot)
         return snapshot
 
     async def set_enabled(self,identifier,request):
@@ -93,6 +100,7 @@ class AutomationActions:
                 return json.loads(old[1])
             record=self.record(identifier,request);await self.qualify(record);self.record(identifier,request)
             effects=self.effects(record)
+            allow_partial=record.rule.execution.allow_partial_lighting
             result=dict(status='unknown_outcome',effects=[],physically_confirmed=False)
             with db:
                 if db.execute('SELECT count(*) FROM home_manual_runs').fetchone()[0]>=1000:raise ValueError('manual_run_capacity')
@@ -104,14 +112,28 @@ class AutomationActions:
                     snapshot=await self.qualify(record)
                     entity=next((e for e in snapshot.entities if e.id==target),None)
                     if entity is None:break
-                    plan=await self.core.actions.plan(DevicePlanRequest(target=target,operation=operation,desired=desired,
-                        expected_state_version=entity.state_version,idempotency_key=digest([request.event_id,identifier,action_id]),
-                        expires_at=datetime.now(UTC)+timedelta(seconds=15)))
-                    trace=await self.core.actions.execute(plan.action_id) if plan.status=='planned' else plan
-                result['effects'].append(dict(target=target,status=trace.status,code=trace.code))
-                result['status']='reported_match' if len(result['effects'])==len(effects) and all(e['status']=='reported_match' for e in result['effects']) else 'unknown_outcome'
+                    now=datetime.now(UTC)
+                    if allow_partial and not target_state_current(snapshot,target,now,capability='light.state'):
+                        status,code='skipped_unavailable','target_temporarily_unavailable'
+                    else:
+                        plan=await self.core.actions.plan(DevicePlanRequest(target=target,operation=operation,desired=desired,
+                            expected_state_version=entity.state_version,idempotency_key=digest([request.event_id,identifier,action_id]),
+                            expires_at=now+timedelta(seconds=15)))
+                        trace=await self.core.actions.execute(plan.action_id) if plan.status=='planned' else plan
+                        status,code=trace.status,trace.code
+                        if allow_partial and status=='rejected' and code=='stale_input' and not trace.real_write_attempted:
+                            status,code='skipped_unavailable','target_temporarily_unavailable'
+                result['effects'].append(dict(target=target,status=status,code=code))
+                if len(result['effects'])==len(effects):
+                    statuses={effect['status'] for effect in result['effects']}
+                    if statuses=={'reported_match'}:
+                        result['status']='reported_match'
+                    elif statuses=={'skipped_unavailable'}:
+                        result['status']='unavailable'
+                    elif statuses=={'reported_match','skipped_unavailable'}:
+                        result['status']='partial'
                 with db:db.execute('UPDATE home_manual_runs SET result=? WHERE event=?',(json.dumps(result),request.event_id))
-                if trace.status!='reported_match':break
+                if status not in {'reported_match','skipped_unavailable'}:break
             return result
 
 

@@ -216,9 +216,27 @@ def remove_instruction(rule, action_id, expected_fingerprint):
     return type(rule).model_validate(body)
 
 
+def target_state_current(snapshot, target, now, *, elapsed=0, capability=None):
+    state_id = target + ":" + capability if capability else None
+    return any(
+        (state.id == state_id if state_id else state.id.rpartition(":")[0] == target)
+        and state.quality == "healthy"
+        and state.valid_until is not None
+        and state.as_of <= now < state.valid_until - timedelta(milliseconds=elapsed)
+        for state in snapshot.states
+    )
+
+
 def evaluate_rule(rule, snapshot, trial, *, now, allow_core=False, preview=False):
     event = trial.event
-    compilation = compile_rule(rule, snapshot)
+    evaluated_rule = rule
+    if allow_core and rule.execution.allow_partial_lighting:
+        # 这个选项只用于已确认彼此独立的灯。触发、条件和全局保护仍使用完整规则。
+        evaluated_rule = rule.model_copy(update={"actions": [
+            action for action in rule.actions
+            if target_state_current(snapshot, action.target, now, capability="light.state")
+        ]})
+    compilation = compile_rule(evaluated_rule, snapshot)
 
     def result(outcome, reasons, commands=None):
         return RuleEvaluation(
@@ -319,15 +337,9 @@ def evaluate_rule(rule, snapshot, trial, *, now, allow_core=False, preview=False
             reasons.append("decision_result_unqualified_or_missing")
     commands = compilation.instructions
     elapsed = max((c.get("after_ms", 0) for c in commands), default=0)
-    for action in rule.actions:
+    for action in evaluated_rule.actions:
         if isinstance(action, (LightInstruction, ClimateInstruction, DeviceInstruction)):
-            states = [s for s in snapshot.states if s.id.startswith(action.target + ":")]
-            if not any(
-                s.quality == "healthy"
-                and s.valid_until is not None
-                and s.as_of <= now < s.valid_until - timedelta(milliseconds=elapsed)
-                for s in states
-            ):
+            if not target_state_current(snapshot, action.target, now, elapsed=elapsed):
                 reasons.append("unknown_target_state:" + action.target)
     if now + timedelta(milliseconds=elapsed) > event.wall_time + timedelta(
         milliseconds=rule.execution.max_event_age_ms

@@ -12,12 +12,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
 
+import httpx
 from pydantic import AwareDatetime, Field, StrictBool, model_validator
 
 from .action_contracts import CoreRuleEffect
 from .automation_catalog import CatalogOrigin, CatalogSelection
 from .contracts import Contract, Event
 from .ha import HAReadOnlyAdapter
+from .ha_control import bindings
 from .rule_compiler import compile_rule, digest, evaluate_rule
 from .rule_contracts import (
     CancelInstruction,
@@ -105,7 +107,7 @@ class CoreRuleRun(Contract):
     boot_id: str
     created_at: AwareDatetime
     expires_at: AwareDatetime
-    status: Literal["running", "waiting", "completed", "cancelled", "suppressed", "unknown_outcome"]
+    status: Literal["running", "waiting", "completed", "partial", "cancelled", "suppressed", "unknown_outcome"]
     code: str
     effects: list[dict] = Field(default_factory=list, max_length=16)
     simulated: Literal[False] = False
@@ -217,12 +219,15 @@ class CoreRules:
 
     def scope(self, rule, snapshot):
         a = self.core.adapter
-        ids = (
+        inputs = (
             (set() if isinstance(rule.trigger, CLOCK_TRIGGERS) else {rule.trigger.entity})
             | {c.entity for c in rule.conditions if isinstance(c, NumericCondition)}
-            | {x.target for x in rule.actions if hasattr(x, "target")}
         )
+        targets = {x.target for x in rule.actions if hasattr(x, "target")}
         entities = {e.id: e for e in snapshot.entities + snapshot.derived_entities}
+        # 离线的灯可能暂时缺少亮度和事件能力描述，身份仍由当前注册表绑定确定。
+        # 独立灯组仍在每次派发前核对实际能力，其余规则继续校对完整作用域。
+        partial_targets = targets - inputs if rule.execution.allow_partial_lighting else set()
         return digest(
             [
                 getattr(a, "url", None),
@@ -232,9 +237,9 @@ class CoreRules:
                         i,
                         [(b.source, b.external_id) for b in entities[i].bindings],
                         entities[i].kind,
-                        [c.model_dump(mode="json") for c in entities[i].capabilities],
+                        [] if i in partial_targets else [c.model_dump(mode="json") for c in entities[i].capabilities],
                     )
-                    for i in sorted(ids)
+                    for i in sorted(inputs | targets)
                     if i in entities
                 ],
             ]
@@ -258,6 +263,12 @@ class CoreRules:
             or any(isinstance(a, FeedbackInstruction) for a in rule.actions)
         ):
             raise ValueError("unsupported_core_compilation")
+        if rule.execution.allow_partial_lighting:
+            targets = {action.target for action in rule.actions}
+            mapped = [bindings(entity) for entity in snapshot.entities if entity.id in targets]
+            if (len(mapped) != len(targets) or any(bound is None for bound in mapped)
+                    or len({bound[1] for bound in mapped if bound}) != len(targets)):
+                raise ValueError("partial_lighting_requires_distinct_registered_devices")
         return compilation
 
     def _acyclic(self, rule, old):
@@ -569,6 +580,8 @@ class CoreRules:
 
 
 class CoreRuleRuntime:
+    RUN_CAPACITY = 1000
+
     def __init__(self, manager):
         self.manager, self.core, self.store = manager, manager.core, manager.store
         self.boot_id = str(uuid4())
@@ -636,11 +649,7 @@ class CoreRuleRuntime:
             return
         self.seen_ingress += len(events)
         if any(e.kind == "observation-gap" for e in events):
-            self.queue.clear()
-            self.modes = {}
-            self.mode_deadline = 0
-            for key in list(self.pending):
-                self._cancel(key, "observation_gap_no_replay")
+            self._discard_live_work("observation_gap_no_replay")
         records = [r for r in self.manager.records() if r.enabled]
         for event in events:
             if (
@@ -650,11 +659,31 @@ class CoreRuleRuntime:
                         and r.rule.trigger.entity == event.payload.get("entity_id") for r in records)
             ):
                 if len(self.queue) >= 32:
-                    self._fail("live_event_queue_overflow")
+                    self._recover_live_gap("live_event_queue_overflow_no_replay")
                     break
                 self.queue.append((adapter, event))
         self.start()
         self.wake.set()
+
+    def _reserve_run_receipt(self, now):
+        db = self.store.connection
+        if db.execute("SELECT count(*) FROM core_rule_runs").fetchone()[0] < self.RUN_CAPACITY:
+            return True
+        # 旧的终态记录可让出空间。当期注册事件、日历回执及未确认动作继续保留。
+        current = ["", *(event.event_id for event in getattr(self.core.adapter, "_events", ()))]
+        parameters = ",".join("?" for _ in current)
+        removed = db.execute(
+            "DELETE FROM core_rule_runs WHERE id IN ("
+            "SELECT id FROM core_rule_runs WHERE created<? AND id NOT LIKE 'clock-run:%' "
+            f"AND event_id NOT IN ({parameters}) AND json_extract(body,'$.status') "
+            "IN ('completed','partial','cancelled','suppressed') ORDER BY created,rowid LIMIT 1"
+            ") RETURNING id",
+            ((now - timedelta(seconds=30)).isoformat(), *current),
+        ).fetchone()
+        if removed:
+            self.store.connection.execute("DELETE FROM home_task_run_titles WHERE run_id=?", removed)
+            self.store.connection.execute("DELETE FROM home_task_attention_seen WHERE run_id=?", removed)
+        return removed is not None
 
     def _save(self, run, *, new=False):
         if len(run.model_dump_json().encode()) > 16384:
@@ -678,6 +707,12 @@ class CoreRuleRuntime:
         )
         with self.store.connection:
             if new:
+                if not self._reserve_run_receipt(now):
+                    self.store.append_events([event.model_copy(update={"payload": {
+                        "status": "suppressed", "code": "run_receipt_storage_unavailable",
+                        "real_write_attempted": False,
+                    }})])
+                    return False
                 result = self.store.connection.execute(
                     "INSERT OR IGNORE INTO core_rule_runs VALUES (?,?,?,?,?)",
                     (run.id, run.event_id, run.rule_id, run.created_at.isoformat(), run.model_dump_json()),
@@ -723,6 +758,31 @@ class CoreRuleRuntime:
                 self._cancel(key, code + "_no_retry")
             except Exception:
                 self.pending.pop(key, None)
+
+    def _discard_live_work(self, code):
+        self.queue.clear()
+        self.modes = {}
+        self.mode_deadline = 0
+        for key in list(self.pending):
+            self._cancel(key, code)
+
+    def _recover_live_gap(self, code):
+        self._discard_live_work(code)
+        now = datetime.now(UTC)
+        self.store.append_events([Event(
+            source="core-rule-runtime", kind="observation-gap", correlation_id=self.boot_id,
+            wall_time=now, received_at=now, monotonic_time=time.monotonic(), boot_id=self.boot_id,
+            payload={"reason": code},
+        )])
+
+    async def _live_snapshot(self):
+        try:
+            async with asyncio.timeout(2):
+                return await self.core.snapshot()
+        except (TimeoutError, ConnectionError, httpx.TransportError):
+            # 只自动恢复读快照中断。清除旧事件和模式租约，等待重新核对后的新事件。
+            self._recover_live_gap("snapshot_interrupted_no_replay")
+            return None
 
     async def invalidate(self, code):
         self.queue.clear()
@@ -956,8 +1016,9 @@ class CoreRuleRuntime:
             age = (now - event.wall_time).total_seconds()
             if not 0 <= age <= 30 or not 0 <= mono - event.monotonic_time <= 30:
                 return {"accepted": False, "code": "expired_or_future_event"}
-            async with asyncio.timeout(2):
-                snapshot = await self.core.snapshot()
+            snapshot = await self._live_snapshot()
+            if snapshot is None:
+                return {"accepted": False, "code": "snapshot_interrupted_no_replay"}
             if adapter is not self.core.adapter:
                 return {"accepted": False, "code": "source_changed"}
             for record in self.manager.records():
@@ -994,8 +1055,6 @@ class CoreRuleRuntime:
                     status="running" if evaluated.outcome == "matched" else "suppressed",
                     code="live_event_admitted" if evaluated.outcome == "matched" else evaluated.reasons[0],
                 )
-                if self.store.connection.execute("SELECT count(*) FROM core_rule_runs").fetchone()[0] >= 1000:
-                    raise ValueError("core_run_capacity")
                 if not self._save(run, new=True):
                     continue
                 if evaluated.outcome == "matched":
@@ -1023,8 +1082,9 @@ class CoreRuleRuntime:
                 if code := self._guard(item):
                     self._cancel(key, code)
                     continue
-                async with asyncio.timeout(2):
-                    snapshot = await self.core.snapshot()
+                snapshot = await self._live_snapshot()
+                if snapshot is None:
+                    return
                 if code := self._guard(item):
                     self._cancel(key, code)
                     continue
@@ -1062,8 +1122,9 @@ class CoreRuleRuntime:
                         break
                     if isinstance(action, CancelInstruction):
                         continue
-                    async with asyncio.timeout(2):
-                        fresh = await self.core.snapshot()
+                    fresh = await self._live_snapshot()
+                    if fresh is None:
+                        return
                     if code := self._guard(item):
                         self._cancel(key, code)
                         break
@@ -1080,6 +1141,17 @@ class CoreRuleRuntime:
                     if result.outcome != "matched":
                         self._cancel(key, "send_guard:" + result.reasons[0])
                         break
+                    if not result.commands:
+                        item["run"] = self._stage(
+                            item["run"], "running", "target_temporarily_unavailable",
+                            effects=[*item["run"].effects, {
+                                "instruction_id": action.id,
+                                "target": action.target,
+                                "status": "skipped_unavailable",
+                                "code": "target_temporarily_unavailable",
+                            }],
+                        )
+                        continue
                     command = result.commands[0]
                     entity = next(e for e in fresh.entities if e.id == command["target"])
                     operation = action.operation if isinstance(action, DeviceInstruction) else action.type
@@ -1112,7 +1184,11 @@ class CoreRuleRuntime:
                             now=datetime.now(UTC),
                             allow_core=True,
                         )
-                        return None if evaluated.outcome == "matched" else "guard:" + evaluated.reasons[0]
+                        if evaluated.outcome != "matched":
+                            return "guard:" + evaluated.reasons[0]
+                        if not evaluated.commands:
+                            return "target_temporarily_unavailable"
+                        return None
 
                     trace = await self.core.actions.plan(request, managed_guard=guard)
                     item["run"] = self._stage(
@@ -1126,9 +1202,11 @@ class CoreRuleRuntime:
                     )
                     if trace.status == "planned":
                         trace = await self.core.actions.execute(trace.action_id, managed_guard=guard)
+                    skipped = (trace.code == "target_temporarily_unavailable" and not trace.real_write_attempted)
                     effects = [
                         *item["run"].effects[:-1],
-                        {"action_id": trace.action_id, "instruction": command, "status": trace.status},
+                        {"action_id": trace.action_id, "instruction": command,
+                         "status": "skipped_unavailable" if skipped else trace.status, "code": trace.code},
                     ]
                     item["run"] = self._stage(
                         item["run"],
@@ -1147,7 +1225,7 @@ class CoreRuleRuntime:
                             failure,
                         )
                         break
-                    if trace.status != "reported_match":
+                    if not skipped and trace.status != "reported_match":
                         self.pending.pop(key, None)
                         self._stage(
                             item["run"],
@@ -1157,7 +1235,14 @@ class CoreRuleRuntime:
                         break
                 else:
                     self.pending.pop(key, None)
-                    self._stage(item["run"], "completed", "ha_reported_sequence_complete_not_physical")
+                    statuses = {effect["status"] for effect in item["run"].effects}
+                    if "skipped_unavailable" in statuses:
+                        if "reported_match" in statuses:
+                            self._stage(item["run"], "partial", "some_targets_temporarily_unavailable")
+                        else:
+                            self._stage(item["run"], "suppressed", "all_targets_temporarily_unavailable")
+                    else:
+                        self._stage(item["run"], "completed", "ha_reported_sequence_complete_not_physical")
 
     async def _worker(self):
         while not self.closed and not self.failure:

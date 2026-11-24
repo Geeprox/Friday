@@ -7,6 +7,7 @@
 | 首页复核状态 | 已选用的画面复核和声音复核各显示一行。按当前来源的近期结果显示等待、延迟、资源不足、恢复或运行。点击对应行打开「家中提醒」的监测设置并定位该项 | 使用合成画面、声音和浏览器验证状态变化、链接与键盘焦点。实际模型、设备和安装版待验收 |
 | Home Assistant | Registry discovery, OAuth, readback and scoped device operations | Your instance, permissions and physical effects |
 | 外部自动化重建 | 在同一页对照盘点记录并选择当前家庭的触发设备、条件及动作。核对后先保存为暂停。启用外部自动化的重建版本时，用户确认已在原应用暂停原规则 | 合成目录和模拟 HA 验证保存、丢失回执后读回、来源变更拒绝，以及新事件按数值条件触发。实际家庭读数、原平台停用和设备效果待验收 |
+| 独立灯具可用性 | 在 Friday 的「自动化」添加两盏或更多实体灯具，每盏一个开关或亮度动作。在「就执行」勾选「有灯具暂不可用时，继续控制其余灯具」，核对并保存 | 合成 HA 验证部分执行、发送前掉线、全部不可用、保留原动作以及恢复后只接受新事件。实物待验收 |
 | Mi Home layout | BakeData/floormap validation, preview, revisioned import, 3D rendering | Your export, accessible files and device positions |
 | Cameras | Optional Miloco media/SDK adapters, worker lifetime, bounded frame pipelines | Supported SDK/platform/device and actual video/audio |
 | 镜头感知恢复 | 原生识别子进程故障时只恢复识别，保持仍有效的采集连接。实时预览继续读取新画面，自动动作及异常判定等待有效识别。镜头关闭后撤下画面 | 主副镜头的原采集循环以合成读写超时、异常回复和恢复帧验证。真实设备的恢复时长与识别准确率仍待实测 |
@@ -52,3 +53,9 @@
 No real household acceptance or installed-build receipt is shipped as generic
 compatibility evidence. See deployment.md for prerequisites and privacy.md for
 local storage and publication audit scope.
+
+## 独立灯具设置示例
+
+有灯具暂不可用时，规则仍会保留其动作。恢复后，Friday 会在下一个符合条件的新事件中重新判断。依赖同一设备的多个步骤仍需按顺序设置。
+
+![合成的 Friday 自动化设置，两盏灯可独立执行](screenshots/automation-lighting-recovery.png)

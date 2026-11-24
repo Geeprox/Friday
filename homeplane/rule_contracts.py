@@ -228,6 +228,7 @@ class RuleExecution(Contract):
     require_core_independent: bool = False
     replay_policy: Literal["never_actuate"] = "never_actuate"
     max_event_age_ms: int = Field(default=3000, ge=1, le=30000, strict=True)
+    allow_partial_lighting: StrictBool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class RuleSafety(Contract):
@@ -252,9 +253,22 @@ class RuleIR(Contract):
     simulated: bool = False
 
     @model_validator(mode="after")
-    def input_budget(self):
+    def validate_rule(self):
         if len(self.model_dump_json().encode()) > 12288:
             raise ValueError("rule_input_budget_exceeded")
+        if self.execution.allow_partial_lighting and (
+            self.execution.preferred_backend != "home_core"
+            or self.simulated
+            or self.safety.allow_during_sleep
+            or len(self.actions) < 2
+            or not all(
+                isinstance(action, LightInstruction) and not action.require_no_bright_flash
+                or isinstance(action, DeviceInstruction) and action.operation == "light.set"
+                for action in self.actions
+            )
+            or len({action.target for action in self.actions}) != len(self.actions)
+        ):
+            raise ValueError("partial_lighting_requires_independent_light_actions")
         return self
 
     @field_validator("actions")

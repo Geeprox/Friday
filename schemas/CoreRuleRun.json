@@ -46,6 +46,7 @@
         "running",
         "waiting",
         "completed",
+        "partial",
         "cancelled",
         "suppressed",
         "unknown_outcome"
