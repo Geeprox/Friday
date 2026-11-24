@@ -2146,7 +2146,7 @@ class Store:
 
 
 def make_handler(store, agent_key, assets, *, guest_only=False):
-    scripts = {"app.js": "48", "add-queue.js": "25", "party-audio.js": "27",
+    scripts = {"app.js": "49", "add-queue.js": "25", "party-audio.js": "27",
                "guide.js": "24", "status-feed.js": "25", "style.css": "33"}
     images = {"avatars.png", "content.png", "festival.png", "live.png"}
 

@@ -47,6 +47,23 @@ test('guide and app scripts share globals without duplicate declarations',()=>{
  new vm.Script(fs.readFileSync(path.join(web,'guide.js'),'utf8')+'\n'+source);
 });
 
+test('弹层记录触屏入口，关闭时仅在焦点丢失后回到入口',()=>{
+ const h=harness(),dialog=h.element('sound-dialog'),trigger=h.element('sound-button'),heading=h.element('sound-title');
+ const doc=h.context.document,other=h.element('view-queue');
+ let close;
+ dialog.addEventListener=(type,callback)=>{if(type==='close')close=callback;};
+ dialog.querySelector=()=>heading;
+ dialog.showModal=()=>{assert.equal(doc.activeElement,trigger);dialog.open=true;};
+ doc.activeElement=doc.body;
+ h.run('openDialog("sound-dialog", $("sound-button"))');
+ assert.equal(doc.activeElement,heading);
+ dialog.open=false;doc.activeElement=doc.body;close();
+ assert.equal(doc.activeElement,trigger);
+ h.run('openDialog("sound-dialog", $("sound-button"))');
+ dialog.open=false;other.focus();close();
+ assert.equal(doc.activeElement,other);
+});
+
 test('scan stays on automatic recovery after a long outage',async()=>{
  const h=harness({validRoom:true}),timers=[];
  h.context.setTimeout=(run,delay)=>{timers.push({run,delay});return timers.length;};

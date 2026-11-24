@@ -376,7 +376,7 @@ function addQueueActions(row,details,song,nextQueuedId,firstOrderableId,hasPeers
    more.type="button";more.className="more-song";more.textContent="⋯";
    more.setAttribute("aria-label","调整歌曲："+song.title);
    more.setAttribute("aria-haspopup","dialog");
-   more.onclick=()=>songActions(song);
+   more.onclick=()=>songActions(song,more);
    tools.append(more);
   }
   if(hasPeers&&canReorder(song)){
@@ -1002,8 +1002,15 @@ $("search-entry").onclick=()=>setView("find",{focus:"query"});
 $("frequent-entry").onclick=()=>setView("frequent");
 document.querySelector(".brand").onclick=event=>{event.preventDefault();setView("home");};
 $("queue-tab").onclick=()=>setView("queue");$("view-queue").onclick=()=>setView("queue");
-function openDialog(id){
+function openDialog(id,trigger){
  const dialog=$(id);
+ if(dialog.open)return;
+ // Safari 触屏不一定聚焦按钮，先让原生弹层记住关闭后要回到的入口。
+ trigger?.focus({preventScroll:true});
+ if(trigger)dialog.addEventListener("close",()=>{
+  if(!dialog.open&&document.activeElement===document.body&&trigger.isConnected&&!trigger.closest("[hidden]"))
+   trigger.focus({preventScroll:true});
+ },{once:true});
  if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");
  dialog.querySelector(".sheet-heading h2").focus({preventScroll:true});
 }
@@ -1022,7 +1029,7 @@ function renderAvatarPicker(){
   button.append(picture);button.onclick=()=>chooseAvatar(id);picker.append(button);
  }
 }
-$("profile-button").onclick=()=>{if(!identity)return;renderAvatarPicker();$("nickname").value=identity.nickname;chooseAvatar(identity.avatar);$("profile-error").textContent="";openDialog("profile-dialog");};
+$("profile-button").onclick=event=>{if(!identity)return;renderAvatarPicker();$("nickname").value=identity.nickname;chooseAvatar(identity.avatar);$("profile-error").textContent="";openDialog("profile-dialog",event.currentTarget);};
 $("random-profile").onclick=()=>{const [picture,word]=crypto.getRandomValues(new Uint32Array(2)),choices=[...names,...extraNames];chooseAvatar(picture%names.length);$("nickname").value=choices[word%choices.length];};
 $("save-profile").onclick=async()=>{const name=$("nickname").value.trim();if(!name){$("profile-error").textContent="起一个昵称再保存。";$("nickname").focus();return;}const b=$("save-profile");b.disabled=true;busy(b,true,"正在保存…");try{const result=await api("profile",{nickname:name,avatar:chosenAvatar});identity={...identity,...result};saveIdentity({prefer:true});$("profile-dialog").close();toast("就用这个名字，开唱吧");await refresh();}catch{$("profile-error").textContent="还没保存，检查连接后再试。";}finally{b.disabled=false;busy(b,false);}};
 async function chooseTheme(value,button){
@@ -1052,7 +1059,7 @@ function renderThemePicker(){
   button.append(preview,copy);button.onclick=()=>chooseTheme(value,button);picker.append(button);
  }
 }
-$("settings-button").onclick=()=>{if(!identity)return;renderThemePicker();$("theme-error").textContent="";openDialog("settings-dialog");};
+$("settings-button").onclick=event=>{if(!identity)return;renderThemePicker();$("theme-error").textContent="";openDialog("settings-dialog",event.currentTarget);};
 // The remembered nonzero level belongs to this room and survives a page reload.
 // Storage may be unavailable in an embedded browser; the in-memory value still works.
 class RoomMusicVolume {
@@ -1275,7 +1282,7 @@ function setControl(value,{signal,propagate=false}={}){
   updatePlayer();
  });
 }
-$("sound-button").onclick=()=>{updatePlayer();openDialog("sound-dialog");};$("play-toggle").onclick=()=>sendCommand(["playing","preparing"].includes(playback.state)?"pause":"resume",playback.current);$("skip-button").onclick=()=>sendCommand("next",playback.current);$("restart-button").onclick=()=>sendCommand("play",playback.current,"restart-button");
+$("sound-button").onclick=event=>{updatePlayer();openDialog("sound-dialog",event.currentTarget);};$("play-toggle").onclick=()=>sendCommand(["playing","preparing"].includes(playback.state)?"pause":"resume",playback.current);$("skip-button").onclick=()=>sendCommand("next",playback.current);$("restart-button").onclick=()=>sendCommand("play",playback.current,"restart-button");
 for(const [id,key]of volumeControls){const input=$(`${id}-volume`);input.oninput=()=>changeGain(id,key,Number(input.value));$(`${id}-minus`).onclick=()=>changeGain(id,key,Number(pendingControls[key]??controls[key])-10,0);$(`${id}-plus`).onclick=()=>changeGain(id,key,Number(pendingControls[key]??controls[key])+10,0);}
 function updateVolumeButtons(id,level){
  const enabled=playback.online&&(id!=="music"||!musicMuteSending)&&(id!=="sfx"||playback.audio_capabilities?.sfx===true),range=$(`${id}-volume`);
@@ -1300,14 +1307,14 @@ for(const [id,action]of[["sfx-applause","sfx_applause"],["sfx-cheer","sfx_cheer"
  $("sfx-error").textContent="";const request=sfxCommands.trigger(action),serial=sfxCommands.state.serial;
  request.then(()=>trackSfx(serial)).catch(error=>{$("sfx-error").textContent=error.code==="sfx_unavailable"?"电视暂未提供氛围音效":"暂未发送成功，请重试";});
 };
-$("atmosphere-button").onclick=()=>{updatePlayer();openDialog("atmosphere-dialog");};
+$("atmosphere-button").onclick=event=>{updatePlayer();openDialog("atmosphere-dialog",event.currentTarget);};
 function canReorder(song){return isUpcoming(song)&&song.lyric_state!==-1;}
-function songActions(song){
+function songActions(song,trigger){
  actionSong=song;
  $("song-action-title").textContent=song.title;
  $("song-error").textContent="";
  refreshSongActions(true);
- openDialog("song-dialog");
+ openDialog("song-dialog",trigger);
 }
 function refreshSongActions(opening=false){
  if(!actionSong||!opening&&!$("song-dialog").open)return;
