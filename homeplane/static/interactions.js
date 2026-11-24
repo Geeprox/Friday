@@ -114,6 +114,7 @@ export function mountInteractions(root,{data,go,toast}){
   }
   const toggle=slot.querySelector?.('[data-interaction-toggle]');
   if(toggle){
+   toggle.hidden=mode==='voice'&&statusRead==='ready'&&report.configured===false&&typeof report.voice_input!=='boolean';
    const label=mode==='voice'?(voiceEnabled()?'暂停语音输入':'开启语音控制'):(interactionEnabled()?'暂停手势控制':'启用手势控制');
    toggle.textContent=canToggle()?label:mode==='voice'?'语音控制':'手势控制';
    toggle.setAttribute('aria-disabled',String(busy||!canToggle()));
