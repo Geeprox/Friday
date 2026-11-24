@@ -7,6 +7,7 @@ import java.io.RandomAccessFile;
 /** Only the authenticated Mac service's exact 48 kHz stereo PCM16 WAV contract is accepted. */
 public final class WavSource implements AutoCloseable {
     private final RandomAccessFile file;
+    final File path;
     public final long frames;
     public long position;
     private final byte[] bytes = new byte[960];
@@ -17,6 +18,7 @@ public final class WavSource implements AutoCloseable {
         return true;
     }
     public WavSource(File source) throws IOException {
+        path=source;
         file = new RandomAccessFile(source,"r");
         try {
             byte[] h = new byte[44]; file.readFully(h);

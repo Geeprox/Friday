@@ -66,9 +66,18 @@ test('phone distinguishes a retained room from incomplete TV and worker readines
  assert.match(h.run('readinessHint(state)'),/歌曲准备服务正在连接/);
  h.context.state.readiness.gates={link_tv:false};assert.match(h.run('readinessHint(state)'),/电视暂未连接/);
  h.context.state.readiness.gates={link_tv:true,tv_audio:false};assert.equal(h.run('readinessHint(state)'),'');
- h.context.state.readiness.gates.qr=false;assert.match(h.run('readinessHint(state)'),/正在准备本场/);
+ h.context.state.readiness.gates.qr=false;assert.equal(h.run('readinessHint(state)'),'');
+ h.context.state.readiness.gates.nas_media=false;assert.match(h.run('readinessHint(state)'),/正在准备本场/);
  h.context.state.readiness.ready=true;assert.equal(h.run('readinessHint(state)'),'');
  assert.doesNotMatch(h.run('readinessHint({mac_online:false})'),/房间.*离线|本场.*结束/);
+});
+test('background readiness checks stay out of an active performance',()=>{
+ const h=harness();
+ h.context.state={mac_online:false,readiness:{state:'degraded',ready:false,gates:{link_tv:true,tv_playback:true,
+  tv_media:false,link_worker:false,nas_media:false}},playback:{online:true,current:'song',state:'playing'}};
+ assert.equal(h.run('readinessHint(state)'),'');
+ h.context.state.playback.state='paused';assert.equal(h.run('readinessHint(state)'),'');
+ h.context.state.readiness.gates.link_tv=false;assert.match(h.run('readinessHint(state)'),/电视暂未连接/);
 });
 
 test('an old load finally cannot clear the new loading state or stop its monitor',async()=>{
@@ -133,12 +142,33 @@ test('cancelling a guide control aborts its HTTP and lets a later music control 
  };
  h.run('api=actualApi;setControl=actualSetControl;waitForTV=async()=>{};updatePlayer=()=>{};var aborter=new AbortController();controls.original=1;controls.music_gain=70;');
  const first=h.run('setControl({original:0},{signal:aborter.signal,propagate:true})').catch(error=>error.code);
- const second=h.run('setControl({music_gain:0})');
+ const second=h.run('setControl({music_gain:38})');
  try{
   await flush();assert.equal(requests.length,1);h.run('aborter.abort()');assert.equal(requests[0].signal.aborted,true);
-  assert.equal(await first,'cancelled');await second;assert.equal(requests.length,2);assert.deepEqual(requests[1].payload,{music_gain:0});
-  assert.equal(h.run('controls.original'),1);assert.equal(h.run('controls.music_gain'),0);
+  assert.equal(await first,'cancelled');await second;assert.equal(requests.length,2);assert.deepEqual(requests[1].payload,{music_gain:38});
+  assert.equal(h.run('controls.original'),1);assert.equal(h.run('controls.music_gain'),38);
  }finally{rejectFirst?.(Object.assign(new Error(),{name:'AbortError'}));}
+});
+
+test('music mute leaves immediately and a deferred slider receipt cannot restore its gain',async()=>{
+ const h=harness({validRoom:true}),slider=deferred(),sent=deferred();
+ const requests=[];
+ h.context.muteApi=(operation,payload)=>{
+  requests.push({operation,payload:Object.fromEntries(Object.entries(payload))});
+  if(payload.music_gain===48){sent.resolve();return slider.promise;}
+  return Promise.resolve({revision:2,music_mute_revision:1});
+ };
+ h.run('api=muteApi;setControl=actualSetControl;waitForTV=async()=>{};updatePlayer=()=>{};controls.music_mute_revision=0');
+ const earlier=h.run('setControl({music_gain:48})');
+ await sent.promise;
+ const queued=h.run('setControl({music_gain:49})');
+ await h.run('setControl({music_gain:0})');
+ assert.deepEqual(requests.map(r=>r.payload),[{music_gain:48,music_mute_revision:0},{music_gain:0}]);
+ slider.resolve({revision:1,music_mute_revision:0});
+ await Promise.all([earlier,queued]);
+ assert.equal(h.run('controls.music_gain'),0);
+ assert.equal(h.run('controls.music_mute_revision'),1);
+ assert.equal(requests.length,2);
 });
 
 test('a late JSON control receipt after cancellation cannot update local controls',async()=>{
@@ -199,6 +229,73 @@ test('home has one search entry and independent secondary pages with source filt
  h.element('search-entry').onclick();assert.equal(h.run('mode'),'find');assert.equal(h.element('page-title').textContent,'搜索');assert.equal(h.element('source-picker').hidden,false);assert.equal(h.element('discover').hidden,true);
  h.element('queue-tab').onclick();assert.equal(h.run('mode'),'queue');assert.equal(h.element('page-title').textContent,'已点歌曲');assert.equal(h.element('source-picker').hidden,true);
  h.run('setView("home")');assert.equal(h.element('search-entry').hidden,false);assert.equal(h.element('page-heading').hidden,true);
+});
+
+test('withdrawing an owned song ignores stale deduplication and allows an immediate new request',async()=>{
+ const h=harness({validRoom:true,localStorage:memoryStorage()}),original={
+  id:'33333333-3333-4333-8333-333333333333',song_id:'11',title:'待唱歌曲',source:'song',state:'queued',
+  guest_id:'44444444-4444-4444-8444-444444444444'
+ };
+ const requests=[];
+ h.context.original=original;
+ h.context.send=async (operation,payload)=>{
+  requests.push({operation,payload});
+  if(payload.request_id)return {id:'55555555-5555-4555-8555-555555555555',state:'queued'};
+  return {withdrawn:true,id:original.id,queue_removed:true,queue_revision:12};
+ };
+ h.run('identity={id:original.guest_id,key:"guest",nickname:"本人",avatar:1};selected=[original];playback.current="";queueRevision=11;api=send;refresh=()=>Promise.resolve(false);activateSong(original)');
+ await flush();await flush();
+ assert.equal(requests.length,1);
+ assert.equal(requests[0].operation,'songs');
+ assert.equal(requests[0].payload.withdraw_id,original.id);
+ assert.equal(h.element('toast').textContent,'已撤回点歌');
+ assert.equal(h.run('selected.length'),0);
+ h.run('applyStatus({songs:[original],queue_revision:11})');
+ assert.equal(h.run('selected.length'),0);
+ assert.equal(h.run('addQueue.has(original)'),false);
+ h.run('activateSong(original)');await flush();
+ assert.equal(requests.length,2);
+ assert.equal(requests[1].payload.song_id,original.song_id);
+ assert.ok(requests[1].payload.request_id);
+ h.run('addQueue.close()');
+});
+
+test('only a claim-aware TV enables withdrawal of ready songs and a new refusal explains the change',async()=>{
+ const h=harness({validRoom:true}),dialog=h.element('song-dialog'),withdraw=h.element('withdraw-song'),requests=[];
+ dialog.showModal=()=>{dialog.open=true;};
+ dialog.close=()=>{dialog.open=false;};
+ dialog.querySelector=()=>h.element('song-action-title');
+ const guest='44444444-4444-4444-8444-444444444444';
+ const ready={id:'33333333-3333-4333-8333-333333333333',song_id:'11',title:'待唱歌曲',
+  source:'song',state:'ready',lyrics_pending:true,guest_id:guest};
+ const preparing={...ready,id:'55555555-5555-4555-8555-555555555555',song_id:'22',state:'separating'};
+ const other={...ready,id:'66666666-6666-4666-8666-666666666666',song_id:'33',state:'queued',guest_id:'other'};
+ h.context.roomStatus={songs:[ready,preparing,other],queue_revision:3,
+  playback:{online:true,current:'',played:[],state:'idle'},controls:{}};
+ h.context.guest=guest;
+ h.context.send=async(operation,payload)=>{
+  requests.push({operation,payload});
+  throw Object.assign(new Error(),{status:409,code:'song_start_unavailable'});
+ };
+ h.run('earEnabled=false;identity={id:guest,key:"fixture"};api=send;refresh=()=>Promise.resolve(false);applyStatus(roomStatus);songActions(selected[0])');
+ assert.equal(withdraw.hidden,true);
+ assert.equal(h.run('canWithdraw(selected[1])'),true);
+ assert.equal(h.run('canWithdraw(selected[2])'),false);
+ h.run('activateSong(selected[0])');withdraw.onclick();await flush();
+ assert.equal(requests.length,0);
+ h.run('applyStatus({...roomStatus,queue_withdraw_ready:"true"})');
+ assert.equal(withdraw.hidden,true);
+ h.run('applyStatus({...roomStatus,queue_withdraw_ready:true})');
+ assert.equal(withdraw.hidden,false);
+ h.run('applyStatus({...roomStatus,queue_revision:2,queue_withdraw_ready:false})');
+ assert.equal(withdraw.hidden,false);
+ withdraw.onclick();await flush();
+ assert.equal(requests.length,1);
+ assert.equal(requests[0].payload.withdraw_id,ready.id);
+ assert.equal(h.element('song-error').textContent,'电视暂不支持撤回已就绪的歌曲。');
+ h.run('applyStatus(roomStatus)');
+ assert.equal(withdraw.hidden,true);
+ h.run('addQueue.close()');
 });
 
 
@@ -281,6 +378,32 @@ test('queue reordering after secondary navigation keeps the current and sung son
  const h=harness();h.run('selected=[{id:"current",state:"ready"},{id:"a",state:"ready"},{id:"missing",state:"ready",lyric_state:-1},{id:"b",state:"ready"},{id:"sung",state:"ready"},{id:"prep",state:"acquiring"}];playback.current="current";playback.played=["sung"];var ordered=null;saveOrder=ids=>{ordered=ids;};setView("queue");moveSong("prep","top")');
  assert.deepEqual(Array.from(h.run('ordered')),['current','prep','missing','a','sung','b']);
  h.run('ordered=null;moveSong("sung","top");moveSong("current","top");moveSong("missing","top")');assert.equal(h.run('ordered'),null);
+});
+
+test('late artwork metadata does not render over a queue drag',async()=>{
+ const h=harness();
+ h.run(`mode="queue";selected=[{id:"existing",song_id:"101",title:"测试"}];drag={};
+  artworkPending.add("101");api=async()=>({covers:{},tracks:{"101":{album:"合成专辑"}}});
+  var renderCalls=0;render=()=>renderCalls++;`);
+ await h.run('enrichArtwork()');
+ assert.equal(h.run('renderCalls'),0);
+ assert.equal(h.run('selected[0].album'),'合成专辑');
+ assert.equal(h.run('drag=null;renderQueueStatus()'),true);
+ assert.equal(h.run('renderCalls'),1);
+});
+
+test('a failed reorder preserves an independently acknowledged withdrawal',async()=>{
+ const h=harness(),pending=deferred();
+ h.context.pendingReorder=pending;
+ h.run(`mode="queue";queueRevision=5;selected=[{id:"a"},{id:"b"},{id:"c"}];
+  api=()=>pendingReorder.promise;render=()=>{};failure=()=>{};refresh=async()=>true;`);
+ const saving=h.run('saveOrder(["c","a","b"])');
+ h.run('selected=selected.filter(song=>song.id!=="a");queueRevision=6');
+ assert.equal(h.run('JSON.stringify(mergeQueueOrder(["a","c","b"]))'),'["c","b"]');
+ pending.reject(Object.assign(new Error(),{code:"queue_changed"}));
+ await saving;
+ assert.equal(h.run('JSON.stringify(selected.map(song=>song.id))'),'["b","c"]');
+ assert.equal(h.run('queueRevision'),6);
 });
 
 test('track choice updates immediately and skips a replaced unsent choice without dropping its final receipt',async()=>{
@@ -463,18 +586,36 @@ test('blocked persistent storage uses the session and a rejected join sends no f
 });
 
 test('the player reports playback even when the TV reports vocal protection',()=>{
- const h=harness();h.run('earEnabled=false;selected=[{id:playback.current,title:"当前歌曲"}];playback.safety_latched=true;playback.audio_capabilities={sfx:true,voice_protection:{state:"failed"}};updatePlayer()');
- assert.match(h.element('player-status').textContent,/正在唱/);
+ const h=harness();h.run('earEnabled=false;selected=[{id:playback.current,title:"当前歌曲",nickname:"点歌的朋友"}];playback.safety_latched=true;playback.audio_capabilities={sfx:true,voice_protection:{state:"failed"}};updatePlayer()');
+ assert.equal(h.element('player-status').textContent,'正在唱');
 });
 
 test('failed songs no longer count as upcoming and warmup can cut into the actual queue',()=>{
  const h=harness();h.run('earEnabled=false;playback.current="";mode="queue";selected=[{id:"a",song_id:"1",title:"失败",state:"failed"},{id:"b",song_id:"2",title:"下首",state:"ready"},{id:"c",song_id:"3",title:"待制备",state:"acquiring"}];render();updatePlayer()');
  assert.equal(h.element('queue-count').textContent,2);
+ assert.equal(h.element('queue-total').textContent,'3 首');
+ assert.equal(h.element('queue-total').hidden,false);
  assert.equal(h.element('results').children[0].className,'queue-group pending');
+ assert.equal(h.element('results').children[0].children[0].tagName,'H2');
  assert.equal(h.element('results').children[1].className,'queue-group preparing');
  assert.equal(h.element('results').children[2].className,'queue-group failed');
  assert.equal(h.element('now-title').textContent,'接下来：下首');
  assert.equal(h.element('skip-button').disabled,false);
+ h.run('playback.state="idle";updatePlayer()');
+ assert.equal(h.element('player-status').textContent,'待播放');
+});
+
+test('a cached page shell can use the current queue and song actions',()=>{
+ const h=harness(),page=h.element('page-heading'),legacy=h.element('legacy-heading'),total=h.element('count');
+ legacy.className='list-heading';legacy.append(total);legacy.remove=()=>h.element('main').removeChild(legacy);
+ h.element('main').append(legacy);page.append(h.element('view-queue'));
+ h.context.document.getElementById=id=>id==='queue-total'?(total.id===id?total:null):id==='song-availability'?null:h.element(id);
+ h.run('mode="queue";selected=[{id:"b",song_id:"2",title:"下首",state:"ready"}];render();actionSong=selected[0];refreshSongActions(true)');
+ assert.equal(page.firstElementChild,total);
+ assert.equal(total.id,'queue-total');
+ assert.equal(total.textContent,'1 首');
+ assert.equal(legacy.parentElement,null);
+ assert.equal(h.element('sing-now').disabled,false);
 });
 
 test('terminal lyric failures retain the order without looking busy or enabling an unavailable next song',()=>{
@@ -499,10 +640,36 @@ test('frequent songs count a personally requested playback once and stay re-adda
  assert.equal(h.element('results').children[0].children.at(-1).dataset.song,'song:101');
 });
 
-test('queue progress changes replace only the changed row and retain stable groups, focus and history disclosure',()=>{
- const h=harness();h.run('earEnabled=false;mode="queue";playback.current="";playback.played=["old"];selected=[{id:"a",song_id:"1",title:"下载",state:"acquiring",progress:{source_bytes:10}},{id:"b",song_id:"2",title:"已就绪",state:"ready"},{id:"old",song_id:"3",title:"已唱",state:"ready"}];render()');
- const root=h.element('results'),pending=root.children[0],preparing=root.children[1],history=root.children[2],a=preparing.children[1],b=pending.children[1];history.open=true;const focused=b.children.at(-1).children[0];focused.focus();const insertions=[];const insert=pending.insertBefore.bind(pending);pending.insertBefore=(node,before)=>{insertions.push(node);insert(node,before);};
- h.run('selected[0]={...selected[0],progress:{source_bytes:20}};render()');assert.equal(root.children[0],pending);assert.equal(root.children[1],preparing);assert.equal(root.children[2],history);assert.equal(history.open,true);assert.notEqual(preparing.children[1],a);assert.equal(pending.children[1],b);assert.equal(h.context.document.activeElement,focused);assert.equal(insertions.includes(b),false,'an unchanged row is not detached/moved just because another progress state changes');
+test('a download tick updates the existing progress bar and preserves the action button, focus and history',()=>{
+ const h=harness();
+ h.run(`earEnabled=false;mode="queue";playback.current="";playback.played=["old"];
+  selected=[{id:"b",song_id:"2",title:"已就绪",state:"ready"},
+    {id:"a",song_id:"1",title:"下载",state:"acquiring",progress:{
+      stage:"acquiring",source_phase:"source_downloading",source_bytes:10,source_total:20}},
+    {id:"old",song_id:"3",title:"已唱",state:"ready"}];render()`);
+ const root=h.element('results'),[pending,preparing,history]=root.children;
+ const [heading,row]=preparing.children, count=heading.firstElementChild;
+ const [label,steps,bar,amount]=row.children[1].children.find(node=>node.className==='preparation').children;
+ const action=row.children.at(-1).children[0], next=pending.children[1];
+ history.open=true;
+ action.focus();
+ assert.equal(bar.value,10);
+ h.run('selected[1]={...selected[1],progress:{...selected[1].progress,source_bytes:15}};render()');
+ assert.deepEqual(root.children,[pending,preparing,history]);
+ assert.equal(history.open,true);
+ assert.equal(pending.children[1],next);
+ assert.equal(heading.firstElementChild,count);
+ assert.equal(preparing.children[1],row);
+ assert.equal(row.children.at(-1).children[0],action);
+ assert.equal(h.context.document.activeElement,action);
+ assert.equal(bar.value,15);
+ assert.equal(amount.textContent,'已下载 75%');
+ assert.deepEqual(steps.children.map(step=>step.textContent),['原曲','伴奏','播放文件']);
+ h.run('selected[1]={...selected[1],progress:{stage:"waiting_storage"}};render()');
+ assert.equal(preparing.children[1],row);
+ assert.equal(label.textContent,'等待 Mac 腾出缓存空间');
+ assert.equal(bar.hidden,true);
+ assert.equal(amount.hidden,true);
 });
 
 test('the queue follows a changed NAS playable order without waiting for another song update',()=>{
@@ -516,6 +683,71 @@ test('the queue follows a changed NAS playable order without waiting for another
  h.run('applyStatus(roomStatus)');
  assert.equal(results.children[0].className,'queue-group pending');
  assert.equal(h.element('now-title').textContent,'接下来：候唱示例');
+});
+
+test('TV takeover and a connection timeout update the current group without a changed queue',()=>{
+ const h=harness();
+ h.context.roomStatus={
+  songs:[{id:'a',song_id:'1',title:'当前歌曲',state:'ready'},{id:'b',song_id:'2',title:'下一首歌曲',state:'ready'}],
+  playable:['b'],queue_revision:4,mac_online:true,
+  playback:{online:true,current:'a',played:[],state:'playing'},controls:{}
+ };
+ h.run('earEnabled=false;mode="queue";applyStatus(roomStatus)');
+ const [current,next]=h.element('results').children;
+ const heading=current.children[0], nextRow=next.children[1];
+ assert.equal(heading.textContent,'正在唱');
+ h.context.roomStatus.playback.online=false;
+ h.run('applyStatus(roomStatus)');
+ assert.equal(heading.textContent,'上次播放');
+ assert.equal(h.element('skip-button').disabled,true);
+ assert.equal(next.children[1],nextRow);
+
+ h.context.roomStatus.playback.online=true;
+ h.run('applyStatus(roomStatus)');
+ assert.equal(heading.textContent,'正在唱');
+ assert.equal(h.element('skip-button').disabled,false);
+ h.run('lastStatusSuccess=roomResumeAt=performance.now()-13000;statusFailure({code:"request_timeout"})');
+ assert.equal(heading.textContent,'上次播放');
+ assert.equal(h.element('skip-button').disabled,true);
+ assert.equal(next.children[1],nextRow);
+});
+
+test('now playing stays in the same dialog when the selected track loses and regains its route',async()=>{
+ const h=harness({validRoom:true}), dialog=h.element('song-dialog'), play=h.element('sing-now'), commands=[];
+ dialog.showModal=()=>{dialog.open=true;};
+ dialog.close=()=>{dialog.open=false;};
+ dialog.querySelector=()=>h.element('song-action-title');
+ h.context.roomStatus={
+  songs:[{id:'a',song_id:'1',title:'测试歌曲',state:'ready',lyric_state:1}],
+  playable:['a'],queue_revision:4,mac_online:true,
+  playback:{online:true,current:'',played:[],state:'idle'},controls:{}
+ };
+ h.context.submit=async(operation,body)=>{
+  assert.equal(operation,'command');
+  commands.push(body);
+  if(commands.length===1)throw Object.assign(new Error(),{code:'media_not_ready'});
+  return {seq:8};
+ };
+ h.run('earEnabled=false;api=submit;waitForTV=async()=>{};refresh=async()=>{};applyStatus(roomStatus);songActions(selected[0])');
+ assert.equal(dialog.open,true);
+ assert.equal(play.hidden,false);
+ assert.equal(play.disabled,false);
+ await play.onclick();
+ assert.equal(dialog.open,true);
+ assert.equal(h.element('song-error').textContent,'所选音轨暂时不可用。');
+ h.context.roomStatus.playable=[];
+ h.run('applyStatus(roomStatus)');
+ assert.equal(play.hidden,false);
+ assert.equal(play.disabled,true);
+ await play.onclick();
+ assert.equal(commands.length,1);
+ h.context.roomStatus.playable=['a'];
+ h.run('applyStatus(roomStatus)');
+ assert.equal(play.disabled,false);
+ assert.equal(h.element('song-error').textContent,'');
+ await play.onclick();
+ assert.equal(dialog.open,false);
+ assert.deepEqual(commands.map(command=>[command.action,command.song]),[['play','a'],['play','a']]);
 });
 
 test('IME search waits for composition and debounces the committed text once',async()=>{
@@ -547,11 +779,11 @@ test('hidden/pagehide cancel subscriptions and pending query work without starti
  h.run('mode="home";var searches=0;api=async()=>{searches++;return {songs:[]};};$("query").oncompositionend()');await new Promise(resolve=>setTimeout(resolve,280));assert.equal(h.run('searches'),0);
 });
 
-test('event progress cannot replace selected rows while a queue drag owns the DOM',()=>{
+test('event progress leaves the active drag alone and refreshes the original row after release',()=>{
  const h=harness();h.run('earEnabled=false;mode="queue";playback.current="";selected=[{id:"a",song_id:"1",state:"acquiring",progress:{source_bytes:10}}];render();drag={id:"a"}');const group=h.element('results').children[0],row=group.children[1];
  h.context.progressStatus={mac_online:true,theme:'content',songs:[{id:'a',song_id:'1',state:'acquiring',progress:{source_bytes:20}}],playback:{online:true,current:'',played:[],state:'idle'},controls:{}};
  h.run('applyStatus(progressStatus)');assert.equal(group.children[1],row);assert.equal(h.run('selected[0].progress.source_bytes'),10);
- h.run('drag=null;applyStatus(progressStatus)');assert.notEqual(group.children[1],row);assert.equal(h.run('selected[0].progress.source_bytes'),20);
+ h.run('drag=null;applyStatus(progressStatus)');assert.equal(group.children[1],row);assert.equal(h.run('selected[0].progress.source_bytes'),20);
 });
 
 test('the guide verifies and plays only the original track without any microphone or reference request',async()=>{

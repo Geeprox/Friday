@@ -5,6 +5,7 @@ import android.media.*;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.LongSupplier;
 
 /** Offline room effects; no capture, focus takeover, network URL or microphone processing. */
 public final class SoundEffectPlayer {
@@ -32,18 +33,18 @@ public final class SoundEffectPlayer {
     }
     public static boolean fresh(long created,long expires,long now){return expires-created==5&&created<=now&&now<expires;}
     public void gain(int value){gain=Math.max(0,Math.min(100,value));synchronized(lock){if(track!=null)track.setVolume(gain/100f);}}
-    public void command(long seq,String name,long created,long expires){
+    public void command(long seq,String name,long created,long expires,LongSupplier serverSeconds){
         synchronized(lock){
             if(closed||seq<=sequence)return;
             sequence=seq;action=name;
-            if(!fresh(created,expires,System.currentTimeMillis()/1000)){state="expired";return;}
+            if(!fresh(created,expires,serverSeconds.getAsLong())){state="expired";return;}
             final long token=++generation;release();
             if(name.equals("sfx_stop")){state="stopped";return;}
             state="pending";
-            worker.execute(()->play(token,seq,name,created,expires));
+            worker.execute(()->play(token,seq,name,created,expires,serverSeconds));
         }
     }
-    private void play(long token,long seq,String name,long created,long expires){
+    private void play(long token,long seq,String name,long created,long expires,LongSupplier serverSeconds){
         AudioTrack output=null;
         try{
             byte[] pcm=sounds.get(name);if(pcm==null)throw new IOException("effect_unavailable");
@@ -54,7 +55,7 @@ public final class SoundEffectPlayer {
             if(output.getState()!=AudioTrack.STATE_NO_STATIC_DATA||output.write(pcm,0,pcm.length)!=pcm.length)throw new IOException("effect_output");
             synchronized(lock){
                 if(closed||token!=generation)return;
-                if(!fresh(created,expires,System.currentTimeMillis()/1000)){state="expired";return;}
+                if(!fresh(created,expires,serverSeconds.getAsLong())){state="expired";return;}
                 track=output;output.setVolume(gain/100f);output.play();
             }
             long started=System.nanoTime();

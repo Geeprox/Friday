@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from homeplane.ktv_archive import MediaArchive
-from homeplane.ktv_audio import pack_playback, source_bitrate
+from homeplane.ktv_audio import pack_peak_safe_playback, pack_playback, source_bitrate
 from homeplane.ktv_service import JobRequest, Queue, create_app, transcode_pcm
 from integrations.ktv_public.audio_format import compact_spec, verify_compact
 from integrations.ktv_public.nas_server import Refusal, Store
@@ -95,6 +95,68 @@ def test_cancelled_pair_is_not_published(tmp_path):
     cancel.set()
     with pytest.raises(ValueError, match="cancelled"):
         pack_playback(source, source, folder, cancel, ffmpeg=FFMPEG, ffprobe=FFPROBE)
+    assert list(folder.iterdir()) == []
+
+
+def test_peak_safe_candidate_preserves_pair_gain_and_sample_timeline(tmp_path):
+    frames = 146051
+    time = np.arange(frames) / 48000
+    signal = 1.32 * np.sin(2 * np.pi * 541 * time) + .1 * np.sin(2 * np.pi * 941 * time)
+    signal *= np.where((time * 3).astype(int) % 3, 1., .4)
+    original = np.column_stack((signal, signal * .81)).astype("<f4")
+    backing = original * .43
+    assert np.abs(original).max() > 1
+    inputs = [tmp_path / "original-float.wav", tmp_path / "backing-float.wav"]
+    for path, pcm in zip(inputs, (original, backing)):
+        subprocess.run([FFMPEG, "-nostdin", "-v", "error", "-f", "f32le", "-ar", "48000", "-ac", "2",
+                        "-i", "pipe:0", "-c:a", "pcm_f32le", str(path)], input=pcm.tobytes(), check=True)
+    input_digests = [hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs]
+    folder = tmp_path / "trial"
+    media, report = pack_peak_safe_playback(*inputs, folder, threading.Event(), ffmpeg=FFMPEG, ffprobe=FFPROBE)
+    assert report["input_dbtp"]["original"] > 0
+    accepted = report["attempts"][-1]
+    assert accepted["gain_db"] < 0
+    assert all(db <= report["target_dbtp"] for db in accepted["decoded_dbtp"].values())
+    scale = 10 ** (accepted["gain_db"] / 20)
+    with wave.open(str(folder / ".playback-original.wav"), "rb") as wav:
+        pcm = np.frombuffer(wav.readframes(frames), "<i2").reshape(-1, 2) / 32768
+    assert np.max(np.abs(pcm - original * scale)) <= 1 / 32768
+    gains = []
+    for kind, reference in (("original", original), ("instrumental", backing)):
+        spec = media[kind]
+        assert spec["frames"] == frames
+        data = subprocess.check_output([FFMPEG, "-nostdin", "-v", "error", "-ignore_editlist", "1",
+            "-i", str(folder / spec["filename"]), "-af",
+            f"atrim=start_sample={spec['encoder_delay']}:end_sample={frames + spec['encoder_delay']}",
+            "-f", "f32le", "-"], timeout=15)
+        decoded = np.frombuffer(data, "<f4").reshape(-1, 2)
+        assert decoded.shape == reference.shape and np.abs(decoded).max() < 1
+        gains.append(20 * np.log10(np.linalg.norm(decoded) / np.linalg.norm(reference)))
+    assert abs(gains[0] - gains[1]) < .3
+    assert [hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs] == input_digests
+    with pytest.raises(FileExistsError):
+        pack_peak_safe_playback(*inputs, folder, threading.Event(), ffmpeg=FFMPEG, ffprobe=FFPROBE)
+
+
+def test_peak_safe_candidate_never_keeps_an_unverified_pair(tmp_path, monkeypatch):
+    from homeplane import ktv_audio
+
+    source = tmp_path / "source.wav"
+    source_wav(source, frames=48000)
+    rejected = []
+    real_measure = ktv_audio._true_peak
+
+    def measure(path, folder, event, *, ffmpeg, spec=None):
+        if spec is None:
+            return real_measure(path, folder, event, ffmpeg=ffmpeg)
+        rejected.append(path.name)
+        return .2
+
+    monkeypatch.setattr(ktv_audio, "_true_peak", measure)
+    folder = tmp_path / "trial"
+    with pytest.raises(ValueError, match="transcode_failed"):
+        pack_peak_safe_playback(source, source, folder, threading.Event(), ffmpeg=FFMPEG, ffprobe=FFPROBE)
+    assert rejected == [".original.partial.m4a", ".instrumental.partial.m4a"] * 3
     assert list(folder.iterdir()) == []
 
 

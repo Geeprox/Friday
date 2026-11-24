@@ -1,5 +1,6 @@
 """Synthetic scheduling/cache checks. No official client, model, microphone or speaker."""
 
+import hashlib
 import shutil
 import threading
 import time
@@ -391,6 +392,46 @@ def test_ready_queue_publishes_final_stems_and_discards_owned_intermediates(tmp_
         assert original.is_file()
     finally:
         queue.close()
+
+
+def test_ready_audio_and_other_jobs_do_not_wait_for_optional_video(tmp_path):
+    source = tmp_path / "input.wav"
+    wav(source)
+    entered, release = threading.Event(), threading.Event()
+    video_calls = []
+
+    def optional_video(song, reference, folder, cancel):
+        video_calls.append(song)
+        assert reference.read_bytes() == source.read_bytes()
+        entered.set()
+        assert release.wait(5)
+        if song == "124":
+            raise ValueError("video_failed")
+        data = "合成视频内容".encode("utf-8")
+        (folder / "video.mp4").write_bytes(data)
+        return {"status": "ready", "encoding": "h264_mp4_silent_clock", "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(), "duration_seconds": 1,
+                "source_audio_sha256": hashlib.sha256(reference.read_bytes()).hexdigest(),
+                "video_offset_ms": 0, "score_min": 1, "window_count": 5, "offset_drift_ms": 0}
+
+    queue = Queue(tmp_path / "runtime", acquire=lambda *_: source, separate=lambda s, *_: s,
+                  transcode=lambda s, o, c: shutil.copyfile(s, o), video=optional_video, simulated=True)
+    try:
+        first = queue.submit(request("123"))
+        assert entered.wait(5)
+        assert wait(queue, first)["video"]["status"] == "unavailable"
+        second = queue.submit(request("124"))
+        assert wait(queue, second)["state"] == "ready"
+        assert video_calls == ["123"]
+        release.set()
+        queue.pools["video"].submit("barrier", lambda: None).result(5)
+        assert queue.get(first["id"])["video"]["status"] == "ready"
+        assert queue.get(second["id"])["video"]["status"] == "unavailable"
+    finally:
+        release.set()
+        queue.close()
+    assert queue.get(first["id"])["state"] == "ready"
+    assert not queue.video_pending
 
 
 def test_explicit_mv_cache_stays_separate_and_auto_reuses_song_audio(tmp_path):

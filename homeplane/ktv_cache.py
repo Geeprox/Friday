@@ -102,15 +102,16 @@ class CacheManager:
                             (str(item.relative_to(path)), stat.st_ino, stat.st_size, stat.st_mtime_ns)
                         )
                 fingerprint = hashlib.sha256(json.dumps(sorted(manifest)).encode()).hexdigest()
+                in_progress = busy or any(job in self.queue.video_pending for job in group["jobs"])
                 result.append(
                     {k: group[k] for k in ("id", "title", "last_used", "kind")}
                     | {
                         "bytes": sum(unique.values()),
                         "revision": fingerprint,
                         "copies": len(group["jobs"]),
-                        "can_delete": not busy and not unsafe and not group["protected"],
+                        "can_delete": not in_progress and not unsafe and not group["protected"],
                         "reason": "preparing"
-                        if busy
+                        if in_progress
                         else "in_queue"
                         if group["protected"]
                         else "unsafe"

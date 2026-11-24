@@ -41,13 +41,19 @@
   }
 
   function commandObserved(action, song, before, playback, seq) {
-    if (!playback.online || playback.last_command < seq) return false;
+    if (!playback.online || !Number.isSafeInteger(seq) || seq < 1 ||
+        !Number.isSafeInteger(playback.last_command) || playback.last_command < seq) return false;
     if (action === "pause") return playback.current === song && ["paused", "idle"].includes(playback.state);
-    if (action === "resume") return playback.current === song && playback.state === "playing";
+    if (action === "resume") {
+      if (song) return playback.current === song && playback.state === "playing";
+      return playback.state === "playing" || playback.state === "preparing" && before.state !== "preparing";
+    }
     if (action === "next") return playback.current !== before.current
-      || !before.current && before.state === "playing" && playback.state === "preparing"
-      || !!before.current && playback.played?.includes(before.current);
+      || !before.current && before.state === "playing" && playback.state === "preparing";
     if (action !== "play" || playback.current !== song) return false;
+    if (before.current === song && before.playback_epoch && playback.playback_epoch) {
+      return playback.playback_epoch !== before.playback_epoch && ["preparing", "playing"].includes(playback.state);
+    }
     if (playback.state === "preparing") return true; // Loading is visible as loading, never "played".
     if (playback.state !== "playing") return false;
     if (before.current !== song || before.state !== "playing") return true;

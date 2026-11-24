@@ -2,6 +2,7 @@
 import base64
 import copy
 import hashlib
+import json
 import io
 import re
 import sqlite3
@@ -11,6 +12,7 @@ import time
 import uuid
 import wave
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -42,6 +44,7 @@ def store(tmp_path, monkeypatch):
     # These unit tests never issue a network request. Cache workers are invoked
     # explicitly below with a memory-only HTTP response replacement.
     monkeypatch.setattr(value.coordinator.cache_pool, "submit", lambda *args: None)
+    monkeypatch.setattr(value.coordinator.video_cache_pool, "submit", lambda *args: None)
     yield value
     value.coordinator.close()
 
@@ -342,6 +345,124 @@ def test_corrupt_archive_keeps_direct_source_and_cannot_publish_wrong_bytes(stor
         store.coordinator.media_file(value["id"], "original")
     assert error.value.code == "media_cache_pending"
 
+
+def test_cache_recovers_with_a_fresh_ticket_after_previous_download_failures(store, monkeypatch):
+    value, data, _, _, room = manifest(store)
+    coordinator = store.coordinator
+    submitted = []
+    monkeypatch.setattr(coordinator.cache_pool, "submit", lambda *args: submitted.append(args))
+    store.coordinator.manifest(value)
+    submitted.clear()
+    coordinator.cache_pending.clear()
+    row = coordinator._row(value["id"])
+    specs = coordinator._specs(row)
+    now = int(time.time())
+    with store.connection() as db:
+        db.execute("UPDATE coordinator_cache SET state='failed',updated=?,attempts=4", (now - 60,))
+    coordinator._queue_cache(value["id"])
+    assert submitted == [], "不要连续重试同一份下载"
+    with store.connection() as db:
+        db.execute("UPDATE coordinator_cache SET updated=?", (now - 250,))
+    coordinator._queue_asset_cache({**row, "expires": now}, "original", specs["original"])
+    assert submitted == [], "不会使用过期票据抢占重试"
+
+    fake_cache(monkeypatch, data, [])
+    store.coordinator.manifest({**value, "media_expires": now + 700, "media_ticket": str(now + 700) + "." + "b" * 43})
+    assert len(submitted) == 2
+    for operation, *args in submitted:
+        operation(*args)
+    assert coordinator.archive_state(value["id"]) == "ready"
+    coordinator.worker["at"] -= 30
+    assert all("origin" not in track["sources"][0] for track in coordinator.jobs()["jobs"][0]["media"].values())
+    assert not store.status(room)["mac_online"]
+
+
+def test_cache_releases_pending_owner_even_if_failure_receipt_cannot_be_written(store, monkeypatch):
+    coordinator = store.coordinator
+    digest = "e" * 64
+    coordinator.cache_pending.add(digest)
+    store.management.reserved[digest] = 128
+
+    def storage_unavailable():
+        raise sqlite3.OperationalError("synthetic_database_busy")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(store, "connection", storage_unavailable)
+        coordinator._cache_one({"origin":coordinator.worker_origin,"expires":0}, "original",
+                               {"sha256":digest,"bytes":128})
+    assert digest not in coordinator.cache_pending and digest not in store.management.reserved
+
+
+def test_start_and_withdrawal_are_serialized_across_a_stale_tv_snapshot(store):
+    value, _, instance, _, room = manifest(store)
+    store.coordinator.manifest(value)
+    song = value["id"]
+    with store.connection() as db:
+        guest = {"id":db.execute("SELECT guest_id FROM songs WHERE id=?", (song,)).fetchone()[0]}
+    receipt = {"room_id":room["id"], "song":song, "request_id":uid()}
+    assert store.coordinator.party()["queue_claims"]
+    assert not store.status(room)["queue_withdraw_ready"]
+    with pytest.raises(Refusal, match="song_start_unavailable"):
+        store.withdraw_song(room, {"withdraw_id":song}, guest)
+    store.coordinator.tv_readiness({"instance":instance, "playback":True, "audio":True, "media":True,
+                                    "protocol":1, "queue_claims":True})
+    assert store.status(room)["queue_withdraw_ready"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        start = pool.submit(store.coordinator.playback_start, receipt, instance)
+        withdraw = pool.submit(store.withdraw_song, room, {"withdraw_id":song}, guest)
+    if start.exception() is None:
+        assert start.result()["accepted"] and withdraw.exception().code == "song_already_started"
+        assert store.coordinator.playback_start(receipt, instance)["lease_ms"] <= start.result()["lease_ms"]
+        assert store.coordinator.playback_start({**receipt, "release":True}, instance)["accepted"]
+        assert store.withdraw_song(room, {"withdraw_id":song}, guest)["queue_removed"]
+    else:
+        assert start.exception().code == "song_unavailable" and withdraw.result()["queue_removed"]
+    assert all(item["id"] != song for item in store.status(room)["songs"])
+    # 即使已记录的候选快照晚到，也不能变成正在唱或已唱。
+    report = {"room_id":room["id"], "current":song, "state":"playing", "played":[],
+              "last_command":0, "safety_latched":False, "applied_revision":0, "mic_muted":True}
+    with pytest.raises(Refusal):
+        store.coordinator.playback(report, instance)
+    store.coordinator.playback({**report,"current":"","played":[song],"state":"idle"}, instance)
+    assert store.status(room)["playback"]["played"] == []
+
+
+def test_releasing_a_start_first_rejects_its_late_request_and_other_room(store):
+    value, _, instance, _, room = manifest(store)
+    store.coordinator.manifest(value)
+    packet = {"room_id":room["id"], "song":value["id"], "request_id":uid()}
+    assert store.coordinator.playback_start({**packet, "release":True}, instance) == {"accepted":True}
+    with pytest.raises(Refusal) as late:
+        store.coordinator.playback_start(packet, instance)
+    assert late.value.code == "playback_start_released"
+    with pytest.raises(Refusal) as wrong:
+        store.coordinator.playback_start({**packet,"room_id":uid()}, instance)
+    assert wrong.value.code == "room_changed"
+    assert store.coordinator.playback_start({**packet,"request_id":uid()}, instance)["accepted"]
+
+
+def test_claim_protects_playing_song_during_a_long_playback_report_gap(store):
+    value, _, instance, _, room = manifest(store)
+    store.coordinator.manifest(value)
+    song = value["id"]
+    store.coordinator.tv_readiness({"instance":instance, "playback":True, "audio":True, "media":True,
+                                    "protocol":1, "queue_claims":True})
+    packet = {"room_id":room["id"], "song":song, "request_id":uid()}
+    assert store.coordinator.playback_start(packet, instance)["accepted"]
+    with store.connection() as db:
+        guest = {"id":db.execute("SELECT guest_id FROM songs WHERE id=?", (song,)).fetchone()[0]}
+        db.execute("UPDATE coordinator_playback_starts SET expires=0 WHERE request_id=?", (packet["request_id"],))
+    with pytest.raises(Refusal, match="playback_start_expired"):
+        store.coordinator.playback_start(packet, instance)
+    with pytest.raises(Refusal, match="song_already_started"):
+        store.withdraw_song(room, {"withdraw_id":song}, guest)
+    report = {"room_id":room["id"], "current":song, "state":"playing", "played":[],
+              "last_command":0, "safety_latched":False, "applied_revision":0, "mic_muted":True}
+    assert store.coordinator.playback(report, instance)["accepted"]
+    assert store.coordinator.playback_start({**packet, "release":True}, instance)["accepted"]
+    assert store.status(room)["playback"]["current"] == song
+
+
 def test_exact_nas_archive_survives_old_room_and_plays_without_mac(store, monkeypatch):
     value, data, tv, party, old_room = manifest(store)
     store.coordinator.manifest(value)
@@ -369,9 +490,15 @@ def test_exact_nas_archive_survives_old_room_and_plays_without_mac(store, monkey
     assert job["synced_lyrics"] is False
     assert all(len(track["sources"]) == 1 and "origin" not in track["sources"][0]
                for track in job["media"].values())
-    with pytest.raises(Refusal) as err:
-        store.add(room, {**request, "source": "mv", "request_id": uid()}, guest)
-    assert err.value.code == "mac_offline"
+    ticket = {**request, "source": "mv", "request_id": uid()}
+    waiting = store.add(room, ticket, guest)
+    assert waiting["state"] == "queued"
+    assert not store.status(room)["mac_online"]
+    assert store.status(room)["upcoming"] == [accepted["id"], waiting["id"]]
+    # Worker 回来后沿用已经点入歌单的项目，无需该访客仍保持页面打开。
+    store.coordinator.register_worker(registration(value["instance"]))
+    assert store.add(room, ticket, guest) == waiting
+    assert [row["id"] for row in store.poll()["tasks"]] == [waiting["id"]]
 
 def test_missing_or_disordered_lyrics_do_not_block_the_next_verified_song(store):
     head, _, _, party, room = manifest(store)
@@ -527,18 +654,122 @@ def test_late_start_and_close_cannot_reopen_or_end_a_replacement_session(store):
     assert error.value.code == "tv_instance_changed"
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_new_tv_waits_for_its_own_playback_report_before_accepting_guest_commands(store, legacy):
+    coordinator = store.coordinator
+    prior, party = (None, store.create()) if legacy else started(store)
+    room, _, guest = admitted(store, party)
+    if legacy:
+        store.poll()
+    else:
+        coordinator.register_worker(registration())
+    song = store.add(room, {"song_id": "123", "title": "上次播放", "request_id": uid()}, guest)["id"]
+    report = {"current": song, "played": [], "state": "playing", "last_command": 0,
+              "safety_latched": False, "applied_revision": 0, "mic_muted": True}
+    if legacy:
+        store.playback(room["id"], report)
+    else:
+        coordinator.playback({**report, "room_id": room["id"]}, prior)
+    assert store.status(room)["playback"]["online"]
+
+    replacement = uid()
+    same = coordinator.start({"instance": replacement, "request_id": uid()})
+    assert same["room_id"] == room["id"]
+    coordinator.tv_readiness({"instance": replacement, "protocol": 1,
+                               "playback": True, "audio": True, "media": True})
+    snapshot = store.status(room)
+    assert snapshot["playback"]["current"] == song
+    assert not snapshot["playback"]["online"]
+    pause = {"action": "pause", "song": song, "request_id": uid()}
+    with pytest.raises(Refusal) as error:
+        store.command(room, pause)
+    assert error.value.code == "tv_offline"
+
+    coordinator.playback({**report, "state": "paused", "room_id": room["id"]}, replacement)
+    assert store.status(room)["playback"]["online"]
+    assert store.command(room, pause)["seq"] > 0
+
+
+@pytest.mark.parametrize("action", ["playback", "controls", "close"])
+def test_delayed_tv_write_rechecks_ownership_after_same_room_takeover(store, monkeypatch, action):
+    coordinator = store.coordinator
+    first, _, prior, party, room = manifest(store)
+    _, _, guest = admitted(store, party)
+    lyrics = {"lines": [{"at_ms": at, "text": "合成歌词"} for at in (0, 500, 1500)]}
+    coordinator.manifest({**first, "lyrics": lyrics})
+    second = store.add(room, {"song_id": "456", "title": "新版当前曲目", "request_id": uid()}, guest)["id"]
+    coordinator.manifest({**first, "id": second, "version": "2" * 64, "lyrics": lyrics,
+                          "job": {**first["job"], "id": second, "song_id": "456", "title": "新版当前曲目"}})
+    room_id = room["id"]
+    before = {"room_id": room_id, "current": first["id"], "played": [], "state": "playing",
+              "last_command": 0, "safety_latched": False, "applied_revision": 0, "mic_muted": True,
+              "position_ms": 400, "playback_epoch": uid()}
+    coordinator.playback(before, prior)
+    assert store.status(room)["playable"] == coordinator.party()["playable"] == [second]
+
+    previous_waiting = threading.Event()
+    room_lock = store.lock
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread().name.startswith("old-ktv"):
+                previous_waiting.set()
+            return room_lock.__enter__()
+
+        def __exit__(self, *exc):
+            return room_lock.__exit__(*exc)
+
+    monkeypatch.setattr(store, "lock", ObservedLock())
+
+    def delayed_write():
+        if action == "playback":
+            return coordinator.playback(before, prior)
+        if action == "controls":
+            return coordinator.tv_controls({"room_id": room_id, "original": 1}, prior)
+        return coordinator.close_party(prior, {"room_id": room_id})
+
+    replacement, epoch = uid(), uid()
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="old-ktv") as pool:
+        with room_lock:
+            pending = pool.submit(delayed_write)
+            assert previous_waiting.wait(3)
+            # 固定旧连接已开始等待写入、新连接随后接手本场的顺序。
+            assert coordinator.start({"instance": replacement, "request_id": uid()})["room_id"] == room_id
+            coordinator.playback({**before, "current": second, "played": [first["id"]],
+                                  "position_ms": 800, "playback_epoch": epoch}, replacement)
+        with pytest.raises(Refusal) as refused:
+            pending.result(timeout=3)
+        assert refused.value.code == "tv_instance_changed"
+
+    snapshot = store.status(room)
+    assert snapshot["playback"]["current"] == second
+    assert snapshot["playback"]["playback_epoch"] == epoch
+    assert snapshot["playback"]["position_ms"] == 800
+    assert snapshot["controls"]["original"] == 0
+    assert snapshot["playable"] == coordinator.party()["playable"] == []
+
+
 def test_nas_restart_keeps_instance_queue_and_allows_readiness_renewal(store):
     value, _, instance, party, room = manifest(store)
     store.coordinator.manifest(value)
     store.coordinator.tv_readiness({"instance": instance, "protocol": 1, "playback": True, "audio": True, "media": True})
+    report = {"room_id": room["id"], "current": value["id"], "played": [], "state": "playing",
+              "last_command": 0, "safety_latched": False, "applied_revision": 0, "mic_muted": True}
+    store.coordinator.playback(report, instance)
+    assert store.status(room)["playback"]["online"]
     reopened = Store(store.root, store.origin)
     try:
         assert reopened.coordinator.party()["room_id"] == party["room_id"]
         assert reopened.coordinator.active()["instance"] == instance
         assert not reopened.coordinator.readiness()["gates"]["link_tv"]
+        assert not reopened.status(room)["playback"]["online"]
         reopened.coordinator.tv_readiness({"instance": instance, "protocol": 1, "playback": True, "audio": True, "media": True})
         assert reopened.coordinator.readiness()["gates"]["link_tv"]
         assert reopened.status(room)["songs"][0]["id"] == value["id"]
+        assert not reopened.status(room)["playback"]["online"]
+        reopened.coordinator.playback({**report, "state": "paused"}, instance)
+        assert reopened.status(room)["playback"]["state"] == "paused"
+        assert reopened.status(room)["playback"]["online"]
     finally:
         reopened.coordinator.close()
 
@@ -629,6 +860,93 @@ def test_movie_alignment_evidence_is_bound_to_audio_and_preserved(store):
     alternate["job"]["video"].update(method="same_mv_audio", video_offset_ms=0, derived_from_video_sha256="c" * 64)
     store.coordinator.manifest(alternate)
     assert store.coordinator.jobs()["jobs"][0]["video"]["derived_from_video_sha256"] == "c" * 64
+
+
+def test_room_playable_requires_the_selected_track_to_have_a_working_source(store, monkeypatch):
+    first, first_audio, tv, _, room = manifest(store)
+    coordinator = store.coordinator
+    first["lyrics"] = {"status": "ready", "lines": [{"time_ms": ms, "text": "合成歌词"} for ms in (0, 400, 900)]}
+    coordinator.manifest(first)
+    follow = store.add(room, {"song_id": "456", "title": "已归档合成歌曲", "request_id": uid()}, store.join(room))["id"]
+    later = copy.deepcopy(first)
+    later.update(id=follow, version="d" * 64)
+    later["job"].update(id=follow, song_id="456")
+    later_audio = {kind: wav_bytes(level=level) for kind, level in (("original", 400), ("instrumental", 500))}
+    for kind, body in later_audio.items():
+        later["job"]["media"][kind].update(sha256=hashlib.sha256(body).hexdigest(), bytes=len(body))
+    coordinator.manifest(later)
+    assert store.status(room)["playable"] == coordinator.party()["playable"] == [first["id"], follow]
+
+    fake_cache(monkeypatch, later_audio, [])
+    row = coordinator._row(follow)
+    for kind, spec in coordinator._specs(row).items():
+        coordinator._cache_one(row, kind, spec)
+    playback = {"room_id": room["id"], "current": "", "played": [], "state": "idle",
+                "last_command": 0, "safety_latched": False, "applied_revision": 0, "mic_muted": True}
+    coordinator.playback(playback, tv)
+    coordinator.worker["at"] = time.time() - 60
+    assert store.status(room)["playable"] == coordinator.party()["playable"] == [follow]
+    assert [song["state"] for song in coordinator.jobs()["jobs"]] == ["transcoding", "ready"]
+    request = {"action": "play", "song": first["id"], "request_id": uid()}
+    with pytest.raises(Refusal) as error:
+        store.command(room, request)
+    assert error.value.code == "media_not_ready"
+    assert coordinator.party()["commands"] == []
+
+    fake_cache(monkeypatch, first_audio, [])
+    original = first["job"]["media"]["original"]
+    coordinator._cache_one(coordinator._row(first["id"]), "original", original)
+    assert store.status(room)["playable"] == coordinator.party()["playable"] == [follow]
+    store.controls(room, {"original": 1})
+    assert store.status(room)["playable"] == coordinator.party()["playable"] == [first["id"], follow]
+    accepted = store.command(room, request)
+    assert coordinator.party()["commands"][0]["seq"] == accepted["seq"]
+    first_job = coordinator.jobs()["jobs"][0]["media"]
+    assert first_job["original"]["sources"] and not first_job["instrumental"]["sources"]
+
+    path = coordinator.media_root / original["sha256"]
+    path.chmod(0o600)
+    path.write_bytes(b"x" * original["bytes"])
+    assert store.status(room)["playable"] == coordinator.party()["playable"] == [follow]
+    assert store.command(room, request) == accepted
+    with pytest.raises(Refusal) as error:
+        store.command(room, {**request, "request_id": uid()})
+    assert error.value.code == "media_not_ready"
+    # 当前电视可从已经校验的本地音轨重唱。
+    coordinator.playback({**playback, "current": first["id"], "state": "playing"}, tv)
+    assert store.command(room, {**request, "request_id": uid()})["seq"] > accepted["seq"]
+
+
+def test_late_video_does_not_attach_if_the_published_audio_changes_during_download(store, monkeypatch):
+    value, *_ = manifest(store)
+    coordinator = store.coordinator
+    coordinator.manifest(value)
+    media = value["job"]["media"]
+    original = media["original"]
+    video_bytes = b"synthetic aligned video" * 5
+    video = {"status": "ready", "url": original["url"].rsplit("/", 1)[0] + "/video", "bytes": len(video_bytes),
+             "sha256": hashlib.sha256(video_bytes).hexdigest(), "duration_seconds": 2, "encoding": "h264_mp4_video_only",
+             "source_audio_sha256": original["sha256"], "video_offset_ms": 0, "method": "same_mv_audio",
+             "derived_from_video_sha256": "c" * 64}
+    payload = {"instance": value["instance"], "items": [{**{k: value[k] for k in ("id", "media_ticket", "media_expires")},
+               "audio": {kind: spec["sha256"] for kind, spec in media.items()}, "video": video}]}
+    submitted = []
+    monkeypatch.setattr(coordinator.video_cache_pool, "submit", lambda *args: submitted.append(args))
+    assert coordinator.archive_videos(payload)["items"][0]["state"] == "pending"
+    assert len(submitted) == 1
+
+    changed = copy.deepcopy(value)
+    changed["version"] = "d" * 64
+    changed["job"]["media"]["instrumental"]["sha256"] = "f" * 64
+    coordinator.manifest(changed)
+    fake_cache(monkeypatch, {"video": video_bytes}, [])
+    run, *args = submitted.pop()
+    run(*args)
+    actual = coordinator._row(value["id"])
+    assert actual["version"] == changed["version"]
+    assert json.loads(actual["job"])["video"] == {"status": "unavailable"}
+    assert coordinator.archive_videos(payload)["items"][0]["state"] == "obsolete" and not submitted
+    assert not (coordinator.media_root / video["sha256"]).exists()
 
 
 def test_phone_guide_is_published_only_after_both_checked_small_caches_are_ready(store, monkeypatch):
@@ -751,14 +1069,17 @@ def test_qr_loss_or_same_size_damage_requests_worker_republication(store):
     assert not store.coordinator.qr_ready()
 
 
-def test_guest_origin_switch_rebinds_pending_qr_and_preserves_room_and_guest(store):
+@pytest.mark.parametrize("invite_only", [False, True])
+def test_guest_origin_switch_rebinds_pending_qr_and_preserves_room_and_guest(store, invite_only):
     instance, previous_party = started(store)
     _, room_key, existing_guest = admitted(store, previous_party)
     publish_qr(store, instance, previous_party)
     assert store.coordinator.qr_ready()
 
-    current = "https://guests.example.test:9443"
-    reopened = Store(store.root, current, previous_guest_origin=store.origin)
+    current = "https://guests.example.test"
+    legacy = "https://previous.example.test:9443"
+    settings = {"previous_guest_origin": legacy, "public_invite_origin": current} if invite_only else {"previous_guest_origin": store.origin}
+    reopened = Store(store.root, store.origin if invite_only else current, **settings)
     server = Server(("127.0.0.1", 0), make_handler(reopened, AGENT, ASSETS))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -785,11 +1106,15 @@ def test_guest_origin_switch_rebinds_pending_qr_and_preserves_room_and_guest(sto
             joined = client.post(path + "/join", headers={"X-KTV-Room": room_key, "Origin": current},
                                  json={"guest_key": "b" * 64, "profile": {"nickname": "海风留声", "avatar": 6}})
             assert joined.status_code == 201 and joined.json()["nickname"] == "海风留声"
+            if invite_only:
+                assert client.get("/?room=current", headers={"Origin": current}).json()["room"] == new_party["room_id"]
+                assert client.get(path + "/profile", headers={**guest_headers, "Origin": legacy}).json()["id"] == existing_guest["id"]
             assert client.post(path + "/join", headers={"Origin": current}, json={}).status_code == 403
             foreign = client.get(path + "/profile", headers={**guest_headers, "Origin": "https://elsewhere.invalid"})
             assert foreign.status_code == 403 and foreign.json()["code"] == "origin_refused"
-            agent = {"Authorization": "Bearer " + AGENT, "Origin": store.origin}
-            tv = {"X-KTV-TV-Key": reopened.coordinator.tv_key, "Origin": store.origin}
+            guest_origin = current if invite_only else store.origin
+            agent = {"Authorization": "Bearer " + AGENT, "Origin": guest_origin}
+            tv = {"X-KTV-TV-Key": reopened.coordinator.tv_key, "Origin": guest_origin}
             assert client.get("/agent/tasks", headers=agent).json()["code"] == "origin_refused"
             assert client.get("/v1/status", headers=tv).json()["code"] == "origin_refused"
     finally:
@@ -1061,6 +1386,11 @@ def test_archive_check_is_bounded_agent_only_and_changed_cache_checks_cannot_sta
             assert client.post(endpoint, json={"items": []}).status_code == 401
             response = client.post(endpoint, headers={"Authorization": "Bearer " + AGENT}, json={"items": [missing]})
             assert response.status_code == 200 and response.json()["items"] == [{"id": missing["id"], "state": "pending"}]
+            endpoint = "/agent/archive-videos"
+            assert client.get("/agent/tasks", headers={"Authorization": "Bearer " + AGENT}).json()["archive_videos"] is True
+            assert client.post(endpoint, headers={"X-KTV-TV-Key": store.coordinator.tv_key}, json={}).status_code == 401
+            assert client.post(endpoint, headers={"Authorization": "Bearer " + AGENT, "Origin": store.origin}, json={}).status_code == 404
+            assert client.post(endpoint, headers={"Authorization": "Bearer " + AGENT}, json={}).json()["code"] == "invalid_archive_videos"
     finally:
         server.shutdown()
         server.server_close()

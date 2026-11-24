@@ -7,6 +7,8 @@ public final class JSONObject {
  public JSONObject(){}
  public JSONObject(String value)throws JSONException{JSONObject stored=envelopes.get(value);if(stored==null)throw new JSONException("unknown test envelope");values.putAll(stored.values);}
  public JSONObject put(String key,Object value)throws JSONException{values.put(key,value);return this;}
+ public JSONObject put(String key,boolean value)throws JSONException{return put(key,Boolean.valueOf(value));}
+ public Object opt(String key){return values.get(key);}
  public JSONObject optJSONObject(String key){Object value=values.get(key);return value instanceof JSONObject?(JSONObject)value:null;}
  public String optString(String key){return optString(key,"");}
  public String optString(String key,String fallback){Object value=values.get(key);return value instanceof String?(String)value:fallback;}
