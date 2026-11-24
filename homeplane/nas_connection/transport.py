@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
@@ -21,6 +22,7 @@ class Transport(Protocol):
 class WorkerTransport:
     def __init__(self, *, python_executable=sys.executable):
         self.process = None
+        self._closing = None
         self.sequence = 0
         self.python_executable = python_executable
 
@@ -29,6 +31,8 @@ class WorkerTransport:
         command = [self.python_executable, "-I", "-B", str(Path(__file__).with_name("worker.py"))]
         environment = {k: os.environ[k] for k in ("LANG", "LC_ALL", "SYSTEMROOT") if k in os.environ}
         try:
+            if self._closing is not None:
+                await self.close()
             self.process = await asyncio.create_subprocess_exec(
                 *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL, env=environment, limit=MAX_FRAME,
@@ -65,20 +69,34 @@ class WorkerTransport:
             raise NASConnectionError("nas_transport_failed") from None
 
     async def close(self):
-        process, self.process = self.process, None
-        if process is None:
-            return
+        if self._closing is None:
+            process, self.process = self.process, None
+            if process is None:
+                return
+            self._closing = asyncio.create_task(self._stop_process(process))
+        cleanup = self._closing
+        try:
+            # 上层取消等待时，后续关闭仍可等待同一进程退出。
+            await asyncio.shield(cleanup)
+        finally:
+            if cleanup.done() and self._closing is cleanup:
+                self._closing = None
+
+    @staticmethod
+    async def _stop_process(process):
         if process.returncode is None:
-            # Closing stdin requests normal adapter teardown, then terminate/kill if hung.
+            # 先请求适配器正常退出，挂起时逐步终止并确认回收。
             process.stdin.close()
             try:
                 await asyncio.wait_for(process.wait(), 0.2)
             except TimeoutError:
                 if process.returncode is None:
-                    process.terminate()
+                    with suppress(ProcessLookupError):
+                        process.terminate()
                 try:
                     await asyncio.wait_for(process.wait(), 0.2)
                 except TimeoutError:
                     if process.returncode is None:
-                        process.kill()
+                        with suppress(ProcessLookupError):
+                            process.kill()
                     await process.wait()

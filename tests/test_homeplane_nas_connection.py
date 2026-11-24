@@ -499,7 +499,7 @@ async def test_actual_worker_dependency_gate_or_fake_unreachable_endpoint_does_n
         try:
             with pytest.raises(NASConnectionError) as caught:
                 # 外层只防止测试挂起；连接失败和超时由独立用例验证，不计 SDK 冷导入耗时。
-                await asyncio.wait_for(transport.connect(cfg, CREDS), 10)
+                await asyncio.wait_for(transport.connect(cfg, CREDS), 30)
             assert caught.value.code in {"nas_dependency_missing", "nas_transport_failed"}
         finally:
             await transport.close()
@@ -508,6 +508,30 @@ async def test_actual_worker_dependency_gate_or_fake_unreachable_endpoint_does_n
     captured = capfd.readouterr()
     assert SECRET not in captured.out + captured.err
     assert "SYNTHETIC-user" not in captured.out + captured.err
+
+
+async def test_cancelled_close_retains_the_worker_until_it_is_reaped():
+    code = ("import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+            "print('ready',flush=True); time.sleep(60)")
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-I", "-B", "-c", code, env={}, stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    transport = WorkerTransport()
+    transport.process = process
+    try:
+        assert await asyncio.wait_for(process.stdout.readline(), 10) == b"ready\n"
+        closing = asyncio.create_task(transport.close())
+        await asyncio.sleep(0)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        await transport.close()
+        assert transport.process is None and process.returncode is not None
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
 
 
 @pytest.mark.parametrize("cancel", [False, True])
