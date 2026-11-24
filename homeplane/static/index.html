@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <title>Friday · 我的家</title>
+  <link rel="icon" href="/static/brand/friday.png">
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/icons.css">
   <link rel="stylesheet" href="/static/home-conversation.css">
@@ -19,7 +20,7 @@
   <script defer src="/static/app.js"></script>
 </head>
 <body>
-<a class="skip" href="#workspace">跳到内容</a>
+<a class="skip" id="skip-navigation" href="#workspace">跳到内容</a>
 <aside class="sidebar">
   <a class="brand" id="brand-home" href="#home"><img class="brand-mark" src="/static/brand/friday.png" alt="" width="32" height="32">Friday</a>
   <nav aria-label="主导航" id="navigation"></nav>
@@ -30,7 +31,7 @@
   <header class="topbar">
     <span id="mode" class="badge">正在连接</span>
     <span id="snapshot-time" class="muted"></span>
-    <button id="refresh" type="button"><span class="icon icon-refresh" aria-hidden="true"></span>刷新状态</button>
+    <button id="refresh" type="button"><span class="icon icon-refresh" aria-hidden="true"></span><span id="refresh-label">刷新状态</span></button>
   </header>
   <main id="workspace" tabindex="-1">
     <div id="notification" role="status" aria-live="polite"></div>

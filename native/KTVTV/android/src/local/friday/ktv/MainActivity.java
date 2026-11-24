@@ -123,6 +123,10 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private long videoSeekCount,videoBufferEvents,videoSurfaceFrames,videoPositionMs,videoTargetMs,seekResultMs,videoPrepareCount,routeRestartCount;
     private float videoSpeed=1;private boolean videoSpeedSupported=true;
     private int activeLine=-1,ticks,accent=0xfffa6670;
+    private int displayedMvLine=Integer.MIN_VALUE;
+    private boolean videoShowing;
+    private long shownClockSecond=-1,shownDurationSecond=-1;
+    private String playbackClockLabel="";
     private static final int WHITE=0xfff8f7f2,MUTED=0xffd2d7d2;
 
     @Override public void onCreate(Bundle state){
@@ -771,7 +775,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         progress.setVisibility(View.INVISIBLE);
         clock.setText("");
         trackTitle.setText("");
-        picture.setAlpha(0);
+        showVideoSurface(false);
         mvLyrics.setVisibility(View.GONE);
 
         boolean joining=qrBitmap!=null&&autoRoom;
@@ -1214,10 +1218,10 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     }
     private void setLyrics(JSONArray value,String title){
         lines=value;activeLine=-1;lyrics.removeAllViews();lyricViews.clear();int h=Math.max(dp(150),lyricScroll.getHeight()/2);lyrics.setPadding(0,h,0,h);
-        lyricStarts=new long[value.length()];for(int i=0;i<value.length();i++)lyricStarts[i]=value.optJSONObject(i).optLong("time_ms");mvPrevious.setText("");mvCurrent.setText("");mvNext.setText("");countdownLine=-1;countdownValue=0;
+        lyricStarts=new long[value.length()];for(int i=0;i<value.length();i++)lyricStarts[i]=value.optJSONObject(i).optLong("time_ms");mvPrevious.setText("");mvCurrent.setText("");mvNext.setText("");countdownLine=-1;countdownValue=0;displayedMvLine=Integer.MIN_VALUE;
         if(value.length()==0){TextView line=text(title,38,WHITE);line.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));textShadow(line,true);lyrics.addView(line);return;}
-        for(int i=0;i<value.length();i++){TextView line=text(value.optJSONObject(i).optString("text"),25,MUTED);line.setPadding(0,dp(10),0,dp(10));line.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));textShadow(line,false);line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);lyrics.addView(line,new LinearLayout.LayoutParams(-1,-2));lyricViews.add(line);}
-        lyricScroll.post(()->lyricScroll.smoothScrollTo(0,0));
+        for(int i=0;i<value.length();i++){TextView line=text(value.optJSONObject(i).optString("text"),32,MUTED);line.setPadding(0,dp(10),0,dp(10));line.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));textShadow(line,false);line.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);lyrics.addView(line,new LinearLayout.LayoutParams(-1,-2));lyricViews.add(line);}
+        lyricScroll.post(()->lyricScroll.scrollTo(0,0));
     }
     private void refreshMissingLyrics(){
         if(current!=null&&(loading||engine.running)&&lines.length()==0)prepareLyrics(current);
@@ -1301,19 +1305,38 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     }
     private void prepareVideo(){releaseVideo();if(videoFile==null||!picture.isAvailable()||!foreground)return;try{
         videoPrepareCount++;videoClock.reset();videoSeekCount=videoBufferEvents=videoSurfaceFrames=0;videoSpeed=1;videoSpeedSupported=false;videoSurface=new Surface(picture.getSurfaceTexture());final MediaPlayer p=new MediaPlayer();video=p;p.setSurface(videoSurface);p.setDataSource(videoFile.getAbsolutePath());p.setLooping(false);p.setVolume(0,0);p.setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING);
-        p.setOnPreparedListener(v->{if(video!=p||!foreground)return;videoReady=true;syncVideo(true);});p.setOnSeekCompleteListener(v->{if(video!=p)return;try{seekResultMs=p.getCurrentPosition();videoSeeking=false;if(engine.running&&foreground){long target=engine.playheadFrames/48+videoOffsetMs;long lag=target-seekResultMs;if(videoSeekCount==1&&lag>180&&lag<1500&&target+lag<videoDurationMs-40){videoSeeking=true;videoSeekCount++;p.seekTo(target+lag,MediaPlayer.SEEK_CLOSEST);}else p.start();}}catch(Exception ignored){if(video==p)releaseVideo();}});p.setOnInfoListener((v,what,extra)->{if(what==MediaPlayer.MEDIA_INFO_BUFFERING_START)videoBufferEvents++;if(what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START&&video==p){picture.setAlpha(1);showScrollingLyrics(false);trackTitle.setVisibility(View.GONE);}return false;});p.setOnCompletionListener(v->{if(video==p)picture.setAlpha(0);});p.setOnErrorListener((v,what,extra)->{if(video==p)releaseVideo();return true;});p.prepareAsync();
+        p.setOnPreparedListener(v->{if(video!=p||!foreground)return;videoReady=true;syncVideo(true);});p.setOnSeekCompleteListener(v->{if(video!=p)return;try{seekResultMs=p.getCurrentPosition();videoSeeking=false;if(engine.running&&foreground){long target=engine.playheadFrames/48+videoOffsetMs;long lag=target-seekResultMs;if(videoSeekCount==1&&lag>180&&lag<1500&&target+lag<videoDurationMs-40){videoSeeking=true;videoSeekCount++;p.seekTo(target+lag,MediaPlayer.SEEK_CLOSEST);}else p.start();}}catch(Exception ignored){if(video==p)releaseVideo();}});p.setOnInfoListener((v,what,extra)->{if(what==MediaPlayer.MEDIA_INFO_BUFFERING_START)videoBufferEvents++;if(what==MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START&&video==p&&foreground)showVideoSurface(true);return false;});p.setOnCompletionListener(v->{if(video==p)releaseVideo();});p.setOnErrorListener((v,what,extra)->{if(video==p)releaseVideo();return true;});p.prepareAsync();
         }catch(Exception ignored){releaseVideo();}}
+    private void showVideoSurface(boolean showing){
+        if(videoShowing==showing)return;
+        videoShowing=showing;
+        picture.setAlpha(showing?1:0);
+        showScrollingLyrics(!showing&&current!=null);
+        trackTitle.setVisibility(!showing&&current!=null?View.VISIBLE:View.GONE);
+        if(showing)updateMvLyrics(engine.playheadFrames/48);
+        else mvLyrics.setVisibility(View.GONE);
+    }
     private void updateMvLyrics(long ms){
-        lyricCue.update(ms,lyricStarts,entryStarts);boolean showVideo=video!=null&&picture.getAlpha()>0&&lines.length()>0;
+        lyricCue.update(ms,lyricStarts,entryStarts);
         int target=lyricCue.countdown>0?lyricCue.entrance:-1;
-        if(target!=countdownLine||lyricCue.countdown!=countdownValue){
+        boolean countdownChanged=target!=countdownLine||lyricCue.countdown!=countdownValue;
+        if(countdownChanged){
             if(countdownLine>=0&&countdownLine<lyricViews.size())lyricViews.get(countdownLine).setText(lines.optJSONObject(countdownLine).optString("text"));
             countdownLine=target;countdownValue=lyricCue.countdown;
             if(target>=0&&target<lyricViews.size())lyricViews.get(target).setText(cuedLine(target));
         }
-        if(!showVideo){mvLyrics.setVisibility(View.GONE);return;}
-        mvLyrics.setVisibility(View.VISIBLE);
-        mvPrevious.setText(cuedLine(LyricWindow.previous(lyricCue.current,lines.length())));mvCurrent.setText(cuedLine(lyricCue.current));mvNext.setText(cuedLine(lyricCue.next));
+        if(!videoShowing||lines.length()==0){
+            if(mvLyrics.getVisibility()!=View.GONE)mvLyrics.setVisibility(View.GONE);
+            return;
+        }
+        boolean revealed=mvLyrics.getVisibility()!=View.VISIBLE;
+        if(revealed||countdownChanged||displayedMvLine!=lyricCue.current){
+            displayedMvLine=lyricCue.current;
+            mvPrevious.setText(cuedLine(LyricWindow.previous(lyricCue.current,lines.length())));
+            mvCurrent.setText(cuedLine(lyricCue.current));
+            mvNext.setText(cuedLine(lyricCue.next));
+        }
+        if(revealed)mvLyrics.setVisibility(View.VISIBLE);
     }
     /** Keeps the just-sung line readable even when a source timestamp advances early. */
     static final class LyricWindow {
@@ -1336,8 +1359,9 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         for(int i:new int[]{formerPrevious,former,previous,index}){
             if(i<0||i>=lyricViews.size())continue;
             boolean active=i==index;
-            TextView line=lyricViews.get(i);line.setTextSize(active?40:i==previous?28:25);
+            TextView line=lyricViews.get(i);
             line.setTextColor(active?(theme.equals("festival")?accent:WHITE):i==previous?0xffe2e2e2:MUTED);
+            line.setBackgroundColor(active?0x80303335:0x00000000);
             textShadow(line,active);
         }
         if(index<0||index>=lyricViews.size())return;
@@ -1357,12 +1381,12 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         int passed=5-lyricCue.countdown;for(int i=0;i<5;i++)text.setSpan(new android.text.style.ForegroundColorSpan(i<passed?0x33ffffff:WHITE),i*3,i*3+1,0);
         return text;
     }
-    private void syncVideo(boolean force){if(video==null||!videoReady||!engine.running||!foreground)return;long target=engine.playheadFrames/48+videoOffsetMs;if(target<0||target>=videoDurationMs-40){try{video.pause();}catch(Exception ignored){}picture.setAlpha(0);return;}try{
+    private void syncVideo(boolean force){if(video==null||!videoReady||!engine.running||!foreground)return;long target=engine.playheadFrames/48+videoOffsetMs;if(target<0||target>=videoDurationMs-40){try{video.pause();}catch(Exception ignored){}showVideoSurface(false);return;}try{
         videoTargetMs=target;videoPositionMs=video.getCurrentPosition();if(videoSeeking)return;videoClock.update(target,videoPositionMs,SystemClock.elapsedRealtime(),force);
         if(videoClock.seek){videoSeeking=true;videoSeekCount++;video.seekTo(target,MediaPlayer.SEEK_CLOSEST);}
         else if(!video.isPlaying())video.start();
         }catch(Exception ignored){releaseVideo();}}
-    private void releaseVideo(){if(current!=null){showScrollingLyrics(true);trackTitle.setVisibility(View.VISIBLE);}mvLyrics.setVisibility(View.GONE);videoReady=false;videoSeeking=false;picture.setAlpha(0);if(video!=null){try{video.release();}catch(Exception ignored){}video=null;}if(videoSurface!=null){videoSurface.release();videoSurface=null;}}
+    private void releaseVideo(){showVideoSurface(false);videoReady=false;videoSeeking=false;if(video!=null){try{video.release();}catch(Exception ignored){}video=null;}if(videoSurface!=null){videoSurface.release();videoSurface=null;}}
     @Override public void onSurfaceTextureAvailable(SurfaceTexture texture,int w,int h){if(engine.running)prepareVideo();}
     @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture){releaseVideo();return true;}
     @Override public void onSurfaceTextureSizeChanged(SurfaceTexture texture,int w,int h){}
@@ -1467,9 +1491,13 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
             if(shownSfx!=soundEffects.sequence){shownSfx=soundEffects.sequence;partyEffects.show(soundEffects.action);}
         }else if(!"pending".equals(soundEffects.state)){partyEffects.stop();}
     }
-    private final Runnable tick=new Runnable(){public void run(){if(!foreground)return;refreshCoordinatorStatus();syncPartyEffects();if(ticks++%5==0){poll();refreshMissingLyrics();tryTvUpdate();}if(engine.running&&current!=null){long ms=engine.playheadFrames/48;updateMvLyrics(ms);int index=-1;for(int i=0;i<lines.length();i++){if(lines.optJSONObject(i).optLong("time_ms")<=ms)index=i;else break;}if(index!=activeLine)highlightScrollingLyrics(index);
+    private final Runnable tick=new Runnable(){public void run(){if(!foreground)return;refreshCoordinatorStatus();syncPartyEffects();if(ticks++%5==0){poll();refreshMissingLyrics();tryTvUpdate();}if(engine.running&&current!=null){long ms=engine.playheadFrames/48;updateMvLyrics(ms);if(lyricCue.current!=activeLine)highlightScrollingLyrics(lyricCue.current);
             JSONObject media=current.optJSONObject("media");JSONObject song=media==null?null:media.optJSONObject("original");long duration=song==null?0:Math.round(song.optDouble("duration_seconds")*1000);progress.setProgress(duration>0?(int)Math.min(10000,ms*10000/duration):0);
-            clock.setText(time(ms)+"  /  "+time(duration)+"     ↑ 原唱/伴奏   ← 重唱   → 切歌");
+            if(ms/1000!=shownClockSecond||duration/1000!=shownDurationSecond||!playbackClockLabel.contentEquals(clock.getText())){
+                shownClockSecond=ms/1000;shownDurationSecond=duration/1000;
+                playbackClockLabel=time(ms)+"  /  "+time(duration)+"     ↑ 原唱/伴奏   ← 重唱   → 切歌";
+                clock.setText(playbackClockLabel);
+            }
             if(ticks%5==0)syncVideo(false);
         }ui.postDelayed(this,100);}};
     private void remoteAction(RemoteShortcuts.Action action){

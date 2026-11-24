@@ -55,12 +55,12 @@ test('a resolved or replaced attention link never opens or runs an obsolete task
 
 test('the original app route keeps the exact attention identifier across reload and same-page selection',()=>{
  const source=fs.readFileSync('homeplane/static/app.js','utf8'),start=source.indexOf('let requestedTaskAttention=null;');assert(start>=0);
- let stored,selected;const scope=vm.createContext({page:'Home',pages:['Home','Automations','Safety'],location:{hash:'#automations?attention='+'d'.repeat(64)},URLSearchParams,
-  requestedSafetyEvent:null,archiveVersion:0,archiveSetupVersion:0,lastTrace:null,stopArchivePlayer(){},render(){},history:{replaceState(_a,_b,path){stored=path;}},
+ let stored,selected;const scope=vm.createContext({page:'Home',pageRefresh:null,pages:['Home','Automations','Safety'],location:{hash:'#automations?attention='+'d'.repeat(64)},URLSearchParams,
+  requestedSafetyEvent:null,archiveVersion:0,archiveSetupVersion:0,lastTrace:null,stopArchivePlayer(){},render(){},history:{pushState(_a,_b,path){stored=path;}},
   experienceView:{selectTaskAttention(id){selected=id;}},$:()=>({setAttribute(){},focus(){}})});
  vm.runInContext(source.slice(start,source.indexOf('function button(',start)),scope);
- assert.equal(scope.pageLocation().attentionId,'d'.repeat(64));scope.go('Automations',{attentionId:'d'.repeat(64)});assert.equal(stored,'#automations?attention='+'d'.repeat(64));assert.equal(selected,'d'.repeat(64));
- scope.go('Automations',{attentionId:'e'.repeat(64)});assert.equal(selected,'e'.repeat(64));
+ assert.equal(scope.pageLocation().attentionId,'d'.repeat(64));scope.go('Automations',{attentionId:'d'.repeat(64)});assert.equal(stored,undefined);assert.equal(selected,'d'.repeat(64));
+ scope.go('Automations',{attentionId:'e'.repeat(64)});assert.equal(stored,'#automations?attention='+'e'.repeat(64));assert.equal(selected,'e'.repeat(64));
  scope.location.hash='#automations?attention=../invalid';assert.equal(scope.pageLocation().attentionId,null);
  scope.location.hash='#safety?attention='+'d'.repeat(64)+'&event='+'a'.repeat(32);assert.equal(scope.pageLocation().attentionId,null);assert.equal(scope.pageLocation().eventId,'a'.repeat(32));
 });

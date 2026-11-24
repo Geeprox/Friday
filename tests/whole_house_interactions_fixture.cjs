@@ -5,6 +5,7 @@ class Element{
  constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this._text='';this.style={};this.value='';this.disabled=false;this.hidden=false;this.dataset={};}
  set textContent(v){this._text=v;this.children=[];}get textContent(){return this._text+this.children.map(c=>c.textContent).join('');}
  setAttribute(k,v){this.attrs[k]=String(v);if(k==='value')this.value=String(v);}getAttribute(k){return this.attrs[k];}
+ removeAttribute(k){delete this.attrs[k];}
  append(...nodes){for(const n of nodes){this.children.push(n);n.parent=this;}if(this.tagName==='select'&&!this.value&&this.children.length)this.value=this.children[0].value;}
  replaceChildren(...nodes){this.children=[];this.append(...nodes);}remove(){if(this.parent)this.parent.children=this.parent.children.filter(x=>x!==this);}
  get isConnected(){return true;}getBoundingClientRect(){return {left:0,top:0,width:640,height:360};}focus(){}scrollIntoView(){}contains(n){return all(this).includes(n);}
@@ -25,7 +26,7 @@ class Element{
    if(path==='/api/embodied/voice-input'){voice=body.enabled;return{};}
    if(path==='/api/embodied/voice-preferences'){assert.equal(body.expected_revision,voicePreferences.revision);voicePreferences={revision:voicePreferences.revision+1,wake_word:body.wake_word};return voicePreferences;}
    if(path==='/api/home/interactions'){config={...body,revision:config.revision+1};return config;}
-   if(path.endsWith('/preview'))return{preview_token:'e'.repeat(32)};
+   if(path.endsWith('/preview'))return path.includes(cameras[1].id)?{preview_token:'e'.repeat(32),state:'waiting'}:{state:'live',camera:cameras[2].id,primary:true};
    if(path.endsWith('/preview/stop'))return{};
    throw Error('unexpected write '+path);
   }
@@ -82,9 +83,18 @@ class Element{
  interactionCameras=[];find('button','手势与动作').onclick();await settle();
  find('button','添加设备控制').onclick();const target=byLabel('控制设备');target.value='lamp';target.onchange();
  all(root).find(n=>n.tagName==='form').onsubmit({preventDefault(){}});await settle();assert.equal(config.bindings[0].camera,null);assert.equal(config.bindings[0].scope,'home');
- find('button','指向设备').onclick();const scope=byLabel('使用范围');scope.value=cameras[2].id;scope.onchange();const pointTarget=byLabel('控制设备');pointTarget.value='curtain';pointTarget.onchange();
- await find('button','打开镜头并查看').onclick();await settle();const image=all(root).find(n=>n.tagName==='img');image.onload();image.onclick({clientX:320,clientY:180});all(root).find(n=>n.tagName==='form').onsubmit({preventDefault(){}});await settle();
+ find('button','指向设备').onclick();find('button','添加设备控制').onclick();
+ const scope=byLabel('用于标记设备的镜头');assert.equal(scope.value,'');assert(find('button','查看画面').disabled);
+ scope.value=cameras[2].id;scope.onchange();const pointTarget=byLabel('控制设备');pointTarget.value='curtain';pointTarget.onchange();await settle();
+ await find('button','查看画面').onclick();await settle();const image=all(root).find(n=>n.tagName==='img');
+ assert(image.src.includes(cameras[2].id+'/frame'),'运行中的镜头没有预览令牌，仍返回实时画面');
+ image.onload();image.onclick({clientX:320,clientY:180});all(root).find(n=>n.tagName==='form').onsubmit({preventDefault(){}});await settle();
  assert.equal(config.bindings[1].camera,cameras[2].id);assert.equal(config.bindings[1].gesture,'hand.point');assert.deepEqual(config.bindings[1].anchor,[.5,.5]);
  assert.ok(!writes.some(w=>['/api/embodied/start','/api/embodied/stop'].includes(w.path)),'Viewing or saving interactions must not restart perception');
+ assert(!writes.some(w=>w.path.includes(cameras[2].id+'/preview/stop')),'查看运行中的共享镜头只收起页面画面');
+ find('button','添加设备控制').onclick();
+ const manual=byLabel('用于标记设备的镜头');manual.value=cameras[1].id;manual.onchange();await settle();
+ await find('button','查看画面').onclick();await find('button','停止查看').onclick();
+ assert(writes.some(w=>w.path.includes(cameras[1].id+'/preview/stop')&&w.body.token==='e'.repeat(32)),'手动预览只释放自己的令牌');
  assert.ok(!reads.some(p=>p.includes('/cameras/')&&p.includes(cameras[0].id)),'Pointing preview stays on its explicitly selected camera');owner.dispose();console.log('All-camera voice, passive browsing, home bindings and scoped pointing preview: OK');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -28,6 +28,19 @@ export function mountFiles(root, {state = {tab:'Files', query:'', selected:new S
   const focusTarget = (element, key) => {element.setAttribute('data-files-focus',key);focusTargets.set(key,element);return element;};
   const abort = new AbortController();
   root.classList.add('files-root');
+  const toolbarSlot=node('div'),bodySlot=node('div');
+  const searchForm=node('form',null,{class:'files-search',hidden:''});
+  const searchInput=node('input',null,{type:'search',required:'','aria-label':'搜索已索引内容',placeholder:copyName('Friday-2245')});
+  let activeResults=null,composing=false;
+  searchInput.value=state.query;
+  searchInput.addEventListener('compositionstart',()=>{composing=true;});
+  searchInput.addEventListener('compositionend',()=>{composing=false;});
+  searchInput.addEventListener('input',()=>{
+    state.query=searchInput.value;clearRead();if(activeResults)activeResults.hidden=true;
+  });
+  searchForm.append(searchInput,node('button','搜索',{type:'submit'}));
+  searchForm.addEventListener('submit',event=>{event.preventDefault();if(!composing&&state.query.trim())void refresh();});
+  root.append(toolbarSlot,searchForm,bodySlot);
   const mode = () => state.tab === 'Search' ? 'indexed_cache' : 'catalog_page';
   function cancelRead() {sequence++;readAbort?.abort();readAbort=null;}
   function clearRead() {cancelRead();rows=[];next=null;searchScope=null;coverage=null;error='';busy=false;}
@@ -259,11 +272,15 @@ export function mountFiles(root, {state = {tab:'Files', query:'', selected:new S
       const fallback=(!active || active === document.body) ? state.busyFocus : null;
       const target = focusTargets.get(state.focusNext || activeKey || fallback);state.focusNext=null;
       if (!busy) state.busyFocus=null;
-      target?.focus?.({preventScroll:true});
-      if (Number.isInteger(selection[0])) target?.setSelectionRange?.(...selection);
+      if (target && target!==document.activeElement) {
+        target.focus?.({preventScroll:true});
+        if (Number.isInteger(selection[0])) target.setSelectionRange?.(...selection);
+      }
       if (Number.isFinite(position)) globalThis.scrollTo?.({top:position,behavior:'instant'});
     };
-    root.replaceChildren();
+    const searching=state.tab==='Search';
+    searchForm.hidden=!searching;if(!searching)composing=false;
+    activeResults=null;toolbarSlot.replaceChildren();bodySlot.replaceChildren();
     const toolbar = node('div',null,{class:'files-toolbar'}), tabs = node('nav',null,{'aria-label':'文件页面'});
     for (const [key, label] of [['Files','已索引资料'],['Inbox','待提取'],['Search','搜索内容'],['Review','整理建议']])
       tabs.append(focusTarget(action(label,() => {
@@ -275,28 +292,28 @@ export function mountFiles(root, {state = {tab:'Files', query:'', selected:new S
     toolbar.append(tabs,node('span',context ? context.session?.label || (context.catalog.source_online ? '目录在线' : '来源离线 · 保留索引') : '正在读取目录',{class:'files-state',role:'status'}));
     if (['authentication_required','connection_required'].includes(context?.session?.reason) && onOpenConnections)
       toolbar.append(action('核对连接',onOpenConnections));
-    root.append(toolbar);
+    toolbarSlot.append(toolbar);
     if(context&&!context.catalog.source_online&&!rows.length&&state.tab!=='Search'){
-      root.append(append(node('section',null,{class:'files-source-empty'}),node('h2','资料来源尚未就绪'),
+      bodySlot.append(append(node('section',null,{class:'files-source-empty'}),node('h2','资料来源尚未就绪'),
         node('p','这里用于搜索 NAS 中已经建立索引的资料，并核对整理建议。当前未读取到资料来源，不能据此判断文件数量。'),
         action('重试读取',()=>refresh()),onOpenConnections?action('设置资料来源',onOpenConnections):node('p','请先配置资料来源。')));
       restore();return;
     }
-    if (readOnly) root.append(node('p','目前只读，提取和整理尚未启用。当前只读；提取、整理和目录设置修改待启用。',{class:'files-state'}));
-    if (error) root.append(append(node('div',null,{class:'files-error'}),node('p',error,{role:'status'}),action('重试',() => refresh(),{disabled:busy ? '' : undefined})));
-    if (context?.catalog.simulated) root.append(node('p','示例文件',{class:'files-eyebrow'}));
-    if (state.tab === 'Review') { renderPlans(root); restore(); return; }
-    if (state.tab === 'Search') {
-      const form = node('form',null,{class:'files-search'}), input = node('input',null,{type:'search','aria-label':'搜索已索引内容',placeholder:copyName('Friday-2245')});
-      focusTarget(input,'search');
-      input.value=state.query;input.addEventListener('input',() => {state.query=input.value;clearRead();render();});
-      form.append(input,node('button','搜索',{type:'submit'}));form.addEventListener('submit',event => {event.preventDefault();void refresh();});root.append(form);
-      root.append(node('p',copyName(coverage?.source_online === false ? 'Friday-2363' : 'Friday-2361'),{class:'files-scope'}),
+    if (readOnly) bodySlot.append(node('p','当前只读，可浏览和搜索已索引的资料。',{class:'files-state'}));
+    if (error) bodySlot.append(append(node('div',null,{class:'files-error'}),node('p',error,{role:'status'}),action('重试',() => refresh(),{disabled:busy ? '' : undefined})));
+    if (context?.catalog.simulated) bodySlot.append(node('p','示例文件',{class:'files-eyebrow'}));
+    if (state.tab === 'Review') { renderPlans(bodySlot); restore(); return; }
+    const resultPanel=searching?node('div'):bodySlot;
+    if (searching) {
+      focusTarget(searchInput,'search');
+      bodySlot.append(node('p',copyName(coverage?.source_online === false ? 'Friday-2363' : 'Friday-2361'),{class:'files-scope'}),
         node('p',copyName('Friday-2362'),{class:'muted'}));
+      if(!state.query.trim()){restore();return;}
+      activeResults=resultPanel;bodySlot.append(resultPanel);
     }
     const visible = state.tab === 'Inbox' ? rows.filter(row => row.extraction_status !== 'done') : rows;
     const bar = node('div',null,{class:'files-selection'});
-    bar.append(node('span',state.tab === 'Search' ? `${visible.length} 项匹配 · 本机索引` : `${visible.length} 个文件 · 当前目录页`));
+    if(!searching||searchScope)bar.append(node('span',searching ? `${visible.length} 项匹配 · 本机索引` : `${visible.length} 个文件 · 当前目录页`));
     const selectedRows = rows.filter(row => state.selected.has(row.item.item_id));
     if (!readOnly && selectedRows.length === 2 && state.selected.size === 2 && selectedRows.every(row => row.policy.dedup_review))
       bar.append(action('核对重复',() => perform(async () => {
@@ -310,8 +327,8 @@ export function mountFiles(root, {state = {tab:'Files', query:'', selected:new S
         inventory:{root_ref:'outputs-preview',namespace_revision:'unverified',checked_at:new Date().toISOString(),complete:false,paths:[],basis:'operator_preview'}});
       plans=await api('/relocations');state.tab='Review';
     })));
-    root.append(bar);
-    if (state.comparison) root.append(node('p',state.comparison.relation === 'exact_hash' ?
+    resultPanel.append(bar);
+    if (state.comparison) resultPanel.append(node('p',state.comparison.relation === 'exact_hash' ?
       `请核对资料范围与当前状态。内容完全相同 · ${state.comparison.evidence.original_count} 条已观察位置记录` : state.comparison.relation === 'possible_version' ?
       '提取文字相近 · 分别保留，核对版本' : '内容不同，或缺少确认依据。内容不同或证据不足',{class:'files-state'}));
     const layout = node('div',null,{class:'files-layout'}), list = node('div',null,{class:'files-list'}), inspector = node('aside',null,{class:'files-inspector','aria-label':'文件详情'});
@@ -328,7 +345,7 @@ export function mountFiles(root, {state = {tab:'Files', query:'', selected:new S
     }
     if (!visible.length) list.append(node('p',busy ? '正在读取…' : state.tab === 'Search' ? copyName(searchScope === 'indexed_cache' ? 'Friday-2364' : 'Friday-2365') : '当前目录页没有文件。',{class:'muted'}));
     if (next) list.append(action(state.tab === 'Search' ? '更多结果' : '下一页',() => refresh(next)));
-    renderInspector(inspector);layout.append(list,inspector);root.append(layout);
+    renderInspector(inspector);layout.append(list,inspector);resultPanel.append(layout);
     restore();
   }
   const ready = refresh();

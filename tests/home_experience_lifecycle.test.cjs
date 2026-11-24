@@ -13,7 +13,7 @@ function fixture(){
  const h=(tag,text,attrs={})=>({tag,text,attrs,children:[],append(node){this.children.push(node);}});
  const context=vm.createContext({alive:true,page:'Home',loadVersion:0,loadAbort:null,hasDrawn:false,data:null,AbortController,Map,
   requestedPositions:new Map(),view,h,add:(node,...children)=>{node.children.push(...children);return node;},
-  homeStatus:null,connectionSetup:null,timer:null,setInterval(fn){tick=fn;return 1;},clearInterval(){tick=null;},stopPreview(){},recordingsView:null,cameraPrivacy:null,cameraConnection:null,recognitionDebug:null,automationView:null,model:null,thumbnails:null,interactions:null,
+  homeStatus:null,connectionSetup:null,layoutDialog:null,speechOutput:null,timer:null,setInterval(fn){tick=fn;return 1;},clearInterval(){tick=null;},stopPreview(){},recordingsView:null,cameraPrivacy:null,cameraConnection:null,recognitionDebug:null,automationView:null,model:null,thumbnails:null,interactions:null,
   ico:name=>h('i',name),btn:(text,run)=>({...h('button',text),run}),go(){},
   document:{dispatchEvent:event=>events.push(event)},CustomEvent:class{constructor(type,opts){this.type=type;Object.assign(this,opts);}},
   draw(){draws.push(context.data);view.replaceChildren(h('section','家庭空间'));},update(){updates.push(context.data);},toast:(...args)=>toasts.push(args),

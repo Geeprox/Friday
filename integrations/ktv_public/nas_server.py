@@ -2037,7 +2037,7 @@ class Store:
 
 def make_handler(store, agent_key, assets, *, guest_only=False):
     scripts = {"app.js": "40", "add-queue.js": "24", "party-audio.js": "26",
-               "guide.js": "24", "status-feed.js": "25", "style.css": "30"}
+               "guide.js": "24", "status-feed.js": "25", "style.css": "31"}
     images = {"avatars.png", "content.png", "festival.png", "live.png"}
 
     @lru_cache(maxsize=24)

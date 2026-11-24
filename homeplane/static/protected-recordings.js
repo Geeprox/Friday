@@ -30,7 +30,7 @@ export function mountRecordings(root,{api,isAlive=()=>true,go=()=>{},openEvidenc
     (document.head||root).append(style);
   }
   let alive=true,generation=0,listingGeneration=0,plan=null,video=null,request=null,expiry=null;
-  let folderValue='',dateValue='',listingContext=null,contextTimer=null;
+  let folderValue='',dateValue='',listingContext=null,contextTimer=null,contextVersion=0;
   let nextPlan=null,nextRequest=null,nextTask=null,cleanup=Promise.resolve();
   const current=()=>alive&&isAlive();
   const shell=element('div',null,{class:'protected-recordings'}),evidenceRoot=element('div');
@@ -200,7 +200,7 @@ export function mountRecordings(root,{api,isAlive=()=>true,go=()=>{},openEvidenc
             if(event?.isTrusted)player.scrollIntoView?.({block:'nearest'});
             for(const sibling of list.children)sibling.classList.remove('selected');row.classList.add('selected');
           }catch(error){
-            if(active()){request=null;player.replaceChildren(element('h3','暂不可播放'),element('p',errors[error?.message]||'录像未就绪，请重试或换一个片段。'),button('重试',()=>void begin(offset)));}
+            if(active()){request=null;player.replaceChildren(element('h3','暂不可播放'),element('p',errors[error?.message]||'录像未就绪，请重试或换一个片段。'),button('重试',()=>void begin(offset)),button('关闭播放器',closePlayback));}
           }finally{row.disabled=false;}
         }
         const row=button('',event=>void begin(0,event),{class:'recording-row','data-recording-id':item.id});
@@ -222,15 +222,23 @@ export function mountRecordings(root,{api,isAlive=()=>true,go=()=>{},openEvidenc
       recordingsRoot.append(details);
     }catch(_){if(current()&&version===listingGeneration)recordingsRoot.replaceChildren(recordingState('alert-circle','暂时无法读取录像','请检查存储连接后重试。',button('重新读取',()=>void load(),{class:'primary'}),button('存储设置',()=>go('Settings')),camera?allRecordings():null));}
   }
-  contextTimer=setInterval(async()=>{
+  function sourceChanged(title,detail){
+    const focused=recordingsRoot.contains(document.activeElement);
+    stop();
+    const retry=button('重新读取录像',()=>void load(),{class:'primary'});
+    recordingsRoot.replaceChildren(recordingState('video',title,detail,retry));
+    if(focused)retry.focus({preventScroll:true});
+  }
+  async function checkSource(){
     if(!current()||!plan||!listingContext)return;
-    const activePlan=plan;
+    const playback=generation,listing=listingGeneration,version=++contextVersion,expected=listingContext;
+    const owns=()=>current()&&playback===generation&&listing===listingGeneration&&version===contextVersion;
     try{
       const context=await api('/api/archive/context');
-      if(plan!==activePlan||!current())return;
-      if(context.fingerprint!==listingContext){stop();recordingsRoot.replaceChildren(element('h2','录像来源已变化'),element('p','已停止旧预览，请重新读取列表。'),button('刷新录像',()=>void load()));}
-    }catch(_){if(plan===activePlan)stop();}
-  },15000);
+      if(owns()&&context.fingerprint!==expected)sourceChanged('录像来源已变化','已停止旧预览。重新读取后可选择录像。');
+    }catch(_){if(owns())sourceChanged('录像已暂停','暂时无法核对录像来源。重新读取后可继续回看。');}
+  }
+  contextTimer=setInterval(checkSource,15000);
   void load();
-  return {refresh(){evidence?.refresh();return load();},dispose(){alive=false;listingGeneration++;stop();clearInterval(contextTimer);evidence?.dispose();clearEvidence();shell.remove();}};
+  return {refresh(){evidence?.refresh();return plan?checkSource():request?undefined:load();},dispose(){alive=false;listingGeneration++;stop();clearInterval(contextTimer);evidence?.dispose();clearEvidence();shell.remove();}};
 }

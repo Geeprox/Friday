@@ -44,7 +44,15 @@ export function mainDeviceControls(d,{send,wake,readCamera,viewCamera,details,bu
   }else if(modes.length)row.append(button('选择模式','mode:'+c.id,details));
   const target=c.attributes?.temperature,limit=cap(c,'climate.temperature');
   row.append(add(h('div',null,{class:'climate-setpoint'}),h('span','设定温度'),add(h('strong'),h('span',typeof target==='number'?String(target):'—'),h('small',limit?.unit||'°C'))));root.append(row);
-  if(limit){const steps=h('div',null,{class:'temperature-steps'});for(const[delta,label]of [[-1,'调低 1°'],[1,'调高 1°']]){const desired=temperatureStep(c,delta),b=button(label,'temperature:'+delta+':'+c.id,b=>send(c,'climate.temperature',{temperature:desired},b),{icon:delta<0?'minus':'plus'});b.disabled||=c.available===false||desired===null;steps.append(b);}root.append(steps);}
+  if(limit){
+   const steps=h('div',null,{class:'temperature-steps'}),step=limit.step>0?limit.step:1;
+   for(const direction of [-1,1]){
+    const label=(direction<0?'调低 ':'调高 ')+step+'°',desired=temperatureStep(c,direction*step);
+    const b=button(label,'temperature:'+direction+':'+c.id,b=>send(c,'climate.temperature',{temperature:desired},b),{icon:direction<0?'minus':'plus'});
+    b.disabled||=c.available===false||desired===null;steps.append(b);
+   }
+   root.append(steps);
+  }
  }
  if(d.kind==='camera'){
   const state=h('p','正在读取镜头状态…',{class:'card-camera-state',role:'status','aria-live':'polite'}),action=button('正在读取…','camera',()=>{},{icon:'refresh'});action.classList.add('camera-view-action');action.lastElementChild.className='command-text';action.disabled=true;root.append(state,action);

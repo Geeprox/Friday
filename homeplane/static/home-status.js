@@ -128,8 +128,67 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
   serviceRows.set(label,{group,value,control});
   list.append(group);
  }
+ const meters=['CPU','内存'].map(label=>{
+  const value=h('strong','—'),meter=h('meter',null,{min:0,max:100,'aria-label':label+'使用率'});
+  resources.append(add(h('div',null,{class:'runtime-resource'}),add(h('div'),h('span',label),value),meter));
+  return {value,meter};
+ });
+ const latency=h('p',null,{class:'runtime-latency',hidden:''});resources.append(latency);
  const attention=h('section',null,{class:'home-attention','aria-label':'需要关注'}),count=h('span','',{class:'attention-count'}),items=h('div',null,{class:'home-attention-items'});
- attention.append(add(h('div',null,{class:'home-aside-heading'}),h('h2','需要关注'),count),items);
+ const attentionTitle=h('h2','需要关注',{tabindex:'-1'}),rows=new Map(),emptyMessage=h('p');
+ const emptyIcon=icon('check'),empty=add(h('div',null,{class:'home-attention-empty'}),emptyIcon,emptyMessage);
+ const more=button(null,()=>{attention.dataset.expanded=String(attention.dataset.expanded!=='true');updateDisclosure();},{class:'home-attention-expand text-button'});
+ function updateDisclosure(){
+  const expanded=attention.dataset.expanded==='true';
+  const text=expanded?'收起提醒':'展开 '+rows.size+' 项提醒';
+  const styles='home-attention-expand text-button'+(rows.size>4?' has-overflow':'');
+  if(more.textContent!==text)more.textContent=text;
+  if(more.getAttribute('aria-expanded')!==String(expanded))more.setAttribute('aria-expanded',String(expanded));
+  if(more.className!==styles)more.className=styles;
+ }
+ function openNotice(item){
+  if(item.proposalRef){try{sessionStorage.setItem('Friday.taskReview',item.proposalRef);}catch{}go('Ask Home');}
+  else if(item.device)onDevice(item.device);
+  else if(item.eventId)go(item.page,{eventId:item.eventId});
+  else if(item.attentionId)go(item.page,{attentionId:item.attentionId});
+  else go(item.page);
+ }
+ function drawNotices(notices,report,pending){
+  const keys=new Set(notices.map(item=>item.key)),active=document.activeElement,hadFocus=items.contains(active);
+  for(const [key,entry] of rows)if(!keys.has(key)){entry.row.remove();rows.delete(key);}
+  if(notices.length)empty.remove();
+  else {
+   const message=report?(report.events?'暂无需要你处理的事项':'事件记录暂未更新'):(pending?'正在更新待处理事项…':'提醒暂未更新');
+   if(emptyMessage.textContent!==message)emptyMessage.textContent=message;
+   emptyIcon.hidden=!report?.events;
+   if(!items.contains(empty))items.append(empty);
+  }
+  notices.forEach((item,index)=>{
+   let entry=rows.get(item.key);
+   if(!entry){
+    const title=h('strong'),detail=h('small');
+    const row=button(null,()=>openNotice(entry.item),{class:'home-attention-item'});
+    row.append(icon(item.priority===0?'alert-circle':item.device?'devices':'clock'),add(h('span'),title,detail),icon('chevron-right'));
+    entry={row,title,detail};rows.set(item.key,entry);
+   }
+   entry.item=item;
+   entry.row.dataset.priority=item.priority;
+   if(entry.title.textContent!==item.title)entry.title.textContent=item.title;
+   if(entry.detail.textContent!==item.detail)entry.detail.textContent=item.detail;
+   if(items.children[index]!==entry.row)items.insertBefore(entry.row,items.children[index]||null);
+  });
+  if(notices.length>1){
+   updateDisclosure();
+   if(!items.contains(more))items.append(more);
+  }else more.remove();
+  const total=notices.length?String(notices.length):'';
+  if(count.textContent!==total)count.textContent=total;
+  if(hadFocus){
+   if(!items.contains(active)||active.offsetParent===null)attentionTitle.focus({preventScroll:true});
+   else if(document.activeElement!==active)active.focus({preventScroll:true});
+  }
+ }
+ attention.append(add(h('div',null,{class:'home-aside-heading'}),attentionTitle,count),items);
  root.append(section,attention);
  function draw(report,pending=false){
   const summary=homeServiceSummary({...report,simulated});
@@ -137,7 +196,7 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
   status.dataset.state=summary.state;
   const [camera,...otherServices]=summary.rows;
   perception.dataset.state=camera.state;
-  perceptionValue.textContent=camera.text;
+  if(perceptionValue.textContent!==camera.text)perceptionValue.textContent=camera.text;
   const nextCameraId=camera.source?.camera??null;
   if(cameraId!==nextCameraId&&document.activeElement===sourceButton)perceptionTitle.focus({preventScroll:true});
   cameraId=nextCameraId;
@@ -163,25 +222,28 @@ export function mountHomeStatus(root,{api,go,devices=[],simulated=false,onDevice
   }
   const sample=report?.resources,age=sample?Date.now()-Date.parse(sample.sampled_at):NaN;
   const fresh=sample?.available&&Number.isFinite(age)&&age>=-2000&&age<=Math.min(15,sample.valid_for_seconds||0)*1000;
-  resources.replaceChildren();
   const cpu=fresh&&Number.isFinite(sample.cpu_percent)?sample.cpu_percent:null;
   const used=fresh&&Number.isFinite(sample.memory_used_bytes)?sample.memory_used_bytes:null,total=fresh&&Number.isFinite(sample.memory_total_bytes)?sample.memory_total_bytes:null;
-  for(const[label,value,ratio]of [['CPU',cpu==null?'—':cpu.toFixed(0)+'%',cpu],['内存',used==null||!total?'—':(used/1073741824).toFixed(1)+' / '+(total/1073741824).toFixed(0)+' GB',used==null||!total?null:used/total*100]]){
-   const row=add(h('div',null,{class:'runtime-resource'}),add(h('div'),h('span',label),h('strong',value)));
-   if(ratio!=null)row.append(h('meter',null,{min:0,max:100,value:Math.max(0,Math.min(100,ratio)),'aria-label':label+'使用率'}));resources.append(row);
-  }
+  const gib=1073741824;
+  const readings=[[cpu==null?'—':cpu.toFixed(0)+'%',cpu],[used==null||!total?'—':(used/gib).toFixed(1)+' / '+(total/gib).toFixed(0)+' GB',used==null||!total?null:used/total*100]];
+  readings.forEach(([text,ratio],index)=>{
+   const {value,meter}=meters[index];
+   if(value.textContent!==text)value.textContent=text;
+   meter.hidden=ratio==null;
+   if(ratio!=null){
+    const measured=String(Math.max(0,Math.min(100,ratio)));
+    if(meter.getAttribute('value')!==measured)meter.setAttribute('value',measured);
+   }
+  });
+  latency.hidden=!camera.latency;
   if(camera.latency){
    const {ms,slow,multiple}=camera.latency;
    const label=slow?'画面处理较慢 · ':multiple?'最慢画面处理 ':'画面处理 ';
-   resources.append(h('p',label+Math.round(ms)+' ms',{class:'runtime-latency','data-state':slow?'degraded':'on'}));
+   const text=label+Math.round(ms)+' ms';
+   if(latency.textContent!==text)latency.textContent=text;
+   latency.dataset.state=slow?'degraded':'on';
   }
-  const notices=homeAttention(report?currentDevices:[],report?.events?.events||[],report?.rules?.runs||[],report?.worker?.owned?report.worker.safety_recording:null,report?.proposals?.proposals||[],report?.rules?.task_attention);count.textContent=notices.length?String(notices.length):'';items.replaceChildren();
-  if(!report)items.append(h('p',pending?'正在更新待处理事项…':'提醒暂未更新',{class:'home-attention-empty'}));
-  else if(!notices.length)items.append(add(h('div',null,{class:'home-attention-empty'}),icon('check'),h('p',report.events?'暂无需要你处理的事项':'事件记录暂未更新')));
-  for(const item of notices){
-   const row=button(null,()=>{if(item.proposalRef){try{sessionStorage.setItem('Friday.taskReview',item.proposalRef);}catch{}go('Ask Home');}else if(item.device)onDevice(item.device);else if(item.eventId)go(item.page,{eventId:item.eventId});else if(item.attentionId)go(item.page,{attentionId:item.attentionId});else go(item.page);},{class:'home-attention-item','data-priority':item.priority});row.append(icon(item.priority===0?'alert-circle':item.device?'devices':'clock'),add(h('span'),h('strong',item.title),h('small',item.detail)),icon('chevron-right'));items.append(row);
-  }
-  if(notices.length>1){const expanded=attention.dataset.expanded==='true',more=button(expanded?'收起提醒':'展开 '+notices.length+' 项提醒',()=>{const expanded=attention.dataset.expanded!=='true';attention.dataset.expanded=String(expanded);more.textContent=expanded?'收起提醒':'展开 '+notices.length+' 项提醒';more.setAttribute('aria-expanded',String(expanded));},{class:'home-attention-expand text-button'+(notices.length>4?' has-overflow':''),'aria-expanded':String(expanded)});items.append(more);}
+  drawNotices(homeAttention(report?currentDevices:[],report?.events?.events||[],report?.rules?.runs||[],report?.worker?.owned?report.worker.safety_recording:null,report?.proposals?.proposals||[],report?.rules?.task_attention),report,pending);
  }
  async function refresh(force=false){
   if(!alive||busy||(!force&&document.hidden))return;busy=true;controller=new AbortController();

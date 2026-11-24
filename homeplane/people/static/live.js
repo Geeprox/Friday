@@ -3,11 +3,12 @@ const messages={identity_candidate_unavailable:'候选人脸已更新，请刷�
 
 export function mountLivePeople(root,{readOnly=false,onSaved=()=>{}}={}){
   let data=null,closed=false,busy=false,timer=null,choice=null,imageCamera=null,showLive=false;
-  const candidateNodes=new Map(),forgetButtons=new Map();
+  const candidateNodes=new Map(),forgetButtons=new Map(),trackNodes=new Map();
+  let cameraOptions='';
   const selectedGroups=new Set();
   let removalDialog=null;
   root.classList.add('people-live');
-  const title=el('h2','实时人物'),status=el('span','正在连接…',{class:'live-caption'});
+  const title=el('h2','实时人物',{tabindex:'-1'}),status=el('span','正在连接…',{class:'live-caption'});
   const control=el('button','现场补充',{type:'button'}),cameraSelect=el('select',undefined,{'aria-label':'人物识别镜头'});
   const header=el('div',undefined,{class:'live-heading'});header.append(title,status,cameraSelect,control);
   const note=el('p','相似的人脸会归在一起。核对照片是同一人后，再登记姓名或归入已有家人。',{class:'inspector-subtitle'});
@@ -40,26 +41,55 @@ export function mountLivePeople(root,{readOnly=false,onSaved=()=>{}}={}){
   }
   function render(){
     if(!data||closed)return;
-    const whole=data.recognition||{},rec=whole.sessions?.find(s=>s.camera===(cameraSelect.value||whole.camera))||whole,cameras=data.cameras||[],room=id=>cameras.find(c=>c.id===id)?.room||'镜头';
+    const whole=data.recognition||{},cameras=data.cameras||[];
+    const options=JSON.stringify(cameras.map(c=>[c.id,c.name||c.room]));
+    if(cameraOptions!==options){
+      const selected=cameraSelect.value;
+      cameraSelect.replaceChildren(el('option','默认镜头',{value:''}),...cameras.map(c=>el('option',c.name||c.room,{value:c.id})));
+      cameraSelect.value=cameras.some(c=>c.id===selected)?selected:'';
+      cameraOptions=options;
+    }
+    const rec=whole.sessions?.find(s=>s.camera===(cameraSelect.value||whole.camera))||whole;
     const rows=rec.tracks||[];
     const running=!['stopped',undefined].includes(whole.state);
-    if(cameraSelect.dataset.loaded!=='true'){
-      cameraSelect.append(el('option','默认镜头',{value:''}));for(const c of cameras)cameraSelect.append(el('option',c.name||c.room,{value:c.id}));cameraSelect.dataset.loaded='true';
-    }
     cameraSelect.disabled=busy;cameraSelect.hidden=!showLive;control.disabled=busy||readOnly;control.hidden=readOnly;
     control.textContent=showLive?'收起现场':'现场补充';body.hidden=!showLive;
     const statusRows=showLive?[rec]:(whole.sessions||[whole]);
     status.textContent=statusRows.some(s=>s.state==='live')?'后台识别中':statusRows.length&&statusRows.every(s=>['shutter_closed','privacy_closed','privacy_shutter_closed'].includes(s.state))?'镜头已关闭，暂未识别':statusRows.some(s=>s.state==='paused')?'人物识别已暂停':statusRows.every(s=>s.state==='stopped')?'识别已停止':'正在连接摄像头';
-    tracks.replaceChildren();boxes.replaceChildren();
     if((choice?.camera!==rec.camera||choice?.session!==rec.session||!rows.some(r=>r.track===choice?.track))&&!busy)choice=null;
     form.hidden=readOnly||!rows.length;
-    if(!rows.length)tracks.append(el('p',rec.state==='live'?'暂未检测到清晰人脸。请面向镜头停留片刻。':running?'正在等待摄像头画面…':'开始识别后，面向镜头停留片刻。',{class:'live-caption'}));
-    for(const r of rows){
+    const visibleTracks=showLive?rows:[],keyOf=r=>JSON.stringify([rec.camera,rec.session,r.track]);
+    const keys=new Set(visibleTracks.map(keyOf)),focused=document.activeElement,hadFocus=tracks.contains(focused);
+    for(const [key,entry] of trackNodes)if(!keys.has(key)){entry.button.remove();entry.outline.remove();trackNodes.delete(key);}
+    const help=tracks.querySelector('p');
+    if(!visibleTracks.length&&showLive){
+      const text=rec.state==='live'?'暂未检测到清晰人脸。请面向镜头停留片刻。':running?'正在等待摄像头画面…':'开始识别后，面向镜头停留片刻。';
+      if(!help)tracks.append(el('p',text,{class:'live-caption'}));else if(help.textContent!==text)help.textContent=text;
+    }else help?.remove();
+    visibleTracks.forEach((r,index)=>{
+      const key=keyOf(r);
       const person=data.profiles.find(p=>p.person_id===r.person_id);
       const label=person?.name||`当前人物 ${r.track}`;
-      const b=el('button',`${label} · ${r.enroll_ready?'可登记':'采样中'}`,{type:'button','aria-pressed':choice?.track===r.track});
-      b.disabled=busy||readOnly;b.onclick=()=>{choice={track:r.track,camera:rec.camera,session:rec.session};render();};tracks.append(b);
-      if(r.box){const outline=el('span',label,{class:'live-face-outline'});Object.assign(outline.style,{left:`${r.box.x*100}%`,top:`${r.box.y*100}%`,width:`${r.box.w*100}%`,height:`${r.box.h*100}%`});boxes.append(outline);}
+      let entry=trackNodes.get(key);
+      if(!entry){
+        const button=el('button',undefined,{type:'button'}),outline=el('span',undefined,{class:'live-face-outline','aria-hidden':'true'});
+        button.onclick=()=>{choice={track:r.track,camera:rec.camera,session:rec.session};render();};
+        boxes.append(outline);entry={button,outline};trackNodes.set(key,entry);
+      }
+      const {button,outline}=entry,text=`${label} · ${r.enroll_ready?'可登记':'采样中'}`,pressed=String(choice?.track===r.track);
+      if(button.textContent!==text)button.textContent=text;
+      if(button.getAttribute('aria-pressed')!==pressed)button.setAttribute('aria-pressed',pressed);
+      button.disabled=busy||readOnly;
+      if(tracks.children[index]!==button)tracks.insertBefore(button,tracks.children[index]||null);
+      outline.hidden=!r.box;
+      if(r.box){
+        if(outline.textContent!==label)outline.textContent=label;
+        Object.assign(outline.style,{left:`${r.box.x*100}%`,top:`${r.box.y*100}%`,width:`${r.box.w*100}%`,height:`${r.box.h*100}%`});
+      }
+    });
+    if(hadFocus){
+      if(!tracks.contains(focused))(showLive&&!cameraSelect.disabled?cameraSelect:title).focus({preventScroll:true});
+      else if(document.activeElement!==focused&&!focused.disabled)focused.focus({preventScroll:true});
     }
     const old=identity.value,known=data.profiles.map(p=>p.person_id).join(',');
     if(identity.dataset.known!==known){identity.replaceChildren(el('option','登记新人物',{value:''}));for(const p of data.profiles)identity.append(el('option',p.name,{value:p.person_id}));identity.dataset.known=known;identity.value=old;}
@@ -67,7 +97,7 @@ export function mountLivePeople(root,{readOnly=false,onSaved=()=>{}}={}){
     save.disabled=busy||!ready;
     if(showLive&&rec.state==='live'&&rec.camera){
       view.hidden=false;if(imageCamera!==rec.camera){imageCamera=rec.camera;image.src=`/api/embodied/cameras/${encodeURIComponent(rec.camera)}/frame?t=${Date.now()}`;}
-    }else view.hidden=true;
+    }else{view.hidden=true;if(image.hasAttribute('src'))image.removeAttribute('src');}
     const available=new Set(visibleCandidates().map(c=>c.id));
     for(const id of selectedGroups)if(!available.has(id))selectedGroups.delete(id);
     for(const [id,card] of candidateNodes)if(!available.has(id)){card.remove();candidateNodes.delete(id);}
