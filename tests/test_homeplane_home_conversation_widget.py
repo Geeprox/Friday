@@ -45,6 +45,18 @@ class Element {
   get lastElementChild() { return this.children.at(-1); }
   get isConnected() { return this === document.body || !!this.parentNode?.isConnected; }
   append(...children) { for (const child of children) { child.remove(); child.parentNode = this; this.children.push(child); } }
+  insertBefore(child, reference) {
+    if (child === reference) return child;
+    child.remove();
+    const index = reference ? this.children.indexOf(reference) : this.children.length;
+    child.parentNode = this;
+    this.children.splice(index, 0, child);
+    return child;
+  }
+  contains(node) {
+    for (let current = node; current; current = current.parentNode) if (current === this) return true;
+    return false;
+  }
   replaceChildren(...children) { for (const child of this.children) child.parentNode = null; this.children = []; this.append(...children); }
   remove() { if (this.parentNode) { this.parentNode.children = this.parentNode.children.filter(child => child !== this); this.parentNode = null; } }
   addEventListener(type, listener) { const entries = this.listeners.get(type) ?? []; entries.push(listener); this.listeners.set(type, entries); }
