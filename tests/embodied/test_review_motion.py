@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from homeplane.embodied.camera_audio import WakeCameraCue
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.camera_intent import camera_intent_readback, finish_camera_survey
 from homeplane.embodied.motion_games import MotionGames
@@ -22,6 +23,11 @@ def source_function(path, name, scope):
     node.decorator_list = []
     exec(compile(ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[])), path, 'exec'), scope)
     return scope[name]
+
+
+def recorded_sound_only(safety):
+    scope = dict(safety=safety, interaction_enabled=False, WakeCameraCue=WakeCameraCue)
+    return source_function('homeplane/embodied/worker.py', 'camera_motion_cue', scope)
 
 
 class Patrol:
@@ -98,7 +104,8 @@ class Patrol:
                 games=MotionGames(), party_camera=PartyCamera(),
                 previews=SimpleNamespace(sessions=other_views, status=lambda _: {'state': 'live'}),
                 home=SimpleNamespace(camera_focus=None),
-                safety=self.home.runtime, motor_step=self.motor, camera_lease=None, camera_planner=None,
+                safety=self.home.runtime, camera_motion_cue=recorded_sound_only(self.home.runtime),
+                motor_step=self.motor, camera_lease=None, camera_planner=None,
                 reap=AsyncMock(),capture=None, camera_intent_readback=camera_intent_readback,
                 finish_camera_survey=finish_camera_survey)
             loop=source_function('homeplane/embodied/worker.py','camera_search',self.scope)
@@ -107,7 +114,7 @@ class Patrol:
                 self=SimpleNamespace(focus=lambda _:None, occupied_elsewhere=lambda _:self.occupied_elsewhere,
                                      review_pending=self.home.runtime.review_pending,
                                      fall_pending=self.home.runtime.fall_pending,
-                                     sound_cue=self.home.runtime.sound_search_cue),
+                                     sound_cue=recorded_sound_only(self.home.runtime)),
                 current_sample=lambda:dict(self.state), privacy_closed=lambda:None, send_motion=self.motor)
             loop=source_function('homeplane/embodied/previews.py','direct',self.scope)
         try:
@@ -245,11 +252,12 @@ def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
     tree=ast.parse(Path('homeplane/embodied/worker.py').read_text())
     assignment=next(n for n in tree.body if isinstance(n,ast.Assign)and any(isinstance(t,ast.Name)and t.id=='previews'for t in n.targets))
     scope=dict(PreviewPool=lambda **kwargs:kwargs,identity_store=None,wall=None,safety=safety,
-               secondary_observation=noop,secondary_audio=noop,clear_camera=noop,clear_camera_view=noop)
+               secondary_observation=noop,secondary_audio=noop,clear_camera=noop,clear_camera_view=noop,
+               camera_motion_cue=recorded_sound_only(safety))
     exec(compile(ast.fix_missing_locations(ast.Module(body=[assignment],type_ignores=[])),'original-preview-construction','exec'),scope)
     assert scope['previews']['review_pending'] is safety.review_pending
     assert scope['previews']['fall_pending'] is safety.fall_pending
-    assert scope['previews']['sound_cue'] is safety.sound_search_cue
+    assert scope['previews']['sound_cue'] is scope['camera_motion_cue']
     assert scope['previews']['sound_view'] is safety.offer_sound_search_frame
     assert scope['previews']['on_capture_frame'] is safety.capture_frame
     assert scope['previews']['on_motion'] is scope['clear_camera_view']

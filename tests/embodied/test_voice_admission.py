@@ -143,19 +143,20 @@ async def test_input_pause_blocks_late_dispatch_even_before_worker_cleanup(voice
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["asr", "intent"])
-async def test_microphone_handoff_keeps_the_completed_utterances_own_lease(voice, phase):
+async def test_retiring_the_input_window_keeps_the_completed_utterances_own_lease(voice, phase):
     fleet = InteractionFleet()
     camera, other = voice.home.camera_id, "cam_2222222222"
     fleet.session(camera, "SYNTHETIC-first")
     fleet.session(other, "SYNTHETIC-second")
-    assert fleet.voice(camera, time.monotonic(), False, people=1, session="SYNTHETIC-first")
+    assert fleet.voice(camera, time.monotonic(), enabled=True, session="SYNTHETIC-first")
     voice.attending, voice.owner = False, None
     if phase == "intent":
         voice.text = "Friday，把玄关灯处理一下"
 
     def handoff():
         now = time.monotonic()
-        assert fleet.voice(other, now, True, people=1, session="SYNTHETIC-second")
+        assert fleet.voice(other, now, enabled=True, session="SYNTHETIC-second")
+        assert not fleet.voice(camera, now, enabled=False, session="SYNTHETIC-first")
         voice.home.audio_allowed = fleet.voice_current(camera, now)
         assert voice.home.audio_allowed is False
 

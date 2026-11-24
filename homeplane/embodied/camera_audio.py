@@ -20,6 +20,17 @@ MAX_GAP = .6
 VOICE_WINDOW_SECONDS = 1.3
 
 
+@dataclass(frozen=True)
+class WakeCameraCue:
+    """同一路摄像头的临时唤醒事件，只提供搜寻起点。"""
+
+    captured: float
+    session: str
+    source: tuple[str, str]
+    voice_revision: int
+    confirmed_mono: float | None = None
+
+
 def number(value):
     return type(value) in (int, float) and math.isfinite(value)
 
@@ -211,14 +222,21 @@ class AudioIngress:
         return AdmittedAudio(dict(packet), changed, self.status(), mono-(wall-packet['received_at']))
 
 
-async def deliver_audio(service, admission):
+def prepare_voice_packet(service, admission):
+    """在语音消费者上记录收音诊断，并撤销中断前的片段。"""
     if not isinstance(admission, AdmittedAudio):
         service.reset_audio()
         service.audio_input_at = None
-        return False
+        return None
     service.state['audio_input'] = admission.diagnostics
     service.audio_input_at = admission.received_mono
     if admission.reset:service.reset_audio()
-    if admission.packet is None:return False
-    await service.audio(admission.packet)
+    return admission.packet
+
+
+async def deliver_audio(service, admission):
+    packet = prepare_voice_packet(service, admission)
+    if packet is None:
+        return False
+    await service.audio(packet)
     return True
