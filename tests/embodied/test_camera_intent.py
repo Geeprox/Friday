@@ -297,6 +297,7 @@ async def test_survey_readback_and_stop_are_bound_to_the_current_round(tmp_path,
                  recorder=SimpleNamespace(public=lambda: {}), safety=SimpleNamespace(recording_status=lambda: {}),
                  home=SimpleNamespace(public=lambda: {}), secondary_homes={}, fleet=SimpleNamespace(public=lambda _: {}),
                  PRIVATE=tmp_path, previews=pool, configuration=config, PET_MODES=PET_MODES,
+                 wall=SimpleNamespace(frame=lambda _: None),
                  camera_intent_readback=camera_intent_readback)
     actual_worker_functions({'view', 'preview_status'}, scope)
     worker = FastAPI()

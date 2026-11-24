@@ -232,7 +232,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
     owner['safety'].recording_status = lambda:{'state':'ready'}
     owner['games'].reset('ski')
     for name in ('reap','invalidate_calibration','calibration_source','primary_frame_current','scene_frame_current',
-                 'primary_recovery_frame','view','preview_status','preview_frame','run_source'):
+                 'primary_recovery_frame','view','preview_status','preview_frame','interaction_game_window','run_source'):
         actual('homeplane/embodied/worker.py', name, owner)
     task = asyncio.create_task(owner['run_source'](1))
     state = owner['state']

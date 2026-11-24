@@ -125,6 +125,7 @@ async def test_secondary_gesture_dispatch_does_not_require_primary_camera_armed(
     source=Path('homeplane/embodied/worker.py').read_text()
     node=next(n for n in ast.parse(source).body if isinstance(n,ast.AsyncFunctionDef) and n.name=='dispatch_interactions')
     source_guard=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='interaction_source_current')
+    game_window=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='interaction_game_window')
     process=SimpleNamespace(returncode=None)
     pool=previews.PreviewPool.__new__(previews.PreviewPool)
     pool.sessions={'secondary':dict(source_active=True,process=process,state='live',privacy_closed=False,
@@ -135,7 +136,7 @@ async def test_secondary_gesture_dispatch_does_not_require_primary_camera_armed(
         secondary_homes={'secondary':SimpleNamespace(armed=True)},
         wall=CameraWall([dict(id='secondary',name='Synthetic',room='Synthetic')]),
         fleet=SimpleNamespace(current=lambda *_:True,receipts=[]),previews=pool)
-    exec(compile(ast.Module(body=[source_guard,node],type_ignores=[]),'<production dispatch>','exec'),scope)
+    exec(compile(ast.Module(body=[source_guard,game_window,node],type_ignores=[]),'<production dispatch>','exec'),scope)
     event=dict(camera='secondary',session='synthetic-secondary',action='on',event_id='synthetic',target='lamp',
                binding='a'*32,revision=1,gesture='hand.open_palm',scope='home',
                triggered_at=time.time(),observed_mono=time.monotonic())
