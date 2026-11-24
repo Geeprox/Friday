@@ -18,6 +18,8 @@ CAMERA=dict(id='cam_1111111111',device={'did':'synthetic-camera'})
 
 
 def actual(path, name, scope):
+    if path.endswith('/worker.py') and name in {'secondary_observation', 'dispatch_interactions'}:
+        actual(path, 'interaction_game_window', scope)
     nodes=[n for n in ast.walk(ast.parse(Path(path).read_text()))
            if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==name]
     assert len(nodes)==1

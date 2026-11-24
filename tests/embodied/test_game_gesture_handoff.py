@@ -12,6 +12,7 @@ from homeplane.embodied.interaction import Binding, Configuration
 from homeplane.embodied.interaction_fleet import InteractionFleet
 from homeplane.embodied.motion_games import MotionGames
 from tests.embodied.test_game_camera_ownership import actual
+from tests.embodied.test_gesture_continuity import person as arm_pose
 
 CAMERA = "cam_1111111111"
 OTHER = "cam_2222222222"
@@ -138,6 +139,66 @@ def test_primary_game_handoff_does_not_block_another_camera_or_its_microphone(mo
         assert not step(fleet, i / 10, label="open_palm", pose=person(raised=True))
         events += step(fleet, i / 10, label="open_palm", camera=OTHER)
     assert len(events) == 1 and events[0]["camera"] == OTHER
+
+
+@pytest.mark.asyncio
+async def test_hiit_arm_open_in_the_same_room_never_reaches_the_device_bridge(tmp_path, monkeypatch):
+    from homeplane.embodied import bridge
+
+    outside = "cam_3333333333"
+    config = configure(monkeypatch, ("body.arms_open",))
+    config.bindings[0].target = "SYNTHETIC-curtain"
+    config.bindings[0].action = "open"
+    fleet, game, queued = InteractionFleet(), MotionGames(), []
+    command = AsyncMock(return_value=dict(status="SIMULATED", acknowledged=False, reached_target=False))
+    monkeypatch.setattr(bridge, "command", command)
+    cameras = [
+        dict(id=OTHER, room="SYNTHETIC-exercise-room"),
+        dict(id=outside, room="SYNTHETIC-other-room"),
+    ]
+    services = {
+        row["id"]: SimpleNamespace(enabled=True, armed=True, speaking=False, last_audio=None,
+                                  attention=SimpleNamespace(candidate=lambda: None), observe=AsyncMock())
+        for row in cameras
+    }
+    clock = [0.0]
+    scope = dict(
+        SELECTED=dict(id=CAMERA, room="SYNTHETIC-exercise-room"), games=game, fleet=fleet,
+        home=SimpleNamespace(spawn=queued.append), secondary_homes=services,
+        interaction_enabled=True, interaction_source_current=lambda _: True,
+        secondary_frame_current=lambda *_: True, PRIVATE=tmp_path,
+        time=SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1000 + clock[0]),
+        practice=SimpleNamespace(observe=Mock(), suppresses=lambda _: False),
+        safety=SimpleNamespace(offer=Mock(), sound_requested=lambda _: False),
+        wall=SimpleNamespace(cameras=cameras, observe=Mock(), notice=Mock()),
+    )
+    actual("dispatch_interactions", scope)
+    observe = actual("secondary_observation", scope)
+
+    async def play(start, end, pose):
+        for index in range(start, end):
+            clock[0] = index / 10
+            for camera in (OTHER, outside):
+                await observe(dict(camera=camera, session="SYNTHETIC", now=clock[0], captured_mono=clock[0],
+                                   people=[pose], hands=[], faces=[], registration=dict(status="locked")), object())
+            while queued:
+                await queued.pop(0)
+
+    game.reset("hiit")
+    await play(0, 13, arm_pose(False))
+    await play(13, 22, arm_pose(True))
+    assert command.await_count == 1
+    assert command.await_args.kwargs["camera_id"] == outside
+    assert services[OTHER].armed and services[OTHER].observe.await_args.args[5] is True
+    assert fleet.cameras[OTHER]["state"] == "game"
+
+    game.reset("off")
+    await play(22, 35, arm_pose(True))
+    assert command.await_count == 1
+    await play(35, 46, person())
+    await play(46, 51, arm_pose(False))
+    await play(51, 56, arm_pose(True))
+    assert [call.kwargs["camera_id"] for call in command.await_args_list].count(OTHER) == 1
 
 
 def test_game_window_changes_require_release_even_without_an_intermediate_camera_frame(monkeypatch):

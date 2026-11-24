@@ -30,7 +30,7 @@ const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate)
  };
  const diagram=()=>{const n=new Element('svg');n.dispose=()=>{};return n;};
  const context=vm.createContext({document:{createElement:tag=>new Element(tag),get activeElement(){return all(root).includes(focused)?focused:null;}},fetch,Date,
-  sessionStorage:{getItem:()=>null,setItem(){}},setInterval:fn=>{poll=fn;return 1;},clearInterval(){},
+  sessionStorage:{getItem:()=>null,setItem(){}},AbortController,setTimeout,clearTimeout,setInterval:fn=>{poll=fn;return 1;},clearInterval(){},
   mountMotionLibrary:()=>({dispose(){}}),createMotionDiagram:diagram,MOTION_GUIDES:{},
   root,options:{data:{devices:fixture.devices},go(){},toast(){}}});
  vm.runInContext(fs.readFileSync('homeplane/static/interactions.js','utf8').replace(/^import.*$/gm,'').replace('export function mountInteractions','function mountInteractions'),context);

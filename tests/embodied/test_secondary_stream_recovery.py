@@ -297,11 +297,16 @@ async def test_continuous_owner_reconnects_after_cleanup_failure(tmp_path, monke
 @pytest.mark.parametrize(('silence', 'open_after_gap', 'outcome'), [
     (65, True, 'live'), (65, False, 'shutter_closed'), (90, True, 'unavailable'),
 ])
-async def test_background_owner_waits_for_native_stream_recovery(tmp_path, monkeypatch, silence, open_after_gap, outcome):
+@pytest.mark.parametrize('refresh_during_readback', [False, True])
+async def test_background_owner_waits_for_native_stream_recovery(
+        tmp_path, monkeypatch, silence, open_after_gap, outcome, refresh_during_readback):
     """推进合成时钟，核对旧画面失效、原进程恢复和父进程兜底超时。"""
     now = 1000.0
     shutter_open = True
     native_packets, receive_waits, observed = asyncio.Queue(), asyncio.Queue(), asyncio.Queue()
+    readback_refresh = False
+    received_latest = asyncio.Event()
+    selected = dict(CAMERA, device={'did': 'synthetic-readback-camera'})
 
     async def wait_for(awaitable, timeout):
         if timeout < 40:
@@ -319,7 +324,16 @@ async def test_background_owner_waits_for_native_stream_recovery(tmp_path, monke
     spawn = AsyncMock(return_value=capture)
     lease = SimpleNamespace(snapshot={'before': {'camera_power': True}}, acquire=AsyncMock(),
                             release=AsyncMock(return_value=True))
-    read_shutter = AsyncMock(side_effect=lambda _: shutter_open)
+    async def shutter_read(_):
+        nonlocal now, readback_refresh
+        if readback_refresh:
+            readback_refresh = False
+            now += 2
+            received_latest.clear()
+            native_packets.put_nowait(frame())
+            await received_latest.wait()
+        return shutter_open
+    read_shutter = AsyncMock(side_effect=shutter_read)
 
     async def recognize(packet, *, source_current, on_vision_failure):
         assert source_current()
@@ -343,7 +357,8 @@ async def test_background_owner_waits_for_native_stream_recovery(tmp_path, monke
     wall = CameraWall([CAMERA], clock=lambda: now)
     cleared = Mock()
     pool = previews.PreviewPool(continuous=True, recognize=True, wall=wall,
-                                on_observation=observation, on_clear=cleared)
+                                on_observation=observation, on_clear=cleared,
+                                on_capture_frame=lambda *_: received_latest.set())
     camera_id = CAMERA['id']
     item = dict(state='connecting', mode='hold', mode_revision='synthetic-hold', received_at=0, frames=0,
                 expires=now + 90, shutter_changed=False)
@@ -352,9 +367,11 @@ async def test_background_owner_waits_for_native_stream_recovery(tmp_path, monke
     def frame():
         jpeg = base64.b64encode(b'\xff\xd8SYNTHETIC-NOT-CAMERA-PIXELS\xff\xd9').decode()
         return json.dumps(dict(type='frame', jpeg=jpeg, preview=jpeg, received_at=now, preview_at=now,
+                               capture_session=json.loads(capture.stdin.write.call_args_list[0].args[0])['capture_session'],
+                               camera_source_context=camera_source_context(selected),
                                width=640, height=360)).encode()
 
-    owner = asyncio.create_task(pool._run(CAMERA, item))
+    owner = asyncio.create_task(pool._run(selected, item))
     try:
         assert await asyncio.wait_for(receive_waits.get(), 2) == now
         native_packets.put_nowait(frame())
@@ -364,6 +381,7 @@ async def test_background_owner_waits_for_native_stream_recovery(tmp_path, monke
         shutter_reads = read_shutter.await_count
         shutter_open = open_after_gap
         now += silence
+        readback_refresh = refresh_during_readback and silence < 85
         assert pool.status(camera_id)['state'] == 'stale'
         assert pool.frame(camera_id) is None and wall.frame(camera_id) is None
         assert pool.source_current(camera_id, capture)

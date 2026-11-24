@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from homeplane.embodied.camera_director import CameraDirector
+from tests.embodied.test_camera_audio import actual
 from tests.embodied.test_camera_director import clear, person, sample
 from tests.embodied.test_speech_owner import rig as rig
 from tests.embodied.test_voice_admission import voice as voice
@@ -35,8 +36,8 @@ def hint(session="source-a", *, track=7, at=None):
 async def frame(camera, origin, session, *, active=True, registration="locked", people=()):
     """Execute the original producer's call, rather than a second observation API."""
     h = camera.home
-    now = time.monotonic()
     tree = ast.parse(WORKER.read_text())
+    now = time.monotonic()
     fleet = SimpleNamespace(cameras={h.camera_id: {"owner": None}},
                             update=Mock(return_value=[]), voice=Mock(return_value=h.audio_allowed))
     safety = SimpleNamespace(sound_requested=Mock(return_value=False), offer=Mock())
@@ -60,16 +61,14 @@ async def frame(camera, origin, session, *, active=True, registration="locked", 
         await scope["receive"]()
     else:
         assert origin == "secondary"
-        functions = [n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
-                     and n.name == "secondary_observation"]
-        assert len(functions) == 1
         process = SimpleNamespace(stdin=None)
         scope.update(secondary_homes={h.camera_id: h}, SELECTED={"id": "cam_2222222222"},
                      secondary_frame_current=lambda observation, owner: owner is process,
                      practice=SimpleNamespace(observe=Mock()), wall=SimpleNamespace(observe=Mock()),
                      dispatch_interactions=AsyncMock())
-        exec(compile(ast.Module(body=functions, type_ignores=[]), str(WORKER), "exec"), scope)
-        await scope["secondary_observation"](dict(camera=h.camera_id, session=session,
+        receive = actual(str(WORKER), "secondary_observation", scope)
+        now = time.monotonic()
+        await receive(dict(camera=h.camera_id, session=session,
             people=list(people), faces=[], hands=[], registration={"status": registration},
             now=now, captured_mono=now, scene_visible=True), process)
 

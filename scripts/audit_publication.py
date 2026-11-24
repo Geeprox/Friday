@@ -23,6 +23,9 @@ FORBIDDEN_SUFFIXES = {'.sqlite', '.sqlite3', '.db', '.pem', '.key', '.p12', '.mp
                       '.m4a', '.aiff', '.zip', '.tar', '.gz', '.bundle', '.patch', '.ses', '.onnx', '.safetensors'}
 # Exact reviewed artwork and synthetic assets; household photos and changed bytes still fail closed.
 SYNTHETIC_MEDIA = {
+    # 固定合成镜头状态截图，输入来自 camera-perception.html，不连接设备。
+    'docs/screenshots/camera-perception-status.png':
+        '9a7df5a50fee28fcad2b18e745566e6a70ab560bb29bbd278c57d885bf02d3f8',
     'docs/screenshots/ktv-source-quality.png':
         'd4d1152743f6b691e8d99398eb70badecbe91afae4a1b09b008af6d3b0d52ee3',
     'docs/screenshots/ktv-storage-management.png':
