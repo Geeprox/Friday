@@ -11,6 +11,7 @@ import pytest
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.camera_intent import CAMERA_MODES
+from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks
 from tests.embodied.test_camera_follow_appearance import appearance_sample
 
@@ -214,7 +215,7 @@ async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once
         camera_lease=SimpleNamespace(snapshot={'status':'owned'}),room_lock=asyncio.Lock(),
         SELECTED=selected,camera_is_open=AsyncMock(return_value=True),close_primary_view=noop,
         identities=SimpleNamespace(discard=noop),fleet=SimpleNamespace(clear=noop),
-        safety=SimpleNamespace(clear_view=noop),
+        safety=SimpleNamespace(clear_view=noop),wall=CameraWall([]),
         home=SimpleNamespace(selected=True,epoch=0,vad=[],pending_audio=None,
                              runtime_log=SimpleNamespace(record=noop),clear_view_for_motion=noop),
         room=SimpleNamespace(expect_motion=noop))

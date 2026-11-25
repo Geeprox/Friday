@@ -225,7 +225,7 @@ async def test_capture_loss_while_waiting_for_room_lock_cannot_send_a_manual_or_
     from tests.embodied.test_motor_recovery import primary_scope as motor_scope
     scope,sent=motor_scope()
     scope.update(generation=1,primary_wall_epoch=1,primary_retired_scope=None,pet_tracks=SimpleNamespace(clear=Mock()),
-                 wall=SimpleNamespace(clear=Mock()),safety=SimpleNamespace(clear=Mock()),
+                 wall=SimpleNamespace(clear=Mock(),clear_observation=Mock()),safety=SimpleNamespace(clear=Mock()),
                  secondary_homes={},notify=AsyncMock(),games=MotionGames())
     actual('homeplane/embodied/worker.py','clear_interactions',scope)
     scope['clear_camera']=actual('homeplane/embodied/worker.py','clear_camera',scope)

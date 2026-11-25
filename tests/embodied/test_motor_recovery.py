@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.local_motor import LocalMotor
 from homeplane.embodied.local_motor import check_motor_deadline
 from tests.embodied.test_camera_director import patrol_view
@@ -152,6 +153,7 @@ def primary_scope():
                  motor_last_sent=-100, motor_waiters={}, room_lock=asyncio.Lock(),calibration_frames=CalibrationFrames(),
                  room=SimpleNamespace(expect_motion=noop), identities=SimpleNamespace(discard=noop),
                  safety=SimpleNamespace(clear_view=noop), secondary_homes={},
+                 wall=CameraWall([]),
                  fleet=SimpleNamespace(clear=noop),
                  home=SimpleNamespace(selected=True, epoch=0, vad=[], pending_audio=None,
                                       runtime_log=SimpleNamespace(record=noop), clear_view_for_motion=noop))
@@ -285,6 +287,56 @@ async def test_primary_search_original_guard_rechecks_the_current_target(change)
             await scope['motor_step']('right', at, expected_intent='original', decision_current=scope['decision_current'])
         assert not sent
     assert not scope['motor_waiters']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('new_observation', [False, True])
+async def test_primary_patrol_rechecks_fresh_occupancy_before_sending(new_observation):
+    from homeplane.embodied.party_camera import PartyCamera
+
+    scope, sent = primary_scope()
+    clock = [18.6]
+    wall = CameraWall([dict(id='other', room='other', name='Synthetic')], clock=lambda: clock[0])
+    holder = PartyCamera()
+
+    def current(at):
+        return dict(view(at, people=[]), party_camera=holder.status(
+            camera=scope['SELECTED']['id'], session='source', frame_mono=at, now=at))
+
+    director = CameraDirector()
+    for at in (1, 1.1):
+        assert director.choose(current(at), at) is None
+    wall.observe('other', 'other-source', view(clock[0])['people'], clock[0])
+    clock[0] = 20.2
+    occupied = wall.occupied_elsewhere(scope['SELECTED']['id'])
+    assert not occupied
+    assert director.choose(current(clock[0]), clock[0], occupied_elsewhere=occupied) == 'right'
+    scope.update(state=current(clock[0]), last_frame=clock[0], wall=wall,
+                 time=SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1000 + clock[0]),
+                 director=director, direction='right', games=SimpleNamespace(public={}), party_camera=holder,
+                 safety=SimpleNamespace(clear_view=lambda _: None, review_pending=lambda *_: False,
+                                        fall_pending=lambda *_: False, sound_search_cue=lambda *_: None))
+    scope['camera_motion_cue'] = recorded_sound_only(scope['safety'])
+    extract('homeplane/embodied/worker.py', {'decision_current'}, scope)
+
+    class RoomWait:
+        async def __aenter__(self):
+            if new_observation:
+                wall.observe('other', 'other-source', view(clock[0])['people'], clock[0])
+
+        async def __aexit__(self, *_):
+            pass
+
+    scope['room_lock'] = RoomWait()
+    if new_observation:
+        with pytest.raises(RuntimeError, match='stale_input'):
+            await scope['motor_step']('right', clock[0], expected_intent='original',
+                                      decision_current=scope['decision_current'])
+        assert sent == []
+    else:
+        await scope['motor_step']('right', clock[0], expected_intent='original',
+                                  decision_current=scope['decision_current'])
+        assert len(sent) == 1
 
 
 @pytest.mark.asyncio

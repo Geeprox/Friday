@@ -108,6 +108,7 @@ def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, fleet=
 
         clear_view = source_function(WORKER, 'clear_camera_view', dict(
             safety=safety, fleet=fleet if fleet is not None else SimpleNamespace(clear=Mock()),
+            wall=SimpleNamespace(clear_observation=Mock()),
             SELECTED={'id': 'cam_2222222222'}, secondary_homes={h.camera_id: h}))
         motion = SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                  review_pending=safety.review_pending, fall_pending=safety.fall_pending,

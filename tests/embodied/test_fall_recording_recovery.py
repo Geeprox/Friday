@@ -15,6 +15,7 @@ from fastapi import APIRouter, FastAPI
 
 from homeplane.embodied import safety, safety_api
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
@@ -444,7 +445,7 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
             camera_intents=SimpleNamespace(load=lambda: SimpleNamespace(mode='auto', revision='intent',
                                                                          status='configured')),
             os=SimpleNamespace(environ={}), SELECTED={'id': camera}, state=state, games=MotionGames(),
-            party_camera=PartyCamera(), previews=SimpleNamespace(sessions={}),
+            party_camera=PartyCamera(), wall=CameraWall([]),
             home=SimpleNamespace(camera_focus=None), safety=runtime, camera_motion_cue=recorded_sound_only(runtime),
             motor_step=motor,
             reap=AsyncMock(), capture=None)

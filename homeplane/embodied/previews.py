@@ -107,29 +107,32 @@ class PreviewPool:
         age = time.time() - item["received_at"]
         fresh = 0 <= age < 2
         recognizing = self.recognize and 0 <= age <= 1.5 and item['state'] == 'live'
+        tracking = recognizing and item.get('tracking_current') is True
         recovering = item.get('recognition_recovering') and item['state'] == 'connecting'
         control = item.get('camera_control')
         if control:
             control = camera_intent_readback(control, mode=item.get('mode', control.get('mode')),
                                              revision=item.get('mode_revision'),
                                              status=item.get('intent_status', 'default'))
-        if control and (not fresh or item['state']!='live'):
+        if control and not tracking:
             control = dict(control,view_usable=False,target_locked=False)
+            if control.get('phase') == 'following':
+                control.update(phase='waiting_video', reason='等待新的识别结果')
         return dict(
             state=item["state"] if fresh or item["state"] != "live" else "stale",
             camera=camera_id,
             frames=item["frames"],
             received_at=item["received_at"],
             shutter_changed=item['shutter_changed'],
-            follow_target_available=bool(item.get('follow_picker') and fresh and item['state'] == 'live'),
+            follow_target_available=bool(item.get('follow_picker') and tracking),
             audio_enabled=bool(self.recognize and self.on_audio),
             recognition='running' if recognizing else 'recovering' if recovering else 'waiting',
             frame_available=bool(self._recovery_frame(camera_id, item)),
             latency_ms=item.get('latency_ms') if recognizing else None,
-            people=item.get('people',0) if fresh else 0,
-            hands=item.get('hands',0) if fresh else 0,
-            animals=item.get('animals',0) if fresh else 0,
-            pet_tracking=dict(item['pet_tracking'],current=False) if item.get('pet_tracking') and not fresh
+            people=item.get('people',0) if tracking else 0,
+            hands=item.get('hands',0) if tracking else 0,
+            animals=item.get('animals',0) if recognizing else 0,
+            pet_tracking=dict(item['pet_tracking'],current=False) if item.get('pet_tracking') and not recognizing
                          else item.get('pet_tracking'),
             error_class=item.get('error_class'),error_stage=item.get('error_stage'),
             timing=item.get('timing',{}),dropped_frames=item.get('dropped_frames',0),
@@ -592,6 +595,7 @@ class PreviewPool:
                             await self.on_observation(observation, process)
                         if not self.source_current(selected['id'], process):break
                         item.update(people=len(observation['people']),hands=len(observation['hands']),
+                            tracking_current=observation.get('tracking_current') is True,
                             animals=len(observation.get('animals',[])),pet_tracking=observation.get('pet_tracking'),
                             room_service=observation.get('room_service'))
                         stage='capture'

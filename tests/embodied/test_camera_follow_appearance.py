@@ -11,6 +11,7 @@ import pytest
 
 from homeplane.embodied.camera_director import CameraDirector, visible_scene
 from homeplane.embodied.camera_follow_appearance import find_follow_target, follow_reference_in_view, remember_follow_target
+from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from tests.embodied.test_camera_director import patrol_view
@@ -136,7 +137,7 @@ async def test_original_camera_loop_aims_twice_at_the_same_subject_despite_track
                      SearchPlanner=lambda *_: planner, camera_intents=SimpleNamespace(load=lambda: SimpleNamespace(
                          mode=mode, revision='intent', status='configured')), SELECTED=scope['selected'],
                      os=SimpleNamespace(environ={}), state=state, games=MotionGames(), party_camera=PartyCamera(),
-                     previews=SimpleNamespace(sessions={}), home=SimpleNamespace(camera_focus=None),
+                     wall=CameraWall([]), home=SimpleNamespace(camera_focus=None),
                      safety=quiet_safety, camera_motion_cue=recorded_sound_only(quiet_safety),
                      motor_step=motor, reap=AsyncMock(), capture=None)
         loop = source_function('homeplane/embodied/worker.py', 'camera_search', scope)

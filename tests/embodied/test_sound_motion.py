@@ -149,8 +149,6 @@ class SoundPatrol:
                                     presets=[], active=None, event=lambda *_, **__: None)
             planner = SimpleNamespace(public=lambda _: {"mode": self.mode}, mode=self.mode, intent_revision="intent",
                                       intent_status="configured")
-            other = {"cam_2222222222": {"people": 1}} if self.occupied_elsewhere else {}
-
             async def reap(_):
                 self.exit_control = self.state.get("camera_control", {})
 
@@ -160,7 +158,7 @@ class SoundPatrol:
                     mode=self.mode, revision="intent", status="configured")),
                 os=SimpleNamespace(environ={}), SELECTED={"id": CAMERA["id"]}, state=self.state,
                 games=MotionGames(), party_camera=PartyCamera(),
-                previews=SimpleNamespace(sessions=other, status=lambda _: {"state": "live"}),
+                wall=SimpleNamespace(occupied_elsewhere=lambda _: self.occupied_elsewhere),
                 home=SimpleNamespace(camera_focus=None), safety=self.j.runtime,
                 camera_motion_cue=recorded_sound_only(self.j.runtime),
                 motor_step=self.motor, camera_lease=None, camera_planner=None,
