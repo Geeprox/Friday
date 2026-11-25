@@ -7,6 +7,7 @@ import json
 import time
 from collections import deque
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import numpy as np
@@ -20,12 +21,15 @@ from homeplane.embodied.household import basic_command
 from homeplane.embodied.intent import address, parse_plan, utterance_focus
 from homeplane.embodied.local_intent import household_plan
 from homeplane.embodied.paths import DATA, PRIVATE, PYTHON
+from homeplane.embodied.pointing_voice import (
+    POINTING_FOLLOWUP_SECONDS, POINTING_HOLD_SECONDS, PointingReply, PointingSpeech, pointing_command,
+)
 from homeplane.embodied.smart_home import Attention, Curtain, WindowGesture
 from homeplane.embodied.speech import Speaker
 from homeplane.embodied.voice_activity import VoiceActivity
 from homeplane.embodied.voice_preferences import read_preferences
 from homeplane.embodied.voice_process import VoiceProcess
-from homeplane.embodied.voice_routing import RETRY_OTHER_MIC, RetryWithOwnAttention, Utterance
+from homeplane.embodied.voice_routing import RETRY_OTHER_MIC, RetryWithOwnAttention, RetryWithOwnPointing, Utterance
 from homeplane.runtime_log import RuntimeLog, observe
 from homeplane.home_questions import is_home_question
 from homeplane.task_composition import is_task_request
@@ -60,11 +64,14 @@ def voice_command_outcome(receipt):
 
 class HomeService:
     def __init__(self, camera_id=None, voice_provider=None, *, voice_preferences=None, voice_routing=None,
-                 input_allowed=None):
+                 input_allowed=None, pointing_frame=None):
         self.camera_id = camera_id
         self.voice_provider = voice_provider
         self.voice_routing = voice_routing
         self.input_allowed = input_allowed or (lambda: True)
+        self.pointing_frame = pointing_frame or (lambda session, now: None)
+        self.pointing_reply = None
+        self.pointing_request = None
         self.voice_preferences=voice_preferences or read_preferences
         self.audio_allowed = True
         self.runtime_log = RuntimeLog(DATA / "logs")
@@ -107,6 +114,8 @@ class HomeService:
         self.view_revision = 0
         self.utterance_view_revision = 0
         self.utterance_attention = []
+        self.utterance_pointing = None
+        self.utterance_pointing_conflict = False
         self.utterance_started = self.utterance_ended = self.utterance_level = 0.0
         self.reply_until = 0.0
         self.pending_audio = None
@@ -258,6 +267,8 @@ class HomeService:
             owner = people[0]["id"]
         self.owner = owner
         self.voice_owner = self.attention.candidate(preferred) if selected else None
+        if self.pointing_request is not None and not self.pointing_request[1]():
+            self._revoke_pointing()
         if not selected or not good:
             self.gesture.reset()
         elif gestures_enabled:
@@ -285,6 +296,36 @@ class HomeService:
         self.visible_tracks.clear()
         self.owner = self.voice_owner = self.camera_focus = None
         self.pending_audio = None
+        self._revoke_pointing()
+
+    def _revoke_pointing(self):
+        self.pointing_reply = None
+        if self.pointing_request is not None:
+            self.pointing_request[0].cancel()
+
+    def _pointing_at_audio_ingress(self, stamp, source):
+        frame = self.pointing_frame(self.camera_session, stamp)
+        if frame is None:
+            return None
+        if 0 <= stamp - frame.target.observed_mono <= POINTING_HOLD_SECONDS:
+            return PointingSpeech(frame.target, frame.single_person)
+        reply = self.pointing_reply
+        if (reply is not None and stamp <= reply.expires and reply.source == source
+                and reply.view_revision == self.view_revision and reply.sequence == frame.target.sequence):
+            return PointingSpeech(frame.target, frame.single_person, reply)
+        return None
+
+    def _accumulate_pointing(self, evidence):
+        if evidence is None or self.utterance_pointing_conflict:
+            return
+        previous = self.utterance_pointing
+        if previous is None:
+            self.utterance_pointing = evidence
+        elif previous.target != evidence.target:
+            self.utterance_pointing = None
+            self.utterance_pointing_conflict = True
+        elif previous.single_person and not evidence.single_person:
+            self.utterance_pointing = replace(previous, single_person=False)
 
     def reset_audio(self):
         """Discard a partial segment; completed admitted requests have their own lease."""
@@ -294,6 +335,8 @@ class HomeService:
         self.silence = self.duration = self.voiced_duration = 0.0
         self.utterance_owner = None
         self.utterance_attention = []
+        self.utterance_pointing = None
+        self.utterance_pointing_conflict = False
         self.utterance_started = self.utterance_ended = self.utterance_level = 0.0
         self.state['voice_activity'] = False
         try:
@@ -305,6 +348,7 @@ class HomeService:
 
     def discard_audio(self):
         self.audio_backlog.clear()
+        self._revoke_pointing()
         self.last_audio = self.audio_input_at = None
         if self.voice_routing is not None:
             self.voice_routing.discard_followup(self.camera_id)
@@ -318,18 +362,24 @@ class HomeService:
         if not isinstance(admission, AdmittedAudio) or admission.packet is None:
             self.audio_backlog.clear()
             self.last_audio = None
+            self._revoke_pointing()
             prepare_voice_packet(self, admission)
             return
         if len(self.audio_backlog) == VOICE_PACKET_BACKLOG:
             self.discard_audio()
-        self.audio_backlog.append((self.epoch, self.view_revision, self.voice_owner, admission))
+        if admission.reset:
+            self._revoke_pointing()
+        source = (admission.packet.get('capture_session'), admission.packet.get('camera_source_context'))
+        stamp = admission.received_mono
+        pointing = self._pointing_at_audio_ingress(stamp, source) if stamp is not None else None
+        self.audio_backlog.append((self.epoch, self.view_revision, self.voice_owner, admission, pointing))
         if self.audio_task is None or self.audio_task.done():
             self.audio_task = asyncio.create_task(self._drain_audio(), name='friday-voice-packets')
 
     async def _drain_audio(self):
         try:
             while self.audio_backlog:
-                epoch, view_revision, owner, admission = self.audio_backlog.popleft()
+                epoch, view_revision, owner, admission, pointing = self.audio_backlog.popleft()
                 if epoch != self.epoch:
                     continue
                 received = admission.received_mono
@@ -337,7 +387,7 @@ class HomeService:
                     self.reset_audio()
                     continue
                 await self.audio(prepare_voice_packet(self, admission), observed_owner=owner,
-                                 observed_view=view_revision)
+                                 observed_view=view_revision, observed_pointing=pointing)
         finally:
             self.audio_task = None
 
@@ -373,7 +423,7 @@ class HomeService:
                 and now >= self.reply_until and 0 <= now - self.last_video < CAMERA_INPUT_MAX_AGE
                 and (self.voice_routing is None or self.voice_routing.listening(now)))
 
-    async def audio(self, item, *, observed_owner=CURRENT_ATTENTION, observed_view=None):
+    async def audio(self, item, *, observed_owner=CURRENT_ATTENTION, observed_view=None, observed_pointing=None):
         now = time.monotonic()
         if observed_view is None:
             observed_view = self.view_revision
@@ -446,6 +496,10 @@ class HomeService:
             self.silence = 0.0
             self.utterance_owner = owner
             self.utterance_attention = [(owner, duration)]
+            self.utterance_pointing = None
+            self.utterance_pointing_conflict = False
+            if observed_view == self.view_revision:
+                self._accumulate_pointing(observed_pointing)
             self.voiced_duration = voiced
             self.utterance_started = sample_at
             self.utterance_ended = min(now, sample_at + duration)
@@ -457,6 +511,8 @@ class HomeService:
         self.silence = 0.0 if speech else self.silence + duration
         if speech:
             self.utterance_attention.append((owner, duration))
+            if observed_view == self.utterance_view_revision == self.view_revision:
+                self._accumulate_pointing(observed_pointing)
             self.voiced_duration += voiced
             self.utterance_ended = min(now, sample_at + duration)
             self.utterance_level += level
@@ -466,8 +522,10 @@ class HomeService:
             self.speaking = False
             self.duration = 0.0
             owner, attending = utterance_focus(self.utterance_attention)
+            pointing = self.utterance_pointing
             if self.utterance_view_revision != self.view_revision:
                 owner, attending = None, False
+                pointing = None
             if len(pcm) >= 16000 and self.voiced_duration >= WAKE_VOICED_SECONDS:
                 source = (item.get('capture_session'), item.get('camera_source_context'))
                 if not all(isinstance(value, str) and value for value in source):
@@ -479,7 +537,8 @@ class HomeService:
                         self.voice_routing.offer(self, Utterance(
                             *segment, self.utterance_started, self.utterance_ended,
                             self.utterance_level / self.voiced_duration, wake_only=wake_only,
-                            view_revision=self.view_revision))
+                            view_revision=self.utterance_view_revision, pointing=pointing,
+                            pointing_conflict=self.utterance_pointing_conflict))
                 elif self.voice_busy:
                     self.pending_audio = (*segment, wake_only)
                 else:
@@ -609,8 +668,86 @@ class HomeService:
         self.state.update(last_result=answer.model_dump(mode='json'),last_route='task',reason=answer.reply)
         await self.speak_reply(answer.reply, lambda: current() and answer.valid_until > datetime.now(UTC))
 
+    def pointing_frame_for(self, utterance, owner, attending):
+        if (utterance is None or utterance.pointing is None or utterance.pointing_conflict
+                or utterance.view_revision != self.view_revision or utterance.epoch != self.epoch):
+            return None
+        evidence = utterance.pointing
+        frame = self.pointing_frame(self.camera_session, time.monotonic())
+        if frame is None or frame.target != evidence.target:
+            return None
+        if attending:
+            return frame if owner == evidence.target.owner and owner in self.attention.latest else None
+        return frame if evidence.single_person and frame.single_person else None
+
+    async def _command_pointed(self, intent, utterance, command, current, *, owner, attending, view_revision,
+                               source, voice_revision, previous_reply, retry):
+        self.state.update(intent_provider='local_rules', last_route='home')
+        evidence = utterance.pointing if utterance is not None else None
+
+        def current_frame():
+            if source is None or utterance is None or utterance.source != source or not current():
+                return None
+            return self.pointing_frame_for(utterance, owner, attending)
+
+        if intent.action == 'no_op':
+            reply = '好的，保持设备当前状态。'
+            command.update(route='no_op', state='ignored', reply=reply, updated_at=time.time())
+            self.state.update(last_route='no_op', reason=reply)
+            await self.speak_reply(reply, current)
+            return
+        frame = current_frame() if intent.action != 'clarify' else None
+        if frame is not None and evidence.reply is not None:
+            remembered = evidence.reply
+            if (remembered is not previous_reply or remembered.source != source
+                    or remembered.voice_revision != voice_revision
+                    or not utterance.started <= remembered.expires):
+                frame = None
+        if frame is None:
+            reply = '请指向一个已标定的设备，再说一次要做什么。'
+            command.update(route='clarify', state='clarify', reply=reply, updated_at=time.time())
+            self.state.update(last_route='clarify', reason=reply)
+            if (retry is not None and evidence is None and utterance is not None
+                    and not utterance.pointing_conflict and self.voice_routing is not None
+                    and self.voice_routing.pointing_alternate(self.camera_id) is not None):
+                return retry
+            await self.speak_reply(reply, current)
+            return
+        target = evidence.target
+        command.update(route='home', state='executing', updated_at=time.time())
+        self.state['reason'] = '正在控制所指设备'
+        job = asyncio.create_task(bridge.command(
+            None, intent.action, command['id'], target=target.target, camera_id=self.camera_id,
+            pointing=dict(binding=target.binding, revision=target.revision, observed_mono=frame.observed_mono,
+                          voice_revision=voice_revision, camera_source_context=source[1], kind=intent.kind),
+        ))
+        self.pointing_request = (job, current_frame)
+        try:
+            receipt = await job
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                raise
+            # 请求可能已发出。取消视觉上下文后不重试，也不宣称设备未动。
+            receipt = dict(status='unknown_outcome', acknowledged=False, reached_target=False)
+        finally:
+            self.pointing_request = None
+        outcome = voice_command_outcome(receipt)
+        if outcome == 'readback' and current_frame() is not None:
+            self.pointing_reply = PointingReply(target.sequence, source, view_revision, voice_revision,
+                                                time.monotonic() + POINTING_FOLLOWUP_SECONDS)
+        reply = {
+            'readback': '已读回目标状态。',
+            'accepted': '指令已发送，设备状态待确认。',
+            'unknown_outcome': '设备状态待确认。',
+        }.get(outcome, '所指设备暂时无法执行这条指令。')
+        command.update(state=outcome, reply=reply,
+                       receipt={key: receipt.get(key) for key in ('status', 'acknowledged', 'reached_target')},
+                       updated_at=time.time())
+        self.state.update(reason=reply, last_event={'source': 'voice', 'receipt': receipt, 'at': time.time()})
+        await self.speak_reply(reply, current)
+
     async def transcribe(self, pcm, owner, captured, attending=False, epoch=None, source=None, wake_only=False,
-                         *, utterance=None, followup=None, gaze_retry=None):
+                         *, utterance=None, followup=None, gaze_retry=None, pointing_retry=None):
         epoch = self.epoch if epoch is None else epoch
         view_revision = utterance.view_revision if utterance is not None else None
         view_revision = self.view_revision if view_revision is None else view_revision
@@ -671,6 +808,13 @@ class HomeService:
                 self.state['last_address'] = dict(admitted=False, reason='gaze_retry_transcript_mismatch')
                 self.state['reason'] = '跨镜头语音不一致，请再说一次'
                 return
+            if pointing_retry is not None and (
+                pointing_retry.voice_revision != policy.revision or not route.get('admitted')
+                or _speech_body(route.get('body')) != pointing_retry.body
+            ):
+                self.state['last_address'] = dict(admitted=False, reason='pointing_retry_transcript_mismatch')
+                self.state['reason'] = '跨镜头语音不一致，请再说一次'
+                return
             self.state["last_address"] = route
             if wake_only or worker_admission.get("admitted") is not True:
                 if (route.get('reason') == 'waiting_instruction'
@@ -715,12 +859,23 @@ class HomeService:
                 return
             if self.voice_routing is not None:
                 self.voice_routing.discard_followup(self.camera_id)
+            previous_reply, self.pointing_reply = self.pointing_reply, None
+            body = route['body']
+            pointed = pointing_command(body)
+            if pointed is not None:
+                self.wake_camera = self.camera_focus = None
+                retry = (RetryWithOwnPointing(_speech_body(body), policy.revision)
+                         if pointing_retry is None and pointed.action not in {'no_op', 'clarify'} else None)
+                return await self._command_pointed(
+                    pointed, utterance, command, current, owner=owner, attending=attending,
+                    view_revision=view_revision, source=source, voice_revision=policy.revision,
+                    previous_reply=previous_reply, retry=retry,
+                )
             self._wake_focus(result['text'], captured, epoch, policy, source)
             # 明确唤醒或同源接续已经准入，设备读回无需占用视角。
             self.voice_needs_stable_view = not (route.get('wake_word') is True or after_wake)
             decision_started = time.monotonic()
             laya = result.get("laya") or {}
-            body = route['body']
             if is_task_request(body):
                 await self.prepare_task(result['text'], event, captured, epoch, attending, policy, command,
                                         current=current, after_wake=after_wake)

@@ -6,6 +6,8 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+from .pointing_voice import PointingSpeech
+
 # 只允许在唤醒与设备动作之前明确放弃的语句转交另一路。
 RETRY_OTHER_MIC = object()
 
@@ -13,6 +15,14 @@ RETRY_OTHER_MIC = object()
 @dataclass(frozen=True, slots=True)
 class RetryWithOwnAttention:
     """原收音已转写但缺少唤醒或注视凭据，允许另一视角独立核对。"""
+
+    body: str
+    voice_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class RetryWithOwnPointing:
+    """首路听清了指令，允许有自己标定指向的来源独立复核。"""
 
     body: str
     voice_revision: int
@@ -31,6 +41,8 @@ class Utterance:
     level: float
     wake_only: bool = False
     view_revision: int | None = None
+    pointing: PointingSpeech | None = None
+    pointing_conflict: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +237,18 @@ class VoiceRouting:
                       if other.camera_id != service.camera_id}
         return service, item, _ActiveUtterance(service.camera_id, window, not item.wake_only, alternates)
 
+    def pointing_alternate(self, camera):
+        active = self._active
+        if active is None or active.camera != camera:
+            return None
+        now = self.clock()
+        candidates = [row for row in active.alternates.values()
+                      if self._eligible(*row, now, except_window=active.window)
+                      and not row[1].wake_only and row[1].pointing is not None
+                      and row[1].pointing.reply is None
+                      and row[0].pointing_frame_for(row[1], row[1].owner, _own_attention(*row)) is not None]
+        return candidates[0] if len(candidates) == 1 else None
+
     async def _dispatch(self):
         try:
             while self.pending:
@@ -239,6 +263,10 @@ class VoiceRouting:
                 result, = await asyncio.gather(job, return_exceptions=True)
                 fallback = None
                 gaze_retry = None
+                pointing_retry = None
+                if isinstance(result, RetryWithOwnPointing):
+                    fallback = self.pointing_alternate(service.camera_id)
+                    pointing_retry = result
                 if result is RETRY_OTHER_MIC or isinstance(result, RetryWithOwnAttention):
                     now = self.clock()
                     fresh = [row for row in active.alternates.values()
@@ -255,13 +283,14 @@ class VoiceRouting:
                     service, item = fallback
                     job = service.spawn(self._transcribe(
                         service, item, window, alternate=True, gaze_retry=gaze_retry,
+                        pointing_retry=pointing_retry,
                     ))
                     await asyncio.gather(job, return_exceptions=True)
         finally:
             self._active = None
             self.task = None
 
-    async def _transcribe(self, service, item, window, *, alternate=False, gaze_retry=None):
+    async def _transcribe(self, service, item, window, *, alternate=False, gaze_retry=None, pointing_retry=None):
         now = self.clock()
         duplicate = self._duplicates(item, now)
         if not alternate and duplicate:
@@ -275,12 +304,14 @@ class VoiceRouting:
         # 备用镜头复核自己的视角。原镜头的注视、人员归属和接续均不转移。
         if gaze_retry is not None and not _own_attention(service, item):
             gaze_retry = None
-        accept_attention = not alternate or gaze_retry is not None
+        accept_attention = not alternate or gaze_retry is not None or (
+            pointing_retry is not None and _own_attention(service, item))
         result = await service.transcribe(item.pcm, item.owner if accept_attention else None,
                                           item.captured, item.attending and accept_attention,
                                           item.epoch, item.source, item.wake_only, utterance=item,
                                           followup=None if alternate else self.followup_for(service, item),
-                                          gaze_retry=gaze_retry)
+                                          gaze_retry=gaze_retry,
+                                          **({'pointing_retry': pointing_retry} if pointing_retry else {}))
         if item.wake_only and result is True and not duplicate:
             self.recent.append((self.clock(), window))
         return result

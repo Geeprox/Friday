@@ -7,9 +7,11 @@ import json
 import math
 import os
 import time
+from dataclasses import replace
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from .paths import PRIVATE
+from .pointing_voice import POINTING_HOLD_SECONDS, PointingTarget
 from .smart_home import WindowGesture
 
 from .gestures import BINDABLE_HAND_LABELS
@@ -154,6 +156,9 @@ class InteractionEngine:
         self.arms=WindowGesture();self.config=Configuration(revision=0)
         self.loaded=-100.;self.owner=None;self.holds={};self.last={};self.pending=None;self.sequence=0
         self.latched=set();self.released={};self.observed=None
+        self.pointing = None
+        self.pointing_sequence = 0
+        self.pointing_single_person = False
         self.rearm=False;self.rearm_owner=None;self.rearm_revision=None;self.game_releases=set()
         self.rearm_body_only = False
         self.release_not_before=-math.inf
@@ -161,6 +166,8 @@ class InteractionEngine:
 
     def reset(self):
         self.arms.reset();self.holds.clear();self.pending=None;self.owner=None
+        self.pointing = None
+        self.pointing_single_person = False
         self.latched.clear();self.released.clear();self.observed=None
         if self.rearm:
             self.rearm_owner=None;self.rearm_revision=None;self.game_releases.clear()
@@ -217,6 +224,7 @@ class InteractionEngine:
             if observed - self.observed > 1:
                 self.reset();self.owner=owner
         self.observed = observed
+        self.pointing_single_person = len(people) == 1
         # 冷却只需要保留近期轨迹。持续运行的镜头会不断产生新轨迹编号。
         self.last = {key: stamp for key, stamp in self.last.items() if observed - stamp <= REPEAT_SECONDS}
         person=next((p for p in people if p['id']==owner),None)
@@ -235,7 +243,9 @@ class InteractionEngine:
         if not body_held:gestures.update(body_gestures(person))
         result=[]
         pointing_ready=registration.get('status')=='locked' and not registration.get('compensated',False)
-        if not pointing_ready:self.pending=None
+        if not pointing_ready:
+            self.pending = None
+            self.pointing = None
         for b in bindings:
             if b.gesture=='hand.point' or body_held and b.gesture.startswith('body.'):continue
             key=(owner,b.id)
@@ -272,11 +282,25 @@ class InteractionEngine:
         if unique:
             b=candidates[0][1]
             key=('ray',owner,b.id)
+            if self.pointing and (self.pointing.binding != b.id
+                                  or observed - self.pointing.observed_mono > POINTING_HOLD_SECONDS):
+                self.pointing = None
+                self.pending = None
             self.holds.setdefault(key,observed)
-            if observed-self.holds[key]>=.8:self.pending=(b,observed+3)
+            if observed-self.holds[key]>=.8:
+                self.pending = (b, observed + POINTING_HOLD_SECONDS)
+                if self.pointing is None:
+                    self.pointing_sequence += 1
+                    self.pointing = PointingTarget(b.id, self.config.revision, b.target, owner,
+                                                   self.pointing_sequence, observed)
+                else:
+                    self.pointing = replace(self.pointing, observed_mono=observed)
             for k in list(self.holds):
                 if k[0]=='ray'and k!=key:self.holds.pop(k,None)
         else:
+            if 'pointing' in labels:
+                self.pending = None
+                self.pointing = None
             for k in list(self.holds):
                 if k[0]=='ray':self.holds.pop(k,None)
         if self.pending and now>self.pending[1]:self.pending=None
@@ -284,6 +308,7 @@ class InteractionEngine:
             b=self.pending[0];key=('point',owner,b.id)
             if observed-self.last.get(key,-100)>REPEAT_SECONDS:self.last[key]=observed;result.append(b)
             self.pending=None
+            self.pointing = None
         self.rearm=bool(self.game_releases)
         self.public={'enabled':True,'selection':self.pending[0].target if self.pending else None,'reason':'confirm_ok'if self.pending else 'release_required'if self.rearm and len(self.game_releases)==len(bindings) else 'ready',**({'release_required':True,'blocked_gestures':sorted({b.gesture for b in bindings if b.id in self.game_releases}),'ready_bindings':len(bindings)-len(self.game_releases)}if self.rearm else {})}
         events=[]

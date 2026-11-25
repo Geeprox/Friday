@@ -117,7 +117,8 @@ recorder = PageRecording(DATA / "recordings")
 record_lock = asyncio.Lock()
 voice_routing = VoiceRouting(lambda: interaction_enabled and not (PRIVATE / 'voice-input-paused').exists())
 home = HomeService(SELECTED['id'], voice_routing=voice_routing,
-                   input_allowed=lambda: camera_interaction_allowed(SELECTED['id'], directory=PRIVATE))
+                   input_allowed=lambda: camera_interaction_allowed(SELECTED['id'], directory=PRIVATE),
+                   pointing_frame=lambda session, now: pointing_frame(SELECTED['id'], session, now))
 from homeplane.embodied.interaction import InteractionEngine
 from homeplane.embodied.interaction_fleet import InteractionFleet
 from homeplane.embodied.practice import RecognitionPractice
@@ -152,6 +153,17 @@ def interaction_game_window(camera_id, now):
     # 多个镜头可能同时看到体感游戏玩家。同房间共用游戏修订，狼人杀仍按主镜头租约。
     game_active = (same_room and games.mode not in {'off', 'home'}) or party_window[2]
     return game_window, party_window[:2], game_active
+
+
+def pointing_frame(camera_id, session, now):
+    frame = fleet.pointing_frame(camera_id, session, now)
+    if frame is None:
+        return None
+    _, _, game_active = interaction_game_window(camera_id, time.monotonic())
+    if (game_active or practice.suppresses(camera_id) or not interaction_enabled
+            or not interaction_source_current({'camera': camera_id, 'session': session})):
+        return None
+    return frame
 
 
 async def dispatch_interactions(events):
@@ -338,7 +350,8 @@ async def secondary_observation(observation, process):
             or observation.get('tracking_current') is not True)
     if camera_id not in secondary_homes:
         secondary_homes[camera_id] = HomeService(camera_id, voice_provider=home, voice_routing=voice_routing,
-            input_allowed=lambda: camera_interaction_allowed(camera_id, directory=PRIVATE))
+            input_allowed=lambda: camera_interaction_allowed(camera_id, directory=PRIVATE),
+            pointing_frame=lambda session, now: pointing_frame(camera_id, session, now))
     service = secondary_homes[camera_id]
     active = interaction_enabled and service.input_allowed()
     game_window, party_window, game_active = interaction_game_window(camera_id, observation['now'])

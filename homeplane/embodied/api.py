@@ -2,6 +2,7 @@
 
 import secrets
 import time
+from typing import Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -15,6 +16,7 @@ from .camera_follow_picker import FollowCommand
 from .game_difficulty import DifficultyId, difficulty_options
 from .household import DeviceCommands, basic_command
 from .paths import PRIVATE
+from .pointing_voice import POINTING_DISPATCH_SECONDS, RELATIVE_BRIGHTNESS
 from .quest import QuestRouteId, quest_route_options
 from .ski_route import SkiTrailId, ski_trail_options
 
@@ -110,8 +112,15 @@ class GestureContext(BaseModel):
     observed_mono: float = Field(ge=0)
 
 
+class PointingContext(GestureContext):
+    voice_revision: int = Field(ge=0)
+    camera_source_context: str = Field(pattern=r'^[a-f0-9]{64}$')
+    kind: Literal['light', 'cover'] | None = None
+
+
 class Command(BaseModel):
     gesture: GestureContext | None = None
+    pointing: PointingContext | None = None
     camera: str | None = Field(default=None, pattern=r'^cam_[a-f0-9]{10}$')
     target: str | None = Field(default=None, min_length=1, max_length=256)
     model_config = ConfigDict(extra="forbid")
@@ -432,33 +441,74 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
         query = plan.get("device") if plan else request.device
         action = plan.get("action") if plan else request.action
         target = request.target
+        pointing = request.pointing
+        if pointing is not None:
+            if (not worker_key or not request.camera or not target or request.gesture is not None
+                    or request.text is not None or request.device is not None or request.preview
+                    or action not in {'open', 'close', *RELATIVE_BRIGHTNESS}):
+                raise HTTPException(422, detail='invalid_pointed_command')
+        elif action in RELATIVE_BRIGHTNESS:
+            raise HTTPException(422, detail='pointing_context_required')
         if (not query and not target) or not action:
             return dict(status="clarify", write_attempted=False, reply="请说明房间、设备和动作。")
-        def current_gesture():
+        context = pointing or request.gesture
+        worker = getattr(service, 'process', None)
+        disconnected = False
+
+        def revoke():
+            nonlocal disconnected
+            disconnected = True
+
+        def current_interaction():
             if request.camera:
                 from .camera_interaction import allowed
                 if not allowed(request.camera, directory=PRIVATE):
                     return False
-            if request.gesture is None:
+            if context is None:
                 return True
-            import time
-            if time.monotonic() < getattr(service, 'practice_deadline', 0):
+            now = time.monotonic()
+            if (disconnected or now < getattr(service, 'practice_deadline', 0)
+                    or not 0 <= now - context.observed_mono <= POINTING_DISPATCH_SECONDS):
                 return False
             from .interaction import load
             try:
                 config = load()
-                binding = next((b for b in config.bindings if b.id == request.gesture.binding), None)
-                return bool(config.enabled and config.revision == request.gesture.revision and binding
-                    and binding.enabled and binding.target == target and binding.action == action
-                    and 0 <= time.monotonic() - request.gesture.observed_mono <= 1.5
-                    and (infrastructure is None or infrastructure.policy.enabled
-                         and infrastructure.policy.recognition and infrastructure.policy.interaction))
+                binding = next((b for b in config.bindings if b.id == context.binding), None)
+                if not (config.enabled and config.revision == context.revision and binding
+                        and binding.enabled and binding.target == target
+                        and (infrastructure is None or infrastructure.policy.enabled
+                             and infrastructure.policy.recognition and infrastructure.policy.interaction)):
+                    return False
+                if pointing is None:
+                    return binding.action == action
+                from .camera_provenance import camera_source_context
+                from .paths import camera
+                return bool(binding.gesture == 'hand.point' and binding.camera == request.camera
+                            and worker is not None and worker is service.process and worker.returncode is None
+                            and service.capture_enabled and service.interaction_enabled
+                            and not (PRIVATE / 'voice-input-paused').exists()
+                            and secrets.compare_digest((PRIVATE / 'control-key').read_text().strip(), worker_key)
+                            and voice_preferences.read().revision == pointing.voice_revision
+                            and camera_source_context(camera(request.camera)) == pointing.camera_source_context)
             except (OSError, ValueError):
                 return False
-        return await devices.command(
-            query, action, request.event_id, room=request.room, preview=request.preview, target=target,
-            dispatch_guard=current_gesture if request.gesture is not None or request.camera else None,
-            dispatch_deadline=request.gesture.observed_mono + 1.5 if request.gesture is not None else None,
-        )
+
+        def execute():
+            return devices.command(
+                query, action, request.event_id, room=request.room, preview=request.preview, target=target,
+                dispatch_guard=current_interaction if context is not None or request.camera else None,
+                dispatch_deadline=context.observed_mono + POINTING_DISPATCH_SECONDS if context else None,
+                **({'pointed': True, 'pointed_kind': pointing.kind} if pointing is not None else {}),
+            )
+
+        if pointing is None:
+            return await execute()
+        if not current_interaction():
+            raise HTTPException(409, detail='pointing_context_changed')
+        from homeplane.preview_request import prepare_for_viewer
+        try:
+            return await prepare_for_viewer(incoming, execute, timeout=34, invalidate=revoke)
+        except (TimeoutError, ValueError):
+            return dict(status='unknown_outcome', acknowledged=False, reached_target=False)
 
     return router

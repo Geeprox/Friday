@@ -454,13 +454,14 @@ class ActionController:
             return trace
 
     @observe('action.approve', upstream='ha', key='action_id')
-    async def execute(self, action_id, *, managed_guard=None, dispatch_guard=None):
+    async def execute(self, action_id, *, managed_guard=None, dispatch_guard=None, brightness_precondition=None):
         # 同一动作的重复调用等待各自的最终回读，不占用新手势需要的发送锁。
         execution_lock = self._execution_locks.setdefault(action_id, asyncio.Lock())
         async with execution_lock:
-            return await self._execute(action_id, managed_guard=managed_guard, dispatch_guard=dispatch_guard)
+            return await self._execute(action_id, managed_guard=managed_guard, dispatch_guard=dispatch_guard,
+                                       brightness_precondition=brightness_precondition)
 
-    async def _execute(self, action_id, *, managed_guard=None, dispatch_guard=None):
+    async def _execute(self, action_id, *, managed_guard=None, dispatch_guard=None, brightness_precondition=None):
         async with self._lock:
             trace = self.core.store.light_action(action_id)
             if trace is None:
@@ -536,6 +537,23 @@ class ActionController:
             mijia = writer is not None
             if dispatch_guard is not None and dispatch_guard() is not True:
                 raise ValueError("dispatch_guard_rejected")
+            if brightness_precondition is not None:
+                # 相对调光依赖灯的原亮度和开机状态。在发送边界再读一次，避免覆盖刚发生的手动调节。
+                initial, deadline = brightness_precondition
+                external = next((b.external_id for b in entity.bindings if b.source == 'ha'), '')
+                try:
+                    async with asyncio.timeout_at(min(deadline, self._deadlines[action_id])):
+                        reported = await read_light_state(adapter, external)
+                except (httpx.HTTPError, OSError, ValueError, TimeoutError):
+                    return self._stage(trace, 'rejected', 'brightness_unavailable')
+                if reported['power'] != 'on' or reported['brightness'] != initial:
+                    return self._stage(trace, 'rejected', 'brightness_changed')
+                if self.core.adapter is not adapter or self.authority()[1] != revision:
+                    return self._stage(trace, 'rejected', 'authority_changed')
+                if dispatch_guard is not None and dispatch_guard() is not True:
+                    return self._stage(trace, 'expired', 'stale_interaction')
+                if trace.request.desired.get('brightness') == initial:
+                    return self._stage(trace, 'reported_match', 'already_at_target', reported=reported)
             # 访问网络前先持久化发送占用记录，写库或状态比较失败则不发送。
             # 其他 Core 也不能重复领取同一计划。
             trace = self._stage(trace, "sent", "send_claim_recorded",

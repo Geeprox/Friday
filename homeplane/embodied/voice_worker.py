@@ -26,6 +26,7 @@ from homeplane.embodied.intent import (
 )
 from homeplane.embodied.local_asr import LocalASR
 from homeplane.embodied.local_intent import household_plan
+from homeplane.embodied.pointing_voice import pointing_command
 from homeplane.embodied.voice_preferences import read_preferences
 
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -97,9 +98,10 @@ def main():
                     route = {"admitted": False, "reason": quality_reason}
                 semantic = None
                 if route["admitted"]:
-                    if household_plan(text, attending, wake_word=policy.wake_word, after_wake=after_wake) or basic_command(
+                    if (pointing_command(route.get('body'))
+                        or household_plan(text, attending, wake_word=policy.wake_word, after_wake=after_wake) or basic_command(
                         text, attending, wake_word=policy.wake_word, after_wake=after_wake
-                    ):
+                    )):
                         semantic = {
                             "choice": "指令或任务请求",
                             "confidence": 1.0,

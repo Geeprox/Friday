@@ -9,6 +9,7 @@ import math
 
 from .interaction import InteractionEngine, body_gestures
 from .interaction import load
+from .pointing_voice import POINTING_DISPATCH_SECONDS, PointingFrame
 
 
 class InteractionFleet:
@@ -37,7 +38,8 @@ class InteractionFleet:
             self.cameras[camera] = dict(session=session, engine=engine,game_window=old.get('game_window')if old else None,
                                         body_window=old.get('body_window') if old else None,
                                         owner=None, candidate=None, since=0, suppress_ok=False,
-                                        seen=-100., people=0, gestures={}, state='connecting')
+                                        seen=-100., people=0, gestures={}, state='connecting',
+                                        pointing_frames=deque(maxlen=64))
         return self.cameras[camera]
 
     def clear(self, camera, *, voice=True):
@@ -45,6 +47,7 @@ class InteractionFleet:
         if item:
             item.update(owner=None, candidate=None, suppress_ok=False, gestures={}, people=0, state='waiting')
             item['engine'].reset()
+            item['pointing_frames'].clear()
             if voice:
                 item['voice_enabled'] = False
                 self.voice_revoked(camera)
@@ -144,8 +147,19 @@ class InteractionFleet:
             if not any(now-c['seen'] < 1.5 and gesture in c['gestures'].get(who, set()) for c in self.cameras.values()):
                 self.latched.discard(key)
         admitted_hands = [h for h in hands if not (item['suppress_ok'] and h.get('gesture') == 'ok')]
-        events = item['engine'].update(people, admitted_hands, owner, registration, active, now,
-                                       observed_hands=hands, observed_mono=captured_mono, body_held=body_held)
+        engine = item['engine']
+        events = engine.update(people, admitted_hands, owner, registration, active, now,
+                               observed_hands=hands, observed_mono=captured_mono, body_held=body_held)
+        # 音频包保留原接收时间。用当时已采到的画面核对，避免使用晚到的新画面代替原指向。
+        frames = item['pointing_frames']
+        if engine.observed is None:
+            frames.clear()
+        elif not frames or engine.observed > frames[-1][0]:
+            if engine.pointing is not None:
+                frames.append((engine.observed, PointingFrame(
+                    engine.pointing, engine.observed, engine.pointing_single_person)))
+            elif frames and frames[-1][1] is not None:
+                frames.append((engine.observed, None))
         self.recent = {k:t for k,t in self.recent.items() if now-t < 10}
         for event in events:
             event['_actor'] = actor
@@ -166,6 +180,15 @@ class InteractionFleet:
         if gesture not in {'body.arms_open', 'body.arms_close', 'hand.point'}:
             self.latched.add(latch)
         return True
+
+    def pointing_frame(self, camera, session, now):
+        item = self.cameras.get(camera)
+        if not item or item['session'] != session or item['state'] != 'ready':
+            return None
+        for observed, frame in reversed(item['pointing_frames']):
+            if observed <= now:
+                return frame if now - observed <= POINTING_DISPATCH_SECONDS else None
+        return None
 
     def current(self, event, now):
         try:

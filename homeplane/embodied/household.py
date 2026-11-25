@@ -12,6 +12,7 @@ from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 
 from .intent import address
+from .pointing_voice import RELATIVE_BRIGHTNESS
 
 PREFIX = r"(?:(?:请你|请|麻烦你|麻烦|能不能|可以|你帮我|帮我|给我)\s*)*"
 SUFFIX = r"(?:(?:一下|吧|谢谢)\s*)*"
@@ -248,10 +249,33 @@ class DeviceCommands:
             return health.get('transport') != 'online' or health.get('observation_gap') is True
         return isinstance(adapter, LocalCameraHome)
 
+    def _brightness_step(self, snapshot, entity, action):
+        from homeplane.ha import HAReadOnlyAdapter
+
+        adapter = self.core.adapter
+        capability = next((c for c in entity.capabilities if c.name == 'light.set' and c.access == 'write'
+                           and c.support == 'supported'), None)
+        if not (isinstance(adapter, HAReadOnlyAdapter) and entity.kind == 'light' and capability
+                and capability.minimum == 1 and capability.maximum == 255
+                and entity.id in snapshot.action_targets):
+            return None
+        state = next((s for s in snapshot.states if s.id == entity.id + ':light.state'), None)
+        if (state is None or state.value != 'on' or state.quality != 'healthy'
+                or state.valid_until is None or state.valid_until <= datetime.now(UTC)):
+            return None
+        external = next((b.external_id for b in entity.bindings if b.source == 'ha'), '')
+        brightness = adapter._light_attributes.get(external, {}).get('brightness')
+        if type(brightness) is not int or not 1 <= brightness <= 255:
+            return None
+        return brightness, max(1, min(255, brightness + RELATIVE_BRIGHTNESS[action]))
+
     async def command(self, query, action, event_id, *, room=None, preview=False, target=None,
-                      dispatch_guard=None, dispatch_deadline=None):
+                      dispatch_guard=None, dispatch_deadline=None, pointed=False, pointed_kind=None):
         from homeplane.action_contracts import DevicePlanRequest
 
+        relative = action in RELATIVE_BRIGHTNESS
+        if relative and (not pointed or target is None or dispatch_deadline is None or preview):
+            raise ValueError('pointing_context_required')
         local_cover = False
         if target == 'friday:configured-cover':
             cover = self.configured_cover()
@@ -297,13 +321,19 @@ class DeviceCommands:
                     outcomes.append(dict(target=item['id'],status='rejected',code='stale_interaction',
                                          write_attempted=False,acknowledged=False))
                     continue
+                if pointed and (pointed_kind is not None and item['kind'] != pointed_kind
+                                or not relative and action not in item['actions']
+                                and {'open': 'on', 'close': 'off'}.get(action) not in item['actions']):
+                    outcomes.append(dict(target=item['id'], status='rejected', code='pointed_action_unsupported',
+                                         write_attempted=False, acknowledged=False))
+                    continue
                 try:
-                    operation, desired = self.parameters(item, action)
+                    operation, desired = ('light.set', None) if relative else self.parameters(item, action)
                 except (ValueError, TypeError, KeyError):
                     outcomes.append(dict(target=item['id'], status='rejected', code='unsupported_parameters',
                                          write_attempted=False, acknowledged=False))
                     continue
-                if item.get("source_kind") == "miot":
+                if item.get("source_kind") == "miot" and not relative:
                     permission = self.core.actions.cover_permission()
                     if operation not in (permission or {}).get('operations', ()):
                         outcomes.append(dict(target=item['id'], status='rejected', code='unauthorized',
@@ -330,10 +360,12 @@ class DeviceCommands:
                     )
                     continue
                 snapshot = await self.core.snapshot()
-                key = hashlib.sha256((event_id + ":" + item["id"]).encode()).hexdigest()
+                source_event = 'pointed:' + event_id if pointed else event_id
+                key = hashlib.sha256((source_event + ":" + item["id"]).encode()).hexdigest()
                 previous = self.core.store.light_action(key=key)
+                brightness_precondition = None
                 if previous is not None:
-                    if (previous.request.target != item['id'] or
+                    if (relative or previous.request.target != item['id'] or
                             getattr(previous.request, 'operation', 'light.set') != operation or
                             previous.request.desired != desired):
                         outcomes.append(dict(target=item['id'], status='rejected', code='source_conflict',
@@ -346,6 +378,15 @@ class DeviceCommands:
                         outcomes.append(dict(target=item['id'], status='rejected', code='target_not_found',
                                              write_attempted=False, acknowledged=False))
                         continue
+                    if relative:
+                        step = self._brightness_step(snapshot, entity, action)
+                        if step is None:
+                            outcomes.append(dict(target=item['id'], status='rejected', code='brightness_unavailable',
+                                                 write_attempted=False, acknowledged=False))
+                            continue
+                        initial, requested = step
+                        desired = {'power': 'on', 'brightness': requested}
+                        brightness_precondition = (initial, dispatch_deadline)
                     request = DevicePlanRequest(
                         target=item["id"],
                         operation=operation,
@@ -356,7 +397,10 @@ class DeviceCommands:
                     )
                     trace = await self.core.actions.plan(request)
                 try:
-                    trace = await self.core.actions.execute(trace.action_id, dispatch_guard=dispatch_guard)
+                    trace = await self.core.actions.execute(
+                        trace.action_id, dispatch_guard=dispatch_guard,
+                        **({'brightness_precondition': brightness_precondition} if brightness_precondition else {}),
+                    )
                 except ValueError:
                     outcomes.append(dict(target=item['id'],status='rejected',code='stale_interaction',
                                          write_attempted=False,acknowledged=False))
