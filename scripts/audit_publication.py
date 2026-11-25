@@ -33,6 +33,9 @@ SYNTHETIC_MEDIA = {
         'f700093133a85f9ef36be52a2e1fd4549c485c7e161a5583c379b36996ad9b5e',
     'docs/screenshots/camera-perception-status.png':
         '9a7df5a50fee28fcad2b18e745566e6a70ab560bb29bbd278c57d885bf02d3f8',
+    # 照护控制台的合成姿态与镜头，截图仅来自隔离的本机测试页。
+    'docs/screenshots/safety-fall-views.png':
+        '0159efe7c8bcd4660548f4b8eabf7272144b9c2161a11d843bd1b04986f0b126',
     # 固定合成灯具配置示例，无家庭设备或写入请求。
     'docs/screenshots/automation-lighting-recovery.png':
         '299b619fa6dbc96e080c88001a264485d15d81563090c02493092e73da447b37',
