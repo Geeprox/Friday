@@ -162,7 +162,7 @@ async def test_queued_gestures_use_the_original_camera_and_game_window(monkeypat
         home=SimpleNamespace(armed=True, spawn=jobs.append),
         secondary_homes={key: SimpleNamespace(armed=True) for key in ("same_room", "other_room")},
         interaction_source_current=lambda _: True,
-        fleet=SimpleNamespace(current=lambda *_: True, receipts=deque()),
+        fleet=SimpleNamespace(claim=lambda *_: True, receipts=deque()),
         practice=SimpleNamespace(suppresses=lambda _: False),
         wall=SimpleNamespace(notice=Mock(), cameras=[
             {"id": "same_room", "room": "SYNTHETIC-game-room"},
@@ -213,7 +213,7 @@ async def test_a_primary_gesture_from_before_a_waiting_home_callback_cannot_reen
         home=SimpleNamespace(armed=True, spawn=jobs.append),
         secondary_homes={},
         interaction_source_current=lambda _: True,
-        fleet=SimpleNamespace(current=lambda *_: True, receipts=[]),
+        fleet=SimpleNamespace(claim=lambda *_: True, receipts=[]),
         practice=SimpleNamespace(suppresses=lambda _: False),
         wall=SimpleNamespace(notice=Mock()),
         time=SimpleNamespace(monotonic=lambda: 10, time=lambda: 1000),
@@ -258,7 +258,7 @@ async def test_original_frame_producer_captures_the_game_window_before_awaiting_
         observed_mono=10,
     )
     scope["fleet"].update.return_value = [event]
-    scope["fleet"].current = lambda *_: True
+    scope["fleet"].claim = lambda *_: True
     scope["fleet"].receipts = []
     scope["home"].armed = True
     scope["home"].spawn = queued.append
