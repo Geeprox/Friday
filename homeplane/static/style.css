@@ -59,7 +59,10 @@
   }
 }
 * { box-sizing: border-box; }
-html { -webkit-font-smoothing: antialiased; scroll-padding-block: 24px; }
+html { -webkit-font-smoothing: antialiased; background-color: var(--bg); scroll-padding-block: 24px; }
+@media (hover: hover) and (pointer: fine) {
+  html { overscroll-behavior-y: none; }
+}
 body { margin: 0; background: var(--bg); color: var(--ink); font: .9375rem/1.55 -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif; }
 button, input, select, textarea { font: inherit; color: inherit; max-inline-size: 100%; }
 button, input:not([type='range']):not([type='checkbox']):not([type='radio']), select, textarea { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; min-height: 44px; }
