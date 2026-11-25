@@ -53,7 +53,7 @@ class Session:
         elif kind == "get_states":
             result = list(copy.deepcopy(self.server.rows).values())
         elif kind == "get_services":
-            result = {"light": {"turn_on": {"fields": {"brightness": {}}}}}
+            result = copy.deepcopy(self.server.services)
         else:
             result = copy.deepcopy(self.server.registry[kind])
         if self.server.inject:
@@ -81,6 +81,7 @@ class Server:
                 "device_id": "SIMULATED-device"} for k in self.rows],
             "config/device_registry/list": [{"id": "SIMULATED-device", "area_id": "SIMULATED-area"}],
             "config/area_registry/list": [{"area_id": "SIMULATED-area", "name": "Simulated Room"}]}
+        self.services = {"light": {"turn_on": {"fields": {"brightness": {}}}}}
         self.sessions, self.requests, self.inject = [], [], None
         self.reject_auth = False
 
@@ -409,6 +410,56 @@ async def test_periodic_reconciliation_is_read_not_transition(connected):
     assert not any(e.kind == "state-transition" for e in snap.events)
     assert all(m["type"] in {"auth", "subscribe_events", "get_states", "get_services", "config/entity_registry/list",
                              "config/device_registry/list", "config/area_registry/list"} for m in server.sessions[-1].sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interleaved_command", ["config/entity_registry/list", "get_states"])
+async def test_periodic_reconciliation_preserves_current_subscription_edges_once(connected, interleaved_command):
+    ha, server = connected
+    stream = ha._stream
+    stream.refresh_seconds = .01
+    session = server.sessions[-1]
+    session.registry_event("area")
+    await until(lambda: stream.counts["reconciles"] == 2)
+
+    def inject(active, message):
+        if message["type"] == interleaved_command:
+            server.inject = None
+            old, new = server.change("on")
+            active.event(old, new)
+            server.change("off")
+
+    server.inject = inject
+    await until(lambda: stream.counts["reconciles"] >= 3 and server.inject is None)
+    snapshot = await ha.snapshot()
+    edges = [e for e in snapshot.events if e.kind == "state-transition"]
+    assert [(e.payload["from"], e.payload["to"]) for e in edges] == [("off", "on"), ("on", "off")]
+    assert [e.source_seq.rpartition(":")[2] for e in edges] == ["2", "4"]
+    assert next(s for s in snapshot.states if s.id.endswith(":light.state")).value == "off"
+    assert stream.ready and not stream.gap and server.sessions == [session]
+
+
+@pytest.mark.asyncio
+async def test_registry_change_during_periodic_reconciliation_fences_later_edges(connected):
+    ha, server = connected
+    stream = ha._stream
+    stream.refresh_seconds = .01
+    session = server.sessions[-1]
+    session.registry_event("area")
+    await until(lambda: stream.counts["reconciles"] == 2)
+
+    def inject(active, message):
+        if message["type"] == "get_states":
+            server.inject = None
+            active.registry_event()
+            server.change("on")
+
+    server.inject = inject
+    await until(lambda: stream.counts["reconciles"] >= 3 and server.inject is None)
+    snapshot = await ha.snapshot()
+    assert not any(e.kind == "state-transition" for e in snapshot.events)
+    assert next(s for s in snapshot.states if s.id.endswith(":light.state")).value == "on"
+    assert stream.ready and not stream.gap
 
 
 def test_snapshot_api_timeout_cancels_read_and_can_recover(tmp_path, monkeypatch):

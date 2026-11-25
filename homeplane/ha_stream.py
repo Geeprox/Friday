@@ -78,7 +78,7 @@ class HAStream:
         return event
 
     @observe('ha.read', upstream='ha')
-    async def command(self, ws, kind, **params):
+    async def command(self, ws, kind, *, preserve_live=False, **params):
         if kind not in READ_COMMANDS:
             raise ValueError("read_only_command_required")
         self.ident += 1
@@ -98,6 +98,8 @@ class HAStream:
                         raise ValueError("event_buffer_overflow")
                     self.buffer.append(event)
                     self.buffer_bytes += size
+                    if preserve_live and not self.gap:
+                        await self._live_event(event)
                     continue
                 if frame.get("type") != "result" or type(frame.get("id")) is not int or frame.get("id") != ident or frame.get("success") is not True:
                     raise ValueError("read_command_rejected")
@@ -156,22 +158,31 @@ class HAStream:
                 "fired_at": fired, "eligible": eligible, "late": not 0 <= age <= 5,
                 "cursor": f"{self.connection_id}:{self.sequence}"}
 
-    async def reconcile(self, ws):
-        # Every command drains interleaved events. Re-read on ambiguous state/registry
-        # changes; finite attempts admit the consistency boundary on a busy source.
+    async def _live_event(self, event):
+        if event["event_type"] != "state_changed":
+            self.gap = True
+            await self.adapter._stream_gap("registry_update")
+            return
+        change = self.delta(event)
+        if change:
+            await self.adapter._stream_change(self, change)
+
+    async def reconcile(self, ws, *, preserve_live=False):
+        # 在线定时读回期间先按同一连接的顺序提交实时边沿。缓冲仅用于合并快照，
+        # 初次接入、登记变化和重连期间的状态只用于重建基线。
         for _attempt in range(3):
             async with asyncio.timeout(12):
                 results = []
                 for kind in ("entity", "device", "area"):
-                    result = await self.command(ws, f"config/{kind}_registry/list")
+                    result = await self.command(ws, f"config/{kind}_registry/list", preserve_live=preserve_live)
                     validate_registry(result, kind)
                     results.append(result)
-                services = await self.command(ws, "get_services")
+                services = await self.command(ws, "get_services", preserve_live=preserve_live)
                 if not isinstance(services, dict) or len(services) > 256 or any(
                     not isinstance(k, str) or not isinstance(v, dict) for k, v in services.items()
                 ):
                     raise ValueError("invalid_services")
-                rows = await self.command(ws, "get_states")
+                rows = await self.command(ws, "get_states", preserve_live=preserve_live)
                 validate_states(rows)
             now = datetime.now(UTC)
             self.rows = {r["entity_id"]: r for r in rows}
@@ -194,6 +205,10 @@ class HAStream:
                     ambiguous = True
             self.counts["reconciled_deltas"] += len(events)
             if ambiguous:
+                if preserve_live and not self.gap:
+                    self.gap = True
+                    await self.adapter._stream_gap("refresh_discontinuity")
+                preserve_live = False
                 continue
             await self.adapter._stream_snapshot(self, results, [{"domain": k, "services": v} for k, v in services.items()])
             self.counts["reconciles"] += 1
@@ -237,17 +252,14 @@ class HAStream:
                             async with asyncio.timeout(max(.001, deadline - time.monotonic())):
                                 frame = _object(await ws.recv())
                         except TimeoutError:
-                            await self.reconcile(ws)
+                            await self.reconcile(ws, preserve_live=True)
                             deadline = time.monotonic() + self.refresh_seconds
                             continue
                         event = self.event(frame)
+                        await self._live_event(event)
                         if event["event_type"] != "state_changed":
                             await self.reconcile(ws)
                             deadline = time.monotonic() + self.refresh_seconds
-                        else:
-                            change = self.delta(event)
-                            if change:
-                                await self.adapter._stream_change(self, change)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

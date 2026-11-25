@@ -25,6 +25,7 @@ from homeplane.rule_contracts import RuleIR
 from homeplane.rule_deployment import RuleManager
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_device_controls import CASES, rig
+from tests.test_homeplane_ha_stream import Server, stamp, until
 from tests.test_household_timezone_wiring import OfflineARL
 
 
@@ -221,6 +222,52 @@ async def test_independent_lighting_does_not_retarget_uncertain_commands(tmp_pat
         fault["send"] = None
         await runtime.ingest(core.adapter, incoming)
         assert len(calls) == 1
+    finally:
+        await cleanup(core, owner, runtime)
+
+
+@pytest.mark.asyncio
+async def test_light_rule_runs_once_for_fresh_arrival_during_ha_refresh(tmp_path):
+    core, rows, calls, _, _, _, owner, manager, runtime = await fixture(tmp_path)
+    adapter = core.adapter
+    server = Server()
+    server.rows = {row["entity_id"]: row for row in rows}
+    server.rows["binary_sensor.simulated_contact"]["last_updated"] = stamp(-1)
+    server.registry = {
+        "config/entity_registry/list": list(adapter._registry.values()),
+        "config/device_registry/list": list(adapter._devices.values()),
+        "config/area_registry/list": list(adapter._areas.values()),
+    }
+    server.services = {row["domain"]: row["services"] for row in adapter._services}
+    adapter._ws_connect = server.connect
+    adapter._stream = HAStream(adapter, refresh_seconds=.05)
+
+    def ingress(events):
+        core.store.append_events(events)
+        runtime.enqueue(adapter, events)
+
+    try:
+        adapter._stream.start()
+        assert (await adapter.subscribe(event_sink=ingress))["status"] == "connected"
+        record = (await enable(manager, await proposal(core, manager))).new
+        await runtime.set_mode("awake")
+
+        def inject(session, message):
+            if message["type"] == "get_states":
+                server.inject = None
+                old, new = server.change("on", entity="binary_sensor.simulated_contact")
+                session.event(old, new)
+
+        server.inject = inject
+        await until(lambda: adapter._stream.counts["reconciles"] >= 2 and server.inject is None)
+        assert len(runtime.queue) == 1
+        source, incoming = runtime.queue.pop(0)
+        await runtime.ingest(source, incoming)
+        await runtime.ingest(source, incoming)
+        assert [call.url.path for call in calls] == ["/api/services/light/turn_on"]
+        run, = runtime.status()["runs"]
+        assert run["record_id"] == record.id and run["event_id"] == incoming.event_id
+        assert run["status"] == "completed" and not run["physically_confirmed"]
     finally:
         await cleanup(core, owner, runtime)
 
