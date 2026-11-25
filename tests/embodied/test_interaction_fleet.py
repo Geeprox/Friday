@@ -109,10 +109,12 @@ def test_takeover_fences_previous_operator_events_and_keeps_other_camera_owner(c
 def test_enrolled_operator_continues_and_overlapping_views_execute_once(configured):
     fleet=InteractionFleet();bind(fleet,CAMERAS[0],'member')
     update(fleet,CAMERAS[0],11.3,'open_palm','member')
-    assert len(update(fleet,CAMERAS[0],12.05,'open_palm','member'))==1
+    primary, = update(fleet,CAMERAS[0],12.05,'open_palm','member')
+    assert fleet.claim(primary, 12.05)
     update(fleet,CAMERAS[1],12.1,'open_palm','member',track=99)
     assert fleet.cameras[CAMERAS[1]]['owner']==99
-    assert not update(fleet,CAMERAS[1],12.9,'open_palm','member',track=99)
+    secondary, = update(fleet,CAMERAS[1],12.9,'open_palm','member',track=99)
+    assert not fleet.claim(secondary, 12.9)
     for n in range(130,190):
         assert not update(fleet,CAMERAS[1],n/10,'open_palm','member',track=99)
 

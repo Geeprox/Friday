@@ -101,9 +101,12 @@ def test_geometry_to_bound_fleet_event_and_cross_camera_deduplication(monkeypatc
     assert not fleet_fixtures.update(fleet, camera, 11.3, observed, 'SYNTHETIC-member')
     event = fleet_fixtures.update(fleet, camera, 12.05, observed, 'SYNTHETIC-member')[0]
     assert event['target'] == 'SYNTHETIC-lamp' and event['revision'] == 7
-    assert fleet.current(event, 12.1)
-    for at in (12.1, 12.5, 12.9):
+    assert fleet.claim(event, 12.1)
+    for at in (12.1, 12.5):
         assert not fleet_fixtures.update(fleet, fleet_fixtures.CAMERAS[1], at,
                                         observed, 'SYNTHETIC-member', track=99)
+    other, = fleet_fixtures.update(fleet, fleet_fixtures.CAMERAS[1], 12.9,
+                                   observed, 'SYNTHETIC-member', track=99)
+    assert not fleet.claim(other, 12.9)
     fleet.clear(camera)
     assert not fleet.current(event, 12.2)

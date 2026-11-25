@@ -138,20 +138,26 @@ class InteractionFleet:
                 self.latched.discard(key)
         admitted_hands = [h for h in hands if not (item['suppress_ok'] and h.get('gesture') == 'ok')]
         events = item['engine'].update(people, admitted_hands, owner, registration, active, now,observed_hands=hands,observed_mono=captured_mono)
-        result = []
-        bindings = {b.id:b for b in item['engine'].config.bindings}
         self.recent = {k:t for k,t in self.recent.items() if now-t < 10}
         for event in events:
-            b = bindings[event['binding']]
-            latch = (actor, b.id, b.gesture)
-            key = (actor, b.target, b.action)
-            if latch in self.latched or now-self.recent.get(key, -100.) < 3:
-                continue
-            self.recent[key] = now
-            if b.gesture not in {'body.arms_open','body.arms_close','hand.point'}:
-                self.latched.add(latch)
-            result.append(event)
-        return result
+            event['_actor'] = actor
+        return events
+
+    def claim(self, event, now):
+        """在实际发送前去重。已失效的候选不占用其他镜头的动作。"""
+        if not self.current(event, now):
+            return False
+        actor = event['_actor']
+        gesture = event['gesture']
+        latch = (actor, event['binding'], gesture)
+        key = (actor, event['target'], event['action'])
+        last = self.recent.get(key)
+        if latch in self.latched or (last is not None and now - last < 3):
+            return False
+        self.recent[key] = now
+        if gesture not in {'body.arms_open', 'body.arms_close', 'hand.point'}:
+            self.latched.add(latch)
+        return True
 
     def current(self, event, now):
         try:
