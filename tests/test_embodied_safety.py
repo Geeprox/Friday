@@ -271,6 +271,70 @@ def test_partial_pose_never_borrows_a_different_track_or_an_unseen_descent(break
     assert not events
 
 
+def occlusion_observations(fence=None, *, down_gap=False):
+    tracking = dict(backend="ByteTrack", space="image", session_id=True)
+    times = [100, 100.25, 100.375, 100.5, 100.75, 101, 101.25, 101.5]
+    if fence == "two_missing":
+        times.append(101.625)
+    times += [101.75 + i * .25 for i in range(12)]
+    for captured in times:
+        if captured == 100 and fence == "too_little_upright":
+            continue
+        down = captured >= 101.75
+        actor = person(down)
+        actor["tracking"] = tracking.copy()
+        actor["box"].update(
+            dict(x=.33, y=.48, w=.35, h=.22) if down else dict(y=.20, h=.56)
+        )
+        if down and fence == "unproven":
+            actor["tracking"].clear()
+        if down and fence == "different_space":
+            actor["tracking"]["space"] = "background_reference"
+        if down and fence == "different_track":
+            actor["id"] = 8
+        if down and fence == "disjoint_box":
+            actor["box"].update(x=.66, w=.33)
+        missing = captured in {100.375, 101.5, 101.625} or down_gap and captured == 102.5
+        people = [] if missing else [actor]
+        if down and fence == "another_person":
+            people.append(dict(person(), id=12))
+        yield captured, people, "other" if down and fence == "source_changed" else "s", (
+            captured == 101.75 and fence == "coalesced"
+        )
+
+
+@pytest.mark.parametrize("down_gap, confirmation", [(False, 103.75), (True, 104.25)])
+def test_one_missed_track_frame_retains_only_observed_posture_time(down_gap, confirmation):
+    detector = FallDetector()
+    confirmations = []
+    for captured, people, session, coalesced in occlusion_observations(down_gap=down_gap):
+        if captured == 101.75:
+            assert detector.needs_stable_view("a", session, captured, (people, captured, 16/9, coalesced))
+        found = detector.observe("a", session, people, captured, captured, stable=True, coalesced=coalesced)
+        confirmations.extend((event["started_mono"], event["descent_mono"], captured) for event in found)
+    assert confirmations == [(101.25, 101.75, confirmation)]
+
+
+@pytest.mark.parametrize("fence", ["two_missing", "unproven", "different_space", "different_track",
+                                 "disjoint_box", "another_person", "source_changed", "coalesced",
+                                 "too_little_upright"])
+def test_missed_track_frame_cannot_substitute_for_upright_time_or_continuity(fence):
+    detector = FallDetector()
+    for captured, people, session, coalesced in occlusion_observations(fence):
+        if captured == 101.75:
+            assert not detector.needs_stable_view("a", session, captured, (people, captured, 16/9, coalesced))
+        assert not detector.observe("a", session, people, captured, captured, stable=True, coalesced=coalesced)
+
+
+def test_consecutive_misses_during_down_confirmation_end_original_episode():
+    detector = FallDetector()
+    for captured, people, session, coalesced in occlusion_observations(down_gap=True):
+        if captured == 102.75:
+            assert not detector.observe("a", session, [], 102.625, 102.625, stable=True)
+            assert not detector.needs_stable_view("a", session, captured)
+        assert not detector.observe("a", session, people, captured, captured, stable=True, coalesced=coalesced)
+
+
 def test_store_restart_review_retention_and_disk_budget(tmp_path, monkeypatch):
     store = SafetyStore(tmp_path / "private/safety.sqlite")
     assert not store.policy().enabled
@@ -326,6 +390,30 @@ async def test_runtime_persists_event_before_named_speech_and_keeps_evidence_loc
     assert store.frame(event["id"], event["frames"][0]["ordinal"]) == b"local-jpeg"
     speaker.say.assert_awaited_once()
     await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_live_fall_queue_keeps_tracking_source_through_one_missed_frame(tmp_path, monkeypatch):
+    store = SafetyStore(tmp_path / "safety.sqlite")
+    store.configure(SafetyPolicy(enabled=True))
+    clock = [100.0]
+    monkeypatch.setattr("homeplane.embodied.safety.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("homeplane.embodied.safety.time.time", lambda: 1800000000 + clock[0])
+    runtime = SafetyRuntime(store)
+    try:
+        for captured, people, session, _ in occlusion_observations(down_gap=True):
+            clock[0] = captured
+            await runtime.sync_policy()
+            assert runtime.offer("a", session, people, captured, captured, stable=True, jpeg=b"synthetic")
+            for actor in people:
+                actor["tracking"].clear()
+            await runtime.drain()
+        saved, = store.events()
+        assert saved["kind"] == "fall" and saved["status"] == "suspected"
+        assert saved["track"] == "7" and saved["captured_at"] == 1800000104.25
+        assert saved["announcement"]["status"] == "not_requested"
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

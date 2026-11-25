@@ -685,6 +685,24 @@ class FallDetector:
         track = person.get("id") if isinstance(person, dict) else None
         return str(track) if type(track) in (int, str) and track else None
 
+    @staticmethod
+    def _tracking_space(person):
+        tracking = person.get("tracking")
+        if (isinstance(tracking, dict) and tracking.get("backend") == "ByteTrack"
+                and tracking.get("session_id") is True
+                and tracking.get("space") in ("image", "background_reference")
+                and type(person.get("id")) is int and person["id"] > 0):
+            return tracking["space"]
+        return None
+
+    def _resumes_track(self, track, person, geometry, captured, people, coalesced):
+        down = track["down"]
+        return (not coalesced and len(people) == 1 and not geometry["partial"]
+                and 0 < captured - track["last"] <= self.MAX_POSE_GAP
+                and self._tracking_space(person) == track["tracking_space"]
+                and (down is None or geometry["horizontal"])
+                and iou(track["last_box"], geometry["box"]) >= (.45 if down else .25))
+
     def needs_stable_view(self, camera, session, evaluated, queued=None):
         """用最新一帧判断是否需要维持视角，不消耗跌倒确认进度。"""
         state = self.cameras.get(camera)
@@ -693,6 +711,7 @@ class FallDetector:
         if queued is None:
             return (0 <= evaluated - state["last"] <= 1.5
                     and any(not track["fired"] and track["down"] is not None
+                            and (not track["missed_frame"] or 0 <= evaluated - track["last"] <= self.MAX_POSE_GAP)
                             for track in state["tracks"].values()))
         people, captured, aspect, coalesced = queued
         if (not 0 <= evaluated - captured <= 1.5 or not 0 < captured - state["last"] <= self.MAX_FRAME_GAP
@@ -707,7 +726,10 @@ class FallDetector:
             geometry = self.geometry(person, aspect)
             if geometry is None or not geometry["horizontal"]:
                 continue
-            slide = self._slide_progress(track, geometry, captured, coalesced)
+            if track["missed_frame"] and not self._resumes_track(
+                    track, person, geometry, captured, people, coalesced):
+                continue
+            slide = self._slide_progress(track, geometry, captured, coalesced or track["missed_frame"])
             if self._descent_kind(track, geometry, captured, coalesced, slide):
                 return True
         return False
@@ -740,6 +762,19 @@ class FallDetector:
             state = dict(session=session, last=captured, tracks={})
             self.cameras[camera] = state
         state["last"] = captured
+        if not people:
+            # 给有实际姿态证据的一条轨迹等一帧。确认后继续要求当下可见的倒卧。
+            if not coalesced and len(state["tracks"]) == 1:
+                track = next(iter(state["tracks"].values()))
+                down = track["down"]
+                supported = (not down["partial"] if down else
+                             track["upright_since"] is not None or track["anchor"] is not None)
+                if (track["tracking_space"] and not track["missed_frame"] and not track["fired"]
+                        and supported and 0 < captured - track["last"] < self.MAX_POSE_GAP):
+                    track["missed_frame"] = True
+                    return []
+            state["tracks"].clear()
+            return []
         found, present = [], set()
         for person in people[:self.MAX_TRACKS]:
             track = self._track_key(person)
@@ -753,15 +788,25 @@ class FallDetector:
             person_id = self.current_identity(person, evaluated_mono)
             old = state["tracks"].get(track)
             if (old is None or not 0 < captured - old["last"] <= self.MAX_FRAME_GAP
-                    or not self._identity_matches(old, person_id)):
+                    or not self._identity_matches(old, person_id)
+                    or old["missed_frame"] and not self._resumes_track(
+                        old, person, geometry, captured, people, coalesced)):
                 old = dict(last=captured, upright_since=None, anchor=None, down=None, slide=None, fired=False,
-                           person_id=person_id)
+                           person_id=person_id, tracking_space=None, missed_frame=False, upright_pause=0.)
                 state["tracks"][track] = old
             elif person_id is not None:
                 old["person_id"] = person_id
+            missed_frame = old["missed_frame"]
+            if missed_frame and old["upright_since"] is not None:
+                old["upright_pause"] += captured - old["last"]
+            old["missed_frame"] = False
             old["last"] = captured
+            old["last_box"] = dict(geometry["box"])
+            old["tracking_space"] = self._tracking_space(person)
             down = old["down"]
-            old["slide"] = self._slide_progress(old, geometry, captured, coalesced) if down is None else None
+            old["slide"] = self._slide_progress(
+                old, geometry, captured, coalesced or missed_frame
+            ) if down is None else None
             kind = self._descent_kind(old, geometry, captured, coalesced, old["slide"])
             if geometry["partial"]:
                 # 缺一个关节时，仅允许同一倒卧轨迹短暂等候下一张完整画面。
@@ -771,26 +816,29 @@ class FallDetector:
                     state["tracks"].pop(track, None)
                 continue
             if (down is not None and not kind
-                    and (down["partial"] or coalesced or iou(geometry["box"], down["box"]) <= 0)):
+                    and (down["partial"] or coalesced or missed_frame
+                         or iou(geometry["box"], down["box"]) <= 0)):
                 # 画面无法接上原轨迹时，下一次确认须重新建立站立基线。
                 old["anchor"] = None
             if geometry["upright"]:
                 old["upright_since"] = old["upright_since"] if old["upright_since"] is not None else captured
-                if captured - old["upright_since"] >= 1:
+                upright_seconds = captured - old["upright_since"] - old["upright_pause"]
+                if upright_seconds >= 1:
                     old["anchor"] = dict(at=captured, center=geometry["center"], height=geometry["height"],
                                          floor=geometry["floor"], box=dict(geometry["box"]))
                 old["down"] = None
                 # One event per continuous episode; rearm after sustained recovery.
-                if captured - old["upright_since"] >= 3:
+                if upright_seconds >= 3:
                     old["fired"] = False
                 continue
             old["upright_since"] = None
+            old["upright_pause"] = 0.
             if not kind:
                 old["down"] = None
                 continue
             seconds = down["seconds"] if down is not None else 0.0
             # 仅将相邻的完整倒卧观测间隔计入确认时长。
-            if down is not None and not down["partial"] and not coalesced:
+            if down is not None and not down["partial"] and not coalesced and not missed_frame:
                 seconds += captured - down["at"]
             descent = down["descent"] if down is not None else captured
             old["down"] = dict(at=captured, descent=descent, seconds=seconds,
@@ -857,6 +905,8 @@ def _snapshot_people(people):
             continue
         row = _scalar_fields(person, ('id', 'motion'))
         row['box'] = _scalar_fields(person.get('box'), ('x', 'y', 'w', 'h', 'confidence'))
+        if (space := FallDetector._tracking_space(person)) is not None:
+            row['tracking'] = dict(backend='ByteTrack', space=space, session_id=True)
         row['identity'] = _scalar_fields(person.get('identity'), (
             'state', 'person_id', 'observed_monotonic', 'face_observed_monotonic'))
         row['joints'] = {}
