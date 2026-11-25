@@ -246,10 +246,41 @@ class SafetyStore:
 
     @staticmethod
     def same_recording(saved, event):
-        keys = ('kind', 'camera', 'session', 'track', 'started_mono', 'captured_at',
+        keys = ('kind', 'camera', 'session', 'track', 'started_mono', 'descent_mono', 'captured_at', '_fall_epoch',
                 'camera_source_context', 'basis', 'detector', 'sound_kind', 'sound_evidence',
                 'visual_kind', 'observation')
         return all(saved.get(key) == event.get(key) for key in keys)
+
+    @staticmethod
+    def _incident_rows(db, event):
+        incident_id = event.get('incident_id')
+        if incident_id is None:
+            return [event]
+        return [json.loads(value) for value, in db.execute(
+            "SELECT value FROM safety_events WHERE json_extract(value, '$.incident_id')=?", (incident_id,))]
+
+    @staticmethod
+    def _fall_anchor(db, event, revision):
+        # 仅使用同一进程、同一监测策略下已经确认且身份一致的下降区间。
+        start, descent = event.get('started_mono'), event.get('descent_mono')
+        if (not event.get('person_id') or not event.get('camera_source_context') or not event.get('_fall_epoch')
+                or not all(type(v) in (int, float) and math.isfinite(v) for v in (start, descent))):
+            return None
+        rows = [json.loads(value) for value, in db.execute(
+            """SELECT value FROM safety_events
+               WHERE json_extract(value, '$._fall_epoch')=?
+                 AND json_extract(value, '$._fall_revision')=?
+                 AND json_extract(value, '$.person_id')=?
+               ORDER BY at DESC LIMIT ?""",
+            (event['_fall_epoch'], revision, event['person_id'], SafetyStore.MAX_EVENTS))]
+        same_camera = {row['incident_id'] for row in rows if row['camera'] == event['camera']}
+        for row in rows:
+            # 与最初的观测比较，避免后续视角将两个不重叠的事件串在一起。
+            if (row['id'] == row['incident_id'] and row['id'] not in same_camera
+                    and row.get('camera_source_context') and row['started_mono'] <= descent
+                    and start <= row['descent_mono']):
+                return row
+        return None
 
     def create(self, event, frames=(), *, policy_revision=None, feature=None, guard=None, event_id=None,
                announcement_status='not_requested', metadata_only=False):
@@ -284,6 +315,13 @@ class SafetyStore:
                         return saved
                     event = saved
             if not existing:
+                if kind == 'fall' and event_id is not None and policy_revision is not None:
+                    anchor = self._fall_anchor(db, event, policy_revision)
+                    event.update(incident_id=event_id, _fall_revision=policy_revision)
+                    if anchor is not None:
+                        event.update(incident_id=anchor['id'], review=anchor['review'])
+                        if anchor.get('announcement_withdrawn'):
+                            event['announcement_withdrawn'] = True
                 db.execute("INSERT INTO safety_events VALUES (?,?,?)",
                            (event["id"], event["at"], json.dumps(event, ensure_ascii=False)))
             for ordinal, (stamp, jpeg) in enumerate(list(frames)[-16:]):
@@ -312,16 +350,16 @@ class SafetyStore:
             if not row:
                 raise ValueError("safety_event_unavailable")
             previous = json.loads(row[0])
-            value = dict(previous, **fields)
-            if previous.get('announcement_withdrawn') or fields.get('review') == 'false_alarm':
-                # Changing a review afterwards does not authorize an old
-                # pending announcement again, including from another process.
-                value['announcement_withdrawn'] = True
-            db.execute(
-                "UPDATE safety_events SET value=? WHERE id=?",
-                (json.dumps(value, ensure_ascii=False), event_id),
-            )
-        return value
+            views = self._incident_rows(db, previous) if 'review' in fields else [previous]
+            for view in views:
+                withdrawn = view.get('announcement_withdrawn')
+                view.update(fields)
+                if withdrawn or fields.get('review') == 'false_alarm':
+                    # 恢复为待查看也不会重新授权同一事件的播报。
+                    view['announcement_withdrawn'] = True
+            db.executemany("UPDATE safety_events SET value=? WHERE id=?",
+                           [(json.dumps(view, ensure_ascii=False), view['id']) for view in views])
+        return next(view for view in views if view['id'] == event_id)
 
     def event(self, event_id):
         with self.connect() as db:
@@ -426,6 +464,8 @@ class SafetyStore:
                 current = json.loads(event[0])
                 if current.get('review') == 'false_alarm' or current.get('announcement_withdrawn'):
                     raise SafetyAdmissionChanged('safety_review_changed')
+                if any(view.get('announcement_attempted') is True for view in self._incident_rows(db, current)):
+                    raise SafetyAdmissionChanged('safety_incident_already_attempted')
             row = db.execute("SELECT expires FROM safety_output WHERE id=1").fetchone()
             if row and row[0] > time.time():
                 return False
@@ -442,6 +482,9 @@ class SafetyStore:
             with self._read_only() as db:
                 row = db.execute('SELECT value FROM safety_events WHERE id=?', (event_id,)).fetchone()
                 if row is None:
+                    return False
+                lease = db.execute('SELECT expires FROM safety_output WHERE id=1 AND owner=?', (event_id,)).fetchone()
+                if lease is None or lease[0] <= time.time():
                     return False
                 event = json.loads(row[0])
                 if event.get('review') == 'false_alarm' or event.get('announcement_withdrawn'):
@@ -679,7 +722,8 @@ class FallDetector:
             # 仅将相邻的完整倒卧观测间隔计入确认时长。
             if down is not None and not down["partial"] and not coalesced:
                 seconds += captured - down["at"]
-            old["down"] = dict(at=captured, seconds=seconds, box=dict(geometry["box"]), partial=False)
+            descent = down["descent"] if down is not None else captured
+            old["down"] = dict(at=captured, descent=descent, seconds=seconds, box=dict(geometry["box"]), partial=False)
             if seconds >= 2 and not old["fired"]:
                 old["fired"] = True
                 found.append(
@@ -695,6 +739,7 @@ class FallDetector:
                         basis="upright_rapid_descent_sustained_horizontal",
                         detector="geometry-fall/3",
                         started_mono=old["anchor"]["at"],
+                        descent_mono=descent,
                     )
                 )
         state["tracks"] = {k: v for k, v in state["tracks"].items() if k in present}
@@ -766,6 +811,7 @@ class SafetyRuntime:
     POLICY_TTL = 2
     SOUND_VIEW_MAX_PENDING = 4
     SOUND_VIEW_SAVE_AGE = 5
+    OUTPUT_BUSY_RECHECK = .5
 
     def __init__(self, store, *, labels=lambda: {}, speaker=None, visual_engine=None, sound_engine=None):
         self.store, self.labels, self.speaker = store, labels, speaker
@@ -775,6 +821,7 @@ class SafetyRuntime:
         self.closed = False
         self.close_task = None
         self.detector = FallDetector()
+        self.fall_epoch = secrets.token_hex(16)
         self.frames = {}
         self.post_frames = {}
         self.tasks = set()
@@ -788,6 +835,7 @@ class SafetyRuntime:
         self.observation_task = None
         self.coalesced = self.skipped = 0
         self.output_revisions = {}
+        self.output_lock = asyncio.Lock()
         self.policy_revision = None
         self.policy_task = None
         self.retention_task = None
@@ -1337,6 +1385,7 @@ class SafetyRuntime:
         if valid_jpeg and (not frames or frames[-1][0] != stamp):
             frames.append((stamp, jpeg))
         for event in events:
+            event['_fall_epoch'] = self.fall_epoch
             event['camera_source_context'] = source_context
             event['camera_name'] = source_name
             event['captured_at'] = stamp
@@ -1412,19 +1461,20 @@ class SafetyRuntime:
 
     def _start_fall_alert(self, job):
         if any(not task.done() for task in self.tasks):
-            job.announcement_status = 'busy'
-            job.output_considered = True
+            # 音箱仍在用时先独立留档，再用已保存的事件等候发送。
+            job.announcement_status = 'queued'
             return
         receipt = job.first_alert = asyncio.get_running_loop().create_future()
         task = self._start_output(self._first_fall_alert(job.identifier, job.event, job.person, job.revision,
-                                                        receipt, self._fall_output_guard(job)), job.revision)
+                                                        receipt, self._fall_output_guard(job),
+                                                        job.captured + self.recording.RETRY_WINDOW), job.revision)
         # 调度后尚未启动就撤销时，也要让留档结束等待。
         def release(_):
             if not receipt.done():
                 receipt.set_result((None, 'cancelled'))
         task.add_done_callback(release)
 
-    async def _first_fall_alert(self, identifier, observation, person, revision, receipt, current):
+    async def _first_fall_alert(self, identifier, observation, person, revision, receipt, current, deadline):
         event, status = None, 'cancelled'
 
         def ready():
@@ -1450,7 +1500,8 @@ class SafetyRuntime:
                     if saved is not None and self.store.same_recording(saved['event'], observation):
                         event = saved['event']
             if event is not None:
-                await self.announce(event, revision=revision, current=current, ready=ready)
+                async with self.output_lock:
+                    await self._deliver_fall(event, revision, current, deadline, ready=ready)
         finally:
             ready()
 
@@ -1474,10 +1525,8 @@ class SafetyRuntime:
         if not job.output_considered:
             job.output_considered = True
             if job.announce:
-                # 数据库忙时，已留档且仍由新鲜画面确认的同一次跌倒可优先补发首报。
-                current = self._fall_output_guard(job)
-                if current():
-                    await self.schedule(job.saved, revision=job.revision, current=current)
+                await self.schedule(job.saved, revision=job.revision, current=self._fall_output_guard(job),
+                                    deadline=job.captured + self.recording.RETRY_WINDOW)
         while job.appended < len(job.following) and self._recording_current(job):
             stamp, jpeg = job.following[job.appended]
             await self.io.call(self.store.append_frame, job.identifier, stamp, jpeg,
@@ -1535,13 +1584,32 @@ class SafetyRuntime:
             captured=frames[-1][0], revision=policy.revision, max_age=12, require_complete=True,
         )
 
-    async def schedule(self, event, revision=None, *, current=None):
-        # Bound pending output independently of the perception frame rate.
-        if any(not task.done() for task in self.tasks):
-            await self.alert_io.call(self.store.update, event["id"],
-                                     announcement={"status": "busy", "physical_audio_confirmed": False})
+    async def schedule(self, event, revision=None, *, current=None, deadline=None):
+        active = sum(not task.done() for task in self.tasks)
+        if active >= (1 if deadline is None else self.recording.MAX_PENDING):
+            await self._save_output(event["id"], 'busy')
             return
-        self._start_output(self.announce(event, revision, current=current), revision)
+        self._start_output(self._wait_for_output(event, revision, current, deadline), revision)
+
+    async def _wait_for_output(self, event, revision, current, deadline):
+        try:
+            async with asyncio.timeout(None if deadline is None else max(0, deadline - time.monotonic())):
+                await self.output_lock.acquire()
+        except TimeoutError:
+            await self._save_output(event['id'], 'expired')
+            return
+        except asyncio.CancelledError:
+            await self._save_output(event['id'], 'cancelled')
+            raise
+        try:
+            if deadline is not None and time.monotonic() > deadline:
+                await self._save_output(event['id'], 'expired')
+            elif deadline is not None:
+                await self._deliver_fall(event, revision, current, deadline)
+            else:
+                await self.announce(event, revision, current=current)
+        finally:
+            self.output_lock.release()
 
     def _start_output(self, operation, revision):
         task = asyncio.create_task(operation)
@@ -1551,9 +1619,40 @@ class SafetyRuntime:
         task.add_done_callback(lambda job: self.output_revisions.pop(job, None))
         return task
 
+    async def _save_output(self, identifier, status, *, release=False, clear_attempt=False):
+        fields = dict(announcement=dict(status=status, physical_audio_confirmed=False))
+        if clear_attempt:
+            fields['announcement_attempted'] = False
+        try:
+            try:
+                await self.alert_io.call(self.store.update, identifier, **fields)
+            finally:
+                if release:
+                    await self.alert_io.call(self.store.release_output, identifier)
+        except (OSError, sqlite3.Error, ValueError, SafetyStorageBusy):
+            self.error = 'safety_receipt_unavailable'
+
+    async def _deliver_fall(self, event, revision, current, deadline, *, ready=None):
+        status = await self.announce(event, revision, current=current, ready=ready)
+        while status == 'busy':
+            if ready is not None:
+                ready()
+                ready = None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not current():
+                await self._save_output(event['id'], 'expired' if remaining <= 0 else 'cancelled')
+                return
+            # 发送端明确未取得音频通道，仍有新鲜观测时才重新尝试。
+            await asyncio.sleep(min(remaining, self.OUTPUT_BUSY_RECHECK))
+            if time.monotonic() >= deadline:
+                await self._save_output(event['id'], 'expired')
+                return
+            status = await self.announce(event, revision, current=current)
+
     async def announce(self, event, revision=None, *, current=None, ready=None):
         status = "unavailable"
         claimed = False
+        started = False
         storage = self.alert_io
 
         def allowed():
@@ -1575,8 +1674,9 @@ class SafetyRuntime:
                 from .speech import Speaker
 
                 speaker = self.speaker or Speaker()
+                attempt = {'announcement_attempted': True} if event.get('incident_id') else {}
                 await storage.call(self.store.update,
-                    event["id"], announcement={"status": "requesting", "physical_audio_confirmed": False}
+                    event["id"], announcement={"status": "requesting", "physical_audio_confirmed": False}, **attempt
                 )
                 async def revalidate():
                     try:
@@ -1587,31 +1687,31 @@ class SafetyRuntime:
 
                 if not allowed():
                     status = 'cancelled'
-                    return
-                if ready is not None:
-                    # 事件和播报租约已写入。现在可补关键帧，发送仍会读回授权。
-                    ready()
-                receipt = await asyncio.wait_for(speaker.say(event["message"], current=allowed, revalidate=revalidate), 35)
-                status = receipt.get("status", "unavailable")
-                status = {"muted": "paused", "expired": "cancelled"}.get(status, status)
-                if status not in {"accepted", "paused", "busy", "unavailable", "unconfirmed", "cancelled"}:
-                    status = "unavailable"
+                else:
+                    if ready is not None:
+                        # 事件和播报租约已写入。现在可补关键帧，发送仍会读回授权。
+                        ready()
+                    started = True
+                    receipt = await asyncio.wait_for(speaker.say(event["message"], current=allowed, revalidate=revalidate), 35)
+                    status = receipt.get("status", "unavailable")
+                    status = {"muted": "paused", "expired": "cancelled"}.get(status, status)
+                    if status not in {"accepted", "paused", "busy", "unavailable", "unconfirmed", "cancelled"}:
+                        status = "unavailable"
         except asyncio.CancelledError:
             status = "interrupted"
             raise
-        except SafetyAdmissionChanged:
-            status = 'cancelled'
+        except SafetyAdmissionChanged as error:
+            # 另一视角或已完成的同一视角已经拥有该事件的送达结果。
+            status = None if not claimed and str(error) == 'safety_incident_already_attempted' else 'cancelled'
         except Exception:
             status = "unavailable"
         finally:
-            try:
-                if claimed:
-                    await storage.call(self.store.release_output, event["id"])
-                await storage.call(self.store.update,
-                    event["id"], announcement={"status": status, "physical_audio_confirmed": False}
-                )
-            except (OSError, sqlite3.Error, ValueError, SafetyStorageBusy):
-                self.error = "safety_receipt_unavailable"
+            # 只有已知未开始发送，或发送端明确返回未发出的状态，才可由其他视角接续。
+            clear_attempt = bool(claimed and event.get('incident_id') and
+                                 (not started or status in {'busy', 'cancelled'}))
+            if status is not None:
+                await self._save_output(event['id'], status, release=claimed, clear_attempt=clear_attempt)
+        return status
 
     async def test(self):
         event = await self.io.call(self.store.create,

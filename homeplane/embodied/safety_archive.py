@@ -2,6 +2,7 @@
 
 import math
 import re
+import time
 from datetime import UTC, datetime, timedelta
 
 from homeplane.archive_contracts import ArchiveResolveRequest
@@ -59,12 +60,31 @@ class SafetyArchive:
         self.store, self.archive = store, archive
 
     def events(self):
-        events = self.store.events()
-        for event in events:
+        groups = {}
+        for event in self.store.events():
             if event.get('simulated') is False and event.get('kind') in REPLAY_KINDS and _camera_source(event):
                 for frame in event['frames']:
                     if _recording_frame(event, frame['ordinal'], frame['at']):
                         frame['recording_anchor'] = True
+            if (event['announcement']['status'] == 'queued' and _time(event.get('captured_at'))
+                    and time.time() - event['captured_at'] > SafetyRecorder.RETRY_WINDOW):
+                event['announcement']['status'] = 'expired'
+            groups.setdefault(event.get('incident_id', event['id']), []).append(event)
+        events = []
+        for identifier, views in groups.items():
+            primary = next((view for view in views if view['id'] == identifier), views[-1])
+            delivery = next((view for view in views if view.get('announcement_attempted')), None)
+            if delivery is None:
+                delivery = next((view for view in views if view['announcement']['status'] == 'queued'), primary)
+            primary['announcement'] = delivery['announcement']
+            if len(views) > 1:
+                primary['fall_views'] = [
+                    {key: view[key] for key in ('id', 'camera_name', 'captured_at', 'frames')}
+                    for view in views if view is not primary
+                ]
+            for key in ('_fall_epoch', '_fall_revision', 'announcement_attempted'):
+                primary.pop(key, None)
+            events.append(primary)
         return events
 
     def references(self, event_id, ordinal=None):

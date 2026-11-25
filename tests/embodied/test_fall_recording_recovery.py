@@ -19,6 +19,7 @@ from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
+from homeplane.embodied.safety_archive import SafetyArchive
 from tests.embodied.test_motor_recovery import primary_scope
 from tests.embodied.test_review_motion import recorded_sound_only, source_function
 from tests.test_embodied_safety import person
@@ -37,14 +38,16 @@ async def monitor(tmp_path, monkeypatch):
 
 
 async def frame(monitor, *, down=True, camera=None, context=None, session='same-session', sync=False,
-                jpeg=b'EXPLICIT-SYNTHETIC-JPEG', capture_session=None, stable=True):
+                jpeg=b'EXPLICIT-SYNTHETIC-JPEG', capture_session=None, stable=True, person_id=None):
     runtime = monitor.runtime
     if sync:
         await runtime.sync_policy()
     now = monitor.clock[0]
+    identity = dict(person_id=person_id, state='tracked', observed_monotonic=now,
+                    face_observed_monotonic=now-2) if person_id is not None else None
     if capture_session is not None:
         runtime.capture_frame(camera or monitor.camera, capture_session, context or monitor.context, now)
-    return runtime.offer(camera or monitor.camera, session, [person(down)], now, now, stable=stable,
+    return runtime.offer(camera or monitor.camera, session, [person(down, identity)], now, now, stable=stable,
                          jpeg=jpeg, source_context=context or monitor.context, capture_session=capture_session)
 
 
@@ -55,6 +58,145 @@ async def before_fall(monitor, **source):
         await monitor.runtime.observation_task
     monitor.clock[0] += .25
     await monitor.runtime.sync_policy()
+
+
+async def two_camera_frames(monitor, index, *, subjects, descent_frames=(7, 7)):
+    monitor.clock[0] = 100 + index * .25
+    await monitor.runtime.sync_policy()
+    for number, (subject, descent) in enumerate(zip(subjects, descent_frames)):
+        await frame(monitor, down=index >= descent, camera=f'cam_{number+1:010x}',
+                    context=str(number+1)*64, jpeg=f'SYNTHETIC-VIEW-{number+1}'.encode(),
+                    person_id=subject)
+        await monitor.runtime.observation_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['accepted', 'unconfirmed'])
+async def test_one_fall_from_two_views_keeps_separate_frames_and_one_output(monitor, outcome):
+    runtime, store = monitor.runtime, monitor.store
+    runtime.speaker.say.return_value = dict(status=outcome)
+    runtime.labels = lambda: {'same': '示例甲'}
+    for index in range(17):
+        await two_camera_frames(monitor, index, subjects=('same', 'same'), descent_frames=(7, 8))
+        await runtime.drain()
+        await asyncio.gather(*runtime.tasks)
+    primary, = SafetyArchive(store, None).events()
+    peer, = primary['fall_views']
+    assert primary['id'] == primary['incident_id']
+    assert primary['captured_at'] + .25 == peer['captured_at']
+    assert store.frame(primary['id'], 0) == b'SYNTHETIC-VIEW-1'
+    assert store.frame(peer['id'], 0) == b'SYNTHETIC-VIEW-2'
+    assert peer['frames'][0]['recording_anchor'] is True
+    assert primary['announcement'] == dict(status=outcome, physical_audio_confirmed=False)
+    await runtime.announce(store.event(primary['id']), revision=runtime.policy_cache.revision)
+    assert store.event(primary['id'])['announcement']['status'] == outcome
+    runtime.speaker.say.assert_awaited_once()
+    store.update(peer['id'], review='false_alarm')
+    store.update(primary['id'], review='unreviewed')
+    rows = store.events()
+    assert all(row['review'] == 'unreviewed' and row['announcement_withdrawn'] for row in rows)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revocation', [None, 'shutter', 'expired', 'review', 'policy'])
+async def test_distinct_fall_waits_for_busy_output_with_its_own_receipt(monitor, revocation):
+    runtime, store = monitor.runtime, monitor.store
+    runtime.labels = lambda: {'first': '示例甲', 'second': '示例乙'}
+    occupied, release = asyncio.Event(), asyncio.Event()
+    heard = []
+
+    async def say(message, *, current, revalidate):
+        assert current() and await revalidate()
+        heard.append(message)
+        if len(heard) == 1:
+            occupied.set()
+            await release.wait()
+        return dict(status='accepted')
+
+    runtime.speaker.say.side_effect = say
+    try:
+        for index in range(16):
+            await two_camera_frames(monitor, index, subjects=('first', 'second'))
+        await asyncio.wait_for(occupied.wait(), 2)
+        await asyncio.wait_for(runtime.drain(), 2)
+        events = {event['person_id']: event for event in store.events()}
+        assert events['first']['id'] != events['second']['incident_id']
+        pending = events['second']
+        assert pending['frames'] and pending['announcement']['status'] == 'queued'
+        if revocation == 'shutter':
+            runtime.clear(pending['camera'])
+        elif revocation == 'expired':
+            monitor.clock[0] += runtime.recording.RETRY_WINDOW + .25
+        elif revocation == 'review':
+            store.update(pending['id'], review='false_alarm')
+        elif revocation == 'policy':
+            store.configure(store.policy().model_copy(update={'announce': False}))
+    finally:
+        release.set()
+    await asyncio.wait_for(asyncio.gather(*runtime.tasks), 2)
+    status = 'accepted' if revocation is None else 'expired' if revocation == 'expired' else 'cancelled'
+    assert store.event(pending['id'])['announcement']['status'] == status
+    assert heard == (['检测到 示例甲 疑似跌倒，请立即查看。', '检测到 示例乙 疑似跌倒，请立即查看。']
+                     if revocation is None else ['检测到 示例甲 疑似跌倒，请立即查看。'])
+
+
+@pytest.mark.asyncio
+async def test_live_peer_can_take_over_before_any_output_was_sent(monitor):
+    runtime, store = monitor.runtime, monitor.store
+    prepared, release = asyncio.Event(), asyncio.Event()
+    sent_from = []
+
+    async def say(_message, *, current, revalidate):
+        requesting, = [event for event in store.events() if event['announcement']['status'] == 'requesting']
+        if requesting['camera'] == 'cam_0000000001':
+            prepared.set()
+            await release.wait()
+        if not current() or not await revalidate():
+            return dict(status='expired')
+        sent_from.append(requesting['camera'])
+        return dict(status='accepted')
+
+    runtime.speaker.say.side_effect = say
+    try:
+        for index in range(17):
+            await two_camera_frames(monitor, index, subjects=('same', 'same'), descent_frames=(7, 8))
+        await asyncio.wait_for(prepared.wait(), 2)
+        await asyncio.wait_for(runtime.drain(), 2)
+        runtime.clear('cam_0000000001')
+    finally:
+        release.set()
+    await asyncio.wait_for(asyncio.gather(*runtime.tasks), 2)
+    assert sent_from == ['cam_0000000002']
+    primary, = SafetyArchive(store, None).events()
+    assert primary['announcement'] == dict(status='accepted', physical_audio_confirmed=False)
+    assert len(primary['fall_views']) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('subjects', 'descent_frames'), [((None, None), (7, 8)), (('same', 'same'), (7, 25))])
+async def test_time_alone_or_same_identity_at_a_different_descent_is_not_grouped(monitor, subjects, descent_frames):
+    runtime = monitor.runtime
+    for index in range(max(descent_frames) + 9):
+        await two_camera_frames(monitor, index, subjects=subjects, descent_frames=descent_frames)
+        await runtime.drain()
+        await asyncio.gather(*runtime.tasks)
+    events = SafetyArchive(monitor.store, None).events()
+    assert len(events) == runtime.speaker.say.await_count == 2
+    assert all('fall_views' not in event for event in events)
+
+
+@pytest.mark.asyncio
+async def test_known_busy_speaker_can_recover_before_the_first_attempt(monitor, monkeypatch):
+    runtime = monitor.runtime
+    monkeypatch.setattr(runtime, 'OUTPUT_BUSY_RECHECK', .01)
+    runtime.speaker.say.side_effect = [dict(status='busy'), dict(status='accepted')]
+    await before_fall(monitor)
+    assert await frame(monitor)
+    await runtime.drain()
+    await asyncio.wait_for(asyncio.gather(*runtime.tasks), 2)
+    event, = monitor.store.events()
+    assert event['announcement'] == dict(status='accepted', physical_audio_confirmed=False)
+    assert runtime.speaker.say.await_count == 2
 
 
 def hold_recording_write(store, monkeypatch):
@@ -349,7 +491,7 @@ async def test_fall_output_runs_while_its_keyframes_are_in_a_pending_transaction
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('revocation', ['shutter', 'incomplete_pose', 'policy'])
+@pytest.mark.parametrize('revocation', ['shutter', 'incomplete_pose', 'policy', 'lease'])
 async def test_automatic_fall_output_revalidates_before_the_send_boundary(monitor, revocation):
     runtime, store = monitor.runtime, monitor.store
     await before_fall(monitor, capture_session='e' * 32)
@@ -379,8 +521,11 @@ async def test_automatic_fall_output_revalidates_before_the_send_boundary(monito
             assert runtime.offer(monitor.camera, 'same-session', [actor], now, now, stable=True,
                                  source_context=monitor.context, capture_session='e' * 32)
             await runtime.observation_task
-        else:
+        elif revocation == 'policy':
             store.configure(store.policy().model_copy(update={'announce': False}))
+        else:
+            event, = store.events()
+            store.release_output(event['id'])
     finally:
         ready.set()
     await asyncio.gather(*runtime.tasks)

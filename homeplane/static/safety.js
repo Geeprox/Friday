@@ -52,7 +52,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  const reconnect=button('重试连接',()=>retryConnection()),cameraCheck=button('查看摄像头',()=>go('Cameras')),recoveryActions=add(el('div',null,{class:'safety-actions',role:'group','aria-label':'监测连接恢复'}),reconnect,cameraCheck);recoveryActions.hidden=true;root.append(status,recoveryActions,historyView,settings);
  const reviewNames={unreviewed:'待查看',acknowledged:'已查看',false_alarm:'已标记误报'};
  const eventRows=new Map();
- const audioNames={not_requested:'未请求播报',requesting:'正在发送播报',accepted:'音箱已接受，实际声音待确认',unconfirmed:'播报结果待确认',paused:'安静模式，未播报',busy:'音箱忙，未播报',unavailable:'播报不可用',cancelled:'已取消播报',interrupted:'播报已中断'};
+ const audioNames={not_requested:'未请求播报',queued:'等待音箱可用',requesting:'正在发送播报',accepted:'音箱已接受，实际声音待确认',unconfirmed:'播报结果待确认',paused:'安静模式，未播报',busy:'音箱忙，未播报',unavailable:'播报不可用',cancelled:'已取消播报',interrupted:'播报已中断',expired:'等待超时，未播报'};
  function availability(){
   const disabled=busy||!statusFresh;
   enable.disabled=announce.disabled=test.disabled=disabled;
@@ -203,7 +203,8 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  function focusDetail(heading){root.dataset.detailOpen='true';heading.focus?.({preventScroll:true});detail.scrollIntoView?.({block:'start',behavior:'instant'});}
  function missingEvent(id,{focus=false}={}){selected=id;lastDetail='';selectionVersion++;stopRecording();recordings.replaceChildren();frameButtons.clear();detailFooter.replaceChildren();detail.hidden=false;for(const row of eventRows.values())row.setAttribute('aria-current','false');const heading=el('h2','这条提醒已不在记录中',{tabindex:'-1'});detailBody.replaceChildren(heading,button('查看近期提醒',()=>{const current=events.find(e=>e.review==='unreviewed')||events[0];if(current)choose(current.id);else backToList();}));if(focus)focusDetail(heading);}
  const frameTime=frame=>new Date(frame.at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'});
- function frameGrid(event,frames,stages){
+ const recordingFrameKey=(event,view,frame)=>view.id===event.id?String(frame.ordinal):view.id+':'+frame.ordinal;
+ function frameGrid(event,frames,stages,view=event){
    const grid=el('div',null,{class:'safety-frames'});
    const sequence=isRapidMovementReview(event)&&frames.length===4;
    if(sequence)grid.dataset.sequence='rapid';
@@ -212,15 +213,16 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
      const phase=sequence?['动作前','动作前','动作中','动作后段'][frame.ordinal]:stages?.get(frame.ordinal);
      const caption=phase?phase+' · '+(sequence?(frame.at-frames[0].at).toFixed(2)+' 秒':time):time;
      const playable=frame.recording_anchor===true&&Number.isSafeInteger(frame.ordinal)&&frame.ordinal>=0;
-     const image=el('img',null,{src:base+'/events/'+event.id+'/frames/'+frame.ordinal,alt:playable?'':(phase||time)+'的关键帧',loading:'lazy'});
+     const image=el('img',null,{src:base+'/events/'+view.id+'/frames/'+frame.ordinal,alt:playable?'':(phase||time)+'的关键帧',loading:'lazy'});
      if(playable){
-       const play=button('',()=>void openRecordings(event,frame));
+       const key=recordingFrameKey(event,view,frame);
+       const play=button('',()=>void openRecordings(event,frame,view));
        play.className='safety-frame-play';
        play.setAttribute('aria-label','回看 '+(phase?(sequence?caption:phase)+'，':'')+time+' 附近录像');
-       play.setAttribute('aria-pressed',String(selectedFrame===String(frame.ordinal)));
-       play.setAttribute('data-recording-frame',String(frame.ordinal));
+       play.setAttribute('aria-pressed',String(selectedFrame===key));
+       play.setAttribute('data-recording-frame',key);
        play.append(image,add(el('span',null,{class:'safety-frame-caption'}),el('span',caption),el('span','回看')));
-       frameButtons.set(String(frame.ordinal),play);
+       frameButtons.set(key,play);
        grid.append(add(el('figure'),play));
      }else grid.append(add(el('figure'),image,el('figcaption',caption)));
    }
@@ -237,6 +239,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    const focusedRecording=selected===event.id&&document.activeElement===detailBody.querySelector('.primary');
    const focusedFrame=selected===event.id&&detailBody.contains(document.activeElement)?document.activeElement.getAttribute('data-recording-frame'):null;
    const extraOpen=selected===event.id&&detailBody.querySelector('.safety-extra-frames')?.open;
+   const viewsOpen=selected===event.id&&detailBody.querySelector('.safety-other-views')?.open;
    if(selected!==event.id){selectionVersion++;stopRecording();recordings.replaceChildren();}
    selected=event.id;detail.hidden=false;frameButtons.clear();
    const heading=el('h2',eventTitle(event),{tabindex:'-1'});
@@ -286,25 +289,35 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
        extra.open=Boolean(extraOpen);detailBody.append(extra);
      }else detailBody.append(el('h3','关键帧'),frameGrid(event,eventFrames));
    }else detailBody.append(el('p',isOutputTest(event)?'播报测试不采集摄像头画面。':'没有可用关键帧。',{class:'caption'}));
+   if(event.kind==='fall'&&Array.isArray(event.fall_views)&&event.fall_views.length){
+     const otherViews=add(el('details',null,{class:'safety-other-views'}),el('summary','查看其他视角'));
+     otherViews.open=Boolean(viewsOpen);
+     for(const view of event.fall_views){
+       const title=view.camera_name||'另一台摄像头';
+       const evidence=view.frames.length?frameGrid(event,view.frames,undefined,view):el('p','没有可用关键帧。',{class:'caption'});
+       otherViews.append(add(el('section'),el('h3',title),evidence));
+     }
+     detailBody.append(otherViews);
+   }
    if(rapid||compared)detailBody.append(actions);
    const exportEvent=button('导出事件记录',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(event,null,2)],{type:'application/json'}));const a=el('a',null,{href:url,download:'Friday-safety-'+event.id+'.json'});a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});exportEvent.className='text-button safety-export';detailFooter.replaceChildren(exportEvent);
    if(focus)focusDetail(heading);else (restoreFocus||frameButtons.get(focusedFrame))?.focus({preventScroll:true});
  }
- async function openRecordings(event,frame=null){
+ async function openRecordings(event,frame=null,view=event){
   if(!alive||selected!==event.id)return;
   const token=++selectionVersion,owns=()=>alive&&selected===event.id&&token===selectionVersion;
   const moment=frame?frameTime(frame):null;
-  stopRecording();selectRecordingFrame(frame?.ordinal);
+  stopRecording();selectRecordingFrame(frame?recordingFrameKey(event,view,frame):null);
   recordings.setAttribute('aria-label',moment?moment+' 附近录像':'事件附近录像');
   recordings.replaceChildren(el('p',moment?'正在查找 '+moment+' 附近的录像…':'正在查找对应录像…',{role:'status'}));
   recordings.focus({preventScroll:true});recordings.scrollIntoView?.({block:'nearest',behavior:'instant'});
   const unavailable=()=>{
-   if(owns())recordings.replaceChildren(el('p','暂时无法读取录像。',{role:'status'}),button('重试回看',()=>void openRecordings(event,frame)));
+   if(owns())recordings.replaceChildren(el('p','暂时无法读取录像。',{role:'status'}),button('重试回看',()=>void openRecordings(event,frame,view)));
   };
   const play=async item=>{if(owns())try{await onOpenRecording(recordings,item);}catch{unavailable();}};
   try{
-   const found=await api('/events/'+event.id+'/recordings'+(frame?'?ordinal='+frame.ordinal:''));if(!owns())return;
-   if(found.event_id!==event.id||frame&&found.frame_ordinal!==frame.ordinal)throw Error('unavailable');
+   const found=await api('/events/'+view.id+'/recordings'+(frame?'?ordinal='+frame.ordinal:''));if(!owns())return;
+   if(found.event_id!==view.id||frame&&found.frame_ordinal!==frame.ordinal)throw Error('unavailable');
    if(found.recordings?.length===1){await play(found.recordings[0]);return;}
    recordings.replaceChildren();
    if(found.recordings?.length){recordings.append(el('h3','选择录像来源'));for(const item of found.recordings)recordings.append(button(item.camera_name,()=>void play(item)));return;}

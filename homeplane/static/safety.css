@@ -24,9 +24,9 @@
 .safety-posture label{font-size:16px;font-weight:600}
 .safety-posture select{inline-size:100%;min-inline-size:0;min-block-size:44px;font-size:16px}
 .safety-posture p{grid-column:1/-1;margin:0;min-block-size:1.5em}
-.safety-extra-frames{margin-block-start:12px}
-.safety-extra-frames summary{padding-block:10px;cursor:pointer}
-.safety-extra-frames[open] summary{margin-block-end:8px}
+.safety-extra-frames,.safety-other-views{margin-block-start:12px}
+.safety-extra-frames summary,.safety-other-views summary{padding-block:10px;cursor:pointer}
+.safety-extra-frames[open] summary,.safety-other-views[open] summary{margin-block-end:8px}
 .safety-frames[data-sequence=rapid]{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:480px){.safety-posture{grid-template-columns:minmax(0,1fr);gap:8px}}
 @media(max-width:1050px){

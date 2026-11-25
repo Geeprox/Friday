@@ -119,6 +119,30 @@ test('sustained infant cry remains distinguishable on home, event list and detai
  view.dispose();
 });
 
+test('同一跌倒的另一视角使用独立的关键帧和录像来源，并保留展开状态',async()=>{
+ const fall={...event('a','fall'),announcement:{status:'queued'},frames:[{ordinal:0,at:1800000000,recording_anchor:true}]};
+ fall.fall_views=[{id:'d'.repeat(32),camera_name:'合成侧面视角',captured_at:1800000000.25,
+  frames:[{ordinal:0,at:1800000000.25,recording_anchor:true}]}];
+ const f=fixture([fall]),view=f.mount({initialEventId:fall.id});await settle();
+ assert.equal(f.rows().length,1);
+ assert(f.by('p','等待音箱可用'));
+ assert(f.by('summary','查看其他视角'));
+ const other=()=>all(f.root).find(node=>node.className==='safety-other-views');
+ other().open=true;
+ const peer=fall.fall_views[0],key=peer.id+':0';
+ const peerControl=()=>all(f.root).find(node=>node.getAttribute('data-recording-frame')===key);
+ assert(peerControl().children.find(node=>node.tagName==='img').attrs.src.endsWith('/'+peer.id+'/frames/0'));
+ peerControl().onclick();await settle();
+ assert.equal(f.calls.at(-1).path,'/api/embodied/safety/events/'+peer.id+'/recordings?ordinal=0');
+ f.resolveRecording({event_id:peer.id,frame_ordinal:0,recordings:[{camera_name:peer.camera_name}]});await settle();
+ assert.equal(f.opened.at(-1).camera_name,peer.camera_name);
+ f.events[0].announcement.status='accepted';await f.tick();
+ assert(other().open);
+ assert.equal(peerControl().getAttribute('aria-pressed'),'true');
+ assert(f.by('p','音箱已接受，实际声音待确认'));
+ view.dispose();
+});
+
 test('verified sound-search views join the same incident in capture order and retain review focus',async()=>{
  const sound={...event('a'),frames:[{ordinal:0,at:1800000000}]};
  const f=fixture([sound]),view=f.mount({initialEventId:sound.id});
