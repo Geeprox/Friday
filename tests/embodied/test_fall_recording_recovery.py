@@ -264,8 +264,11 @@ async def test_disabling_interactions_leaves_the_camera_monitoring_and_its_queue
 
 
 @pytest.mark.asyncio
-async def test_closing_the_camera_during_the_sqlite_transaction_rolls_back_event_and_frames(monitor, monkeypatch):
+@pytest.mark.parametrize('announce', [False, True])
+async def test_closing_the_camera_during_the_sqlite_transaction_rolls_back_pending_writes(monitor, monkeypatch, announce):
     runtime, store = monitor.runtime, monitor.store
+    if not announce:
+        store.configure(store.policy().model_copy(update={'announce': False}))
     await before_fall(monitor, capture_session='e' * 32)
     entered, release = threading.Event(), threading.Event()
     prune = store._prune
@@ -284,11 +287,107 @@ async def test_closing_the_camera_during_the_sqlite_transaction_rolls_back_event
         runtime.clear(monitor.camera)
         release.set()
         await runtime.drain()
-        assert store.recording_receipt(original.identifier) is None
+        receipt = store.recording_receipt(original.identifier)
+        if announce:
+            assert receipt['event']['id'] == original.identifier and not receipt['stamps']
+        else:
+            assert receipt is None
         with store.connect() as db:
             assert db.execute('SELECT count(*) FROM safety_frames').fetchone() == (0,)
     finally:
         release.set()
+
+
+@pytest.mark.asyncio
+async def test_fall_output_runs_while_its_keyframes_are_in_a_pending_transaction(monitor, monkeypatch):
+    runtime, store = monitor.runtime, monitor.store
+    await before_fall(monitor)
+    entered, release = threading.Event(), threading.Event()
+    allow_speech, sent = asyncio.Event(), asyncio.Event()
+    prune = store._prune
+    sent_ids = []
+
+    def held_prune(db):
+        prune(db)
+        entered.set()
+        assert release.wait(5)
+
+    async def say(_message, *, current, revalidate):
+        await allow_speech.wait()
+        assert current() and await revalidate()
+        assert entered.is_set() and not release.is_set()
+        with store._read_only() as db:
+            identifier, raw = db.execute('SELECT id,value FROM safety_events').fetchone()
+            assert json.loads(raw)['announcement']['status'] == 'requesting'
+            assert db.execute('SELECT COUNT(*) FROM safety_frames').fetchone() == (0,)
+        sent_ids.append(identifier)
+        sent.set()
+        return dict(status='accepted')
+
+    monkeypatch.setattr(store, '_prune', held_prune)
+    runtime.speaker.say.side_effect = say
+    try:
+        assert await frame(monitor)
+        assert await asyncio.to_thread(entered.wait, 1)
+        for _ in range(7):
+            monitor.clock[0] += .25
+            assert await frame(monitor, sync=True)
+            await runtime.observation_task
+        allow_speech.set()
+        await asyncio.wait_for(sent.wait(), 1)
+    finally:
+        allow_speech.set()
+        release.set()
+    await runtime.drain()
+    await asyncio.gather(*runtime.tasks)
+    event, = store.events()
+    assert sent_ids == [event['id']]
+    assert event['announcement'] == dict(status='accepted', physical_audio_confirmed=False)
+    stamps = [f['at'] for f in event['frames']]
+    assert event['captured_at'] in stamps and stamps == sorted(set(stamps))
+    runtime.speaker.say.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('revocation', ['shutter', 'incomplete_pose', 'policy'])
+async def test_automatic_fall_output_revalidates_before_the_send_boundary(monitor, revocation):
+    runtime, store = monitor.runtime, monitor.store
+    await before_fall(monitor, capture_session='e' * 32)
+    preparing, ready = asyncio.Event(), asyncio.Event()
+    sends = []
+
+    async def say(message, *, current, revalidate):
+        preparing.set()
+        await ready.wait()
+        if not current() or not await revalidate():
+            return dict(status='expired')
+        sends.append(message)
+        return dict(status='accepted')
+
+    runtime.speaker.say.side_effect = say
+    try:
+        assert await frame(monitor, capture_session='e' * 32)
+        await asyncio.wait_for(preparing.wait(), 2)
+        if revocation == 'shutter':
+            runtime.clear(monitor.camera)
+        elif revocation == 'incomplete_pose':
+            monitor.clock[0] += .25
+            now = monitor.clock[0]
+            actor = person(True)
+            actor['joints'].pop('leftShoulder')
+            runtime.capture_frame(monitor.camera, 'e' * 32, monitor.context, now)
+            assert runtime.offer(monitor.camera, 'same-session', [actor], now, now, stable=True,
+                                 source_context=monitor.context, capture_session='e' * 32)
+            await runtime.observation_task
+        else:
+            store.configure(store.policy().model_copy(update={'announce': False}))
+    finally:
+        ready.set()
+    await asyncio.gather(*runtime.tasks)
+    await runtime.drain()
+    assert sends == []
+    event, = store.events()
+    assert event['announcement'] == dict(status='cancelled', physical_audio_confirmed=False)
 
 
 @pytest.mark.asyncio
@@ -569,6 +668,7 @@ async def test_queued_fall_candidate_cannot_hold_a_retired_view(monitor, retirem
 
 @pytest.mark.asyncio
 async def test_qualified_fall_survives_a_storage_failure_without_a_second_fall(monitor, monkeypatch):
+    monitor.store.configure(monitor.store.policy().model_copy(update={'announce': False}))
     create = monitor.store.create
     attempts = []
 
@@ -764,6 +864,9 @@ async def test_pending_incident_cannot_cross_revocation_or_source_replacement(mo
         release.set()
         if closing:
             await closing
+            alert_io = monitor.runtime.alert_io
+            assert alert_io.closed and not alert_io.pending
+            assert all(not thread.is_alive() for thread in alert_io.executor._threads)
         else:
             await monitor.runtime.drain()
         assert monitor.store.events() == []
@@ -916,14 +1019,22 @@ async def test_retired_inflight_recording_keeps_its_memory_budget_until_actual_r
 @pytest.mark.asyncio
 async def test_deadline_readback_can_confirm_a_committed_incident_without_replaying_audio(monitor, monkeypatch):
     create = monitor.store.create
+    sent = asyncio.Event()
+
+    async def say(_message, *, current, revalidate):
+        assert current() and await revalidate()
+        sent.set()
+        return dict(status='accepted')
 
     def always_lose_receipt(*args, **kwargs):
         create(*args, **kwargs)
         raise OSError('synthetic missing receipt')
 
     monkeypatch.setattr(monitor.store, 'create', always_lose_receipt)
+    monitor.runtime.speaker.say.side_effect = say
     await before_fall(monitor)
     await frame(monitor)
+    await asyncio.wait_for(sent.wait(), 2)
     for _ in range(44):
         await asyncio.sleep(.005)
         monitor.clock[0] += .5
@@ -933,7 +1044,7 @@ async def test_deadline_readback_can_confirm_a_committed_incident_without_replay
     assert len(monitor.store.events()) == 1 and report['completed'] == 1
     assert report['dropped'] == report['partial'] == report['unconfirmed'] == 0
     assert report['state'] == 'ready'
-    monitor.runtime.speaker.say.assert_not_awaited()
+    monitor.runtime.speaker.say.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -981,22 +1092,24 @@ async def test_real_sqlite_writer_wait_does_not_age_out_a_qualified_incident(mon
             while not (busy.is_set() and any(job.failed for job in monitor.runtime.recording.jobs.values())):
                 await asyncio.sleep(.05)
                 monitor.clock[0] += .05
-                await frame(monitor)
+                await frame(monitor, sync=True)
                 await frame(monitor, camera='secondary', down=False)
 
         # 等真实 SQLite 竞争进入原记录器的重试状态，不以调度耗时推测它已发生。
         await asyncio.wait_for(until_retry_pending(), 10)
         for _ in range(16):
             monitor.clock[0] += .25
-            await frame(monitor)
+            await frame(monitor, sync=True)
             await frame(monitor, camera='secondary', down=False)
             await asyncio.sleep(0)
         blocker.commit()
         await asyncio.wait_for(monitor.runtime.drain(), 2)
+        await asyncio.gather(*monitor.runtime.tasks)
         events = monitor.store.events()
         assert len(events) == 1 and events[0]['captured_at'] == qualified_at
         assert events[0]['frames'] and monitor.runtime.recording.retried >= 1
-        monitor.runtime.speaker.say.assert_not_awaited()
+        assert events[0]['announcement']['status'] == 'accepted'
+        monitor.runtime.speaker.say.assert_awaited_once()
     finally:
         blocker.rollback()
         blocker.close()
@@ -1006,6 +1119,7 @@ async def test_real_sqlite_writer_wait_does_not_age_out_a_qualified_incident(mon
 @pytest.mark.parametrize('revoke', [False, True], ids=['write-lock', 'policy-revoked'])
 async def test_policy_refresh_while_writer_is_busy_preserves_only_authorized_fall(monitor, revoke):
     runtime, store = monitor.runtime, monitor.store
+    store.configure(store.policy().model_copy(update={'announce': False}))
     await runtime.sync_policy()
     entered, release = threading.Event(), threading.Event()
 

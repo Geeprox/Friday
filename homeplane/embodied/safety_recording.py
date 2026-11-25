@@ -42,6 +42,8 @@ class IncidentRecording:
     following: list = field(default_factory=list)
     appended: int = 0
     saved: dict | None = None
+    first_alert: asyncio.Future | None = None
+    announcement_status: str = 'not_requested'
     output_considered: bool = False
     attempts: int = 0
     failures: int = 0
@@ -199,9 +201,10 @@ class SafetyRecorder:
             if job.saved is None:
                 self.dropped += 1
         else:
-            if job.saved is None:
+            initial_complete = all(stamp in receipt['stamps'] for stamp, _ in job.initial)
+            if job.saved is None and initial_complete:
                 self.recorded(job)
-            if any(stamp not in receipt['stamps'] for stamp, _ in job.following):
+            if not initial_complete or any(stamp not in receipt['stamps'] for stamp, _ in job.following):
                 self.partial += 1
         self._drop(job)
 

@@ -204,7 +204,7 @@ def test_store_restart_review_retention_and_disk_budget(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_runtime_persists_before_named_speech_and_keeps_evidence_local(tmp_path, monkeypatch):
+async def test_runtime_persists_event_before_named_speech_and_keeps_evidence_local(tmp_path, monkeypatch):
     store = SafetyStore(tmp_path / "safety.sqlite")
     store.configure(SafetyPolicy(enabled=True, announce=True))
     clock = [100.0]
@@ -214,7 +214,6 @@ async def test_runtime_persists_before_named_speech_and_keeps_evidence_local(tmp
     async def say(text, *, current, revalidate):
         assert current() is True and await revalidate() is True
         assert store.events()[0]["person_name"] == "Example Person"
-        assert store.events()[0]["frames"]
         assert text == "检测到 Example Person 疑似跌倒，请立即查看。"
         return dict(status="accepted", physical_audio_verified=True)
 
