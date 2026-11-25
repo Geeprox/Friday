@@ -5,7 +5,7 @@ const event=(id,kind='sound_review',review='unreviewed')=>({id:id.repeat(32),kin
  simulated:false,camera:'cam_1111111111',camera_name:'合成客厅',message:'合成事件 '+id,review,announcement:{status:'not_requested'},frames:[]});
 function fixture(initial=[event('b'),event('a')]){
  let focused,events=structuredClone(initial),tick,recording=null,workerStatus='running',supervision=null,holdRetry=false,heldRetry,postureReview=null;
- let holdStatus=false,heldStatus,historyFailure=false;
+ let holdStatus=false,heldStatus,historyFailure=false,fallObservations=null;
  const recordingReads=[];
  class Element{
   constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.dataset={};this.disabled=false;this.hidden=false;this._text='';}
@@ -36,7 +36,7 @@ function fixture(initial=[event('b'),event('a')]){
   else if(path.endsWith('/review')){const id=path.split('/').at(-2),current=events.find(e=>e.id===id);current.review=body.review;data=current;}
   else if(path.endsWith('/events')){if(historyFailure)return{ok:false,status:503};data={events};}
   else if(path==='/api/embodied/safety'){
-   data={policy,worker:{status:workerStatus,cameras:[],recording},supervision,visual_review:{available:false},sound_review:{available:false},capabilities:[],posture_review:postureReview};
+   data={policy,worker:{status:workerStatus,cameras:[],recording},supervision,visual_review:{available:false},sound_review:{available:false},capabilities:[],posture_review:postureReview,fall_observations:fallObservations};
    if(holdStatus)return new Promise(resolve=>heldStatus=ok=>resolve({ok,status:ok?200:503,json:async()=>structuredClone(data)}));
   }
   else if(path==='/api/embodied/status')data={configured:true,owned:true,state:'live',safety_recording:recording};
@@ -60,9 +60,34 @@ function fixture(initial=[event('b'),event('a')]){
   holdStatus(){holdStatus=true;},resolveStatus(ok){holdStatus=false;heldStatus(ok);},historyFailure(value){historyFailure=value;},
   recording(value){recording=value;},
   posture(value){postureReview=value;},
+  fallObservations(value){fallObservations=value;},
   monitoring(state,owner){workerStatus=state;supervision=owner;},holdRetry(){holdRetry=true;},resolveRetry(){heldRetry();},
  };
 }
+
+test('跌倒观测分别显示姿态、画面中断和隐私关闭，读回失败时撤下旧状态',async()=>{
+ const f=fixture();
+ const cameras=[
+  {name:'合成客厅',state:'pose_available'},
+  {name:'合成书房',state:'pose_limited',pose_gap_ms:1800},
+  {name:'合成健身房',state:'observation_gap',observation_gap_ms:2150},
+  {name:'合成卧室',state:'shutter_closed'},
+ ];
+ f.fallObservations(cameras);
+ const view=f.mount();await settle();
+ const detail=all(f.root).find(n=>n.className==='safety-fall-views');
+ assert(detail&&!detail.hidden);
+ assert(f.by('p','2 路有近期跌倒观测 · 1 路姿态不完整 · 1 路观测中断 · 只记录事件'));
+ for(const label of ['姿态可判读','检测到人，姿态不完整 · 1 秒','观测已中断 · 2 秒','镜头已关闭'])assert(f.by('span',label));
+ f.holdStatus();await f.tick();f.resolveStatus(false);await settle();
+ assert(detail.hidden&&f.by('p','暂时无法读取监测状态。'));
+ f.fallObservations(cameras.map(camera=>({...camera,state:'shutter_closed'})));
+ await f.tick();
+ assert(!detail.hidden&&f.by('p','所有镜头已关闭'));
+ assert(!f.by('span','姿态可判读'));
+ assert(f.calls.every(call=>!call.body));
+ view.dispose();
+});
 
 test('a home incident keeps its exact identity through navigation into the review view',async()=>{
  const f=fixture(),home=f.home();await settle();

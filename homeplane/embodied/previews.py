@@ -9,6 +9,7 @@ import time
 from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage, capture_environment
 from .camera_director import CameraDirector
 from .camera_follow_picker import CameraFollowPicker
+from .camera_provenance import camera_source_context
 from .camera_intent import (
     CAMERA_MODES, PET_MODES, TARGET_MODES, CameraIntentStore, camera_intent_readback, finish_camera_survey,
 )
@@ -83,6 +84,7 @@ class PreviewPool:
             intent = self.intent_factory(selected).load(default='auto' if self.recognize else 'hold')
             entry = dict(
                 state="connecting",
+                source_context=camera_source_context(selected),
                 frame=None,
                 frames=0,
                 received_at=0,

@@ -54,6 +54,7 @@ from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.embodied.camera_audio import AudioIngress, WakeCameraCue
 from homeplane.embodied.camera_interaction import allowed as camera_interaction_allowed
+from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.voice_routing import VoiceRouting
 from homeplane.embodied.vision_pipe import VisionProcess
 from homeplane.people.live import IdentityStore, analyze, close_identity
@@ -1329,8 +1330,17 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 
 
 @app.get('/api/safety/status')
-async def safety_status():
-    return safety.status()
+async def safety_status(request: Request):
+    local = request.client is not None and request.client.host in {"127.0.0.1", "::1"}
+    report = safety.status(include_fall_inputs=local)
+    if local:
+        report["closed_sources"] = {
+            camera_id: entry.get("source_context")
+            for camera_id, entry in previews.sessions.items() if entry["state"] == "shutter_closed"
+        }
+        if state.get("status") == "shutter_closed":
+            report["closed_sources"][SELECTED["id"]] = camera_source_context(SELECTED)
+    return report
 
 
 @app.post('/api/safety/policy')

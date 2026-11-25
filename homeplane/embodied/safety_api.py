@@ -35,6 +35,48 @@ class SoundSearchSelection(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
+FALL_STATES = {"waiting", "observation_gap", "no_person_reported", "pose_limited", "pose_available"}
+FALL_METRICS = ("capture_age_ms", "observed_age_ms", "last_pose_age_ms", "reported_people",
+                "usable_poses", "pose_gap_ms", "observation_gap_ms", "longest_gap_ms")
+
+
+def fall_observations(policy, sources, worker, supervision):
+    """发布当前来源与策略的观测摘要，移除工作进程的私有关联字段。"""
+    revision = worker.pop("fall_policy_revision", None)
+    inputs = worker.pop("fall_inputs", None)
+    closed = worker.pop("closed_sources", None)
+    by_source = {}
+    if isinstance(inputs, list):
+        for row in inputs:
+            if isinstance(row, dict) and all(isinstance(row.get(key), str) for key in ("camera", "source_context")):
+                by_source[row["camera"], row["source_context"]] = row
+    closed = closed if isinstance(closed, dict) else {}
+    supervisor = supervision.get("policy") if supervision is not None else None
+    paused = not policy.enabled or (supervisor is not None
+                                    and (supervisor.get("enabled") is False or supervisor.get("recognition") is False))
+    running = worker["status"] == "running" and type(revision) is int and revision == policy.revision
+    result = []
+    for source in sources:
+        camera, context = source["id"], source["source_context"]
+        item = dict(camera=camera, name=source["name"])
+        if closed.get(camera) == context:
+            item["state"] = "shutter_closed"
+        elif paused:
+            item["state"] = "paused"
+        elif not running:
+            item["state"] = "unavailable"
+        elif ((row := by_source.get((camera, context))) is None
+              or not isinstance(row.get("state"), str) or row["state"] not in FALL_STATES):
+            item["state"] = "waiting"
+        else:
+            item["state"] = row["state"]
+            for key in FALL_METRICS:
+                if type(value := row.get(key)) is int and value >= 0:
+                    item[key] = value
+        result.append(item)
+    return result
+
+
 def posture_status(policy, sources, visual):
     source = policy.posture_source
     camera = source.camera if source else None
@@ -93,14 +135,16 @@ def install(router, service, *, archive=None, infrastructure=None):
         sound_review = worker.get('sound_review') or runtime.sound.status()
         visual_review = worker.get('visual_review') or runtime.visual.status()
         sources = await stored(configured_camera_sources)
+        supervision = infrastructure.report() if infrastructure is not None else None
         crying_available = (sound_review.get('available') is True and 'infant_cry_supported' in sound_review
                             and sound_review['infant_cry_supported'] is not False)
         capabilities = [dict(row, status='unavailable') if row['id'] == 'crying' and not crying_available else row
                         for row in CAPABILITIES]
         return dict(
             policy=runtime.policy_cache.model_dump(),
+            fall_observations=fall_observations(runtime.policy_cache, sources, worker, supervision),
             worker=worker,
-            supervision=infrastructure.report() if infrastructure is not None else None,
+            supervision=supervision,
             capabilities=capabilities,
             output_scope="selected_device",
             retention_days=30,

@@ -3,6 +3,11 @@
 .safety-page .safety-history{grid-template-columns:minmax(260px,340px) minmax(0,1fr);gap:32px;align-items:start}
 .safety-page>[role=status]{font-size:16px;line-height:1.6;color:var(--ink);inline-size:fit-content;max-inline-size:100%;margin-block:0 12px}
 .safety-page>.safety-actions{margin-block-end:28px}
+.safety-fall-views{margin-block:0 24px;max-inline-size:580px;color:var(--ink);font-size:14px}
+.safety-fall-views summary{cursor:pointer;font-weight:600;align-content:center;min-block-size:44px}
+.safety-fall-views ul{padding:0;margin:4px 0 0;list-style:none}
+.safety-fall-views li{display:flex;justify-content:space-between;flex-wrap:wrap;gap:2px 16px;padding:9px 0;border-block-start:1px solid var(--line);line-height:1.5;overflow-wrap:anywhere}
+.safety-fall-views li span:last-child{color:var(--muted)}
 .safety-page .safety-history[data-empty=true]{grid-template-columns:minmax(0,1fr)}
 .safety-history-status{grid-column:1/-1;margin:0;color:var(--muted,#666963);line-height:1.5}
 .safety-history-status[hidden]{display:none}

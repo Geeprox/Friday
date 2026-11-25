@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 import pytest_asyncio
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 
 from homeplane.embodied import safety, safety_api
 from homeplane.embodied.camera_director import CameraDirector
@@ -331,8 +331,12 @@ async def test_confirmed_fall_uses_live_capture_after_pose_observations_stop(mon
             if interruption != 'source_ended':
                 runtime.capture_frame(camera, capture_session, monitor.context, monitor.clock[0])
         if interruption == 'status_read':
-            handler = source_function('homeplane/embodied/worker.py', 'safety_status', {'safety': runtime})
-            assert (await handler())['cameras'] == []
+            scope = {'safety': runtime, 'Request': Request, 'state': {}, 'previews': SimpleNamespace(sessions={})}
+            handler = source_function('homeplane/embodied/worker.py', 'safety_status', scope)
+            local = Request({'type': 'http', 'client': ('127.0.0.1', 8740)})
+            viewer = Request({'type': 'http', 'client': ('192.0.2.10', 8740)})
+            assert (await handler(local))['cameras'] == []
+            assert 'fall_inputs' not in await handler(viewer)
             assert runtime.recording.jobs.get(incident.identifier) is incident
         elif interruption == 'late_pose':
             assert not runtime.offer(camera, 'same-session', [person(True)], monitor.clock[0], incident.captured,

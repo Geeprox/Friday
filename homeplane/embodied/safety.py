@@ -17,7 +17,7 @@ import threading
 import time
 from collections import OrderedDict, deque
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -762,6 +762,7 @@ class FallDetector:
             state = dict(session=session, last=captured, tracks={})
             self.cameras[camera] = state
         state["last"] = captured
+        state["complete_poses"] = 0
         if not people:
             # 给有实际姿态证据的一条轨迹等一帧。确认后继续要求当下可见的倒卧。
             if not coalesced and len(state["tracks"]) == 1:
@@ -775,7 +776,7 @@ class FallDetector:
                     return []
             state["tracks"].clear()
             return []
-        found, present = [], set()
+        found, present, complete = [], set(), set()
         for person in people[:self.MAX_TRACKS]:
             track = self._track_key(person)
             if track is None:
@@ -815,6 +816,7 @@ class FallDetector:
                 else:
                     state["tracks"].pop(track, None)
                 continue
+            complete.add(track)
             if (down is not None and not kind
                     and (down["partial"] or coalesced or missed_frame
                          or iou(geometry["box"], down["box"]) <= 0)):
@@ -863,6 +865,7 @@ class FallDetector:
                     )
                 )
         state["tracks"] = {k: v for k, v in state["tracks"].items() if k in present}
+        state["complete_poses"] = len(complete)
         return found
 
 
@@ -920,11 +923,82 @@ def _snapshot_people(people):
     return snapshot
 
 
+@dataclass
+class _FallInput:
+    """保存同一次取流的姿态状态与已实际观测到的中断。"""
+
+    observed: float | None = None
+    interrupted: float | None = None
+    last_pose: float | None = None
+    incomplete_since: float | None = None
+    longest_gap: float = 0.
+    people: int = 0
+    complete: int = 0
+
+    def _gap(self, now):
+        if self.interrupted is not None:
+            return self.interrupted
+        if self.observed is not None and now - self.observed > FallDetector.MAX_FRAME_GAP:
+            return self.observed + FallDetector.MAX_FRAME_GAP
+        return None
+
+    def clear_view(self, now):
+        if self.observed is not None and self.interrupted is None:
+            self.interrupted = min(now, self.observed + FallDetector.MAX_FRAME_GAP)
+        self.last_pose = self.incomplete_since = None
+
+    def observe(self, captured, people, complete, *, coalesced):
+        if self.observed is not None and captured <= self.observed:
+            return
+        gap = self._gap(captured)
+        if gap is not None:
+            self.longest_gap = max(self.longest_gap, captured - gap)
+            self.last_pose = self.incomplete_since = None
+        if coalesced:
+            self.incomplete_since = None
+        self.observed, self.interrupted = captured, None
+        self.people, self.complete = people, complete
+        if complete:
+            self.last_pose = captured
+        if people > complete:
+            if self.incomplete_since is None:
+                self.incomplete_since = captured
+        else:
+            self.incomplete_since = None
+
+    def readout(self, now):
+        gap = self._gap(now)
+        if self.observed is None:
+            state = "waiting"
+        elif gap is not None:
+            state = "observation_gap"
+        elif not self.people:
+            state = "no_person_reported"
+        elif self.people > self.complete:
+            state = "pose_limited"
+        else:
+            state = "pose_available"
+        current = state not in {"waiting", "observation_gap"}
+        gap_seconds = max(0., now - gap) if gap is not None else 0.
+        return dict(
+            state=state,
+            observed_age_ms=round((now - self.observed) * 1000) if self.observed is not None else None,
+            last_pose_age_ms=round((now - self.last_pose) * 1000) if self.last_pose is not None else None,
+            reported_people=self.people if current else None,
+            usable_poses=self.complete if current else None,
+            pose_gap_ms=(round((now - self.incomplete_since) * 1000)
+                         if current and self.incomplete_since is not None else None),
+            observation_gap_ms=round(gap_seconds * 1000) if gap is not None else None,
+            longest_gap_ms=round(max(gap_seconds, self.longest_gap) * 1000),
+        )
+
+
 @dataclass(eq=False)
 class _CaptureSource:
     session: str
     context: str
     seen: float
+    fall: _FallInput = field(default_factory=_FallInput)
 
 
 class SafetyRuntime:
@@ -1096,7 +1170,7 @@ class SafetyRuntime:
             (camera, session, _snapshot_people(people), now, captured),
             dict(stable=stable, jpeg=jpeg if isinstance(jpeg, bytes) and len(jpeg) <= self.store.MAX_FRAME else b'',
                  aspect=aspect, source_context=source_context, source_name=source_name, _admission=token,
-                 _coalesced=coalesced, _capture=capture),
+                 _coalesced=coalesced, _capture=capture, _reported_people=len(people)),
         )
         if self.observation_task is None:
             self.observation_task = asyncio.create_task(self._consume(), name='friday-safety-observations')
@@ -1388,6 +1462,9 @@ class SafetyRuntime:
                 await asyncio.sleep(self.store.PRUNE_INTERVAL)
 
     def _clear_view(self, camera, *, keep_sound_search=False):
+        capture = self.capture_sources.get(camera)
+        if capture is not None:
+            capture.fall.clear_view(time.monotonic())
         token = self.source_tokens.pop(camera, None)
         if token is not None:
             token.set()
@@ -1426,7 +1503,8 @@ class SafetyRuntime:
                 self.clear_view(camera)
 
     async def observe(self, camera, session, people, now, captured, *, stable, jpeg=b"", aspect=16 / 9,
-                      source_context=None, source_name=None, _admission=None, _coalesced=False, _capture=None):
+                      source_context=None, source_name=None, _admission=None, _coalesced=False, _capture=None,
+                      _reported_people=None):
         if self.closed:
             return
         source_context = self._context(source_context)
@@ -1447,6 +1525,7 @@ class SafetyRuntime:
                 camera, session, people, now, captured, stable=stable, jpeg=jpeg, aspect=aspect,
                 source_context=source_context, source_name=source_name, token=token,
                 refresh_policy=_admission is None, coalesced=_coalesced, capture=_capture,
+                reported_people=_reported_people,
             )
             if not token.is_set():
                 self.error = None
@@ -1459,7 +1538,8 @@ class SafetyRuntime:
             self.error = "safety_storage_unavailable"
 
     async def _observe(self, camera, session, people, now, captured, *, stable, jpeg, aspect,
-                       source_context=None, source_name=None, token, refresh_policy=True, coalesced=False, capture=None):
+                       source_context=None, source_name=None, token, refresh_policy=True, coalesced=False,
+                       capture=None, reported_people):
         if refresh_policy:
             await self.sync_policy()
         if token.is_set() or self.source_tokens.get(camera) is not token:
@@ -1496,10 +1576,18 @@ class SafetyRuntime:
             pending = self.post_frames.get(camera, [])
             self.post_frames[camera] = [p for p in pending if captured <= p["until"]]
             self.recording.frame(camera, token, captured, jpeg)
+        evaluated = time.monotonic()
         events = self.detector.observe(
             camera, session, people, now, captured, stable=stable, aspect=aspect,
-            evaluated_mono=time.monotonic(), coalesced=coalesced,
+            evaluated_mono=evaluated, coalesced=coalesced,
         )
+        if capture is not None and self.capture_sources.get(camera) is capture:
+            frame = self.detector.cameras.get(camera)
+            if frame is not None and frame["last"] == captured:
+                count = reported_people if reported_people is not None else len(people)
+                capture.fall.observe(captured, count, frame["complete_poses"], coalesced=coalesced)
+            else:
+                capture.fall.clear_view(evaluated)
         if not events or not guard():
             return
         frames = [(stamp - (captured - frame_at), frame) for frame_at, frame in ring['items']
@@ -1891,10 +1979,10 @@ class SafetyRuntime:
                     result[kind] = 'recovering'
         return result
 
-    def status(self):
+    def status(self, *, include_fall_inputs=False):
         now = time.monotonic()
         recording = self.recording_status()
-        return dict(
+        report = dict(
             cameras=[
                 dict(camera=camera, fresh=True)
                 for camera, seen in self.last_seen.items()
@@ -1911,6 +1999,16 @@ class SafetyRuntime:
             visual_review=self.visual.status(),
             sound_review=dict(self.sound.status(),input_paused=not self._sound_input_open()),
         )
+        if include_fall_inputs:
+            policy = self._cached_policy()
+            report["fall_policy_revision"] = policy.revision if policy.enabled else None
+            report["fall_inputs"] = [
+                dict(camera=camera, source_context=capture.context,
+                     capture_age_ms=round((now - capture.seen) * 1000), **capture.fall.readout(now))
+                for camera, capture in self.capture_sources.items()
+                if policy.enabled and 0 <= now - capture.seen <= self.FRAME_TTL
+            ]
+        return report
 
     def _sound_input_open(self):
         from .paths import PRIVATE

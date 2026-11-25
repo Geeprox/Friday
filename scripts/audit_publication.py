@@ -39,6 +39,9 @@ SYNTHETIC_MEDIA = {
         '0159efe7c8bcd4660548f4b8eabf7272144b9c2161a11d843bd1b04986f0b126',
     'docs/screenshots/safety-monitoring-slide.png':
         'a491a886c151a549cc8e7fc329ed249c9c61953796e47123dc321447a2a184b3',
+    # 隔离控制台的五种合成镜头状态，未接入摄像头。
+    'docs/screenshots/safety-observation-status.png':
+        '500a8cb1965f73ce4744404ea31f8a4bf440391c4036e6c8ef463a6fa740d17a',
     # 固定合成灯具配置示例，无家庭设备或写入请求。
     'docs/screenshots/automation-lighting-recovery.png':
         '299b619fa6dbc96e080c88001a264485d15d81563090c02493092e73da447b37',

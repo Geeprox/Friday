@@ -49,7 +49,11 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  const limits=add(el('details',null,{class:'safety-limits'}),el('summary','监测范围与限制'),capabilities);
  const historyStatus=el('p','正在读取提醒…',{class:'safety-history-status',role:'status'});
  const historyView=el('div',null,{class:'safety-history'}),settings=add(el('details',null,{class:'safety-settings'}),el('summary','监测设置'),intro,visual,sound,limits);historyView.append(historyStatus,add(el('div',null,{class:'safety-list-panel'}),add(el('div',null,{class:'safety-actions'}),el('h2','近期提醒'),button('刷新记录',()=>refreshHistory())),list),detail);
- const reconnect=button('重试连接',()=>retryConnection()),cameraCheck=button('查看摄像头',()=>go('Cameras')),recoveryActions=add(el('div',null,{class:'safety-actions',role:'group','aria-label':'监测连接恢复'}),reconnect,cameraCheck);recoveryActions.hidden=true;root.append(status,recoveryActions,historyView,settings);
+ const fallCameras=el('ul'),fallDetail=add(el('details',null,{class:'safety-fall-views'}),el('summary','逐镜头跌倒观测'),fallCameras);
+ const reconnect=button('重试连接',()=>retryConnection()),cameraCheck=button('查看摄像头',()=>go('Cameras')),recoveryActions=add(el('div',null,{class:'safety-actions',role:'group','aria-label':'监测连接恢复'}),reconnect,cameraCheck);
+ recoveryActions.hidden=fallDetail.hidden=true;
+ root.append(status,recoveryActions,fallDetail,historyView,settings);
+ let lastFallCameras='';
  const reviewNames={unreviewed:'待查看',acknowledged:'已查看',false_alarm:'已标记误报'};
  const eventRows=new Map();
  const audioNames={not_requested:'未请求播报',queued:'等待音箱可用',requesting:'正在发送播报',accepted:'音箱已接受，实际声音待确认',unconfirmed:'播报结果待确认',paused:'安静模式，未播报',busy:'音箱忙，未播报',unavailable:'播报不可用',cancelled:'已取消播报',interrupted:'播报已中断',expired:'等待超时，未播报'};
@@ -111,6 +115,30 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
        (document.activeElement===document.body||document.activeElement===soundSearch))soundSearch.focus({preventScroll:true});}
   }
  }
+ function renderFallCameras(cameras, announce){
+   if(!Array.isArray(cameras)||!cameras.length){fallDetail.hidden=true;return '';}
+   const names={pose_available:'姿态可判读',pose_limited:'检测到人，姿态不完整',no_person_reported:'已观测，暂未识别到人',
+     observation_gap:'观测已中断',waiting:'等待稳定画面',paused:'监测已暂停',shutter_closed:'镜头已关闭',unavailable:'观测状态暂不可读'};
+   const rows=cameras.map(camera=>{
+     const time=camera.state==='observation_gap'?camera.observation_gap_ms:camera.pose_gap_ms;
+     const duration=Number.isFinite(time)&&time>=1000?' · '+Math.floor(time/1000)+' 秒':'';
+     return [camera.name,(names[camera.state]||names.unavailable)+duration];
+   });
+   const fingerprint=JSON.stringify(rows);
+   if(fingerprint!==lastFallCameras){
+     lastFallCameras=fingerprint;
+     fallCameras.replaceChildren(...rows.map(([name,label])=>add(el('li'),el('span',name),el('span',label))));
+   }
+   fallDetail.hidden=false;
+   const recent=cameras.filter(camera=>['no_person_reported','pose_available','pose_limited'].includes(camera.state)).length;
+   const limited=cameras.filter(camera=>camera.state==='pose_limited').length;
+   const interrupted=cameras.filter(camera=>camera.state==='observation_gap').length;
+   if(cameras.every(camera=>camera.state==='shutter_closed'))return '所有镜头已关闭';
+   if(cameras.every(camera=>camera.state==='unavailable'))return '等待同步跌倒观测状态';
+   const summary=recent?`${recent} 路有近期跌倒观测`:'等待清晰、稳定的摄像头画面';
+   return [summary,limited?`${limited} 路姿态不完整`:'',interrupted?`${interrupted} 路观测中断`:'',
+     recent?(announce?'语音提醒已开启':'只记录事件'):''].filter(Boolean).join(' · ');
+ }
  function renderStatus(next){
    if(!next?.policy||!next.worker||!Array.isArray(next.capabilities))throw Error('unavailable');
    report=next;statusFresh=true;
@@ -133,8 +161,10 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
    const recordingFailure=recording?.dropped>0?'有提醒未能保存，请检查本机存储。':recording?.unconfirmed>0?'有提醒的保存结果尚未确认，请查看记录并检查本机存储。':recording?.partial>0?'有提醒的画面未完整保存，可查看已保存的记录。':'提醒记录暂不可用，请检查本机存储。';
    const supervision=next.supervision,recovery=supervision?.recovery,paused=!next.policy.enabled||Boolean(supervision?.policy&&(!supervision.policy.enabled||!supervision.policy.recognition));
    const disconnected=['not_running','unavailable'].includes(next.worker.status),recovering=recovery?.automatic&&(recovery.in_progress||supervision.failure==='service_unavailable');
+   const observation=renderFallCameras(next.fall_observations,next.policy.announce);
    const recoveryFocused=recoveryActions.contains(document.activeElement);recoveryActions.hidden=paused||!disconnected;reconnect.hidden=!recovery?.automatic||supervision?.failure!=='service_unavailable';availability();
-   const message=next.worker.error||recording?.state==='unavailable'?recordingFailure:paused?'监测已暂停':disconnected?(recovering?'正在恢复监测，稍后自动重试。':next.worker.status==='not_running'?'监测尚未运行':'暂时无法读取监测状态'):next.worker.status!=='running'?'监测状态尚未更新':recording?.state==='recovering'?'提醒正在保存，稍后自动重试。':recording?.state==='saving'?'提醒正在保存。':count?`${count} 台摄像头正在监测 · ${next.policy.announce?'单设备语音提醒':'只记录事件'}`:'监测已开启，等待清晰、稳定的摄像头画面';if(status.textContent!==message)status.textContent=message;
+   const message=next.worker.error||recording?.state==='unavailable'?recordingFailure:paused?'监测已暂停':disconnected?(recovering?'正在恢复监测，稍后自动重试。':next.worker.status==='not_running'?'监测尚未运行':'暂时无法读取监测状态'):next.worker.status!=='running'?'监测状态尚未更新':recording?.state==='recovering'?'提醒正在保存，稍后自动重试。':recording?.state==='saving'?'提醒正在保存。':observation||(count?`${count} 台摄像头有近期输入 · ${next.policy.announce?'语音提醒已开启':'只记录事件'}`:'监测已开启，等待清晰、稳定的摄像头画面');
+   if(status.textContent!==message)status.textContent=message;
    if(recoveryFocused&&(recoveryActions.hidden||document.activeElement===reconnect&&reconnect.disabled))status.focus({preventScroll:true});
    capabilities.replaceChildren(el('h2','监测场景'));
    const descriptions={rough_handling:'目前无法可靠判断照护动作的力度或意图。'};
@@ -185,7 +215,7 @@ export function mountSafety(container,{go=()=>{},onOpenRecording=()=>{},onArchiv
  function refreshStatus(replace=false){
   return readFeed(statusFeed,'',renderStatus,()=>{
    const focused=recoveryActions.contains(document.activeElement);
-   statusFresh=false;recoveryActions.hidden=true;availability();
+   statusFresh=false;recoveryActions.hidden=fallDetail.hidden=true;availability();
    status.textContent='暂时无法读取监测状态。';
    if(focused)status.focus({preventScroll:true});
   },replace);

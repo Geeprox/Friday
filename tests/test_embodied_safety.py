@@ -417,6 +417,121 @@ async def test_live_fall_queue_keeps_tracking_source_through_one_missed_frame(tm
 
 
 @pytest.mark.asyncio
+async def test_fall_observation_quality_tracks_geometry_and_recovery_for_the_owned_capture(tmp_path, monkeypatch):
+    store = SafetyStore(tmp_path / "safety.sqlite")
+    store.configure(SafetyPolicy(enabled=True))
+    clock = [100.]
+    monkeypatch.setattr("homeplane.embodied.safety.time.monotonic", lambda: clock[0])
+    runtime = SafetyRuntime(store)
+    camera, stream, context = "camera", "a" * 32, "b" * 64
+    complete = person()
+    incomplete = dict(person(), id=8)
+    del incomplete["joints"]["rightShoulder"]
+
+    def quality():
+        return runtime.status(include_fall_inputs=True)["fall_inputs"][0]
+
+    async def feed(at, people):
+        clock[0] = at
+        await runtime.sync_policy()
+        runtime.capture_frame(camera, stream, context, at)
+        assert runtime.offer(camera, "view", people, at, at, stable=True,
+                             source_context=context, capture_session=stream)
+        await runtime.drain()
+        return quality()
+
+    try:
+        await runtime.sync_policy()
+        runtime.capture_frame(camera, stream, context, 100.)
+        assert quality()["state"] == "waiting"
+        assert "fall_inputs" not in runtime.status()
+        assert (await feed(100., []))["state"] == "no_person_reported"
+        assert (await feed(100.25, [complete]))["state"] == "pose_available"
+        mixed = await feed(100.5, [complete, incomplete])
+        assert (mixed["state"], mixed["reported_people"], mixed["usable_poses"]) == ("pose_limited", 2, 1)
+        limited = await feed(100.75, [incomplete])
+        assert limited["state"] == "pose_limited" and limited["usable_poses"] == 0
+        assert limited["pose_gap_ms"] == limited["last_pose_age_ms"] == 250
+
+        clock[0] = 102.
+        runtime.capture_frame(camera, stream, context, 102.)
+        gap = quality()
+        assert gap["state"] == "observation_gap" and gap["capture_age_ms"] == 0
+        assert gap["observed_age_ms"] == 1250 and gap["observation_gap_ms"] == 500
+        assert gap["reported_people"] is None and gap["usable_poses"] is None
+        runtime.clear_view(camera)
+        assert quality()["last_pose_age_ms"] is None
+        recovered = await feed(102.25, [])
+        assert recovered["state"] == "no_person_reported" and recovered["longest_gap_ms"] == 750
+        assert recovered["pose_gap_ms"] is None
+        people = [dict(complete, id=i) for i in range(1, 12)]
+        crowded = await feed(102.5, people)
+        assert (crowded["state"], crowded["reported_people"], crowded["usable_poses"]) == ("pose_limited", 11, 10)
+
+        clock[0] = 102.75
+        runtime.capture_frame(camera, "c" * 32, "d" * 64, 102.75)
+        assert quality()["state"] == "waiting" and quality()["longest_gap_ms"] == 0
+        assert not runtime.offer(camera, "view", [complete], 102.75, 102.75, stable=True,
+                                 source_context=context, capture_session=stream)
+        assert not store.events()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_api_fall_quality_follows_current_source_privacy_and_policy_revision(tmp_path, monkeypatch):
+    monkeypatch.setattr(safety_api, "PRIVATE", tmp_path)
+    facing = dict(id="cam_1111111111", name="合成客厅", source_context="a" * 64)
+    shutter = dict(id="cam_2222222222", name="合成主卧", source_context="b" * 64)
+    replaced = dict(id="cam_3333333333", name="合成书房", source_context="c" * 64)
+    sources = [facing, shutter, replaced]
+    monkeypatch.setattr(safety_api, "configured_camera_sources", lambda: sources)
+    router = APIRouter()
+    service = SimpleNamespace(process=SimpleNamespace(returncode=None))
+    runtime = safety_api.install(router, service)
+    policy = runtime.store.configure(SafetyPolicy(enabled=True))
+    clock = [100.]
+    monkeypatch.setattr("homeplane.embodied.safety.time.monotonic", lambda: clock[0])
+    stream = "d" * 32
+    revision = policy.revision
+
+    async def request(path):
+        assert path == "/api/safety/status"
+        return dict(runtime.status(include_fall_inputs=True), fall_policy_revision=revision,
+                    closed_sources={shutter["id"]: shutter["source_context"]})
+
+    service.request = request
+    app = FastAPI()
+    app.include_router(router)
+    try:
+        await runtime.sync_policy()
+        for source, context in ((facing, facing["source_context"]), (replaced, "e" * 64)):
+            runtime.capture_frame(source["id"], stream, context, 100.)
+            assert runtime.offer(source["id"], "view", [person()], 100., 100., stable=True,
+                                 source_context=context, capture_session=stream)
+        await runtime.drain()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
+            response = await client.get("/api/embodied/safety")
+            assert response.status_code == 200
+            report = response.json()
+            good, closed, waiting = report["fall_observations"]
+            assert good["state"] == "pose_available" and good["usable_poses"] == 1
+            assert closed == dict(camera=shutter["id"], name=shutter["name"], state="shutter_closed")
+            assert waiting == dict(camera=replaced["id"], name=replaced["name"], state="waiting")
+            assert all(key not in response.text for key in ("source_context", "fall_policy_revision", "closed_sources"))
+            revision -= 1
+            report = (await client.get("/api/embodied/safety")).json()
+            assert [row["state"] for row in report["fall_observations"]] == [
+                "unavailable", "shutter_closed", "unavailable"]
+            runtime.store.configure(policy.model_copy(update={"enabled": False}))
+            report = (await client.get("/api/embodied/safety")).json()
+            assert [row["state"] for row in report["fall_observations"]] == ["paused", "shutter_closed", "paused"]
+        assert not runtime.store.events()
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_revocation_and_quiet_are_recorded_without_fabricating_physical_success(tmp_path):
     store = SafetyStore(tmp_path / "safety.sqlite")
     policy = store.configure(SafetyPolicy(enabled=True, announce=True))
