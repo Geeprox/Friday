@@ -26,6 +26,14 @@ def home_input(directory):
     return cfg, membership, home_inputs(cfg, membership)
 
 
+def route_snapshot(hub, allowed, group):
+    """只统计当前家庭的目录记录，离线设备仍属于目录。"""
+    directory = [did for did in allowed if (hub.local_device(did) or {}).get('group_id') == group]
+    routes = sorted(did for did in directory if hub.can_control(did) and not hub.in_local_cooldown(did))
+    return {'connected': hub.is_ready, 'directory_devices': len(directory), 'routes': routes,
+            'push': sum(hub.can_push(did) for did in routes)}
+
+
 def private_directory(root, key):
     """给同一个账号与家庭复用独立客户端证书和虚拟编号。"""
     cache = root / 'mijia-lan'
@@ -181,11 +189,7 @@ async def serve(reader, session):
                 if request.pop('family') != family:
                     raise ValueError('mijia_lan_unavailable')
                 if request == {'routes': True}:
-                    routes = sorted(did for did in allowed if hub.can_control(did)
-                                    and not hub.in_local_cooldown(did)
-                                    and (hub.local_device(did) or {}).get('group_id') == home.group_id)
-                    reply = {'connected': hub.is_ready, 'routes': routes,
-                             'push': sum(hub.can_push(did) for did in routes)}
+                    reply = route_snapshot(hub, allowed, home.group_id)
                 elif 'cover' in request:
                     reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
                 else:

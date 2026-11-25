@@ -408,7 +408,9 @@ def create_app(
     async def mijia_lan_status():
         if core.actions.mijia is not None:
             return core.actions.mijia.lan.status()
-        return {"connected": False, "control_devices": 0, "push_capable": 0}
+        return {"connected": False, "control_devices": 0, "push_capable": 0,
+                "directory_state": "unavailable", "directory_devices": None,
+                "directory_recovery_attempts": 0}
 
     @app.get("/api/embodied/infrastructure")
     async def infrastructure_status():
