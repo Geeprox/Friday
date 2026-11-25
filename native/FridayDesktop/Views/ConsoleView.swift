@@ -10,7 +10,6 @@ struct ConsoleView: NSViewRepresentable {
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.uiDelegate = context.coordinator
-        view.underPageBackgroundColor = .windowBackgroundColor
         view.load(URLRequest(url: url))
         return view
     }
