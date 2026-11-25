@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, deliver_audio, voice_window_deadlines
 from homeplane.embodied.camera_provenance import camera_source_context
+from homeplane.embodied.motion_games import MotionGames
 
 
 CAMERA=dict(id='cam_1111111111',device={'did':'synthetic-camera'})
@@ -20,6 +21,8 @@ CAMERA=dict(id='cam_1111111111',device={'did':'synthetic-camera'})
 
 def actual(path, name, scope):
     if path.endswith('/worker.py') and name in {'secondary_observation', 'dispatch_interactions'}:
+        if 'games' not in scope:
+            scope['games'] = MotionGames()
         actual(path, 'interaction_game_window', scope)
     nodes=[n for n in ast.walk(ast.parse(Path(path).read_text()))
            if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==name]

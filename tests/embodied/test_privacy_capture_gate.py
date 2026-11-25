@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 from homeplane.embodied import paths, previews
 from homeplane.embodied.camera_wall import CameraWall
+from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.people.live import close_identity
 
@@ -132,6 +133,7 @@ async def test_secondary_gesture_dispatch_does_not_require_primary_camera_armed(
                                     recognizer=SimpleNamespace(session='synthetic-secondary'))}
     tasks=[]
     scope=dict(time=__import__('time'),practice=practice,interaction_enabled=True,SELECTED={'id':'primary'},
+        games=MotionGames(),
         home=SimpleNamespace(armed=False,spawn=lambda coro:tasks.append(asyncio.create_task(coro))),
         secondary_homes={'secondary':SimpleNamespace(armed=True)},
         wall=CameraWall([dict(id='secondary',name='Synthetic',room='Synthetic')]),

@@ -148,8 +148,13 @@ async def test_explicit_manual_positioning_still_uses_the_original_current_camer
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("camera", ["primary", "same_room", "other_room"])
-@pytest.mark.parametrize("transition", ["none", "start", "start_then_stop"])
-async def test_queued_gestures_use_the_original_camera_and_game_window(monkeypatch, camera, transition):
+@pytest.mark.parametrize("transition", ["none", "start", "start_then_stop", "cycle_before_queue"])
+@pytest.mark.parametrize("mode,gesture", [
+    ("ski", "body.arms_open"),
+    ("hiit", "body.arms_open"),
+    ("hiit", "hand.open_palm"),
+])
+async def test_queued_gestures_use_the_original_camera_and_game_window(monkeypatch, camera, transition, mode, gesture):
     from homeplane.embodied import bridge
 
     game, jobs = MotionGames(), []
@@ -178,17 +183,24 @@ async def test_queued_gestures_use_the_original_camera_and_game_window(monkeypat
         target="SYNTHETIC-light",
         event_id="SYNTHETIC-event",
         binding="a" * 32,
+        gesture=gesture,
         revision=1,
         observed_mono=10,
     )
-    await dispatch([event])
+    game_window, party_window, _ = scope["interaction_game_window"](camera, 10)
+    event.update(_game_window=game_window, _party_window=party_window, _hiit_body_window=game.hiit_body_window)
+    if transition != "cycle_before_queue":
+        await dispatch([event])
     if transition != "none":
-        game.reset("ski")
-    if transition == "start_then_stop":
+        game.reset(mode)
+    if transition in {"start_then_stop", "cycle_before_queue"}:
         game.reset("off")
+    if transition == "cycle_before_queue":
+        await dispatch([event])
     for job in jobs:
         await job
-    if camera == "other_room" or transition == "none":
+    remote_gesture_remains_active = camera == "other_room" and (mode != "hiit" or gesture.startswith("hand."))
+    if remote_gesture_remains_active or transition == "none":
         command.assert_awaited_once()
     else:
         command.assert_not_awaited()

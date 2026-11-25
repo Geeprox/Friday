@@ -470,6 +470,7 @@ class MotionGames:
         self.tennis_variant = 'match'
         self.control_context = secrets.token_hex(16)
         self.control_revision = 0
+        self.hiit_revision = None
         self.mode = "off"
         self.selected_mode = "quest"
         self.gesture_key = None
@@ -499,8 +500,11 @@ class MotionGames:
         self.quest_route = route
         if mode != "off":
             self.selected_mode = mode
+        was_hiit = self.mode == "hiit"
         self.mode = mode
         self.control_revision += 1
+        if was_hiit or mode == "hiit":
+            self.hiit_revision = self.control_revision
         self.round_id = getattr(self, 'round_id', 0) + 1
         self.game_input_enabled = mode in MOTION_GAME_MODES
         self.beam = BeamRound() if mode == 'beam' else None
@@ -787,6 +791,12 @@ class MotionGames:
     def control_current(self, context, revision):
         return (type(context) is str and context == self.control_context
                 and type(revision) is int and revision == self.control_revision)
+
+    @property
+    def hiit_body_window(self):
+        if self.hiit_revision is not None:
+            return self.control_context, self.hiit_revision
+        return None
 
     def presentation_scope(self):
         step = self.level if self.selected_mode == 'quest' else self.circuit.public()['level'] if self.selected_mode == 'hiit' else None

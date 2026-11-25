@@ -31,8 +31,11 @@ class InteractionFleet:
             if old:
                 self.voice_revoked(camera)
             engine=InteractionEngine(camera,session)
-            if old and old['engine'].rearm:engine.require_release(not_before=old['engine'].release_not_before)
+            if old and old['engine'].rearm:
+                engine.require_release(not_before=old['engine'].release_not_before,
+                                       body_only=old['engine'].rearm_body_only)
             self.cameras[camera] = dict(session=session, engine=engine,game_window=old.get('game_window')if old else None,
+                                        body_window=old.get('body_window') if old else None,
                                         owner=None, candidate=None, since=0, suppress_ok=False,
                                         seen=-100., people=0, gestures={}, state='connecting')
         return self.cameras[camera]
@@ -108,13 +111,17 @@ class InteractionFleet:
                 item['suppress_ok'] = False
         return owner
 
-    def update(self, camera, session, people, hands, registration, active, now, *, game_window=None, game_active=False,captured_mono=None):
+    def update(self, camera, session, people, hands, registration, active, now, *, game_window=None, game_active=False,
+               body_window=None, body_held=False, captured_mono=None):
         stationary = registration.get('status') not in {'moving', 'settling', 'lost', 'stale'}
         item=self.session(camera,session)
         if game_window is not None:
             if item.get('game_window') is not None and item['game_window']!=game_window:
                 item['engine'].require_release(not_before=now)
             item['game_window']=game_window
+        if body_window is not None and body_window != item['body_window']:
+            item['engine'].require_release(not_before=now, body_only=True)
+            item['body_window'] = body_window
         if not active:
             # A game may consume this camera's gestures while its microphone
             # remains a household consumer. Actual source loss uses clear().
@@ -126,7 +133,7 @@ class InteractionFleet:
         item = self.cameras[camera]
         person = next((p for p in people if p['id'] == owner), None)
         actor = ('person', self.identity(person)) if person and self.identity(person) else ('track', camera, session, owner)
-        visible = body_gestures(person) if person else set()
+        visible = body_gestures(person) if person and not body_held else set()
         from .gestures import BINDABLE_HAND_LABELS
         visible.update('hand.'+h['gesture'] for h in hands if h.get('person_id') == owner and h.get('gesture') in BINDABLE_HAND_LABELS)
         item['gestures'] = {actor:visible} if person else {}
@@ -137,7 +144,8 @@ class InteractionFleet:
             if not any(now-c['seen'] < 1.5 and gesture in c['gestures'].get(who, set()) for c in self.cameras.values()):
                 self.latched.discard(key)
         admitted_hands = [h for h in hands if not (item['suppress_ok'] and h.get('gesture') == 'ok')]
-        events = item['engine'].update(people, admitted_hands, owner, registration, active, now,observed_hands=hands,observed_mono=captured_mono)
+        events = item['engine'].update(people, admitted_hands, owner, registration, active, now,
+                                       observed_hands=hands, observed_mono=captured_mono, body_held=body_held)
         self.recent = {k:t for k,t in self.recent.items() if now-t < 10}
         for event in events:
             event['_actor'] = actor
@@ -170,8 +178,7 @@ class InteractionFleet:
             return False
         item = self.cameras.get(event['camera'])
         return bool(item and item['session'] == event['session'] and item['owner'] == event['track']
-                    and not(item['engine'].rearm and (item['engine'].rearm_owner is None
-                            or event['binding']in item['engine'].game_releases))
+                    and not item['engine'].release_blocks(binding)
                     and item['state'] == 'ready' and 0 <= now-event['observed_mono'] <= 1.5
                     and now-item['seen'] <= 1.5)
 

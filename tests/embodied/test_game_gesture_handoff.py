@@ -198,11 +198,12 @@ def test_primary_game_handoff_does_not_block_another_camera_or_its_microphone(mo
 
 
 @pytest.mark.asyncio
-async def test_hiit_arm_open_in_the_same_room_never_reaches_the_device_bridge(tmp_path, monkeypatch):
+@pytest.mark.parametrize("paused", [False, True])
+async def test_hiit_arm_open_cannot_escape_through_an_adjoining_room(tmp_path, monkeypatch, paused):
     from homeplane.embodied import bridge
 
     outside = "cam_3333333333"
-    config = configure(monkeypatch, ("body.arms_open",))
+    config = configure(monkeypatch, ("body.arms_open", "hand.open_palm"))
     config.bindings[0].target = "SYNTHETIC-curtain"
     config.bindings[0].action = "open"
     fleet, game, queued = InteractionFleet(), MotionGames(), []
@@ -232,30 +233,40 @@ async def test_hiit_arm_open_in_the_same_room_never_reaches_the_device_bridge(tm
     actual("dispatch_interactions", scope)
     observe = actual("secondary_observation", scope)
 
-    async def play(start, end, pose):
+    async def play(start, end, pose, *, label=None, cameras=(OTHER, outside)):
         for index in range(start, end):
             clock[0] = index / 10
-            for camera in (OTHER, outside):
+            hands = [dict(person_id=pose["id"], gesture=label)] if label else []
+            for camera in cameras:
                 await observe(dict(camera=camera, session="SYNTHETIC", now=clock[0], captured_mono=clock[0],
-                                   people=[pose], hands=[], faces=[], registration=dict(status="locked")), object())
+                                   people=[pose], hands=hands, faces=[], registration=dict(status="locked")), object())
             while queued:
                 await queued.pop(0)
 
     game.reset("hiit")
+    if paused:
+        game.set_paused(True)
     await play(0, 13, arm_pose(False))
     await play(13, 22, arm_pose(True))
-    assert command.await_count == 1
-    assert command.await_args.kwargs["camera_id"] == outside
-    assert services[OTHER].armed and services[OTHER].observe.await_args.args[5] is True
+    command.assert_not_awaited()
+    assert all(services[camera].audio_allowed for camera in (OTHER, outside))
     assert fleet.cameras[OTHER]["state"] == "game"
+    await play(22, 34, person(), label="open_palm")
+    command.assert_awaited_once()
+    assert command.await_args.kwargs["camera_id"] == outside
+    assert command.await_args.kwargs["target"] == "SYNTHETIC-light"
 
     game.reset("off")
-    await play(22, 35, arm_pose(True))
+    await play(34, 42, arm_pose(False))
+    await play(42, 49, arm_pose(True))
     assert command.await_count == 1
-    await play(35, 46, person())
-    await play(46, 51, arm_pose(False))
-    await play(51, 56, arm_pose(True))
-    assert [call.kwargs["camera_id"] for call in command.await_args_list].count(OTHER) == 1
+    await play(49, 60, person())
+    await play(60, 65, arm_pose(False), cameras=(outside,))
+    await play(65, 71, arm_pose(True), cameras=(outside,))
+    assert [(call.kwargs["camera_id"], call.kwargs["target"]) for call in command.await_args_list] == [
+        (outside, "SYNTHETIC-light"),
+        (outside, "SYNTHETIC-curtain"),
+    ]
 
 
 def test_game_window_changes_require_release_even_without_an_intermediate_camera_frame(monkeypatch):

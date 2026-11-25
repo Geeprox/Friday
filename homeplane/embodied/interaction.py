@@ -155,6 +155,7 @@ class InteractionEngine:
         self.loaded=-100.;self.owner=None;self.holds={};self.last={};self.pending=None;self.sequence=0
         self.latched=set();self.released={};self.observed=None
         self.rearm=False;self.rearm_owner=None;self.rearm_revision=None;self.game_releases=set()
+        self.rearm_body_only = False
         self.release_not_before=-math.inf
         self.public={'enabled':False,'selection':None,'reason':'not_enabled'}
 
@@ -164,11 +165,22 @@ class InteractionEngine:
         if self.rearm:
             self.rearm_owner=None;self.rearm_revision=None;self.game_releases.clear()
 
-    def require_release(self, reason='release_required', *, not_before=None):
-        self.reset()
+    def require_release(self, reason='release_required', *, not_before=None, body_only=False):
+        if body_only:
+            # 其他房间的手形进度和待确认的指向可跨过 HIIT 交接。
+            self.arms.reset()
+            body_bindings = {binding.id for binding in self.config.bindings if binding.gesture.startswith('body.')}
+            self.released = {key: since for key, since in self.released.items() if key[-1] not in body_bindings}
+        else:
+            self.reset()
+        self.rearm_body_only = body_only and (not self.rearm or self.rearm_body_only)
         self.rearm=True;self.rearm_owner=None;self.rearm_revision=None;self.game_releases.clear()
         if not_before is not None:self.release_not_before=max(self.release_not_before,not_before)
         self.public={'enabled':False,'selection':None,'reason':reason,'release_required':True}
+
+    def release_blocks(self, binding):
+        return (self.rearm and (not self.rearm_body_only or binding.gesture.startswith('body.'))
+                and (self.rearm_owner is None or binding.id in self.game_releases))
 
     def _release_binding(self, binding, person, hands, now, observed):
         key=('game',person['id'],binding.id)
@@ -183,7 +195,8 @@ class InteractionEngine:
             self.latched.discard((person['id'],binding.id))
             self.holds.pop((person['id'],binding.id),None)
 
-    def update(self,people,hands,owner,registration,active,now,*,observed_hands=None,observed_mono=None):
+    def update(self,people,hands,owner,registration,active,now,*,observed_hands=None,observed_mono=None,
+               body_held=False):
         if now-self.loaded>1:
             try:
                 next_config=load()
@@ -211,20 +224,20 @@ class InteractionEngine:
         bindings=[b for b in self.config.bindings if b.enabled and (b.gesture!='hand.point' and b.scope!='camera' or b.camera==self.camera)]
         if self.rearm and (self.rearm_owner!=owner or self.rearm_revision!=self.config.revision):
             self.rearm_owner=owner;self.rearm_revision=self.config.revision
-            self.game_releases={b.id for b in bindings}
-            self.latched.update((owner,b.id)for b in bindings if b.gesture!='hand.point')
-            self.pending=None
+            self.game_releases = {b.id for b in bindings if not self.rearm_body_only or b.gesture.startswith('body.')}
+            self.latched.update((owner,b.id)for b in bindings if b.gesture!='hand.point' and b.id in self.game_releases)
+            if not self.rearm_body_only:self.pending=None
         labels={h.get('gesture')for h in hands if h.get('person_id')==owner}
         release_hands=hands if observed_hands is None else observed_hands
-        event=self.arms.update(person,observed)
+        event=self.arms.update(person,observed) if not body_held else None
         gestures={'body.arms_'+event['action'] if event else ''}
         gestures.update('hand.'+x for x in labels if x in BINDABLE_HAND_LABELS)
-        gestures.update(body_gestures(person))
+        if not body_held:gestures.update(body_gestures(person))
         result=[]
         pointing_ready=registration.get('status')=='locked' and not registration.get('compensated',False)
         if not pointing_ready:self.pending=None
         for b in bindings:
-            if b.gesture=='hand.point':continue
+            if b.gesture=='hand.point' or body_held and b.gesture.startswith('body.'):continue
             key=(owner,b.id)
             if b.id in self.game_releases:
                 self._release_binding(b,person,release_hands,now,observed)

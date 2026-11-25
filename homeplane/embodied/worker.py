@@ -158,10 +158,14 @@ async def dispatch_interactions(events):
     for event in events:
         game, party, _ = interaction_game_window(event['camera'], time.monotonic())
         expected = (event.get('_game_window', game), event.get('_party_window', party))
+        body_window = event.get('_hiit_body_window', games.hiit_body_window)
 
-        async def dispatch(e=event, expected_window=expected):
+        async def dispatch(e=event, expected_window=expected, expected_body_window=body_window):
             game, party, blocked = interaction_game_window(e['camera'], time.monotonic())
             if blocked or expected_window != (game, party):
+                return
+            if (e.get('gesture', '').startswith('body.')
+                    and (games.mode == 'hiit' or expected_body_window != games.hiit_body_window)):
                 return
             service = home if e['camera'] == SELECTED['id'] else secondary_homes.get(e['camera'])
             if not (interaction_enabled and service and service.armed and interaction_source_current(e)
@@ -338,13 +342,16 @@ async def secondary_observation(observation, process):
     service = secondary_homes[camera_id]
     active = interaction_enabled and service.input_allowed()
     game_window, party_window, game_active = interaction_game_window(camera_id, observation['now'])
+    body_window = games.hiit_body_window
     events=fleet.update(camera_id,observation['session'],observation['people'],observation['hands'],
         observation['registration'],active and not game_active,observation['now'],
         game_window=(game_window, party_window) if game_window is not None else None,
-        game_active=game_active,captured_mono=observation['captured_mono'])
+        game_active=game_active,body_window=body_window,body_held=games.mode == 'hiit',
+        captured_mono=observation['captured_mono'])
     for event in events:
         event['_game_window'] = game_window
         event['_party_window'] = party_window
+        event['_hiit_body_window'] = body_window
     await dispatch_interactions(events)
     if not secondary_frame_current(observation, process):return
     if active and not service.enabled:await service.enable()
@@ -1095,16 +1102,18 @@ async def run_source(my_generation):
                     continue
                 last_selection = games.selected_mode
                 game_window, party_window, game_active = interaction_game_window(SELECTED['id'], time.monotonic())
+                body_window = games.hiit_body_window
                 gesture_active = camera_active and not game_active
                 practice.observe(SELECTED['id'], identities.session, people, hands,
                     layout['registration'], now, now-(time.time()-item['received_at']))
                 interaction_events=fleet.update(SELECTED['id'],identities.session,people,hands,
                     layout['registration'],gesture_active,now,game_window=(game_window,party_window),
-                    game_active=game_active,
+                    game_active=game_active,body_window=body_window,body_held=games.mode == 'hiit',
                     captured_mono=time.monotonic()-(time.time()-item['received_at']))
                 for event in interaction_events:
                     event['_game_window'] = game_window
                     event['_party_window'] = party_window
+                    event['_hiit_body_window'] = body_window
                 voice_now = time.monotonic()
                 voice_captured_mono = voice_now - (time.time() - item['received_at'])
                 home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,session=identities.session,
