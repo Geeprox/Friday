@@ -8,6 +8,7 @@ import asyncio
 import fcntl
 import hashlib
 import os
+import stat
 import tempfile
 import time
 from datetime import UTC, datetime, timedelta
@@ -18,7 +19,7 @@ from weakref import WeakValueDictionary
 import httpx
 from pydantic import TypeAdapter
 
-from .action_contracts import CoreRuleEffect, HomeDeviceAuthority, LightAuthority, LightExecutionTrace
+from .action_contracts import CoreRuleEffect, HomeDeviceAuthority, LightAuthority, LightExecutionTrace, MijiaCoverAuthority
 from .contracts import Capability, Event
 from .ha import HAReadOnlyAdapter
 from .ha_control import (
@@ -36,6 +37,49 @@ from .event_provenance import entity_source_context
 AUTHORITY = TypeAdapter(LightAuthority | HomeDeviceAuthority)
 
 
+def _read_authority_file(path):
+    if any(parent.is_symlink() for parent in path.parents):
+        raise ValueError('authority_symlink_rejected')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size > 16384):
+            raise ValueError('invalid_authority_file')
+        body = stream.read(16385)
+        if len(body) > 16384:
+            raise ValueError('invalid_authority_file')
+    stamp = f'{info.st_dev}:{info.st_ino}:{info.st_mtime_ns}'.encode()
+    return body, stamp
+
+
+def read_device_authority(path, *, include_inactive=False, include_generation=False):
+    try:
+        body, stamp = _read_authority_file(path)
+        authority = AUTHORITY.validate_json(body)
+        if (not include_inactive and not authority.enabled) or (
+            authority.expires_at is not None and authority.expires_at <= datetime.now(UTC)
+        ):
+            return None, None
+        return authority, hashlib.sha256(body + stamp if include_generation else body).hexdigest()
+    except (OSError, ValueError):
+        return None, None
+
+
+def cover_authority_path(directory):
+    return directory / 'mijia-cover-authority.json'
+
+
+def cover_approval(authority):
+    # 暂停只改变即时许可。授权范围、实例或有效期的变更撤销原迁移。
+    return hashlib.sha256(authority.model_dump_json(exclude={'enabled'}).encode()).hexdigest()
+
+
+def read_cover_authority(directory):
+    body, _ = _read_authority_file(cover_authority_path(directory))
+    return MijiaCoverAuthority.model_validate_json(body)
+
+
 class ActionController:
     def __init__(self, core, authority_path):
         self.core = core
@@ -44,6 +88,7 @@ class ActionController:
         self._deadlines = {}
         self._lock = asyncio.Lock()
         self._execution_locks = WeakValueDictionary()
+        self.mijia = None
         self.authority_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if any(p.is_symlink() for p in self.authority_path.parents):
             raise ValueError("authority_symlink_rejected")
@@ -69,17 +114,17 @@ class ActionController:
         authority, revision = self.authority(include_inactive=True)
         if authority is None:
             return {"status": "paused", "action_targets": []}
-        self._set_enabled(authority, revision, False)
+        self._save_authority(authority.model_copy(update={'enabled': False}), revision)
         return {"status": "paused", "action_targets": [], "external_rules_changed": False}
 
-    def _set_enabled(self, authority, revision, enabled):
-        if hashlib.sha256(self.authority_path.read_bytes()).hexdigest() != revision:
+    def _save_authority(self, authority, revision):
+        if self.authority(include_inactive=True)[1] != revision:
             raise ValueError("source_conflict")
         fd, name = tempfile.mkstemp(prefix=".authority-", dir=self.authority_path.parent)
         try:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w") as stream:
-                stream.write(authority.model_copy(update={"enabled": enabled}).model_dump_json())
+                stream.write(authority.model_dump_json())
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(name, self.authority_path)
@@ -90,15 +135,11 @@ class ActionController:
     def resume(self, expected_revision):
         authority, revision = self.authority(include_inactive=True)
         adapter = self.core.adapter
-        if (
-            not authority
-            or revision != expected_revision
-            or not isinstance(adapter, HAReadOnlyAdapter)
-            or authority.ha_url.rstrip("/") != adapter.url
-            or authority.ha_instance != adapter.instance_id
-        ):
+        matching_ha = (authority and isinstance(adapter, HAReadOnlyAdapter)
+                       and authority.ha_url.rstrip("/") == adapter.url and authority.ha_instance == adapter.instance_id)
+        if not authority or revision != expected_revision or not (matching_ha or self._cover_scope(authority)):
             raise ValueError("source_conflict")
-        self._set_enabled(authority, revision, True)
+        self._save_authority(authority.model_copy(update={'enabled': True}), revision)
         # Restoring the existing grant never renews an old action plan.
         self._deadlines.clear()
 
@@ -122,25 +163,68 @@ class ActionController:
             "device_write_attempted": False,
         }
 
-    def authority(self, *, include_inactive=False):
+    def authority(self, *, include_inactive=False, include_generation=False):
         if not self._owner_owned:
             return None, None
-        path = self.authority_path
+        return read_device_authority(self.authority_path, include_inactive=include_inactive,
+                                     include_generation=include_generation)
+
+    def _cover_scope(self, authority, cover=None):
+        if self.mijia is None or not isinstance(authority, HomeDeviceAuthority) or authority.external_entity_ids is not None:
+            return None
+        from .embodied.miot_spec import optional_cover
+
+        cover = optional_cover() if cover is None else cover
+        if cover is None:
+            return None
+        context = self.mijia.cover_context(cover, self.authority_path.parent)
+        if context is None:
+            return None
         try:
-            if path.is_symlink() or any(p.is_symlink() for p in path.parents):
-                return None, None
-            metadata = path.stat()
-            if metadata.st_size > 16384 or metadata.st_mode & 0o077 or not path.is_file():
-                return None, None
-            body = path.read_bytes()
-            authority = AUTHORITY.validate_json(body)
-            if (not include_inactive and not authority.enabled) or (
-                authority.expires_at is not None and authority.expires_at <= datetime.now(UTC)
-            ):
-                return None, None
-            return authority, hashlib.sha256(body).hexdigest()
+            grant = read_cover_authority(self.authority_path.parent)
         except (OSError, ValueError):
-            return None, None
+            return None
+        if (grant.legacy_approval != cover_approval(authority)
+                or grant.household != context['household'] or grant.binding != context['binding']):
+            return None
+        return context
+
+    def migrate_cover_authority(self):
+        from .embodied.miot_spec import optional_cover
+        from .embodied.ptz_control import atomic
+
+        authority, revision = self.authority()
+        adapter = self.core.adapter
+        if (self.mijia is None or not isinstance(authority, HomeDeviceAuthority)
+                or authority.external_entity_ids is not None
+                or not {'cover.state', 'cover.position'}.intersection(authority.operations)
+                or not isinstance(adapter, HAReadOnlyAdapter) or authority.ha_url.rstrip('/') != adapter.url
+                or authority.ha_instance != adapter.instance_id or adapter.health().get('transport') != 'online'):
+            return
+        directory = self.authority_path.parent
+        try:
+            read_cover_authority(directory)
+        except FileNotFoundError:
+            pass
+        else:
+            return
+        cover = optional_cover()
+        context = self.mijia.cover_context(cover, directory) if cover else None
+        if context is not None and self.authority()[1] == revision:
+            grant = MijiaCoverAuthority(household=context['household'], binding=context['binding'],
+                                        legacy_approval=cover_approval(authority))
+            atomic(cover_authority_path(directory), grant.model_dump())
+
+    def cover_permission(self, cover=None):
+        authority, revision = self.authority(include_generation=True)
+        context = self._cover_scope(authority, cover)
+        if not context:
+            return None
+        operations = sorted(set(authority.operations) & {'cover.state', 'cover.position'})
+        return dict(context, authority_revision=revision, operations=operations) if operations else None
+
+    def cover_read_context(self, cover):
+        return self.mijia.cover_context(cover, self.authority_path.parent) if self.mijia else None
 
     def targets(self, snapshot):
         authority, _ = self.authority()
@@ -275,7 +359,7 @@ class ActionController:
         return None
 
     @observe('action.transition', upstream='local')
-    def _stage(self, trace, status, code, *, reported=None):
+    def _stage(self, trace, status, code, *, reported=None, mijia_binding=None, mijia_channel=None):
         event = Event(
             source="action-gateway",
             source_context=trace.events[0].source_context if trace.events else None,
@@ -291,6 +375,7 @@ class ActionController:
                 "code": code,
                 "write_attempted": trace.real_write_attempted or status == "sent",
                 "physical_verification": "NOT_RUN",
+                **({"mijia_binding": mijia_binding, "mijia_channel": mijia_channel} if mijia_binding else {}),
             },
         )
         updated = trace.model_copy(
@@ -409,23 +494,63 @@ class ActionController:
                 code = managed_guard(snapshot) or code
             if code:
                 return self._stage(trace, "expired" if code == "expired_request" else "rejected", code)
+            adapter = self.core.adapter
+            entity = next(e for e in snapshot.entities if e.id == trace.request.target)
+            if trace.target_binding_fingerprint != self.binding_fingerprint(entity):
+                return self._stage(trace, "rejected", "source_conflict")
+            operation = getattr(trace.request, "operation", "light.set")
+            writer = None
+            # 镜头指令只尝试已经就绪的局域网路径，给原有手势有效期保留派发余量。
+            if self.mijia is not None and isinstance(authority, HomeDeviceAuthority):
+                quick = dispatch_guard is not None
+                try:
+                    remaining = self._deadlines[action_id] - time.monotonic()
+                    async with asyncio.timeout(min(.22 if quick else 1.2, max(0, remaining))):
+                        writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
+                                                         quick=quick)
+                        if writer is not None:
+                            observed = await writer.readback()
+                            # 已锁定到原计划时的状态版本，再核对一次实际开关。
+                            # 避免 HA 尚未收到上游变化时继续覆盖新状态。
+                            if writer.channel == 'lan' and not self.mijia.state_agrees(snapshot, entity, observed):
+                                return self._stage(trace, "rejected", "source_conflict")
+                except (httpx.HTTPError, ValueError, TimeoutError, OSError):
+                    writer = None
+                if self.core.adapter is not adapter or self.authority()[1] != revision:
+                    return self._stage(trace, "rejected", "authority_changed")
+                if writer is not None:
+                    if not writer.current():
+                        return self._stage(trace, "rejected", "source_conflict")
+                    current_snapshot = await self.core.snapshot()
+                    changed = self._policy(trace.request, current_snapshot, authority)
+                    if isinstance(trace.request, CoreRuleEffect):
+                        changed = managed_guard(current_snapshot) or changed
+                    if changed:
+                        return self._stage(trace, "expired" if changed == "expired_request" else "rejected", changed)
+                if self.core.adapter is not adapter or self.authority()[1] != revision:
+                    return self._stage(trace, "rejected", "authority_changed")
+                if writer is not None and not writer.current():
+                    return self._stage(trace, "rejected", "source_conflict")
+                if time.monotonic() >= self._deadlines[action_id]:
+                    return self._stage(trace, "expired", "expired_request")
+            mijia = writer is not None
             if dispatch_guard is not None and dispatch_guard() is not True:
                 raise ValueError("dispatch_guard_rejected")
             # 访问网络前先持久化发送占用记录，写库或状态比较失败则不发送。
             # 其他 Core 也不能重复领取同一计划。
-            trace = self._stage(trace, "sent", "send_claim_recorded")
+            trace = self._stage(trace, "sent", "send_claim_recorded",
+                                mijia_binding=writer.fingerprint() if mijia else None,
+                                mijia_channel=writer.channel if mijia else None)
             try:
-                entity = next(e for e in snapshot.entities if e.id == trace.request.target)
-                writer = HADeviceWriter(
-                    self.core.adapter, entity, getattr(trace.request, "operation", "light.set")
-                )
+                if not mijia:
+                    writer = HADeviceWriter(adapter, entity, operation)
                 async with asyncio.timeout(max(0, self._deadlines[action_id] - time.monotonic())):
                     outcome = await writer.send(trace.request.desired)
                 if outcome != "accepted":
                     return self._stage(
                         trace, "failed" if outcome == "rejected_by_ha" else "unknown_outcome", outcome
                     )
-                trace = self._stage(trace, "accepted", "ha_service_accepted")
+                trace = self._stage(trace, "accepted", "mijia_property_accepted" if mijia else "ha_service_accepted")
             except asyncio.CancelledError:
                 self._stage(trace, "unknown_outcome", "request_cancelled_after_send")
                 raise
@@ -440,7 +565,7 @@ class ActionController:
             return self._stage(
                 trace,
                 "reported_match" if matches else "unknown_outcome",
-                "ha_reported_match" if matches else "reported_state_mismatch",
+                ("mijia_reported_match" if mijia else "ha_reported_match") if matches else "reported_state_mismatch",
                 reported=reported,
             )
         except asyncio.CancelledError:
@@ -450,7 +575,7 @@ class ActionController:
             return self._stage(trace, "unknown_outcome", "readback_or_transport_unavailable")
 
     async def _settle(self, writer, desired):
-        """在有界时间内等待 HA 异步回报，设备请求只发送一次。
+        """在有界时间内等待设备状态回报，设备请求只发送一次。
 
         延迟重试仅用于读取；发送失败或结果不明时直接标记 unknown_outcome，
         不进入此流程，也不重发设备请求。
@@ -488,9 +613,20 @@ class ActionController:
             if not binding or trace.target_binding_fingerprint != self.binding_fingerprint(entity):
                 return trace
             try:
-                reported = await HADeviceWriter(
-                    adapter, entity, getattr(trace.request, "operation", "light.set")
-                ).readback()
+                operation = getattr(trace.request, "operation", "light.set")
+                sent = next((item.payload for item in trace.events if item.payload.get("status") == "sent"), {})
+                mijia_binding = sent.get("mijia_binding")
+                if mijia_binding:
+                    channel = sent.get("mijia_channel", "cloud")
+                    if self.mijia is None or channel not in {"lan", "cloud"}:
+                        return trace
+                    writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
+                                                     channel=channel)
+                    if writer is None or writer.fingerprint() != mijia_binding or not writer.current():
+                        return trace
+                else:
+                    writer = HADeviceWriter(adapter, entity, operation)
+                reported = await writer.readback()
             except (httpx.HTTPError, ValueError, TimeoutError, OSError):
                 return trace
             matches = reported_matches(trace.request.desired, reported)

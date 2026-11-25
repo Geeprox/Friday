@@ -158,6 +158,7 @@ async def test_hiit_arm_open_in_the_same_room_never_reaches_the_device_bridge(tm
     ]
     services = {
         row["id"]: SimpleNamespace(enabled=True, armed=True, speaking=False, last_audio=None,
+                                  input_allowed=lambda: True,
                                   attention=SimpleNamespace(candidate=lambda: None), observe=AsyncMock())
         for row in cameras
     }

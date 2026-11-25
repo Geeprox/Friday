@@ -140,6 +140,10 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
  function cameraPanel(d,slot,{start=false}={}){
   stopPreview();
   const endpoint='/api/embodied/cameras/'+d.id;
+  const previewOnly=d.camera?.preview_only===true;
+  const canSetPower=!previewOnly&&d.camera?.power_writable!==false;
+  const canAim=!previewOnly&&d.camera?.can_takeover!==false;
+  let interactionSetting=null;
   let power=null,pending=false,viewing=false,previewEpoch=0,previewTimer=null,previewToken=null;
   let modePending=false,directionPending=false,followReport=null,cameraControl=null,previousIntent=null;
   let modeVersion=0,pollSequence=0,appliedPoll=0;
@@ -221,11 +225,11 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   function syncControls(){
    workspace.setAttribute('data-viewing',String(viewing));
    workspace.setAttribute('data-picking',String(!!picker));
-   liveControls.hidden=!viewing||!!picker;
-   watch.textContent=viewing?'停止查看':power?.enabled===false?'打开镜头并查看':'查看实时画面';
+   liveControls.hidden=!canAim||!viewing||!!picker;
+   watch.textContent=viewing?'停止查看':power?.enabled===false&&canSetPower?'打开镜头并查看':'查看实时画面';
    watch.classList.toggle('primary',!viewing);
-   watch.disabled=!viewing&&(pending||!power);
-   close.hidden=power?.enabled!==true;
+   watch.disabled=!viewing&&(pending||!power||!power.enabled&&!canSetPower);
+   close.hidden=!canSetPower||power?.enabled!==true;
    close.disabled=pending;
    refresh.hidden=Boolean(power);
    refresh.disabled=pending;
@@ -233,7 +237,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    const frameCurrent=live();
    const recovering=followReport?.recognition==='recovering';
    const focused=globalThis.document?.activeElement;
-   const canStart=frameCurrent&&!recovering&&followReport?.recognition_enabled!==false;
+   const canStart=canAim&&frameCurrent&&!recovering&&followReport?.recognition_enabled!==false;
    const canPick=canStart&&followReport?.follow_target_available===true;
    targetToggle.hidden=!canPick;
    targetToggle.disabled=modePending||directionPending||!!picker;
@@ -292,7 +296,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     const result=await api(endpoint+'/power');
     if(!owns())return;
     power=result;
-    if(!viewing)setStatus(power.enabled?'尚未查看':'镜头已关闭');
+    if(!viewing)setStatus(power.enabled?'尚未查看':canSetPower?'镜头已关闭':'请在米家打开镜头');
    }catch(_){
     if(owns()){power=null;setStatus('暂时无法读取镜头状态');}
    }finally{
@@ -307,7 +311,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     void poll();
     return;
    }
-   if(pending||!power)return;
+   if(pending||!power||!power.enabled&&!canSetPower)return;
    const epoch=++previewEpoch;
    pending=true;syncControls();
    try{
@@ -330,7 +334,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    finally{pending=false;if(owns())syncControls();}
   },{class:'primary'});
   const close=btn('关闭镜头',async()=>{
-   if(!owns()||pending||!power?.enabled)return;
+   if(!owns()||!canSetPower||pending||!power?.enabled)return;
    pending=true;stopViewing();setStatus('正在关闭镜头…');syncControls();
    try{
     const result=await api(endpoint+'/power',{enabled:false,revision:power.revision,event_id:crypto.randomUUID()});
@@ -580,11 +584,30 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const viewActions=add(h('div',null,{class:'camera-view-actions'}),watch,recordings);
   const viewBar=add(h('div',null,{class:'camera-view-bar'}),status,viewActions);
   const picture=add(h('div',null,{class:'camera-picture'}),pickerTools,frame,targetPhoto,targetChoices,viewBar,surveyRow);
-  add(liveControls,add(h('div'),h('h3','镜头模式'),followControls),add(h('div'),h('h3','调整视角'),cameraControls));
+  if(canAim)add(liveControls,add(h('div'),h('h3','镜头模式'),followControls),add(h('div'),h('h3','调整视角'),cameraControls));
+  const interaction=btn('正在读取…',async()=>{
+   if(!owns()||!interactionSetting||interaction.disabled)return;
+   interaction.disabled=true;
+   try{
+    await api(endpoint+'/interaction',{enabled:!interactionSetting.enabled,expected_revision:interactionSetting.revision});
+   }catch(_){if(owns())toast('设置未保存，请重试。',true);}
+   finally{if(owns())await refreshInteraction();}
+  },{role:'switch','aria-label':'允许这台镜头接收语音和手势','aria-checked':'false'});
+  interaction.disabled=true;
+  async function refreshInteraction(){
+   try{interactionSetting=await api(endpoint+'/interaction');}
+   catch(_){interactionSetting=null;}
+   if(!owns())return;
+   interaction.textContent=interactionSetting?.enabled?'已开启':interactionSetting?'已关闭':'状态待确认';
+   interaction.setAttribute('aria-checked',String(interactionSetting?.enabled===true));
+   interaction.disabled=!interactionSetting;
+  }
+  const inputRow=add(h('div',null,{class:'camera-power-row'}),add(h('div'),ico('microphone'),h('span','语音与手势')),interaction);
   const powerRow=add(h('div',null,{class:'camera-power-row'}),add(h('div'),ico('power'),powerStatus),close,refresh,
-    btn('人物识别',()=>go('People'),{class:'text-button'}));
-  add(workspace,picture,liveControls,powerRow);slot.append(workspace);
+    previewOnly?null:btn('人物识别',()=>go('People'),{class:'text-button'}));
+  add(workspace,picture,liveControls,powerRow,previewOnly?null:inputRow);slot.append(workspace);
   previewStop=dispose;
+  if(!previewOnly)void refreshInteraction();
   void readPower().then(()=>{if(start&&owns()&&power?.enabled)watch.click();});
   void poll();
   previewTimer=setInterval(()=>{

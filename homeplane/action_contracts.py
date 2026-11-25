@@ -128,6 +128,12 @@ class DevicePlanRequest(Contract):
         return self
 
 
+class MijiaCoverAuthority(Contract):
+    household: str = Field(pattern=r"^[a-f0-9]{64}$")
+    binding: str = Field(pattern=r"^[a-f0-9]{64}$")
+    legacy_approval: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class HomeDeviceAuthority(Contract):
     """Private operator grant. Runtime peers do not inherit Console device authority."""
 

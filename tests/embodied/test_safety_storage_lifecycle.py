@@ -140,7 +140,7 @@ async def test_latest_mailboxes_keep_actual_secondary_callback_live_and_revoke_o
 
     monkeypatch.setattr(runtime.store, 'create', held_create)
     camera = 'cam_1111111111'
-    home = SimpleNamespace(enabled=True, armed=True, speaking=False, last_audio=None,
+    home = SimpleNamespace(enabled=True, armed=True, speaking=False, last_audio=None, input_allowed=lambda: True,
                            attention=SimpleNamespace(candidate=lambda: None), observe=AsyncMock())
     scope = dict(safety=runtime, secondary_frame_current=lambda *_: True,
                  practice=SimpleNamespace(observe=Mock()), wall=SimpleNamespace(observe=Mock()),
@@ -469,6 +469,8 @@ async def test_original_service_always_stops_worker_and_closes_client_after_opti
 
     service = EmbodiedService.__new__(EmbodiedService)
     service.closed = False
+    service.discovery_task = None
+    service.registration_lock = asyncio.Lock()
     service.manual_previews = SimpleNamespace(close=AsyncMock())
     service.safety_output = SimpleNamespace(close=AsyncMock())
     service.stop = AsyncMock()

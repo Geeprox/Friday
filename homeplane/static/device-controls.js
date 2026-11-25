@@ -55,6 +55,10 @@ export function mainDeviceControls(d,{send,wake,readCamera,viewCamera,details,bu
   }
  }
  if(d.kind==='camera'){
+  if(d.camera?.preview_only||d.camera?.power_writable===false){
+   root.append(button('查看画面','camera',()=>viewCamera(d),{icon:'video'}));
+   return root;
+  }
   const state=h('p','正在读取镜头状态…',{class:'card-camera-state',role:'status','aria-live':'polite'}),action=button('正在读取…','camera',()=>{},{icon:'refresh'});action.classList.add('camera-view-action');action.lastElementChild.className='command-text';action.disabled=true;root.append(state,action);
   const setAction=label=>{action.lastElementChild.textContent=label;action.setAttribute('aria-label',d.name+' · '+label);action.title=label;action.querySelector('.icon')?.setAttribute('class','icon icon-'+(label==='查看画面'?'video':label==='唤醒镜头'?'power':'refresh'));};
   const enabledStatus=d.camera_state==='recovering'?'感知恢复中':'镜头已打开';

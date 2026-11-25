@@ -461,7 +461,7 @@ async def test_actual_worker_callback_cannot_rearm_or_dispatch_after_source_reti
     entry = dict(source_active=phase != 'before', process=process, state='live', privacy_closed=False)
     pool = previews.PreviewPool.__new__(previews.PreviewPool)
     pool.sessions = {CAMERA['id']: entry}
-    service = SimpleNamespace(enabled=False, armed=True, selected=True, epoch=1, vad=[b'private'],
+    service = SimpleNamespace(enabled=False, armed=True, selected=True, epoch=1, vad=[b'private'], input_allowed=lambda: True,
         pending_audio=object(), speaking=False, last_audio=None, audio_allowed=True,
         attention=SimpleNamespace(candidate=lambda: None), observe=AsyncMock())
     scope = dict(previews=pool, time=SimpleNamespace(monotonic=lambda: 10, time=lambda: 1000),

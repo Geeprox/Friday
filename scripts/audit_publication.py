@@ -29,6 +29,8 @@ SYNTHETIC_MEDIA = {
     'docs/screenshots/ktv-mobile-dark-sound.png':
         'dae71add526d7ef92b7136d816031c791311c27cf95eba1180e38fbbf7606734',
     # 固定合成镜头状态截图，输入来自 camera-perception.html，不连接设备。
+    'docs/screenshots/camera-interaction-settings.png':
+        'f700093133a85f9ef36be52a2e1fd4549c485c7e161a5583c379b36996ad9b5e',
     'docs/screenshots/camera-perception-status.png':
         '9a7df5a50fee28fcad2b18e745566e6a70ab560bb29bbd278c57d885bf02d3f8',
     # 固定合成灯具配置示例，无家庭设备或写入请求。

@@ -308,24 +308,31 @@ class HomeExperience:
                 readings=readings,triggers=triggers,available=available,bindings=[b.model_dump(mode='json')for b in device.bindings]))
         devices.sort(key=lambda d: ({'light':0,'cover':1,'climate':2,'camera':3,'sensor':4,'binary_sensor':5,'media_player':6}.get(d['kind'],9),d['room'],d['name']))
         from .embodied.miot_spec import optional_cover
-        cover = optional_cover() if self.embodied.configured() else None
+        cover = optional_cover() if snapshot.mode != "simulator" else None
         if cover:
-            # One registered DID has one household card. The explicitly imported
-            # binding owns its semantics, including unreliable slat feedback;
-            # a later HA device sync must not introduce a second travel slider.
+            # 同一已登记设备只有一张卡片。角度和位置语义沿用显式导入的绑定。
             identity='cn_'+str(cover['did'])
             devices=[d for d in devices if not any(b.get('source')=='xiaomi-identity' and b.get('external_id')==identity for b in d.get('bindings',[]))]
             from .embodied.miot_spec import cover_revision
-            try:readback=await self.embodied.miot_cover('read',None)
+            context = self.core.actions.cover_read_context(cover)
+            lan = self.core.actions.mijia.lan if context else None
+            try:readback=await self.embodied.miot_cover('read',None,permission=context,lan=lan)
             except (OSError,ValueError,TimeoutError):readback={}
             available=readback.get('fault')==0 and readback.get('status')not in {'unavailable','connecting'}
             unreliable=cover.get('feedback_quality')=='unreliable'
+            permission = self.core.actions.cover_permission(cover)
+            operations = (permission or {}).get('operations', [])
+            controls = []
+            if 'cover.position' in operations:
+                controls.append(dict(name='cover.position', minimum=0, maximum=100, step=1, unit='%'))
+            if 'cover.state' in operations:
+                controls.append(dict(name='cover.state', choices=['open', 'closed', 'stopped']))
             devices.append(dict(id='friday:configured-cover',name=cover['name'],room=cover['room'],kind='cover',readings=[],available=available,
                 bindings=[dict(source='xiaomi-identity',external_id='cn_'+str(cover['did']))],
                 controls=[dict(id='friday:configured-cover',name=cover['name'],kind='cover',state_version=cover_revision(cover),
-                    value='unconfirmed' if unreliable else 'closed' if readback.get('position')==0 else 'open',available=available,quality='unknown' if unreliable else 'reported',
+                    value='unconfirmed' if unreliable or not available else 'closed' if readback.get('position')==0 else 'open',available=available,quality='unknown' if unreliable or not available else 'reported',
                     attributes=dict(current_position=None if unreliable else readback.get('position'),position_semantics=cover.get('position_semantics','travel'),feedback_quality=cover.get('feedback_quality','reported')),
-                    capabilities=[dict(name='cover.position',minimum=0,maximum=100,step=1,unit='%'),dict(name='cover.state',choices=['open','closed','stopped'])] if self.core.actions.policy_report().get('enabled') else [])]))
+                    capabilities=controls)]))
         cameras=self.embodied.cameras()
         camera_sessions={}
         if cameras and callable(getattr(self.embodied,'status',None)):
@@ -349,7 +356,11 @@ class HomeExperience:
         except (OSError,ValueError):
             layout,membership=None,None
         devices=home_spatial.project(devices,layout,membership)
-        return dict(home_name=HOME_NAME,devices=devices,preferences=self.preferences,presentation=profile.model_dump(),
+        known_mijia = {b.external_id for device in snapshot.devices for b in device.bindings
+                       if b.source == 'xiaomi-identity'}
+        discover = getattr(self.embodied, 'mijia_discovery', None)
+        discovery = discover(known_mijia) if discover and snapshot.mode != 'simulator' else None
+        return dict(home_name=HOME_NAME,devices=devices,discovery=discovery,preferences=self.preferences,presentation=profile.model_dump(),
                     rooms=sorted({d['room']for d in devices if d['room']!='其他'} | {r.name for r in layout.rooms} if layout else {d['room']for d in devices if d['room']!='其他'}),
                     connected=self.connection_health().get('transport')=='online',
                     generated_at=snapshot.generated_at,simulated=snapshot.mode=='simulator',

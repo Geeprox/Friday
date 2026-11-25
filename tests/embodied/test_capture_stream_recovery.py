@@ -398,6 +398,7 @@ def primary_frame_scope(tmp_path, fault_stage=None):
     scope['safety'].offer=Mock()
     scope['safety'].sound_requested=lambda _:False
     scope['home'].enable=AsyncMock(side_effect=enable)
+    scope['home'].input_allowed = lambda: True
     scope['home'].observe=AsyncMock(side_effect=observe)
     scope['home'].spawn=Mock()
     scope['home'].attention=SimpleNamespace(candidate=lambda:None)

@@ -1006,7 +1006,8 @@
     "mode": {
       "enum": [
         "simulator",
-        "ha-read-only"
+        "ha-read-only",
+        "local-cameras"
       ],
       "title": "Mode",
       "type": "string"

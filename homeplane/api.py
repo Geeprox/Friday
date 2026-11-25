@@ -288,8 +288,12 @@ def create_app(
     from .embodied.service import EmbodiedService
     from .embodied.api import create_router as embodied_router
     embodied = embodied_service or EmbodiedService()
+    if background_enabled:
+        from .mijia_control import MijiaPower
+        core.actions.mijia = MijiaPower(embodied)
     from .infrastructure import HouseholdInfrastructure, ServicePolicy
     from .ha import HAReadOnlyAdapter
+    from .local_camera_home import LocalCameraHome
     async def prepare_household_interactions():
         from .embodied.paths import PRIVATE
         if (PRIVATE / 'interactions.json').exists():
@@ -301,13 +305,33 @@ def create_app(
 
     infrastructure = HouseholdInfrastructure(
         embodied, settings.path.with_name("infrastructure.json"),
-        admitted=lambda: background_enabled and isinstance(core.adapter, HAReadOnlyAdapter), people=people_catalog, prepare=prepare_household_interactions,
+        admitted=lambda: background_enabled and isinstance(core.adapter, (HAReadOnlyAdapter, LocalCameraHome)),
+        people=people_catalog, prepare=prepare_household_interactions,
     )
 
     def ingress(active, events):
         if core.adapter is active:
             store.append_events(events)
             core_rule_runtime.enqueue(active, events)
+
+    async def attach_ha(candidate, initial=None, *, current=lambda: True):
+        # 接回家电来源时保留已经运行的镜头会话。来源切换要撤销待执行的旧计划。
+        if isinstance(candidate, HAReadOnlyAdapter):
+            await candidate.subscribe(event_sink=lambda events: ingress(candidate, events))
+        if initial is None:
+            initial = await candidate.snapshot()
+        if candidate.health().get("transport") != "online":
+            raise ValueError("ha_unavailable")
+        async with lock:
+            if not current():
+                raise ValueError("source_conflict")
+            store.append_events(initial.events)
+            old = core.adapter
+            home_flow.invalidate()
+            await core_rule_runtime.invalidate("source_changed")
+            await rule_runtime.invalidate("source_changed", reset_modes=True)
+            core.adapter = candidate
+            return old, initial
 
     @asynccontextmanager
     async def lifespan(app):
@@ -328,6 +352,9 @@ def create_app(
             core_rule_runtime.start()
             await app.state.home_experience.start()
             await infrastructure.start()
+            if background_enabled and isinstance(core.adapter, (HAReadOnlyAdapter, LocalCameraHome)):
+                embodied.start_mijia_discovery()
+                core.actions.mijia.start(core)
             if query_adoption:
                 query_adoption.bind_loop()
             yield
@@ -336,6 +363,8 @@ def create_app(
             await infrastructure.close()
             await app.state.home_experience.close()
             await app.state.werewolf.close()
+            if core.actions.mijia is not None:
+                await core.actions.mijia.close()
             await embodied.close()
             await home_flow.close()
             if query_adoption:
@@ -373,6 +402,13 @@ def create_app(
     app.state.intelligence = intelligence
     app.state.embodied = embodied
     app.state.infrastructure = infrastructure
+    app.state.attach_ha = attach_ha
+
+    @app.get("/api/embodied/mijia-lan")
+    async def mijia_lan_status():
+        if core.actions.mijia is not None:
+            return core.actions.mijia.lan.status()
+        return {"connected": False, "control_devices": 0, "push_capable": 0}
 
     @app.get("/api/embodied/infrastructure")
     async def infrastructure_status():
@@ -1386,23 +1422,8 @@ def create_app(
         candidate = None
         try:
             candidate = await build(settings.path)
-            from .ha import HAReadOnlyAdapter
-
-            if isinstance(candidate, HAReadOnlyAdapter):
-                selected = candidate
-                await candidate.subscribe(event_sink=lambda events: ingress(selected, events))
-            initial = await candidate.snapshot()
-            if candidate.health().get("transport") != "online":
-                raise ValueError("ha_unavailable")
-            async with lock:
-                if revision != settings.revision:
-                    raise ValueError("source_conflict")
-                store.append_events(initial.events)
-                old = core.adapter
-                await core_rule_runtime.invalidate("source_changed")
-                await rule_runtime.invalidate("source_changed", reset_modes=True)
-                core.adapter = candidate
-                candidate = None
+            old, initial = await attach_ha(candidate, current=lambda: revision == settings.revision)
+            candidate = None
         except Exception:
             if candidate:
                 await candidate.close()

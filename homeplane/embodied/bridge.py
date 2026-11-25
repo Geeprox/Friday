@@ -103,7 +103,8 @@ async def command(device, action, event_id, target=None, camera_id=None, gesture
                 "Origin": config["main_origin"],
                 "X-Friday-Worker": (PRIVATE / "control-key").read_text().strip(),
             },
-            json=dict(device=device, action=action, event_id=event_id, room=camera(camera_id)["room"], target=target, gesture=gesture),
+            json=dict(device=device, action=action, event_id=event_id, room=camera(camera_id)["room"],
+                      target=target, gesture=gesture, camera=camera_id if camera_id else None),
         )
         if response.status_code != 200:
             return dict(status="unavailable", acknowledged=False, reached_target=False)

@@ -73,6 +73,8 @@ class PreviewPool:
 
     async def start(self, camera_id):
         selected = camera(camera_id)
+        if self.recognize and selected.get('preview_only') is True:
+            return dict(state='preview_only', camera=camera_id, frames=0)
         async with self.lock:
             old = self.sessions.get(camera_id)
             if old and not old["task"].done():

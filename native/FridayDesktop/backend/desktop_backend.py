@@ -35,6 +35,7 @@ from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse, HTMLResponse, FileResponse, RedirectResponse
 from homeplane.arl import ARLRuntime
 from homeplane.ha import HAReadOnlyAdapter
+from homeplane.local_camera_home import LocalCameraHome
 from homeplane.ktv_game_api import OWNER_PREFIX, accepts_owner_operation, create_router as ktv_owner_router
 from homeplane.settings import SettingsConfig, SettingsService
 from friday.home import Credentials
@@ -593,7 +594,8 @@ class DesktopService:
             'configured': facts['configurationAvailable'],
             'credential_available': facts['credentialAvailable'],
             'authorization_state': facts['authorizationState'],
-            'home_readable': self.inner is not None and self.connection_failure() is None and self.connection == 'connected',
+            'home_readable': self.inner is not None and not isinstance(self.adapter, LocalCameraHome)
+                and self.connection_failure() is None and self.connection == 'connected',
             'connection_phase': self.failure_evidence.get('phase') if isinstance(self.failure_evidence, dict) and self.failure_evidence.get('phase') in CONNECTION_PHASES else None,
             'server_acceptance': 'unavailable' if (
                 self.connection_failure() or self.failure) == 'ha_authorization_rejected' else (
@@ -639,7 +641,7 @@ class DesktopService:
 
     def connection_failure(self):
         """Project already-observed health; status never probes or renews HA."""
-        if self.inner is None:
+        if self.inner is None or isinstance(self.adapter, LocalCameraHome):
             return None
         try:
             health = self.adapter.health()
@@ -661,7 +663,10 @@ class DesktopService:
     async def status(self):
         facts = connection_configuration()
         observed_failure = self.connection_failure()
-        connection = 'failed' if observed_failure else self.connection
+        local_home = (isinstance(self.adapter, LocalCameraHome)
+                      or bool(observed_failure and self.persistent and self.inner
+                              and self.inner.state.embodied.configured()))
+        connection = 'connected' if local_home else 'failed' if observed_failure else self.connection
         failure = observed_failure or self.failure
         health_result = (connection, failure)
         if health_result != self._last_health_result:
@@ -670,9 +675,9 @@ class DesktopService:
                                     result='unavailable' if failure else 'ok',
                                     code=failure or 'none', upstream='ha' if self.inner else 'local')
         return {**facts, 'service': 'running', 'connection': connection,
-                'failure': failure, 'source': 'ha-read-only' if self.inner else 'not_connected',
+                'failure': failure, 'source': 'local-cameras' if local_home else 'ha-read-only' if self.inner else 'not_connected',
                 'failureEvidence': self.failure_evidence,
-                'homeReadable': self.inner is not None and not observed_failure and self.connection == 'connected',
+                'homeReadable': self.inner is not None and not local_home and not observed_failure and self.connection == 'connected',
                 'providerReads': self.provider_reads,
                 'entityCount': self.entity_count, 'deviceWrites': 'scoped' if self.inner and self.inner.state.core.actions.policy_report()['enabled'] else 'disabled',
                 'arl': self.arl, 'simulated': False, 'pid': os.getpid(),
@@ -695,13 +700,17 @@ class DesktopService:
         Existing HA streams own their reconnect. Never churn camera sessions or
         replay commands to recover an upstream transport gap.
         """
+        from homeplane.embodied.service import camera_runtime_configured
+
         attempt = 0
         rejected_revision = None
         while True:
             facts = connection_configuration()
             revision = facts.get('authorizationRevision')
-            if (self.inner is None and not (STATE / 'connection-paused').exists()
-                    and facts.get('configurationAvailable') and facts.get('credentialAvailable')
+            local = isinstance(self.adapter, LocalCameraHome)
+            saved_ha = facts.get('configurationAvailable') and facts.get('credentialAvailable')
+            if ((self.inner is None or local) and not (STATE / 'connection-paused').exists()
+                    and (saved_ha or self.inner is None and camera_runtime_configured())
                     and (rejected_revision is None or revision != rejected_revision)):
                 try:
                     await self._connect()
@@ -711,17 +720,23 @@ class DesktopService:
                     self.runtime_log.record('desktop.health', 'result', result='unavailable', code='service_unavailable')
                 if self.failure == 'ha_authorization_rejected':
                     rejected_revision = revision
-                attempt = 0 if self.inner is not None else min(attempt + 1, 6)
+                attempt = min(attempt + 1, 6) if self.inner is None or isinstance(self.adapter, LocalCameraHome) else 0
             await asyncio.sleep(min(60, 2 ** attempt) if attempt else 5)
 
     async def _connect(self):
         if self.gate.locked() or self._cleanup_state in {'running', 'failed'}:
             return JSONResponse({'code': 'connection_in_progress'}, status_code=409)
         async with self.gate:
+            if isinstance(self.adapter, LocalCameraHome):
+                await self.recover_ha()
+                return await self.status()
             if self.inner is not None:
                 selected_url = (self.setup_settings().config.ha_url or '').rstrip('/')
                 current_url = getattr(self.adapter, 'url', None)
                 if self.connection_failure() is None and current_url == selected_url:
+                    return await self.status()
+                if self.persistent and self.inner.state.embodied.configured():
+                    await self.recover_ha()
                     return await self.status()
                 # Only the explicit connect request replaces an unhealthy owner.
                 # A passive status read never closes or reconnects it.
@@ -745,7 +760,15 @@ class DesktopService:
                 # Household control is independent from optional camera/ML setup.
                 controls=(Path(os.environ['FRIDAY_EMBODIED_DATA'])/'private/action-authority.json').is_file()
                 grant_context=_device_control.set(controls)
-                try:settings, adapter, snapshot = await real_adapter(self.renewal)
+                local_failure = None
+                try:
+                    settings, adapter, snapshot = await real_adapter(self.renewal)
+                except (OSError, ValueError, RuntimeError) as error:
+                    if not self.persistent or not integration.configured():
+                        raise
+                    settings, adapter = self.setup_settings().config, LocalCameraHome()
+                    snapshot = await adapter.snapshot()
+                    local_failure = failure_code(error)
                 finally:_device_control.reset(grant_context)
                 phase = 'workspace'
                 from homeplane.api import create_app
@@ -787,6 +810,7 @@ class DesktopService:
                 self.entity_count = len(snapshot.entities)
                 self.provider_reads = getattr(adapter, '_desktop_http_reads', [])
                 self.connection = 'connected'
+                self.failure = local_failure
             except BaseException as error:
                 if lifespan_entered:
                     await lifespan.__aexit__(type(error), error, error.__traceback__)
@@ -807,6 +831,34 @@ class DesktopService:
                 if isinstance(error, asyncio.CancelledError):
                     raise
             return await self.status()
+
+    async def recover_ha(self):
+        if not self.inner:
+            return
+        adapter = None
+        controls = self.inner.state.core.actions.authority_path.name == 'action-authority.json'
+        grant = _device_control.set(controls)
+        try:
+            settings, adapter, snapshot = await real_adapter(self.renewal)
+            old, _ = await self.inner.state.attach_ha(adapter, snapshot, current=lambda: config() == settings)
+            self.adapter, adapter = adapter, None
+            local_settings = self.inner.state.settings
+            local_settings.config = local_settings.config.model_copy(update={
+                'ha_url': settings.ha_url, 'ha_instance': settings.ha_instance})
+            self.entity_count = len(snapshot.entities)
+            self.provider_reads = getattr(self.adapter, '_desktop_http_reads', [])
+            self.failure = self.failure_evidence = None
+            await old.close()
+        except (OSError, ValueError, RuntimeError) as error:
+            self.failure = failure_code(error)
+            if isinstance(error, RealHomeFailure):
+                self.provider_reads = error.http_reads
+                self.failure_evidence = {'source': 'provider_http', 'httpReads': error.http_reads,
+                                         'phase': error.connection_phase}
+        finally:
+            _device_control.reset(grant)
+            if adapter is not None:
+                await adapter.close()
 
     @observe('desktop.close', upstream='local')
     async def close(self):

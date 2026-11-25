@@ -142,7 +142,8 @@ class LocalConsumerChecks(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(p["enabled"] for p in value["providers"]))
         self.assertFalse((backend.STATE / "nas-connection.json").exists())
         settings = await self.client.get("/api/settings")
-        self.assertEqual(settings.json()["credentials"]["nas"], "private_resolver_not_configured")
+        # 桌面状态可说明私有凭据存储的绑定方式，文件上下文仍显示需要连接 NAS。
+        self.assertEqual(settings.json()["credentials"]["nas"], "local_endpoint_bound_private_store")
 
     async def test_two_typed_reads_reach_original_domain_and_context_fence(self):
         await self.connect()

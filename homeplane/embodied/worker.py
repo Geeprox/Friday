@@ -53,6 +53,7 @@ from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.embodied.camera_audio import AudioIngress, WakeCameraCue
+from homeplane.embodied.camera_interaction import allowed as camera_interaction_allowed
 from homeplane.embodied.voice_routing import VoiceRouting
 from homeplane.embodied.vision_pipe import VisionProcess
 from homeplane.people.live import IdentityStore, analyze, close_identity
@@ -63,6 +64,8 @@ KEY_PATH = PRIVATE / "viewer-key"
 KEY = KEY_PATH.read_text().strip()
 ALLOWED_IPS = set(configuration()["viewer_hosts"])
 SELECTED = dict(camera())
+if SELECTED.get('preview_only') is True:
+    raise ValueError('camera_preview_only')
 wall = CameraWall(configuration()['cameras'])
 primary_wall_epoch = 0
 primary_retired_scope = None
@@ -113,7 +116,8 @@ party_camera = PartyCamera()
 recorder = PageRecording(DATA / "recordings")
 record_lock = asyncio.Lock()
 voice_routing = VoiceRouting(lambda: interaction_enabled and not (PRIVATE / 'voice-input-paused').exists())
-home = HomeService(SELECTED['id'], voice_routing=voice_routing)
+home = HomeService(SELECTED['id'], voice_routing=voice_routing,
+                   input_allowed=lambda: camera_interaction_allowed(SELECTED['id'], directory=PRIVATE))
 from homeplane.embodied.interaction import InteractionEngine
 from homeplane.embodied.interaction_fleet import InteractionFleet
 from homeplane.embodied.practice import RecognitionPractice
@@ -320,7 +324,11 @@ async def secondary_observation(observation, process):
         time.time()-(time.monotonic()-observation['captured_mono']),
         hands=observation['hands'],
         moving=observation['registration'].get('status') in {'moving','settling','lost','stale'})
-    active=interaction_enabled
+    if camera_id not in secondary_homes:
+        secondary_homes[camera_id] = HomeService(camera_id, voice_provider=home, voice_routing=voice_routing,
+            input_allowed=lambda: camera_interaction_allowed(camera_id, directory=PRIVATE))
+    service = secondary_homes[camera_id]
+    active = interaction_enabled and service.input_allowed()
     game_window, party_window, game_active = interaction_game_window(camera_id, observation['now'])
     events=fleet.update(camera_id,observation['session'],observation['people'],observation['hands'],
         observation['registration'],active and not game_active,observation['now'],
@@ -331,9 +339,6 @@ async def secondary_observation(observation, process):
         event['_party_window'] = party_window
     await dispatch_interactions(events)
     if not secondary_frame_current(observation, process):return
-    if camera_id not in secondary_homes:
-        secondary_homes[camera_id] = HomeService(camera_id, voice_provider=home, voice_routing=voice_routing)
-    service=secondary_homes[camera_id]
     if active and not service.enabled:await service.enable()
     if not secondary_frame_current(observation, process):return
     service.armed=active
@@ -1078,9 +1083,10 @@ async def run_source(my_generation):
                     )
                 state["extension_events"] = [e.model_dump() for e in extension_events]
                 phase_at = time.monotonic()
-                if interaction_enabled:
+                camera_active = interaction_enabled and home.input_allowed()
+                if camera_active:
                     await home.enable()
-                elif not interaction_enabled:
+                else:
                     home.armed = False
                 if state.get('status')=='shutter_closed':return
                 if not primary_frame_current(my_generation, frame_motion_generation, item['received_at']):
@@ -1089,7 +1095,7 @@ async def run_source(my_generation):
                     continue
                 last_selection = games.selected_mode
                 game_window, party_window, game_active = interaction_game_window(SELECTED['id'], time.monotonic())
-                gesture_active = interaction_enabled and not game_active
+                gesture_active = camera_active and not game_active
                 practice.observe(SELECTED['id'], identities.session, people, hands,
                     layout['registration'], now, now-(time.time()-item['received_at']))
                 interaction_events=fleet.update(SELECTED['id'],identities.session,people,hands,
@@ -1102,7 +1108,7 @@ async def run_source(my_generation):
                 voice_now = time.monotonic()
                 voice_captured_mono = voice_now - (time.time() - item['received_at'])
                 home.audio_allowed=fleet.voice(SELECTED['id'],voice_now,session=identities.session,
-                    enabled=interaction_enabled and home.armed and 0 <= voice_now-now <= 1.5
+                    enabled=camera_active and home.armed and 0 <= voice_now-now <= 1.5
                         and not (PRIVATE/'voice-input-paused').exists())
                 await home.observe(
                     people,
@@ -1240,7 +1246,8 @@ async def start():
     last_frame = 0
     task = asyncio.create_task(supervised_source(generation))
     for selected in configuration()["cameras"]:
-        if selected["id"] != SELECTED["id"]:
+        if selected["id"] != SELECTED["id"] and selected.get("preview_only") is not True:
+            wall.register(selected)
             await previews.start(selected["id"])
 
 
@@ -1497,7 +1504,24 @@ async def start_preview(camera_id: str, request: Request):
         raise HTTPException(403)
     if camera_id == SELECTED["id"]:
         return {"state": view()["status"], "camera": camera_id, "primary": True}
+    wall.register(camera(camera_id))
     return await previews.start(camera_id)
+
+
+@app.post('/api/internal/camera-registration')
+async def reconcile_registered_cameras(request: Request):
+    identity_authorized(request)
+    owner = task
+    if owner is None or owner.done():
+        return {'active': False}
+    for selected in configuration()['cameras']:
+        if task is not owner or owner.done():
+            return {'active': False}
+        if (selected['id'] != SELECTED['id'] and selected.get('mijia_enrolled') is True
+                and selected.get('preview_only') is not True):
+            wall.register(selected)
+            await previews.start(selected['id'])
+    return {'active': task is owner and not owner.done()}
 
 
 def primary_recovery_frame():
