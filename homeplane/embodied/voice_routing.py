@@ -11,6 +11,14 @@ RETRY_OTHER_MIC = object()
 
 
 @dataclass(frozen=True, slots=True)
+class RetryWithOwnAttention:
+    """原收音已转写但缺少唤醒或注视凭据，允许另一视角独立核对。"""
+
+    body: str
+    voice_revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class Utterance:
     pcm: bytes
     owner: int | str | None
@@ -50,6 +58,11 @@ def overlaps(first, second):
 
 def _attending(service, item):
     return item.attending and (item.view_revision is None or item.view_revision == service.view_revision)
+
+
+def _own_attention(service, item):
+    return (not item.wake_only and item.view_revision is not None and _attending(service, item)
+            and item.owner is not None and item.owner in service.attention.latest and service.audio_allowed)
 
 
 def _priority(row, *, use_attention=True):
@@ -225,23 +238,30 @@ class VoiceRouting:
                 job = service.spawn(self._transcribe(service, item, window))
                 result, = await asyncio.gather(job, return_exceptions=True)
                 fallback = None
-                if result is RETRY_OTHER_MIC:
+                gaze_retry = None
+                if result is RETRY_OTHER_MIC or isinstance(result, RetryWithOwnAttention):
                     now = self.clock()
-                    fresh = (row for row in active.alternates.values()
-                             if self._eligible(*row, now, except_window=window))
-                    # 备用镜头各自验证唤醒词，排序使用该路收音。
-                    fallback = max(fresh, key=lambda row: _priority(row, use_attention=False), default=None)
+                    fresh = [row for row in active.alternates.values()
+                             if self._eligible(*row, now, except_window=window)]
+                    if isinstance(result, RetryWithOwnAttention):
+                        attentive = [row for row in fresh if _own_attention(*row)]
+                        if len(attentive) == 1:
+                            fallback, gaze_retry = attentive[0], result
+                    if fallback is None:
+                        fallback = max(fresh, key=lambda row: _priority(row, use_attention=False), default=None)
                 active.alternates.clear()
                 self._active = None
                 if fallback is not None:
                     service, item = fallback
-                    job = service.spawn(self._transcribe(service, item, window, alternate=True))
+                    job = service.spawn(self._transcribe(
+                        service, item, window, alternate=True, gaze_retry=gaze_retry,
+                    ))
                     await asyncio.gather(job, return_exceptions=True)
         finally:
             self._active = None
             self.task = None
 
-    async def _transcribe(self, service, item, window, *, alternate=False):
+    async def _transcribe(self, service, item, window, *, alternate=False, gaze_retry=None):
         now = self.clock()
         duplicate = self._duplicates(item, now)
         if not alternate and duplicate:
@@ -252,11 +272,15 @@ class VoiceRouting:
         if not item.wake_only and not duplicate:
             self.recent.append((now, window))
         service.voice_busy = True
-        # 备用镜头必须听清唤醒词。原镜头的注视和人员归属不能转移。
-        result = await service.transcribe(item.pcm, None if alternate else item.owner,
-                                          item.captured, item.attending and not alternate,
+        # 备用镜头复核自己的视角。原镜头的注视、人员归属和接续均不转移。
+        if gaze_retry is not None and not _own_attention(service, item):
+            gaze_retry = None
+        accept_attention = not alternate or gaze_retry is not None
+        result = await service.transcribe(item.pcm, item.owner if accept_attention else None,
+                                          item.captured, item.attending and accept_attention,
                                           item.epoch, item.source, item.wake_only, utterance=item,
-                                          followup=None if alternate else self.followup_for(service, item))
+                                          followup=None if alternate else self.followup_for(service, item),
+                                          gaze_retry=gaze_retry)
         if item.wake_only and result is True and not duplicate:
             self.recent.append((self.clock(), window))
         return result

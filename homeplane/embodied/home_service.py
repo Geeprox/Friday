@@ -25,7 +25,7 @@ from homeplane.embodied.speech import Speaker
 from homeplane.embodied.voice_activity import VoiceActivity
 from homeplane.embodied.voice_preferences import read_preferences
 from homeplane.embodied.voice_process import VoiceProcess
-from homeplane.embodied.voice_routing import RETRY_OTHER_MIC, Utterance
+from homeplane.embodied.voice_routing import RETRY_OTHER_MIC, RetryWithOwnAttention, Utterance
 from homeplane.runtime_log import RuntimeLog, observe
 from homeplane.home_questions import is_home_question
 from homeplane.task_composition import is_task_request
@@ -38,6 +38,11 @@ WAKE_VOICED_SECONDS = .25
 COMMAND_VOICED_SECONDS = .45
 VOICE_PACKET_BACKLOG = 2
 CURRENT_ATTENTION = object()
+
+
+def _speech_body(body):
+    """忽略转写补上的句尾标点，保留动作、目标和否定词。"""
+    return body.rstrip(" \t\n\r。！？.!?") if isinstance(body, str) else ""
 
 
 def voice_command_outcome(receipt):
@@ -605,7 +610,7 @@ class HomeService:
         await self.speak_reply(answer.reply, lambda: current() and answer.valid_until > datetime.now(UTC))
 
     async def transcribe(self, pcm, owner, captured, attending=False, epoch=None, source=None, wake_only=False,
-                         *, utterance=None, followup=None):
+                         *, utterance=None, followup=None, gaze_retry=None):
         epoch = self.epoch if epoch is None else epoch
         view_revision = utterance.view_revision if utterance is not None else None
         view_revision = self.view_revision if view_revision is None else view_revision
@@ -618,6 +623,8 @@ class HomeService:
             self.state["voice"] = "transcribing"
             policy=self.voice_preferences()
             attending = attending and view_revision == self.view_revision
+            if gaze_retry is not None and gaze_retry.voice_revision != policy.revision:
+                attending, owner = False, None
             if followup is not None and (
                 followup.revision != policy.revision
                 or self.voice_routing.followup_for(self, utterance) is not followup
@@ -659,6 +666,11 @@ class HomeService:
             if route.get('admitted') is True or route.get('reason') == 'waiting_instruction':
                 route = address(result.get('text'), attending and not wake_only, wake_word=policy.wake_word,
                                 after_wake=followup is not None and not wake_only)
+            if (gaze_retry is not None and route.get('reason') == 'sustained_attention'
+                    and _speech_body(route.get('body')) != gaze_retry.body):
+                self.state['last_address'] = dict(admitted=False, reason='gaze_retry_transcript_mismatch')
+                self.state['reason'] = '跨镜头语音不一致，请再说一次'
+                return
             self.state["last_address"] = route
             if wake_only or worker_admission.get("admitted") is not True:
                 if (route.get('reason') == 'waiting_instruction'
@@ -677,6 +689,10 @@ class HomeService:
                 else:
                     self.state["reason"] = "请继续说出指令"
                 if self.voice_routing is not None and not VOICE_INPUT_PAUSED.exists():
+                    if not wake_only and worker_admission.get('reason') == 'need_wake_word_without_attention':
+                        body = _speech_body(address(result.get('text'), True, wake_word=policy.wake_word).get('body'))
+                        if body:
+                            return RetryWithOwnAttention(body, policy.revision)
                     return RETRY_OTHER_MIC
                 return
             if result.get("text"):

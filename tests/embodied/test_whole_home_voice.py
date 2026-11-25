@@ -58,8 +58,8 @@ def voice_at(camera, session, routing, *, owner=None, text='Friday'):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('winner', ['primary', 'secondary'])
-@pytest.mark.parametrize('text, voiced_frames', [('Friday', 2), ('Friday', 6), ('Friday，打开玄关灯', 6)])
-async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_occupied(
+@pytest.mark.parametrize('text, voiced_frames', [('Friday', 2), ('Friday', 6), ('Friday，打开玄关灯', 6), ('打开玄关灯', 6)])
+async def test_overlapping_audio_uses_the_original_motor_or_the_attended_view(
         tmp_path, monkeypatch, winner, text, voiced_frames):
     clock = clock_at()
     monkeypatch.setattr(home_service, 'time', clock)
@@ -76,6 +76,8 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
         CAMERA['id']: voice_at(CAMERA, SESSION, routing, text=text),
         OTHER['id']: voice_at(OTHER, 'SYNTHETIC-other-view', routing, owner=7, text=text),
     }
+    for service in services.values():
+        service.request.side_effect = lambda *_, **kwargs: command_transcript(text, **kwargs)
     receivers, framer, ingress = {}, {}, {}
     for camera, generation in ((CAMERA, 'a' * 32), (OTHER, 'b' * 32)):
         cid = camera['id']
@@ -129,6 +131,15 @@ async def test_offscreen_caller_gets_the_original_motor_even_when_other_room_is_
     home = services[CAMERA['id']]
     home.request.assert_awaited_once()
     assert home.request.await_args.kwargs['wake_only'] == (voiced_frames == 2)
+    if text == '打开玄关灯':
+        attended = services[OTHER['id']]
+        attended.request.assert_awaited_once()
+        assert attended.request.await_args.kwargs['attending'] is True
+        device.assert_awaited_once()
+        assert device.await_args.kwargs['camera_id'] == attended.camera_id
+        assert attended.state['voice_command']['state'] == 'readback'
+        assert home.wake_camera is attended.wake_camera is None
+        return
     services[OTHER['id']].request.assert_not_awaited()
     assert services[OTHER['id']].wake_camera is None
     source = ingress[CAMERA['id']].session, ingress[CAMERA['id']].context
@@ -316,6 +327,69 @@ async def test_motion_retires_gaze_while_asr_is_waiting(tmp_path, monkeypatch):
     await route.task
     device.assert_not_awaited()
     assert home.state['last_address']['reason'] == 'need_wake_word_without_attention'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', [
+    'same_command', 'late_backup', 'different_device', 'missing_negation', 'view_changed', 'left_view',
+    'view_changed_during_backup', 'older_audio', 'policy_changed', 'two_attending_views', 'explicit_wake',
+])
+async def test_same_command_can_use_the_backup_cameras_own_gaze(tmp_path, monkeypatch, case):
+    first, backup, routing, clock, device, _ = continue_wake_fixture(tmp_path, monkeypatch)
+    backup.voice_owner = 7
+    backup.attention.latest = {7: True}
+    phrase = candidate(clock.at)
+    backup_phrase = replace(phrase, owner=7, attending=True, view_revision=backup.view_revision,
+                            source=('c'*32, 'd'*64))
+
+    def decode_first(*_, **kwargs):
+        if case == 'view_changed':
+            backup.clear_view_for_motion()
+            backup.attention.latest = {7: True}
+        elif case == 'left_view':
+            backup.attention.latest = {}
+        elif case == 'older_audio':
+            clock.at = first.last_video = backup.last_video = clock.at + 3.1
+        elif case == 'policy_changed':
+            backup.voice_preferences = lambda: SimpleNamespace(wake_word='小福', revision=1)
+        elif case == 'late_backup':
+            assert routing.offer(backup, backup_phrase)
+        text = '不要打开客厅灯' if case == 'missing_negation' else '打开客厅灯。'
+        return dict(command_transcript(text, **kwargs), voice_revision=kwargs['voice_revision'])
+
+    def decode_backup(*_, **kwargs):
+        if case == 'view_changed_during_backup':
+            backup.clear_view_for_motion()
+            backup.attention.latest = {7: True}
+        text = {'different_device': '打开玄关灯', 'explicit_wake': 'Friday，打开玄关灯'}.get(case, '打开客厅灯')
+        return dict(command_transcript(text, **kwargs), voice_revision=kwargs['voice_revision'])
+
+    first.request.side_effect = decode_first
+    backup.request.side_effect = decode_backup
+    assert routing.offer(first, replace(phrase, level=.12, view_revision=first.view_revision))
+    if case != 'late_backup':
+        assert routing.offer(backup, backup_phrase)
+    if case == 'two_attending_views':
+        third = voice_at(dict(id='cam_3333333333'), 'test-third-view', routing, owner=8)
+        third.last_video = clock.at
+        assert routing.offer(third, replace(phrase, owner=8, attending=True, view_revision=third.view_revision,
+                                            level=.03, source=('e'*32, 'f'*64)))
+    await routing.task
+    first.request.assert_awaited_once()
+
+    if case in {'same_command', 'late_backup', 'explicit_wake'}:
+        device.assert_awaited_once()
+        assert device.await_args.kwargs['camera_id'] == backup.camera_id
+        assert backup.state['voice_command']['state'] == 'readback'
+    else:
+        device.assert_not_awaited()
+    if case == 'older_audio':
+        backup.request.assert_not_awaited()
+    else:
+        backup.request.assert_awaited_once()
+        assert backup.request.await_args.kwargs['attending'] is (
+            case not in {'view_changed', 'left_view', 'policy_changed', 'two_attending_views'}
+        )
 
 
 @pytest.mark.asyncio
