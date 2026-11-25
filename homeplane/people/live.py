@@ -12,8 +12,8 @@ import asyncio
 import json
 import math
 import os
-import re
 import queue
+import re
 import secrets
 import sqlite3
 import stat
@@ -28,13 +28,17 @@ from homeplane.recognition.artifacts import SFACE_SHA256
 from homeplane.recognition.contracts import Embedding
 from homeplane.runtime_log import observe
 
+from .identity_session import IdentitySession
+
 REF = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 POLICY = "sface-household-experimental-v1"
 THRESHOLD, MARGIN = 0.65, 0.08
 
 
 async def analyze(pipeline, *args, **kwargs):
-    """Cancellation waits for the native call before its owner closes models/DB."""
+    """直接提交镜头身份样本，同步识别由后台执行器完成并等待实际退出。"""
+    if isinstance(pipeline, IdentitySession):
+        return pipeline.process(*args, **kwargs)
     task = asyncio.create_task(asyncio.to_thread(pipeline.process, *args, **kwargs))
     try:
         return await asyncio.shield(task)

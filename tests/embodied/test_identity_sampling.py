@@ -59,6 +59,116 @@ async def test_original_secondary_body_pipeline_continues_while_identity_startup
     finally:
         gate.set();await recognizer.close();store.close()
 
+def test_four_camera_frames_reach_consumers_while_identity_and_default_executor_are_busy(tmp_path, monkeypatch):
+    import base64
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import AsyncMock
+
+    from homeplane.embodied import camera_recognition
+    from homeplane.people.identity_session import IdentitySession
+    from homeplane.people.live import IdentityStore, analyze, close_identity
+    from tests.embodied.test_capture_stream_recovery import frame_continuation, primary_frame_scope
+    from tests.embodied.test_room_process import room_port
+    from tests.embodied.test_tracking_continuity import frame
+    from tests.test_embodied_safety import person
+    from tests.test_identity_session import JPEG, Peer
+
+    async def exercise():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        occupied = asyncio.Event()
+        queue_release, peer_release = threading.Event(), threading.Event()
+
+        def occupy_executor():
+            loop.call_soon_threadsafe(occupied.set)
+            assert queue_release.wait(6)
+
+        executor_task = loop.run_in_executor(None, occupy_executor)
+        names = ("fixture-primary", "fixture-secondary-a", "fixture-secondary-b", "fixture-secondary-c")
+        peers = {name: Peer(frame_gate=peer_release, ignore_abort=True) for name in names}
+        identities, recognizers, tasks = [], [], []
+        clock = SimpleNamespace(time=lambda: 1000., monotonic=lambda: 10.)
+        private = tmp_path / "private"
+        private.mkdir(mode=0o700)
+        store = IdentityStore(private / "identities.sqlite")
+
+        def identity(owner, camera, session, models):
+            result = IdentitySession(owner, camera, session, models, clock=clock.monotonic,
+                                     _peer_factory=lambda: peers[camera])
+            identities.append(result)
+            assert result.process(JPEG, [person()], captured_at=9.5) == []
+            return result
+
+        entered = set()
+        all_entered = asyncio.Event()
+
+        async def identity_stage(pipeline, *args, **kwargs):
+            entered.add(pipeline.camera)
+            if len(entered) == len(names):
+                all_entered.set()
+            return await analyze(pipeline, *args, **kwargs)
+
+        try:
+            await asyncio.wait_for(occupied.wait(), 2)
+            jpeg = base64.b64encode(JPEG).decode()
+            scope, _ = primary_frame_scope(tmp_path)
+            scope.update(identities=identity(store, names[0], "fixture-view", tmp_path),
+                         time=clock, analyze=identity_stage)
+            scope["tracks"].update.return_value = [person()]
+            scope["item"]["jpeg"] = jpeg
+            monkeypatch.setattr(camera_recognition, "IdentitySession", identity)
+            monkeypatch.setattr(camera_recognition, "analyze", identity_stage)
+            monkeypatch.setattr(camera_recognition, "time", clock)
+            for name in names[1:]:
+                recognizer = camera_recognition.CameraRecognition(name, store)
+                recognizers.append(recognizer)
+                recognizer.room = room_port(registration=np.eye(3))
+                recognizer.vision.detect = AsyncMock(side_effect=lambda *args, **kwargs: frame())
+                for observed in (9.7, 9.8, 9.9):
+                    recognizer.tracks.update(frame(), observed, transform=np.eye(3))
+
+            async with asyncio.timeout(2):
+                while not all(peer.processing.is_set() for peer in peers.values()):
+                    await asyncio.sleep(.002)
+            tasks.append(asyncio.create_task(frame_continuation(scope)()))
+            tasks.extend(asyncio.create_task(recognizer.observe(
+                dict(received_at=1000., jpeg=jpeg, width=640, height=360), source_current=lambda: True))
+                for recognizer in recognizers)
+            await asyncio.wait_for(all_entered.wait(), 2)
+            assert all(task.done() and not task.cancelled() for task in tasks)
+            assert not executor_task.done() and not peer_release.is_set()
+            tasks[0].result()
+            scope["safety"].offer.assert_called_once()
+            scope["home"].observe.assert_awaited_once()
+            primary_people = scope["safety"].offer.call_args.args[2]
+            camera_people = [primary_people, *(task.result()["people"] for task in tasks[1:])]
+            assert all(people and people[0]["joints"] and people[0]["identity"]["state"] == "unknown"
+                       for people in camera_people)
+            for session in identities:
+                transport = session.diagnostics()["transport"]
+                assert transport["busy"] == transport["pending"] == 1
+                session.discard()
+            assert all(peer.aborted for peer in peers.values())
+            peer_release.set()
+            async with asyncio.timeout(2):
+                while any(session.diagnostics()["transport"]["busy"] for session in identities):
+                    await asyncio.sleep(.002)
+            assert all(session.public() == [] for session in identities)
+        finally:
+            queue_release.set()
+            peer_release.set()
+            await executor_task
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for session in identities:
+                await close_identity(session)
+            for recognizer in recognizers:
+                await recognizer.vision.close()
+            store.close()
+
+    asyncio.run(exercise())
+
+
 BODY = dict(id=1, box=dict(x=0., y=0., w=1., h=1.))
 ROW = (150., 140., 80., 90., 170., 165., 210., 165., 190., 185., 175., 210., 205., 210., .99)
 

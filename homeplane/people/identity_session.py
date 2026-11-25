@@ -187,6 +187,7 @@ class IdentitySession:
         self._condition.notify_all()
 
     def process(self, jpeg, people=None, faces=(), *, moving=False, sample=True, captured_at=None):
+        """更新当前可见轨迹，提交一份待处理样本并返回仍有效的身份快照。"""
         observed = self.clock() if captured_at is None else captured_at
         if (
             moving
