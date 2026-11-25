@@ -616,6 +616,84 @@ async def test_identity_cleanup_error_still_reaps_the_original_native_vision_chi
     assert process.returncode == 0
 
 
+@pytest.mark.parametrize("finish", ["confirmed", "pending", "canceled"])
+def test_camera_cleanup_releases_its_resources_without_waiting_for_the_shared_executor(tmp_path, finish):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from homeplane.people.identity_session import IdentitySession
+    from homeplane.people.live import IdentityStore
+    from tests.test_identity_session import JPEG, Peer, body
+
+    async def exercise():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        executor_running, closing_peer = asyncio.Event(), asyncio.Event()
+        executor_release, peer_release = threading.Event(), threading.Event()
+
+        def occupy_executor():
+            loop.call_soon_threadsafe(executor_running.set)
+            assert executor_release.wait(8)
+
+        class PeerWithClosingGate(Peer):
+            def close(self):
+                loop.call_soon_threadsafe(closing_peer.set)
+                assert peer_release.wait(6)
+                super().close()
+
+        executor_task = loop.run_in_executor(None, occupy_executor)
+        peer = PeerWithClosingGate()
+        store = IdentityStore(tmp_path / "private" / "identities.sqlite")
+        session = IdentitySession(store, "fixture-camera", "view", tmp_path, clock=lambda: 100.,
+                                  _peer_factory=lambda: peer)
+        recognizer = camera_recognition.CameraRecognition.__new__(camera_recognition.CameraRecognition)
+        recognizer.identities = session
+        recognizer.room = SimpleNamespace(close=AsyncMock())
+        recognizer.vision = SimpleNamespace(close=AsyncMock())
+        close_task = None
+        try:
+            await asyncio.wait_for(executor_running.wait(), 2)
+            session.process(JPEG, [body()], captured_at=100.)
+            async with asyncio.timeout(2):
+                while not session.public():
+                    await asyncio.sleep(.002)
+            close_task = asyncio.create_task(recognizer.close())
+            await asyncio.wait_for(closing_peer.wait(), 2)
+            assert session.public() == []
+            if finish == "confirmed":
+                peer_release.set()
+                assert await close_task is True
+            elif finish == "pending":
+                assert await close_task is False
+                assert session.reason == "identity_cleanup_pending"
+            else:
+                close_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await close_task
+            recognizer.room.close.assert_awaited_once()
+            recognizer.vision.close.assert_awaited_once()
+            assert not executor_task.done()
+            if finish != "confirmed":
+                assert session._thread.is_alive() and session._peer is peer and session._has_slot
+                assert not peer.closed
+            peer_release.set()
+            async with asyncio.timeout(2):
+                while session._thread.is_alive():
+                    await asyncio.sleep(.002)
+            assert peer.closed and session._peer is None and not session._has_slot
+            assert session.public() == []
+        finally:
+            executor_release.set()
+            peer_release.set()
+            await executor_task
+            if close_task is not None:
+                await asyncio.gather(close_task, return_exceptions=True)
+            session.close()
+            store.close()
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('camera', ['primary', 'secondary'])
 @pytest.mark.parametrize('change', [None, 'retire', 'replace'])

@@ -4,6 +4,7 @@ Only public identity rows cross back. Images stay in bounded memory and the
 existing private store remains the only template/candidate persistence owner.
 """
 
+import asyncio
 import base64
 import copy
 import math
@@ -26,6 +27,7 @@ REF = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 JPEG_LIMIT = 4 * 1024 * 1024
 PROCESS_SLOTS = threading.BoundedSemaphore(8)
 IDLE_SECONDS = 30
+CLOSE_WAIT_SECONDS = 2.
 
 
 class IdentityPeer:
@@ -317,7 +319,7 @@ class IdentitySession:
             future.cancel()
             raise ValueError("identity_enrollment_unavailable") from None
 
-    def close(self):
+    def _begin_close(self):
         self.discard()
         with self._condition:
             self._closed = True
@@ -338,12 +340,34 @@ class IdentitySession:
             self._condition.notify_all()
         if peer is not None:
             peer.abort()
-        if thread and thread is not threading.current_thread():
-            thread.join(timeout=2)
+        return thread
+
+    def _close_result(self, thread):
         if thread and thread.is_alive():
             self.reason = "identity_cleanup_pending"
             return False
         return self._cleanup_ok and self._peer is None
+
+    def close(self):
+        thread = self._begin_close()
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=CLOSE_WAIT_SECONDS)
+        return self._close_result(thread)
+
+    async def close_async(self):
+        """先撤销来源，以有界等待确认原所有者退出。"""
+        thread = self._begin_close()
+        try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + CLOSE_WAIT_SECONDS
+            while thread is not None and thread.is_alive():
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(remaining, .01))
+        finally:
+            closed = self._close_result(thread)
+        return closed
 
     def _drop_peer(self):
         peer, session = self._peer, self._peer_session

@@ -48,7 +48,9 @@ async def analyze(pipeline, *args, **kwargs):
 
 
 async def close_identity(pipeline):
-    """A camera never waits on identity cleanup while holding its event loop."""
+    """等待镜头的身份所有者退出，同步识别仍在后台关闭。"""
+    if isinstance(pipeline, IdentitySession):
+        return await pipeline.close_async()
     return await asyncio.to_thread(pipeline.close)
 
 
