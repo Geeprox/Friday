@@ -12,7 +12,7 @@ import pytest
 
 from homeplane.embodied import home_service
 from homeplane.embodied import voice_activity
-from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, deliver_audio
+from homeplane.embodied.camera_audio import AudioIngress, PCMFramer, WakeCameraPause, deliver_audio
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.intent import address
 from homeplane.embodied.interaction_fleet import InteractionFleet
@@ -165,6 +165,159 @@ def candidate(at):
     return Utterance(b'SYNTHETIC', None, at, False, 1, ('a'*32, 'b'*64), at-1.3, at-.7, .04)
 
 
+def continue_wake_fixture(tmp_path, monkeypatch):
+    clock = clock_at(10)
+    monkeypatch.setattr(home_service, 'time', clock)
+    monkeypatch.setattr(home_service, 'DATA', tmp_path)
+    paused = tmp_path / 'voice-input-paused'
+    monkeypatch.setattr(home_service, 'VOICE_INPUT_PAUSED', paused)
+    quiet = tmp_path / 'voice-paused'
+    quiet.touch()
+    monkeypatch.setattr(home_service, 'VOICE_PAUSED', quiet)
+    device = AsyncMock(return_value=dict(status='reported_match', reached_target=True, acknowledged=True))
+    monkeypatch.setattr(home_service.bridge, 'command', device)
+    routing = VoiceRouting(lambda: not paused.exists(), clock=clock.monotonic)
+    routing.COLLECT_SECONDS = 0
+    home = voice_at(CAMERA, SESSION, routing)
+    other = voice_at(OTHER, 'SYNTHETIC-other-view', routing, text='打开客厅灯')
+    home.last_video = other.last_video = clock.at
+    return home, other, routing, clock, device, paused
+
+
+def command_transcript(text, *, attending=False, after_wake=False, **_):
+    return dict(text=text, address=address(text, attending, after_wake=after_wake))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('owner', ['primary', 'secondary'])
+async def test_followup_survives_the_original_motor_without_reusing_attention(tmp_path, monkeypatch, owner):
+    home, other, route, clock, device, _ = continue_wake_fixture(tmp_path, monkeypatch)
+    assert route.offer(home, replace(candidate(clock.at), wake_only=True))
+    await route.task
+    assert route.followup is not None
+    device.assert_not_awaited()
+
+    cue, safety = cue_source(home, clock, owner)
+    party = PartyCamera()
+    fleet = InteractionFleet(voice_revoked=route.discard)
+    fleet.session(home.camera_id, SESSION)
+    fleet.voice(home.camera_id, clock.at, enabled=True, session=SESSION)
+    director = CameraDirector()
+    director.apply_mode('auto', 'original')
+    source = home.wake_camera.source
+    director.choose(current_frame(clock.at - .7, source), clock.at - .7)
+    clock.at += .1
+    state = current_frame(clock.at, source)
+    if owner == 'primary':
+        state['party_camera'] = party.status(camera=CAMERA['id'], session=SESSION, frame_mono=clock.at, now=clock.at)
+    assert director.choose(state, clock.at, sound_cue=cue(home.camera_id, state, None)) == 'right'
+    send, sent = dispatch_for(owner, state, clock, director, home, cue, safety, party, fleet=fleet)
+    await send('right')
+    assert sent[0]['direction'] == 'right'
+    assert home.view_revision == 1 and home.epoch == 1 and home.selected
+    assert fleet.voice_current(home.camera_id, clock.at) and route.followup is not None
+    assert not home.attention.latest
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def report(*_, **__):
+        entered.set()
+        await release.wait()
+        return dict(status='reported_match', reached_target=True, acknowledged=True)
+
+    device.side_effect = report
+    home.request.side_effect = lambda *args, **kwargs: command_transcript('打开客厅灯', **kwargs)
+    clock.at = home.last_video = other.last_video = 12.4
+    phrase = replace(candidate(clock.at), pcm=b'SYNTHETIC-next', view_revision=home.view_revision)
+    frame = current_frame(clock.at, source, offset=.05)
+    if owner == 'primary':
+        frame['party_camera'] = party.status(camera=CAMERA['id'], session=SESSION, frame_mono=clock.at, now=clock.at)
+    home.speaking = True
+    paused = cue(home.camera_id, frame, director.sound_search_cue)
+    assert isinstance(paused, WakeCameraPause)
+    assert director.choose(frame, clock.at, sound_cue=paused) is None
+    assert director.sound_search_cue is home.wake_camera
+    home.speaking = False
+    # 同一句的近似收音优先保留唤醒来源。
+    assert route.offer(other, replace(phrase, level=.046, source=('c'*32, 'd'*64)))
+    assert route.offer(home, phrase)
+    task = route.task
+    try:
+        async with asyncio.timeout(1):
+            await entered.wait()
+        assert home.voice_busy
+        assert cue(home.camera_id, frame, director.sound_search_cue) is home.wake_camera
+    finally:
+        release.set()
+        await task
+    device.assert_awaited_once()
+    assert device.await_args.kwargs['camera_id'] == home.camera_id
+    assert home.request.await_args.kwargs['after_wake'] is True
+    assert home.state['last_address']['reason'] == 'wake_followup'
+    assert route.followup is None
+
+    clock.at = home.last_video = 15.7
+    assert route.offer(home, replace(candidate(clock.at), pcm=b'SYNTHETIC-unused-window'))
+    await route.task
+    assert device.await_count == 1 and not home.request.await_args.kwargs.get('after_wake')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason', [
+    'louder_other', 'new_capture', 'policy_changed', 'expired', 'discarded', 'audio_gap', 'revoked_during_decode',
+])
+async def test_followup_never_grants_another_source_or_a_revoked_input(tmp_path, monkeypatch, reason):
+    home, other, route, clock, device, paused = continue_wake_fixture(tmp_path, monkeypatch)
+    assert route.offer(home, replace(candidate(clock.at), wake_only=True))
+    await route.task
+    assert route.followup is not None
+    clock.at = home.last_video = other.last_video = 20 if reason == 'expired' else 11.8
+    phrase = replace(candidate(clock.at), pcm=b'SYNTHETIC-next')
+    if reason == 'louder_other':
+        assert route.offer(other, replace(phrase, level=.09, source=('c'*32, 'd'*64)))
+    elif reason == 'new_capture':
+        phrase = replace(phrase, source=('c'*32, 'b'*64))
+    elif reason == 'policy_changed':
+        home.voice_preferences = lambda: SimpleNamespace(wake_word='小福', revision=1)
+    elif reason == 'discarded':
+        route.discard(home.camera_id)
+    elif reason == 'audio_gap':
+        home.offer_audio(None)
+
+    def decode(*args, **kwargs):
+        if reason == 'revoked_during_decode':
+            paused.touch()
+        return dict(command_transcript('打开客厅灯', **kwargs), voice_revision=kwargs['voice_revision'])
+
+    home.request.side_effect = decode
+    assert route.offer(home, phrase)
+    await route.task
+    device.assert_not_awaited()
+    if reason == 'louder_other':
+        other.request.assert_awaited_once()
+        assert home.request.await_count == 2
+        assert not home.request.await_args.kwargs.get('after_wake')
+
+
+@pytest.mark.asyncio
+async def test_motion_retires_gaze_while_asr_is_waiting(tmp_path, monkeypatch):
+    home, _, route, clock, device, _ = continue_wake_fixture(tmp_path, monkeypatch)
+    home.voice_owner = 7
+    home.attention.latest = {7: True}
+
+    def decode(*args, **kwargs):
+        assert kwargs['attending'] is True
+        home.clear_view_for_motion()
+        home.attention.latest = {7: True}
+        return command_transcript('打开客厅灯', **kwargs)
+
+    home.request.side_effect = decode
+    assert route.offer(home, replace(candidate(clock.at), owner=7, attending=True, view_revision=0))
+    await route.task
+    device.assert_not_awaited()
+    assert home.state['last_address']['reason'] == 'need_wake_word_without_attention'
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure', ['first_unheard', 'backup_without_wake', 'backup_revoked', 'write_uncertain'])
 async def test_voice_fallback_requires_its_own_wake_and_never_retries_a_write(tmp_path, monkeypatch, failure):
@@ -307,7 +460,7 @@ async def test_distinct_phrases_use_the_shared_transcriber_in_order():
     route.COLLECT_SECONDS = 0
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def hold(*_):
+    async def hold(*_, **__):
         entered.set()
         await release.wait()
 

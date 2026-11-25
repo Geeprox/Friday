@@ -118,7 +118,8 @@ class VoiceQuestions:
             raise HTTPException(409, detail='voice_question_busy')
         try:
             binding = self._binding(request,key)
-            admission = address(request.text,request.attending,wake_word=binding[4].wake_word)
+            admission = address(request.text, request.attending, wake_word=binding[4].wake_word,
+                                after_wake=request.after_wake)
             if not admission['admitted'] or not is_home_question(admission.get('body','')):
                 raise FlowAbort('voice_question_not_admitted')
         except (FlowAbort, OSError, ValueError, KeyError, TypeError):

@@ -80,13 +80,44 @@ def transcript(text, revision=0):
     return dict(text=text,voice_revision=revision,address={'admitted':True,'wake_word':True},laya={})
 
 
+async def speak_after_wake(home, text):
+    from homeplane.embodied.intent import address
+    from homeplane.embodied.voice_routing import Utterance, VoiceRouting
+
+    home.camera_session = 'SYNTHETIC-after-wake'
+    route = home.voice_routing = VoiceRouting(lambda: True)
+    route.COLLECT_SECONDS = 0
+    source = ('a' * 32, 'b' * 64)
+    now = home.last_video = time.monotonic()
+    home.request = AsyncMock(return_value=dict(text='Friday', address=address('Friday')))
+    wake = Utterance(b'SYNTHETIC-wake', None, now, False, home.epoch, source, now - 2.3, now - 2, .05)
+    assert route.offer(home, wake)
+    await route.task
+
+    def decode(*_, after_wake=False, **__):
+        return dict(transcript(text), address=address(text, after_wake=after_wake))
+
+    home.request.side_effect = decode
+    captured = home.last_video = time.monotonic()
+    phrase = Utterance(
+        b'SYNTHETIC-next', None, captured, False, home.epoch, source, now - 1, now - .35, .05)
+    assert route.offer(home, phrase)
+    await route.task
+    assert home.request.await_args.kwargs['after_wake'] is True
+
+
 @pytest.mark.asyncio
-async def test_original_voice_bridge_reads_each_source_and_speaks_without_a_model_or_effect(tmp_path,monkeypatch):
+@pytest.mark.parametrize('followup', [False, True])
+async def test_original_voice_bridge_reads_each_source_and_speaks_without_a_model_or_effect(
+        tmp_path, monkeypatch, followup):
     runtime = QuestionRuntime()
     async with setup(tmp_path,monkeypatch,runtime=runtime) as o:
-        o.home.request = AsyncMock(return_value=transcript('Friday，温度多少？'))
-        await o.home.transcribe(b'SYNTHETIC',None,time.monotonic(),False)
-        assert [c.args[0] for c in o.home.request.call_args_list] == ['transcribe']
+        if followup:
+            await speak_after_wake(o.home, '温度多少？')
+        else:
+            o.home.request = AsyncMock(return_value=transcript('Friday，温度多少？'))
+            await o.home.transcribe(b'SYNTHETIC', None, time.monotonic(), False)
+        assert [c.args[0] for c in o.home.request.call_args_list] == ['transcribe'] * (2 if followup else 1)
         command = o.home.state['voice_command']
         assert command['state']=='answered',o.home.state.get('last_result',o.home.state)
         assert command['route']=='query' and command['receipt']['read_only'] is True

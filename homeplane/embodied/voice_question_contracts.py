@@ -13,6 +13,7 @@ class VoiceQuestion(BaseModel):
     camera_source_context: str = Field(pattern=r'^[a-f0-9]{64}$')
     text: str = Field(min_length=1, max_length=1000)
     attending: bool
+    after_wake: bool = False
     captured_mono: float = Field(ge=0)
     voice_revision: int = Field(ge=0)
 
