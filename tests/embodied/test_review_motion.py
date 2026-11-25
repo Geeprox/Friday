@@ -10,6 +10,7 @@ import pytest
 from homeplane.embodied.camera_audio import WakeCameraCue
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.camera_intent import camera_intent_readback, finish_camera_survey
+from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
 from tests.test_visual_followup import Home
@@ -97,12 +98,11 @@ class Patrol:
                                     presets=[], active=None, event=lambda *_,**__:None)
             planner = SimpleNamespace(public=lambda _: {'mode': self.mode}, mode=self.mode, intent_revision='intent',
                                       intent_status='configured')
-            other_views = {'synthetic-other': {'people': 1}} if self.occupied_elsewhere else {}
             self.scope.update(Transport=lambda:SimpleNamespace(close=AsyncMock()), CameraLease=lambda *a,**k:lease,
                 SearchPlanner=lambda *a:planner, camera_intents=SimpleNamespace(load=lambda:SimpleNamespace(mode=self.mode,revision='intent',status='configured')),
                 os=SimpleNamespace(environ={}), SELECTED={'id':self.camera}, state=self.state,
                 games=MotionGames(), party_camera=PartyCamera(),
-                previews=SimpleNamespace(sessions=other_views, status=lambda _: {'state': 'live'}),
+                wall=SimpleNamespace(occupied_elsewhere=lambda _: self.occupied_elsewhere),
                 home=SimpleNamespace(camera_focus=None),
                 safety=self.home.runtime, camera_motion_cue=recorded_sound_only(self.home.runtime),
                 motor_step=self.motor, camera_lease=None, camera_planner=None,
@@ -251,7 +251,8 @@ def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
                            offer_sound_search_frame=lambda *_, **__: False, capture_frame=noop)
     tree=ast.parse(Path('homeplane/embodied/worker.py').read_text())
     assignment=next(n for n in tree.body if isinstance(n,ast.Assign)and any(isinstance(t,ast.Name)and t.id=='previews'for t in n.targets))
-    scope=dict(PreviewPool=lambda **kwargs:kwargs,identity_store=None,wall=None,safety=safety,
+    wall = CameraWall([])
+    scope=dict(PreviewPool=lambda **kwargs:kwargs,identity_store=None,wall=wall,safety=safety,
                secondary_observation=noop,secondary_audio=noop,clear_camera=noop,clear_camera_view=noop,
                camera_motion_cue=recorded_sound_only(safety))
     exec(compile(ast.fix_missing_locations(ast.Module(body=[assignment],type_ignores=[])),'original-preview-construction','exec'),scope)
@@ -261,6 +262,7 @@ def test_original_secondary_pool_constructor_binds_the_runtime_hint(tmp_path):
     assert scope['previews']['sound_view'] is safety.offer_sound_search_frame
     assert scope['previews']['on_capture_frame'] is safety.capture_frame
     assert scope['previews']['on_motion'] is scope['clear_camera_view']
+    assert scope['previews']['occupied_elsewhere'] == wall.occupied_elsewhere
 
 
 async def patrol_fleet(home,steps=480):

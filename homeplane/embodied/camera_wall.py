@@ -14,6 +14,7 @@ class CameraWall:
         self.epochs = {c['id']: 0 for c in cameras}
         self.video = {c['id']: VideoRelay(clock=clock) for c in cameras}
         self.observations = {}
+        self.occupancy = {}
         self.labels = {}
         self.toasts = {}
         self.gestures = {}
@@ -24,9 +25,7 @@ class CameraWall:
         self.frames.pop(camera, None)
         self.stills.pop(camera,None)
         self.video[camera].clear()
-        self.observations.pop(camera,None)
-        self.toasts.pop(camera,None);self.gestures.pop(camera,None)
-        self.labels[camera]={}
+        self.clear_observation(camera)
         return self.epochs[camera]
 
     def clear(self, camera, epoch):
@@ -35,15 +34,16 @@ class CameraWall:
             self.frames.pop(camera, None)
             self.stills.pop(camera,None)
             self.video[camera].clear()
-            self.observations.pop(camera,None)
-            self.toasts.pop(camera,None);self.gestures.pop(camera,None)
+            self.clear_observation(camera, keep_labels=True)
 
-    def clear_observation(self, camera):
-        """Retire overlays/labels while keeping the live transport epoch."""
+    def clear_observation(self, camera, *, keep_labels=False):
+        """撤销识别与占用信息，保留实时预览。"""
         self.observations.pop(camera, None)
+        self.occupancy.pop(camera, None)
         self.toasts.pop(camera, None)
         self.gestures.pop(camera, None)
-        self.labels[camera] = {}
+        if not keep_labels:
+            self.labels[camera] = {}
 
     def offer(self, camera, epoch, packet):
         if self.epochs[camera] != epoch:return
@@ -77,8 +77,17 @@ class CameraWall:
         self.toasts[camera]=dict(id=self.toast_sequence,text=text,at_ms=int(self.clock()*1000))
 
     def observe(self, camera, session, people, at, *, moving=False, hands=()):
-        if moving or not 0 <= self.clock()-at <= 1.5:
-            self.observations.pop(camera,None);self.gestures.pop(camera,None);self.toasts.pop(camera,None);return
+        if (camera not in self.epochs or type(at) not in (int, float) or not math.isfinite(at)
+                or not 0 <= self.clock()-at <= 1.5):
+            return
+        previous = self.occupancy.get(camera)
+        if previous is not None and at <= previous[0]:
+            return
+        if moving:
+            self.clear_observation(camera, keep_labels=True)
+            return
+        # 占用供云台决策。界面编号用完时仍须保留当前识别结果。
+        self.occupancy[camera] = (at, bool(people))
         from .interaction import body_gestures,GESTURES
         from .gestures import BINDABLE_HAND_LABELS
         recognized=set()
@@ -105,7 +114,16 @@ class CameraWall:
             identity=p.get('identity') or {}
             rows.append(dict(track=str(p['id']),label='人物 '+str(labels[key]),box={k:box[k] for k in ('x','y','w','h')},
                 joints=joints,person_id=identity.get('person_id') if identity.get('state') in {'matched','tracked'} else None))
-        self.observations[camera]=dict(at_ms=int(at*1000),people=rows)
+        self.observations[camera]=dict(at_ms=int(at * 1000),people=rows)
+
+    @staticmethod
+    def _observation_current(observation, now_ms):
+        return observation is not None and 0 <= now_ms - observation['at_ms'] <= 1500
+
+    def occupied_elsewhere(self, camera):
+        now = self.clock()
+        return any(other != camera and occupied and 0 <= now - at <= 1.5
+                   for other, (at, occupied) in self.occupancy.items())
 
     def frame(self, camera):
         value = self.frames.get(camera)
@@ -124,12 +142,13 @@ class CameraWall:
             if source in {'shutter_closed', 'stopped'}:continue
             frame = self.frame(camera['id'])
             recognition = status.get('recognition') == 'running'
+            observation = self.observations.get(camera['id'])
             result.append(dict(camera, state='live' if frame else 'connecting',
                 frame_age_ms=round((self.clock()-frame[1])*1000) if frame else None,
                 recognition='running' if recognition else 'waiting',
                 people=status.get('people', 0) if recognition else 0,
                 hands=status.get('hands', 0) if recognition else 0,
                 toast=self.toasts.get(camera['id']) if self.toasts.get(camera['id']) and 0<=self.clock()*1000-self.toasts[camera['id']]['at_ms']<3000 else None,
-                overlay=self.observations.get(camera['id']) if recognition and self.observations.get(camera['id'])
-                    and 0 <= self.clock()*1000-self.observations[camera['id']]['at_ms'] <= 1500 else None))
+                overlay=observation if recognition
+                    and self._observation_current(observation, self.clock() * 1000) else None))
         return dict(version=1, server_time_ms=int(self.clock()*1000), cameras=result, configured=len(self.cameras))

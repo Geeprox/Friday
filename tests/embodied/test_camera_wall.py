@@ -49,3 +49,44 @@ def test_hd_fallback_is_revoked_with_privacy_and_rejects_mismatched_source_time(
  p=packet(9.9);p.update(jpeg=base64.b64encode(JPEG).decode(),received_at=9.9)
  wall.offer(cid,old,p);assert wall.still(cid)
  wall.clear(cid,old);wall.offer(cid,old,p);assert wall.still(cid) is None
+
+
+def test_patrol_occupancy_uses_fresh_recognition_even_when_preview_is_still_usable():
+    now = [10.0]
+    wall = CameraWall(CAMERAS, clock=lambda: now[0])
+    primary, secondary = (camera["id"] for camera in CAMERAS)
+    epoch = wall.begin(secondary)
+    wall.offer(secondary, epoch, packet(now[0]))
+    people = [dict(id=1, box=dict(x=.2, y=.2, w=.2, h=.6))]
+    wall.observe(secondary, "session", people, now[0])
+
+    assert wall.occupied_elsewhere(primary)
+    assert not wall.occupied_elsewhere(secondary)
+    now[0] = 11.51
+    assert wall.frame(secondary) is not None
+    assert not wall.occupied_elsewhere(primary)
+
+    wall.observe(secondary, "session", people, now[0])
+    assert wall.occupied_elsewhere(primary)
+    wall.observe(secondary, "session", [], 9.0)
+    assert wall.occupied_elsewhere(primary)
+    wall.clear_observation(secondary, keep_labels=True)
+    assert not wall.occupied_elsewhere(primary)
+    assert wall.frame(secondary) is not None
+    wall.clear(secondary, epoch)
+    assert wall.frame(secondary) is None
+
+
+def test_occupancy_survives_overlay_label_limit_and_retires_on_movement():
+    now = [10.0]
+    wall = CameraWall(CAMERAS, clock=lambda: now[0])
+    primary, secondary = (camera["id"] for camera in CAMERAS)
+    wall.begin(secondary)
+    wall.labels[secondary] = {("old-session", str(track)): track for track in range(512)}
+    person = dict(id=1, box=dict(x=.2, y=.2, w=.2, h=.6))
+    wall.observe(secondary, "new-session", [person], now[0])
+    assert wall.observations[secondary]["people"] == []
+    assert wall.occupied_elsewhere(primary)
+    now[0] += .4
+    wall.observe(secondary, "new-session", [person], now[0], moving=True)
+    assert not wall.occupied_elsewhere(primary)

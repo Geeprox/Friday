@@ -165,13 +165,22 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
     (3, 'stale', 'waiting', None),
     (-1, 'stale', 'waiting', None),
 ])
-def test_secondary_status_never_reuses_latency_from_an_expired_frame(monkeypatch, age, state, recognition, latency):
+def test_secondary_status_retires_recognition_before_preview(monkeypatch, age, state, recognition, latency):
     monkeypatch.setattr(previews,'time',SimpleNamespace(time=lambda:100))
     pool = previews.PreviewPool(recognize=True)
-    pool.sessions[CAMERA['id']] = dict(state='live',received_at=100-age,frames=4,
-                                      shutter_changed=False,latency_ms=320)
+    pool.sessions[CAMERA['id']] = dict(
+        state='live', received_at=100-age, frames=4, shutter_changed=False, latency_ms=320,
+        people=2, hands=3, animals=1, tracking_current=True, follow_picker=object(),
+        camera_control=dict(mode='auto', phase='following', view_usable=True, target_locked=True),
+    )
     status = pool.status(CAMERA['id'])
     assert (status['state'], status['recognition'], status['latency_ms']) == (state, recognition, latency)
+    current = recognition == 'running'
+    assert (status['people'], status['hands'], status['animals']) == ((2, 3, 1) if current else (0, 0, 0))
+    assert status['follow_target_available'] is current
+    assert status['camera_control']['target_locked'] is current
+    assert status['camera_control']['view_usable'] is current
+    assert status['camera_control']['phase'] == ('following' if current else 'waiting_video')
 
 
 @pytest.mark.asyncio
@@ -468,7 +477,7 @@ async def test_actual_worker_callback_cannot_rearm_or_dispatch_after_source_reti
         practice=SimpleNamespace(observe=Mock()),
         safety=SimpleNamespace(offer=None, clear=Mock(), sound_requested=lambda _: False),
         fleet=SimpleNamespace(update=Mock(return_value=[]), clear=Mock(), cameras={}, voice=Mock(return_value=False)),
-        wall=SimpleNamespace(observe=Mock()), secondary_homes={CAMERA['id']: service},
+        wall=SimpleNamespace(observe=Mock(), clear_observation=Mock()), secondary_homes={CAMERA['id']: service},
         SELECTED={'id': 'synthetic-primary'}, home=object(), PRIVATE=tmp_path, interaction_enabled=True)
     actual('homeplane/embodied/worker.py', 'clear_interactions', scope)
     clear = actual('homeplane/embodied/worker.py', 'clear_camera', scope)

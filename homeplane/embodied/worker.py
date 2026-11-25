@@ -188,11 +188,13 @@ def clear_interactions(camera_id, *, keep_wake=False):
 
 
 def clear_camera(camera_id):
+    wall.clear_observation(camera_id, keep_labels=True)
     safety.clear(camera_id)
     clear_interactions(camera_id)
 
 
 def clear_camera_view(camera_id):
+    wall.clear_observation(camera_id, keep_labels=True)
     safety.clear_view(camera_id)
     clear_interactions(camera_id, keep_wake=True)
 
@@ -319,7 +321,8 @@ async def secondary_observation(observation, process):
     wall.observe(camera_id,observation['session'],observation['people'],
         time.time()-(time.monotonic()-observation['captured_mono']),
         hands=observation['hands'],
-        moving=observation['registration'].get('status') in {'moving','settling','lost','stale'})
+        moving=observation['registration'].get('status') in {'moving','settling','lost','stale'}
+            or observation.get('tracking_current') is not True)
     active=interaction_enabled
     game_window, party_window, game_active = interaction_game_window(camera_id, observation['now'])
     events=fleet.update(camera_id,observation['session'],observation['people'],observation['hands'],
@@ -362,9 +365,7 @@ previews = PreviewPool(identity_store=identity_store, continuous=True, recognize
     review_pending=safety.review_pending, fall_pending=safety.fall_pending,
     sound_cue=camera_motion_cue, sound_view=safety.offer_sound_search_frame,
     focus=lambda cid:getattr(secondary_homes.get(cid),'camera_focus',None),
-    occupied_elsewhere=lambda cid: (cid!=SELECTED['id'] and bool(view().get('people')))
-        or any(other!=cid and previews.status(other)['state']=='live' and item.get('people',0)
-               for other,item in previews.sessions.items()))
+    occupied_elsewhere=wall.occupied_elsewhere)
 registry = RecognizerRegistry()
 bindings = ActionBindings(registry)
 configure(registry, bindings, games, home)
@@ -428,6 +429,7 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             if now >= expires:
                 raise RuntimeError('motor_request_expired')
             motion_generation += 1
+            wall.clear_observation(SELECTED['id'], keep_labels=True)
             safety.clear_view(SELECTED['id'])
             calibration_frames.clear()
             motor_last_sent = now
@@ -499,8 +501,7 @@ async def camera_search():
             sample = dict(state, _local_received=last_frame, game=games.public,
                 party_camera=party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
                     frame_mono=last_frame,now=now))
-            elsewhere = any(item.get('people',0) and previews.status(cid)['state']=='live'
-                            for cid,item in previews.sessions.items())
+            elsewhere = wall.occupied_elsewhere(SELECTED['id'])
             director.apply_mode(planner.mode, planner.intent_revision)
             direction = director.choose(sample, now, focus=getattr(home,'camera_focus',None),
                                         occupied_elsewhere=elsewhere,
@@ -525,8 +526,7 @@ async def camera_search():
                         current = dict(state, _local_received=last_frame, game=games.public,
                             party_camera=party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
                                 frame_mono=last_frame,now=time.monotonic()))
-                        occupied = any(item.get('people',0) and previews.status(cid)['state']=='live'
-                                       for cid,item in previews.sessions.items())
+                        occupied = wall.occupied_elsewhere(SELECTED['id'])
                         return director.decision_current(current, time.monotonic(), direction,
                             focus=getattr(home,'camera_focus',None), occupied_elsewhere=occupied,
                             review_pending=safety.review_pending(SELECTED['id'], current.get('session_id')),
@@ -1043,7 +1043,8 @@ async def run_source(my_generation):
                     continue
                 wall.observe(SELECTED['id'],identities.session,people,item['received_at'],
                     hands=hands,
-                    moving=layout['registration'].get('status') in {'moving','settling','lost','stale'})
+                    moving=layout['registration'].get('status') in {'moving','settling','lost','stale'}
+                        or not tracks.input_valid)
                 if practice.suppresses(SELECTED['id']):
                     # Practising OK must neither join nor start a game. Keep its
                     # latch closed until the person releases after the lesson.
