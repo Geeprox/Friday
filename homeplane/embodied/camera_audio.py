@@ -31,6 +31,13 @@ class WakeCameraCue:
     confirmed_mono: float | None = None
 
 
+@dataclass(frozen=True)
+class WakeCameraPause:
+    """收音期间保留唤醒转向进度，暂缓新的云台动作。"""
+
+    cue: WakeCameraCue
+
+
 def number(value):
     return type(value) in (int, float) and math.isfinite(value)
 

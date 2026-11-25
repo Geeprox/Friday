@@ -176,15 +176,14 @@ async def dispatch_interactions(events):
         home.spawn(dispatch())
 
 
-def clear_interactions(camera_id, *, keep_wake=False):
+def clear_interactions(camera_id):
     fleet.clear(camera_id)
     service=home if camera_id==SELECTED['id'] else secondary_homes.get(camera_id)
     if service:
         service.selected=False;service.epoch+=1;service.vad=[];service.pending_audio=None
         service.armed=False;service.audio_allowed=False;service.speaking=False;service.last_audio=None
         service.camera_session=None;service.camera_focus=None
-        if not keep_wake:
-            service.wake_camera = None
+        service.wake_camera = None
 
 
 def clear_camera(camera_id):
@@ -194,7 +193,10 @@ def clear_camera(camera_id):
 
 def clear_camera_view(camera_id):
     safety.clear_view(camera_id)
-    clear_interactions(camera_id, keep_wake=True)
+    fleet.clear(camera_id, voice=False)
+    service = home if camera_id == SELECTED['id'] else secondary_homes.get(camera_id)
+    if service is not None:
+        service.clear_view_for_motion()
 
 
 def camera_motion_cue(camera_id, sample, active):
@@ -428,17 +430,12 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             if now >= expires:
                 raise RuntimeError('motor_request_expired')
             motion_generation += 1
-            safety.clear_view(SELECTED['id'])
+            clear_camera_view(SELECTED['id'])
             calibration_frames.clear()
             motor_last_sent = now
             state['_patrol_view'] = None
             state['scene'] = {'objects': []}
             identities.discard()
-            fleet.clear(SELECTED['id'])
-            home.selected = False
-            home.epoch += 1
-            home.vad = []
-            home.pending_audio = None
             if room:
                 room.expect_motion(now, 2)
             capture.stdin.write((json.dumps(dict(action='motor_step', direction=direction,

@@ -215,7 +215,8 @@ async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once
         SELECTED=selected,camera_is_open=AsyncMock(return_value=True),close_primary_view=noop,
         identities=SimpleNamespace(discard=noop),fleet=SimpleNamespace(clear=noop),
         safety=SimpleNamespace(clear_view=noop),
-        home=SimpleNamespace(selected=True,epoch=0,vad=[],pending_audio=None,runtime_log=SimpleNamespace(record=noop)),
+        home=SimpleNamespace(selected=True,epoch=0,vad=[],pending_audio=None,
+                             runtime_log=SimpleNamespace(record=noop),clear_view_for_motion=noop),
         room=SimpleNamespace(expect_motion=noop))
     def send(raw):
         command=json.loads(raw);sent.append(command)
@@ -223,8 +224,8 @@ async def test_primary_persisted_pet_choice_reaches_original_motor_dispatch_once
     scope['capture']=SimpleNamespace(stdin=SimpleNamespace(write=send,drain=AsyncMock()))
     path=Path('homeplane/embodied/worker.py')
     nodes=[n for n in ast.parse(path.read_text()).body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))
-           and n.name in {'set_primary_camera_mode','motor_step'}]
-    assert len(nodes)==2
+           and n.name in {'set_primary_camera_mode','motor_step','clear_camera_view'}]
+    assert len(nodes)==3
     for n in nodes:n.decorator_list=[]
     exec(compile(ast.Module(body=nodes,type_ignores=[]),str(path),'exec'),scope)
     scope['set_primary_camera_mode']('pets')

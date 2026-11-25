@@ -84,8 +84,10 @@ def main():
                     text, quality = asr.transcribe(samples)
                 valid, quality_reason = transcript_quality(text, quality, wake_word=policy.wake_word)
                 wake_only = request.get("wake_only") is True
+                attending = not wake_only and request.get("attending") is True
+                after_wake = not wake_only and request.get("after_wake") is True
                 route = (
-                    address(text, not wake_only and request.get("attending") is True, wake_word=policy.wake_word)
+                    address(text, attending, wake_word=policy.wake_word, after_wake=after_wake)
                     if valid
                     else {"admitted": False, "reason": quality_reason}
                 )
@@ -95,8 +97,8 @@ def main():
                     route = {"admitted": False, "reason": quality_reason}
                 semantic = None
                 if route["admitted"]:
-                    if household_plan(text, request.get("attending") is True, wake_word=policy.wake_word) or basic_command(
-                        text, request.get("attending") is True, wake_word=policy.wake_word
+                    if household_plan(text, attending, wake_word=policy.wake_word, after_wake=after_wake) or basic_command(
+                        text, attending, wake_word=policy.wake_word, after_wake=after_wake
                     ):
                         semantic = {
                             "choice": "指令或任务请求",

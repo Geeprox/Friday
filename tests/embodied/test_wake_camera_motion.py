@@ -81,13 +81,15 @@ def cue_source(h, clock, owner):
     return source_function(WORKER, 'camera_motion_cue', scope), quiet
 
 
-def dispatch_for(owner, state, clock, director, h, cue, safety, party):
+def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, fleet=None):
     """执行主、副镜头原来的发送函数，原生端只以管道回执替身回应。"""
     if owner == 'primary':
         scope, sent = primary_scope()
         scope.update(time=clock, SELECTED=CAMERA, home=h, state=state, director=director,
                      safety=safety, previews=SimpleNamespace(sessions={}), direction='right',
                      games=SimpleNamespace(public={}), party_camera=party, camera_motion_cue=cue)
+        if fleet is not None:
+            scope['fleet'] = fleet
         extract(WORKER, {'decision_current'}, scope)
 
         async def send(direction):
@@ -104,9 +106,12 @@ def dispatch_for(owner, state, clock, director, h, cue, safety, party):
             sent.append(command)
             waiters[command['request_id']].set_result(dict(native_code=0))
 
+        clear_view = source_function(WORKER, 'clear_camera_view', dict(
+            safety=safety, fleet=fleet if fleet is not None else SimpleNamespace(clear=Mock()),
+            SELECTED={'id': 'cam_2222222222'}, secondary_homes={h.camera_id: h}))
         motion = SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                  review_pending=safety.review_pending, fall_pending=safety.fall_pending,
-                                 sound_cue=cue, on_motion=None, runtime_log=h.runtime_log)
+                                 sound_cue=cue, on_motion=clear_view, runtime_log=h.runtime_log)
         item = dict(privacy_closed=False, source_active=True, control_epoch=1)
         scope = dict(time=clock, asyncio=asyncio, secrets=secrets, json=json,
                      director=director, selected=CAMERA, self=motion, item=item, waiters=waiters,
