@@ -144,6 +144,29 @@ class Element{
  assert(writes.some(w=>w.path.includes(cameras[1].id+'/preview/stop')&&w.body.token==='e'.repeat(32)),'手动预览只释放自己的令牌');
  assert.ok(!reads.some(p=>p.includes('/cameras/')&&p.includes(cameras[0].id)),'Pointing preview stays on its explicitly selected camera');
  owner.dispose();
+ const priorVoiceSessions=voiceSessions;
+ const priorWrites=writes.length;
+ const fourth={id:'cam_4444444444',kind:'camera',room:'健身房',name:'合成镜头'};
+ const fourCameras=[...cameras,fourth];
+ const feedback=(camera,text,started_at)=>({camera:camera.id,last_transcript:text,
+  voice_command:{text,started_at,state:'readback',receipt:{status:'reported_match',reached_target:true}}});
+ voiceSessions=[
+  feedback(cameras[0],'打开客厅主灯',40),
+  feedback(cameras[1],'关闭书房灯',25),
+  {...feedback(cameras[2],'已失配的旧回执',90),last_transcript:'关卧室灯'},
+  feedback(fourth,'关闭训练灯',15),
+ ];
+ context.options.data.devices=fourCameras;
+ const four=vm.runInContext('mountInteractions(root,options)',context);await settle();
+ const visibleVoice=()=>all(root).filter(n=>n.attrs.class==='voice-recent-row').map(n=>n.children[1].textContent);
+ assert.deepEqual(visibleVoice(),['打开客厅主灯','关闭书房灯','关闭训练灯'],'最近语音按本次指令时间排列');
+ voiceSessions[2]=feedback(cameras[2],'打开卧室灯',50);
+ await poll();await settle();
+ assert.deepEqual(visibleVoice(),['打开卧室灯','打开客厅主灯','关闭书房灯'],'备用镜头的新结果也能置顶');
+ assert.equal(all(root).find(n=>n.attrs.class==='voice-recent-row').children[2].textContent,'设备状态已更新');
+ assert.equal(writes.length,priorWrites,'显示和刷新反馈保持只读');
+ four.dispose();
+ voiceSessions=priorVoiceSessions;
  context.options.data.devices=[cameras[0]];
  const single=vm.runInContext('mountInteractions(root,options)',context);await settle();
  find('button','指向设备').onclick();

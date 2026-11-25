@@ -31,8 +31,9 @@ SYNTHETIC_MEDIA = {
     # 固定合成镜头状态截图，输入来自 camera-perception.html，不连接设备。
     'docs/screenshots/camera-interaction-settings.png':
         'f700093133a85f9ef36be52a2e1fd4549c485c7e161a5583c379b36996ad9b5e',
+    # 隔离浏览器中的四路模拟反馈及镜头状态，无真实家庭数据。
     'docs/screenshots/camera-perception-status.png':
-        '9a7df5a50fee28fcad2b18e745566e6a70ab560bb29bbd278c57d885bf02d3f8',
+        '74c29a7db93ee822009562a1d11e9b5e9e799644ef1c7121aa9ce98896e5a9ad',
     # 照护控制台的合成姿态与镜头，截图仅来自隔离的本机测试页。
     'docs/screenshots/safety-fall-views.png':
         '0159efe7c8bcd4660548f4b8eabf7272144b9c2161a11d843bd1b04986f0b126',

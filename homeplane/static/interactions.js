@@ -6,6 +6,11 @@ const btn=(text,run,attrs={})=>{const n=h('button',text,{type:'button',...attrs}
 const api=async(path,body,signal)=>{const r=await fetch(path,{signal,headers:{'Content-Type':'application/json'},...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)})});const data=await r.json();if(!r.ok){const error=Error(typeof data.detail==='string'?data.detail:'unavailable');error.status=r.status;throw error;}return data;};
 const actionName=value=>({on:'开启',off:'关闭',open:'打开',close:'关闭','mode:off':'关闭','mode:cool':'制冷','mode:heat':'制热','mode:auto':'自动','mode:heat_cool':'自动冷暖','mode:dry':'除湿','mode:fan_only':'送风'}[value]||(value?.startsWith('position:')?'开到 '+value.slice(9)+'%':'调整设备'));
 const states={live:'识别中',ready:'识别中',connecting:'正在连接',waiting:'等待画面',stopped:'未开启',unavailable:'连接中断',shutter_closed:'镜头已关闭',stale:'画面已中断'};
+function voiceCommandTimestamp(voice){
+ const command=voice.voice_command;
+ if(!command||command.text!==voice.last_transcript)return 0;
+ return Number.isFinite(command.started_at)&&command.started_at>0?command.started_at:0;
+}
 function voiceCommandPresentation(voice){
  const command=voice.voice_command;
  if(!command||command.text!==voice.last_transcript)return{state:'unknown',text:'这条指令的结果尚未确认',recover:true};
@@ -140,7 +145,10 @@ export function mountInteractions(root,{data,go,toast}){
   }
   const voiceState=slot.querySelector?.('[data-voice-state]');if(voiceState){
    const voices=(report.voice_sessions||[]).filter(v=>v.last_transcript);if(!voices.length&&report.home?.last_transcript)voices.push({...report.home,camera:report.camera});
-   const rows=voices.slice(-3).map(voice=>({voice,room:cameras.find(c=>c.id===voice.camera)?.room||'家中',outcome:voiceCommandPresentation(voice)}));
+   const recent=voices.some(v=>voiceCommandTimestamp(v)>0)
+    ?voices.sort((a,b)=>voiceCommandTimestamp(b)-voiceCommandTimestamp(a)).slice(0,3)
+    :voices.slice(-3);
+   const rows=recent.map(voice=>({voice,room:cameras.find(c=>c.id===voice.camera)?.room||'家中',outcome:voiceCommandPresentation(voice)}));
    const empty=rows.length?'':canToggle()&&!voiceEnabled()?'语音输入已暂停':'还没有最近的语音指令';
    const summary=JSON.stringify([empty,rows.map(({voice,room,outcome})=>[voice.last_transcript,room,outcome])]);
    if(voiceState.voiceSummary!==summary){voiceState.voiceSummary=summary;voiceState.replaceChildren();for(const{voice,room,outcome}of rows){const row=add(h('div',null,{class:'voice-recent-row'}),h('span',room,{class:'caption'}),h('p',voice.last_transcript),h('span',outcome.text,{class:'voice-command-result','data-state':outcome.state}));if(outcome.recover)row.append(add(h('div',null,{class:'voice-command-recovery'}),btn('查看设备',()=>go('Devices')),btn('刷新结果',()=>refresh())));voiceState.append(row);}if(empty)voiceState.append(h('p',empty,{class:'caption'}));}
