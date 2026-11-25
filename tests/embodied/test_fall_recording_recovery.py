@@ -22,7 +22,7 @@ from homeplane.embodied.safety import SafetyPolicy, SafetyRuntime, SafetyStore
 from homeplane.embodied.safety_archive import SafetyArchive
 from tests.embodied.test_motor_recovery import primary_scope
 from tests.embodied.test_review_motion import recorded_sound_only, source_function
-from tests.test_embodied_safety import person
+from tests.test_embodied_safety import person, slide_person
 
 
 @pytest_asyncio.fixture
@@ -95,6 +95,32 @@ async def test_one_fall_from_two_views_keeps_separate_frames_and_one_output(moni
     store.update(primary['id'], review='unreviewed')
     rows = store.events()
     assert all(row['review'] == 'unreviewed' and row['announcement_withdrawn'] for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_slow_and_rapid_views_share_one_fall_record_and_output(monitor):
+    runtime, store = monitor.runtime, monitor.store
+    runtime.labels = lambda: {'same': '示例甲'}
+    for index in range(29):
+        monitor.clock[0] = captured = 100 + index * .25
+        await runtime.sync_policy()
+        slide = slide_person(max(0, min(1, (index - 6) / 16)))
+        rapid = person(index >= 18)
+        for camera, context, actor in (('a', 'a'*64, slide), ('b', 'b'*64, rapid)):
+            actor['identity'] = dict(state='tracked', person_id='same', observed_monotonic=captured,
+                                     face_observed_monotonic=captured)
+            assert runtime.offer(camera, 's', [actor], captured, captured, stable=True,
+                                 jpeg=f'SYNTHETIC-{camera}'.encode(), source_context=context)
+            await runtime.observation_task
+        await runtime.drain()
+        await asyncio.gather(*runtime.tasks)
+    event, = SafetyArchive(store, None).events()
+    peer, = event['fall_views']
+    views = {item['id']: item for item in store.events()}
+    assert {views[view['id']]['camera'] for view in (event, peer)} == {'a', 'b'}
+    assert {item['detector'] for item in views.values()} == {'geometry-fall/3', 'geometry-fall/4'}
+    assert {store.frame(item['id'], 0) for item in (event, peer)} == {b'SYNTHETIC-a', b'SYNTHETIC-b'}
+    runtime.speaker.say.assert_awaited_once()
 
 
 @pytest.mark.asyncio

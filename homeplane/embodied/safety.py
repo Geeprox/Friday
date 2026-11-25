@@ -65,7 +65,7 @@ CAPABILITIES = [
         name="疑似跌倒",
         status="experimental",
         severity="urgent",
-        basis="持续直立后快速倒下，并持续倒卧；需要清晰骨骼和稳定镜头",
+        basis="从直立快速倒下或连续滑至低位，并保持倒卧。需要清晰骨骼和稳定镜头。",
     ),
     dict(id="crying", name="婴儿持续哭声", status="experimental",
          basis="连续识别到疑似婴儿哭声时，保留同时段的关键帧。"),
@@ -530,11 +530,14 @@ class SafetyStore:
 
 
 class FallDetector:
-    """按采集时间核对站立、快速下降和持续倒卧的画面线索。"""
+    """按采集时间核对同一轨迹的站立、下降和持续倒卧。"""
 
     MAX_FRAME_GAP = 0.75
     MAX_POSE_GAP = 0.55
     MAX_TRACKS = 10
+    RAPID_DESCENT_SECONDS = 1.2
+    MAX_SLIDE_SECONDS = 5.0
+    MAX_SLIDE_PAUSE = 0.7
 
     def __init__(self):
         self.cameras = {}
@@ -584,7 +587,22 @@ class FallDetector:
         upright = not partial and dy > dx * 1.6 and sy < hy and box["h"] > box["w"] * aspect * 1.15
         horizontal = dx > dy * 1.5 and box["w"] * aspect > box["h"] * 1.15
         return dict(upright=upright, horizontal=horizontal, partial=partial, center=(sy + hy) / 2,
-                    height=box["h"], box=box)
+                    height=box["h"], box=box, tilt=dx / (dx + dy),
+                    floor=cls._standing_footline(joints, box, hy) if upright else None)
+
+    @classmethod
+    def _standing_footline(cls, joints, box, hip_y):
+        feet = [joints.get(side + "Ankle") for side in ("left", "right")]
+        if not all(cls._valid_point(foot) and foot["confidence"] >= .65 for foot in feet):
+            return None
+        first, second = (foot["y"] for foot in feet)
+        height = box["h"]
+        bottom = box["y"] + height
+        if (not all(.01 <= foot["x"] <= .99 and .01 <= foot["y"] <= .99 for foot in feet)
+                or min(first, second) < hip_y + .15 * height or abs(first - second) > .12 * height
+                or not all(abs(foot["y"] - bottom) <= .15 * height for foot in feet)):
+            return None
+        return (first + second) / 2
 
     @staticmethod
     def current_identity(person, evaluated_mono):
@@ -602,18 +620,65 @@ class FallDetector:
     def _identity_matches(track, person_id):
         return person_id is None or track['person_id'] in (None, person_id)
 
-    def _supports_descent(self, track, geometry, captured, coalesced):
-        if not geometry["horizontal"]:
+    def _slide_progress(self, track, geometry, captured, coalesced):
+        anchor = track["anchor"]
+        previous = track["slide"]
+        if (anchor is None or anchor["floor"] is None or geometry["upright"] or geometry["partial"]
+                or coalesced or not 0 < captured - anchor["at"] <= self.MAX_SLIDE_SECONDS):
+            return None
+        current = previous or dict(at=anchor["at"], moved_at=anchor["at"], box=anchor["box"],
+                                   peak=anchor["center"], moves=0, tilted=False)
+        if (not 0 < captured - current["at"] <= self.MAX_POSE_GAP
+                or captured - current["moved_at"] > self.MAX_SLIDE_PAUSE
+                or iou(current["box"], geometry["box"]) < .15):
+            return None
+        height = anchor["height"]
+        change = geometry["center"] - current["peak"]
+        if not -.10 * height <= change <= .25 * height:
+            return None
+        moving = change >= .035 * height
+        return dict(
+            at=captured, box=geometry["box"],
+            moved_at=captured if moving else current["moved_at"],
+            peak=geometry["center"] if moving else current["peak"],
+            moves=current["moves"] + int(moving),
+            tilted=current["tilted"] or .32 <= geometry["tilt"] <= .59,
+        )
+
+    @staticmethod
+    def _low_slide_pose(anchor, geometry):
+        if anchor is None or anchor["floor"] is None:
             return False
+        # 双脚只提供原站立位置在画面里的低位参考，用来排除明显高于该位置的倒卧。
+        floor, height, box = anchor["floor"], anchor["height"], geometry["box"]
+        bottom = box["y"] + box["h"]
+        return (geometry["center"] - anchor["center"] >= .40 * height
+                and geometry["height"] <= .55 * height and abs(geometry["center"] - floor) <= .20 * height
+                and floor - .15 * height <= bottom <= floor + .30 * height)
+
+    def _descent_kind(self, track, geometry, captured, coalesced, slide):
+        if not geometry["horizontal"]:
+            return None
         down = track["down"]
         if down is not None:
+            if down["kind"] == "slide" and not self._low_slide_pose(track["anchor"], geometry):
+                return None
             overlap = iou(geometry["box"], down["box"])
             if geometry["partial"] or down["partial"] or coalesced:
-                return 0 < captured - down["at"] <= self.MAX_POSE_GAP and overlap >= 0.45
-            return overlap > 0
+                if not 0 < captured - down["at"] <= self.MAX_POSE_GAP or overlap < .45:
+                    return None
+            return down["kind"] if overlap > 0 else None
         anchor = track["anchor"]
-        return (not geometry["partial"] and anchor is not None and captured - anchor["at"] <= 1.2
-                and geometry["center"] - anchor["center"] >= anchor["height"] * 0.25)
+        if anchor is None or geometry["partial"]:
+            return None
+        height = anchor["height"]
+        displacement = geometry["center"] - anchor["center"]
+        if captured - anchor["at"] <= self.RAPID_DESCENT_SECONDS and displacement >= .25 * height:
+            return "rapid"
+        if (slide is not None and slide["moves"] >= 4 and slide["tilted"]
+                and self._low_slide_pose(anchor, geometry)):
+            return "slide"
+        return None
 
     @staticmethod
     def _track_key(person):
@@ -640,7 +705,10 @@ class FallDetector:
             if not self._identity_matches(track, self.current_identity(person, evaluated)):
                 continue
             geometry = self.geometry(person, aspect)
-            if geometry is not None and self._supports_descent(track, geometry, captured, coalesced):
+            if geometry is None or not geometry["horizontal"]:
+                continue
+            slide = self._slide_progress(track, geometry, captured, coalesced)
+            if self._descent_kind(track, geometry, captured, coalesced, slide):
                 return True
         return False
 
@@ -686,36 +754,38 @@ class FallDetector:
             old = state["tracks"].get(track)
             if (old is None or not 0 < captured - old["last"] <= self.MAX_FRAME_GAP
                     or not self._identity_matches(old, person_id)):
-                old = dict(last=captured, upright_since=None, anchor=None, down=None, fired=False,
+                old = dict(last=captured, upright_since=None, anchor=None, down=None, slide=None, fired=False,
                            person_id=person_id)
                 state["tracks"][track] = old
             elif person_id is not None:
                 old["person_id"] = person_id
             old["last"] = captured
-            supports = self._supports_descent(old, geometry, captured, coalesced)
             down = old["down"]
+            old["slide"] = self._slide_progress(old, geometry, captured, coalesced) if down is None else None
+            kind = self._descent_kind(old, geometry, captured, coalesced, old["slide"])
             if geometry["partial"]:
                 # 缺一个关节时，仅允许同一倒卧轨迹短暂等候下一张完整画面。
-                if supports:
+                if kind:
                     down["partial"] = True
                 else:
                     state["tracks"].pop(track, None)
                 continue
-            if (down is not None and not supports
+            if (down is not None and not kind
                     and (down["partial"] or coalesced or iou(geometry["box"], down["box"]) <= 0)):
                 # 画面无法接上原轨迹时，下一次确认须重新建立站立基线。
                 old["anchor"] = None
             if geometry["upright"]:
                 old["upright_since"] = old["upright_since"] if old["upright_since"] is not None else captured
                 if captured - old["upright_since"] >= 1:
-                    old["anchor"] = dict(at=captured, center=geometry["center"], height=geometry["height"])
+                    old["anchor"] = dict(at=captured, center=geometry["center"], height=geometry["height"],
+                                         floor=geometry["floor"], box=dict(geometry["box"]))
                 old["down"] = None
                 # One event per continuous episode; rearm after sustained recovery.
                 if captured - old["upright_since"] >= 3:
                     old["fired"] = False
                 continue
             old["upright_since"] = None
-            if not supports:
+            if not kind:
                 old["down"] = None
                 continue
             seconds = down["seconds"] if down is not None else 0.0
@@ -723,7 +793,8 @@ class FallDetector:
             if down is not None and not down["partial"] and not coalesced:
                 seconds += captured - down["at"]
             descent = down["descent"] if down is not None else captured
-            old["down"] = dict(at=captured, descent=descent, seconds=seconds, box=dict(geometry["box"]), partial=False)
+            old["down"] = dict(at=captured, descent=descent, seconds=seconds,
+                               box=dict(geometry["box"]), partial=False, kind=kind)
             if seconds >= 2 and not old["fired"]:
                 old["fired"] = True
                 found.append(
@@ -736,8 +807,9 @@ class FallDetector:
                         person_id=person_id,
                         simulated=False,
                         status="suspected",
-                        basis="upright_rapid_descent_sustained_horizontal",
-                        detector="geometry-fall/3",
+                        basis=("upright_progressive_slide_sustained_low_horizontal" if kind == "slide"
+                               else "upright_rapid_descent_sustained_horizontal"),
+                        detector="geometry-fall/4" if kind == "slide" else "geometry-fall/3",
                         started_mono=old["anchor"]["at"],
                         descent_mono=descent,
                     )
@@ -790,7 +862,8 @@ def _snapshot_people(people):
         row['joints'] = {}
         joints = person.get('joints')
         if isinstance(joints, dict):
-            for name in ('leftShoulder', 'rightShoulder', 'leftHip', 'rightHip', 'leftWrist', 'rightWrist'):
+            for name in ('leftShoulder', 'rightShoulder', 'leftHip', 'rightHip',
+                         'leftAnkle', 'rightAnkle', 'leftWrist', 'rightWrist'):
                 if name in joints:
                     row['joints'][name] = _scalar_fields(joints[name], ('x', 'y', 'confidence'))
         snapshot.append(row)

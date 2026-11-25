@@ -110,18 +110,110 @@ def test_camera_and_track_cannot_borrow_upright_baseline_or_stale_identity():
             assert out[0]["person_id"] is None
 
 
-def test_short_horizontal_pose_and_slow_descent_do_not_trigger():
-    for mode in ("brief", "slow"):
+def test_short_horizontal_pose_and_stationary_transition_do_not_trigger():
+    for mode in ("brief", "stationary"):
         d = FallDetector()
         events = []
         for i in range(28):
             now = 100 + i * 0.25
-            p = person(i >= 7 if mode == "slow" else 7 <= i < 10)
-            if mode == "slow" and 7 <= i < 15:
+            p = person(i >= 7 if mode == "stationary" else 7 <= i < 10)
+            if mode == "stationary" and 7 <= i < 15:
                 p = person()
                 p["box"]["h"] = 0.3  # neither standing nor horizontal during descent
             events += d.observe("a", "s", [p], now, now, stable=True)
         assert events == []
+
+
+def slide_person(progress, *, raised=False, feet=True):
+    """从同一站位分步降低躯干并转向倒卧，纵向坐标随镜头比例变化。"""
+    start, end = person(), person(True)
+    if raised:
+        end["box"]["y"] -= .18
+        for point in end["joints"].values():
+            point["y"] -= .18
+    for part in start["joints"]:
+        for axis in ("x", "y"):
+            first, final = start["joints"][part][axis], end["joints"][part][axis]
+            start["joints"][part][axis] = first + (final - first) * progress
+    for axis in ("x", "y", "w", "h"):
+        first, final = start["box"][axis], end["box"][axis]
+        start["box"][axis] = first + (final - first) * progress
+    if feet:
+        for side, x in (("left", .44), ("right", .48)):
+            start["joints"][side + "Ankle"] = dict(x=x + progress * .18, y=.64, confidence=.94)
+    return start
+
+
+def slide_episode(detector, *, scenario="slide", camera="a", start=100.0, room_aspect=16 / 9):
+    results = []
+    for index in range(40):
+        captured = start + index * .25
+        progress = max(0, min(1, (index - 6) / 16))
+        if scenario == "sit_then_lie" and 13 <= index <= 17:
+            progress = 7 / 16
+        if scenario == "recovery" and 14 <= index <= 16:
+            progress = 3 / 16
+        if scenario == "sit":
+            progress = min(.4, progress)
+        raised = scenario in {"bed", "sofa"} or scenario == "rise_while_horizontal" and index >= 22
+        actor = slide_person(progress, raised=raised, feet=scenario != "no_feet")
+        if scenario == "weak_feet":
+            actor["joints"]["leftAnkle"]["confidence"] = .52
+        if scenario == "discontinuous" and index == 15:
+            actor["box"]["x"] = 0
+            actor["box"]["w"] = .07
+        if scenario == "wrong_track" and index >= 15:
+            actor["id"] = 8
+        if scenario == "occluded" and index == 15:
+            actor["joints"].pop("rightShoulder")
+        if scenario == "changed_person":
+            actor["identity"] = dict(state="matched", person_id="actor-a" if index < 15 else "actor-b",
+                                     observed_monotonic=captured, face_observed_monotonic=captured)
+        processed = captured + .3 if scenario == "jitter" and index >= 15 else captured
+        events = detector.observe(camera, "next" if scenario == "changed_session" and index >= 15 else "s",
+                                  [actor], processed, captured, stable=not (scenario == "motor" and index == 15),
+                                  aspect=room_aspect, coalesced=scenario == "coalesced" and index == 15)
+        results.extend((captured, event) for event in events)
+    return results
+
+
+@pytest.mark.parametrize("scenario,aspect", [("slide", 16/9), ("slide", 4/3), ("jitter", 16/9)])
+def test_progressive_slide_reaches_one_suspected_fall_without_changing_rapid_timing(scenario, aspect):
+    tracker = FallDetector()
+    [(captured, event)] = slide_episode(tracker, scenario=scenario, room_aspect=aspect)
+    assert event["kind"] == "fall" and event["status"] == "suspected"
+    assert event["detector"] == "geometry-fall/4"
+    assert event["basis"] == "upright_progressive_slide_sustained_low_horizontal"
+    assert event["descent_mono"] - event["started_mono"] > FallDetector.RAPID_DESCENT_SECONDS
+    assert captured - event["descent_mono"] == 2.0
+    assert tracker.confirmed_down("a", "s", "7", started=event["started_mono"], evaluated=109.75, max_age=1.5)
+
+
+@pytest.mark.parametrize("scenario", [
+    "bed", "sofa", "sit", "sit_then_lie", "no_feet", "weak_feet", "discontinuous", "wrong_track",
+    "occluded", "changed_person", "changed_session", "motor", "coalesced", "recovery", "rise_while_horizontal",
+])
+def test_slow_motion_without_continuous_floor_evidence_stays_unconfirmed(scenario):
+    assert slide_episode(FallDetector(), scenario=scenario) == []
+
+
+def test_queued_low_slide_holds_only_the_confirming_view():
+    tracker = FallDetector()
+    for index in range(29):
+        captured = 100 + index * .25
+        actor = slide_person(max(0, min(1, (index - 6) / 16)))
+        candidate = ([actor], captured, 16 / 9, False)
+        pending = tracker.needs_stable_view("a", "s", captured, candidate)
+        if pending:
+            assert not tracker.needs_stable_view("b", "s", captured, candidate)
+            assert not tracker.needs_stable_view("a", "other", captured, candidate)
+            assert not tracker.needs_stable_view("a", "s", captured + 1.6, candidate)
+        tracker.observe("a", "s", [actor], captured, captured, stable=True)
+        if pending:
+            assert tracker.needs_stable_view("a", "s", captured)
+            break
+    else:
+        pytest.fail("完整的慢滑倒卧没有请求稳定视角")
 
 
 @pytest.mark.parametrize("latency", ["growing", "jump"])
