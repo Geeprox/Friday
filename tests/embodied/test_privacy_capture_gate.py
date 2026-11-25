@@ -135,7 +135,7 @@ async def test_secondary_gesture_dispatch_does_not_require_primary_camera_armed(
         home=SimpleNamespace(armed=False,spawn=lambda coro:tasks.append(asyncio.create_task(coro))),
         secondary_homes={'secondary':SimpleNamespace(armed=True)},
         wall=CameraWall([dict(id='secondary',name='Synthetic',room='Synthetic')]),
-        fleet=SimpleNamespace(current=lambda *_:True,receipts=[]),previews=pool)
+        fleet=SimpleNamespace(claim=lambda *_:True,receipts=[]),previews=pool)
     exec(compile(ast.Module(body=[source_guard,game_window,node],type_ignores=[]),'<production dispatch>','exec'),scope)
     event=dict(camera='secondary',session='synthetic-secondary',action='on',event_id='synthetic',target='lamp',
                binding='a'*32,revision=1,gesture='hand.open_palm',scope='home',

@@ -1,5 +1,6 @@
 """Game-to-home gesture handoff through the actual coordinator, no camera/model I/O."""
 
+import asyncio
 import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -88,6 +89,61 @@ async def test_a_held_finish_pose_cannot_reach_the_original_household_dispatch(m
             await queued.pop(0)
     command.assert_not_awaited()
     assert fleet.public(clock[0])["cameras"][0]["interaction"]["release_required"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost_at", [None, "before_secondary", "after_secondary"])
+async def test_fresh_gesture_can_dispatch_from_the_other_camera_if_the_first_source_closes(monkeypatch, lost_at):
+    from homeplane.embodied import bridge
+
+    configure(monkeypatch)
+    fleet, game, queued = InteractionFleet(), MotionGames(), []
+    current_sources = {CAMERA, OTHER}
+    clock = [0.0]
+
+    async def send(*args, **kwargs):
+        await asyncio.sleep(0)
+        return dict(status="unknown_outcome", acknowledged=False, reached_target=False)
+
+    command = AsyncMock(side_effect=send)
+    monkeypatch.setattr(bridge, "command", command)
+    scope = dict(
+        SELECTED=dict(id=CAMERA, room="SYNTHETIC-room"), games=game, party_camera=PartyCamera(),
+        interaction_enabled=True, home=SimpleNamespace(armed=True, spawn=queued.append),
+        secondary_homes={OTHER: SimpleNamespace(armed=True)},
+        interaction_source_current=lambda event: event["camera"] in current_sources,
+        fleet=fleet, practice=SimpleNamespace(suppresses=lambda _: False),
+        wall=SimpleNamespace(cameras=[dict(id=OTHER, room="SYNTHETIC-room")], notice=Mock()),
+        time=SimpleNamespace(monotonic=lambda: clock[0], time=lambda: 1000 + clock[0]),
+    )
+    dispatch = actual("dispatch_interactions", scope)
+
+    def frame(camera, track, at, label=None):
+        clock[0] = at
+        pose = person(track=track)
+        pose["identity"] = dict(state="matched", person_id="SYNTHETIC-member")
+        return step(fleet, at, label=label, camera=camera, pose=pose, session=camera)
+
+    def close_primary():
+        current_sources.remove(CAMERA)
+        fleet.clear(CAMERA)
+
+    for at in (10.0, 10.4, 10.8):
+        assert not frame(CAMERA, 7, at)
+        assert not frame(OTHER, 99, at)
+    assert not frame(CAMERA, 7, 11.3, "open_palm")
+    assert not frame(OTHER, 99, 11.35, "open_palm")
+    await dispatch(frame(CAMERA, 7, 12.05, "open_palm"))
+    if lost_at == "before_secondary":
+        close_primary()
+    await dispatch(frame(OTHER, 99, 12.15, "open_palm"))
+    if lost_at == "after_secondary":
+        close_primary()
+    await asyncio.gather(*queued)
+
+    command.assert_awaited_once()
+    assert command.await_args.kwargs["camera_id"] == (OTHER if lost_at else CAMERA)
+    assert fleet.receipts[0]["status"] == "unknown_outcome"
 
 
 @pytest.mark.parametrize("gesture,label", [("hand.open_palm", "open_palm"), ("body.hands_up", None)])

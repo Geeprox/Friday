@@ -165,8 +165,11 @@ async def dispatch_interactions(events):
                 return
             service = home if e['camera'] == SELECTED['id'] else secondary_homes.get(e['camera'])
             if not (interaction_enabled and service and service.armed and interaction_source_current(e)
-                    and fleet.current(e,time.monotonic())) or practice.suppresses(e['camera']):return
+                    and not practice.suppresses(e['camera'])):
+                return
             from homeplane.embodied.bridge import command
+            if not fleet.claim(e, time.monotonic()):
+                return
             receipt = await command(None,e['action'],e['event_id'],target=e['target'],camera_id=e['camera'],
                 gesture={k:e[k] for k in ('binding','revision','observed_mono')})
             action={'open':'打开','close':'关闭','on':'开启','off':'关闭'}.get(e['action'],'设备控制')

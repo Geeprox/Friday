@@ -634,7 +634,7 @@ async def test_queued_original_gesture_rechecks_source_even_if_clear_callback_fa
         games=MotionGames(),party_camera=PartyCamera(),
         home=SimpleNamespace(spawn=jobs.append, armed=True),
         secondary_homes={CAMERA['id']: SimpleNamespace(armed=True)},
-        fleet=SimpleNamespace(current=Mock(return_value=True), receipts=deque()),
+        fleet=SimpleNamespace(claim=Mock(return_value=True), receipts=deque()),
         practice=SimpleNamespace(suppresses=lambda _: False), wall=SimpleNamespace(notice=Mock()),
         time=SimpleNamespace(monotonic=lambda: 10, time=lambda: 1000))
     command = AsyncMock(return_value={'status': 'synthetic', 'acknowledged': False, 'reached_target': False})
