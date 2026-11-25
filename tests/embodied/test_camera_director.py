@@ -297,6 +297,23 @@ def test_fall_has_a_short_independent_window_and_respects_camera_ownership():
     assert director.choose(sample(41), 41, fall_pending=True) is None and director.phase == 'held'
 
 
+def test_independent_fall_revokes_motion_during_an_earlier_falls_retry_interval():
+    director = CameraDirector()
+    director.apply_mode('auto', 1)
+    clear(director)
+    first = frozenset({('7', 30.5)})
+    both = first | {('8', 39.)}
+
+    assert director.choose(sample(1), 1, review_pending=True) is None
+    assert director.choose(sample(31), 31, review_pending=True, fall_pending=first) is None
+    assert director.choose(sample(39), 39, fall_pending=first) == 'right'
+    assert director.decision_current(sample(39.1), 39.1, 'right', fall_pending=first)
+    assert not director.decision_current(sample(39.1), 39.1, 'right', fall_pending=both)
+    assert director.choose(sample(39.25), 39.25, fall_pending=both) is None
+    assert director.choose(sample(47.24), 47.24, fall_pending=both) is None
+    assert director.choose(sample(47.25), 47.25, fall_pending=both) == 'right'
+
+
 def test_two_level_survey_is_finite_and_repeated_intent_does_not_restart_it():
     d=CameraDirector();d.apply_mode('survey',7)
     attempts=[]

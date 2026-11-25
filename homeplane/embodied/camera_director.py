@@ -637,29 +637,33 @@ class CameraDirector:
         pending['previous'] = (stamp, view[2], shift)
         return True
 
+    def _review_window(self, key, scope, now, duration, interval, reserve):
+        window = self.review_windows.get(key)
+        if window is not None:
+            previous_scope, until, retry_at = window
+            if previous_scope == scope and now < retry_at:
+                return now < until
+        if reserve:
+            self.review_windows[key] = (scope, now + duration, now + interval)
+        return True
+
     def _review_holds(self, sample, now, review_pending, fall_pending, *, reserve=False):
         if not self._fresh(sample, now) or sample.get('scene_visible') is not True:
             return False
         scope = (self.intent, sample.get('session_id'))
-        for kind, pending, duration, interval in (
-            ('fall', fall_pending is True, self.FALL_HOLD_SECONDS, self.FALL_INTERVAL_SECONDS),
-            ('review', review_pending is True and (self.mode in {'auto', 'survey'} or self.mode in TARGET_MODES),
-             self.REVIEW_HOLD_SECONDS, self.REVIEW_INTERVAL_SECONDS),
-        ):
-            if not pending:
-                continue
-            window = self.review_windows.get(kind)
-            if window is not None:
-                previous_scope, until, retry_at = window
-                if previous_scope == scope:
-                    if now < until:
-                        return True
-                    if now < retry_at:
-                        continue
-            if reserve:
-                self.review_windows[kind] = (scope, now + duration, now + interval)
+        if reserve:
+            self.review_windows = {key: window for key, window in self.review_windows.items()
+                                   if window[0] == scope and now < window[2]}
+        falls = fall_pending if isinstance(fall_pending, frozenset) else ((None,) if fall_pending is True else ())
+        holding = False
+        for key in falls:
+            holding = self._review_window(('fall', key), scope, now, self.FALL_HOLD_SECONDS,
+                                          self.FALL_INTERVAL_SECONDS, reserve) or holding
+        if holding:
             return True
-        return False
+        return (review_pending is True and (self.mode in {'auto', 'survey'} or self.mode in TARGET_MODES)
+                and self._review_window('review', scope, now, self.REVIEW_HOLD_SECONDS,
+                                        self.REVIEW_INTERVAL_SECONDS, reserve))
 
     def _patrol(self, sample, now):
         session = sample.get('session_id')

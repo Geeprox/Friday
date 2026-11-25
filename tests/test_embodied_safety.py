@@ -203,14 +203,14 @@ def test_queued_low_slide_holds_only_the_confirming_view():
         captured = 100 + index * .25
         actor = slide_person(max(0, min(1, (index - 6) / 16)))
         candidate = ([actor], captured, 16 / 9, False)
-        pending = tracker.needs_stable_view("a", "s", captured, candidate)
+        pending = tracker.stable_view_tracks("a", "s", captured, candidate)
         if pending:
-            assert not tracker.needs_stable_view("b", "s", captured, candidate)
-            assert not tracker.needs_stable_view("a", "other", captured, candidate)
-            assert not tracker.needs_stable_view("a", "s", captured + 1.6, candidate)
+            assert not tracker.stable_view_tracks("b", "s", captured, candidate)
+            assert not tracker.stable_view_tracks("a", "other", captured, candidate)
+            assert not tracker.stable_view_tracks("a", "s", captured + 1.6, candidate)
         tracker.observe("a", "s", [actor], captured, captured, stable=True)
         if pending:
-            assert tracker.needs_stable_view("a", "s", captured)
+            assert tracker.stable_view_tracks("a", "s", captured)
             break
     else:
         pytest.fail("完整的慢滑倒卧没有请求稳定视角")
@@ -244,12 +244,12 @@ def test_one_missing_joint_holds_same_track_without_counting_the_gap(missing):
                 actor["joints"].pop("leftShoulder")
             else:
                 actor["joints"]["leftShoulder"]["confidence"] = .4
-            assert detector.needs_stable_view("a", "s", captured, ([actor], captured, 16/9, False))
+            assert detector.stable_view_tracks("a", "s", captured, ([actor], captured, 16/9, False))
         events = detector.observe("a", "s", [actor], captured, captured, stable=True)
         confirmations.extend([captured]*len(events))
         if index == 10:
-            assert detector.needs_stable_view("a", "s", captured + .8)
-            assert not detector.needs_stable_view("a", "s", captured + 1.51)
+            assert detector.stable_view_tracks("a", "s", captured + .8)
+            assert not detector.stable_view_tracks("a", "s", captured + 1.51)
     assert confirmations == [104.25]
 
 
@@ -309,7 +309,7 @@ def test_one_missed_track_frame_retains_only_observed_posture_time(down_gap, con
     confirmations = []
     for captured, people, session, coalesced in occlusion_observations(down_gap=down_gap):
         if captured == 101.75:
-            assert detector.needs_stable_view("a", session, captured, (people, captured, 16/9, coalesced))
+            assert detector.stable_view_tracks("a", session, captured, (people, captured, 16/9, coalesced))
         found = detector.observe("a", session, people, captured, captured, stable=True, coalesced=coalesced)
         confirmations.extend((event["started_mono"], event["descent_mono"], captured) for event in found)
     assert confirmations == [(101.25, 101.75, confirmation)]
@@ -322,7 +322,7 @@ def test_missed_track_frame_cannot_substitute_for_upright_time_or_continuity(fen
     detector = FallDetector()
     for captured, people, session, coalesced in occlusion_observations(fence):
         if captured == 101.75:
-            assert not detector.needs_stable_view("a", session, captured, (people, captured, 16/9, coalesced))
+            assert not detector.stable_view_tracks("a", session, captured, (people, captured, 16/9, coalesced))
         assert not detector.observe("a", session, people, captured, captured, stable=True, coalesced=coalesced)
 
 
@@ -331,7 +331,7 @@ def test_consecutive_misses_during_down_confirmation_end_original_episode():
     for captured, people, session, coalesced in occlusion_observations(down_gap=True):
         if captured == 102.75:
             assert not detector.observe("a", session, [], 102.625, 102.625, stable=True)
-            assert not detector.needs_stable_view("a", session, captured)
+            assert not detector.stable_view_tracks("a", session, captured)
         assert not detector.observe("a", session, people, captured, captured, stable=True, coalesced=coalesced)
 
 

@@ -97,12 +97,13 @@ class SafetyRecorder:
                    and job.receipt is not None and job.receipt.pending and not job.expired
                    and self.current(job) for job in self.jobs.values())
 
-    def pending_fall(self, camera, token, revision):
+    def fall_view_tracks(self, camera, token, revision):
         now = self.clock()
-        return any(job.camera == camera and job.token is token and job.revision == revision
-                   and job.feature is None and not job.expired and self.current(job)
-                   and (now <= job.captured + self.POST_WINDOW or job.saved is None
-                        or job.appended < len(job.following)) for job in self.jobs.values())
+        return {(job.event['track'], job.event['started_mono']) for job in self.jobs.values()
+                if job.camera == camera and job.token is token and job.revision == revision
+                and job.feature is None and not job.expired and self.current(job)
+                and (now <= job.captured + self.POST_WINDOW or job.saved is None
+                     or job.appended < len(job.following))}
 
     def maintain(self):
         now = self.clock()

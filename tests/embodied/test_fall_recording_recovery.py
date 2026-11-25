@@ -654,8 +654,9 @@ async def test_an_incomplete_neighbor_row_does_not_drop_the_confirmed_fall(monit
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner', ['primary', 'secondary'])
-@pytest.mark.parametrize('joint_gap', [False, True])
-async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(monitor, owner, joint_gap, monkeypatch):
+@pytest.mark.parametrize('joint_gap, second_fall', [(False, False), (True, False), (False, True)])
+async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(
+        monitor, owner, joint_gap, second_fall, monkeypatch):
     runtime, camera, session = monitor.runtime, monitor.camera, 'synthetic-source'
     state = {}
     item = dict(privacy_closed=False, source_active=True, control_epoch=1, mode='auto', mode_revision='intent')
@@ -664,6 +665,8 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
     moving_until = 0
     moves = []
     after_post_frames = 30 if joint_gap else 28
+    if second_fall:
+        after_post_frames = 64
 
     async def advance(_=0):
         nonlocal index
@@ -679,8 +682,12 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
         if index % 4 == 0:
             await runtime.sync_policy()
         stable = now >= moving_until
-        actor = person(index >= 7)
-        if index >= 7:
+        second_person = second_fall and index >= 28
+        falling = index >= (43 if second_person else 7)
+        actor = person(falling)
+        if second_person:
+            actor['id'] = 8
+        if falling:
             actor['box']['x'] += .24
             for joint in actor['joints'].values():
                 joint['x'] += .24
@@ -737,12 +744,15 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
     with pytest.raises(asyncio.CancelledError):
         await loop()
     await runtime.drain()
-    events = monitor.store.events()
-    assert len(events) == 1 and events[0]['kind'] == 'fall', (owner, moves)
-    assert len(events[0]['frames']) >= 12, (owner, moves)
     gap = .5 if joint_gap else 0
-    assert events[0]['captured_at'] == 1800000103.75 + gap
-    assert moves and min(moves) > 106.75 + gap, '确认及后续画面收齐后，镜头才恢复自动跟随'
+    events = sorted(monitor.store.events(), key=lambda event: event['captured_at'])
+    expected = [('7', 1800000103.75 + gap)]
+    if second_fall:
+        expected.append(('8', 1800000112.75))
+    assert [(event['track'], event['captured_at']) for event in events] == expected, (owner, moves)
+    assert all(event['kind'] == 'fall' and len(event['frames']) >= 12 for event in events), (owner, moves)
+    resumed_after = 115.75 if second_fall else 106.75 + gap
+    assert moves and min(moves) > resumed_after, '确认及后续画面收齐后，镜头才恢复自动跟随'
     monkeypatch.setattr(safety_api, 'PRIVATE', monitor.store.path.parent)
     router = APIRouter()
     console = safety_api.install(router, SimpleNamespace(process=None))
@@ -752,7 +762,7 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(m
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://local') as client:
             path = '/api/embodied/safety/events'
             result = await client.get(path)
-            visible, = result.json()['events']
+            visible = next(event for event in result.json()['events'] if event['id'] == events[0]['id'])
             assert result.status_code == 200 and visible['id'] == events[0]['id']
             assert visible['camera'] == camera and visible['captured_at'] == events[0]['captured_at']
             ordinal = visible['frames'][0]['ordinal']

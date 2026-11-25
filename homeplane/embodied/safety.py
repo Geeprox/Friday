@@ -703,22 +703,25 @@ class FallDetector:
                 and (down is None or geometry["horizontal"])
                 and iou(track["last_box"], geometry["box"]) >= (.45 if down else .25))
 
-    def needs_stable_view(self, camera, session, evaluated, queued=None):
-        """用最新一帧判断是否需要维持视角，不消耗跌倒确认进度。"""
+    def stable_view_tracks(self, camera, session, evaluated, queued=None):
+        """取需要维持视角的轨迹与本次下降前的基线时间。"""
         state = self.cameras.get(camera)
         if state is None or state["session"] != session:
-            return False
+            return set()
         if queued is None:
-            return (0 <= evaluated - state["last"] <= 1.5
-                    and any(not track["fired"] and track["down"] is not None
-                            and (not track["missed_frame"] or 0 <= evaluated - track["last"] <= self.MAX_POSE_GAP)
-                            for track in state["tracks"].values()))
+            if not 0 <= evaluated - state["last"] <= 1.5:
+                return set()
+            return {(key, track["anchor"]["at"]) for key, track in state["tracks"].items()
+                    if not track["fired"] and track["down"] is not None
+                    and (not track["missed_frame"] or 0 <= evaluated - track["last"] <= self.MAX_POSE_GAP)}
         people, captured, aspect, coalesced = queued
         if (not 0 <= evaluated - captured <= 1.5 or not 0 < captured - state["last"] <= self.MAX_FRAME_GAP
                 or not 0.2 <= aspect <= 5):
-            return False
+            return set()
+        pending = set()
         for person in people[:self.MAX_TRACKS]:
-            track = state["tracks"].get(self._track_key(person))
+            key = self._track_key(person)
+            track = state["tracks"].get(key)
             if track is None or track["fired"] or not 0 < captured - track["last"] <= self.MAX_FRAME_GAP:
                 continue
             if not self._identity_matches(track, self.current_identity(person, evaluated)):
@@ -731,8 +734,8 @@ class FallDetector:
                 continue
             slide = self._slide_progress(track, geometry, captured, coalesced or track["missed_frame"])
             if self._descent_kind(track, geometry, captured, coalesced, slide):
-                return True
-        return False
+                pending.add((key, track["anchor"]["at"]))
+        return pending
 
     def confirmed_down(self, camera, session, track, *, started, evaluated, max_age):
         state = self.cameras.get(camera)
@@ -1283,27 +1286,29 @@ class SafetyRuntime:
                 and 0 <= time.monotonic() - self.last_seen.get(camera, -math.inf) <= 1.5)
 
     def fall_pending(self, camera, session):
-        """仅在当前获准来源的疑似跌倒确认或留档期间请求稳定视角。"""
+        """返回当前获准来源各次跌倒确认与留档所需的视角。"""
         if not self._current_review_source(camera, session):
-            return False
+            return frozenset()
         # 策略暂时读不到时，已准入的留档仍可短暂停留，新的候选需要有效策略。
-        if self.policy_cache.enabled and self.recording.pending_fall(
-                camera, self.source_tokens.get(camera), self.policy_cache.revision):
-            return True
+        token = self.source_tokens[camera]
+        recording = (self.recording.fall_view_tracks(camera, token, self.policy_cache.revision)
+                     if self.policy_cache.enabled else set())
         if not self._cached_policy().enabled:
-            return False
+            return frozenset(recording)
+        evaluated = time.monotonic()
         queued = self.pending.get(camera)
         if queued is None:
-            return self.detector.needs_stable_view(camera, session, time.monotonic())
+            return frozenset(recording | self.detector.stable_view_tracks(camera, session, evaluated))
         args, kwargs = queued
         _, _, people, now, captured = args
         aspect = kwargs['aspect']
-        if (kwargs['_admission'] is not self.source_tokens.get(camera)
+        if (kwargs['_admission'] is not token
                 or type(now) not in (int, float) or not 0 <= now - captured <= 1.5
                 or type(aspect) not in (int, float)):
-            return False
-        return self.detector.needs_stable_view(camera, session, time.monotonic(),
-                                              (people, captured, aspect, kwargs['_coalesced']))
+            return frozenset(recording)
+        pending = self.detector.stable_view_tracks(camera, session, evaluated,
+                                                   (people, captured, aspect, kwargs['_coalesced']))
+        return frozenset(recording | pending)
 
     def review_pending(self, camera, session):
         """Fresh same-source sound or visual review, without starting a model."""
