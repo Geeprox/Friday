@@ -397,7 +397,7 @@ async def test_queued_household_gestures_cannot_cross_a_party_hold_but_other_cam
         home=SimpleNamespace(armed=True, spawn=jobs.append),
         secondary_homes={"secondary": SimpleNamespace(armed=True)},
         interaction_source_current=lambda _: True,
-        fleet=SimpleNamespace(current=lambda *_: True, receipts=deque()),
+        fleet=SimpleNamespace(claim=lambda *_: True, receipts=deque()),
         practice=SimpleNamespace(suppresses=lambda _: False),
         wall=SimpleNamespace(notice=Mock()),
         time=SimpleNamespace(monotonic=lambda: 10.0, time=lambda: 1000.0),

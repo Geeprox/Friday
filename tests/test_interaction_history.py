@@ -67,7 +67,8 @@ async def test_delayed_receipt_keeps_trigger_time_and_rule_metadata(monkeypatch)
     event = dict(camera='synthetic-camera', session='synthetic-session', track=7,
                  target='lamp', action='on', event_id='synthetic-history',
                  binding='a' * 32, revision=3, gesture='hand.open_palm', scope='home',
-                 triggered_at=1794024000.25, observed_mono=20)
+                 triggered_at=1794024000.25, observed_mono=20,
+                 _actor=('track', 'synthetic-camera', 'synthetic-session', 7))
     try:
         await scope['dispatch_interactions']([event])
         await asyncio.wait_for(waiting.wait(), 1)
@@ -80,7 +81,7 @@ async def test_delayed_receipt_keeps_trigger_time_and_rule_metadata(monkeypatch)
         for key in ('camera', 'target', 'action', 'binding', 'revision', 'gesture', 'scope'):
             assert receipt[key] == event[key]
         assert receipt['acknowledged'] and receipt['reached_target']
-        assert not {'session', 'track', 'observed_mono', 'event_id'} & receipt.keys()
+        assert not {'session', 'track', 'observed_mono', 'event_id', '_actor'} & receipt.keys()
     finally:
         release.set()
         await asyncio.gather(*tasks, return_exceptions=True)
