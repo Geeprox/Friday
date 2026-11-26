@@ -69,7 +69,16 @@ async def test_overlapping_audio_uses_the_original_motor_or_the_attended_view(
     device = AsyncMock(return_value=dict(status='reported_match', reached_target=True, acknowledged=True))
     monkeypatch.setattr(home_service.bridge, 'command', device)
     routing = VoiceRouting(lambda: True, clock=clock.monotonic)
-    routing.COLLECT_SECONDS = .01
+    routing.COLLECT_SECONDS = 0
+    synthetic_capture_complete = asyncio.Event()
+    dispatch = routing._dispatch
+
+    async def dispatch_after_capture():
+        # 两路回放采集只差 20 毫秒。收集完成由回放推进，避免受真实 CI 调度影响。
+        await synthetic_capture_complete.wait()
+        await dispatch()
+
+    monkeypatch.setattr(routing, '_dispatch', dispatch_after_capture)
     fleet = InteractionFleet(voice_revoked=routing.discard)
     primary, secondary = (CAMERA, OTHER) if winner == 'primary' else (OTHER, CAMERA)
     services = {
@@ -127,6 +136,8 @@ async def test_overlapping_audio_uses_the_original_motor_or_the_attended_view(
                 await home.audio_task
 
     assert routing.task is not None
+    assert set(routing.pending) == set(services)
+    synthetic_capture_complete.set()
     await routing.task
     home = services[CAMERA['id']]
     home.request.assert_awaited_once()
