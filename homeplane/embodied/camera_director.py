@@ -408,8 +408,8 @@ class CameraDirector:
             return match if same_target else None
         cue, origin, direction = self.sound_follow_motion
         view = sample.get('_patrol_view')
-        shift = self._directional_shift(origin, view, direction)
-        if shift is None or view[2] <= self.last_move:
+        shift = _view_shift(origin, view)
+        if not self._matches_direction(shift, direction) or view[2] <= self.last_move:
             return None
         # 跟随转向后的同一目标必须出现在两次独立配准确认的新视角中。
         if same_target and math.dist(shift, previous[3]) <= .025:
@@ -608,13 +608,10 @@ class CameraDirector:
         proof, self.sound_confirmed_view = self.sound_confirmed_view, None
         return proof
 
-    def _directional_shift(self, before, after, direction):
-        shift = _view_shift(before, after)
-        if shift is not None:
-            axis, sign = self.PATROL_AXES[direction]
-            if sign * shift[axis] >= .025 and abs(shift[axis]) >= 1.5 * abs(shift[1-axis]):
-                return shift
-        return None
+    def _matches_direction(self, shift, direction):
+        axis, sign = self.PATROL_AXES[direction]
+        return (shift is not None and sign * shift[axis] >= .025
+                and abs(shift[axis]) >= 1.5 * abs(shift[1-axis]))
 
     def _defer_auto_patrol(self, pending, now):
         # 相对角度无法确认，暂缓下一次自动巡视。互动和清晰视野恢复仍从当前画面判断。
@@ -622,7 +619,7 @@ class CameraDirector:
         self.scan_direction = 'left' if pending['direction'] == 'right' else 'right'
         self.patrol_retry_at = now + self.AUTO_PATROL_RETRY_SECONDS
 
-    def _confirm_patrol(self, sample, now, sound_cue=None):
+    def _confirm_patrol(self, sample, now, sound_cue=None, *, observation_requested=False):
         pending = self.patrol_confirmation
         if pending is None:
             return False
@@ -649,25 +646,37 @@ class CameraDirector:
         pending['stamp'] = stamp
         if stamp < self.last_move + 2:
             return True
-        if ordinary and sample.get('scene_visible') is False:
+        visible = sample.get('scene_visible')
+        if ordinary and (visible is False or visible is True and observation_requested):
             self._defer_auto_patrol(pending, now)
             return False
         view = sample.get('_patrol_view')
-        if (self.mode == 'survey' or pending.get('sound_search')) and view is not None and view[0] != pending['view'][0]:
-            self._discard_patrol()
+        if ((ordinary or self.mode == 'survey' or pending['sound_search'])
+                and view is not None and view[0] != pending['view'][0]):
+            if ordinary:
+                self._defer_auto_patrol(pending, now)
+            else:
+                self._discard_patrol()
             return False
-        shift = (self._directional_shift(pending['view'], view, pending['direction'])
-                 if sample.get('scene_visible') is True else None)
-        if shift is None:
+        shift = _view_shift(pending['view'], view) if visible is True else None
+        moved = self._matches_direction(shift, pending['direction'])
+        steady = (ordinary and shift is not None and view[2] >= self.last_move + 2
+                  and math.hypot(*shift) <= .012)
+        if not moved and not steady:
             pending['previous'] = None
             return True
         previous = pending['previous']
-        if previous is not None:
-            previous_stamp, previous_view_at, previous_shift = previous
+        if previous is not None and previous[3] == moved:
+            previous_stamp, previous_view_at, previous_shift, _ = previous
             # 配准最多每 0.3 秒计算一次。两次采样必须跨过复用窗口。
             if view[2] - previous_view_at < .35:
                 return True
             if stamp - previous_stamp <= 3.5 and math.dist(shift, previous_shift) <= .025:
+                if steady:
+                    # 当前画面清晰且连续接近起始视角，可以恢复观察。巡视步进仍未确认。
+                    self._defer_auto_patrol(pending, now)
+                    self.visible_samples = 1
+                    return False
                 self.patrol_confirmation = None
                 self.patrol_view_state = 'confirmed'
                 self.failed_moves = 0
@@ -688,7 +697,7 @@ class CameraDirector:
                         self.scan_steps = 0
                 self.visible_samples = 1
                 return False
-        pending['previous'] = (stamp, view[2], shift)
+        pending['previous'] = (stamp, view[2], shift, moved)
         return True
 
     def _review_window(self, key, scope, now, duration, interval, reserve):
@@ -913,7 +922,14 @@ class CameraDirector:
             self.phase = 'checking_view'
         wake_waiting = self._wake_waits_for_voice(sample, now, sound_cue)
         confirming_cue = sound_cue.cue if wake_waiting else sound_cue
-        if self._confirm_patrol(sample, now, confirming_cue):
+        patrol = self.patrol_confirmation
+        observation_requested = (
+            patrol is not None and self.mode == 'auto' and not patrol['sound_search']
+            and (occupied_elsewhere or bool(sample.get('people')) or wake_waiting
+                 or self._review_holds(sample, now, review_pending, fall_pending)
+                 or self._sound_start_available(sample, now, sound_cue))
+        )
+        if self._confirm_patrol(sample, now, confirming_cue, observation_requested=observation_requested):
             return None
         if self._survey_done():
             self.phase = 'survey_finished'

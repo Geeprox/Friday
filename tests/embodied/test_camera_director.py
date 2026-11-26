@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from homeplane.embodied.camera_director import CameraDirector, visible_scene
+from homeplane.embodied.camera_audio import WakeCameraCue, WakeCameraPause
 from homeplane.embodied.intent import address, transcript_quality
 from homeplane.embodied.home_service import HomeService
 from homeplane.embodied.ptz_control import CameraLease, FLAGS
@@ -527,16 +528,87 @@ def test_patrol_without_visual_confirmation_reverses_after_a_pause_and_keeps_the
     assert director.choose(sample(16), 16) == 'right'
     director.sent(16)
     for at in (18, 19, 24, 25, 29, 42, 53):
-        assert director.choose(sample(at), at) is None
+        assert director.choose(sample(at, x=.02), at) is None
     assert director.public()['view_usable']
     assert director.public()['patrol_view_state'] == 'unconfirmed'
     assert director.failed_moves == 0 and director.position == (0, 0)
-    assert director.choose(sample(54), 54) == 'left'
+    assert director.choose(sample(54, x=.02), 54) == 'left'
     director.sent(54)
     assert director.choose(sample(56.5, x=-.05), 56.5) is None
     assert director.choose(sample(57, x=-.05), 57) is None
     assert director.public()['patrol_view_state'] == 'confirmed'
     assert director.position == (-1, 0)
+
+
+@pytest.mark.parametrize('basis', ['synthetic-room', 'new-room-reference'])
+def test_auto_patrol_restores_observation_without_claiming_an_unproved_angle(basis):
+    director = CameraDirector()
+    clear(director)
+    assert director.choose(sample(16), 16) == 'right'
+    director.sent(16)
+    if basis == 'synthetic-room':
+        for at, registered_at in ((18, 17.4), (18.05, 17.9)):
+            stale_fit = dict(sample(at), _patrol_view=patrol_view(registered_at))
+            assert director.choose(stale_fit, at) is None
+            assert director.phase == 'confirming_view'
+    first = sample(18.1, x=.004, basis=basis)
+    assert director.choose(first, 18.1) is None
+    assert not director.public()['view_usable']
+    cached = dict(first, _local_received=18.3)
+    if basis == 'synthetic-room':
+        assert director.choose(cached, 18.3) is None
+        assert director.phase == 'confirming_view'
+    assert director.choose(sample(18.6, x=.005, basis=basis), 18.6) is None
+    assert director.public()['view_usable']
+    assert director.public()['patrol_view_state'] == 'unconfirmed'
+    assert director.position == (0, 0) and director.scan_steps == 0
+
+
+@pytest.mark.parametrize('event,phase', [
+    ('person', 'following'), ('elsewhere', 'observing'), ('fall', 'review_held'),
+])
+def test_auto_patrol_yields_to_current_interaction_or_review_once_settled(event, phase):
+    director = CameraDirector()
+    clear(director)
+    assert director.choose(sample(16), 16) == 'right'
+    director.sent(16)
+    context = dict(occupied_elsewhere=event == 'elsewhere', fall_pending=event == 'fall')
+    people = [person(x=.44, identity='synthetic-adult')] if event == 'person' else []
+    for at in (17.5, 18.1, 18.6):
+        frame = sample(at, x=.02, people=people)
+        assert director.choose(frame, at, **context) is None
+        if at == 17.5:
+            assert director.phase == 'confirming_view'
+        if at == 18.1:
+            assert not director.public()['view_usable']
+    assert director.phase == phase
+    assert director.public()['view_usable']
+    assert director.public()['patrol_view_state'] == 'unconfirmed'
+
+
+@pytest.mark.parametrize('voice_active', [False, True])
+def test_current_wake_preempts_idle_patrol_confirmation_after_settling(voice_active):
+    director = CameraDirector()
+    clear(director)
+    assert director.choose(sample(16), 16) == 'right'
+    director.sent(16)
+    source = ('synthetic-capture', 'synthetic-context')
+    cue = WakeCameraCue(16.2, 'first', source, 1, confirmed_mono=16.5)
+    stale_scope = dict(sample(18.1, x=.02), tracking_current=True, _wake_source=('other', 'other'))
+    assert director.choose(stale_scope, 18.1, sound_cue=cue) is None
+    assert director.phase == 'confirming_view'
+
+    def frame(at):
+        return dict(sample(at, x=.02), tracking_current=True, _wake_source=source)
+
+    signal = WakeCameraPause(cue) if voice_active else cue
+    assert director.choose(frame(18.4), 18.4, sound_cue=signal) is None
+    assert director.public()['patrol_view_state'] == 'unconfirmed'
+    if voice_active:
+        assert director.choose(frame(18.8), 18.8, sound_cue=signal) is None
+    else:
+        assert director.choose(frame(18.8), 18.8, sound_cue=cue) == 'left'
+        assert director.decision_current(frame(18.8), 18.8, 'left', sound_cue=cue)
 
 
 def test_auto_patrol_hands_an_obstructed_view_back_after_settling():
