@@ -44,6 +44,7 @@ class Patrol:
         self.view_offset = 0.
         self.view_height = 0.
         self.session = 'SYNTHETIC-review-motion'
+        self.capture_session = 'f' * 32
         self.state = {}
         self.director = CameraDirector()
         self.item = dict(privacy_closed=False, source_active=True, control_epoch=1, mode=mode, mode_revision='intent')
@@ -56,14 +57,19 @@ class Patrol:
         home.clock += .5
         if home.clock > self.duration:
             raise asyncio.CancelledError
-        task = home.runtime.visual.task
+        runtime = home.runtime
+        await runtime.sync_policy()
+        runtime.capture_frame(self.camera, self.capture_session, self.context, home.clock)
+        task = runtime.visual.task
         if home.engine.release_due() and task:
             await task
             await settle()
         stable = home.clock >= self.moving_until
-        await home.runtime.observe(self.camera, self.session, self.people if stable else [], home.clock, home.clock,
+        runtime.offer(self.camera, self.session, self.people if stable else [], home.clock, home.clock,
             stable=stable, jpeg=bytes([self.marker])+b'SYNTHETIC-FRAME',
-            source_context=self.context, source_name='合成镜头')
+            source_context=self.context, source_name='合成镜头', capture_session=self.capture_session)
+        if observation := runtime.observation_task:
+            await observation
         self.state.update(status='live', _local_received=home.clock, session_id=self.session,
                           tracking_current=True, scene_visible=stable, people=self.people if stable else [],
                           _patrol_view=patrol_view(home.clock, x=self.view_offset, y=self.view_height) if stable else None)
@@ -83,7 +89,8 @@ class Patrol:
         self.moving_until = self.home.clock + 1
         self.view_offset += .05 * ((direction == 'right') - (direction == 'left'))
         self.view_height += .05 * ((direction == 'down') - (direction == 'up'))
-        self.home.runtime.clear(self.camera)
+        # 实际主副镜头转向时只清除视角，同一授权取流仍可完成已确认留档。
+        self.home.runtime.clear_view(self.camera)
         if self.owner == 'secondary':
             self.director.sent(self.home.clock, direction)
         return {'native_code':0}

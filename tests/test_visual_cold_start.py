@@ -68,9 +68,32 @@ def cold_home(tmp_path,monkeypatch,**options):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('owner',['primary','secondary'])
 async def test_cold_start_uses_recent_frames_and_still_corroborates_in_original_patrol(tmp_path,monkeypatch,owner):
-    home,engine=cold_home(tmp_path,monkeypatch);patrol=Patrol(home,owner)
+    home,engine=cold_home(tmp_path,monkeypatch)
+    patrol=Patrol(home,owner)
+    release_write=asyncio.Event()
+    held_writes=[]
+    persist=home.runtime.recording.persist
+    motor=patrol.motor
+
+    async def persist_after_motion(job):
+        if not held_writes:
+            # 首条已确认记录跨越一次正常转向，以固定顺序复现后台存储延迟。
+            held_writes.append(job.identifier)
+            await release_write.wait()
+        await persist(job)
+
+    async def move_before_write(*args, **kwargs):
+        result=await motor(*args, **kwargs)
+        if held_writes and not release_write.is_set():
+            release_write.set()
+            await home.runtime.recording.drain()
+        return result
+
+    monkeypatch.setattr(home.runtime.recording, 'persist', persist_after_motion)
+    monkeypatch.setattr(patrol, 'motor', move_before_write)
     try:
-        await patrol.run()
+        await asyncio.wait_for(patrol.run(), 10)
+        assert held_writes and release_write.is_set()
         events=home.store.events()
         assert events, (owner,'cold startup consumed evidence freshness',engine.ready_at,
                         [(at,frames[-1][0])for at,frames in engine.inputs],patrol.moves)
@@ -81,6 +104,7 @@ async def test_cold_start_uses_recent_frames_and_still_corroborates_in_original_
         assert patrol.moves
         home.runtime.speaker.say.assert_not_awaited()
     finally:
+        release_write.set()
         await home.runtime.close()
 
 
