@@ -54,6 +54,7 @@ class CameraDirector:
     FALL_HOLD_SECONDS = 8
     FALL_INTERVAL_SECONDS = 20
     PATROL_CONFIRM_SECONDS = 8
+    AUTO_PATROL_RETRY_SECONDS = 30
     FOLLOW_REACQUIRE_SECONDS = 8
     FOLLOW_REFERENCE_INTERVAL = 2
     TILT_DIRECTIONS = ('up', 'down')
@@ -119,6 +120,7 @@ class CameraDirector:
         self.survey_interruption = None
         self.patrol_confirmation = None
         self.patrol_view_state = 'idle'
+        self.patrol_retry_at = 0.0
         self.game_hold = False
         self.review_windows = {}
         self.sound_search_cue = None
@@ -192,6 +194,7 @@ class CameraDirector:
             self.survey_interrupted = False
             self.survey_interruption = None
             self.patrol_view_state = 'idle'
+            self.patrol_retry_at = 0.0
             if mode == 'survey':
                 self.position = (0, 0)
                 self.blocked_positions.clear()
@@ -613,6 +616,12 @@ class CameraDirector:
                 return shift
         return None
 
+    def _defer_auto_patrol(self, pending, now):
+        # 相对角度无法确认，暂缓下一次自动巡视。互动和清晰视野恢复仍从当前画面判断。
+        self._discard_patrol()
+        self.scan_direction = 'left' if pending['direction'] == 'right' else 'right'
+        self.patrol_retry_at = now + self.AUTO_PATROL_RETRY_SECONDS
+
     def _confirm_patrol(self, sample, now, sound_cue=None):
         pending = self.patrol_confirmation
         if pending is None:
@@ -622,7 +631,11 @@ class CameraDirector:
                 or self._camera_window(sample) != pending['game_window']):
             self._discard_patrol()
             return False
+        ordinary = self.mode == 'auto' and not pending['sound_search']
         if now >= pending['deadline']:
+            if ordinary:
+                self._defer_auto_patrol(pending, now)
+                return False
             # 退避从确认超时起算，画面稳定和巡视间隔仍从实际发出转向起算。
             last_move = self.last_move
             self.failed(now)
@@ -636,6 +649,9 @@ class CameraDirector:
         pending['stamp'] = stamp
         if stamp < self.last_move + 2:
             return True
+        if ordinary and sample.get('scene_visible') is False:
+            self._defer_auto_patrol(pending, now)
+            return False
         view = sample.get('_patrol_view')
         if (self.mode == 'survey' or pending.get('sound_search')) and view is not None and view[0] != pending['view'][0]:
             self._discard_patrol()
@@ -948,6 +964,7 @@ class CameraDirector:
             self.recovery_steps = self.scan_steps = 0
             self.recovery_retry_at = 0.0
             self.recovery_pan_reversed = False
+            self.patrol_retry_at = 0.0
             self.last_direction = None
             self.position = (0, 0)
             self.blocked_positions.clear()
@@ -1122,7 +1139,8 @@ class CameraDirector:
         if self.mode == 'auto' and self.followed_person:
             self.phase = 'target_lost'
             return None
-        if occupied_elsewhere or now-self.last_person < 15 or now-self.last_move < 12:
+        if (occupied_elsewhere or now < self.patrol_retry_at
+                or now-self.last_person < 15 or now-self.last_move < 12):
             self.phase = 'observing'
             return None
         return self._patrol(sample, now)
@@ -1146,6 +1164,9 @@ class CameraDirector:
                 stamp=now, deadline=now + self.PATROL_CONFIRM_SECONDS, previous=None,
                 sound_search=pending['phase'] == 'sound_search')
             self.patrol_view_state = 'checking'
+            if self.mode == 'auto' and pending['phase'] == 'patrolling':
+                self.failed_moves = 0
+                self.retry_at = 0.0
         else:
             if self.survey_confirmed_moves:
                 self._interrupt_survey()

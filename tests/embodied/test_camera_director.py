@@ -521,24 +521,42 @@ def test_patrol_confirmation_expires_with_its_original_scope(change):
     assert director.survey_confirmed_moves == 0 and director.position == (0, 0)
 
 
-def test_patrol_does_not_keep_pulsing_when_acks_arrive_without_movement():
+def test_patrol_without_visual_confirmation_reverses_after_a_pause_and_keeps_the_clear_view():
     director = CameraDirector()
     clear(director)
-    for attempt, at in enumerate((16, 29, 42), 1):
-        assert director.choose(sample(at), at) == 'right'
-        director.sent(at)
-        assert director.choose(sample(at+8), at+8) is None
-        assert director.failed_moves == attempt
-        assert director.choose(sample(at+10), at+10) is None
-        assert director.choose(sample(at+11), at+11) is None
-    assert director.choose(sample(109), 109) is None
-    assert director.phase == 'motor_unavailable'
-    assert director.choose(sample(110), 110) is None
-    assert director.choose(sample(111), 111) == 'right'
-    director.sent(111)
-    assert director.choose(sample(113.5, x=.05), 113.5) is None
-    assert director.choose(sample(114, x=.05), 114) is None
-    assert director.failed_moves == 0 and director.position == (1, 0)
+    assert director.choose(sample(16), 16) == 'right'
+    director.sent(16)
+    for at in (18, 19, 24, 25, 29, 42, 53):
+        assert director.choose(sample(at), at) is None
+    assert director.public()['view_usable']
+    assert director.public()['patrol_view_state'] == 'unconfirmed'
+    assert director.failed_moves == 0 and director.position == (0, 0)
+    assert director.choose(sample(54), 54) == 'left'
+    director.sent(54)
+    assert director.choose(sample(56.5, x=-.05), 56.5) is None
+    assert director.choose(sample(57, x=-.05), 57) is None
+    assert director.public()['patrol_view_state'] == 'confirmed'
+    assert director.position == (-1, 0)
+
+
+def test_auto_patrol_hands_an_obstructed_view_back_after_settling():
+    director = CameraDirector()
+    clear(director)
+    assert director.choose(sample(16), 16) == 'right'
+    director.sent(16)
+    assert director.choose(sample(17.5, visible=False), 17.5) is None
+    assert director.phase == 'confirming_view'
+    assert director.choose(sample(18, visible=False), 18) is None
+    assert director.choose(sample(18.5, visible=False), 18.5) is None
+    frame = sample(19, visible=False)
+    assert director.choose(frame, 19) == 'left'
+    assert director.decision_current(frame, 19, 'left')
+    assert not director.public()['view_usable']
+    director.sent(19)
+    assert director.choose(sample(21), 21) is None
+    assert director.choose(sample(21.5), 21.5) is None
+    assert director.public()['view_usable']
+    assert director.failed_moves == 0
 
 
 def test_unknown_dispatch_forgets_relative_angle_and_preserves_confirmed_count():
