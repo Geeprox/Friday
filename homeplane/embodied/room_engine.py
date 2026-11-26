@@ -24,6 +24,27 @@ DEFAULT = {
 }
 
 
+def matching_finger_side(body, hand, aspect):
+    """只在两套检测的指尖对应唯一且可分辨时返回骨架侧别。"""
+    def distance(a, b):
+        return math.hypot((a['x'] - b['x']) * aspect, a['y'] - b['y'])
+
+    candidates = []
+    for side in ('left', 'right'):
+        pairs = []
+        for name in ('indexTip', 'littleTip', 'thumbTip'):
+            anchor = body.get(side + name[0].upper() + name[1:])
+            tip = hand.get(name)
+            if anchor and tip and min(anchor.get('confidence', 0), tip.get('confidence', 0)) >= .55:
+                pairs.append((anchor, tip))
+        if len(pairs) < 2 or any(distance(a, b) > .05 for a, b in pairs):
+            continue
+        if any(min(distance(a, c), distance(b, d)) > .06
+               for i, (a, b) in enumerate(pairs) for c, d in pairs[i+1:]):
+            candidates.append(side + 'Wrist')
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def calibration_draft(config):
     """Editing handles on a unit canvas, never an observed household layout."""
     draft = copy.deepcopy(config)
@@ -512,17 +533,42 @@ class Room:
                 for side in ("leftWrist", "rightWrist"):
                     q = p["joints"].get(side)
                     if q:
-                        matches.append((math.hypot((q["x"] - wrist["x"]) * ratio, q["y"] - wrist["y"]), p))
-            distance, person = min(matches, key=lambda a: a[0], default=(1, None))
-            if person is not None and distance <= 0.18:
+                        matches.append((math.hypot((q["x"] - wrist["x"]) * ratio, q["y"] - wrist["y"]), p, side))
+            matches.sort(key=lambda match: match[0])
+            distance, person, body_side = matches[0] if matches else (1, None, None)
+            stable_side = hand["side"]
+            # 单手与单人骨架的腕点唯一重合时，侧别预测短暂跳变仍属同一只手。
+            if (len(hands) == 1 and len(people) == 1 and distance < .06
+                    and len(matches) == 2 and matches[1][0] - distance > .05
+                    and person["joints"][body_side].get("confidence", 0) >= .55):
+                stable_side = body_side.removesuffix("Wrist")
+            owner_matched = person is not None and distance <= 0.18
+            if not moving and len(people) == 1 and len(hands) == 1:
+                if not owner_matched and hand.get("mask_owner_box") == people[0]["box"]:
+                    person = people[0]
+                    owner_matched = True
+                if not people[0]["joints"] and wrist.get("confidence", 0) >= .55:
+                    partial = sorted((math.hypot((q["x"] - wrist["x"]) * ratio, q["y"] - wrist["y"]), side)
+                                     for side, q in people[0].get("arm_wrists", {}).items())
+                    if (partial and partial[0][0] <= .045
+                            and (len(partial) == 1 or partial[1][0] - partial[0][0] > .05)):
+                        person = people[0]
+                        stable_side = partial[0][1].removesuffix("Wrist")
+                        owner_matched = True
+                finger_side = matching_finger_side(people[0]["joints"], j, ratio)
+                if finger_side and (not owner_matched or body_side == finger_side):
+                    person = people[0]
+                    stable_side = finger_side.removesuffix("Wrist")
+                    owner_matched = True
+            if owner_matched:
                 hand["person_id"] = person["id"]
                 person["hands"].append(index)
             else:
                 person = None
-            raw_gesture = classify_hand(j, ratio)
+            raw_gesture = classify_hand(j, ratio, world_horns=hand.get("world_horns") is True)
             hand["raw_gesture"] = raw_gesture
             hand["gesture"] = self.gestures.update(
-                (hand["person_id"], hand["side"]), raw_gesture, wrist, now, hand.get("sample_id")
+                (hand["person_id"], stable_side), raw_gesture, wrist, now, hand.get("sample_id")
             )
             if hand["gesture"] != "pointing" or person is None:
                 continue
