@@ -14,8 +14,8 @@ function panel({supported=true,recognition=true,powerEnabled=true,initialMode='a
  const h=(tag,text,attrs={})=>{const n=new Element(tag);n.textContent=text||'';for(const[k,v]of Object.entries(attrs)){n.setAttribute(k,v);if(k==='class')n.className=v;if(k==='hidden')n.hidden=true;}return n;};
  const add=(n,...children)=>{n.append(...children);return n;};
  const slot=new Element('section'),requests=[],pending={},routes=[];let mode=initialMode,phase=mode==='survey'?'patrolling':'following',tick,deferRead=false,deferControl=false,deferPower=false;
- let state='live',revision=0,result=null,confirmed=mode==='survey'?4:0,oldReport=null,failRead=false,interruption=null;
- const report=()=>({state,primary:true,recognition_enabled:recognition,camera_control:{owner:'friday',mode,phase,
+ let state='live',recognitionState,frameAvailable,revision=0,result=null,confirmed=mode==='survey'?4:0,oldReport=null,failRead=false,interruption=null;
+ const report=()=>({state,recognition:recognitionState,frame_available:frameAvailable,primary:true,recognition_enabled:recognition,camera_control:{owner:'friday',mode,phase,
   intent_revision:String(revision),survey_result:result,survey_confirmed_moves:confirmed,survey_total_steps:10,survey_interruption:interruption,
   reason:phase==='sound_search'?'异响后环视':mode==='pets'?'跟随宠物':mode==='hold'?'停留当前视角':mode==='survey'?(result==='complete'?'本轮巡视完成':result?'本轮巡视未完成':'巡视低处'):'跟随人物'},pet_tracking:{supported}});
  function apply(next){mode=next;revision++;phase=next==='survey'?'patrolling':next==='hold'?'held':'following';result=null;interruption=null;confirmed=0;return{mode,intent_revision:String(revision)};}
@@ -43,6 +43,7 @@ function panel({supported=true,recognition=true,powerEnabled=true,initialMode='a
   progress:()=>all(slot).find(n=>n.tagName==='progress'),
   image:()=>all(slot).find(n=>n.tagName==='img'),tick:()=>tick(),deferRead:()=>deferRead=true,deferControl:()=>deferControl=true,
   delayModeRead:()=>oldReport=report(),failRead:()=>failRead=true,setState:value=>state=value,
+  setPreview:(source,perception,frame)=>{state=source;recognitionState=perception;frameAvailable=frame;},
   finishSurvey:outcome=>{phase='survey_finished';result=outcome;confirmed=outcome==='complete'?10:4;},
   soundSearch:()=>{phase='sound_search';interruption='sound';},
   async click(label){const b=button(label);assert(b&&!b.disabled,'Enabled button: '+label);await b.onclick();await settle();}};
@@ -63,6 +64,20 @@ test('late preview read cannot put a frame or enabled controls back after stop',
  await c.click('停止查看');c.pending.read();await read;
  assert.equal(c.image().hidden,true);assert.equal(c.status(),'已停止查看');assert.equal(c.button('跟随宠物').disabled,true);
  assert.equal(c.requests.filter(r=>r.path.endsWith('/preview/stop')).length,1);
+});
+
+test('感知延迟时继续显示新画面并暂停自动跟随，关闭优先于画面状态',async()=>{
+ const c=panel();await settle();await c.click('查看实时画面');
+ c.setPreview('unavailable','waiting',true);await c.tick();await settle();
+ assert.equal(c.image().hidden,false);
+ assert.equal(c.status(),'实时画面 · 感知延迟');
+ for(const mode of ['跟随人物','跟随宠物','巡视一轮'])assert.equal(c.button(mode).disabled,true);
+ assert.equal(c.button('向左').disabled,false);
+ c.setPreview('live','running',true);await c.tick();await settle();
+ assert.equal(c.button('跟随人物').disabled,false);
+ c.setPreview('shutter_closed','waiting',true);await c.tick();await settle();
+ assert.equal(c.image().hidden,true);
+ assert(!c.requests.some(r=>r.path.endsWith('/power')&&r.body));
 });
 
 test('late follow reply cannot overwrite the stopped view',async()=>{

@@ -1012,9 +1012,15 @@ async def run_source(my_generation):
                     "attention_enabled": True,
                     "animals_enabled": pet_revision is not None,
                 }, on_failure=recognition_failed)
+                elapsed = time.monotonic() - phase_at
+                queue.note_processing(elapsed)
                 if detection is None:
                     continue
-                timings['vision_ms'] = round((time.monotonic()-phase_at)*1000,1)
+                timings['vision_ms'] = round(elapsed * 1000, 1)
+                for field in ('body_ms', 'hand_ms', 'animal_ms'):
+                    duration = detection.get(field)
+                    if type(duration) in (int, float) and 0 <= duration < 60_000:
+                        timings[field] = round(duration, 1)
                 phase_at = time.monotonic()
                 if my_generation != generation:
                     break
@@ -1603,10 +1609,16 @@ async def reconcile_registered_cameras(request: Request):
     return {'active': task is owner and not owner.done()}
 
 
-def primary_recovery_frame():
-    if (state.get('status') == 'connecting' and state.get('recognition') == 'recovering'
-            and capture is not None and capture.returncode is None):
-        return wall.frame(SELECTED['id'])
+def primary_preview_frame():
+    # 识别延迟只撤销动作输入。仍由当前采集进程和画面时效决定能否预览。
+    if (state.get('status') not in {'connecting', 'live'}
+            or capture is None or capture.returncode is not None):
+        return None
+    preview = wall.frame(SELECTED['id'])
+    if preview is not None:
+        return preview[0]
+    if state['status'] == 'live' and last_preview and 0 <= time.time() - last_preview_at < 2:
+        return last_preview
     return None
 
 
@@ -1617,16 +1629,17 @@ async def preview_status(camera_id: str, request: Request):
     if camera_id == SELECTED["id"]:
         report = view()
         session = report['camera_sessions'][0]
+        current = session['recognition'] == 'running' and session['state'] == 'live'
         return {
             "state": report["status"],
             "camera": camera_id,
             "frames": state["processed_frames"],
             "primary": True,
             "recognition": session['recognition'],
-            "frame_available": session['recognition'] == 'recovering' and bool(primary_recovery_frame()),
+            "frame_available": bool(primary_preview_frame()),
             "camera_control": report.get('camera_control'),
             "pet_tracking": report.get('pet_tracking'),
-            "follow_target_available": report['status'] == 'live' and (report.get('camera_control') or {}).get('owner') == 'friday',
+            "follow_target_available": current and (report.get('camera_control') or {}).get('owner') == 'friday',
         }
     return previews.status(camera_id)
 
@@ -1636,13 +1649,12 @@ async def preview_frame(camera_id: str, request: Request):
     if request.client.host not in {"127.0.0.1", "::1"}:
         raise HTTPException(403)
     if camera_id == SELECTED['id']:
-        recovery_frame = primary_recovery_frame()
-        frame = recovery_frame[0] if recovery_frame else last_preview if view()['status'] == 'live' else None
+        frame = primary_preview_frame()
     else:
         frame = previews.frame(camera_id)
     if not frame:
         raise HTTPException(409, detail="camera_frame_unavailable")
-    return Response(frame, media_type="image/jpeg")
+    return Response(frame, media_type="image/jpeg", headers={'Cache-Control': 'no-store'})
 
 
 def primary_follow_sample():

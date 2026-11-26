@@ -345,7 +345,8 @@ def create_router(service, core, lock, infrastructure=None, *, arl_runtime=None,
     @router.get("/api/embodied/cameras/{camera_id}/frame")
     async def preview_frame(camera_id: str):
         try:
-            return Response(await service.preview(camera_id, frame=True), media_type="image/jpeg")
+            return Response(await service.preview(camera_id, frame=True), media_type="image/jpeg",
+                            headers={'Cache-Control': 'no-store'})
         except ValueError:
             raise HTTPException(409, detail="camera_frame_unavailable") from None
 

@@ -134,7 +134,7 @@ class PreviewPool:
             follow_target_available=bool(item.get('follow_picker') and tracking),
             audio_enabled=bool(self.recognize and self.on_audio),
             recognition='running' if recognizing else 'recovering' if recovering else 'waiting',
-            frame_available=bool(self._recovery_frame(camera_id, item)),
+            frame_available=bool(self._capture_frame(camera_id, item) or self._processed_frame(camera_id, item)),
             latency_ms=item.get('latency_ms') if recognizing else None,
             people=item.get('people',0) if tracking else 0,
             hands=item.get('hands',0) if tracking else 0,
@@ -149,21 +149,28 @@ class PreviewPool:
             manual_control=bool(item.get('control')),
         )
 
-    def _recovery_frame(self, camera_id, item):
-        if (item.get('recognition_recovering') and self.wall
-                and self.source_current(camera_id, item.get('process'))):
+    def _capture_frame(self, camera_id, item):
+        if self.wall and self.source_current(camera_id, item.get('process')):
             return self.wall.frame(camera_id)
+        return None
+
+    def _processed_frame(self, camera_id, item):
+        if (item['state'] == 'live' and not item.get('privacy_closed')
+                and 0 <= time.time() - item['received_at'] < 2
+                and (self.wall is None or self.source_current(camera_id, item.get('process')))):
+            return item.get("frame")
         return None
 
     def frame(self, camera_id):
         item = self.sessions.get(camera_id)
         if not item:
             return None
-        recovery_frame = self._recovery_frame(camera_id, item)
-        if not recovery_frame and self.status(camera_id)["state"] != "live":
+        preview = self._capture_frame(camera_id, item)
+        frame = preview[0] if preview else self._processed_frame(camera_id, item)
+        if not frame:
             return None
         item["expires"] = time.monotonic() + 60
-        return recovery_frame[0] if recovery_frame else item["frame"]
+        return frame
 
     def source_current(self, camera_id, process):
         item = self.sessions.get(camera_id)
@@ -645,9 +652,11 @@ class PreviewPool:
                         stage='recognition'
                         recognizer.animals_enabled = item['mode'] in PET_MODES
                         recognizer.animals_intent = item.get('mode_revision')
+                        began = time.monotonic()
                         observation = await recognizer.observe(packet,
                             source_current=lambda: self.source_current(selected['id'], process),
                             on_vision_failure=recognition_failed)
+                        queue.note_processing(time.monotonic() - began)
                         if item['privacy_closed'] or not item['source_active']:break
                         # Inference finishing after a stale input cannot trigger.
                         item['timing'] = recognizer.timing

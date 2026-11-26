@@ -11,6 +11,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from fastapi import HTTPException, Request
+from fastapi.responses import Response
 
 from homeplane.embodied.vision_pipe import PIPE_LIMIT, request_vision
 from homeplane.embodied import camera_recognition, previews, ptz_control, vision_pipe
@@ -232,7 +234,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
     owner['safety'].recording_status = lambda:{'state':'ready'}
     owner['games'].reset('ski')
     for name in ('reap','invalidate_calibration','calibration_source','primary_frame_current','scene_frame_current',
-                 'primary_recovery_frame','view','preview_status','preview_frame','interaction_game_window','run_source'):
+                 'primary_preview_frame','view','preview_status','preview_frame','interaction_game_window','run_source'):
         actual('homeplane/embodied/worker.py', name, owner)
     task = asyncio.create_task(owner['run_source'](1))
     state = owner['state']
@@ -267,7 +269,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         assert capture.returncode is None and failed.returncode==0
         queue.put_nowait(b'')
         await asyncio.wait_for(task, 1)
-        assert owner['primary_recovery_frame']() is None and owner['capture'] is None
+        assert owner['primary_preview_frame']() is None and owner['capture'] is None
         assert capture.returncode==replacement.returncode==0
         failed.wait.assert_awaited_once()
         capture.wait.assert_awaited_once()
@@ -277,6 +279,60 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         if not task.done():
             task.cancel()
         await asyncio.gather(task,return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["primary", "secondary"])
+@pytest.mark.parametrize("cutoff", ["closed", "retired", "expired"])
+async def test_details_keep_raw_preview_during_recognition_lag_until_source_is_revoked(monkeypatch, owner, cutoff):
+    from tests.embodied.test_secondary_stream_recovery import CAMERA
+
+    clock = [100.]
+    port = SimpleNamespace(returncode=None)
+    camera = CAMERA["id"]
+    wall = CameraWall([CAMERA], clock=lambda: clock[0])
+    epoch = wall.begin(camera)
+    raw = b"\xff\xd8SYNTHETIC-FRESH-PREVIEW\xff\xd9"
+    wall.offer(camera, epoch, dict(type="frame", preview_at=100.,
+                                    preview=base64.b64encode(raw).decode()))
+    local_time = SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0])
+    if owner == "primary":
+        state = dict(status="live", processed_frames=12)
+        report = dict(status="unavailable", camera_sessions=[dict(state="unavailable", recognition="waiting")],
+                      camera_control=dict(owner="friday", view_usable=False))
+        scope = dict(state=state, capture=port, wall=wall, SELECTED=CAMERA, time=local_time,
+                     last_preview=b"OLD-PROCESSED-FRAME", last_preview_at=97.,
+                     view=lambda: report, Request=Request, Response=Response, HTTPException=HTTPException)
+        for name in ("primary_preview_frame", "preview_status", "preview_frame"):
+            actual("homeplane/embodied/worker.py", name, scope)
+        request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
+        status = await scope["preview_status"](camera, request)
+        response = await scope["preview_frame"](camera, request)
+        assert response.body == raw and response.headers["cache-control"] == "no-store"
+    else:
+        monkeypatch.setattr(previews, "time", local_time)
+        pool = previews.PreviewPool(recognize=True, wall=wall)
+        state = dict(state="live", source_active=True, privacy_closed=False, process=port,
+                     frames=12, received_at=97., shutter_changed=False, frame=b"OLD-PROCESSED-FRAME",
+                     people=2, hands=1, follow_picker=object(), tracking_current=True)
+        pool.sessions[camera] = state
+        status = pool.status(camera)
+        assert pool.frame(camera) == raw
+    assert status["frame_available"] is True
+    assert status["recognition"] == "waiting" and not status["follow_target_available"]
+    if cutoff == "closed":
+        state["status" if owner == "primary" else "state"] = "shutter_closed"
+    elif cutoff == "retired":
+        port.returncode = 0
+    else:
+        clock[0] += 2
+    if owner == "primary":
+        assert (await scope["preview_status"](camera, request))["frame_available"] is False
+        with pytest.raises(HTTPException) as error:
+            await scope["preview_frame"](camera, request)
+        assert error.value.status_code == 409
+    else:
+        assert pool.status(camera)["frame_available"] is False and pool.frame(camera) is None
 
 
 @pytest.mark.asyncio

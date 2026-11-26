@@ -206,6 +206,21 @@ def test_recent_high_resolution_packet_survives_preview_burst_as_whole_frame():
     assert queue.empty()
 
 
+def test_recent_processing_cost_prefers_a_fresh_frame_then_restores_face_priority():
+    queue = PendingFrames(clock=lambda: 100.4)
+    face, latest = packet(100., True), packet(100.4)
+    queue.note_processing(1.22)
+    queue.offer(face)
+    queue.offer(latest)
+    assert queue.get_nowait() is latest
+    assert queue.empty()
+    queue.note_processing(.5)
+    queue.offer(face)
+    queue.offer(latest)
+    assert queue.get_nowait() is face
+    assert queue.get_nowait() is latest
+
+
 @pytest.mark.parametrize('taken_at, newest_at', [(100.50001, 100.4), (99., 99.)])
 def test_priority_is_checked_when_taken_and_excludes_stale_or_future_face(taken_at, newest_at):
     queue = PendingFrames(clock=lambda: taken_at)

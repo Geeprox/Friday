@@ -34,6 +34,9 @@ SYNTHETIC_MEDIA = {
     # 隔离浏览器中的四路模拟反馈及镜头状态，无真实家庭数据。
     'docs/screenshots/camera-perception-status.png':
         '74c29a7db93ee822009562a1d11e9b5e9e799644ef1c7121aa9ce98896e5a9ad',
+    # 仅从合成镜头详情生成，使用绘制的房间画面。
+    'docs/screenshots/camera-preview-during-recognition-delay.png':
+        '3a78e05f71ed3175651acf479f654f61318bd675386186aef9c7a4fd8955756a',
     # 照护控制台的合成姿态与镜头，截图仅来自隔离的本机测试页。
     'docs/screenshots/safety-fall-views.png':
         '0159efe7c8bcd4660548f4b8eabf7272144b9c2161a11d843bd1b04986f0b126',

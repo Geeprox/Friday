@@ -1,6 +1,7 @@
 """按原始到达时间编码并选择镜头样本。"""
 import asyncio
 import base64
+import math
 import time
 
 import cv2
@@ -18,6 +19,11 @@ class PendingFrames:
         self._available = asyncio.Event()
         self._latest = None
         self._face = None
+        self._processing_seconds = 0.
+
+    def note_processing(self, seconds):
+        if type(seconds) in (int, float) and math.isfinite(seconds) and seconds >= 0:
+            self._processing_seconds = seconds
 
     def offer(self, packet):
         if self._latest is not None and self._latest.get('type') == 'error':
@@ -51,7 +57,9 @@ class PendingFrames:
         self._face = None
         if face is not None and face is not latest:
             now = self._clock()
-            if 0 <= now - face.get('received_at', -100) <= .5:
+            # 处理已经变慢时，给原有识别时效留出余量，优先读取最新整帧。
+            useful_age = min(.5, 1.5 - self._processing_seconds)
+            if 0 <= now - face.get('received_at', -100) <= useful_age:
                 # 取走人脸帧时保留更新的帧，供下一次识别选取。
                 return face
         self._latest = None

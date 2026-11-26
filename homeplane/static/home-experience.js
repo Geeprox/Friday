@@ -172,8 +172,15 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
   const followButtons=[],directions=[];
   const owns=()=>alive&&frame.isConnected&&previewStop===dispose;
   const current=epoch=>owns()&&epoch===previewEpoch;
-  const hasLiveFrame=()=>followReport?.frame_available||followReport?.state==='live'||followReport?.status==='live';
+  function hasLiveFrame(){
+   if(!followReport)return false;
+   const closed=['privacy_closed','privacy_shutter_closed','shutter_closed','stopped'];
+   if([followReport.reason,followReport.state,followReport.status].some(value=>closed.includes(value)))return false;
+   return followReport.frame_available??(followReport.state==='live'||followReport.status==='live');
+  }
   const live=()=>viewing&&hasLiveFrame();
+  const recognizes=()=>followReport?.recognition==='running'||followReport?.recognition===undefined&&
+   (followReport?.state==='live'||followReport?.status==='live');
   const surveyControl=()=>cameraControl?.mode==='survey'?cameraControl:null;
   const surveying=()=>!!surveyControl()&&!cameraControl.survey_result&&cameraControl.phase!=='survey_finished';
   const selectingMode=()=>['person_target','pet_target'].includes(cameraControl?.mode);
@@ -237,7 +244,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    const frameCurrent=live();
    const recovering=followReport?.recognition==='recovering';
    const focused=globalThis.document?.activeElement;
-   const canStart=canAim&&frameCurrent&&!recovering&&followReport?.recognition_enabled!==false;
+   const canStart=canAim&&frameCurrent&&recognizes()&&followReport?.recognition_enabled!==false;
    const canPick=canStart&&followReport?.follow_target_available===true;
    targetToggle.hidden=!canPick;
    targetToggle.disabled=modePending||directionPending||!!picker;
@@ -259,7 +266,8 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     const title=retry?'重新'+label:label;
     if(b.textContent!==title)b.textContent=title;
     modeAvailability(b,canStart&&!unsupported);
-    b.title=recovering?'感知恢复中':!frameCurrent?'等待实时画面':followReport?.recognition_enabled===false?'当前镜头未开启识别':unsupported?'当前识别服务暂不支持宠物跟随':'';
+    b.title=recovering?'感知恢复中':!frameCurrent?'等待实时画面':followReport?.recognition_enabled===false?'当前镜头未开启识别':
+     !recognizes()?'感知延迟':unsupported?'当前识别服务暂不支持宠物跟随':'';
     b.setAttribute('aria-pressed',String(active&&!retry));
    }
    const report=surveyControl(),running=surveying();
@@ -271,7 +279,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    const interrupted=report?.survey_interruption==='sound'?'本轮因异响结束':'本轮巡视未完成';
    let surveyText=({complete:'本轮巡视完成',interrupted}[report?.survey_result])||report?.reason||'';
    if(running&&statusReadFailed)surveyText='巡视状态待更新';
-   else if(running&&recovering)surveyText='等待感知恢复';
+   else if(running&&frameCurrent&&!recognizes())surveyText='等待感知恢复';
    else if(running&&followReport&&!hasLiveFrame())surveyText='等待画面恢复';
    if(surveyStatus.textContent!==surveyText)surveyStatus.textContent=surveyText;
    surveyTrack.hidden=!hasProgress;
@@ -285,7 +293,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
    survey.textContent=running?'停止巡视':'巡视一轮';
    modeAvailability(survey,running?!!report.intent_revision:canStart&&cameraControl?.owner==='friday'&&cameraControl.phase!=='game_held');
    if(surveyHadFocus&&(surveyRow.hidden||survey.hidden))watch.focus({preventScroll:true});
-   if(recovering&&(focused===targetToggle||focused===survey&&survey.disabled
+   if(frameCurrent&&!recognizes()&&(focused===targetToggle||focused===survey&&survey.disabled
       ||followButtons.some(([,control])=>control===focused)))watch.focus({preventScroll:true});
    for(const b of directions)b.disabled=directionPending||!!picker||!frameCurrent||!(followReport?.primary||followReport?.manual_control);
   }
@@ -550,7 +558,7 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
     }
     if(!viewing)return;
     const recovering=report.recognition==='recovering';
-    if(recovering&&picker){
+    if(!recognizes()&&picker){
      const focused=pickerTools.contains(document.activeElement)||targetChoices.contains(document.activeElement);
      leavePicker();
      if(focused)watch.focus({preventScroll:true});
@@ -560,8 +568,10 @@ export function mountExperience(root,{page,go,legacyConnections,legacyRules,snap
      image.hidden=false;placeholder.hidden=true;
      if(picker?.revision&&(!selectingMode()||cameraControl?.intent_revision!==picker.revision||!report.follow_target_available))leavePicker();
      if(picker)void readTargetPhoto(picker);
-     else setStatus(recovering?'实时画面 · 感知恢复中':
-      report.recognition_enabled===false||surveyControl()?'实时画面':cameraControl?.reason||'实时画面');
+     else if(report.recognition_enabled===false)setStatus('实时画面');
+     else if(recovering)setStatus('实时画面 · 感知恢复中');
+     else if(!recognizes())setStatus('实时画面 · 感知延迟');
+     else setStatus(surveyControl()?'实时画面':cameraControl?.reason||'实时画面');
     }else{
      leavePicker();
      clearFrame();

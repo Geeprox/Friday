@@ -1,13 +1,20 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Friday · 感知状态合成示例</title><link rel="icon" href="data:,">
 <link rel="stylesheet" href="/homeplane/static/style.css"><link rel="stylesheet" href="/homeplane/static/icons.css"><link rel="stylesheet" href="/homeplane/static/home-conversation.css"><script defer src="/homeplane/static/copy-layout.js"></script>
-<link rel="stylesheet" href="/homeplane/static/games-library.css"><link rel="stylesheet" href="/homeplane/static/home-experience.css"><link rel="stylesheet" href="/homeplane/static/interface.css"><link rel="stylesheet" href="/homeplane/static/connection-setup.css"><link rel="stylesheet" href="/homeplane/static/motion-guide.css"><style>.icon-microphone{mask-image:url('/homeplane/static/icons/microphone.svg');-webkit-mask-image:url('/homeplane/static/icons/microphone.svg')}</style></head>
+<link rel="stylesheet" href="/homeplane/static/games-library.css"><link rel="stylesheet" href="/homeplane/static/home-experience.css"><link rel="stylesheet" href="/homeplane/static/interface.css"><link rel="stylesheet" href="/homeplane/static/connection-setup.css"><link rel="stylesheet" href="/homeplane/static/motion-guide.css"><style>
+.icon-microphone{mask-image:url('/homeplane/static/icons/microphone.svg')}
+.icon-chevron-right{mask-image:url('/homeplane/static/icons/chevron-right.svg')}
+.icon-video{mask-image:url('/homeplane/static/icons/video.svg')}
+.icon-power{mask-image:url('/homeplane/static/icons/power.svg')}
+.icon-hand{mask-image:url('/homeplane/static/icons/hand.svg')}
+</style></head>
 <body>
 <a class="skip" href="#workspace">跳到内容</a>
 <aside class="sidebar"><a class="brand" href="#home">Friday</a><div class="household">示例家庭</div></aside>
 <div class="shell"><header class="topbar"><span class="badge">合成示例 · 未连接设备</span></header><main id="workspace" tabindex="-1"><div class="page-header"><div><h1>互动控制</h1><p class="muted">合成状态，展示画面与感知的区别。</p></div></div><section class="experience" id="content" aria-label="家庭状态"></section></main></div>
 <script type="module">
 import {mountInteractions} from '/homeplane/static/interactions.js';
+import {mountExperience} from '/homeplane/static/home-experience.js';
 const devices=['示例客厅','示例书房','示例卧室','示例走廊'].map((room,index)=>({id:'cam_'+String(index+1).repeat(10),kind:'camera',room,name:'示例镜头'}));
 const sessions=[
  {state:'live',recognition:'running',preview_fresh:true},
@@ -22,9 +29,41 @@ const routes={
  '/api/embodied/infrastructure':{policy:{enabled:true,recognition:true,interaction:true}},
  '/api/embodied/voice-preferences':{revision:0,wake_word:'Friday'}
 };
+const detail=location.hash==='#detail';
+const endpoint='/api/embodied/cameras/'+devices[0].id;
+if(detail){
+ const camera={...devices[0],available:true,controls:[],readings:[],camera_state:'live'};
+ Object.assign(routes,{
+  '/api/home/overview':{connected:true,simulated:true,devices:[camera],rooms:[],control_count:0},
+  [endpoint+'/power']:{enabled:true,revision:'synthetic'},
+  [endpoint+'/preview']:{state:'unavailable',recognition:'waiting',frame_available:true,primary:true,
+   camera_control:{owner:'friday',mode:'hold',phase:'held',reason:'停留当前视角',intent_revision:'synthetic'}},
+  [endpoint+'/interaction']:{enabled:true,revision:'synthetic'}
+ });
+ // 用完全人工生成的预览检验详情的真实取帧路径。
+ const sample=document.createElement('canvas');sample.width=640;sample.height=360;
+ const g=sample.getContext('2d');
+ g.fillStyle='#c0b5a8';g.fillRect(0,0,640,360);
+ g.fillStyle='#6e655b';g.fillRect(0,230,640,130);
+ g.fillStyle='#6d7674';g.fillRect(410,29,185,158);
+ g.fillStyle='#9fb5b7';g.fillRect(422,41,161,134);
+ g.fillStyle='#d4d0c8';g.fillRect(78,148,272,93);g.fillRect(66,213,296,57);
+ g.fillStyle='#ae9b8d';g.fillRect(171,250,269,66);
+ g.fillStyle='#7b6b5b';g.fillRect(246,255,137,27);
+ const preview=sample.toDataURL('image/jpeg');
+ const source=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');
+ Object.defineProperty(HTMLImageElement.prototype,'src',{...source,set(value){
+  source.set.call(this,value.startsWith(endpoint+'/frame?')?preview:value);
+ }});
+ document.querySelector('h1').textContent='摄像头';
+ document.querySelector('.page-header p').textContent='合成镜头详情';
+}
 window.fetch=async(path,options={})=>{
+ if(detail&&options.method==='POST'&&path===endpoint+'/preview')
+  return {ok:true,json:async()=>({state:'live'})};
  if(options.method||!Object.hasOwn(routes,path))throw Error('合成示例只允许读取固定状态');
  return {ok:true,json:async()=>structuredClone(routes[path])};
 };
-mountInteractions(document.getElementById('content'),{data:{devices},go(){},toast(){}});
+if(detail)mountExperience(document.getElementById('content'),{page:'Cameras',go(){}});
+else mountInteractions(document.getElementById('content'),{data:{devices},go(){},toast(){}});
 </script></body></html>
