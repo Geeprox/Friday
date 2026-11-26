@@ -4,6 +4,7 @@ import asyncio
 import fcntl
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -139,6 +140,11 @@ def local_result(row, did, siid, piid, *, write):
 
 
 async def property_operation(manager, request, grant, group, dids, scope_current):
+    illuminance = request.get('read') == 'illuminance'
+    if illuminance:
+        if set(request) != {'did', 'siid', 'piid', 'grant', 'read'}:
+            raise ValueError('mijia_invalid_binding')
+        request = {key: value for key, value in request.items() if key != 'read'}
     did, siid, piid, power = property_request(request)
     if (not scope_current() or request.get('grant') != grant or did not in dids
             or not manager.can_control(did) or manager.in_local_cooldown(did)
@@ -151,8 +157,17 @@ async def property_operation(manager, request, grant, group, dids, scope_current
             else:
                 row = await manager.set_prop_async(did, siid, piid, power == 'on')
     except TimeoutError:
-        manager.note_local_failure(did)
+        if not illuminance:
+            manager.note_local_failure(did)
         raise
+    if illuminance:
+        value = row.get('value') if isinstance(row, dict) else None
+        if (not scope_current() or not manager.can_control(did)
+                or (manager.local_device(did) or {}).get('group_id') != group
+                or type(value) not in (int, float) or (type(value) is float and not math.isfinite(value))
+                or type(row.get('code')) is not int or row['code'] != 0):
+            raise ValueError('mijia_property_unconfirmed')
+        return {'value': value}
     return local_result(row, did, siid, piid, write=power is not None)
 
 
@@ -269,7 +284,7 @@ async def serve(reader, session):
                     raise ValueError('mijia_lan_unavailable')
                 if request == {'routes': True}:
                     reply = route_snapshot(hub, allowed, home.group_id)
-                elif 'cover' in request:
+                elif 'cover' in request and request.get('read') != 'illuminance':
                     reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
                 else:
                     reply = await property_operation(hub, request, grant, home.group_id, allowed, current)

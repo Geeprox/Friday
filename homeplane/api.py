@@ -412,6 +412,22 @@ def create_app(
                 "directory_state": "unavailable", "directory_devices": None,
                 "directory_recovery_attempts": 0}
 
+    @app.get("/api/embodied/mijia-lan/illuminance/{candidate}")
+    async def mijia_lan_illuminance(candidate: str, request: Request):
+        origin = request.headers.get("origin")
+        if (request.client is None or request.client.host not in {"127.0.0.1", "::1"}
+                or (origin is not None and origin != str(request.base_url).rstrip("/"))):
+            raise HTTPException(403, detail="unauthorized")
+        if not re.fullmatch(r"[a-f0-9]{64}", candidate):
+            raise HTTPException(404, detail="mijia_illuminance_unavailable")
+        if core.actions.mijia is not None:
+            try:
+                reading = await core.actions.mijia.read_illuminance(candidate)
+                return JSONResponse(reading, headers={"Cache-Control": "no-store"})
+            except (OSError, ValueError, TypeError, TimeoutError, httpx.HTTPError):
+                pass
+        raise HTTPException(503, detail="mijia_illuminance_unavailable")
+
     @app.get("/api/embodied/infrastructure")
     async def infrastructure_status():
         return infrastructure.report()

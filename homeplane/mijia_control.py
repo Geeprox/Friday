@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -88,8 +89,28 @@ def power_property(spec, unique_id, kind, device_urn, device_model):
 POWER_OPERATIONS = frozenset({'light.set', 'switch.set', 'fan.set', 'climate.power', 'humidifier.power', 'water_heater.power'})
 
 
+def illuminance_readback(prop, value):
+    if type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)):
+        raise ValueError('mijia_illuminance_unavailable')
+    bounds = prop.get('value-range')
+    if prop.get('unit') == 'lux' and isinstance(bounds, list) and len(bounds) == 3:
+        low, high, step = bounds
+        if (all(type(n) in (int, float) and (type(n) is int or math.isfinite(n)) for n in bounds)
+                and 0 <= low < high and step > 0 and low <= value <= high):
+            return {'kind': 'numeric', 'unit': 'lux', 'value': value}
+    choices = prop.get('value-list')
+    if prop.get('unit') is None and isinstance(choices, list) and len(choices) == 2 and type(value) is int and all(
+        isinstance(item, dict) and type(item.get('value')) is int
+        and isinstance(item.get('description'), str) for item in choices
+    ):
+        values = {item['value']: item['description'].strip().lower() for item in choices}
+        if set(values.values()) == {'weak', 'strong'} and value in values:
+            return {'kind': 'category', 'unit': None, 'value': values[value]}
+    raise ValueError('mijia_illuminance_unavailable')
+
+
 class MijiaPower:
-    """直连只接管已有授权的确定性电源操作，使用原有实体 ID。"""
+    """复用米家家庭授权派发电源操作和执行只读光照查询。"""
 
     def __init__(self, service, *, spec=None, request=request_property, lan=None):
         if spec is None:
@@ -109,6 +130,36 @@ class MijiaPower:
                 and isinstance(family, str) and FAMILY.fullmatch(family)):
             return family
         return None
+
+    async def read_illuminance(self, candidate):
+        from .embodied.miot_spec import properties, property_ref
+
+        report = self.service.discovery_report
+        family, grant = self.current_family(), report.get('grant')
+        rows = [row for row in report.get('devices', []) if isinstance(row, dict) and row.get('id') == candidate]
+        if (not family or not isinstance(grant, str) or not FAMILY.fullmatch(grant)
+                or len(rows) != 1 or rows[0].get('kind') != 'device'):
+            raise ValueError('mijia_illuminance_unavailable')
+        identity = xiaomi_identifier(rows[0].get('identity'))
+        catalog = report.get('models', {}).get(identity) if identity else None
+        if not isinstance(catalog, dict) or not isinstance(urn := catalog.get('urn'), str):
+            raise ValueError('mijia_illuminance_unavailable')
+        did = identity.split('_', 1)[1]
+        if not self.lan.ready(family, did):
+            raise ValueError('mijia_illuminance_unavailable')
+        spec = await self._spec(urn)
+        if (not isinstance(spec, dict) or spec.get('type') != urn
+                or self.service.discovery_report is not report or self.current_family() != family):
+            raise ValueError('mijia_illuminance_unavailable')
+        props = properties(spec)
+        siid, piid = property_ref(props, 'illumination', 'read')
+        value = await self.lan.request(dict(did=did, siid=siid, piid=piid, grant=grant, read='illuminance'),
+                                       family=family)
+        if self.service.discovery_report is not report or self.current_family() != family:
+            raise ValueError('mijia_illuminance_unavailable')
+        reading = illuminance_readback(props['illumination'], value.get('value'))
+        return dict(status='reported', source=candidate, transport='mijia_lan',
+                    received_at=datetime.now(UTC).isoformat(), measured_at=None, **reading)
 
     def cover_context(self, cover, directory):
         from .embodied.mijia_lan import home_input
