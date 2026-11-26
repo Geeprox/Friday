@@ -886,8 +886,16 @@ class CameraDirector:
         identity = person.get('identity') or {}
         return identity.get('person_id') if identity.get('state') in {'matched', 'tracked'} else None
 
+    def ordinary_patrol_pending(self):
+        return (self.mode == 'auto' and self.pending_decision is not None
+                and self.pending_decision['phase'] == 'patrolling')
+
+    def defer_patrol(self):
+        self.pending_direction = self.pending_decision = None
+        self.phase = 'patrol_deferred'
+
     def choose(self, sample, now, *, focus=None, occupied_elsewhere=False, review_pending=False, fall_pending=False,
-               sound_cue=None):
+               sound_cue=None, ordinary_patrol_allowed=True):
         # 镜头稳定等待期间也要撤销单人前提，避免两人交错后误跟。
         if self.reframe_started is not None and len(sample.get('people') or []) > 1:
             self.single_person_move = False
@@ -1198,6 +1206,9 @@ class CameraDirector:
                 or now-self.last_person < 15 or now-self.last_move < 12):
             self.phase = 'observing'
             return None
+        if self.mode == 'auto' and not ordinary_patrol_allowed:
+            self.defer_patrol()
+            return None
         return self._patrol(sample, now)
 
     def sent(self, now, direction=None, *, automatic=True):
@@ -1288,6 +1299,7 @@ class CameraDirector:
                   'following':'跟随人物', 'target_ambiguous':'等待确认目标',
                   'target_reacquiring':'正在确认原目标', 'target_lost':'未找到原目标', 'target_selecting':'等待选择目标',
                   'patrolling':'环视房间', 'observing':'静候互动', 'held':'停留当前视角',
+                  'patrol_deferred':'保留当前视角',
                   'sound_search':'异响后环视',
                   'confirming_view':'确认新视角', 'patrol_waiting_view':'等待清晰视角',
                   'survey_finished':'本轮巡视已结束', 'pet_unavailable':'宠物识别暂不可用',
@@ -1315,7 +1327,7 @@ class CameraDirector:
                     intent_revision=self.intent[1] if self.intent else None,
                     native_patrol=False, view_usable=self.clear and self.phase in {
                         'following','target_ambiguous','patrolling','sound_search','observing','game_held','pet_unavailable',
-                        'review_held','patrol_waiting_view','target_reacquiring','target_lost'},
+                        'review_held','patrol_waiting_view','patrol_deferred','target_reacquiring','target_lost'},
                     uncover_steps=self.uncover_steps, recovery_steps=self.recovery_steps,
                     survey_attempts=self.survey_attempts, survey_command_limit=self.SURVEY_ATTEMPT_LIMIT,
                     survey_confirmed_moves=self.survey_confirmed_moves, survey_total_steps=len(self.SURVEY_ROUTE),

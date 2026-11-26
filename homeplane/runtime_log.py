@@ -46,7 +46,7 @@ UPSTREAMS = frozenset({'local', 'ha', 'arl', 'nas'})
 RESULTS = frozenset({'ok', 'refused', 'unavailable', 'timeout', 'cancelled', 'error'})
 # Membership is the privacy boundary. Syntactically valid strings are NOT trusted codes.
 CODES = frozenset('''none unclassified internal_error invalid_local_origin origin_required
-unsupported_ttl identity_unavailable offline_dependency stale_input unsupported invalid_readback
+unsupported_ttl identity_unavailable offline_dependency stale_input unsupported invalid_readback camera_patrol_deferred
 unavailable_readback invalid_actuator_binding request_refused
 authentication_unavailable subscription_disconnected event_buffer_overflow state_delta_discontinuity
 reconcile_not_converged event_identity_mismatch

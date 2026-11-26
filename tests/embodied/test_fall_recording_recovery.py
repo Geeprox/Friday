@@ -253,7 +253,7 @@ async def manual_turn(monitor, owner):
             waiters[command['request_id']].set_result({'native_code': 0})
 
         scope = dict(asyncio=asyncio, time=safety.time, secrets=secrets, json=json, waiters=waiters,
-                     motion_lock=asyncio.Lock(), selected={'id': camera}, recognizer=None, director=CameraDirector(),
+                     motion_lock=asyncio.Lock(), selected={'id': camera}, recognizer=None, director=CameraDirector(), patrol=None,
                      camera_is_open=AsyncMock(return_value=True), current_sample=dict,
                      item=dict(privacy_closed=False, source_active=True, control_epoch=1),
                      process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=write, drain=AsyncMock())),
@@ -737,7 +737,7 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(
                                  review_pending=runtime.review_pending,
                                  fall_pending=lambda *args: runtime.fall_pending(*args),
                                  sound_cue=recorded_sound_only(runtime)),
-            current_sample=lambda: dict(state), privacy_closed=lambda: None, send_motion=motor)
+            current_sample=lambda: dict(state), privacy_closed=lambda: None, send_motion=motor, patrol=None)
         loop = source_function('homeplane/embodied/previews.py', 'direct', scope)
 
     await advance()

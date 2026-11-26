@@ -402,7 +402,7 @@ bindings = ActionBindings(registry)
 configure(registry, bindings, games, home)
 
 
-async def motor_step(direction, observed=None, expected_intent=None, decision_current=None):
+async def motor_step(direction, observed=None, expected_intent=None, decision_current=None, *, ordinary_patrol=False):
     global motor_sequence, motion_generation, motor_last_sent
     if direction not in ("left", "right", "up", "down"):
         raise ValueError("invalid_motor_direction")
@@ -459,6 +459,8 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
                 raise RuntimeError('stale_input')
             if now >= expires:
                 raise RuntimeError('motor_request_expired')
+            if ordinary_patrol and not wall.patrol.allows(SELECTED['id'], now):
+                raise RuntimeError('camera_patrol_deferred')
             motion_generation += 1
             clear_camera_view(SELECTED['id'])
             calibration_frames.clear()
@@ -468,6 +470,7 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             identities.discard()
             if room:
                 room.expect_motion(now, 2)
+            wall.patrol.dispatched(SELECTED['id'], now)
             capture.stdin.write((json.dumps(dict(action='motor_step', direction=direction,
                 request_id=request_id, expires_mono=expires))+'\n').encode())
             sent = True
@@ -486,9 +489,12 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             result='cancelled',code='control_cancelled_after_send' if sent else 'control_cancelled_before_dispatch',
             elapsed_ms=round((time.monotonic()-began)*1000))
         raise
-    except Exception:
+    except Exception as error:
+        deferred = str(error) == 'camera_patrol_deferred'
         home.runtime_log.record('embodied.command','result',correlation=correlation,
-            result='unavailable',code='runtime_error',elapsed_ms=round((time.monotonic()-began)*1000))
+            result='refused' if deferred else 'unavailable',
+            code='camera_patrol_deferred' if deferred else 'runtime_error',
+            elapsed_ms=round((time.monotonic()-began)*1000))
         raise
     finally:
         motor_waiters.pop(request_id, None)
@@ -528,13 +534,16 @@ async def camera_search():
                     frame_mono=last_frame,now=now))
             elsewhere = wall.occupied_elsewhere(SELECTED['id'])
             director.apply_mode(planner.mode, planner.intent_revision)
-            direction = director.choose(sample, now, focus=getattr(home,'camera_focus',None),
-                                        occupied_elsewhere=elsewhere,
-                                        review_pending=safety.review_pending(SELECTED['id'], sample.get('session_id')),
-                                        fall_pending=safety.fall_pending(SELECTED['id'], sample.get('session_id')),
-                                        sound_cue=camera_motion_cue(SELECTED['id'], sample,
-                                                                    director.sound_search_cue)) if planner.mode!='hold' else None
-            if planner.mode == 'hold':director.hold()
+            direction = None
+            if planner.mode == 'hold':
+                director.hold()
+            else:
+                direction = director.choose(sample, now, focus=getattr(home,'camera_focus',None),
+                    occupied_elsewhere=elsewhere,
+                    review_pending=safety.review_pending(SELECTED['id'], sample.get('session_id')),
+                    fall_pending=safety.fall_pending(SELECTED['id'], sample.get('session_id')),
+                    sound_cue=camera_motion_cue(SELECTED['id'], sample, director.sound_search_cue),
+                    ordinary_patrol_allowed=wall.patrol.allows(SELECTED['id'], now))
             if proof := director.take_sound_view():
                 def source_current(owner=capture, source_generation=generation,
                                    session=sample['session_id'], revision=planner.intent_revision):
@@ -545,6 +554,7 @@ async def camera_search():
 
                 safety.offer_sound_search_frame(SELECTED['id'], proof, last_jpeg, source_current=source_current)
             state['camera_control'] = dict(planner.public(lease.presets), **director.public())
+            wall.patrol.observe(SELECTED['id'], sample, state['camera_control'], now)
             if direction is not None:
                 try:
                     def decision_current():
@@ -558,13 +568,17 @@ async def camera_search():
                             fall_pending=safety.fall_pending(SELECTED['id'], current.get('session_id')),
                             sound_cue=camera_motion_cue(SELECTED['id'], current, director.sound_search_cue))
                     await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
-                                     decision_current=decision_current)
+                                     decision_current=decision_current, ordinary_patrol=director.ordinary_patrol_pending())
                     director.sent(time.monotonic())
                     lease.event('local_follow_impulse', direction=direction)
                 except (RuntimeError, OSError, TimeoutError) as error:
                     # Capture connection is not ready during startup; retry only
                     # after a new fresh observation, with no queued motor commands.
-                    if str(error) not in {'stale_input', 'camera_intent_changed', 'motor_busy', 'motor_request_expired', 'capture_source_changed'}:
+                    if str(error) == 'camera_patrol_deferred':
+                        director.defer_patrol()
+                        state['camera_control'] = dict(planner.public(lease.presets), **director.public())
+                    elif str(error) not in {'stale_input', 'camera_intent_changed', 'motor_busy',
+                                           'motor_request_expired', 'capture_source_changed'}:
                         state['camera_control']['phase'] = 'motor_unavailable'
                         director.failed(time.monotonic())
             await asyncio.sleep(.3)

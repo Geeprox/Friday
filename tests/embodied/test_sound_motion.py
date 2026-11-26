@@ -10,6 +10,7 @@ import pytest
 from homeplane.embodied.camera_audio import AudioIngress, PCMFramer
 from homeplane.embodied.camera_director import CameraDirector
 from homeplane.embodied.camera_intent import camera_intent_readback, finish_camera_survey
+from homeplane.embodied.camera_patrol import CameraPatrol
 from homeplane.embodied.camera_provenance import camera_source_context
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.party_camera import PartyCamera
@@ -158,7 +159,7 @@ class SoundPatrol:
                     mode=self.mode, revision="intent", status="configured")),
                 os=SimpleNamespace(environ={}), SELECTED={"id": CAMERA["id"]}, state=self.state,
                 games=MotionGames(), party_camera=PartyCamera(),
-                wall=SimpleNamespace(occupied_elsewhere=lambda _: self.occupied_elsewhere),
+                wall=SimpleNamespace(occupied_elsewhere=lambda _: self.occupied_elsewhere, patrol=CameraPatrol()),
                 home=SimpleNamespace(camera_focus=None), safety=self.j.runtime,
                 camera_motion_cue=recorded_sound_only(self.j.runtime),
                 motor_step=self.motor, camera_lease=None, camera_planner=None,
@@ -175,7 +176,7 @@ class SoundPatrol:
                                      sound_view=self.j.runtime.offer_sound_search_frame,
                                      source_current=lambda _, process: process is self.process),
                 current_sample=lambda: dict(self.state), privacy_closed=lambda: None,
-                send_motion=self.motor)
+                send_motion=self.motor, patrol=None)
             loop = source_function("homeplane/embodied/previews.py", "direct", self.scope)
         try:
             await loop()

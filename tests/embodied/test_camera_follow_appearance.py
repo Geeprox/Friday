@@ -145,7 +145,7 @@ async def test_original_camera_loop_aims_twice_at_the_same_subject_despite_track
         source_function('homeplane/embodied/previews.py', 'current_sample', scope)
         scope.update(self=SimpleNamespace(focus=lambda _: None, occupied_elsewhere=lambda _: False,
                      review_pending=quiet_safety.review_pending, fall_pending=quiet_safety.fall_pending,
-                     sound_cue=recorded_sound_only(quiet_safety)), send_motion=motor, privacy_closed=lambda: None)
+                     sound_cue=recorded_sound_only(quiet_safety)), send_motion=motor, patrol=None, privacy_closed=lambda: None)
         loop = source_function('homeplane/embodied/previews.py', 'direct', scope)
     with pytest.raises(asyncio.CancelledError):
         await loop()

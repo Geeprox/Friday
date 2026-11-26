@@ -114,7 +114,7 @@ class Patrol:
                 SearchPlanner=lambda *a:planner, camera_intents=SimpleNamespace(load=lambda:SimpleNamespace(mode=self.mode,revision='intent',status='configured')),
                 os=SimpleNamespace(environ={}), SELECTED={'id':self.camera}, state=self.state,
                 games=MotionGames(), party_camera=PartyCamera(),
-                wall=SimpleNamespace(occupied_elsewhere=lambda _: self.occupied_elsewhere),
+                wall=SimpleNamespace(occupied_elsewhere=lambda _: self.occupied_elsewhere, patrol=CameraWall([]).patrol),
                 home=SimpleNamespace(camera_focus=None),
                 safety=self.home.runtime, camera_motion_cue=recorded_sound_only(self.home.runtime),
                 motor_step=self.motor, camera_lease=None, camera_planner=None,
@@ -127,7 +127,7 @@ class Patrol:
                                      review_pending=self.home.runtime.review_pending,
                                      fall_pending=self.home.runtime.fall_pending,
                                      sound_cue=recorded_sound_only(self.home.runtime)),
-                current_sample=lambda:dict(self.state), privacy_closed=lambda:None, send_motion=self.motor)
+                current_sample=lambda:dict(self.state), privacy_closed=lambda:None, send_motion=self.motor, patrol=None)
             loop=source_function('homeplane/embodied/previews.py','direct',self.scope)
         try:
             try:

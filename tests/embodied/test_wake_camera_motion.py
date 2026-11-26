@@ -119,7 +119,7 @@ def dispatch_for(owner, state, clock, director, h, cue, safety, party, *, fleet=
                      process=SimpleNamespace(returncode=None,
                          stdin=SimpleNamespace(write=write, drain=AsyncMock())),
                      camera_is_open=AsyncMock(return_value=True), motion_lock=asyncio.Lock(),
-                     recognizer=None, privacy_closed=Mock())
+                     recognizer=None, privacy_closed=Mock(), patrol=None)
         extract(PREVIEWS, {'current_sample', 'send_motion'}, scope)
 
         async def send(direction):

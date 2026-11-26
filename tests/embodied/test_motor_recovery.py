@@ -167,6 +167,24 @@ def primary_scope():
 
 
 @pytest.mark.asyncio
+async def test_primary_defers_only_ordinary_patrol_when_a_peer_moves_during_privacy_read():
+    scope, sent = primary_scope()
+    wall = scope['wall']
+
+    async def open_after_peer_motion(_):
+        wall.patrol.dispatched('side', time.monotonic())
+        return True
+
+    scope['camera_is_open'] = open_after_peer_motion
+    with pytest.raises(RuntimeError, match='camera_patrol_deferred'):
+        await scope['motor_step']('right', scope['last_frame'], ordinary_patrol=True)
+    assert not sent and scope['motion_generation'] == 0
+    assert not scope['motor_waiters']
+    assert (await scope['motor_step']('left'))['native_code'] == 0
+    assert [command['direction'] for command in sent] == ['left']
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['tracking', 'post_move', 'decision'])
 async def test_primary_revalidates_actual_inputs_after_waiting(change):
     scope, sent = primary_scope()
@@ -209,26 +227,32 @@ async def test_primary_reserves_motion_before_first_await_and_bounds_child_comma
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['direction', 'tracking', 'post_move', 'epoch', 'privacy', 'source', 'review', 'fall'])
+@pytest.mark.parametrize('change', ['direction', 'tracking', 'post_move', 'epoch', 'privacy', 'source', 'review', 'fall', 'peer'])
 async def test_secondary_checks_latest_observation_after_privacy_read(change):
     director = CameraDirector()
     now = time.monotonic()
-    director.choose(view(now-.1), now-.1)
-    assert director.choose(view(now), now) == 'right'
+    ordinary = change == 'peer'
+    current = view(now, people=[]) if ordinary else view(now)
+    if ordinary:
+        director.choose(view(now-20, people=[]), now-20)
+        director.choose(view(now-19.9, people=[]), now-19.9)
+    else:
+        director.choose(view(now-.1), now-.1)
+    assert director.choose(current, now) == 'right'
     noop = lambda *_, **__: None
     sent = []
     scope = dict(asyncio=asyncio, time=time, secrets=secrets, json=json, director=director,
                  item=dict(privacy_closed=False, control_epoch=1, last_motor_sent=-100, source_active=True),
                  motion_lock=asyncio.Lock(), selected=dict(id='synthetic'),
                  process=SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=sent.append, drain=AsyncMock())),
-                 waiters={}, recognizer=None, privacy_closed=noop,
+                 waiters={}, recognizer=None, privacy_closed=noop, patrol=CameraWall([]).patrol,
                  self=SimpleNamespace(on_motion=None, focus=lambda _: None, occupied_elsewhere=lambda _: False,
                                       review_pending=lambda *_:scope.get('review_pending',False),
                                       fall_pending=lambda *_:scope.get('fall_pending',False),
                                       sound_cue=lambda *_:None,
                                       runtime_log=SimpleNamespace(record=noop)),
                  latest=dict(now=now, captured_mono=now, session='source', tracking_current=True,
-                             people=view(now)['people'], scene_visible=True))
+                             people=current['people'], scene_visible=True, _patrol_view=current['_patrol_view']))
     async def read_power(_):
         await asyncio.sleep(0)
         if change == 'direction': scope['latest']['people'] = view(now, x=.05)['people']
@@ -240,13 +264,15 @@ async def test_secondary_checks_latest_observation_after_privacy_read(change):
         if change == 'review': scope['review_pending'] = True
         if change == 'fall':
             scope['fall_pending'] = True
+        if ordinary:
+            scope['patrol'].dispatched('other', time.monotonic())
         return True
     scope['camera_is_open'] = read_power
     extract('homeplane/embodied/previews.py', {'current_sample', 'send_motion'}, scope)
     reason = {'epoch':'camera_intent_changed', 'privacy':'privacy_shutter_closed',
-              'source':'capture_source_changed'}.get(change, 'stale_input')
+              'source':'capture_source_changed', 'peer':'camera_patrol_deferred'}.get(change, 'stale_input')
     with pytest.raises(RuntimeError, match=reason):
-        await scope['send_motion']('right', now, 1)
+        await scope['send_motion']('right', now, 1, ordinary_patrol=ordinary)
     assert not sent and not scope['waiters'] and director.failed_moves == 0
 
 

@@ -2,6 +2,7 @@
 import base64
 import math
 import time
+from .camera_patrol import CameraPatrol
 from .video_relay import VideoRelay
 
 
@@ -15,6 +16,7 @@ class CameraWall:
         self.video = {}
         self.observations = {}
         self.occupancy = {}
+        self.patrol = CameraPatrol()
         self.labels = {}
         self.toasts = {}
         self.gestures = {}
@@ -50,6 +52,7 @@ class CameraWall:
         """撤销识别与占用信息，保留实时预览。"""
         self.observations.pop(camera, None)
         self.occupancy.pop(camera, None)
+        self.patrol.forget_view(camera)
         self.toasts.pop(camera, None)
         self.gestures.pop(camera, None)
         if not keep_labels:
