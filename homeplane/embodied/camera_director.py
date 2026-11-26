@@ -496,6 +496,8 @@ class CameraDirector:
             return False
         people = self._subjects(sample)
         if pending['phase'] in {'patrolling', 'sound_search'}:
+            if pending['phase'] == 'patrolling' and self.mode == 'auto' and self.recovery_steps:
+                return False
             shift = _view_shift(pending['view'], sample.get('_patrol_view'))
             if self.mode == 'survey' and pending['phase'] == 'patrolling':
                 # 已就绪的异响可撤销尚未发出的普通巡视步进。
@@ -993,6 +995,8 @@ class CameraDirector:
         if self.last_sample is not None and stamp - self.last_sample > 1.5:
             self.obscured_samples = 0
             self.obscured_since = None
+            if self.recovery_steps:
+                self.clear_since = None
             if explicit or self.sound_following:
                 self._interrupt_selection(now)
         self.last_sample = stamp
@@ -1155,7 +1159,8 @@ class CameraDirector:
         if self.mode == 'auto' and self.followed_person:
             self.phase = 'target_lost'
             return None
-        if (occupied_elsewhere or now < self.patrol_retry_at
+        # 刚恢复的视野先保持到连续观测重置恢复计数，有效唤醒和跟随已在上面处理。
+        if (occupied_elsewhere or now < self.patrol_retry_at or (self.mode == 'auto' and self.recovery_steps)
                 or now-self.last_person < 15 or now-self.last_move < 12):
             self.phase = 'observing'
             return None
