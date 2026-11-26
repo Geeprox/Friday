@@ -8,6 +8,38 @@ var handSequence=0
 var lastFaceAt=Date.distantPast
 var lastFaces=[[String:Any]]()
 
+// 近景只露出上半身时，用同帧的唯一人体实例校验腕、掌与胸部归属。
+@available(macOS 14.0, *)
+func nearPersonHand(_ image: CGImage, hand: [String:Any], box: CGRect) throws -> Bool {
+    guard let joints=hand["joints"] as? [String:[String:Double]] else {return false}
+    let handler=VNImageRequestHandler(cgImage:image, orientation:.up)
+    let request=VNGeneratePersonInstanceMaskRequest()
+    try handler.perform([request])
+    guard let obs=request.results?.first, obs.allInstances.count == 1 else {return false}
+    let mask=try obs.generateScaledMaskForImage(forInstances:obs.allInstances, from:handler)
+    guard CVPixelBufferGetPixelFormatType(mask) == kCVPixelFormatType_OneComponent32Float,
+          CVPixelBufferLockBaseAddress(mask,.readOnly) == kCVReturnSuccess else {return false}
+    defer {CVPixelBufferUnlockBaseAddress(mask,.readOnly)}
+    guard let pixels=CVPixelBufferGetBaseAddress(mask) else {return false}
+    let w=CVPixelBufferGetWidth(mask), h=CVPixelBufferGetHeight(mask)
+    func inside(_ x: Double, _ y: Double) -> Bool {
+        guard (0..<1).contains(x), (0..<1).contains(y) else {return false}
+        let row=pixels.advanced(by:Int(y*Double(h))*CVPixelBufferGetBytesPerRow(mask))
+        return row.assumingMemoryBound(to:Float.self)[Int(x*Double(w))] >= 0.8
+    }
+    guard inside(box.midX,box.midY), inside(box.midX,box.minY+box.height*0.75) else {return false}
+    func point(_ name: String) -> CGPoint? {
+        guard let p=joints[name], let x=p["x"], let y=p["y"], let score=p["confidence"], score>=0.55,
+              (0..<1).contains(x), (0..<1).contains(y) else {return nil}
+        return CGPoint(x:x,y:y)
+    }
+    guard let wrist=point("wrist"), inside(wrist.x,wrist.y) else {return false}
+    let knuckles=["indexMCP","middleMCP","ringMCP","littleMCP"].compactMap(point)
+    // 指根可能落在侧掌轮廓边缘，掌内的中点和多数指根须同时属于同一实例。
+    return knuckles.count == 4 && knuckles.filter{inside($0.x,$0.y)}.count >= 3
+        && knuckles.allSatisfy{inside(Double(wrist.x+$0.x)*0.5,Double(wrist.y+$0.y)*0.5)}
+}
+
 // Local video only. Coordinates in output use top-left image origin.
 while let line = readLine() {
     autoreleasepool {
@@ -66,7 +98,9 @@ while let line = readLine() {
                 let pose = VNDetectHumanBodyPoseRequest()
                 try VNImageRequestHandler(cgImage: image, orientation: .up).perform([people, pose])
                 for person in people.results ?? [] where person.confidence >= 0.55 {
-                    let b = person.boundingBox
+                    // Vision 在画面边缘可能给出越界框，按本次裁图的可见范围投回整帧。
+                    let b = person.boundingBox.intersection(CGRect(x:0,y:0,width:1,height:1))
+                    guard !b.isNull, b.width > 0, b.height > 0 else {continue}
                     boxes.append(["x":Double(region.minX+b.minX*region.width),
                                   "y":Double(region.minY+(1-b.maxY)*region.height),
                                   "w":Double(b.width*region.width),"h":Double(b.height*region.height),
@@ -76,7 +110,7 @@ while let line = readLine() {
                     var points = [String: [String: Double]]()
                     for (label, joint) in joints {
                         let p = try observation.recognizedPoint(joint)
-                        if p.confidence >= 0.4 {
+                        if p.confidence >= 0.4 && (0...1).contains(p.location.x) && (0...1).contains(p.location.y) {
                             points[label] = ["x":region.minX+p.location.x*region.width,
                                              "y":region.minY+(1-p.location.y)*region.height,
                                              "confidence":Double(p.confidence)]
@@ -100,14 +134,35 @@ while let line = readLine() {
             }
             try infer(full,CGRect(x:0,y:0,width:1,height:1))
             let supplied=obj["person_rois"] as? [[String:Double]] ?? []
-            if poses.allSatisfy({ (($0["joints"] as? [String:Any])?.count ?? 0) < 6 }) && (!supplied.isEmpty || Date().timeIntervalSince(lastRescue)>0.5) {
-                lastRescue=Date()
-                let regions=supplied.isEmpty ? [CGRect(x:0,y:0,width:0.6,height:1),CGRect(x:0.4,y:0,width:0.6,height:1)] : supplied.prefix(2).map { b in
-                    CGRect(x:(b["x"] ?? 0)-0.04,y:(b["y"] ?? 0)-0.05,width:(b["w"] ?? 0)+0.08,height:(b["h"] ?? 0)+0.10).intersection(CGRect(x:0,y:0,width:1,height:1))
+            func hasSupportedPose() -> Bool {
+                poses.contains { pose in
+                    guard let points=pose["joints"] as? [String:[String:Double]] else {return false}
+                    return points.count >= 6 && (points["root"] != nil || points["neck"] != nil)
                 }
-                for r in regions where r.width>0 && r.height>0 {
-                    let px=CGRect(x:r.minX*Double(full.width),y:r.minY*Double(full.height),width:r.width*Double(full.width),height:r.height*Double(full.height)).integral
-                    if let crop=full.cropping(to:px) {try infer(crop,CGRect(x:px.minX/Double(full.width),y:px.minY/Double(full.height),width:px.width/Double(full.width),height:px.height/Double(full.height)))}
+            }
+            if !hasSupportedPose() && (!supplied.isEmpty || Date().timeIntervalSince(lastRescue)>0.5) {
+                lastRescue=Date()
+                func rescue(_ region: CGRect) throws {
+                    let bounds=CGRect(x:0,y:0,width:full.width,height:full.height)
+                    let px=CGRect(x:region.minX*bounds.width,y:region.minY*bounds.height,
+                                  width:region.width*bounds.width,height:region.height*bounds.height).integral.intersection(bounds)
+                    guard !px.isNull, px.width>0, px.height>0, px != bounds,
+                          let crop=full.cropping(to:px) else {return}
+                    try infer(crop,CGRect(x:px.minX/bounds.width,y:px.minY/bounds.height,
+                                          width:px.width/bounds.width,height:px.height/bounds.height))
+                }
+                func expanded(_ b: [String:Double]) -> CGRect {
+                    CGRect(x:(b["x"] ?? 0)-0.04,y:(b["y"] ?? 0)-0.05,
+                           width:(b["w"] ?? 0)+0.08,height:(b["h"] ?? 0)+0.10)
+                }
+                if !supplied.isEmpty {
+                    for b in supplied.prefix(2) {try rescue(expanded(b))}
+                } else {
+                    // 单个人体框先按实际位置补检，以免固定左右裁图切开居中的上半身。
+                    if boxes.count == 1, let b=boxes[0] as? [String:Double] {try rescue(expanded(b))}
+                    if !hasSupportedPose() {
+                        for x in [0.0, 0.4] {try rescue(CGRect(x:x,y:0,width:0.6,height:1))}
+                    }
                 }
             }
             let bodyMilliseconds=Date().timeIntervalSince(started)*1000
@@ -126,18 +181,18 @@ while let line = readLine() {
                     }
                 }
             }
-            if regions.isEmpty {try handInfer(full,CGRect(x:0,y:0,width:1,height:1),4)}
-            else {
+            if !regions.isEmpty {
                 for r in regions.prefix(4) {
                     let px=CGRect(x:r.minX*Double(full.width),y:r.minY*Double(full.height),width:r.width*Double(full.width),height:r.height*Double(full.height)).integral
                     if let crop=full.cropping(to:px) {try handInfer(crop,CGRect(x:px.minX/Double(full.width),y:px.minY/Double(full.height),width:px.width/Double(full.width),height:px.height/Double(full.height)),1)}
                 }
             }
+            // 手腕裁图可能截断伸出的手指，整帧补检使用相同的关节质量要求。
+            if hands.isEmpty {try handInfer(full,CGRect(x:0,y:0,width:1,height:1),4)}
             handSequence += 1
             for i in hands.indices { hands[i]["sample_id"]=handSequence }
             lastHands=hands;lastHandAt=Date()
             } else if Date().timeIntervalSince(lastHandAt)<0.28 { hands=lastHands }
-            let handMilliseconds=Date().timeIntervalSince(started)*1000-bodyMilliseconds
             // Remove duplicate full-body and pose-supported boxes.
             boxes.sort { ($0["w"] as! Double)*($0["h"] as! Double) > ($1["w"] as! Double)*($1["h"] as! Double) }
             var unique = [[String:Any]]()
@@ -150,6 +205,42 @@ while let line = readLine() {
                 }
                 if !duplicate {unique.append(b)}
             }
+            if #available(macOS 14.0, *), sampleHands, hands.count == 1, unique.count <= 1, !hasSupportedPose() {
+                let previous=unique.first
+                func rectangle(_ row: [String:Any]) -> CGRect {
+                    CGRect(x:row["x"] as! Double,y:row["y"] as! Double,
+                           width:row["w"] as! Double,height:row["h"] as! Double)
+                }
+                func closeUp(_ box: CGRect) -> Bool {box.height >= 0.65 && box.maxY >= 0.95}
+                let previousBox=previous.map(rectangle)
+                if previousBox.map(closeUp) ?? true {
+                    var candidate=previous
+                    // 全身框缺失或分数较低时，用同帧的唯一上半身候选复核。
+                    if (previous?["confidence"] as? Double ?? 0) < 0.65 {
+                        let upper=VNDetectHumanRectanglesRequest()
+                        upper.upperBodyOnly=true
+                        if (try? VNImageRequestHandler(cgImage:full,orientation:.up).perform([upper])) != nil,
+                           let rows=upper.results, rows.count == 1, let r=rows.first, r.confidence>=0.65 {
+                            let b=r.boundingBox.intersection(CGRect(x:0,y:0,width:1,height:1))
+                            let top=CGRect(x:b.minX,y:1-b.maxY,width:b.width,height:b.height)
+                            let agrees=previousBox.map { box in
+                                let overlap=top.intersection(box)
+                                return !overlap.isNull && overlap.width*overlap.height >= 0.65*top.width*top.height
+                                    && box.contains(CGPoint(x:top.midX,y:top.midY))
+                            } ?? closeUp(top)
+                            if !top.isEmpty && agrees {
+                                candidate=["x":Double(top.minX),"y":Double(top.minY),"w":Double(top.width),"h":Double(top.height),"confidence":Double(r.confidence)]
+                            }
+                        }
+                    }
+                    if let row=candidate {
+                        let matched=(try? nearPersonHand(full,hand:hands[0],box:rectangle(row))) == true
+                        if previous != nil || matched {unique=[row]}
+                        if matched {hands[0]["mask_owner_box"]=row}
+                    }
+                }
+            }
+            let handMilliseconds=Date().timeIntervalSince(started)*1000-bodyMilliseconds
             // Low-rate face orientation is an attention cue, not identity or
             // proof of precise eye gaze. Never report a distant/tiny face as sure.
             let faceNow=Date()

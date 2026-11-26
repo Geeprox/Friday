@@ -8,7 +8,7 @@ from .practice_requests import valid_id
 
 from .interaction import GESTURES, body_gestures
 from .smart_home import WindowGesture
-from .gestures import BINDABLE_HAND_LABELS
+from .gestures import BINDABLE_HAND_LABELS, HAND_HOLD_SECONDS, HAND_MAX_GAP
 from .hiit import EXERCISE_GESTURES, PRACTICE_PLAN
 
 MOTION_GESTURES = {
@@ -142,7 +142,10 @@ class RecognitionPractice:
         person = people[0]
         key = (session, person['id'])
         item = self.observers.get(camera)
-        if not item or item['key'] != key or now - item['sample_at'] > .5:
+        hand_lesson = lease['gesture'].startswith('hand.')
+        stamp = captured_at if hand_lesson else now
+        max_gap = HAND_MAX_GAP if hand_lesson else .5
+        if not item or item['key'] != key or stamp - item['sample_at'] > max_gap:
             from .motion_games import BodyMotion
             from .hiit import HIITCircuit
             action = EXERCISE_GESTURES.get(lease['gesture'])
@@ -190,8 +193,9 @@ class RecognitionPractice:
             item['since'] = None
             return
         if item['since'] is None:
-            item['since'] = now
-        progress = 1.0 if immediate else min(1.0, (now - item['since']) / .7)
+            item['since'] = stamp
+        hold = HAND_HOLD_SECONDS if hand_lesson else .7
+        progress = 1.0 if immediate else min(1.0, (stamp - item['since']) / hold)
         lease.update(phase='recognizing', progress=round(progress, 2))
         item.update(phase='recognizing', progress=round(progress, 2))
         if progress >= 1:

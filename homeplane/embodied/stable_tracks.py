@@ -53,6 +53,28 @@ def assign_poses(detection, boxes):
     return {i:values[0] for i,values in assignments.items() if len(values)==1 and i not in ambiguous}
 
 
+def partial_arm_wrists(poses, box):
+    """单人局部骨架只提供同一侧实测手臂的腕点，用于核对独立手部检测。"""
+    if len(poses) != 1 or not isinstance(poses[0], dict):
+        return {}
+    joints = poses[0].get('joints')
+    if not isinstance(joints, dict) or sum(valid_point(p) for p in joints.values()) >= 6:
+        return {}
+    wrists = {}
+    for side in ('left', 'right'):
+        arm = [joints.get(side + part) for part in ('Shoulder', 'Elbow', 'Wrist')]
+        if not all(valid_point(p) and p['confidence'] >= .55 for p in arm):
+            continue
+        shoulder, elbow, wrist = arm
+        if not all(box['x'] <= p['x'] <= box['x'] + box['w']
+                   and box['y'] <= p['y'] <= box['y'] + box['h'] for p in (shoulder, elbow)):
+            continue
+        if min(math.hypot(a['x']-b['x'], a['y']-b['y']) for a,b in zip(arm, arm[1:])) < .02:
+            continue
+        wrists[side + 'Wrist'] = wrist
+    return wrists
+
+
 def warp_box(box, transform):
     x, y, w, h = [box[k] for k in ("x", "y", "w", "h")]
     q = np.array([[x, y, 1], [x + w, y, 1], [x, y + h, 1], [x + w, y + h, 1]], dtype=float) @ transform.T
@@ -195,6 +217,10 @@ class StableTracks:
                     "tracking": {"backend": "ByteTrack", "space": space, "session_id": True},
                 }
             )
+        if len(boxes) == len(people) == 1 and not people[0]['joints']:
+            wrists = partial_arm_wrists(detection.get('poses', []), boxes[0])
+            if wrists:
+                people[0]['arm_wrists'] = wrists
         self.items = {k: v for k, v in self.items.items() if now - v["last"] <= TRACK_GAP_SECONDS}
         self.last_update = now
         self.input_valid = True

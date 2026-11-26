@@ -14,7 +14,7 @@ from .paths import PRIVATE
 from .pointing_voice import POINTING_HOLD_SECONDS, PointingTarget
 from .smart_home import WindowGesture
 
-from .gestures import BINDABLE_HAND_LABELS
+from .gestures import BINDABLE_HAND_LABELS, HAND_HOLD_SECONDS
 
 GESTURES={'body.arms_open':'双臂打开','body.arms_close':'双臂合上','body.hands_up':'双手举高','body.left_hand_up':'举起左手','body.right_hand_up':'举起右手','body.squat':'下蹲','body.lean_left':'身体向左倾','body.lean_right':'身体向右倾','hand.open_palm':'张开手掌','hand.yeah':'剪刀手','hand.ok':'OK','hand.fist':'握拳','hand.thumb_up':'点赞','hand.thumb_down':'拇指向下','hand.shaka':'电话手势','hand.horns':'摇滚手势'}
 ACTIONS={'on','off','open','close','position:0','position:25','position:50','position:75','position:100','mode:cool','mode:heat','mode:off','mode:auto','mode:heat_cool','mode:dry','mode:fan_only'}
@@ -260,7 +260,8 @@ class InteractionEngine:
             self.released.pop(key,None)
             self.holds.setdefault(key,observed)
             moving_arms=b.gesture in {'body.arms_open','body.arms_close'}
-            if (key not in self.latched and (moving_arms or observed-self.holds[key]>=.7)
+            hold = HAND_HOLD_SECONDS if b.gesture.startswith("hand.") else .7
+            if (key not in self.latched and (moving_arms or observed-self.holds[key]>=hold)
                     and observed-self.last.get(key,-100)>REPEAT_SECONDS):
                 self.last[key]=observed;self.latched.add(key);result.append(b)
         candidates=[]

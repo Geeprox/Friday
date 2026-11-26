@@ -63,11 +63,17 @@ def body_rows(landmarks, region=(0, 0, 1, 1)):
         w, h = min(1, max(xs)+.02)-x, min(1, max(ys)+.02)-y
         if confidence >= .65 and w > 0 and h > 0:
             boxes.append(dict(x=x, y=y, w=w, h=h, confidence=confidence, source='body_pose'))
+            # 手指锚点仅用来核对同帧的手部检测，不参与人体框或骨架质量评分。
+            for finger, left_id in (('LittleTip', 17), ('IndexTip', 19), ('ThumbTip', 21)):
+                for side, idx in (('left', left_id), ('right', left_id + 1)):
+                    anchor = point(row[idx], region)
+                    if anchor and anchor['confidence'] >= .55:
+                        joints[side + finger] = anchor
             poses.append(dict(joints=joints, confidence=confidence))
     return boxes, poses
 
 
-def hand_rows(result, sample, region=(0, 0, 1, 1)):
+def hand_rows(result, sample, region=(0, 0, 1, 1), *, wrists=(), aspect=1):
     hands = []
     for row, categories in zip(result.hand_landmarks[:4], result.handedness[:4]):
         if len(row) != 21 or not categories:
@@ -75,17 +81,79 @@ def hand_rows(result, sample, region=(0, 0, 1, 1)):
         category = categories[0]
         # Tasks 不返回逐点置信度；左右手分数只筛选侧别，不能冒充关节质量。
         score = category.score
-        if not finite(score) or not .75 <= score <= 1:
+        if not finite(score) or not .5 <= score <= 1:
             continue
         joints = {name: p for name, landmark in zip(HAND, row)
                   if (p := point(landmark, region, confidence=.75)) is not None}
-        if len(joints) != 21:
+        # 分类器根据可见的指尖和近端关节判断蜷曲，允许指根及远端关节在裁图外。
+        if any(name not in joints for name in HAND if name != 'thumbCMC' and not name.endswith(('DIP', 'MCP'))):
             continue
         side = category.category_name.lower()
-        hands.append(dict(joints=joints, confidence=.75, handedness_score=score,
+        if score < .75:
+            # 侧别分数低时，只接受与唯一清晰人体腕点重合的手。
+            if len(wrists) != 2 or {side_ for side_, _ in wrists} != {'left', 'right'}:
+                continue
+            w = joints['wrist']
+            matches = sorted((math.hypot((w['x']-point_['x'])*aspect, w['y']-point_['y']), side_)
+                             for side_, point_ in wrists)
+            if not matches or matches[0][0] > .045 or (len(matches) > 1 and matches[1][0]-matches[0][0] < .05):
+                continue
+            side = matches[0][1]
+        presence = getattr(category, 'presence', .75)
+        if not finite(presence) or not .75 <= presence <= 1:
+            continue
+        hand = dict(joints=joints, confidence=.75, handedness_score=score, model_presence=presence,
                           confidence_source='model_presence_gate_not_joint_visibility',
-                          side=side if side in {'left', 'right'} else 'unknown', sample_id=sample))
+                          side=side if side in {'left', 'right'} else 'unknown', sample_id=sample)
+        if len(joints) == len(HAND) and getattr(category, 'world_horns', False):
+            hand['world_horns'] = True
+        hands.append(hand)
     return hands
+
+
+def hand_in_person_mask(mask, body, hand, aspect):
+    """用同帧单人分割图核对腕点和掌内采样点是否与肩颈连通。"""
+    import cv2
+    import numpy as np
+    wrist = hand.get('wrist')
+    if not wrist or wrist['confidence'] < .55:
+        return False
+    if any(math.hypot((wrist['x']-p['x'])*aspect, wrist['y']-p['y']) <= .18
+           for key in ('leftWrist','rightWrist') if (p := body.get(key))):
+        return False
+    torso = [body.get(k) for k in ('leftShoulder','neck','rightShoulder')]
+    knuckles = [hand.get(k) for k in ('indexMCP','middleMCP','ringMCP','littleMCP')]
+    if not all(p and p['confidence'] >= .55 for p in torso + knuckles):
+        return False
+    if mask.dtype != np.uint8 or mask.all():
+        return False
+    _, components = cv2.connectedComponents(mask)
+    h, w = mask.shape
+    def label(x, y):
+        return components[min(h-1, int(y*h)), min(w-1, int(x*w))]
+    owner = label(wrist['x'], wrist['y'])
+    return (owner != 0 and all(label(p['x'], p['y']) == owner for p in torso)
+            and sum(label(p['x'], p['y']) == owner for p in knuckles) >= 3
+            and all(label((wrist['x']+p['x'])/2, (wrist['y']+p['y'])/2) == owner for p in knuckles))
+
+
+def merge_hand(hands, candidate):
+    """同一腕点的整帧与局部结果只算一次，优先保留关键点完整且模型更确定的观测。"""
+    wrist = candidate['joints']['wrist']
+    nearby = []
+    for i, old in enumerate(hands):
+        other = old['joints']['wrist']
+        if math.hypot(wrist['x']-other['x'], wrist['y']-other['y']) < .035:
+            nearby.append(i)
+    if not nearby:
+        if len(hands) < 4:
+            hands.append(candidate)
+    elif len(nearby) == 1:
+        i = nearby[0]
+        old = hands[i]
+        if (old['side'] == candidate['side'] and old['joints'].keys() <= candidate['joints'].keys()
+                and candidate['model_presence'] > old['model_presence'] + .02):
+            hands[i] = candidate
 
 
 def decode_image(encoded):
@@ -142,7 +210,9 @@ class PortableVision:
         started = time.monotonic()
         array = decode_image(request.get('jpeg'))
         image = self.image(array)
-        boxes, poses = body_rows(self.pose.detect(image).pose_landmarks)
+        full_pose = self.pose.detect(image)
+        boxes, poses = body_rows(full_pose.pose_landmarks)
+        single_mask = getattr(full_pose, 'single_mask', None) if len(poses) == 1 else None
         if not poses:
             rois = request.get('person_rois', [])
             if not isinstance(rois, list) or len(rois) > 10:
@@ -173,26 +243,39 @@ class PortableVision:
         hands = []
         if sampled:
             self.sequence += 1
-            hands = hand_rows(self.hand.detect(image), self.sequence)
+            height, width = array.shape[:2]
+            aspect = width / height
+            wrists = [(side, w) for pose in (poses if len(poses) == 1 else []) for side in ('left', 'right')
+                      if (w := pose['joints'].get(side+'Wrist')) and w['confidence'] >= .55]
+            hands = hand_rows(self.hand.detect(image), self.sequence, wrists=wrists, aspect=aspect)
             regions = []
             for pose in poses[:3]:
-                for name in ('leftWrist', 'rightWrist'):
-                    wrist = pose['joints'].get(name)
-                    if wrist is not None:
-                        regions.append((wrist['x']-.075, wrist['y']-.11, .15, .22))
+                for side in ('left', 'right'):
+                    wrist = pose['joints'].get(side+'Wrist')
+                    if wrist is None:
+                        continue
+                    # 越靠近镜头，越需要给展开的拇指和小指留出空间。
+                    elbow = pose['joints'].get(side+'Elbow')
+                    half_w, half_h = .075, .11
+                    if elbow and elbow['confidence'] >= .55:
+                        forearm = math.hypot((wrist['x']-elbow['x'])*aspect, wrist['y']-elbow['y'])
+                        radius = min(.32, forearm * .95)
+                        half_w, half_h = max(half_w, radius/aspect), max(half_h, radius)
+                    regions.append((wrist['x']-half_w, wrist['y']-half_h, 2*half_w, 2*half_h))
             for region in regions[:4]:
-                if len(hands) >= 4:
-                    break
                 crop = self.crop(array, region)
-                if crop:
-                    for hand in hand_rows(self.hand.detect(crop[0]), self.sequence, crop[1]):
-                        wrist = hand['joints']['wrist']
-                        if not any(math.hypot(h['joints']['wrist']['x']-wrist['x'],
-                                              h['joints']['wrist']['y']-wrist['y']) < .035 for h in hands):
-                            hands.append(hand)
-                            if len(hands) >= 4:
-                                break
+                if not crop:
+                    continue
+                candidates = hand_rows(self.hand.detect(crop[0]), self.sequence, crop[1],
+                                       wrists=wrists, aspect=aspect)
+                for candidate in candidates:
+                    merge_hand(hands, candidate)
+            for hand in hands:
+                hand.pop('model_presence')
             self.last_hands, self.last_sample = hands, time.monotonic()
+            if (single_mask is not None and single_mask.shape == array.shape[:2] and len(hands) == 1
+                    and hand_in_person_mask(single_mask, poses[0]['joints'], hands[0]['joints'], aspect)):
+                hands = [dict(hands[0], mask_owner_box=boxes[0])]
         elif time.monotonic()-self.last_sample < .28:
             hands = self.last_hands
         hand_ms = (time.monotonic()-started)*1000-body_ms
