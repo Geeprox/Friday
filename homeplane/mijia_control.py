@@ -14,7 +14,7 @@ from typing import Callable
 import httpx
 
 from .devices import xiaomi_identifier
-from .mijia_lan_client import FAMILY, MijiaLanClient
+from .mijia_lan_client import FAMILY, SENSOR_PROPERTIES, MijiaLanClient, valid_sensor_value
 
 
 async def request_property(request):
@@ -90,7 +90,7 @@ POWER_OPERATIONS = frozenset({'light.set', 'switch.set', 'fan.set', 'climate.pow
 
 
 def illuminance_readback(prop, value):
-    if type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)):
+    if not valid_sensor_value('illuminance', value):
         raise ValueError('mijia_illuminance_unavailable')
     bounds = prop.get('value-range')
     if prop.get('unit') == 'lux' and isinstance(bounds, list) and len(bounds) == 3:
@@ -109,8 +109,17 @@ def illuminance_readback(prop, value):
     raise ValueError('mijia_illuminance_unavailable')
 
 
+def sensor_readback(prop, signal, value):
+    if signal == 'illuminance':
+        return illuminance_readback(prop, value)
+    if not valid_sensor_value(signal, value):
+        raise ValueError('mijia_sensor_unavailable')
+    # 保留原生设备值，门磁没有统一的开闭极性，占用也不等同于配置的靠近事件。
+    return {'kind': signal, 'unit': None, 'value': value}
+
+
 class MijiaPower:
-    """复用米家家庭授权派发电源操作和执行只读光照查询。"""
+    """复用米家家庭授权派发电源操作和执行只读传感器查询。"""
 
     def __init__(self, service, *, spec=None, request=request_property, lan=None):
         if spec is None:
@@ -131,54 +140,59 @@ class MijiaPower:
             return family
         return None
 
-    async def read_illuminance(self, candidate, *, observe=False):
+    async def read_sensor(self, candidate, signal, *, observe=False):
         from .embodied.miot_spec import properties, property_ref
 
         report = self.service.discovery_report
         family, grant = self.current_family(), report.get('grant')
+        name = SENSOR_PROPERTIES.get(signal)
         rows = [row for row in report.get('devices', []) if isinstance(row, dict) and row.get('id') == candidate]
-        if (not family or not isinstance(grant, str) or not FAMILY.fullmatch(grant)
+        if (name is None or not family or not isinstance(grant, str) or not FAMILY.fullmatch(grant)
                 or len(rows) != 1 or rows[0].get('kind') != 'device'):
-            raise ValueError('mijia_illuminance_unavailable')
+            raise ValueError('mijia_sensor_unavailable')
         identity = xiaomi_identifier(rows[0].get('identity'))
         catalog = report.get('models', {}).get(identity) if identity else None
         if not isinstance(catalog, dict) or not isinstance(urn := catalog.get('urn'), str):
-            raise ValueError('mijia_illuminance_unavailable')
+            raise ValueError('mijia_sensor_unavailable')
         did = identity.split('_', 1)[1]
         if not self.lan.ready(family, None if observe else did):
-            raise ValueError('mijia_illuminance_unavailable')
+            raise ValueError('mijia_sensor_unavailable')
         spec = await self._spec(urn)
         if (not isinstance(spec, dict) or spec.get('type') != urn
                 or self.service.discovery_report is not report or self.current_family() != family):
-            raise ValueError('mijia_illuminance_unavailable')
+            raise ValueError('mijia_sensor_unavailable')
         props = properties(spec)
-        siid, piid = property_ref(props, 'illumination', 'read')
+        siid, piid = property_ref(props, name, 'read')
+        prop = props[name]
+        expected_format = {'occupancy': 'uint8', 'contact': 'bool'}.get(signal)
+        if expected_format is not None and prop.get('format') != expected_format:
+            raise ValueError('mijia_sensor_unavailable')
         if observe:
-            property_ref(props, 'illumination', 'notify')
-        purpose = 'illuminance_observation' if observe else 'illuminance'
+            property_ref(props, name, 'notify')
+        purpose = f'{signal}_observation' if observe else signal
         value = await self.lan.request(dict(did=did, siid=siid, piid=piid, grant=grant, read=purpose), family=family)
         if self.service.discovery_report is not report or self.current_family() != family:
-            raise ValueError('mijia_illuminance_unavailable')
+            raise ValueError('mijia_sensor_unavailable')
         report = dict(source=candidate, transport='mijia_lan', measured_at=None)
         if not observe:
             return dict(report, status='reported', received_at=datetime.now(UTC).isoformat(),
-                        **illuminance_readback(props['illumination'], value.get('value')))
+                        **sensor_readback(prop, signal, value.get('value')))
         state = value.get('state')
         if state in {'unavailable', 'subscribing'}:
             return dict(report, status=state)
         subscription = value.get('subscription')
         if not isinstance(subscription, str) or not re.fullmatch('[a-f0-9]{32}', subscription):
-            raise ValueError('mijia_illuminance_unavailable')
+            raise ValueError('mijia_sensor_unavailable')
         if state == 'awaiting_notification':
             return dict(report, status=state, subscription=subscription)
         stamp, age, sequence = value.get('received_at'), value.get('age_seconds'), value.get('sequence')
         if (state != 'observed' or type(sequence) is not int or sequence <= 0
                 or type(stamp) not in (float, int) or not 0 < stamp < 253402300799
                 or type(age) not in (float, int) or not 0 <= age < math.inf):
-            raise ValueError('mijia_illuminance_unavailable')
+            raise ValueError('mijia_sensor_unavailable')
         return dict(report, status=state, subscription=subscription, sequence=sequence, age_seconds=age,
                     received_at=datetime.fromtimestamp(stamp, UTC).isoformat(),
-                    **illuminance_readback(props['illumination'], value.get('value')))
+                    **sensor_readback(prop, signal, value.get('value')))
 
     def cover_context(self, cover, directory):
         from .embodied.mijia_lan import home_input

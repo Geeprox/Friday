@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import os
 import re
 import time
@@ -13,7 +14,16 @@ STATUS_TTL = 12.0
 DIRECTORY_GRACE = 20.0
 DIRECTORY_RETRY_INITIAL = 30.0
 DIRECTORY_RETRY_MAX = 600.0
-ILLUMINANCE_READS = frozenset({'illuminance', 'illuminance_observation'})
+SENSOR_PROPERTIES = {'illuminance': 'illumination', 'occupancy': 'occupancy-status', 'contact': 'contact-state'}
+SENSOR_OBSERVATIONS = {f'{signal}_observation': signal for signal in SENSOR_PROPERTIES}
+
+
+def valid_sensor_value(signal, value):
+    if signal == 'contact':
+        return type(value) is bool
+    if signal == 'occupancy':
+        return type(value) is int and 0 <= value <= 255
+    return signal == 'illuminance' and (type(value) is int or (type(value) is float and math.isfinite(value)))
 
 
 class MijiaLanClient:
@@ -96,7 +106,7 @@ class MijiaLanClient:
                     or family != self.current_family()):
                 raise ValueError('mijia_lan_unavailable')
             # 等候管道期间可能切换路由或重建工作进程，旧请求不能随恢复一起派发。
-            route = None if request.get('read') == 'illuminance_observation' else request.get('did')
+            route = None if request.get('read') in SENSOR_OBSERVATIONS else request.get('did')
             if expected_process is not None and (proc is not expected_process or not self.ready(family, route)):
                 raise ValueError('mijia_lan_unavailable')
             self.sequence += 1
@@ -122,18 +132,19 @@ class MijiaLanClient:
     async def request(self, request, *, family):
         process = self.process
         purpose = request.get('read')
-        route = None if purpose == 'illuminance_observation' else request.get('did')
-        illuminance = purpose in ILLUMINANCE_READS
-        if not self.ready(family, route) or (illuminance and self.io.locked()):
+        observing = purpose in SENSOR_OBSERVATIONS
+        route = None if observing else request.get('did')
+        sensor_read = observing or purpose in SENSOR_PROPERTIES
+        if not self.ready(family, route) or (sensor_read and self.io.locked()):
             raise ValueError('mijia_lan_unavailable')
-        read_only = illuminance or request.get('cover') == 'read' or ('cover' not in request and 'power' not in request)
+        read_only = sensor_read or request.get('cover') == 'read' or ('cover' not in request and 'power' not in request)
         async with asyncio.timeout(1.6 if read_only else 5):
             reply = await self._call(request, family, expected_process=process)
-        if illuminance and (self.process is not process or not self.ready(family, route)):
+        if sensor_read and (self.process is not process or not self.ready(family, route)):
             raise ValueError('mijia_lan_unavailable')
         if 'error' in reply:
             # 探测数值失败时保留设备可用于控制的路由。
-            if not illuminance and self.process is process:
+            if not sensor_read and self.process is process:
                 self.routes = self.routes.difference({request.get('did')})
             raise ValueError('mijia_lan_unavailable')
         return reply

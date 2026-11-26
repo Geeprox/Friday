@@ -412,21 +412,31 @@ def create_app(
                 "directory_state": "unavailable", "directory_devices": None,
                 "directory_recovery_attempts": 0}
 
-    @app.get("/api/embodied/mijia-lan/illuminance/{candidate}")
-    async def mijia_lan_illuminance(candidate: str, request: Request, observe: bool = False):
+    async def read_mijia_lan_sensor(signal: str, candidate: str, request: Request, observe: bool):
+        from .mijia_lan_client import SENSOR_PROPERTIES
+
         origin = request.headers.get("origin")
         if (request.client is None or request.client.host not in {"127.0.0.1", "::1"}
                 or (origin is not None and origin != str(request.base_url).rstrip("/"))):
             raise HTTPException(403, detail="unauthorized")
-        if not re.fullmatch(r"[a-f0-9]{64}", candidate):
-            raise HTTPException(404, detail="mijia_illuminance_unavailable")
+        unavailable = "mijia_illuminance_unavailable" if signal == "illuminance" else "mijia_sensor_unavailable"
+        if signal not in SENSOR_PROPERTIES or not re.fullmatch(r"[a-f0-9]{64}", candidate):
+            raise HTTPException(404, detail=unavailable)
         if core.actions.mijia is not None:
             try:
-                reading = await core.actions.mijia.read_illuminance(candidate, observe=observe)
+                reading = await core.actions.mijia.read_sensor(candidate, signal, observe=observe)
                 return JSONResponse(reading, headers={"Cache-Control": "no-store"})
             except (OSError, ValueError, TypeError, TimeoutError, httpx.HTTPError):
                 pass
-        raise HTTPException(503, detail="mijia_illuminance_unavailable")
+        raise HTTPException(503, detail=unavailable)
+
+    @app.get("/api/embodied/mijia-lan/illuminance/{candidate}")
+    async def mijia_lan_illuminance(candidate: str, request: Request, observe: bool = False):
+        return await read_mijia_lan_sensor("illuminance", candidate, request, observe)
+
+    @app.get("/api/embodied/mijia-lan/{signal}/{candidate}")
+    async def mijia_lan_sensor(signal: str, candidate: str, request: Request, observe: bool = False):
+        return await read_mijia_lan_sensor(signal, candidate, request, observe)
 
     @app.get("/api/embodied/infrastructure")
     async def infrastructure_status():

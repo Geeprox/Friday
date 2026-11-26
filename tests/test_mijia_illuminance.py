@@ -23,8 +23,11 @@ QUERY = dict(did=DEVICE, siid=2, piid=4, grant=GRANT, read="illuminance")
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("signal", "valid", "invalid"), [
+    ("illuminance", 25.0, True), ("occupancy", 0, 256), ("contact", False, 0),
+])
 @pytest.mark.parametrize("fault", ["none", "mixed_write", "scope", "timeout", "invalid"])
-async def test_worker_illuminance_only_reads_current_home(fault):
+async def test_worker_sensor_only_reads_current_home(fault, signal, valid, invalid):
     current = True
 
     async def value(*args):
@@ -34,14 +37,16 @@ async def test_worker_illuminance_only_reads_current_home(fault):
             current = False
         if fault == "timeout":
             raise TimeoutError()
-        return {"code": 0, "value": True if fault == "invalid" else 25.0}
+        return {"code": 0, "value": invalid if fault == "invalid" else valid}
 
     gateway = SimpleNamespace(local_device=lambda _: {"group_id": "fixture"}, can_control=lambda _: True,
                               in_local_cooldown=lambda _: False, get_prop_async=AsyncMock(side_effect=value),
                               set_prop_async=AsyncMock(), note_local_failure=Mock())
-    request = dict(QUERY, power="on") if fault == "mixed_write" else QUERY
+    request = dict(QUERY, read=signal)
+    if fault == "mixed_write":
+        request["power"] = "on"
     if fault == "none":
-        assert await property_operation(gateway, request, GRANT, "fixture", {DEVICE}, lambda: current) == {"value": 25.0}
+        assert await property_operation(gateway, request, GRANT, "fixture", {DEVICE}, lambda: current) == {"value": valid}
     else:
         with pytest.raises(TimeoutError if fault == "timeout" else ValueError):
             await property_operation(gateway, request, GRANT, "fixture", {DEVICE}, lambda: current)
@@ -69,17 +74,28 @@ async def test_optional_illuminance_keeps_control_route_and_does_not_queue():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["lux", "door", "observation", "missing_notify",
-                                 "camera", "changed", "foreign", "remote", "wrong_origin"])
-async def test_loopback_illuminance_readback_uses_registered_native_capability(tmp_path, monkeypatch, case):
+                                 "occupancy", "contact", "contact_observation", "wrong_format",
+                                 "camera", "changed", "foreign", "remote", "wrong_origin", "unknown_signal"])
+async def test_loopback_sensor_readback_uses_registered_native_capability(tmp_path, monkeypatch, case):
     model = "urn:miot-spec-v2:device:sensor:0000A001:synthetic"
     identity = "cn_" + DEVICE
-    definition = dict(iid=4, type="urn:miot-spec-v2:property:illumination:00000001", access=["read", "notify"])
-    observe = case in {"observation", "missing_notify"}
+    signal = {
+        "occupancy": "occupancy", "contact": "contact", "contact_observation": "contact",
+        "wrong_format": "occupancy", "unknown_signal": "camera",
+    }.get(case, "illuminance")
+    name, prop_format = {
+        "occupancy": ("occupancy-status", "uint8"), "contact": ("contact-state", "bool"),
+    }.get(signal, ("illumination", "float"))
+    definition = dict(iid=4, type=f"urn:miot-spec-v2:property:{name}:00000001",
+                      access=["read", "notify"], format=prop_format)
+    observe = case in {"observation", "missing_notify", "contact_observation"}
     if case == "missing_notify":
         definition["access"] = ["read"]
+    if case == "wrong_format":
+        definition["format"] = "bool"
     if case == "door":
         definition["value-list"] = [{"value": 1, "description": "Weak"}, {"value": 2, "description": "Strong"}]
-    else:
+    elif signal == "illuminance":
         definition.update(unit="lux", **{"value-range": [0, 10000, 1]})
     spec = dict(type=model, services=[dict(iid=2, properties=[definition])])
     catalog = dict(state="ready", family=FAMILY, grant=GRANT, models={identity: {"urn": model}},
@@ -89,7 +105,7 @@ async def test_loopback_illuminance_readback_uses_registered_native_capability(t
         assert args == (DEVICE, 2, 4)
         if case == "changed":
             app.state.embodied.discovery_report = dict(catalog, family="d" * 64)
-        return {"code": 0, "value": 2 if case == "door" else 25.0}
+        return {"code": 0, "value": {"door": 2, "contact": False, "occupancy": 3}.get(case, 25.0)}
 
     gateway = SimpleNamespace(local_device=lambda _: {"group_id": "fixture"}, can_control=lambda _: True,
                               in_local_cooldown=lambda _: False, get_prop_async=AsyncMock(side_effect=read),
@@ -101,11 +117,11 @@ async def test_loopback_illuminance_readback_uses_registered_native_capability(t
             request_id = packet.pop("id")
             assert packet.pop("family") == FAMILY
             if observe:
-                assert packet == dict(QUERY, read="illuminance_observation")
+                assert packet == dict(QUERY, read=f"{signal}_observation")
                 response = dict(state="observed", sequence=1, subscription="e" * 32,
-                                received_at=1013.0, age_seconds=3.0, value=22)
+                                received_at=1013.0, age_seconds=3.0, value=False if signal == "contact" else 22)
             else:
-                assert packet == QUERY
+                assert packet == dict(QUERY, read=signal)
                 response = await property_operation(gateway, packet, GRANT, "fixture", {DEVICE}, lambda: True)
             return json.dumps(dict(id=request_id, **response)).encode()
 
@@ -125,26 +141,30 @@ async def test_loopback_illuminance_readback_uses_registered_native_capability(t
     target = "f" * 64 if case == "foreign" else CANDIDATE
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(peer, 45321)),
                                  base_url="http://127.0.0.1:8740") as client:
-        result = await client.get("/api/embodied/mijia-lan/illuminance/" + target, headers=headers,
+        result = await client.get(f"/api/embodied/mijia-lan/{signal}/{target}", headers=headers,
                                   params={"observe": observe} if observe else None)
-    if case in {"lux", "door"}:
+    if case in {"lux", "door", "contact", "occupancy"}:
         assert result.status_code == 200 and result.headers["cache-control"] == "no-store"
         row = result.json()
         assert row["status"] == "reported" and row["source"] == target and row["transport"] == "mijia_lan"
         assert row["received_at"] and row["measured_at"] is None
-        assert (row["kind"], row["unit"], row["value"]) == (
-            ("numeric", "lux", 25.0) if case == "lux" else ("category", None, "strong")
-        )
-    elif case == "observation":
+        assert (row["kind"], row["unit"], row["value"]) == {
+            "lux": ("numeric", "lux", 25.0), "door": ("category", None, "strong"),
+            "contact": ("contact", None, False), "occupancy": ("occupancy", None, 3),
+        }[case]
+    elif case in {"observation", "contact_observation"}:
         assert result.status_code == 200 and result.headers["cache-control"] == "no-store"
+        kind, unit, value = ("contact", None, False) if signal == "contact" else ("numeric", "lux", 22)
         assert result.json() == dict(status="observed", source=CANDIDATE, transport="mijia_lan",
                                      measured_at=None, subscription="e" * 32, sequence=1, age_seconds=3.0,
-                                     received_at="1970-01-01T00:16:53+00:00", kind="numeric", unit="lux", value=22)
+                                     received_at="1970-01-01T00:16:53+00:00", kind=kind, unit=unit, value=value)
     elif case in {"remote", "wrong_origin"}:
         assert result.status_code == 403
+    elif case == "unknown_signal":
+        assert result.status_code == 404
     else:
         assert result.status_code == 503
-    read_check = case in {"lux", "door", "changed"}
-    assert len(pipe.packets) == int(read_check or case == "observation")
+    read_check = case in {"lux", "door", "contact", "occupancy", "changed"}
+    assert len(pipe.packets) == int(read_check or case in {"observation", "contact_observation"})
     assert gateway.get_prop_async.await_count == int(read_check)
     gateway.set_prop_async.assert_not_awaited()

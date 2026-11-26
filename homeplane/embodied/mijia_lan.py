@@ -4,7 +4,6 @@ import asyncio
 import fcntl
 import json
 import logging
-import math
 import os
 import re
 import secrets
@@ -13,8 +12,9 @@ import sys
 import time
 from importlib.metadata import PackageNotFoundError, version
 
+from ..mijia_lan_client import SENSOR_OBSERVATIONS, SENSOR_PROPERTIES, valid_sensor_value
 from .mijia_inventory import home_devices, home_inputs, home_scope
-from .mijia_lan_observation import IlluminanceNotifications, property_receipt
+from .mijia_lan_observation import PropertyConnection, SensorNotifications, property_receipt
 from .mijia_power import family_binding, grant_binding, property_request
 from .miot_session import MiSession
 from .miot_spec import cover_binding, cover_revision
@@ -48,7 +48,7 @@ def retrying_directory_client(base, scope_current, read_errors, connection_error
             self._clear_property_connection()
             if (connections is not None and not self._directory_closed
                     and getattr(reason_code, 'value', reason_code) == 0):
-                self._property_connection = object()
+                self._property_connection = PropertyConnection()
                 connections[self.group_id] = self._property_connection
             super()._on_connect(client, userdata, flags, reason_code, properties)
 
@@ -61,8 +61,9 @@ def retrying_directory_client(base, scope_current, read_errors, connection_error
             if (connection is None or msg.retain or msg.dup
                     or '/appMsg/notify/iot/' not in msg.topic or '/property/' not in msg.topic):
                 return super()._on_message(client, userdata, msg)
-            # SDK 在 asyncio 队列里才为事件生成时间。先在网络线程记录原接收时刻。
-            token = property_receipt.set((connection, time.monotonic(), time.time()))
+            # 在网络线程记录收包顺序和时间，避免被 asyncio 回调顺序改变。
+            connection.received_packets += 1
+            token = property_receipt.set((connection, connection.received_packets, time.monotonic(), time.time()))
             try:
                 return super()._on_message(client, userdata, msg)
             finally:
@@ -174,8 +175,9 @@ def local_result(row, did, siid, piid, *, write):
 
 
 async def property_operation(manager, request, grant, group, dids, scope_current):
-    illuminance = request.get('read') == 'illuminance'
-    if illuminance:
+    signal = request.get('read')
+    sensor_read = signal in SENSOR_PROPERTIES
+    if sensor_read:
         if set(request) != {'did', 'siid', 'piid', 'grant', 'read'}:
             raise ValueError('mijia_invalid_binding')
         request = {key: value for key, value in request.items() if key != 'read'}
@@ -191,14 +193,14 @@ async def property_operation(manager, request, grant, group, dids, scope_current
             else:
                 row = await manager.set_prop_async(did, siid, piid, power == 'on')
     except TimeoutError:
-        if not illuminance:
+        if not sensor_read:
             manager.note_local_failure(did)
         raise
-    if illuminance:
+    if sensor_read:
         value = row.get('value') if isinstance(row, dict) else None
         if (not scope_current() or not manager.can_control(did)
                 or (manager.local_device(did) or {}).get('group_id') != group
-                or type(value) not in (int, float) or (type(value) is float and not math.isfinite(value))
+                or not valid_sensor_value(signal, value)
                 or type(row.get('code')) is not int or row['code'] != 0):
             raise ValueError('mijia_property_unconfirmed')
         return {'value': value}
@@ -307,7 +309,7 @@ async def serve(reader, session):
                 return
             await hub.init_async()
         if sdk_gateway is not None:
-            observations = IlluminanceNotifications(
+            observations = SensorNotifications(
                 hub, allowed, grant, home.group_id, current, connections,
                 (OSError, MIoTMipsError, MipsConnectionError, MipsSubscribeRejectedError,
                  MipsSubscribeTimeoutError, TimeoutError, ValueError, RuntimeError))
@@ -328,10 +330,10 @@ async def serve(reader, session):
                     if observations is not None:
                         await observations.expire()
                     reply = route_snapshot(hub, allowed, home.group_id)
-                elif request.get('read') == 'illuminance_observation':
+                elif request.get('read') in SENSOR_OBSERVATIONS:
                     if observations is not None:
                         reply = await observations.snapshot(request)
-                elif 'cover' in request and request.get('read') != 'illuminance':
+                elif 'cover' in request and request.get('read') not in SENSOR_PROPERTIES:
                     reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
                 else:
                     reply = await property_operation(hub, request, grant, home.group_id, allowed, current)

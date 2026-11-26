@@ -13,6 +13,8 @@ DID = "100000001"
 GROUP = "fixture"
 GRANT = "c" * 64
 REQUEST = dict(did=DID, siid=2, piid=4, grant=GRANT, read="illuminance_observation")
+OCCUPANCY = dict(REQUEST, piid=5, read="occupancy_observation")
+CONTACT = dict(REQUEST, piid=5, read="contact_observation")
 
 
 class Gateway:
@@ -43,7 +45,7 @@ class Gateway:
 
     def receive(self, value, *, retain=False, dup=False, did=DID, piid=4):
         change = SimpleNamespace(siid=2, piid=piid, value=value)
-        msg = SimpleNamespace(topic="fixture/appMsg/notify/iot/fixture/property/2.4",
+        msg = SimpleNamespace(topic=f"fixture/appMsg/notify/iot/fixture/property/2.{piid}",
                               retain=retain, dup=dup, event=SimpleNamespace(did=did, changes=[change]))
         self._on_message(None, None, msg)
 
@@ -81,7 +83,7 @@ def feed(monkeypatch):
         Gateway, lambda: clock.current, (OSError,), OSError, connections
     )()
     gateway._on_connect(None, None, None, 0, None)
-    stream = mijia_lan_observation.IlluminanceNotifications(
+    stream = mijia_lan_observation.SensorNotifications(
         gateway, {DID}, GRANT, GROUP, lambda: clock.current, connections, (OSError,)
     )
     return clock, gateway, stream
@@ -105,7 +107,6 @@ async def test_observation_requires_current_ack_and_uses_wire_arrival_time(feed)
         assert await stream.snapshot(REQUEST) == {"state": "subscribing"}
         await asyncio.sleep(0)
         gateway.receive(9)
-        clock.now = 11
         subscribed = await acknowledge(stream, gateway)
         gateway.receive(99, retain=True)
         gateway.receive(99, dup=True)
@@ -126,6 +127,84 @@ async def test_observation_requires_current_ack_and_uses_wire_arrival_time(feed)
         gateway.receive(True)
         gateway.flush_events()
         assert (await stream.snapshot(REQUEST))["state"] == "awaiting_notification"
+    finally:
+        await stream.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("sensor_request", "value"), [(OCCUPANCY, 3), (CONTACT, False)])
+async def test_shared_subscription_keeps_independent_properties_and_start_times(feed, sensor_request, value):
+    clock, gateway, stream = feed
+    try:
+        light_subscription = await acknowledge(stream, gateway)
+        gateway.receive(14)
+        gateway.receive(value, piid=5)
+        sensor = await stream.snapshot(sensor_request)
+        assert sensor["state"] == "awaiting_notification"
+        assert sensor["subscription"] != light_subscription
+        gateway.flush_events()
+        assert await stream.snapshot(sensor_request) == sensor
+        assert (await stream.snapshot(REQUEST))["value"] == 14
+
+        clock.now += 1
+        gateway.receive(value, piid=5)
+        gateway.receive(15)
+        gateway.flush_events()
+        assert (await stream.snapshot(sensor_request)) == dict(
+            sensor, state="observed", sequence=1, value=value, received_at=1011.0, age_seconds=0.0)
+        light = await stream.snapshot(REQUEST)
+        assert (light["subscription"], light["sequence"], light["value"]) == (light_subscription, 2, 15)
+        assert len(gateway.requests) == 1
+        assert gateway.removed == 0
+    finally:
+        await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_late_callback_cannot_replace_or_clear_a_newer_packet_even_at_same_clock_time(feed):
+    _, gateway, stream = feed
+    try:
+        await acknowledge(stream, gateway)
+        gateway.receive(10)
+        gateway.receive(True)
+        gateway.receive(11)
+        gateway.events.reverse()
+        gateway.flush_events()
+        light = await stream.snapshot(REQUEST)
+        assert (light["sequence"], light["value"]) == (1, 11)
+
+        gateway.receive(12)
+        gateway.receive(True)
+        gateway.events.reverse()
+        gateway.flush_events()
+        assert (await stream.snapshot(REQUEST))["state"] == "awaiting_notification"
+    finally:
+        await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_idle_property_expires_without_disturbing_other_property_or_replaying_old_sample(feed):
+    clock, gateway, stream = feed
+    try:
+        light_subscription = await acknowledge(stream, gateway)
+        first = await stream.snapshot(OCCUPANCY)
+        gateway.receive(1, piid=5)
+        gateway.flush_events()
+        assert (await stream.snapshot(OCCUPANCY))["value"] == 1
+        clock.now += 40
+        gateway.receive(16)
+        gateway.flush_events()
+        assert (await stream.snapshot(REQUEST))["value"] == 16
+
+        gateway.receive(0, piid=5)
+        clock.now += 6
+        await stream.expire()
+        again = await stream.snapshot(OCCUPANCY)
+        gateway.flush_events()
+        assert again["subscription"] != first["subscription"]
+        assert await stream.snapshot(OCCUPANCY) == again
+        assert (await stream.snapshot(REQUEST))["subscription"] == light_subscription
+        assert len(gateway.requests) == 1 and gateway.removed == 0
     finally:
         await stream.close()
 
@@ -154,10 +233,14 @@ async def test_reconnect_even_between_polls_requires_another_ack_and_new_packet(
     clock, gateway, stream = feed
     try:
         old = await acknowledge(stream, gateway)
+        previous_occupancy = await stream.snapshot(OCCUPANCY)
         gateway.receive(10)
+        gateway.receive(1, piid=5)
         gateway.flush_events()
         assert (await stream.snapshot(REQUEST))["state"] == "observed"
+        assert (await stream.snapshot(OCCUPANCY))["value"] == 1
         gateway.receive(11)
+        gateway.receive(2, piid=5)
         gateway._on_disconnect(None, None, None, 0, None)
         gateway._on_connect(None, None, None, 0, None)
         clock.now = 20
@@ -165,8 +248,11 @@ async def test_reconnect_even_between_polls_requires_another_ack_and_new_packet(
         assert gateway.removed == 1
         new = await acknowledge(stream, gateway)
         assert old != new and len(gateway.requests) == 2
+        next_occupancy = await stream.snapshot(OCCUPANCY)
+        assert next_occupancy["subscription"] != previous_occupancy["subscription"]
         gateway.flush_events()
         assert await stream.snapshot(REQUEST) == {"state": "awaiting_notification", "subscription": new}
+        assert await stream.snapshot(OCCUPANCY) == next_occupancy
         gateway.receive(24)
         gateway.flush_events()
         assert (await stream.snapshot(REQUEST))["value"] == 24
