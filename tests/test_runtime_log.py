@@ -319,7 +319,8 @@ async def test_production_arl_exception_with_malformed_or_private_code_is_redact
             raise ARLError(code)
         with binding(journal):
             with pytest.raises(ARLError) as caught:
-                await runtime._bounded(worker, .1)
+                # 给工作线程留出调度时间。短时限的行为由超时用例覆盖。
+                await runtime._bounded(worker, 2.0)
         assert caught.value.code == code
     assert all(r['code'] == 'unclassified' for r in journal.rows if r['event'] == 'result')
     check_private(journal)
