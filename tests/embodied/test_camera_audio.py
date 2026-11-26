@@ -314,6 +314,69 @@ def voice_service(module):
     return s
 
 
+@pytest.fixture
+def voice_window_source(tmp_path, monkeypatch):
+    from homeplane.embodied import home_service as module
+
+    clock = [100.0]
+    marker = tmp_path / 'paused'
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(module, 'VOICE_INPUT_PAUSED', marker)
+    service = voice_service(module)
+    service.ensure_voice = Mock()
+    buffer_size = Mock(return_value=0)
+    writer = SimpleNamespace(write=Mock(), is_closing=lambda: False,
+                             transport=SimpleNamespace(get_write_buffer_size=buffer_size))
+    capture = SimpleNamespace(stdin=writer)
+
+    async def observe_at(now, captured=None):
+        clock[0] = now
+        writes = writer.write.call_count
+        await service.observe([], [], {'status': 'locked'}, now, capture, True,
+                              session_id='same-camera', captured_mono=captured)
+        if writer.write.call_count == writes or writer.write.side_effect:
+            return None
+        command = json.loads(writer.write.call_args.args[0])
+        return voice_window_deadlines(command, now)[0]
+
+    return observe_at, writer, marker
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault', ['buffered', 'write_error'])
+async def test_camera_voice_window_recovers_before_expiry_after_failed_enqueue(voice_window_source, fault):
+    observe_at, writer, _ = voice_window_source
+    assert await observe_at(100.0) == pytest.approx(101.3)
+
+    if fault == 'buffered':
+        writer.transport.get_write_buffer_size.return_value = 1
+    else:
+        writer.write.side_effect = OSError('synthetic pipe error')
+    assert await observe_at(101.18) is None
+
+    writer.transport.get_write_buffer_size.return_value = 0
+    writer.write.side_effect = None
+    assert await observe_at(101.22) == pytest.approx(102.52)
+
+
+@pytest.mark.asyncio
+async def test_camera_voice_window_renews_short_lease_with_a_new_frame(voice_window_source):
+    observe_at, _, _ = voice_window_source
+    assert await observe_at(100.0, captured=98.67) == pytest.approx(100.17)
+    assert await observe_at(100.10) == pytest.approx(101.40)
+    assert await observe_at(100.20) is None
+
+
+@pytest.mark.asyncio
+async def test_camera_voice_window_pause_and_resume_take_effect_on_next_frame(voice_window_source):
+    observe_at, _, marker = voice_window_source
+    assert await observe_at(100.0) == pytest.approx(101.3)
+    marker.touch()
+    assert await observe_at(100.08) == 0.0
+    marker.unlink()
+    assert await observe_at(100.17) == pytest.approx(101.47)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fault',['load','measure','reset'])
 async def test_local_audio_model_failure_does_not_stop_primary_frames_or_motor_results(tmp_path,monkeypatch,fault):

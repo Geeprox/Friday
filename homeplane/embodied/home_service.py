@@ -88,6 +88,7 @@ class HomeService:
         self.owner = None
         self.voice_owner = None
         self.gate_sent = -100.0
+        self.gate_audio_until = 0.0
         self.vad = []
         self.speaking = False
         self.silence = 0.0
@@ -252,6 +253,7 @@ class HomeService:
             # 恢复后的首帧不能延续断流前的注视时长。
             self.attention.update([], [], now)
             self.gate_sent = -100.0
+            self.gate_audio_until = 0.0
         self.camera_session = session
         self.selected = selected
         self.last_video = now if captured_mono is None else captured_mono
@@ -275,18 +277,23 @@ class HomeService:
             event = self.gesture.update(next((p for p in people if p["id"] == owner), None), now)
             if event:
                 self.spawn(self.command(event["action"], event["id"], "window_gesture"))
-        if capture and capture.stdin and now - self.gate_sent > 0.4:
-            self.gate_sent = now
-            # Keep the wake-word path available even with no qualified face. Audio is
-            # bounded in RAM and only forwarded while this mode is selected.
+        if capture and capture.stdin:
+            gate_at = time.monotonic()
+            # 清晰人脸缺失时仍可接收唤醒词，收音继续受本路授权和时效约束。
             gate = bool(
                 not VOICE_INPUT_PAUSED.exists() and (sound_review is True or
                 selected and self.audio_allowed and self.voice_status() in ("ready", "transcribing")
-                and now > self.reply_until and (
-                    self.voice_routing is None or self.voice_routing.listening(now)))
+                and gate_at > self.reply_until and (
+                    self.voice_routing is None or self.voice_routing.listening(gate_at)))
             )
-            offer_voice_window(capture.stdin, now=time.monotonic(), captured=self.last_video, enabled=gate,
-                attention=bool(people and registration.get('status') not in {'moving', 'settling'}))
+            sent_until = offer_voice_window(
+                capture.stdin, now=gate_at, captured=self.last_video, enabled=gate,
+                attention=bool(people and registration.get('status') not in {'moving', 'settling'}),
+                last_sent=self.gate_sent, last_audio_until=self.gate_audio_until,
+            )
+            if sent_until is not None:
+                self.gate_sent = gate_at
+                self.gate_audio_until = sent_until
 
     def clear_view_for_motion(self):
         """撤销画面依据，保留同一采集来源的收音。"""

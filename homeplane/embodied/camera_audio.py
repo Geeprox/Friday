@@ -18,6 +18,7 @@ SAMPLE_RATE = 16000
 MAX_AGE = 1.5
 MAX_GAP = .6
 VOICE_WINDOW_SECONDS = 1.3
+VOICE_WINDOW_REFRESH = .4
 
 
 @dataclass(frozen=True)
@@ -47,20 +48,27 @@ def fresh(received, decoded, wall):
             and 0 <= wall-received <= MAX_AGE and received <= decoded <= wall)
 
 
-def offer_voice_window(writer, *, now, captured, enabled, attention):
-    """仅在控制管道可写时提交本帧授权，后续由新鲜帧续期。"""
-    if writer.is_closing() or writer.transport.get_write_buffer_size():
-        return
+def offer_voice_window(writer, *, now, captured, enabled, attention, last_sent, last_audio_until):
+    """返回已写入的收音截止时间；停用返回零，未写入返回 None。"""
     deadline = now
     if number(captured) and 0 <= now - captured < MAX_AGE:
         deadline = min(now + VOICE_WINDOW_SECONDS, captured + MAX_AGE)
+    audio_enabled = enabled and deadline > now
+    was_enabled = last_audio_until > 0
+    renewing = (audio_enabled and was_enabled and last_audio_until - now <= VOICE_WINDOW_REFRESH
+                and deadline > last_audio_until)
+    if audio_enabled == was_enabled and not renewing and now - last_sent <= VOICE_WINDOW_REFRESH:
+        return None
+    if writer.is_closing() or writer.transport.get_write_buffer_size():
+        return None
     command = dict(action='voice_window', expires_mono=deadline,
-                   enabled=enabled and deadline > now, attention=attention and deadline > now)
+                   enabled=audio_enabled, attention=attention and deadline > now)
     try:
         writer.write((json.dumps(command, separators=(',', ':')) + '\n').encode())
     except (OSError, RuntimeError):
         # 管道关闭交由采集生命周期处理，视频观察可以继续结束本帧。
-        return
+        return None
+    return deadline if audio_enabled else 0.0
 
 
 def voice_window_deadlines(command, now):
