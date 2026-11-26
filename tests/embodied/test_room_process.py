@@ -273,7 +273,8 @@ from homeplane.embodied.room_protocol import unavailable_layout
 mode=sys.argv[2]
 def stall():
     signal.signal(signal.SIGTERM,signal.SIG_IGN)
-    (Path(sys.argv[1]) / 'stalled-phase').write_text(mode)
+    if len(sys.argv) > 3:
+        Path(sys.argv[3]).write_text(mode)
     ctypes.PyDLL(None).sleep(60)
 class Room:
     def __init__(self,*_):
@@ -294,8 +295,11 @@ serve(sys.stdin.buffer,sys.stdout.buffer,Path(sys.argv[1]),factory=Room,draft_fa
 """
 
 
-def fake(folder, mode="ok", **kwargs):
-    return RoomSession(folder, command=(sys.executable, "-B", "-c", CHILD, str(folder), mode), **kwargs)
+def fake(folder, mode="ok", *, stall_marker=None, **kwargs):
+    command = (sys.executable, "-B", "-c", CHILD, str(folder), mode)
+    if stall_marker is not None:
+        command += (str(stall_marker),)
+    return RoomSession(folder, command=command, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -313,7 +317,8 @@ async def test_native_room_stalls_are_actually_killed_and_reaped(tmp_path, phase
 
     # 在启动时保留实际句柄。回收后所有者会清空自己的引用。
     monkeypatch.setattr(local_child.asyncio, "create_subprocess_exec", record_process)
-    session = fake(tmp_path, phase)
+    stall_marker = tmp_path / "stalled-phase"
+    session = fake(tmp_path, phase, stall_marker=stall_marker)
     try:
         registered = await session.register(b"SYNTHETIC", [], time.monotonic())
         if phase == "layout":
@@ -324,7 +329,7 @@ async def test_native_room_stalls_are_actually_killed_and_reaped(tmp_path, phase
         assert session.reason == "room_timeout"
     finally:
         assert await session.close()
-    assert (tmp_path / "stalled-phase").read_text() == phase
+    assert stall_marker.read_text() == phase
     assert len(processes) == 1 and processes[0].returncode == -signal.SIGKILL
     assert session.owner.process is None and not session.owner.slot
 

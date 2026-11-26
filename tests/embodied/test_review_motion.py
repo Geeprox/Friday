@@ -32,9 +32,11 @@ def recorded_sound_only(safety):
 
 
 class Patrol:
-    def __init__(self, home, owner, *, mode='auto', duration=80, activity=None):
+    def __init__(self, home, owner, *, mode='auto', duration=80, activity=None,
+                 drain_review_writes=False):
         self.home, self.owner = home, owner
         self.mode, self.duration = mode, duration
+        self.drain_review_writes = drain_review_writes
         self.people = [person(1, .08)] if activity == 'same_camera' else []
         self.occupied_elsewhere = activity == 'other_camera'
         self.marker, self.camera, self.context = home.feeds[0]
@@ -63,6 +65,9 @@ class Patrol:
         task = runtime.visual.task
         if home.engine.release_due() and task:
             await task
+            if self.drain_review_writes:
+                # 留档用真实线程。当前回放等本次写完再推进合成时钟。
+                await asyncio.wait_for(runtime.recording.drain(), 3)
             await settle()
         stable = home.clock >= self.moving_until
         runtime.offer(self.camera, self.session, self.people if stable else [], home.clock, home.clock,
@@ -164,7 +169,8 @@ async def test_original_owners_complete_a_two_level_survey(tmp_path, monkeypatch
 @pytest.mark.parametrize('mode',['auto','survey'])
 async def test_patrol_preserves_a_positive_review_and_resumes_afterward(tmp_path,monkeypatch,owner,mode):
     home=Home(tmp_path,monkeypatch)
-    patrol=Patrol(home,owner,mode=mode,activity='other_camera' if mode=='survey' else None)
+    patrol=Patrol(home,owner,mode=mode,activity='other_camera' if mode=='survey' else None,
+                  drain_review_writes=True)
     try:
         await patrol.run()
         events=home.store.events()
