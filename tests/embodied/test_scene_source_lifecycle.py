@@ -340,13 +340,14 @@ async def test_original_vision_request_only_uses_current_scene_rois(change):
     # Execute the original frame prefix, including both scene admission and the
     # actual native-vision port. Do not import the private runtime entry point.
     request = AsyncMock(return_value={})
+    from homeplane.embodied.frame_sampling import PendingFrames
     source = dict(type='frame', received_at=999.5, _motion_generation=4,
                   capture_session='a' * 32, camera_source_context='b' * 64)
     item = dict(source, received_at=1000, jpeg='SYNTHETIC')
     scene = dict(RESULT, observed_at=999.5, _source=source)
     scope = dict(motion_generation=4, my_generation=1, generation=1, primary_wall_epoch=2,
         wall_epoch=2, time=SimpleNamespace(time=lambda: 1000, monotonic=lambda: 10),
-        state=dict(status='live'), item=item, scene_data=scene, room=None,
+        state=dict(status='live'), item=item, scene_data=scene, room=None, queue=PendingFrames(),
         camera_planner=None, games=SimpleNamespace(mode='home'), vision=SimpleNamespace(detect=request),
         recognition_failed=lambda _:None)
     if change == 'queued_motion':
