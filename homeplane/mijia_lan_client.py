@@ -13,6 +13,7 @@ STATUS_TTL = 12.0
 DIRECTORY_GRACE = 20.0
 DIRECTORY_RETRY_INITIAL = 30.0
 DIRECTORY_RETRY_MAX = 600.0
+ILLUMINANCE_READS = frozenset({'illuminance', 'illuminance_observation'})
 
 
 class MijiaLanClient:
@@ -95,8 +96,8 @@ class MijiaLanClient:
                     or family != self.current_family()):
                 raise ValueError('mijia_lan_unavailable')
             # 等候管道期间可能切换路由或重建工作进程，旧请求不能随恢复一起派发。
-            if expected_process is not None and (proc is not expected_process
-                    or not self.ready(family, request.get('did'))):
+            route = None if request.get('read') == 'illuminance_observation' else request.get('did')
+            if expected_process is not None and (proc is not expected_process or not self.ready(family, route)):
                 raise ValueError('mijia_lan_unavailable')
             self.sequence += 1
             ident = self.sequence
@@ -120,15 +121,15 @@ class MijiaLanClient:
 
     async def request(self, request, *, family):
         process = self.process
-        if not self.ready(family, request.get('did')):
-            raise ValueError('mijia_lan_unavailable')
-        illuminance = request.get('read') == 'illuminance'
-        if illuminance and self.io.locked():
+        purpose = request.get('read')
+        route = None if purpose == 'illuminance_observation' else request.get('did')
+        illuminance = purpose in ILLUMINANCE_READS
+        if not self.ready(family, route) or (illuminance and self.io.locked()):
             raise ValueError('mijia_lan_unavailable')
         read_only = illuminance or request.get('cover') == 'read' or ('cover' not in request and 'power' not in request)
         async with asyncio.timeout(1.6 if read_only else 5):
             reply = await self._call(request, family, expected_process=process)
-        if illuminance and (self.process is not process or not self.ready(family, request.get('did'))):
+        if illuminance and (self.process is not process or not self.ready(family, route)):
             raise ValueError('mijia_lan_unavailable')
         if 'error' in reply:
             # 探测数值失败时保留设备可用于控制的路由。

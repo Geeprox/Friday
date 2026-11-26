@@ -131,7 +131,7 @@ class MijiaPower:
             return family
         return None
 
-    async def read_illuminance(self, candidate):
+    async def read_illuminance(self, candidate, *, observe=False):
         from .embodied.miot_spec import properties, property_ref
 
         report = self.service.discovery_report
@@ -145,7 +145,7 @@ class MijiaPower:
         if not isinstance(catalog, dict) or not isinstance(urn := catalog.get('urn'), str):
             raise ValueError('mijia_illuminance_unavailable')
         did = identity.split('_', 1)[1]
-        if not self.lan.ready(family, did):
+        if not self.lan.ready(family, None if observe else did):
             raise ValueError('mijia_illuminance_unavailable')
         spec = await self._spec(urn)
         if (not isinstance(spec, dict) or spec.get('type') != urn
@@ -153,13 +153,32 @@ class MijiaPower:
             raise ValueError('mijia_illuminance_unavailable')
         props = properties(spec)
         siid, piid = property_ref(props, 'illumination', 'read')
-        value = await self.lan.request(dict(did=did, siid=siid, piid=piid, grant=grant, read='illuminance'),
-                                       family=family)
+        if observe:
+            property_ref(props, 'illumination', 'notify')
+        purpose = 'illuminance_observation' if observe else 'illuminance'
+        value = await self.lan.request(dict(did=did, siid=siid, piid=piid, grant=grant, read=purpose), family=family)
         if self.service.discovery_report is not report or self.current_family() != family:
             raise ValueError('mijia_illuminance_unavailable')
-        reading = illuminance_readback(props['illumination'], value.get('value'))
-        return dict(status='reported', source=candidate, transport='mijia_lan',
-                    received_at=datetime.now(UTC).isoformat(), measured_at=None, **reading)
+        report = dict(source=candidate, transport='mijia_lan', measured_at=None)
+        if not observe:
+            return dict(report, status='reported', received_at=datetime.now(UTC).isoformat(),
+                        **illuminance_readback(props['illumination'], value.get('value')))
+        state = value.get('state')
+        if state in {'unavailable', 'subscribing'}:
+            return dict(report, status=state)
+        subscription = value.get('subscription')
+        if not isinstance(subscription, str) or not re.fullmatch('[a-f0-9]{32}', subscription):
+            raise ValueError('mijia_illuminance_unavailable')
+        if state == 'awaiting_notification':
+            return dict(report, status=state, subscription=subscription)
+        stamp, age, sequence = value.get('received_at'), value.get('age_seconds'), value.get('sequence')
+        if (state != 'observed' or type(sequence) is not int or sequence <= 0
+                or type(stamp) not in (float, int) or not 0 < stamp < 253402300799
+                or type(age) not in (float, int) or not 0 <= age < math.inf):
+            raise ValueError('mijia_illuminance_unavailable')
+        return dict(report, status=state, subscription=subscription, sequence=sequence, age_seconds=age,
+                    received_at=datetime.fromtimestamp(stamp, UTC).isoformat(),
+                    **illuminance_readback(props['illumination'], value.get('value')))
 
     def cover_context(self, cover, directory):
         from .embodied.mijia_lan import home_input

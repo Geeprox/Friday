@@ -68,11 +68,15 @@ async def test_optional_illuminance_keeps_control_route_and_does_not_queue():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["lux", "door", "camera", "changed", "foreign", "remote", "wrong_origin"])
+@pytest.mark.parametrize("case", ["lux", "door", "observation", "missing_notify",
+                                 "camera", "changed", "foreign", "remote", "wrong_origin"])
 async def test_loopback_illuminance_readback_uses_registered_native_capability(tmp_path, monkeypatch, case):
     model = "urn:miot-spec-v2:device:sensor:0000A001:synthetic"
     identity = "cn_" + DEVICE
     definition = dict(iid=4, type="urn:miot-spec-v2:property:illumination:00000001", access=["read", "notify"])
+    observe = case in {"observation", "missing_notify"}
+    if case == "missing_notify":
+        definition["access"] = ["read"]
     if case == "door":
         definition["value-list"] = [{"value": 1, "description": "Weak"}, {"value": 2, "description": "Strong"}]
     else:
@@ -95,14 +99,20 @@ async def test_loopback_illuminance_readback_uses_registered_native_capability(t
         async def readline(self):
             packet = self.packets[-1].copy()
             request_id = packet.pop("id")
-            assert packet.pop("family") == FAMILY and packet == QUERY
-            response = await property_operation(gateway, packet, GRANT, "fixture", {DEVICE}, lambda: True)
+            assert packet.pop("family") == FAMILY
+            if observe:
+                assert packet == dict(QUERY, read="illuminance_observation")
+                response = dict(state="observed", sequence=1, subscription="e" * 32,
+                                received_at=1013.0, age_seconds=3.0, value=22)
+            else:
+                assert packet == QUERY
+                response = await property_operation(gateway, packet, GRANT, "fixture", {DEVICE}, lambda: True)
             return json.dumps(dict(id=request_id, **response)).encode()
 
     pipe = SensorPipe(lambda: {})
     lan = MijiaLanClient(lambda: app.state.embodied.discovery_report["family"])
     lan.process, lan.family = pipe, FAMILY
-    lan.connected, lan.routes, lan.updated_at = True, frozenset({DEVICE}), time.monotonic()
+    lan.connected, lan.routes, lan.updated_at = True, frozenset() if observe else frozenset({DEVICE}), time.monotonic()
     original = mijia_control.MijiaPower
     monkeypatch.setattr(mijia_control, "MijiaPower", lambda service: original(
         service, spec=AsyncMock(return_value=spec), lan=lan))
@@ -115,7 +125,8 @@ async def test_loopback_illuminance_readback_uses_registered_native_capability(t
     target = "f" * 64 if case == "foreign" else CANDIDATE
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(peer, 45321)),
                                  base_url="http://127.0.0.1:8740") as client:
-        result = await client.get("/api/embodied/mijia-lan/illuminance/" + target, headers=headers)
+        result = await client.get("/api/embodied/mijia-lan/illuminance/" + target, headers=headers,
+                                  params={"observe": observe} if observe else None)
     if case in {"lux", "door"}:
         assert result.status_code == 200 and result.headers["cache-control"] == "no-store"
         row = result.json()
@@ -124,11 +135,16 @@ async def test_loopback_illuminance_readback_uses_registered_native_capability(t
         assert (row["kind"], row["unit"], row["value"]) == (
             ("numeric", "lux", 25.0) if case == "lux" else ("category", None, "strong")
         )
+    elif case == "observation":
+        assert result.status_code == 200 and result.headers["cache-control"] == "no-store"
+        assert result.json() == dict(status="observed", source=CANDIDATE, transport="mijia_lan",
+                                     measured_at=None, subscription="e" * 32, sequence=1, age_seconds=3.0,
+                                     received_at="1970-01-01T00:16:53+00:00", kind="numeric", unit="lux", value=22)
     elif case in {"remote", "wrong_origin"}:
         assert result.status_code == 403
     else:
         assert result.status_code == 503
-    assert len(pipe.packets) == gateway.get_prop_async.await_count == (
-        1 if case in {"lux", "door", "changed"} else 0
-    )
+    read_check = case in {"lux", "door", "changed"}
+    assert len(pipe.packets) == int(read_check or case == "observation")
+    assert gateway.get_prop_async.await_count == int(read_check)
     gateway.set_prop_async.assert_not_awaited()

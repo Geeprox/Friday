@@ -10,9 +10,11 @@ import re
 import secrets
 import stat
 import sys
+import time
 from importlib.metadata import PackageNotFoundError, version
 
 from .mijia_inventory import home_devices, home_inputs, home_scope
+from .mijia_lan_observation import IlluminanceNotifications, property_receipt
 from .mijia_power import family_binding, grant_binding, property_request
 from .miot_session import MiSession
 from .miot_spec import cover_binding, cover_revision
@@ -24,7 +26,7 @@ DIRECTORY_REFRESH_RETRY = 3.0
 DIRECTORY_REFRESH_RETRY_MAX = 60.0
 
 
-def retrying_directory_client(base, scope_current, read_errors, connection_error):
+def retrying_directory_client(base, scope_current, read_errors, connection_error, connections=None):
     """在同一网关连接上恢复目录读取，保留其他设备的可用路由。"""
 
     class DirectoryClient(base):
@@ -34,6 +36,37 @@ def retrying_directory_client(base, scope_current, read_errors, connection_error
             self._directory_retry = None
             self._directory_stale = False
             self._directory_closed = False
+            self._property_connection = None
+
+        def _clear_property_connection(self):
+            connection, self._property_connection = self._property_connection, None
+            if connections is not None and connection is not None:
+                if connections.get(self.group_id) is connection:
+                    del connections[self.group_id]
+
+        def _on_connect(self, client, userdata, flags, reason_code, properties):
+            self._clear_property_connection()
+            if (connections is not None and not self._directory_closed
+                    and getattr(reason_code, 'value', reason_code) == 0):
+                self._property_connection = object()
+                connections[self.group_id] = self._property_connection
+            super()._on_connect(client, userdata, flags, reason_code, properties)
+
+        def _on_disconnect(self, client, userdata, flags, reason_code, properties):
+            self._clear_property_connection()
+            super()._on_disconnect(client, userdata, flags, reason_code, properties)
+
+        def _on_message(self, client, userdata, msg):
+            connection = self._property_connection
+            if (connection is None or msg.retain or msg.dup
+                    or '/appMsg/notify/iot/' not in msg.topic or '/property/' not in msg.topic):
+                return super()._on_message(client, userdata, msg)
+            # SDK 在 asyncio 队列里才为事件生成时间。先在网络线程记录原接收时刻。
+            token = property_receipt.set((connection, time.monotonic(), time.time()))
+            try:
+                return super()._on_message(client, userdata, msg)
+            finally:
+                property_receipt.reset(token)
 
         async def get_dev_list_async(self, *args, **kwargs):
             async with self._directory_lock:
@@ -75,6 +108,7 @@ def retrying_directory_client(base, scope_current, read_errors, connection_error
 
         async def deinit_async(self):
             self._directory_closed = True
+            self._clear_property_connection()
             task = self._directory_retry
             if task is not None:
                 task.cancel()
@@ -229,6 +263,8 @@ async def serve(reader, session):
     hub = None
     lock = None
     sdk_gateway = None
+    connections = {}
+    observations = None
 
     def current():
         try:
@@ -252,7 +288,7 @@ async def serve(reader, session):
             # SDK 未提供客户端工厂，只在 Friday 的独立直连进程替换该构造入口。
             sdk_gateway = central_hub.MipsLocalClient
             central_hub.MipsLocalClient = retrying_directory_client(
-                sdk_gateway, current, (OSError, MIoTMipsError, MipsConnectionError), MipsConnectionError)
+                sdk_gateway, current, (OSError, MIoTMipsError, MipsConnectionError), MipsConnectionError, connections)
         async with asyncio.timeout(16):
             homes = await api.get_homes_async()
             home = home_scope(list(homes.values()), cfg, membership)
@@ -270,6 +306,11 @@ async def serve(reader, session):
             if not hub.enabled:
                 return
             await hub.init_async()
+        if sdk_gateway is not None:
+            observations = IlluminanceNotifications(
+                hub, allowed, grant, home.group_id, current, connections,
+                (OSError, MIoTMipsError, MipsConnectionError, TimeoutError, ValueError, RuntimeError))
+            hub.on_dev_list_changed = observations.directory_changed
         print(json.dumps({'ready': True, 'family': family}), flush=True)
 
         while packet := await reader.readline():
@@ -283,7 +324,12 @@ async def serve(reader, session):
                 if request.pop('family') != family:
                     raise ValueError('mijia_lan_unavailable')
                 if request == {'routes': True}:
+                    if observations is not None:
+                        await observations.expire()
                     reply = route_snapshot(hub, allowed, home.group_id)
+                elif request.get('read') == 'illuminance_observation':
+                    if observations is not None:
+                        reply = await observations.snapshot(request)
                 elif 'cover' in request and request.get('read') != 'illuminance':
                     reply = await cover_operation(hub, request, grant, home.group_id, allowed, current, session.directory)
                 else:
@@ -293,8 +339,13 @@ async def serve(reader, session):
             print(json.dumps({'id': ident, **reply}), flush=True)
     finally:
         try:
-            if hub is not None:
-                await hub.deinit_async()
+            try:
+                if observations is not None:
+                    hub.on_dev_list_changed = None
+                    await observations.close()
+            finally:
+                if hub is not None:
+                    await hub.deinit_async()
         finally:
             try:
                 try:
