@@ -53,6 +53,35 @@ def test_binding_ok_is_consumed_and_a_held_gesture_needs_release(configured):
     assert len(update(fleet,CAMERAS[0],21.2,'ok'))==1
 
 
+@pytest.mark.parametrize("gap_expected", [False, True])
+def test_cached_hand_frames_are_neutral_until_the_next_real_hand_sample(configured, gap_expected):
+    fleet = InteractionFleet()
+    camera = CAMERAS[0]
+    bind(fleet, camera)
+    context = {"status": "locked"}
+    assert not fleet.update(camera, 'session', people(), hand('open_palm'), context, True, 11.4)
+    if not gap_expected:
+        assert not fleet.update(camera, 'session', people(), hand('open_palm'), context, True, 11.8)
+    for at in (12., 12.1, 12.2, 12.45):
+        assert not fleet.update(camera, 'session', people(), hand('open_palm'), context, True, at,
+                                hands_sampled=False)
+    result = fleet.update(camera, 'session', people(), hand('open_palm'), context, True, 12.5)
+    assert len(result) == int(not gap_expected)
+    if result:
+        assert result[0]['observed_mono'] == 12.5
+
+
+def test_cached_frames_cannot_complete_or_reset_an_ok_takeover(configured):
+    fleet = InteractionFleet()
+    camera = CAMERAS[0]
+    bind(fleet, camera)
+    group = people() + people(track=8)
+    assert fleet.operator(camera, 'session', group, hand('ok', 8), 11.3) == 7
+    assert fleet.operator(camera, 'session', group, [], 11.5, hands_sampled=False) == 7
+    assert fleet.operator(camera, 'session', group, hand('ok', 8), 12.05, hands_sampled=False) == 7
+    assert fleet.operator(camera, 'session', group, hand('ok', 8), 12.08) == 8
+
+
 def test_gesture_cooldown_expires_old_tracks_during_continuous_operation(configured):
     engine = InteractionEngine(CAMERAS[0], 'SYNTHETIC-long-session')
     for track in range(1, 721):

@@ -107,11 +107,17 @@ if __name__ == "__main__":
 
 def test_same_body_wrist_with_flickering_hand_side():
     room, person, hand = GeometryTests().fixture()
-    person["joints"]["leftWrist"] = dict(x=.62, y=.52, confidence=.9)
-    for i, side in enumerate(["left", "right", "unknown"]):
+    for i, side in enumerate(["left", "right", "unknown"] * 4):
+        if i % 2:
+            person["joints"]["leftWrist"] = dict(x=.62, y=.52, confidence=.9)
+        else:
+            person["joints"].pop("leftWrist", None)
         hand["side"] = side
-        room.update(b"", [person], [hand], i * .12)
+        hand["sample_id"] = i
+        result = room.update(b"", [person], [hand], i * .14)
     assert hand["gesture"] == "pointing"
+    assert result["pointing"][0]["confirmed"]
+    assert result["pointing"][0]["target"] == 2
 
 
 def test_linux_fingertips_recover_a_missing_body_wrist_only_for_unique_owner():
@@ -196,6 +202,14 @@ def test_partial_arm_matches_only_current_single_hand_and_supplies_no_body_pose(
         person, = tracker.update(dict(boxes=[box], poses=poses), 1 + i*.1)
         room.update(b"", [person], [h], 1 + i*.1)
         assert h["person_id"] is None and not person.get("arm_wrists")
+    both_arms = dict(arm, leftShoulder=dict(x=.6, y=.4, confidence=.95),
+                     leftElbow=dict(x=.65, y=.6, confidence=.95),
+                     leftWrist=dict(x=.72, y=.72, confidence=.95))
+    person, = tracker.update(dict(boxes=[box], poses=[dict(joints=both_arms)]), 1.4)
+    assert person["joints"] == {} and person["actions"] == ["pose_unknown"]
+    assert person["arm_wrists"] == {"leftWrist": both_arms["leftWrist"], "rightWrist": wrist}
+    room.update(b"", [person], [h], 1.4)
+    assert h["person_id"] == person["id"]
 
 
 def test_mask_owner_requires_same_tracked_box_and_single_hand_in_stationary_view():
@@ -214,3 +228,28 @@ def test_mask_owner_requires_same_tracked_box_and_single_hand_in_stationary_view
     hand["mask_owner_box"]["x"] += .05
     room.update(b"", [person], [hand], .4)
     assert hand["person_id"] is None
+
+
+def test_cached_hand_with_mask_owner_preserves_lesson_without_advancing_or_reusing_owner():
+    from homeplane.embodied.practice import RecognitionPractice
+    from tests.embodied.test_common_hand_poses import hand as shape
+
+    room, person, hand = GeometryTests().fixture()
+    person["joints"] = {}
+    hand["joints"] = shape("horns")
+    clock = [0.]
+    practice = RecognitionPractice(clock=lambda: clock[0])
+    token = practice.begin("hand.horns", ["test"])["token"]
+    for index in range(13):
+        clock[0] = index * .1
+        sampled = index % 2 == 0
+        if sampled:
+            hand.update(sample_id=index, mask_owner_box=dict(person["box"]))
+        before = practice.status(token)["progress"]
+        room.update(b"", [person], [hand], clock[0], hands_sampled=sampled)
+        practice.observe("test", "local", [person], [hand], room.reg_info, clock[0], clock[0],
+                         hands_sampled=sampled)
+        if not sampled:
+            assert hand["person_id"] is None
+            assert practice.status(token)["progress"] == before
+    assert practice.status(token)["phase"] == "success"

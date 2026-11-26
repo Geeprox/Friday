@@ -335,8 +335,9 @@ def scene_frame_current(my_generation, wall_epoch, item, frame_generation, curre
 async def secondary_observation(observation, process):
     camera_id=observation['camera']
     if not secondary_frame_current(observation, process):return
+    hands_sampled = observation.get('hands_sampled') is not False
     practice.observe(camera_id, observation['session'], observation['people'], observation['hands'],
-        observation['registration'], observation['now'], observation['captured_mono'])
+        observation['registration'], observation['now'], observation['captured_mono'], hands_sampled=hands_sampled)
     safety.offer(camera_id, observation['session'], observation['people'], observation['now'],
         observation['captured_mono'], stable=observation.get('scene_visible', False)
             and observation['registration'].get('status') == 'locked',
@@ -361,7 +362,7 @@ async def secondary_observation(observation, process):
         observation['registration'],active and not game_active,observation['now'],
         game_window=(game_window, party_window) if game_window is not None else None,
         game_active=game_active,body_window=body_window,body_held=games.mode == 'hiit',
-        captured_mono=observation['captured_mono'])
+        captured_mono=observation['captured_mono'], hands_sampled=hands_sampled)
     for event in events:
         event['_game_window'] = game_window
         event['_party_window'] = party_window
@@ -999,6 +1000,7 @@ async def run_source(my_generation):
                 if room is None:
                     room = RoomSession(CAMERA_STORAGE, scope=source_scope)
                 hands = detection.get("hands", [])
+                hands_sampled = detection.get('hands_sampled') is not False
                 async with room_lock:
                     frame_room = room
                     frame_current = lambda: primary_frame_current(my_generation, frame_motion_generation, item['received_at'])
@@ -1022,7 +1024,7 @@ async def run_source(my_generation):
                                                frame_motion_generation, item):
                         current_scene = {'objects': []}
                     layout = (await frame_room.update(picture, people, hands, now, item['width'], item['height'],
-                        current_scene['objects'], current=frame_current)) if registered else None
+                        current_scene['objects'], hands_sampled=hands_sampled, current=frame_current)) if registered else None
                     if layout is None:
                         if room_ok:games.suspend_source()
                         room_ok=False
@@ -1133,11 +1135,11 @@ async def run_source(my_generation):
                 body_window = games.hiit_body_window
                 gesture_active = camera_active and not game_active
                 practice.observe(SELECTED['id'], identities.session, people, hands,
-                    layout['registration'], now, now-(time.time()-item['received_at']))
+                    layout['registration'], now, now-(time.time()-item['received_at']), hands_sampled=hands_sampled)
                 interaction_events=fleet.update(SELECTED['id'],identities.session,people,hands,
                     layout['registration'],gesture_active,now,game_window=(game_window,party_window),
                     game_active=game_active,body_window=body_window,body_held=games.mode == 'hiit',
-                    captured_mono=time.monotonic()-(time.time()-item['received_at']))
+                    captured_mono=time.monotonic()-(time.time()-item['received_at']), hands_sampled=hands_sampled)
                 for event in interaction_events:
                     event['_game_window'] = game_window
                     event['_party_window'] = party_window

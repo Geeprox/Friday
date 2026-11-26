@@ -96,8 +96,10 @@ class CameraRecognition:
         animals = self.pet_tracks.update(detection, now, intent=animal_intent,
                                         transform=self.room.registration, camera_moving=moving)
         hands = detection.get('hands', [])
+        hands_sampled = detection.get('hands_sampled') is not False
         layout = (await self.room.update(picture, people, hands, now,
-                                        packet['width'], packet['height'], [], current=current)) if registered else None
+                                        packet['width'], packet['height'], [],
+                                        hands_sampled=hands_sampled, current=current)) if registered else None
         if layout is None:
             self.tracks.invalidate();self.pet_tracks.clear();self.identities.discard()
             people,hands,animals=[],[],[]
@@ -134,6 +136,7 @@ class CameraRecognition:
         for person in people:
             person['identity'] = by_track.get(str(person['id']), dict(state='unknown', person_id=None))
         self.last = dict(camera=self.camera, session=self.session, people=people, hands=hands,
+                         hands_sampled=hands_sampled,
                          animals=animals, animals_current=self.pet_tracks.current,
                          animals_intent=animal_intent, pet_tracking=self.pet_tracks.public(),
                          tracking_current=self.tracks.input_valid,

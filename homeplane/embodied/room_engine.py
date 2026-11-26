@@ -426,7 +426,8 @@ class Room:
                 self.keyframe_at = now
                 self.keyframe_center = center
 
-    def update(self, picture, people, hands, now, width=1920, height=1080, objects=None, registered=False):
+    def update(self, picture, people, hands, now, width=1920, height=1080, objects=None, registered=False,
+               *, hands_sampled=True):
         if not registered:
             self.register(picture, people, now)
         moving = self.reg_info.get("status") in ("moving", "settling")
@@ -569,6 +570,9 @@ class Room:
         for index, hand in enumerate(hands):
             hand["person_id"] = None
             hand["gesture"] = "hand_visible"
+            hand.pop("ray", None)
+            if not hands_sampled:
+                continue
             j = hand["joints"]
             wrist = j.get("wrist")
             if not wrist:
@@ -584,7 +588,7 @@ class Room:
             stable_side = hand["side"]
             # 单手与单人骨架的腕点唯一重合时，侧别预测短暂跳变仍属同一只手。
             if (len(hands) == 1 and len(people) == 1 and distance < .06
-                    and len(matches) == 2 and matches[1][0] - distance > .05
+                    and (len(matches) == 1 or matches[1][0] - distance > .05)
                     and person["joints"][body_side].get("confidence", 0) >= .55):
                 stable_side = body_side.removesuffix("Wrist")
             owner_matched = person is not None and distance <= 0.18
@@ -663,7 +667,7 @@ class Room:
                 continue
             ambiguous = len(candidates) > 1 and candidates[1][0] - candidates[0][0] < math.radians(7)
             target = candidates[0][1]
-            key = (person["id"], hand["side"])
+            key = (person["id"], stable_side)
             seen.add(key)
             old = self.holds.get(key)
             if ambiguous:
@@ -691,7 +695,12 @@ class Room:
                     "approximate": self.config["mode"] == "approximate",
                 }
             )
-        self.holds = {k: v for k, v in self.holds.items() if k in seen and now - v["last"] <= 0.3}
+        current_people = {person["id"] for person in people}
+        self.holds = {
+            k: v for k, v in self.holds.items()
+            if 0 <= now - v["last"] <= 0.3
+            and (k in seen if hands_sampled else not moving and k[0] in current_people)
+        }
         return {
             "mode": self.config["mode"],
             "position_status": self.config["mode"] if self.floor is not None else "unconfigured",

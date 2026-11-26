@@ -288,7 +288,7 @@ class Room:
         if mode=='register':stall()
         if check_visibility and mode=='visible':stall()
         return True if check_visibility else None
-    def update(self,*_):
+    def update(self,*_,hands_sampled=True):
         if mode=='layout':stall()
         return dict(unavailable_layout(),registration={'status':'locked'})
 serve(sys.stdin.buffer,sys.stdout.buffer,Path(sys.argv[1]),factory=Room,draft_factory=lambda _:None)

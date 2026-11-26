@@ -58,7 +58,10 @@ def partial_arm_wrists(poses, box):
     if len(poses) != 1 or not isinstance(poses[0], dict):
         return {}
     joints = poses[0].get('joints')
-    if not isinstance(joints, dict) or sum(valid_point(p) for p in joints.values()) >= 6:
+    if not isinstance(joints, dict):
+        return {}
+    if (any(valid_point(joints.get(name)) for name in ('root', 'neck'))
+            and sum(valid_point(p) for p in joints.values()) >= 6):
         return {}
     wrists = {}
     for side in ('left', 'right'):

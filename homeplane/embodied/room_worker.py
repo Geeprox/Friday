@@ -103,7 +103,8 @@ def serve(reader, writer, folder, *, factory=open_room, draft_factory=draft):
                 action == "layout"
                 and room is not None
                 and request["frame"] == frame
-                and set(value) == {"people", "hands", "now", "width", "height", "objects"}
+                and set(value) == {"people", "hands", "now", "width", "height", "objects", "hands_sampled"}
+                and type(value["hands_sampled"]) is bool
             ):
                 people, hands = value["people"], value["hands"]
                 if (
@@ -114,7 +115,8 @@ def serve(reader, writer, folder, *, factory=open_room, draft_factory=draft):
                 ):
                     return
                 layout = room.update(
-                    b"", people, hands, value["now"], value["width"], value["height"], value["objects"], True
+                    b"", people, hands, value["now"], value["width"], value["height"], value["objects"], True,
+                    hands_sampled=value["hands_sampled"]
                 )
                 result = dict(layout=layout, people=people, hands=hands, draft=draft_factory(room))
             else:

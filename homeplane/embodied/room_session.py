@@ -242,10 +242,12 @@ class RoomSession:
         self.reason = None
         return True
 
-    async def update(self, picture, people, hands, now, width, height, objects, *, current=lambda: True):
+    async def update(self, picture, people, hands, now, width, height, objects,
+                     *, hands_sampled=True, current=lambda: True):
         if not self.ready or self.frame is None:
             return None
-        value = dict(people=people, hands=hands, now=now, width=width, height=height, objects=objects)
+        value = dict(people=people, hands=hands, now=now, width=width, height=height, objects=objects,
+                     hands_sampled=hands_sampled)
         result = await self._call("layout", value, self.frame, picture, current, None)
         if result is None:
             return None
