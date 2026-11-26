@@ -28,6 +28,101 @@ CAMERA = dict(id='cam_1111111111', name='Synthetic', room='Synthetic')
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('readback', ['open', 'closed', 'closed_with_cleanup_error', 'late'])
+async def test_secondary_prefetches_privacy_read_without_passing_the_check_deadline(tmp_path, monkeypatch, readback):
+    now = 100.0
+    started, release, captured = (asyncio.Event() for _ in range(3))
+    readings, observations = asyncio.Queue(), asyncio.Queue()
+    selected = dict(CAMERA, device={'did': 'synthetic'})
+    camera_id = selected['id']
+    jpeg = base64.b64encode(b'\xff\xd8SYNTHETIC-NOT-CAMERA-PIXELS\xff\xd9').decode()
+    wall = CameraWall([selected], clock=lambda: now)
+
+    async def shutter_read(_):
+        if now >= 103.0 and not started.is_set():
+            started.set()
+            await release.wait()
+            return not readback.startswith('closed')
+        return True
+
+    async def recognize(packet, *, source_current, **_):
+        assert source_current()
+        return dict(camera=camera_id, session='synthetic', people=[], hands=[], now=now,
+                    captured_mono=packet['received_at'])
+
+    async def observe(value, _):
+        observations.put_nowait(value['captured_mono'])
+
+    process = SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()),
+                              stdout=SimpleNamespace(readline=readings.get), wait=AsyncMock())
+    process.terminate = process.kill = lambda: setattr(process, 'returncode', 0)
+    lease = SimpleNamespace(snapshot={'before': {'camera_power': True}},
+                            acquire=AsyncMock(), release=AsyncMock(return_value=True))
+    recognizer = SimpleNamespace(timing={}, observe=recognize, close=AsyncMock(), session='synthetic')
+    monkeypatch.setattr(previews, 'time', SimpleNamespace(time=lambda: now, monotonic=lambda: now))
+    monkeypatch.setattr(previews, 'DATA', tmp_path)
+    monkeypatch.setattr(previews, 'camera_storage', lambda _: tmp_path)
+    monkeypatch.setattr(previews, 'camera_is_open', shutter_read)
+    monkeypatch.setattr(previews, 'capture_environment', lambda _: {})
+    monkeypatch.setattr(ptz_control, 'Transport', lambda _: SimpleNamespace(close=AsyncMock()))
+    monkeypatch.setattr(ptz_control, 'CameraLease', lambda *_, **__: lease)
+    monkeypatch.setattr(camera_recognition, 'CameraRecognition', lambda *_: recognizer)
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', AsyncMock(return_value=process))
+    on_clear = Mock(side_effect=RuntimeError('synthetic-cleanup-failure')
+                    if readback == 'closed_with_cleanup_error' else None)
+    pool = previews.PreviewPool(continuous=True, recognize=True, wall=wall, on_observation=observe,
+                                on_capture_frame=lambda *_: captured.set(), on_clear=on_clear)
+    item = dict(state='connecting', mode='hold', mode_revision=0, received_at=0, frames=0,
+                expires=now + 60, shutter_changed=False)
+    pool.sessions[camera_id] = item
+
+    def offer(at):
+        nonlocal now
+        now = at
+        captured.clear()
+        session = json.loads(process.stdin.write.call_args_list[0].args[0])['capture_session']
+        readings.put_nowait(json.dumps(dict(type='frame', jpeg=jpeg, preview=jpeg, received_at=now,
+            preview_at=now, capture_session=session, camera_source_context=camera_source_context(selected),
+            width=640, height=360)).encode())
+
+    owner = asyncio.create_task(pool._run(selected, item))
+    try:
+        await asyncio.sleep(0)
+        offer(100.0)
+        assert await asyncio.wait_for(observations.get(), 1) == 100.0
+        offer(103.1)
+        await asyncio.wait_for(started.wait(), 1)
+        assert await asyncio.wait_for(observations.get(), 1) == 103.1
+        offer(104.9)
+        assert await asyncio.wait_for(observations.get(), 1) == 104.9
+        if readback.startswith('closed'):
+            release.set()
+            await asyncio.wait_for(owner, 1)
+            assert pool.status(camera_id)['state'] == 'shutter_closed'
+            assert wall.frame(camera_id) is None and not pool.source_current(camera_id, process)
+        elif readback == 'open':
+            release.set()
+            offer(105.1)
+            assert await asyncio.wait_for(observations.get(), 1) == 105.1
+            assert pool.status(camera_id)['recognition'] == 'running'
+        else:
+            offer(105.1)
+            await asyncio.wait_for(captured.wait(), 1)
+            offer(106.9)
+            await asyncio.wait_for(captured.wait(), 1)
+            assert observations.empty() and wall.frame(camera_id) is not None
+            release.set()
+            assert await asyncio.wait_for(observations.get(), 1) == 106.9
+        assert observations.empty()
+    finally:
+        release.set()
+        owner.cancel()
+        await asyncio.gather(owner, return_exceptions=True)
+    assert process.returncode == 0
+    lease.release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('fault', [b'', b'{private-invalid-json', b'[]\n',
                                    OSError('private-pipe-error'), ValueError('private-line-limit')])
 async def test_capture_fault_revokes_live_inputs_before_blocked_inference_returns(tmp_path, monkeypatch, fault):
@@ -566,7 +661,7 @@ async def test_cleanup_failure_cannot_skip_remaining_owned_resources(fault):
     final = next(n for n in owner.body if isinstance(n, ast.Try)).finalbody
     function = ast.parse('async def cleanup():\n pass').body[0]
     function.body = copy.deepcopy(final)
-    tasks = [asyncio.create_task(asyncio.sleep(60)) for _ in range(3)]
+    tasks = [asyncio.create_task(asyncio.sleep(60)) for _ in range(4)]
     process = SimpleNamespace(returncode=None, wait=AsyncMock())
     def terminate():process.returncode = 0
     process.terminate = process.kill = terminate
@@ -580,7 +675,7 @@ async def test_cleanup_failure_cannot_skip_remaining_owned_resources(fault):
     item = {'manual_tasks': {tasks[0]}, 'control_epoch': 1, 'recognizer': recognizer, 'frame': b'old-private-frame'}
     scope = dict(asyncio=asyncio, item=item,
         retire_source=Mock(side_effect=RuntimeError('synthetic-cleanup-failure') if fault == 'clear' else None),
-        motion_task=tasks[1], receiver=tasks[2], recognizer=recognizer, pipeline=pipeline,
+        motion_task=tasks[1], receiver=tasks[2], shutter_probe=tasks[3], recognizer=recognizer, pipeline=pipeline,
         process=process, lease=lease, io=io, close_identity=close_identity)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
                  '<original secondary owner cleanup>', 'exec'), scope)

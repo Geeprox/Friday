@@ -19,6 +19,10 @@ from homeplane.runtime_log import RuntimeLog
 from homeplane.people.live import close_identity
 
 
+SHUTTER_READ_INTERVAL = 5.0
+SHUTTER_READ_LEAD = 2.0
+
+
 async def camera_is_open(selected, *, client_factory=None, parameter_factory=None):
     """Read privacy state without changing it; failed reads remain unavailable."""
     from .miot_spec import camera_property
@@ -254,6 +258,7 @@ class PreviewPool:
                     control_epoch=item.get('control_epoch', 0)+1, control=None, manual_tasks=set(),
                     source_active=False, state='connecting', recognition_recovering=False)
         latest = None
+        shutter_probe = None
         stage='initializing'
         wall_epoch = self.wall.begin(selected['id']) if self.wall else None
 
@@ -420,9 +425,16 @@ class PreviewPool:
             motion_lock = asyncio.Lock()
             def privacy_closed():
                 item.update(state='shutter_closed',privacy_closed=True)
-                retire_source('privacy_shutter_closed')
-                if queue.full():queue.get_nowait()
-                queue.put_nowait({'type':'error','reason':'privacy_shutter_closed'})
+                try:
+                    retire_source('privacy_shutter_closed')
+                finally:
+                    if queue.full():queue.get_nowait()
+                    queue.put_nowait({'type':'error','reason':'privacy_shutter_closed'})
+
+            async def check_shutter():
+                if not await camera_is_open(selected) and item['source_active']:
+                    privacy_closed()
+
             def current_sample():
                 observation = latest if item.get('source_active') else None
                 return dict(status='live' if observation else 'connecting',
@@ -557,7 +569,7 @@ class PreviewPool:
                             if item['privacy_closed']:return
                     await asyncio.sleep(.3)
             if lease is not None and self.recognize:motion_task=asyncio.create_task(direct())
-            checked_power=0.
+            next_shutter_read = time.monotonic()
             while self.continuous or time.monotonic() < item["expires"]:
                 if item['privacy_closed'] or not item['source_active']:break
                 if motion_task and motion_task.done():
@@ -567,9 +579,17 @@ class PreviewPool:
                     wait_timeout = CAPTURE_IDLE_TIMEOUT if not item['frames'] else 40
                 packet = await asyncio.wait_for(queue.get(), wait_timeout)
                 if not item['source_active']:break
-                if time.monotonic()-checked_power>=5:
-                    checked_power=time.monotonic()
-                    if not await camera_is_open(selected):privacy_closed()
+                now = time.monotonic()
+                if shutter_probe is None and now >= next_shutter_read - SHUTTER_READ_LEAD:
+                    next_shutter_read = max(next_shutter_read, now)
+                    shutter_probe = asyncio.create_task(check_shutter())
+                if shutter_probe is not None and (shutter_probe.done() or now >= next_shutter_read):
+                    # 提前发出查询，到了原定核对时刻仍须有结果。遮蔽读回会立即撤销来源。
+                    stage = 'shutter_readback'
+                    await shutter_probe
+                    shutter_probe = None
+                    next_shutter_read += SHUTTER_READ_INTERVAL
+                    stage = 'capture'
                     if item['source_active'] and packet.get('type') == 'frame' and not queue.empty():
                         # 保留原有隐私校验；读回期间收到的最新包替换已经等待的包。
                         packet = queue.get_nowait()
@@ -637,6 +657,7 @@ class PreviewPool:
                         cleanup_tasks = list(item['manual_tasks'])
                         if motion_task:cleanup_tasks.append(motion_task)
                         if receiver:cleanup_tasks.append(receiver)
+                        if shutter_probe:cleanup_tasks.append(shutter_probe)
                         for task in cleanup_tasks:task.cancel()
                         try:
                             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
