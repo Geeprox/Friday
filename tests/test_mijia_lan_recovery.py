@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from homeplane import mijia_lan_client
+from homeplane.embodied import mijia_lan
 from homeplane.embodied.mijia_lan import route_snapshot
 from homeplane.mijia_lan_client import MijiaLanClient
 
@@ -96,6 +97,122 @@ def test_directory_keeps_offline_rows_and_respects_family():
                           can_push=lambda did: did == DID)
     allowed = set(devices).difference({'100005'}) | {'100006'}
     assert route_snapshot(hub, allowed, 'home') == health_packet(3, [DID])
+
+
+class Gateway:
+    group_id = 'home'
+    is_connected = True
+
+    def __init__(self):
+        self.outcomes = asyncio.Queue()
+        self.reads = 0
+        self.closed = False
+        self.devices = {DID: False, '100002': True}
+        self.on_dev_list_changed = self.refresh
+
+    async def get_dev_list_async(self):
+        self.reads += 1
+        outcome = self.outcomes.get_nowait()
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def refresh(self, client, _notification):
+        try:
+            online = await client.get_dev_list_async()
+        except TimeoutError:
+            return
+        self.devices[DID] = online
+
+    def local_device(self, did):
+        return {'group_id': self.group_id} if did in self.devices else None
+
+    def can_control(self, did):
+        return self.devices[did]
+
+    can_push = can_control
+    is_ready = True
+
+    def in_local_cooldown(self, _did):
+        return False
+
+    async def deinit_async(self):
+        self.closed = True
+
+
+@pytest.fixture
+def directory_client(monkeypatch):
+    delays, release = asyncio.Queue(), asyncio.Queue()
+    scope = SimpleNamespace(current=True)
+
+    async def pause(delay):
+        delays.put_nowait(delay)
+        await release.get()
+
+    monkeypatch.setattr(mijia_lan, 'asyncio', SimpleNamespace(
+        sleep=pause, Lock=asyncio.Lock, create_task=asyncio.create_task,
+        current_task=asyncio.current_task, gather=asyncio.gather,
+    ))
+
+    gateway = mijia_lan.retrying_directory_client(
+        Gateway, lambda: scope.current, (OSError,), ConnectionError)()
+    return gateway, scope, delays, release
+
+
+@pytest.mark.asyncio
+async def test_partial_directory_recovers_on_same_client_without_another_push(directory_client):
+    gateway, _, delays, release = directory_client
+    allowed = {DID, '100002'}
+    original = health_packet(2, ['100002'])
+    gateway.outcomes.put_nowait(TimeoutError())
+    await gateway.refresh(gateway, [])
+    try:
+        assert await asyncio.wait_for(delays.get(), 1) == 3
+        assert route_snapshot(gateway, allowed, 'home') == original
+        gateway.outcomes.put_nowait(TimeoutError())
+        release.put_nowait(None)
+        assert await asyncio.wait_for(delays.get(), 1) == 6
+        assert route_snapshot(gateway, allowed, 'home') == original
+        retry = gateway._directory_retry
+        gateway.outcomes.put_nowait(True)
+        release.put_nowait(None)
+        await asyncio.wait_for(retry, 1)
+        assert route_snapshot(gateway, allowed, 'home') == health_packet(2, [DID, '100002'])
+        assert gateway.reads == 3 and not gateway.closed
+    finally:
+        await gateway.deinit_async()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['new_push', 'scope_revoked', 'deinit'])
+async def test_scheduled_directory_read_ends_when_stale_work_is_invalidated(directory_client, change):
+    gateway, scope, delays, release = directory_client
+    gateway.outcomes.put_nowait(TimeoutError())
+    await gateway.refresh(gateway, [])
+    try:
+        assert await asyncio.wait_for(delays.get(), 1) == 3
+        old_task = gateway._directory_retry
+        if change == 'new_push':
+            gateway.outcomes.put_nowait(True)
+            await gateway.refresh(gateway, [])
+            assert gateway.reads == 2 and gateway.devices[DID]
+            # 下一次独立读取失败重新从初始间隔开始，旧协程不能清掉新协程。
+            gateway.outcomes.put_nowait(TimeoutError())
+            await gateway.refresh(gateway, [])
+            await asyncio.gather(old_task, return_exceptions=True)
+            assert await asyncio.wait_for(delays.get(), 1) == 3
+            assert gateway._directory_retry is not None and gateway.reads == 3
+        elif change == 'scope_revoked':
+            scope.current = False
+            release.put_nowait(None)
+            await asyncio.wait_for(old_task, 1)
+            assert gateway.reads == 1 and gateway._directory_retry is None
+        else:
+            await gateway.deinit_async()
+            assert old_task.cancelled() and gateway.closed
+            assert gateway.reads == 1 and gateway._directory_retry is None
+    finally:
+        await gateway.deinit_async()
 
 
 @pytest.mark.asyncio

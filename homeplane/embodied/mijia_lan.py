@@ -9,6 +9,7 @@ import re
 import secrets
 import stat
 import sys
+from importlib.metadata import PackageNotFoundError, version
 
 from .mijia_inventory import home_devices, home_inputs, home_scope
 from .mijia_power import family_binding, grant_binding, property_request
@@ -16,6 +17,70 @@ from .miot_session import MiSession
 from .miot_spec import cover_binding, cover_revision
 from .paths import configuration
 from .ptz_control import atomic, read_lease
+
+
+DIRECTORY_REFRESH_RETRY = 3.0
+DIRECTORY_REFRESH_RETRY_MAX = 60.0
+
+
+def retrying_directory_client(base, scope_current, read_errors, connection_error):
+    """在同一网关连接上恢复目录读取，保留其他设备的可用路由。"""
+
+    class DirectoryClient(base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._directory_lock = asyncio.Lock()
+            self._directory_retry = None
+            self._directory_stale = False
+            self._directory_closed = False
+
+        async def get_dev_list_async(self, *args, **kwargs):
+            async with self._directory_lock:
+                if self._directory_closed or not scope_current():
+                    self._directory_stale = False
+                    raise connection_error('directory_scope_unavailable')
+                try:
+                    rows = await super().get_dev_list_async(*args, **kwargs)
+                except read_errors:
+                    if not self._directory_closed:
+                        self._directory_stale = True
+                        if self._directory_retry is None:
+                            self._directory_retry = asyncio.create_task(self._retry_directory())
+                    raise
+                if self._directory_closed:
+                    raise connection_error('directory_client_closed')
+                self._directory_stale = False
+                task = self._directory_retry
+                if task is not None and task is not asyncio.current_task():
+                    self._directory_retry = None
+                    task.cancel()
+                return rows
+
+        async def _retry_directory(self):
+            delay = DIRECTORY_REFRESH_RETRY
+            try:
+                while self._directory_stale:
+                    await asyncio.sleep(delay)
+                    refresh = self.on_dev_list_changed
+                    if self._directory_closed or not self._directory_stale or refresh is None or not scope_current():
+                        return
+                    if self.is_connected:
+                        # 固定版 SDK 的目录变化回调只发起完整只读查询，不消费列表内容。
+                        await refresh(self, [])
+                    delay = min(delay * 2, DIRECTORY_REFRESH_RETRY_MAX)
+            finally:
+                if self._directory_retry is asyncio.current_task():
+                    self._directory_retry = None
+
+        async def deinit_async(self):
+            self._directory_closed = True
+            task = self._directory_retry
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await super().deinit_async()
+
+    return DirectoryClient
 
 
 def home_input(directory):
@@ -136,7 +201,7 @@ async def cover_operation(manager, request, grant, group, dids, scope_current, d
 
 
 async def serve(reader, session):
-    from miot.central_hub import CentralHubManager
+    from miot import central_hub
     from miot.network import MIoTNetwork
     from miot.storage import MIoTStorage
 
@@ -148,7 +213,31 @@ async def serve(reader, session):
     net = MIoTNetwork()
     hub = None
     lock = None
+    sdk_gateway = None
+
+    def current():
+        try:
+            latest = read_lease(session.path)
+            if grant_binding(latest) != grant or home_input(session.directory)[2] != scope:
+                return False
+            api.update_http_header(access_token=latest['access_token'])
+            return True
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
+
     try:
+        try:
+            sdk_version = version('miloco-miot')
+        except PackageNotFoundError:
+            sdk_version = None
+        if sdk_version == '2026.10.16':
+            from miot.error import MIoTMipsError
+            from miot.types import MipsConnectionError
+
+            # SDK 未提供客户端工厂，只在 Friday 的独立直连进程替换该构造入口。
+            sdk_gateway = central_hub.MipsLocalClient
+            central_hub.MipsLocalClient = retrying_directory_client(
+                sdk_gateway, current, (OSError, MIoTMipsError, MipsConnectionError), MipsConnectionError)
         async with asyncio.timeout(16):
             homes = await api.get_homes_async()
             home = home_scope(list(homes.values()), cfg, membership)
@@ -158,7 +247,7 @@ async def serve(reader, session):
             family = family_binding(grant, home.home_id)
             area, client, lock = private_directory(session.directory, family)
             await net.init_async()
-            hub = CentralHubManager(
+            hub = central_hub.CentralHubManager(
                 storage=MIoTStorage(str(area)), http_client=api,
                 uid=saved['user_info']['uid'], cloud_server=region, virtual_did=client,
                 home_ids_provider=lambda: {str(home.home_id)}, network=net,
@@ -167,16 +256,6 @@ async def serve(reader, session):
                 return
             await hub.init_async()
         print(json.dumps({'ready': True, 'family': family}), flush=True)
-
-        def current():
-            try:
-                latest = read_lease(session.path)
-                if grant_binding(latest) != grant or home_input(session.directory)[2] != scope:
-                    return False
-                api.update_http_header(access_token=latest['access_token'])
-                return True
-            except (OSError, ValueError, TypeError, KeyError):
-                return False
 
         while packet := await reader.readline():
             reply = {'error': 'mijia_lan_unavailable'}
@@ -208,6 +287,8 @@ async def serve(reader, session):
                 finally:
                     await api.deinit_async()
             finally:
+                if sdk_gateway is not None:
+                    central_hub.MipsLocalClient = sdk_gateway
                 if lock is not None:
                     os.close(lock)
 
