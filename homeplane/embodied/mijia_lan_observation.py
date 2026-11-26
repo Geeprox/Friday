@@ -42,6 +42,13 @@ class IlluminanceNotifications:
             return self.connections.get(self.group)
         return None
 
+    def _confirmed_registration(self, did):
+        return self.manager.props_sub_groups(did) == {self.group}
+
+    def _current_observation(self, did, observation):
+        return (not observation.invalidated and self._source(did) is observation.connection
+                and (observation.confirmed_at is None or self._confirmed_registration(did)))
+
     async def _remove(self, did, observation):
         del self.observations[did]
         if observation.task is not None and not observation.task.done():
@@ -53,8 +60,7 @@ class IlluminanceNotifications:
         now = time.monotonic()
         async with self.lock:
             for did, observation in tuple(self.observations.items()):
-                if (now - observation.observed_at > OBSERVATION_IDLE or observation.invalidated
-                        or self._source(did) is not observation.connection):
+                if now - observation.observed_at > OBSERVATION_IDLE or not self._current_observation(did, observation):
                     await self._remove(did, observation)
 
     async def directory_changed(self, _added, _removed):
@@ -71,9 +77,9 @@ class IlluminanceNotifications:
 
     def _accept(self, did, observation, event):
         receipt = property_receipt.get()
-        if (observation.invalidated or receipt is None or receipt[0] is not observation.connection
+        if (receipt is None or receipt[0] is not observation.connection
                 or observation.confirmed_at is None or receipt[1] < observation.confirmed_at
-                or self.observations.get(did) is not observation or self._source(did) is not observation.connection
+                or self.observations.get(did) is not observation or not self._current_observation(did, observation)
                 or event.did != did or len(event.changes) != 1):
             return
         change = event.changes[0]
@@ -92,7 +98,8 @@ class IlluminanceNotifications:
         except self.subscribe_errors:
             observation.failed = True
         else:
-            if self._source(did) is observation.connection and self.scope_current():
+            if (self._current_observation(did, observation) and self._confirmed_registration(did)
+                    and self.scope_current()):
                 observation.confirmed_at = time.monotonic()
             else:
                 observation.failed = True
@@ -109,8 +116,8 @@ class IlluminanceNotifications:
     async def _observe(self, did, prop):
         source = self._source(did)
         observation = self.observations.get(did)
-        if observation is not None and (observation.connection is not source or observation.prop != prop
-                                        or observation.failed or observation.invalidated):
+        if observation is not None and (observation.prop != prop or observation.failed
+                                        or not self._current_observation(did, observation)):
             failed_on_current_connection = observation.failed and observation.connection is source
             await self._remove(did, observation)
             if failed_on_current_connection:
@@ -133,4 +140,4 @@ class IlluminanceNotifications:
             row.update(state='observed', received_at=received_at, age_seconds=now - received_mono,
                        sequence=observation.sequence, value=value)
         # 回包时也复查连接，避免把刚断线的最后一条样本继续交给上层。
-        return row if self._source(did) is source and not observation.invalidated else {'state': 'unavailable'}
+        return row if self._current_observation(did, observation) else {'state': 'unavailable'}

@@ -283,7 +283,7 @@ async def serve(reader, session):
             sdk_version = None
         if sdk_version == '2026.10.16':
             from miot.error import MIoTMipsError
-            from miot.types import MipsConnectionError
+            from miot.types import MipsConnectionError, MipsSubscribeRejectedError, MipsSubscribeTimeoutError
 
             # SDK 未提供客户端工厂，只在 Friday 的独立直连进程替换该构造入口。
             sdk_gateway = central_hub.MipsLocalClient
@@ -309,7 +309,8 @@ async def serve(reader, session):
         if sdk_gateway is not None:
             observations = IlluminanceNotifications(
                 hub, allowed, grant, home.group_id, current, connections,
-                (OSError, MIoTMipsError, MipsConnectionError, TimeoutError, ValueError, RuntimeError))
+                (OSError, MIoTMipsError, MipsConnectionError, MipsSubscribeRejectedError,
+                 MipsSubscribeTimeoutError, TimeoutError, ValueError, RuntimeError))
             hub.on_dev_list_changed = observations.directory_changed
         print(json.dumps({'ready': True, 'family': family}), flush=True)
 

@@ -65,6 +65,10 @@ class Gateway:
         self.handler = None
         self.removed += 1
 
+    def props_sub_groups(self, did):
+        assert did == DID
+        return {GROUP} if self.handler is not None else set()
+
 
 @pytest.fixture
 def feed(monkeypatch):
@@ -122,6 +126,25 @@ async def test_observation_requires_current_ack_and_uses_wire_arrival_time(feed)
         gateway.receive(True)
         gateway.flush_events()
         assert (await stream.snapshot(REQUEST))["state"] == "awaiting_notification"
+    finally:
+        await stream.close()
+
+
+@pytest.mark.asyncio
+async def test_registry_loss_after_confirmed_subscription_discards_the_old_sample(feed):
+    _, gateway, stream = feed
+    try:
+        old = await acknowledge(stream, gateway)
+        gateway.receive(10)
+        gateway.flush_events()
+        assert (await stream.snapshot(REQUEST))["value"] == 10
+        gateway.receive(11)
+        # 固定版 SDK 可能因重连前的迟到回包撤下订阅表。
+        gateway.handler = None
+        new = await acknowledge(stream, gateway)
+        assert old != new
+        gateway.flush_events()
+        assert await stream.snapshot(REQUEST) == {"state": "awaiting_notification", "subscription": new}
     finally:
         await stream.close()
 
