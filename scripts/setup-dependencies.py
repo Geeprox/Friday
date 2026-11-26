@@ -225,7 +225,7 @@ def main():
         subprocess.run(['git', 'clone', '--depth', '1', '--branch', MILOCO_VERSION,
                         'https://github.com/XiaoMi/xiaomi-miloco.git', str(target)], check=True)
         result = {'downloaded': True, 'installed': False, 'services_started': False,
-                  'next': 'Read data/upstream/miloco/scripts/install-guide.md for your agent platform'}
+                  'next': '阅读 data/upstream/miloco/scripts/install-guide.md，使用 scripts/install-miloco.sh 执行官方安装阶段并启用升级维护'}
     print(json.dumps(result, indent=2))
 
 

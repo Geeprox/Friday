@@ -111,7 +111,7 @@ Friday 基础运行不依赖 Miloco。摄像头能力需要账号、设备支持
 “连接”页的“摄像头与互动”单独标为可选，不阻止家庭设备连接。安装与授权入口直接
 可见。已有旧版兼容服务的用户可在“设置摄像头连接 → 已有兼容的 Miloco 服务？”中
 填写地址并检查服务与米家绑定；这项检查不取流或开启识别。当前 Miloco 插件按下方
-官方平台指南安装，不能把旧版 HTTP 服务配置当作当前插件已经接入的证明。
+官方平台指南和下文的 Friday 安装入口安装，不能把旧版 HTTP 服务配置当作当前插件已经接入的证明。
 
 ```sh
 python3 scripts/setup-dependencies.py miloco-source
@@ -174,3 +174,13 @@ HA 登录与读取成功不会自动授予 Friday 设备写入权限。首次连
 桌面版使用其私有 embodied 目录下的 `private/action-authority.json`，配置后重新连接。
 不要复制其他家庭的实例或实体标识。授权文件不是 HA 令牌，不需要在聊天或公开仓库中提交。
 已授权的控制可以在“连接 → 高级连接设置 → 家庭数据”中暂停或恢复；暂停不会撤回已发送的指令。
+
+### Miloco 摄像头授权的后台恢复
+
+从 Friday 源码根目录执行官方平台指南的安装阶段时，用 `./scripts/install-miloco.sh /path/to/install.sh --agent-prepare` 和 `./scripts/install-miloco.sh /path/to/install.sh --agent-finish`。将路径换成已下载的官方发布版安装器，按指南在两步之间完成账号绑定。在已有 Miloco 部署上，可一次性运行 `python3 integrations/miloco_recovery/lifecycle.py enable` 接入相同流程。这些命令在实际运行 Miloco 的用户账号下执行。
+
+安装成功后，macOS 的 launchd 或 Linux 的 systemd 用户定时器保管维护任务。兼容的网页升级、命令行重装和虚拟环境替换都会在安装结束后得到检查，通常在两分钟内补回组件；若当前受管后台正在运行，只为新组件重启一次。Linux 需有可用的 systemd 用户管理器。组件保存在用户数据目录，安装完成后可以移走 Friday 源码。巡检随 Miloco 的账号生命周期启动和退出，复用其串行续期和退避逻辑。每分钟检查一次；续期逾期且超过 20 分钟没有进展，连续两次确认无换票任务和待确认的换票记录，才重新启动续期循环。两次停滞恢复至少间隔两小时。已退出的续期任务会在下次检查后重新创建。
+
+小米明确拒绝续期时，macOS 通过通知中心提醒，Linux 桌面需要用户通知总线和 `notify-send`。同一事件按账号健康记录中的时间去重。无桌面部署可以在 Miloco 后台的运行环境中配置 `FRIDAY_RECOVERY_HA_URL` 和 `FRIDAY_RECOVERY_HA_TOKEN_FILE`，将提醒发送到 Home Assistant 的持久通知；URL 使用 HTTPS 或本机回环 HTTP，令牌保存在该服务用户专用的文件中。重新授权后会撤销这条 HA 通知。Miloco 自身的网页也显示绑定状态。
+
+本适配器针对带授权健康状态的 Miloco v2026.10.16。安装器校验接入位置并支持重复执行。遇到上游不兼容的续期接口会保留原包并记录 `check_failed`。macOS 可查用户目录下的 `Library/Application Support/Friday/miloco-components/maintenance.log`，Linux 可查 `journalctl --user -u local.friday.miloco-components.service`。

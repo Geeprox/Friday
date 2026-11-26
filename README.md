@@ -32,7 +32,7 @@ python3 scripts/setup-dependencies.py prepare
 # 以下命令在准备运行 HA 的 Linux 主机执行：
 python3 scripts/setup-dependencies.py xiaomi-home
 python3 scripts/setup-dependencies.py ha-up
-# 可选：下载固定版本 Miloco 源码，之后按其平台指南安装：
+# 可选：下载固定版本 Miloco 源码，之后按部署指南通过 scripts/install-miloco.sh 安装并启用升级维护：
 python3 scripts/setup-dependencies.py miloco-source
 ```
 
