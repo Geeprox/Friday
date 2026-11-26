@@ -3,7 +3,7 @@ import ast
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -126,7 +126,11 @@ class Patrol:
             loop=source_function('homeplane/embodied/previews.py','direct',self.scope)
         try:
             try:
-                await loop()
+                # 场景使用首帧已读到的固定策略，避免虚拟时钟驱动重复 SQLite 读取。
+                # 留档仍从实际存储入口写入，由回放控制转向和写入的交接时刻。
+                policy = self.home.runtime.policy_cache
+                with patch.object(self.home.store, 'read_policy', new=lambda: policy):
+                    await loop()
             except asyncio.CancelledError:
                 pass
             else:
