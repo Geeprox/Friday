@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import signal
 import sys
 import time
 from types import SimpleNamespace
@@ -272,6 +273,7 @@ from homeplane.embodied.room_protocol import unavailable_layout
 mode=sys.argv[2]
 def stall():
     signal.signal(signal.SIGTERM,signal.SIG_IGN)
+    (Path(sys.argv[1]) / 'stalled-phase').write_text(mode)
     ctypes.PyDLL(None).sleep(60)
 class Room:
     def __init__(self,*_):
@@ -298,13 +300,22 @@ def fake(folder, mode="ok", **kwargs):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["open", "register", "visible", "layout"])
-async def test_native_room_stalls_are_actually_killed_and_reaped(tmp_path, phase):
-    session = fake(tmp_path, phase, startup_timeout=0.2, timeout=0.12)
-    job = asyncio.create_task(session.register(b"SYNTHETIC", [], time.monotonic()))
+async def test_native_room_stalls_are_actually_killed_and_reaped(tmp_path, phase, monkeypatch):
+    from homeplane.embodied import local_child
+
+    spawn = local_child.asyncio.create_subprocess_exec
+    processes = []
+
+    async def record_process(*args, **kwargs):
+        process = await spawn(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    # 在启动时保留实际句柄。回收后所有者会清空自己的引用。
+    monkeypatch.setattr(local_child.asyncio, "create_subprocess_exec", record_process)
+    session = fake(tmp_path, phase)
     try:
-        await until(lambda: session.owner is not None and session.owner.process is not None)
-        process = session.owner.process
-        registered = await job
+        registered = await session.register(b"SYNTHETIC", [], time.monotonic())
         if phase == "layout":
             assert registered
             assert await session.update(b"SYNTHETIC", [], [], time.monotonic(), 640, 360, []) is None
@@ -313,7 +324,9 @@ async def test_native_room_stalls_are_actually_killed_and_reaped(tmp_path, phase
         assert session.reason == "room_timeout"
     finally:
         assert await session.close()
-    assert process.returncode is not None and not session.owner.slot
+    assert (tmp_path / "stalled-phase").read_text() == phase
+    assert len(processes) == 1 and processes[0].returncode == -signal.SIGKILL
+    assert session.owner.process is None and not session.owner.slot
 
 
 @pytest.mark.asyncio
