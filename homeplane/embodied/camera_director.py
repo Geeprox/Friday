@@ -61,13 +61,15 @@ class CameraDirector:
     SURVEY_ATTEMPT_LIMIT = 12
     SURVEY_ROUTE = ('right', 'right', 'down', 'left', 'left', 'left', 'left', 'up', 'right', 'right')
     PATROL_AXES = {'right': (0, 1), 'left': (0, -1), 'down': (1, 1), 'up': (1, -1)}
-    UNCOVER_ROUTE = ('up', 'up') + ('left',) * 6 + ('up', 'up') + ('right',) * 10
+    # 先抬起镜头脱离遮挡，再把俯仰降回房间方向后扫过两侧。
+    UNCOVER_ROUTE = ('up', 'up') + ('left',) * 3 + ('down',) * 4 + ('left',) * 4 + ('right',) * 7
     VIEW_RECOVERY_ROUTE = ('left',) * 4 + ('up',) * 2 + ('right',) * 8 + ('down',) * 3 + ('left',) * 3
+    # 在不同俯仰层横向查找。一轮步数左右相抵，避免持续向同一侧偏移。
     VIEW_RECOVERY_PROBES = (
-        ('left', 'left', 'down', 'down'),
-        ('left', 'left', 'up', 'up'),
-        ('right', 'right', 'up', 'up'),
-        ('right', 'right', 'down', 'down'),
+        ('down', 'down') + ('right',) * 8,
+        ('up', 'up') + ('left',) * 8,
+        ('up', 'up') + ('left',) * 8,
+        ('down', 'down') + ('right',) * 8,
     )
     VIEW_RECOVERY_DELAYS = (30, 60, 120)
 

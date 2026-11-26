@@ -61,7 +61,7 @@ def test_repeated_frame_never_confirms_open_or_repeats_motion():
     assert d.clear
 
 
-def test_persistent_wall_retries_short_sweeps_instead_of_stopping():
+def test_persistent_wall_pauses_between_sweeps_and_resumes_after_clear_frames():
     director = CameraDirector()
     clear(director)
     director.sent(1, 'right', automatic=False)
@@ -73,21 +73,50 @@ def test_persistent_wall_retries_short_sweeps_instead_of_stopping():
             assert director.decision_current(frame, at, direction)
             steps.append((at, direction))
             director.sent(at)
-        elif at in (100, 300):
+        elif director.phase == 'view_recovery_waiting':
             assert not director.public()['view_usable']
-            assert director.phase == 'view_recovery_waiting'
-    assert len(steps) > 36
-    first = steps[:20]
+    first_length = len(director.UNCOVER_ROUTE)
+    sweep_length = len(director.VIEW_RECOVERY_PROBES[0])
+    assert len(steps) > first_length + 3 * sweep_length
+    first = steps[:first_length]
     assert first[0][1] == 'left'
     assert {direction for _, direction in first} == {'left', 'right', 'up', 'down'}
-    for end, delay in ((19, 30), (23, 60), (27, 120), (31, 120)):
+    for number, delay in enumerate((30, 60, 120, 120)):
+        end = first_length + number * sweep_length - 1
         assert steps[end + 1][0] - steps[end][0] == delay
-    assert [direction for _, direction in steps[20:24]] != [direction for _, direction in steps[24:28]]
+    assert {'right', 'down'} <= {direction for _, direction in steps[first_length:first_length + sweep_length]}
+    assert {'left', 'up'} <= {
+        direction for _, direction in steps[first_length + sweep_length:first_length + 2 * sweep_length]}
 
     for at in range(781, 809):
         director.choose(sample(at), at, occupied_elsewhere=True)
     assert director.public()['view_usable']
     assert director.recovery_steps == 0
+
+
+@pytest.mark.parametrize(('starting_pan', 'room_pans', 'max_pitch', 'latest_recovery'), [
+    (14, range(3, 9), 2, 55),
+    (0, range(12, 15), 1, 132),
+])
+def test_recovers_a_room_below_the_wall_at_both_pan_limits(starting_pan, room_pans, max_pitch, latest_recovery):
+    director = CameraDirector()
+    pan, pitch = starting_pan, 4
+    recovered_at = None
+    for index in range(2 * latest_recovery + 1):
+        at = index / 2
+        room_visible = pan in room_pans and pitch <= max_pitch
+        frame = sample(at, visible=room_visible)
+        direction = director.choose(frame, at, occupied_elsewhere=True)
+        if direction:
+            assert not room_visible and director.decision_current(frame, at, direction)
+            pan = min(14, max(0, pan + (direction == 'right') - (direction == 'left')))
+            pitch = min(6, max(0, pitch + (direction == 'up') - (direction == 'down')))
+            director.sent(at, direction)
+        if director.public()['view_usable']:
+            assert room_visible
+            recovered_at = at
+            break
+    assert recovered_at is not None and recovered_at <= latest_recovery
 
 
 def test_view_retry_requires_new_obstruction_after_a_source_gap_or_switch():
@@ -106,7 +135,7 @@ def test_view_retry_requires_new_obstruction_after_a_source_gap_or_switch():
     assert director.choose(sample(retry_at + .5, visible=None), retry_at + .5) is None
     assert director.choose(sample(retry_at + 1, visible=False), retry_at + 1) is None
     assert director.choose(sample(retry_at + 1.5, visible=False), retry_at + 1.5) is None
-    assert director.choose(sample(retry_at + 2, visible=False), retry_at + 2) == 'left'
+    assert director.choose(sample(retry_at + 2, visible=False), retry_at + 2) == 'down'
 
     for offset in (2.1, 2.6):
         when = retry_at + offset
