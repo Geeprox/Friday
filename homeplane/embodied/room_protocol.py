@@ -66,6 +66,9 @@ def metadata(value):
         or type(value["command_until"]) not in (int, float)
     ):
         raise ValueError("room_protocol_invalid")
+    generation = value["info"].get("reference_generation", 0)
+    if type(generation) is not int or generation < 0:
+        raise ValueError("room_protocol_invalid")
     matrix = value["matrix"]
     if matrix is not None:
         if (

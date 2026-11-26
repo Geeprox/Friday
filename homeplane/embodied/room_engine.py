@@ -23,6 +23,8 @@ DEFAULT = {
     "note": "尚未标定空间",
 }
 
+VIEW_SETTLE_SECONDS = 0.8
+
 
 def calibration_draft(config):
     """Editing handles on a unit canvas, never an observed household layout."""
@@ -144,13 +146,18 @@ class Room:
         self.keyframe_center = [0.5, 0.5]
         self.previous_features = None
         self.previous_at = 0.0
+        self.previous_visible = False
         self.motion_at = -10.0
         self.command_until = 0.0
+        self.reference_generation = 0
+        self.reference_stable_since = None
 
     def expect_motion(self, now, seconds=1.5):
         self.command_until = now + seconds
         self.motion_at = now
         self.registration = None
+        self.previous_visible = False
+        self.reference_stable_since = None
         self.holds.clear()
         self.gestures = GestureStabilizer()
 
@@ -248,20 +255,51 @@ class Room:
         due = now - self.reg_checked >= 0.3
         if not due and not check_visibility:
             return
+        from .camera_director import visible_scene_luma
+
         image = decode_luma(picture)
+        visible = visible_scene_luma(image) if check_visibility or self.floor is None else False
         if due:
-            self._register_luma(image, people, now)
+            self._register_luma(image, people, now, visible)
+        elif not visible:
+            self.previous_visible = False
+            self.reference_stable_since = None
         if check_visibility:
-            from .camera_director import visible_scene_luma
+            return visible
 
-            return visible_scene_luma(image)
+    def _recover_transient_reference(self, pts, desc, now, still_since):
+        from .camera_director import CameraDirector
 
-    def _register_luma(self, image, people, now):
+        if (self.floor is not None or still_since is None
+                or now - self.motion_at < VIEW_SETTLE_SECONDS
+                or self.command_until and now < self.command_until + CameraDirector.PATROL_CONFIRM_SECONDS):
+            self.reference_stable_since = None
+            return
+        if self.reference_stable_since is None:
+            self.reference_stable_since = still_since
+        if now - self.reference_stable_since < VIEW_SETTLE_SECONDS:
+            return
+
+        # 只更新当前进程中的参考。下一次背景匹配完成后才允许发布新配准。
+        self.ref_points, self.ref_desc = pts, desc
+        self.reference_generation += 1
+        self.reference_stable_since = None
+        self.keyframes.clear()
+        self.keyframe_at, self.keyframe_center = now, [0.5, 0.5]
+        self.holds.clear()
+        self.gestures = GestureStabilizer()
+        self.players.clear()
+        self.pending.clear()
+        self.next_seat = 1
+        self.reg_info = {"status": "settling"}
+
+    def _register_luma(self, image, people, now, visible):
         self.reg_checked = now
         self.registration = None
         pts, desc = self.features(image, people)
         motion = 0.0
-        if self.previous_features is not None and now - self.previous_at < 1:
+        still_since = None
+        if self.previous_features is not None and 0 < now - self.previous_at < 1:
             previous = self.estimate(pts, desc, *self.previous_features)
             if previous is not None:
                 _, _, inside, src, dst = previous
@@ -270,10 +308,14 @@ class Room:
                     motion = float(np.median(np.linalg.norm(src[selected] - dst[selected], axis=1)))
                     if motion > 0.004:
                         self.motion_at = now
+                    elif visible and self.previous_visible:
+                        still_since = self.previous_at
         self.previous_features = (pts, desc)
         self.previous_at = now
+        self.previous_visible = visible
         if desc is None or self.ref_desc is None or len(desc) < 16:
             self.reg_info = {"status": "background_unavailable"}
+            self._recover_transient_reference(pts, desc, now, still_since)
             return
         best = None
         for ref_pts, ref_desc in [(self.ref_points, self.ref_desc)] + list(reversed(self.keyframes)):
@@ -304,6 +346,7 @@ class Room:
                 else "background_unavailable",
                 "motion": round(motion, 5),
             }
+            self._recover_transient_reference(pts, desc, now, still_since)
             return
         count, h, inliers, src, dst = best
         selected = inliers.ravel().astype(bool)
@@ -324,12 +367,14 @@ class Room:
                 "residual": round(residual, 5),
                 "spread": round(float(spread), 4),
             }
+            self._recover_transient_reference(pts, desc, now, still_since)
             return
+        self.reference_stable_since = None
         status = (
             "moving"
             if motion > 0.004 or now < self.command_until
             else "settling"
-            if now - self.motion_at < 0.8
+            if now - self.motion_at < VIEW_SETTLE_SECONDS
             else "locked"
         )
         self.reg_info = {

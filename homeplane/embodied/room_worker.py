@@ -22,9 +22,10 @@ def draft(room):
         return None
     import numpy as np
 
-    from .room_engine import calibration_draft, project
+    from .room_engine import DEFAULT, calibration_draft, project
 
-    result = calibration_draft(room.calibration_candidate)
+    # 新建的临时参考只定义当前视角，旧编辑草稿坐标与它没有配准关系。
+    result = calibration_draft(DEFAULT if room.reference_generation else room.calibration_candidate)
     inverse = np.linalg.inv(room.registration)
     for item in result["anchors"] + result["seats"]:
         point = project(inverse, item["image"])
@@ -94,7 +95,7 @@ def serve(reader, writer, folder, *, factory=open_room, draft_factory=draft):
                 frame = request["frame"]
                 result = dict(
                     matrix=room.registration.tolist() if room.registration is not None else None,
-                    info=room.reg_info,
+                    info=dict(room.reg_info, reference_generation=getattr(room, "reference_generation", 0)),
                     command_until=room.command_until,
                     visible=scene_visible,
                 )

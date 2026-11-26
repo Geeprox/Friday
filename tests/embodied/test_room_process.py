@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from homeplane.embodied.calibration_frames import CalibrationFrames
-from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_director import CameraDirector, _view_shift
 from homeplane.embodied.room_session import RoomSession
 
 
@@ -128,7 +128,71 @@ def test_registration_shares_decode_but_checks_cover_between_feature_matches(ima
 
 
 @pytest.mark.asyncio
-async def test_real_room_child_confirms_patrol_from_background_with_moving_foreground(tmp_path, image):
+async def test_room_child_recovers_from_a_covered_start_without_reusing_view_evidence(tmp_path, image):
+    session = RoomSession(tmp_path)
+    cover = cv2.imencode(".jpg", np.full((360, 640), 36, dtype=np.uint8))[1].tobytes()
+    now = time.monotonic()
+    try:
+        assert await session.register(cover, [], now)
+        assert not session.scene_visible and session.patrol_view is None
+        for offset, picture in ((.4, image), (.8, image), (.9, cover), (1.2, image), (1.65, image)):
+            assert await session.register(picture, [], now + offset)
+            assert session.patrol_view is None
+        assert await session.register(image, [], now + 2.1)
+        assert session.reg_info["status"] == "settling" and session.patrol_view is None
+        assert await session.register(image, [], now + 2.5)
+        assert session.scene_visible and session.reg_info["status"] == "locked"
+        assert session.patrol_view is not None
+        layout = await session.update(image, [], [], now + 2.5, 640, 360, [])
+        assert layout["mode"] == "unconfigured" and layout["outline"] == []
+        assert not list(tmp_path.iterdir())
+    finally:
+        assert await session.close()
+
+
+@pytest.mark.asyncio
+async def test_room_child_rebases_disjoint_view_after_pending_turn_window(tmp_path, image):
+    session = RoomSession(tmp_path)
+    pixels = np.random.default_rng(98).integers(0, 255, (360, 640, 3), dtype=np.uint8)
+    unrelated = cv2.imencode(".jpg", pixels)[1].tobytes()
+    now = time.monotonic()
+    try:
+        assert await session.register(image, [], now)
+        old_view = session.patrol_view
+        assert old_view is not None
+        session.expect_motion(now + 1, 2)
+        for offset in range(4, 22):
+            assert await session.register(unrelated, [], now + offset * .5)
+            assert session.patrol_view is None
+        for offset in (11., 11.5, 12., 12.5, 13.):
+            assert await session.register(unrelated, [], now + offset)
+        assert session.patrol_view is not None and session.patrol_view[0] != old_view[0]
+        assert _view_shift(old_view, session.patrol_view) is None
+        assert not list(tmp_path.iterdir())
+    finally:
+        assert await session.close()
+
+
+def test_transient_recovery_never_replaces_a_calibrated_room_reference(image):
+    from homeplane.embodied.room_engine import DEFAULT, Room, calibration_draft
+
+    config = calibration_draft(DEFAULT)
+    config["mode"] = "relative_calibrated"
+    room = Room(config, image)
+    assert room.register(image, [], 2, check_visibility=True)
+    original = room.ref_desc
+    pixels = np.random.default_rng(98).integers(0, 255, (360, 640, 3), dtype=np.uint8)
+    unrelated = cv2.imencode(".jpg", pixels)[1].tobytes()
+    for now in (3., 3.5, 4., 4.5, 5.):
+        assert room.register(unrelated, [], now, check_visibility=True)
+        assert room.registration is None
+    assert room.reference_generation == 0 and room.ref_desc is original
+    assert room.register(image, [], 6, check_visibility=True) and room.registration is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("covered_start", [False, True])
+async def test_real_room_child_confirms_patrol_from_background_with_moving_foreground(tmp_path, image, covered_start):
     session = RoomSession(tmp_path)
     director = CameraDirector()
     director.apply_mode("survey", "synthetic-intent")
@@ -150,6 +214,12 @@ async def test_real_room_child_confirms_patrol_from_background_with_moving_foreg
             _patrol_view=session.patrol_view), now + at)
 
     try:
+        if covered_start:
+            cover = cv2.imencode(".jpg", np.full((360, 640), 36, dtype=np.uint8))[1].tobytes()
+            assert await session.register(cover, [], now - 2)
+            for offset in (-1.55, -1.1, -.6, -.1):
+                assert await session.register(image, [], now + offset)
+            assert session.patrol_view is not None
         assert await observe(0, image) is None
         assert await observe(.5, image) is None
         assert await observe(16, image) == "right"

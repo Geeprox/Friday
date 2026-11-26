@@ -227,12 +227,14 @@ class RoomSession:
         self.registration = (
             np.asarray(result["matrix"], dtype=float) if result["matrix"] is not None else None
         )
-        # 同一子进程的参考画面才能用于比较两个视角。快照只在当前进程内使用。
+        info = dict(result["info"])
+        generation = info.pop("reference_generation", 0)
+        # 只有同一子进程的同一代参考才能比较视角。新参考不能确认之前的转向。
         self.patrol_view = (
-            (self.nonce, tuple(tuple(row) for row in result["matrix"]), now)
+            (f"{self.nonce}:{generation}", tuple(tuple(row) for row in result["matrix"]), now)
             if self.registration is not None else None
         )
-        self.reg_info = dict(result["info"])
+        self.reg_info = info
         self.command_until = result["command_until"]
         self.scene_visible = result["visible"]
         self.frame = frame
