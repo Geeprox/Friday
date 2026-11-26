@@ -1,4 +1,4 @@
-"""One latest decoded frame, bounded encoding cadence, original arrival times."""
+"""按原始到达时间编码并选择镜头样本。"""
 import asyncio
 import base64
 import time
@@ -10,22 +10,53 @@ CAPTURE_IDLE_TIMEOUT = 75
 CAPTURE_RECEIVE_TIMEOUT = CAPTURE_IDLE_TIMEOUT + 10
 
 
-def offer_frame(queue, packet, *, now=None):
-    """Keep one whole, recent face packet until consumed; never mix frames.
+class PendingFrames:
+    """单个消费者可取最新整帧，或尚在半秒优先窗口内的完整人脸帧。"""
 
-    A latest-only body queue can repeatedly overwrite the lower-cadence native
-    face frame. Give that whole packet at most half a second of priority. Errors
-    always revoke it, and newer face packets still replace older ones.
-    """
-    if queue.full():
-        pending = queue.get_nowait()
-        at = time.time() if now is None else now
-        if (pending.get('type') == 'error'
-                or (pending.get('type') == packet.get('type') == 'frame'
-                and pending.get('face_jpeg') and not packet.get('face_jpeg')
-                and 0 <= at - pending.get('received_at', -100) <= .5)):
-            packet = pending
-    queue.put_nowait(packet)
+    def __init__(self, *, clock=time.time):
+        self._clock = clock
+        self._available = asyncio.Event()
+        self._latest = None
+        self._face = None
+
+    def offer(self, packet):
+        if self._latest is not None and self._latest.get('type') == 'error':
+            return
+        self._latest = packet
+        if packet.get('type') != 'frame':
+            self._face = None
+        elif packet.get('face_jpeg'):
+            self._face = packet
+        elif self._face is not None and any(
+            packet.get(key) != self._face.get(key)
+            for key in ('capture_session', 'camera_source_context', '_motion_generation')
+        ):
+            self._face = None
+        self._available.set()
+
+    def empty(self):
+        return self._latest is None
+
+    async def wait(self):
+        await self._available.wait()
+
+    async def get(self):
+        await self.wait()
+        return self.get_nowait()
+
+    def get_nowait(self):
+        if self.empty():
+            raise asyncio.QueueEmpty
+        latest, face = self._latest, self._face
+        self._face = None
+        if face is not None and face is not latest:
+            now = self._clock()
+            if 0 <= now - face.get('received_at', -100) <= .5:
+                # 取走人脸帧时保留更新的帧，供下一次识别选取。
+                return face
+        self._latest = None
+        self._available.clear()
+        return latest
 
 
 def encode_frame(packet, *, face, quality):

@@ -28,7 +28,7 @@ CAMERA = dict(id='cam_1111111111', name='Synthetic', room='Synthetic')
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('readback', ['open', 'closed', 'closed_with_cleanup_error', 'late'])
+@pytest.mark.parametrize('readback', ['open', 'closed', 'closed_with_cleanup_error', 'late', 'late_face'])
 async def test_secondary_prefetches_privacy_read_without_passing_the_check_deadline(tmp_path, monkeypatch, readback):
     now = 100.0
     started, release, captured = (asyncio.Event() for _ in range(3))
@@ -76,14 +76,14 @@ async def test_secondary_prefetches_privacy_read_without_passing_the_check_deadl
                 expires=now + 60, shutter_changed=False)
     pool.sessions[camera_id] = item
 
-    def offer(at):
+    def offer(at, *, face=False):
         nonlocal now
         now = at
         captured.clear()
         session = json.loads(process.stdin.write.call_args_list[0].args[0])['capture_session']
         readings.put_nowait(json.dumps(dict(type='frame', jpeg=jpeg, preview=jpeg, received_at=now,
             preview_at=now, capture_session=session, camera_source_context=camera_source_context(selected),
-            width=640, height=360)).encode())
+            width=640, height=360, face_jpeg=jpeg if face else None)).encode())
 
     owner = asyncio.create_task(pool._run(selected, item))
     try:
@@ -108,11 +108,20 @@ async def test_secondary_prefetches_privacy_read_without_passing_the_check_deadl
         else:
             offer(105.1)
             await asyncio.wait_for(captured.wait(), 1)
-            offer(106.9)
+            if readback == 'late_face':
+                offer(105.2, face=True)
+                await asyncio.wait_for(captured.wait(), 1)
+                offer(105.5)
+                expected = 105.5
+            else:
+                offer(106.9)
+                expected = 106.9
             await asyncio.wait_for(captured.wait(), 1)
             assert observations.empty() and wall.frame(camera_id) is not None
+            if readback == 'late_face':
+                now = 105.85
             release.set()
-            assert await asyncio.wait_for(observations.get(), 1) == 106.9
+            assert await asyncio.wait_for(observations.get(), 1) == expected
         assert observations.empty()
     finally:
         release.set()

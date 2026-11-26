@@ -611,10 +611,10 @@ async def test_original_camera_pipe_delivers_sound_without_an_active_voice_owner
         if source=='primary':
             scope=dict(capture=process,state={'status':'live'},home=home,audio_ingress=j.gate,
                 safety=j.runtime,deliver_audio=deliver_audio,SELECTED=CAMERA,generation=1,my_generation=1,
-                fleet=SimpleNamespace(voice_current=lambda *_:False),time=time,json=json,queue=object(),
+                fleet=SimpleNamespace(voice_current=lambda *_:False),time=time,json=json,queue=Mock(),
                 wall=SimpleNamespace(offer=Mock(),video={CAMERA['id']:SimpleNamespace(subscribers=0)}),
                 wall_epoch=1,primary_wall_epoch=1,primary_capture_closed=AsyncMock(),
-                last_video_lease=0,captured_times=deque(),offer_frame=lambda *_:None,
+                last_video_lease=0,captured_times=deque(),
                 asyncio=asyncio,motion_generation=4)
             await actual('homeplane/embodied/worker.py','receive',scope)()
         else:
@@ -624,8 +624,7 @@ async def test_original_camera_pipe_delivers_sound_without_an_active_voice_owner
             scope=dict(process=process,self=SimpleNamespace(on_audio=callback,on_capture_frame=j.runtime.capture_frame,
                 source_current=lambda *_:True,wall=None),
                 selected=CAMERA,audio_ingress=j.gate,item={'privacy_closed':False},waiters={},
-                queue=asyncio.Queue(maxsize=1),last_video_lease=0,wall_epoch=1,time=time,json=json,
-                offer_frame=lambda *_:None,retire_source=Mock())
+                queue=Mock(),last_video_lease=0,wall_epoch=1,time=time,json=json,retire_source=Mock())
             await actual('homeplane/embodied/previews.py','receive',scope)()
         await settle()
         assert j.engine.analyze.await_count>=2 and len(j.store.events())==1

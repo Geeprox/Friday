@@ -48,7 +48,7 @@ from homeplane.embodied.camera_intent import (
     CAMERA_MODES, PET_MODES, CameraIntentStore, camera_intent_readback, finish_camera_survey,
 )
 from homeplane.embodied.camera_follow_picker import FollowCommand
-from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_frame
+from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, PendingFrames
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.stable_tracks import StableTracks as Tracks
 from homeplane.embodied.pet_tracks import PetTracks
@@ -792,7 +792,7 @@ async def run_source(my_generation):
             ).encode()
         )
         await capture.stdin.drain()
-        queue = asyncio.Queue(maxsize=1)
+        queue = PendingFrames()
         latest_item = None
         last_selection = None
         scene_data = {"objects": [], "observed_at": 0}
@@ -885,7 +885,7 @@ async def run_source(my_generation):
                             capture.stdin.write((json.dumps(dict(action='video_window',enabled=wall.video[SELECTED['id']].subscribers>0))+'\n').encode())
                         captured_times.append(time.monotonic())
                         if state.get('status') != 'shutter_closed':wall.offer(SELECTED['id'], wall_epoch, item)
-                    offer_frame(queue, item)
+                    queue.offer(item)
             except asyncio.CancelledError:
                 raise
             except Exception as error:
@@ -899,7 +899,7 @@ async def run_source(my_generation):
                         await primary_capture_closed(my_generation, wall_epoch, reason, error_class)
                     finally:
                         if my_generation == generation and wall_epoch == primary_wall_epoch:
-                            offer_frame(queue, dict(type='error', reason=reason, error_class=error_class))
+                            queue.offer(dict(type='error', reason=reason, error_class=error_class))
 
         receiver = asyncio.create_task(receive())
         scene_task = asyncio.create_task(observe_scene())

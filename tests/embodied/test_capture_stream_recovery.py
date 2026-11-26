@@ -16,13 +16,13 @@ from homeplane.embodied.party_camera import PartyCamera
 
 from tests.embodied.test_camera_audio import actual, CAMERA
 from homeplane.embodied.camera_wall import CameraWall
-from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT
+from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, PendingFrames
 from homeplane.embodied.motion_games import MotionGames
 
 
 def primary_scope(reads, *, obsolete=False):
-    queue = asyncio.Queue(maxsize=1)
-    queue.put_nowait({'type': 'frame', 'received_at': 999})
+    queue = PendingFrames(clock=lambda: 1000)
+    queue.offer({'type': 'frame', 'received_at': 999})
     closed = AsyncMock()
     scope = dict(
         asyncio=asyncio, json=json, time=SimpleNamespace(time=lambda: 1000, monotonic=lambda: 10),
@@ -32,11 +32,6 @@ def primary_scope(reads, *, obsolete=False):
         state={'status': 'live'}, captured_times=deque(), motor_waiters={}, wall_epoch=7,
         primary_capture_closed=closed, primary_wall_epoch=7,
     )
-    def offer(q, packet):
-        if q.full():
-            q.get_nowait()
-        q.put_nowait(packet)
-    scope['offer_frame'] = offer
     return scope, queue, closed
 
 
@@ -49,8 +44,8 @@ async def test_primary_receiver_ends_with_one_fault_signal_instead_of_waiting_85
     scope, queue, closed = primary_scope([fault])
     receive = actual('homeplane/embodied/worker.py', 'receive', scope)
     await receive()
-    assert queue.qsize() == 1
     packet = queue.get_nowait()
+    assert queue.empty()
     assert packet['type'] == 'error'
     assert packet['reason'] == ('source_closed' if fault == b'' else 'capture_stream_unavailable')
     closed.assert_awaited_once_with(1, 7, packet['reason'], packet.get('error_class'))

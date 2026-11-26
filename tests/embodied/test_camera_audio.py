@@ -229,17 +229,17 @@ async def test_secondary_receiver_preserves_source_admission_and_privacy_before_
     callback=actual('homeplane/embodied/worker.py','secondary_audio',dict(
         secondary_homes={CAMERA['id']:service},fleet=SimpleNamespace(voice_current=lambda *_:True),
         time=time,deliver_audio=deliver_audio,safety=SimpleNamespace(observe_audio=Mock())))
-    future=asyncio.get_running_loop().create_future();offered=[];queue=asyncio.Queue(maxsize=2)
+    future=asyncio.get_running_loop().create_future();offered=[]
     stream=[frame,dict(packet,received_at=998),packet,
             dict(type='motor_result',request_id=7,native_code=0)]
     scope=dict(process=SimpleNamespace(stdout=SimpleNamespace(readline=AsyncMock(
         side_effect=[json.dumps(p).encode() for p in stream]+[b'']))),
         self=SimpleNamespace(on_audio=callback,on_capture_frame=None,wall=None),selected=CAMERA,audio_ingress=g,
-        item={'privacy_closed':closed},waiters={7:future},queue=queue,last_video_lease=0,
-        wall_epoch=1,time=time,json=json,offer_frame=lambda _,p:offered.append(p),retire_source=Mock())
+        item={'privacy_closed':closed},waiters={7:future},queue=SimpleNamespace(offer=offered.append),last_video_lease=0,
+        wall_epoch=1,time=time,json=json,retire_source=Mock())
     await actual('homeplane/embodied/previews.py','receive',scope)()
     await asyncio.gather(*service.tasks)
-    assert offered==[frame] and future.result()['native_code']==0
+    assert offered==[frame, dict(type='error', reason='source_closed')] and future.result()['native_code']==0
     if closed:
         service.audio.assert_not_awaited()
         assert service.state['audio_input']['reason']=='camera_paused'
@@ -260,7 +260,7 @@ async def test_original_primary_receiver_gates_pcm_and_stops_an_obsolete_generat
             generation=2 if obsolete else 1,my_generation=1,
             SELECTED=CAMERA,fleet=SimpleNamespace(voice_current=lambda *_:True),
             time=SimpleNamespace(time=lambda:1000,monotonic=lambda:0),json=json,
-            offer_frame=lambda *_:None,queue=object(),wall_epoch=1,primary_wall_epoch=1,
+            queue=Mock(),wall_epoch=1,primary_wall_epoch=1,
             primary_capture_closed=AsyncMock())
         receiver=actual('homeplane/embodied/worker.py','receive',scope)
         await receiver()
@@ -338,7 +338,7 @@ async def test_local_audio_model_failure_does_not_stop_primary_frames_or_motor_r
         state={'status':'live'},audio_ingress=g,home=s,deliver_audio=deliver_audio,generation=1,my_generation=1,
         safety=SimpleNamespace(observe_audio=Mock(),capture_frame=Mock()),
         SELECTED=CAMERA,fleet=SimpleNamespace(voice_current=lambda *_:True),time=time,json=json,
-        offer_frame=lambda _,item:offered.append(item),queue=object(),last_video_lease=0,
+        queue=SimpleNamespace(offer=offered.append),last_video_lease=0,
         captured_times=deque(),wall=SimpleNamespace(offer=Mock()),wall_epoch=1,motor_waiters={7:future},
         primary_wall_epoch=1,primary_capture_closed=AsyncMock(),asyncio=asyncio,motion_generation=4)
     await actual('homeplane/embodied/worker.py','receive',scope)()

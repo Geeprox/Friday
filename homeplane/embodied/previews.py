@@ -14,7 +14,7 @@ from .camera_intent import (
     CAMERA_MODES, PET_MODES, TARGET_MODES, CameraIntentStore, camera_intent_readback, finish_camera_survey,
 )
 from .camera_audio import AudioIngress
-from .frame_sampling import CAPTURE_IDLE_TIMEOUT, CAPTURE_RECEIVE_TIMEOUT, offer_frame
+from .frame_sampling import CAPTURE_IDLE_TIMEOUT, CAPTURE_RECEIVE_TIMEOUT, PendingFrames
 from homeplane.runtime_log import RuntimeLog
 from homeplane.people.live import close_identity
 
@@ -358,7 +358,7 @@ class PreviewPool:
             )
             await process.stdin.drain()
             item['source_active'] = True
-            queue = asyncio.Queue(maxsize=1)
+            queue = PendingFrames(clock=time.time)
             last_video_lease=0.0
             async def receive():
                 nonlocal last_video_lease
@@ -392,6 +392,9 @@ class PreviewPool:
                                 reason = 'capture_stream_unavailable'
                             return
                         if packet.get('type')=='frame':
+                            if 'last_motor_sent' in item:
+                                # 转向后排队的旧画面不能提供新视角的识别。
+                                packet['_motion_generation'] = item['last_motor_sent']
                             if audio_ingress:
                                 audio_ingress.observe_frame(packet,wall=time.time(),mono=time.monotonic())
                                 if self.on_capture_frame and self.source_current(selected['id'], process):
@@ -403,7 +406,7 @@ class PreviewPool:
                             item['capture']={k:packet.get(k) for k in ('raw_fps','decoded_fps','hardware_decoding','host_decode_ms','capture_encode_ms')}
                         if self.wall and not item['privacy_closed']:
                             self.wall.offer(selected['id'], wall_epoch, packet)
-                        offer_frame(queue, packet)
+                        queue.offer(packet)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
@@ -412,8 +415,7 @@ class PreviewPool:
                     try:
                         retire_source(reason, error_class)
                     finally:
-                        if queue.full():queue.get_nowait()
-                        queue.put_nowait({'type':'error', 'reason':reason})
+                        queue.offer({'type':'error', 'reason':reason})
             receiver = asyncio.create_task(receive())
             director = CameraDirector()
             director.apply_mode(item['mode'], item.get('mode_revision', 0))
@@ -428,8 +430,7 @@ class PreviewPool:
                 try:
                     retire_source('privacy_shutter_closed')
                 finally:
-                    if queue.full():queue.get_nowait()
-                    queue.put_nowait({'type':'error','reason':'privacy_shutter_closed'})
+                    queue.offer({'type':'error','reason':'privacy_shutter_closed'})
 
             async def check_shutter():
                 if not await camera_is_open(selected) and item['source_active']:
@@ -577,7 +578,7 @@ class PreviewPool:
                 wait_timeout = CAPTURE_RECEIVE_TIMEOUT
                 if not self.continuous:
                     wait_timeout = CAPTURE_IDLE_TIMEOUT if not item['frames'] else 40
-                packet = await asyncio.wait_for(queue.get(), wait_timeout)
+                await asyncio.wait_for(queue.wait(), wait_timeout)
                 if not item['source_active']:break
                 now = time.monotonic()
                 if shutter_probe is None and now >= next_shutter_read - SHUTTER_READ_LEAD:
@@ -590,14 +591,14 @@ class PreviewPool:
                     shutter_probe = None
                     next_shutter_read += SHUTTER_READ_INTERVAL
                     stage = 'capture'
-                    if item['source_active'] and packet.get('type') == 'frame' and not queue.empty():
-                        # 保留原有隐私校验；读回期间收到的最新包替换已经等待的包。
-                        packet = queue.get_nowait()
                 if item['privacy_closed'] or not item['source_active']:break
+                packet = queue.get_nowait()
                 if packet.get("type") == "frame":
                     if recognizer is not None:
-                        stage='recognition'
                         motor_sent = item.get('last_motor_sent')
+                        if packet.get('_motion_generation') != motor_sent:
+                            continue
+                        stage='recognition'
                         recognizer.animals_enabled = item['mode'] in PET_MODES
                         recognizer.animals_intent = item.get('mode_revision')
                         observation = await recognizer.observe(packet,

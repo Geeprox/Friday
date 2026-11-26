@@ -99,7 +99,7 @@ async def test_overlapping_audio_uses_the_original_motor_or_the_attended_view(
                      secondary_homes={cid: services[cid]}, asyncio=asyncio, json=json, capture=None,
                      generation=1, my_generation=1, state={'status': 'live'},
                      primary_capture_closed=AsyncMock(), audio_ingress=ingress[cid],
-                     wall_epoch=1, primary_wall_epoch=1, queue=Mock(), offer_frame=Mock())
+                     wall_epoch=1, primary_wall_epoch=1, queue=Mock())
         if camera == primary:
             receive = actual(WORKER, 'receive', scope)
 

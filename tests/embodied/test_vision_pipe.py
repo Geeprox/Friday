@@ -17,7 +17,7 @@ from homeplane.embodied import camera_recognition, previews, ptz_control, vision
 from homeplane.embodied.camera_wall import CameraWall
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.camera_audio import AudioIngress
-from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, offer_frame
+from homeplane.embodied.frame_sampling import CAPTURE_RECEIVE_TIMEOUT, PendingFrames
 from homeplane.embodied.pet_tracks import PetTracks
 from homeplane.people.live import close_identity
 from tests.embodied.test_camera_audio import actual
@@ -204,7 +204,7 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
         Tracks=lambda:SimpleNamespace(update=Mock(return_value=[]),invalidate=Mock(),input_valid=True),
         PetTracks=PetTracks, PET_MODES=set(), processed_times=deque(), captured_times=deque(),
         PYTHON='synthetic-capture', VISION='synthetic-vision', MODELS=tmp_path, PRIVATE=tmp_path,
-        offer_frame=offer_frame, CAPTURE_RECEIVE_TIMEOUT=CAPTURE_RECEIVE_TIMEOUT, AudioIngress=AudioIngress,
+        PendingFrames=PendingFrames, CAPTURE_RECEIVE_TIMEOUT=CAPTURE_RECEIVE_TIMEOUT, AudioIngress=AudioIngress,
         close_identity=close_identity, camera_is_open=AsyncMock(return_value=True), capture_environment=lambda *_:{},
         VisionProcess=vision_pipe.VisionProcess, RoomSession=lambda *_,**__:room_port(), room=None,
         CAMERA_STORAGE=tmp_path, room_lock=asyncio.Lock(), close_rooms=AsyncMock(),

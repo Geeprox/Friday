@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from homeplane.embodied.camera_director import CameraDirector
-from homeplane.embodied.frame_sampling import offer_frame
+from homeplane.embodied.frame_sampling import PendingFrames
 from homeplane.people.live import FaceIdentityPipeline
 from homeplane.recognition.artifacts import SFACE_SHA256
 from homeplane.recognition.contracts import Embedding
@@ -195,47 +195,62 @@ def packet(at, face=False):
 
 
 def test_recent_high_resolution_packet_survives_preview_burst_as_whole_frame():
-    queue = asyncio.Queue(maxsize=1)
+    queue = PendingFrames(clock=lambda: 100.4)
     original = packet(100., True)
-    offer_frame(queue, original, now=100.)
-    for at in (100.2, 100.4):
-        offer_frame(queue, packet(at), now=at)
-    assert queue.qsize() == 1
+    newest = packet(100.4)
+    queue.offer(original)
+    queue.offer(packet(100.2))
+    queue.offer(newest)
     assert queue.get_nowait() is original
-
-
-@pytest.mark.parametrize('age', [.50001, -1.])
-def test_priority_never_retains_stale_or_future_frame(age):
-    queue = asyncio.Queue(maxsize=1)
-    offer_frame(queue, packet(100., True), now=100.)
-    newest = packet(100. + age)
-    offer_frame(queue, newest, now=100. + age)
     assert queue.get_nowait() is newest
+    assert queue.empty()
+
+
+@pytest.mark.parametrize('taken_at, newest_at', [(100.50001, 100.4), (99., 99.)])
+def test_priority_is_checked_when_taken_and_excludes_stale_or_future_face(taken_at, newest_at):
+    queue = PendingFrames(clock=lambda: taken_at)
+    newest = packet(newest_at)
+    queue.offer(packet(100., True))
+    queue.offer(newest)
+    assert queue.get_nowait() is newest
+    assert queue.empty()
+
+
+@pytest.mark.parametrize('scope_key', ['capture_session', 'camera_source_context', '_motion_generation'])
+def test_face_priority_cannot_carry_across_source_or_motion_change(scope_key):
+    queue = PendingFrames(clock=lambda: 100.4)
+    queue.offer(dict(packet(100., True), **{scope_key: 'old'}))
+    newest = dict(packet(100.4), **{scope_key: 'new'})
+    queue.offer(newest)
+    assert queue.get_nowait() is newest
+    assert queue.empty()
 
 
 def test_new_face_and_terminal_error_replace_pending_frame_immediately():
-    queue = asyncio.Queue(maxsize=1)
-    offer_frame(queue, packet(100., True), now=100.)
+    queue = PendingFrames(clock=lambda: 100.4)
+    queue.offer(packet(100., True))
     newer = packet(100.2, True)
-    offer_frame(queue, newer, now=100.2)
+    queue.offer(newer)
     assert queue.get_nowait() is newer
-    offer_frame(queue, newer, now=100.2)
+    queue.offer(newer)
+    queue.offer(packet(100.3))
     terminal = dict(type='error', reason='privacy_shutter_closed')
-    offer_frame(queue, terminal, now=100.3)
-    offer_frame(queue, packet(100.4, True), now=100.4)
+    queue.offer(terminal)
+    queue.offer(packet(100.4, True))
     assert queue.get_nowait() is terminal
+    assert queue.empty()
 
 
 def test_five_hz_producer_and_slower_consumer_can_accumulate_independent_faces(face):
     pipeline, jpeg, clock, _ = face
-    queue = asyncio.Queue(maxsize=1)
+    queue = PendingFrames(clock=lambda: clock[0])
     states, observed = [], []
     for i in range(37):
         at = 100. + i * .2
-        offer_frame(queue, packet(at, i % 3 == 0), now=at)
+        clock[0] = at
+        queue.offer(packet(at, i % 3 == 0))
         if i % 2 == 0:
             current = queue.get_nowait()
-            clock[0] = at
             rows = pipeline.process(jpeg, [BODY], sample=bool(current.get('face_jpeg')),
                                     captured_at=current['received_at'])
             if current.get('face_jpeg'):
