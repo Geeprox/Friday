@@ -101,12 +101,12 @@ async def test_manual_close_during_room_wait_blocks_motor_send():
 @pytest.mark.asyncio
 async def test_preset_ack_without_readback_remains_pending(tmp_path):
     values=dict(camera_power=True,cruise=True,human_tracking=True,pet_tracking=True,
-                human_close_up=False,active_preset=1,presets=[])
+                human_close_up=False,active_preset=1,presets=[{'idx':2,'name':'synthetic'}])
     async def write(name,value):
-        if name!='active_preset':values[name]=value
+        if (name,value)!=('active_preset',1):values[name]=value
     io=SimpleNamespace(read=AsyncMock(side_effect=lambda:dict(values)),write=write)
     lease=CameraLease(io,tmp_path/'lease.json')
-    await lease.acquire();values['active_preset']=2
+    await lease.acquire();await lease.move(2)
     original=lease.read_until
     async def bounded(expected,seconds=5):return await original(expected,seconds=0)
     lease.read_until=bounded

@@ -62,6 +62,44 @@ class LeaseTests(unittest.IsolatedAsyncioTestCase):
         self.io.fail = None
         self.assertTrue(await self.lease.release())
 
+    async def test_release_and_retry_keep_the_newer_preset(self):
+        await self.lease.acquire()
+        await self.lease.move(2)
+        self.io.values["active_preset"] = 3
+        self.io.fail = ("human_tracking", True)
+        self.assertFalse(await self.lease.release())
+        self.assertEqual(self.io.values["active_preset"], 3)
+        self.assertTrue(json.loads(self.path.read_text())["current_preset_preserved"])
+        self.io.fail = None
+        self.assertTrue(await self.lease.release())
+        self.assertEqual(self.io.values["active_preset"], 3)
+        self.assertNotIn(("active_preset", 1), self.io.writes)
+
+    async def test_unconfirmed_move_does_not_grant_restore_authority(self):
+        await self.lease.acquire()
+        # 模拟写入失败后无法区分未发出或设备已接到指令。
+        self.io.fail = ("active_preset", 2)
+        with self.assertRaises(RuntimeError):
+            await self.lease.move(2)
+        self.io.fail = None
+        self.assertIsNone(json.loads(self.path.read_text())["owned_preset"])
+        self.assertTrue(await self.lease.release())
+        self.assertNotIn(("active_preset", 1), self.io.writes)
+
+    async def test_preset_changed_while_native_tracking_is_disabled_is_preserved(self):
+        await self.lease.acquire()
+        write = self.io.write
+
+        async def change_after_first_read(name, value):
+            await write(name, value)
+            if (name, value) == ("pet_tracking", False):
+                self.io.values["active_preset"] = 2
+
+        self.io.write = change_after_first_read
+        self.assertTrue(await self.lease.release())
+        self.assertEqual(self.io.values["active_preset"], 2)
+        self.assertNotIn(("active_preset", 1), self.io.writes)
+
     async def test_unknown_presets_never_sent(self):
         await self.lease.acquire()
         count = len(self.io.writes)

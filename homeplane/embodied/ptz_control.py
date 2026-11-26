@@ -224,6 +224,7 @@ class CameraLease:
             "before": original,
             "observed_before": {k: before[k] for k in flags},
             "return_preset": before["active_preset"],
+            "owned_preset": before["active_preset"],
             "restore_native": True,
         }
         self.events = []
@@ -263,10 +264,14 @@ class CameraLease:
         if preset not in {p["idx"] for p in self.presets}:
             raise ValueError("unknown_preset")
         began = time.monotonic()
+        # 进程可能在写入与读回之间退出。此时尚不能归属设备当前的预置位。
+        self.snapshot["owned_preset"] = None
+        self.event("preset_command_start", preset=preset)
         await self.io.write("active_preset", int(preset))
         self.event("preset_command_accepted", preset=preset)
         await self.read_until({"active_preset": preset})
         self.active = preset
+        self.snapshot["owned_preset"] = preset
         self.event("preset_acknowledged", preset=preset, latency_ms=round((time.monotonic() - began) * 1000))
 
     async def release(self):
@@ -285,6 +290,19 @@ class CameraLease:
         flags = getattr(self.io, 'flags', None)
         return flags if isinstance(flags, tuple) else tuple(FLAGS)
 
+    def _owned_preset(self):
+        if "owned_preset" in self.snapshot:
+            return self.snapshot["owned_preset"]
+        # 旧租约只保留事件。最后一笔发送缺少确认时，当前视角归属仍不明确。
+        for event in reversed(self.events):
+            if not isinstance(event, dict):
+                continue
+            if event.get("event") == "preset_acknowledged":
+                return event.get("preset")
+            if event.get("event") == "preset_command_accepted":
+                return None
+        return self.snapshot.get("return_preset")
+
     async def _restore(self):
         if not self.snapshot or self.snapshot.get("status") == "restored":
             return True
@@ -300,6 +318,8 @@ class CameraLease:
         atomic(self.path, self.snapshot)
         errors = []
         returned_preset = False
+        return_preset = self.snapshot.get("return_preset")
+        owned_preset = self._owned_preset()
         try:
             current = await self.io.read()
         except Exception:
@@ -313,9 +333,15 @@ class CameraLease:
                 await self.io.write("human_tracking", False)
                 await self.io.write("pet_tracking", False)
                 current = await self.io.read()
-            if current.get("camera_power") is True:
-                await self.io.write("active_preset", self.snapshot["return_preset"])
-                returned_preset = True
+            if current.get("camera_power") is True and self.snapshot.get("current_preset_preserved") is not True:
+                active_preset = current.get("active_preset")
+                if (type(return_preset) is int and type(owned_preset) is int
+                        and type(active_preset) is int and active_preset == owned_preset):
+                    await self.io.write("active_preset", return_preset)
+                    returned_preset = True
+                else:
+                    self.snapshot["current_preset_preserved"] = True
+                    self.event("preset_preserved")
         except Exception as e:
             errors.append(type(e).__name__)
         for name in ('human_close_up', 'pet_tracking', 'human_tracking', 'cruise'):
@@ -326,7 +352,7 @@ class CameraLease:
             except Exception as e:
                 errors.append(name + ":" + type(e).__name__)
         expected = {name: before[name] for name in flags}
-        if returned_preset:expected['active_preset'] = self.snapshot['return_preset']
+        if returned_preset:expected['active_preset'] = return_preset
         if 'camera_power' in before:
             try:
                 current = await self.io.read()

@@ -36,6 +36,12 @@ OWNER = FAKE_IO + '''
 async def main():
     lease=CameraLease(Camera(),path)
     await lease.acquire()
+    if sys.argv[2]=='owned_move':
+        await lease.move(2)
+    else:
+        # 模拟当前旧版安装留下的租约格式。
+        lease.snapshot.pop('owned_preset')
+        lease.event('legacy_lease_fixture')
     print('owned',flush=True)
     await asyncio.Event().wait()
 asyncio.run(main())
@@ -62,19 +68,20 @@ async def eventually(predicate):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('closed,offline',[(False,False),(True,False),(True,True)])
-async def test_sigkill_restores_exact_baseline_without_opening_shutter(tmp_path,closed,offline):
+@pytest.mark.parametrize('closed,offline,owned_move',[(False,False,False),(False,False,True),
+                                                    (True,False,False),(True,True,False)])
+async def test_sigkill_restores_owned_changes_and_preserves_manual_preset_and_shutter(tmp_path,closed,offline,owned_move):
     folder=tmp_path/'cameras'/'cam_1111111111';folder.mkdir(parents=True)
     path=folder/'ptz-lease.json'
     original=dict(camera_power=True,cruise=True,human_tracking=False,pet_tracking=True,
-                  human_close_up=True,active_preset=1,presets=[])
+                  human_close_up=True,active_preset=1,presets=[{'idx':1,'name':'a'},{'idx':2,'name':'b'}])
     (tmp_path/'device.json').write_text(json.dumps(original))
     read_fd,write_fd=os.pipe();owner=guardian=None
     try:
         guardian=subprocess.Popen([sys.executable,'-B','-c',GUARDIAN,str(tmp_path),str(read_fd)],
             pass_fds=(read_fd,),stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
         assert await asyncio.to_thread(guardian.stdout.readline)==b'ready\n'
-        owner=subprocess.Popen([sys.executable,'-B','-c',OWNER,str(tmp_path)],
+        owner=subprocess.Popen([sys.executable,'-B','-c',OWNER,str(tmp_path),'owned_move' if owned_move else 'external_move'],
             env=dict(os.environ,FRIDAY_CAMERA_OWNER='1'*32),pass_fds=(write_fd,),
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
         os.close(read_fd);read_fd=None;os.close(write_fd);write_fd=None
@@ -97,10 +104,11 @@ async def test_sigkill_restores_exact_baseline_without_opening_shutter(tmp_path,
         result=json.loads((tmp_path/'device.json').read_text())
         assert {k:result[k] for k in FLAGS}=={k:original[k] for k in FLAGS}
         assert result['camera_power'] is not closed
-        assert result['active_preset']==(2 if closed else 1)
+        assert result['active_preset']==(1 if owned_move and not closed else 2)
         assert json.loads(path.read_text())['status']=='restored'
         writes=[json.loads(row) for row in (tmp_path/'writes.jsonl').read_text().splitlines()]
         assert ['camera_power',True] not in writes
+        assert (['active_preset',1] in writes) is (owned_move and not closed)
     finally:
         for process in (owner,guardian):
             if process is not None:
