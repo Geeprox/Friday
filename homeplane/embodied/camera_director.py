@@ -60,6 +60,15 @@ class CameraDirector:
     SURVEY_ATTEMPT_LIMIT = 12
     SURVEY_ROUTE = ('right', 'right', 'down', 'left', 'left', 'left', 'left', 'up', 'right', 'right')
     PATROL_AXES = {'right': (0, 1), 'left': (0, -1), 'down': (1, 1), 'up': (1, -1)}
+    UNCOVER_ROUTE = ('up', 'up') + ('left',) * 6 + ('up', 'up') + ('right',) * 10
+    VIEW_RECOVERY_ROUTE = ('left',) * 4 + ('up',) * 2 + ('right',) * 8 + ('down',) * 3 + ('left',) * 3
+    VIEW_RECOVERY_PROBES = (
+        ('left', 'left', 'down', 'down'),
+        ('left', 'left', 'up', 'up'),
+        ('right', 'right', 'up', 'up'),
+        ('right', 'right', 'down', 'down'),
+    )
+    VIEW_RECOVERY_DELAYS = (30, 60, 120)
 
     def __init__(self):
         self.phase = 'waiting_video'
@@ -93,7 +102,8 @@ class CameraDirector:
         self.obscured_since = None
         self.obscured_samples = 0
         self.recovery_steps = 0
-        self.recovery_direction = 'left'
+        self.recovery_retry_at = 0.0
+        self.recovery_pan_reversed = False
         self.last_direction = None
         self.pending_direction = None
         self.pending_decision = None
@@ -545,6 +555,7 @@ class CameraDirector:
         self.tilt_recovery = None
         self.visible_samples = 0
         self.recovery_steps = 0
+        self.recovery_retry_at = 0.0
         self.obscured_since = None
         self.obscured_samples = 0
         self.phase = 'held'
@@ -562,6 +573,33 @@ class CameraDirector:
         self.position = (0, 0)
         self.scan_steps = 0
         self.blocked_positions.clear()
+
+    def _recover_view(self, sample, now):
+        if now < self.recovery_retry_at:
+            self.phase = 'view_recovery_waiting'
+            return None
+        step = self.recovery_steps
+        if step == 0:
+            self.recovery_pan_reversed = self.last_direction != 'right'
+        self.phase = 'recovering_view'
+        if self.tilt_recovery is not None:
+            # 跟随之后先撤回同一游戏状态下的俯仰。
+            direction, camera_window = self.tilt_recovery
+            self.tilt_recovery = None
+            if camera_window == self._camera_window(sample):
+                return self._aim(direction, sample, now)
+        if step >= len(self.UNCOVER_ROUTE):
+            attempt, offset = divmod(step - len(self.UNCOVER_ROUTE), len(self.VIEW_RECOVERY_PROBES[0]))
+            direction = self.VIEW_RECOVERY_PROBES[attempt % len(self.VIEW_RECOVERY_PROBES)][offset]
+        elif not self.clear:
+            direction = self.UNCOVER_ROUTE[step]
+            if direction == 'up':
+                self.phase = 'uncovering'
+        else:
+            direction = self.VIEW_RECOVERY_ROUTE[step]
+            if self.recovery_pan_reversed and direction in ('left', 'right'):
+                direction = 'right' if direction == 'left' else 'left'
+        return self._aim(direction, sample, now)
 
     def take_sound_view(self):
         proof, self.sound_confirmed_view = self.sound_confirmed_view, None
@@ -876,8 +914,8 @@ class CameraDirector:
             self.sound_candidate = None
             if explicit or self.sound_following:
                 self._interrupt_selection(now)
-            self.visible_samples = 0
-            self.clear_since = None
+            self.visible_samples = self.obscured_samples = 0
+            self.clear_since = self.obscured_since = None
             self.tilt_observation = None
             self.phase = 'waiting_video'
             return None
@@ -904,20 +942,35 @@ class CameraDirector:
             self.target = self.target_identity = self.last_focus = None
             self._clear_reframe()
             self.last_sample = None
+            self.clear = False
             self.visible_samples = self.obscured_samples = 0
             self.clear_since = self.obscured_since = None
+            self.recovery_steps = self.scan_steps = 0
+            self.recovery_retry_at = 0.0
+            self.recovery_pan_reversed = False
+            self.last_direction = None
+            self.position = (0, 0)
+            self.blocked_positions.clear()
             self.pending_direction = self.pending_decision = None
             self.tilt_observation = None
             self.tilt_recovery = None
         stamp = sample.get('_local_received')
         if self.last_sample is not None and stamp <= self.last_sample:
             return None
-        if (explicit or self.sound_following) and self.last_sample is not None and stamp - self.last_sample > 1.5:
-            self._interrupt_selection(now)
+        if self.last_sample is not None and stamp - self.last_sample > 1.5:
+            self.obscured_samples = 0
+            self.obscured_since = None
+            if explicit or self.sound_following:
+                self._interrupt_selection(now)
         self.last_sample = stamp
         previous_tilt, self.tilt_observation = self.tilt_observation, None
         visible = sample.get('scene_visible') is True
         self.visible_samples = self.visible_samples+1 if visible else 0
+        if sample.get('scene_visible') is None:
+            self.obscured_samples = 0
+            self.clear_since = self.obscured_since = None
+            self.phase = 'checking_view'
+            return None
         if not visible:
             self._end_sound_search(now)
             self.clear_since = None
@@ -936,27 +989,7 @@ class CameraDirector:
                 return None
             self.blocked_positions.add(self.position)
             if len(self.blocked_positions)>64:self.blocked_positions.pop()
-            if self.recovery_steps >= 20:
-                return None
-            if self.tilt_recovery is not None:
-                # 俯仰后仍无清晰画面，先尝试一次反向调整，再交还给原来的视野恢复。
-                direction, camera_window = self.tilt_recovery
-                self.tilt_recovery = None
-                if camera_window == self._camera_window(sample):
-                    self.phase = 'recovering_view'
-                    return self._aim(direction, sample, now)
-            if not self.clear:
-                # Two opening impulses, then pan out of a wall-facing angle.
-                # If still covered after a bounded sweep, try two further tilts.
-                step=self.recovery_steps
-                direction='up' if step<2 or 8<=step<10 else ('left' if step<8 else 'right')
-                self.phase='uncovering' if direction=='up' else 'recovering_view'
-            else:
-                if self.recovery_steps == 0:
-                    self.recovery_direction='left' if self.last_direction=='right' else 'right'
-                direction=self.recovery_direction
-                self.phase='recovering_view'
-            return self._aim(direction, sample, now)
+            return self._recover_view(sample, now)
         self.obscured_samples = 0
         self.obscured_since = None
         people = self._subjects(sample)
@@ -969,7 +1002,9 @@ class CameraDirector:
         self.clear = True
         self.blocked_positions.discard(self.position)
         if self.clear_since is None:self.clear_since=now
-        if now-self.clear_since >= 20:self.recovery_steps=0
+        if now-self.clear_since >= 20:
+            self.recovery_steps = 0
+            self.recovery_retry_at = 0.0
         if self._review_holds(sample, now, review_pending, fall_pending, reserve=True):
             self.pending_direction = self.pending_decision = None
             self.reframe_candidate = None
@@ -1129,15 +1164,22 @@ class CameraDirector:
         self.pending_direction=None
         self.pending_decision=None
         self.tilt_observation = None
-        if self.phase in {'uncovering','recovering_view'}:
-            self.recovery_steps+=1
+        if (automatic and pending and direction == pending['direction']
+                and pending['phase'] in {'uncovering', 'recovering_view'}):
+            self.recovery_steps += 1
+            probe_steps = self.recovery_steps - len(self.UNCOVER_ROUTE)
+            if probe_steps >= 0:
+                attempt, remaining = divmod(probe_steps, len(self.VIEW_RECOVERY_PROBES[0]))
+                if remaining == 0:
+                    delay = self.VIEW_RECOVERY_DELAYS[min(attempt, len(self.VIEW_RECOVERY_DELAYS) - 1)]
+                    self.recovery_retry_at = now + delay
+            if pending['phase'] == 'uncovering':
+                self.uncover_steps += 1
         # Every impulse requires a new stable multi-frame view, never the frame
         # that caused that impulse. No queued or timed blind motor sequence.
         self.visible_samples=0
         self.obscured_samples=0
         self.obscured_since=None
-        if self.phase == 'uncovering':
-            self.uncover_steps += 1
 
     def failed(self, now):
         pending = self.pending_decision
@@ -1161,7 +1203,7 @@ class CameraDirector:
     def public(self):
         reason = {'waiting_video':'等待画面', 'settling':'镜头稳定中',
                   'checking_view':'确认视野', 'uncovering':'镜头唤醒中',
-                  'recovering_view':'调整视野',
+                  'recovering_view':'调整视野', 'view_recovery_waiting':'视野受阻，等待重试',
                   'view_obscured':'视野受阻', 'motor_unavailable':'云台待恢复',
                   'following':'跟随人物', 'target_ambiguous':'等待确认目标',
                   'target_reacquiring':'正在确认原目标', 'target_lost':'未找到原目标', 'target_selecting':'等待选择目标',

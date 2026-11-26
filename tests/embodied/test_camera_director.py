@@ -60,13 +60,63 @@ def test_repeated_frame_never_confirms_open_or_repeats_motion():
     assert d.clear
 
 
-def test_cover_recovery_and_failed_motor_are_bounded():
-    d=CameraDirector()
-    moves=0
-    for at in range(0,250,1):
-        if d.choose(sample(at,visible=False),at):
-            moves+=1;d.sent(at)
-    assert moves==20 and d.phase=='view_obscured'
+def test_persistent_wall_retries_short_sweeps_instead_of_stopping():
+    director = CameraDirector()
+    clear(director)
+    director.sent(1, 'right', automatic=False)
+    steps = []
+    for at in range(2, 781):
+        frame = sample(at, visible=False)
+        direction = director.choose(frame, at)
+        if direction:
+            assert director.decision_current(frame, at, direction)
+            steps.append((at, direction))
+            director.sent(at)
+        elif at in (100, 300):
+            assert not director.public()['view_usable']
+            assert director.phase == 'view_recovery_waiting'
+    assert len(steps) > 36
+    first = steps[:20]
+    assert first[0][1] == 'left'
+    assert {direction for _, direction in first} == {'left', 'right', 'up', 'down'}
+    for end, delay in ((19, 30), (23, 60), (27, 120), (31, 120)):
+        assert steps[end + 1][0] - steps[end][0] == delay
+    assert [direction for _, direction in steps[20:24]] != [direction for _, direction in steps[24:28]]
+
+    for at in range(781, 809):
+        director.choose(sample(at), at, occupied_elsewhere=True)
+    assert director.public()['view_usable']
+    assert director.recovery_steps == 0
+
+
+def test_view_retry_requires_new_obstruction_after_a_source_gap_or_switch():
+    director = CameraDirector()
+    for at in range(100):
+        if direction := director.choose(sample(at, visible=False), at):
+            director.sent(at, direction)
+            if director.recovery_steps == 20:
+                break
+    assert director.recovery_steps == 20
+    retry_at = at + 30
+    assert director.choose(sample(at + 3, visible=False), at + 3) is None
+    assert director.choose(sample(retry_at - 2, visible=False), retry_at) is None
+    assert director.choose(sample(retry_at, visible=False), retry_at) is None
+    assert director.choose(sample(retry_at, visible=False), retry_at + .5) is None
+    assert director.choose(sample(retry_at + .5, visible=None), retry_at + .5) is None
+    assert director.choose(sample(retry_at + 1, visible=False), retry_at + 1) is None
+    assert director.choose(sample(retry_at + 1.5, visible=False), retry_at + 1.5) is None
+    assert director.choose(sample(retry_at + 2, visible=False), retry_at + 2) == 'left'
+
+    for offset in (2.1, 2.6):
+        when = retry_at + offset
+        assert director.choose(sample(when, visible=False, session='replacement'), when) is None
+    when = retry_at + 3.2
+    assert director.choose(sample(when, visible=False, session='replacement'), when) == 'up'
+    assert director.recovery_steps == 0
+    assert director.position == (0, 0)
+
+
+def test_failed_motor_waits_before_another_probe():
     d=CameraDirector()
     for at in range(20):
         if d.choose(sample(at,visible=False),at):d.failed(at)
