@@ -516,6 +516,8 @@ class ActionController:
                             if writer.channel == 'lan' and not self.mijia.state_agrees(snapshot, entity, observed):
                                 return self._stage(trace, "rejected", "source_conflict")
                 except (httpx.HTTPError, ValueError, TimeoutError, OSError):
+                    if writer is not None and not writer.current():
+                        return self._stage(trace, "rejected", "source_conflict")
                     writer = None
                 if self.core.adapter is not adapter or self.authority()[1] != revision:
                     return self._stage(trace, "rejected", "authority_changed")
@@ -530,8 +532,12 @@ class ActionController:
                         return self._stage(trace, "expired" if changed == "expired_request" else "rejected", changed)
                 if self.core.adapter is not adapter or self.authority()[1] != revision:
                     return self._stage(trace, "rejected", "authority_changed")
-                if writer is not None and not writer.current():
-                    return self._stage(trace, "rejected", "source_conflict")
+                if writer is not None:
+                    if not writer.current():
+                        return self._stage(trace, "rejected", "source_conflict")
+                    # 发送记录尚未领取，可使用已经复核的原设备通道接替掉线的直连。
+                    if not writer.available():
+                        writer = None
                 if time.monotonic() >= self._deadlines[action_id]:
                     return self._stage(trace, "expired", "expired_request")
             mijia = writer is not None
@@ -640,7 +646,8 @@ class ActionController:
                         return trace
                     writer = await self.mijia.writer(adapter, snapshot, entity, operation, trace.request.desired,
                                                      channel=channel)
-                    if writer is None or writer.fingerprint() != mijia_binding or not writer.current():
+                    if (writer is None or writer.fingerprint() != mijia_binding
+                            or not writer.current() or not writer.available()):
                         return trace
                 else:
                     writer = HADeviceWriter(adapter, entity, operation)

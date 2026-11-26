@@ -232,10 +232,15 @@ class MijiaPower:
             match = power_property(spec, row['unique_id'], entity.kind, urn, catalog.get('model'))
         except (OSError, ValueError, KeyError, TypeError, IndexError):
             return None
+
+        scope_keys = ('family', 'household', 'inputs')
+        scope = tuple(report.get(key) for key in scope_keys)
+
         def current():
             refreshed = self.service.discovery_report
             device = adapter._devices.get(row['device_id'], {})
             return (refreshed.get('state') == 'ready' and refreshed.get('grant') == grant
+                    and tuple(refreshed.get(key) for key in scope_keys) == scope
                     and refreshed.get('models', {}).get(identity) == catalog and adapter._registry.get(external) == row
                     and any(namespace == 'xiaomi_home' and xiaomi_identifier(value) == identity
                             for entry in device.get('identifiers', []) if isinstance(entry, (list, tuple)) and len(entry) == 2
@@ -251,10 +256,8 @@ class MijiaPower:
         async def request_lan(payload):
             return await self.lan.request(payload, family=family)
 
-        def local_current():
-            return current() and self.lan.ready(family, did)
-
-        return MijiaPowerWriter(request_lan, binding, local_current, channel='lan', family=family)
+        return MijiaPowerWriter(request_lan, binding, current, channel='lan', family=family,
+                                available=lambda: self.lan.ready(family, did))
 
 
 @dataclass(frozen=True)
@@ -265,6 +268,7 @@ class MijiaPowerWriter:
     current: Callable[[], bool]
     channel: str = 'cloud'
     family: str | None = None
+    available: Callable[[], bool] = lambda: True
 
     def fingerprint(self):
         # 保持旧版云端回执的核对方式。局域网回执绑定同一家庭和通道。

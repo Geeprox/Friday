@@ -2,7 +2,10 @@
 
 import asyncio
 import json
+import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
@@ -14,6 +17,7 @@ from homeplane.actions import ActionController
 from homeplane.core import HomeCore
 from homeplane.ha import HAReadOnlyAdapter
 from homeplane.ha_control import OPERATIONS
+from homeplane.mijia_control import MijiaPower
 from homeplane.store import TraceStore
 from tests.test_homeplane_actions import close
 from tests.test_homeplane_ha import Socket
@@ -208,6 +212,88 @@ async def plan(core, operation, desired):
             idempotency_key=str(uuid4()),
         )
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case,expected_code",
+    [
+        ("ready", "mijia_reported_match"),
+        ("route_lost", "ha_reported_match"),
+        ("family_changed", "source_conflict"),
+        ("state_changed", "source_conflict"),
+        ("send_unknown", "readback_or_transport_unavailable"),
+    ],
+)
+async def test_mijia_light_selects_one_writer_after_readback(tmp_path, case, expected_code):
+    core, rows, ha_calls, _, _, _ = rig(tmp_path)
+    light = next(row for row in rows if row["entity_id"] == "light.simulated")
+    did = "100000001"
+    identity = "cn_" + did
+    urn = "urn:miot-spec-v2:device:light:0000A001:simulated"
+
+    class MijiaRegistry(Registry):
+        async def send(self, message):
+            await super().send(message)
+            command = json.loads(message)["type"]
+            if command == "config/entity_registry/list":
+                entity = next(r for r in self.messages[-1]["result"] if r["entity_id"] == light["entity_id"])
+                entity.update(platform="xiaomi_home", unique_id=f"light.synthetic_{identity}_lamp_on_p_2_1")
+            if command == "config/device_registry/list":
+                device = next(r for r in self.messages[-1]["result"] if r["id"] == "device-" + light["entity_id"])
+                device.update(identifiers=[["xiaomi_home", identity]])
+
+    core.adapter._ws_connect = lambda *_args, **_kwargs: MijiaRegistry(rows)
+    discovery = dict(state="ready", models={identity: dict(urn=urn, model="synthetic.light.lamp")},
+                     family="a" * 64, grant="b" * 64, household="c" * 64, inputs="d" * 64)
+    service = SimpleNamespace(discovery_report=discovery, discovery_checked_at=time.monotonic())
+    spec = dict(type=urn, services=[
+        dict(iid=2, type="urn:miot-spec-v2:service:light:00007802", properties=[
+            dict(iid=1, type="urn:miot-spec-v2:property:on:00000006", format="bool", access=["read", "write"]),
+        ]),
+    ])
+    lan_online = True
+    lan_reads, lan_writes = [], []
+
+    async def request(payload, *, family):
+        nonlocal lan_online
+        assert family == discovery["family"]
+        assert (payload["did"], payload["siid"], payload["piid"]) == (did, 2, 1)
+        if "power" in payload:
+            lan_writes.append(payload["power"])
+            if case == "send_unknown":
+                raise TimeoutError()
+            light["state"] = payload["power"]
+            return {"accepted": True}
+        observed = light["state"]
+        lan_reads.append(observed)
+        if case in {"route_lost", "state_changed"}:
+            lan_online = False
+        if case == "family_changed":
+            service.discovery_report = {**discovery, "family": "e" * 64}
+        if case == "state_changed":
+            light["state"] = "on"
+            light["attributes"]["brightness"] = 50
+        return {"power": observed}
+
+    lan = SimpleNamespace(ready=lambda family, device: lan_online and (family, device) == (discovery["family"], did),
+                          request=request)
+    cloud = AsyncMock(side_effect=AssertionError("unexpected cloud operation"))
+    core.actions.mijia = MijiaPower(service, spec=AsyncMock(return_value=spec), request=cloud, lan=lan)
+    try:
+        trace = await plan(core, "light.set", {"power": "on"})
+        assert trace.status == "planned"
+        result = await core.actions.execute(trace.action_id)
+        assert result.code == expected_code
+        assert await core.actions.execute(trace.action_id) == result
+        assert lan_reads and lan_reads[0] == "off"
+        assert lan_writes == (["on"] if case in {"ready", "send_unknown"} else [])
+        assert [request.url.path for request in ha_calls] == (
+            ["/api/services/light/turn_on"] if case == "route_lost" else []
+        )
+        cloud.assert_not_awaited()
+    finally:
+        await close(core)
 
 
 @pytest.mark.asyncio
