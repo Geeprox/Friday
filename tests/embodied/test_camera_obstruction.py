@@ -63,6 +63,33 @@ def test_a_frame_gap_restarts_the_clear_interval_before_automatic_patrol():
     assert director.recovery_steps == 0
 
 
+def test_fresh_clear_images_bridge_tracking_gaps_without_authorizing_motion():
+    director = restored_camera()
+    for at in range(7, 27):
+        tracking = at not in (9, 13, 17, 21, 24)
+        frame = dict(view(at, True), tracking_current=tracking)
+        assert director.choose(frame, at) is None
+        if not tracking:
+            assert director.public()['phase'] == 'waiting_video'
+            assert not director.public()['view_usable']
+    frame = dict(view(27, True), tracking_current=True)
+    assert director.choose(frame, 27) == 'left'
+    assert director.recovery_steps == 0
+    assert not director.decision_current(dict(frame, tracking_current=False), 27, 'left')
+    assert director.decision_current(frame, 27, 'left')
+
+
+def test_missing_view_evidence_during_tracking_gap_restarts_recovery_interval():
+    director = restored_camera()
+    for at in range(7, 20):
+        assert director.choose(view(at, True), at) is None
+    assert director.choose(dict(view(20, None), tracking_current=False), 20) is None
+    for at in range(21, 42):
+        assert director.choose(view(at, True), at) is None
+    assert director.recovery_steps == 1
+    assert director.choose(view(42, True), 42) == 'left'
+
+
 def test_current_wake_can_move_while_the_recovered_view_is_held_for_observation():
     director = restored_camera()
     for at in range(7, 18):

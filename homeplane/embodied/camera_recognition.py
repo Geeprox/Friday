@@ -125,7 +125,7 @@ class CameraRecognition:
             layout_ms=round((layout_done-vision_done)*1000),
             identity_ms=round((time.monotonic()-layout_done)*1000),
             pipeline_ms=round((time.time()-packet['received_at'])*1000))
-        scene_visible = self.room.scene_visible
+        scene_visible = self.room.scene_visible if registered else None
         if not current():
             self.identities.discard()
             self.last = None

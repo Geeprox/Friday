@@ -1037,7 +1037,7 @@ async def run_source(my_generation):
                     captured_at=time.monotonic()-(time.time()-item['received_at']))
                 timings['identity_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 phase_at = time.monotonic()
-                scene_visible = frame_room.scene_visible
+                scene_visible = frame_room.scene_visible if registered else None
                 timings['visibility_ms'] = round((time.monotonic()-phase_at)*1000,1)
                 state['pipeline_timing'] = dict(timings)
                 if state.get('status')=='shutter_closed':return
@@ -1057,7 +1057,7 @@ async def run_source(my_generation):
                 state["identity"] = dict(reason=identities.reason, tracks=identity_rows)
                 safety.offer(SELECTED['id'], identities.session, people, now,
                     time.monotonic() - (time.time() - item['received_at']),
-                    stable=scene_visible and layout['registration'].get('status') == 'locked'
+                    stable=scene_visible is True and layout['registration'].get('status') == 'locked'
                         and now >= frame_room.command_until,
                     jpeg=picture, aspect=item['width'] / max(1, item['height']),
                     source_context=item.get('camera_source_context'), source_name=item.get('camera_source_name'),

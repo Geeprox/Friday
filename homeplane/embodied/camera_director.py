@@ -111,6 +111,7 @@ class CameraDirector:
         self.position = (0, 0)
         self.blocked_positions = set()
         self.clear_since = None
+        self.recovery_view_stamp = None
         self.mode = 'auto'
         self.intent = None
         self.survey_attempts = 0
@@ -175,6 +176,8 @@ class CameraDirector:
             self.sound_intent_since = None
             self.tilt_observation = None
             self.tilt_recovery = None
+            if self.recovery_steps:
+                self.recovery_view_stamp = self.clear_since = None
             if self.intent or self.mode != mode:
                 self.target = None
                 self.target_identity = None
@@ -272,9 +275,27 @@ class CameraDirector:
         return direction
 
     @staticmethod
-    def _fresh(sample, now):
-        return (sample.get('status') == 'live' and sample.get('tracking_current') is not False
-                and 0 <= now-sample.get('_local_received', -100) <= 1.5)
+    def _frame_fresh(sample, now):
+        return sample.get('status') == 'live' and 0 <= now-sample.get('_local_received', -100) <= 1.5
+
+    @classmethod
+    def _fresh(cls, sample, now):
+        return cls._frame_fresh(sample, now) and sample.get('tracking_current') is not False
+
+    def _observe_recovery_view(self, sample, now):
+        """从同一采集会话持续核对清晰画面，人物跟踪短暂失效时仍可续接。"""
+        stamp = sample.get('_local_received', -100)
+        if (sample.get('session_id') != self.source_session or not self._frame_fresh(sample, now)
+                or stamp < self.last_move + 2 or sample.get('scene_visible') is not True):
+            self.recovery_view_stamp = self.clear_since = None
+            return
+        previous = self.recovery_view_stamp
+        if previous is not None:
+            if stamp <= previous:
+                return
+            if stamp - previous > 1.5:
+                self.clear_since = None
+        self.recovery_view_stamp = stamp
 
     def _pets_current(self, sample):
         return (sample.get('animals_current') is True and self.intent is not None
@@ -561,6 +582,7 @@ class CameraDirector:
         self.visible_samples = 0
         self.recovery_steps = 0
         self.recovery_retry_at = 0.0
+        self.recovery_view_stamp = None
         self.obscured_since = None
         self.obscured_samples = 0
         self.phase = 'held'
@@ -892,6 +914,7 @@ class CameraDirector:
             self.last_focus = None
             self.visible_samples = self.obscured_samples = 0
             self.clear_since = self.obscured_since = None
+            self.recovery_view_stamp = None
             fresh = self._fresh(sample, now)
             if fresh:
                 self.source_session = sample.get('session_id')
@@ -921,6 +944,7 @@ class CameraDirector:
             self.clear = False
             self.visible_samples = self.obscured_samples = 0
             self.clear_since = self.obscured_since = None
+            self.recovery_view_stamp = None
             self.phase = 'checking_view'
         wake_waiting = self._wake_waits_for_voice(sample, now, sound_cue)
         confirming_cue = sound_cue.cue if wake_waiting else sound_cue
@@ -943,13 +967,18 @@ class CameraDirector:
             self.tilt_observation = None
             self.phase = 'motor_unavailable'
             return None
+        checking_recovery_view = self.mode == 'auto' and self.recovery_steps > 0
+        if checking_recovery_view:
+            self._observe_recovery_view(sample, now)
         if (not self._fresh(sample, now) or sample['_local_received'] <= self.last_move
                 or (explicit or self.sound_following) and sample.get('tracking_current') is not True):
             self.sound_candidate = None
             if explicit or self.sound_following:
                 self._interrupt_selection(now)
             self.visible_samples = self.obscured_samples = 0
-            self.clear_since = self.obscured_since = None
+            self.obscured_since = None
+            if not checking_recovery_view:
+                self.clear_since = None
             self.tilt_observation = None
             self.phase = 'waiting_video'
             return None
@@ -981,6 +1010,8 @@ class CameraDirector:
             self.clear_since = self.obscured_since = None
             self.recovery_steps = self.scan_steps = 0
             self.recovery_retry_at = 0.0
+            self.recovery_view_stamp = None
+            checking_recovery_view = False
             self.recovery_pan_reversed = False
             self.patrol_retry_at = 0.0
             self.last_direction = None
@@ -995,7 +1026,7 @@ class CameraDirector:
         if self.last_sample is not None and stamp - self.last_sample > 1.5:
             self.obscured_samples = 0
             self.obscured_since = None
-            if self.recovery_steps:
+            if self.recovery_steps and not checking_recovery_view:
                 self.clear_since = None
             if explicit or self.sound_following:
                 self._interrupt_selection(now)
@@ -1038,10 +1069,13 @@ class CameraDirector:
         self.tilt_recovery = None
         self.clear = True
         self.blocked_positions.discard(self.position)
-        if self.clear_since is None:self.clear_since=now
-        if now-self.clear_since >= 20:
+        clear_at = stamp if checking_recovery_view else now
+        if self.clear_since is None:
+            self.clear_since = clear_at
+        if clear_at - self.clear_since >= 20:
             self.recovery_steps = 0
             self.recovery_retry_at = 0.0
+            self.recovery_view_stamp = None
         if self._review_holds(sample, now, review_pending, fall_pending, reserve=True):
             self.pending_direction = self.pending_decision = None
             self.reframe_candidate = None
@@ -1168,6 +1202,8 @@ class CameraDirector:
 
     def sent(self, now, direction=None, *, automatic=True):
         self.last_move = now
+        if self.recovery_steps:
+            self.recovery_view_stamp = self.clear_since = None
         self.auto_reconfirmed = None
         if not automatic:
             self.last_wake_captured = max(self.last_wake_captured, now)
@@ -1231,6 +1267,8 @@ class CameraDirector:
         self._end_sound_search(now)
         self._discard_patrol(uncertain_dispatch=pending is not None and pending['phase'] in {'patrolling', 'sound_search'})
         self.last_move = now
+        if self.recovery_steps:
+            self.recovery_view_stamp = self.clear_since = None
         self.failed_moves += 1
         if self.failed_moves >= 3:
             self.retry_at = now + 60
