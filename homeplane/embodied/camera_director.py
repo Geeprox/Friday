@@ -9,6 +9,7 @@ import numpy as np
 
 from .camera_audio import WakeCameraCue, WakeCameraPause
 from .camera_intent import CAMERA_MODES, PET_MODES, TARGET_MODES, finish_camera_survey
+from .camera_view_recovery import CameraViewRecovery, ViewRecall
 from .catalog import MOTION_GAME_MODES
 from .pose_rules import iou
 
@@ -73,7 +74,8 @@ class CameraDirector:
     )
     VIEW_RECOVERY_DELAYS = (30, 60, 120)
 
-    def __init__(self):
+    def __init__(self, *, presets=()):
+        self.view_recovery = CameraViewRecovery(presets)
         self.phase = 'waiting_video'
         self.last_move = -100.0
         self.last_person = None
@@ -483,6 +485,9 @@ class CameraDirector:
     def decision_current(self, sample, now, direction, *, focus=None, occupied_elsewhere=False,
                          review_pending=False, fall_pending=False, sound_cue=None):
         """Recheck the pending purpose without consuming evidence or survey budget."""
+        if not isinstance(direction, str) and isinstance(direction, ViewRecall):
+            return self.view_recovery.current(direction, sample, now, self._reference_scope(sample),
+                idle=self._reference_idle(sample, now, review_pending, fall_pending, sound_cue))
         pending = self.pending_decision
         if (not pending or direction != self.pending_direction or self.mode == 'hold'
                 or self._game_holds(sample)
@@ -896,12 +901,36 @@ class CameraDirector:
         self.pending_direction = self.pending_decision = None
         self.phase = 'patrol_deferred'
 
+    def _reference_scope(self, sample):
+        return self.intent, sample.get('session_id'), self._camera_window(sample)
+
+    def _reference_idle(self, sample, now, review_pending, fall_pending, sound_cue):
+        return (self.mode == 'auto' and not self._game_holds(sample) and self._fresh(sample, now)
+                and sample.get('tracking_current') is True and not sample.get('people')
+                and not review_pending and not fall_pending and sound_cue is None
+                and self.sound_search_cue is None and self.patrol_confirmation is None
+                and (self.reframe_started is None or now - self.reframe_started >= self.FOLLOW_REACQUIRE_SECONDS)
+                and (not self.followed_person or self.last_person is None
+                     or now - self.last_person >= self.FOLLOW_REACQUIRE_SECONDS)
+                and now - self.last_move >= 2)
+
+    def reference_dispatched(self, now):
+        self.view_recovery.dispatched(now)
+        self._discard_patrol(uncertain_dispatch=True)
+        self.pending_direction = self.pending_decision = None
+        self.last_move, self.clear, self.clear_since = now, False, None
+        self.visible_samples = self.obscured_samples = 0
+        self.recovery_view_stamp = self.obscured_since = None
+        self.phase = 'verifying_room_view'
+
     def choose(self, sample, now, *, focus=None, occupied_elsewhere=False, review_pending=False, fall_pending=False,
                sound_cue=None, ordinary_patrol_allowed=True):
         # 镜头稳定等待期间也要撤销单人前提，避免两人交错后误跟。
         if self.reframe_started is not None and len(sample.get('people') or []) > 1:
             self.single_person_move = False
         self.sound_confirmed_view = None
+        reference = self.view_recovery.observe(sample, now, self._reference_scope(sample),
+            idle=self._reference_idle(sample, now, review_pending, fall_pending, sound_cue))
         if self.mode == 'hold':
             self.phase = 'held'
             self.tilt_observation = None
@@ -995,6 +1024,10 @@ class CameraDirector:
         if now-self.last_move < 2:
             self.phase = 'settling'
             return None
+        if reference is not None or self.view_recovery.waiting:
+            self.phase = ('verifying_room_view' if self.view_recovery.state == 'verifying'
+                          else 'room_view_unconfirmed')
+            return reference
         if self.mode == 'survey' and self.sound_search_cue is None and not self._survey_source_current(sample):
             self._interrupt_survey()
             self.phase = 'survey_finished'
@@ -1205,6 +1238,7 @@ class CameraDirector:
             return None
         # 刚恢复的视野先保持到连续观测重置恢复计数，有效唤醒和跟随已在上面处理。
         if (occupied_elsewhere or now < self.patrol_retry_at or (self.mode == 'auto' and self.recovery_steps)
+                or self.mode == 'auto' and self.view_recovery.holding(now)
                 or now-self.last_person < 15 or now-self.last_move < 12):
             self.phase = 'observing'
             return None
@@ -1296,6 +1330,7 @@ class CameraDirector:
     def public(self):
         reason = {'waiting_video':'等待画面', 'settling':'镜头稳定中',
                   'checking_view':'确认视野', 'uncovering':'镜头唤醒中',
+                  'verifying_room_view':'检查回位后的房间画面', 'room_view_unconfirmed':'房间视野待确认',
                   'recovering_view':'调整视野', 'view_recovery_waiting':'视野受阻，等待重试',
                   'view_obscured':'视野受阻', 'motor_unavailable':'云台待恢复',
                   'following':'跟随人物', 'target_ambiguous':'等待确认目标',
@@ -1327,7 +1362,8 @@ class CameraDirector:
             reason = '巡视中，观察当前视角'
         report = dict(owner='friday', phase=self.phase, reason=reason, native_tracking=False,
                     intent_revision=self.intent[1] if self.intent else None,
-                    native_patrol=False, view_usable=self.clear and self.phase in {
+                    native_patrol=False, room_view=self.view_recovery.state,
+                    view_usable=self.clear and self.view_recovery.state in (None, 'covered') and self.phase in {
                         'following','target_ambiguous','patrolling','sound_search','observing','game_held','pet_unavailable',
                         'review_held','patrol_waiting_view','patrol_deferred','target_reacquiring','target_lost'},
                     uncover_steps=self.uncover_steps, recovery_steps=self.recovery_steps,

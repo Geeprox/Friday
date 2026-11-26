@@ -46,6 +46,7 @@ class RoomSession:
         self.reset_pending = False
         self.registration = None
         self.patrol_view = None
+        self.room_coverage = None
         self.reg_info = {"status": "checking"}
         self.scene_visible = False
         self.draft = None
@@ -64,6 +65,7 @@ class RoomSession:
         self.command_until = now + seconds
         self.registration = None
         self.patrol_view = None
+        self.room_coverage = None
         self.reg_info = {"status": "moving"}
         self.draft = None
 
@@ -119,6 +121,7 @@ class RoomSession:
         self.reason = reason
         self.registration = None
         self.patrol_view = None
+        self.room_coverage = None
         self.reg_info = {"status": "unavailable"}
         self.scene_visible = False
         self.draft = None
@@ -229,6 +232,7 @@ class RoomSession:
         )
         info = dict(result["info"])
         generation = info.pop("reference_generation", 0)
+        self.room_coverage = info.pop("room_coverage", None)
         # 只有同一子进程的同一代参考才能比较视角。新参考不能确认之前的转向。
         self.patrol_view = (
             (f"{self.nonce}:{generation}", tuple(tuple(row) for row in result["matrix"]), now)

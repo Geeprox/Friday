@@ -34,7 +34,7 @@ async def test_exited_capture_race_cannot_skip_native_restore_or_retain_lock(tmp
     def exited():raise ProcessLookupError('synthetic_capture_exited')
     capture=SimpleNamespace(returncode=None,terminate=exited,wait=AsyncMock())
     scope=dict(asyncio=asyncio,time=time,os=os,Transport=lambda:io,CameraLease=lambda *_,**__:lease,
-               SearchPlanner=SearchPlanner,CameraDirector=lambda:None,camera_is_open=AsyncMock(return_value=False),
+               SearchPlanner=SearchPlanner,CameraDirector=lambda **_:None,camera_is_open=AsyncMock(return_value=False),
                SELECTED={'id':'synthetic'},close_primary_view=lambda:None,capture=capture,state={},
                camera_intents=SimpleNamespace(load=lambda:CameraIntent('auto','initial','default')),
                camera_lease=None,camera_planner=None)
@@ -61,7 +61,7 @@ async def test_primary_search_recreation_loads_intent_and_still_restores_vendor(
     def make_planner(*args):
         planner=SearchPlanner(*args);planners.append(planner);return planner
     scope=dict(asyncio=asyncio,time=time,os=os,Transport=lambda:io,CameraLease=lambda *_,**__:lease,
-               SearchPlanner=make_planner,CameraDirector=lambda:None,camera_is_open=AsyncMock(return_value=False),
+               SearchPlanner=make_planner,CameraDirector=lambda **_:None,camera_is_open=AsyncMock(return_value=False),
                SELECTED=selected,close_primary_view=lambda:None,capture=None,state={},
                camera_intents=intents,camera_lease=None,camera_planner=None)
     functions({'camera_search','reap'},scope)

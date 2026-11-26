@@ -311,7 +311,7 @@ async def test_secondary_vision_failure_keeps_preview_and_privacy_gate_on_same_c
     from tests.embodied.test_secondary_stream_recovery import CAMERA
 
     capture, failed, replacement, clock, queue, frame, spawn = camera_ports(monkeypatch, fault)
-    lease = SimpleNamespace(snapshot={'before': {'camera_power': True}},
+    lease = SimpleNamespace(snapshot={'before': {'camera_power': True}}, presets=(),
                             acquire=AsyncMock(),release=AsyncMock(return_value=True))
     io = SimpleNamespace(close=AsyncMock())
     identities = SimpleNamespace(discard=Mock(), close=Mock())

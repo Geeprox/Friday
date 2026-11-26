@@ -12,9 +12,12 @@ from .room_protocol import MAX_JPEG, MAX_REPLY, MAX_REQUEST, packet
 
 def open_room(folder, picture):
     os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(4096 * 4096)
+    from .camera_view_reference import ViewReferenceProbe
     from .room_engine import load_room
 
-    return load_room(folder, picture)
+    room = load_room(folder, picture)
+    room.view_reference = ViewReferenceProbe(folder)
+    return room
 
 
 def draft(room):
@@ -93,9 +96,12 @@ def serve(reader, writer, folder, *, factory=open_room, draft_factory=draft):
                 # 同一帧只解码一次，遮挡判断仍然逐帧更新。
                 scene_visible = room.register(picture, value["masks"], value["now"], check_visibility=True)
                 frame = request["frame"]
+                info = dict(room.reg_info, reference_generation=getattr(room, "reference_generation", 0))
+                if coverage := getattr(room, "room_coverage", None):
+                    info["room_coverage"] = coverage
                 result = dict(
                     matrix=room.registration.tolist() if room.registration is not None else None,
-                    info=dict(room.reg_info, reference_generation=getattr(room, "reference_generation", 0)),
+                    info=info,
                     command_until=room.command_until,
                     visible=scene_visible,
                 )

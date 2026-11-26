@@ -69,7 +69,7 @@ class SoundPatrol:
                          mode=mode, mode_revision="intent")
         self.scope = dict(time=SimpleNamespace(monotonic=lambda: self.j.clock),
                           asyncio=SimpleNamespace(sleep=self.advance, CancelledError=asyncio.CancelledError),
-                          CameraDirector=lambda: self.director, camera_is_open=AsyncMock(return_value=True))
+                          CameraDirector=lambda **_: self.director, camera_is_open=AsyncMock(return_value=True))
 
     async def advance(self, _=0):
         # 等已接纳的画面写入 SQLite，再推进合成时钟。

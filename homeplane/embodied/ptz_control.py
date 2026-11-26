@@ -111,7 +111,7 @@ class Transport:
             values[name] = rows[0].get("value")
         return values
 
-    async def write(self, name, value):
+    async def write(self, name, value, *, before_send=None):
         from miot.types import MIoTSetPropertyParam
 
         if name not in FLAGS and name not in ("active_preset", "camera_power"):
@@ -119,6 +119,8 @@ class Transport:
         s, p = self.refs[name]
         async with self._io_lock, asyncio.timeout(12):
             api = await self._current_api()
+            if before_send is not None:
+                before_send()
             result = await api.set_prop_async(
                 MIoTSetPropertyParam(did=self.did, siid=s, piid=p, value=value))
         if result.get("code") != 0:
@@ -255,19 +257,37 @@ class CameraLease:
             await self._restore()
             raise
 
-    async def move(self, preset):
+    async def move(self, preset, *, before_send=None):
         if self.lock_fd is None or not self.snapshot or self.snapshot.get('status') != 'owned':
             raise RuntimeError('camera_not_owned')
-        if (await self.io.read()).get('camera_power') is not True:
+        current = await self.io.read()
+        if current.get('camera_power') is not True:
             raise RuntimeError('privacy_shutter_closed')
         # Existing favourite IDs only. Never modify the household's preset definitions.
         if preset not in {p["idx"] for p in self.presets}:
             raise ValueError("unknown_preset")
+        if before_send is not None:
+            raw = current.get("presets")
+            raw = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(raw, list) or not any(isinstance(p, dict) and type(p.get("idx")) is int
+                                                   and p["idx"] == preset for p in raw):
+                raise ValueError("unknown_preset")
         began = time.monotonic()
-        # 进程可能在写入与读回之间退出。此时尚不能归属设备当前的预置位。
-        self.snapshot["owned_preset"] = None
-        self.event("preset_command_start", preset=preset)
-        await self.io.write("active_preset", int(preset))
+
+        def dispatch():
+            if self.lock_fd is None or self.snapshot.get('status') != 'owned':
+                raise RuntimeError('camera_not_owned')
+            if before_send is not None:
+                before_send()
+            # 进程可能在写入与读回之间退出。此时尚不能归属设备当前的预置位。
+            self.snapshot["owned_preset"] = None
+            self.event("preset_command_start", preset=preset)
+
+        if before_send is None:
+            dispatch()
+            await self.io.write("active_preset", int(preset))
+        else:
+            await self.io.write("active_preset", int(preset), before_send=dispatch)
         self.event("preset_command_accepted", preset=preset)
         await self.read_until({"active_preset": preset})
         self.active = preset

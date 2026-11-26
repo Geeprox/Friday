@@ -8,6 +8,7 @@ import time
 
 from .paths import DATA, MODELS, PROJECT, PYTHON, camera, camera_storage, capture_environment
 from .camera_director import CameraDirector
+from .camera_view_recovery import ViewRecall
 from .camera_follow_picker import CameraFollowPicker
 from .camera_provenance import camera_source_context
 from .camera_intent import (
@@ -121,7 +122,7 @@ class PreviewPool:
                                              revision=item.get('mode_revision'),
                                              status=item.get('intent_status', 'default'))
         if control and not tracking:
-            control = dict(control,view_usable=False,target_locked=False)
+            control = dict(control,view_usable=False,target_locked=False,room_view=None)
             if control.get('phase') == 'following':
                 control.update(phase='waiting_video', reason='等待新的识别结果')
         return dict(
@@ -417,7 +418,7 @@ class PreviewPool:
                     finally:
                         queue.offer({'type':'error', 'reason':reason})
             receiver = asyncio.create_task(receive())
-            director = CameraDirector()
+            director = CameraDirector(presets=lease.presets if lease is not None else ())
             patrol = self.wall.patrol if self.wall is not None else None
             director.apply_mode(item['mode'], item.get('mode_revision', 0))
             previous_control = item.get('camera_control') or {}
@@ -448,6 +449,7 @@ class PreviewPool:
                     animals_intent=observation.get('animals_intent') if observation else None,
                     people=observation['people'] if observation else [],
                     scene_visible=observation.get('scene_visible',False) if observation else False,
+                    room_coverage=observation.get('room_coverage') if observation else None,
                     _wake_source=(observation.get('capture_session'), observation.get('camera_source_context'))
                         if observation else None,
                     _follow_jpeg=observation.get('safety_jpeg') if observation else None,
@@ -461,12 +463,18 @@ class PreviewPool:
                 item['follow_picker'] = CameraFollowPicker(director, follow_sample,
                     lambda: (item['mode'], item['mode_revision']), lambda mode: self._set_mode(selected['id'], item, mode))
             async def send_motion(direction, observed=None, expected_epoch=None, *, ordinary_patrol=False):
-                if direction not in {'left','right','up','down'}:raise ValueError('invalid_motor_direction')
+                reference = None
+                if not isinstance(direction, str) and observed is not None and isinstance(direction, ViewRecall):
+                    reference = direction
+                elif direction not in ('left', 'right', 'up', 'down'):
+                    raise ValueError('invalid_motor_direction')
                 if item['privacy_closed']:raise RuntimeError('privacy_shutter_closed')
                 if not item.get('source_active'):raise RuntimeError('capture_source_changed')
                 if motion_lock.locked():raise RuntimeError('motor_busy')
                 began = time.monotonic()
                 expires = min(began+1.5, observed+1.5) if observed is not None else began+1.5
+                if reference:
+                    expires = began + 6
                 async with motion_lock:
                     request_id = secrets.token_hex(12)
                     correlation = secrets.token_hex(16)
@@ -474,11 +482,8 @@ class PreviewPool:
                     waiters[request_id] = future
                     sent = False
                     self.runtime_log.record('embodied.command','start',correlation=correlation)
-                    try:
-                        if process.returncode is not None:raise RuntimeError('camera_not_owned')
-                        if not await camera_is_open(selected):
-                            privacy_closed()
-                            raise RuntimeError('privacy_shutter_closed')
+                    def dispatch():
+                        nonlocal sent
                         if item['privacy_closed']:raise RuntimeError('privacy_shutter_closed')
                         if not item.get('source_active'):raise RuntimeError('capture_source_changed')
                         if process.returncode is not None:raise RuntimeError('camera_not_owned')
@@ -486,7 +491,7 @@ class PreviewPool:
                             raise RuntimeError('camera_intent_changed')
                         now = time.monotonic()
                         current = current_sample()
-                        if observed is not None and (not 0 <= now-observed <= 1.5
+                        if observed is not None and ((reference is None and not 0 <= now-observed <= 1.5)
                                 or current['tracking_current'] is not True
                                 or current['_local_received'] <= item.get('last_motor_sent', -100)
                                 or not director.decision_current(current, now, direction,
@@ -498,22 +503,37 @@ class PreviewPool:
                                                            director.sound_search_cue))):
                             raise RuntimeError('stale_input')
                         if now >= expires:raise RuntimeError('motor_request_expired')
-                        if ordinary_patrol and patrol is not None and not patrol.allows(selected['id'], now):
+                        if patrol is not None and (ordinary_patrol and not patrol.allows(selected['id'], now)
+                                or reference and not patrol.motion_idle(selected['id'], now)):
                             raise RuntimeError('camera_patrol_deferred')
                         item['last_motor_sent'] = now
                         if recognizer is not None:recognizer.mark_motion(now)
                         if self.on_motion:self.on_motion(selected['id'])
                         if patrol is not None:patrol.dispatched(selected['id'], now)
-                        process.stdin.write((json.dumps(dict(action='motor_step',direction=direction,
-                            request_id=request_id,expires_mono=expires))+'\n').encode())
+                        if reference:
+                            director.reference_dispatched(now)
+                        else:
+                            process.stdin.write((json.dumps(dict(action='motor_step',direction=direction,
+                                request_id=request_id,expires_mono=expires))+'\n').encode())
                         sent = True
-                        await process.stdin.drain()
-                        result = await asyncio.wait_for(future,3)
-                        if result.get('error_code') == 'motor_request_expired':
-                            raise RuntimeError('motor_request_expired')
-                        if result.get('error_class') or result.get('native_code')!=0:
-                            raise RuntimeError('local_motor_rejected')
-                        director.sent(time.monotonic(), direction, automatic=observed is not None)
+
+                    try:
+                        if process.returncode is not None:raise RuntimeError('camera_not_owned')
+                        if reference:
+                            async with asyncio.timeout(6):
+                                await lease.move(reference.preset, before_send=dispatch)
+                            result = dict(accepted=True)
+                        else:
+                            if not await camera_is_open(selected):
+                                raise RuntimeError('privacy_shutter_closed')
+                            dispatch()
+                            await process.stdin.drain()
+                            result = await asyncio.wait_for(future,3)
+                            if result.get('error_code') == 'motor_request_expired':
+                                raise RuntimeError('motor_request_expired')
+                            if result.get('error_class') or result.get('native_code')!=0:
+                                raise RuntimeError('local_motor_rejected')
+                            director.sent(time.monotonic(), direction, automatic=observed is not None)
                         self.runtime_log.record('embodied.command','result',correlation=correlation,
                             elapsed_ms=round((time.monotonic()-began)*1000))
                         return result
@@ -523,10 +543,13 @@ class PreviewPool:
                             elapsed_ms=round((time.monotonic()-began)*1000))
                         raise
                     except Exception as error:
+                        if str(error) == 'privacy_shutter_closed' and not item['privacy_closed']:
+                            privacy_closed()
                         deferred = str(error) == 'camera_patrol_deferred'
-                        if str(error) not in {'stale_input', 'camera_intent_changed', 'motor_request_expired',
-                                              'privacy_shutter_closed', 'capture_source_changed', 'source_closed',
-                                              'capture_stream_unavailable', 'camera_patrol_deferred'}:
+                        if reference is None and str(error) not in {
+                                'stale_input', 'camera_intent_changed', 'motor_request_expired',
+                                'privacy_shutter_closed', 'capture_source_changed', 'source_closed',
+                                'capture_stream_unavailable', 'camera_patrol_deferred'}:
                             director.failed(time.monotonic())
                         self.runtime_log.record('embodied.command','result',correlation=correlation,
                             result='refused' if deferred else 'unavailable',
@@ -552,16 +575,14 @@ class PreviewPool:
                     sample = current_sample()
                     epoch = item['control_epoch']
                     director.apply_mode(item['mode'], item.get('mode_revision', 0))
-                    direction = None
                     if item['mode'] == 'hold':
                         director.hold()
-                    else:
-                        direction = director.choose(sample, now, focus=self.focus(selected['id']),
-                            occupied_elsewhere=self.occupied_elsewhere(selected['id']),
-                            review_pending=self.review_pending(selected['id'], sample.get('session_id')),
-                            fall_pending=self.fall_pending(selected['id'], sample.get('session_id')),
-                            sound_cue=self.sound_cue(selected['id'], sample, director.sound_search_cue),
-                            ordinary_patrol_allowed=patrol is None or patrol.allows(selected['id'], now))
+                    direction = director.choose(sample, now, focus=self.focus(selected['id']),
+                        occupied_elsewhere=self.occupied_elsewhere(selected['id']),
+                        review_pending=self.review_pending(selected['id'], sample.get('session_id')),
+                        fall_pending=self.fall_pending(selected['id'], sample.get('session_id')),
+                        sound_cue=self.sound_cue(selected['id'], sample, director.sound_search_cue),
+                        ordinary_patrol_allowed=patrol is None or patrol.allows(selected['id'], now))
                     item['survey_attempts'] = director.survey_attempts
                     item['survey_confirmed_moves'] = director.survey_confirmed_moves
                     if (proof := director.take_sound_view()) and self.sound_view is not None:
@@ -575,13 +596,19 @@ class PreviewPool:
                                                  intent_status=item.get('intent_status', 'default'))
                     if patrol is not None:
                         patrol.observe(selected['id'], sample, item['camera_control'], now)
+                        if direction is not None and not isinstance(direction, str) and not patrol.motion_idle(selected['id'], now):
+                            direction = None
                     if direction:
                         try:
                             await send_motion(direction, sample['_local_received'], epoch,
                                               ordinary_patrol=director.ordinary_patrol_pending())
-                        except (RuntimeError, OSError, TimeoutError) as error:
+                        except (RuntimeError, OSError, TimeoutError, ValueError) as error:
                             if item['privacy_closed']:return
-                            if str(error) == 'camera_patrol_deferred':
+                            if not isinstance(direction, str):
+                                director.view_recovery.refused(time.monotonic(), error)
+                                item['camera_control'] = dict(director.public(), mode=item['mode'],
+                                    intent_status=item.get('intent_status', 'default'))
+                            elif str(error) == 'camera_patrol_deferred':
                                 director.defer_patrol()
                                 item['camera_control'] = dict(director.public(),mode=item['mode'],
                                                              intent_status=item.get('intent_status', 'default'))

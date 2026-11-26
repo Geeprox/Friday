@@ -56,7 +56,7 @@ async def test_secondary_prefetches_privacy_read_without_passing_the_check_deadl
     process = SimpleNamespace(returncode=None, stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()),
                               stdout=SimpleNamespace(readline=readings.get), wait=AsyncMock())
     process.terminate = process.kill = lambda: setattr(process, 'returncode', 0)
-    lease = SimpleNamespace(snapshot={'before': {'camera_power': True}},
+    lease = SimpleNamespace(snapshot={'before': {'camera_power': True}}, presets=(),
                             acquire=AsyncMock(), release=AsyncMock(return_value=True))
     recognizer = SimpleNamespace(timing={}, observe=recognize, close=AsyncMock(), session='synthetic')
     monkeypatch.setattr(previews, 'time', SimpleNamespace(time=lambda: now, monotonic=lambda: now))
@@ -166,6 +166,7 @@ async def test_capture_fault_revokes_live_inputs_before_blocked_inference_return
 
     class Lease:
         snapshot = {'before': {'camera_power': True}}
+        presets = ()
 
         def __init__(self, *_, **__):
             pass
@@ -320,7 +321,7 @@ async def test_continuous_owner_reconnects_after_cleanup_failure(tmp_path, monke
     leases, recognizers = [], []
 
     def lease(*_, **__):
-        owner = SimpleNamespace(snapshot={'before': {'camera_power': True}},
+        owner = SimpleNamespace(snapshot={'before': {'camera_power': True}}, presets=(),
                                 acquire=AsyncMock(), release=AsyncMock(return_value=True))
         leases.append(owner)
         return owner
@@ -435,7 +436,7 @@ async def test_background_owner_waits_for_native_stream_recovery(
                               stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()), wait=AsyncMock())
     capture.terminate = capture.kill = lambda: setattr(capture, 'returncode', 0)
     spawn = AsyncMock(return_value=capture)
-    lease = SimpleNamespace(snapshot={'before': {'camera_power': True}}, acquire=AsyncMock(),
+    lease = SimpleNamespace(snapshot={'before': {'camera_power': True}}, presets=(), acquire=AsyncMock(),
                             release=AsyncMock(return_value=True))
     async def shutter_read(_):
         nonlocal now, readback_refresh

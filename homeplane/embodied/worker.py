@@ -43,6 +43,7 @@ from homeplane.embodied.calibration_save import CalibrationSaver
 from homeplane.embodied.calibration_frames import CalibrationFrames
 from homeplane.embodied.static_page import static_asset, static_page
 from homeplane.embodied.camera_director import CameraDirector
+from homeplane.embodied.camera_view_recovery import ViewRecall
 from homeplane.embodied.party_camera import PartyCamera
 from homeplane.embodied.camera_intent import (
     CAMERA_MODES, PET_MODES, CameraIntentStore, camera_intent_readback, finish_camera_survey,
@@ -403,9 +404,13 @@ bindings = ActionBindings(registry)
 configure(registry, bindings, games, home)
 
 
-async def motor_step(direction, observed=None, expected_intent=None, decision_current=None, *, ordinary_patrol=False):
-    global motor_sequence, motion_generation, motor_last_sent
-    if direction not in ("left", "right", "up", "down"):
+async def motor_step(direction, observed=None, expected_intent=None, decision_current=None, *,
+                     ordinary_patrol=False, on_reference_sent=None):
+    global motor_sequence
+    reference = None
+    if not isinstance(direction, str) and observed is not None and isinstance(direction, ViewRecall):
+        reference = direction
+    elif direction not in ("left", "right", "up", "down"):
         raise ValueError("invalid_motor_direction")
     if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
     if (
@@ -429,59 +434,74 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
     motor_waiters[request_id] = future
     correlation = secrets.token_hex(16)
     began = time.monotonic()
-    expires = min(began+1.5, observed+1.5) if observed is not None else began+1.5
+    expires = min(began + 1.5, observed + 1.5) if observed is not None else began + 1.5
+    if reference:
+        expires = began + 6
     sent = False
     home.runtime_log.record('embodied.command','start',correlation=correlation)
-    try:
-        if not await camera_is_open(SELECTED):
-            close_primary_view()
-            raise RuntimeError('privacy_shutter_closed')
-        async with room_lock:
-            if not await camera_is_open(SELECTED):
-                close_primary_view()
-                raise RuntimeError('privacy_shutter_closed')
-            # Registration and privacy reads may have waited. No await separates
-            # the final authority/observation check from reserving and writing.
-            if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
-            if (capture is not owned_capture or camera_lease is not owned_lease
-                    or not camera_lease.snapshot or camera_lease.snapshot.get('status')!='owned'):
-                raise RuntimeError('camera_not_owned')
-            if motion_generation != owned_motion_generation:
-                raise RuntimeError('capture_source_changed')
-            if expected_intent is not None and (camera_planner is not owned_planner
-                    or not camera_planner or camera_planner.intent_revision != expected_intent):
-                raise RuntimeError('camera_intent_changed')
-            now = time.monotonic()
-            if observed is not None and (not 0 <= now-observed <= 1.5
-                    or camera_planner and camera_planner.mode=='hold'
-                    or state.get('status')!='live' or state.get('tracking_current') is not True
-                    or not 0 <= now-last_frame <= 1.5 or last_frame <= motor_last_sent
-                    or decision_current is not None and not decision_current()):
-                raise RuntimeError('stale_input')
-            if now >= expires:
-                raise RuntimeError('motor_request_expired')
-            if ordinary_patrol and not wall.patrol.allows(SELECTED['id'], now):
-                raise RuntimeError('camera_patrol_deferred')
-            motion_generation += 1
-            clear_camera_view(SELECTED['id'])
-            calibration_frames.clear()
-            motor_last_sent = now
-            state['_patrol_view'] = None
-            state['scene'] = {'objects': []}
-            identities.discard()
-            if room:
-                room.expect_motion(now, 2)
-            wall.patrol.dispatched(SELECTED['id'], now)
+    def dispatch():
+        global motion_generation, motor_last_sent
+        nonlocal sent
+        # 米家连接初始化和隐私读回可能等待。到实际提交时重新核对权限与最新帧。
+        if state.get('status')=='shutter_closed':raise RuntimeError('privacy_shutter_closed')
+        if (capture is not owned_capture or camera_lease is not owned_lease
+                or not camera_lease.snapshot or camera_lease.snapshot.get('status')!='owned'):
+            raise RuntimeError('camera_not_owned')
+        if motion_generation != owned_motion_generation:
+            raise RuntimeError('capture_source_changed')
+        if expected_intent is not None and (camera_planner is not owned_planner
+                or not camera_planner or camera_planner.intent_revision != expected_intent):
+            raise RuntimeError('camera_intent_changed')
+        now = time.monotonic()
+        if observed is not None and ((reference is None and not 0 <= now-observed <= 1.5)
+                or camera_planner and camera_planner.mode=='hold'
+                or state.get('status')!='live' or state.get('tracking_current') is not True
+                or not 0 <= now-last_frame <= 1.5 or last_frame <= motor_last_sent
+                or decision_current is not None and not decision_current()):
+            raise RuntimeError('stale_input')
+        if now >= expires:
+            raise RuntimeError('motor_request_expired')
+        if (ordinary_patrol and not wall.patrol.allows(SELECTED['id'], now)
+                or reference and not wall.patrol.motion_idle(SELECTED['id'], now)):
+            raise RuntimeError('camera_patrol_deferred')
+        motion_generation += 1
+        clear_camera_view(SELECTED['id'])
+        calibration_frames.clear()
+        motor_last_sent = now
+        state['_patrol_view'] = state['room_coverage'] = None
+        state['scene'] = {'objects': []}
+        identities.discard()
+        if room:
+            room.expect_motion(now, 2)
+        wall.patrol.dispatched(SELECTED['id'], now)
+        if reference:
+            on_reference_sent(now)
+        else:
             capture.stdin.write((json.dumps(dict(action='motor_step', direction=direction,
                 request_id=request_id, expires_mono=expires))+'\n').encode())
-            sent = True
-        await capture.stdin.drain()
-        result = await asyncio.wait_for(future, 3)
-        if result.get('error_code') == 'motor_request_expired':
-            raise RuntimeError('motor_request_expired')
-        if result.get("error_class") or result.get("native_code") != 0:
-            raise RuntimeError("local_motor_rejected")
-        state["local_motor"] = dict(result, at=time.time())
+        sent = True
+
+    try:
+        if reference:
+            if on_reference_sent is None or decision_current is None or observed is None:
+                raise RuntimeError('stale_input')
+            async with asyncio.timeout(6):
+                await owned_lease.move(reference.preset, before_send=dispatch)
+            result = dict(accepted=True)
+        else:
+            if not await camera_is_open(SELECTED):
+                raise RuntimeError('privacy_shutter_closed')
+            async with room_lock:
+                if not await camera_is_open(SELECTED):
+                    raise RuntimeError('privacy_shutter_closed')
+                dispatch()
+            await capture.stdin.drain()
+            result = await asyncio.wait_for(future, 3)
+            if result.get('error_code') == 'motor_request_expired':
+                raise RuntimeError('motor_request_expired')
+            if result.get("error_class") or result.get("native_code") != 0:
+                raise RuntimeError("local_motor_rejected")
+            state["local_motor"] = dict(result, at=time.time())
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             elapsed_ms=round((time.monotonic()-began)*1000))
         return result
@@ -491,6 +511,8 @@ async def motor_step(direction, observed=None, expected_intent=None, decision_cu
             elapsed_ms=round((time.monotonic()-began)*1000))
         raise
     except Exception as error:
+        if str(error) == 'privacy_shutter_closed':
+            close_primary_view()
         deferred = str(error) == 'camera_patrol_deferred'
         home.runtime_log.record('embodied.command','result',correlation=correlation,
             result='refused' if deferred else 'unavailable',
@@ -516,7 +538,7 @@ async def camera_search():
         planner.intent_status = intent.status
         if os.environ.get("FRIDAY_CAMERA_HOLD")=="1":planner.mode="hold"
         camera_planner = planner
-        director = CameraDirector()
+        director = CameraDirector(presets=lease.presets)
         from homeplane.embodied.camera_follow_picker import CameraFollowPicker
 
         planner.follow_picker = CameraFollowPicker(director, lambda: primary_follow_sample(),
@@ -535,16 +557,14 @@ async def camera_search():
                     frame_mono=last_frame,now=now))
             elsewhere = wall.occupied_elsewhere(SELECTED['id'])
             director.apply_mode(planner.mode, planner.intent_revision)
-            direction = None
             if planner.mode == 'hold':
                 director.hold()
-            else:
-                direction = director.choose(sample, now, focus=getattr(home,'camera_focus',None),
-                    occupied_elsewhere=elsewhere,
-                    review_pending=safety.review_pending(SELECTED['id'], sample.get('session_id')),
-                    fall_pending=safety.fall_pending(SELECTED['id'], sample.get('session_id')),
-                    sound_cue=camera_motion_cue(SELECTED['id'], sample, director.sound_search_cue),
-                    ordinary_patrol_allowed=wall.patrol.allows(SELECTED['id'], now))
+            direction = director.choose(sample, now, focus=getattr(home,'camera_focus',None),
+                occupied_elsewhere=elsewhere,
+                review_pending=safety.review_pending(SELECTED['id'], sample.get('session_id')),
+                fall_pending=safety.fall_pending(SELECTED['id'], sample.get('session_id')),
+                sound_cue=camera_motion_cue(SELECTED['id'], sample, director.sound_search_cue),
+                ordinary_patrol_allowed=wall.patrol.allows(SELECTED['id'], now))
             if proof := director.take_sound_view():
                 def source_current(owner=capture, source_generation=generation,
                                    session=sample['session_id'], revision=planner.intent_revision):
@@ -556,6 +576,8 @@ async def camera_search():
                 safety.offer_sound_search_frame(SELECTED['id'], proof, last_jpeg, source_current=source_current)
             state['camera_control'] = dict(planner.public(lease.presets), **director.public())
             wall.patrol.observe(SELECTED['id'], sample, state['camera_control'], now)
+            if direction is not None and not isinstance(direction, str) and not wall.patrol.motion_idle(SELECTED['id'], now):
+                direction = None
             if direction is not None:
                 try:
                     def decision_current():
@@ -568,14 +590,21 @@ async def camera_search():
                             review_pending=safety.review_pending(SELECTED['id'], current.get('session_id')),
                             fall_pending=safety.fall_pending(SELECTED['id'], current.get('session_id')),
                             sound_cue=camera_motion_cue(SELECTED['id'], current, director.sound_search_cue))
-                    await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
-                                     decision_current=decision_current, ordinary_patrol=director.ordinary_patrol_pending())
-                    director.sent(time.monotonic())
-                    lease.event('local_follow_impulse', direction=direction)
-                except (RuntimeError, OSError, TimeoutError) as error:
+                    if not isinstance(direction, str):
+                        await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
+                            decision_current=decision_current, on_reference_sent=director.reference_dispatched)
+                    else:
+                        await motor_step(direction, sample['_local_received'], expected_intent=planner.intent_revision,
+                            decision_current=decision_current, ordinary_patrol=director.ordinary_patrol_pending())
+                        director.sent(time.monotonic())
+                        lease.event('local_follow_impulse', direction=direction)
+                except (RuntimeError, OSError, TimeoutError, ValueError) as error:
                     # Capture connection is not ready during startup; retry only
                     # after a new fresh observation, with no queued motor commands.
-                    if str(error) == 'camera_patrol_deferred':
+                    if not isinstance(direction, str):
+                        director.view_recovery.refused(time.monotonic(), error)
+                        state['camera_control'] = dict(planner.public(lease.presets), **director.public())
+                    elif str(error) == 'camera_patrol_deferred':
                         director.defer_patrol()
                         state['camera_control'] = dict(planner.public(lease.presets), **director.public())
                     elif str(error) not in {'stale_input', 'camera_intent_changed', 'motor_busy',
@@ -629,6 +658,7 @@ def view():
     now = time.monotonic()
     result = dict(state)
     result.pop('_patrol_view', None)
+    result.pop('room_coverage', None)
     result.pop('_wake_source', None)
     result['party_camera'] = party_camera.status(camera=SELECTED['id'],session=state.get('session_id'),
         frame_mono=last_frame,now=now)
@@ -656,7 +686,7 @@ def view():
             game=dict(result['game'], status="paused", reason="实时画面已过期", players=[]),
         )
     if result['status'] != 'live' and result.get('camera_control'):
-        result['camera_control'] = dict(result['camera_control'], view_usable=False, target_locked=False)
+        result['camera_control'] = dict(result['camera_control'], view_usable=False, target_locked=False, room_view=None)
     if result['status'] != 'live':
         result['game'] = dict(result['game'], players=[])
         if result['game'].get('mode') != 'off' and result['game'].get('status') != 'complete':
@@ -1193,6 +1223,7 @@ async def run_source(my_generation):
                     animals=animals,animals_current=pet_tracks.current,
                     animals_intent=pet_revision if pet_active else None,pet_tracking=pet_tracks.public(),
                     scene_visible=scene_visible,
+                    room_coverage=getattr(frame_room, 'room_coverage', None) if registered else None,
                     _patrol_view=getattr(frame_room, 'patrol_view', None) if registered else None,
                     _wake_source=(item.get('capture_session'), item.get('camera_source_context')),
                     reason=None,

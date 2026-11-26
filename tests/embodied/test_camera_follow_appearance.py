@@ -126,7 +126,7 @@ async def test_original_camera_loop_aims_twice_at_the_same_subject_despite_track
                                    sound_search_cue=lambda *_: None)
     scope.update(time=SimpleNamespace(monotonic=lambda: clock),
                  asyncio=SimpleNamespace(sleep=advance, CancelledError=asyncio.CancelledError),
-                 CameraDirector=lambda: director, camera_is_open=AsyncMock(return_value=True),
+                 CameraDirector=lambda **_: director, camera_is_open=AsyncMock(return_value=True),
                  selected={'id': 'synthetic-camera'}, item=item, director=director)
     await advance(0)
     if owner == 'primary':

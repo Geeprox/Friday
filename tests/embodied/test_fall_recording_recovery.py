@@ -715,7 +715,7 @@ async def test_following_does_not_interrupt_fall_confirmation_or_its_keyframes(
 
     scope = dict(time=SimpleNamespace(monotonic=lambda: monitor.clock[0]),
                  asyncio=SimpleNamespace(sleep=advance, CancelledError=asyncio.CancelledError),
-                 CameraDirector=lambda: director, camera_is_open=AsyncMock(return_value=True))
+                 CameraDirector=lambda **_: director, camera_is_open=AsyncMock(return_value=True))
     if owner == 'primary':
         lease = SimpleNamespace(acquire=AsyncMock(), release=AsyncMock(return_value=True),
                                 presets=[], active=None, event=lambda *_args, **_kwargs: None)

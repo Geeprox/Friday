@@ -52,7 +52,7 @@ class Patrol:
         self.item = dict(privacy_closed=False, source_active=True, control_epoch=1, mode=mode, mode_revision='intent')
         self.scope = dict(time=SimpleNamespace(monotonic=lambda:home.clock),
                           asyncio=SimpleNamespace(sleep=self.advance, CancelledError=asyncio.CancelledError),
-                          CameraDirector=lambda:self.director, camera_is_open=AsyncMock(return_value=True))
+                          CameraDirector=lambda **_:self.director, camera_is_open=AsyncMock(return_value=True))
 
     async def advance(self, _):
         home = self.home

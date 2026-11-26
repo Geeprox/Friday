@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 
 MAX_REQUEST = 3_000_000
 MAX_REPLY = 512_000
@@ -69,6 +70,20 @@ def metadata(value):
     generation = value["info"].get("reference_generation", 0)
     if type(generation) is not int or generation < 0:
         raise ValueError("room_protocol_invalid")
+    coverage = value["info"].get("room_coverage")
+    if coverage is not None:
+        if (not isinstance(coverage, dict)
+                or coverage.keys() != {"revision", "preset", "state", "at", "overlap"}
+                or not isinstance(coverage["revision"], str) or not re.fullmatch("[0-9a-f]{24}", coverage["revision"])
+                or type(coverage["preset"]) is not int or not 0 <= coverage["preset"] < 2 ** 31
+                or type(coverage["at"]) not in (int, float) or coverage["at"] < 0
+                or coverage["state"] not in ("unknown", "covered", "partial")):
+            raise ValueError("room_protocol_invalid")
+        overlap = coverage["overlap"]
+        if (coverage["state"] == "unknown" and overlap is not None
+                or coverage["state"] != "unknown"
+                and (type(overlap) not in (int, float) or not 0 <= overlap <= 1)):
+            raise ValueError("room_protocol_invalid")
     matrix = value["matrix"]
     if matrix is not None:
         if (

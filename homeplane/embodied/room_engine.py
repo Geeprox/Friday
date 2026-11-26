@@ -151,6 +151,7 @@ class Room:
         if self.floor is None:
             self.config.update(copy.deepcopy(DEFAULT))
         self.reference = reference
+        self.view_reference = self.room_coverage = None
         self.orb = cv2.ORB_create(nfeatures=1000, fastThreshold=12)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
         self.ref_points, self.ref_desc = self.features(decode_luma(reference), [])
@@ -179,6 +180,7 @@ class Room:
         self.registration = None
         self.previous_visible = False
         self.reference_stable_since = None
+        self.room_coverage = None
         self.holds.clear()
         self.gestures = GestureStabilizer()
 
@@ -334,6 +336,9 @@ class Room:
         self.previous_features = (pts, desc)
         self.previous_at = now
         self.previous_visible = visible
+        if self.view_reference is not None:
+            self.room_coverage = self.view_reference.observe(self, pts, desc, visible, now,
+                stable=now >= self.command_until and now - self.motion_at >= VIEW_SETTLE_SECONDS)
         if desc is None or self.ref_desc is None or len(desc) < 16:
             self.reg_info = {"status": "background_unavailable"}
             self._recover_transient_reference(pts, desc, now, still_since)

@@ -24,6 +24,7 @@ class CameraPatrol:
         if previous is not None and captured < previous[0]:
             return
         usable = (sample.get('scene_visible') is True and sample.get('tracking_current') is True
+                  and control.get('room_view') in (None, 'covered')
                   and (control.get('view_usable') is True or control.get('mode') == 'hold'))
         started = self.moves.get(camera)
         if started is not None:
@@ -32,9 +33,12 @@ class CameraPatrol:
                 self.moves.pop(camera)
         self.views[camera] = (captured, usable)
 
+    def motion_idle(self, camera, now):
+        return not any(other != camera and 0 <= now - started < self.MOTION_MAX_WAIT
+                       for other, started in self.moves.items())
+
     def allows(self, camera, now):
-        if any(other != camera and 0 <= now - started < self.MOTION_MAX_WAIT
-               for other, started in self.moves.items()):
+        if not self.motion_idle(camera, now):
             return False
         peers = [usable for other, (captured, usable) in self.views.items()
                  if other != camera and 0 <= now - captured <= self.FRAME_MAX_AGE]
