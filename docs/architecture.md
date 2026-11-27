@@ -23,6 +23,10 @@ ARL provides the model-runtime boundary and is not a prerequisite for simulation
 
 ## 重建其他平台的自动化
 
+规则指纹在 `rule_contracts.py` 生成，编译、日历与执行回执使用同一编码。
+审核计划、外部来源引用和本地执行回执由 `core_rule_contracts.py` 定义。
+调度和提醒通过该契约读写回执。原 JSON Schema 和既有持久指纹继续有效。
+
 自动化目录在读取时为每条盘点记录生成摘要。重建页将原记录与当前家庭设备选择放在一起。新规则使用当前注册设备和能力标识，数值条件使用读数能力绑定的单位。
 `CoreRules` 在创建计划、试算和保存时重新核对所选记录。其他目录项变化时仍可继续；所选记录变动时要求重新打开。
 保存事务记录来源标识、摘要及名称，并将 Friday 新规则置为暂停。若保存回执丢失，界面按计划编号读回同一次结果。

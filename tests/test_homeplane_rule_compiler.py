@@ -7,11 +7,18 @@ from pathlib import Path
 import pytest
 
 from homeplane.contracts import Event
-from homeplane.rule_compiler import compile_rule, digest, evaluate_rule, remove_instruction
-from homeplane.rule_contracts import ModeLease, RuleIR, RuleTrial
+from homeplane.rule_compiler import compile_rule, evaluate_rule, remove_instruction
+from homeplane.rule_contracts import ModeLease, OnceTrigger, RuleIR, RuleTrial, digest
 from homeplane.simulator import Simulator
 
 RULE = Path(__file__).resolve().parents[1] / "fixtures/homeplane/managed-arrival.json"
+
+
+def test_persisted_rule_fingerprint_is_stable():
+    payload = {"规则": ["家庭", None, 1], "a": True}
+    trigger = OnceTrigger(at="2031-06-20T15:23:19+08:00", timezone="Asia/Shanghai")
+    assert digest(payload) == "b39c263325768a0dba88af41f61b981eecdc94f98e1db0dbe2c1de4dccad679e"
+    assert digest(trigger) == "48f7f757c4b06e999d1b6852e65a505795a3bb931f5d2775bd6371363eab7ca1"
 
 
 def rule(**changes):

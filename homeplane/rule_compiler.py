@@ -1,11 +1,10 @@
 """Mechanical capability proof and pure Simulator evaluation. No vendor codegen."""
 
-import hashlib
-import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .rule_contracts import (
+    CLOCK_TRIGGERS,
     ClimateInstruction,
     DecisionCondition,
     DelayInstruction,
@@ -17,18 +16,11 @@ from .rule_contracts import (
     NumericCondition,
     RuleCompilation,
     RuleEvaluation,
-    CLOCK_TRIGGERS,
     TimeCondition,
+    digest,
 )
+from .rule_schedule import clock_event_matches
 from .rules import minimum_light_action
-
-
-def digest(value):
-    if hasattr(value, "model_dump"):
-        value = value.model_dump(mode="json")
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
-    ).hexdigest()
 
 
 def compile_rule(rule, snapshot):
@@ -276,7 +268,6 @@ def evaluate_rule(rule, snapshot, trial, *, now, allow_core=False, preview=False
         return result("not_triggered", ["snapshot_and_data_edges_are_not_triggers"])
     p, t = event.payload, rule.trigger
     if scheduled:
-        from .rule_schedule import clock_event_matches
         if not clock_event_matches(t, event, preview=preview):
             return result('not_triggered', ['different_schedule_occurrence'])
     elif p.get("entity_id") != t.entity or p.get("capability") != t.capability:

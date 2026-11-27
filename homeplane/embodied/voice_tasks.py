@@ -19,7 +19,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 from homeplane.home_flow_contracts import FlowAbort, TrustedFlowContext
 from homeplane.preview_request import prepare_for_viewer
 from homeplane.query_contracts import ReadScope
-from homeplane.rule_compiler import digest
+from homeplane.rule_contracts import digest
 from homeplane.rule_text import RuleTextRequest
 from homeplane.task_composition import PreparedTask, TaskTextResult, is_task_request
 

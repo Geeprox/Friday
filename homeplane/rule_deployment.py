@@ -12,8 +12,8 @@ from uuid import uuid4
 from pydantic import AwareDatetime, Field
 
 from .contracts import Contract, Event
-from .rule_compiler import compile_rule, digest, evaluate_rule, remove_instruction
-from .rule_contracts import ModeLease, RuleCompilation, RuleEvaluation, RuleIR, RuleTrial
+from .rule_compiler import compile_rule, evaluate_rule, remove_instruction
+from .rule_contracts import ModeLease, RuleCompilation, RuleEvaluation, RuleIR, RuleTrial, digest
 from .simulator import Simulator
 
 

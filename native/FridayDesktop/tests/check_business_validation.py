@@ -32,7 +32,7 @@ if APP:
 from homeplane.ha import HAReadOnlyAdapter
 from homeplane.home_flow import Operation
 from homeplane.query_contracts import HomeQuery
-from homeplane.core_rules import CoreRuleProposal
+from homeplane.core_rule_contracts import CoreRuleProposal
 
 class BusinessChecks(base.ConsumerChecks):
     async def test_expired_cancel_waits_for_original_owned_child(self):

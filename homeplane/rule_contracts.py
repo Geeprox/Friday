@@ -1,5 +1,7 @@
 """Restricted project AST. These types do not describe a vendor Graph protocol."""
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -20,6 +22,15 @@ from .contracts import Contract, Event
 
 Scalar = StrictBool | StrictInt | StrictFloat | StrictStr
 Identifier = Annotated[str, Field(min_length=1, max_length=128)]
+
+
+def digest(value):
+    """生成规则、审核计划和日历回执共用的持久指纹。"""
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
+    ).hexdigest()
 
 
 class TransitionTrigger(Contract):

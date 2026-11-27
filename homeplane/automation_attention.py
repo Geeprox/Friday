@@ -2,7 +2,8 @@
 
 from datetime import UTC, datetime
 
-from .rule_compiler import digest
+from .core_rule_contracts import CoreRuleRun
+from .rule_contracts import digest
 
 
 class AutomationAttention:
@@ -49,8 +50,6 @@ class AutomationAttention:
     def status(self, clock):
         if not self.manager.owner.owned:
             return dict(available=False, items=[], has_more=False)
-        from .core_rules import CoreRuleRun
-
         records = {record.id: record for record in self.manager.records()}
         seen = {row[0] for row in self.db.execute('SELECT id FROM home_task_attention_seen')}
         items = []

@@ -8,18 +8,8 @@
   "homeplane.arl_application": [
     "homeplane.arl"
   ],
-  "homeplane.automation_attention": [
-    "homeplane.core_rules"
-  ],
   "homeplane.cli": [
     "homeplane.api"
-  ],
-  "homeplane.core_rules": [
-    "homeplane.automation_attention",
-    "homeplane.core_schedule"
-  ],
-  "homeplane.core_schedule": [
-    "homeplane.core_rules"
   ],
   "homeplane.embodied.camera_udp_relay": [
     "homeplane.embodied.paths"
@@ -127,12 +117,6 @@
   ],
   "homeplane.recognition_feature_handoff": [
     "homeplane.recognition_contracts"
-  ],
-  "homeplane.rule_compiler": [
-    "homeplane.rule_schedule"
-  ],
-  "homeplane.rule_schedule": [
-    "homeplane.rule_compiler"
   ],
   "homeplane.simulator": [
     "homeplane.event_provenance"

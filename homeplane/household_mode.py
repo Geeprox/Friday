@@ -15,7 +15,7 @@ from pydantic import AwareDatetime, Field
 
 from .contracts import Contract
 from .ha import HAReadOnlyAdapter
-from .rule_compiler import digest
+from .rule_contracts import digest
 
 
 class ModeIntent(Contract):

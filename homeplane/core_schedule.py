@@ -11,8 +11,9 @@ import time
 from datetime import UTC, date, datetime, timedelta
 
 from .contracts import Event
-from .rule_compiler import digest, evaluate_rule
-from .rule_contracts import RuleTrial, OnceTrigger, CLOCK_TRIGGERS
+from .core_rule_contracts import CoreRuleRun
+from .rule_compiler import evaluate_rule
+from .rule_contracts import CLOCK_TRIGGERS, OnceTrigger, RuleTrial, digest
 from .rule_schedule import clock_event_matches, clock_payload, due_occurrence, next_occurrence, once_occurrence
 
 
@@ -78,8 +79,6 @@ class CoreSchedule:
         self.generation = self.manager.generation
 
     async def poll(self):
-        from .core_rules import CoreRuleRun
-
         runtime = self.runtime
         async with self.manager.lock:
             if runtime.closed or runtime.failure or not self.manager.owner.owned:

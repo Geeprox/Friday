@@ -37,7 +37,7 @@ KTV 的两条运行时请求方向有不同职责。Worker 向 NAS 领取任务�
 | --- | --- | --- |
 | 家庭应用装配 | `homeplane.api.create_app` 挂载 HTTP、静态资源与生命周期。 `homeplane.cli` 提供 doctor、模拟、schema、服务入口 | 装配层持有服务实例和接入锁。业务结果由各服务读回。默认运行 Simulator |
 | 设备与读模型 | `HomeCore.snapshot`，`contracts.py`，`devices.py`，`quality.py`；接入者为 `HAReadOnlyAdapter`、`Simulator`、`GeekSession` | 外部注册表、事件与回读由对应来源拥有。 `TraceStore` 保存本地事件与可追溯回执。HA REST 与 WebSocket 接受来源切换和观察中断 |
-| 动作与自动化 | `ActionController` 与 `action_contracts.py`。 `rule_contracts.py` 描述意图与执行模型，`rule_compiler.py` 编译和试算，`CoreRules` 审核落盘，`CoreRuleRuntime` 接纳实时事件 | 动作权限文件、幂等领取、当前家庭模式租约与持久回执各有独立语义。 `CoreSchedule` 消费日历时点。外部自动化目录仅观察 |
+| 动作与自动化 | `ActionController` 与 `action_contracts.py`。 `rule_contracts.py` 描述意图、执行和持久指纹，`core_rule_contracts.py` 持有审核与持久回执格式。 `rule_compiler.py` 编译和试算，`CoreRules` 审核落盘，`CoreRuleRuntime` 接纳实时事件 | 动作权限文件、幂等领取、当前家庭模式租约与持久回执各有独立语义。 `CoreSchedule` 消费日历时点。外部自动化目录仅观察 |
 | 家庭问答、空间与测量 | `home_flow.py` 组织交互会话，`HomeQueries` 提供带来源的只读查询，`home_layout.py` 持有导入几何，`MeasurementSettings` 与 `SensorQualityEngine` 持有校准及派生质量 | 保持源坐标和缺失位置。会话状态在进程内，布局与来源配置在私有存储。测量校准和暂时排除以稳定来源为界 |
 | 感知、交互、声音与异常留档 | `EmbodiedService` 装配 `embodied/worker.py`、副镜头、语音和互动路径。 `SafetyRuntime` 判定，`SafetyRecorder` 写入，`SafetyIO` 控制 SQLite 操作 | 采集会话、云台意图、帧新鲜度、隐私许可和子进程回收各归实际控制者。已确认留档与仍有效的新输入分别判定 |
 | 人物与识别 | `recognition_contracts.py` 定义识别数据，`recognition_feature_handoff.py` 管理私有候选，`PeopleCatalog`、`people/live.py` 管理本地观察归组、登记和撤销 | 标签与识别回执独立于认证。不同受信输入的临时特征和持久身份不可互换 |
@@ -67,7 +67,7 @@ KTV 的两条运行时请求方向有不同职责。Worker 向 NAS 领取任务�
 | --- | --- | --- |
 | KTV 音频能力上报 | `ktv_nas_bridge.audio_playback` 和 `nas_server.audio_playback` 函数体相同，测试也要求两端输出一致 | 复用独立 NAS 与 Mac 都能加载的 `audio_format.py`，保留拒绝码和旧电视默认值 |
 | 本机子进程持有 | `scene_process.owned` 和 `local_child.owned` 相同，场景进程还重复终止、清空管道和回收；场景的可重试状态与其他进程关闭语义不同 | 先验证槽位、取消、重启和状态，找能移除的重复责任 |
-| 家庭日历与规则 | 日历依赖编译器计算指纹，编译器反向调用日历。调度和提醒从依赖它们的运行时导入持久回执类型 | 把指纹和持久回执放在拥有对应语义、无运行时依赖的模块 |
+| 家庭日历与规则 | 原日历反向导入编译器，调度与提醒反向导入运行时 | 指纹、日历、审核和回执依赖已厘清。CI 禁止重新引入原循环 |
 | 入口与 transport | HTTP doctor 反向依赖 CLI。HA WebSocket 从 HA adapter 导入解析私有函数。事件来源登记直接读取具体适配器私有字段 | 分别处理共享诊断输出、消息校验、来源身份契约，保持 HTTP 及事件指纹兼容 |
 | 文件管家 | `service.py` 挂载设置、队列、全文搜索、单页提取，这些子模块反向依赖其错误类型、上限或标识 | 让它们依赖窄的契约与数据访问入口。冻结的独立 provider 保留其协议快照 |
 | 界面基础 | 文档色值与运行时 CSS 都有维护成本。家庭控制台多个功能以全局挂载，KTV 两套页面已共用 `party-audio.js` | 先找同语义的生产调用方和回归，再迁移。跨端显示方式须依据实际平台能力 |
@@ -92,11 +92,19 @@ uv run --no-sync python scripts/check_architecture.py
 uv run --no-sync python scripts/check_architecture.py --graph
 ```
 
+### 002 · 让自动化契约独立于编译和运行时
+
+考虑过保留函数内导入、把时钟匹配放进编译器，以及让双方依赖规则契约。选第三种。
+日期算法继续拥有时区、跳时和重复时点判断，指纹编码由规则契约拥有。
+在调度和提醒中注入运行时类型会保留上下层的语义依赖，因此把持久回执和审核类型迁至
+独立模块，并迁移 HTTP、CLI、原生验证器和其他读取方。新模块可在未装配服务时导入。
+三个已跟踪 schema 在基线已和运行时导出不同，本批的五项运行时 schema 比对均一致。
+
 ## 优化任务池
 
 | 任务 | 收敛条件 | 状态 |
 | --- | --- | --- |
-| 自动化指纹、时钟、回执 | 编译器、日历、调度、提醒无循环导入。旧规则、指纹和收据可按原格式读取 | 待迁移 |
+| 自动化指纹、时钟、回执 | 编译器、日历、调度、提醒无循环导入。旧规则、指纹和收据可按原格式读取 | 已完成 |
 | KTV 音频上报与工人依赖 | 同一个上报解释，Mac/NAS 独立入口可加载；音视频工具和 Worker 无需依赖 HTTP 组装层 | 待迁移 |
 | 家庭控制面入口与 HA 来源身份 | CLI 与 HTTP 消费同一个诊断报告。HA 和 Simulator 拥有自身来源证据，持久摘要稳定 | 待迁移 |
 | 文件管家 | 设置、索引和队列不反向导入运行时；保留持久记录、Apple provider 和所有读取权限 | 待迁移 |
@@ -111,3 +119,4 @@ uv run --no-sync python scripts/check_architecture.py --graph
 | 批次 | 结果与复查 |
 | --- | --- |
 | 001 · 仓库盘点与依赖基线 | 记录运行边界、状态所有者和治理候选。AST 检查和两项合成回归通过。全量基线在收集三个 Laya 测试文件时缺少完整宿主的 `arl.service`，纳入工具链治理 |
+| 002 · 自动化契约 | 定向基线 334 项通过，迁移后含新增核验共 346 项通过。五项运行时 JSON Schema 逐项摘要相同，迁移的八项定义 AST 相同。循环边 54 → 48 |

@@ -156,7 +156,7 @@ def main():
             RuleAnalysisReview,
         )
         from .contracts import PhysicalDevice
-        from .core_rules import CoreRuleApproval, CoreRulePlan, CoreRuleProposal, CoreRuleRecord, CoreRuleRun
+        from .core_rule_contracts import CoreRuleApproval, CoreRulePlan, CoreRuleProposal, CoreRuleRecord, CoreRuleRun
         from .diagnostics import DiagnosticsExportRequest, DiagnosticsPolicy, DiagnosticsReport
         from .geek_background_contracts import BackgroundRequest, ConnectionIntent
         from .geek_inventory import GeekInventoryView

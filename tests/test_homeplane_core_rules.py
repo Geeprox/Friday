@@ -17,8 +17,9 @@ from pydantic import ValidationError
 from homeplane.action_contracts import CoreRuleEffect, DevicePlanRequest
 from homeplane.api import create_app
 from homeplane.automation_actions import AutomationActions, RecordEdit
-from homeplane.automation_catalog import AutomationCatalog, Bundle, CatalogSelection, Entry, Import
-from homeplane.core_rules import CoreRuleApproval, CoreRuleProposal, CoreRuleRun, CoreRuleRuntime, CoreRules
+from homeplane.automation_catalog import AutomationCatalog, Bundle, Entry, Import
+from homeplane.core_rule_contracts import CatalogSelection, CoreRuleApproval, CoreRuleProposal, CoreRuleRun
+from homeplane.core_rules import CoreRuleRuntime, CoreRules
 from homeplane.ha_control import HADeviceWriter
 from homeplane.ha_stream import HAStream
 from homeplane.rule_contracts import RuleIR
