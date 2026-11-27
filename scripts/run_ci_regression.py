@@ -31,8 +31,10 @@ def clean_owned(root):
     )
     if tracked.returncode != 128:
         raise ValueError("ci_workspace_git_boundary_changed")
+    # macOS 个别 stat 调用可耗完目录扫描时限，单独限制系统调用等待。
     opened = subprocess.run(
-        ["lsof", "-nP", "+D", str(root), "-F", "pn"], capture_output=True, text=True, timeout=20
+        ["lsof", "-nP", "-S", "2", "+D", str(root), "-F", "pn"],
+        capture_output=True, text=True, timeout=20,
     )
     if opened.returncode not in {0, 1}:
         raise ValueError("ci_workspace_reference_check_failed")
