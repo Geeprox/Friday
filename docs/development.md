@@ -18,6 +18,10 @@ uv sync --locked --python 3.12 --group dev --extra airplay --extra nas-connectio
 
 完整测试套件运行前，使用 `npm --prefix workers/geek ci --ignore-scripts` 安装可选 Geek 工作进程的测试依赖；完整回归的依赖参数以 [CI 工作流](../.github/workflows/ci.yml)为准。基础控制台安装仍支持 Python 3.11 及以上版本。
 
+Python 依赖边界由 `uv run --no-sync python scripts/check_architecture.py` 检查。CI 拒绝新增循环边
+和已经失效的历史例外。查看完整的静态导入图可追加 `--graph`。原生、部署和动态调用的边界由
+[架构治理](architecture-governance.md)记录。
+
 完整回归包含 KTV 的真实 PNG 二维码生成，因此须选择已锁定的 `ktv` extra；
 `qrcode` 本身不包含 `PyPNGImage` 所需的 PyPNG。无需为运行测试启动 KTV、登录、扬声器或电视。
 

@@ -1,0 +1,140 @@
+{
+  "homeplane.api": [
+    "homeplane.cli"
+  ],
+  "homeplane.arl": [
+    "homeplane.arl_application"
+  ],
+  "homeplane.arl_application": [
+    "homeplane.arl"
+  ],
+  "homeplane.automation_attention": [
+    "homeplane.core_rules"
+  ],
+  "homeplane.cli": [
+    "homeplane.api"
+  ],
+  "homeplane.core_rules": [
+    "homeplane.automation_attention",
+    "homeplane.core_schedule"
+  ],
+  "homeplane.core_schedule": [
+    "homeplane.core_rules"
+  ],
+  "homeplane.embodied.camera_udp_relay": [
+    "homeplane.embodied.paths"
+  ],
+  "homeplane.embodied.household": [
+    "homeplane.home_experience"
+  ],
+  "homeplane.embodied.interaction": [
+    "homeplane.embodied.household"
+  ],
+  "homeplane.embodied.miot_session": [
+    "homeplane.embodied.ptz_control"
+  ],
+  "homeplane.embodied.paths": [
+    "homeplane.embodied.camera_udp_relay"
+  ],
+  "homeplane.embodied.ptz_control": [
+    "homeplane.embodied.miot_session"
+  ],
+  "homeplane.embodied.safety": [
+    "homeplane.embodied.safety_recording",
+    "homeplane.embodied.sound_review",
+    "homeplane.embodied.temporal_review"
+  ],
+  "homeplane.embodied.safety_recording": [
+    "homeplane.embodied.safety"
+  ],
+  "homeplane.embodied.sound_review": [
+    "homeplane.embodied.safety_recording"
+  ],
+  "homeplane.embodied.temporal_review": [
+    "homeplane.embodied.safety_recording"
+  ],
+  "homeplane.event_provenance": [
+    "homeplane.ha",
+    "homeplane.simulator"
+  ],
+  "homeplane.file_steward.extraction_queue": [
+    "homeplane.file_steward.service"
+  ],
+  "homeplane.file_steward.local_text": [
+    "homeplane.file_steward.service"
+  ],
+  "homeplane.file_steward.search": [
+    "homeplane.file_steward.service"
+  ],
+  "homeplane.file_steward.service": [
+    "homeplane.file_steward.extraction_queue",
+    "homeplane.file_steward.local_text",
+    "homeplane.file_steward.search",
+    "homeplane.file_steward.settings"
+  ],
+  "homeplane.file_steward.settings": [
+    "homeplane.file_steward.service"
+  ],
+  "homeplane.geek_inventory": [
+    "homeplane.geek_session"
+  ],
+  "homeplane.geek_session": [
+    "homeplane.geek_inventory"
+  ],
+  "homeplane.ha": [
+    "homeplane.event_provenance",
+    "homeplane.ha_stream"
+  ],
+  "homeplane.ha_stream": [
+    "homeplane.ha"
+  ],
+  "homeplane.home_experience": [
+    "homeplane.embodied.household",
+    "homeplane.embodied.interaction"
+  ],
+  "homeplane.ktv_audio": [
+    "homeplane.ktv_service"
+  ],
+  "homeplane.ktv_nas_bridge": [
+    "homeplane.ktv_service"
+  ],
+  "homeplane.ktv_service": [
+    "homeplane.ktv_audio",
+    "homeplane.ktv_video",
+    "homeplane.ktv_worker"
+  ],
+  "homeplane.ktv_video": [
+    "homeplane.ktv_service"
+  ],
+  "homeplane.ktv_worker": [
+    "homeplane.ktv_nas_bridge",
+    "homeplane.ktv_service"
+  ],
+  "homeplane.measurement_enrollment": [
+    "homeplane.measurement_settings"
+  ],
+  "homeplane.measurement_settings": [
+    "homeplane.measurement_enrollment"
+  ],
+  "homeplane.people.catalog": [
+    "homeplane.people.recognition_bridge"
+  ],
+  "homeplane.people.recognition_bridge": [
+    "homeplane.people.catalog"
+  ],
+  "homeplane.recognition_contracts": [
+    "homeplane.recognition_feature_handoff"
+  ],
+  "homeplane.recognition_feature_handoff": [
+    "homeplane.recognition_contracts"
+  ],
+  "homeplane.rule_compiler": [
+    "homeplane.rule_schedule"
+  ],
+  "homeplane.rule_schedule": [
+    "homeplane.rule_compiler"
+  ],
+  "homeplane.simulator": [
+    "homeplane.event_provenance"
+  ]
+}
