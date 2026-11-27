@@ -955,15 +955,14 @@ def test_tv_remote_controls_require_owner_and_live_room(station):
 
 
 def test_public_song_titles_remove_only_media_filename_wrapping(station):
-    from integrations.ktv_public.nas_server import song_title
-    from homeplane.ktv_metadata import song_title as private_title
+    from integrations.ktv_public.audio_format import song_title
     samples = {
         '01. 歌手 (Feat. 合作歌手) - 歌曲.flac': '歌曲',
         '01. 歌手 - 歌曲 (Live).flac': '歌曲 (Live)',
         '1973': '1973', 'Love - Part 2': 'Love - Part 2',
     }
     for raw, expected in samples.items():
-        assert song_title(raw) == private_title(raw) == expected
+        assert song_title(raw) == expected
     store, _ = station
     value, _ = room(store)
     store.poll()
@@ -1716,27 +1715,39 @@ os._exit(17)
             assert 'nickname_custom' not in {row[1] for row in db.execute('PRAGMA table_info(guests)')}
 
 
-def test_voice_protection_reports_round_trip_with_closed_scalar_schema(station):
-    from homeplane.ktv_nas_bridge import audio_playback as private_audio
-    from integrations.ktv_public.nas_server import audio_playback as public_audio
+def test_voice_protection_reports_round_trip_with_closed_scalar_schema(station, tmp_path):
     store, client = station
     value, _ = room(store)
     store.poll()
-    for state in ('off', 'preparing', 'monitoring', 'attenuated', 'muted', 'failed'):
-        voice = {'state': state, 'effective_gain': 26 if state == 'attenuated' else 0, 'mute_confirmed': state != 'preparing'}
-        payload = playback(audio_capabilities={'vocal_presets': ['dry', 'pop'], 'sfx': True, 'voice_protection': voice})
-        assert private_audio(payload) == public_audio(payload)
-        store.playback(value['id'], payload)
-        assert store.status(value)['playback']['audio_capabilities']['voice_protection'] == voice
-    for invalid in ({'state': 'vendor-string', 'effective_gain': 0},
-                    {'state': 'muted', 'effective_gain': True},
-                    {'state': 'muted', 'effective_gain': 101},
-                    {'state': 'muted', 'effective_gain': 0, 'pcm': [1]},
-                    {'state': 'muted', 'effective_gain': 0, 'mute_confirmed': 1}, None):
-        payload = playback(audio_capabilities={'vocal_presets': ['dry'], 'sfx': True, 'voice_protection': invalid})
-        for parse in (private_audio, public_audio):
-            with pytest.raises(ValueError):
-                parse(payload)
+    config = tmp_path / 'remote.json'
+    config.write_text(json.dumps({'endpoint': str(client.base_url).rstrip('/') + '/ktv', 'agent_key': KEY}))
+    config.chmod(0o600)
+    bridge = NasBridge(FakeQueue(), config, allow_loopback=True)
+    bridge.party = {'room_id': value['id']}
+    try:
+        for state in ('off', 'preparing', 'monitoring', 'attenuated', 'muted', 'failed'):
+            voice = {
+                'state': state, 'effective_gain': 26 if state == 'attenuated' else 0,
+                'mute_confirmed': state != 'preparing',
+            }
+            payload = playback(audio_capabilities={'vocal_presets': ['dry', 'pop'], 'sfx': True, 'voice_protection': voice})
+            assert bridge.report_playback({'room_id': value['id'], **payload}) == {'accepted': True}
+            assert bridge.playback['audio_capabilities']['voice_protection'] == voice
+            store.playback(value['id'], payload)
+            assert store.status(value)['playback']['audio_capabilities']['voice_protection'] == voice
+        for invalid in ({'state': 'vendor-string', 'effective_gain': 0},
+                        {'state': 'muted', 'effective_gain': True},
+                        {'state': 'muted', 'effective_gain': 101},
+                        {'state': 'muted', 'effective_gain': 0, 'pcm': [1]},
+                        {'state': 'muted', 'effective_gain': 0, 'mute_confirmed': 1}, None):
+            payload = playback(audio_capabilities={'vocal_presets': ['dry'], 'sfx': True, 'voice_protection': invalid})
+            with pytest.raises(ValueError, match='invalid_voice_protection'):
+                bridge.report_playback({'room_id': value['id'], **payload})
+            with pytest.raises(Refusal) as error:
+                store.playback(value['id'], payload)
+            assert (error.value.status, error.value.code) == (400, 'invalid_audio_playback')
+    finally:
+        bridge.close()
 
 
 def test_cloud_artwork_resolves_recording_and_persists_source_specific_queue_metadata(station, monkeypatch):

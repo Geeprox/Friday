@@ -1999,7 +1999,7 @@ def create_app(
 
     @app.get("/v1/jobs")
     def jobs():
-        from .ktv_metadata import song_title
+        from integrations.ktv_public.audio_format import song_title
         linked = getattr(bridge, "protected_jobs", None)
         values = queue.list(for_playback=True, linked_jobs=linked() if callable(linked) else ())
         try:

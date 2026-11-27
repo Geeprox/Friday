@@ -6,6 +6,9 @@ The NAS owns room/session state, guest queues, commands, public search and TV pl
 
 NAS 的 `/v1/status` 可声明 `audio_formats`。电视确认该字段后，在就绪上报中声明可解码格式。只有新鲜的 AAC 就绪记录会让 Worker 领取 `playback_encoding: aac_lc_m4a` 任务。旧电视、旧 Worker 和未知能力继续走 WAV。压缩媒体使用既有摘要、票据、原子归档和请求范围校验，双轨的帧数与码率必须一致。`audio_format.py` 在 NAS 验证 M4A 容器、AAC LC 参数及显式裁切时间线，服务不启动编码器或音频设备。
 
+电视音频能力、语音保护、音效序号与曲名规范化也由 `audio_format.py` 定义。
+Mac 制备服务与独立 NAS 从相同源码读取这些规则。桥接端和 NAS 各自保留房间及命令校验和对外错误码。
+
 ## Startup and readiness
 
 Only an authenticated TV `POST /v1/party` with `instance` and `request_id` UUIDs opens/adopts a session and arms preparation/recovery. A phone preview, read-only status poll, NAS timer or worker registration cannot open a session or wake a TV. The TV renews its existing instance using `POST /v1/tv/readiness` every few seconds; that lease survives NAS restart without creating a new session.
