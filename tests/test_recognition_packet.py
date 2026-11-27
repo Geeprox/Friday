@@ -1,11 +1,12 @@
 """Synthetic contract tests only: no optional native imports or real model bytes."""
 
 import hashlib
-import importlib
 import math
 import struct
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -183,18 +184,37 @@ class RecognitionContractTests(unittest.TestCase):
         return provider, fake
 
     def test_import_and_default_off_never_load_native_modules_or_artifacts(self):
-        initial_modules = {name: name in sys.modules for name in ("cv2", "sherpa_onnx")}
-        with patch("importlib.import_module", side_effect=AssertionError("native import")), patch.object(
-                LocalArtifact, "verified_path", side_effect=AssertionError("artifact read")):
-            importlib.reload(sys.modules["homeplane.recognition.face"])
-            importlib.reload(sys.modules["homeplane.recognition.speaker"])
-            face = OpenCVFaceProvider(self.face_artifact, self.face_artifact)
-            voice = SherpaSpeakerProvider(self.speaker_artifact)
-            self.assertEqual(face.activate().state, "disabled")
-            self.assertEqual(voice.activate().state, "disabled")
-            self.assertEqual(face.detect(self.image).status.state, "disabled")
-            self.assertEqual(voice.embed(self.audio, 16000, SPEAKER_QUALITY).status.state, "disabled")
-        self.assertEqual(initial_modules, {name: name in sys.modules for name in initial_modules})
+        # 在新进程检验首次导入，避免重载后的类身份污染同一测试进程。
+        program = textwrap.dedent("""
+            import sys
+            from pathlib import Path
+            from unittest.mock import patch
+
+            import numpy as np
+            from homeplane.recognition.artifacts import LocalArtifact
+
+            native = ("cv2", "sherpa_onnx")
+            assert all(name not in sys.modules for name in native)
+            with patch("importlib.import_module", side_effect=AssertionError("native import")), patch.object(
+                    LocalArtifact, "verified_path", side_effect=AssertionError("artifact read")):
+                from homeplane.recognition.face import OpenCVFaceProvider
+                from homeplane.recognition.speaker import SherpaSpeakerProvider, SpeakerQuality
+
+                artifact = LocalArtifact(Path(sys.argv[1]), "a" * 64)
+                face = OpenCVFaceProvider(artifact, artifact)
+                voice = SherpaSpeakerProvider(artifact)
+                assert face.activate().state == "disabled"
+                assert voice.activate().state == "disabled"
+                assert face.detect(np.zeros((8, 8, 3), dtype=np.uint8)).status.state == "disabled"
+                assert voice.embed(np.zeros(16000, dtype=np.float32), 16000,
+                                   SpeakerQuality(True, True, True)).status.state == "disabled"
+            assert all(name not in sys.modules for name in native)
+        """)
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", program, str(self.face_artifact.path)],
+            cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_explicit_activation_missing_weights_and_dependency_fail_closed(self):
         for provider in (OpenCVFaceProvider(enabled=True), SherpaSpeakerProvider(enabled=True)):
