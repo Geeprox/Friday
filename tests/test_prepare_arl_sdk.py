@@ -1,7 +1,6 @@
 """准备器只生成经固定摘要核对的源码输入，不执行下载内容。"""
 
 import hashlib
-import importlib.util
 import os
 import subprocess
 import sys
@@ -9,10 +8,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("prepare_arl_sdk", ROOT / "scripts/prepare_arl_sdk.py")
-prepare = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(prepare)
+from scripts import prepare_arl_sdk as prepare
 
 
 @pytest.fixture

@@ -16,6 +16,11 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
+if __package__:
+    from .workspace_references import workspace_in_use
+else:
+    from workspace_references import workspace_in_use
+
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_MANIFEST = ROOT / "native/FridayDesktop/Resources/ARL-SDK-MANIFEST.json"
 REQUIREMENTS = ROOT / "homeplane/arl_sdk_requirements.json"
@@ -198,12 +203,7 @@ def clean(output):
                     raise ValueError("sdk_cleanup_tracked_input")
             elif tracked_root.returncode != 128:
                 raise ValueError("sdk_cleanup_git_unavailable")
-            opened = subprocess.run(
-                ["lsof", "-nP", "+D", str(output), "-F", "pn"], capture_output=True, text=True, timeout=20
-            )
-            if opened.returncode not in {0, 1} or any(
-                line.startswith("n") for line in opened.stdout.splitlines()
-            ):
+            if workspace_in_use(output):
                 raise ValueError("sdk_cleanup_input_in_use")
             shutil.rmtree(output)
         state.update(status="cleaned", ended_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
