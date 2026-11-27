@@ -13,9 +13,11 @@ from homeplane.family_media.catalog import digest
 from homeplane.family_media.contracts import FamilyMediaAssetRequest, FamilyMediaQuery
 
 from .contracts import (
+    MAX_UNITS,
     StewardBatchApproval,
     StewardBudget,
     StewardDestinationInventory,
+    StewardError,
     StewardJob,
     StewardJournalEntry,
     StewardPageOutcome,
@@ -23,6 +25,7 @@ from .contracts import (
     StewardRelocationPlan,
     StewardSuggestion,
     StewardUnit,
+    fingerprint,
     relative_path,
 )
 from .policy import PRESETS, StewardPolicyRule, resolve_policy
@@ -30,24 +33,7 @@ from .providers import PROVIDERS
 from .session import session_projection
 from .settings_contracts import StewardSettingsRequest
 
-MAX_JOBS, MAX_UNITS, MAX_PLANS, MAX_JOURNAL = 256, 4096, 64, 2048
-
-
-class StewardError(ValueError):
-    def __init__(self, code):
-        self.code = code
-        super().__init__(code)
-
-
-def fingerprint(item):
-    return digest(
-        [
-            item.item_id,
-            item.original_hash,
-            item.size_bytes,
-            item.original_ref.model_dump(mode="json") if item.original_ref else None,
-        ]
-    )
+MAX_JOBS, MAX_PLANS, MAX_JOURNAL = 256, 64, 2048
 
 
 def path_key(value):

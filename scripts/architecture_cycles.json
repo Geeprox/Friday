@@ -47,24 +47,6 @@
     "homeplane.ha",
     "homeplane.simulator"
   ],
-  "homeplane.file_steward.extraction_queue": [
-    "homeplane.file_steward.service"
-  ],
-  "homeplane.file_steward.local_text": [
-    "homeplane.file_steward.service"
-  ],
-  "homeplane.file_steward.search": [
-    "homeplane.file_steward.service"
-  ],
-  "homeplane.file_steward.service": [
-    "homeplane.file_steward.extraction_queue",
-    "homeplane.file_steward.local_text",
-    "homeplane.file_steward.search",
-    "homeplane.file_steward.settings"
-  ],
-  "homeplane.file_steward.settings": [
-    "homeplane.file_steward.service"
-  ],
   "homeplane.geek_inventory": [
     "homeplane.geek_session"
   ],

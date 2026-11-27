@@ -10,7 +10,7 @@ from homeplane.contracts import Contract
 from homeplane.family_media.catalog import digest
 from homeplane.family_media.contracts import FamilyMediaScanRequest, OpaqueRef
 
-from .service import StewardError
+from .contracts import StewardError
 from .session import session_projection
 
 

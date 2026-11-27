@@ -2,8 +2,8 @@
 
 from homeplane.family_media.catalog import digest
 
+from .contracts import StewardError
 from .policy import StewardPolicyRule, resolve_policy
-from .service import StewardError
 from .settings_contracts import StewardDirectorySettings, StewardSettingsView
 
 
