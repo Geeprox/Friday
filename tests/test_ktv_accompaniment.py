@@ -245,23 +245,24 @@ def test_actual_worker_poll_cancels_and_reaps_ignored_sigterm(tmp_path, monkeypa
     request = job / "request.json"
     request.write_text("{}")
     pid_file = tmp_path / "pid"
-    runtime = tmp_path / "inert-worker"
-    runtime.write_text(f"#!{sys.executable}\nimport os,signal,time\n"
-                       "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
-                       f"open({str(pid_file)!r},'w').write(str(os.getpid()))\n"
-                       "time.sleep(30)\n")
-    runtime.chmod(0o700)
+    worker = tmp_path / "scripts/ktv_prepare.py"
+    worker.parent.mkdir()
+    worker.write_text("import os,signal,time\n"
+                      "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                      f"open({str(pid_file)!r},'w').write(str(os.getpid()))\n"
+                      "time.sleep(30)\n")
     cancel = threading.Event()
     def cancel_when_ready():
         deadline = time.monotonic() + 3
         while not pid_file.exists() and time.monotonic() < deadline:
             time.sleep(.01)
-        cancel.set()
+        if pid_file.exists():
+            cancel.set()
     trigger = threading.Thread(target=cancel_when_ready)
     trigger.start()
     try:
         with pytest.raises(audio.PreparationError, match="preparation_cancelled"):
-            audio._run_worker(request, runtime, cancel, 5)
+            audio._run_worker(request, Path(sys.executable), cancel, 5)
     finally:
         trigger.join(timeout=4)
     with pytest.raises(ProcessLookupError):

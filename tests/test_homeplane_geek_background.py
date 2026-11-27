@@ -4,6 +4,7 @@ import json
 import os
 import plistlib
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -44,8 +45,13 @@ def private(monkeypatch):
 
 
 @pytest.fixture
-def macos_service(monkeypatch):
-    # Simulate only the service platform check; every launch/build boundary is mocked.
+def macos_service(private, monkeypatch):
+    # 合成安装目录保留生产路径校验，启动与构建由夹具替代。
+    root = private / "source"
+    python = root / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.touch()
+    monkeypatch.setattr("homeplane.geek_service.ROOT", root)
     monkeypatch.setattr('homeplane.geek_service.platform', SimpleNamespace(system=lambda: 'Darwin'))
 
 
@@ -378,7 +384,7 @@ def test_actual_second_process_holding_lease_prevents_cleanup(private):
     old = time.time() - 8 * 86400
     os.utime(root, (old, old))
     script = "import sys,os; from pathlib import Path; from homeplane.geek_setup import GeekSetup; root=Path(sys.argv[1]); fd=GeekSetup(root.parent.parent).lease(root); print('SIMULATED lease held',flush=True); sys.stdin.read(1); os.close(fd)"
-    process = subprocess.Popen([str(ROOT / ".venv/bin/python"), "-c", script, str(root)], cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen([sys.executable, "-B", "-c", script, str(root)], cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
         assert process.stdout.readline() == b"SIMULATED lease held\n"
         setup.prune()
