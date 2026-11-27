@@ -84,7 +84,6 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private final CoordinatorStatus coordinatorStatus=new CoordinatorStatus();
     private PlaybackTimeline playbackTimeline;
     private volatile long readinessAt;
-    private long coordinatorReceivedAt;
     private boolean coordinatorVisible;
     private volatile KtvClient client;
     private AudioEngine engine;
@@ -423,7 +422,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         prefetchCancel.set(true);
         coordinatorSession.closed();coordinatorSession=new CoordinatorSession();
         autoRoom=true;
-        coordinatorSession.requestOpen();readinessAt=0;coordinatorVisible=false;coordinatorStatus.disconnected(false);if(connectionBadge!=null)connectionBadge.setText("");
+        coordinatorSession.requestOpen();readinessAt=0;coordinatorVisible=false;if(connectionBadge!=null)connectionBadge.setText("");
         connectionEpoch++;controlEpoch++;roomEpoch++;pendingPlay=null;stopAudio(true);protocolReady=false;roomId="";currentFilesJob="";currentOriginal=currentInstrumental=null;client=null;current=null;currentId="";jobs.clear();qrBitmap=null;
         playbackReleases.connectionChanged(null);
         resetRoomQueue();nextConnectAttempt=nextJobPoll=nextQrPoll=nextDiagnosticPoll=lastControlStateAt=0;connectionFailures=0;
@@ -500,20 +499,20 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
             }else roomOpening();
             return;
         }
-        if(coordinatorVisible)observeReadiness(true,room.optJSONObject("readiness"));
         if(!roomId.equals(room.optString("room_id"))){
             showSmallQr(false);bigQr.setVisibility(View.GONE);qrBitmap=null;
             nextJobPoll=nextQrPoll=readinessAt=0;
             applyRoom(room);
         }
+        if(coordinatorVisible)observeRoomReadiness(room.optJSONObject("readiness"));
         setTheme(room.optString("theme","content"));
         roomConnection("房间已开启，正在准备点歌二维码…",false);
         if(current==null&&!loading)showIdle();
-        refreshTvReadiness(c,roomId,connectionEpoch);
+        refreshTvReadiness(c,connectionEpoch);
         refreshRoomQr(c,roomId,connectionEpoch);
         refreshRoomJobs(c,roomEpoch);
     }
-    private void refreshTvReadiness(KtvClient c,String room,long epoch){
+    private void refreshTvReadiness(KtvClient c,long epoch){
         long now=SystemClock.elapsedRealtime();
         if(!c.coordinator()||roomReportBusy||(readinessAt!=0&&now-readinessAt<3000))return;
         roomReportBusy=true;readinessAt=now;
@@ -521,8 +520,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         try{roomReports.execute(()->{
             try{
                 if(!ownsConnection(c,epoch))return;
-                JSONObject ready=c.controlJson("/v1/tv/readiness",readiness(c,claims));
-                ui.post(()->{if(ownsConnection(c,epoch)&&room.equals(roomId))observeReadiness(true,ready);});
+                c.controlJson("/v1/tv/readiness",readiness(c,claims));
             }catch(Exception ignored){}
             finally{ui.post(()->roomReportBusy=false);}
         });}catch(RejectedExecutionException ignored){roomReportBusy=false;}
@@ -539,6 +537,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                 Bitmap decoded=qr==null?null:BitmapFactory.decodeByteArray(qr,0,qr.length);
                 if(decoded!=null){
                     qrBitmap=decoded;smallQrImage.setImageBitmap(decoded);bigQr.setImageBitmap(decoded);
+                    refreshCoordinatorStatus();
                     if(current!=null)showSmallQr(true);
                     else if(!loading)showIdle();
                 }
@@ -646,16 +645,23 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         if(claims)result.put("queue_claims",true);
         return result;
     }
-    private void observeReadiness(boolean active,JSONObject ready){
-        coordinatorReceivedAt=SystemClock.elapsedRealtime();
-        Map<String,Boolean> gates=new HashMap<>();JSONObject values=ready==null?null:ready.optJSONObject("gates");
-        if(values!=null)for(String key:CoordinatorStatus.GATES)gates.put(key,Boolean.TRUE.equals(values.opt(key)));
-        coordinatorStatus.observe(active,!coordinatorSession.pending()&&ready!=null&&Boolean.TRUE.equals(ready.opt("ready")),gates);
-        if(!coordinatorStatus.text().contentEquals(connectionBadge.getText()))connectionBadge.setText(coordinatorStatus.text());
+    private void observeRoomReadiness(JSONObject readiness){
+        // 以当前房间的快照为准。上报回执不更新画面，也不延长房间在线时间。
+        JSONObject gates=readiness==null?null:readiness.optJSONObject("gates");
+        boolean knownDevice=gates!=null&&Boolean.TRUE.equals(gates.opt("link_tv"));
+        coordinatorStatus.observeRoom(SystemClock.elapsedRealtime(),
+            knownDevice&&Boolean.FALSE.equals(gates.opt("tv_playback")),
+            knownDevice&&Boolean.FALSE.equals(gates.opt("tv_media")));
+        refreshCoordinatorStatus();
     }
-    private void refreshCoordinatorStatus(){if(coordinatorVisible&&coordinatorStatus.expire(SystemClock.elapsedRealtime()-coordinatorReceivedAt,engine.running))connectionBadge.setText(coordinatorStatus.text());}
+    private void refreshCoordinatorStatus(){
+        if(!coordinatorVisible)return;
+        String status=coordinatorStatus.text(SystemClock.elapsedRealtime(),qrBitmap!=null,engine.running);
+        if(!status.contentEquals(connectionBadge.getText()))connectionBadge.setText(status);
+    }
     private int orderIndex(JSONArray values,String id){for(int i=0;i<values.length();i++)if(id.equals(values.optString(i)))return i;return Integer.MAX_VALUE;}
     private void resetRoomQueue(){
+        coordinatorStatus.reset();
         queueClaims=false;
         presentedSong=refusedStartSong="";
         waitForQueueRead=0;
@@ -718,8 +724,8 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         String priorTheme=theme;
         setTheme(room.optString("theme","content"));
         applyRoom(room);
-        if(c.coordinator())observeReadiness(true,room.optJSONObject("readiness"));
-        refreshTvReadiness(c,roomId,connectionEpoch);
+        if(c.coordinator())observeRoomReadiness(room.optJSONObject("readiness"));
+        refreshTvReadiness(c,connectionEpoch);
         refreshRoomQr(c,roomId,connectionEpoch);
         refreshRoomJobs(c,roomEpoch);
         if(!priorTheme.equals(theme)&&current==null&&!loading)showIdle();
