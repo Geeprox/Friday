@@ -12,7 +12,13 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCES = ["homeplane/shared_laya.py", "homeplane/shared_laya_service.py", "homeplane/runtime_log.py"]
+SOURCES = [
+    "homeplane/platform_paths.py",
+    "homeplane/runtime_log.py",
+    "homeplane/shared_laya.py",
+    "homeplane/shared_laya_engine.py",
+    "homeplane/shared_laya_service.py",
+]
 LABEL = "com.arl.laya.runtime"
 
 

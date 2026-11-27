@@ -1,4 +1,7 @@
 import json
+import subprocess
+import sys
+from importlib.util import find_spec
 from pathlib import Path
 import tempfile
 import time
@@ -9,7 +12,7 @@ import pytest
 pytest.importorskip('arl', reason='Optional shared ARL SDK')
 from arl.contracts import Fault
 from homeplane.shared_laya import SharedLaya, validate_input, VERSION
-from homeplane.shared_laya_service import LayaEngine, SharedRuntime
+from homeplane.shared_laya_engine import LayaEngine
 
 Q = {"command": {"type": "choice", "instructions": "Choose", "criteria": {"yes": "request", "no": "chat"}}}
 
@@ -82,6 +85,10 @@ def test_client_rejects_invalid_answers(choice):
 
 
 def test_no_unverified_rpc(tmp_path, monkeypatch):
+    if find_spec("arl.service") is None:
+        pytest.skip("需要 ARL 完整宿主以验证 RPC 身份；公开客户端 SDK 可验证其余 Laya 行为")
+    from homeplane.shared_laya_service import SharedRuntime
+
     # 两个平台均使用独占短 socket 目录；模型/日志夹具留在隔离缓存，构造过程不启动宿主或模型。
     from types import SimpleNamespace
     # The optional host SDK's travel catalogue is unrelated to this admission
@@ -94,6 +101,33 @@ def test_no_unverified_rpc(tmp_path, monkeypatch):
         with pytest.raises(Fault, match="app_identity_unverified"):
             runtime.dispatch(request)
         assert runtime.execute_jobs is False and runtime.policies["friday"].max_calls == 0
+
+
+def test_reviewed_laya_inventory_can_load_engine_in_isolated_release(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    receipt = json.loads(subprocess.check_output(
+        [sys.executable, "-B", str(root / "scripts/install_shared_laya.py")],
+        cwd=root, timeout=10,
+    ))
+    package = tmp_path / "homeplane"
+    package.mkdir()
+    (package / "__init__.py").touch()
+    for source in receipt["sources"]:
+        (tmp_path / source).write_bytes((root / source).read_bytes())
+
+    import_engine = subprocess.run(
+        [
+            sys.executable, "-B", "-c",
+            "import sys; from pathlib import Path; from homeplane import shared_laya_engine as engine; "
+            "assert Path(engine.__file__).resolve().is_relative_to(Path.cwd()); "
+            "assert 'arl.service' not in sys.modules",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert import_engine.returncode == 0, import_engine.stderr
 
 
 @pytest.mark.parametrize("state,questions", [("x"*8001,Q),("x",{}),("x",{"x":{"type":"code"}})])

@@ -39,6 +39,10 @@ Python 依赖边界由 `uv run --no-sync python scripts/check_architecture.py` �
 常规 Python 导入也必须设置 `PYTHONDONTWRITEBYTECODE=1`，避免在固定输入中生成
 `__pycache__`；额外文件仍会使来源核验和清理拒绝，不能用忽略缓存的方式放宽清单。
 
+Laya 的推理和有界日志归 `shared_laya_engine.py`，ARL 宿主启动、进程身份和关闭顺序
+归 `shared_laya_service.py`。按安装器的无 `--apply` 清单重建最小源码目录，测试隔离加载。
+有 `arl.service` 时执行宿主 RPC 身份回归，其余 Laya 测试直接使用合成引擎输入。
+
 CI 通过 `scripts/run_ci_regression.py` 为每个回归进程创建独占的 `/tmp/fci-*`，同时将它设为
 `TMPDIR`，并把 pytest `--basetemp` 放在其 `p/` 子目录。这样 SQLite 仍遵守原本的
 本机临时位置校验，Unix socket 也保留短路径余量；回归期间持有锁，结束后核对来源、
