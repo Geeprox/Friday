@@ -12,7 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from homeplane.api import create_app
-from homeplane.geek_session import REVISION, GeekSession
+from homeplane.geek_contracts import REVISION
+from homeplane.geek_session import GeekSession
 from homeplane.geek_setup import GeekSetup
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -485,7 +486,7 @@ async def test_late_local_inventory_is_discarded_after_disconnect(setup, monkeyp
 
 
 def test_inventory_api_uses_shared_contract_and_never_launches_on_get(tmp_path):
-    from homeplane.geek_inventory import GeekInventoryView
+    from homeplane.geek_contracts import GeekInventoryView
 
     async def forbidden(*args):
         raise AssertionError('GET must not start a worker')

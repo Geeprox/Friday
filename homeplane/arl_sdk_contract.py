@@ -22,6 +22,15 @@ import sysconfig
 import threading
 
 
+TERMINAL = frozenset({"succeeded", "failed", "cancelled", "needs_review", "needs_unlock"})
+
+
+class ARLError(ValueError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
 class _Refused(Exception):
     def __init__(self, code):
         self.code = code

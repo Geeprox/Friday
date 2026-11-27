@@ -18,18 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .arl_sdk_contract import ARLError, TERMINAL
 from .runtime_log import observe, stage_span
 
 from .platform_paths import arl_home
 
 DEFAULT_HOME = arl_home()
-TERMINAL = {"succeeded", "failed", "cancelled", "needs_review", "needs_unlock"}
-
-
-class ARLError(ValueError):
-    def __init__(self, code):
-        self.code = code
-        super().__init__(code)
 
 
 class _LocalWorkerBusy(ARLError):

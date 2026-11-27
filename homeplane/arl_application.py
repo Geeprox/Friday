@@ -18,6 +18,8 @@ import sqlite3
 import threading
 import time
 
+from .arl_sdk_contract import ARLError, TERMINAL
+
 APP_ID = 'com.friday.home.desktop'
 MAX_INPUT_BYTES = 12000
 SCENARIOS = (
@@ -26,7 +28,6 @@ SCENARIOS = (
     dict(id='home_planning', name='家庭操作建议', task_kind='household.plan',
          priority='interactive', package_id='high', deadline_ms=30000, max_output_bytes=8192),
 )
-TERMINAL = {'succeeded', 'failed', 'cancelled', 'needs_review', 'needs_unlock'}
 
 
 def sdk_compatibility(*, vendor_root=None, expected_manifest_sha256=None):
@@ -218,7 +219,6 @@ class FridayApplication:
 
     async def ping(self, *, timeout=8):
         """A current connection.ping receipt, without submitting a work item."""
-        from .arl import ARLError
         self.start()
         end = time.monotonic() + timeout
         while not self.status()['connected'] and time.monotonic() < end:
@@ -276,7 +276,6 @@ class FridayApplication:
                 'device_authority': False}
 
     async def complete(self, scenario_id, text, *, request_id, deadline, current=None):
-        from .arl import ARLError
         scenario = next((s for s in SCENARIOS if s['id'] == scenario_id), None)
         if (scenario is None or not isinstance(text, str) or not 0 < len(text.encode()) <= MAX_INPUT_BYTES
                 or not isinstance(request_id, str) or re.fullmatch(r'[a-z0-9-]{1,128}', request_id) is None

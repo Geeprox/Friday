@@ -8,7 +8,7 @@ import pytest
 
 from homeplane.api import create_app
 from homeplane.geek_background import MARKER_NAME
-from homeplane.geek_background_contracts import BackgroundInstallation
+from homeplane.geek_contracts import BackgroundInstallation
 from homeplane.geek_daemon import GeekDaemon, atomic_private
 from homeplane.geek_setup import GeekSetup
 from homeplane.settings import SettingsService

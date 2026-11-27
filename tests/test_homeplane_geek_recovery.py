@@ -147,7 +147,7 @@ async def test_readonly_diagnostics_ipc_and_old_status_client_compatibility(monk
     # AF_UNIX paths must also fit when the checkout is a deep frozen export.
     with tempfile.TemporaryDirectory(prefix="gk-", dir=Path(tempfile.gettempdir()).resolve()) as name:
         daemon, processes, now = make(Path(name))
-        from homeplane.geek_background_contracts import BackgroundInstallation
+        from homeplane.geek_contracts import BackgroundInstallation
         module.atomic_private(Path(name) / "geek-background-installed.json", BackgroundInstallation(use_for_connections=True).model_dump_json())
         await daemon.start()
         try:

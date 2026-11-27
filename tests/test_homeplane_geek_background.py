@@ -17,7 +17,7 @@ from test_homeplane_geek_session import Process, settle, simulated_snapshot
 
 from homeplane.api import create_app
 from homeplane.geek_background import MARKER_NAME, GeekBackground, enabled, last_attempt
-from homeplane.geek_background_contracts import BackgroundInstallation, ConnectionIntent
+from homeplane.geek_contracts import BackgroundInstallation, ConnectionIntent
 from homeplane.geek_daemon import GeekDaemon, atomic_private
 from homeplane.geek_service import LABEL, install
 from homeplane.geek_session import GeekSession

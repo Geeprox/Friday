@@ -10,6 +10,10 @@ from .action_contracts import LightExecutionTrace
 from .contracts import ActionTrace, Event
 
 
+DEFAULT_MAX_ROWS = 1000
+DEFAULT_RETENTION_DAYS = 7
+
+
 def local_database_path(path: Path):
     """Existing output-location policy, with no directory creation or database open."""
     path = path.expanduser().resolve()
@@ -42,7 +46,7 @@ def local_database_path(path: Path):
 
 
 class TraceStore:
-    def __init__(self, path: Path, *, max_rows=1000, retention_days=7, wall_now=None):
+    def __init__(self, path: Path, *, max_rows=DEFAULT_MAX_ROWS, retention_days=DEFAULT_RETENTION_DAYS, wall_now=None):
         self.wall_now = wall_now or (lambda: datetime.now(UTC))
         path = local_database_path(path)
         self.path = path

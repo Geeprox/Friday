@@ -162,7 +162,11 @@ def test_gap_rejects_actions_and_recovery_is_snapshot(client):
 
 def test_cross_origin_and_developer_do_not_authorize(client):
     assert client.post('/api/simulator/scenario/baseline', headers={'Origin':'https://evil.test'}).status_code == 403
-    assert client.get('/api/doctor').json()['real_writes'] == 'disabled'
+    doctor = client.get('/api/doctor').json()
+    store = client.app.state.core.store
+    assert doctor['real_writes'] == 'disabled'
+    assert doctor['retention']['max_rows'] == store.max_rows
+    assert doctor['retention']['traces_days'] == store.retention_days
 
 
 def test_schema_and_timezone_contract(client):

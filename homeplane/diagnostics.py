@@ -19,7 +19,9 @@ from typing import Annotated, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .geek_session import FailureCode, FailurePhase
+from .geek_contracts import FailureCode, FailurePhase
+from .simulator import Simulator
+from .store import DEFAULT_MAX_ROWS, DEFAULT_RETENTION_DAYS
 
 MAX_BYTES = 65536
 ROW_LIMIT = 1000
@@ -34,6 +36,30 @@ EXCLUDED = (
     "database_and_settings_files",
 )
 VERSION = re.compile(r"^\d{1,4}\.\d{1,4}(?:\.\d{1,4})?(?:(?:a|b|rc)\d{1,4})?$")
+
+
+def readiness(adapter=None, actions=None):
+    """报告当前接入状态和可用能力，不启动额外的硬件检查。"""
+    targets = actions.targets(adapter._last) if actions and getattr(adapter, "_last", None) else []
+    return {
+        "schema_version": 1, "mode": "simulator" if adapter is None or isinstance(adapter, Simulator) else "ha-read-only",
+        "real_writes": "scoped_explicit_execution_only" if targets else "disabled",
+        "authorized_target_count": len(targets), "python": platform.python_version(), "platform": platform.system(),
+        "dependencies": {n: importlib.metadata.version(n) for n in ("fastapi", "pydantic", "httpx", "websockets")},
+        "retention": {"traces_days": DEFAULT_RETENTION_DAYS, "max_rows": DEFAULT_MAX_ROWS, "sensitivity": "household", "media_capture": "disabled"},
+        "capabilities": {
+            "simulator": "available", "ha": "settings_oauth_readonly_activation",
+            "geek": "requires_local_pairing_passcode", "camera": "account_stream_and_license_probe_required",
+            "nas": "bounded_readonly_index_interval_and_original_mp4_player_simulated_real_timing_and_codec_pending", "room_output": "audibility_and_offline_test_pending",
+            "laya": "arl_task_contract_pending", "codex": "arl_provider_required", "arl": "shared_sdk",
+            "rules": "owned_simulator_and_reviewed_local_core_backend_native_deployment_unqualified",
+            "measurement_settings": "source_bound_temperature_profiles_and_temporary_exclusion",
+            "measurement_calibration_enrollment": "reviewed_relative_only_qualified_paired_samples_no_physical_independence_claim",
+        },
+        "offline_hardware": "unknown", "physical_verification": "NOT_RUN",
+        "limitations": ["No hardware test follows from readiness.", "External rules are not fully visible or intercepted."],
+        "ha_ingress": adapter.health() if adapter is not None and not isinstance(adapter, Simulator) else None,
+    }
 
 
 class Contract(BaseModel):

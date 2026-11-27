@@ -1,16 +1,4 @@
 {
-  "homeplane.api": [
-    "homeplane.cli"
-  ],
-  "homeplane.arl": [
-    "homeplane.arl_application"
-  ],
-  "homeplane.arl_application": [
-    "homeplane.arl"
-  ],
-  "homeplane.cli": [
-    "homeplane.api"
-  ],
   "homeplane.embodied.camera_udp_relay": [
     "homeplane.embodied.paths"
   ],
@@ -42,12 +30,6 @@
   ],
   "homeplane.embodied.temporal_review": [
     "homeplane.embodied.safety_recording"
-  ],
-  "homeplane.geek_inventory": [
-    "homeplane.geek_session"
-  ],
-  "homeplane.geek_session": [
-    "homeplane.geek_inventory"
   ],
   "homeplane.home_experience": [
     "homeplane.embodied.household",
