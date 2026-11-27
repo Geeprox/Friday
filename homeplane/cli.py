@@ -157,24 +157,29 @@ def main():
         )
         from .rule_runtime import RuleRun
         from .rule_text import RuleTextContext, RuleTextRequest, RuleTextResult
-        out = Path("schemas")
-        out.mkdir(exist_ok=True)
-        for name, model in [("GeekBackgroundRequest", BackgroundRequest), ("GeekConnectionIntent", ConnectionIntent),
-                            ("GeekSessionStatus", GeekSessionView), ("GeekInventory", GeekInventoryView)]:
-            (out / f"{name}.json").write_text(json.dumps(model.model_json_schema(), indent=2) + "\n")
-        for model in (MediaProbeRequest, MediaProbeResult, DiagnosticsExportRequest, DiagnosticsPolicy, DiagnosticsReport,
-                      Snapshot, ActionRequest, ActionTrace, PhysicalDevice, LightPlanRequest, LightExecutionTrace, LightAuthority,
-                      ArchiveCameraEdit, ArchiveResolution, ArchiveResolveRequest, ArchiveSegmentRef, ArchiveTimeRange,
-                      ArchivePlaybackCancel, ArchivePlaybackPlan, ArchivePlaybackRequest,
-                      DevicePlanRequest, HomeDeviceAuthority,
-                      RuleIR, RuleCompilation, RuleEvaluation, ModeLease, RuleTrial, ManagedRuleRecord,
-                      RemoveRuleAction, RuleApproval, RuleDeployment, RulePlanRef, RuleRun, HomeQuery, HomeQueryResult,
-                      EditMeasurement, ExcludeMeasurement, MeasurementChange, MeasurementSettingsView,
-                      EditMeasurementGroup, PreviewRelativeCalibration, CalibrationPreview, ApproveRelativeCalibration,
-                      RuleTextContext, RuleTextRequest, RuleTextResult,
-                      RuleAnalysisApproval, RuleAnalysisContext, RuleAnalysisRequest, RuleAnalysisResult, RuleAnalysisReview,
-                      CoreRuleApproval, CoreRulePlan, CoreRuleProposal, CoreRuleRecord, CoreRuleRun):
-            (out / f"{model.__name__}.json").write_text(json.dumps(model.model_json_schema(), indent=2) + "\n")
+        from .schema_export import write_schemas
+
+        aliases = {
+            "GeekBackgroundRequest": BackgroundRequest,
+            "GeekConnectionIntent": ConnectionIntent,
+            "GeekSessionStatus": GeekSessionView,
+            "GeekInventory": GeekInventoryView,
+        }
+        models = (
+            MediaProbeRequest, MediaProbeResult, DiagnosticsExportRequest, DiagnosticsPolicy, DiagnosticsReport,
+            Snapshot, ActionRequest, ActionTrace, PhysicalDevice, LightPlanRequest, LightExecutionTrace, LightAuthority,
+            ArchiveCameraEdit, ArchiveResolution, ArchiveResolveRequest, ArchiveSegmentRef, ArchiveTimeRange,
+            ArchivePlaybackCancel, ArchivePlaybackPlan, ArchivePlaybackRequest,
+            DevicePlanRequest, HomeDeviceAuthority,
+            RuleIR, RuleCompilation, RuleEvaluation, ModeLease, RuleTrial, ManagedRuleRecord,
+            RemoveRuleAction, RuleApproval, RuleDeployment, RulePlanRef, RuleRun, HomeQuery, HomeQueryResult,
+            EditMeasurement, ExcludeMeasurement, MeasurementChange, MeasurementSettingsView,
+            EditMeasurementGroup, PreviewRelativeCalibration, CalibrationPreview, ApproveRelativeCalibration,
+            RuleTextContext, RuleTextRequest, RuleTextResult,
+            RuleAnalysisApproval, RuleAnalysisContext, RuleAnalysisRequest, RuleAnalysisResult, RuleAnalysisReview,
+            CoreRuleApproval, CoreRulePlan, CoreRuleProposal, CoreRuleRecord, CoreRuleRun,
+        )
+        write_schemas("schemas", {**aliases, **{model.__name__: model for model in models}})
     else:
         async def run():
             try:

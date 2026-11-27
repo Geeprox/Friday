@@ -22,6 +22,10 @@ Python 依赖边界由 `uv run --no-sync python scripts/check_architecture.py` �
 和已经失效的历史例外。查看完整的静态导入图可追加 `--graph`。原生、部署和动态调用的边界由
 [架构治理](architecture-governance.md)记录。
 
+控制台、家庭资料和文件管家的 Schema 导出共用 `homeplane/schema_export.py`。
+用 `tests/test_schema_exports.py` 复现现有三个入口并检查已跟踪结果。历史差异由该测试列出；
+同步时核对公开文件的消费方和兼容版本，然后撤掉已解除的记录。
+
 完整回归包含 KTV 的真实 PNG 二维码生成，因此须选择已锁定的 `ktv` extra；
 `qrcode` 本身不包含 `PyPNGImage` 所需的 PyPNG。无需为运行测试启动 KTV、登录、扬声器或电视。
 
