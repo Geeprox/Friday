@@ -1,5 +1,4 @@
 """Household-owned visual semantics, independent of source geometry and authority."""
-import json
 import os
 from typing import Literal
 
@@ -61,6 +60,32 @@ def save(profile: Profile, expected_revision: int) -> Profile:
         return updated
     finally:
         os.close(lock)
+
+
+def household_function(entity, alias, functions):
+    """Select the physical function for the product view, independently of authority."""
+    if alias:
+        return True
+    name = entity.name.lower()
+    if any(word in name for word in ('指示灯', 'indicator', '凌动', '延时', '防闪烁',
+        '默认', '断电', '上电', '生物节律', '调光模式', '起夜', '初始化', '格式化',
+        '恢复出厂', '电机反向', '屏幕', '显示屏', '禁麦', '睡眠模式', '弹窗', '音效')):
+        return False
+    if entity.kind in {'light', 'climate', 'cover', 'fan', 'lock','media_player','humidifier','water_heater'}:
+        return True
+    if entity.kind == 'switch':
+        if ' * ' in entity.name or '门锁' in entity.name:
+            return False
+        if any(e.kind in {'light', 'climate', 'cover', 'fan', 'lock','humidifier','water_heater'}
+               and household_function(e, {}, []) for e in functions):
+            return False
+        # MIoT generic properties on panels/locks are not physical power channels.
+        parts = [p.strip() for p in entity.name.split('  ') if p.strip()]
+        if len(parts) > 1:
+            channel = parts[-1].split()
+            return channel[-1] in {'开关', '左键', '右键', '中键'}
+        return True
+    return False
 
 
 def appearance(kind, name, profile: Profile, identities=()):

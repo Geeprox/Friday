@@ -11,6 +11,8 @@ import re
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 
+from homeplane.home_presentation import household_function
+
 from .intent import address
 
 PREFIX = r"(?:(?:请你|请|麻烦你|麻烦|能不能|可以|你帮我|帮我|给我)\s*)*"
@@ -143,7 +145,6 @@ class DeviceCommands:
             alias = aliases.get(external)
             if entity.kind not in {"light", "cover", "climate", "fan", "switch"} and not alias:
                 continue
-            from homeplane.home_experience import household_function
             siblings = next((d.function_ids for d in snapshot.devices if entity.id in d.function_ids), [])
             if not household_function(entity, alias, [e for e in snapshot.entities if e.id in siblings]):
                 continue

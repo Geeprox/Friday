@@ -17,7 +17,8 @@ import pytest
 from tracking_fixtures import detection, quality, vector
 from tracking_fixtures import scope as scope
 
-from homeplane.people.catalog import PeopleCatalog, PeopleError
+from homeplane.people.catalog import PeopleCatalog
+from homeplane.people.contracts import PeopleError
 from homeplane.people_feature_bridge import SyntheticPeopleBatchOwner
 from homeplane.recognition.contracts import Embedding, VerificationPolicy
 from homeplane.recognition.face import FaceQuality

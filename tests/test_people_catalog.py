@@ -2,7 +2,8 @@ import sqlite3
 
 import pytest
 
-from homeplane.people.catalog import PeopleCatalog, PeopleError
+from homeplane.people.catalog import PeopleCatalog
+from homeplane.people.contracts import PeopleError
 from homeplane.people.contracts import Correct, Edit, Merge, Name, ReviewVoice, Split
 from homeplane.people.fixture import MODEL, POLICY, demo_factory, inputs, partition_factory, sample, seed
 from homeplane.people.recognition_bridge import SpeakerAgreement

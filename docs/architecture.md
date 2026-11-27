@@ -29,6 +29,10 @@ CLI 与 HTTP 的 doctor 报告由 `diagnostics.py` 生成，使用实际跟踪�
 Geek 会话、清单与后台服务共用 `geek_contracts.py`，数据模型无需加载 Worker 生命周期。
 ARL 应用与客户端的错误类型和终态集合共用 `arl_sdk_contract.py`。
 
+测量设置和校准共用 `measurement_settings_contracts.py` 的来源指纹与身份材料。
+家庭控制台与互动意图从 `home_presentation.py` 获取物理设备功能的筛选规则。
+人物记录与识别桥接统一使用人物契约定义的错误类型。
+
 ## 重建其他平台的自动化
 
 规则指纹在 `rule_contracts.py` 生成，编译、日历与执行回执使用同一编码。

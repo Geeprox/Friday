@@ -8,6 +8,12 @@ Ref = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 
 
+class PeopleError(ValueError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
     schema_version: Literal[1] = 1

@@ -4,7 +4,7 @@ from dataclasses import replace
 import pytest
 from pydantic import ValidationError
 
-from homeplane.people.catalog import PeopleError
+from homeplane.people.contracts import PeopleError
 from homeplane.people.fixture import MODEL, sample
 from homeplane.people.recognition_bridge import SpeakerAgreement, face_input
 from homeplane.recognition.contracts import Embedding

@@ -1,11 +1,50 @@
 """Local profile edits do not supply observations, identity or hardware timestamps."""
 
+import hashlib
+import json
 from typing import Literal
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from .contracts import CanonicalState, Contract
 from .measurement_profiles import MeasurementGroup, MeasurementProfile, RelativeCalibration
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def source_key(entity):
+    return digest([entity.id, entity.physical_source_id, "temperature"])
+
+
+def binding_fingerprint(entity):
+    return digest([entity.id, entity.physical_source_id, entity.room, entity.simulated,
+                   sorted((b.source, b.external_id) for b in entity.bindings),
+                   sorted((c.name, c.access, c.unit, c.support) for c in entity.capabilities
+                          if c.name == "temperature")])
+
+
+def identity_material(entity, snapshot):
+    if snapshot.mode == "simulator" and entity.simulated:
+        return ["simulated", entity.physical_source_id]
+    devices = [
+        d
+        for d in snapshot.devices
+        if entity.id in d.function_ids and not d.simulated and d.identity_basis == "xiaomi_identifier"
+    ]
+    if len(devices) != 1:
+        return None
+    identifiers = sorted(b.external_id for b in devices[0].bindings if b.source == "xiaomi-identity")
+    return ["upstream_xiaomi_identifiers", identifiers] if len(identifiers) == 1 else None
+
+
+def contextual_device(entity, snapshot):
+    return (
+        entity.kind == "climate"
+        or any(c.name == "climate.set" for c in entity.capabilities)
+        or any(entity.id in d.function_ids and d.kind == "climate" for d in snapshot.devices)
+    )
 
 
 class ProfileFields(Contract):

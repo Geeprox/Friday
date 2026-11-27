@@ -302,7 +302,7 @@ async def test_current_bad_diagnostics_and_flat_coverage_do_not_qualify(tmp_path
 
 @pytest.mark.asyncio
 async def test_upstream_identifier_aliases_and_generic_registry_are_not_independent(tmp_path):
-    from homeplane.measurement_settings import binding_fingerprint, source_key
+    from homeplane.measurement_settings_contracts import binding_fingerprint, source_key
     from homeplane.measurement_settings_contracts import MeasurementConfiguration, SavedMeasurement
 
     clock = [START]

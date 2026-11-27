@@ -2,12 +2,6 @@
   "homeplane.embodied.camera_udp_relay": [
     "homeplane.embodied.paths"
   ],
-  "homeplane.embodied.household": [
-    "homeplane.home_experience"
-  ],
-  "homeplane.embodied.interaction": [
-    "homeplane.embodied.household"
-  ],
   "homeplane.embodied.miot_session": [
     "homeplane.embodied.ptz_control"
   ],
@@ -30,22 +24,6 @@
   ],
   "homeplane.embodied.temporal_review": [
     "homeplane.embodied.safety_recording"
-  ],
-  "homeplane.home_experience": [
-    "homeplane.embodied.household",
-    "homeplane.embodied.interaction"
-  ],
-  "homeplane.measurement_enrollment": [
-    "homeplane.measurement_settings"
-  ],
-  "homeplane.measurement_settings": [
-    "homeplane.measurement_enrollment"
-  ],
-  "homeplane.people.catalog": [
-    "homeplane.people.recognition_bridge"
-  ],
-  "homeplane.people.recognition_bridge": [
-    "homeplane.people.catalog"
   ],
   "homeplane.recognition_contracts": [
     "homeplane.recognition_feature_handoff"
