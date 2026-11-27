@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from homeplane import ktv_accompaniment as audio
+from homeplane.ktv_process import terminate
 
 
 def wav(path, value=100):
@@ -189,7 +190,7 @@ def test_terminate_kills_and_reaps_ignored_sigterm(tmp_path):
                                 "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); time.sleep(30)"],
                                stdout=subprocess.PIPE, start_new_session=True)
     assert process.stdout.readline().strip() == b"ready"
-    audio._terminate(process)
+    terminate(process)
     assert process.returncode == -signal.SIGKILL
 
 

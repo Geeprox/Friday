@@ -25,6 +25,8 @@ import threading
 import time
 from pathlib import Path
 
+from integrations.ktv_public.audio_format import MAX_DURATION_SECONDS
+
 from .runtime_log import RuntimeLog
 
 MAX_FILES = 256
@@ -33,7 +35,6 @@ MAX_FILE_BYTES = 512 * 1024 * 1024
 MAX_METADATA_BYTES = 1024 * 1024
 MAX_CATALOG_METADATA_BYTES = 8 * 1024 * 1024
 MAX_KEY_BYTES = 65536
-MAX_DURATION_SECONDS = 1800
 MAX_FAILED_JOBS = 8
 MAX_SCAN_SECONDS = 5
 MAX_CACHE_BYTES = 2 * 1024 * 1024 * 1024

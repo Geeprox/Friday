@@ -5,7 +5,8 @@ import struct
 
 AAC_ENCODING = "aac_lc_m4a"
 AAC_FIELDS = {"frames", "encoder_delay", "encoder_padding", "bitrate"}
-MAX_FRAMES = 86400000
+MAX_DURATION_SECONDS = 1800
+MAX_FRAMES = MAX_DURATION_SECONDS * 48000
 VOCAL_PRESETS = frozenset({"dry", "pop", "ktv", "power", "opera", "studio", "echo"})
 SFX_ACTIONS = frozenset({"sfx_applause", "sfx_cheer", "sfx_stop"})
 SFX_TTL = 5

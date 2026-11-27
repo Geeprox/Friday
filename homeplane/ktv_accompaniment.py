@@ -13,7 +13,6 @@ import math
 import os
 import secrets
 import shutil
-import signal
 import stat
 import sys
 import subprocess
@@ -21,6 +20,10 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+
+from integrations.ktv_public.audio_format import MAX_DURATION_SECONDS
+
+from .ktv_process import terminate
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / ".artifacts/ktv-audio/separation/runtime/bin/python"
@@ -48,7 +51,6 @@ if SEPARATION_PLATFORM.startswith('linux'):
 
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024
-MAX_DURATION_SECONDS = 1800
 SCHEMA = 1
 CODES = frozenset(
     {
@@ -181,26 +183,6 @@ def _stage_source(source: Path, job: Path, cancel: threading.Event) -> tuple[Pat
     return staged, digest.hexdigest(), signature(after)
 
 
-def _terminate(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        process.wait()
-        return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=1)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait(timeout=2)
-
-
 def _run_worker(
     request: Path, runtime: Path, cancel: threading.Event, timeout: float, *, workspace: Path | None = None
 ) -> None:
@@ -244,7 +226,7 @@ def _run_worker(
         if process.returncode != 0:
             raise PreparationError("worker_failed")
     finally:
-        _terminate(process)
+        terminate(process)
 
 
 def _artifact(path: Path, job: Path) -> dict:

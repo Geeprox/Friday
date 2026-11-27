@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 
 from homeplane.ktv_cache import CacheManager
 from homeplane.ktv_scheduler import PriorityPool
-from homeplane.ktv_service import JobRequest, Queue, create_app
+from homeplane.ktv_job_contracts import JobRequest
+from homeplane.ktv_service import Queue, create_app
 
 
 def wav(path):

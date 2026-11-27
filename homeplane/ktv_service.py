@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import hmac
 import io
-import ipaddress
 import json
 import math
 import os
@@ -14,7 +13,6 @@ import re
 import secrets
 import shutil
 import stat
-import subprocess
 import threading
 import time
 import uuid
@@ -27,15 +25,18 @@ from typing import Callable, Literal
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
 
-from .ktv_accompaniment import MAX_DURATION_SECONDS, MODEL_REVISION, RUNTIME, prepare
+from integrations.ktv_public.audio_format import MAX_DURATION_SECONDS
+
+from .ktv_accompaniment import MODEL_REVISION, RUNTIME, prepare
+from .ktv_audio import audio_suffix
+from .ktv_files import MAX_MEDIA, atomic_json, digest, private_directory, safe_file
+from .ktv_job_contracts import ACTIVE, ERRORS, SOURCE_ORIGINS, JobRequest, nas_attempt_request_id, requested_audio_origin
 from .ktv_scheduler import PriorityPool
+from .ktv_video import valid_video
 
 SONG_ID = re.compile(r"[1-9][0-9]{0,17}\Z")
 JOB_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-SOURCE_ORIGINS = {"auto": "song", "song": "song", "mv": "mv", "cloud": "cloud", "mv_direct": "mv_direct"}
-MAX_MEDIA = 512 * 1024 * 1024
 MAX_STORAGE = 4 * 1024 * 1024 * 1024
 DEFAULT_MODEL_WORKERS = 3
 DEFAULT_DOWNLOAD_WORKERS = 3
@@ -44,107 +45,6 @@ MAX_MODEL_WORKERS = 10
 PREPARATION_RESERVE_BYTES = MAX_MEDIA * 4
 STORAGE_RETRY_SECONDS = 3
 STORAGE_WAIT_SECONDS = 60
-ACTIVE = {"queued", "acquiring", "separating", "transcoding"}
-ERRORS = {
-    "cancelled",
-    "interrupted",
-    "source_unavailable",
-    "source_changed",
-    "download_unavailable",
-    "download_timeout",
-    "download_identity_mismatch",
-    "download_cancelled",
-    "decode_failed",
-    "separation_failed",
-    "transcode_failed",
-    "invalid_audio",
-    "storage_full",
-    "internal_error",
-    "source_login_required",
-    "source_rights_denied",
-    "source_api_unavailable",
-    "source_file_invalid",
-}
-
-
-def requested_audio_origin(preference: str) -> str:
-    """Automatic MV matching must never change the selected song's audio edition."""
-    return SOURCE_ORIGINS[preference]
-
-
-def nas_attempt_request_id(job_id: str, attempt: int) -> str:
-    """沿用 NAS 队列记录与 Mac 制备记录的确定性绑定。"""
-    return job_id if not attempt else str(uuid.uuid5(uuid.UUID(job_id), "retry:" + str(attempt)))
-
-
-def valid_video(value, source_hash):
-    if not isinstance(value, dict):
-        return False
-    common = (value.get("status") == "ready"
-        and value.get("encoding") in {"h264_mp4_video_only", "h264_mp4_silent_clock"}
-        and value.get("source_audio_sha256") == source_hash
-        and isinstance(value.get("sha256"), str) and bool(re.fullmatch(r"[a-f0-9]{64}", value["sha256"]))
-        and type(value.get("bytes")) is int and 0 < value["bytes"] <= 128*1024*1024
-        and type(value.get("duration_seconds")) in {int,float} and math.isfinite(value["duration_seconds"])
-        and 0 < value["duration_seconds"] <= MAX_DURATION_SECONDS
-        and type(value.get("video_offset_ms")) in {int,float} and math.isfinite(value["video_offset_ms"])
-        and -12000 <= value["video_offset_ms"] <= 12000)
-    if not common:
-        return False
-    if value.get("method") == "same_mv_audio":
-        return value["video_offset_ms"] == 0 and isinstance(value.get("derived_from_video_sha256"),str) and bool(re.fullmatch(r"[a-f0-9]{64}",value["derived_from_video_sha256"]))
-    return (all(type(value.get(k)) in {int,float} and math.isfinite(value[k]) for k in ("score_min","offset_drift_ms"))
-        and .94 <= value["score_min"] <= 1.01 and type(value.get("window_count")) is int
-        and 5 <= value["window_count"] <= 7 and 0 <= value["offset_drift_ms"] <= 25)
-
-
-def digest(path: Path) -> str:
-    value = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            value.update(chunk)
-    return value.hexdigest()
-
-
-def atomic_json(path: Path, value) -> None:
-    temporary = path.with_name("." + path.name + "." + secrets.token_hex(6))
-    with temporary.open("x", encoding="utf-8") as stream:
-        os.chmod(temporary, 0o600)
-        json.dump(value, stream, ensure_ascii=False, allow_nan=False)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
-
-
-def safe_file(path: Path, root: Path | None = None) -> Path:
-    path = path.absolute()
-    if path.resolve() != path or not path.is_file() or not 0 < path.stat().st_size <= MAX_MEDIA:
-        raise ValueError("source_unavailable")
-    if root is not None and not path.is_relative_to(root):
-        raise ValueError("source_unavailable")
-    return path
-
-
-def private_directory(path: Path) -> Path:
-    path = path.absolute()
-    if path.resolve() != path:
-        raise ValueError("unsafe_directory")
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if path.stat().st_uid != os.getuid():
-        raise ValueError("unsafe_directory")
-    path.chmod(0o700)
-    return path
-
-
-class JobRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    song_id: str = Field(pattern=r"^[1-9][0-9]{0,17}$")
-    title: str = Field(default="", max_length=120)
-    request_id: str = Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-    requester: dict | None = None
-    cache_only: bool = False
-    source_preference: Literal["auto", "mv", "song", "cloud", "mv_direct"] = "auto"
-    playback_encoding: Literal["pcm_s16le_wav", "aac_lc_m4a"] = "pcm_s16le_wav"
 
 
 class Queue:
@@ -1008,7 +908,6 @@ class Queue:
                 item = dict(value["video"])
             else:
                 item = dict(value["media"][kind])
-        from .ktv_audio import audio_suffix
         filename = "video.mp4" if kind == "video" else kind + audio_suffix(item)
         path = self.jobs_dir / job_id / filename
         try:
@@ -1027,79 +926,6 @@ class Queue:
             if kind != "video":
                 self._state(job_id, "failed", "source_changed")
             raise HTTPException(409, "media_integrity_failed") from None
-
-
-def run_bounded(command: list[str], event: threading.Event, *, timeout: float, stderr=subprocess.DEVNULL):
-    from .ktv_accompaniment import _terminate
-
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=stderr,
-        start_new_session=True,
-    )
-    deadline = time.monotonic() + timeout
-    try:
-        while process.poll() is None:
-            if event.wait(0.05):
-                raise ValueError("cancelled")
-            if time.monotonic() > deadline:
-                raise ValueError("transcode_failed")
-        if process.returncode != 0:
-            raise ValueError("transcode_failed")
-    finally:
-        _terminate(process)
-
-
-def transcode_pcm(source: Path, output: Path, event: threading.Event, *, ffmpeg: str, gain_db: float = 0):
-    # Rewrap with stdlib wave to eliminate extra RIFF chunks; Android consumes one exact PCM contract.
-    if not math.isfinite(gain_db) or gain_db > 0:
-        raise ValueError("invalid_audio")
-    filters = []
-    if gain_db:
-        from .ktv_audio import FLOAT_STEREO
-
-        filters = ["-af", f"{FLOAT_STEREO},volume={gain_db:.2f}dB:precision=float"]
-    intermediate = output.with_suffix(".partial.wav")
-    try:
-        run_bounded(
-            [
-                ffmpeg,
-                "-nostdin",
-                "-v",
-                "error",
-                "-n",
-                "-i",
-                str(source),
-                "-map",
-                "0:a:0",
-                *filters,
-                "-t",
-                str(MAX_DURATION_SECONDS + 1),
-                "-map_metadata",
-                "-1",
-                "-ac",
-                "2",
-                "-ar",
-                "48000",
-                "-c:a",
-                "pcm_s16le",
-                str(intermediate),
-            ],
-            event,
-            timeout=180,
-        )
-        safe_file(intermediate)
-        with wave.open(str(intermediate), "rb") as reader, wave.open(str(output), "wb") as writer:
-            writer.setparams(reader.getparams())
-            while chunk := reader.readframes(8192):
-                if event.is_set():
-                    raise ValueError("cancelled")
-                writer.writeframesraw(chunk)
-        output.chmod(0o600)
-    finally:
-        intermediate.unlink(missing_ok=True)
 
 
 def separator(cache: Path, *, workspace: Path | None = None, runtime: Path = RUNTIME):
@@ -2183,16 +2009,3 @@ def create_app(
         )
 
     return app
-
-
-def local_host(value: str) -> str:
-    address = ipaddress.ip_address(value)
-    if address.version != 4 or not (
-        address.is_loopback
-        or any(
-            address in ipaddress.ip_network(cidr)
-            for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
-        )
-    ):
-        raise ValueError("private_ipv4_required")
-    return str(address)

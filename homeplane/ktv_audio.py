@@ -8,10 +8,14 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import wave
 from pathlib import Path
 
-from integrations.ktv_public.audio_format import AAC_ENCODING, verify_compact
+from integrations.ktv_public.audio_format import AAC_ENCODING, MAX_DURATION_SECONDS, verify_compact
+
+from .ktv_files import safe_file
+from .ktv_process import run_bounded
 
 RATE = 48000
 LOSSLESS_BITRATE = 256000
@@ -47,9 +51,55 @@ def source_bitrate(source, ffprobe):
     return bitrate
 
 
-def _true_peak(path, folder, event, *, ffmpeg, spec=None):
-    from .ktv_service import MAX_DURATION_SECONDS, run_bounded
+def transcode_pcm(source: Path, output: Path, event: threading.Event, *, ffmpeg: str, gain_db: float = 0):
+    # 用标准库 wave 重打包以移除额外 RIFF 块，保持电视端的 PCM 格式。
+    if not math.isfinite(gain_db) or gain_db > 0:
+        raise ValueError("invalid_audio")
+    filters = []
+    if gain_db:
+        filters = ["-af", f"{FLOAT_STEREO},volume={gain_db:.2f}dB:precision=float"]
+    intermediate = output.with_suffix(".partial.wav")
+    try:
+        run_bounded(
+            [
+                ffmpeg,
+                "-nostdin",
+                "-v",
+                "error",
+                "-n",
+                "-i",
+                str(source),
+                "-map",
+                "0:a:0",
+                *filters,
+                "-t",
+                str(MAX_DURATION_SECONDS + 1),
+                "-map_metadata",
+                "-1",
+                "-ac",
+                "2",
+                "-ar",
+                "48000",
+                "-c:a",
+                "pcm_s16le",
+                str(intermediate),
+            ],
+            event,
+            timeout=180,
+        )
+        safe_file(intermediate)
+        with wave.open(str(intermediate), "rb") as reader, wave.open(str(output), "wb") as writer:
+            writer.setparams(reader.getparams())
+            while chunk := reader.readframes(8192):
+                if event.is_set():
+                    raise ValueError("cancelled")
+                writer.writeframesraw(chunk)
+        output.chmod(0o600)
+    finally:
+        intermediate.unlink(missing_ok=True)
 
+
+def _true_peak(path, folder, event, *, ffmpeg, spec=None):
     filters = [FLOAT_STEREO]
     input_options = []
     if spec is not None:
@@ -77,8 +127,6 @@ def _true_peak(path, folder, event, *, ffmpeg, spec=None):
 
 
 def _encode_pair(inputs, normalized, partials, event, *, ffmpeg, bitrate, gain_db):
-    from .ktv_service import MAX_DURATION_SECONDS, run_bounded, transcode_pcm
-
     for source, output in zip(inputs, normalized):
         transcode_pcm(source, output, event, ffmpeg=ffmpeg, gain_db=gain_db)
     with wave.open(str(normalized[0]), "rb") as audio:

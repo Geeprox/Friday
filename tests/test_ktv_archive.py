@@ -9,7 +9,8 @@ import pytest
 
 from homeplane.ktv_archive import MediaArchive
 from homeplane.ktv_cache import CacheManager
-from homeplane.ktv_service import JobRequest, Queue
+from homeplane.ktv_job_contracts import JobRequest
+from homeplane.ktv_service import Queue
 
 
 def setup_archive(tmp_path):

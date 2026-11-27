@@ -9,7 +9,6 @@ import json
 import re
 import threading
 import time
-import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -20,7 +19,9 @@ from integrations.ktv_public.audio_format import (
     AUDIO_PLAYBACK_FIELDS, SFX_ACTIONS, SFX_TTL, VOCAL_PRESETS, audio_playback,
 )
 
-from .ktv_service import ERRORS, JobRequest, atomic_json, local_host, nas_attempt_request_id, private_directory
+from .ktv_files import atomic_json, private_directory
+from .ktv_job_contracts import ERRORS, JobRequest, nas_attempt_request_id
+from .ktv_startup import local_host
 
 
 def command_is_fresh(command, now):

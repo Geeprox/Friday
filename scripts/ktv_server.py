@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 def acquire_source(queue, adapter, cloud_adapter, song_id, folder, event):
     """Acquire the requested audio edition; optional video is prepared separately."""
-    from homeplane.ktv_service import requested_audio_origin
+    from homeplane.ktv_job_contracts import requested_audio_origin
     from homeplane.ktv_source_api import SOURCE_ERRORS
     from homeplane.ktv_video import acquire_mv_source
 
@@ -46,16 +46,10 @@ def acquire_source(queue, adapter, cloud_adapter, song_id, folder, event):
 def main(argv=None):
     # Runtime/dependency imports stay inside the outer startup admission guard.
     from homeplane.ktv_accompaniment import RUNTIME
-    from homeplane.ktv_service import (
-        Queue,
-        atomic_json,
-        create_app,
-        local_host,
-        private_directory,
-        separator,
-        transcode_pcm,
-    )
-    from homeplane.ktv_startup import installed_workspace
+    from homeplane.ktv_audio import transcode_pcm
+    from homeplane.ktv_files import atomic_json, private_directory
+    from homeplane.ktv_service import Queue, create_app, separator
+    from homeplane.ktv_startup import installed_workspace, local_host
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["init", "serve", "check"])
     parser.add_argument("--config", type=Path, default=Path("data/ktv/config.json"))

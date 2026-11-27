@@ -21,6 +21,19 @@ import threading
 import time
 
 
+def local_host(value: str) -> str:
+    address = ipaddress.ip_address(value)
+    if address.version != 4 or not (
+        address.is_loopback
+        or any(
+            address in ipaddress.ip_network(cidr)
+            for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+        )
+    ):
+        raise ValueError("private_ipv4_required")
+    return str(address)
+
+
 def activate(host, port, *, library=None):
     """Adopt only the exact LAN/loopback listeners declared by our launch agent."""
     lib = library or ctypes.CDLL(None)
