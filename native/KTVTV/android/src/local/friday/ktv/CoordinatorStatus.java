@@ -1,32 +1,44 @@
 package local.friday.ktv;
 
-import java.util.Map;
-
 /** 主屏只显示点歌和播放所需的状态。 */
 public final class CoordinatorStatus {
-    public static final String[] GATES={"nas_api","nas_data","nas_media","qr","link_worker","link_tv","worker_source","worker_model","worker_download","worker_lyrics","worker_media","tv_playback","tv_audio","tv_media"};
-    private static final String[] LABELS={"房间服务","房间数据","歌曲文件","点歌二维码","歌曲准备电脑","电视连接","音源账号","伴奏处理","歌曲下载","歌词处理","成品文件","电视播放","","电视缓存"};
-    private boolean complete;private String text="正在检查房间…";
-    public void observe(boolean active,boolean ready,Map<String,Boolean> gates){
-        boolean optionalAudio=gates!=null&&Boolean.FALSE.equals(gates.get("tv_audio"));
-        complete=active&&gates!=null&&(ready||optionalAudio);
-        StringBuilder missing=new StringBuilder();
-        int count=0;
-        for(int i=0;i<GATES.length;i++){
-            if("tv_audio".equals(GATES[i]))continue;
-            if(gates!=null&&Boolean.TRUE.equals(gates.get(GATES[i])))continue;
-            complete=false;
-            if(count++>=2)continue;
-            if(missing.length()>0)missing.append("、");
-            missing.append(LABELS[i]);
-        }
-        if(complete)text="房间已就绪";
-        else if(!active)text="本场尚未开启";
-        else if(missing.length()==0)text="正在检查房间…";
-        else text="正在等待"+missing;
+    // 与 NAS 的电视在线窗口一致，跨过个别连接超时。
+    private static final long ROOM_STALE_MS = 12_000;
+    // 电视能力每三秒上报一次。至少跨过一轮上报再显示异常。
+    private static final long DEVICE_ISSUE_MS = 3_000;
+
+    private enum DeviceIssue { NONE, OUTPUT, STORAGE }
+
+    private long roomSeenAt = -1;
+    private long issueSince;
+    private DeviceIssue issue = DeviceIssue.NONE;
+
+    public void reset() {
+        roomSeenAt = -1;
+        issue = DeviceIssue.NONE;
+        issueSince = 0;
     }
-    public void disconnected(boolean playing){complete=false;text=playing?"房间连接中 · 本地播放继续":"正在重新连接房间…";}
-    public boolean expire(long age,boolean playing){if(age>6000){String prior=text;disconnected(playing);return !prior.equals(text);}return false;}
-    public boolean complete(){return complete;}
-    public String text(){return text;}
+
+    public void observeRoom(long receivedAt, boolean outputUnavailable, boolean storageUnavailable) {
+        roomSeenAt = receivedAt;
+        DeviceIssue reported = outputUnavailable ? DeviceIssue.OUTPUT
+            : storageUnavailable ? DeviceIssue.STORAGE : DeviceIssue.NONE;
+        if (issue != reported) {
+            issue = reported;
+            issueSince = receivedAt;
+        }
+    }
+
+    public String text(long now, boolean hasRoomQr, boolean playing) {
+        if (roomSeenAt < 0) return "";
+        if (now - roomSeenAt >= ROOM_STALE_MS) {
+            return playing ? "房间连接中 · 本地播放继续" : "正在重新连接房间…";
+        }
+        if (!hasRoomQr) return "正在准备点歌二维码…";
+        if (roomSeenAt - issueSince >= DEVICE_ISSUE_MS) {
+            if (issue == DeviceIssue.OUTPUT) return "电视暂时无法播放";
+            if (issue == DeviceIssue.STORAGE) return "电视存储暂不可用";
+        }
+        return "房间已就绪";
+    }
 }

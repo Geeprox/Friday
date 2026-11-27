@@ -14,7 +14,7 @@ All TV endpoints require a separate `X-KTV-TV-Key`, stored locally in `state/tv-
 
 `GET /v1/status` returns protocol 2, current `party`, and `readiness`. The latter is complete only when all fixed gates are true: `nas_api`, `nas_data`, `nas_media`, `qr`, `link_worker`, `link_tv`, `worker_source`, `worker_model`, `worker_download`, `worker_lyrics`, `worker_media`, `tv_playback`, `tv_audio`, `tv_media`. Worker claims expire after 20 seconds, TV receipts after 12 seconds, and NAS local health evidence after 15 seconds. The NAS filesystem/SQLite read-write probes run on a separate health lane; request handlers only read their bounded snapshot. First startup waits for those results. These are software/capability receipts, not proof of physical sound or microphone feedback protection.
 
-新版电视收到开房回执后即可显示房间。电视的就绪上报、二维码和歌曲列表分别处理，任一路暂时超时，其余状态仍可更新。Mac Worker 从状态轮询交付当前二维码，避免等待媒体归档、歌词或伴奏任务。暂时失败时，前台电视用原请求 ID 继续以最长 10 秒的退避间隔重试。明确拒绝、密钥错误和房间冲突等待用户处理。
+电视收到开房回执后即可显示房间。右上角的就绪状态以当前房间快照和本场已显示的二维码为准。电视的就绪上报只更新 NAS 记录，后台制备和探针波动继续通过相应环节反映。电视能力持续异常或房间持续失联时显示对应提示。二维码和歌曲列表分别处理，任一路暂时超时，其余状态仍可更新。Mac Worker 从状态轮询交付当前二维码，避免等待媒体归档、歌词或伴奏任务。暂时失败时，前台电视用原请求 ID 继续以最长 10 秒的退避间隔重试。明确拒绝、密钥错误和房间冲突等待用户处理。
 
 启用后，电视开房会在第 0、2、6、14 秒访问已配置的 Mac 固定 `/v1/status` 监听器。单次超时为 1 秒，首轮窗口为 30 秒。前台电视继续有效上报、Worker 一直没有新鲜注册时，同一个开房请求每 60 秒最多补一次探测。仍在线的 Worker 如果只是依赖未就绪，等待依赖状态更新。收到 401 表示监听器已响应，完整就绪仍取决于新鲜的 Worker 注册与依赖检查。接口仅联系固定监听器，`cannot_wake` 表明它不负责从休眠或断电唤醒 Mac。
 

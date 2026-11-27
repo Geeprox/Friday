@@ -64,12 +64,31 @@ public final class CoordinatorClientTest {
         check(reports.shouldSend(1,"playing with confirmed mute",true,801),"new controls are immediate during playback");
         check(reports.shouldSend(2,"paused",false,200),"reconnected controls establish a new receipt");
 
-        Map<String,Boolean> gates=new HashMap<>();for(String gate:CoordinatorStatus.GATES)gates.put(gate,true);CoordinatorStatus status=new CoordinatorStatus();
-        status.observe(true,true,gates);check(status.complete(),"all complete gates");check(!status.expire(6000,true)&&status.complete(),"fresh status");check(status.expire(6001,true)&&!status.complete(),"an unanswered poll cannot leave complete readiness stale");gates.put("worker_model",false);status.observe(true,true,gates);check(!status.complete()&&status.text().contains("伴奏处理"),"HTTP ready cannot override failed model dependency");gates.put("worker_model",true);gates.remove("qr");status.observe(true,true,gates);check(!status.complete(),"missing gate fails closed");status.disconnected(true);check(!status.complete()&&status.text().contains("本地播放继续"),"disconnect is visibly degraded");
-        gates.put("qr",true);gates.put("tv_audio",false);
-        status.observe(true,false,gates);check(status.complete()&&status.text().equals("房间已就绪"),"external microphone does not delay the room");
-        gates.put("tv_playback",false);
-        status.observe(true,false,gates);check(!status.complete()&&status.text().contains("电视播放")&&!status.text().contains("麦克风"),"real playback failure stays visible");
+        CoordinatorStatus status=new CoordinatorStatus();
+        check(status.text(0,false,false).isEmpty(),"新房间须先有房间回包");
+        status.observeRoom(100,false,false);
+        check(status.text(100,false,false).equals("正在准备点歌二维码…"),"房间回包不能提前确认电视已显示二维码");
+        check(status.text(100,true,false).equals("房间已就绪"),"本场二维码显示后才确认就绪");
+        check(status.text(6101,true,false).equals("房间已就绪"),"连续个别读取超时不让就绪文案闪动");
+        check(status.text(12100,true,false).equals("正在重新连接房间…"),"持续失联仍须显示重连");
+        check(status.text(12100,true,true).contains("本地播放继续"),"持续失联仍显示本地播放");
+        status.observeRoom(13000,true,false);
+        check(status.text(16001,true,false).equals("房间已就绪"),"一条异常回包不能自行变成持续异常");
+        status.observeRoom(15999,true,false);
+        check(status.text(15999,true,false).equals("房间已就绪"),"本轮电视能力短暂为不可用不闪动");
+        status.observeRoom(16000,false,false);
+        check(status.text(16000,true,false).equals("房间已就绪"),"短暂的电视输出变化已恢复");
+        status.observeRoom(18000,true,false);
+        status.observeRoom(21000,true,false);
+        check(status.text(21000,true,false).equals("电视暂时无法播放"),"持续输出异常给出明确状态");
+        status.observeRoom(22000,false,true);
+        status.observeRoom(25000,false,true);
+        check(status.text(25000,true,false).equals("电视存储暂不可用"),"持续存储异常给出明确状态");
+        status.observeRoom(26000,false,false);
+        check(status.text(26000,true,false).equals("房间已就绪"),"电视能力恢复后回到已就绪");
+        check(status.text(26000,false,false).equals("正在准备点歌二维码…"),"真换码时显示准备新二维码");
+        status.reset();
+        check(status.text(27000,true,false).isEmpty(),"换房或连接后丢弃旧证据");
 
         PlaybackTimeline timeline=new PlaybackTimeline("","","");check(timeline.start("song","edition",true),"first performance");String epoch=timeline.epoch();check(!timeline.start("song","edition",false)&&epoch.equals(timeline.epoch()),"pause/resume and route recovery retain timeline");check(timeline.start("song","edition",true)&&!epoch.equals(timeline.epoch()),"same-song replay even at time zero changes epoch");epoch=timeline.epoch();check(timeline.start("song","new-edition",false)&&!epoch.equals(timeline.epoch()),"changed edition invalidates calibration");PlaybackTimeline restored=new PlaybackTimeline(timeline.epoch(),timeline.song(),timeline.media());check(!restored.start("song","new-edition",false)&&restored.epoch().equals(timeline.epoch()),"persistent timeline proof");
         check(MediaTimeline.valid(48000,1000,192044,192044,1,1),"exact PCM timeline");check(MediaTimeline.valid(48000,1000,192044,192048,1,48001/48000.0),"bounded equivalent tail");check(!MediaTimeline.valid(48000,1000,192044,250000,1,1),"mismatched stem timeline");check(!MediaTimeline.valid(48000,1000,192044,192044,Double.NaN,1),"nonfinite duration");
