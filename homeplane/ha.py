@@ -23,13 +23,13 @@ from .contracts import (
     Snapshot,
 )
 from .devices import project_ha
+from .event_provenance import SourceContextProvider, entity_source_context, ha_endpoint, source_digest, valid_label
+from .ha_protocol import decode_json, parse_frame, parse_time, validate_states
 from .quality import resolve
-from .event_provenance import entity_source_context
-
 from .runtime_log import observe
 
 
-class HAReadOnlyAdapter:
+class HAReadOnlyAdapter(SourceContextProvider):
     """Read-only snapshots and opt-in continuous events over the same domain contract."""
 
     def __init__(self, url, token, instance_id, *, client=None, transport=None, ws_connect=connect, token_provider=None):
@@ -161,25 +161,25 @@ class HAReadOnlyAdapter:
                 content.extend(chunk)
                 if len(content) > 4 * 1024 * 1024:
                     raise ValueError("HA response exceeds byte budget")
-            return _json(content)
+            return decode_json(content)
 
     @observe('ha.inventory', upstream='ha')
     async def _inventory(self):
         async with self._ws_connect(self._ws_url, open_timeout=8, close_timeout=2,
                                     max_size=4 * 1024 * 1024, max_queue=16, proxy=None) as ws:
             async with asyncio.timeout(12):
-                hello = _object(await ws.recv())
+                hello = parse_frame(await ws.recv())
                 if hello.get("type") != "auth_required":
                     raise ValueError("Invalid HA handshake")
                 await ws.send(json.dumps({"type": "auth", "access_token": self._token}))
-                auth = _object(await ws.recv())
+                auth = parse_frame(await ws.recv())
                 if auth.get("type") != "auth_ok":
                     raise ValueError("HA authentication rejected")
                 self._ha_version = auth.get("ha_version")
                 results = []
                 for ident, kind in enumerate(("entity", "device", "area"), 1):
                     await ws.send(json.dumps({"id": ident, "type": f"config/{kind}_registry/list"}))
-                    result = _object(await ws.recv())
+                    result = parse_frame(await ws.recv())
                     if result.get("id") != ident or result.get("success") is not True or not isinstance(result.get("result"), list):
                         raise ValueError("Registry inventory unavailable")
                     key = "entity_id" if kind == "entity" else "area_id" if kind == "area" else "id"
@@ -390,7 +390,7 @@ class HAReadOnlyAdapter:
                                    bindings=bindings, capabilities=caps,
                                    state_version=hashlib.sha256(json.dumps([external, stable, registry.get("device_id"),
                                                row.get("state"), attrs, self._switch_channels.get(external)], sort_keys=True).encode()).hexdigest()))
-            written = _date(row.get("last_reported") or row.get("last_updated"))
+            written = parse_time(row.get("last_reported") or row.get("last_updated"))
             value = row.get("state")
             unavailable = value in ("unknown", "unavailable", None)
             if capability == "temperature" and not unavailable:
@@ -437,17 +437,55 @@ class HAReadOnlyAdapter:
                               devices=project_ha(entities, self._devices, self._areas, self.instance_id))
         return self._last
 
+    def _provenance_endpoint(self):
+        if self._registry_ok is not True or not valid_label(self.instance_id):
+            return None
+        return ha_endpoint(self.url)
+
+    def _entity_source_context(self, entity, binding):
+        endpoint = self._provenance_endpoint()
+        if endpoint is None or entity.simulated:
+            return None
+        external = [item.external_id for item in entity.bindings if item.source == 'ha']
+        if len(external) != 1:
+            return None
+        registry = self._registry.get(external[0])
+        if not isinstance(registry, dict) or registry.get('entity_id') != external[0]:
+            return None
+        stable = self._registry_identity(external[0])
+        if not valid_label(stable):
+            return None
+        identity = self._identity(stable)
+        if entity.id != identity or entity.physical_source_id != identity:
+            return None
+        device = registry.get('device_id')
+        device_bindings = [item.external_id for item in entity.bindings if item.source == 'ha-device-registry']
+        if device_bindings != ([device] if device is not None else []):
+            return None
+        registration = {key: registry.get(key) for key in ('id', 'unique_id', 'platform', 'device_id', 'area_id')}
+        registration['device_area_id'] = self._devices.get(device, {}).get('area_id')
+        if any(value is not None and not valid_label(value) for value in registration.values()):
+            return None
+        area = registration['area_id'] or registration['device_area_id']
+        expected_room = self._areas.get(area, {}).get('name') or area
+        if entity.room != expected_room:
+            return None
+        return source_digest(['friday.event-source.v1', 'ha', endpoint, self.instance_id, binding, registration])
+
+    def _registered_room_context(self, room):
+        endpoint = self._provenance_endpoint()
+        if endpoint is None:
+            return None
+        areas = {key for key, value in self._areas.items()
+                 if valid_label(key) and isinstance(value, dict) and value.get('area_id') == key
+                 and (room == key or room == value.get('name'))}
+        if len(areas) != 1:
+            return None
+        return source_digest(['friday.registered-room.v1', 'ha', endpoint, self.instance_id, next(iter(areas))])
+
     def _rules(self):
         return [ExternalRuleRecord(id=self._identity("external-rules"), source="ha",
                                    raw=None, fingerprint=None, coverage_note="External Graph unavailable; no semantics inferred.")]
-
-
-def _date(value):
-    try:
-        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return result if result.tzinfo else None
-    except (AttributeError, ValueError, TypeError):
-        return None
 
 
 def _numeric(value):
@@ -456,42 +494,3 @@ def _numeric(value):
         return math.isfinite(float(value))
     except (ValueError, TypeError):
         return False
-
-
-def validate_states(rows):
-    if not isinstance(rows, list) or len(rows) > 10000 or any(
-        not isinstance(r, dict) or not isinstance(r.get("entity_id"), str) or len(r["entity_id"]) > 256
-        or not isinstance(r.get("state"), str) or len(r["state"]) > 1024
-        or not isinstance(r.get("attributes", {}), dict)
-        or any(r.get("attributes", {}).get(k) is not None and not isinstance(r["attributes"][k], str)
-               for k in ("friendly_name", "unit_of_measurement", "device_class")) for r in rows
-    ) or len({r["entity_id"] for r in rows}) != len(rows):
-        raise ValueError("invalid_states")
-
-
-def validate_registry(rows, kind):
-    key = "entity_id" if kind == "entity" else "area_id" if kind == "area" else "id"
-    if not isinstance(rows, list) or len(rows) > 10000 or any(
-        not isinstance(r, dict) or not isinstance(r.get(key), str)
-        or any(r.get(k) is not None and not isinstance(r[k], str)
-               for k in ("id", "device_id", "area_id", "unique_id", "platform", "name")) for r in rows
-    ) or len({r[key] for r in rows}) != len(rows):
-        raise ValueError("invalid_registry")
-
-
-def _json(raw):
-    def reject_constant(_value):
-        raise ValueError("Non-finite JSON constant")
-    try:
-        return json.loads(raw, parse_constant=reject_constant)
-    except (RecursionError, UnicodeError) as exc:
-        raise ValueError("Invalid HA JSON") from exc
-
-
-def _object(raw):
-    if len(raw) > 4 * 1024 * 1024:
-        raise ValueError("HA message exceeds byte budget")
-    value = _json(raw)
-    if not isinstance(value, dict):
-        raise ValueError("HA message must be an object")
-    return value

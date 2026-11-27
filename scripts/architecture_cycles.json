@@ -43,22 +43,11 @@
   "homeplane.embodied.temporal_review": [
     "homeplane.embodied.safety_recording"
   ],
-  "homeplane.event_provenance": [
-    "homeplane.ha",
-    "homeplane.simulator"
-  ],
   "homeplane.geek_inventory": [
     "homeplane.geek_session"
   ],
   "homeplane.geek_session": [
     "homeplane.geek_inventory"
-  ],
-  "homeplane.ha": [
-    "homeplane.event_provenance",
-    "homeplane.ha_stream"
-  ],
-  "homeplane.ha_stream": [
-    "homeplane.ha"
   ],
   "homeplane.home_experience": [
     "homeplane.embodied.household",
@@ -81,8 +70,5 @@
   ],
   "homeplane.recognition_feature_handoff": [
     "homeplane.recognition_contracts"
-  ],
-  "homeplane.simulator": [
-    "homeplane.event_provenance"
   ]
 }

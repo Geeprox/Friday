@@ -21,6 +21,10 @@ are derived from the current user; it does not embed an author's repository path
 login session or signing identity. NAS and People content stay local. Optional
 ARL provides the model-runtime boundary and is not a prerequisite for simulation.
 
+HA REST 与 WebSocket 共用 `ha_protocol.py` 的有界消息解析与状态校验。
+HA 和 Simulator 各自核对登记、房间和当前身份材料，再用 `event_provenance.py`
+生成稳定来源摘要。历史事件查验继续比较原摘要、来源和当前权限。
+
 ## 重建其他平台的自动化
 
 规则指纹在 `rule_contracts.py` 生成，编译、日历与执行回执使用同一编码。
