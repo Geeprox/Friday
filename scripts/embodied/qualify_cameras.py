@@ -21,7 +21,8 @@ async def main():
     from miot.types import MIoTGetPropertyParam, MIoTSetPropertyParam
 
     from homeplane.embodied.paths import PRIVATE, PROJECT, configuration
-    from homeplane.embodied.ptz_control import alive, atomic
+    from homeplane.embodied.camera_state import atomic
+    from homeplane.embodied.ptz_control import alive
     from homeplane.embodied.miot_spec import properties, property_ref
 
     parser = argparse.ArgumentParser(description=__doc__)

@@ -23,11 +23,8 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from .pose_rules import iou
+from .safety_recording import SafetyAdmissionChanged
 from .safety_storage import SafetyIO, SafetyStorageBusy
-
-
-class SafetyAdmissionChanged(ValueError):
-    pass
 
 
 def _sound_view_slot(step):

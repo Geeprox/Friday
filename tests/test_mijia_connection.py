@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 import pytest
 
 from homeplane.embodied.miot_session import MiSession
-from homeplane.embodied.ptz_control import atomic
+from homeplane.embodied.camera_state import atomic
 
 
 def rig(tmp_path,*,expired=False):

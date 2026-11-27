@@ -465,7 +465,7 @@ class EmbodiedService:
         return dict(status="stopped", restored=True)
 
     async def _recover_pending(self, worker_pid=None):
-        from .ptz_control import read_lease
+        from .camera_state import read_lease
         try:cameras = configuration()['cameras']
         except FileNotFoundError:return
         except (ValueError, OSError, KeyError):

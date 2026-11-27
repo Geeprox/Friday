@@ -13,6 +13,10 @@ import time
 from dataclasses import dataclass, field
 
 
+class SafetyAdmissionChanged(ValueError):
+    pass
+
+
 @dataclass(eq=False)
 class ReviewReceipt:
     pending: bool = True
@@ -206,7 +210,6 @@ class SafetyRecorder:
         self._drop(job)
 
     async def _run(self):
-        from .safety import SafetyAdmissionChanged
         try:
             while not self.closed:
                 self.changed.clear()

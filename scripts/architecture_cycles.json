@@ -1,30 +1,4 @@
 {
-  "homeplane.embodied.camera_udp_relay": [
-    "homeplane.embodied.paths"
-  ],
-  "homeplane.embodied.miot_session": [
-    "homeplane.embodied.ptz_control"
-  ],
-  "homeplane.embodied.paths": [
-    "homeplane.embodied.camera_udp_relay"
-  ],
-  "homeplane.embodied.ptz_control": [
-    "homeplane.embodied.miot_session"
-  ],
-  "homeplane.embodied.safety": [
-    "homeplane.embodied.safety_recording",
-    "homeplane.embodied.sound_review",
-    "homeplane.embodied.temporal_review"
-  ],
-  "homeplane.embodied.safety_recording": [
-    "homeplane.embodied.safety"
-  ],
-  "homeplane.embodied.sound_review": [
-    "homeplane.embodied.safety_recording"
-  ],
-  "homeplane.embodied.temporal_review": [
-    "homeplane.embodied.safety_recording"
-  ],
   "homeplane.recognition_contracts": [
     "homeplane.recognition_feature_handoff"
   ],

@@ -19,6 +19,7 @@ from homeplane.embodied.extensions import ActionBindings, RecognizerRegistry
 from homeplane.embodied.home_service import HomeService
 from homeplane.embodied.motion_games import MotionGames
 from homeplane.embodied.page_recording import PageRecording
+from homeplane.embodied.capture_environment import capture_environment
 from homeplane.embodied.paths import (
     DATA,
     MODELS,
@@ -27,7 +28,6 @@ from homeplane.embodied.paths import (
     VISION,
     camera,
     camera_storage,
-    capture_environment,
     configuration,
 )
 from homeplane.embodied.paths import (
@@ -1461,7 +1461,7 @@ async def internal_cover(request: Request):
     if home.curtain.api is None:
         await home.curtain.connect()
     entries[key] = {"status": "unknown_outcome", "acknowledged": False, "reached_target": False}
-    from homeplane.embodied.ptz_control import atomic
+    from homeplane.embodied.camera_state import atomic
 
     atomic(ledger, dict(list(entries.items())[-128:]))
     result = await home.curtain.act(action, event)
