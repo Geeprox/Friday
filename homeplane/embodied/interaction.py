@@ -20,6 +20,17 @@ GESTURES={'body.arms_open':'双臂打开','body.arms_close':'双臂合上','body
 ACTIONS={'on','off','open','close','position:0','position:25','position:50','position:75','position:100','mode:cool','mode:heat','mode:off','mode:auto','mode:heat_cool','mode:dry','mode:fan_only'}
 REPEAT_SECONDS = 3.0
 
+def recent_preview_gestures(previous, hands, captured_at):
+    """保留两秒内确认过的名称，让轮询预览有机会显示短暂的稳定手势。"""
+    names = {name:stamp for name,stamp in previous.items() if 0 <= captured_at - stamp < 2}
+    for hand in hands:
+        label = hand.get("gesture")
+        name = "食指指认" if label == "pointing" else GESTURES.get("hand." + (label or ""))
+        if name:
+            names[name] = captured_at
+    return names
+
+
 class Binding(BaseModel):
     model_config=ConfigDict(extra='forbid')
     id:str=Field(pattern=r'^[a-f0-9]{32}$')

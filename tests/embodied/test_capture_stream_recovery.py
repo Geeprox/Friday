@@ -328,6 +328,8 @@ async def test_original_supervisor_retries_after_fault_and_a_replacement_receive
 
 def frame_continuation(scope):
     """Original post-Vision pipeline with inert recognition/layout ports."""
+    from homeplane.embodied.interaction import recent_preview_gestures
+    scope['recent_preview_gestures'] = recent_preview_gestures
     tree=ast.parse(Path('homeplane/embodied/worker.py').read_text())
     source=next(n for n in tree.body if isinstance(n,ast.AsyncFunctionDef)and n.name=='run_source')
     loop=next(n for n in ast.walk(source)if isinstance(n,ast.While)and any(

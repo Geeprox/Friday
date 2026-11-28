@@ -299,6 +299,10 @@ async def test_survey_readback_and_stop_are_bound_to_the_current_round(tmp_path,
                  PRIVATE=tmp_path, previews=pool, configuration=config, PET_MODES=PET_MODES,
                  wall=SimpleNamespace(frame=lambda _: None),
                  camera_intent_readback=camera_intent_readback)
+    from homeplane.embodied.interaction import recent_preview_gestures
+    observed_hands = [{'gesture':'thumb_down'}, {'gesture':'hand_visible', 'raw_gesture':'thumb_up'}]
+    state['hands'] = observed_hands
+    item['recent_gestures'] = state['_preview_gestures'] = recent_preview_gestures({}, observed_hands, time.time())
     actual_worker_functions({'view', 'preview_status'}, scope)
     worker = FastAPI()
     worker.get('/api/previews/{camera_id}')(scope['preview_status'])
@@ -324,7 +328,9 @@ async def test_survey_readback_and_stop_are_bound_to_the_current_round(tmp_path,
         director.phase = 'survey_finished'
         snapshot = dict(director.public(), mode='survey')
         (state if primary else item)['camera_control'] = snapshot
-        assert (await client.get(base+'/preview')).json()['camera_control']['survey_result'] == 'complete'
+        preview = (await client.get(base+'/preview')).json()
+        assert preview['camera_control']['survey_result'] == 'complete'
+        assert preview['hand_gestures'] == ['拇指向下']
 
         restarted = await client.post(base+'/control', json={'mode': 'survey'})
         assert restarted.status_code == 200
@@ -337,6 +343,7 @@ async def test_survey_readback_and_stop_are_bound_to_the_current_round(tmp_path,
 
         state['status'] = item['state'] = 'unavailable'
         item['control'] = None
+        assert (await client.get(base+'/preview')).json()['hand_gestures'] == []
         invalid = await client.post(base+'/control', json={'mode': 'auto', 'survey_revision': current})
         assert invalid.status_code == 422
         stale = await client.post(base+'/control', json={'mode': 'hold', 'survey_revision': old})
@@ -419,3 +426,11 @@ async def test_pending_primary_auto_decision_is_cancelled_after_intent_changes(c
     with pytest.raises(RuntimeError, match='camera_intent_changed'):
         await scope['motor_step']('left', time.monotonic(), expected_intent='original')
     assert not sent and not scope['motor_waiters']
+
+
+def test_preview_keeps_short_confirmations_across_a_poll_and_expires_them():
+    from homeplane.embodied.interaction import recent_preview_gestures
+    initial = recent_preview_gestures({}, [{'gesture':'thumb_down'}], 10)
+    candidate = [{'raw_gesture':'thumb_up', 'gesture':'hand_visible'}]
+    assert recent_preview_gestures(initial, candidate, 11.5) == {'拇指向下':10}
+    assert recent_preview_gestures(initial, candidate, 12) == {}

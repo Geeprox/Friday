@@ -105,9 +105,9 @@ def classify_hand(joints, ratio=16 / 9, *, world_horns=False):
             upward_thumb = True
         # 相对水平线向下至少约 25 度。要求拇指突出拳面，侧伸或贴拳的拇指不计入。
         fist_center_y = sum(q(n + "Tip")["y"] for n in curled) / 4
-        if (all(curled.values()) and far_thumb and thumb_angle > 130
-                and thumb_reach > palm * .58 and dy > max(palm * .25, abs(dx) * .47)
-                and thumb["y"] > fist_center_y + palm * .08):
+        protrudes_below_fist = all(curled.values()) and far_thumb and thumb["y"] > fist_center_y + palm * .08
+        if (protrudes_below_fist and thumb_angle > 130 and thumb_reach > palm * .58
+                and dy > max(palm * .25, abs(dx) * .47)):
             return "thumb_down"
         pinky_open = False
         little_tip = q("littleTip")
@@ -125,6 +125,20 @@ def classify_hand(joints, ratio=16 / 9, *, world_horns=False):
             if (pinky_open and opposed and spread > palm * 1.15 and far_thumb
                     and thumb_angle > 110 and thumb_reach > palm * .5):
                 return "shaka"
+        # 浅角度时要求拇指伸直、伸出足够远，并先排除点赞和侧伸小指的电话手势。
+        if (clear and protrudes_below_fist and not upward_thumb and thumb_straight and thumb_angle > 155
+                and thumb_reach > palm * .75 and dy > max(palm * .20, abs(dx) * .27)):
+            return "thumb_down"
+        # 侧视时拇指末段可接近水平。用完整拳面交叉确认指尖确实从拳的下侧伸出。
+        if all_fingers and all(curled.values()) and thumb_straight and not upward_thumb and dy > 0:
+            below_knuckle = thumb["y"] - index["y"]
+            across_knuckle = abs(thumb["x"] - index["x"]) * ratio
+            lowest_fingertip = max(q(n + "Tip")["y"] for n in curled)
+            if (thumb_angle > 155 and thumb_reach > palm * .6
+                    and thumb["y"] - thumb_base["y"] > palm * .15
+                    and below_knuckle > max(across_knuckle, palm * .45)
+                    and thumb["y"] - lowest_fingertip > palm * .25):
+                return "thumb_down"
         # 拇指可横压中指或无名指，不能仅按它与食指根的距离判断收拢。
         tucked = any(
             q(n) and dist(thumb, q(n)) < palm * .5

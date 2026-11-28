@@ -31,6 +31,9 @@ SYNTHETIC_MEDIA = {
     # 固定合成镜头状态截图，输入来自 camera-perception.html，不连接设备。
     'docs/screenshots/camera-perception-status.png':
         '9a7df5a50fee28fcad2b18e745566e6a70ab560bb29bbd278c57d885bf02d3f8',
+    # 摄像头详情使用合成色条和固定的手势读数。
+    'docs/screenshots/camera-preview-gesture.png':
+        '1cca10f09119fdad225215834f98d96cdf5acc4a75d5f8bdc5448f2687133b48',
     # 固定合成灯具配置示例，无家庭设备或写入请求。
     'docs/screenshots/automation-lighting-recovery.png':
         '299b619fa6dbc96e080c88001a264485d15d81563090c02493092e73da447b37',

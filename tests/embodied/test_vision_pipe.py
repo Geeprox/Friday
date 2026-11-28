@@ -230,6 +230,8 @@ async def test_primary_vision_failure_restarts_only_recognition_and_rebinds_fres
     owner['safety'].offer = Mock()
     owner['safety'].sound_requested = lambda _:False
     owner['safety'].recording_status = lambda:{'state':'ready'}
+    from homeplane.embodied.interaction import recent_preview_gestures
+    owner['recent_preview_gestures'] = recent_preview_gestures
     owner['games'].reset('ski')
     for name in ('reap','invalidate_calibration','calibration_source','primary_frame_current','scene_frame_current',
                  'primary_recovery_frame','view','preview_status','preview_frame','interaction_game_window','run_source'):

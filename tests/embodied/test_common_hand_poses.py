@@ -176,7 +176,8 @@ def test_hidden_thumb_base_cannot_invert_vertical_direction(label):
 
 
 @pytest.mark.parametrize("degrees, expected", [(55, "thumb_down"), (60, "thumb_down"),
-                                              (80, "hand_visible"), (90, "hand_visible")])
+                                              (70, "thumb_down"), (80, "hand_visible"),
+                                              (90, "hand_visible"), (110, "hand_visible")])
 @pytest.mark.parametrize("mirror", [False, True])
 def test_downward_diagonal_both_hands(degrees, expected, mirror):
     import math
@@ -187,6 +188,30 @@ def test_downward_diagonal_both_hands(degrees, expected, mirror):
         p["x"] = .5 + (.75 if not mirror else -.75)*(x*math.cos(angle)-y*math.sin(angle))*9/16
         p["y"] = .5 + .75*(x*math.sin(angle)+y*math.cos(angle))
     assert classify_hand(joints) == expected
+    if degrees == 70:
+        joints["thumbCMC"]["confidence"] = .54
+        assert classify_hand(joints) != "thumb_down"
+        joints["thumbCMC"]["confidence"] = .55
+        assert classify_hand(joints) == "thumb_down"
+
+
+@pytest.mark.parametrize("mirror", [False, True])
+@pytest.mark.parametrize(("tip_y", "expected"), [
+    (.68, "thumb_down"),  # 末段仅微微向下，但指尖明确落在拳面下方。
+    (.64, "hand_visible"),  # 拇指末段水平。
+    (.62, "hand_visible"),  # 拇指末段向上。
+])
+def test_shallow_thumb_below_folded_fist(mirror, tip_y, expected):
+    joints = hand("thumb_down")
+    for name, x, y in (("thumbCMC", .29, .52), ("thumbMP", .37, .64),
+                       ("thumbIP", .45, (.64 + tip_y) / 2), ("thumbTip", .54, tip_y)):
+        joints[name].update(x=x, y=y)
+    if mirror:
+        for point in joints.values():
+            point["x"] = 1 - point["x"]
+    assert classify_hand(joints) == expected
+    del joints["thumbIP"]
+    assert classify_hand(joints) != "thumb_down"
 
 
 @pytest.mark.parametrize("mirror", [False, True])

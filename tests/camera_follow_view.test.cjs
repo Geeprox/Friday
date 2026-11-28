@@ -5,7 +5,7 @@ const cameraPanel=source.slice(source.indexOf(' function cameraPanel('),source.i
 const stopPreview=source.slice(source.indexOf(' function stopPreview('),source.indexOf('\n function cameraPanel('));
 const all=n=>[n,...n.children.flatMap(all)],settle=()=>new Promise(setImmediate);
 
-function panel({supported=true,recognition=true,powerEnabled=true,initialMode='auto'}={}){
+function panel({supported=true,recognition=true,powerEnabled=true,initialMode='auto',handGestures=[]}={}){
  class Element{
   constructor(tag){this.tagName=tag;this.children=[];this.attrs={};this.textContent='';this.isConnected=true;this.hidden=false;this.classList={toggle(){}};}
   append(...nodes){this.children.push(...nodes);}setAttribute(k,v){this.attrs[k]=String(v);}removeAttribute(k){delete this.attrs[k];}
@@ -15,7 +15,7 @@ function panel({supported=true,recognition=true,powerEnabled=true,initialMode='a
  const add=(n,...children)=>{n.append(...children);return n;};
  const slot=new Element('section'),requests=[],pending={},routes=[];let mode=initialMode,phase=mode==='survey'?'patrolling':'following',tick,deferRead=false,deferControl=false,deferPower=false;
  let state='live',revision=0,result=null,confirmed=mode==='survey'?4:0,oldReport=null,failRead=false,interruption=null;
- const report=()=>({state,primary:true,recognition_enabled:recognition,camera_control:{owner:'friday',mode,phase,
+ const report=()=>({state,primary:true,recognition_enabled:recognition,recognition:recognition?'running':'waiting',hand_gestures:handGestures,camera_control:{owner:'friday',mode,phase,
   intent_revision:String(revision),survey_result:result,survey_confirmed_moves:confirmed,survey_total_steps:10,survey_interruption:interruption,
   reason:phase==='sound_search'?'异响后环视':mode==='pets'?'跟随宠物':mode==='hold'?'停留当前视角':mode==='survey'?(result==='complete'?'本轮巡视完成':result?'本轮巡视未完成':'巡视低处'):'跟随人物'},pet_tracking:{supported}});
  function apply(next){mode=next;revision++;phase=next==='survey'?'patrolling':next==='hold'?'held':'following';result=null;interruption=null;confirmed=0;return{mode,intent_revision:String(revision)};}
@@ -154,4 +154,12 @@ test('closing a detail during explicit wake cannot open a retired preview after 
  c.close();c.pending.power();await opening;
  assert.equal(c.requests.filter(r=>r.path.endsWith('/preview')&&r.body).length,0);
  assert.equal(c.image().hidden,true);
+});
+
+test('镜头预览显示稳定手势并在停止查看时清空',async()=>{
+ const c=panel({handGestures:['拇指向下']});await settle();await c.click('查看实时画面');await c.tick();
+ const label=all(c.slot).find(n=>n.className==='camera-gestures');
+ assert.equal(label.hidden,false);assert.equal(label.textContent,'刚识别到拇指向下');
+ await c.click('停止查看');
+ assert.equal(label.hidden,true);assert.equal(label.textContent,'');
 });
